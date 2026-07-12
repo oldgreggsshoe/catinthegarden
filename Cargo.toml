@@ -1,0 +1,17 @@
+[workspace]
+members = ["crates/app"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+bytemuck = { version = "1.25", features = ["derive"] }
+egui = "0.35"
+egui-wgpu = "0.35"
+egui-winit = "0.35"
+pollster = "0.4"
+wgpu = "29.0"
+winit = "0.30.13"

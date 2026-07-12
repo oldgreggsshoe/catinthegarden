@@ -5,7 +5,7 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
-- Nothing yet. Starting Phase 0.
+- Phase 0 complete: workspace app opens a wgpu/winit window with an egui FPS overlay, dark-grey clear, and rotating salmon-pink triangle.
 
 ## Planet constants (test planet)
 
