@@ -2,6 +2,10 @@
 
 Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the whole architecture in one page so you don't need the full design doc pasted in every session.
 
+## Version control
+
+-- You are working in active repo with a remote set. After each set of changes you make, following a prompt, commit and push the changes
+
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
@@ -16,6 +20,10 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 - Split/merge threshold: screen-space error ~2px (project chunk's worst-case geometric error at current LOD to screen pixels via camera distance; split above threshold, merge below with hysteresis to avoid flicker)
 - Max mountain height: ~9,000 m above sea level (Everest-scale ceiling)
 - Ice cap trigger: latitude > ~66° OR altitude above a per-latitude snowline (snowline drops toward poles, roughly linear interpolate from ~5000m at equator to 0m at pole)
+- Star: G2V (sun-like), radius 696,000 km, ~5778K surface temp, warm-white color (not yellow)
+- Orbit distance: 1 AU (149,600,000 km) — real Earth-Sun numbers, trivially in the habitable zone for this star type
+- Sun angular size: ~0.53° (derived from radius/distance above, don't hand-pick it)
+- Sunlight treated as directional (no meaningful parallax at 1 AU vs 4000km planet radius) for all lighting math; only the sun disc render needs the real distance
 
 ## Non-negotiable architecture decisions
 
@@ -32,9 +40,34 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
   - normal: derive on GPU from height texture (central-difference sample), don't bake — saves texture memory
   Runtime only streams and displaces, never computes noise/erosion live.
 
-**Atmosphere:** Precomputed scattering LUTs (transmittance, single-scattering, multi-scattering), Bruneton-style. Typical LUT sizes: transmittance 256x64, scattering packed 3D texture roughly 32x128x32 texels — start half-res and verify visually before committing to full-res, it's a memory/startup-time tradeoff. Computed once at startup or baked, sampled at runtime, never raymarched per-frame. Rayleigh coefficient ~(5.8, 13.5, 33.1)e-6 per meter (RGB, Earth-like air), Mie coefficient ~21e-6 per meter — standard Earth-atmosphere starting values, tune from there.
+**Atmosphere:** No precomputed LUTs. Altitude-aware single-scattering, analytic, based on the Preetham/Hoffman model extended for non-constant density (Nielsen 2003). Density `ρ(h) = ρ0 · e^(-h/H)`, Rayleigh H≈8000m, Mie H≈1200m. Optical depth estimated as average-endpoint-density × path length (no ray integral). Two render paths, same math: (1) terrain aerial perspective computed per-vertex on the existing LOD terrain mesh, interpolated by GPU; (2) sky/space view via a short 4-16 sample single-scattering raymarch through the atmosphere shell — same shader covers ground sky and orbital limb view, just different ray length. Match sky horizon optical depth to terrain far-plane optical depth to avoid a seam. No multiple scattering (keeps it cheap; fake it later with Mie g-parameter/sun-intensity nudge only if needed). Rayleigh coefficient ~(5.8, 13.5, 33.1)e-6/m, Mie ~21e-6/m. Sunset/sunrise colors emerge automatically from Rayleigh wavelength dependence.
 
-**Ocean:** Sum of 4-8 Gerstner waves at varying wavelength/direction/amplitude (bigger/slower waves dominate, smaller add chop). Blinn-Phong + Fresnel (Schlick approximation), cubemap reflection (not SSR) for now. Sea level = height 0 in the outmap.
+**Sun & HDR:** Sun is a camera-facing disc drawn along the sun direction at fixed far depth (always-pass depth test, skybox-style), no LOD, no mesh — its apparent size barely changes across the game's altitude range. Day/night from planet axial rotation, not simulated orbital revolution. Render to HDR float target (Rgba16Float), values can exceed 1.0. Auto-exposure: manual mip-chain luminance downsample to 1x1, smoothed adaptation (`exposure = lerp(exposure, target, 1 - exp(-dt*adapt_speed))`), target from `key / (avg_luminance + eps)`, key ≈ 0.18. Tonemap: ACES filmic (Narkowicz fitted approximation, no LUT). Log exposure value into `log.jsonl` every frame — same tier-1 testing as everything else, assert it's bounded and doesn't oscillate.
+
+**Ocean:** Sum of 4-8 Gerstner waves at varying wavelength/direction/amplitude (bigger/slower waves dominate, smaller add chop). Blinn-Phong + Fresnel (Schlick approximation) using the real sun direction/color, cubemap reflection (not SSR) for now. Sea level = height 0 in the outmap.
+
+## Debug & test infrastructure
+
+Built right after Phase 0, used by every phase after that. Don't skip or defer this.
+
+- **Logging:** `tracing` → JSON-lines log file, one line per ~0.5s (not per render frame). Fields: sim_time, camera world pos (f64 xyz), lat/lon/altitude, velocity, orientation, LOD level histogram (counts per level 0-17), chunks loaded/unloaded this tick, frame_time_ms, draw_calls.
+- **Debug overlay:** egui panel, toggleable, shows FPS/LOD stats/camera position. Exists from Phase 0 onward.
+- **Test scenarios:** data-defined waypoint lists (time_s, position, look_at), run with a **fixed simulation timestep** (not wall-clock dt) for determinism — same scenario must produce identical frames every run.
+- **Screenshots:** wgpu texture readback → PNG, triggered at scenario waypoints or a debug-mode keypress.
+- **Storage:**
+  ```
+  /test-runs/{scenario_name}/{run_id}/
+    manifest.json          -- scenario, git commit, timestamp, pass/fail
+    log.jsonl               -- per-frame spatial log (fields above)
+    screenshots/*.png
+    screenshots/manifest.json  -- maps PNG filename -> corresponding log.jsonl entry
+  ```
+**Check order — three tiers, cheapest and most objective first:**
+1. *Log assertions* against `log.jsonl` — NaN/inf checks, chunk-count bounds, frame time budget, LOD thrash detection (rapid split/merge on the same chunk), `max_seam_delta_m` under tolerance when a chunk changes LOD. Fully automated, no image involved.
+2. *Programmatic pixel/image analysis* — still fully objective, no judgment call, just reads numbers out of a screenshot: crack detection via a flat-color-per-chunk debug pass scanned for background pixels inside the planet silhouette; atmosphere sunset check via sampling fixed sky pixel coordinates across a sun-angle sweep and asserting red-channel-over-blue grows near the horizon; ocean check via sampling wave-height statistics from a heightfield readback rather than looking at the water. Prefer this over vision whenever the thing you're checking can be reduced to "read this pixel/region and compare a number."
+3. *Vision review* (Codex or a human looks at the screenshot) — last resort only, for cases where you don't have a predefined numeric criterion yet or something looks wrong in a way nobody thought to assert against. Don't default to this tier; if a check keeps getting done by vision, that's a sign it should be converted to tier 2.
+
+Every phase from Phase 2 onward adds/reuses at least one named test scenario checked into the repo, so old scenarios catch regressions from new phases. Aim for every scenario to have at least one tier-1 or tier-2 assertion — a scenario that only produces screenshots for someone to look at isn't a real test yet.
 
 ## Crate versions (pinned, July 2026)
 
@@ -50,6 +83,9 @@ rayon = "1"
 image = "0.25"
 noise = "0.9"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json"] }
 ```
 If a `cargo add` resolves something newer, that's fine — these are floors, not hard locks.
 
@@ -91,10 +127,12 @@ Test the baker standalone with the PNG preview before ever wiring it into the re
 ## Phase list
 
 0. Skeleton — wgpu+winit+egui window, clear screen, FPS counter.
-1. Cube-sphere mesh, fixed res, no LOD, no height. Orbit camera. Prove f64→f32 rebasing works.
-2. Quadtree LOD, split/merge, skirts. Placeholder sine-wave height to visualize popping/morphing.
-3. Baker CLI — full terrain pipeline above, PNG preview output.
-4. Wire outmap into renderer — tile streaming matched to quadtree, GPU height displacement, biome coloring.
-5. Atmosphere — scattering LUTs, sky pass, aerial perspective on terrain.
-6. Ocean — Gerstner shader, specular/fresnel, swap in below sea level.
-7. Polish — ice cap visuals, egui debug panel (LOD level/chunk count/draw calls), perf pass.
+0.5. Debug/test infra — tracing JSON-lines logger, debug overlay toggle, manual screenshot capture, fixed-timestep test-mode scaffolding. Prove the harness with a trivial scenario before anything else exists.
+1. Cube-sphere mesh, fixed res, no LOD, no height. Orbit camera. Prove f64→f32 rebasing works. Test scenario: one orbit, 4 screenshots, check for seams at cube face boundaries.
+2. Quadtree LOD, split/merge, skirts. Placeholder sine-wave height to visualize popping/morphing. Test scenario: orbit-to-10m descent, log LOD histogram + screenshots at several altitudes.
+3. Baker CLI — full terrain pipeline above, PNG preview output. Checked via preview PNGs directly, no game-side scenario yet.
+4. Wire outmap into renderer — tile streaming matched to quadtree, GPU height displacement, biome coloring. Reuse Phase 2's descent scenario, compare against its placeholder-terrain baseline.
+5. Atmosphere — per-vertex terrain aerial perspective + raymarch sky/space shader, altitude-aware density, no LUTs. Test scenarios: fixed camera + swept sun angle (sunset color check), plus ground-to-orbit ascent (check sky-to-space transition has no seam).
+5.5. Sun & HDR pipeline — real sun disc, HDR float target, luminance downsample, smoothed auto-exposure, ACES tonemap. Test: log exposure in ground-to-orbit ascent, assert bounded/no oscillation; add "stare at sun" scenario, check smooth adapt not snap.
+6. Ocean — Gerstner shader, specular/fresnel using real sun direction, swap in below sea level. Test scenario: low-altitude ocean flyover.
+7. Polish — ice cap visuals, egui debug panel additions, perf pass. Rerun all prior scenarios as a regression pass.
