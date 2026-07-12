@@ -6,8 +6,9 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
+        mpsc,
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use wgpu::util::DeviceExt;
@@ -24,6 +25,13 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     b: 0.09,
     a: 1.0,
 };
+
+struct GpuProfiler {
+    query_set: wgpu::QuerySet,
+    resolve_buffer: wgpu::Buffer,
+    readback_buffer: wgpu::Buffer,
+    timestamp_period_ns: f32,
+}
 
 struct State {
     surface: wgpu::Surface<'static>,
@@ -54,6 +62,7 @@ struct State {
     scenario_capture_failed: bool,
     mouse_captured: bool,
     profile_render: bool,
+    gpu_profiler: Option<GpuProfiler>,
 }
 
 impl State {
@@ -84,10 +93,18 @@ impl State {
             })
             .await
             .expect("no suitable GPU adapter found");
+        let timestamp_features =
+            wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES;
+        let requested_features =
+            if profile_render && adapter.features().contains(timestamp_features) {
+                timestamp_features
+            } else {
+                wgpu::Features::empty()
+            };
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("render device"),
-                required_features: wgpu::Features::empty(),
+                required_features: requested_features,
                 required_limits: wgpu::Limits::default(),
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 memory_hints: wgpu::MemoryHints::Performance,
@@ -95,6 +112,28 @@ impl State {
             })
             .await
             .expect("failed to create render device");
+        let gpu_profiler = requested_features
+            .contains(wgpu::Features::TIMESTAMP_QUERY)
+            .then(|| GpuProfiler {
+                query_set: device.create_query_set(&wgpu::QuerySetDescriptor {
+                    label: Some("render timestamps"),
+                    ty: wgpu::QueryType::Timestamp,
+                    count: 2,
+                }),
+                resolve_buffer: device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("render timestamp resolve"),
+                    size: 16,
+                    usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: false,
+                }),
+                readback_buffer: device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("render timestamp readback"),
+                    size: 16,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                }),
+                timestamp_period_ns: queue.get_timestamp_period(),
+            });
 
         let surface_capabilities = surface.get_capabilities(&adapter);
         let surface_format = surface_capabilities
@@ -248,6 +287,7 @@ impl State {
             scenario_capture_failed: false,
             mouse_captured: false,
             profile_render,
+            gpu_profiler,
         }
     }
 
@@ -436,6 +476,7 @@ impl State {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("render encoder"),
             });
+        let sample_gpu = self.profile_render && write_log && self.gpu_profiler.is_some();
         if let Some(paint_jobs) = &paint_jobs {
             self.egui_renderer.update_buffers(
                 &self.device,
@@ -483,7 +524,14 @@ impl State {
                     stencil_ops: None,
                 }),
                 occlusion_query_set: None,
-                timestamp_writes: None,
+                timestamp_writes: sample_gpu.then(|| {
+                    let profiler = self.gpu_profiler.as_ref().expect("GPU profiler exists");
+                    wgpu::RenderPassTimestampWrites {
+                        query_set: &profiler.query_set,
+                        beginning_of_pass_write_index: Some(0),
+                        end_of_pass_write_index: Some(1),
+                    }
+                }),
                 multiview_mask: None,
             });
             if !solid_color_screen {
@@ -541,9 +589,27 @@ impl State {
             - egui_ms
             - rebase_upload_ms;
 
+        if sample_gpu {
+            let profiler = self.gpu_profiler.as_ref().expect("GPU profiler exists");
+            encoder.resolve_query_set(&profiler.query_set, 0..2, &profiler.resolve_buffer, 0);
+            encoder.copy_buffer_to_buffer(
+                &profiler.resolve_buffer,
+                0,
+                &profiler.readback_buffer,
+                0,
+                16,
+            );
+        }
+
         let submit_started = Instant::now();
         self.queue.submit(Some(encoder.finish()));
         let submit_ms = submit_started.elapsed().as_secs_f32() * 1_000.0;
+        let gpu_render_ms = if sample_gpu {
+            let profiler = self.gpu_profiler.as_ref().expect("GPU profiler exists");
+            read_gpu_timestamp_ms(&self.device, profiler)
+        } else {
+            None
+        };
         let capture_started = Instant::now();
         if let Some(pending_capture) = pending_capture {
             if let Err(error) = debug::finish_capture(
@@ -570,6 +636,7 @@ impl State {
                 encode_ms,
                 submit_ms,
                 capture_readback_ms,
+                gpu_render_ms.unwrap_or(-1.0),
                 profile_started.elapsed().as_secs_f32() * 1_000.0,
             );
         }
@@ -775,4 +842,31 @@ fn create_depth_view(
             view_formats: &[],
         })
         .create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+fn read_gpu_timestamp_ms(device: &wgpu::Device, profiler: &GpuProfiler) -> Option<f64> {
+    let (sender, receiver) = mpsc::channel();
+    profiler
+        .readback_buffer
+        .slice(..)
+        .map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result.is_ok());
+        });
+    device
+        .poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(Duration::from_secs(5)),
+        })
+        .ok()?;
+    if !receiver.recv_timeout(Duration::from_secs(5)).ok()? {
+        return None;
+    }
+    let timestamps = profiler.readback_buffer.slice(..).get_mapped_range();
+    let values: &[u64] = bytemuck::cast_slice(&timestamps);
+    let elapsed_ms = values[1].saturating_sub(values[0]) as f64
+        * f64::from(profiler.timestamp_period_ns)
+        / 1_000_000.0;
+    drop(timestamps);
+    profiler.readback_buffer.unmap();
+    Some(elapsed_ms)
 }

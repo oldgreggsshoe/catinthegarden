@@ -156,6 +156,7 @@ impl RunArtifacts {
         encode_ms: f32,
         submit_ms: f32,
         capture_readback_ms: f32,
+        gpu_render_ms: f64,
         total_render_ms: f32,
     ) {
         tracing::info!(
@@ -167,6 +168,7 @@ impl RunArtifacts {
             encode_ms,
             submit_ms,
             capture_readback_ms,
+            gpu_render_ms,
             total_render_ms,
             "render timing sample"
         );
