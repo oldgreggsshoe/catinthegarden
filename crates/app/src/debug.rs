@@ -152,11 +152,15 @@ impl RunArtifacts {
         sim_time: f64,
         simulation_ms: f32,
         egui_ms: f32,
-        rebase_upload_ms: f32,
+        surface_acquire_ms: f32,
+        egui_upload_ms: f32,
+        vertex_rebase_ms: f32,
+        vertex_upload_ms: f32,
         encode_ms: f32,
         submit_ms: f32,
         capture_readback_ms: f32,
         gpu_render_ms: f64,
+        gpu_timestamp_readback_ms: f32,
         total_render_ms: f32,
     ) {
         tracing::info!(
@@ -164,11 +168,15 @@ impl RunArtifacts {
             sim_time,
             simulation_ms,
             egui_ms,
-            rebase_upload_ms,
+            surface_acquire_ms,
+            egui_upload_ms,
+            vertex_rebase_ms,
+            vertex_upload_ms,
             encode_ms,
             submit_ms,
             capture_readback_ms,
             gpu_render_ms,
+            gpu_timestamp_readback_ms,
             total_render_ms,
             "render timing sample"
         );

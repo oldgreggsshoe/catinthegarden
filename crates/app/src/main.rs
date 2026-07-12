@@ -454,6 +454,7 @@ impl State {
         };
 
         let mut reconfigure_surface = false;
+        let surface_acquire_started = Instant::now();
         let output = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(output) => output,
             wgpu::CurrentSurfaceTexture::Suboptimal(output) => {
@@ -471,12 +472,14 @@ impl State {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        let surface_acquire_ms = surface_acquire_started.elapsed().as_secs_f32() * 1_000.0;
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("render encoder"),
             });
         let sample_gpu = self.profile_render && write_log && self.gpu_profiler.is_some();
+        let egui_upload_started = Instant::now();
         if let Some(paint_jobs) = &paint_jobs {
             self.egui_renderer.update_buffers(
                 &self.device,
@@ -486,23 +489,27 @@ impl State {
                 &screen_descriptor,
             );
         }
+        let egui_upload_ms = egui_upload_started.elapsed().as_secs_f32() * 1_000.0;
 
+        let rebase_started = Instant::now();
         let rebased_vertices = self
             .planet_mesh
             .rebased_vertices(self.camera.world_position());
+        let vertex_rebase_ms = rebase_started.elapsed().as_secs_f32() * 1_000.0;
+        let upload_started = Instant::now();
         self.queue.write_buffer(
             &self.planet_vertex_buffer,
             0,
             bytemuck::cast_slice(&rebased_vertices),
         );
-        let rebase_upload_ms =
-            profile_started.elapsed().as_secs_f32() * 1_000.0 - simulation_ms - egui_ms;
         let camera_uniform = planet::CameraUniform::from_camera(
             &self.camera,
             self.size.width as f32 / self.size.height as f32,
         );
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
+        let vertex_upload_ms = upload_started.elapsed().as_secs_f32() * 1_000.0;
+        let encode_started = Instant::now();
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("cube-sphere pass"),
@@ -584,10 +591,7 @@ impl State {
             )
         });
 
-        let encode_ms = profile_started.elapsed().as_secs_f32() * 1_000.0
-            - simulation_ms
-            - egui_ms
-            - rebase_upload_ms;
+        let encode_ms = encode_started.elapsed().as_secs_f32() * 1_000.0;
 
         if sample_gpu {
             let profiler = self.gpu_profiler.as_ref().expect("GPU profiler exists");
@@ -604,12 +608,14 @@ impl State {
         let submit_started = Instant::now();
         self.queue.submit(Some(encoder.finish()));
         let submit_ms = submit_started.elapsed().as_secs_f32() * 1_000.0;
+        let gpu_readback_started = Instant::now();
         let gpu_render_ms = if sample_gpu {
             let profiler = self.gpu_profiler.as_ref().expect("GPU profiler exists");
             read_gpu_timestamp_ms(&self.device, profiler)
         } else {
             None
         };
+        let gpu_timestamp_readback_ms = gpu_readback_started.elapsed().as_secs_f32() * 1_000.0;
         let capture_started = Instant::now();
         if let Some(pending_capture) = pending_capture {
             if let Err(error) = debug::finish_capture(
@@ -632,11 +638,15 @@ impl State {
                 sim_time,
                 simulation_ms,
                 egui_ms,
-                rebase_upload_ms,
+                surface_acquire_ms,
+                egui_upload_ms,
+                vertex_rebase_ms,
+                vertex_upload_ms,
                 encode_ms,
                 submit_ms,
                 capture_readback_ms,
                 gpu_render_ms.unwrap_or(-1.0),
+                gpu_timestamp_readback_ms,
                 profile_started.elapsed().as_secs_f32() * 1_000.0,
             );
         }
