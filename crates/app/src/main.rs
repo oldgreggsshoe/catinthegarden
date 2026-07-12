@@ -15,7 +15,7 @@ use winit::{
     event::{DeviceEvent, Event, MouseScrollDelta, WindowEvent},
     event_loop::EventLoop,
     keyboard::{KeyCode, PhysicalKey},
-    window::{Window, WindowAttributes},
+    window::{CursorGrabMode, Window, WindowAttributes},
 };
 
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
@@ -52,6 +52,7 @@ struct State {
     scenario: Option<scenario::ScenarioRunner>,
     artifacts: debug::RunArtifacts,
     scenario_capture_failed: bool,
+    mouse_captured: bool,
 }
 
 impl State {
@@ -244,6 +245,7 @@ impl State {
             scenario,
             artifacts,
             scenario_capture_failed: false,
+            mouse_captured: false,
         }
     }
 
@@ -269,6 +271,23 @@ impl State {
 
     fn zoom_camera(&mut self, wheel_delta: f64) {
         self.camera.zoom(wheel_delta);
+    }
+
+    fn set_mouse_capture(&mut self, window: &Window, captured: bool) {
+        if captured {
+            let result = window
+                .set_cursor_grab(CursorGrabMode::Locked)
+                .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined));
+            self.mouse_captured = result.is_ok();
+            window.set_cursor_visible(!self.mouse_captured);
+            if let Err(error) = result {
+                tracing::warn!(%error, "cursor capture is unavailable");
+            }
+        } else {
+            let _ = window.set_cursor_grab(CursorGrabMode::None);
+            window.set_cursor_visible(true);
+            self.mouse_captured = false;
+        }
     }
 
     fn render(&mut self, window: &Window) -> Option<bool> {
@@ -567,6 +586,7 @@ fn main() {
             .expect("failed to create window"),
     );
     let mut state = pollster::block_on(State::new(window.clone(), scenario_name));
+    state.set_mouse_capture(&window, true);
 
     event_loop
         .run(move |event, event_loop| match event {
@@ -591,6 +611,7 @@ fn main() {
                 if !egui_response.consumed {
                     match event {
                         WindowEvent::CloseRequested => event_loop.exit(),
+                        WindowEvent::Focused(focused) => state.set_mouse_capture(&window, focused),
                         WindowEvent::Resized(size) => state.resize(size),
                         WindowEvent::KeyboardInput { event, .. }
                             if event.state.is_pressed()
@@ -655,7 +676,7 @@ fn main() {
             Event::DeviceEvent {
                 event: DeviceEvent::MouseMotion { delta },
                 ..
-            } => {
+            } if state.mouse_captured => {
                 state.look_camera(delta.0 * 0.003, -delta.1 * 0.003);
                 window.request_redraw();
             }
