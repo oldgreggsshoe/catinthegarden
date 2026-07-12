@@ -14,7 +14,7 @@ use std::{
 use wgpu::util::DeviceExt;
 use winit::{
     event::{DeviceEvent, Event, MouseScrollDelta, WindowEvent},
-    event_loop::EventLoop,
+    event_loop::{ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
     window::{CursorGrabMode, Window, WindowAttributes},
 };
@@ -25,6 +25,7 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     b: 0.09,
     a: 1.0,
 };
+const HUD_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
 
 struct GpuProfiler {
     query_set: wgpu::QuerySet,
@@ -63,6 +64,9 @@ struct State {
     mouse_captured: bool,
     profile_render: bool,
     gpu_profiler: Option<GpuProfiler>,
+    cached_paint_jobs: Vec<egui::ClippedPrimitive>,
+    next_hud_update: Instant,
+    hud_dirty: bool,
 }
 
 impl State {
@@ -288,6 +292,9 @@ impl State {
             mouse_captured: false,
             profile_render,
             gpu_profiler,
+            cached_paint_jobs: Vec::new(),
+            next_hud_update: Instant::now(),
+            hud_dirty: true,
         }
     }
 
@@ -301,6 +308,7 @@ impl State {
         self.config.height = size.height;
         self.surface.configure(&self.device, &self.config);
         self.depth_view = create_depth_view(&self.device, size);
+        self.mark_hud_dirty();
     }
 
     fn rotate_camera(&mut self, azimuth_delta: f64, elevation_delta: f64) {
@@ -330,6 +338,10 @@ impl State {
             window.set_cursor_visible(true);
             self.mouse_captured = false;
         }
+    }
+
+    fn mark_hud_dirty(&mut self) {
+        self.hud_dirty = true;
     }
 
     fn render(&mut self, window: &Window) -> Option<bool> {
@@ -401,9 +413,10 @@ impl State {
         }
         let simulation_ms = profile_started.elapsed().as_secs_f32() * 1_000.0;
 
-        let mut paint_jobs = None;
         let mut textures_to_free = Vec::new();
-        if !solid_color_screen && !hide_overlay {
+        let render_egui = !solid_color_screen && !hide_overlay;
+        let refresh_egui = render_egui && (self.hud_dirty || now >= self.next_hud_update);
+        if refresh_egui {
             let raw_input = self.egui_state.take_egui_input(window);
             let show_debug_overlay = self.debug_overlay_visible;
             let fps = self.fps;
@@ -416,7 +429,7 @@ impl State {
                         .default_pos([12.0, 12.0])
                         .show(&context, |ui| {
                             ui.label("Phase 0.5: debug/test harness");
-                            ui.label(format!("FPS: {fps:.0}"));
+                            ui.label(format!("Render FPS: {fps:.0}"));
                             ui.label(format!(
                                 "Camera: [{:.0}, {:.0}, {:.0}] m",
                                 camera_position.x, camera_position.y, camera_position.z
@@ -442,11 +455,13 @@ impl State {
                 );
             }
             textures_to_free = full_output.textures_delta.free;
-            paint_jobs = Some(
-                self.egui_context
-                    .tessellate(full_output.shapes, self.egui_context.pixels_per_point()),
-            );
+            self.cached_paint_jobs = self
+                .egui_context
+                .tessellate(full_output.shapes, self.egui_context.pixels_per_point());
+            self.next_hud_update = now + HUD_REFRESH_INTERVAL;
+            self.hud_dirty = false;
         }
+        let paint_jobs = render_egui.then_some(&self.cached_paint_jobs);
         let egui_ms = profile_started.elapsed().as_secs_f32() * 1_000.0 - simulation_ms;
         let screen_descriptor = egui_wgpu::ScreenDescriptor {
             size_in_pixels: [self.size.width, self.size.height],
@@ -719,7 +734,7 @@ fn main() {
                     return;
                 }
                 let egui_response = state.egui_state.on_window_event(&window, &event);
-                if egui_response.repaint {
+                if egui_response.repaint && !matches!(&event, WindowEvent::RedrawRequested) {
                     window.request_redraw();
                 }
 
@@ -733,6 +748,7 @@ fn main() {
                                 && event.physical_key == PhysicalKey::Code(KeyCode::F3) =>
                         {
                             state.debug_overlay_visible = !state.debug_overlay_visible;
+                            state.mark_hud_dirty();
                             window.request_redraw();
                         }
                         WindowEvent::KeyboardInput { event, .. }
@@ -795,7 +811,18 @@ fn main() {
                 state.look_camera(delta.0 * 0.003, -delta.1 * 0.003);
                 window.request_redraw();
             }
-            Event::AboutToWait => window.request_redraw(),
+            Event::AboutToWait => {
+                if state.scenario.is_some() {
+                    event_loop.set_control_flow(ControlFlow::Poll);
+                    window.request_redraw();
+                } else {
+                    let now = Instant::now();
+                    if state.hud_dirty || now >= state.next_hud_update {
+                        window.request_redraw();
+                    }
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(state.next_hud_update));
+                }
+            }
             _ => {}
         })
         .expect("event loop failed");
