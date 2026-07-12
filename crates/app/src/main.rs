@@ -26,12 +26,106 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 const HUD_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
+const HIDDEN_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
+const GPU_PROFILE_RING_SIZE: usize = 3;
 
-struct GpuProfiler {
+struct PendingGpuTimestamp {
+    sim_time: f64,
+    receiver: mpsc::Receiver<bool>,
+}
+
+struct GpuProfileSlot {
     query_set: wgpu::QuerySet,
     resolve_buffer: wgpu::Buffer,
     readback_buffer: wgpu::Buffer,
+    pending: Option<PendingGpuTimestamp>,
+}
+
+struct GpuProfiler {
+    slots: Vec<GpuProfileSlot>,
+    next_slot: usize,
     timestamp_period_ns: f32,
+}
+
+impl GpuProfiler {
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
+        let slots = (0..GPU_PROFILE_RING_SIZE)
+            .map(|_| GpuProfileSlot {
+                query_set: device.create_query_set(&wgpu::QuerySetDescriptor {
+                    label: Some("render timestamps"),
+                    ty: wgpu::QueryType::Timestamp,
+                    count: 2,
+                }),
+                resolve_buffer: device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("render timestamp resolve"),
+                    size: 16,
+                    usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: false,
+                }),
+                readback_buffer: device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("render timestamp readback"),
+                    size: 16,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                }),
+                pending: None,
+            })
+            .collect();
+        Self {
+            slots,
+            next_slot: 0,
+            timestamp_period_ns: queue.get_timestamp_period(),
+        }
+    }
+
+    fn acquire_slot(&mut self) -> Option<usize> {
+        for offset in 0..self.slots.len() {
+            let index = (self.next_slot + offset) % self.slots.len();
+            if self.slots[index].pending.is_none() {
+                self.next_slot = (index + 1) % self.slots.len();
+                return Some(index);
+            }
+        }
+        None
+    }
+
+    fn begin_readback(&mut self, index: usize, sim_time: f64) {
+        let (sender, receiver) = mpsc::channel();
+        self.slots[index]
+            .readback_buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                let _ = sender.send(result.is_ok());
+            });
+        self.slots[index].pending = Some(PendingGpuTimestamp { sim_time, receiver });
+    }
+
+    fn collect_completed(&mut self, device: &wgpu::Device) -> Vec<(f64, f64)> {
+        let _ = device.poll(wgpu::PollType::Poll);
+        let mut completed = Vec::new();
+        for slot in &mut self.slots {
+            let Some(pending) = slot.pending.as_ref() else {
+                continue;
+            };
+            let Ok(mapped_ok) = pending.receiver.try_recv() else {
+                continue;
+            };
+            let sim_time = pending.sim_time;
+            slot.pending = None;
+            if !mapped_ok {
+                continue;
+            }
+            let timestamps = slot.readback_buffer.slice(..).get_mapped_range();
+            let values: &[u64] = bytemuck::cast_slice(&timestamps);
+            let elapsed_ms = values[1].saturating_sub(values[0]) as f64
+                * f64::from(self.timestamp_period_ns)
+                / 1_000_000.0;
+            drop(timestamps);
+            slot.readback_buffer.unmap();
+            completed.push((sim_time, elapsed_ms));
+        }
+        completed
+    }
 }
 
 struct State {
@@ -45,7 +139,9 @@ struct State {
     planet_vertex_buffer: wgpu::Buffer,
     planet_index_buffer: wgpu::Buffer,
     planet_mesh: planet::CubeSphereMesh,
+    rebased_vertices: Vec<planet::RebasedVertex>,
     camera: planet::OrbitCamera,
+    last_rebased_camera_position: glam::DVec3,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     started_at: Instant,
@@ -65,6 +161,7 @@ struct State {
     profile_render: bool,
     gpu_profiler: Option<GpuProfiler>,
     cached_paint_jobs: Vec<egui::ClippedPrimitive>,
+    egui_buffers_dirty: bool,
     next_hud_update: Instant,
     hud_dirty: bool,
 }
@@ -118,26 +215,7 @@ impl State {
             .expect("failed to create render device");
         let gpu_profiler = requested_features
             .contains(wgpu::Features::TIMESTAMP_QUERY)
-            .then(|| GpuProfiler {
-                query_set: device.create_query_set(&wgpu::QuerySetDescriptor {
-                    label: Some("render timestamps"),
-                    ty: wgpu::QueryType::Timestamp,
-                    count: 2,
-                }),
-                resolve_buffer: device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("render timestamp resolve"),
-                    size: 16,
-                    usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
-                    mapped_at_creation: false,
-                }),
-                readback_buffer: device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("render timestamp readback"),
-                    size: 16,
-                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                    mapped_at_creation: false,
-                }),
-                timestamp_period_ns: queue.get_timestamp_period(),
-            });
+            .then(|| GpuProfiler::new(&device, &queue));
 
         let surface_capabilities = surface.get_capabilities(&adapter);
         let surface_format = surface_capabilities
@@ -167,7 +245,8 @@ impl State {
 
         let planet_mesh = planet::CubeSphereMesh::new();
         let camera = planet::OrbitCamera::default();
-        let initial_vertices = planet_mesh.rebased_vertices(camera.world_position());
+        let initial_camera_world_position = camera.world_position();
+        let initial_vertices = planet_mesh.rebased_vertices(initial_camera_world_position);
         let planet_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("camera-relative planet vertices"),
             contents: bytemuck::cast_slice(&initial_vertices),
@@ -273,7 +352,9 @@ impl State {
             planet_vertex_buffer,
             planet_index_buffer,
             planet_mesh,
+            rebased_vertices: initial_vertices,
             camera,
+            last_rebased_camera_position: initial_camera_world_position,
             camera_buffer,
             camera_bind_group,
             started_at: Instant::now(),
@@ -293,6 +374,7 @@ impl State {
             profile_render,
             gpu_profiler,
             cached_paint_jobs: Vec::new(),
+            egui_buffers_dirty: true,
             next_hud_update: Instant::now(),
             hud_dirty: true,
         }
@@ -308,6 +390,7 @@ impl State {
         self.config.height = size.height;
         self.surface.configure(&self.device, &self.config);
         self.depth_view = create_depth_view(&self.device, size);
+        self.egui_buffers_dirty = true;
         self.mark_hud_dirty();
     }
 
@@ -344,9 +427,50 @@ impl State {
         self.hud_dirty = true;
     }
 
+    fn toggle_debug_overlay(&mut self) {
+        self.debug_overlay_visible = !self.debug_overlay_visible;
+        self.cached_paint_jobs.clear();
+        self.egui_buffers_dirty = self.debug_overlay_visible;
+        self.hud_dirty = self.debug_overlay_visible;
+        self.next_hud_update = Instant::now()
+            + if self.debug_overlay_visible {
+                Duration::ZERO
+            } else {
+                HIDDEN_REFRESH_INTERVAL
+            };
+    }
+
+    fn flush_gpu_profile(&mut self) {
+        if self.gpu_profiler.is_none() {
+            return;
+        }
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(Duration::from_secs(5)),
+        });
+        let completed = self
+            .gpu_profiler
+            .as_mut()
+            .expect("GPU profiler exists")
+            .collect_completed(&self.device);
+        for (sample_time, gpu_render_ms) in completed {
+            self.artifacts
+                .record_gpu_timestamp(sample_time, gpu_render_ms);
+        }
+    }
+
     fn render(&mut self, window: &Window) -> Option<bool> {
         let profile_started = Instant::now();
         let now = Instant::now();
+        let completed_gpu_samples = self
+            .gpu_profiler
+            .as_mut()
+            .map(|profiler| profiler.collect_completed(&self.device))
+            .unwrap_or_default();
+        for (sample_time, gpu_render_ms) in completed_gpu_samples {
+            self.artifacts
+                .record_gpu_timestamp(sample_time, gpu_render_ms);
+        }
         let frame_time = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
         if frame_time > 0.0 {
@@ -414,7 +538,7 @@ impl State {
         let simulation_ms = profile_started.elapsed().as_secs_f32() * 1_000.0;
 
         let mut textures_to_free = Vec::new();
-        let render_egui = !solid_color_screen && !hide_overlay;
+        let render_egui = !solid_color_screen && !hide_overlay && self.debug_overlay_visible;
         let refresh_egui = render_egui && (self.hud_dirty || now >= self.next_hud_update);
         if refresh_egui {
             let raw_input = self.egui_state.take_egui_input(window);
@@ -458,10 +582,15 @@ impl State {
             self.cached_paint_jobs = self
                 .egui_context
                 .tessellate(full_output.shapes, self.egui_context.pixels_per_point());
+            self.egui_buffers_dirty = true;
             self.next_hud_update = now + HUD_REFRESH_INTERVAL;
             self.hud_dirty = false;
         }
         let paint_jobs = render_egui.then_some(&self.cached_paint_jobs);
+        if !self.debug_overlay_visible {
+            self.hud_dirty = false;
+            self.next_hud_update = now + HIDDEN_REFRESH_INTERVAL;
+        }
         let egui_ms = profile_started.elapsed().as_secs_f32() * 1_000.0 - simulation_ms;
         let screen_descriptor = egui_wgpu::ScreenDescriptor {
             size_in_pixels: [self.size.width, self.size.height],
@@ -493,9 +622,17 @@ impl State {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("render encoder"),
             });
-        let sample_gpu = self.profile_render && write_log && self.gpu_profiler.is_some();
+        let gpu_slot_index = if self.profile_render && write_log {
+            self.gpu_profiler
+                .as_mut()
+                .and_then(GpuProfiler::acquire_slot)
+        } else {
+            None
+        };
         let egui_upload_started = Instant::now();
-        if let Some(paint_jobs) = &paint_jobs {
+        if self.egui_buffers_dirty
+            && let Some(paint_jobs) = &paint_jobs
+        {
             self.egui_renderer.update_buffers(
                 &self.device,
                 &self.queue,
@@ -503,20 +640,24 @@ impl State {
                 paint_jobs,
                 &screen_descriptor,
             );
+            self.egui_buffers_dirty = false;
         }
         let egui_upload_ms = egui_upload_started.elapsed().as_secs_f32() * 1_000.0;
 
-        let rebase_started = Instant::now();
-        let rebased_vertices = self
-            .planet_mesh
-            .rebased_vertices(self.camera.world_position());
-        let vertex_rebase_ms = rebase_started.elapsed().as_secs_f32() * 1_000.0;
         let upload_started = Instant::now();
-        self.queue.write_buffer(
-            &self.planet_vertex_buffer,
-            0,
-            bytemuck::cast_slice(&rebased_vertices),
-        );
+        let mut vertex_rebase_ms = 0.0;
+        if camera_world_position != self.last_rebased_camera_position {
+            let rebase_started = Instant::now();
+            self.planet_mesh
+                .rebase_into(camera_world_position, &mut self.rebased_vertices);
+            vertex_rebase_ms = rebase_started.elapsed().as_secs_f32() * 1_000.0;
+            self.queue.write_buffer(
+                &self.planet_vertex_buffer,
+                0,
+                bytemuck::cast_slice(&self.rebased_vertices),
+            );
+            self.last_rebased_camera_position = camera_world_position;
+        }
         let camera_uniform = planet::CameraUniform::from_camera(
             &self.camera,
             self.size.width as f32 / self.size.height as f32,
@@ -541,15 +682,15 @@ impl State {
                     view: &self.depth_view,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(0.0),
-                        store: wgpu::StoreOp::Store,
+                        store: wgpu::StoreOp::Discard,
                     }),
                     stencil_ops: None,
                 }),
                 occlusion_query_set: None,
-                timestamp_writes: sample_gpu.then(|| {
+                timestamp_writes: gpu_slot_index.map(|slot_index| {
                     let profiler = self.gpu_profiler.as_ref().expect("GPU profiler exists");
                     wgpu::RenderPassTimestampWrites {
-                        query_set: &profiler.query_set,
+                        query_set: &profiler.slots[slot_index].query_set,
                         beginning_of_pass_write_index: Some(0),
                         end_of_pass_write_index: Some(1),
                     }
@@ -608,29 +749,27 @@ impl State {
 
         let encode_ms = encode_started.elapsed().as_secs_f32() * 1_000.0;
 
-        if sample_gpu {
+        if let Some(slot_index) = gpu_slot_index {
             let profiler = self.gpu_profiler.as_ref().expect("GPU profiler exists");
-            encoder.resolve_query_set(&profiler.query_set, 0..2, &profiler.resolve_buffer, 0);
-            encoder.copy_buffer_to_buffer(
-                &profiler.resolve_buffer,
-                0,
-                &profiler.readback_buffer,
-                0,
-                16,
-            );
+            let slot = &profiler.slots[slot_index];
+            encoder.resolve_query_set(&slot.query_set, 0..2, &slot.resolve_buffer, 0);
+            encoder.copy_buffer_to_buffer(&slot.resolve_buffer, 0, &slot.readback_buffer, 0, 16);
         }
 
         let submit_started = Instant::now();
         self.queue.submit(Some(encoder.finish()));
         let submit_ms = submit_started.elapsed().as_secs_f32() * 1_000.0;
         let gpu_readback_started = Instant::now();
-        let gpu_render_ms = if sample_gpu {
-            let profiler = self.gpu_profiler.as_ref().expect("GPU profiler exists");
-            read_gpu_timestamp_ms(&self.device, profiler)
-        } else {
-            None
-        };
+        if let Some(slot_index) = gpu_slot_index {
+            self.gpu_profiler
+                .as_mut()
+                .expect("GPU profiler exists")
+                .begin_readback(slot_index, sim_time);
+        }
         let gpu_timestamp_readback_ms = gpu_readback_started.elapsed().as_secs_f32() * 1_000.0;
+        let present_started = Instant::now();
+        output.present();
+        let present_ms = present_started.elapsed().as_secs_f32() * 1_000.0;
         let capture_started = Instant::now();
         if let Some(pending_capture) = pending_capture {
             if let Err(error) = debug::finish_capture(
@@ -646,8 +785,6 @@ impl State {
             }
         }
         let capture_readback_ms = capture_started.elapsed().as_secs_f32() * 1_000.0;
-        output.present();
-
         if self.profile_render && write_log {
             self.artifacts.record_render_profile(
                 sim_time,
@@ -659,8 +796,9 @@ impl State {
                 vertex_upload_ms,
                 encode_ms,
                 submit_ms,
+                present_ms,
                 capture_readback_ms,
-                gpu_render_ms.unwrap_or(-1.0),
+                -1.0,
                 gpu_timestamp_readback_ms,
                 profile_started.elapsed().as_secs_f32() * 1_000.0,
             );
@@ -675,6 +813,7 @@ impl State {
         }
 
         if scenario_complete {
+            self.flush_gpu_profile();
             let expected_screenshots = self
                 .scenario
                 .as_ref()
@@ -747,8 +886,7 @@ fn main() {
                             if event.state.is_pressed()
                                 && event.physical_key == PhysicalKey::Code(KeyCode::F3) =>
                         {
-                            state.debug_overlay_visible = !state.debug_overlay_visible;
-                            state.mark_hud_dirty();
+                            state.toggle_debug_overlay();
                             window.request_redraw();
                         }
                         WindowEvent::KeyboardInput { event, .. }
@@ -879,31 +1017,4 @@ fn create_depth_view(
             view_formats: &[],
         })
         .create_view(&wgpu::TextureViewDescriptor::default())
-}
-
-fn read_gpu_timestamp_ms(device: &wgpu::Device, profiler: &GpuProfiler) -> Option<f64> {
-    let (sender, receiver) = mpsc::channel();
-    profiler
-        .readback_buffer
-        .slice(..)
-        .map_async(wgpu::MapMode::Read, move |result| {
-            let _ = sender.send(result.is_ok());
-        });
-    device
-        .poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: Some(Duration::from_secs(5)),
-        })
-        .ok()?;
-    if !receiver.recv_timeout(Duration::from_secs(5)).ok()? {
-        return None;
-    }
-    let timestamps = profiler.readback_buffer.slice(..).get_mapped_range();
-    let values: &[u64] = bytemuck::cast_slice(&timestamps);
-    let elapsed_ms = values[1].saturating_sub(values[0]) as f64
-        * f64::from(profiler.timestamp_period_ns)
-        / 1_000_000.0;
-    drop(timestamps);
-    profiler.readback_buffer.unmap();
-    Some(elapsed_ms)
 }

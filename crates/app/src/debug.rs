@@ -158,6 +158,7 @@ impl RunArtifacts {
         vertex_upload_ms: f32,
         encode_ms: f32,
         submit_ms: f32,
+        present_ms: f32,
         capture_readback_ms: f32,
         gpu_render_ms: f64,
         gpu_timestamp_readback_ms: f32,
@@ -174,11 +175,21 @@ impl RunArtifacts {
             vertex_upload_ms,
             encode_ms,
             submit_ms,
+            present_ms,
             capture_readback_ms,
             gpu_render_ms,
             gpu_timestamp_readback_ms,
             total_render_ms,
             "render timing sample"
+        );
+    }
+
+    pub fn record_gpu_timestamp(&self, sim_time: f64, gpu_render_ms: f64) {
+        tracing::info!(
+            target: "catinthegarden::gpu_profile",
+            sim_time,
+            gpu_render_ms,
+            "asynchronous GPU timing sample"
         );
     }
 

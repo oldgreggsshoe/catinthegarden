@@ -161,14 +161,20 @@ impl CubeSphereMesh {
     }
 
     pub fn rebased_vertices(&self, camera_world_position: DVec3) -> Vec<RebasedVertex> {
-        self.world_positions
-            .iter()
-            .map(|world_position| RebasedVertex {
+        let mut vertices = Vec::with_capacity(self.world_positions.len());
+        self.rebase_into(camera_world_position, &mut vertices);
+        vertices
+    }
+
+    pub fn rebase_into(&self, camera_world_position: DVec3, vertices: &mut Vec<RebasedVertex>) {
+        vertices.clear();
+        vertices.extend(self.world_positions.iter().map(|world_position| {
+            RebasedVertex {
                 camera_relative_position: (*world_position - camera_world_position)
                     .as_vec3()
                     .to_array(),
-            })
-            .collect()
+            }
+        }));
     }
 
     #[cfg(test)]
