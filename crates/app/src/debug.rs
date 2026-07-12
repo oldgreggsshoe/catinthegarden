@@ -147,6 +147,31 @@ impl RunArtifacts {
         self.spatial_log_count
     }
 
+    pub fn record_render_profile(
+        &self,
+        sim_time: f64,
+        simulation_ms: f32,
+        egui_ms: f32,
+        rebase_upload_ms: f32,
+        encode_ms: f32,
+        submit_ms: f32,
+        capture_readback_ms: f32,
+        total_render_ms: f32,
+    ) {
+        tracing::info!(
+            target: "catinthegarden::render_profile",
+            sim_time,
+            simulation_ms,
+            egui_ms,
+            rebase_upload_ms,
+            encode_ms,
+            submit_ms,
+            capture_readback_ms,
+            total_render_ms,
+            "render timing sample"
+        );
+    }
+
     pub fn finish(&mut self, passed: bool) -> Result<(), String> {
         self.manifest.passed = Some(passed);
         self.write_manifests()

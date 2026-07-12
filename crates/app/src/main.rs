@@ -53,10 +53,11 @@ struct State {
     artifacts: debug::RunArtifacts,
     scenario_capture_failed: bool,
     mouse_captured: bool,
+    profile_render: bool,
 }
 
 impl State {
-    async fn new(window: Arc<Window>, scenario_name: Option<String>) -> Self {
+    async fn new(window: Arc<Window>, scenario_name: Option<String>, profile_render: bool) -> Self {
         let scenario = scenario_name
             .as_deref()
             .map(scenario::ScenarioRunner::load)
@@ -246,6 +247,7 @@ impl State {
             artifacts,
             scenario_capture_failed: false,
             mouse_captured: false,
+            profile_render,
         }
     }
 
@@ -291,6 +293,7 @@ impl State {
     }
 
     fn render(&mut self, window: &Window) -> Option<bool> {
+        let profile_started = Instant::now();
         let now = Instant::now();
         let frame_time = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
@@ -356,6 +359,7 @@ impl State {
                 draw_calls,
             );
         }
+        let simulation_ms = profile_started.elapsed().as_secs_f32() * 1_000.0;
 
         let mut paint_jobs = None;
         let mut textures_to_free = Vec::new();
@@ -403,6 +407,7 @@ impl State {
                     .tessellate(full_output.shapes, self.egui_context.pixels_per_point()),
             );
         }
+        let egui_ms = profile_started.elapsed().as_secs_f32() * 1_000.0 - simulation_ms;
         let screen_descriptor = egui_wgpu::ScreenDescriptor {
             size_in_pixels: [self.size.width, self.size.height],
             pixels_per_point: window.scale_factor() as f32,
@@ -449,6 +454,8 @@ impl State {
             0,
             bytemuck::cast_slice(&rebased_vertices),
         );
+        let rebase_upload_ms =
+            profile_started.elapsed().as_secs_f32() * 1_000.0 - simulation_ms - egui_ms;
         let camera_uniform = planet::CameraUniform::from_camera(
             &self.camera,
             self.size.width as f32 / self.size.height as f32,
@@ -529,7 +536,15 @@ impl State {
             )
         });
 
+        let encode_ms = profile_started.elapsed().as_secs_f32() * 1_000.0
+            - simulation_ms
+            - egui_ms
+            - rebase_upload_ms;
+
+        let submit_started = Instant::now();
         self.queue.submit(Some(encoder.finish()));
+        let submit_ms = submit_started.elapsed().as_secs_f32() * 1_000.0;
+        let capture_started = Instant::now();
         if let Some(pending_capture) = pending_capture {
             if let Err(error) = debug::finish_capture(
                 &self.device,
@@ -543,7 +558,21 @@ impl State {
                 tracing::error!(%error, "screenshot capture failed");
             }
         }
+        let capture_readback_ms = capture_started.elapsed().as_secs_f32() * 1_000.0;
         output.present();
+
+        if self.profile_render && write_log {
+            self.artifacts.record_render_profile(
+                sim_time,
+                simulation_ms,
+                egui_ms,
+                rebase_upload_ms,
+                encode_ms,
+                submit_ms,
+                capture_readback_ms,
+                profile_started.elapsed().as_secs_f32() * 1_000.0,
+            );
+        }
 
         for texture_id in &textures_to_free {
             self.egui_renderer.free_texture(texture_id);
@@ -577,7 +606,7 @@ impl State {
 }
 
 fn main() {
-    let scenario_name = scenario_argument().unwrap_or_else(|error| panic!("{error}"));
+    let launch_options = launch_options().unwrap_or_else(|error| panic!("{error}"));
     let scenario_failed = Arc::new(AtomicBool::new(false));
     let scenario_failed_in_loop = scenario_failed.clone();
     let event_loop = EventLoop::new().expect("failed to create event loop");
@@ -590,7 +619,11 @@ fn main() {
             )
             .expect("failed to create window"),
     );
-    let mut state = pollster::block_on(State::new(window.clone(), scenario_name));
+    let mut state = pollster::block_on(State::new(
+        window.clone(),
+        launch_options.scenario_name,
+        launch_options.profile_render,
+    ));
     state.set_mouse_capture(&window, true);
 
     event_loop
@@ -695,16 +728,31 @@ fn main() {
     }
 }
 
-fn scenario_argument() -> Result<Option<String>, String> {
+struct LaunchOptions {
+    scenario_name: Option<String>,
+    profile_render: bool,
+}
+
+fn launch_options() -> Result<LaunchOptions, String> {
+    let mut options = LaunchOptions {
+        scenario_name: None,
+        profile_render: false,
+    };
     let mut arguments = std::env::args().skip(1);
-    match arguments.next() {
-        None => Ok(None),
-        Some(flag) if flag == "--scenario" => arguments
-            .next()
-            .map(Some)
-            .ok_or_else(|| "--scenario requires a scenario name".to_owned()),
-        Some(flag) => Err(format!("unrecognized argument '{flag}'")),
+    while let Some(flag) = arguments.next() {
+        match flag.as_str() {
+            "--scenario" => {
+                options.scenario_name = Some(
+                    arguments
+                        .next()
+                        .ok_or_else(|| "--scenario requires a scenario name".to_owned())?,
+                )
+            }
+            "--profile-render" => options.profile_render = true,
+            _ => return Err(format!("unrecognized argument '{flag}'")),
+        }
     }
+    Ok(options)
 }
 
 fn create_depth_view(
