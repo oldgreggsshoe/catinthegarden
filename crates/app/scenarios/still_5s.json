@@ -1,0 +1,14 @@
+{
+  "name": "still_5s",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 5.0,
+  "solid_color_screen": true,
+  "screenshot_times_seconds": [1.0, 3.0, 5.0],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [0.0, 0.0, 0.0],
+      "look_at": [0.0, 0.0, -1.0]
+    }
+  ]
+}

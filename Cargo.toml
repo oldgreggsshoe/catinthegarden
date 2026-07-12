@@ -12,6 +12,11 @@ bytemuck = { version = "1.25", features = ["derive"] }
 egui = "0.35"
 egui-wgpu = "0.35"
 egui-winit = "0.35"
+image = { version = "0.25", default-features = false, features = ["png"] }
 pollster = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json"] }
 wgpu = "29.0"
 winit = "0.30.13"

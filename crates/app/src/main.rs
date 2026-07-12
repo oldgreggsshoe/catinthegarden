@@ -1,9 +1,19 @@
-use std::{sync::Arc, time::Instant};
+mod debug;
+mod scenario;
+
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Instant,
+};
 
 use wgpu::util::DeviceExt;
 use winit::{
     event::{Event, WindowEvent},
     event_loop::EventLoop,
+    keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowAttributes},
 };
 
@@ -65,10 +75,30 @@ struct State {
     egui_renderer: egui_wgpu::Renderer,
     last_frame: Instant,
     fps: f32,
+    debug_overlay_visible: bool,
+    manual_screenshot_requested: bool,
+    next_log_time: f64,
+    capture_number: usize,
+    scenario: Option<scenario::ScenarioRunner>,
+    artifacts: debug::RunArtifacts,
+    scenario_capture_failed: bool,
 }
 
 impl State {
-    async fn new(window: Arc<Window>) -> Self {
+    async fn new(window: Arc<Window>, scenario_name: Option<String>) -> Self {
+        let scenario = scenario_name
+            .as_deref()
+            .map(scenario::ScenarioRunner::load)
+            .transpose()
+            .expect("scenario must be valid");
+        let artifact_name = scenario
+            .as_ref()
+            .map_or("manual", scenario::ScenarioRunner::name);
+        let (artifacts, log_writer) =
+            debug::RunArtifacts::create(artifact_name).expect("test-run storage must be writable");
+        debug::init_tracing(log_writer);
+        tracing::info!(scenario = artifact_name, "run started");
+
         let size = window.inner_size();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = instance
@@ -101,8 +131,14 @@ impl State {
             .copied()
             .find(wgpu::TextureFormat::is_srgb)
             .unwrap_or(surface_capabilities.formats[0]);
+        assert!(
+            surface_capabilities
+                .usages
+                .contains(wgpu::TextureUsages::COPY_SRC),
+            "the selected surface does not support screenshot readback"
+        );
         let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             format: surface_format,
             width: size.width.max(1),
             height: size.height.max(1),
@@ -209,6 +245,13 @@ impl State {
             egui_renderer,
             last_frame: Instant::now(),
             fps: 0.0,
+            debug_overlay_visible: true,
+            manual_screenshot_requested: false,
+            next_log_time: 0.0,
+            capture_number: 0,
+            scenario,
+            artifacts,
+            scenario_capture_failed: false,
         }
     }
 
@@ -223,7 +266,7 @@ impl State {
         self.surface.configure(&self.device, &self.config);
     }
 
-    fn render(&mut self, window: &Window) {
+    fn render(&mut self, window: &Window) -> Option<bool> {
         let now = Instant::now();
         let frame_time = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
@@ -231,26 +274,64 @@ impl State {
             self.fps = 1.0 / frame_time;
         }
 
-        let raw_input = self.egui_state.take_egui_input(window);
-        let full_output = self.egui_context.run_ui(raw_input, |ui| {
-            let context = ui.ctx().clone();
-            egui::Window::new("Cat in the Garden")
-                .default_pos([12.0, 12.0])
-                .show(&context, |ui| {
-                    ui.label("Phase 0: wgpu + egui");
-                    ui.label(format!("FPS: {:.0}", self.fps));
-                });
-        });
-        self.egui_state
-            .handle_platform_output(window, full_output.platform_output);
-
-        for (texture_id, image_delta) in &full_output.textures_delta.set {
-            self.egui_renderer
-                .update_texture(&self.device, &self.queue, *texture_id, image_delta);
+        let (sim_time, write_log, scenario_capture, scenario_complete, solid_color_screen) =
+            if let Some(scenario) = self.scenario.as_mut() {
+                let frame = scenario.advance();
+                (
+                    frame.sim_time,
+                    frame.write_log,
+                    frame.capture_screenshot,
+                    frame.complete,
+                    scenario.renders_solid_color(),
+                )
+            } else {
+                let sim_time = self.started_at.elapsed().as_secs_f64();
+                let write_log = sim_time >= self.next_log_time;
+                if write_log {
+                    self.next_log_time = sim_time + 0.5;
+                }
+                (sim_time, write_log, false, false, false)
+            };
+        let draw_calls = u32::from(!solid_color_screen);
+        if write_log {
+            self.artifacts
+                .record_spatial_log(sim_time, frame_time * 1000.0, draw_calls);
         }
-        let paint_jobs = self
-            .egui_context
-            .tessellate(full_output.shapes, self.egui_context.pixels_per_point());
+
+        let mut paint_jobs = None;
+        let mut textures_to_free = Vec::new();
+        if !solid_color_screen {
+            let raw_input = self.egui_state.take_egui_input(window);
+            let show_debug_overlay = self.debug_overlay_visible;
+            let fps = self.fps;
+            let full_output = self.egui_context.run_ui(raw_input, |ui| {
+                if show_debug_overlay {
+                    let context = ui.ctx().clone();
+                    egui::Window::new("Cat in the Garden")
+                        .default_pos([12.0, 12.0])
+                        .show(&context, |ui| {
+                            ui.label("Phase 0.5: debug/test harness");
+                            ui.label(format!("FPS: {fps:.0}"));
+                            ui.label("F3: toggle overlay  |  F12: capture PNG");
+                        });
+                }
+            });
+            self.egui_state
+                .handle_platform_output(window, full_output.platform_output);
+            for (texture_id, image_delta) in &full_output.textures_delta.set {
+                self.egui_renderer.update_texture(
+                    &self.device,
+                    &self.queue,
+                    *texture_id,
+                    image_delta,
+                );
+            }
+            textures_to_free = full_output.textures_delta.free;
+            paint_jobs = Some(
+                self.egui_context
+                    .tessellate(full_output.shapes, self.egui_context.pixels_per_point()),
+            );
+        }
         let screen_descriptor = egui_wgpu::ScreenDescriptor {
             size_in_pixels: [self.size.width, self.size.height],
             pixels_per_point: window.scale_factor() as f32,
@@ -265,11 +346,11 @@ impl State {
             }
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 self.resize(self.size);
-                return;
+                return None;
             }
             wgpu::CurrentSurfaceTexture::Timeout
             | wgpu::CurrentSurfaceTexture::Occluded
-            | wgpu::CurrentSurfaceTexture::Validation => return,
+            | wgpu::CurrentSurfaceTexture::Validation => return None,
         };
         let view = output
             .texture
@@ -279,13 +360,15 @@ impl State {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("render encoder"),
             });
-        self.egui_renderer.update_buffers(
-            &self.device,
-            &self.queue,
-            &mut encoder,
-            &paint_jobs,
-            &screen_descriptor,
-        );
+        if let Some(paint_jobs) = &paint_jobs {
+            self.egui_renderer.update_buffers(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                paint_jobs,
+                &screen_descriptor,
+            );
+        }
 
         let elapsed_seconds = self.started_at.elapsed().as_secs_f32();
         self.queue
@@ -307,12 +390,14 @@ impl State {
                 timestamp_writes: None,
                 multiview_mask: None,
             });
-            render_pass.set_pipeline(&self.triangle_pipeline);
-            render_pass.set_bind_group(0, &self.time_bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.draw(0..TRIANGLE.len() as u32, 0..1);
+            if !solid_color_screen {
+                render_pass.set_pipeline(&self.triangle_pipeline);
+                render_pass.set_bind_group(0, &self.time_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                render_pass.draw(0..TRIANGLE.len() as u32, 0..1);
+            }
         }
-        {
+        if let Some(paint_jobs) = &paint_jobs {
             let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("egui pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -331,25 +416,72 @@ impl State {
             });
             self.egui_renderer.render(
                 &mut render_pass.forget_lifetime(),
-                &paint_jobs,
+                paint_jobs,
                 &screen_descriptor,
             );
         }
 
+        let capture_requested = self.manual_screenshot_requested || scenario_capture;
+        self.manual_screenshot_requested = false;
+        let pending_capture = capture_requested.then(|| {
+            self.capture_number += 1;
+            debug::schedule_capture(
+                &self.device,
+                &mut encoder,
+                &output.texture,
+                self.size.width,
+                self.size.height,
+                self.config.format,
+                self.capture_number,
+            )
+        });
+
         self.queue.submit(Some(encoder.finish()));
+        if let Some(pending_capture) = pending_capture {
+            if let Err(error) = debug::finish_capture(
+                &self.device,
+                pending_capture,
+                &mut self.artifacts,
+                sim_time,
+                solid_color_screen,
+            ) {
+                self.scenario_capture_failed = true;
+                tracing::error!(%error, "screenshot capture failed");
+            }
+        }
         output.present();
 
-        for texture_id in &full_output.textures_delta.free {
+        for texture_id in &textures_to_free {
             self.egui_renderer.free_texture(texture_id);
         }
 
         if reconfigure_surface {
             self.resize(self.size);
         }
+
+        if scenario_complete {
+            let expected_screenshots = self
+                .scenario
+                .as_ref()
+                .map_or(0, scenario::ScenarioRunner::expected_screenshots);
+            let passed = !self.scenario_capture_failed
+                && self.artifacts.screenshot_count() == expected_screenshots
+                && self.artifacts.spatial_log_count() >= 10;
+            self.artifacts.finish(passed).unwrap_or_else(
+                |error| tracing::error!(%error, "could not finalize test-run manifest"),
+            );
+            tracing::info!(passed, "scenario completed");
+            return Some(passed);
+        }
+
+        None
     }
 }
 
 fn main() {
+    let scenario_name = scenario_argument().unwrap_or_else(|error| panic!("{error}"));
+    let scenario_failed = Arc::new(AtomicBool::new(false));
+    let scenario_failed_in_loop = scenario_failed.clone();
     let event_loop = EventLoop::new().expect("failed to create event loop");
     let window = Arc::new(
         event_loop
@@ -360,7 +492,7 @@ fn main() {
             )
             .expect("failed to create window"),
     );
-    let mut state = pollster::block_on(State::new(window.clone()));
+    let mut state = pollster::block_on(State::new(window.clone(), scenario_name));
 
     event_loop
         .run(move |event, event_loop| match event {
@@ -374,7 +506,26 @@ fn main() {
                     match event {
                         WindowEvent::CloseRequested => event_loop.exit(),
                         WindowEvent::Resized(size) => state.resize(size),
-                        WindowEvent::RedrawRequested => state.render(&window),
+                        WindowEvent::KeyboardInput { event, .. }
+                            if event.state.is_pressed()
+                                && event.physical_key == PhysicalKey::Code(KeyCode::F3) =>
+                        {
+                            state.debug_overlay_visible = !state.debug_overlay_visible;
+                            window.request_redraw();
+                        }
+                        WindowEvent::KeyboardInput { event, .. }
+                            if event.state.is_pressed()
+                                && event.physical_key == PhysicalKey::Code(KeyCode::F12) =>
+                        {
+                            state.manual_screenshot_requested = true;
+                            window.request_redraw();
+                        }
+                        WindowEvent::RedrawRequested => {
+                            if let Some(passed) = state.render(&window) {
+                                scenario_failed_in_loop.store(!passed, Ordering::Relaxed);
+                                event_loop.exit();
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -383,4 +534,20 @@ fn main() {
             _ => {}
         })
         .expect("event loop failed");
+
+    if scenario_failed.load(Ordering::Relaxed) {
+        std::process::exit(1);
+    }
+}
+
+fn scenario_argument() -> Result<Option<String>, String> {
+    let mut arguments = std::env::args().skip(1);
+    match arguments.next() {
+        None => Ok(None),
+        Some(flag) if flag == "--scenario" => arguments
+            .next()
+            .map(Some)
+            .ok_or_else(|| "--scenario requires a scenario name".to_owned()),
+        Some(flag) => Err(format!("unrecognized argument '{flag}'")),
+    }
 }
