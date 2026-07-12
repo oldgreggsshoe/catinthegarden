@@ -12,7 +12,7 @@ use std::{
 
 use wgpu::util::DeviceExt;
 use winit::{
-    event::{Event, WindowEvent},
+    event::{DeviceEvent, Event, MouseScrollDelta, WindowEvent},
     event_loop::EventLoop,
     keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowAttributes},
@@ -260,9 +260,11 @@ impl State {
     }
 
     fn rotate_camera(&mut self, azimuth_delta: f64, elevation_delta: f64) {
-        if self.scenario.is_none() {
-            self.camera.rotate(azimuth_delta, elevation_delta);
-        }
+        self.camera.rotate(azimuth_delta, elevation_delta);
+    }
+
+    fn zoom_camera(&mut self, wheel_delta: f64) {
+        self.camera.zoom(wheel_delta);
     }
 
     fn render(&mut self, window: &Window) -> Option<bool> {
@@ -352,7 +354,7 @@ impl State {
                             ));
                             ui.label(format!("Altitude: {camera_altitude:.0} m  |  LOD: fixed"));
                             ui.label("F3: toggle overlay  |  F12: capture PNG");
-                            ui.label("Arrow keys: orbit camera  |  Esc/Q: quit");
+                            ui.label("Mouse: orbit  |  Wheel: zoom  |  Esc/Q: quit");
                         });
                 }
             });
@@ -627,6 +629,14 @@ fn main() {
                             state.rotate_camera(0.0, -0.05);
                             window.request_redraw();
                         }
+                        WindowEvent::MouseWheel { delta, .. } => {
+                            let wheel_delta = match delta {
+                                MouseScrollDelta::LineDelta(_, y) => f64::from(y),
+                                MouseScrollDelta::PixelDelta(position) => position.y / 80.0,
+                            };
+                            state.zoom_camera(wheel_delta);
+                            window.request_redraw();
+                        }
                         WindowEvent::RedrawRequested => {
                             if let Some(passed) = state.render(&window) {
                                 scenario_failed_in_loop.store(!passed, Ordering::Relaxed);
@@ -636,6 +646,13 @@ fn main() {
                         _ => {}
                     }
                 }
+            }
+            Event::DeviceEvent {
+                event: DeviceEvent::MouseMotion { delta },
+                ..
+            } => {
+                state.rotate_camera(-delta.0 * 0.003, -delta.1 * 0.003);
+                window.request_redraw();
             }
             Event::AboutToWait => window.request_redraw(),
             _ => {}

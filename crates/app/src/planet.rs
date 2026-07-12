@@ -217,6 +217,12 @@ impl OrbitCamera {
         self.azimuth_radians += azimuth_delta;
         self.elevation_radians = (self.elevation_radians + elevation_delta).clamp(-1.45, 1.45);
     }
+
+    pub fn zoom(&mut self, wheel_delta: f64) {
+        let minimum_radius = PLANET_RADIUS_METERS + 10.0;
+        self.orbit_radius_meters = (self.orbit_radius_meters * (-wheel_delta * 0.12).exp())
+            .clamp(minimum_radius, PLANET_RADIUS_METERS * 20.0);
+    }
 }
 
 #[repr(C)]
@@ -306,5 +312,12 @@ mod tests {
                 .iter()
                 .any(|vertex| vertex.camera_relative_position[0] < -1_000_000.0)
         );
+    }
+
+    #[test]
+    fn zoom_clamps_at_the_ten_meter_minimum_altitude() {
+        let mut camera = OrbitCamera::default();
+        camera.zoom(1_000.0);
+        assert_eq!(camera.orbit_radius_meters, PLANET_RADIUS_METERS + 10.0);
     }
 }
