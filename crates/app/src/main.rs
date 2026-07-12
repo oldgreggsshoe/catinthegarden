@@ -260,7 +260,11 @@ impl State {
     }
 
     fn rotate_camera(&mut self, azimuth_delta: f64, elevation_delta: f64) {
-        self.camera.rotate(azimuth_delta, elevation_delta);
+        self.camera.orbit(azimuth_delta, elevation_delta);
+    }
+
+    fn look_camera(&mut self, yaw_delta: f64, pitch_delta: f64) {
+        self.camera.look(yaw_delta, pitch_delta);
     }
 
     fn zoom_camera(&mut self, wheel_delta: f64) {
@@ -317,6 +321,7 @@ impl State {
             self.camera.orbit_radius_meters = radius;
             self.camera.elevation_radians = elevation;
             self.camera.azimuth_radians = azimuth;
+            self.camera.look_at_origin();
         }
         let camera_world_position = self.camera.world_position();
         let camera_altitude = self.camera.orbit_radius_meters - planet::PLANET_RADIUS_METERS;
@@ -651,7 +656,7 @@ fn main() {
                 event: DeviceEvent::MouseMotion { delta },
                 ..
             } => {
-                state.rotate_camera(-delta.0 * 0.003, -delta.1 * 0.003);
+                state.look_camera(-delta.0 * 0.003, -delta.1 * 0.003);
                 window.request_redraw();
             }
             Event::AboutToWait => window.request_redraw(),

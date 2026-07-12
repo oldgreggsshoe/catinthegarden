@@ -181,15 +181,21 @@ pub struct OrbitCamera {
     pub azimuth_radians: f64,
     pub elevation_radians: f64,
     pub orbit_radius_meters: f64,
+    look_yaw_radians: f64,
+    look_pitch_radians: f64,
 }
 
 impl Default for OrbitCamera {
     fn default() -> Self {
-        Self {
+        let mut camera = Self {
             azimuth_radians: 0.0,
             elevation_radians: 20.0_f64.to_radians(),
             orbit_radius_meters: 10_000_000.0,
-        }
+            look_yaw_radians: 0.0,
+            look_pitch_radians: 0.0,
+        };
+        camera.look_at_origin();
+        camera
     }
 }
 
@@ -204,8 +210,7 @@ impl OrbitCamera {
     }
 
     pub fn view_projection(&self, aspect_ratio: f32) -> Mat4 {
-        let world_position = self.world_position();
-        let forward = (-world_position).normalize().as_vec3();
+        let forward = self.forward();
         let up = DVec3::Y.as_vec3();
         let view = Mat4::look_to_rh(Vec3::ZERO, forward, up);
         let altitude = self.orbit_radius_meters - PLANET_RADIUS_METERS;
@@ -213,9 +218,30 @@ impl OrbitCamera {
         reversed_z_infinite_perspective(45.0_f32.to_radians(), aspect_ratio, near) * view
     }
 
-    pub fn rotate(&mut self, azimuth_delta: f64, elevation_delta: f64) {
+    pub fn orbit(&mut self, azimuth_delta: f64, elevation_delta: f64) {
         self.azimuth_radians += azimuth_delta;
         self.elevation_radians = (self.elevation_radians + elevation_delta).clamp(-1.45, 1.45);
+    }
+
+    pub fn look(&mut self, yaw_delta: f64, pitch_delta: f64) {
+        self.look_yaw_radians += yaw_delta;
+        self.look_pitch_radians = (self.look_pitch_radians + pitch_delta).clamp(-1.5, 1.5);
+    }
+
+    pub fn look_at_origin(&mut self) {
+        let forward = -self.world_position().normalize();
+        self.look_yaw_radians = forward.x.atan2(-forward.z);
+        self.look_pitch_radians = forward.y.asin();
+    }
+
+    fn forward(&self) -> Vec3 {
+        let horizontal = self.look_pitch_radians.cos() as f32;
+        Vec3::new(
+            (self.look_yaw_radians.sin() as f32) * horizontal,
+            self.look_pitch_radians.sin() as f32,
+            -(self.look_yaw_radians.cos() as f32) * horizontal,
+        )
+        .normalize()
     }
 
     pub fn zoom(&mut self, wheel_delta: f64) {
@@ -319,5 +345,15 @@ mod tests {
         let mut camera = OrbitCamera::default();
         camera.zoom(1_000.0);
         assert_eq!(camera.orbit_radius_meters, PLANET_RADIUS_METERS + 10.0);
+    }
+
+    #[test]
+    fn free_look_changes_orientation_without_moving_the_camera() {
+        let mut camera = OrbitCamera::default();
+        let position = camera.world_position();
+        let before = camera.view_projection(1.0);
+        camera.look(0.25, -0.1);
+        assert_eq!(camera.world_position(), position);
+        assert_ne!(camera.view_projection(1.0), before);
     }
 }
