@@ -12,6 +12,7 @@ bytemuck = { version = "1.25", features = ["derive"] }
 egui = "0.35"
 egui-wgpu = "0.35"
 egui-winit = "0.35"
+glam = "0.30"
 image = { version = "0.25", default-features = false, features = ["png"] }
 pollster = "0.4"
 serde = { version = "1", features = ["derive"] }

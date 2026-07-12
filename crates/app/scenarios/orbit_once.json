@@ -1,0 +1,19 @@
+{
+  "name": "orbit_once",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 4.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": true,
+  "orbit_radius_meters": 10000000.0,
+  "orbit_elevation_degrees": 20.0,
+  "orbit_turns": 1.0,
+  "screenshot_times_seconds": [0.5, 1.5, 2.5, 3.5],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [10000000.0, 0.0, 0.0],
+      "look_at": [0.0, 0.0, 0.0]
+    }
+  ]
+}

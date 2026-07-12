@@ -50,6 +50,7 @@ struct ScreenshotEntry {
     filename: String,
     log_entry_sim_time: f64,
     solid_color_verified: bool,
+    seam_gap_verified: Option<bool>,
 }
 
 pub struct RunArtifacts {
@@ -105,19 +106,30 @@ impl RunArtifacts {
         Ok((artifacts, SharedFile(Arc::new(Mutex::new(log_file)))))
     }
 
-    pub fn record_spatial_log(&mut self, sim_time: f64, frame_time_ms: f32, draw_calls: u32) {
+    pub fn record_spatial_log(
+        &mut self,
+        sim_time: f64,
+        camera_world_position: [f64; 3],
+        altitude_meters: f64,
+        orientation_azimuth_radians: f64,
+        orientation_elevation_radians: f64,
+        frame_time_ms: f32,
+        draw_calls: u32,
+    ) {
         self.spatial_log_count += 1;
         tracing::info!(
             target: "catinthegarden::spatial",
             sim_time,
-            camera_world_x = 0.0_f64,
-            camera_world_y = 0.0_f64,
-            camera_world_z = 0.0_f64,
+            camera_world_x = camera_world_position[0],
+            camera_world_y = camera_world_position[1],
+            camera_world_z = camera_world_position[2],
             latitude_degrees = 0.0_f64,
             longitude_degrees = 0.0_f64,
-            altitude_meters = 0.0_f64,
+            altitude_meters,
             velocity_meters_per_second = 0.0_f64,
-            orientation = "identity",
+            orientation = "orbit",
+            orientation_azimuth_radians,
+            orientation_elevation_radians,
             lod_level_histogram = "0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0",
             chunks_loaded = 0_u32,
             chunks_unloaded = 0_u32,
@@ -145,11 +157,13 @@ impl RunArtifacts {
         filename: String,
         log_entry_sim_time: f64,
         solid_color_verified: bool,
+        seam_gap_verified: Option<bool>,
     ) -> Result<(), String> {
         self.screenshots.push(ScreenshotEntry {
             filename,
             log_entry_sim_time,
             solid_color_verified,
+            seam_gap_verified,
         });
         self.write_manifests()
     }
@@ -229,6 +243,7 @@ pub fn finish_capture(
     artifacts: &mut RunArtifacts,
     sim_time: f64,
     verify_solid_color: bool,
+    verify_no_background_gaps: bool,
 ) -> Result<bool, String> {
     let (sender, receiver) = mpsc::channel();
     pending
@@ -269,6 +284,11 @@ pub fn finish_capture(
     if verify_solid_color && !solid_color_verified {
         return Err("solid-color scenario screenshot contains more than one color".to_owned());
     }
+    let seam_gap_verified = verify_no_background_gaps
+        .then(|| no_background_gaps(&pixels, pending.width, pending.height));
+    if seam_gap_verified == Some(false) {
+        return Err("planet screenshot contains a background gap inside its silhouette".to_owned());
+    }
     image::save_buffer(
         artifacts.screenshots_dir.join(&pending.filename),
         &pixels,
@@ -277,8 +297,43 @@ pub fn finish_capture(
         image::ColorType::Rgba8,
     )
     .map_err(|error| error.to_string())?;
-    artifacts.record_screenshot(pending.filename, sim_time, solid_color_verified)?;
+    artifacts.record_screenshot(
+        pending.filename,
+        sim_time,
+        solid_color_verified,
+        seam_gap_verified,
+    )?;
     Ok(solid_color_verified)
+}
+
+fn no_background_gaps(pixels: &[u8], width: u32, height: u32) -> bool {
+    let background = &pixels[..4];
+    let mut rows_with_planet = 0;
+    for row in pixels
+        .chunks_exact((width * 4) as usize)
+        .take(height as usize)
+    {
+        let non_background = row
+            .chunks_exact(4)
+            .enumerate()
+            .filter_map(|(index, pixel)| (pixel != background).then_some(index));
+        let Some(first) = non_background.clone().next() else {
+            continue;
+        };
+        let last = non_background
+            .last()
+            .expect("first non-background pixel exists");
+        rows_with_planet += 1;
+        if row
+            .chunks_exact(4)
+            .skip(first)
+            .take(last - first + 1)
+            .any(|pixel| pixel == background)
+        {
+            return false;
+        }
+    }
+    rows_with_planet > height as usize / 8
 }
 
 fn write_json(path: PathBuf, value: &impl Serialize) -> Result<(), String> {

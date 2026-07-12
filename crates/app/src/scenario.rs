@@ -6,6 +6,13 @@ pub struct ScenarioDefinition {
     pub fixed_timestep_seconds: f64,
     pub duration_seconds: f64,
     pub solid_color_screen: bool,
+    #[serde(default)]
+    pub hide_overlay: bool,
+    #[serde(default)]
+    pub seam_gap_check: bool,
+    pub orbit_radius_meters: Option<f64>,
+    pub orbit_elevation_degrees: Option<f64>,
+    pub orbit_turns: Option<f64>,
     pub screenshot_times_seconds: Vec<f64>,
     pub waypoints: Vec<Waypoint>,
 }
@@ -22,6 +29,7 @@ pub struct FramePlan {
     pub write_log: bool,
     pub capture_screenshot: bool,
     pub complete: bool,
+    pub orbit_azimuth_radians: Option<f64>,
 }
 
 pub struct ScenarioRunner {
@@ -35,6 +43,7 @@ impl ScenarioRunner {
     pub fn load(name: &str) -> Result<Self, String> {
         let source = match name {
             "still_5s" => include_str!("../scenarios/still_5s.json"),
+            "orbit_once" => include_str!("../scenarios/orbit_once.json"),
             _ => return Err(format!("unknown scenario '{name}'")),
         };
         let definition: ScenarioDefinition =
@@ -58,6 +67,27 @@ impl ScenarioRunner {
         {
             return Err("scenario waypoints must be present and finite".to_owned());
         }
+        let orbit_fields_present = [
+            definition.orbit_radius_meters.is_some(),
+            definition.orbit_elevation_degrees.is_some(),
+            definition.orbit_turns.is_some(),
+        ];
+        if orbit_fields_present.iter().any(|present| *present)
+            && (!orbit_fields_present.iter().all(|present| *present)
+                || definition
+                    .orbit_radius_meters
+                    .is_some_and(|radius| !radius.is_finite() || radius <= 0.0)
+                || definition
+                    .orbit_elevation_degrees
+                    .is_some_and(|elevation| !elevation.is_finite())
+                || definition
+                    .orbit_turns
+                    .is_some_and(|turns| !turns.is_finite()))
+        {
+            return Err(
+                "orbit scenarios require finite radius, elevation, and turn count".to_owned(),
+            );
+        }
 
         Ok(Self {
             definition,
@@ -77,6 +107,25 @@ impl ScenarioRunner {
 
     pub fn expected_screenshots(&self) -> usize {
         self.definition.screenshot_times_seconds.len()
+    }
+
+    pub fn expected_log_samples(&self) -> usize {
+        (self.definition.duration_seconds / 0.5).floor() as usize + 1
+    }
+
+    pub fn hides_overlay(&self) -> bool {
+        self.definition.hide_overlay
+    }
+
+    pub fn needs_seam_gap_check(&self) -> bool {
+        self.definition.seam_gap_check
+    }
+
+    pub fn orbit_settings(&self) -> Option<(f64, f64)> {
+        Some((
+            self.definition.orbit_radius_meters?,
+            self.definition.orbit_elevation_degrees?.to_radians(),
+        ))
     }
 
     pub fn advance(&mut self) -> FramePlan {
@@ -103,6 +152,9 @@ impl ScenarioRunner {
             capture_screenshot,
             complete: self.sim_time + f64::EPSILON >= self.definition.duration_seconds
                 && self.next_screenshot == self.definition.screenshot_times_seconds.len(),
+            orbit_azimuth_radians: self.definition.orbit_turns.map(|turns| {
+                std::f64::consts::TAU * turns * self.sim_time / self.definition.duration_seconds
+            }),
         }
     }
 }
@@ -125,5 +177,21 @@ mod tests {
 
         assert_eq!(captures, 3);
         assert_eq!(completion_time, 5.0);
+    }
+
+    #[test]
+    fn orbit_scenario_completes_one_turn_with_four_captures() {
+        let mut scenario = ScenarioRunner::load("orbit_once").expect("scenario parses");
+        let mut captures = 0;
+        let final_azimuth = loop {
+            let frame = scenario.advance();
+            captures += usize::from(frame.capture_screenshot);
+            if frame.complete {
+                break frame.orbit_azimuth_radians.expect("orbit angle");
+            }
+        };
+
+        assert_eq!(captures, 4);
+        assert!((final_azimuth - std::f64::consts::TAU).abs() < f64::EPSILON);
     }
 }

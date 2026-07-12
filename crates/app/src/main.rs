@@ -1,4 +1,5 @@
 mod debug;
+mod planet;
 mod scenario;
 
 use std::{
@@ -24,51 +25,20 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Vertex {
-    position: [f32; 2],
-    color: [f32; 3],
-}
-
-impl Vertex {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
-        wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x3];
-
-    fn layout() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: size_of::<Self>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &Self::ATTRIBUTES,
-        }
-    }
-}
-
-const TRIANGLE: [Vertex; 3] = [
-    Vertex {
-        position: [0.0, 0.6],
-        color: [1.0, 0.48, 0.44],
-    },
-    Vertex {
-        position: [-0.52, -0.36],
-        color: [0.95, 0.38, 0.38],
-    },
-    Vertex {
-        position: [0.52, -0.36],
-        color: [1.0, 0.62, 0.54],
-    },
-];
-
 struct State {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
-    triangle_pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
-    time_buffer: wgpu::Buffer,
-    time_bind_group: wgpu::BindGroup,
+    depth_view: wgpu::TextureView,
+    planet_pipeline: wgpu::RenderPipeline,
+    planet_vertex_buffer: wgpu::Buffer,
+    planet_index_buffer: wgpu::Buffer,
+    planet_mesh: planet::CubeSphereMesh,
+    camera: planet::OrbitCamera,
+    camera_buffer: wgpu::Buffer,
+    camera_bind_group: wgpu::BindGroup,
     started_at: Instant,
     egui_context: egui::Context,
     egui_state: egui_winit::State,
@@ -148,22 +118,30 @@ impl State {
             desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &config);
+        let depth_view = create_depth_view(&device, size);
 
-        let shader = device.create_shader_module(wgpu::include_wgsl!("triangle.wgsl"));
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("triangle vertices"),
-            contents: bytemuck::cast_slice(&TRIANGLE),
-            usage: wgpu::BufferUsages::VERTEX,
+        let planet_mesh = planet::CubeSphereMesh::new();
+        let camera = planet::OrbitCamera::default();
+        let initial_vertices = planet_mesh.rebased_vertices(camera.world_position());
+        let planet_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("camera-relative planet vertices"),
+            contents: bytemuck::cast_slice(&initial_vertices),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
-        let time_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("triangle rotation time"),
-            size: size_of::<f32>() as u64,
+        let planet_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("cube-sphere indices"),
+            contents: bytemuck::cast_slice(planet_mesh.indices()),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("camera projection"),
+            size: size_of::<planet::CameraUniform>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let time_bind_group_layout =
+        let camera_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("triangle time layout"),
+                label: Some("camera layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX,
@@ -175,27 +153,28 @@ impl State {
                     count: None,
                 }],
             });
-        let time_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("triangle time bind group"),
-            layout: &time_bind_group_layout,
+        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("camera bind group"),
+            layout: &camera_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: time_buffer.as_entire_binding(),
+                resource: camera_buffer.as_entire_binding(),
             }],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("triangle pipeline layout"),
-            bind_group_layouts: &[Some(&time_bind_group_layout)],
+            label: Some("planet pipeline layout"),
+            bind_group_layouts: &[Some(&camera_bind_group_layout)],
             immediate_size: 0,
         });
-        let triangle_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("rotating triangle pipeline"),
+        let shader = device.create_shader_module(wgpu::include_wgsl!("planet.wgsl"));
+        let planet_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("flat-shaded cube-sphere pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[Vertex::layout()],
+                buffers: &[planet::RebasedVertex::layout()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -207,8 +186,17 @@ impl State {
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
+            primitive: wgpu::PrimitiveState {
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Greater),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
             cache: None,
@@ -235,10 +223,14 @@ impl State {
             queue,
             config,
             size,
-            triangle_pipeline,
-            vertex_buffer,
-            time_buffer,
-            time_bind_group,
+            depth_view,
+            planet_pipeline,
+            planet_vertex_buffer,
+            planet_index_buffer,
+            planet_mesh,
+            camera,
+            camera_buffer,
+            camera_bind_group,
             started_at: Instant::now(),
             egui_context,
             egui_state,
@@ -264,6 +256,13 @@ impl State {
         self.config.width = size.width;
         self.config.height = size.height;
         self.surface.configure(&self.device, &self.config);
+        self.depth_view = create_depth_view(&self.device, size);
+    }
+
+    fn rotate_camera(&mut self, azimuth_delta: f64, elevation_delta: f64) {
+        if self.scenario.is_none() {
+            self.camera.rotate(azimuth_delta, elevation_delta);
+        }
     }
 
     fn render(&mut self, window: &Window) -> Option<bool> {
@@ -274,36 +273,71 @@ impl State {
             self.fps = 1.0 / frame_time;
         }
 
-        let (sim_time, write_log, scenario_capture, scenario_complete, solid_color_screen) =
-            if let Some(scenario) = self.scenario.as_mut() {
-                let frame = scenario.advance();
+        let (
+            sim_time,
+            write_log,
+            scenario_capture,
+            scenario_complete,
+            solid_color_screen,
+            hide_overlay,
+            seam_gap_check,
+            orbit_update,
+        ) = if let Some(scenario) = self.scenario.as_mut() {
+            let frame = scenario.advance();
+            let orbit_update = scenario.orbit_settings().map(|(radius, elevation)| {
                 (
-                    frame.sim_time,
-                    frame.write_log,
-                    frame.capture_screenshot,
-                    frame.complete,
-                    scenario.renders_solid_color(),
+                    radius,
+                    elevation,
+                    frame
+                        .orbit_azimuth_radians
+                        .expect("orbit scenario has an angle"),
                 )
-            } else {
-                let sim_time = self.started_at.elapsed().as_secs_f64();
-                let write_log = sim_time >= self.next_log_time;
-                if write_log {
-                    self.next_log_time = sim_time + 0.5;
-                }
-                (sim_time, write_log, false, false, false)
-            };
+            });
+            (
+                frame.sim_time,
+                frame.write_log,
+                frame.capture_screenshot,
+                frame.complete,
+                scenario.renders_solid_color(),
+                scenario.hides_overlay(),
+                scenario.needs_seam_gap_check(),
+                orbit_update,
+            )
+        } else {
+            let sim_time = self.started_at.elapsed().as_secs_f64();
+            let write_log = sim_time >= self.next_log_time;
+            if write_log {
+                self.next_log_time = sim_time + 0.5;
+            }
+            (sim_time, write_log, false, false, false, false, false, None)
+        };
+        if let Some((radius, elevation, azimuth)) = orbit_update {
+            self.camera.orbit_radius_meters = radius;
+            self.camera.elevation_radians = elevation;
+            self.camera.azimuth_radians = azimuth;
+        }
+        let camera_world_position = self.camera.world_position();
+        let camera_altitude = self.camera.orbit_radius_meters - planet::PLANET_RADIUS_METERS;
         let draw_calls = u32::from(!solid_color_screen);
         if write_log {
-            self.artifacts
-                .record_spatial_log(sim_time, frame_time * 1000.0, draw_calls);
+            self.artifacts.record_spatial_log(
+                sim_time,
+                camera_world_position.to_array(),
+                camera_altitude,
+                self.camera.azimuth_radians,
+                self.camera.elevation_radians,
+                frame_time * 1000.0,
+                draw_calls,
+            );
         }
 
         let mut paint_jobs = None;
         let mut textures_to_free = Vec::new();
-        if !solid_color_screen {
+        if !solid_color_screen && !hide_overlay {
             let raw_input = self.egui_state.take_egui_input(window);
             let show_debug_overlay = self.debug_overlay_visible;
             let fps = self.fps;
+            let camera_position = camera_world_position;
             let full_output = self.egui_context.run_ui(raw_input, |ui| {
                 if show_debug_overlay {
                     let context = ui.ctx().clone();
@@ -312,7 +346,13 @@ impl State {
                         .show(&context, |ui| {
                             ui.label("Phase 0.5: debug/test harness");
                             ui.label(format!("FPS: {fps:.0}"));
+                            ui.label(format!(
+                                "Camera: [{:.0}, {:.0}, {:.0}] m",
+                                camera_position.x, camera_position.y, camera_position.z
+                            ));
+                            ui.label(format!("Altitude: {camera_altitude:.0} m  |  LOD: fixed"));
                             ui.label("F3: toggle overlay  |  F12: capture PNG");
+                            ui.label("Arrow keys: orbit camera  |  Esc/Q: quit");
                         });
                 }
             });
@@ -370,12 +410,23 @@ impl State {
             );
         }
 
-        let elapsed_seconds = self.started_at.elapsed().as_secs_f32();
+        let rebased_vertices = self
+            .planet_mesh
+            .rebased_vertices(self.camera.world_position());
+        self.queue.write_buffer(
+            &self.planet_vertex_buffer,
+            0,
+            bytemuck::cast_slice(&rebased_vertices),
+        );
+        let camera_uniform = planet::CameraUniform::from_camera(
+            &self.camera,
+            self.size.width as f32 / self.size.height as f32,
+        );
         self.queue
-            .write_buffer(&self.time_buffer, 0, bytemuck::bytes_of(&elapsed_seconds));
+            .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("triangle pass"),
+                label: Some("cube-sphere pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     depth_slice: None,
@@ -385,16 +436,27 @@ impl State {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
                 occlusion_query_set: None,
                 timestamp_writes: None,
                 multiview_mask: None,
             });
             if !solid_color_screen {
-                render_pass.set_pipeline(&self.triangle_pipeline);
-                render_pass.set_bind_group(0, &self.time_bind_group, &[]);
-                render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                render_pass.draw(0..TRIANGLE.len() as u32, 0..1);
+                render_pass.set_pipeline(&self.planet_pipeline);
+                render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, self.planet_vertex_buffer.slice(..));
+                render_pass.set_index_buffer(
+                    self.planet_index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
+                render_pass.draw_indexed(0..self.planet_mesh.indices().len() as u32, 0, 0..1);
             }
         }
         if let Some(paint_jobs) = &paint_jobs {
@@ -444,6 +506,7 @@ impl State {
                 &mut self.artifacts,
                 sim_time,
                 solid_color_screen,
+                seam_gap_check,
             ) {
                 self.scenario_capture_failed = true;
                 tracing::error!(%error, "screenshot capture failed");
@@ -466,7 +529,11 @@ impl State {
                 .map_or(0, scenario::ScenarioRunner::expected_screenshots);
             let passed = !self.scenario_capture_failed
                 && self.artifacts.screenshot_count() == expected_screenshots
-                && self.artifacts.spatial_log_count() >= 10;
+                && self.artifacts.spatial_log_count()
+                    >= self
+                        .scenario
+                        .as_ref()
+                        .map_or(0, scenario::ScenarioRunner::expected_log_samples);
             self.artifacts.finish(passed).unwrap_or_else(
                 |error| tracing::error!(%error, "could not finalize test-run manifest"),
             );
@@ -497,6 +564,18 @@ fn main() {
     event_loop
         .run(move |event, event_loop| match event {
             Event::WindowEvent { window_id, event } if window_id == window.id() => {
+                if matches!(
+                    &event,
+                    WindowEvent::KeyboardInput { event, .. }
+                        if event.state.is_pressed()
+                            && matches!(
+                                event.physical_key,
+                                PhysicalKey::Code(KeyCode::Escape | KeyCode::KeyQ)
+                            )
+                ) {
+                    event_loop.exit();
+                    return;
+                }
                 let egui_response = state.egui_state.on_window_event(&window, &event);
                 if egui_response.repaint {
                     window.request_redraw();
@@ -518,6 +597,34 @@ fn main() {
                                 && event.physical_key == PhysicalKey::Code(KeyCode::F12) =>
                         {
                             state.manual_screenshot_requested = true;
+                            window.request_redraw();
+                        }
+                        WindowEvent::KeyboardInput { event, .. }
+                            if event.state.is_pressed()
+                                && event.physical_key == PhysicalKey::Code(KeyCode::ArrowLeft) =>
+                        {
+                            state.rotate_camera(-0.08, 0.0);
+                            window.request_redraw();
+                        }
+                        WindowEvent::KeyboardInput { event, .. }
+                            if event.state.is_pressed()
+                                && event.physical_key == PhysicalKey::Code(KeyCode::ArrowRight) =>
+                        {
+                            state.rotate_camera(0.08, 0.0);
+                            window.request_redraw();
+                        }
+                        WindowEvent::KeyboardInput { event, .. }
+                            if event.state.is_pressed()
+                                && event.physical_key == PhysicalKey::Code(KeyCode::ArrowUp) =>
+                        {
+                            state.rotate_camera(0.0, 0.05);
+                            window.request_redraw();
+                        }
+                        WindowEvent::KeyboardInput { event, .. }
+                            if event.state.is_pressed()
+                                && event.physical_key == PhysicalKey::Code(KeyCode::ArrowDown) =>
+                        {
+                            state.rotate_camera(0.0, -0.05);
                             window.request_redraw();
                         }
                         WindowEvent::RedrawRequested => {
@@ -550,4 +657,26 @@ fn scenario_argument() -> Result<Option<String>, String> {
             .ok_or_else(|| "--scenario requires a scenario name".to_owned()),
         Some(flag) => Err(format!("unrecognized argument '{flag}'")),
     }
+}
+
+fn create_depth_view(
+    device: &wgpu::Device,
+    size: winit::dpi::PhysicalSize<u32>,
+) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("reversed-z depth texture"),
+            size: wgpu::Extent3d {
+                width: size.width.max(1),
+                height: size.height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        })
+        .create_view(&wgpu::TextureViewDescriptor::default())
 }
