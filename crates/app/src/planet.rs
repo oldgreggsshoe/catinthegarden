@@ -210,7 +210,7 @@ impl OrbitCamera {
     }
 
     pub fn view_projection(&self, aspect_ratio: f32) -> Mat4 {
-        let forward = self.forward();
+        let forward = self.direction();
         let up = DVec3::Y.as_vec3();
         let view = Mat4::look_to_rh(Vec3::ZERO, forward, up);
         let altitude = self.orbit_radius_meters - PLANET_RADIUS_METERS;
@@ -234,7 +234,7 @@ impl OrbitCamera {
         self.look_pitch_radians = forward.y.asin();
     }
 
-    fn forward(&self) -> Vec3 {
+    pub fn direction(&self) -> Vec3 {
         let horizontal = self.look_pitch_radians.cos() as f32;
         Vec3::new(
             (self.look_yaw_radians.sin() as f32) * horizontal,

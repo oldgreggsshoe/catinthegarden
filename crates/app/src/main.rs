@@ -364,6 +364,7 @@ impl State {
             let show_debug_overlay = self.debug_overlay_visible;
             let fps = self.fps;
             let camera_position = camera_world_position;
+            let camera_direction = self.camera.direction();
             let full_output = self.egui_context.run_ui(raw_input, |ui| {
                 if show_debug_overlay {
                     let context = ui.ctx().clone();
@@ -375,6 +376,10 @@ impl State {
                             ui.label(format!(
                                 "Camera: [{:.0}, {:.0}, {:.0}] m",
                                 camera_position.x, camera_position.y, camera_position.z
+                            ));
+                            ui.label(format!(
+                                "Direction: [{:.3}, {:.3}, {:.3}]",
+                                camera_direction.x, camera_direction.y, camera_direction.z
                             ));
                             ui.label(format!("Altitude: {camera_altitude:.0} m  |  LOD: fixed"));
                             ui.label("F3: toggle overlay  |  F12: capture PNG");
