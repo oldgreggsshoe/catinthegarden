@@ -12,6 +12,7 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 - Phase 0 complete: workspace app opens a wgpu/winit window with an egui FPS overlay, dark-grey clear, and rotating salmon-pink triangle.
 - Phase 0.5 complete: tracing JSONL runs, F3 debug-overlay toggle, F12 PNG capture, and the fixed-step `still_5s` scenario with tier-1 log/manifest assertions.
 - Phase 1 complete: 6-face 32x32 cube-sphere with flat shading, f64 orbit camera and f32 camera-relative upload, arrows for orbit, Esc/Q quit, and seam-checked `orbit_once` screenshots.
+- Phase 3 complete: deterministic baker runs the full terrain/erosion/hydrology/climate pipeline and exports validated previews plus R32F/R8/R8 guttered tiles, with global L0-L2 coverage and parent-complete sparse +X refinement through L18.
 
 ## Planet constants (test planet)
 

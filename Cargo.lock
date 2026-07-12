@@ -290,6 +290,7 @@ name = "catinthegarden-app"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "catinthegarden-coretypes",
  "egui",
  "egui-wgpu",
  "egui-winit",
@@ -308,11 +309,21 @@ dependencies = [
 name = "catinthegarden-baker"
 version = "0.1.0"
 dependencies = [
+ "catinthegarden-coretypes",
+ "glam",
  "image",
  "noise",
  "rayon",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "catinthegarden-coretypes"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "serde",
 ]
 
 [[package]]

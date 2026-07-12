@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+catinthegarden-coretypes = { path = "../coretypes" }
+glam.workspace = true
 image.workspace = true
 noise.workspace = true
 rayon.workspace = true
