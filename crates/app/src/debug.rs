@@ -32,6 +32,9 @@ pub struct SpatialLogSample {
     pub max_seam_delta_m: f64,
     pub resident_chunks: u32,
     pub fallback_chunks: u32,
+    pub resident_tiles: u32,
+    pub tiles_loaded: u32,
+    pub tiles_unloaded: u32,
     pub lod_thrash_events: u32,
 }
 
@@ -379,6 +382,9 @@ impl RunArtifacts {
             max_seam_delta_m: 0.0,
             resident_chunks: 0,
             fallback_chunks: 0,
+            resident_tiles: 0,
+            tiles_loaded: 0,
+            tiles_unloaded: 0,
             lod_thrash_events: 0,
         });
     }
@@ -407,6 +413,9 @@ impl RunArtifacts {
             max_seam_delta_m = sample.max_seam_delta_m,
             resident_chunks = sample.resident_chunks,
             fallback_chunks = sample.fallback_chunks,
+            resident_tiles = sample.resident_tiles,
+            tiles_loaded = sample.tiles_loaded,
+            tiles_unloaded = sample.tiles_unloaded,
             lod_thrash_events = sample.lod_thrash_events,
             "spatial frame"
         );
@@ -735,6 +744,9 @@ mod tests {
             max_seam_delta_m: 0.01,
             resident_chunks,
             fallback_chunks: 0,
+            resident_tiles: 0,
+            tiles_loaded: 0,
+            tiles_unloaded: 0,
             lod_thrash_events: 0,
         }
     }

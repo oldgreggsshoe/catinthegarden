@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::{self, ErrorKind},
     path::Path,
@@ -12,6 +12,7 @@ use catinthegarden_coretypes::{
 };
 use glam::DVec3;
 use image::{GrayImage, ImageBuffer, ImageReader, Luma, Rgb, RgbImage};
+use noise::{NoiseFn, Perlin};
 
 use crate::{
     BakeResult,
@@ -22,13 +23,26 @@ use crate::{
 const HEIGHT_FILE: &str = "height.r32f";
 const BIOME_FILE: &str = "biome.r8";
 const MOISTURE_FILE: &str = "moisture.r8";
+const MICRORELIEF_START_LEVEL: u8 = 12;
+const MICRORELIEF_MAX_AMPLITUDE_METERS: f64 = 2.0;
+const MICRORELIEF_FREQUENCY: f64 = 220_000.0;
 
 pub fn export_outmap(config: &BakeConfig, terrain: &Terrain) -> BakeResult<OutmapManifest> {
     fs::create_dir_all(&config.output)?;
     write_previews(&config.output.join("previews"), terrain)?;
     let available_tiles = available_tile_keys(config);
+    let mut generated_tiles = BTreeMap::new();
+    let microrelief = Perlin::new(config.seed ^ 0x4D49_4352);
     for &key in &available_tiles {
-        write_tile(&config.output, terrain, key)?;
+        let mut tile = sample_tile(config, terrain, key, &microrelief);
+        if let Some(parent) = key.parent() {
+            let parent_tile = generated_tiles
+                .get(&parent)
+                .expect("available tile ordering must place parents before children");
+            constrain_logical_border_to_parent(&mut tile, key, parent_tile);
+        }
+        write_tile(&config.output, key, &tile)?;
+        generated_tiles.insert(key, tile);
     }
     let manifest = build_manifest(config, available_tiles);
     manifest
@@ -49,6 +63,7 @@ pub fn validate_output(output: &Path) -> BakeResult<OutmapManifest> {
         .map_err(|message| io::Error::new(ErrorKind::InvalidData, message))?;
     validate_channels(&manifest)?;
     validate_previews(output, &manifest)?;
+    let mut height_tiles = BTreeMap::new();
     for &key in &manifest.available_tiles {
         let directory = output.join(key.relative_path());
         let height = fs::read(directory.join(HEIGHT_FILE))?;
@@ -61,6 +76,7 @@ pub fn validate_output(output: &Path) -> BakeResult<OutmapManifest> {
         if biome.len() != samples || moisture.len() != samples {
             return Err(invalid_data(format!("bad R8 byte count for {key:?}")));
         }
+        let mut decoded_height = Vec::with_capacity(samples);
         for bytes in height.chunks_exact(size_of::<f32>()) {
             let value = f32::from_le_bytes(bytes.try_into().expect("chunk has four bytes"));
             if !value.is_finite()
@@ -69,6 +85,7 @@ pub fn validate_output(output: &Path) -> BakeResult<OutmapManifest> {
             {
                 return Err(invalid_data(format!("invalid height in {key:?}")));
             }
+            decoded_height.push(value);
         }
         if let Some(&invalid) = biome
             .iter()
@@ -83,9 +100,73 @@ pub fn validate_output(output: &Path) -> BakeResult<OutmapManifest> {
                 "normal data must not be baked for {key:?}"
             )));
         }
+        height_tiles.insert(key, decoded_height);
     }
+    validate_fallback_edges(&manifest, &height_tiles)?;
     validate_landing_height(output, &manifest)?;
     Ok(manifest)
+}
+
+fn validate_fallback_edges(
+    manifest: &OutmapManifest,
+    height_tiles: &BTreeMap<TileKey, Vec<f32>>,
+) -> BakeResult<()> {
+    const EDGE_TOLERANCE_METERS: f32 = 0.002;
+    for &key in &manifest.available_tiles {
+        if key.level == 0 {
+            continue;
+        }
+        let side = 1_u32 << key.level;
+        for (dx, dy, edge) in [(-1_i32, 0_i32, 0_u8), (1, 0, 1), (0, -1, 2), (0, 1, 3)] {
+            let neighbor_x = key.x as i64 + i64::from(dx);
+            let neighbor_y = key.y as i64 + i64::from(dy);
+            if neighbor_x < 0
+                || neighbor_y < 0
+                || neighbor_x >= i64::from(side)
+                || neighbor_y >= i64::from(side)
+            {
+                continue;
+            }
+            let neighbor = TileKey {
+                face: key.face,
+                level: key.level,
+                x: neighbor_x as u32,
+                y: neighbor_y as u32,
+            };
+            let fallback = manifest
+                .best_available_ancestor(neighbor)
+                .expect("every face has a root fallback");
+            let active_height = &height_tiles[&key];
+            let fallback_height = &height_tiles[&fallback];
+            for offset in 0..TILE_LOGICAL_SIZE {
+                let (local_x, local_y) = match edge {
+                    0 => (0, offset),
+                    1 => (TILE_LOGICAL_SIZE - 1, offset),
+                    2 => (offset, 0),
+                    3 => (offset, TILE_LOGICAL_SIZE - 1),
+                    _ => unreachable!(),
+                };
+                let global_x =
+                    u64::from(key.x) * u64::from(TILE_LOGICAL_SIZE - 1) + u64::from(local_x);
+                let global_y =
+                    u64::from(key.y) * u64::from(TILE_LOGICAL_SIZE - 1) + u64::from(local_y);
+                let scale = (1_u64 << fallback.level) as f64 / (1_u64 << key.level) as f64;
+                let fallback_x =
+                    global_x as f64 * scale - f64::from(fallback.x * (TILE_LOGICAL_SIZE - 1));
+                let fallback_y =
+                    global_y as f64 * scale - f64::from(fallback.y * (TILE_LOGICAL_SIZE - 1));
+                let actual = active_height[logical_index(local_x, local_y)];
+                let expected = sample_parent_f32(fallback_height, fallback_x, fallback_y);
+                if (actual - expected).abs() > EDGE_TOLERANCE_METERS {
+                    return Err(invalid_data(format!(
+                        "fallback edge mismatch {key:?} -> {fallback:?}: {:.6}m",
+                        (actual - expected).abs()
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_channels(manifest: &OutmapManifest) -> BakeResult<()> {
@@ -252,13 +333,23 @@ fn write_previews(output: &Path, terrain: &Terrain) -> BakeResult<()> {
     Ok(())
 }
 
-fn write_tile(output: &Path, terrain: &Terrain, key: TileKey) -> BakeResult<()> {
-    let directory = output.join(key.relative_path());
-    fs::create_dir_all(&directory)?;
+#[derive(Clone, Debug)]
+struct TileData {
+    height: Vec<f32>,
+    biome: Vec<u8>,
+    moisture: Vec<u8>,
+}
+
+fn sample_tile(
+    config: &BakeConfig,
+    terrain: &Terrain,
+    key: TileKey,
+    microrelief: &Perlin,
+) -> TileData {
     let sample_count = (TILE_STORED_SIZE * TILE_STORED_SIZE) as usize;
-    let mut height_bytes = Vec::with_capacity(sample_count * size_of::<f32>());
-    let mut biome_bytes = Vec::with_capacity(sample_count);
-    let mut moisture_bytes = Vec::with_capacity(sample_count);
+    let mut height = Vec::with_capacity(sample_count);
+    let mut biome = Vec::with_capacity(sample_count);
+    let mut moisture = Vec::with_capacity(sample_count);
     let biome_ids: Vec<u8> = terrain.biome.iter().map(|biome| *biome as u8).collect();
     let side = 1_u64 << key.level;
     let denominator = u64::from(TILE_LOGICAL_SIZE - 1) * side;
@@ -271,18 +362,114 @@ fn write_tile(output: &Path, terrain: &Terrain, key: TileKey) -> BakeResult<()> 
             let global_x = i64::from(key.x) * i64::from(TILE_LOGICAL_SIZE - 1) + local_x;
             let u = -1.0 + 2.0 * global_x as f64 / denominator as f64;
             let direction = face_uv_to_direction(key.face, u, v);
-            let height = terrain
-                .grid
-                .sample_f64(&terrain.height_meters, direction)
-                .clamp(MIN_HEIGHT_METERS, MAX_HEIGHT_METERS) as f32;
-            height_bytes.extend_from_slice(&height.to_le_bytes());
-            biome_bytes.push(terrain.grid.sample_u8_nearest(&biome_ids, direction));
-            moisture_bytes.push(terrain.grid.sample_u8_linear(&terrain.moisture, direction));
+            let sampled_height = terrain.grid.sample_f64(&terrain.height_meters, direction)
+                + sparse_microrelief(config, key, direction, microrelief);
+            let sampled_height = sampled_height.clamp(MIN_HEIGHT_METERS, MAX_HEIGHT_METERS) as f32;
+            height.push(sampled_height);
+            biome.push(terrain.grid.sample_u8_nearest(&biome_ids, direction));
+            moisture.push(terrain.grid.sample_u8_linear(&terrain.moisture, direction));
         }
     }
+    TileData {
+        height,
+        biome,
+        moisture,
+    }
+}
+
+fn sparse_microrelief(config: &BakeConfig, key: TileKey, direction: DVec3, noise: &Perlin) -> f64 {
+    if key.face != CubeFace::PositiveX
+        || key.level <= config.dense_level
+        || key.level < MICRORELIEF_START_LEVEL
+    {
+        return 0.0;
+    }
+    let progress = (f64::from(key.level - MICRORELIEF_START_LEVEL)
+        / f64::from(catinthegarden_coretypes::QUADTREE_MAX_LEVEL - MICRORELIEF_START_LEVEL))
+    .clamp(0.0, 1.0);
+    let ramp = progress * progress * (3.0 - 2.0 * progress);
+    let sample = |sample_direction: DVec3| {
+        noise.get([
+            sample_direction.x * MICRORELIEF_FREQUENCY,
+            sample_direction.y * MICRORELIEF_FREQUENCY,
+            sample_direction.z * MICRORELIEF_FREQUENCY,
+        ])
+    };
+    let centered = (sample(direction) - sample(DVec3::X)).clamp(-1.0, 1.0);
+    centered * MICRORELIEF_MAX_AMPLITUDE_METERS * ramp
+}
+
+fn constrain_logical_border_to_parent(tile: &mut TileData, key: TileKey, parent: &TileData) {
+    let half_quads = (TILE_LOGICAL_SIZE - 1) as f64 / 2.0;
+    let quadrant_x = f64::from(key.x & 1);
+    let quadrant_y = f64::from(key.y & 1);
+    for logical_y in 0..TILE_LOGICAL_SIZE {
+        for logical_x in 0..TILE_LOGICAL_SIZE {
+            if logical_x != 0
+                && logical_x != TILE_LOGICAL_SIZE - 1
+                && logical_y != 0
+                && logical_y != TILE_LOGICAL_SIZE - 1
+            {
+                continue;
+            }
+            let parent_x = quadrant_x * half_quads + f64::from(logical_x) * 0.5;
+            let parent_y = quadrant_y * half_quads + f64::from(logical_y) * 0.5;
+            let index = stored_index(logical_x + TILE_GUTTER, logical_y + TILE_GUTTER);
+            tile.height[index] = sample_parent_f32(&parent.height, parent_x, parent_y);
+            tile.moisture[index] = sample_parent_u8_linear(&parent.moisture, parent_x, parent_y);
+            tile.biome[index] = sample_parent_u8_nearest(&parent.biome, parent_x, parent_y);
+        }
+    }
+}
+
+fn sample_parent_f32(values: &[f32], x: f64, y: f64) -> f32 {
+    sample_parent_bilinear(values, x, y, |value| f64::from(*value)) as f32
+}
+
+fn sample_parent_u8_linear(values: &[u8], x: f64, y: f64) -> u8 {
+    sample_parent_bilinear(values, x, y, |value| f64::from(*value))
+        .round()
+        .clamp(0.0, 255.0) as u8
+}
+
+fn sample_parent_bilinear<T>(values: &[T], x: f64, y: f64, promote: impl Fn(&T) -> f64) -> f64 {
+    let x0 = x.floor() as u32;
+    let y0 = y.floor() as u32;
+    let x1 = (x0 + 1).min(TILE_LOGICAL_SIZE - 1);
+    let y1 = (y0 + 1).min(TILE_LOGICAL_SIZE - 1);
+    let tx = x - f64::from(x0);
+    let ty = y - f64::from(y0);
+    let top = promote(&values[logical_index(x0, y0)]) * (1.0 - tx)
+        + promote(&values[logical_index(x1, y0)]) * tx;
+    let bottom = promote(&values[logical_index(x0, y1)]) * (1.0 - tx)
+        + promote(&values[logical_index(x1, y1)]) * tx;
+    top * (1.0 - ty) + bottom * ty
+}
+
+fn sample_parent_u8_nearest(values: &[u8], x: f64, y: f64) -> u8 {
+    let x = x.round().clamp(0.0, f64::from(TILE_LOGICAL_SIZE - 1)) as u32;
+    let y = y.round().clamp(0.0, f64::from(TILE_LOGICAL_SIZE - 1)) as u32;
+    values[logical_index(x, y)]
+}
+
+fn logical_index(x: u32, y: u32) -> usize {
+    stored_index(x + TILE_GUTTER, y + TILE_GUTTER)
+}
+
+fn stored_index(x: u32, y: u32) -> usize {
+    (y * TILE_STORED_SIZE + x) as usize
+}
+
+fn write_tile(output: &Path, key: TileKey, tile: &TileData) -> BakeResult<()> {
+    let directory = output.join(key.relative_path());
+    fs::create_dir_all(&directory)?;
+    let mut height_bytes = Vec::with_capacity(tile.height.len() * size_of::<f32>());
+    for height in &tile.height {
+        height_bytes.extend_from_slice(&height.to_le_bytes());
+    }
     fs::write(directory.join(HEIGHT_FILE), height_bytes)?;
-    fs::write(directory.join(BIOME_FILE), biome_bytes)?;
-    fs::write(directory.join(MOISTURE_FILE), moisture_bytes)?;
+    fs::write(directory.join(BIOME_FILE), &tile.biome)?;
+    fs::write(directory.join(MOISTURE_FILE), &tile.moisture)?;
     Ok(())
 }
 

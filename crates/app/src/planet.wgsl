@@ -150,11 +150,13 @@ fn displaced_surface_normal(
     let right_height = terrain_height(outmap, source_uv + vec2<f32>(uv_step.x, 0.0), right_direction);
     let down_height = terrain_height(outmap, source_uv - vec2<f32>(0.0, uv_step.y), down_direction);
     let up_height = terrain_height(outmap, source_uv + vec2<f32>(0.0, uv_step.y), up_direction);
-    let left = left_direction * (PLANET_RADIUS_METERS + left_height);
-    let right = right_direction * (PLANET_RADIUS_METERS + right_height);
-    let down = down_direction * (PLANET_RADIUS_METERS + down_height);
-    let up = up_direction * (PLANET_RADIUS_METERS + up_height);
-    return normalize(cross(right - left, up - down));
+    let tangent_delta_u = (right_direction - left_direction) * PLANET_RADIUS_METERS
+        + right_direction * right_height
+        - left_direction * left_height;
+    let tangent_delta_v = (up_direction - down_direction) * PLANET_RADIUS_METERS
+        + up_direction * up_height
+        - down_direction * down_height;
+    return normalize(cross(tangent_delta_u, tangent_delta_v));
 }
 
 fn biome_color(biome: u32) -> vec3<f32> {

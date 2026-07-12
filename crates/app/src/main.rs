@@ -189,7 +189,7 @@ impl State {
             debug::RunArtifacts::create_with_assertions(artifact_name, assertions)
                 .expect("test-run storage must be writable");
         debug::init_tracing(log_writer);
-        tracing::info!(scenario = artifact_name, "run started");
+        tracing::info!(scenario = artifact_name, ?terrain_source, "run started");
 
         let size = window.inner_size();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
@@ -532,6 +532,9 @@ impl State {
                     max_seam_delta_m: self.terrain_stats.max_seam_delta_meters,
                     resident_chunks: self.terrain_stats.resident_chunks,
                     fallback_chunks: self.terrain_stats.fallback_chunks,
+                    resident_tiles: self.terrain_stats.resident_tiles,
+                    tiles_loaded: self.terrain_stats.tiles_loaded,
+                    tiles_unloaded: self.terrain_stats.tiles_unloaded,
                     lod_thrash_events: self.terrain_stats.lod_thrash_events,
                 });
         }

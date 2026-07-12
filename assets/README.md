@@ -21,8 +21,15 @@ sample gutter on every side:
 - `moisture.r8`: normalized 0-255 moisture.
 
 Normals are intentionally absent and must be derived from height samples on
-the GPU. The baker smooths the exact `+X` landing point to -10m so the nominal
-10m descent scenario remains above terrain while Phase 4 is integrated.
+the GPU. Every non-root logical border is recursively constrained to bilinear
+values from its immediate parent tile. Fine tiles therefore meet a neighboring
+chunk's nearest available ancestor without a height discontinuity; biome and
+moisture borders use the corresponding nearest/bilinear parent values. The
+baker also smooths the exact `+X` landing point to -10m so the nominal 10m
+descent scenario remains above terrain while Phase 4 is integrated. Sparse
+tile interiors gain deterministic seamless 3D microrelief from level 12,
+ramping to a bounded +/-2m at level 18; the term is exactly zero at `+X` and
+is applied before the parent-border constraint.
 
 Validate an existing bake with:
 
