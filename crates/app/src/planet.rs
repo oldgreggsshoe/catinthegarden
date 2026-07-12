@@ -1,11 +1,40 @@
+use std::{
+    cmp::Ordering,
+    collections::{BinaryHeap, HashMap, HashSet},
+};
+
 use glam::{DVec3, Mat4, Vec3, Vec4};
 
 pub const PLANET_RADIUS_METERS: f64 = 4_000_000.0;
-const SUBDIVISIONS: usize = 32;
+pub const CHUNK_GRID_QUADS: usize = 32;
+pub const CHUNK_GRID_VERTICES: usize = CHUNK_GRID_QUADS + 1;
+pub const MAX_LOD_LEVEL: u8 = 18;
+pub const DEFAULT_MAX_ACTIVE_CHUNKS: usize = 1_024;
+pub const SKIRT_DEPTH_RATIO: f64 = 0.075;
+pub const PLACEHOLDER_HEIGHT_OCTAVES: [(f64, f64); 4] = [
+    (8.0, 2_800.0),
+    (512.0, 600.0),
+    (32_768.0, 100.0),
+    (2_097_152.0, 3.0),
+];
+pub const PLACEHOLDER_HEIGHT_AMPLITUDE_METERS: f64 = 3_503.0;
+pub const PLACEHOLDER_GEOMETRIC_ERROR_RATIO: f64 = 0.02;
+pub const LOD_THRASH_WINDOW_UPDATES: u64 = 4;
+
+const FACE_COUNT: u8 = 6;
+const NODE_BOUNDS_SAMPLE_STEPS: usize = 4;
+const FACE_BASES: [(DVec3, DVec3, DVec3); FACE_COUNT as usize] = [
+    (DVec3::X, DVec3::NEG_Z, DVec3::Y),
+    (DVec3::NEG_X, DVec3::Z, DVec3::Y),
+    (DVec3::Y, DVec3::X, DVec3::NEG_Z),
+    (DVec3::NEG_Y, DVec3::X, DVec3::Z),
+    (DVec3::Z, DVec3::X, DVec3::Y),
+    (DVec3::NEG_Z, DVec3::NEG_X, DVec3::Y),
+];
 
 /// A leaf in one of the six face-local quadtrees. Coordinates address a node
 /// at `level`, so children are `(x * 2 + dx, y * 2 + dy)` at `level + 1`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct QuadtreeNode {
     pub face: u8,
     pub level: u8,
@@ -24,6 +53,10 @@ impl QuadtreeNode {
     }
 
     pub fn children(self) -> [Self; 4] {
+        assert!(
+            self.level < MAX_LOD_LEVEL,
+            "maximum LOD node has no children"
+        );
         let level = self.level + 1;
         let x = self.x * 2;
         let y = self.y * 2;
@@ -54,6 +87,70 @@ impl QuadtreeNode {
             },
         ]
     }
+
+    pub fn parent(self) -> Option<Self> {
+        (self.level > 0).then(|| Self {
+            face: self.face,
+            level: self.level - 1,
+            x: self.x / 2,
+            y: self.y / 2,
+        })
+    }
+
+    pub fn is_valid(self) -> bool {
+        if self.face >= FACE_COUNT || self.level > MAX_LOD_LEVEL {
+            return false;
+        }
+        let nodes_per_axis = 1_u32 << self.level;
+        self.x < nodes_per_axis && self.y < nodes_per_axis
+    }
+
+    pub fn uv_bounds(self) -> [f64; 4] {
+        assert!(self.is_valid(), "invalid quadtree node {self:?}");
+        let nodes_per_axis = (1_u64 << self.level) as f64;
+        let size = 2.0 / nodes_per_axis;
+        let u_min = -1.0 + f64::from(self.x) * size;
+        let v_min = -1.0 + f64::from(self.y) * size;
+        [u_min, v_min, u_min + size, v_min + size]
+    }
+
+    pub fn center_direction(self) -> DVec3 {
+        let [u_min, v_min, u_max, v_max] = self.uv_bounds();
+        cube_face_direction(self.face, (u_min + u_max) * 0.5, (v_min + v_max) * 0.5)
+    }
+
+    pub fn geometric_error_meters(self) -> f64 {
+        let root_triangle_spacing =
+            PLANET_RADIUS_METERS * std::f64::consts::FRAC_PI_2 / CHUNK_GRID_QUADS as f64;
+        // Triangle spacing is resolution, not approximation error. For the smooth analytic
+        // placeholder, 2% of the edge is a conservative combined curvature and unresolved-sine
+        // bound. Phase 4 replaces this with the baker's per-tile measured geometric error.
+        root_triangle_spacing * PLACEHOLDER_GEOMETRIC_ERROR_RATIO / f64::from(1_u32 << self.level)
+    }
+}
+
+pub fn cube_face_basis(face: u8) -> (DVec3, DVec3, DVec3) {
+    FACE_BASES
+        .get(face as usize)
+        .copied()
+        .unwrap_or_else(|| panic!("invalid cube face {face}"))
+}
+
+pub fn cube_face_direction(face: u8, u: f64, v: f64) -> DVec3 {
+    let (normal, tangent_u, tangent_v) = cube_face_basis(face);
+    (normal + tangent_u * u + tangent_v * v).normalize()
+}
+
+pub fn placeholder_height_meters(direction: DVec3) -> f64 {
+    PLACEHOLDER_HEIGHT_OCTAVES
+        .iter()
+        .map(|(frequency, amplitude_meters)| {
+            let wave = (frequency * direction.x).sin() - direction.x * frequency.sin()
+                + (1.375 * frequency * direction.y).sin()
+                + (1.75 * frequency * direction.z).sin();
+            amplitude_meters * wave * 0.25
+        })
+        .sum()
 }
 
 /// Screen-space LOD policy shared by all face trees. The hysteresis band
@@ -69,7 +166,7 @@ impl Default for LodPolicy {
         Self {
             split_pixels: 2.0,
             merge_pixels: 1.25,
-            max_level: 8,
+            max_level: MAX_LOD_LEVEL,
         }
     }
 }
@@ -81,6 +178,692 @@ impl LodPolicy {
 
     pub fn should_merge(&self, projected_error_pixels: f64) -> bool {
         projected_error_pixels < self.merge_pixels
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct NodeBounds {
+    pub center_world: DVec3,
+    pub radius_meters: f64,
+}
+
+pub fn node_bounds(node: QuadtreeNode) -> NodeBounds {
+    let [u_min, v_min, u_max, v_max] = node.uv_bounds();
+    let center_direction = node.center_direction();
+    let center_world =
+        center_direction * (PLANET_RADIUS_METERS + placeholder_height_meters(center_direction));
+    let mut radius_meters: f64 = 0.0;
+    for y in 0..=NODE_BOUNDS_SAMPLE_STEPS {
+        let v_fraction = y as f64 / NODE_BOUNDS_SAMPLE_STEPS as f64;
+        let v = v_min + (v_max - v_min) * v_fraction;
+        for x in 0..=NODE_BOUNDS_SAMPLE_STEPS {
+            let u_fraction = x as f64 / NODE_BOUNDS_SAMPLE_STEPS as f64;
+            let u = u_min + (u_max - u_min) * u_fraction;
+            let direction = cube_face_direction(node.face, u, v);
+            let world = direction * (PLANET_RADIUS_METERS + placeholder_height_meters(direction));
+            radius_meters = radius_meters.max(world.distance(center_world));
+        }
+    }
+    NodeBounds {
+        center_world,
+        // The sampled displaced surface captures local height variation without inflating every
+        // tiny node by the global height range. The unresolved geometric-error margin remains
+        // conservative between samples and is replaced by measured tile bounds in Phase 4.
+        radius_meters: radius_meters + node.geometric_error_meters(),
+    }
+}
+
+pub fn node_is_above_horizon(node: QuadtreeNode, camera_world: DVec3) -> bool {
+    let bounds = node_bounds(node);
+    camera_world.dot(bounds.center_world) + camera_world.length() * bounds.radius_meters
+        >= PLANET_RADIUS_METERS * PLANET_RADIUS_METERS
+}
+
+pub fn projected_error_pixels(
+    node: QuadtreeNode,
+    camera_world: DVec3,
+    viewport_height: u32,
+    vertical_fov_radians: f64,
+) -> f64 {
+    let bounds = node_bounds(node);
+    let distance = (camera_world.distance(bounds.center_world) - bounds.radius_meters).max(1.0);
+    let projection_scale = f64::from(viewport_height.max(1))
+        / (2.0 * (vertical_fov_radians.clamp(0.01, std::f64::consts::PI - 0.01) * 0.5).tan());
+    node.geometric_error_meters() * projection_scale / distance
+}
+
+#[derive(Clone, Debug)]
+pub struct LodMetrics {
+    pub level_histogram: [u32; MAX_LOD_LEVEL as usize + 1],
+    pub active_chunks: u32,
+    pub chunks_loaded: u32,
+    pub chunks_unloaded: u32,
+    pub splits: u32,
+    pub merges: u32,
+    pub lod_thrash_events: u32,
+    pub culled_nodes: u32,
+    pub max_level: u8,
+    pub max_seam_delta_meters: f64,
+    pub budget_limited: bool,
+}
+
+impl Default for LodMetrics {
+    fn default() -> Self {
+        Self {
+            level_histogram: [0; MAX_LOD_LEVEL as usize + 1],
+            active_chunks: 0,
+            chunks_loaded: 0,
+            chunks_unloaded: 0,
+            splits: 0,
+            merges: 0,
+            lod_thrash_events: 0,
+            culled_nodes: 0,
+            max_level: 0,
+            max_seam_delta_meters: 0.0,
+            budget_limited: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct LodUpdate {
+    pub active_nodes: Vec<QuadtreeNode>,
+    pub loaded_nodes: Vec<QuadtreeNode>,
+    pub unloaded_nodes: Vec<QuadtreeNode>,
+    pub metrics: LodMetrics,
+}
+
+#[derive(Clone, Copy)]
+struct NodeEvaluation {
+    visible: bool,
+    projected_error_pixels: f64,
+}
+
+struct SplitCandidate {
+    node: QuadtreeNode,
+    priority: f64,
+    visible_children: Vec<QuadtreeNode>,
+}
+
+struct SeamSample {
+    position: DVec3,
+    references: u32,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum LodTransitionKind {
+    Split,
+    Merge,
+}
+
+struct RecentLodTransition {
+    kind: LodTransitionKind,
+    update_index: u64,
+}
+
+impl PartialEq for SplitCandidate {
+    fn eq(&self, other: &Self) -> bool {
+        self.node == other.node && self.priority.total_cmp(&other.priority) == Ordering::Equal
+    }
+}
+
+impl Eq for SplitCandidate {}
+
+impl PartialOrd for SplitCandidate {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for SplitCandidate {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.priority
+            .total_cmp(&other.priority)
+            .then_with(|| self.node.cmp(&other.node))
+    }
+}
+
+pub struct PlanetLod {
+    policy: LodPolicy,
+    max_active_chunks: usize,
+    split_nodes: HashSet<QuadtreeNode>,
+    active_nodes: Vec<QuadtreeNode>,
+    seam_samples: HashMap<[i64; 3], SeamSample>,
+    max_seam_delta_meters: f64,
+    last_selection_input: Option<(DVec3, u32, f64)>,
+    last_metrics: LodMetrics,
+    update_index: u64,
+    recent_lod_transitions: HashMap<QuadtreeNode, RecentLodTransition>,
+}
+
+impl Default for PlanetLod {
+    fn default() -> Self {
+        Self::new(LodPolicy::default(), DEFAULT_MAX_ACTIVE_CHUNKS)
+    }
+}
+
+impl PlanetLod {
+    pub fn new(mut policy: LodPolicy, max_active_chunks: usize) -> Self {
+        policy.max_level = policy.max_level.min(MAX_LOD_LEVEL);
+        assert!(policy.merge_pixels < policy.split_pixels);
+        assert!(max_active_chunks >= FACE_COUNT as usize);
+        Self {
+            policy,
+            max_active_chunks,
+            split_nodes: HashSet::new(),
+            active_nodes: Vec::new(),
+            seam_samples: HashMap::new(),
+            max_seam_delta_meters: 0.0,
+            last_selection_input: None,
+            last_metrics: LodMetrics::default(),
+            update_index: 0,
+            recent_lod_transitions: HashMap::new(),
+        }
+    }
+
+    pub fn active_nodes(&self) -> &[QuadtreeNode] {
+        &self.active_nodes
+    }
+
+    pub fn is_split(&self, node: QuadtreeNode) -> bool {
+        self.split_nodes.contains(&node)
+    }
+
+    pub fn update(
+        &mut self,
+        camera_world: DVec3,
+        viewport_height: u32,
+        vertical_fov_radians: f64,
+    ) -> LodUpdate {
+        assert!(camera_world.is_finite());
+        assert!(camera_world.length() > PLANET_RADIUS_METERS);
+        assert!(vertical_fov_radians.is_finite() && vertical_fov_radians > 0.0);
+        self.update_index += 1;
+        self.recent_lod_transitions.retain(|_, transition| {
+            self.update_index.saturating_sub(transition.update_index) <= LOD_THRASH_WINDOW_UPDATES
+        });
+        let selection_input = (camera_world, viewport_height, vertical_fov_radians);
+        if self.last_selection_input == Some(selection_input) {
+            let mut metrics = self.last_metrics.clone();
+            metrics.chunks_loaded = 0;
+            metrics.chunks_unloaded = 0;
+            metrics.splits = 0;
+            metrics.merges = 0;
+            metrics.lod_thrash_events = 0;
+            metrics.culled_nodes = 0;
+            return LodUpdate {
+                active_nodes: self.active_nodes.clone(),
+                loaded_nodes: Vec::new(),
+                unloaded_nodes: Vec::new(),
+                metrics,
+            };
+        }
+
+        let previous_active: HashSet<_> = self.active_nodes.iter().copied().collect();
+        let previous_split = self.split_nodes.clone();
+        let mut evaluations = HashMap::new();
+        let mut culled_nodes = 0_u32;
+        let mut leaves = HashSet::with_capacity(self.max_active_chunks);
+        for face in 0..FACE_COUNT {
+            let root = QuadtreeNode::root(face);
+            if Self::evaluate(
+                root,
+                camera_world,
+                viewport_height,
+                vertical_fov_radians,
+                &mut evaluations,
+                &mut culled_nodes,
+            )
+            .visible
+            {
+                leaves.insert(root);
+            }
+        }
+
+        let mut next_split = HashSet::new();
+        let mut budget_limited = false;
+        let mut candidates = BinaryHeap::new();
+        for root in leaves.iter().copied() {
+            if let Some(candidate) = Self::split_candidate(
+                &self.policy,
+                root,
+                &previous_split,
+                camera_world,
+                viewport_height,
+                vertical_fov_radians,
+                &mut evaluations,
+                &mut culled_nodes,
+            ) {
+                candidates.push(candidate);
+            }
+        }
+        while let Some(candidate) = candidates.pop() {
+            if !leaves.contains(&candidate.node) {
+                continue;
+            }
+            let next_len = leaves.len() - 1 + candidate.visible_children.len();
+            if next_len > self.max_active_chunks {
+                budget_limited = true;
+                break;
+            }
+            leaves.remove(&candidate.node);
+            next_split.insert(candidate.node);
+            for child in candidate.visible_children {
+                leaves.insert(child);
+                if let Some(child_candidate) = Self::split_candidate(
+                    &self.policy,
+                    child,
+                    &previous_split,
+                    camera_world,
+                    viewport_height,
+                    vertical_fov_radians,
+                    &mut evaluations,
+                    &mut culled_nodes,
+                ) {
+                    candidates.push(child_candidate);
+                }
+            }
+        }
+
+        let mut leaves: Vec<_> = leaves.into_iter().collect();
+        leaves.sort_unstable();
+        let next_active: HashSet<_> = leaves.iter().copied().collect();
+        let mut loaded_nodes: Vec<_> = next_active.difference(&previous_active).copied().collect();
+        let mut unloaded_nodes: Vec<_> =
+            previous_active.difference(&next_active).copied().collect();
+        loaded_nodes.sort_unstable();
+        unloaded_nodes.sort_unstable();
+        self.update_seam_metrics(&loaded_nodes, &unloaded_nodes);
+
+        let split_transitions: Vec<_> = next_split.difference(&previous_split).copied().collect();
+        let merge_transitions: Vec<_> = previous_split
+            .difference(&next_split)
+            .copied()
+            .filter(|node| {
+                let evaluation = Self::evaluate(
+                    *node,
+                    camera_world,
+                    viewport_height,
+                    vertical_fov_radians,
+                    &mut evaluations,
+                    &mut culled_nodes,
+                );
+                evaluation.visible && self.policy.should_merge(evaluation.projected_error_pixels)
+            })
+            .collect();
+        let lod_thrash_events = self.record_lod_transitions(&split_transitions, &merge_transitions);
+
+        let mut metrics = LodMetrics {
+            active_chunks: leaves.len() as u32,
+            chunks_loaded: loaded_nodes.len() as u32,
+            chunks_unloaded: unloaded_nodes.len() as u32,
+            splits: split_transitions.len() as u32,
+            merges: merge_transitions.len() as u32,
+            lod_thrash_events,
+            culled_nodes,
+            max_seam_delta_meters: self.max_seam_delta_meters,
+            budget_limited,
+            ..LodMetrics::default()
+        };
+        for node in &leaves {
+            metrics.level_histogram[node.level as usize] += 1;
+            metrics.max_level = metrics.max_level.max(node.level);
+        }
+
+        self.split_nodes = next_split;
+        self.active_nodes = leaves.clone();
+        self.last_selection_input = Some(selection_input);
+        self.last_metrics = metrics.clone();
+        LodUpdate {
+            active_nodes: leaves,
+            loaded_nodes,
+            unloaded_nodes,
+            metrics,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn split_candidate(
+        policy: &LodPolicy,
+        node: QuadtreeNode,
+        previous_split: &HashSet<QuadtreeNode>,
+        camera_world: DVec3,
+        viewport_height: u32,
+        vertical_fov_radians: f64,
+        evaluations: &mut HashMap<QuadtreeNode, NodeEvaluation>,
+        culled_nodes: &mut u32,
+    ) -> Option<SplitCandidate> {
+        if node.level >= policy.max_level {
+            return None;
+        }
+        let evaluation = Self::evaluate(
+            node,
+            camera_world,
+            viewport_height,
+            vertical_fov_radians,
+            evaluations,
+            culled_nodes,
+        );
+        let refine = if previous_split.contains(&node) {
+            !policy.should_merge(evaluation.projected_error_pixels)
+        } else {
+            policy.should_split(evaluation.projected_error_pixels, node.level)
+        };
+        if !refine {
+            return None;
+        }
+        let visible_children: Vec<_> = node
+            .children()
+            .into_iter()
+            .filter(|child| {
+                Self::evaluate(
+                    *child,
+                    camera_world,
+                    viewport_height,
+                    vertical_fov_radians,
+                    evaluations,
+                    culled_nodes,
+                )
+                .visible
+            })
+            .collect();
+        if visible_children.is_empty() {
+            return None;
+        }
+        // Once the global leaf budget is approached, favour the nearest/deepest demand
+        // instead of breadth-refining the entire horizon at a lower level. Multiplying by
+        // 2^level removes the nominal level-halving from geometric error, leaving camera
+        // distance as the dominant priority signal.
+        let priority = evaluation.projected_error_pixels * f64::from(1_u32 << node.level);
+        Some(SplitCandidate {
+            node,
+            priority,
+            visible_children,
+        })
+    }
+
+    fn evaluate(
+        node: QuadtreeNode,
+        camera_world: DVec3,
+        viewport_height: u32,
+        vertical_fov_radians: f64,
+        evaluations: &mut HashMap<QuadtreeNode, NodeEvaluation>,
+        culled_nodes: &mut u32,
+    ) -> NodeEvaluation {
+        if let Some(evaluation) = evaluations.get(&node) {
+            return *evaluation;
+        }
+        let visible = node_is_above_horizon(node, camera_world);
+        if !visible {
+            *culled_nodes += 1;
+        }
+        let evaluation = NodeEvaluation {
+            visible,
+            projected_error_pixels: projected_error_pixels(
+                node,
+                camera_world,
+                viewport_height,
+                vertical_fov_radians,
+            ),
+        };
+        evaluations.insert(node, evaluation);
+        evaluation
+    }
+
+    fn record_lod_transitions(
+        &mut self,
+        split_nodes: &[QuadtreeNode],
+        merge_nodes: &[QuadtreeNode],
+    ) -> u32 {
+        let mut thrash_events = 0;
+        for (nodes, kind) in [
+            (split_nodes, LodTransitionKind::Split),
+            (merge_nodes, LodTransitionKind::Merge),
+        ] {
+            for node in nodes {
+                if self
+                    .recent_lod_transitions
+                    .get(node)
+                    .is_some_and(|previous| {
+                        previous.kind != kind
+                            && self.update_index.saturating_sub(previous.update_index)
+                                <= LOD_THRASH_WINDOW_UPDATES
+                    })
+                {
+                    thrash_events += 1;
+                }
+                self.recent_lod_transitions.insert(
+                    *node,
+                    RecentLodTransition {
+                        kind,
+                        update_index: self.update_index,
+                    },
+                );
+            }
+        }
+        thrash_events
+    }
+
+    fn update_seam_metrics(
+        &mut self,
+        loaded_nodes: &[QuadtreeNode],
+        unloaded_nodes: &[QuadtreeNode],
+    ) {
+        for node in unloaded_nodes {
+            for (key, _) in node_boundary_samples(*node) {
+                if let std::collections::hash_map::Entry::Occupied(mut entry) =
+                    self.seam_samples.entry(key)
+                {
+                    if entry.get().references > 1 {
+                        entry.get_mut().references -= 1;
+                    } else {
+                        entry.remove();
+                    }
+                }
+            }
+        }
+        for node in loaded_nodes {
+            for (key, position) in node_boundary_samples(*node) {
+                if let Some(existing) = self.seam_samples.get_mut(&key) {
+                    self.max_seam_delta_meters = self
+                        .max_seam_delta_meters
+                        .max(existing.position.distance(position));
+                    existing.references += 1;
+                } else {
+                    self.seam_samples.insert(
+                        key,
+                        SeamSample {
+                            position,
+                            references: 1,
+                        },
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn node_boundary_samples(node: QuadtreeNode) -> Vec<([i64; 3], DVec3)> {
+    let [u_min, v_min, u_max, v_max] = node.uv_bounds();
+    let mut samples = Vec::with_capacity(4 * CHUNK_GRID_QUADS);
+    let mut push_sample = |u: f64, v: f64| {
+        let direction = cube_face_direction(node.face, u, v);
+        let position = direction * (PLANET_RADIUS_METERS + placeholder_height_meters(direction));
+        let key = [
+            (direction.x * 1.0e10).round() as i64,
+            (direction.y * 1.0e10).round() as i64,
+            (direction.z * 1.0e10).round() as i64,
+        ];
+        samples.push((key, position));
+    };
+    for step in 0..=CHUNK_GRID_QUADS {
+        let fraction = step as f64 / CHUNK_GRID_QUADS as f64;
+        push_sample(u_min + (u_max - u_min) * fraction, v_min);
+    }
+    for step in 1..=CHUNK_GRID_QUADS {
+        let fraction = step as f64 / CHUNK_GRID_QUADS as f64;
+        push_sample(u_max, v_min + (v_max - v_min) * fraction);
+    }
+    for step in (0..CHUNK_GRID_QUADS).rev() {
+        let fraction = step as f64 / CHUNK_GRID_QUADS as f64;
+        push_sample(u_min + (u_max - u_min) * fraction, v_max);
+    }
+    for step in (1..CHUNK_GRID_QUADS).rev() {
+        let fraction = step as f64 / CHUNK_GRID_QUADS as f64;
+        push_sample(u_min, v_min + (v_max - v_min) * fraction);
+    }
+    samples
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ChunkVertex {
+    pub anchor_relative_position: [f32; 3],
+    pub sphere_direction: [f32; 3],
+    pub tile_uv: [f32; 2],
+    pub skirt_depth_meters: f32,
+}
+
+impl ChunkVertex {
+    pub const ATTRIBUTES: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
+        0 => Float32x3,
+        1 => Float32x3,
+        2 => Float32x2,
+        3 => Float32
+    ];
+
+    pub fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &Self::ATTRIBUTES,
+        }
+    }
+}
+
+pub struct ChunkMesh {
+    pub node: QuadtreeNode,
+    pub anchor_world: DVec3,
+    pub vertices: Vec<ChunkVertex>,
+    pub indices: Vec<u32>,
+    pub edge_length_meters: f64,
+    pub skirt_depth_meters: f64,
+}
+
+impl ChunkMesh {
+    pub fn anchor_relative_to_camera(&self, camera_world: DVec3) -> [f32; 3] {
+        (self.anchor_world - camera_world).as_vec3().to_array()
+    }
+
+    pub fn vertex_world_position(&self, vertex_index: usize, displaced: bool) -> DVec3 {
+        let vertex = self.vertices[vertex_index];
+        let direction = DVec3::from_array(vertex.sphere_direction.map(f64::from));
+        let base =
+            self.anchor_world + DVec3::from_array(vertex.anchor_relative_position.map(f64::from));
+        let height = if displaced {
+            placeholder_height_meters(direction)
+        } else {
+            0.0
+        };
+        base + direction * (height - f64::from(vertex.skirt_depth_meters))
+    }
+}
+
+pub fn build_chunk_mesh(node: QuadtreeNode) -> ChunkMesh {
+    assert!(node.is_valid(), "invalid quadtree node {node:?}");
+    let [u_min, v_min, u_max, v_max] = node.uv_bounds();
+    let anchor_world = node.center_direction() * PLANET_RADIUS_METERS;
+    let corners = [
+        cube_face_direction(node.face, u_min, v_min) * PLANET_RADIUS_METERS,
+        cube_face_direction(node.face, u_max, v_min) * PLANET_RADIUS_METERS,
+        cube_face_direction(node.face, u_max, v_max) * PLANET_RADIUS_METERS,
+        cube_face_direction(node.face, u_min, v_max) * PLANET_RADIUS_METERS,
+    ];
+    let edge_length_meters = corners[0]
+        .distance(corners[1])
+        .max(corners[1].distance(corners[2]))
+        .max(corners[2].distance(corners[3]))
+        .max(corners[3].distance(corners[0]));
+    let skirt_depth_meters = edge_length_meters * SKIRT_DEPTH_RATIO;
+    let top_vertex_count = CHUNK_GRID_VERTICES * CHUNK_GRID_VERTICES;
+    let skirt_vertex_count = 4 * CHUNK_GRID_VERTICES;
+    let mut vertices = Vec::with_capacity(top_vertex_count + skirt_vertex_count);
+    let mut indices =
+        Vec::with_capacity(CHUNK_GRID_QUADS * CHUNK_GRID_QUADS * 6 + 4 * CHUNK_GRID_QUADS * 6);
+
+    for y in 0..CHUNK_GRID_VERTICES {
+        let v_fraction = y as f64 / CHUNK_GRID_QUADS as f64;
+        let v = v_min + (v_max - v_min) * v_fraction;
+        for x in 0..CHUNK_GRID_VERTICES {
+            let u_fraction = x as f64 / CHUNK_GRID_QUADS as f64;
+            let u = u_min + (u_max - u_min) * u_fraction;
+            let direction = cube_face_direction(node.face, u, v);
+            let world = direction * PLANET_RADIUS_METERS;
+            vertices.push(ChunkVertex {
+                anchor_relative_position: (world - anchor_world).as_vec3().to_array(),
+                sphere_direction: direction.as_vec3().to_array(),
+                tile_uv: [u_fraction as f32, v_fraction as f32],
+                skirt_depth_meters: 0.0,
+            });
+        }
+    }
+    for y in 0..CHUNK_GRID_QUADS {
+        for x in 0..CHUNK_GRID_QUADS {
+            let lower_left = (y * CHUNK_GRID_VERTICES + x) as u32;
+            let lower_right = lower_left + 1;
+            let upper_left = lower_left + CHUNK_GRID_VERTICES as u32;
+            let upper_right = upper_left + 1;
+            indices.extend_from_slice(&[
+                lower_left,
+                lower_right,
+                upper_left,
+                lower_right,
+                upper_right,
+                upper_left,
+            ]);
+        }
+    }
+
+    let bottom: Vec<_> = (0..CHUNK_GRID_VERTICES).map(|x| (x, 0)).collect();
+    let right: Vec<_> = (0..CHUNK_GRID_VERTICES)
+        .map(|y| (CHUNK_GRID_QUADS, y))
+        .collect();
+    let top: Vec<_> = (0..CHUNK_GRID_VERTICES)
+        .rev()
+        .map(|x| (x, CHUNK_GRID_QUADS))
+        .collect();
+    let left: Vec<_> = (0..CHUNK_GRID_VERTICES).rev().map(|y| (0, y)).collect();
+    for edge in [bottom, right, top, left] {
+        let skirt_start = vertices.len() as u32;
+        for &(x, y) in &edge {
+            let top_index = y * CHUNK_GRID_VERTICES + x;
+            let mut skirt_vertex = vertices[top_index];
+            skirt_vertex.skirt_depth_meters = skirt_depth_meters as f32;
+            vertices.push(skirt_vertex);
+        }
+        for segment in 0..CHUNK_GRID_QUADS {
+            let top_start = (edge[segment].1 * CHUNK_GRID_VERTICES + edge[segment].0) as u32;
+            let top_end = (edge[segment + 1].1 * CHUNK_GRID_VERTICES + edge[segment + 1].0) as u32;
+            let skirt_start_vertex = skirt_start + segment as u32;
+            let skirt_end_vertex = skirt_start_vertex + 1;
+            indices.extend_from_slice(&[
+                top_start,
+                skirt_start_vertex,
+                top_end,
+                top_end,
+                skirt_start_vertex,
+                skirt_end_vertex,
+            ]);
+        }
+    }
+
+    ChunkMesh {
+        node,
+        anchor_world,
+        vertices,
+        indices,
+        edge_length_meters,
+        skirt_depth_meters,
     }
 }
 
@@ -109,34 +892,27 @@ pub struct CubeSphereMesh {
 
 impl CubeSphereMesh {
     pub fn new() -> Self {
-        let faces = [
-            (DVec3::X, -DVec3::Z, DVec3::Y),
-            (-DVec3::X, DVec3::Z, DVec3::Y),
-            (DVec3::Y, DVec3::X, -DVec3::Z),
-            (-DVec3::Y, DVec3::X, DVec3::Z),
-            (DVec3::Z, DVec3::X, DVec3::Y),
-            (-DVec3::Z, -DVec3::X, DVec3::Y),
-        ];
-        let vertices_per_face = (SUBDIVISIONS + 1) * (SUBDIVISIONS + 1);
+        let faces = FACE_BASES;
+        let vertices_per_face = CHUNK_GRID_VERTICES * CHUNK_GRID_VERTICES;
         let mut world_positions = Vec::with_capacity(faces.len() * vertices_per_face);
-        let mut indices = Vec::with_capacity(faces.len() * SUBDIVISIONS * SUBDIVISIONS * 6);
+        let mut indices = Vec::with_capacity(faces.len() * CHUNK_GRID_QUADS * CHUNK_GRID_QUADS * 6);
 
         for (face_index, (normal, tangent_u, tangent_v)) in faces.into_iter().enumerate() {
             let face_start = (face_index * vertices_per_face) as u32;
-            for y in 0..=SUBDIVISIONS {
-                let v = y as f64 / SUBDIVISIONS as f64 * 2.0 - 1.0;
-                for x in 0..=SUBDIVISIONS {
-                    let u = x as f64 / SUBDIVISIONS as f64 * 2.0 - 1.0;
+            for y in 0..CHUNK_GRID_VERTICES {
+                let v = y as f64 / CHUNK_GRID_QUADS as f64 * 2.0 - 1.0;
+                for x in 0..CHUNK_GRID_VERTICES {
+                    let u = x as f64 / CHUNK_GRID_QUADS as f64 * 2.0 - 1.0;
                     world_positions.push(
                         (normal + tangent_u * u + tangent_v * v).normalize() * PLANET_RADIUS_METERS,
                     );
                 }
             }
-            for y in 0..SUBDIVISIONS {
-                for x in 0..SUBDIVISIONS {
-                    let lower_left = face_start + (y * (SUBDIVISIONS + 1) + x) as u32;
+            for y in 0..CHUNK_GRID_QUADS {
+                for x in 0..CHUNK_GRID_QUADS {
+                    let lower_left = face_start + (y * CHUNK_GRID_VERTICES + x) as u32;
                     let lower_right = lower_left + 1;
-                    let upper_left = lower_left + (SUBDIVISIONS + 1) as u32;
+                    let upper_left = lower_left + CHUNK_GRID_VERTICES as u32;
                     let upper_right = upper_left + 1;
                     indices.extend_from_slice(&[
                         lower_left,
@@ -224,6 +1000,28 @@ impl OrbitCamera {
         reversed_z_infinite_perspective(45.0_f32.to_radians(), aspect_ratio, near) * view
     }
 
+    pub fn set_world_pose(&mut self, position: DVec3, look_at: DVec3) {
+        assert!(position.is_finite() && look_at.is_finite());
+        let radius = position.length();
+        assert!(
+            radius > 0.0,
+            "camera position must not be the planet origin"
+        );
+        let forward = look_at - position;
+        assert!(
+            forward.length_squared() > 0.0,
+            "camera look target must differ from its position"
+        );
+
+        self.orbit_radius_meters = radius;
+        self.azimuth_radians = position.z.atan2(position.x);
+        self.elevation_radians = (position.y / radius).clamp(-1.0, 1.0).asin();
+
+        let forward = forward.normalize();
+        self.look_yaw_radians = forward.x.atan2(-forward.z);
+        self.look_pitch_radians = forward.y.clamp(-1.0, 1.0).asin();
+    }
+
     pub fn orbit(&mut self, azimuth_delta: f64, elevation_delta: f64) {
         self.azimuth_radians += azimuth_delta;
         self.elevation_radians = (self.elevation_radians + elevation_delta).clamp(-1.45, 1.45);
@@ -287,7 +1085,13 @@ fn reversed_z_infinite_perspective(
 
 #[cfg(test)]
 mod tests {
-    use super::{CubeSphereMesh, LodPolicy, OrbitCamera, PLANET_RADIUS_METERS, QuadtreeNode};
+    use glam::DVec3;
+
+    use super::{
+        CHUNK_GRID_QUADS, CHUNK_GRID_VERTICES, CubeSphereMesh, LodPolicy, MAX_LOD_LEVEL,
+        OrbitCamera, PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode, SKIRT_DEPTH_RATIO,
+        build_chunk_mesh, cube_face_direction, placeholder_height_meters, projected_error_pixels,
+    };
 
     #[test]
     fn quadtree_children_tile_the_parent_node() {
@@ -313,6 +1117,202 @@ mod tests {
         let policy = LodPolicy::default();
         assert!(policy.should_split(2.1, 0));
         assert!(policy.should_merge(1.0));
+        assert_eq!(policy.max_level, MAX_LOD_LEVEL);
+        assert_eq!(children[0].parent(), Some(QuadtreeNode::root(3)));
+        assert!(children.iter().all(|child| child.is_valid()));
+    }
+
+    #[test]
+    fn projected_error_decreases_with_distance_and_level() {
+        let node = QuadtreeNode::root(0);
+        let near = DVec3::X * (PLANET_RADIUS_METERS * 3.0);
+        let far = DVec3::X * (PLANET_RADIUS_METERS * 30.0);
+        let near_error = projected_error_pixels(node, near, 1_080, 45.0_f64.to_radians());
+        let far_error = projected_error_pixels(node, far, 1_080, 45.0_f64.to_radians());
+        assert!(near_error > far_error);
+        assert_eq!(
+            node.children()[0].geometric_error_meters(),
+            node.geometric_error_meters() * 0.5
+        );
+    }
+
+    #[test]
+    fn orbit_selection_stays_coarse_and_bounded() {
+        let camera = OrbitCamera::default();
+        let mut lod = PlanetLod::default();
+        let update = lod.update(camera.world_position(), 1_080, 45.0_f64.to_radians());
+        assert!(update.metrics.active_chunks <= 12);
+        assert!(update.metrics.max_level <= 1);
+        assert!(!update.metrics.budget_limited);
+    }
+
+    #[test]
+    fn persistent_selector_respects_split_merge_hysteresis() {
+        let root = QuadtreeNode::root(0);
+        let mut lod = PlanetLod::new(
+            LodPolicy {
+                split_pixels: 2.0,
+                merge_pixels: 1.25,
+                max_level: 1,
+            },
+            64,
+        );
+        let near = camera_for_error(root, 2.5);
+        lod.update(near, 1_080, 45.0_f64.to_radians());
+        assert!(lod.is_split(root));
+
+        let hysteresis_band = camera_for_error(root, 1.6);
+        lod.update(hysteresis_band, 1_080, 45.0_f64.to_radians());
+        assert!(lod.is_split(root));
+
+        let far = camera_for_error(root, 1.0);
+        let merged = lod.update(far, 1_080, 45.0_f64.to_radians());
+        assert!(!lod.is_split(root));
+        assert!(merged.metrics.merges > 0);
+        assert!(merged.metrics.lod_thrash_events > 0);
+    }
+
+    #[test]
+    fn monotonic_descent_does_not_report_lod_thrash() {
+        let root = QuadtreeNode::root(0);
+        let mut lod = PlanetLod::new(
+            LodPolicy {
+                split_pixels: 2.0,
+                merge_pixels: 1.25,
+                max_level: 4,
+            },
+            256,
+        );
+        for target_error in [0.8, 1.1, 1.6, 2.1, 3.0, 5.0, 9.0] {
+            let update = lod.update(
+                camera_for_error(root, target_error),
+                1_080,
+                45.0_f64.to_radians(),
+            );
+            assert_eq!(update.metrics.lod_thrash_events, 0);
+        }
+    }
+
+    #[test]
+    fn two_kilometer_selection_stays_below_finest_lod_and_budget() {
+        let mut lod = PlanetLod::default();
+        let camera = DVec3::X * (PLANET_RADIUS_METERS + 2_000.0);
+        let update = lod.update(camera, 1_080, 45.0_f64.to_radians());
+        assert!(update.metrics.max_level >= 9);
+        assert!(update.metrics.max_level <= 13);
+        assert!(!update.metrics.budget_limited);
+        assert!(update.metrics.active_chunks < super::DEFAULT_MAX_ACTIVE_CHUNKS as u32);
+    }
+
+    #[test]
+    fn near_surface_selection_reaches_level_eighteen_without_dense_refinement() {
+        let mut lod = PlanetLod::default();
+        let camera = DVec3::X * (PLANET_RADIUS_METERS + 10.0);
+        let update = lod.update(camera, 1_080, 45.0_f64.to_radians());
+        assert_eq!(update.metrics.max_level, MAX_LOD_LEVEL);
+        assert!(update.active_nodes.len() <= super::DEFAULT_MAX_ACTIVE_CHUNKS);
+        assert_eq!(
+            update.metrics.level_histogram.iter().copied().sum::<u32>(),
+            update.metrics.active_chunks
+        );
+        assert_eq!(update.metrics.chunks_loaded, update.metrics.active_chunks);
+        assert!(update.metrics.culled_nodes > 0);
+        assert!(update.metrics.max_seam_delta_meters < 0.01);
+
+        let stable = lod.update(camera, 1_080, 45.0_f64.to_radians());
+        assert_eq!(stable.metrics.chunks_loaded, 0);
+        assert_eq!(stable.metrics.chunks_unloaded, 0);
+    }
+
+    #[test]
+    fn chunk_mesh_has_fixed_grid_and_proportional_skirts() {
+        let chunk = build_chunk_mesh(QuadtreeNode {
+            face: 0,
+            level: 4,
+            x: 7,
+            y: 9,
+        });
+        let top_vertex_count = CHUNK_GRID_VERTICES * CHUNK_GRID_VERTICES;
+        assert_eq!(
+            chunk.vertices.len(),
+            top_vertex_count + 4 * CHUNK_GRID_VERTICES
+        );
+        assert_eq!(
+            chunk.indices.len(),
+            CHUNK_GRID_QUADS * CHUNK_GRID_QUADS * 6 + 4 * CHUNK_GRID_QUADS * 6
+        );
+        assert!(
+            chunk.vertices[..top_vertex_count]
+                .iter()
+                .all(|vertex| vertex.skirt_depth_meters == 0.0)
+        );
+        assert!(
+            chunk.vertices[top_vertex_count..]
+                .iter()
+                .all(|vertex| vertex.skirt_depth_meters > 0.0)
+        );
+        assert!(
+            (chunk.skirt_depth_meters / chunk.edge_length_meters - SKIRT_DEPTH_RATIO).abs()
+                < f64::EPSILON
+        );
+        let top_world = chunk.vertex_world_position(0, false);
+        let skirt_world = chunk.vertex_world_position(top_vertex_count, false);
+        assert!(
+            (top_world.distance(skirt_world) - chunk.skirt_depth_meters).abs()
+                < chunk.skirt_depth_meters * 0.001
+        );
+    }
+
+    #[test]
+    fn placeholder_height_and_cube_face_edges_are_seam_continuous() {
+        assert!(placeholder_height_meters(DVec3::X).abs() < 1.0e-12);
+        assert!(super::PLACEHOLDER_HEIGHT_AMPLITUDE_METERS < 4_000.0);
+        for face in 0..6 {
+            for y in 0..=8 {
+                for x in 0..=8 {
+                    let direction =
+                        cube_face_direction(face, -1.0 + x as f64 * 0.25, -1.0 + y as f64 * 0.25);
+                    assert!(
+                        placeholder_height_meters(direction).abs()
+                            <= super::PLACEHOLDER_HEIGHT_AMPLITUDE_METERS
+                    );
+                }
+            }
+        }
+        for step in 0..=CHUNK_GRID_QUADS {
+            let v = -1.0 + 2.0 * step as f64 / CHUNK_GRID_QUADS as f64;
+            let positive_x_right = cube_face_direction(0, 1.0, v);
+            let negative_z_left = cube_face_direction(5, -1.0, v);
+            assert!(positive_x_right.distance(negative_z_left) < 1.0e-12);
+            assert!(
+                (placeholder_height_meters(positive_x_right)
+                    - placeholder_height_meters(negative_z_left))
+                .abs()
+                    < 1.0e-9
+            );
+        }
+
+        let left = build_chunk_mesh(QuadtreeNode {
+            face: 0,
+            level: 1,
+            x: 0,
+            y: 0,
+        });
+        let right = build_chunk_mesh(QuadtreeNode {
+            face: 0,
+            level: 1,
+            x: 1,
+            y: 0,
+        });
+        for y in 0..CHUNK_GRID_VERTICES {
+            let left_index = y * CHUNK_GRID_VERTICES + CHUNK_GRID_QUADS;
+            let right_index = y * CHUNK_GRID_VERTICES;
+            assert!(
+                left.vertex_world_position(left_index, true)
+                    .distance(right.vertex_world_position(right_index, true))
+                    < 1.0
+            );
+        }
     }
 
     #[test]
@@ -361,5 +1361,35 @@ mod tests {
         camera.look(0.25, -0.1);
         assert_eq!(camera.world_position(), position);
         assert_ne!(camera.view_projection(1.0), before);
+    }
+
+    #[test]
+    fn waypoint_pose_preserves_f64_position_and_arbitrary_look_direction() {
+        let mut camera = OrbitCamera::default();
+        let position =
+            DVec3::new(1.0, 2.0, -3.0).normalize() * (PLANET_RADIUS_METERS + 1_234.567_890_123);
+        let look_at = DVec3::new(-81_234.5, 456_789.25, 12_345.75);
+        camera.set_world_pose(position, look_at);
+
+        assert!(camera.world_position().distance(position) < 1.0e-8);
+        let expected_direction = (look_at - position).normalize();
+        assert!(camera.direction().as_dvec3().distance(expected_direction) < 1.0e-6);
+        assert!(camera.view_projection(1.5).is_finite());
+    }
+
+    fn camera_for_error(node: QuadtreeNode, target_error_pixels: f64) -> DVec3 {
+        let mut near_radius = PLANET_RADIUS_METERS + 10.0;
+        let mut far_radius = PLANET_RADIUS_METERS * 10_000.0;
+        for _ in 0..100 {
+            let radius = (near_radius + far_radius) * 0.5;
+            let error =
+                projected_error_pixels(node, DVec3::X * radius, 1_080, 45.0_f64.to_radians());
+            if error > target_error_pixels {
+                near_radius = radius;
+            } else {
+                far_radius = radius;
+            }
+        }
+        DVec3::X * ((near_radius + far_radius) * 0.5)
     }
 }

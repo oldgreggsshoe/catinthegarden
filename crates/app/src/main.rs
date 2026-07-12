@@ -1,8 +1,11 @@
 mod debug;
+mod outmap;
 mod planet;
 mod scenario;
+mod terrain;
 
 use std::{
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -10,8 +13,6 @@ use std::{
     },
     time::{Duration, Instant},
 };
-
-use wgpu::util::DeviceExt;
 use winit::{
     event::{DeviceEvent, Event, MouseScrollDelta, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
@@ -28,6 +29,7 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
 const HUD_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
 const HIDDEN_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 const GPU_PROFILE_RING_SIZE: usize = 3;
+const DEFAULT_OUTMAP_PATH: &str = "assets/outmaps/test-planet";
 
 struct PendingGpuTimestamp {
     sim_time: f64,
@@ -135,13 +137,11 @@ struct State {
     config: wgpu::SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
     depth_view: wgpu::TextureView,
-    planet_pipeline: wgpu::RenderPipeline,
-    planet_vertex_buffer: wgpu::Buffer,
-    planet_index_buffer: wgpu::Buffer,
-    planet_mesh: planet::CubeSphereMesh,
-    rebased_vertices: Vec<planet::RebasedVertex>,
+    terrain: terrain::TerrainRenderer,
+    terrain_stats: terrain::TerrainStats,
     camera: planet::OrbitCamera,
-    last_rebased_camera_position: glam::DVec3,
+    previous_camera_world_position: glam::DVec3,
+    previous_sim_time: f64,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     started_at: Instant,
@@ -167,7 +167,12 @@ struct State {
 }
 
 impl State {
-    async fn new(window: Arc<Window>, scenario_name: Option<String>, profile_render: bool) -> Self {
+    async fn new(
+        window: Arc<Window>,
+        scenario_name: Option<String>,
+        profile_render: bool,
+        terrain_source: terrain::TerrainSource,
+    ) -> Self {
         let scenario = scenario_name
             .as_deref()
             .map(scenario::ScenarioRunner::load)
@@ -176,8 +181,13 @@ impl State {
         let artifact_name = scenario
             .as_ref()
             .map_or("manual", scenario::ScenarioRunner::name);
+        let assertions = scenario
+            .as_ref()
+            .map(|scenario| scenario.assertions().clone())
+            .unwrap_or_default();
         let (artifacts, log_writer) =
-            debug::RunArtifacts::create(artifact_name).expect("test-run storage must be writable");
+            debug::RunArtifacts::create_with_assertions(artifact_name, assertions)
+                .expect("test-run storage must be writable");
         debug::init_tracing(log_writer);
         tracing::info!(scenario = artifact_name, "run started");
 
@@ -243,20 +253,8 @@ impl State {
         surface.configure(&device, &config);
         let depth_view = create_depth_view(&device, size);
 
-        let planet_mesh = planet::CubeSphereMesh::new();
         let camera = planet::OrbitCamera::default();
         let initial_camera_world_position = camera.world_position();
-        let initial_vertices = planet_mesh.rebased_vertices(initial_camera_world_position);
-        let planet_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("camera-relative planet vertices"),
-            contents: bytemuck::cast_slice(&initial_vertices),
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        });
-        let planet_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("cube-sphere indices"),
-            contents: bytemuck::cast_slice(planet_mesh.indices()),
-            usage: wgpu::BufferUsages::INDEX,
-        });
         let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("camera projection"),
             size: size_of::<planet::CameraUniform>() as u64,
@@ -285,46 +283,14 @@ impl State {
                 resource: camera_buffer.as_entire_binding(),
             }],
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("planet pipeline layout"),
-            bind_group_layouts: &[Some(&camera_bind_group_layout)],
-            immediate_size: 0,
-        });
-        let shader = device.create_shader_module(wgpu::include_wgsl!("planet.wgsl"));
-        let planet_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("flat-shaded cube-sphere pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[planet::RebasedVertex::layout()],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                cull_mode: Some(wgpu::Face::Back),
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Greater),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let terrain = terrain::TerrainRenderer::new(
+            &device,
+            &queue,
+            config.format,
+            &camera_bind_group_layout,
+            terrain_source,
+        )
+        .expect("terrain renderer must initialize");
 
         let egui_context = egui::Context::default();
         let egui_state = egui_winit::State::new(
@@ -348,13 +314,11 @@ impl State {
             config,
             size,
             depth_view,
-            planet_pipeline,
-            planet_vertex_buffer,
-            planet_index_buffer,
-            planet_mesh,
-            rebased_vertices: initial_vertices,
+            terrain,
+            terrain_stats: terrain::TerrainStats::default(),
             camera,
-            last_rebased_camera_position: initial_camera_world_position,
+            previous_camera_world_position: initial_camera_world_position,
+            previous_sim_time: 0.0,
             camera_buffer,
             camera_bind_group,
             started_at: Instant::now(),
@@ -485,16 +449,14 @@ impl State {
             solid_color_screen,
             hide_overlay,
             seam_gap_check,
-            orbit_update,
+            scenario_pose,
         ) = if let Some(scenario) = self.scenario.as_mut() {
             let frame = scenario.advance();
-            let orbit_update = scenario.orbit_settings().map(|(radius, elevation)| {
+            let solid_color_screen = scenario.renders_solid_color();
+            let scenario_pose = (!solid_color_screen).then(|| {
                 (
-                    radius,
-                    elevation,
-                    frame
-                        .orbit_azimuth_radians
-                        .expect("orbit scenario has an angle"),
+                    glam::DVec3::from_array(frame.camera_world_position),
+                    glam::DVec3::from_array(frame.camera_look_at),
                 )
             });
             (
@@ -502,10 +464,10 @@ impl State {
                 frame.write_log,
                 frame.capture_screenshot,
                 frame.complete,
-                scenario.renders_solid_color(),
+                solid_color_screen,
                 scenario.hides_overlay(),
                 scenario.needs_seam_gap_check(),
-                orbit_update,
+                scenario_pose,
             )
         } else {
             let sim_time = self.started_at.elapsed().as_secs_f64();
@@ -515,25 +477,63 @@ impl State {
             }
             (sim_time, write_log, false, false, false, false, false, None)
         };
-        if let Some((radius, elevation, azimuth)) = orbit_update {
-            self.camera.orbit_radius_meters = radius;
-            self.camera.elevation_radians = elevation;
-            self.camera.azimuth_radians = azimuth;
-            self.camera.look_at_origin();
+        if let Some((position, look_at)) = scenario_pose {
+            self.camera.set_world_pose(position, look_at);
         }
         let camera_world_position = self.camera.world_position();
-        let camera_altitude = self.camera.orbit_radius_meters - planet::PLANET_RADIUS_METERS;
-        let draw_calls = u32::from(!solid_color_screen);
+        let camera_radius = camera_world_position.length();
+        let camera_altitude = camera_radius - planet::PLANET_RADIUS_METERS;
+        let delta_sim_time = (sim_time - self.previous_sim_time).max(f64::EPSILON);
+        let velocity_meters_per_second =
+            camera_world_position.distance(self.previous_camera_world_position) / delta_sim_time;
+        self.previous_camera_world_position = camera_world_position;
+        self.previous_sim_time = sim_time;
+        self.terrain_stats = if solid_color_screen {
+            terrain::TerrainStats::default()
+        } else {
+            self.terrain
+                .update(camera_world_position, [self.size.width, self.size.height])
+                .unwrap_or_else(|error| panic!("terrain update failed: {error}"))
+        };
+        let draw_calls = if solid_color_screen {
+            0
+        } else {
+            self.terrain_stats.draw_calls
+        };
         if write_log {
-            self.artifacts.record_spatial_log(
-                sim_time,
-                camera_world_position.to_array(),
-                camera_altitude,
-                self.camera.azimuth_radians,
-                self.camera.elevation_radians,
-                frame_time * 1000.0,
-                draw_calls,
-            );
+            let latitude_degrees = (camera_world_position.y / camera_radius)
+                .clamp(-1.0, 1.0)
+                .asin()
+                .to_degrees();
+            let longitude_degrees = camera_world_position
+                .z
+                .atan2(camera_world_position.x)
+                .to_degrees();
+            self.artifacts
+                .record_spatial_sample(debug::SpatialLogSample {
+                    sim_time,
+                    camera_world_position: camera_world_position.to_array(),
+                    latitude_degrees,
+                    longitude_degrees,
+                    altitude_meters: camera_altitude,
+                    velocity_meters_per_second,
+                    orientation: if self.scenario.is_some() {
+                        "waypoint".to_owned()
+                    } else {
+                        "free_look".to_owned()
+                    },
+                    orientation_azimuth_radians: self.camera.azimuth_radians,
+                    orientation_elevation_radians: self.camera.elevation_radians,
+                    lod_level_histogram: self.terrain_stats.level_histogram,
+                    chunks_loaded: self.terrain_stats.chunks_loaded,
+                    chunks_unloaded: self.terrain_stats.chunks_unloaded,
+                    frame_time_ms: frame_time * 1000.0,
+                    draw_calls,
+                    max_seam_delta_m: self.terrain_stats.max_seam_delta_meters,
+                    resident_chunks: self.terrain_stats.resident_chunks,
+                    fallback_chunks: self.terrain_stats.fallback_chunks,
+                    lod_thrash_events: self.terrain_stats.lod_thrash_events,
+                });
         }
         let simulation_ms = profile_started.elapsed().as_secs_f32() * 1_000.0;
 
@@ -546,13 +546,14 @@ impl State {
             let fps = self.fps;
             let camera_position = camera_world_position;
             let camera_direction = self.camera.direction();
+            let terrain_stats = self.terrain_stats.clone();
             let full_output = self.egui_context.run_ui(raw_input, |ui| {
                 if show_debug_overlay {
                     let context = ui.ctx().clone();
                     egui::Window::new("Cat in the Garden")
                         .default_pos([12.0, 12.0])
                         .show(&context, |ui| {
-                            ui.label("Phase 0.5: debug/test harness");
+                            ui.label("Quadtree terrain renderer");
                             ui.label(format!("Render FPS: {fps:.0}"));
                             ui.label(format!(
                                 "Camera: [{:.0}, {:.0}, {:.0}] m",
@@ -562,7 +563,16 @@ impl State {
                                 "Direction: [{:.3}, {:.3}, {:.3}]",
                                 camera_direction.x, camera_direction.y, camera_direction.z
                             ));
-                            ui.label(format!("Altitude: {camera_altitude:.0} m  |  LOD: fixed"));
+                            ui.label(format!(
+                                "Altitude: {camera_altitude:.0} m  |  LOD: {}  |  Chunks: {}",
+                                terrain_stats.max_level, terrain_stats.resident_chunks
+                            ));
+                            ui.label(format!(
+                                "Tiles: {}  |  Fallback chunks: {}  |  Seam: {:.4} m",
+                                terrain_stats.resident_tiles,
+                                terrain_stats.fallback_chunks,
+                                terrain_stats.max_seam_delta_meters
+                            ));
                             ui.label("F3: toggle overlay  |  F12: capture PNG");
                             ui.label("Mouse: orbit  |  Wheel: zoom  |  Esc/Q: quit");
                         });
@@ -645,25 +655,13 @@ impl State {
         let egui_upload_ms = egui_upload_started.elapsed().as_secs_f32() * 1_000.0;
 
         let upload_started = Instant::now();
-        let mut vertex_rebase_ms = 0.0;
-        if camera_world_position != self.last_rebased_camera_position {
-            let rebase_started = Instant::now();
-            self.planet_mesh
-                .rebase_into(camera_world_position, &mut self.rebased_vertices);
-            vertex_rebase_ms = rebase_started.elapsed().as_secs_f32() * 1_000.0;
-            self.queue.write_buffer(
-                &self.planet_vertex_buffer,
-                0,
-                bytemuck::cast_slice(&self.rebased_vertices),
-            );
-            self.last_rebased_camera_position = camera_world_position;
-        }
         let camera_uniform = planet::CameraUniform::from_camera(
             &self.camera,
             self.size.width as f32 / self.size.height as f32,
         );
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
+        let vertex_rebase_ms = 0.0;
         let vertex_upload_ms = upload_started.elapsed().as_secs_f32() * 1_000.0;
         let encode_started = Instant::now();
         {
@@ -698,14 +696,7 @@ impl State {
                 multiview_mask: None,
             });
             if !solid_color_screen {
-                render_pass.set_pipeline(&self.planet_pipeline);
-                render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-                render_pass.set_vertex_buffer(0, self.planet_vertex_buffer.slice(..));
-                render_pass.set_index_buffer(
-                    self.planet_index_buffer.slice(..),
-                    wgpu::IndexFormat::Uint32,
-                );
-                render_pass.draw_indexed(0..self.planet_mesh.indices().len() as u32, 0, 0..1);
+                self.terrain.draw(&mut render_pass, &self.camera_bind_group);
             }
         }
         if let Some(paint_jobs) = &paint_jobs {
@@ -818,14 +809,15 @@ impl State {
                 .scenario
                 .as_ref()
                 .map_or(0, scenario::ScenarioRunner::expected_screenshots);
-            let passed = !self.scenario_capture_failed
+            let harness_passed = !self.scenario_capture_failed
                 && self.artifacts.screenshot_count() == expected_screenshots
                 && self.artifacts.spatial_log_count()
                     >= self
                         .scenario
                         .as_ref()
                         .map_or(0, scenario::ScenarioRunner::expected_log_samples);
-            self.artifacts.finish(passed).unwrap_or_else(
+            let passed = self.artifacts.final_passed(harness_passed);
+            self.artifacts.finish(harness_passed).unwrap_or_else(
                 |error| tracing::error!(%error, "could not finalize test-run manifest"),
             );
             tracing::info!(passed, "scenario completed");
@@ -854,6 +846,7 @@ fn main() {
         window.clone(),
         launch_options.scenario_name,
         launch_options.profile_render,
+        launch_options.terrain_source,
     ));
     state.set_mouse_capture(&window, true);
 
@@ -973,12 +966,19 @@ fn main() {
 struct LaunchOptions {
     scenario_name: Option<String>,
     profile_render: bool,
+    terrain_source: terrain::TerrainSource,
 }
 
 fn launch_options() -> Result<LaunchOptions, String> {
+    let default_outmap = PathBuf::from(DEFAULT_OUTMAP_PATH);
     let mut options = LaunchOptions {
         scenario_name: None,
         profile_render: false,
+        terrain_source: if default_outmap.join("manifest.json").is_file() {
+            terrain::TerrainSource::Outmap(default_outmap.clone())
+        } else {
+            terrain::TerrainSource::Placeholder
+        },
     };
     let mut arguments = std::env::args().skip(1);
     while let Some(flag) = arguments.next() {
@@ -991,6 +991,24 @@ fn launch_options() -> Result<LaunchOptions, String> {
                 )
             }
             "--profile-render" => options.profile_render = true,
+            "--terrain" => {
+                options.terrain_source = match arguments
+                    .next()
+                    .ok_or_else(|| "--terrain requires 'placeholder' or 'outmap'".to_owned())?
+                    .as_str()
+                {
+                    "placeholder" => terrain::TerrainSource::Placeholder,
+                    "outmap" => terrain::TerrainSource::Outmap(default_outmap.clone()),
+                    value => return Err(format!("unsupported terrain source '{value}'")),
+                };
+            }
+            "--outmap" => {
+                options.terrain_source = terrain::TerrainSource::Outmap(PathBuf::from(
+                    arguments
+                        .next()
+                        .ok_or_else(|| "--outmap requires a path".to_owned())?,
+                ));
+            }
             _ => return Err(format!("unrecognized argument '{flag}'")),
         }
     }

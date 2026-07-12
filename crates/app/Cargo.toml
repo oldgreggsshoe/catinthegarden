@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 bytemuck.workspace = true
+catinthegarden-coretypes = { path = "../coretypes" }
 egui.workspace = true
 egui-wgpu.workspace = true
 egui-winit.workspace = true

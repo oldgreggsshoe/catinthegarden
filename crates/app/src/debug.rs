@@ -9,6 +9,32 @@ use std::{
 use serde::Serialize;
 use tracing_subscriber::fmt::MakeWriter;
 
+use crate::scenario::{MAX_TERRAIN_LOD_LEVEL, ScenarioAssertionResult, ScenarioAssertions};
+
+pub const LOD_LEVEL_COUNT: usize = MAX_TERRAIN_LOD_LEVEL as usize + 1;
+
+#[derive(Clone, Debug)]
+pub struct SpatialLogSample {
+    pub sim_time: f64,
+    pub camera_world_position: [f64; 3],
+    pub latitude_degrees: f64,
+    pub longitude_degrees: f64,
+    pub altitude_meters: f64,
+    pub velocity_meters_per_second: f64,
+    pub orientation: String,
+    pub orientation_azimuth_radians: f64,
+    pub orientation_elevation_radians: f64,
+    pub lod_level_histogram: [u32; LOD_LEVEL_COUNT],
+    pub chunks_loaded: u32,
+    pub chunks_unloaded: u32,
+    pub frame_time_ms: f32,
+    pub draw_calls: u32,
+    pub max_seam_delta_m: f64,
+    pub resident_chunks: u32,
+    pub fallback_chunks: u32,
+    pub lod_thrash_events: u32,
+}
+
 #[derive(Clone)]
 pub(crate) struct SharedFile(Arc<Mutex<File>>);
 
@@ -38,6 +64,8 @@ struct RunManifest {
     git_commit: String,
     timestamp_unix_seconds: u64,
     passed: Option<bool>,
+    assertion_results: Vec<ScenarioAssertionResult>,
+    failure_reasons: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -59,6 +87,205 @@ pub struct RunArtifacts {
     manifest: RunManifest,
     screenshots: Vec<ScreenshotEntry>,
     spatial_log_count: usize,
+    assertion_tracker: AssertionTracker,
+}
+
+struct AssertionTracker {
+    config: ScenarioAssertions,
+    sample_count: usize,
+    non_finite_samples: usize,
+    peak_lod_level: Option<u8>,
+    previous_lod_level: Option<u8>,
+    lod_regressions: usize,
+    resident_chunk_violations: usize,
+    maximum_resident_chunks: u32,
+    lod_thrash_events: u64,
+    seam_violations: usize,
+    maximum_seam_delta_m: f64,
+    fallback_violations: usize,
+    maximum_fallback_chunks: u32,
+}
+
+impl AssertionTracker {
+    fn new(config: ScenarioAssertions) -> Self {
+        Self {
+            config,
+            sample_count: 0,
+            non_finite_samples: 0,
+            peak_lod_level: None,
+            previous_lod_level: None,
+            lod_regressions: 0,
+            resident_chunk_violations: 0,
+            maximum_resident_chunks: 0,
+            lod_thrash_events: 0,
+            seam_violations: 0,
+            maximum_seam_delta_m: 0.0,
+            fallback_violations: 0,
+            maximum_fallback_chunks: 0,
+        }
+    }
+
+    fn observe(&mut self, sample: &SpatialLogSample) {
+        self.sample_count += 1;
+        if !sample_metrics_are_finite(sample) {
+            self.non_finite_samples += 1;
+        }
+
+        let current_lod_level = sample
+            .lod_level_histogram
+            .iter()
+            .rposition(|count| *count > 0)
+            .map(|level| level as u8);
+        if let Some(level) = current_lod_level {
+            self.peak_lod_level = Some(self.peak_lod_level.map_or(level, |peak| peak.max(level)));
+            if self.config.require_monotonic_lod_progression
+                && self
+                    .previous_lod_level
+                    .is_some_and(|previous| level < previous)
+            {
+                self.lod_regressions += 1;
+            }
+            self.previous_lod_level = Some(level);
+        }
+
+        self.maximum_resident_chunks = self.maximum_resident_chunks.max(sample.resident_chunks);
+        if self
+            .config
+            .min_resident_chunks
+            .is_some_and(|minimum| sample.resident_chunks < minimum)
+            || self
+                .config
+                .max_resident_chunks
+                .is_some_and(|maximum| sample.resident_chunks > maximum)
+        {
+            self.resident_chunk_violations += 1;
+        }
+
+        self.lod_thrash_events += u64::from(sample.lod_thrash_events);
+        if sample.max_seam_delta_m.is_finite() {
+            self.maximum_seam_delta_m = self.maximum_seam_delta_m.max(sample.max_seam_delta_m);
+            if self
+                .config
+                .max_seam_delta_m
+                .is_some_and(|maximum| sample.max_seam_delta_m > maximum)
+            {
+                self.seam_violations += 1;
+            }
+        }
+
+        self.maximum_fallback_chunks = self.maximum_fallback_chunks.max(sample.fallback_chunks);
+        if self
+            .config
+            .max_fallback_chunks
+            .is_some_and(|maximum| sample.fallback_chunks > maximum)
+        {
+            self.fallback_violations += 1;
+        }
+    }
+
+    fn results(&self, screenshot_count: usize) -> Vec<ScenarioAssertionResult> {
+        let mut results = Vec::new();
+        if self.config.require_finite_metrics {
+            results.push(assertion_result(
+                "finite_metrics",
+                self.non_finite_samples == 0,
+                format!(
+                    "{} of {} spatial samples contained non-finite metrics",
+                    self.non_finite_samples, self.sample_count
+                ),
+            ));
+        }
+        if let Some(required) = self.config.required_peak_lod_level {
+            let observed = self.peak_lod_level;
+            results.push(assertion_result(
+                "lod_reaches_required_level",
+                observed.is_some_and(|level| level >= required),
+                format!("required level {required}, observed peak {observed:?}"),
+            ));
+        }
+        if self.config.require_monotonic_lod_progression {
+            results.push(assertion_result(
+                "lod_progression_is_monotonic",
+                self.lod_regressions == 0,
+                format!("observed {} LOD regressions", self.lod_regressions),
+            ));
+        }
+        if self.config.min_resident_chunks.is_some() || self.config.max_resident_chunks.is_some() {
+            results.push(assertion_result(
+                "resident_chunk_count_is_bounded",
+                self.resident_chunk_violations == 0,
+                format!(
+                    "bounds {:?}..={:?}, maximum observed {}, violations {}",
+                    self.config.min_resident_chunks,
+                    self.config.max_resident_chunks,
+                    self.maximum_resident_chunks,
+                    self.resident_chunk_violations
+                ),
+            ));
+        }
+        if let Some(maximum) = self.config.max_lod_thrash_events {
+            results.push(assertion_result(
+                "lod_does_not_thrash",
+                self.lod_thrash_events <= u64::from(maximum),
+                format!(
+                    "allowed {maximum} LOD thrash events, observed {}",
+                    self.lod_thrash_events
+                ),
+            ));
+        }
+        if let Some(maximum) = self.config.max_seam_delta_m {
+            results.push(assertion_result(
+                "seam_delta_is_within_tolerance",
+                self.seam_violations == 0,
+                format!(
+                    "tolerance {maximum}m, maximum observed {}m, violations {}",
+                    self.maximum_seam_delta_m, self.seam_violations
+                ),
+            ));
+        }
+        if let Some(maximum) = self.config.max_fallback_chunks {
+            results.push(assertion_result(
+                "fallback_chunk_count_is_bounded",
+                self.fallback_violations == 0,
+                format!(
+                    "allowed {maximum}, maximum observed {}, violations {}",
+                    self.maximum_fallback_chunks, self.fallback_violations
+                ),
+            ));
+        }
+        if let Some(expected) = self.config.expected_screenshots {
+            results.push(assertion_result(
+                "expected_screenshots_were_captured",
+                screenshot_count == expected,
+                format!("expected {expected}, captured {screenshot_count}"),
+            ));
+        }
+        results
+    }
+}
+
+fn sample_metrics_are_finite(sample: &SpatialLogSample) -> bool {
+    sample.sim_time.is_finite()
+        && sample
+            .camera_world_position
+            .iter()
+            .all(|value| value.is_finite())
+        && sample.latitude_degrees.is_finite()
+        && sample.longitude_degrees.is_finite()
+        && sample.altitude_meters.is_finite()
+        && sample.velocity_meters_per_second.is_finite()
+        && sample.orientation_azimuth_radians.is_finite()
+        && sample.orientation_elevation_radians.is_finite()
+        && sample.frame_time_ms.is_finite()
+        && sample.max_seam_delta_m.is_finite()
+}
+
+fn assertion_result(name: &str, passed: bool, details: String) -> ScenarioAssertionResult {
+    ScenarioAssertionResult {
+        name: name.to_owned(),
+        passed,
+        details,
+    }
 }
 
 pub struct PendingCapture {
@@ -72,6 +299,13 @@ pub struct PendingCapture {
 
 impl RunArtifacts {
     pub fn create(scenario: &str) -> Result<(Self, SharedFile), String> {
+        Self::create_with_assertions(scenario, ScenarioAssertions::default())
+    }
+
+    pub fn create_with_assertions(
+        scenario: &str,
+        assertions: ScenarioAssertions,
+    ) -> Result<(Self, SharedFile), String> {
         let run_id = format!(
             "{}-{}",
             SystemTime::now()
@@ -91,6 +325,8 @@ impl RunArtifacts {
                 .map_err(|error| error.to_string())?
                 .as_secs(),
             passed: None,
+            assertion_results: Vec::new(),
+            failure_reasons: Vec::new(),
         };
         let artifacts = Self {
             root,
@@ -98,12 +334,21 @@ impl RunArtifacts {
             manifest,
             screenshots: Vec::new(),
             spatial_log_count: 0,
+            assertion_tracker: AssertionTracker::new(assertions),
         };
         artifacts.write_manifests()?;
         let log_file =
             File::create(artifacts.root.join("log.jsonl")).map_err(|error| error.to_string())?;
 
         Ok((artifacts, SharedFile(Arc::new(Mutex::new(log_file)))))
+    }
+
+    pub fn configure_assertions(&mut self, assertions: ScenarioAssertions) {
+        assert_eq!(
+            self.spatial_log_count, 0,
+            "scenario assertions must be configured before spatial samples are recorded"
+        );
+        self.assertion_tracker = AssertionTracker::new(assertions);
     }
 
     pub fn record_spatial_log(
@@ -116,25 +361,53 @@ impl RunArtifacts {
         frame_time_ms: f32,
         draw_calls: u32,
     ) {
-        self.spatial_log_count += 1;
-        tracing::info!(
-            target: "catinthegarden::spatial",
+        self.record_spatial_sample(SpatialLogSample {
             sim_time,
-            camera_world_x = camera_world_position[0],
-            camera_world_y = camera_world_position[1],
-            camera_world_z = camera_world_position[2],
-            latitude_degrees = 0.0_f64,
-            longitude_degrees = 0.0_f64,
+            camera_world_position,
+            latitude_degrees: 0.0,
+            longitude_degrees: 0.0,
             altitude_meters,
-            velocity_meters_per_second = 0.0_f64,
-            orientation = "orbit",
+            velocity_meters_per_second: 0.0,
+            orientation: "orbit".to_owned(),
             orientation_azimuth_radians,
             orientation_elevation_radians,
-            lod_level_histogram = "0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0",
-            chunks_loaded = 0_u32,
-            chunks_unloaded = 0_u32,
+            lod_level_histogram: [0; LOD_LEVEL_COUNT],
+            chunks_loaded: 0,
+            chunks_unloaded: 0,
             frame_time_ms,
             draw_calls,
+            max_seam_delta_m: 0.0,
+            resident_chunks: 0,
+            fallback_chunks: 0,
+            lod_thrash_events: 0,
+        });
+    }
+
+    pub fn record_spatial_sample(&mut self, sample: SpatialLogSample) {
+        self.spatial_log_count += 1;
+        self.assertion_tracker.observe(&sample);
+        tracing::info!(
+            target: "catinthegarden::spatial",
+            sim_time = sample.sim_time,
+            camera_world_x = sample.camera_world_position[0],
+            camera_world_y = sample.camera_world_position[1],
+            camera_world_z = sample.camera_world_position[2],
+            latitude_degrees = sample.latitude_degrees,
+            longitude_degrees = sample.longitude_degrees,
+            altitude_meters = sample.altitude_meters,
+            velocity_meters_per_second = sample.velocity_meters_per_second,
+            orientation = sample.orientation,
+            orientation_azimuth_radians = sample.orientation_azimuth_radians,
+            orientation_elevation_radians = sample.orientation_elevation_radians,
+            lod_level_histogram = ?sample.lod_level_histogram,
+            chunks_loaded = sample.chunks_loaded,
+            chunks_unloaded = sample.chunks_unloaded,
+            frame_time_ms = sample.frame_time_ms,
+            draw_calls = sample.draw_calls,
+            max_seam_delta_m = sample.max_seam_delta_m,
+            resident_chunks = sample.resident_chunks,
+            fallback_chunks = sample.fallback_chunks,
+            lod_thrash_events = sample.lod_thrash_events,
             "spatial frame"
         );
     }
@@ -193,8 +466,32 @@ impl RunArtifacts {
         );
     }
 
-    pub fn finish(&mut self, passed: bool) -> Result<(), String> {
-        self.manifest.passed = Some(passed);
+    pub fn assertion_results(&self) -> Vec<ScenarioAssertionResult> {
+        self.assertion_tracker.results(self.screenshot_count())
+    }
+
+    pub fn assertion_failure_reasons(&self) -> Vec<String> {
+        self.assertion_results()
+            .into_iter()
+            .filter_map(|result| {
+                (!result.passed).then(|| format!("{}: {}", result.name, result.details))
+            })
+            .collect()
+    }
+
+    pub fn final_passed(&self, harness_passed: bool) -> bool {
+        harness_passed && self.assertion_failure_reasons().is_empty()
+    }
+
+    pub fn finish(&mut self, harness_passed: bool) -> Result<(), String> {
+        self.manifest.assertion_results = self.assertion_results();
+        self.manifest.failure_reasons = self.assertion_failure_reasons();
+        if !harness_passed {
+            self.manifest
+                .failure_reasons
+                .push("scenario harness checks failed".to_owned());
+        }
+        self.manifest.passed = Some(harness_passed && self.manifest.failure_reasons.is_empty());
         self.write_manifests()
     }
 
@@ -396,4 +693,96 @@ fn git_commit() -> String {
         .and_then(|output| String::from_utf8(output.stdout).ok())
         .map(|commit| commit.trim().to_owned())
         .unwrap_or_else(|| "unknown".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AssertionTracker, LOD_LEVEL_COUNT, SpatialLogSample};
+    use crate::scenario::ScenarioAssertions;
+
+    fn assertions() -> ScenarioAssertions {
+        ScenarioAssertions {
+            require_finite_metrics: true,
+            required_peak_lod_level: Some(18),
+            require_monotonic_lod_progression: true,
+            min_resident_chunks: Some(6),
+            max_resident_chunks: Some(64),
+            max_lod_thrash_events: Some(0),
+            max_seam_delta_m: Some(0.1),
+            max_fallback_chunks: Some(4),
+            expected_screenshots: Some(2),
+        }
+    }
+
+    fn sample(level: usize, resident_chunks: u32) -> SpatialLogSample {
+        let mut lod_level_histogram = [0; LOD_LEVEL_COUNT];
+        lod_level_histogram[level] = resident_chunks;
+        SpatialLogSample {
+            sim_time: level as f64,
+            camera_world_position: [4_000_010.0, 0.0, 0.0],
+            latitude_degrees: 0.0,
+            longitude_degrees: 0.0,
+            altitude_meters: 10.0,
+            velocity_meters_per_second: 0.0,
+            orientation: "waypoint".to_owned(),
+            orientation_azimuth_radians: 0.0,
+            orientation_elevation_radians: 0.0,
+            lod_level_histogram,
+            chunks_loaded: 1,
+            chunks_unloaded: 0,
+            frame_time_ms: 16.0,
+            draw_calls: resident_chunks,
+            max_seam_delta_m: 0.01,
+            resident_chunks,
+            fallback_chunks: 0,
+            lod_thrash_events: 0,
+        }
+    }
+
+    fn result<'a>(
+        results: &'a [crate::scenario::ScenarioAssertionResult],
+        name: &str,
+    ) -> &'a crate::scenario::ScenarioAssertionResult {
+        results
+            .iter()
+            .find(|result| result.name == name)
+            .expect("assertion result exists")
+    }
+
+    #[test]
+    fn valid_descent_metrics_pass_all_tier_one_assertions() {
+        let mut tracker = AssertionTracker::new(assertions());
+        tracker.observe(&sample(0, 6));
+        tracker.observe(&sample(9, 24));
+        tracker.observe(&sample(18, 48));
+
+        let results = tracker.results(2);
+        assert!(results.iter().all(|result| result.passed));
+    }
+
+    #[test]
+    fn invalid_metrics_report_each_failure_reason() {
+        let mut tracker = AssertionTracker::new(assertions());
+        tracker.observe(&sample(10, 12));
+        let mut invalid = sample(8, 100);
+        invalid.altitude_meters = f64::NAN;
+        invalid.lod_thrash_events = 1;
+        invalid.max_seam_delta_m = 0.25;
+        invalid.fallback_chunks = 5;
+        tracker.observe(&invalid);
+
+        let results = tracker.results(1);
+        for name in [
+            "finite_metrics",
+            "lod_reaches_required_level",
+            "lod_progression_is_monotonic",
+            "resident_chunk_count_is_bounded",
+            "lod_does_not_thrash",
+            "seam_delta_is_within_tolerance",
+            "fallback_chunk_count_is_bounded",
+            "expected_screenshots_were_captured",
+        ] {
+            assert!(!result(&results, name).passed, "{name} should fail");
+        }
+    }
 }
