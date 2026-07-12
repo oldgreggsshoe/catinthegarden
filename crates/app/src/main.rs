@@ -656,7 +656,7 @@ fn main() {
                 event: DeviceEvent::MouseMotion { delta },
                 ..
             } => {
-                state.look_camera(-delta.0 * 0.003, -delta.1 * 0.003);
+                state.look_camera(delta.0 * 0.003, -delta.1 * 0.003);
                 window.request_redraw();
             }
             Event::AboutToWait => window.request_redraw(),
