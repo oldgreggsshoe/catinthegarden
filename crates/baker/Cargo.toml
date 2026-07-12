@@ -1,0 +1,12 @@
+[package]
+name = "catinthegarden-baker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+image.workspace = true
+noise.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
