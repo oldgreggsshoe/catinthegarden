@@ -3,6 +3,87 @@ use glam::{DVec3, Mat4, Vec3, Vec4};
 pub const PLANET_RADIUS_METERS: f64 = 4_000_000.0;
 const SUBDIVISIONS: usize = 32;
 
+/// A leaf in one of the six face-local quadtrees. Coordinates address a node
+/// at `level`, so children are `(x * 2 + dx, y * 2 + dy)` at `level + 1`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct QuadtreeNode {
+    pub face: u8,
+    pub level: u8,
+    pub x: u32,
+    pub y: u32,
+}
+
+impl QuadtreeNode {
+    pub const fn root(face: u8) -> Self {
+        Self {
+            face,
+            level: 0,
+            x: 0,
+            y: 0,
+        }
+    }
+
+    pub fn children(self) -> [Self; 4] {
+        let level = self.level + 1;
+        let x = self.x * 2;
+        let y = self.y * 2;
+        [
+            Self {
+                face: self.face,
+                level,
+                x,
+                y,
+            },
+            Self {
+                face: self.face,
+                level,
+                x: x + 1,
+                y,
+            },
+            Self {
+                face: self.face,
+                level,
+                x,
+                y: y + 1,
+            },
+            Self {
+                face: self.face,
+                level,
+                x: x + 1,
+                y: y + 1,
+            },
+        ]
+    }
+}
+
+/// Screen-space LOD policy shared by all face trees. The hysteresis band
+/// prevents a node from split/merge thrashing at the split boundary.
+pub struct LodPolicy {
+    pub split_pixels: f64,
+    pub merge_pixels: f64,
+    pub max_level: u8,
+}
+
+impl Default for LodPolicy {
+    fn default() -> Self {
+        Self {
+            split_pixels: 2.0,
+            merge_pixels: 1.25,
+            max_level: 8,
+        }
+    }
+}
+
+impl LodPolicy {
+    pub fn should_split(&self, projected_error_pixels: f64, level: u8) -> bool {
+        level < self.max_level && projected_error_pixels > self.split_pixels
+    }
+
+    pub fn should_merge(&self, projected_error_pixels: f64) -> bool {
+        projected_error_pixels < self.merge_pixels
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct RebasedVertex {
@@ -168,7 +249,33 @@ fn reversed_z_infinite_perspective(
 
 #[cfg(test)]
 mod tests {
-    use super::{CubeSphereMesh, OrbitCamera, PLANET_RADIUS_METERS};
+    use super::{CubeSphereMesh, LodPolicy, OrbitCamera, PLANET_RADIUS_METERS, QuadtreeNode};
+
+    #[test]
+    fn quadtree_children_tile_the_parent_node() {
+        let children = QuadtreeNode::root(3).children();
+        assert_eq!(
+            children[0],
+            QuadtreeNode {
+                face: 3,
+                level: 1,
+                x: 0,
+                y: 0
+            }
+        );
+        assert_eq!(
+            children[3],
+            QuadtreeNode {
+                face: 3,
+                level: 1,
+                x: 1,
+                y: 1
+            }
+        );
+        let policy = LodPolicy::default();
+        assert!(policy.should_split(2.1, 0));
+        assert!(policy.should_merge(1.0));
+    }
 
     #[test]
     fn cube_sphere_vertices_are_on_the_planet_radius() {
