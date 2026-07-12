@@ -9,8 +9,8 @@ pub const PLANET_RADIUS_METERS: f64 = 4_000_000.0;
 pub const CHUNK_GRID_QUADS: usize = 32;
 pub const CHUNK_GRID_VERTICES: usize = CHUNK_GRID_QUADS + 1;
 pub const MAX_LOD_LEVEL: u8 = 18;
-/// The coarsest rendered quadtree leaf. L0/L1 would otherwise produce visibly
-/// oversized far-view triangles; normal screen-space refinement begins at L2.
+/// The coarsest rendered quadtree leaf. Screen-space error raises the LOD into
+/// the globally available L3/L4 data only when that detail can affect pixels.
 pub const MINIMUM_LOD_LEVEL: u8 = 2;
 /// Deliberately game-time-scaled so axial rotation is visible during normal play.
 pub const PLANET_ROTATION_PERIOD_SECONDS: f64 = 600.0;
@@ -26,6 +26,8 @@ pub const PLACEHOLDER_HEIGHT_AMPLITUDE_METERS: f64 = 3_503.0;
 const DEFAULT_VERTICAL_FOV_RADIANS: f64 = 45.0_f64.to_radians();
 const MIN_VERTICAL_FOV_RADIANS: f64 = 2.0_f64.to_radians();
 const MAX_VERTICAL_FOV_RADIANS: f64 = 75.0_f64.to_radians();
+const HIGH_DETAIL_ZOOM_VERTICAL_FOV_RADIANS: f64 = 8.0_f64.to_radians();
+const HIGH_DETAIL_ZOOM_MINIMUM_LOD_LEVEL: u8 = 4;
 pub const PLACEHOLDER_GEOMETRIC_ERROR_RATIO: f64 = 0.02;
 pub const LOD_THRASH_WINDOW_UPDATES: u64 = 4;
 
@@ -196,6 +198,15 @@ impl LodPolicy {
         MINIMUM_LOD_LEVEL.min(self.max_level)
     }
 
+    fn minimum_level_for_view(&self, vertical_fov_radians: f64) -> u8 {
+        let normal_minimum = self.minimum_level();
+        if vertical_fov_radians <= HIGH_DETAIL_ZOOM_VERTICAL_FOV_RADIANS {
+            normal_minimum.max(HIGH_DETAIL_ZOOM_MINIMUM_LOD_LEVEL.min(self.max_level))
+        } else {
+            normal_minimum
+        }
+    }
+
     pub fn should_split(&self, projected_error_pixels: f64, level: u8) -> bool {
         level < self.max_level && projected_error_pixels > self.split_pixels
     }
@@ -241,6 +252,49 @@ pub fn node_is_above_horizon(node: QuadtreeNode, camera_world: DVec3) -> bool {
     let bounds = node_bounds(node);
     camera_world.dot(bounds.center_world) + camera_world.length() * bounds.radius_meters
         >= PLANET_RADIUS_METERS * PLANET_RADIUS_METERS
+}
+
+fn node_is_in_view_frustum(
+    node: QuadtreeNode,
+    camera_world: DVec3,
+    camera_forward: DVec3,
+    aspect_ratio: f64,
+    vertical_fov_radians: f64,
+) -> bool {
+    let bounds = node_bounds(node);
+    let camera_to_center = bounds.center_world - camera_world;
+    let forward = camera_forward.normalize();
+    let forward_distance = camera_to_center.dot(forward);
+    if forward_distance < -bounds.radius_meters {
+        return false;
+    }
+
+    // Match the renderer's look-to basis, but retain a stable fallback for a
+    // camera that is almost parallel to its nominal up vector.
+    let right = forward.cross(DVec3::Y).normalize_or_zero();
+    let right = if right.length_squared() > 0.0 {
+        right
+    } else {
+        forward.cross(DVec3::X).normalize()
+    };
+    let up = right.cross(forward).normalize();
+    let vertical_tangent = (vertical_fov_radians * 0.5).tan();
+    let horizontal_tangent = vertical_tangent * aspect_ratio;
+
+    // Test the node's conservative bounding sphere against all four side
+    // planes. This intentionally retains boundary chunks so a narrow optical
+    // zoom cannot create a visible hole at the viewport edge.
+    for (axis, tangent) in [(right, horizontal_tangent), (up, vertical_tangent)] {
+        let normal_length = (1.0 + tangent * tangent).sqrt();
+        let plane_distance = forward_distance * tangent;
+        let side_distance = camera_to_center.dot(axis);
+        if plane_distance + side_distance < -bounds.radius_meters * normal_length
+            || plane_distance - side_distance < -bounds.radius_meters * normal_length
+        {
+            return false;
+        }
+    }
+    true
 }
 
 pub fn projected_error_pixels(
@@ -325,6 +379,15 @@ struct RecentLodTransition {
     update_index: u64,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+struct SelectionInput {
+    camera_world: DVec3,
+    camera_forward: Option<DVec3>,
+    aspect_ratio: f64,
+    viewport_height: u32,
+    vertical_fov_radians: f64,
+}
+
 impl PartialEq for SplitCandidate {
     fn eq(&self, other: &Self) -> bool {
         self.node == other.node && self.priority.total_cmp(&other.priority) == Ordering::Equal
@@ -354,7 +417,7 @@ pub struct PlanetLod {
     active_nodes: Vec<QuadtreeNode>,
     seam_samples: HashMap<[i64; 3], SeamSample>,
     max_seam_delta_meters: f64,
-    last_selection_input: Option<(DVec3, u32, f64)>,
+    last_selection_input: Option<SelectionInput>,
     last_metrics: LodMetrics,
     update_index: u64,
     recent_lod_transitions: HashMap<QuadtreeNode, RecentLodTransition>,
@@ -399,14 +462,59 @@ impl PlanetLod {
         viewport_height: u32,
         vertical_fov_radians: f64,
     ) -> LodUpdate {
+        self.update_internal(
+            camera_world,
+            None,
+            1.0,
+            viewport_height,
+            vertical_fov_radians,
+        )
+    }
+
+    pub fn update_for_view(
+        &mut self,
+        camera_world: DVec3,
+        camera_forward: DVec3,
+        aspect_ratio: f64,
+        viewport_height: u32,
+        vertical_fov_radians: f64,
+    ) -> LodUpdate {
         assert!(camera_world.is_finite());
         assert!(camera_world.length() > PLANET_RADIUS_METERS);
+        assert!(camera_forward.is_finite() && camera_forward.length_squared() > 0.0);
+        assert!(aspect_ratio.is_finite() && aspect_ratio > 0.0);
+        self.update_internal(
+            camera_world,
+            Some(camera_forward.normalize()),
+            aspect_ratio,
+            viewport_height,
+            vertical_fov_radians,
+        )
+    }
+
+    fn update_internal(
+        &mut self,
+        camera_world: DVec3,
+        camera_forward: Option<DVec3>,
+        aspect_ratio: f64,
+        viewport_height: u32,
+        vertical_fov_radians: f64,
+    ) -> LodUpdate {
+        assert!(camera_world.is_finite());
+        assert!(camera_world.length() > PLANET_RADIUS_METERS);
+        assert!(aspect_ratio.is_finite() && aspect_ratio > 0.0);
         assert!(vertical_fov_radians.is_finite() && vertical_fov_radians > 0.0);
         self.update_index += 1;
         self.recent_lod_transitions.retain(|_, transition| {
             self.update_index.saturating_sub(transition.update_index) <= LOD_THRASH_WINDOW_UPDATES
         });
-        let selection_input = (camera_world, viewport_height, vertical_fov_radians);
+        let selection_input = SelectionInput {
+            camera_world,
+            camera_forward,
+            aspect_ratio,
+            viewport_height,
+            vertical_fov_radians,
+        };
         if self.last_selection_input == Some(selection_input) {
             let mut metrics = self.last_metrics.clone();
             metrics.chunks_loaded = 0;
@@ -433,6 +541,8 @@ impl PlanetLod {
             if Self::evaluate(
                 root,
                 camera_world,
+                camera_forward,
+                aspect_ratio,
                 viewport_height,
                 vertical_fov_radians,
                 &mut evaluations,
@@ -453,6 +563,8 @@ impl PlanetLod {
                 root,
                 &previous_split,
                 camera_world,
+                camera_forward,
+                aspect_ratio,
                 viewport_height,
                 vertical_fov_radians,
                 &mut evaluations,
@@ -479,6 +591,8 @@ impl PlanetLod {
                     child,
                     &previous_split,
                     camera_world,
+                    camera_forward,
+                    aspect_ratio,
                     viewport_height,
                     vertical_fov_radians,
                     &mut evaluations,
@@ -487,6 +601,30 @@ impl PlanetLod {
                     candidates.push(child_candidate);
                 }
             }
+        }
+
+        if camera_forward.is_some() {
+            // A large parent sphere can graze the viewport even when every
+            // tighter child bound is outside it. Such a parent must not remain
+            // as a coarse rendered leaf: it contributes no pixels, defeats the
+            // minimum LOD policy, and becomes especially expensive at a narrow
+            // optical zoom.
+            leaves.retain(|node| {
+                node.level >= self.policy.minimum_level_for_view(vertical_fov_radians)
+                    || node.children().into_iter().any(|child| {
+                        Self::evaluate(
+                            child,
+                            camera_world,
+                            camera_forward,
+                            aspect_ratio,
+                            viewport_height,
+                            vertical_fov_radians,
+                            &mut evaluations,
+                            &mut culled_nodes,
+                        )
+                        .visible
+                    })
+            });
         }
 
         let mut leaves: Vec<_> = leaves.into_iter().collect();
@@ -507,12 +645,15 @@ impl PlanetLod {
                 let evaluation = Self::evaluate(
                     *node,
                     camera_world,
+                    camera_forward,
+                    aspect_ratio,
                     viewport_height,
                     vertical_fov_radians,
                     &mut evaluations,
                     &mut culled_nodes,
                 );
                 evaluation.visible
+                    && node.level >= self.policy.minimum_level_for_view(vertical_fov_radians)
                     && self
                         .policy
                         .should_merge(evaluation.projected_error_pixels, node.level)
@@ -555,6 +696,8 @@ impl PlanetLod {
         node: QuadtreeNode,
         previous_split: &HashSet<QuadtreeNode>,
         camera_world: DVec3,
+        camera_forward: Option<DVec3>,
+        aspect_ratio: f64,
         viewport_height: u32,
         vertical_fov_radians: f64,
         evaluations: &mut HashMap<QuadtreeNode, NodeEvaluation>,
@@ -566,12 +709,14 @@ impl PlanetLod {
         let evaluation = Self::evaluate(
             node,
             camera_world,
+            camera_forward,
+            aspect_ratio,
             viewport_height,
             vertical_fov_radians,
             evaluations,
             culled_nodes,
         );
-        let refine = if node.level < policy.minimum_level() {
+        let refine = if node.level < policy.minimum_level_for_view(vertical_fov_radians) {
             true
         } else if previous_split.contains(&node) {
             !policy.should_merge(evaluation.projected_error_pixels, node.level)
@@ -588,6 +733,8 @@ impl PlanetLod {
                 Self::evaluate(
                     *child,
                     camera_world,
+                    camera_forward,
+                    aspect_ratio,
                     viewport_height,
                     vertical_fov_radians,
                     evaluations,
@@ -614,6 +761,8 @@ impl PlanetLod {
     fn evaluate(
         node: QuadtreeNode,
         camera_world: DVec3,
+        camera_forward: Option<DVec3>,
+        aspect_ratio: f64,
         viewport_height: u32,
         vertical_fov_radians: f64,
         evaluations: &mut HashMap<QuadtreeNode, NodeEvaluation>,
@@ -622,7 +771,16 @@ impl PlanetLod {
         if let Some(evaluation) = evaluations.get(&node) {
             return *evaluation;
         }
-        let visible = node_is_above_horizon(node, camera_world);
+        let visible = node_is_above_horizon(node, camera_world)
+            && camera_forward.map_or(true, |camera_forward| {
+                node_is_in_view_frustum(
+                    node,
+                    camera_world,
+                    camera_forward,
+                    aspect_ratio,
+                    vertical_fov_radians,
+                )
+            });
         if !visible {
             *culled_nodes += 1;
         }
@@ -1100,6 +1258,13 @@ impl OrbitCamera {
         self.vertical_fov_radians
     }
 
+    pub fn set_vertical_fov_degrees(&mut self, vertical_fov_degrees: f64) {
+        assert!(vertical_fov_degrees.is_finite() && vertical_fov_degrees > 0.0);
+        self.vertical_fov_radians = vertical_fov_degrees
+            .to_radians()
+            .clamp(MIN_VERTICAL_FOV_RADIANS, MAX_VERTICAL_FOV_RADIANS);
+    }
+
     pub fn zoom(&mut self, wheel_delta: f64) {
         self.vertical_fov_radians = (self.vertical_fov_radians * (-wheel_delta * 0.12).exp())
             .clamp(MIN_VERTICAL_FOV_RADIANS, MAX_VERTICAL_FOV_RADIANS);
@@ -1201,10 +1366,11 @@ mod tests {
     use glam::DVec3;
 
     use super::{
-        CHUNK_GRID_QUADS, CHUNK_GRID_VERTICES, CubeSphereMesh, LodPolicy, MAX_LOD_LEVEL,
-        MINIMUM_LOD_LEVEL, OrbitCamera, PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode,
-        SKIRT_DEPTH_RATIO, build_chunk_mesh, cube_face_direction, placeholder_height_meters,
-        planet_local_vector, planet_rotation_radians, projected_error_pixels,
+        CHUNK_GRID_QUADS, CHUNK_GRID_VERTICES, CubeSphereMesh, HIGH_DETAIL_ZOOM_MINIMUM_LOD_LEVEL,
+        LodPolicy, MAX_LOD_LEVEL, MINIMUM_LOD_LEVEL, OrbitCamera, PLANET_RADIUS_METERS, PlanetLod,
+        QuadtreeNode, SKIRT_DEPTH_RATIO, build_chunk_mesh, cube_face_direction,
+        placeholder_height_meters, planet_local_vector, planet_rotation_radians,
+        projected_error_pixels,
     };
 
     #[test]
@@ -1255,8 +1421,14 @@ mod tests {
     fn orbit_selection_stays_coarse_and_bounded() {
         let camera = OrbitCamera::default();
         let mut lod = PlanetLod::default();
-        let update = lod.update(camera.world_position(), 1_080, 45.0_f64.to_radians());
-        assert!(update.metrics.active_chunks <= 96);
+        let update = lod.update_for_view(
+            camera.world_position(),
+            camera.direction().as_dvec3(),
+            1.5,
+            1_080,
+            45.0_f64.to_radians(),
+        );
+        assert!(update.metrics.active_chunks <= super::DEFAULT_MAX_ACTIVE_CHUNKS as u32);
         assert_eq!(update.metrics.max_level, MINIMUM_LOD_LEVEL);
         assert!(
             update
@@ -1268,12 +1440,39 @@ mod tests {
     }
 
     #[test]
+    fn frustum_culling_refines_only_the_visible_zoomed_patch() {
+        let camera = OrbitCamera::default();
+        let position = camera.world_position();
+        let forward = -position.normalize();
+        let mut wide_lod = PlanetLod::default();
+        let wide = wide_lod.update_for_view(position, forward, 1.5, 1_080, 45.0_f64.to_radians());
+        let mut zoomed_lod = PlanetLod::default();
+        let zoomed =
+            zoomed_lod.update_for_view(position, forward, 1.5, 1_080, 2.0_f64.to_radians());
+
+        assert!(
+            zoomed.metrics.active_chunks < wide.metrics.active_chunks,
+            "wide chunks: {}, zoomed chunks: {}",
+            wide.metrics.active_chunks,
+            zoomed.metrics.active_chunks
+        );
+        assert!(zoomed.metrics.max_level >= wide.metrics.max_level);
+        assert!(zoomed.metrics.max_level >= HIGH_DETAIL_ZOOM_MINIMUM_LOD_LEVEL);
+        assert!(
+            zoomed
+                .active_nodes
+                .iter()
+                .all(|node| node.level >= MINIMUM_LOD_LEVEL)
+        );
+    }
+
+    #[test]
     fn persistent_selector_respects_split_merge_hysteresis() {
         let node = QuadtreeNode {
             face: 0,
             level: MINIMUM_LOD_LEVEL,
-            x: 1,
-            y: 1,
+            x: 1 << (MINIMUM_LOD_LEVEL - 1),
+            y: 1 << (MINIMUM_LOD_LEVEL - 1),
         };
         let mut lod = PlanetLod::new(
             LodPolicy {
@@ -1495,7 +1694,7 @@ mod tests {
 
         let mut lod = PlanetLod::default();
         let detailed = lod.update(position, 1_080, camera.vertical_fov_radians());
-        assert!(detailed.metrics.max_level > MINIMUM_LOD_LEVEL);
+        assert!(detailed.metrics.max_level >= HIGH_DETAIL_ZOOM_MINIMUM_LOD_LEVEL);
 
         camera.zoom(-1_000.0);
         assert!((camera.vertical_fov_radians().to_degrees() - 75.0).abs() < 1.0e-9);

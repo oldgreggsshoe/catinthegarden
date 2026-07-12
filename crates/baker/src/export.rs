@@ -17,7 +17,7 @@ use noise::{NoiseFn, Perlin};
 use crate::{
     BakeResult,
     config::BakeConfig,
-    terrain::{MAX_HEIGHT_METERS, MIN_HEIGHT_METERS, Terrain},
+    terrain::{MAX_HEIGHT_METERS, MIN_HEIGHT_METERS, Terrain, snowline_meters},
 };
 
 const HEIGHT_FILE: &str = "height.r32f";
@@ -26,6 +26,12 @@ const MOISTURE_FILE: &str = "moisture.r8";
 const MICRORELIEF_START_LEVEL: u8 = 12;
 const MICRORELIEF_MAX_AMPLITUDE_METERS: f64 = 2.0;
 const MICRORELIEF_FREQUENCY: f64 = 220_000.0;
+const BAKED_DETAIL_START_LEVEL: u8 = 3;
+const BAKED_DETAIL_MAX_AMPLITUDE_METERS: f64 = 300.0;
+const BAKED_DETAIL_BASE_FREQUENCY: f64 = 40.0;
+const LANDING_DETAIL_PROTECTION_METERS: f64 = 500.0;
+const BAKED_BIOME_DETAIL_START_LEVEL: u8 = 3;
+const BAKED_BIOME_DETAIL_FREQUENCY: f64 = 280.0;
 
 pub fn export_outmap(config: &BakeConfig, terrain: &Terrain) -> BakeResult<OutmapManifest> {
     fs::create_dir_all(&config.output)?;
@@ -362,12 +368,22 @@ fn sample_tile(
             let global_x = i64::from(key.x) * i64::from(TILE_LOGICAL_SIZE - 1) + local_x;
             let u = -1.0 + 2.0 * global_x as f64 / denominator as f64;
             let direction = face_uv_to_direction(key.face, u, v);
+            let sampled_moisture = terrain.grid.sample_u8_linear(&terrain.moisture, direction);
             let sampled_height = terrain.grid.sample_f64(&terrain.height_meters, direction)
+                + baked_surface_detail(key, direction, microrelief)
                 + sparse_microrelief(config, key, direction, microrelief);
             let sampled_height = sampled_height.clamp(MIN_HEIGHT_METERS, MAX_HEIGHT_METERS) as f32;
             height.push(sampled_height);
-            biome.push(terrain.grid.sample_u8_nearest(&biome_ids, direction));
-            moisture.push(terrain.grid.sample_u8_linear(&terrain.moisture, direction));
+            let sampled_biome = terrain.grid.sample_u8_nearest(&biome_ids, direction);
+            biome.push(baked_biome_detail(
+                key,
+                direction,
+                f64::from(sampled_height),
+                sampled_moisture,
+                sampled_biome,
+                microrelief,
+            ));
+            moisture.push(sampled_moisture);
         }
     }
     TileData {
@@ -375,6 +391,90 @@ fn sample_tile(
         biome,
         moisture,
     }
+}
+
+fn baked_biome_detail(
+    key: TileKey,
+    direction: DVec3,
+    height_meters: f64,
+    moisture: u8,
+    base_biome: u8,
+    noise: &Perlin,
+) -> u8 {
+    let base_biome = BiomeId::try_from(base_biome).expect("terrain biome ids are valid");
+    if key.level < BAKED_BIOME_DETAIL_START_LEVEL
+        || matches!(base_biome, BiomeId::Ocean | BiomeId::Lake | BiomeId::Ice)
+    {
+        return base_biome as u8;
+    }
+
+    let latitude = direction.y.asin();
+    let absolute_latitude = latitude.abs();
+    if absolute_latitude > 66.0_f64.to_radians() || height_meters > snowline_meters(latitude) {
+        return BiomeId::Ice as u8;
+    }
+    if height_meters <= 0.0 {
+        return BiomeId::Ocean as u8;
+    }
+    if height_meters > (snowline_meters(latitude) - 700.0).max(2_800.0) {
+        return BiomeId::MountainSnow as u8;
+    }
+    if height_meters > 2_400.0 {
+        return BiomeId::MountainRock as u8;
+    }
+
+    let detail_moisture = noise.get([
+        direction.x * BAKED_BIOME_DETAIL_FREQUENCY,
+        direction.y * BAKED_BIOME_DETAIL_FREQUENCY,
+        direction.z * BAKED_BIOME_DETAIL_FREQUENCY,
+    ]);
+    let wetness = (f64::from(moisture) / 255.0 + detail_moisture * 0.26).clamp(0.0, 1.0);
+    let temperature = 1.0
+        - absolute_latitude / std::f64::consts::FRAC_PI_2
+        - height_meters / MAX_HEIGHT_METERS * 0.55;
+    let biome = if temperature < 0.24 {
+        BiomeId::Tundra
+    } else if temperature > 0.72 && wetness > 0.62 {
+        BiomeId::TropicalForest
+    } else if wetness < 0.28 {
+        BiomeId::Desert
+    } else if wetness > 0.58 {
+        BiomeId::TemperateForest
+    } else {
+        BiomeId::TemperateGrassland
+    };
+    biome as u8
+}
+
+fn baked_surface_detail(key: TileKey, direction: DVec3, noise: &Perlin) -> f64 {
+    if key.level < BAKED_DETAIL_START_LEVEL {
+        return 0.0;
+    }
+
+    // The equirectangular terrain atlas carries continental features and
+    // erosion. These three 3D-noise bands are sampled only by the baker, then
+    // stored in higher-level tiles, providing kilometre-scale terrain rather
+    // than a runtime procedural fallback.
+    let sample = |frequency: f64| {
+        noise.get([
+            direction.x * frequency,
+            direction.y * frequency,
+            direction.z * frequency,
+        ])
+    };
+    let detail = sample(BAKED_DETAIL_BASE_FREQUENCY) * 0.58
+        + sample(BAKED_DETAIL_BASE_FREQUENCY * 2.0) * 0.29
+        + sample(BAKED_DETAIL_BASE_FREQUENCY * 4.0) * 0.13;
+    let level_ramp = (f64::from(key.level - BAKED_DETAIL_START_LEVEL + 1) / 2.0).min(1.0);
+
+    // Keep the deterministic descent target locally flat, without leaving the
+    // old multi-degree landing disc as the only detail visible after zooming.
+    let landing_angle = direction.dot(DVec3::X).clamp(-1.0, 1.0).acos();
+    let protection_angle = LANDING_DETAIL_PROTECTION_METERS / PLANET_RADIUS_METERS;
+    let landing_ramp = (landing_angle / protection_angle).clamp(0.0, 1.0);
+    let landing_ramp = landing_ramp * landing_ramp * (3.0 - 2.0 * landing_ramp);
+
+    detail * BAKED_DETAIL_MAX_AMPLITUDE_METERS * level_ramp * landing_ramp
 }
 
 fn sparse_microrelief(config: &BakeConfig, key: TileKey, direction: DVec3, noise: &Perlin) -> f64 {
@@ -490,5 +590,74 @@ mod tests {
                 assert!(keys.binary_search(&parent).is_ok());
             }
         }
+    }
+
+    #[test]
+    fn level_four_tiles_contain_baked_detail_away_from_landing_site() {
+        let key = TileKey {
+            face: CubeFace::PositiveZ,
+            level: 4,
+            x: 8,
+            y: 8,
+        };
+        let noise = Perlin::new(0xABCD_0123);
+        let mut minimum = f64::INFINITY;
+        let mut maximum = f64::NEG_INFINITY;
+        for y in 0..=32 {
+            for x in 0..=32 {
+                let direction = face_uv_to_direction(
+                    key.face,
+                    -1.0 + 2.0 * (f64::from(key.x) + f64::from(x) / 32.0) / 16.0,
+                    -1.0 + 2.0 * (f64::from(key.y) + f64::from(y) / 32.0) / 16.0,
+                );
+                let detail = baked_surface_detail(key, direction, &noise);
+                minimum = minimum.min(detail);
+                maximum = maximum.max(detail);
+            }
+        }
+        assert!(maximum - minimum > 20.0);
+        assert_eq!(
+            baked_surface_detail(
+                TileKey {
+                    face: CubeFace::PositiveX,
+                    level: 18,
+                    x: 1 << 17,
+                    y: 1 << 17,
+                },
+                DVec3::X,
+                &noise,
+            ),
+            0.0
+        );
+    }
+
+    #[test]
+    fn level_four_biome_detail_breaks_up_land_materials() {
+        let key = TileKey {
+            face: CubeFace::PositiveZ,
+            level: 4,
+            x: 8,
+            y: 8,
+        };
+        let noise = Perlin::new(0xABCD_0123);
+        let biomes: std::collections::BTreeSet<_> = (0..=32)
+            .flat_map(|y| (0..=32).map(move |x| (x, y)))
+            .map(|(x, y)| {
+                let direction = face_uv_to_direction(
+                    key.face,
+                    -1.0 + 2.0 * (f64::from(key.x) + f64::from(x) / 32.0) / 16.0,
+                    -1.0 + 2.0 * (f64::from(key.y) + f64::from(y) / 32.0) / 16.0,
+                );
+                baked_biome_detail(
+                    key,
+                    direction,
+                    500.0,
+                    128,
+                    BiomeId::TemperateGrassland as u8,
+                    &noise,
+                )
+            })
+            .collect();
+        assert!(biomes.len() >= 2);
     }
 }

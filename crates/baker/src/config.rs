@@ -19,9 +19,13 @@ impl Default for BakeConfig {
         Self {
             output: PathBuf::from("assets/outmaps/test-planet"),
             seed: 0x000C_471A,
-            width: 256,
-            height: 128,
-            dense_level: 2,
+            // Preserve continental/hydrology data at a useful resolution, then
+            // make actual L4 tiles available globally. L4 is the current
+            // coarsest rendered level, so a lower dense level only makes the
+            // renderer spend geometry work on ancestor-fallback textures.
+            width: 1_024,
+            height: 512,
+            dense_level: 4,
             max_level: QUADTREE_MAX_LEVEL,
             sparse_radius: 1,
             erosion_iterations: 2_048,

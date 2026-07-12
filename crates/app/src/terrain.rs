@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     error::Error,
     fmt,
     path::PathBuf,
@@ -16,6 +16,11 @@ use crate::{
         QuadtreeNode, build_chunk_mesh, cube_face_direction,
     },
 };
+
+// The default detailed test planet contains 2,172 tiles. Keeping that working
+// set resident prevents a moving camera from continually uploading the same
+// L4 textures, while keeping GPU texture memory bounded for larger outmaps.
+const MAX_RESIDENT_TERRAIN_TILES: usize = 2_560;
 
 #[derive(Clone, Debug)]
 pub enum TerrainSource {
@@ -107,8 +112,11 @@ pub struct TerrainRenderer {
     source: TerrainDataSource,
     placeholder_tile: GpuTile,
     tile_cache: HashMap<TileKey, GpuTile>,
+    tile_last_used: HashMap<TileKey, u64>,
+    tile_cache_tick: u64,
     chunks: BTreeMap<QuadtreeNode, GpuChunk>,
     draw_items: Vec<DrawItem>,
+    max_outmap_seam_delta_meters: f64,
 }
 
 impl TerrainRenderer {
@@ -207,20 +215,31 @@ impl TerrainRenderer {
             source,
             placeholder_tile,
             tile_cache: HashMap::new(),
+            tile_last_used: HashMap::new(),
+            tile_cache_tick: 0,
             chunks: BTreeMap::new(),
             draw_items: Vec::new(),
+            max_outmap_seam_delta_meters: 0.0,
         })
     }
 
     pub fn update(
         &mut self,
         camera_world: DVec3,
+        camera_forward: DVec3,
         viewport: [u32; 2],
         vertical_fov_radians: f64,
     ) -> Result<TerrainStats, TerrainError> {
-        let lod_update = self
-            .lod
-            .update(camera_world, viewport[1].max(1), vertical_fov_radians);
+        self.tile_cache_tick = self.tile_cache_tick.wrapping_add(1);
+        let lod_update = self.lod.update_for_view(
+            camera_world,
+            camera_forward,
+            f64::from(viewport[0].max(1)) / f64::from(viewport[1].max(1)),
+            viewport[1].max(1),
+            vertical_fov_radians,
+        );
+        let topology_changed =
+            !lod_update.loaded_nodes.is_empty() || !lod_update.unloaded_nodes.is_empty();
 
         for node in &lod_update.unloaded_nodes {
             self.chunks.remove(node);
@@ -278,12 +297,28 @@ impl TerrainRenderer {
             self.tile_cache.insert(key, gpu_tile);
         }
 
-        let used_tiles: HashSet<_> = resolved_tiles
+        for source_key in resolved_tiles
             .iter()
             .filter_map(|resolved| resolved.map(|(_, source)| source))
-            .collect();
+        {
+            self.tile_last_used.insert(source_key, self.tile_cache_tick);
+        }
         let before_eviction = self.tile_cache.len();
-        self.tile_cache.retain(|key, _| used_tiles.contains(key));
+        if self.tile_cache.len() > MAX_RESIDENT_TERRAIN_TILES {
+            let mut eviction_candidates: Vec<_> = self
+                .tile_cache
+                .keys()
+                .map(|key| (self.tile_last_used.get(key).copied().unwrap_or(0), *key))
+                .collect();
+            eviction_candidates.sort_unstable();
+            for (_, key) in eviction_candidates
+                .into_iter()
+                .take(self.tile_cache.len() - MAX_RESIDENT_TERRAIN_TILES)
+            {
+                self.tile_cache.remove(&key);
+                self.tile_last_used.remove(&key);
+            }
+        }
         let tiles_unloaded = (before_eviction - self.tile_cache.len()) as u32;
 
         let mut instances = Vec::with_capacity(lod_update.active_nodes.len());
@@ -327,7 +362,14 @@ impl TerrainRenderer {
 
         let metrics = lod_update.metrics;
         let max_seam_delta_meters = if matches!(&self.source, TerrainDataSource::Outmap(_)) {
-            max_outmap_seam_delta(&lod_update.active_nodes, &resolved_tiles, &self.tile_cache)
+            if topology_changed {
+                self.max_outmap_seam_delta_meters = max_outmap_seam_delta(
+                    &lod_update.active_nodes,
+                    &resolved_tiles,
+                    &self.tile_cache,
+                );
+            }
+            self.max_outmap_seam_delta_meters
         } else {
             metrics.max_seam_delta_meters
         };

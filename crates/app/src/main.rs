@@ -177,6 +177,7 @@ impl State {
         window: Arc<Window>,
         scenario_name: Option<String>,
         profile_render: bool,
+        vertical_fov_degrees: Option<f64>,
         terrain_source: terrain::TerrainSource,
     ) -> Self {
         let scenario = scenario_name
@@ -259,7 +260,10 @@ impl State {
         surface.configure(&device, &config);
         let depth_view = create_depth_view(&device, size);
 
-        let camera = planet::OrbitCamera::default();
+        let mut camera = planet::OrbitCamera::default();
+        if let Some(vertical_fov_degrees) = vertical_fov_degrees {
+            camera.set_vertical_fov_degrees(vertical_fov_degrees);
+        }
         let initial_camera_world_position = camera.world_position();
         let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("camera projection"),
@@ -514,6 +518,10 @@ impl State {
         let camera_planet_frame_position = self
             .camera
             .planet_frame_world_position(planet_rotation_radians);
+        let camera_planet_frame_direction = self
+            .camera
+            .planet_frame_direction(planet_rotation_radians)
+            .as_dvec3();
         let camera_radius = camera_world_position.length();
         let camera_altitude = camera_radius - planet::PLANET_RADIUS_METERS;
         let delta_sim_time = (sim_time - self.previous_sim_time).max(f64::EPSILON);
@@ -527,6 +535,7 @@ impl State {
             self.terrain
                 .update(
                     camera_planet_frame_position,
+                    camera_planet_frame_direction,
                     [self.size.width, self.size.height],
                     self.camera.vertical_fov_radians(),
                 )
@@ -561,6 +570,7 @@ impl State {
                     },
                     orientation_azimuth_radians: self.camera.azimuth_radians,
                     orientation_elevation_radians: self.camera.elevation_radians,
+                    vertical_fov_degrees: self.camera.vertical_fov_radians().to_degrees(),
                     sun_direction: self.sun_direction.to_array(),
                     planet_rotation_radians,
                     lod_level_histogram: self.terrain_stats.level_histogram,
@@ -897,6 +907,7 @@ fn main() {
         window.clone(),
         launch_options.scenario_name,
         launch_options.profile_render,
+        launch_options.vertical_fov_degrees,
         launch_options.terrain_source,
     ));
     state.set_mouse_capture(&window, true);
@@ -1015,6 +1026,7 @@ fn main() {
 struct LaunchOptions {
     scenario_name: Option<String>,
     profile_render: bool,
+    vertical_fov_degrees: Option<f64>,
     terrain_source: terrain::TerrainSource,
 }
 
@@ -1023,6 +1035,7 @@ fn launch_options() -> Result<LaunchOptions, String> {
     let mut options = LaunchOptions {
         scenario_name: None,
         profile_render: false,
+        vertical_fov_degrees: None,
         terrain_source: if default_outmap.join("manifest.json").is_file() {
             terrain::TerrainSource::Outmap(default_outmap.clone())
         } else {
@@ -1040,6 +1053,20 @@ fn launch_options() -> Result<LaunchOptions, String> {
                 )
             }
             "--profile-render" => options.profile_render = true,
+            "--vertical-fov-degrees" => {
+                let value = arguments
+                    .next()
+                    .ok_or_else(|| "--vertical-fov-degrees requires a number".to_owned())?;
+                let degrees = value.parse::<f64>().map_err(|_| {
+                    "--vertical-fov-degrees must be a finite positive number".to_owned()
+                })?;
+                if !degrees.is_finite() || degrees <= 0.0 {
+                    return Err(
+                        "--vertical-fov-degrees must be a finite positive number".to_owned()
+                    );
+                }
+                options.vertical_fov_degrees = Some(degrees);
+            }
             "--terrain" => {
                 options.terrain_source = match arguments
                     .next()

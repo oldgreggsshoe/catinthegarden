@@ -24,6 +24,7 @@ pub struct SpatialLogSample {
     pub orientation: String,
     pub orientation_azimuth_radians: f64,
     pub orientation_elevation_radians: f64,
+    pub vertical_fov_degrees: f64,
     pub sun_direction: [f64; 3],
     pub planet_rotation_radians: f64,
     pub lod_level_histogram: [u32; LOD_LEVEL_COUNT],
@@ -339,6 +340,7 @@ fn sample_metrics_are_finite(sample: &SpatialLogSample) -> bool {
         && sample.velocity_meters_per_second.is_finite()
         && sample.orientation_azimuth_radians.is_finite()
         && sample.orientation_elevation_radians.is_finite()
+        && sample.vertical_fov_degrees.is_finite()
         && sample.sun_direction.iter().all(|value| value.is_finite())
         && sample.planet_rotation_radians.is_finite()
         && sample.frame_time_ms.is_finite()
@@ -436,6 +438,7 @@ impl RunArtifacts {
             orientation: "orbit".to_owned(),
             orientation_azimuth_radians,
             orientation_elevation_radians,
+            vertical_fov_degrees: 45.0,
             sun_direction: [0.4, 0.7, 0.6],
             planet_rotation_radians: 0.0,
             lod_level_histogram: [0; LOD_LEVEL_COUNT],
@@ -469,6 +472,7 @@ impl RunArtifacts {
             orientation = sample.orientation,
             orientation_azimuth_radians = sample.orientation_azimuth_radians,
             orientation_elevation_radians = sample.orientation_elevation_radians,
+            vertical_fov_degrees = sample.vertical_fov_degrees,
             sun_direction = ?sample.sun_direction,
             planet_rotation_radians = sample.planet_rotation_radians,
             lod_level_histogram = ?sample.lod_level_histogram,
@@ -821,6 +825,7 @@ mod tests {
             orientation: "waypoint".to_owned(),
             orientation_azimuth_radians: 0.0,
             orientation_elevation_radians: 0.0,
+            vertical_fov_degrees: 45.0,
             sun_direction: [0.4, 0.7, 0.6],
             planet_rotation_radians: 0.0,
             lod_level_histogram,
