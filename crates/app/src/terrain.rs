@@ -17,8 +17,6 @@ use crate::{
     },
 };
 
-const CAMERA_VERTICAL_FOV_RADIANS: f64 = 45.0_f64.to_radians();
-
 #[derive(Clone, Debug)]
 pub enum TerrainSource {
     Placeholder,
@@ -218,12 +216,11 @@ impl TerrainRenderer {
         &mut self,
         camera_world: DVec3,
         viewport: [u32; 2],
+        vertical_fov_radians: f64,
     ) -> Result<TerrainStats, TerrainError> {
-        let lod_update = self.lod.update(
-            camera_world,
-            viewport[1].max(1),
-            CAMERA_VERTICAL_FOV_RADIANS,
-        );
+        let lod_update = self
+            .lod
+            .update(camera_world, viewport[1].max(1), vertical_fov_radians);
 
         for node in &lod_update.unloaded_nodes {
             self.chunks.remove(node);

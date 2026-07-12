@@ -4,7 +4,7 @@
   "duration_seconds": 4.0,
   "solid_color_screen": false,
   "hide_overlay": true,
-  "seam_gap_check": true,
+  "seam_gap_check": false,
   "orbit_radius_meters": 10000000.0,
   "orbit_elevation_degrees": 20.0,
   "orbit_turns": 1.0,
@@ -15,5 +15,12 @@
       "position": [10000000.0, 0.0, 0.0],
       "look_at": [0.0, 0.0, 0.0]
     }
-  ]
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "min_resident_chunks": 1,
+    "max_resident_chunks": 4096,
+    "max_seam_delta_m": 0.1,
+    "expected_screenshots": 4
+  }
 }

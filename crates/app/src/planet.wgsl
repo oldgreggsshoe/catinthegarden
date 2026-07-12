@@ -1,9 +1,23 @@
 const PLANET_RADIUS_METERS: f32 = 4000000.0;
 const TILE_LOGICAL_QUADS: f32 = 32.0;
 const TILE_GUTTER: f32 = 1.0;
+const ATMOSPHERE_HEIGHT_METERS: f32 = 80000.0;
+const ATMOSPHERE_RADIUS_METERS: f32 = PLANET_RADIUS_METERS + ATMOSPHERE_HEIGHT_METERS;
+const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 8000.0;
+const MIE_SCALE_HEIGHT_METERS: f32 = 1200.0;
+const RAYLEIGH_COEFFICIENT: vec3<f32> = vec3<f32>(5.8e-6, 13.5e-6, 33.1e-6);
+const MIE_COEFFICIENT: vec3<f32> = vec3<f32>(21.0e-6);
+const MIE_G: f32 = 0.76;
+const SOLAR_RADIANCE: f32 = 2.0;
 
 struct Camera {
     view_projection: mat4x4<f32>,
+    camera_forward: vec4<f32>,
+    camera_right: vec4<f32>,
+    camera_up: vec4<f32>,
+    camera_planet_direction_altitude: vec4<f32>,
+    sun_direction: vec4<f32>,
+    projection: vec4<f32>,
 }
 
 @group(0) @binding(0)
@@ -33,7 +47,7 @@ struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) camera_relative_position: vec3<f32>,
     @location(1) world_normal: vec3<f32>,
-    @location(2) base_color: vec3<f32>,
+    @location(2) aerial_color: vec3<f32>,
 }
 
 fn uses_outmap(terrain_info: u32) -> bool {
@@ -85,6 +99,128 @@ fn terrain_height(outmap: bool, source_uv: vec2<f32>, direction: vec3<f32>) -> f
         return sample_height(source_uv);
     }
     return placeholder_height(direction);
+}
+
+fn density(altitude_meters: f32, scale_height_meters: f32) -> f32 {
+    return exp(-max(altitude_meters, 0.0) / scale_height_meters);
+}
+
+fn phase_rayleigh(cos_theta: f32) -> f32 {
+    return 3.0 * (1.0 + cos_theta * cos_theta) / (16.0 * 3.14159265);
+}
+
+fn phase_mie(cos_theta: f32) -> f32 {
+    let g_squared = MIE_G * MIE_G;
+    let denominator = max(1.0 + g_squared - 2.0 * MIE_G * cos_theta, 1.0e-4);
+    return 3.0 * (1.0 - g_squared) * (1.0 + cos_theta * cos_theta)
+        / (8.0 * 3.14159265 * (2.0 + g_squared) * pow(denominator, 1.5));
+}
+
+fn transmittance(
+    start_altitude_meters: f32,
+    end_altitude_meters: f32,
+    distance_meters: f32,
+) -> vec3<f32> {
+    let rayleigh_density = 0.5
+        * (density(start_altitude_meters, RAYLEIGH_SCALE_HEIGHT_METERS)
+            + density(end_altitude_meters, RAYLEIGH_SCALE_HEIGHT_METERS));
+    let mie_density = 0.5
+        * (density(start_altitude_meters, MIE_SCALE_HEIGHT_METERS)
+            + density(end_altitude_meters, MIE_SCALE_HEIGHT_METERS));
+    return exp(-(RAYLEIGH_COEFFICIENT * rayleigh_density + MIE_COEFFICIENT * mie_density)
+        * max(distance_meters, 0.0));
+}
+
+fn atmosphere_interval(radius_meters: f32, radial_dot_ray: f32) -> vec2<f32> {
+    let discriminant = radial_dot_ray * radial_dot_ray
+        + ATMOSPHERE_RADIUS_METERS * ATMOSPHERE_RADIUS_METERS
+        - radius_meters * radius_meters;
+    if discriminant <= 0.0 {
+        return vec2<f32>(-1.0);
+    }
+    let root = sqrt(discriminant);
+    return vec2<f32>(-radial_dot_ray - root, -radial_dot_ray + root);
+}
+
+fn atmosphere_exit_distance(radius_meters: f32, radial_dot_ray: f32) -> f32 {
+    return max(atmosphere_interval(radius_meters, radial_dot_ray).y, 0.0);
+}
+
+fn altitude_along_ray(radius_meters: f32, radial_dot_ray: f32, distance_meters: f32) -> f32 {
+    return sqrt(
+        radius_meters * radius_meters
+            + 2.0 * radial_dot_ray * distance_meters
+            + distance_meters * distance_meters,
+    ) - PLANET_RADIUS_METERS;
+}
+
+fn sun_is_occluded(radius_meters: f32, radial_dot_sun: f32) -> bool {
+    let discriminant = radial_dot_sun * radial_dot_sun
+        - (radius_meters * radius_meters - PLANET_RADIUS_METERS * PLANET_RADIUS_METERS);
+    return radial_dot_sun < 0.0 && discriminant >= 0.0;
+}
+
+fn aerial_perspective(
+    lit_surface_color: vec3<f32>,
+    camera_relative_position: vec3<f32>,
+    surface_direction: vec3<f32>,
+    surface_altitude_meters: f32,
+) -> vec3<f32> {
+    let distance_meters = length(camera_relative_position);
+    let camera_altitude_meters = camera.camera_planet_direction_altitude.w;
+    let view_direction = normalize(camera_relative_position);
+    let sun_direction = normalize(camera.sun_direction.xyz);
+    let camera_radius = PLANET_RADIUS_METERS + camera_altitude_meters;
+    let radial_dot_view = camera_radius
+        * dot(camera.camera_planet_direction_altitude.xyz, view_direction);
+    let view_interval = atmosphere_interval(camera_radius, radial_dot_view);
+    let view_start = max(view_interval.x, 0.0);
+    let view_end = min(view_interval.y, distance_meters);
+    if view_end <= view_start {
+        return lit_surface_color;
+    }
+    let atmospheric_view_length = view_end - view_start;
+    let atmospheric_view_start_altitude = altitude_along_ray(
+        camera_radius,
+        radial_dot_view,
+        view_start,
+    );
+    let atmospheric_view_end_altitude = altitude_along_ray(
+        camera_radius,
+        radial_dot_view,
+        view_end,
+    );
+    let surface_radius = PLANET_RADIUS_METERS + surface_altitude_meters;
+    let radial_dot_sun = surface_radius * dot(surface_direction, sun_direction);
+    let sun_distance = atmosphere_exit_distance(surface_radius, radial_dot_sun);
+    let sun_transmittance = select(
+        transmittance(surface_altitude_meters, ATMOSPHERE_HEIGHT_METERS, sun_distance),
+        vec3<f32>(0.0),
+        sun_is_occluded(surface_radius, radial_dot_sun),
+    );
+    let view_transmittance = transmittance(
+        atmospheric_view_start_altitude,
+        atmospheric_view_end_altitude,
+        atmospheric_view_length,
+    );
+    let average_rayleigh_density = 0.5
+        * (density(
+            atmospheric_view_start_altitude,
+            RAYLEIGH_SCALE_HEIGHT_METERS,
+        ) + density(
+            atmospheric_view_end_altitude,
+            RAYLEIGH_SCALE_HEIGHT_METERS,
+        ));
+    let average_mie_density = 0.5
+        * (density(atmospheric_view_start_altitude, MIE_SCALE_HEIGHT_METERS)
+            + density(atmospheric_view_end_altitude, MIE_SCALE_HEIGHT_METERS));
+    let cos_theta = dot(view_direction, sun_direction);
+    let in_scatter = sun_transmittance
+        * (RAYLEIGH_COEFFICIENT * average_rayleigh_density * phase_rayleigh(cos_theta)
+            + MIE_COEFFICIENT * average_mie_density * phase_mie(cos_theta))
+        * atmospheric_view_length
+        * SOLAR_RADIANCE;
+    return lit_surface_color * view_transmittance + in_scatter;
 }
 
 fn sample_biome(source_uv: vec2<f32>) -> u32 {
@@ -188,22 +324,35 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         let moisture = sample_moisture(source_uv);
         color = biome_color(sample_biome(source_uv)) * mix(0.88, 1.06, moisture);
     }
+    let normal = displaced_surface_normal(
+        direction,
+        source_uv,
+        input.source_uv_scale,
+        input.terrain_info,
+    );
+    let sun_direction = normalize(camera.sun_direction.xyz);
+    let surface_radius = PLANET_RADIUS_METERS + height;
+    let radial_dot_sun = surface_radius * dot(direction, sun_direction);
+    let direct_sun_transmittance = select(
+        transmittance(
+            height,
+            ATMOSPHERE_HEIGHT_METERS,
+            atmosphere_exit_distance(surface_radius, radial_dot_sun),
+        ),
+        vec3<f32>(0.0),
+        sun_is_occluded(surface_radius, radial_dot_sun),
+    );
+    let direct_light = max(dot(normal, sun_direction), 0.14);
+    let lit_surface_color = color * (vec3<f32>(0.14) + direct_sun_transmittance * direct_light);
     return VertexOutput(
         camera.view_projection * vec4<f32>(camera_relative_position, 1.0),
         camera_relative_position,
-        displaced_surface_normal(
-            direction,
-            source_uv,
-            input.source_uv_scale,
-            input.terrain_info,
-        ),
-        color,
+        normal,
+        aerial_perspective(lit_surface_color, camera_relative_position, direction, height),
     );
 }
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let light_direction = normalize(vec3<f32>(0.4, 0.7, 0.6));
-    let light = max(dot(normalize(input.world_normal), light_direction), 0.14);
-    return vec4<f32>(input.base_color * light, 1.0);
+    return vec4<f32>(input.aerial_color, 1.0);
 }

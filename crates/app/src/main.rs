@@ -1,3 +1,4 @@
+mod atmosphere;
 mod debug;
 mod outmap;
 mod planet;
@@ -30,6 +31,8 @@ const HUD_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
 const HIDDEN_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 const GPU_PROFILE_RING_SIZE: usize = 3;
 const DEFAULT_OUTMAP_PATH: &str = "assets/outmaps/test-planet";
+const DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND: f64 = 0.08;
+const MOUSE_LOOK_RADIANS_PER_PIXEL: f64 = 0.0006;
 
 struct PendingGpuTimestamp {
     sim_time: f64,
@@ -137,11 +140,14 @@ struct State {
     config: wgpu::SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
     depth_view: wgpu::TextureView,
+    atmosphere: atmosphere::AtmosphereRenderer,
     terrain: terrain::TerrainRenderer,
     terrain_stats: terrain::TerrainStats,
     camera: planet::OrbitCamera,
+    sun_direction: glam::DVec3,
     previous_camera_world_position: glam::DVec3,
     previous_sim_time: f64,
+    last_auto_orbit_sim_time: f64,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     started_at: Instant,
@@ -266,7 +272,7 @@ impl State {
                 label: Some("camera layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -291,6 +297,8 @@ impl State {
             terrain_source,
         )
         .expect("terrain renderer must initialize");
+        let atmosphere =
+            atmosphere::AtmosphereRenderer::new(&device, config.format, &camera_bind_group_layout);
 
         let egui_context = egui::Context::default();
         let egui_state = egui_winit::State::new(
@@ -314,11 +322,14 @@ impl State {
             config,
             size,
             depth_view,
+            atmosphere,
             terrain,
             terrain_stats: terrain::TerrainStats::default(),
             camera,
+            sun_direction: glam::DVec3::new(0.4, 0.7, 0.6).normalize(),
             previous_camera_world_position: initial_camera_world_position,
             previous_sim_time: 0.0,
+            last_auto_orbit_sim_time: 0.0,
             camera_buffer,
             camera_bind_group,
             started_at: Instant::now(),
@@ -450,6 +461,8 @@ impl State {
             hide_overlay,
             seam_gap_check,
             scenario_pose,
+            scenario_sun_direction,
+            scenario_planet_rotation_time_scale,
         ) = if let Some(scenario) = self.scenario.as_mut() {
             let frame = scenario.advance();
             let solid_color_screen = scenario.renders_solid_color();
@@ -468,6 +481,8 @@ impl State {
                 scenario.hides_overlay(),
                 scenario.needs_seam_gap_check(),
                 scenario_pose,
+                Some(glam::DVec3::from_array(frame.sun_direction)),
+                frame.planet_rotation_time_scale,
             )
         } else {
             let sim_time = self.started_at.elapsed().as_secs_f64();
@@ -475,12 +490,30 @@ impl State {
             if write_log {
                 self.next_log_time = sim_time + 0.5;
             }
-            (sim_time, write_log, false, false, false, false, false, None)
+            (
+                sim_time, write_log, false, false, false, false, false, None, None, 1.0,
+            )
         };
         if let Some((position, look_at)) = scenario_pose {
             self.camera.set_world_pose(position, look_at);
         }
+        if let Some(sun_direction) = scenario_sun_direction {
+            self.sun_direction = sun_direction.normalize();
+        }
+        if self.scenario.is_none() {
+            let orbit_delta_seconds = (sim_time - self.last_auto_orbit_sim_time).max(0.0);
+            self.camera.orbit(
+                DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND * orbit_delta_seconds,
+                0.0,
+            );
+        }
+        self.last_auto_orbit_sim_time = sim_time;
         let camera_world_position = self.camera.world_position();
+        let planet_rotation_radians =
+            planet::planet_rotation_radians(sim_time * scenario_planet_rotation_time_scale);
+        let camera_planet_frame_position = self
+            .camera
+            .planet_frame_world_position(planet_rotation_radians);
         let camera_radius = camera_world_position.length();
         let camera_altitude = camera_radius - planet::PLANET_RADIUS_METERS;
         let delta_sim_time = (sim_time - self.previous_sim_time).max(f64::EPSILON);
@@ -492,7 +525,11 @@ impl State {
             terrain::TerrainStats::default()
         } else {
             self.terrain
-                .update(camera_world_position, [self.size.width, self.size.height])
+                .update(
+                    camera_planet_frame_position,
+                    [self.size.width, self.size.height],
+                    self.camera.vertical_fov_radians(),
+                )
                 .unwrap_or_else(|error| panic!("terrain update failed: {error}"))
         };
         let draw_calls = if solid_color_screen {
@@ -524,6 +561,8 @@ impl State {
                     },
                     orientation_azimuth_radians: self.camera.azimuth_radians,
                     orientation_elevation_radians: self.camera.elevation_radians,
+                    sun_direction: self.sun_direction.to_array(),
+                    planet_rotation_radians,
                     lod_level_histogram: self.terrain_stats.level_histogram,
                     chunks_loaded: self.terrain_stats.chunks_loaded,
                     chunks_unloaded: self.terrain_stats.chunks_unloaded,
@@ -549,6 +588,7 @@ impl State {
             let fps = self.fps;
             let camera_position = camera_world_position;
             let camera_direction = self.camera.direction();
+            let vertical_fov_degrees = self.camera.vertical_fov_radians().to_degrees();
             let terrain_stats = self.terrain_stats.clone();
             let full_output = self.egui_context.run_ui(raw_input, |ui| {
                 if show_debug_overlay {
@@ -571,13 +611,17 @@ impl State {
                                 terrain_stats.max_level, terrain_stats.resident_chunks
                             ));
                             ui.label(format!(
+                                "Optical zoom: {:.1}\u{00b0} vertical FOV",
+                                vertical_fov_degrees
+                            ));
+                            ui.label(format!(
                                 "Tiles: {}  |  Fallback chunks: {}  |  Seam: {:.4} m",
                                 terrain_stats.resident_tiles,
                                 terrain_stats.fallback_chunks,
                                 terrain_stats.max_seam_delta_meters
                             ));
                             ui.label("F3: toggle overlay  |  F12: capture PNG");
-                            ui.label("Mouse: orbit  |  Wheel: zoom  |  Esc/Q: quit");
+                            ui.label("Default: auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc/Q: quit");
                         });
                 }
             });
@@ -661,6 +705,8 @@ impl State {
         let camera_uniform = planet::CameraUniform::from_camera(
             &self.camera,
             self.size.width as f32 / self.size.height as f32,
+            self.sun_direction,
+            planet_rotation_radians,
         );
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
@@ -699,6 +745,8 @@ impl State {
                 multiview_mask: None,
             });
             if !solid_color_screen {
+                self.atmosphere
+                    .draw(&mut render_pass, &self.camera_bind_group);
                 self.terrain.draw(&mut render_pass, &self.camera_bind_group);
             }
         }
@@ -942,20 +990,18 @@ fn main() {
                 event: DeviceEvent::MouseMotion { delta },
                 ..
             } if state.mouse_captured => {
-                state.look_camera(delta.0 * 0.003, -delta.1 * 0.003);
+                state.look_camera(
+                    delta.0 * MOUSE_LOOK_RADIANS_PER_PIXEL,
+                    -delta.1 * MOUSE_LOOK_RADIANS_PER_PIXEL,
+                );
                 window.request_redraw();
             }
             Event::AboutToWait => {
-                if state.scenario.is_some() {
-                    event_loop.set_control_flow(ControlFlow::Poll);
-                    window.request_redraw();
-                } else {
-                    let now = Instant::now();
-                    if state.hud_dirty || now >= state.next_hud_update {
-                        window.request_redraw();
-                    }
-                    event_loop.set_control_flow(ControlFlow::WaitUntil(state.next_hud_update));
-                }
+                // Present mode is FIFO, so this remains display-paced while the cached HUD
+                // refreshes independently at its lower rate. Waiting for HUD refreshes here
+                // incorrectly made an otherwise idle scene render at 10 FPS.
+                event_loop.set_control_flow(ControlFlow::Poll);
+                window.request_redraw();
             }
             _ => {}
         })

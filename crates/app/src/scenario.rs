@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const MAX_TERRAIN_LOD_LEVEL: u8 = 18;
+const DEFAULT_SUN_DIRECTION: [f64; 3] = [0.4, 0.7, 0.6];
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
@@ -14,6 +15,10 @@ pub struct ScenarioAssertions {
     pub max_seam_delta_m: Option<f64>,
     pub max_fallback_chunks: Option<u32>,
     pub expected_screenshots: Option<usize>,
+    pub sky_sample_uv: Option<[f32; 2]>,
+    pub min_sunset_red_blue_growth: Option<f32>,
+    pub min_final_sunset_red_blue_ratio: Option<f32>,
+    pub max_adjacent_sky_luminance_delta: Option<f32>,
 }
 
 impl Default for ScenarioAssertions {
@@ -28,6 +33,10 @@ impl Default for ScenarioAssertions {
             max_seam_delta_m: None,
             max_fallback_chunks: None,
             expected_screenshots: None,
+            sky_sample_uv: None,
+            min_sunset_red_blue_growth: None,
+            min_final_sunset_red_blue_ratio: None,
+            max_adjacent_sky_luminance_delta: None,
         }
     }
 }
@@ -49,11 +58,17 @@ pub struct ScenarioDefinition {
     pub hide_overlay: bool,
     #[serde(default)]
     pub seam_gap_check: bool,
+    /// Test scenarios default to a static planet so terrain/LOD regressions
+    /// remain focused; atmosphere scenarios opt in explicitly.
+    #[serde(default)]
+    pub planet_rotation_time_scale: f64,
     pub orbit_radius_meters: Option<f64>,
     pub orbit_elevation_degrees: Option<f64>,
     pub orbit_turns: Option<f64>,
     pub screenshot_times_seconds: Vec<f64>,
     pub waypoints: Vec<Waypoint>,
+    #[serde(default)]
+    pub sun_waypoints: Vec<SunWaypoint>,
     #[serde(default)]
     pub assertions: ScenarioAssertions,
 }
@@ -65,6 +80,12 @@ pub struct Waypoint {
     pub look_at: [f64; 3],
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SunWaypoint {
+    pub time_s: f64,
+    pub direction: [f64; 3],
+}
+
 pub struct FramePlan {
     pub sim_time: f64,
     pub write_log: bool,
@@ -73,6 +94,8 @@ pub struct FramePlan {
     pub orbit_azimuth_radians: Option<f64>,
     pub camera_world_position: [f64; 3],
     pub camera_look_at: [f64; 3],
+    pub sun_direction: [f64; 3],
+    pub planet_rotation_time_scale: f64,
 }
 
 pub struct ScenarioRunner {
@@ -88,6 +111,8 @@ impl ScenarioRunner {
             "still_5s" => include_str!("../scenarios/still_5s.json"),
             "orbit_once" => include_str!("../scenarios/orbit_once.json"),
             "descent_to_10m" => include_str!("../scenarios/descent_to_10m.json"),
+            "sunset_sweep" => include_str!("../scenarios/sunset_sweep.json"),
+            "ground_to_orbit" => include_str!("../scenarios/ground_to_orbit.json"),
             _ => return Err(format!("unknown scenario '{name}'")),
         };
         Self::from_source(source)
@@ -134,6 +159,29 @@ impl ScenarioRunner {
         {
             return Err(
                 "scenario waypoints must start at zero, be finite, sorted, unique, in range, and look away from the camera"
+                    .to_owned(),
+            );
+        }
+        if !definition.planet_rotation_time_scale.is_finite()
+            || definition.planet_rotation_time_scale < 0.0
+        {
+            return Err("planet rotation time scale must be finite and non-negative".to_owned());
+        }
+        if !definition.sun_waypoints.is_empty()
+            && (definition.sun_waypoints.iter().any(|waypoint| {
+                !waypoint.time_s.is_finite()
+                    || waypoint.time_s < 0.0
+                    || waypoint.time_s > definition.duration_seconds
+                    || waypoint.direction.iter().any(|value| !value.is_finite())
+                    || squared_length(waypoint.direction) <= f64::EPSILON
+            }) || definition.sun_waypoints[0].time_s != 0.0
+                || definition
+                    .sun_waypoints
+                    .windows(2)
+                    .any(|waypoints| waypoints[0].time_s >= waypoints[1].time_s))
+        {
+            return Err(
+                "sun waypoints must start at zero, have finite non-zero directions, and be sorted within the scenario duration"
                     .to_owned(),
             );
         }
@@ -234,6 +282,11 @@ impl ScenarioRunner {
         });
         let (mut camera_world_position, camera_look_at) =
             interpolated_waypoint(&self.definition.waypoints, self.sim_time);
+        let sun_direction = if self.definition.sun_waypoints.is_empty() {
+            normalize_array(DEFAULT_SUN_DIRECTION)
+        } else {
+            interpolated_sun_direction(&self.definition.sun_waypoints, self.sim_time)
+        };
         if let (Some(radius), Some(elevation), Some(azimuth)) = (
             self.definition.orbit_radius_meters,
             self.definition.orbit_elevation_degrees,
@@ -257,6 +310,8 @@ impl ScenarioRunner {
             orbit_azimuth_radians,
             camera_world_position,
             camera_look_at,
+            sun_direction,
+            planet_rotation_time_scale: self.definition.planet_rotation_time_scale,
         }
     }
 }
@@ -291,6 +346,36 @@ fn validate_assertions(
     {
         return Err("expected screenshot count must match screenshot times".to_owned());
     }
+    let needs_sky_sample = assertions.min_sunset_red_blue_growth.is_some()
+        || assertions.min_final_sunset_red_blue_ratio.is_some()
+        || assertions.max_adjacent_sky_luminance_delta.is_some();
+    if needs_sky_sample && assertions.sky_sample_uv.is_none() {
+        return Err("sky image assertions require sky_sample_uv".to_owned());
+    }
+    if assertions.sky_sample_uv.is_some_and(|uv| {
+        uv.iter()
+            .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+    }) {
+        return Err("sky_sample_uv must be finite normalized coordinates".to_owned());
+    }
+    for (name, value) in [
+        (
+            "minimum sunset red/blue growth",
+            assertions.min_sunset_red_blue_growth,
+        ),
+        (
+            "minimum final sunset red/blue ratio",
+            assertions.min_final_sunset_red_blue_ratio,
+        ),
+        (
+            "maximum adjacent sky luminance delta",
+            assertions.max_adjacent_sky_luminance_delta,
+        ),
+    ] {
+        if value.is_some_and(|value| !value.is_finite() || value < 0.0) {
+            return Err(format!("{name} must be finite and non-negative"));
+        }
+    }
     Ok(())
 }
 
@@ -316,6 +401,37 @@ fn interpolated_waypoint(waypoints: &[Waypoint], time_s: f64) -> ([f64; 3], [f64
 
 fn lerp_array(start: [f64; 3], end: [f64; 3], amount: f64) -> [f64; 3] {
     std::array::from_fn(|index| start[index] + (end[index] - start[index]) * amount)
+}
+
+fn interpolated_sun_direction(waypoints: &[SunWaypoint], time_s: f64) -> [f64; 3] {
+    let first = &waypoints[0];
+    if time_s <= first.time_s {
+        return normalize_array(first.direction);
+    }
+    for pair in waypoints.windows(2) {
+        let start = &pair[0];
+        let end = &pair[1];
+        if time_s <= end.time_s {
+            return normalize_array(lerp_array(
+                start.direction,
+                end.direction,
+                (time_s - start.time_s) / (end.time_s - start.time_s),
+            ));
+        }
+    }
+    normalize_array(waypoints[waypoints.len() - 1].direction)
+}
+
+fn normalize_array(direction: [f64; 3]) -> [f64; 3] {
+    let inverse_length = squared_length(direction).sqrt().recip();
+    std::array::from_fn(|index| direction[index] * inverse_length)
+}
+
+fn squared_length(direction: [f64; 3]) -> f64 {
+    direction
+        .iter()
+        .map(|component| component * component)
+        .sum()
 }
 
 #[cfg(test)]
@@ -377,6 +493,39 @@ mod tests {
         assert_eq!(
             scenario.assertions().required_peak_lod_level,
             Some(MAX_TERRAIN_LOD_LEVEL)
+        );
+    }
+
+    #[test]
+    fn atmosphere_scenarios_have_deterministic_sun_and_ascent_coverage() {
+        let mut sunset = ScenarioRunner::load("sunset_sweep").expect("sunset scenario parses");
+        let first_sun = sunset.advance().sun_direction;
+        let mut last_sun = first_sun;
+        while sunset.sim_time < 8.0 {
+            let frame = sunset.advance();
+            last_sun = frame.sun_direction;
+            if frame.complete {
+                break;
+            }
+        }
+        assert!(last_sun[0] < first_sun[0]);
+        assert_eq!(sunset.expected_screenshots(), 4);
+        assert!(
+            sunset
+                .assertions()
+                .min_sunset_red_blue_growth
+                .is_some_and(|growth| growth > 1.0)
+        );
+        assert_eq!(sunset.definition.planet_rotation_time_scale, 1.0);
+
+        let ascent = ScenarioRunner::load("ground_to_orbit").expect("ascent scenario parses");
+        assert_eq!(ascent.expected_screenshots(), 7);
+        assert_eq!(ascent.definition.planet_rotation_time_scale, 1.0);
+        assert!(
+            ascent
+                .assertions()
+                .max_adjacent_sky_luminance_delta
+                .is_some()
         );
     }
 

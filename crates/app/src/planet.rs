@@ -3,12 +3,17 @@ use std::{
     collections::{BinaryHeap, HashMap, HashSet},
 };
 
-use glam::{DVec3, Mat4, Vec3, Vec4};
+use glam::{DQuat, DVec3, Mat4, Vec3, Vec4};
 
 pub const PLANET_RADIUS_METERS: f64 = 4_000_000.0;
 pub const CHUNK_GRID_QUADS: usize = 32;
 pub const CHUNK_GRID_VERTICES: usize = CHUNK_GRID_QUADS + 1;
 pub const MAX_LOD_LEVEL: u8 = 18;
+/// The coarsest rendered quadtree leaf. L0/L1 would otherwise produce visibly
+/// oversized far-view triangles; normal screen-space refinement begins at L2.
+pub const MINIMUM_LOD_LEVEL: u8 = 2;
+/// Deliberately game-time-scaled so axial rotation is visible during normal play.
+pub const PLANET_ROTATION_PERIOD_SECONDS: f64 = 600.0;
 pub const DEFAULT_MAX_ACTIVE_CHUNKS: usize = 1_024;
 pub const SKIRT_DEPTH_RATIO: f64 = 0.075;
 pub const PLACEHOLDER_HEIGHT_OCTAVES: [(f64, f64); 4] = [
@@ -18,6 +23,9 @@ pub const PLACEHOLDER_HEIGHT_OCTAVES: [(f64, f64); 4] = [
     (2_097_152.0, 3.0),
 ];
 pub const PLACEHOLDER_HEIGHT_AMPLITUDE_METERS: f64 = 3_503.0;
+const DEFAULT_VERTICAL_FOV_RADIANS: f64 = 45.0_f64.to_radians();
+const MIN_VERTICAL_FOV_RADIANS: f64 = 2.0_f64.to_radians();
+const MAX_VERTICAL_FOV_RADIANS: f64 = 75.0_f64.to_radians();
 pub const PLACEHOLDER_GEOMETRIC_ERROR_RATIO: f64 = 0.02;
 pub const LOD_THRASH_WINDOW_UPDATES: u64 = 4;
 
@@ -141,6 +149,18 @@ pub fn cube_face_direction(face: u8, u: f64, v: f64) -> DVec3 {
     (normal + tangent_u * u + tangent_v * v).normalize()
 }
 
+pub fn planet_rotation_radians(sim_time_seconds: f64) -> f64 {
+    (sim_time_seconds * std::f64::consts::TAU / PLANET_ROTATION_PERIOD_SECONDS)
+        .rem_euclid(std::f64::consts::TAU)
+}
+
+/// Expresses a world-space vector in the rotating planet's local frame. The
+/// renderer keeps all terrain/outmap data in this local frame and transforms
+/// the f64 camera and sun inputs into it each frame.
+pub fn planet_local_vector(world_vector: DVec3, planet_rotation_radians: f64) -> DVec3 {
+    DQuat::from_rotation_y(-planet_rotation_radians).mul_vec3(world_vector)
+}
+
 pub fn placeholder_height_meters(direction: DVec3) -> f64 {
     PLACEHOLDER_HEIGHT_OCTAVES
         .iter()
@@ -172,12 +192,16 @@ impl Default for LodPolicy {
 }
 
 impl LodPolicy {
+    fn minimum_level(&self) -> u8 {
+        MINIMUM_LOD_LEVEL.min(self.max_level)
+    }
+
     pub fn should_split(&self, projected_error_pixels: f64, level: u8) -> bool {
         level < self.max_level && projected_error_pixels > self.split_pixels
     }
 
-    pub fn should_merge(&self, projected_error_pixels: f64) -> bool {
-        projected_error_pixels < self.merge_pixels
+    pub fn should_merge(&self, projected_error_pixels: f64, level: u8) -> bool {
+        level >= self.minimum_level() && projected_error_pixels < self.merge_pixels
     }
 }
 
@@ -488,7 +512,10 @@ impl PlanetLod {
                     &mut evaluations,
                     &mut culled_nodes,
                 );
-                evaluation.visible && self.policy.should_merge(evaluation.projected_error_pixels)
+                evaluation.visible
+                    && self
+                        .policy
+                        .should_merge(evaluation.projected_error_pixels, node.level)
             })
             .collect();
         let lod_thrash_events = self.record_lod_transitions(&split_transitions, &merge_transitions);
@@ -544,8 +571,10 @@ impl PlanetLod {
             evaluations,
             culled_nodes,
         );
-        let refine = if previous_split.contains(&node) {
-            !policy.should_merge(evaluation.projected_error_pixels)
+        let refine = if node.level < policy.minimum_level() {
+            true
+        } else if previous_split.contains(&node) {
+            !policy.should_merge(evaluation.projected_error_pixels, node.level)
         } else {
             policy.should_split(evaluation.projected_error_pixels, node.level)
         };
@@ -963,6 +992,7 @@ pub struct OrbitCamera {
     pub azimuth_radians: f64,
     pub elevation_radians: f64,
     pub orbit_radius_meters: f64,
+    vertical_fov_radians: f64,
     look_yaw_radians: f64,
     look_pitch_radians: f64,
 }
@@ -973,6 +1003,7 @@ impl Default for OrbitCamera {
             azimuth_radians: 0.0,
             elevation_radians: 20.0_f64.to_radians(),
             orbit_radius_meters: 10_000_000.0,
+            vertical_fov_radians: DEFAULT_VERTICAL_FOV_RADIANS,
             look_yaw_radians: 0.0,
             look_pitch_radians: 0.0,
         };
@@ -992,12 +1023,25 @@ impl OrbitCamera {
     }
 
     pub fn view_projection(&self, aspect_ratio: f32) -> Mat4 {
-        let forward = self.direction();
-        let up = DVec3::Y.as_vec3();
-        let view = Mat4::look_to_rh(Vec3::ZERO, forward, up);
-        let altitude = self.orbit_radius_meters - PLANET_RADIUS_METERS;
-        let near = (altitude * 0.01).clamp(0.05, 10.0) as f32;
-        reversed_z_infinite_perspective(45.0_f32.to_radians(), aspect_ratio, near) * view
+        view_projection_for(
+            self.direction(),
+            self.orbit_radius_meters - PLANET_RADIUS_METERS,
+            self.vertical_fov_radians,
+            aspect_ratio,
+        )
+    }
+
+    pub fn view_projection_in_planet_frame(
+        &self,
+        aspect_ratio: f32,
+        planet_rotation_radians: f64,
+    ) -> Mat4 {
+        view_projection_for(
+            self.planet_frame_direction(planet_rotation_radians),
+            self.orbit_radius_meters - PLANET_RADIUS_METERS,
+            self.vertical_fov_radians,
+            aspect_ratio,
+        )
     }
 
     pub fn set_world_pose(&mut self, position: DVec3, look_at: DVec3) {
@@ -1017,9 +1061,7 @@ impl OrbitCamera {
         self.azimuth_radians = position.z.atan2(position.x);
         self.elevation_radians = (position.y / radius).clamp(-1.0, 1.0).asin();
 
-        let forward = forward.normalize();
-        self.look_yaw_radians = forward.x.atan2(-forward.z);
-        self.look_pitch_radians = forward.y.clamp(-1.0, 1.0).asin();
+        self.set_look_direction_relative(forward.normalize().as_vec3());
     }
 
     pub fn orbit(&mut self, azimuth_delta: f64, elevation_delta: f64) {
@@ -1033,38 +1075,109 @@ impl OrbitCamera {
     }
 
     pub fn look_at_origin(&mut self) {
-        let forward = -self.world_position().normalize();
-        self.look_yaw_radians = forward.x.atan2(-forward.z);
-        self.look_pitch_radians = forward.y.asin();
+        self.look_yaw_radians = 0.0;
+        self.look_pitch_radians = 0.0;
     }
 
     pub fn direction(&self) -> Vec3 {
+        let (down, right, up) = self.orbit_look_frame();
         let horizontal = self.look_pitch_radians.cos() as f32;
-        Vec3::new(
-            (self.look_yaw_radians.sin() as f32) * horizontal,
-            self.look_pitch_radians.sin() as f32,
-            -(self.look_yaw_radians.cos() as f32) * horizontal,
-        )
-        .normalize()
+        (down * (self.look_yaw_radians.cos() as f32 * horizontal)
+            + right * (self.look_yaw_radians.sin() as f32 * horizontal)
+            + up * self.look_pitch_radians.sin() as f32)
+            .normalize()
+    }
+
+    pub fn planet_frame_world_position(&self, planet_rotation_radians: f64) -> DVec3 {
+        planet_local_vector(self.world_position(), planet_rotation_radians)
+    }
+
+    pub fn planet_frame_direction(&self, planet_rotation_radians: f64) -> Vec3 {
+        planet_local_vector(self.direction().as_dvec3(), planet_rotation_radians).as_vec3()
+    }
+
+    pub fn vertical_fov_radians(&self) -> f64 {
+        self.vertical_fov_radians
     }
 
     pub fn zoom(&mut self, wheel_delta: f64) {
-        let minimum_radius = PLANET_RADIUS_METERS + 10.0;
-        self.orbit_radius_meters = (self.orbit_radius_meters * (-wheel_delta * 0.12).exp())
-            .clamp(minimum_radius, PLANET_RADIUS_METERS * 20.0);
+        self.vertical_fov_radians = (self.vertical_fov_radians * (-wheel_delta * 0.12).exp())
+            .clamp(MIN_VERTICAL_FOV_RADIANS, MAX_VERTICAL_FOV_RADIANS);
     }
+
+    fn orbit_look_frame(&self) -> (Vec3, Vec3, Vec3) {
+        let down = -self.world_position().normalize().as_vec3();
+        let right = down.cross(Vec3::Y).normalize();
+        let up = right.cross(down).normalize();
+        (down, right, up)
+    }
+
+    fn set_look_direction_relative(&mut self, direction: Vec3) {
+        let (down, right, up) = self.orbit_look_frame();
+        self.look_yaw_radians = f64::from(direction.dot(right).atan2(direction.dot(down)));
+        self.look_pitch_radians = f64::from(direction.dot(up).clamp(-1.0, 1.0).asin());
+    }
+}
+
+fn view_projection_for(
+    forward: Vec3,
+    altitude_meters: f64,
+    vertical_fov_radians: f64,
+    aspect_ratio: f32,
+) -> Mat4 {
+    let view = Mat4::look_to_rh(Vec3::ZERO, forward, DVec3::Y.as_vec3());
+    let near = (altitude_meters * 0.01).clamp(0.05, 10.0) as f32;
+    reversed_z_infinite_perspective(vertical_fov_radians as f32, aspect_ratio, near) * view
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraUniform {
     pub view_projection: [[f32; 4]; 4],
+    pub camera_forward: [f32; 4],
+    pub camera_right: [f32; 4],
+    pub camera_up: [f32; 4],
+    pub camera_planet_direction_altitude: [f32; 4],
+    pub sun_direction: [f32; 4],
+    pub projection: [f32; 4],
 }
 
 impl CameraUniform {
-    pub fn from_camera(camera: &OrbitCamera, aspect_ratio: f32) -> Self {
+    pub fn from_camera(
+        camera: &OrbitCamera,
+        aspect_ratio: f32,
+        sun_direction: DVec3,
+        planet_rotation_radians: f64,
+    ) -> Self {
+        let forward = camera.planet_frame_direction(planet_rotation_radians);
+        let right = forward.cross(Vec3::Y).normalize();
+        let up = right.cross(forward).normalize();
+        let camera_world_position = camera.planet_frame_world_position(planet_rotation_radians);
+        let camera_radius = camera_world_position.length();
+        let planet_direction = (camera_world_position / camera_radius).as_vec3();
+        let sun_direction = planet_local_vector(sun_direction, planet_rotation_radians)
+            .normalize()
+            .as_vec3();
         Self {
-            view_projection: camera.view_projection(aspect_ratio).to_cols_array_2d(),
+            view_projection: camera
+                .view_projection_in_planet_frame(aspect_ratio, planet_rotation_radians)
+                .to_cols_array_2d(),
+            camera_forward: [forward.x, forward.y, forward.z, 0.0],
+            camera_right: [right.x, right.y, right.z, 0.0],
+            camera_up: [up.x, up.y, up.z, 0.0],
+            camera_planet_direction_altitude: [
+                planet_direction.x,
+                planet_direction.y,
+                planet_direction.z,
+                (camera_radius - PLANET_RADIUS_METERS) as f32,
+            ],
+            sun_direction: [sun_direction.x, sun_direction.y, sun_direction.z, 0.0],
+            projection: [
+                aspect_ratio,
+                (camera.vertical_fov_radians as f32 * 0.5).tan(),
+                0.0,
+                0.0,
+            ],
         }
     }
 }
@@ -1089,8 +1202,9 @@ mod tests {
 
     use super::{
         CHUNK_GRID_QUADS, CHUNK_GRID_VERTICES, CubeSphereMesh, LodPolicy, MAX_LOD_LEVEL,
-        OrbitCamera, PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode, SKIRT_DEPTH_RATIO,
-        build_chunk_mesh, cube_face_direction, placeholder_height_meters, projected_error_pixels,
+        MINIMUM_LOD_LEVEL, OrbitCamera, PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode,
+        SKIRT_DEPTH_RATIO, build_chunk_mesh, cube_face_direction, placeholder_height_meters,
+        planet_local_vector, planet_rotation_radians, projected_error_pixels,
     };
 
     #[test]
@@ -1116,7 +1230,8 @@ mod tests {
         );
         let policy = LodPolicy::default();
         assert!(policy.should_split(2.1, 0));
-        assert!(policy.should_merge(1.0));
+        assert!(!policy.should_merge(1.0, MINIMUM_LOD_LEVEL - 1));
+        assert!(policy.should_merge(1.0, MINIMUM_LOD_LEVEL));
         assert_eq!(policy.max_level, MAX_LOD_LEVEL);
         assert_eq!(children[0].parent(), Some(QuadtreeNode::root(3)));
         assert!(children.iter().all(|child| child.is_valid()));
@@ -1141,33 +1256,44 @@ mod tests {
         let camera = OrbitCamera::default();
         let mut lod = PlanetLod::default();
         let update = lod.update(camera.world_position(), 1_080, 45.0_f64.to_radians());
-        assert!(update.metrics.active_chunks <= 12);
-        assert!(update.metrics.max_level <= 1);
+        assert!(update.metrics.active_chunks <= 96);
+        assert_eq!(update.metrics.max_level, MINIMUM_LOD_LEVEL);
+        assert!(
+            update
+                .active_nodes
+                .iter()
+                .all(|node| node.level >= MINIMUM_LOD_LEVEL)
+        );
         assert!(!update.metrics.budget_limited);
     }
 
     #[test]
     fn persistent_selector_respects_split_merge_hysteresis() {
-        let root = QuadtreeNode::root(0);
+        let node = QuadtreeNode {
+            face: 0,
+            level: MINIMUM_LOD_LEVEL,
+            x: 1,
+            y: 1,
+        };
         let mut lod = PlanetLod::new(
             LodPolicy {
                 split_pixels: 2.0,
                 merge_pixels: 1.25,
-                max_level: 1,
+                max_level: MINIMUM_LOD_LEVEL + 1,
             },
-            64,
+            1_024,
         );
-        let near = camera_for_error(root, 2.5);
+        let near = camera_for_error(node, 2.5);
         lod.update(near, 1_080, 45.0_f64.to_radians());
-        assert!(lod.is_split(root));
+        assert!(lod.is_split(node));
 
-        let hysteresis_band = camera_for_error(root, 1.6);
+        let hysteresis_band = camera_for_error(node, 1.6);
         lod.update(hysteresis_band, 1_080, 45.0_f64.to_radians());
-        assert!(lod.is_split(root));
+        assert!(lod.is_split(node));
 
-        let far = camera_for_error(root, 1.0);
+        let far = camera_for_error(node, 0.1);
         let merged = lod.update(far, 1_080, 45.0_f64.to_radians());
-        assert!(!lod.is_split(root));
+        assert!(!lod.is_split(node));
         assert!(merged.metrics.merges > 0);
         assert!(merged.metrics.lod_thrash_events > 0);
     }
@@ -1347,10 +1473,51 @@ mod tests {
     }
 
     #[test]
-    fn zoom_clamps_at_the_ten_meter_minimum_altitude() {
+    fn wheel_zoom_changes_fov_without_moving_the_camera_and_increases_screen_error() {
         let mut camera = OrbitCamera::default();
+        let position = camera.world_position();
+        let error_before = projected_error_pixels(
+            QuadtreeNode::root(0),
+            position,
+            1_080,
+            camera.vertical_fov_radians(),
+        );
         camera.zoom(1_000.0);
-        assert_eq!(camera.orbit_radius_meters, PLANET_RADIUS_METERS + 10.0);
+        assert_eq!(camera.world_position(), position);
+        assert!((camera.vertical_fov_radians().to_degrees() - 2.0).abs() < 1.0e-9);
+        let error_after = projected_error_pixels(
+            QuadtreeNode::root(0),
+            position,
+            1_080,
+            camera.vertical_fov_radians(),
+        );
+        assert!(error_after > error_before);
+
+        let mut lod = PlanetLod::default();
+        let detailed = lod.update(position, 1_080, camera.vertical_fov_radians());
+        assert!(detailed.metrics.max_level > MINIMUM_LOD_LEVEL);
+
+        camera.zoom(-1_000.0);
+        assert!((camera.vertical_fov_radians().to_degrees() - 75.0).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn planet_rotation_transforms_camera_and_sun_into_a_stable_local_frame() {
+        let camera = OrbitCamera::default();
+        let rotation = planet_rotation_radians(150.0);
+        let world_position = camera.world_position();
+        let local_position = camera.planet_frame_world_position(rotation);
+        assert!((local_position.length() - world_position.length()).abs() < 1.0e-8);
+        assert!(local_position.distance(world_position) > 1_000_000.0);
+
+        let world_sun = DVec3::new(0.4, 0.7, 0.6).normalize();
+        let local_sun = planet_local_vector(world_sun, rotation);
+        let world_camera_direction = world_position.normalize();
+        assert!(
+            (local_position.normalize().dot(local_sun) - world_camera_direction.dot(world_sun))
+                .abs()
+                < 1.0e-12
+        );
     }
 
     #[test]
@@ -1361,6 +1528,36 @@ mod tests {
         camera.look(0.25, -0.1);
         assert_eq!(camera.world_position(), position);
         assert_ne!(camera.view_projection(1.0), before);
+    }
+
+    #[test]
+    fn default_look_tracks_orbital_down_with_a_persistent_mouse_offset() {
+        let mut camera = OrbitCamera::default();
+        assert!(
+            camera
+                .direction()
+                .as_dvec3()
+                .distance(-camera.world_position().normalize())
+                < 1.0e-6
+        );
+
+        camera.look(0.25, -0.1);
+        let (down_before, right_before, up_before) = camera.orbit_look_frame();
+        let relative_before = [
+            camera.direction().dot(down_before),
+            camera.direction().dot(right_before),
+            camera.direction().dot(up_before),
+        ];
+        camera.orbit(0.4, 0.0);
+        let (down_after, right_after, up_after) = camera.orbit_look_frame();
+        let relative_after = [
+            camera.direction().dot(down_after),
+            camera.direction().dot(right_after),
+            camera.direction().dot(up_after),
+        ];
+        for (before, after) in relative_before.into_iter().zip(relative_after) {
+            assert!((before - after).abs() < 1.0e-6);
+        }
     }
 
     #[test]

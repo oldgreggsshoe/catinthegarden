@@ -24,6 +24,8 @@ pub struct SpatialLogSample {
     pub orientation: String,
     pub orientation_azimuth_radians: f64,
     pub orientation_elevation_radians: f64,
+    pub sun_direction: [f64; 3],
+    pub planet_rotation_radians: f64,
     pub lod_level_histogram: [u32; LOD_LEVEL_COUNT],
     pub chunks_loaded: u32,
     pub chunks_unloaded: u32,
@@ -82,6 +84,7 @@ struct ScreenshotEntry {
     log_entry_sim_time: f64,
     solid_color_verified: bool,
     seam_gap_verified: Option<bool>,
+    sky_sample_rgb: Option<[u8; 3]>,
 }
 
 pub struct RunArtifacts {
@@ -107,6 +110,7 @@ struct AssertionTracker {
     maximum_seam_delta_m: f64,
     fallback_violations: usize,
     maximum_fallback_chunks: u32,
+    sky_samples: Vec<[u8; 3]>,
 }
 
 impl AssertionTracker {
@@ -125,6 +129,7 @@ impl AssertionTracker {
             maximum_seam_delta_m: 0.0,
             fallback_violations: 0,
             maximum_fallback_chunks: 0,
+            sky_samples: Vec::new(),
         }
     }
 
@@ -184,6 +189,10 @@ impl AssertionTracker {
         {
             self.fallback_violations += 1;
         }
+    }
+
+    fn observe_sky_sample(&mut self, sample: [u8; 3]) {
+        self.sky_samples.push(sample);
     }
 
     fn results(&self, screenshot_count: usize) -> Vec<ScenarioAssertionResult> {
@@ -263,8 +272,59 @@ impl AssertionTracker {
                 format!("expected {expected}, captured {screenshot_count}"),
             ));
         }
+        if let Some(minimum_growth) = self.config.min_sunset_red_blue_growth {
+            let first = self.sky_samples.first().copied();
+            let last = self.sky_samples.last().copied();
+            let growth = first.zip(last).map(|(first, last)| {
+                red_blue_ratio(last) / red_blue_ratio(first).max(f32::EPSILON)
+            });
+            results.push(assertion_result(
+                "sunset_red_over_blue_grows",
+                growth.is_some_and(|growth| growth >= minimum_growth),
+                format!(
+                    "required growth {minimum_growth:.3}, observed {} from {} samples",
+                    growth.map_or_else(|| "none".to_owned(), |growth| format!("{growth:.3}")),
+                    self.sky_samples.len(),
+                ),
+            ));
+        }
+        if let Some(minimum_ratio) = self.config.min_final_sunset_red_blue_ratio {
+            let ratio = self.sky_samples.last().copied().map(red_blue_ratio);
+            results.push(assertion_result(
+                "sunset_final_red_over_blue_is_warm",
+                ratio.is_some_and(|ratio| ratio >= minimum_ratio),
+                format!(
+                    "required final ratio {minimum_ratio:.3}, observed {}",
+                    ratio.map_or_else(|| "none".to_owned(), |ratio| format!("{ratio:.3}")),
+                ),
+            ));
+        }
+        if let Some(maximum_delta) = self.config.max_adjacent_sky_luminance_delta {
+            let maximum_observed = self
+                .sky_samples
+                .windows(2)
+                .map(|pair| (sky_luminance(pair[1]) - sky_luminance(pair[0])).abs())
+                .fold(0.0_f32, f32::max);
+            results.push(assertion_result(
+                "sky_luminance_transition_is_continuous",
+                self.sky_samples.len() >= 2 && maximum_observed <= maximum_delta,
+                format!(
+                    "allowed adjacent delta {maximum_delta:.3}, observed {maximum_observed:.3} from {} samples",
+                    self.sky_samples.len(),
+                ),
+            ));
+        }
         results
     }
+}
+
+fn red_blue_ratio(sample: [u8; 3]) -> f32 {
+    f32::from(sample[0]) / f32::from(sample[2]).max(1.0)
+}
+
+fn sky_luminance(sample: [u8; 3]) -> f32 {
+    (0.2126 * f32::from(sample[0]) + 0.7152 * f32::from(sample[1]) + 0.0722 * f32::from(sample[2]))
+        / 255.0
 }
 
 fn sample_metrics_are_finite(sample: &SpatialLogSample) -> bool {
@@ -279,6 +339,8 @@ fn sample_metrics_are_finite(sample: &SpatialLogSample) -> bool {
         && sample.velocity_meters_per_second.is_finite()
         && sample.orientation_azimuth_radians.is_finite()
         && sample.orientation_elevation_radians.is_finite()
+        && sample.sun_direction.iter().all(|value| value.is_finite())
+        && sample.planet_rotation_radians.is_finite()
         && sample.frame_time_ms.is_finite()
         && sample.max_seam_delta_m.is_finite()
 }
@@ -374,6 +436,8 @@ impl RunArtifacts {
             orientation: "orbit".to_owned(),
             orientation_azimuth_radians,
             orientation_elevation_radians,
+            sun_direction: [0.4, 0.7, 0.6],
+            planet_rotation_radians: 0.0,
             lod_level_histogram: [0; LOD_LEVEL_COUNT],
             chunks_loaded: 0,
             chunks_unloaded: 0,
@@ -405,6 +469,8 @@ impl RunArtifacts {
             orientation = sample.orientation,
             orientation_azimuth_radians = sample.orientation_azimuth_radians,
             orientation_elevation_radians = sample.orientation_elevation_radians,
+            sun_direction = ?sample.sun_direction,
+            planet_rotation_radians = sample.planet_rotation_radians,
             lod_level_histogram = ?sample.lod_level_histogram,
             chunks_loaded = sample.chunks_loaded,
             chunks_unloaded = sample.chunks_unloaded,
@@ -510,14 +576,27 @@ impl RunArtifacts {
         log_entry_sim_time: f64,
         solid_color_verified: bool,
         seam_gap_verified: Option<bool>,
+        sky_sample_rgb: Option<[u8; 3]>,
     ) -> Result<(), String> {
         self.screenshots.push(ScreenshotEntry {
             filename,
             log_entry_sim_time,
             solid_color_verified,
             seam_gap_verified,
+            sky_sample_rgb,
         });
         self.write_manifests()
+    }
+
+    fn record_sky_sample(&mut self, pixels: &[u8], width: u32, height: u32) -> Option<[u8; 3]> {
+        let [u, v] = self.assertion_tracker.config.sky_sample_uv?;
+        let x = (u * (width.saturating_sub(1)) as f32).round() as usize;
+        let y = (v * (height.saturating_sub(1)) as f32).round() as usize;
+        let pixel = pixels[(y * width as usize + x) * 4..][..3]
+            .try_into()
+            .expect("sample coordinate is inside the screenshot");
+        self.assertion_tracker.observe_sky_sample(pixel);
+        Some(pixel)
     }
 
     fn write_manifests(&self) -> Result<(), String> {
@@ -649,11 +728,13 @@ pub fn finish_capture(
         image::ColorType::Rgba8,
     )
     .map_err(|error| error.to_string())?;
+    let sky_sample_rgb = artifacts.record_sky_sample(&pixels, pending.width, pending.height);
     artifacts.record_screenshot(
         pending.filename,
         sim_time,
         solid_color_verified,
         seam_gap_verified,
+        sky_sample_rgb,
     )?;
     Ok(solid_color_verified)
 }
@@ -720,6 +801,10 @@ mod tests {
             max_seam_delta_m: Some(0.1),
             max_fallback_chunks: Some(4),
             expected_screenshots: Some(2),
+            sky_sample_uv: None,
+            min_sunset_red_blue_growth: None,
+            min_final_sunset_red_blue_ratio: None,
+            max_adjacent_sky_luminance_delta: None,
         }
     }
 
@@ -736,6 +821,8 @@ mod tests {
             orientation: "waypoint".to_owned(),
             orientation_azimuth_radians: 0.0,
             orientation_elevation_radians: 0.0,
+            sun_direction: [0.4, 0.7, 0.6],
+            planet_rotation_radians: 0.0,
             lod_level_histogram,
             chunks_loaded: 1,
             chunks_unloaded: 0,
@@ -795,6 +882,28 @@ mod tests {
             "expected_screenshots_were_captured",
         ] {
             assert!(!result(&results, name).passed, "{name} should fail");
+        }
+    }
+
+    #[test]
+    fn image_assertions_measure_sunset_warming_and_smooth_sky_transition() {
+        let mut config = assertions();
+        config.sky_sample_uv = Some([0.5, 0.25]);
+        config.min_sunset_red_blue_growth = Some(1.5);
+        config.min_final_sunset_red_blue_ratio = Some(1.0);
+        config.max_adjacent_sky_luminance_delta = Some(0.2);
+        let mut tracker = AssertionTracker::new(config);
+        tracker.observe_sky_sample([40, 80, 180]);
+        tracker.observe_sky_sample([70, 80, 130]);
+        tracker.observe_sky_sample([100, 75, 80]);
+
+        let results = tracker.results(2);
+        for name in [
+            "sunset_red_over_blue_grows",
+            "sunset_final_red_over_blue_is_warm",
+            "sky_luminance_transition_is_continuous",
+        ] {
+            assert!(result(&results, name).passed, "{name} should pass");
         }
     }
 }
