@@ -1,8 +1,10 @@
 mod atmosphere;
 mod debug;
+mod hdr;
 mod outmap;
 mod planet;
 mod scenario;
+mod sun;
 mod terrain;
 
 use std::{
@@ -140,7 +142,9 @@ struct State {
     config: wgpu::SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
     depth_view: wgpu::TextureView,
+    hdr: hdr::HdrRenderer,
     atmosphere: atmosphere::AtmosphereRenderer,
+    sun: sun::SunRenderer,
     terrain: terrain::TerrainRenderer,
     terrain_stats: terrain::TerrainStats,
     camera: planet::OrbitCamera,
@@ -259,6 +263,7 @@ impl State {
         };
         surface.configure(&device, &config);
         let depth_view = create_depth_view(&device, size);
+        let hdr = hdr::HdrRenderer::new(&device, size, config.format);
 
         let mut camera = planet::OrbitCamera::default();
         if let Some(vertical_fov_degrees) = vertical_fov_degrees {
@@ -296,13 +301,21 @@ impl State {
         let terrain = terrain::TerrainRenderer::new(
             &device,
             &queue,
-            config.format,
+            hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
             terrain_source,
         )
         .expect("terrain renderer must initialize");
-        let atmosphere =
-            atmosphere::AtmosphereRenderer::new(&device, config.format, &camera_bind_group_layout);
+        let atmosphere = atmosphere::AtmosphereRenderer::new(
+            &device,
+            hdr::HdrRenderer::SCENE_FORMAT,
+            &camera_bind_group_layout,
+        );
+        let sun = sun::SunRenderer::new(
+            &device,
+            hdr::HdrRenderer::SCENE_FORMAT,
+            &camera_bind_group_layout,
+        );
 
         let egui_context = egui::Context::default();
         let egui_state = egui_winit::State::new(
@@ -326,7 +339,9 @@ impl State {
             config,
             size,
             depth_view,
+            hdr,
             atmosphere,
+            sun,
             terrain,
             terrain_stats: terrain::TerrainStats::default(),
             camera,
@@ -369,6 +384,7 @@ impl State {
         self.config.height = size.height;
         self.surface.configure(&self.device, &self.config);
         self.depth_view = create_depth_view(&self.device, size);
+        self.hdr.resize(&self.device, size);
         self.egui_buffers_dirty = true;
         self.mark_hud_dirty();
     }
@@ -529,6 +545,15 @@ impl State {
             camera_world_position.distance(self.previous_camera_world_position) / delta_sim_time;
         self.previous_camera_world_position = camera_world_position;
         self.previous_sim_time = sim_time;
+        self.hdr.collect_completed_luminance(&self.device);
+        self.hdr.update_exposure(&self.queue, delta_sim_time);
+        let exposure_state = self.hdr.exposure_state();
+        self.artifacts.record_exposure_sample(
+            sim_time,
+            exposure_state.exposure,
+            exposure_state.target_exposure,
+            exposure_state.average_luminance,
+        );
         self.terrain_stats = if solid_color_screen {
             terrain::TerrainStats::default()
         } else {
@@ -586,6 +611,7 @@ impl State {
                     tiles_loaded: self.terrain_stats.tiles_loaded,
                     tiles_unloaded: self.terrain_stats.tiles_unloaded,
                     lod_thrash_events: self.terrain_stats.lod_thrash_events,
+                    exposure: exposure_state.exposure,
                 });
         }
         let simulation_ms = profile_started.elapsed().as_secs_f32() * 1_000.0;
@@ -600,6 +626,8 @@ impl State {
             let camera_position = camera_world_position;
             let camera_direction = self.camera.direction();
             let vertical_fov_degrees = self.camera.vertical_fov_radians().to_degrees();
+            let exposure = exposure_state.exposure;
+            let average_luminance = exposure_state.average_luminance;
             let terrain_stats = self.terrain_stats.clone();
             let full_output = self.egui_context.run_ui(raw_input, |ui| {
                 if show_debug_overlay {
@@ -630,6 +658,9 @@ impl State {
                                 terrain_stats.resident_tiles,
                                 terrain_stats.fallback_chunks,
                                 terrain_stats.max_seam_delta_meters
+                            ));
+                            ui.label(format!(
+                                "Exposure: {exposure:.3}  |  Average luminance: {average_luminance:.3}"
                             ));
                             ui.label("F3: toggle overlay  |  F12: capture PNG");
                             ui.label("Default: auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc/Q: quit");
@@ -728,7 +759,7 @@ impl State {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("cube-sphere pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: self.hdr.scene_view(),
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -750,7 +781,7 @@ impl State {
                     wgpu::RenderPassTimestampWrites {
                         query_set: &profiler.slots[slot_index].query_set,
                         beginning_of_pass_write_index: Some(0),
-                        end_of_pass_write_index: Some(1),
+                        end_of_pass_write_index: None,
                     }
                 }),
                 multiview_mask: None,
@@ -758,9 +789,22 @@ impl State {
             if !solid_color_screen {
                 self.atmosphere
                     .draw(&mut render_pass, &self.camera_bind_group);
+                self.sun.draw(&mut render_pass, &self.camera_bind_group);
                 self.terrain.draw(&mut render_pass, &self.camera_bind_group);
             }
         }
+        self.hdr.encode_luminance(&mut encoder);
+        let hdr_luminance_readback_slot = self.hdr.encode_luminance_readback(&mut encoder);
+        let tone_map_timestamp_query_set = gpu_slot_index.map(|slot_index| {
+            &self
+                .gpu_profiler
+                .as_ref()
+                .expect("GPU profiler exists")
+                .slots[slot_index]
+                .query_set
+        });
+        self.hdr
+            .encode_tone_map(&mut encoder, &view, tone_map_timestamp_query_set);
         if let Some(paint_jobs) = &paint_jobs {
             let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("egui pass"),
@@ -812,6 +856,9 @@ impl State {
         let submit_started = Instant::now();
         self.queue.submit(Some(encoder.finish()));
         let submit_ms = submit_started.elapsed().as_secs_f32() * 1_000.0;
+        if let Some(slot_index) = hdr_luminance_readback_slot {
+            self.hdr.begin_luminance_readback(slot_index);
+        }
         let gpu_readback_started = Instant::now();
         if let Some(slot_index) = gpu_slot_index {
             self.gpu_profiler

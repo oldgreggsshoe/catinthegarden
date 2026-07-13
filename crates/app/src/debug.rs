@@ -39,6 +39,7 @@ pub struct SpatialLogSample {
     pub tiles_loaded: u32,
     pub tiles_unloaded: u32,
     pub lod_thrash_events: u32,
+    pub exposure: f32,
 }
 
 #[derive(Clone)]
@@ -112,6 +113,13 @@ struct AssertionTracker {
     fallback_violations: usize,
     maximum_fallback_chunks: u32,
     sky_samples: Vec<[u8; 3]>,
+    exposure_sample_count: usize,
+    exposure_bound_violations: usize,
+    maximum_exposure_frame_delta: f32,
+    exposure_oscillation_events: u32,
+    previous_exposure: Option<f32>,
+    previous_exposure_delta: Option<f32>,
+    previous_target_exposure: Option<f32>,
 }
 
 impl AssertionTracker {
@@ -131,6 +139,13 @@ impl AssertionTracker {
             fallback_violations: 0,
             maximum_fallback_chunks: 0,
             sky_samples: Vec::new(),
+            exposure_sample_count: 0,
+            exposure_bound_violations: 0,
+            maximum_exposure_frame_delta: 0.0,
+            exposure_oscillation_events: 0,
+            previous_exposure: None,
+            previous_exposure_delta: None,
+            previous_target_exposure: None,
         }
     }
 
@@ -194,6 +209,47 @@ impl AssertionTracker {
 
     fn observe_sky_sample(&mut self, sample: [u8; 3]) {
         self.sky_samples.push(sample);
+    }
+
+    fn observe_exposure(&mut self, exposure: f32, target_exposure: f32, average_luminance: f32) {
+        self.exposure_sample_count += 1;
+        if !exposure.is_finite() || !target_exposure.is_finite() || !average_luminance.is_finite() {
+            self.exposure_bound_violations += 1;
+            return;
+        }
+        if self
+            .config
+            .min_exposure
+            .is_some_and(|minimum| exposure < minimum)
+            || self
+                .config
+                .max_exposure
+                .is_some_and(|maximum| exposure > maximum)
+        {
+            self.exposure_bound_violations += 1;
+        }
+        if let Some(previous_exposure) = self.previous_exposure {
+            let delta = exposure - previous_exposure;
+            self.maximum_exposure_frame_delta = self.maximum_exposure_frame_delta.max(delta.abs());
+            let target_is_stable = self
+                .previous_target_exposure
+                .is_some_and(|previous_target| {
+                    (target_exposure - previous_target).abs()
+                        <= previous_target.abs().max(0.01) * 0.01
+                });
+            if target_is_stable
+                && self.previous_exposure_delta.is_some_and(|previous_delta| {
+                    previous_delta.abs() > 0.0001
+                        && delta.abs() > 0.0001
+                        && previous_delta.signum() != delta.signum()
+                })
+            {
+                self.exposure_oscillation_events += 1;
+            }
+            self.previous_exposure_delta = Some(delta);
+        }
+        self.previous_exposure = Some(exposure);
+        self.previous_target_exposure = Some(target_exposure);
     }
 
     fn results(&self, screenshot_count: usize) -> Vec<ScenarioAssertionResult> {
@@ -315,6 +371,40 @@ impl AssertionTracker {
                 ),
             ));
         }
+        if self.config.min_exposure.is_some() || self.config.max_exposure.is_some() {
+            results.push(assertion_result(
+                "exposure_is_bounded",
+                self.exposure_sample_count > 0 && self.exposure_bound_violations == 0,
+                format!(
+                    "bounds {:?}..={:?}, samples {}, violations {}",
+                    self.config.min_exposure,
+                    self.config.max_exposure,
+                    self.exposure_sample_count,
+                    self.exposure_bound_violations,
+                ),
+            ));
+        }
+        if let Some(maximum_delta) = self.config.max_exposure_delta_per_frame {
+            results.push(assertion_result(
+                "exposure_adapts_smoothly",
+                self.exposure_sample_count >= 2
+                    && self.maximum_exposure_frame_delta <= maximum_delta,
+                format!(
+                    "allowed per-frame delta {maximum_delta:.4}, observed {:.4} from {} samples",
+                    self.maximum_exposure_frame_delta, self.exposure_sample_count,
+                ),
+            ));
+        }
+        if let Some(maximum_events) = self.config.max_exposure_oscillation_events {
+            results.push(assertion_result(
+                "exposure_does_not_oscillate",
+                self.exposure_oscillation_events <= maximum_events,
+                format!(
+                    "allowed {maximum_events} oscillation events, observed {}",
+                    self.exposure_oscillation_events,
+                ),
+            ));
+        }
         results
     }
 }
@@ -345,6 +435,7 @@ fn sample_metrics_are_finite(sample: &SpatialLogSample) -> bool {
         && sample.planet_rotation_radians.is_finite()
         && sample.frame_time_ms.is_finite()
         && sample.max_seam_delta_m.is_finite()
+        && sample.exposure.is_finite()
 }
 
 fn assertion_result(name: &str, passed: bool, details: String) -> ScenarioAssertionResult {
@@ -453,6 +544,7 @@ impl RunArtifacts {
             tiles_loaded: 0,
             tiles_unloaded: 0,
             lod_thrash_events: 0,
+            exposure: 1.0,
         });
     }
 
@@ -487,7 +579,27 @@ impl RunArtifacts {
             tiles_loaded = sample.tiles_loaded,
             tiles_unloaded = sample.tiles_unloaded,
             lod_thrash_events = sample.lod_thrash_events,
+            exposure = sample.exposure,
             "spatial frame"
+        );
+    }
+
+    pub fn record_exposure_sample(
+        &mut self,
+        sim_time: f64,
+        exposure: f32,
+        target_exposure: f32,
+        average_luminance: f32,
+    ) {
+        self.assertion_tracker
+            .observe_exposure(exposure, target_exposure, average_luminance);
+        tracing::info!(
+            target: "catinthegarden::exposure",
+            sim_time,
+            exposure,
+            target_exposure,
+            average_luminance,
+            "auto exposure frame"
         );
     }
 
@@ -809,6 +921,10 @@ mod tests {
             min_sunset_red_blue_growth: None,
             min_final_sunset_red_blue_ratio: None,
             max_adjacent_sky_luminance_delta: None,
+            min_exposure: None,
+            max_exposure: None,
+            max_exposure_delta_per_frame: None,
+            max_exposure_oscillation_events: None,
         }
     }
 
@@ -840,6 +956,7 @@ mod tests {
             tiles_loaded: 0,
             tiles_unloaded: 0,
             lod_thrash_events: 0,
+            exposure: 1.0,
         }
     }
 
@@ -888,6 +1005,26 @@ mod tests {
         ] {
             assert!(!result(&results, name).passed, "{name} should fail");
         }
+    }
+
+    #[test]
+    fn exposure_assertions_reject_snaps_and_oscillation() {
+        let mut config = ScenarioAssertions::default();
+        config.min_exposure = Some(0.05);
+        config.max_exposure = Some(2.0);
+        config.max_exposure_delta_per_frame = Some(0.2);
+        config.max_exposure_oscillation_events = Some(0);
+        let mut tracker = AssertionTracker::new(config);
+
+        tracker.observe_exposure(1.0, 1.0, 0.18);
+        tracker.observe_exposure(1.1, 1.0, 0.18);
+        tracker.observe_exposure(1.4, 1.0, 0.18);
+        tracker.observe_exposure(1.1, 1.0, 0.18);
+
+        let results = tracker.results(0);
+        assert!(result(&results, "exposure_is_bounded").passed);
+        assert!(!result(&results, "exposure_adapts_smoothly").passed);
+        assert!(!result(&results, "exposure_does_not_oscillate").passed);
     }
 
     #[test]

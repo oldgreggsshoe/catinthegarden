@@ -1,0 +1,66 @@
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+}
+
+struct Exposure {
+    exposure: f32,
+}
+
+@group(0) @binding(0)
+var source_texture: texture_2d<f32>;
+
+@group(0) @binding(1)
+var<uniform> exposure: Exposure;
+
+fn luminance(color: vec3<f32>) -> f32 {
+    return dot(max(color, vec3<f32>(0.0)), vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
+fn aces_filmic(color: vec3<f32>) -> vec3<f32> {
+    let a = 2.51;
+    let b = 0.03;
+    let c = 2.43;
+    let d = 0.59;
+    let e = 0.14;
+    return clamp((color * (a * color + vec3<f32>(b))) / (color * (c * color + vec3<f32>(d)) + vec3<f32>(e)), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    var positions = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(3.0, -1.0),
+        vec2<f32>(-1.0, 3.0),
+    );
+    return VertexOutput(vec4<f32>(positions[vertex_index], 0.0, 1.0));
+}
+
+@fragment
+fn luminance_from_scene(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let pixel = vec2<i32>(position.xy);
+    let value = luminance(textureLoad(source_texture, pixel, 0).rgb);
+    return vec4<f32>(value, value, value, 1.0);
+}
+
+@fragment
+fn luminance_downsample(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let output_pixel = vec2<i32>(position.xy);
+    let source_pixel = output_pixel * 2;
+    let source_size = vec2<i32>(textureDimensions(source_texture));
+    var total = vec3<f32>(0.0);
+    for (var y = 0; y < 2; y += 1) {
+        for (var x = 0; x < 2; x += 1) {
+            let sample_pixel = min(source_pixel + vec2<i32>(x, y), source_size - vec2<i32>(1));
+            total += textureLoad(source_texture, sample_pixel, 0).rgb;
+        }
+    }
+    let value = luminance(total * 0.25);
+    return vec4<f32>(value, value, value, 1.0);
+}
+
+@fragment
+fn tone_map(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let pixel = vec2<i32>(position.xy);
+    let hdr_color = textureLoad(source_texture, pixel, 0).rgb;
+    return vec4<f32>(aces_filmic(hdr_color * exposure.exposure), 1.0);
+}

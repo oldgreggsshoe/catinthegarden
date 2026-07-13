@@ -19,6 +19,10 @@ pub struct ScenarioAssertions {
     pub min_sunset_red_blue_growth: Option<f32>,
     pub min_final_sunset_red_blue_ratio: Option<f32>,
     pub max_adjacent_sky_luminance_delta: Option<f32>,
+    pub min_exposure: Option<f32>,
+    pub max_exposure: Option<f32>,
+    pub max_exposure_delta_per_frame: Option<f32>,
+    pub max_exposure_oscillation_events: Option<u32>,
 }
 
 impl Default for ScenarioAssertions {
@@ -37,6 +41,10 @@ impl Default for ScenarioAssertions {
             min_sunset_red_blue_growth: None,
             min_final_sunset_red_blue_ratio: None,
             max_adjacent_sky_luminance_delta: None,
+            min_exposure: None,
+            max_exposure: None,
+            max_exposure_delta_per_frame: None,
+            max_exposure_oscillation_events: None,
         }
     }
 }
@@ -113,6 +121,7 @@ impl ScenarioRunner {
             "descent_to_10m" => include_str!("../scenarios/descent_to_10m.json"),
             "sunset_sweep" => include_str!("../scenarios/sunset_sweep.json"),
             "ground_to_orbit" => include_str!("../scenarios/ground_to_orbit.json"),
+            "stare_at_sun" => include_str!("../scenarios/stare_at_sun.json"),
             _ => return Err(format!("unknown scenario '{name}'")),
         };
         Self::from_source(source)
@@ -334,6 +343,12 @@ fn validate_assertions(
     ) {
         return Err("minimum resident chunks cannot exceed the maximum".to_owned());
     }
+    if matches!(
+        (assertions.min_exposure, assertions.max_exposure),
+        (Some(minimum), Some(maximum)) if minimum > maximum
+    ) {
+        return Err("minimum exposure cannot exceed the maximum".to_owned());
+    }
     if assertions
         .max_seam_delta_m
         .is_some_and(|tolerance| !tolerance.is_finite() || tolerance < 0.0)
@@ -370,6 +385,18 @@ fn validate_assertions(
         (
             "maximum adjacent sky luminance delta",
             assertions.max_adjacent_sky_luminance_delta,
+        ),
+    ] {
+        if value.is_some_and(|value| !value.is_finite() || value < 0.0) {
+            return Err(format!("{name} must be finite and non-negative"));
+        }
+    }
+    for (name, value) in [
+        ("minimum exposure", assertions.min_exposure),
+        ("maximum exposure", assertions.max_exposure),
+        (
+            "maximum exposure delta per frame",
+            assertions.max_exposure_delta_per_frame,
         ),
     ] {
         if value.is_some_and(|value| !value.is_finite() || value < 0.0) {
@@ -526,6 +553,14 @@ mod tests {
                 .assertions()
                 .max_adjacent_sky_luminance_delta
                 .is_some()
+        );
+        assert_eq!(ascent.assertions().min_exposure, Some(0.05));
+
+        let stare_at_sun = ScenarioRunner::load("stare_at_sun").expect("sun scenario parses");
+        assert_eq!(stare_at_sun.expected_screenshots(), 3);
+        assert_eq!(
+            stare_at_sun.assertions().max_exposure_delta_per_frame,
+            Some(0.5)
         );
     }
 
