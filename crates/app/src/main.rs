@@ -536,6 +536,7 @@ impl State {
                 .update(
                     camera_planet_frame_position,
                     camera_planet_frame_direction,
+                    sim_time,
                     [self.size.width, self.size.height],
                     self.camera.vertical_fov_radians(),
                 )

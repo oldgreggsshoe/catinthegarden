@@ -41,6 +41,7 @@ struct VertexInput {
     @location(5) source_uv_scale: vec2<f32>,
     @location(6) source_uv_offset: vec2<f32>,
     @location(7) terrain_info: u32,
+    @location(8) lod_transition: vec2<f32>,
 }
 
 struct VertexOutput {
@@ -48,6 +49,7 @@ struct VertexOutput {
     @location(0) camera_relative_position: vec3<f32>,
     @location(1) world_normal: vec3<f32>,
     @location(2) aerial_color: vec3<f32>,
+    @location(3) lod_transition: vec2<f32>,
 }
 
 fn uses_outmap(terrain_info: u32) -> bool {
@@ -349,10 +351,31 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         camera_relative_position,
         normal,
         aerial_perspective(lit_surface_color, camera_relative_position, direction, height),
+        input.lod_transition,
     );
+}
+
+fn bayer_dither(fragment_position: vec4<f32>) -> f32 {
+    let pattern = array<u32, 16>(
+        0u, 8u, 2u, 10u,
+        12u, 4u, 14u, 6u,
+        3u, 11u, 1u, 9u,
+        15u, 7u, 13u, 5u,
+    );
+    let pixel = vec2<u32>(u32(fragment_position.x), u32(fragment_position.y));
+    let index = (pixel.y & 3u) * 4u + (pixel.x & 3u);
+    return (f32(pattern[index]) + 0.5) / 16.0;
 }
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    let transition_progress = input.lod_transition.x;
+    let incoming = input.lod_transition.y > 0.5;
+    let threshold = bayer_dither(input.position);
+    if (incoming && threshold >= transition_progress)
+        || (!incoming && threshold < transition_progress)
+    {
+        discard;
+    }
     return vec4<f32>(input.aerial_color, 1.0);
 }

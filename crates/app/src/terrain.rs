@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     error::Error,
     fmt,
     path::PathBuf,
@@ -21,6 +21,7 @@ use crate::{
 // set resident prevents a moving camera from continually uploading the same
 // L4 textures, while keeping GPU texture memory bounded for larger outmaps.
 const MAX_RESIDENT_TERRAIN_TILES: usize = 2_560;
+const LOD_TRANSITION_DURATION_SECONDS: f64 = 0.5;
 
 #[derive(Clone, Debug)]
 pub enum TerrainSource {
@@ -55,14 +56,16 @@ struct TerrainInstance {
     source_uv_scale: [f32; 2],
     source_uv_offset: [f32; 2],
     terrain_info: u32,
+    lod_transition: [f32; 2],
 }
 
 impl TerrainInstance {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
+    const ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
         4 => Float32x3,
         5 => Float32x2,
         6 => Float32x2,
-        7 => Uint32
+        7 => Uint32,
+        8 => Float32x2
     ];
 
     fn layout() -> wgpu::VertexBufferLayout<'static> {
@@ -79,6 +82,11 @@ struct GpuChunk {
     anchor_world: DVec3,
 }
 
+struct FadingChunk {
+    chunk: GpuChunk,
+    started_at_sim_time: f64,
+}
+
 struct GpuTile {
     _height_texture: wgpu::Texture,
     _biome_texture: wgpu::Texture,
@@ -92,6 +100,16 @@ struct DrawItem {
     node: QuadtreeNode,
     instance_index: usize,
     tile_key: Option<TileKey>,
+    fading_out: bool,
+}
+
+#[derive(Clone, Copy)]
+struct RenderNode {
+    node: QuadtreeNode,
+    active: bool,
+    fading_out: bool,
+    transition_progress: f32,
+    transition_incoming: bool,
 }
 
 enum TerrainDataSource {
@@ -115,6 +133,8 @@ pub struct TerrainRenderer {
     tile_last_used: HashMap<TileKey, u64>,
     tile_cache_tick: u64,
     chunks: BTreeMap<QuadtreeNode, GpuChunk>,
+    fading_out_chunks: BTreeMap<QuadtreeNode, FadingChunk>,
+    fade_in_started_at: HashMap<QuadtreeNode, f64>,
     draw_items: Vec<DrawItem>,
     max_outmap_seam_delta_meters: f64,
 }
@@ -218,6 +238,8 @@ impl TerrainRenderer {
             tile_last_used: HashMap::new(),
             tile_cache_tick: 0,
             chunks: BTreeMap::new(),
+            fading_out_chunks: BTreeMap::new(),
+            fade_in_started_at: HashMap::new(),
             draw_items: Vec::new(),
             max_outmap_seam_delta_meters: 0.0,
         })
@@ -227,10 +249,13 @@ impl TerrainRenderer {
         &mut self,
         camera_world: DVec3,
         camera_forward: DVec3,
+        sim_time: f64,
         viewport: [u32; 2],
         vertical_fov_radians: f64,
     ) -> Result<TerrainStats, TerrainError> {
+        assert!(sim_time.is_finite() && sim_time >= 0.0);
         self.tile_cache_tick = self.tile_cache_tick.wrapping_add(1);
+        self.purge_expired_lod_transitions(sim_time);
         let lod_update = self.lod.update_for_view(
             camera_world,
             camera_forward,
@@ -240,34 +265,96 @@ impl TerrainRenderer {
         );
         let topology_changed =
             !lod_update.loaded_nodes.is_empty() || !lod_update.unloaded_nodes.is_empty();
+        let transition_loaded_nodes: HashSet<_> = lod_update
+            .loaded_nodes
+            .iter()
+            .copied()
+            .filter(|loaded| {
+                lod_update
+                    .unloaded_nodes
+                    .iter()
+                    .copied()
+                    .any(|unloaded| nodes_share_lod_transition(*loaded, unloaded))
+            })
+            .collect();
+        let transition_unloaded_nodes: HashSet<_> = lod_update
+            .unloaded_nodes
+            .iter()
+            .copied()
+            .filter(|unloaded| {
+                lod_update
+                    .loaded_nodes
+                    .iter()
+                    .copied()
+                    .any(|loaded| nodes_share_lod_transition(loaded, *unloaded))
+            })
+            .collect();
 
         for node in &lod_update.unloaded_nodes {
-            self.chunks.remove(node);
+            let chunk = self
+                .chunks
+                .remove(node)
+                .expect("unloaded LOD leaf has a GPU chunk");
+            self.fade_in_started_at.remove(node);
+            if transition_unloaded_nodes.contains(node) {
+                self.fading_out_chunks.insert(
+                    *node,
+                    FadingChunk {
+                        chunk,
+                        started_at_sim_time: sim_time,
+                    },
+                );
+            }
         }
         for &node in &lod_update.loaded_nodes {
-            let mesh = build_chunk_mesh(node);
-            debug_assert_eq!(mesh.indices.len() as u32, self.index_count);
-            let vertex_buffer = self
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("static anchor-local terrain vertices"),
-                    contents: bytemuck::cast_slice(&mesh.vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
-            self.chunks.insert(
-                node,
-                GpuChunk {
-                    vertex_buffer,
-                    anchor_world: mesh.anchor_world,
-                },
-            );
+            let chunk = self
+                .fading_out_chunks
+                .remove(&node)
+                .map(|fading| fading.chunk)
+                .unwrap_or_else(|| self.create_gpu_chunk(node));
+            self.chunks.insert(node, chunk);
+            if transition_loaded_nodes.contains(&node) {
+                self.fade_in_started_at.insert(node, sim_time);
+            }
         }
 
-        let mut resolved_tiles = Vec::with_capacity(lod_update.active_nodes.len());
+        self.fade_in_started_at.retain(|node, started_at_sim_time| {
+            self.chunks.contains_key(node)
+                && sim_time - *started_at_sim_time < LOD_TRANSITION_DURATION_SECONDS
+        });
+
+        let mut render_nodes =
+            Vec::with_capacity(self.fading_out_chunks.len() + lod_update.active_nodes.len());
+        for (&node, fading) in &self.fading_out_chunks {
+            render_nodes.push(RenderNode {
+                node,
+                active: false,
+                fading_out: true,
+                transition_progress: lod_transition_progress(sim_time, fading.started_at_sim_time),
+                transition_incoming: false,
+            });
+        }
+        for &node in &lod_update.active_nodes {
+            let transition_progress = self
+                .fade_in_started_at
+                .get(&node)
+                .map_or(1.0, |started_at_sim_time| {
+                    lod_transition_progress(sim_time, *started_at_sim_time)
+                });
+            render_nodes.push(RenderNode {
+                node,
+                active: true,
+                fading_out: false,
+                transition_progress,
+                transition_incoming: true,
+            });
+        }
+
+        let mut resolved_tiles = Vec::with_capacity(render_nodes.len());
         let mut pending_tiles = Vec::new();
         if let TerrainDataSource::Outmap(outmap) = &self.source {
-            for &node in &lod_update.active_nodes {
-                let requested_key = tile_key(node)?;
+            for render_node in &render_nodes {
+                let requested_key = tile_key(render_node.node)?;
                 let source_key = outmap.resolve_tile(requested_key)?;
                 if !self.tile_cache.contains_key(&source_key)
                     && !pending_tiles
@@ -279,7 +366,7 @@ impl TerrainRenderer {
                 resolved_tiles.push(Some((requested_key, source_key)));
             }
         } else {
-            resolved_tiles.resize(lod_update.active_nodes.len(), None);
+            resolved_tiles.resize(render_nodes.len(), None);
         }
 
         let tiles_loaded = pending_tiles.len() as u32;
@@ -321,37 +408,57 @@ impl TerrainRenderer {
         }
         let tiles_unloaded = (before_eviction - self.tile_cache.len()) as u32;
 
-        let mut instances = Vec::with_capacity(lod_update.active_nodes.len());
+        let mut instances = Vec::with_capacity(render_nodes.len());
         self.draw_items.clear();
         let mut fallback_chunks = 0_u32;
-        for (instance_index, (&node, resolved)) in lod_update
-            .active_nodes
-            .iter()
-            .zip(resolved_tiles.iter())
-            .enumerate()
+        for (instance_index, (render_node, resolved)) in
+            render_nodes.iter().zip(resolved_tiles.iter()).enumerate()
         {
-            let chunk = self
-                .chunks
-                .get(&node)
-                .expect("active LOD leaf has a GPU chunk");
+            let chunk = if render_node.fading_out {
+                &self
+                    .fading_out_chunks
+                    .get(&render_node.node)
+                    .expect("fading LOD leaf has a GPU chunk")
+                    .chunk
+            } else {
+                self.chunks
+                    .get(&render_node.node)
+                    .expect("active LOD leaf has a GPU chunk")
+            };
             let (source_uv_scale, source_uv_offset, source_level, tile_key, outmap_mode) =
                 if let Some((requested_key, source_key)) = *resolved {
                     let (scale, offset) = fallback_uv_transform(requested_key, source_key);
-                    fallback_chunks += u32::from(requested_key != source_key);
+                    if render_node.active {
+                        fallback_chunks += u32::from(requested_key != source_key);
+                    }
                     (scale, offset, source_key.level, Some(source_key), true)
                 } else {
-                    ([1.0, 1.0], [0.0, 0.0], node.level, None, false)
+                    ([1.0, 1.0], [0.0, 0.0], render_node.node.level, None, false)
                 };
             instances.push(TerrainInstance {
                 anchor_relative_to_camera: (chunk.anchor_world - camera_world).as_vec3().to_array(),
                 source_uv_scale,
                 source_uv_offset,
-                terrain_info: pack_terrain_info(outmap_mode, node.face, node.level, source_level),
+                terrain_info: pack_terrain_info(
+                    outmap_mode,
+                    render_node.node.face,
+                    render_node.node.level,
+                    source_level,
+                ),
+                lod_transition: [
+                    render_node.transition_progress,
+                    if render_node.transition_incoming {
+                        1.0
+                    } else {
+                        0.0
+                    },
+                ],
             });
             self.draw_items.push(DrawItem {
-                node,
+                node: render_node.node,
                 instance_index,
                 tile_key,
+                fading_out: render_node.fading_out,
             });
         }
         self.ensure_instance_capacity(instances.len());
@@ -361,11 +468,16 @@ impl TerrainRenderer {
         }
 
         let metrics = lod_update.metrics;
+        let active_resolved_tiles: Vec<_> = render_nodes
+            .iter()
+            .zip(resolved_tiles.iter())
+            .filter_map(|(render_node, resolved)| render_node.active.then_some(*resolved))
+            .collect();
         let max_seam_delta_meters = if matches!(&self.source, TerrainDataSource::Outmap(_)) {
             if topology_changed {
                 self.max_outmap_seam_delta_meters = max_outmap_seam_delta(
                     &lod_update.active_nodes,
-                    &resolved_tiles,
+                    &active_resolved_tiles,
                     &self.tile_cache,
                 );
             }
@@ -402,10 +514,17 @@ impl TerrainRenderer {
         render_pass.set_bind_group(0, camera_bind_group, &[]);
         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         for draw in &self.draw_items {
-            let chunk = self
-                .chunks
-                .get(&draw.node)
-                .expect("draw item has a GPU chunk");
+            let chunk = if draw.fading_out {
+                &self
+                    .fading_out_chunks
+                    .get(&draw.node)
+                    .expect("draw item has a fading GPU chunk")
+                    .chunk
+            } else {
+                self.chunks
+                    .get(&draw.node)
+                    .expect("draw item has a GPU chunk")
+            };
             let tile = draw.tile_key.map_or(&self.placeholder_tile, |key| {
                 self.tile_cache
                     .get(&key)
@@ -428,6 +547,50 @@ impl TerrainRenderer {
         self.instance_capacity = required.next_power_of_two();
         self.instance_buffer = create_instance_buffer(&self.device, self.instance_capacity);
     }
+
+    fn create_gpu_chunk(&self, node: QuadtreeNode) -> GpuChunk {
+        let mesh = build_chunk_mesh(node);
+        debug_assert_eq!(mesh.indices.len() as u32, self.index_count);
+        let vertex_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("static anchor-local terrain vertices"),
+                contents: bytemuck::cast_slice(&mesh.vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        GpuChunk {
+            vertex_buffer,
+            anchor_world: mesh.anchor_world,
+        }
+    }
+
+    fn purge_expired_lod_transitions(&mut self, sim_time: f64) {
+        self.fading_out_chunks.retain(|_, fading| {
+            sim_time - fading.started_at_sim_time < LOD_TRANSITION_DURATION_SECONDS
+        });
+        self.fade_in_started_at.retain(|node, started_at_sim_time| {
+            self.chunks.contains_key(node)
+                && sim_time - *started_at_sim_time < LOD_TRANSITION_DURATION_SECONDS
+        });
+    }
+}
+
+fn lod_transition_progress(sim_time: f64, started_at_sim_time: f64) -> f32 {
+    ((sim_time - started_at_sim_time) / LOD_TRANSITION_DURATION_SECONDS).clamp(0.0, 1.0) as f32
+}
+
+fn nodes_share_lod_transition(first: QuadtreeNode, second: QuadtreeNode) -> bool {
+    node_is_descendant_of(first, second) || node_is_descendant_of(second, first)
+}
+
+fn node_is_descendant_of(mut node: QuadtreeNode, ancestor: QuadtreeNode) -> bool {
+    while let Some(parent) = node.parent() {
+        if parent == ancestor {
+            return true;
+        }
+        node = parent;
+    }
+    false
 }
 
 #[derive(Debug)]
@@ -718,7 +881,10 @@ fn sample_height_cpu(heights: &[f32], uv: [f32; 2]) -> f32 {
 mod tests {
     use catinthegarden_coretypes::{CubeFace, TILE_STORED_SIZE, TileKey};
 
-    use super::{fallback_uv_transform, pack_terrain_info, sample_height_cpu};
+    use super::{
+        fallback_uv_transform, lod_transition_progress, nodes_share_lod_transition,
+        pack_terrain_info, sample_height_cpu,
+    };
     use crate::planet::{QuadtreeNode, build_chunk_mesh};
 
     #[test]
@@ -769,5 +935,34 @@ mod tests {
             y: 9,
         });
         assert_eq!(first.indices, second.indices);
+    }
+
+    #[test]
+    fn parent_child_replacements_are_lod_transitions() {
+        let parent = QuadtreeNode {
+            face: 2,
+            level: 3,
+            x: 5,
+            y: 2,
+        };
+        let child = parent.children()[3];
+        let unrelated = QuadtreeNode {
+            face: 2,
+            level: 3,
+            x: 6,
+            y: 2,
+        };
+
+        assert!(nodes_share_lod_transition(parent, child));
+        assert!(nodes_share_lod_transition(child, parent));
+        assert!(!nodes_share_lod_transition(parent, unrelated));
+    }
+
+    #[test]
+    fn lod_transition_progress_reaches_full_coverage_after_half_a_second() {
+        assert_eq!(lod_transition_progress(10.0, 10.0), 0.0);
+        assert!((lod_transition_progress(10.25, 10.0) - 0.5).abs() < f32::EPSILON);
+        assert_eq!(lod_transition_progress(10.5, 10.0), 1.0);
+        assert_eq!(lod_transition_progress(11.0, 10.0), 1.0);
     }
 }
