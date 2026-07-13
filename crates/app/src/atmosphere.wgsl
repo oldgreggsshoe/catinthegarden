@@ -70,10 +70,20 @@ fn altitude_along_ray(radius_meters: f32, radial_dot_ray: f32, distance_meters: 
     ) - PLANET_RADIUS_METERS;
 }
 
-fn sun_is_occluded(radius_meters: f32, radial_dot_sun: f32) -> bool {
-    let discriminant = radial_dot_sun * radial_dot_sun
-        - (radius_meters * radius_meters - PLANET_RADIUS_METERS * PLANET_RADIUS_METERS);
-    return radial_dot_sun < 0.0 && discriminant >= 0.0;
+fn sun_visibility(
+    radius_meters: f32,
+    radial_dot_sun: f32,
+    transition_meters: f32,
+) -> f32 {
+    if radial_dot_sun >= 0.0 {
+        return 1.0;
+    }
+    let closest_approach_meters = sqrt(max(
+        radius_meters * radius_meters - radial_dot_sun * radial_dot_sun,
+        0.0,
+    ));
+    let clearance_meters = closest_approach_meters - PLANET_RADIUS_METERS;
+    return smoothstep(-transition_meters, transition_meters, clearance_meters);
 }
 
 fn transmittance(
@@ -127,6 +137,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let cos_theta = dot(ray, sun);
     let rayleigh_phase = phase_rayleigh(cos_theta);
     let mie_phase = phase_mie(cos_theta);
+    // A binary shadow test per raymarch point produces visible concentric
+    // terminator bands. Blend over roughly one march interval instead, so the
+    // individual sample shadows reconstruct a continuous atmosphere limb.
+    let sun_shadow_transition_meters = max(20000.0, sample_length * 0.45);
     var radiance = vec3<f32>(0.0);
     for (var index = 0u; index < SKY_SAMPLE_COUNT; index += 1u) {
         let distance_meters = start_distance + (f32(index) + 0.5) * sample_length;
@@ -139,14 +153,14 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let sun_interval = sphere_interval(sample_radius, sample_radial_dot_sun);
         let sun_distance = max(sun_interval.y, 0.0);
         let view_transmittance = transmittance(camera_altitude, sample_altitude, distance_meters);
-        // A sample on the planet's night side cannot receive direct sunlight:
-        // its ray toward the directional sun is blocked by the solid planet.
-        // Near the terminator the unblocked grazing path still naturally fades
-        // through atmospheric extinction, preserving the sunset transition.
-        let sun_transmittance = select(
-            transmittance(sample_altitude, ATMOSPHERE_HEIGHT_METERS, sun_distance),
-            vec3<f32>(0.0),
-            sun_is_occluded(sample_radius, sample_radial_dot_sun),
+        let sun_transmittance = transmittance(
+            sample_altitude,
+            ATMOSPHERE_HEIGHT_METERS,
+            sun_distance,
+        ) * sun_visibility(
+            sample_radius,
+            sample_radial_dot_sun,
+            sun_shadow_transition_meters,
         );
         let rayleigh_scattering = RAYLEIGH_COEFFICIENT
             * density(sample_altitude, RAYLEIGH_SCALE_HEIGHT_METERS)
