@@ -143,14 +143,21 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let rayleigh_phase = phase_rayleigh(cos_theta);
     let mie_phase = phase_mie(cos_theta);
     // A binary shadow test per raymarch point produces visible concentric
-    // terminator bands. Sixteen samples let this tighter spacing-aware blend
-    // retain a naturally tapered directional limb without discrete contours.
-    let sun_shadow_transition_meters = max(12000.0, sample_length * 0.30);
+    // terminator bands. Keep a wider penumbra at the dense lower layers so a
+    // setting sun tapers smoothly all the way to full occultation, while
+    // deeply shadowed samples still receive no direct in-scattering.
+    let sun_shadow_transition_meters = max(24000.0, sample_length * 0.50);
     var radiance = vec3<f32>(0.0);
     for (var index = 0u; index < SKY_SAMPLE_COUNT; index += 1u) {
         let distance_meters = start_distance + (f32(index) + 0.5) * sample_length;
         let sample_altitude = altitude_along_ray(camera_radius, radial_dot_ray, distance_meters);
         let sample_radius = PLANET_RADIUS_METERS + sample_altitude;
+        let lower_atmosphere_weight = density(
+            sample_altitude,
+            RAYLEIGH_SCALE_HEIGHT_METERS,
+        );
+        let sample_shadow_transition_meters = sun_shadow_transition_meters
+            * mix(1.0, 2.0, lower_atmosphere_weight);
         let sample_radial_dot_sun = (
             camera_radius * dot(camera.camera_planet_direction_altitude.xyz, sun)
                 + distance_meters * dot(ray, sun)
@@ -172,7 +179,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         ) * sun_visibility(
             sample_radius,
             sample_radial_dot_sun,
-            sun_shadow_transition_meters,
+            sample_shadow_transition_meters,
         );
         let rayleigh_scattering = RAYLEIGH_COEFFICIENT
             * density(sample_altitude, RAYLEIGH_SCALE_HEIGHT_METERS)

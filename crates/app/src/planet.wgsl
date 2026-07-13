@@ -13,6 +13,7 @@ const SOLAR_RADIANCE: f32 = 2.0;
 // Artistic surface exposure only: this does not alter sky scattering or the
 // camera-facing sun disc.
 const SURFACE_SUNLIGHT_SCALE: f32 = 5.0;
+const SKY_DIFFUSE_LIGHT_SCALE: f32 = 0.22;
 
 struct Camera {
     view_projection: mat4x4<f32>,
@@ -265,6 +266,31 @@ fn surface_direct_sun_transmittance(
     return exp(-(rayleigh_optical_depth + mie_optical_depth));
 }
 
+fn sky_diffuse_irradiance(
+    surface_direction: vec3<f32>,
+    surface_altitude_meters: f32,
+    sun_direction: vec3<f32>,
+) -> vec3<f32> {
+    let surface_radius = PLANET_RADIUS_METERS + surface_altitude_meters;
+    let radial_dot_sun = surface_radius * dot(surface_direction, sun_direction);
+    if sun_is_occluded(surface_radius, radial_dot_sun) {
+        return vec3<f32>(0.0);
+    }
+
+    // A compact hemispherical approximation of Rayleigh/Mie sky fill. The
+    // fraction removed from direct daylight is available as coloured diffuse
+    // illumination from the visible sky, so terrain is not direct-lit only.
+    let direct_transmittance = surface_direct_sun_transmittance(
+        surface_direction,
+        surface_altitude_meters,
+        sun_direction,
+    );
+    let sun_elevation = max(dot(surface_direction, sun_direction), 0.0);
+    let daylight_weight = mix(0.35, 1.0, smoothstep(0.0, 0.25, sun_elevation));
+    return (vec3<f32>(1.0) - direct_transmittance)
+        * (SKY_DIFFUSE_LIGHT_SCALE * daylight_weight);
+}
+
 fn aerial_perspective(
     lit_surface_color: vec3<f32>,
     camera_relative_position: vec3<f32>,
@@ -472,9 +498,12 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         surface_height,
         sun_direction,
     );
+    let sky_diffuse = sky_diffuse_irradiance(direction, surface_height, sun_direction)
+        * max(dot(normal, direction), 0.0);
     let direct_light = max(dot(normal, sun_direction), 0.14);
     let terrain_lighting = color * (
         vec3<f32>(0.14)
+            + sky_diffuse
             + direct_sun_transmittance * direct_light * SURFACE_SUNLIGHT_SCALE
     );
     let lit_surface_color = terrain_lighting;
