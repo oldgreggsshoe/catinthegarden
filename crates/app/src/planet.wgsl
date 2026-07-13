@@ -10,6 +10,9 @@ const RAYLEIGH_COEFFICIENT: vec3<f32> = vec3<f32>(5.8e-6, 13.5e-6, 33.1e-6);
 const MIE_COEFFICIENT: vec3<f32> = vec3<f32>(21.0e-6);
 const MIE_G: f32 = 0.76;
 const SOLAR_RADIANCE: f32 = 2.0;
+// Artistic surface exposure only: this does not alter sky scattering or the
+// camera-facing sun disc.
+const SURFACE_SUNLIGHT_SCALE: f32 = 5.0;
 
 struct Camera {
     view_projection: mat4x4<f32>,
@@ -401,8 +404,9 @@ fn ocean_lighting(
     let half_vector = normalize(sun_direction + view_direction);
     let specular = pow(max(dot(normal, half_vector), 0.0), 128.0);
     let diffuse = vec3<f32>(0.006, 0.035, 0.095)
-        * (vec3<f32>(0.035) + sun_transmittance * 0.18);
-    return diffuse + reflected_color * fresnel + sun_transmittance * specular * fresnel * 12.0;
+        * (vec3<f32>(0.035) + sun_transmittance * (0.18 * SURFACE_SUNLIGHT_SCALE));
+    return diffuse + reflected_color * fresnel
+        + sun_transmittance * specular * fresnel * (12.0 * SURFACE_SUNLIGHT_SCALE);
 }
 
 @vertex
@@ -445,7 +449,10 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         sun_is_occluded(surface_radius, radial_dot_sun),
     );
     let direct_light = max(dot(normal, sun_direction), 0.14);
-    let terrain_lighting = color * (vec3<f32>(0.14) + direct_sun_transmittance * direct_light);
+    let terrain_lighting = color * (
+        vec3<f32>(0.14)
+            + direct_sun_transmittance * direct_light * SURFACE_SUNLIGHT_SCALE
+    );
     let lit_surface_color = terrain_lighting;
     return VertexOutput(
         camera.view_projection * vec4<f32>(camera_relative_position, 1.0),
