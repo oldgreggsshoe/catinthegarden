@@ -1,12 +1,14 @@
 const PHYSICAL_SUN_ANGULAR_RADIUS_RADIANS: f32 = 0.004625;
 const VISUAL_SUN_SIZE_SCALE: f32 = 3.0;
 const SUN_ANGULAR_RADIUS_RADIANS: f32 = PHYSICAL_SUN_ANGULAR_RADIUS_RADIANS * VISUAL_SUN_SIZE_SCALE;
-const SUN_HALO_RADIUS_SCALE: f32 = 2.0;
+// The core tones to white under ACES, so apparent glare comes from a broad
+// HDR corona rather than increasing only the already-clipped disc centre.
+const SUN_HALO_RADIUS_SCALE: f32 = 8.0;
 // This multiplier belongs only to the camera-facing HDR disc.  Terrain,
 // ocean, and atmosphere lighting use their own physical solar radiance.
 const SUN_VISUAL_RADIANCE_SCALE: f32 = 5.0;
 const SUN_CORE_RADIANCE: vec3<f32> = vec3<f32>(72.0, 65.0, 52.0);
-const SUN_HALO_RADIANCE: vec3<f32> = vec3<f32>(0.8, 0.7, 0.55);
+const SUN_HALO_RADIANCE: vec3<f32> = vec3<f32>(6.0, 5.5, 4.5);
 
 struct Camera {
     view_projection: mat4x4<f32>,
