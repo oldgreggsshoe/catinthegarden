@@ -235,6 +235,36 @@ fn sun_is_occluded(radius_meters: f32, radial_dot_sun: f32) -> bool {
     return radial_dot_sun < 0.0 && discriminant >= 0.0;
 }
 
+fn surface_direct_sun_transmittance(
+    surface_direction: vec3<f32>,
+    surface_altitude_meters: f32,
+    sun_direction: vec3<f32>,
+) -> vec3<f32> {
+    let surface_radius = PLANET_RADIUS_METERS + surface_altitude_meters;
+    let radial_dot_sun = surface_radius * dot(surface_direction, sun_direction);
+    if sun_is_occluded(surface_radius, radial_dot_sun) {
+        return vec3<f32>(0.0);
+    }
+
+    // The generic endpoint-average estimate spans the full 360km shell for
+    // a noon surface point. That makes the near-zero density at its top count
+    // as half the density of the entire path, nearly extinguishing direct
+    // daylight before the existing surface-only intensity scale can matter.
+    // Estimate a local scale-height air mass instead. It retains directional
+    // warm attenuation near the terminator without altering sky scattering.
+    let sun_zenith_cosine = max(dot(surface_direction, sun_direction), 0.0);
+    let air_mass = min(1.0 / max(sun_zenith_cosine, 0.08), 12.0);
+    let rayleigh_optical_depth = RAYLEIGH_COEFFICIENT
+        * density(surface_altitude_meters, RAYLEIGH_SCALE_HEIGHT_METERS)
+        * RAYLEIGH_SCALE_HEIGHT_METERS
+        * air_mass;
+    let mie_optical_depth = MIE_COEFFICIENT
+        * density(surface_altitude_meters, MIE_SCALE_HEIGHT_METERS)
+        * MIE_SCALE_HEIGHT_METERS
+        * air_mass;
+    return exp(-(rayleigh_optical_depth + mie_optical_depth));
+}
+
 fn aerial_perspective(
     lit_surface_color: vec3<f32>,
     camera_relative_position: vec3<f32>,
@@ -437,16 +467,10 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         normal = wave_surface.normal;
     }
     let sun_direction = normalize(camera.sun_direction.xyz);
-    let surface_radius = PLANET_RADIUS_METERS + surface_height;
-    let radial_dot_sun = surface_radius * dot(direction, sun_direction);
-    let direct_sun_transmittance = select(
-        transmittance(
-            surface_height,
-            ATMOSPHERE_HEIGHT_METERS,
-            atmosphere_exit_distance(surface_radius, radial_dot_sun),
-        ),
-        vec3<f32>(0.0),
-        sun_is_occluded(surface_radius, radial_dot_sun),
+    let direct_sun_transmittance = surface_direct_sun_transmittance(
+        direction,
+        surface_height,
+        sun_direction,
     );
     let direct_light = max(dot(normal, sun_direction), 0.14);
     let terrain_lighting = color * (
@@ -492,16 +516,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let surface = ocean_surface(direction, camera.projection.z);
         let surface_height = surface.vertical_displacement;
         let sun_direction = normalize(camera.sun_direction.xyz);
-        let surface_radius = PLANET_RADIUS_METERS + surface_height;
-        let radial_dot_sun = surface_radius * dot(direction, sun_direction);
-        let direct_sun_transmittance = select(
-            transmittance(
-                surface_height,
-                ATMOSPHERE_HEIGHT_METERS,
-                atmosphere_exit_distance(surface_radius, radial_dot_sun),
-            ),
-            vec3<f32>(0.0),
-            sun_is_occluded(surface_radius, radial_dot_sun),
+        let direct_sun_transmittance = surface_direct_sun_transmittance(
+            direction,
+            surface_height,
+            sun_direction,
         );
         let water_color = ocean_lighting(
             surface.normal,
