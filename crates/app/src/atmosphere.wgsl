@@ -7,7 +7,7 @@ const MIE_SCALE_HEIGHT_METERS: f32 = 4800.0;
 const RAYLEIGH_COEFFICIENT: vec3<f32> = vec3<f32>(5.8e-6, 13.5e-6, 33.1e-6);
 const MIE_COEFFICIENT: vec3<f32> = vec3<f32>(21.0e-6);
 const MIE_G: f32 = 0.76;
-const SOLAR_RADIANCE: f32 = 2.0;
+const SOLAR_RADIANCE: f32 = 4.0;
 const SKY_SAMPLE_COUNT: u32 = 16u;
 
 struct Camera {
