@@ -6,7 +6,7 @@ const EXPOSURE_KEY: f32 = 0.18;
 const EXPOSURE_EPSILON: f32 = 1.0e-4;
 const EXPOSURE_ADAPT_SPEED: f32 = 1.5;
 const MINIMUM_EXPOSURE: f32 = 0.05;
-const MAXIMUM_EXPOSURE: f32 = 16.0;
+const MAXIMUM_EXPOSURE: f32 = 4.0;
 const READBACK_RING_SIZE: usize = 3;
 
 #[repr(C)]
@@ -346,9 +346,7 @@ impl HdrRenderer {
 
     pub fn update_exposure(&mut self, queue: &wgpu::Queue, delta_seconds: f64) {
         let delta_seconds = delta_seconds.clamp(0.0, 1.0) as f32;
-        let luminance = self.average_luminance.clamp(EXPOSURE_EPSILON, 10_000.0);
-        self.target_exposure = (EXPOSURE_KEY / (luminance + EXPOSURE_EPSILON))
-            .clamp(MINIMUM_EXPOSURE, MAXIMUM_EXPOSURE);
+        self.target_exposure = target_exposure(self.average_luminance);
         let interpolation = 1.0 - (-delta_seconds * EXPOSURE_ADAPT_SPEED).exp();
         self.exposure = (self.exposure + (self.target_exposure - self.exposure) * interpolation)
             .clamp(MINIMUM_EXPOSURE, MAXIMUM_EXPOSURE);
@@ -495,6 +493,11 @@ impl HdrRenderer {
     }
 }
 
+fn target_exposure(average_luminance: f32) -> f32 {
+    let luminance = average_luminance.clamp(EXPOSURE_EPSILON, 10_000.0);
+    (EXPOSURE_KEY / (luminance + EXPOSURE_EPSILON)).clamp(MINIMUM_EXPOSURE, MAXIMUM_EXPOSURE)
+}
+
 fn fullscreen_pipeline(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
@@ -576,7 +579,7 @@ fn f16_to_f32(bits: u16) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::f16_to_f32;
+    use super::{f16_to_f32, target_exposure};
 
     #[test]
     fn decodes_half_float_luminance_values() {
@@ -584,5 +587,11 @@ mod tests {
         assert_eq!(f16_to_f32(0x3c00), 1.0);
         assert_eq!(f16_to_f32(0x4000), 2.0);
         assert!((f16_to_f32(0x2e66) - 0.1).abs() < 0.001);
+    }
+
+    #[test]
+    fn black_space_cannot_overexpose_a_visible_planet() {
+        assert_eq!(target_exposure(0.0), 4.0);
+        assert!((target_exposure(0.18) - 1.0).abs() < 0.001);
     }
 }

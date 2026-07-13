@@ -20,7 +20,7 @@
     "require_finite_metrics": true,
     "expected_screenshots": 3,
     "min_exposure": 0.05,
-    "max_exposure": 16.0,
+    "max_exposure": 4.0,
     "max_exposure_delta_per_frame": 0.5,
     "max_exposure_oscillation_events": 0
   }

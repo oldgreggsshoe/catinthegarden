@@ -478,19 +478,27 @@ fn displaced_surface_normal(
     return normalize(cross(tangent_delta_u, tangent_delta_v));
 }
 
+fn srgb_to_linear(color: vec3<f32>) -> vec3<f32> {
+    let low = color / 12.92;
+    let high = pow((color + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
+    return select(high, low, color <= vec3<f32>(0.04045));
+}
+
 fn biome_color(biome: u32) -> vec3<f32> {
+    var display_color: vec3<f32>;
     switch biome {
-        case 0u: { return vec3<f32>(20.0, 65.0, 150.0) / 255.0; }
-        case 1u: { return vec3<f32>(45.0, 115.0, 190.0) / 255.0; }
-        case 2u: { return vec3<f32>(230.0, 240.0, 245.0) / 255.0; }
-        case 3u: { return vec3<f32>(130.0, 145.0, 120.0) / 255.0; }
-        case 4u: { return vec3<f32>(45.0, 105.0, 55.0) / 255.0; }
-        case 5u: { return vec3<f32>(105.0, 145.0, 65.0) / 255.0; }
-        case 6u: { return vec3<f32>(25.0, 125.0, 55.0) / 255.0; }
-        case 7u: { return vec3<f32>(205.0, 180.0, 105.0) / 255.0; }
-        case 8u: { return vec3<f32>(105.0, 100.0, 95.0) / 255.0; }
-        default: { return vec3<f32>(205.0, 210.0, 210.0) / 255.0; }
+        case 0u: { display_color = vec3<f32>(20.0, 65.0, 150.0) / 255.0; }
+        case 1u: { display_color = vec3<f32>(45.0, 115.0, 190.0) / 255.0; }
+        case 2u: { display_color = vec3<f32>(230.0, 240.0, 245.0) / 255.0; }
+        case 3u: { display_color = vec3<f32>(130.0, 145.0, 120.0) / 255.0; }
+        case 4u: { display_color = vec3<f32>(45.0, 105.0, 55.0) / 255.0; }
+        case 5u: { display_color = vec3<f32>(105.0, 145.0, 65.0) / 255.0; }
+        case 6u: { display_color = vec3<f32>(25.0, 125.0, 55.0) / 255.0; }
+        case 7u: { display_color = vec3<f32>(205.0, 180.0, 105.0) / 255.0; }
+        case 8u: { display_color = vec3<f32>(105.0, 100.0, 95.0) / 255.0; }
+        default: { display_color = vec3<f32>(205.0, 210.0, 210.0) / 255.0; }
     }
+    return srgb_to_linear(display_color);
 }
 
 fn terrain_material_color(outmap: bool, source_uv: vec2<f32>, height_meters: f32) -> vec3<f32> {
@@ -506,7 +514,7 @@ fn terrain_material_color(outmap: bool, source_uv: vec2<f32>, height_meters: f32
         // Use bilinear terrain height, not a nearest biome class, for the
         // coast. This gives a continuous shallow-water/beach transition.
         let beach = 1.0 - smoothstep(20.0, 220.0, height_meters);
-        color = mix(color, vec3<f32>(0.48, 0.40, 0.23), beach * 0.65);
+        color = mix(color, srgb_to_linear(vec3<f32>(0.48, 0.40, 0.23)), beach * 0.65);
     }
     return color;
 }
@@ -523,6 +531,7 @@ fn ocean_lighting(
     camera_relative_position: vec3<f32>,
     sun_direction: vec3<f32>,
     sun_transmittance: vec3<f32>,
+    sky_diffuse: vec3<f32>,
 ) -> vec3<f32> {
     let view_direction = normalize(-camera_relative_position);
     let reflection_direction = reflect(-view_direction, normal);
@@ -537,8 +546,8 @@ fn ocean_lighting(
     let half_vector = normalize(sun_direction + view_direction);
     let specular = pow(max(dot(normal, half_vector), 0.0), 128.0);
     let daylight = max(max(sun_transmittance.x, sun_transmittance.y), sun_transmittance.z);
-    let diffuse = vec3<f32>(0.006, 0.035, 0.095)
-        * sun_transmittance * (0.18 * SURFACE_SUNLIGHT_SCALE);
+    let diffuse = vec3<f32>(0.02, 0.12, 0.50)
+        * (sky_diffuse + sun_transmittance * (0.4 * SURFACE_SUNLIGHT_SCALE));
     // The Phase 6 cubemap is static. It represents daytime sky reflection, so
     // gate it by direct daylight instead of reflecting a bright blue sky from
     // the fully occluded hemisphere.
@@ -557,11 +566,17 @@ fn ocean_with_aerial_perspective(
         surface.vertical_displacement,
         sun_direction,
     );
+    let sky_diffuse = sky_diffuse_irradiance(
+        direction,
+        surface.vertical_displacement,
+        sun_direction,
+    );
     let water_color = ocean_lighting(
         surface.normal,
         camera_relative_position,
         sun_direction,
         sun_transmittance,
+        sky_diffuse,
     );
     return aerial_perspective(
         water_color,
@@ -660,11 +675,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     if ocean_coverage <= 0.0 {
         return vec4<f32>(input.aerial_color, 1.0);
     }
-    let beach_tint = mix(
-        vec3<f32>(1.0),
-        vec3<f32>(0.82, 0.72, 0.48),
-        1.0 - smoothstep(20.0, 220.0, terrain_height_meters),
-    );
     let water_with_aerial_perspective = ocean_with_aerial_perspective(
         direction,
         input.camera_relative_position,
@@ -672,7 +682,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     );
     return vec4<f32>(
         mix(
-            input.aerial_color * beach_tint,
+            input.aerial_color,
             water_with_aerial_perspective,
             ocean_coverage,
         ),

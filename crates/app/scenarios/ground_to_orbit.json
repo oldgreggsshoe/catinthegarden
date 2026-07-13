@@ -47,7 +47,7 @@
     "sky_sample_uv": [0.5, 0.02],
     "max_adjacent_sky_luminance_delta": 0.50,
     "min_exposure": 0.05,
-    "max_exposure": 16.0,
+    "max_exposure": 4.0,
     "max_exposure_oscillation_events": 0
   }
 }
