@@ -2,6 +2,9 @@ const PHYSICAL_SUN_ANGULAR_RADIUS_RADIANS: f32 = 0.004625;
 const VISUAL_SUN_SIZE_SCALE: f32 = 3.0;
 const SUN_ANGULAR_RADIUS_RADIANS: f32 = PHYSICAL_SUN_ANGULAR_RADIUS_RADIANS * VISUAL_SUN_SIZE_SCALE;
 const SUN_HALO_RADIUS_SCALE: f32 = 2.0;
+// This multiplier belongs only to the camera-facing HDR disc.  Terrain,
+// ocean, and atmosphere lighting use their own physical solar radiance.
+const SUN_VISUAL_RADIANCE_SCALE: f32 = 5.0;
 const SUN_CORE_RADIANCE: vec3<f32> = vec3<f32>(72.0, 65.0, 52.0);
 const SUN_HALO_RADIANCE: vec3<f32> = vec3<f32>(0.8, 0.7, 0.55);
 
@@ -52,6 +55,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let disc_coverage = 1.0 - smoothstep(0.92, 1.0, normalized_distance);
     let limb_darkening = 1.0 - 0.25 * min(normalized_distance, 1.0);
     let halo = pow(1.0 - normalized_distance / SUN_HALO_RADIUS_SCALE, 2.0);
-    let radiance = SUN_CORE_RADIANCE * disc_coverage * limb_darkening + SUN_HALO_RADIANCE * halo;
+    let radiance = SUN_VISUAL_RADIANCE_SCALE
+        * (SUN_CORE_RADIANCE * disc_coverage * limb_darkening + SUN_HALO_RADIANCE * halo);
     return vec4<f32>(radiance, 1.0);
 }
