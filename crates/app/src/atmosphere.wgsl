@@ -133,6 +133,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     let sample_length = (end_distance - start_distance) / f32(SKY_SAMPLE_COUNT);
+    let atmosphere_entry_altitude = altitude_along_ray(
+        camera_radius,
+        radial_dot_ray,
+        start_distance,
+    );
     let sun = normalize(camera.sun_direction.xyz);
     let cos_theta = dot(ray, sun);
     let rayleigh_phase = phase_rayleigh(cos_theta);
@@ -152,7 +157,14 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         );
         let sun_interval = sphere_interval(sample_radius, sample_radial_dot_sun);
         let sun_distance = max(sun_interval.y, 0.0);
-        let view_transmittance = transmittance(camera_altitude, sample_altitude, distance_meters);
+        // The camera may be in space. Only the segment from the atmosphere
+        // entry point to this sample has optical depth; treating the preceding
+        // vacuum as half-density incorrectly darkened the lower atmosphere.
+        let view_transmittance = transmittance(
+            atmosphere_entry_altitude,
+            sample_altitude,
+            distance_meters - start_distance,
+        );
         let sun_transmittance = transmittance(
             sample_altitude,
             ATMOSPHERE_HEIGHT_METERS,
