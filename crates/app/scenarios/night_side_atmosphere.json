@@ -1,0 +1,25 @@
+{
+  "name": "night_side_atmosphere",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 2.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "screenshot_times_seconds": [1.0],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [20000000.0, 0.0, 0.0],
+      "look_at": [0.0, 0.0, 0.0]
+    }
+  ],
+  "sun_waypoints": [
+    { "time_s": 0.0, "direction": [0.0, 0.0, 1.0] }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 1,
+    "sky_sample_uv": [0.68, 0.5],
+    "max_sky_luminance": 0.02
+  }
+}

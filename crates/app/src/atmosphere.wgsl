@@ -70,6 +70,12 @@ fn altitude_along_ray(radius_meters: f32, radial_dot_ray: f32, distance_meters: 
     ) - PLANET_RADIUS_METERS;
 }
 
+fn sun_is_occluded(radius_meters: f32, radial_dot_sun: f32) -> bool {
+    let discriminant = radial_dot_sun * radial_dot_sun
+        - (radius_meters * radius_meters - PLANET_RADIUS_METERS * PLANET_RADIUS_METERS);
+    return radial_dot_sun < 0.0 && discriminant >= 0.0;
+}
+
 fn transmittance(
     start_altitude_meters: f32,
     end_altitude_meters: f32,
@@ -133,7 +139,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let sun_interval = sphere_interval(sample_radius, sample_radial_dot_sun);
         let sun_distance = max(sun_interval.y, 0.0);
         let view_transmittance = transmittance(camera_altitude, sample_altitude, distance_meters);
-        let sun_transmittance = transmittance(sample_altitude, ATMOSPHERE_HEIGHT_METERS, sun_distance);
+        // A sample on the planet's night side cannot receive direct sunlight:
+        // its ray toward the directional sun is blocked by the solid planet.
+        // Near the terminator the unblocked grazing path still naturally fades
+        // through atmospheric extinction, preserving the sunset transition.
+        let sun_transmittance = select(
+            transmittance(sample_altitude, ATMOSPHERE_HEIGHT_METERS, sun_distance),
+            vec3<f32>(0.0),
+            sun_is_occluded(sample_radius, sample_radial_dot_sun),
+        );
         let rayleigh_scattering = RAYLEIGH_COEFFICIENT
             * density(sample_altitude, RAYLEIGH_SCALE_HEIGHT_METERS)
             * rayleigh_phase;

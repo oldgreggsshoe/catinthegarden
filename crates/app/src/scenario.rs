@@ -19,6 +19,7 @@ pub struct ScenarioAssertions {
     pub min_sunset_red_blue_growth: Option<f32>,
     pub min_final_sunset_red_blue_ratio: Option<f32>,
     pub max_adjacent_sky_luminance_delta: Option<f32>,
+    pub max_sky_luminance: Option<f32>,
     pub min_exposure: Option<f32>,
     pub max_exposure: Option<f32>,
     pub max_exposure_delta_per_frame: Option<f32>,
@@ -42,6 +43,7 @@ impl Default for ScenarioAssertions {
             min_sunset_red_blue_growth: None,
             min_final_sunset_red_blue_ratio: None,
             max_adjacent_sky_luminance_delta: None,
+            max_sky_luminance: None,
             min_exposure: None,
             max_exposure: None,
             max_exposure_delta_per_frame: None,
@@ -122,6 +124,7 @@ impl ScenarioRunner {
             "orbit_once" => include_str!("../scenarios/orbit_once.json"),
             "descent_to_10m" => include_str!("../scenarios/descent_to_10m.json"),
             "sunset_sweep" => include_str!("../scenarios/sunset_sweep.json"),
+            "night_side_atmosphere" => include_str!("../scenarios/night_side_atmosphere.json"),
             "ground_to_orbit" => include_str!("../scenarios/ground_to_orbit.json"),
             "stare_at_sun" => include_str!("../scenarios/stare_at_sun.json"),
             "ocean_flyover" => include_str!("../scenarios/ocean_flyover.json"),
@@ -366,7 +369,8 @@ fn validate_assertions(
     }
     let needs_sky_sample = assertions.min_sunset_red_blue_growth.is_some()
         || assertions.min_final_sunset_red_blue_ratio.is_some()
-        || assertions.max_adjacent_sky_luminance_delta.is_some();
+        || assertions.max_adjacent_sky_luminance_delta.is_some()
+        || assertions.max_sky_luminance.is_some();
     if needs_sky_sample && assertions.sky_sample_uv.is_none() {
         return Err("sky image assertions require sky_sample_uv".to_owned());
     }
@@ -389,6 +393,7 @@ fn validate_assertions(
             "maximum adjacent sky luminance delta",
             assertions.max_adjacent_sky_luminance_delta,
         ),
+        ("maximum sky luminance", assertions.max_sky_luminance),
     ] {
         if value.is_some_and(|value| !value.is_finite() || value < 0.0) {
             return Err(format!("{name} must be finite and non-negative"));
@@ -551,6 +556,11 @@ mod tests {
                 .is_some_and(|growth| growth > 1.0)
         );
         assert_eq!(sunset.definition.planet_rotation_time_scale, 1.0);
+
+        let night_side = ScenarioRunner::load("night_side_atmosphere")
+            .expect("night-side atmosphere scenario parses");
+        assert_eq!(night_side.expected_screenshots(), 1);
+        assert_eq!(night_side.assertions().max_sky_luminance, Some(0.02));
 
         let ascent = ScenarioRunner::load("ground_to_orbit").expect("ascent scenario parses");
         assert_eq!(ascent.expected_screenshots(), 7);

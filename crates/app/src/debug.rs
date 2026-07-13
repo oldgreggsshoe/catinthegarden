@@ -378,6 +378,22 @@ impl AssertionTracker {
                 ),
             ));
         }
+        if let Some(maximum_luminance) = self.config.max_sky_luminance {
+            let maximum_observed = self
+                .sky_samples
+                .iter()
+                .copied()
+                .map(sky_luminance)
+                .fold(0.0_f32, f32::max);
+            results.push(assertion_result(
+                "sky_samples_are_dark",
+                !self.sky_samples.is_empty() && maximum_observed <= maximum_luminance,
+                format!(
+                    "allowed luminance {maximum_luminance:.3}, observed {maximum_observed:.3} from {} samples",
+                    self.sky_samples.len(),
+                ),
+            ));
+        }
         if self.config.min_exposure.is_some() || self.config.max_exposure.is_some() {
             results.push(assertion_result(
                 "exposure_is_bounded",
@@ -944,6 +960,7 @@ mod tests {
             min_sunset_red_blue_growth: None,
             min_final_sunset_red_blue_ratio: None,
             max_adjacent_sky_luminance_delta: None,
+            max_sky_luminance: None,
             min_exposure: None,
             max_exposure: None,
             max_exposure_delta_per_frame: None,
@@ -1073,5 +1090,18 @@ mod tests {
         ] {
             assert!(result(&results, name).passed, "{name} should pass");
         }
+    }
+
+    #[test]
+    fn image_assertions_reject_a_lit_night_side_sky_sample() {
+        let mut config = assertions();
+        config.sky_sample_uv = Some([0.5, 0.25]);
+        config.max_sky_luminance = Some(0.02);
+        let mut tracker = AssertionTracker::new(config);
+        tracker.observe_sky_sample([4, 4, 4]);
+        assert!(result(&tracker.results(1), "sky_samples_are_dark").passed);
+
+        tracker.observe_sky_sample([80, 80, 80]);
+        assert!(!result(&tracker.results(2), "sky_samples_are_dark").passed);
     }
 }
