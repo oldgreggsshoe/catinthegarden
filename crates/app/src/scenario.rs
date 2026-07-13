@@ -20,6 +20,9 @@ pub struct ScenarioAssertions {
     pub min_final_sunset_red_blue_ratio: Option<f32>,
     pub max_adjacent_sky_luminance_delta: Option<f32>,
     pub max_sky_luminance: Option<f32>,
+    pub day_surface_sample_uv: Option<[f32; 2]>,
+    pub night_surface_sample_uv: Option<[f32; 2]>,
+    pub min_day_night_surface_luminance_ratio: Option<f32>,
     pub min_exposure: Option<f32>,
     pub max_exposure: Option<f32>,
     pub max_exposure_delta_per_frame: Option<f32>,
@@ -44,6 +47,9 @@ impl Default for ScenarioAssertions {
             min_final_sunset_red_blue_ratio: None,
             max_adjacent_sky_luminance_delta: None,
             max_sky_luminance: None,
+            day_surface_sample_uv: None,
+            night_surface_sample_uv: None,
+            min_day_night_surface_luminance_ratio: None,
             min_exposure: None,
             max_exposure: None,
             max_exposure_delta_per_frame: None,
@@ -381,6 +387,30 @@ fn validate_assertions(
     }) {
         return Err("sky_sample_uv must be finite normalized coordinates".to_owned());
     }
+    let needs_surface_samples = assertions.min_day_night_surface_luminance_ratio.is_some();
+    if needs_surface_samples
+        && (assertions.day_surface_sample_uv.is_none()
+            || assertions.night_surface_sample_uv.is_none())
+    {
+        return Err(
+            "day/night surface luminance assertions require both surface sample coordinates"
+                .to_owned(),
+        );
+    }
+    for (name, sample) in [
+        ("day_surface_sample_uv", assertions.day_surface_sample_uv),
+        (
+            "night_surface_sample_uv",
+            assertions.night_surface_sample_uv,
+        ),
+    ] {
+        if sample.is_some_and(|uv| {
+            uv.iter()
+                .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+        }) {
+            return Err(format!("{name} must be finite normalized coordinates"));
+        }
+    }
     for (name, value) in [
         (
             "minimum sunset red/blue growth",
@@ -395,6 +425,10 @@ fn validate_assertions(
             assertions.max_adjacent_sky_luminance_delta,
         ),
         ("maximum sky luminance", assertions.max_sky_luminance),
+        (
+            "minimum day/night surface luminance ratio",
+            assertions.min_day_night_surface_luminance_ratio,
+        ),
     ] {
         if value.is_some_and(|value| !value.is_finite() || value < 0.0) {
             return Err(format!("{name} must be finite and non-negative"));

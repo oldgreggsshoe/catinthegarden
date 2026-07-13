@@ -493,9 +493,13 @@ fn ocean_lighting(
     let fresnel = vec3<f32>(0.02) + vec3<f32>(0.98) * pow(1.0 - facing, 5.0);
     let half_vector = normalize(sun_direction + view_direction);
     let specular = pow(max(dot(normal, half_vector), 0.0), 128.0);
+    let daylight = max(max(sun_transmittance.x, sun_transmittance.y), sun_transmittance.z);
     let diffuse = vec3<f32>(0.006, 0.035, 0.095)
-        * (vec3<f32>(0.035) + sun_transmittance * (0.18 * SURFACE_SUNLIGHT_SCALE));
-    return diffuse + reflected_color * fresnel
+        * sun_transmittance * (0.18 * SURFACE_SUNLIGHT_SCALE);
+    // The Phase 6 cubemap is static. It represents daytime sky reflection, so
+    // gate it by direct daylight instead of reflecting a bright blue sky from
+    // the fully occluded hemisphere.
+    return diffuse + reflected_color * fresnel * daylight
         + sun_transmittance * specular * fresnel * (12.0 * SURFACE_SUNLIGHT_SCALE);
 }
 
@@ -536,9 +540,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         * max(dot(normal, direction), 0.0);
     let direct_light = max(dot(normal, sun_direction), 0.14);
     let terrain_lighting = color * (
-        vec3<f32>(0.14)
-            + sky_diffuse
-            + direct_sun_transmittance * direct_light * SURFACE_SUNLIGHT_SCALE
+        sky_diffuse + direct_sun_transmittance * direct_light * SURFACE_SUNLIGHT_SCALE
     );
     let lit_surface_color = terrain_lighting;
     return VertexOutput(

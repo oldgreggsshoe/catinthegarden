@@ -89,6 +89,7 @@ struct ScreenshotEntry {
     solid_color_verified: bool,
     seam_gap_verified: Option<bool>,
     sky_sample_rgb: Option<[u8; 3]>,
+    day_night_surface_luminance_ratio: Option<f32>,
 }
 
 pub struct RunArtifacts {
@@ -115,6 +116,7 @@ struct AssertionTracker {
     fallback_violations: usize,
     maximum_fallback_chunks: u32,
     sky_samples: Vec<[u8; 3]>,
+    day_night_surface_luminance_ratios: Vec<f32>,
     exposure_sample_count: usize,
     exposure_bound_violations: usize,
     maximum_exposure_frame_delta: f32,
@@ -142,6 +144,7 @@ impl AssertionTracker {
             fallback_violations: 0,
             maximum_fallback_chunks: 0,
             sky_samples: Vec::new(),
+            day_night_surface_luminance_ratios: Vec::new(),
             exposure_sample_count: 0,
             exposure_bound_violations: 0,
             maximum_exposure_frame_delta: 0.0,
@@ -216,6 +219,10 @@ impl AssertionTracker {
 
     fn observe_sky_sample(&mut self, sample: [u8; 3]) {
         self.sky_samples.push(sample);
+    }
+
+    fn observe_day_night_surface_luminance_ratio(&mut self, ratio: f32) {
+        self.day_night_surface_luminance_ratios.push(ratio);
     }
 
     fn observe_exposure(&mut self, exposure: f32, target_exposure: f32, average_luminance: f32) {
@@ -391,6 +398,26 @@ impl AssertionTracker {
                 format!(
                     "allowed luminance {maximum_luminance:.3}, observed {maximum_observed:.3} from {} samples",
                     self.sky_samples.len(),
+                ),
+            ));
+        }
+        if let Some(minimum_ratio) = self.config.min_day_night_surface_luminance_ratio {
+            let minimum_observed = self
+                .day_night_surface_luminance_ratios
+                .iter()
+                .copied()
+                .fold(f32::INFINITY, f32::min);
+            results.push(assertion_result(
+                "day_side_surface_is_brighter_than_night_side",
+                minimum_observed.is_finite() && minimum_observed >= minimum_ratio,
+                format!(
+                    "required ratio {minimum_ratio:.3}, observed {} from {} screenshots",
+                    if minimum_observed.is_finite() {
+                        format!("{minimum_observed:.3}")
+                    } else {
+                        "none".to_owned()
+                    },
+                    self.day_night_surface_luminance_ratios.len(),
                 ),
             ));
         }
@@ -732,6 +759,7 @@ impl RunArtifacts {
         solid_color_verified: bool,
         seam_gap_verified: Option<bool>,
         sky_sample_rgb: Option<[u8; 3]>,
+        day_night_surface_luminance_ratio: Option<f32>,
     ) -> Result<(), String> {
         self.screenshots.push(ScreenshotEntry {
             filename,
@@ -739,6 +767,7 @@ impl RunArtifacts {
             solid_color_verified,
             seam_gap_verified,
             sky_sample_rgb,
+            day_night_surface_luminance_ratio,
         });
         self.write_manifests()
     }
@@ -752,6 +781,29 @@ impl RunArtifacts {
             .expect("sample coordinate is inside the screenshot");
         self.assertion_tracker.observe_sky_sample(pixel);
         Some(pixel)
+    }
+
+    fn record_day_night_surface_luminance_ratio(
+        &mut self,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Option<f32> {
+        let [day_u, day_v] = self.assertion_tracker.config.day_surface_sample_uv?;
+        let [night_u, night_v] = self.assertion_tracker.config.night_surface_sample_uv?;
+        let sample = |u: f32, v: f32| {
+            let x = (u * (width.saturating_sub(1)) as f32).round() as usize;
+            let y = (v * (height.saturating_sub(1)) as f32).round() as usize;
+            pixels[(y * width as usize + x) * 4..][..3]
+                .try_into()
+                .expect("sample coordinate is inside the screenshot")
+        };
+        let day_luminance = sky_luminance(sample(day_u, day_v));
+        let night_luminance = sky_luminance(sample(night_u, night_v));
+        let ratio = day_luminance / night_luminance.max(0.001);
+        self.assertion_tracker
+            .observe_day_night_surface_luminance_ratio(ratio);
+        Some(ratio)
     }
 
     fn write_manifests(&self) -> Result<(), String> {
@@ -884,12 +936,15 @@ pub fn finish_capture(
     )
     .map_err(|error| error.to_string())?;
     let sky_sample_rgb = artifacts.record_sky_sample(&pixels, pending.width, pending.height);
+    let day_night_surface_luminance_ratio =
+        artifacts.record_day_night_surface_luminance_ratio(&pixels, pending.width, pending.height);
     artifacts.record_screenshot(
         pending.filename,
         sim_time,
         solid_color_verified,
         seam_gap_verified,
         sky_sample_rgb,
+        day_night_surface_luminance_ratio,
     )?;
     Ok(solid_color_verified)
 }
@@ -961,6 +1016,9 @@ mod tests {
             min_final_sunset_red_blue_ratio: None,
             max_adjacent_sky_luminance_delta: None,
             max_sky_luminance: None,
+            day_surface_sample_uv: None,
+            night_surface_sample_uv: None,
+            min_day_night_surface_luminance_ratio: None,
             min_exposure: None,
             max_exposure: None,
             max_exposure_delta_per_frame: None,
@@ -1103,5 +1161,31 @@ mod tests {
 
         tracker.observe_sky_sample([80, 80, 80]);
         assert!(!result(&tracker.results(2), "sky_samples_are_dark").passed);
+    }
+
+    #[test]
+    fn image_assertions_require_a_bright_day_side_and_dark_night_side() {
+        let mut config = assertions();
+        config.min_day_night_surface_luminance_ratio = Some(5.0);
+
+        let mut dim_contrast = AssertionTracker::new(config.clone());
+        dim_contrast.observe_day_night_surface_luminance_ratio(4.9);
+        assert!(
+            !result(
+                &dim_contrast.results(1),
+                "day_side_surface_is_brighter_than_night_side"
+            )
+            .passed
+        );
+
+        let mut sufficient_contrast = AssertionTracker::new(config);
+        sufficient_contrast.observe_day_night_surface_luminance_ratio(5.1);
+        assert!(
+            result(
+                &sufficient_contrast.results(1),
+                "day_side_surface_is_brighter_than_night_side"
+            )
+            .passed
+        );
     }
 }
