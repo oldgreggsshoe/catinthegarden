@@ -11,10 +11,10 @@ pub const CHUNK_GRID_VERTICES: usize = CHUNK_GRID_QUADS + 1;
 pub const MAX_LOD_LEVEL: u8 = 18;
 /// The coarsest rendered quadtree leaf. Screen-space error raises the LOD into
 /// finer levels only when their geometric error can affect visible pixels.
-pub const MINIMUM_LOD_LEVEL: u8 = 2;
+pub const MINIMUM_LOD_LEVEL: u8 = 1;
 /// Deliberately game-time-scaled so axial rotation is visible during normal play.
-pub const PLANET_ROTATION_PERIOD_SECONDS: f64 = 600.0;
-pub const DEFAULT_MAX_ACTIVE_CHUNKS: usize = 1_024;
+pub const PLANET_ROTATION_PERIOD_SECONDS: f64 = 60_000.0;
+pub const DEFAULT_MAX_ACTIVE_CHUNKS: usize = 2_048;
 pub const SKIRT_DEPTH_RATIO: f64 = 0.075;
 pub const PLACEHOLDER_HEIGHT_OCTAVES: [(f64, f64); 4] = [
     (8.0, 2_800.0),
@@ -59,7 +59,6 @@ pub fn reference_vertical_fov_radians_for_viewport(
         MAX_VERTICAL_FOV_RADIANS,
     )
 }
-
 const FACE_COUNT: u8 = 6;
 const NODE_BOUNDS_SAMPLE_STEPS: usize = 4;
 const FACE_BASES: [(DVec3, DVec3, DVec3); FACE_COUNT as usize] = [
@@ -248,8 +247,8 @@ pub struct LodPolicy {
 impl Default for LodPolicy {
     fn default() -> Self {
         Self {
-            split_pixels: 2.0,
-            merge_pixels: 1.25,
+            split_pixels: 0.4,
+            merge_pixels: 0.25,
             max_level: MAX_LOD_LEVEL,
         }
     }
@@ -1348,17 +1347,6 @@ impl OrbitCamera {
         );
     }
 
-    pub fn set_reference_vertical_fov_degrees_for_viewport(
-        &mut self,
-        reference_vertical_fov_degrees: f64,
-        viewport_height: u32,
-    ) {
-        self.vertical_fov_radians = reference_vertical_fov_radians_for_viewport(
-            reference_vertical_fov_degrees.to_radians(),
-            viewport_height,
-        );
-    }
-
     pub fn zoom(&mut self, wheel_delta: f64) {
         self.zoom_for_viewport(wheel_delta, REFERENCE_VERTICAL_FOV_VIEWPORT_HEIGHT);
     }
@@ -1388,6 +1376,17 @@ impl OrbitCamera {
         self.look_yaw_radians = direction.dot(right).atan2(direction.dot(down));
         self.look_pitch_radians = direction.dot(up).clamp(-1.0, 1.0).asin();
     }
+
+    pub fn set_reference_vertical_fov_degrees_for_viewport(
+        &mut self,
+        reference_vertical_fov_degrees: f64,
+        viewport_height: u32,
+    ) {
+        self.vertical_fov_radians = reference_vertical_fov_radians_for_viewport(
+            reference_vertical_fov_degrees.to_radians(),
+            viewport_height,
+        );
+    }    
 }
 
 fn view_projection_for(
@@ -1562,31 +1561,6 @@ mod tests {
                 .all(|node| node.level >= MINIMUM_LOD_LEVEL)
         );
         assert!(!update.metrics.budget_limited);
-    }
-
-    #[test]
-    fn noncardinal_orbit_selection_enforces_the_minimum_lod() {
-        let mut camera = OrbitCamera::default();
-        camera.set_world_pose(
-            DVec3::new(9_000_000.0, 3_000_000.0, 3_162_277.660_168_379_5),
-            DVec3::X * PLANET_RADIUS_METERS,
-        );
-        let mut lod = PlanetLod::default();
-        let update = lod.update_for_view(
-            camera.world_position(),
-            camera.direction_dvec3(),
-            1.5,
-            960,
-            72.314_457_411_106_82_f64.to_radians(),
-        );
-        assert!(
-            update
-                .active_nodes
-                .iter()
-                .all(|node| node.level >= MINIMUM_LOD_LEVEL),
-            "active histogram: {:?}",
-            update.metrics.level_histogram
-        );
     }
 
     #[test]

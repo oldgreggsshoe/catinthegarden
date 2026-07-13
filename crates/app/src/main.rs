@@ -529,7 +529,7 @@ impl State {
                 self.next_log_time = sim_time + 0.5;
             }
             (
-                sim_time, write_log, false, false, false, false, false, None, None, None, 1.0,
+                sim_time, write_log, false, false, false, false, false, None, None, None, 0.0,
             )
         };
         if let Some((position, look_at)) = scenario_pose {
@@ -546,10 +546,10 @@ impl State {
         }
         if self.scenario.is_none() {
             let orbit_delta_seconds = (sim_time - self.last_auto_orbit_sim_time).max(0.0);
-            self.camera.orbit(
+            /*self.camera.orbit(
                 DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND * orbit_delta_seconds,
                 0.0,
-            );
+            );*/
         }
         self.last_auto_orbit_sim_time = sim_time;
         let camera_world_position = self.camera.world_position();
