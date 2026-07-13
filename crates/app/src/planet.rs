@@ -10,7 +10,7 @@ pub const CHUNK_GRID_QUADS: usize = 32;
 pub const CHUNK_GRID_VERTICES: usize = CHUNK_GRID_QUADS + 1;
 pub const MAX_LOD_LEVEL: u8 = 18;
 /// The coarsest rendered quadtree leaf. Screen-space error raises the LOD into
-/// the globally available L3/L4 data only when that detail can affect pixels.
+/// finer levels only when their geometric error can affect visible pixels.
 pub const MINIMUM_LOD_LEVEL: u8 = 2;
 /// Deliberately game-time-scaled so axial rotation is visible during normal play.
 pub const PLANET_ROTATION_PERIOD_SECONDS: f64 = 600.0;
@@ -24,12 +24,41 @@ pub const PLACEHOLDER_HEIGHT_OCTAVES: [(f64, f64); 4] = [
 ];
 pub const PLACEHOLDER_HEIGHT_AMPLITUDE_METERS: f64 = 3_503.0;
 const DEFAULT_VERTICAL_FOV_RADIANS: f64 = 45.0_f64.to_radians();
-const MIN_VERTICAL_FOV_RADIANS: f64 = 2.0_f64.to_radians();
-const MAX_VERTICAL_FOV_RADIANS: f64 = 75.0_f64.to_radians();
-const HIGH_DETAIL_ZOOM_VERTICAL_FOV_RADIANS: f64 = 8.0_f64.to_radians();
-const HIGH_DETAIL_ZOOM_MINIMUM_LOD_LEVEL: u8 = 4;
+/// The default 640px-high viewport needs roughly this optical field of view
+/// before screen-space error naturally requests L18 from a 6,000km orbit.
+pub const MIN_VERTICAL_FOV_DEGREES: f64 = 0.000_05;
+pub const MAX_VERTICAL_FOV_DEGREES: f64 = 75.0;
+pub const REFERENCE_VERTICAL_FOV_VIEWPORT_HEIGHT: u32 = 640;
+const MIN_VERTICAL_FOV_RADIANS: f64 = MIN_VERTICAL_FOV_DEGREES.to_radians();
+const MAX_VERTICAL_FOV_RADIANS: f64 = MAX_VERTICAL_FOV_DEGREES.to_radians();
+const ZOOM_LOG_FOV_PER_WHEEL_STEP: f64 = 0.12;
 pub const PLACEHOLDER_GEOMETRIC_ERROR_RATIO: f64 = 0.02;
 pub const LOD_THRASH_WINDOW_UPDATES: u64 = 4;
+
+pub fn minimum_vertical_fov_radians_for_viewport(viewport_height: u32) -> f64 {
+    let reference_tangent = (MIN_VERTICAL_FOV_RADIANS * 0.5).tan();
+    let scaled_tangent = reference_tangent * f64::from(viewport_height.max(1))
+        / f64::from(REFERENCE_VERTICAL_FOV_VIEWPORT_HEIGHT);
+    (2.0 * scaled_tangent.atan()).min(MAX_VERTICAL_FOV_RADIANS)
+}
+
+pub fn reference_vertical_fov_radians_for_viewport(
+    reference_vertical_fov_radians: f64,
+    viewport_height: u32,
+) -> f64 {
+    assert!(
+        reference_vertical_fov_radians.is_finite()
+            && reference_vertical_fov_radians > 0.0
+            && reference_vertical_fov_radians < std::f64::consts::PI
+    );
+    let scaled_tangent = (reference_vertical_fov_radians * 0.5).tan()
+        * f64::from(viewport_height.max(1))
+        / f64::from(REFERENCE_VERTICAL_FOV_VIEWPORT_HEIGHT);
+    (2.0 * scaled_tangent.atan()).clamp(
+        minimum_vertical_fov_radians_for_viewport(viewport_height),
+        MAX_VERTICAL_FOV_RADIANS,
+    )
+}
 
 const FACE_COUNT: u8 = 6;
 const NODE_BOUNDS_SAMPLE_STEPS: usize = 4;
@@ -41,6 +70,39 @@ const FACE_BASES: [(DVec3, DVec3, DVec3); FACE_COUNT as usize] = [
     (DVec3::Z, DVec3::X, DVec3::Y),
     (DVec3::NEG_Z, DVec3::NEG_X, DVec3::Y),
 ];
+
+/// Orthonormal camera axes retained in f64 until camera-relative values have
+/// been transformed into view space. This avoids rotating multi-megameter
+/// f32 offsets in the terrain shader at extremely narrow optical zooms.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CameraViewBasis {
+    forward: DVec3,
+    right: DVec3,
+    up: DVec3,
+}
+
+impl CameraViewBasis {
+    pub(crate) fn from_forward(forward: DVec3) -> Self {
+        assert!(forward.is_finite() && forward.length_squared() > 0.0);
+        let forward = forward.normalize();
+        let right = forward.cross(DVec3::Y).normalize_or_zero();
+        let right = if right.length_squared() > 0.0 {
+            right
+        } else {
+            forward.cross(DVec3::X).normalize()
+        };
+        let up = right.cross(forward).normalize();
+        Self { forward, right, up }
+    }
+
+    pub(crate) fn world_to_view(self, vector: DVec3) -> DVec3 {
+        DVec3::new(
+            vector.dot(self.right),
+            vector.dot(self.up),
+            -vector.dot(self.forward),
+        )
+    }
+}
 
 /// A leaf in one of the six face-local quadtrees. Coordinates address a node
 /// at `level`, so children are `(x * 2 + dx, y * 2 + dy)` at `level + 1`.
@@ -198,15 +260,6 @@ impl LodPolicy {
         MINIMUM_LOD_LEVEL.min(self.max_level)
     }
 
-    fn minimum_level_for_view(&self, vertical_fov_radians: f64) -> u8 {
-        let normal_minimum = self.minimum_level();
-        if vertical_fov_radians <= HIGH_DETAIL_ZOOM_VERTICAL_FOV_RADIANS {
-            normal_minimum.max(HIGH_DETAIL_ZOOM_MINIMUM_LOD_LEVEL.min(self.max_level))
-        } else {
-            normal_minimum
-        }
-    }
-
     pub fn should_split(&self, projected_error_pixels: f64, level: u8) -> bool {
         level < self.max_level && projected_error_pixels > self.split_pixels
     }
@@ -263,28 +316,23 @@ fn node_is_in_view_frustum(
 ) -> bool {
     let bounds = node_bounds(node);
     let camera_to_center = bounds.center_world - camera_world;
-    let forward = camera_forward.normalize();
+    let basis = CameraViewBasis::from_forward(camera_forward);
+    let forward = basis.forward;
     let forward_distance = camera_to_center.dot(forward);
     if forward_distance < -bounds.radius_meters {
         return false;
     }
 
-    // Match the renderer's look-to basis, but retain a stable fallback for a
-    // camera that is almost parallel to its nominal up vector.
-    let right = forward.cross(DVec3::Y).normalize_or_zero();
-    let right = if right.length_squared() > 0.0 {
-        right
-    } else {
-        forward.cross(DVec3::X).normalize()
-    };
-    let up = right.cross(forward).normalize();
     let vertical_tangent = (vertical_fov_radians * 0.5).tan();
     let horizontal_tangent = vertical_tangent * aspect_ratio;
 
     // Test the node's conservative bounding sphere against all four side
     // planes. This intentionally retains boundary chunks so a narrow optical
     // zoom cannot create a visible hole at the viewport edge.
-    for (axis, tangent) in [(right, horizontal_tangent), (up, vertical_tangent)] {
+    for (axis, tangent) in [
+        (basis.right, horizontal_tangent),
+        (basis.up, vertical_tangent),
+    ] {
         let normal_length = (1.0 + tangent * tangent).sqrt();
         let plane_distance = forward_distance * tangent;
         let side_distance = camera_to_center.dot(axis);
@@ -306,7 +354,12 @@ pub fn projected_error_pixels(
     let bounds = node_bounds(node);
     let distance = (camera_world.distance(bounds.center_world) - bounds.radius_meters).max(1.0);
     let projection_scale = f64::from(viewport_height.max(1))
-        / (2.0 * (vertical_fov_radians.clamp(0.01, std::f64::consts::PI - 0.01) * 0.5).tan());
+        / (2.0
+            * (vertical_fov_radians.clamp(
+                minimum_vertical_fov_radians_for_viewport(1),
+                std::f64::consts::PI - f64::EPSILON,
+            ) * 0.5)
+                .tan());
     node.geometric_error_meters() * projection_scale / distance
 }
 
@@ -610,7 +663,7 @@ impl PlanetLod {
             // minimum LOD policy, and becomes especially expensive at a narrow
             // optical zoom.
             leaves.retain(|node| {
-                node.level >= self.policy.minimum_level_for_view(vertical_fov_radians)
+                node.level >= self.policy.minimum_level()
                     || node.children().into_iter().any(|child| {
                         Self::evaluate(
                             child,
@@ -653,7 +706,7 @@ impl PlanetLod {
                     &mut culled_nodes,
                 );
                 evaluation.visible
-                    && node.level >= self.policy.minimum_level_for_view(vertical_fov_radians)
+                    && node.level >= self.policy.minimum_level()
                     && self
                         .policy
                         .should_merge(evaluation.projected_error_pixels, node.level)
@@ -716,7 +769,7 @@ impl PlanetLod {
             evaluations,
             culled_nodes,
         );
-        let refine = if node.level < policy.minimum_level_for_view(vertical_fov_radians) {
+        let refine = if node.level < policy.minimum_level() {
             true
         } else if previous_split.contains(&node) {
             !policy.should_merge(evaluation.projected_error_pixels, node.level)
@@ -1182,7 +1235,7 @@ impl OrbitCamera {
 
     pub fn view_projection(&self, aspect_ratio: f32) -> Mat4 {
         view_projection_for(
-            self.direction(),
+            self.direction_dvec3(),
             self.orbit_radius_meters - PLANET_RADIUS_METERS,
             self.vertical_fov_radians,
             aspect_ratio,
@@ -1195,7 +1248,7 @@ impl OrbitCamera {
         planet_rotation_radians: f64,
     ) -> Mat4 {
         view_projection_for(
-            self.planet_frame_direction(planet_rotation_radians),
+            self.planet_frame_direction_dvec3(planet_rotation_radians),
             self.orbit_radius_meters - PLANET_RADIUS_METERS,
             self.vertical_fov_radians,
             aspect_ratio,
@@ -1219,7 +1272,7 @@ impl OrbitCamera {
         self.azimuth_radians = position.z.atan2(position.x);
         self.elevation_radians = (position.y / radius).clamp(-1.0, 1.0).asin();
 
-        self.set_look_direction_relative(forward.normalize().as_vec3());
+        self.set_look_direction_relative(forward.normalize());
     }
 
     pub fn orbit(&mut self, azimuth_delta: f64, elevation_delta: f64) {
@@ -1232,18 +1285,27 @@ impl OrbitCamera {
         self.look_pitch_radians = (self.look_pitch_radians + pitch_delta).clamp(-1.5, 1.5);
     }
 
+    pub fn look_with_optical_sensitivity(&mut self, yaw_delta: f64, pitch_delta: f64) {
+        let scale = self.look_sensitivity_scale();
+        self.look(yaw_delta * scale, pitch_delta * scale);
+    }
+
     pub fn look_at_origin(&mut self) {
         self.look_yaw_radians = 0.0;
         self.look_pitch_radians = 0.0;
     }
 
     pub fn direction(&self) -> Vec3 {
+        self.direction_dvec3().as_vec3()
+    }
+
+    pub fn direction_dvec3(&self) -> DVec3 {
         let (down, right, up) = self.orbit_look_frame();
-        let horizontal = self.look_pitch_radians.cos() as f32;
-        (down * (self.look_yaw_radians.cos() as f32 * horizontal)
-            + right * (self.look_yaw_radians.sin() as f32 * horizontal)
-            + up * self.look_pitch_radians.sin() as f32)
-            .normalize()
+        let horizontal = self.look_pitch_radians.cos();
+        (down * (self.look_yaw_radians.cos() * horizontal)
+            + right * (self.look_yaw_radians.sin() * horizontal)
+            + up * self.look_pitch_radians.sin())
+        .normalize()
     }
 
     pub fn planet_frame_world_position(&self, planet_rotation_radians: f64) -> DVec3 {
@@ -1251,46 +1313,90 @@ impl OrbitCamera {
     }
 
     pub fn planet_frame_direction(&self, planet_rotation_radians: f64) -> Vec3 {
-        planet_local_vector(self.direction().as_dvec3(), planet_rotation_radians).as_vec3()
+        self.planet_frame_direction_dvec3(planet_rotation_radians)
+            .as_vec3()
+    }
+
+    pub fn planet_frame_direction_dvec3(&self, planet_rotation_radians: f64) -> DVec3 {
+        planet_local_vector(self.direction_dvec3(), planet_rotation_radians)
     }
 
     pub fn vertical_fov_radians(&self) -> f64 {
         self.vertical_fov_radians
     }
 
+    pub fn look_sensitivity_scale(&self) -> f64 {
+        (self.vertical_fov_radians / DEFAULT_VERTICAL_FOV_RADIANS).min(1.0)
+    }
+
     pub fn set_vertical_fov_degrees(&mut self, vertical_fov_degrees: f64) {
+        self.set_vertical_fov_degrees_for_viewport(
+            vertical_fov_degrees,
+            REFERENCE_VERTICAL_FOV_VIEWPORT_HEIGHT,
+        );
+    }
+
+    pub fn set_vertical_fov_degrees_for_viewport(
+        &mut self,
+        vertical_fov_degrees: f64,
+        viewport_height: u32,
+    ) {
         assert!(vertical_fov_degrees.is_finite() && vertical_fov_degrees > 0.0);
-        self.vertical_fov_radians = vertical_fov_degrees
-            .to_radians()
-            .clamp(MIN_VERTICAL_FOV_RADIANS, MAX_VERTICAL_FOV_RADIANS);
+        self.vertical_fov_radians = vertical_fov_degrees.to_radians().clamp(
+            minimum_vertical_fov_radians_for_viewport(viewport_height),
+            MAX_VERTICAL_FOV_RADIANS,
+        );
+    }
+
+    pub fn set_reference_vertical_fov_degrees_for_viewport(
+        &mut self,
+        reference_vertical_fov_degrees: f64,
+        viewport_height: u32,
+    ) {
+        self.vertical_fov_radians = reference_vertical_fov_radians_for_viewport(
+            reference_vertical_fov_degrees.to_radians(),
+            viewport_height,
+        );
     }
 
     pub fn zoom(&mut self, wheel_delta: f64) {
-        self.vertical_fov_radians = (self.vertical_fov_radians * (-wheel_delta * 0.12).exp())
-            .clamp(MIN_VERTICAL_FOV_RADIANS, MAX_VERTICAL_FOV_RADIANS);
+        self.zoom_for_viewport(wheel_delta, REFERENCE_VERTICAL_FOV_VIEWPORT_HEIGHT);
     }
 
-    fn orbit_look_frame(&self) -> (Vec3, Vec3, Vec3) {
-        let down = -self.world_position().normalize().as_vec3();
-        let right = down.cross(Vec3::Y).normalize();
-        let up = right.cross(down).normalize();
-        (down, right, up)
+    pub fn zoom_for_viewport(&mut self, wheel_delta: f64, viewport_height: u32) {
+        self.vertical_fov_radians =
+            (self.vertical_fov_radians * (-wheel_delta * ZOOM_LOG_FOV_PER_WHEEL_STEP).exp()).clamp(
+                minimum_vertical_fov_radians_for_viewport(viewport_height),
+                MAX_VERTICAL_FOV_RADIANS,
+            );
     }
 
-    fn set_look_direction_relative(&mut self, direction: Vec3) {
+    pub fn clamp_vertical_fov_for_viewport(&mut self, viewport_height: u32) {
+        self.vertical_fov_radians = self.vertical_fov_radians.clamp(
+            minimum_vertical_fov_radians_for_viewport(viewport_height),
+            MAX_VERTICAL_FOV_RADIANS,
+        );
+    }
+
+    fn orbit_look_frame(&self) -> (DVec3, DVec3, DVec3) {
+        let basis = CameraViewBasis::from_forward(-self.world_position().normalize());
+        (basis.forward, basis.right, basis.up)
+    }
+
+    fn set_look_direction_relative(&mut self, direction: DVec3) {
         let (down, right, up) = self.orbit_look_frame();
-        self.look_yaw_radians = f64::from(direction.dot(right).atan2(direction.dot(down)));
-        self.look_pitch_radians = f64::from(direction.dot(up).clamp(-1.0, 1.0).asin());
+        self.look_yaw_radians = direction.dot(right).atan2(direction.dot(down));
+        self.look_pitch_radians = direction.dot(up).clamp(-1.0, 1.0).asin();
     }
 }
 
 fn view_projection_for(
-    forward: Vec3,
+    forward: DVec3,
     altitude_meters: f64,
     vertical_fov_radians: f64,
     aspect_ratio: f32,
 ) -> Mat4 {
-    let view = Mat4::look_to_rh(Vec3::ZERO, forward, DVec3::Y.as_vec3());
+    let view = Mat4::look_to_rh(Vec3::ZERO, forward.as_vec3(), Vec3::Y);
     let near = (altitude_meters * 0.01).clamp(0.05, 10.0) as f32;
     reversed_z_infinite_perspective(vertical_fov_radians as f32, aspect_ratio, near) * view
 }
@@ -1298,12 +1404,13 @@ fn view_projection_for(
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraUniform {
-    pub view_projection: [[f32; 4]; 4],
+    pub projection_matrix: [[f32; 4]; 4],
     pub camera_forward: [f32; 4],
     pub camera_right: [f32; 4],
     pub camera_up: [f32; 4],
-    pub camera_planet_direction_altitude: [f32; 4],
+    pub camera_planet_direction_view_altitude: [f32; 4],
     pub sun_direction: [f32; 4],
+    pub sun_direction_view: [f32; 4],
     pub projection: [f32; 4],
 }
 
@@ -1315,29 +1422,45 @@ impl CameraUniform {
         planet_rotation_radians: f64,
         sim_time: f64,
     ) -> Self {
-        let forward = camera.planet_frame_direction(planet_rotation_radians);
-        let right = forward.cross(Vec3::Y).normalize();
-        let up = right.cross(forward).normalize();
+        let basis = CameraViewBasis::from_forward(
+            camera.planet_frame_direction_dvec3(planet_rotation_radians),
+        );
         let camera_world_position = camera.planet_frame_world_position(planet_rotation_radians);
         let camera_radius = camera_world_position.length();
-        let planet_direction = (camera_world_position / camera_radius).as_vec3();
-        let sun_direction = planet_local_vector(sun_direction, planet_rotation_radians)
-            .normalize()
+        let camera_altitude = camera_radius - PLANET_RADIUS_METERS;
+        let planet_direction_view = basis
+            .world_to_view(camera_world_position / camera_radius)
             .as_vec3();
+        let sun_direction = planet_local_vector(sun_direction, planet_rotation_radians).normalize();
+        let sun_direction_view = basis.world_to_view(sun_direction).as_vec3();
+        let forward = basis.forward.as_vec3();
+        let right = basis.right.as_vec3();
+        let up = basis.up.as_vec3();
+        let sun_direction = sun_direction.as_vec3();
+        let near = (camera_altitude * 0.01).clamp(0.05, 10.0) as f32;
         Self {
-            view_projection: camera
-                .view_projection_in_planet_frame(aspect_ratio, planet_rotation_radians)
-                .to_cols_array_2d(),
+            projection_matrix: reversed_z_infinite_perspective(
+                camera.vertical_fov_radians as f32,
+                aspect_ratio,
+                near,
+            )
+            .to_cols_array_2d(),
             camera_forward: [forward.x, forward.y, forward.z, 0.0],
             camera_right: [right.x, right.y, right.z, 0.0],
             camera_up: [up.x, up.y, up.z, 0.0],
-            camera_planet_direction_altitude: [
-                planet_direction.x,
-                planet_direction.y,
-                planet_direction.z,
-                (camera_radius - PLANET_RADIUS_METERS) as f32,
+            camera_planet_direction_view_altitude: [
+                planet_direction_view.x,
+                planet_direction_view.y,
+                planet_direction_view.z,
+                camera_altitude as f32,
             ],
             sun_direction: [sun_direction.x, sun_direction.y, sun_direction.z, 0.0],
+            sun_direction_view: [
+                sun_direction_view.x,
+                sun_direction_view.y,
+                sun_direction_view.z,
+                0.0,
+            ],
             projection: [
                 aspect_ratio,
                 (camera.vertical_fov_radians as f32 * 0.5).tan(),
@@ -1367,11 +1490,12 @@ mod tests {
     use glam::DVec3;
 
     use super::{
-        CHUNK_GRID_QUADS, CHUNK_GRID_VERTICES, CubeSphereMesh, HIGH_DETAIL_ZOOM_MINIMUM_LOD_LEVEL,
-        LodPolicy, MAX_LOD_LEVEL, MINIMUM_LOD_LEVEL, OrbitCamera, PLANET_RADIUS_METERS, PlanetLod,
+        CHUNK_GRID_QUADS, CHUNK_GRID_VERTICES, CameraViewBasis, CubeSphereMesh,
+        DEFAULT_VERTICAL_FOV_RADIANS, LodPolicy, MAX_LOD_LEVEL, MAX_VERTICAL_FOV_RADIANS,
+        MIN_VERTICAL_FOV_RADIANS, MINIMUM_LOD_LEVEL, OrbitCamera, PLANET_RADIUS_METERS, PlanetLod,
         QuadtreeNode, SKIRT_DEPTH_RATIO, build_chunk_mesh, cube_face_direction,
-        placeholder_height_meters, planet_local_vector, planet_rotation_radians,
-        projected_error_pixels,
+        minimum_vertical_fov_radians_for_viewport, placeholder_height_meters, planet_local_vector,
+        planet_rotation_radians, projected_error_pixels,
     };
 
     #[test]
@@ -1424,7 +1548,7 @@ mod tests {
         let mut lod = PlanetLod::default();
         let update = lod.update_for_view(
             camera.world_position(),
-            camera.direction().as_dvec3(),
+            camera.direction_dvec3(),
             1.5,
             1_080,
             45.0_f64.to_radians(),
@@ -1438,6 +1562,31 @@ mod tests {
                 .all(|node| node.level >= MINIMUM_LOD_LEVEL)
         );
         assert!(!update.metrics.budget_limited);
+    }
+
+    #[test]
+    fn noncardinal_orbit_selection_enforces_the_minimum_lod() {
+        let mut camera = OrbitCamera::default();
+        camera.set_world_pose(
+            DVec3::new(9_000_000.0, 3_000_000.0, 3_162_277.660_168_379_5),
+            DVec3::X * PLANET_RADIUS_METERS,
+        );
+        let mut lod = PlanetLod::default();
+        let update = lod.update_for_view(
+            camera.world_position(),
+            camera.direction_dvec3(),
+            1.5,
+            960,
+            72.314_457_411_106_82_f64.to_radians(),
+        );
+        assert!(
+            update
+                .active_nodes
+                .iter()
+                .all(|node| node.level >= MINIMUM_LOD_LEVEL),
+            "active histogram: {:?}",
+            update.metrics.level_histogram
+        );
     }
 
     #[test]
@@ -1458,13 +1607,110 @@ mod tests {
             zoomed.metrics.active_chunks
         );
         assert!(zoomed.metrics.max_level >= wide.metrics.max_level);
-        assert!(zoomed.metrics.max_level >= HIGH_DETAIL_ZOOM_MINIMUM_LOD_LEVEL);
+        assert!(zoomed.metrics.max_level > MINIMUM_LOD_LEVEL);
         assert!(
             zoomed
                 .active_nodes
                 .iter()
                 .all(|node| node.level >= MINIMUM_LOD_LEVEL)
         );
+    }
+
+    #[test]
+    fn orbital_optical_zoom_traverses_every_lod_level_in_both_directions() {
+        let mut camera = OrbitCamera::default();
+        camera.set_vertical_fov_degrees(75.0);
+        let position = camera.world_position();
+        let forward = -position.normalize();
+        let mut lod = PlanetLod::default();
+        let mut observed_levels = Vec::new();
+        let mut lod_thrash_events = 0_u32;
+
+        let mut zoom_in_steps = 0;
+        loop {
+            let update =
+                lod.update_for_view(position, forward, 1.5, 640, camera.vertical_fov_radians());
+            assert!(!update.metrics.budget_limited);
+            assert!(update.metrics.active_chunks <= super::DEFAULT_MAX_ACTIVE_CHUNKS as u32);
+            lod_thrash_events += update.metrics.lod_thrash_events;
+            if observed_levels.last() != Some(&update.metrics.max_level) {
+                observed_levels.push(update.metrics.max_level);
+            }
+            if camera.vertical_fov_radians() == MIN_VERTICAL_FOV_RADIANS {
+                break;
+            }
+            camera.zoom(1.0);
+            zoom_in_steps += 1;
+        }
+        for _ in 0..=super::LOD_THRASH_WINDOW_UPDATES {
+            let update =
+                lod.update_for_view(position, forward, 1.5, 640, camera.vertical_fov_radians());
+            assert!(!update.metrics.budget_limited);
+            lod_thrash_events += update.metrics.lod_thrash_events;
+        }
+        let mut zoom_out_steps = 0;
+        loop {
+            camera.zoom(-1.0);
+            zoom_out_steps += 1;
+            let update =
+                lod.update_for_view(position, forward, 1.5, 640, camera.vertical_fov_radians());
+            assert!(!update.metrics.budget_limited);
+            assert!(update.metrics.active_chunks <= super::DEFAULT_MAX_ACTIVE_CHUNKS as u32);
+            lod_thrash_events += update.metrics.lod_thrash_events;
+            if observed_levels.last() != Some(&update.metrics.max_level) {
+                observed_levels.push(update.metrics.max_level);
+            }
+            if camera.vertical_fov_radians() == MAX_VERTICAL_FOV_RADIANS {
+                break;
+            }
+        }
+
+        let mut expected_levels: Vec<_> = (MINIMUM_LOD_LEVEL..=MAX_LOD_LEVEL).collect();
+        expected_levels.extend((MINIMUM_LOD_LEVEL..MAX_LOD_LEVEL).rev());
+        assert_eq!(observed_levels, expected_levels);
+        assert_eq!(lod_thrash_events, 0);
+        assert_eq!(zoom_in_steps, zoom_out_steps);
+        assert!(zoom_in_steps < 128);
+    }
+
+    #[test]
+    fn maximum_zoom_reaches_every_lod_at_any_viewport_height() {
+        for viewport_height in [1, 240, 640, 2_160] {
+            let mut camera = OrbitCamera::default();
+            camera.set_vertical_fov_degrees_for_viewport(75.0, viewport_height);
+            let position = camera.world_position();
+            let forward = -position.normalize();
+            let mut lod = PlanetLod::default();
+            let mut observed_levels = Vec::new();
+            let minimum_fov = minimum_vertical_fov_radians_for_viewport(viewport_height);
+            let mut zoom_steps = 0;
+
+            loop {
+                let update = lod.update_for_view(
+                    position,
+                    forward,
+                    1.5,
+                    viewport_height,
+                    camera.vertical_fov_radians(),
+                );
+                assert!(!update.metrics.budget_limited);
+                if observed_levels.last() != Some(&update.metrics.max_level) {
+                    observed_levels.push(update.metrics.max_level);
+                }
+                if camera.vertical_fov_radians() == minimum_fov {
+                    break;
+                }
+                camera.zoom_for_viewport(1.0, viewport_height);
+                zoom_steps += 1;
+            }
+
+            assert_eq!(
+                observed_levels,
+                (MINIMUM_LOD_LEVEL..=MAX_LOD_LEVEL).collect::<Vec<_>>(),
+                "viewport height {viewport_height} skipped a renderable LOD"
+            );
+            assert!(zoom_steps < 192);
+        }
     }
 
     #[test]
@@ -1676,6 +1922,10 @@ mod tests {
     fn wheel_zoom_changes_fov_without_moving_the_camera_and_increases_screen_error() {
         let mut camera = OrbitCamera::default();
         let position = camera.world_position();
+        assert_eq!(camera.look_sensitivity_scale(), 1.0);
+        camera.set_vertical_fov_degrees(22.5);
+        assert!((camera.look_sensitivity_scale() - 0.5).abs() < f64::EPSILON);
+        camera.set_vertical_fov_degrees(45.0);
         let error_before = projected_error_pixels(
             QuadtreeNode::root(0),
             position,
@@ -1684,7 +1934,10 @@ mod tests {
         );
         camera.zoom(1_000.0);
         assert_eq!(camera.world_position(), position);
-        assert!((camera.vertical_fov_radians().to_degrees() - 2.0).abs() < 1.0e-9);
+        assert!((camera.vertical_fov_radians() - MIN_VERTICAL_FOV_RADIANS).abs() < f64::EPSILON);
+        let minimum_look_scale = MIN_VERTICAL_FOV_RADIANS / DEFAULT_VERTICAL_FOV_RADIANS;
+        assert!(minimum_look_scale > 0.0);
+        assert!((camera.look_sensitivity_scale() - minimum_look_scale).abs() < f64::EPSILON);
         let error_after = projected_error_pixels(
             QuadtreeNode::root(0),
             position,
@@ -1694,11 +1947,76 @@ mod tests {
         assert!(error_after > error_before);
 
         let mut lod = PlanetLod::default();
-        let detailed = lod.update(position, 1_080, camera.vertical_fov_radians());
-        assert!(detailed.metrics.max_level >= HIGH_DETAIL_ZOOM_MINIMUM_LOD_LEVEL);
+        let detailed = lod.update_for_view(
+            position,
+            -position.normalize(),
+            1.5,
+            640,
+            camera.vertical_fov_radians(),
+        );
+        assert_eq!(detailed.metrics.max_level, MAX_LOD_LEVEL);
+
+        let direction_before_mouse_look = camera.direction_dvec3();
+        camera.look_with_optical_sensitivity(0.0006, -0.0006);
+        assert_eq!(camera.world_position(), position);
+        assert_ne!(camera.direction_dvec3(), direction_before_mouse_look);
 
         camera.zoom(-1_000.0);
         assert!((camera.vertical_fov_radians().to_degrees() - 75.0).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn one_pixel_mouse_look_remains_smooth_at_maximum_optical_zoom() {
+        let mut camera = OrbitCamera::default();
+        let position = DVec3::new(9_000_000.0, 3_000_000.0, 3_162_277.660_168_379_5);
+        let look_at = DVec3::X * PLANET_RADIUS_METERS;
+        camera.set_world_pose(position, look_at);
+        camera.set_vertical_fov_degrees(super::MIN_VERTICAL_FOV_DEGREES);
+
+        let target_relative = look_at - camera.world_position();
+        let direction_before = camera.direction_dvec3();
+        let view_before =
+            CameraViewBasis::from_forward(direction_before).world_to_view(target_relative);
+        camera.look_with_optical_sensitivity(0.0006, 0.0);
+        let direction_after = camera.direction_dvec3();
+        let view_after =
+            CameraViewBasis::from_forward(direction_after).world_to_view(target_relative);
+
+        let pixels_per_view_tangent = 640.0 / (2.0 * (camera.vertical_fov_radians() * 0.5).tan());
+        let pixel_before = view_before.x / -view_before.z * pixels_per_view_tangent;
+        let pixel_after = view_after.x / -view_after.z * pixels_per_view_tangent;
+        let pixel_delta = (pixel_after - pixel_before).abs();
+
+        assert!(direction_after.distance(direction_before) > 1.0e-10);
+        assert!(direction_after.distance(direction_before) < 1.0e-9);
+        assert!(
+            (0.45..0.53).contains(&pixel_delta),
+            "one physical mouse pixel moved the target by {pixel_delta} screen pixels"
+        );
+    }
+
+    #[test]
+    fn f64_view_rebase_preserves_small_lateral_offsets_at_orbital_distance() {
+        for forward in [
+            DVec3::new(-5.0, -3.0, -3.162_277_660_168_379_5),
+            DVec3::Y,
+            DVec3::NEG_Y,
+        ] {
+            let basis = CameraViewBasis::from_forward(forward);
+            assert!(basis.forward.is_finite());
+            assert!(basis.right.is_finite());
+            assert!(basis.up.is_finite());
+            assert!(basis.forward.dot(basis.right).abs() < 1.0e-12);
+            assert!(basis.forward.dot(basis.up).abs() < 1.0e-12);
+            assert!(basis.right.dot(basis.up).abs() < 1.0e-12);
+        }
+
+        let basis = CameraViewBasis::from_forward(DVec3::new(-5.0, -3.0, -3.162_277_660_168_379_5));
+        let orbital_offset =
+            basis.forward * 6_633_249.580_710_8 + basis.right * 0.0125 - basis.up * 0.021;
+        let packed_view = basis.world_to_view(orbital_offset).as_vec3();
+        assert!((f64::from(packed_view.x) - 0.0125).abs() < 1.0e-7);
+        assert!((f64::from(packed_view.y) + 0.021).abs() < 1.0e-7);
     }
 
     #[test]
@@ -1735,25 +2053,24 @@ mod tests {
         let mut camera = OrbitCamera::default();
         assert!(
             camera
-                .direction()
-                .as_dvec3()
+                .direction_dvec3()
                 .distance(-camera.world_position().normalize())
-                < 1.0e-6
+                < 1.0e-12
         );
 
         camera.look(0.25, -0.1);
         let (down_before, right_before, up_before) = camera.orbit_look_frame();
         let relative_before = [
-            camera.direction().dot(down_before),
-            camera.direction().dot(right_before),
-            camera.direction().dot(up_before),
+            camera.direction_dvec3().dot(down_before),
+            camera.direction_dvec3().dot(right_before),
+            camera.direction_dvec3().dot(up_before),
         ];
         camera.orbit(0.4, 0.0);
         let (down_after, right_after, up_after) = camera.orbit_look_frame();
         let relative_after = [
-            camera.direction().dot(down_after),
-            camera.direction().dot(right_after),
-            camera.direction().dot(up_after),
+            camera.direction_dvec3().dot(down_after),
+            camera.direction_dvec3().dot(right_after),
+            camera.direction_dvec3().dot(up_after),
         ];
         for (before, after) in relative_before.into_iter().zip(relative_after) {
             assert!((before - after).abs() < 1.0e-6);
@@ -1770,7 +2087,7 @@ mod tests {
 
         assert!(camera.world_position().distance(position) < 1.0e-8);
         let expected_direction = (look_at - position).normalize();
-        assert!(camera.direction().as_dvec3().distance(expected_direction) < 1.0e-6);
+        assert!(camera.direction_dvec3().distance(expected_direction) < 1.0e-12);
         assert!(camera.view_projection(1.5).is_finite());
     }
 

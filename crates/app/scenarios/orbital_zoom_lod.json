@@ -1,0 +1,38 @@
+{
+  "name": "orbital_zoom_lod",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 14.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_rotation_time_scale": 0.0,
+  "screenshot_times_seconds": [0.5, 3.25, 7.0, 10.75, 14.0],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [9000000.0, 3000000.0, 3162277.6601683795],
+      "look_at": [4000000.0, 0.0, 0.0]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    { "time_s": 0.0, "vertical_fov_degrees": 75.0 },
+    { "time_s": 6.5, "vertical_fov_degrees": 0.00005 },
+    { "time_s": 7.5, "vertical_fov_degrees": 0.00005 },
+    { "time_s": 14.0, "vertical_fov_degrees": 75.0 }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "required_peak_lod_level": 18,
+    "required_lod_level_sequence": [
+      2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+      17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2
+    ],
+    "require_unlimited_lod_budget": true,
+    "min_resident_chunks": 1,
+    "max_resident_chunks": 256,
+    "max_lod_thrash_events": 0,
+    "max_seam_delta_m": 0.1,
+    "max_fallback_chunks": 64,
+    "expected_screenshots": 5
+  }
+}

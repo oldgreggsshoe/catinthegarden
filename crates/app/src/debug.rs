@@ -39,6 +39,7 @@ pub struct SpatialLogSample {
     pub tiles_loaded: u32,
     pub tiles_unloaded: u32,
     pub lod_thrash_events: u32,
+    pub budget_limited: bool,
     pub exposure: f32,
     pub ocean_wave_min_meters: f32,
     pub ocean_wave_max_meters: f32,
@@ -106,11 +107,17 @@ struct AssertionTracker {
     sample_count: usize,
     non_finite_samples: usize,
     peak_lod_level: Option<u8>,
+    observed_lod_level_sequence: Vec<u8>,
     previous_lod_level: Option<u8>,
     lod_regressions: usize,
     resident_chunk_violations: usize,
     maximum_resident_chunks: u32,
+    lod_frame_count: usize,
+    per_frame_resident_chunk_violations: usize,
+    per_frame_maximum_resident_chunks: u32,
     lod_thrash_events: u64,
+    per_frame_lod_thrash_events: u64,
+    lod_budget_limited_frames: u64,
     seam_violations: usize,
     maximum_seam_delta_m: f64,
     fallback_violations: usize,
@@ -134,11 +141,17 @@ impl AssertionTracker {
             sample_count: 0,
             non_finite_samples: 0,
             peak_lod_level: None,
+            observed_lod_level_sequence: Vec::new(),
             previous_lod_level: None,
             lod_regressions: 0,
             resident_chunk_violations: 0,
             maximum_resident_chunks: 0,
+            lod_frame_count: 0,
+            per_frame_resident_chunk_violations: 0,
+            per_frame_maximum_resident_chunks: 0,
             lod_thrash_events: 0,
+            per_frame_lod_thrash_events: 0,
+            lod_budget_limited_frames: 0,
             seam_violations: 0,
             maximum_seam_delta_m: 0.0,
             fallback_violations: 0,
@@ -217,6 +230,40 @@ impl AssertionTracker {
         }
     }
 
+    fn observe_lod_frame(
+        &mut self,
+        level_histogram: &[u32; LOD_LEVEL_COUNT],
+        resident_chunks: u32,
+        lod_thrash_events: u32,
+        budget_limited: bool,
+    ) {
+        self.lod_frame_count += 1;
+        if let Some(level) = level_histogram
+            .iter()
+            .rposition(|count| *count > 0)
+            .map(|level| level as u8)
+        {
+            if self.observed_lod_level_sequence.last() != Some(&level) {
+                self.observed_lod_level_sequence.push(level);
+            }
+        }
+        self.per_frame_maximum_resident_chunks =
+            self.per_frame_maximum_resident_chunks.max(resident_chunks);
+        if self
+            .config
+            .min_resident_chunks
+            .is_some_and(|minimum| resident_chunks < minimum)
+            || self
+                .config
+                .max_resident_chunks
+                .is_some_and(|maximum| resident_chunks > maximum)
+        {
+            self.per_frame_resident_chunk_violations += 1;
+        }
+        self.per_frame_lod_thrash_events += u64::from(lod_thrash_events);
+        self.lod_budget_limited_frames += u64::from(budget_limited);
+    }
+
     fn observe_sky_sample(&mut self, sample: [u8; 3]) {
         self.sky_samples.push(sample);
     }
@@ -286,6 +333,26 @@ impl AssertionTracker {
                 format!("required level {required}, observed peak {observed:?}"),
             ));
         }
+        if let Some(required) = &self.config.required_lod_level_sequence {
+            results.push(assertion_result(
+                "lod_traverses_required_sequence",
+                self.observed_lod_level_sequence == *required,
+                format!(
+                    "required {required:?}, observed {:?}",
+                    self.observed_lod_level_sequence
+                ),
+            ));
+        }
+        if self.config.require_unlimited_lod_budget {
+            results.push(assertion_result(
+                "lod_stays_within_chunk_budget",
+                self.lod_budget_limited_frames == 0,
+                format!(
+                    "observed {} budget-limited frames",
+                    self.lod_budget_limited_frames
+                ),
+            ));
+        }
         if self.config.require_monotonic_lod_progression {
             results.push(assertion_result(
                 "lod_progression_is_monotonic",
@@ -294,26 +361,32 @@ impl AssertionTracker {
             ));
         }
         if self.config.min_resident_chunks.is_some() || self.config.max_resident_chunks.is_some() {
+            let (maximum_observed, violations) = if self.lod_frame_count > 0 {
+                (
+                    self.per_frame_maximum_resident_chunks,
+                    self.per_frame_resident_chunk_violations,
+                )
+            } else {
+                (self.maximum_resident_chunks, self.resident_chunk_violations)
+            };
             results.push(assertion_result(
                 "resident_chunk_count_is_bounded",
-                self.resident_chunk_violations == 0,
+                violations == 0,
                 format!(
                     "bounds {:?}..={:?}, maximum observed {}, violations {}",
                     self.config.min_resident_chunks,
                     self.config.max_resident_chunks,
-                    self.maximum_resident_chunks,
-                    self.resident_chunk_violations
+                    maximum_observed,
+                    violations
                 ),
             ));
         }
         if let Some(maximum) = self.config.max_lod_thrash_events {
+            let observed = self.lod_thrash_events.max(self.per_frame_lod_thrash_events);
             results.push(assertion_result(
                 "lod_does_not_thrash",
-                self.lod_thrash_events <= u64::from(maximum),
-                format!(
-                    "allowed {maximum} LOD thrash events, observed {}",
-                    self.lod_thrash_events
-                ),
+                observed <= u64::from(maximum),
+                format!("allowed {maximum} LOD thrash events, observed {}", observed),
             ));
         }
         if let Some(maximum) = self.config.max_seam_delta_m {
@@ -606,6 +679,7 @@ impl RunArtifacts {
             tiles_loaded: 0,
             tiles_unloaded: 0,
             lod_thrash_events: 0,
+            budget_limited: false,
             exposure: 1.0,
             ocean_wave_min_meters: 0.0,
             ocean_wave_max_meters: 0.0,
@@ -643,10 +717,26 @@ impl RunArtifacts {
             tiles_loaded = sample.tiles_loaded,
             tiles_unloaded = sample.tiles_unloaded,
             lod_thrash_events = sample.lod_thrash_events,
+            budget_limited = sample.budget_limited,
             exposure = sample.exposure,
             ocean_wave_min_meters = sample.ocean_wave_min_meters,
             ocean_wave_max_meters = sample.ocean_wave_max_meters,
             "spatial frame"
+        );
+    }
+
+    pub fn observe_lod_frame(
+        &mut self,
+        level_histogram: &[u32; LOD_LEVEL_COUNT],
+        resident_chunks: u32,
+        lod_thrash_events: u32,
+        budget_limited: bool,
+    ) {
+        self.assertion_tracker.observe_lod_frame(
+            level_histogram,
+            resident_chunks,
+            lod_thrash_events,
+            budget_limited,
         );
     }
 
@@ -1004,7 +1094,9 @@ mod tests {
         ScenarioAssertions {
             require_finite_metrics: true,
             required_peak_lod_level: Some(18),
+            required_lod_level_sequence: None,
             require_monotonic_lod_progression: true,
+            require_unlimited_lod_budget: false,
             min_resident_chunks: Some(6),
             max_resident_chunks: Some(64),
             max_lod_thrash_events: Some(0),
@@ -1055,6 +1147,7 @@ mod tests {
             tiles_loaded: 0,
             tiles_unloaded: 0,
             lod_thrash_events: 0,
+            budget_limited: false,
             exposure: 1.0,
             ocean_wave_min_meters: 0.0,
             ocean_wave_max_meters: 0.0,
@@ -1106,6 +1199,31 @@ mod tests {
         ] {
             assert!(!result(&results, name).passed, "{name} should fail");
         }
+    }
+
+    #[test]
+    fn per_frame_lod_assertions_require_the_full_round_trip_without_budget_pressure() {
+        let mut config = ScenarioAssertions::default();
+        config.required_lod_level_sequence = Some(vec![2, 3, 4, 3, 2]);
+        config.require_unlimited_lod_budget = true;
+        config.max_resident_chunks = Some(1);
+        let mut tracker = AssertionTracker::new(config);
+
+        for level in [2_usize, 3, 4, 3, 2] {
+            let mut histogram = [0; LOD_LEVEL_COUNT];
+            histogram[level] = 1;
+            tracker.observe_lod_frame(&histogram, 1, 0, false);
+        }
+        let results = tracker.results(0);
+        assert!(result(&results, "lod_traverses_required_sequence").passed);
+        assert!(result(&results, "lod_stays_within_chunk_budget").passed);
+        assert!(result(&results, "resident_chunk_count_is_bounded").passed);
+
+        let mut histogram = [0; LOD_LEVEL_COUNT];
+        histogram[2] = 1;
+        tracker.observe_lod_frame(&histogram, 2, 0, true);
+        assert!(!result(&tracker.results(0), "lod_stays_within_chunk_budget").passed);
+        assert!(!result(&tracker.results(0), "resident_chunk_count_is_bounded").passed);
     }
 
     #[test]

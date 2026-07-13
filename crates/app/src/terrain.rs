@@ -14,8 +14,8 @@ use wgpu::util::DeviceExt;
 use crate::{
     outmap::{Outmap, OutmapError, TileData},
     planet::{
-        CHUNK_GRID_QUADS, ChunkVertex, DEFAULT_MAX_ACTIVE_CHUNKS, MAX_LOD_LEVEL, PlanetLod,
-        QuadtreeNode, build_chunk_mesh, cube_face_direction,
+        CHUNK_GRID_QUADS, CameraViewBasis, ChunkVertex, DEFAULT_MAX_ACTIVE_CHUNKS, MAX_LOD_LEVEL,
+        PlanetLod, QuadtreeNode, build_chunk_mesh, cube_face_direction,
     },
 };
 
@@ -54,7 +54,7 @@ pub struct TerrainStats {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct TerrainInstance {
-    anchor_relative_to_camera: [f32; 3],
+    anchor_view_position: [f32; 3],
     source_uv_scale: [f32; 2],
     source_uv_offset: [f32; 2],
     terrain_info: u32,
@@ -432,6 +432,7 @@ impl TerrainRenderer {
         let mut instances = Vec::with_capacity(render_nodes.len());
         self.draw_items.clear();
         let mut fallback_chunks = 0_u32;
+        let camera_view_basis = CameraViewBasis::from_forward(camera_forward);
         for (instance_index, (render_node, resolved)) in
             render_nodes.iter().zip(resolved_tiles.iter()).enumerate()
         {
@@ -457,7 +458,10 @@ impl TerrainRenderer {
                     ([1.0, 1.0], [0.0, 0.0], render_node.node.level, None, false)
                 };
             instances.push(TerrainInstance {
-                anchor_relative_to_camera: (chunk.anchor_world - camera_world).as_vec3().to_array(),
+                anchor_view_position: camera_view_basis
+                    .world_to_view(chunk.anchor_world - camera_world)
+                    .as_vec3()
+                    .to_array(),
                 source_uv_scale,
                 source_uv_offset,
                 terrain_info: pack_terrain_info(

@@ -11,12 +11,13 @@ const SOLAR_RADIANCE: f32 = 4.0;
 const SKY_SAMPLE_COUNT: u32 = 16u;
 
 struct Camera {
-    view_projection: mat4x4<f32>,
+    projection_matrix: mat4x4<f32>,
     camera_forward: vec4<f32>,
     camera_right: vec4<f32>,
     camera_up: vec4<f32>,
-    camera_planet_direction_altitude: vec4<f32>,
+    camera_planet_direction_view_altitude: vec4<f32>,
     sun_direction: vec4<f32>,
+    sun_direction_view: vec4<f32>,
     projection: vec4<f32>,
 }
 
@@ -104,8 +105,7 @@ fn transmittance(
 fn view_direction(ndc: vec2<f32>) -> vec3<f32> {
     let horizontal = ndc.x * camera.projection.x * camera.projection.y;
     let vertical = ndc.y * camera.projection.y;
-    return normalize(camera.camera_forward.xyz + camera.camera_right.xyz * horizontal
-        + camera.camera_up.xyz * vertical);
+    return normalize(vec3<f32>(horizontal, vertical, -1.0));
 }
 
 @vertex
@@ -122,9 +122,10 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let ray = view_direction(input.ndc);
-    let camera_altitude = camera.camera_planet_direction_altitude.w;
+    let camera_altitude = camera.camera_planet_direction_view_altitude.w;
     let camera_radius = PLANET_RADIUS_METERS + camera_altitude;
-    let radial_dot_ray = camera_radius * dot(camera.camera_planet_direction_altitude.xyz, ray);
+    let radial_dot_ray = camera_radius
+        * dot(camera.camera_planet_direction_view_altitude.xyz, ray);
     let interval = sphere_interval(camera_radius, radial_dot_ray);
     let start_distance = max(interval.x, 0.0);
     let end_distance = interval.y;
@@ -138,7 +139,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         radial_dot_ray,
         start_distance,
     );
-    let sun = normalize(camera.sun_direction.xyz);
+    let sun = normalize(camera.sun_direction_view.xyz);
     let cos_theta = dot(ray, sun);
     let rayleigh_phase = phase_rayleigh(cos_theta);
     let mie_phase = phase_mie(cos_theta);
@@ -159,7 +160,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let sample_shadow_transition_meters = sun_shadow_transition_meters
             * mix(1.0, 2.0, lower_atmosphere_weight);
         let sample_radial_dot_sun = (
-            camera_radius * dot(camera.camera_planet_direction_altitude.xyz, sun)
+            camera_radius * dot(camera.camera_planet_direction_view_altitude.xyz, sun)
                 + distance_meters * dot(ray, sun)
         );
         let sun_interval = sphere_interval(sample_radius, sample_radial_dot_sun);

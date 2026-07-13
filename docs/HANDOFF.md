@@ -14,16 +14,21 @@ Do not remove or weaken the maintenance requirement above.
 - Repository: `/home/dad/catinthegarden`
 - Branch: `main`
 - Remote branch: `origin/main`
-- Implementation baseline reviewed: `75b5d1d` (`Double atmospheric scattering intensity`)
+- Implementation baseline reviewed: current working tree based on `f993fd8`
+  (`Add canonical project handoff`)
 - Last full source review: 2026-07-13
 - Current phase status: Phases 0 through 6, including 5.5, are complete.
 - Remaining planned phase: Phase 7, polish and final regression.
-- Current bounded engineering issue: orbital optical zoom jumps from HUD LOD 2
-  directly to HUD LOD 4 instead of traversing LOD 3.
+- Current bounded engineering issue: none. The orbital optical-zoom LOD jump
+  described by the previous handoff is resolved and covered by a deterministic
+  L2-through-L18 round-trip regression. Extreme-zoom non-cardinal camera
+  precision is also resolved by CPU f64 view-space rebasing and camera-local
+  atmosphere/sun rays.
 
-The commit containing this document follows the implementation baseline above
-and changes documentation only. Always use `git log -1 --oneline` and
-`git status --short` rather than assuming this snapshot is still HEAD.
+The change containing this document adds the optical-zoom implementation,
+regression scenario, and matching documentation on top of the baseline above.
+Always use `git log -1 --oneline` and `git status --short` rather than assuming
+this snapshot is still HEAD.
 
 ## Mandatory resume procedure
 
@@ -158,7 +163,7 @@ Per-frame flow:
 
 1. Collect completed GPU timestamps and luminance readbacks.
 2. Advance fixed scenario time or interactive elapsed time.
-3. Apply scenario pose/sun or automatic azimuth orbit.
+3. Apply scenario pose/FOV/sun or automatic azimuth orbit.
 4. Compute the planet's 600-second axial rotation.
 5. Transform camera position/direction into the rotating planet-local frame.
 6. Update smoothed exposure using the previous luminance result.
@@ -193,12 +198,27 @@ Rgba16Float HDR scene + reversed-Z Depth32Float
 
 - default center radius: 10,000,000 m, therefore 6,000,000 m altitude;
 - default elevation: 20 degrees;
-- FOV default: 45 degrees; clamp: 2 to 75 degrees;
+- FOV default: 45 degrees; maximum: 75 degrees; the 640px reference minimum
+  is 0.00005 degrees and scales with viewport height as described below;
 - mouse look is a yaw/pitch offset in the local frame whose forward/down vector
   always points from the camera toward the planet;
+- mouse-look sensitivity scales by current FOV / default FOV below 45 degrees,
+  so aiming remains usable rather than becoming hypersensitive at telescope
+  magnifications;
 - the mouse wheel changes FOV only and never moves the camera;
 - interactive mode auto-orbits while retaining the mouse look offset;
 - planet rotation period is 600 simulation seconds.
+
+Camera yaw/pitch, the planet-local forward vector, and its orthonormal
+forward/right/up basis remain f64 on the CPU. Terrain chunk anchors are
+subtracted from the f64 camera position and transformed into view space with
+f64 dot products before the resulting camera-relative value is packed as f32.
+The GPU projection is therefore projection-only; it rotates only the much
+smaller anchor-local vertex offset. Fullscreen atmosphere and sun shaders form
+rays directly in camera-local coordinates and consume CPU-transformed radial
+and sun directions. Do not reintroduce a planet-frame f32 look vector or rotate
+multi-megameter f32 anchor offsets in a view matrix: both quantize by tens of
+pixels at the narrowest FOV.
 
 Controls:
 
@@ -215,6 +235,16 @@ Controls:
 The wheel is deliberately routed before egui consumption. Focus changes grab
 or release the cursor. `ControlFlow::Poll` keeps interactive rendering display
 paced; do not reintroduce the old idle 10 FPS scheduling bug.
+
+Wheel zoom is multiplicative (`exp(-wheel_delta * 0.12)`). A line-wheel step is
+small enough to cross at most one normal SSE level boundary; the complete 75
+degree to 0.00005 degree range takes 119 such steps at 640px height. The
+minimum's half-FOV tangent scales by `viewport_height / 640`, keeping the
+maximum-zoom physical size per screen pixel constant when the window is
+resized. The extreme endpoint is not an arbitrary LOD override: at the default
+6,000 km altitude it covers about 5.24 m vertically at 640px and naturally
+makes the 2-pixel SSE policy request L18. A regression exercises heights 1,
+240, 640, and 2160 and verifies that each still traverses every L2-L18 level.
 
 ## Cube-sphere and LOD
 
@@ -236,28 +266,43 @@ identical selection inputs.
 
 ### What the HUD LOD means
 
-The HUD prints `TerrainStats::max_level`, the highest active leaf level. It is
-not the only active level and it is not the complete histogram. Mixed levels
-can coexist while the HUD shows a single number. The full 19-slot histogram is
-present in spatial JSONL records.
+The HUD now prints the active range, for example `L5-L8`, rather than only
+`TerrainStats::max_level`. Mixed levels can coexist because the horizon and
+viewport edges need less detail than the focal patch. The full 19-slot
+histogram remains present in spatial JSONL records. FOV formatting adds decimal
+places below one degree, so telescope values no longer misleadingly display as
+`0.0 degrees`.
 
-### Known orbital zoom defect
+### Orbital optical zoom
 
-`LodPolicy::minimum_level_for_view` currently has a binary rule:
+Optical zoom is now governed by the same SSE policy as altitude changes. There
+is no FOV-specific minimum-level floor. The prior 8-degree rule that forced a
+single-frame L2-to-L4 jump was removed, and the old `projected_error_pixels`
+lower clamp of 0.01 radians was replaced by the actual camera minimum FOV. The
+old clamp would otherwise have capped refinement around L5 even after widening
+the camera's zoom range.
 
-- vertical FOV greater than 8 degrees: minimum active level L2;
-- vertical FOV at or below 8 degrees: minimum active level L4.
+At the default camera and 960x640 viewport, representative zoom-in thresholds
+are approximately L3 at 3.699 degrees, L4 at 1.671 degrees, L10 at 0.02348
+degrees, L17 at 0.000183 degrees, and L18 at 0.00009155 degrees. Zoom-out occurs
+around 1.6 times wider because the normal 2.0-pixel split / 1.25-pixel merge
+hysteresis remains in control. No second FOV ladder or per-frame forced level
+exists.
 
-At the default orbital distance, screen-space error usually leaves the planet
-at L2 until this rule fires. The selector can recurse through L3 and produce L4
-in one update, so L3 never has to become an active leaf. The 0.5-second dither
-fade softens the L2-to-L4 replacement but does not create an L3 stage. This is
-why zooming from space visibly alternates between HUD values 2 and 4.
-
-Intermediate/high levels are otherwise used: at a 2 km altitude, a test bounds
-the maximum selected level between L9 and L13; at 10 m, a test reaches L18. The
-immediate fix should be a staged, hysteretic L2/L3/L4 optical-zoom ladder, not
-forcing levels above globally available data.
+The unit regression drives actual one-step wheel input from 75 degrees to the
+minimum and back, asserting the exact maximum-level sequence L2 through L18
+and L17 back through L2, zero thrash, and no leaf-budget pressure. A second
+selector regression repeats the zoom-in ladder at 1, 240, 640, and 2160 pixels
+high, proving that the viewport-aware endpoint still reaches every level after
+a resize. The embedded `orbital_zoom_lod` GPU scenario independently uses
+log-space 640px-reference FOV waypoints at a fixed non-cardinal orbit aimed at
+the sparse +X validation patch and asserts the same per-frame sequence. The
+scenario runner's reference half-FOV tangent is scaled to the actual viewport,
+and a 240px scenario-level regression proves the exact round trip remains
+portable rather than stopping at L17. A separate
+one-physical-pixel regression at the minimum FOV verifies about 0.49 pixels of
+smooth screen movement rather than a stuck direction followed by a multi-pixel
+f32 jump.
 
 ### LOD transitions and GPU representation
 
@@ -265,8 +310,13 @@ forcing levels above globally available data.
 simulation seconds. `planet.wgsl` uses a 4x4 Bayer discard pattern to dither
 between them. Skirts remain active. All chunks share one index topology.
 
-Chunk vertices are static anchor-local f32 data. Each chunk anchor is f64; a
-per-frame instance carries the f32 camera-relative anchor. Rendering currently
+Chunk vertices are static anchor-local f32 data. Each chunk anchor and the
+camera basis are f64; a per-frame instance carries the anchor transformed in
+f64 into camera-relative view space and only then cast to f32. `planet.wgsl`
+adds the small anchor-local offset after an f32 basis rotation and applies the
+projection-only reversed-Z matrix. Terrain aerial perspective and ocean view
+lighting use this precise view-space position while planet normals, height,
+biomes, and direct-sun occlusion remain planet-frame. Rendering currently
 issues one indexed draw per render node because the tile bind group can differ.
 
 ## Outmap runtime and generated data
@@ -400,7 +450,10 @@ The raymarch excludes space before atmosphere entry from optical depth and uses
 a density/spacing-aware penumbra for smooth directional occultation. Deep dark
 side samples receive no leaked direct in-scattering. The 4.0 scale changes only
 visible atmospheric in-scatter; it does not change extinction or direct surface
-light.
+light. Screen rays are generated as camera-local `(x, y, -1)` directions, and
+the f64 CPU basis transforms camera radial/sun vectors into that frame before
+f32 upload; rebuilding tiny ray offsets from large planet-frame f32 basis
+vectors would quantize the maximum optical zoom.
 
 ### Sun
 
@@ -412,6 +465,9 @@ light.
 - camera-only radiance multiplier: 5x;
 - HDR core: `(72, 65, 52)` before the visual multiplier;
 - HDR halo: `(6, 5.5, 4.5)` before the visual multiplier.
+
+Sun-disc angular distance uses `atan2(length(cross(ray, sun)), dot(ray, sun))`
+rather than `acos(dot)`, retaining sub-microradian separation near alignment.
 
 It changes appearance only, not scene illumination.
 
@@ -469,11 +525,18 @@ Spatial records are emitted about every 0.5 simulation seconds and include:
 - latitude, longitude, altitude, velocity, orientation, and FOV;
 - sun direction and planet rotation;
 - complete L0-L18 histogram;
-- chunk/tile load, unload, resident, fallback, draw, seam, and thrash metrics;
+- chunk/tile load, unload, resident, fallback, draw, seam, thrash, and
+  leaf-budget metrics;
 - frame time, exposure, and ocean wave range.
 
 Exposure records are emitted every rendered frame. Logs store event fields
 under `.fields`; filter by `.target` with `jq`.
+
+Spatial JSONL remains sampled every 0.5 simulation seconds. The scenario
+assertion tracker separately observes maximum active LOD, resident-chunk
+bounds, thrash events, and leaf-budget pressure every rendered frame, without
+increasing log volume. This is what lets a short zoom scenario prove that no
+transient LOD or one-frame budget/count violation was skipped.
 
 Screenshots are post-tone-map, post-egui swapchain readbacks. Capture completion
 waits synchronously, so capture frames must not be used as normal performance
@@ -484,6 +547,9 @@ samples.
 Scenario JSON is compiled with `include_str!`; rebuild after editing JSON.
 All use a fixed 1/60 s simulation step. Unless a terrain flag is supplied, the
 app uses the default outmap when its manifest exists and placeholder otherwise.
+Vertical-FOV waypoints are authored as 640px-reference values; the runtime
+scales their half-FOV tangent to framebuffer height before applying them. CLI
+and interactive FOV values remain actual viewport FOVs, not reference values.
 
 | Scenario | Purpose | Duration | PNGs | Objective checks |
 |---|---:|---:|---:|---|
@@ -496,6 +562,7 @@ app uses the default outmap when its manifest exists and placeholder otherwise.
 | `ground_to_orbit` | Sky-to-space/HDR | 8 s | 7 | continuous sky luminance and stable bounded exposure |
 | `stare_at_sun` | Exposure response | 4 s | 3 | bounded, smooth, non-oscillating exposure |
 | `ocean_flyover` | Gerstner ocean | 6 s | 5 | >=0.5 m mirrored wave-height range |
+| `orbital_zoom_lod` | Fixed-orbit optical zoom | 14 s | 5 | exact L2->L18->L2 sequence, no budget pressure/thrash, seam/fallback bounds |
 
 Current scenario files have screenshot `seam_gap_check` disabled or defaulted
 off. CPU `max_seam_delta_m` assertions still run where configured. Do not claim
@@ -543,6 +610,7 @@ TMPDIR=/home/dad/.cache/citg-tmp cargo test --workspace
 cargo run --release --bin catinthegarden-app
 cargo run --release --bin catinthegarden-app -- --profile-render
 cargo run --release --bin catinthegarden-app -- --vertical-fov-degrees 8
+cargo run --release --bin catinthegarden-app -- --vertical-fov-degrees 0.00005
 cargo run --release --bin catinthegarden-app -- --terrain placeholder
 cargo run --release --bin catinthegarden-app -- --terrain outmap
 cargo run --release --bin catinthegarden-app -- --outmap /path/to/outmap
@@ -606,39 +674,63 @@ Other baker flags: positional output or `--output`, `--seed`, `--width`,
 | 0 | Complete | wgpu/winit/egui skeleton and FPS HUD |
 | 0.5 | Complete | JSONL logs, HUD toggle, PNG capture, fixed-step harness |
 | 1 | Complete | Fixed cube-sphere and f64-to-f32 rebased orbit camera |
-| 2 | Complete | Six quadtrees, SSE LOD, skirts, transitions, L18 descent |
+| 2 | Complete | Six quadtrees, SSE L2-L18 altitude/optical LOD, skirts, transitions, descent and zoom regressions |
 | 3 | Complete | Deterministic full baker and preview/raw export |
 | 4 | Complete | Runtime outmap streaming, height displacement, biome materials |
 | 5 | Complete | Analytic atmosphere, aerial perspective, transition scenarios |
 | 5.5 | Complete | Sun, HDR target, luminance chain, exposure, ACES |
 | 6 | Complete | Gerstner ocean, reflection, Fresnel, ocean scenario |
-| 7 | Not complete | Ice-cap polish, HUD improvements, performance/regression pass |
+| 7 | Not complete | LOD-range/FOV HUD polish is done; ice-cap visuals and final performance/all-scenario regression remain |
 
 ## Verification snapshot
 
-Verified on 2026-07-13 against implementation content represented by
-`75b5d1d`:
+Verified on 2026-07-13 against the optical-zoom implementation working tree
+based on `f993fd8`:
 
-- `cargo check --workspace`: passed; 16 warnings.
-- `TMPDIR=/home/dad/.cache/citg-tmp cargo test --workspace`: 71 passed,
-  0 failed (app 44, baker library 17, baker binary 1, baker integration 4,
+- `cargo fmt --all`: passed.
+- `TMPDIR=/home/dad/.cache/citg-tmp cargo check --workspace`: passed; 17
+  existing warnings.
+- `TMPDIR=/home/dad/.cache/citg-tmp cargo test --workspace`: 80 passed, 0
+  failed (app 53, baker library 17, baker binary 1, baker integration 4,
   coretypes 5).
-- `sunset_sweep`: passed; red/blue growth 15.961, final ratio 11.0.
-- `night_side_atmosphere`: passed; sampled dark sky 0.0 and day/night surface
-  ratio 626.327.
-- `limb_atmosphere`: passed configured assertions; image remains visual-only.
-- `ground_to_orbit`: passed; maximum adjacent sampled sky luminance delta
-  0.307, 481 exposure samples bounded to 0.05-4.0, no oscillation.
-- `stare_at_sun`: passed; maximum per-frame exposure delta 0.0187 across 241
-  samples, no oscillation.
+- `TMPDIR=/home/dad/.cache/citg-tmp cargo build --release --bin
+  catinthegarden-app`: passed.
+- `orbital_zoom_lod`: passed all nine assertions and captured five PNGs. The
+  observed per-frame maximum-level sequence exactly matched L2 through L18 and
+  L17 back through L2; maximum per-frame resident chunks 43, budget-limited
+  frames 0, thrash events 0, maximum sampled seam delta 0 m, maximum sampled
+  fallbacks 6. The scenario uses a non-cardinal camera aimed at +X, so it also
+  exercises the f64 view-rebase path that the previous cardinal pose masked.
+  On the verified 1.5x display scale the framebuffer was 1440x960 and the
+  viewport-aware endpoint became 0.000075 degrees while retaining the exact
+  ladder.
+- `orbit_once`: passed; four PNGs, maximum per-frame resident chunks 45,
+  maximum sampled seam delta 0 m.
+- `descent_to_10m`: passed; reached L18 monotonically, seven PNGs, maximum
+  per-frame resident chunks 48, thrash 0, maximum sampled seam delta 0 m,
+  maximum sampled fallbacks 2.
+- `ground_to_orbit`: passed; seven PNGs, maximum per-frame resident chunks 48,
+  maximum sampled fallbacks 30, sky-luminance delta 0.307, 481 exposure samples
+  within 0.05-4.0, and no exposure oscillation.
+- `sunset_sweep`: passed; four PNGs, maximum per-frame resident chunks 48,
+  maximum sampled fallbacks 38, maximum seam delta 0.00000191 m, red/blue
+  growth 15.961, and final red/blue ratio 11.000.
+- `night_side_atmosphere`: passed; one PNG, sampled sky luminance 0.000 and
+  rendered day/night surface ratio 626.327.
+- `limb_atmosphere`: passed; one PNG, maximum per-frame resident chunks 44,
+  maximum sampled fallbacks 0, and maximum sampled seam delta 0 m. It still
+  has no dedicated tier-2 limb-shape assertion.
+- `stare_at_sun`: passed; three PNGs, 241 bounded exposure samples, maximum
+  per-frame exposure step 0.0187, and no oscillation.
+- `ocean_flyover`: passed; five PNGs, maximum per-frame resident chunks 8,
+  maximum sampled fallbacks 4, maximum sampled seam delta 0 m, and a 5.166 m
+  mirrored Gerstner wave-height range.
 
-The atmosphere scenario manifests record previous HEAD `405b8cc` because they
-were run with the final atmosphere change dirty immediately before it was
-committed as `75b5d1d`. The tested shader content matches the commit, but the
-manifest logger does not record dirty state. Do not represent those hashes as a
-clean-checkout replay. The documentation task itself reran the 71 workspace
-tests with implementation source matching `75b5d1d`; the pre-existing
-`.gitignore` and PNG working-tree changes remained present.
+Those scenario manifests record `f993fd8` because the implementation was dirty
+when exercised; the manifest format does not record dirty state. The source
+content tested is the content described here, but this is not a clean-HEAD
+replay. The pre-existing `.gitignore` and root PNG changes remained untouched
+throughout.
 
 Known warnings are the deprecated `winit` `EventLoop::create_window` and
 `EventLoop::run` APIs plus phase-leftover dead code/unused fields. They are not
@@ -646,7 +738,7 @@ current test failures.
 
 ## Working-tree safety snapshot
 
-At the start of this documentation task, the following pre-existing user state
+At the start of this optical-zoom task, the following pre-existing user state
 was intentionally left untouched and must not be swept into unrelated commits:
 
 ```text
@@ -664,14 +756,27 @@ The `.gitignore` edit adds `.env`, `.env.*`, and the `!.env.example` exception.
 The PNGs are user/reference captures. Re-run `git status --short`; this section
 is a snapshot, not permission to alter those files.
 
+Verification during this task also produced an unexplained zero-byte untracked
+file named `::call_once::h52f3341f83ee0b20`. It is not implementation input,
+was excluded from the commit, and was left in place because repository rules
+forbid deleting files without an explicit request.
+
 ## Known limitations and actionable risks
 
-1. Orbital optical zoom uses the hard 8-degree L2-to-L4 floor described above.
-   It has no separate FOV hysteresis and can churn near the threshold.
-2. The HUD displays only maximum active LOD, which can be mistaken for the only
-   active level. The histogram exists in logs but not in the panel.
-3. Outmap detail above L4 exists only around +X. Deep geometry elsewhere often
+1. Outmap detail above L4 exists only around +X. Deep geometry elsewhere often
    samples L4 fallback and provides no new visual information.
+2. The maximum orbital zoom covers about 5.24 m vertically at the 640px
+   reference height (the physical span scales with viewport height to preserve
+   metres per pixel). CPU f64 view-space rebasing and the one-pixel camera
+   regression remove the previous 0.25-0.5 m non-cardinal quantization, but
+   there is not yet a GPU temporal pixel-motion assertion; the current
+   maximum-zoom screenshot is uniform ocean and cannot measure subpixel
+   tracking from frame to frame.
+3. The sparse +X L18 validation patch lies inside the intentionally flat ocean
+   landing region. It proves geometry/streaming selection but is not a visually
+   rich demonstration of metre-scale land detail; the maximum-zoom scenario
+   capture is a uniform ocean-color image and must not be cited as pixel-level
+   proof of added surface detail.
 4. SSE and approximate bounds still use placeholder estimates instead of
    measured per-tile baked error/min/max height.
 5. Runtime tile disk reads and GPU uploads are synchronous.
@@ -685,36 +790,33 @@ is a snapshot, not permission to alter those files.
 11. `triangle.wgsl` and fixed `CubeSphereMesh` are Phase-0/1 leftovers; do not
     assume they drive the current terrain renderer.
 12. Phase 7 has not had a single clean-HEAD all-scenario regression run.
+13. The zero-byte untracked `::call_once::h52f3341f83ee0b20` artifact described
+    above remains in the working tree pending explicit permission to remove it.
 
 ## Next action
 
-Implement one bounded optical-zoom LOD correction before broad Phase 7 polish:
+Begin Phase 7 with one bounded ice-cap visual slice:
 
-1. Add a deterministic fixed-orbit FOV sweep that zooms in and back out.
-2. Replace the binary 8-degree floor with a staged, hysteretic L2 -> L3 -> L4
-   ladder. Do not force orbital levels above L4 until deeper data coverage is
-   available for the viewed region.
-3. Assert that L3 becomes active, progression is 2/3/4 then 4/3/2, L2 is
-   restored after zoom-out, thrash remains bounded, seams remain within 0.1 m,
-   and chunk/fallback counts remain bounded.
-4. Show the active LOD range or compact histogram in the HUD so `max_level` is
-   unambiguous.
-5. Rerun the new zoom scenario plus `orbit_once`, `descent_to_10m`, and
-   `ground_to_orbit` before committing.
+1. Verify how `BiomeId::Ice`, `MountainSnow`, latitude, and height currently
+   reach the terrain shader.
+2. Add a deterministic polar camera scenario with at least one objective pixel
+   or material assertion; do not rely only on a screenshot review.
+3. Implement only the missing polar/high-altitude ice-cap presentation needed
+   by that assertion, preserving the current Earth-like palette and lighting.
+4. Run the new polar scenario plus `sunset_sweep`, `night_side_atmosphere`, and
+   `ground_to_orbit` before expanding into the rest of Phase 7.
 
 Read first for that task:
 
-- `crates/app/src/planet.rs`: constants, `LodPolicy::minimum_level_for_view`,
-  `PlanetLod::split_candidate`, and LOD tests;
-- `crates/app/src/terrain.rs`: `TerrainRenderer::update` and `TerrainStats`;
-- `crates/app/src/main.rs`: wheel routing and HUD LOD label;
-- `crates/app/src/scenario.rs` and `crates/app/scenarios/`: extend deterministic
-  scenario data only as much as required for FOV waypoints;
-- `crates/coretypes/src/lib.rs`: current outmap coverage contract.
+- `crates/coretypes/src/lib.rs`: biome IDs and schema contract;
+- `crates/baker/src/`: snowline and biome classification output;
+- `crates/app/src/planet.wgsl`: biome palette and terrain lighting;
+- `crates/app/src/scenario.rs`, `crates/app/src/debug.rs`, and existing scenario
+  JSON: smallest deterministic polar assertion path.
 
-Do not reopen atmosphere, sun, ocean, terrain palette, or baker generation for
-this LOD correction unless a regression provides direct evidence. The problem
-is currently localized to zoom policy, scenario coverage, and HUD reporting.
+Do not reopen the now-pinned optical LOD policy, atmosphere constants, ocean,
+or baker erosion pipeline unless the polar regression exposes direct evidence
+that one of them is involved.
 
 ## Longer-term follow-ups after the next action
 
@@ -726,6 +828,7 @@ These are separate tasks, not permission to scope-creep:
 3. Decide whether to batch/indirect terrain draws without changing tile binding
    behavior.
 4. Move synchronous tile I/O/upload behind a bounded streaming queue.
-5. Complete Phase 7 ice-cap visuals and HUD polish.
+5. Complete Phase 7 ice-cap visuals, remaining debug-panel additions, and
+   performance polish.
 6. Run every named scenario from a clean HEAD and record the regression result
    here.

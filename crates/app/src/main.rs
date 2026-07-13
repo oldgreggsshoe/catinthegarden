@@ -37,6 +37,18 @@ const DEFAULT_OUTMAP_PATH: &str = "assets/outmaps/test-planet";
 const DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND: f64 = 0.4;
 const MOUSE_LOOK_RADIANS_PER_PIXEL: f64 = 0.0006;
 
+fn format_vertical_fov(vertical_fov_degrees: f64) -> String {
+    if vertical_fov_degrees >= 10.0 {
+        format!("{vertical_fov_degrees:.1}")
+    } else if vertical_fov_degrees >= 1.0 {
+        format!("{vertical_fov_degrees:.2}")
+    } else if vertical_fov_degrees >= 0.01 {
+        format!("{vertical_fov_degrees:.3}")
+    } else {
+        format!("{vertical_fov_degrees:.6}")
+    }
+}
+
 struct PendingGpuTimestamp {
     sim_time: f64,
     receiver: mpsc::Receiver<bool>,
@@ -268,7 +280,7 @@ impl State {
 
         let mut camera = planet::OrbitCamera::default();
         if let Some(vertical_fov_degrees) = vertical_fov_degrees {
-            camera.set_vertical_fov_degrees(vertical_fov_degrees);
+            camera.set_vertical_fov_degrees_for_viewport(vertical_fov_degrees, size.height);
         }
         let initial_camera_world_position = camera.world_position();
         let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -381,6 +393,8 @@ impl State {
         }
 
         self.size = size;
+        self.camera
+            .clamp_vertical_fov_for_viewport(self.size.height);
         self.config.width = size.width;
         self.config.height = size.height;
         self.surface.configure(&self.device, &self.config);
@@ -395,11 +409,12 @@ impl State {
     }
 
     fn look_camera(&mut self, yaw_delta: f64, pitch_delta: f64) {
-        self.camera.look(yaw_delta, pitch_delta);
+        self.camera
+            .look_with_optical_sensitivity(yaw_delta, pitch_delta);
     }
 
     fn zoom_camera(&mut self, wheel_delta: f64) {
-        self.camera.zoom(wheel_delta);
+        self.camera.zoom_for_viewport(wheel_delta, self.size.height);
     }
 
     fn set_mouse_capture(&mut self, window: &Window, captured: bool) {
@@ -482,6 +497,7 @@ impl State {
             hide_overlay,
             seam_gap_check,
             scenario_pose,
+            scenario_vertical_fov_degrees,
             scenario_sun_direction,
             scenario_planet_rotation_time_scale,
         ) = if let Some(scenario) = self.scenario.as_mut() {
@@ -502,6 +518,7 @@ impl State {
                 scenario.hides_overlay(),
                 scenario.needs_seam_gap_check(),
                 scenario_pose,
+                frame.vertical_fov_degrees,
                 Some(glam::DVec3::from_array(frame.sun_direction)),
                 frame.planet_rotation_time_scale,
             )
@@ -512,11 +529,17 @@ impl State {
                 self.next_log_time = sim_time + 0.5;
             }
             (
-                sim_time, write_log, false, false, false, false, false, None, None, 1.0,
+                sim_time, write_log, false, false, false, false, false, None, None, None, 1.0,
             )
         };
         if let Some((position, look_at)) = scenario_pose {
             self.camera.set_world_pose(position, look_at);
+        }
+        if let Some(vertical_fov_degrees) = scenario_vertical_fov_degrees {
+            self.camera.set_reference_vertical_fov_degrees_for_viewport(
+                vertical_fov_degrees,
+                self.size.height,
+            );
         }
         if let Some(sun_direction) = scenario_sun_direction {
             self.sun_direction = sun_direction.normalize();
@@ -537,8 +560,7 @@ impl State {
             .planet_frame_world_position(planet_rotation_radians);
         let camera_planet_frame_direction = self
             .camera
-            .planet_frame_direction(planet_rotation_radians)
-            .as_dvec3();
+            .planet_frame_direction_dvec3(planet_rotation_radians);
         let camera_radius = camera_world_position.length();
         let camera_altitude = camera_radius - planet::PLANET_RADIUS_METERS;
         let delta_sim_time = (sim_time - self.previous_sim_time).max(f64::EPSILON);
@@ -568,6 +590,12 @@ impl State {
                 )
                 .unwrap_or_else(|error| panic!("terrain update failed: {error}"))
         };
+        self.artifacts.observe_lod_frame(
+            &self.terrain_stats.level_histogram,
+            self.terrain_stats.resident_chunks,
+            self.terrain_stats.lod_thrash_events,
+            self.terrain_stats.budget_limited,
+        );
         let draw_calls = if solid_color_screen {
             0
         } else {
@@ -614,6 +642,7 @@ impl State {
                     tiles_loaded: self.terrain_stats.tiles_loaded,
                     tiles_unloaded: self.terrain_stats.tiles_unloaded,
                     lod_thrash_events: self.terrain_stats.lod_thrash_events,
+                    budget_limited: self.terrain_stats.budget_limited,
                     exposure: exposure_state.exposure,
                     ocean_wave_min_meters: ocean_wave_stats.minimum_meters,
                     ocean_wave_max_meters: ocean_wave_stats.maximum_meters,
@@ -635,6 +664,17 @@ impl State {
             let average_luminance = exposure_state.average_luminance;
             let ocean_wave_range = ocean_wave_range;
             let terrain_stats = self.terrain_stats.clone();
+            let minimum_lod_level = terrain_stats
+                .level_histogram
+                .iter()
+                .position(|count| *count > 0)
+                .unwrap_or(0);
+            let lod_range = if minimum_lod_level == usize::from(terrain_stats.max_level) {
+                format!("L{}", terrain_stats.max_level)
+            } else {
+                format!("L{minimum_lod_level}-L{}", terrain_stats.max_level)
+            };
+            let vertical_fov_label = format_vertical_fov(vertical_fov_degrees);
             let full_output = self.egui_context.run_ui(raw_input, |ui| {
                 if show_debug_overlay {
                     let context = ui.ctx().clone();
@@ -652,12 +692,11 @@ impl State {
                                 camera_direction.x, camera_direction.y, camera_direction.z
                             ));
                             ui.label(format!(
-                                "Altitude: {camera_altitude:.0} m  |  LOD: {}  |  Chunks: {}",
-                                terrain_stats.max_level, terrain_stats.resident_chunks
+                                "Altitude: {camera_altitude:.0} m  |  LOD: {lod_range}  |  Chunks: {}",
+                                terrain_stats.resident_chunks
                             ));
                             ui.label(format!(
-                                "Optical zoom: {:.1}\u{00b0} vertical FOV",
-                                vertical_fov_degrees
+                                "Optical zoom: {vertical_fov_label}\u{00b0} vertical FOV"
                             ));
                             ui.label(format!(
                                 "Tiles: {}  |  Fallback chunks: {}  |  Seam: {:.4} m",

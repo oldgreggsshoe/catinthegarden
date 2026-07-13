@@ -19,12 +19,13 @@ const SURFACE_SUNLIGHT_SCALE: f32 = 5.0;
 const SKY_DIFFUSE_LIGHT_SCALE: f32 = 0.18;
 
 struct Camera {
-    view_projection: mat4x4<f32>,
+    projection_matrix: mat4x4<f32>,
     camera_forward: vec4<f32>,
     camera_right: vec4<f32>,
     camera_up: vec4<f32>,
-    camera_planet_direction_altitude: vec4<f32>,
+    camera_planet_direction_view_altitude: vec4<f32>,
     sun_direction: vec4<f32>,
+    sun_direction_view: vec4<f32>,
     projection: vec4<f32>,
 }
 
@@ -51,7 +52,7 @@ struct VertexInput {
     @location(1) sphere_direction: vec3<f32>,
     @location(2) tile_uv: vec2<f32>,
     @location(3) skirt_depth_meters: f32,
-    @location(4) anchor_relative_to_camera: vec3<f32>,
+    @location(4) anchor_view_position: vec3<f32>,
     @location(5) source_uv_scale: vec2<f32>,
     @location(6) source_uv_offset: vec2<f32>,
     @location(7) terrain_info: u32,
@@ -60,7 +61,7 @@ struct VertexInput {
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
-    @location(0) camera_relative_position: vec3<f32>,
+    @location(0) camera_relative_view_position: vec3<f32>,
     @location(1) world_normal: vec3<f32>,
     @location(2) aerial_color: vec3<f32>,
     @location(3) lod_transition: vec2<f32>,
@@ -80,6 +81,20 @@ struct OceanSurface {
     horizontal_displacement: vec3<f32>,
     vertical_displacement: f32,
     normal: vec3<f32>,
+}
+
+fn planet_to_view(vector: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        dot(vector, camera.camera_right.xyz),
+        dot(vector, camera.camera_up.xyz),
+        -dot(vector, camera.camera_forward.xyz),
+    );
+}
+
+fn view_to_planet(vector: vec3<f32>) -> vec3<f32> {
+    return camera.camera_right.xyz * vector.x
+        + camera.camera_up.xyz * vector.y
+        - camera.camera_forward.xyz * vector.z;
 }
 
 fn uses_outmap(terrain_info: u32) -> bool {
@@ -334,17 +349,18 @@ fn aerial_view_transmittance(
 
 fn aerial_perspective(
     lit_surface_color: vec3<f32>,
-    camera_relative_position: vec3<f32>,
+    camera_relative_view_position: vec3<f32>,
     surface_direction: vec3<f32>,
     surface_altitude_meters: f32,
 ) -> vec3<f32> {
-    let distance_meters = length(camera_relative_position);
-    let camera_altitude_meters = camera.camera_planet_direction_altitude.w;
-    let view_direction = normalize(camera_relative_position);
+    let distance_meters = length(camera_relative_view_position);
+    let camera_altitude_meters = camera.camera_planet_direction_view_altitude.w;
+    let view_direction = normalize(camera_relative_view_position);
     let sun_direction = normalize(camera.sun_direction.xyz);
+    let sun_direction_view = normalize(camera.sun_direction_view.xyz);
     let camera_radius = PLANET_RADIUS_METERS + camera_altitude_meters;
     let radial_dot_view = camera_radius
-        * dot(camera.camera_planet_direction_altitude.xyz, view_direction);
+        * dot(camera.camera_planet_direction_view_altitude.xyz, view_direction);
     let view_interval = atmosphere_interval(camera_radius, radial_dot_view);
     let view_start = max(view_interval.x, 0.0);
     let view_end = min(view_interval.y, distance_meters);
@@ -370,7 +386,10 @@ fn aerial_perspective(
         vec3<f32>(0.0),
         sun_is_occluded(surface_radius, radial_dot_sun),
     );
-    let surface_to_camera_zenith_cosine = max(dot(surface_direction, -view_direction), 0.0);
+    let surface_to_camera_zenith_cosine = max(
+        dot(planet_to_view(surface_direction), -view_direction),
+        0.0,
+    );
     let view_transmittance = aerial_view_transmittance(
         atmospheric_view_start_altitude,
         atmospheric_view_end_altitude,
@@ -388,7 +407,7 @@ fn aerial_perspective(
     let average_mie_density = 0.5
         * (density(atmospheric_view_start_altitude, MIE_SCALE_HEIGHT_METERS)
             + density(atmospheric_view_end_altitude, MIE_SCALE_HEIGHT_METERS));
-    let cos_theta = dot(view_direction, sun_direction);
+    let cos_theta = dot(view_direction, sun_direction_view);
     let in_scatter = sun_transmittance
         * (RAYLEIGH_COEFFICIENT * average_rayleigh_density * phase_rayleigh(cos_theta)
             + MIE_COEFFICIENT * average_mie_density * phase_mie(cos_theta))
@@ -528,23 +547,24 @@ fn outmap_ocean_coverage(outmap: bool, height_meters: f32) -> f32 {
 
 fn ocean_lighting(
     normal: vec3<f32>,
-    camera_relative_position: vec3<f32>,
-    sun_direction: vec3<f32>,
+    camera_relative_view_position: vec3<f32>,
     sun_transmittance: vec3<f32>,
     sky_diffuse: vec3<f32>,
 ) -> vec3<f32> {
-    let view_direction = normalize(-camera_relative_position);
-    let reflection_direction = reflect(-view_direction, normal);
+    let view_direction = normalize(-camera_relative_view_position);
+    let normal_view = normalize(planet_to_view(normal));
+    let sun_direction_view = normalize(camera.sun_direction_view.xyz);
+    let reflection_direction = view_to_planet(reflect(-view_direction, normal_view));
     let reflected_color = textureSampleLevel(
         environment_map,
         environment_sampler,
         reflection_direction,
         0.0,
     ).rgb;
-    let facing = max(dot(normal, view_direction), 0.0);
+    let facing = max(dot(normal_view, view_direction), 0.0);
     let fresnel = vec3<f32>(0.02) + vec3<f32>(0.98) * pow(1.0 - facing, 5.0);
-    let half_vector = normalize(sun_direction + view_direction);
-    let specular = pow(max(dot(normal, half_vector), 0.0), 128.0);
+    let half_vector = normalize(sun_direction_view + view_direction);
+    let specular = pow(max(dot(normal_view, half_vector), 0.0), 128.0);
     let daylight = max(max(sun_transmittance.x, sun_transmittance.y), sun_transmittance.z);
     let diffuse = vec3<f32>(0.02, 0.12, 0.50)
         * (sky_diffuse + sun_transmittance * (0.4 * SURFACE_SUNLIGHT_SCALE));
@@ -557,7 +577,7 @@ fn ocean_lighting(
 
 fn ocean_with_aerial_perspective(
     direction: vec3<f32>,
-    camera_relative_position: vec3<f32>,
+    camera_relative_view_position: vec3<f32>,
     sun_direction: vec3<f32>,
 ) -> vec3<f32> {
     let surface = ocean_surface(direction, camera.projection.z);
@@ -573,14 +593,13 @@ fn ocean_with_aerial_perspective(
     );
     let water_color = ocean_lighting(
         surface.normal,
-        camera_relative_position,
-        sun_direction,
+        camera_relative_view_position,
         sun_transmittance,
         sky_diffuse,
     );
     return aerial_perspective(
         water_color,
-        camera_relative_position,
+        camera_relative_view_position,
         direction,
         surface.vertical_displacement,
     );
@@ -595,10 +614,11 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let ocean = height <= 0.0;
     let wave_surface = ocean_surface(direction, camera.projection.z);
     let surface_height = select(height, wave_surface.vertical_displacement, ocean);
-    let camera_relative_position = input.anchor_relative_to_camera
-        + input.anchor_relative_position
+    let local_planet_position = input.anchor_relative_position
         + direction * (surface_height - input.skirt_depth_meters)
         + select(vec3<f32>(0.0), wave_surface.horizontal_displacement, ocean);
+    let camera_relative_view_position = input.anchor_view_position
+        + planet_to_view(local_planet_position);
     var normal = displaced_surface_normal(
         direction,
         source_uv,
@@ -620,10 +640,15 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let lit_surface_color = terrain_material_color(outmap, source_uv, height)
         * (sky_diffuse + sun_transmittance * direct_light * SURFACE_SUNLIGHT_SCALE);
     return VertexOutput(
-        camera.view_projection * vec4<f32>(camera_relative_position, 1.0),
-        camera_relative_position,
+        camera.projection_matrix * vec4<f32>(camera_relative_view_position, 1.0),
+        camera_relative_view_position,
         normal,
-        aerial_perspective(lit_surface_color, camera_relative_position, direction, surface_height),
+        aerial_perspective(
+            lit_surface_color,
+            camera_relative_view_position,
+            direction,
+            surface_height,
+        ),
         input.lod_transition,
         direction,
         select(0.0, 1.0, ocean),
@@ -660,7 +685,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(
             ocean_with_aerial_perspective(
                 direction,
-                input.camera_relative_position,
+                input.camera_relative_view_position,
                 sun_direction,
             ),
             1.0,
@@ -677,7 +702,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
     let water_with_aerial_perspective = ocean_with_aerial_perspective(
         direction,
-        input.camera_relative_position,
+        input.camera_relative_view_position,
         sun_direction,
     );
     return vec4<f32>(

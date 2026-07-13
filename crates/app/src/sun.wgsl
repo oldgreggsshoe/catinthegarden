@@ -11,12 +11,13 @@ const SUN_CORE_RADIANCE: vec3<f32> = vec3<f32>(72.0, 65.0, 52.0);
 const SUN_HALO_RADIANCE: vec3<f32> = vec3<f32>(6.0, 5.5, 4.5);
 
 struct Camera {
-    view_projection: mat4x4<f32>,
+    projection_matrix: mat4x4<f32>,
     camera_forward: vec4<f32>,
     camera_right: vec4<f32>,
     camera_up: vec4<f32>,
-    camera_planet_direction_altitude: vec4<f32>,
+    camera_planet_direction_view_altitude: vec4<f32>,
     sun_direction: vec4<f32>,
+    sun_direction_view: vec4<f32>,
     projection: vec4<f32>,
 }
 
@@ -31,8 +32,7 @@ struct VertexOutput {
 fn view_direction(ndc: vec2<f32>) -> vec3<f32> {
     let horizontal = ndc.x * camera.projection.x * camera.projection.y;
     let vertical = ndc.y * camera.projection.y;
-    return normalize(camera.camera_forward.xyz + camera.camera_right.xyz * horizontal
-        + camera.camera_up.xyz * vertical);
+    return normalize(vec3<f32>(horizontal, vertical, -1.0));
 }
 
 @vertex
@@ -48,8 +48,10 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let alignment = dot(view_direction(input.ndc), normalize(camera.sun_direction.xyz));
-    let angular_distance = acos(clamp(alignment, -1.0, 1.0));
+    let ray = view_direction(input.ndc);
+    let sun = normalize(camera.sun_direction_view.xyz);
+    let alignment = clamp(dot(ray, sun), -1.0, 1.0);
+    let angular_distance = atan2(length(cross(ray, sun)), alignment);
     let normalized_distance = angular_distance / SUN_ANGULAR_RADIUS_RADIANS;
     if normalized_distance > SUN_HALO_RADIUS_SCALE {
         discard;

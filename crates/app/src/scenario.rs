@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::planet::{MAX_VERTICAL_FOV_DEGREES, MIN_VERTICAL_FOV_DEGREES};
+
 pub const MAX_TERRAIN_LOD_LEVEL: u8 = 18;
 const DEFAULT_SUN_DIRECTION: [f64; 3] = [0.4, 0.7, 0.6];
 
@@ -8,7 +10,9 @@ const DEFAULT_SUN_DIRECTION: [f64; 3] = [0.4, 0.7, 0.6];
 pub struct ScenarioAssertions {
     pub require_finite_metrics: bool,
     pub required_peak_lod_level: Option<u8>,
+    pub required_lod_level_sequence: Option<Vec<u8>>,
     pub require_monotonic_lod_progression: bool,
+    pub require_unlimited_lod_budget: bool,
     pub min_resident_chunks: Option<u32>,
     pub max_resident_chunks: Option<u32>,
     pub max_lod_thrash_events: Option<u32>,
@@ -35,7 +39,9 @@ impl Default for ScenarioAssertions {
         Self {
             require_finite_metrics: true,
             required_peak_lod_level: None,
+            required_lod_level_sequence: None,
             require_monotonic_lod_progression: false,
+            require_unlimited_lod_budget: false,
             min_resident_chunks: None,
             max_resident_chunks: None,
             max_lod_thrash_events: None,
@@ -88,6 +94,8 @@ pub struct ScenarioDefinition {
     #[serde(default)]
     pub sun_waypoints: Vec<SunWaypoint>,
     #[serde(default)]
+    pub vertical_fov_waypoints: Vec<VerticalFovWaypoint>,
+    #[serde(default)]
     pub assertions: ScenarioAssertions,
 }
 
@@ -104,6 +112,12 @@ pub struct SunWaypoint {
     pub direction: [f64; 3],
 }
 
+#[derive(Debug, Deserialize)]
+pub struct VerticalFovWaypoint {
+    pub time_s: f64,
+    pub vertical_fov_degrees: f64,
+}
+
 pub struct FramePlan {
     pub sim_time: f64,
     pub write_log: bool,
@@ -112,6 +126,7 @@ pub struct FramePlan {
     pub orbit_azimuth_radians: Option<f64>,
     pub camera_world_position: [f64; 3],
     pub camera_look_at: [f64; 3],
+    pub vertical_fov_degrees: Option<f64>,
     pub sun_direction: [f64; 3],
     pub planet_rotation_time_scale: f64,
 }
@@ -135,6 +150,7 @@ impl ScenarioRunner {
             "ground_to_orbit" => include_str!("../scenarios/ground_to_orbit.json"),
             "stare_at_sun" => include_str!("../scenarios/stare_at_sun.json"),
             "ocean_flyover" => include_str!("../scenarios/ocean_flyover.json"),
+            "orbital_zoom_lod" => include_str!("../scenarios/orbital_zoom_lod.json"),
             _ => return Err(format!("unknown scenario '{name}'")),
         };
         Self::from_source(source)
@@ -206,6 +222,24 @@ impl ScenarioRunner {
                 "sun waypoints must start at zero, have finite non-zero directions, and be sorted within the scenario duration"
                     .to_owned(),
             );
+        }
+        if !definition.vertical_fov_waypoints.is_empty()
+            && (definition.vertical_fov_waypoints.iter().any(|waypoint| {
+                !waypoint.time_s.is_finite()
+                    || waypoint.time_s < 0.0
+                    || waypoint.time_s > definition.duration_seconds
+                    || !waypoint.vertical_fov_degrees.is_finite()
+                    || !(MIN_VERTICAL_FOV_DEGREES..=MAX_VERTICAL_FOV_DEGREES)
+                        .contains(&waypoint.vertical_fov_degrees)
+            }) || definition.vertical_fov_waypoints[0].time_s != 0.0
+                || definition
+                    .vertical_fov_waypoints
+                    .windows(2)
+                    .any(|waypoints| waypoints[0].time_s >= waypoints[1].time_s))
+        {
+            return Err(format!(
+                "vertical FOV waypoints must start at zero, stay within {MIN_VERTICAL_FOV_DEGREES}..={MAX_VERTICAL_FOV_DEGREES} degrees, and be sorted within the scenario duration"
+            ));
         }
         let orbit_fields_present = [
             definition.orbit_radius_meters.is_some(),
@@ -309,6 +343,10 @@ impl ScenarioRunner {
         } else {
             interpolated_sun_direction(&self.definition.sun_waypoints, self.sim_time)
         };
+        let vertical_fov_degrees =
+            (!self.definition.vertical_fov_waypoints.is_empty()).then(|| {
+                interpolated_vertical_fov(&self.definition.vertical_fov_waypoints, self.sim_time)
+            });
         if let (Some(radius), Some(elevation), Some(azimuth)) = (
             self.definition.orbit_radius_meters,
             self.definition.orbit_elevation_degrees,
@@ -332,6 +370,7 @@ impl ScenarioRunner {
             orbit_azimuth_radians,
             camera_world_position,
             camera_look_at,
+            vertical_fov_degrees,
             sun_direction,
             planet_rotation_time_scale: self.definition.planet_rotation_time_scale,
         }
@@ -348,6 +387,17 @@ fn validate_assertions(
     {
         return Err(format!(
             "required peak LOD level cannot exceed {MAX_TERRAIN_LOD_LEVEL}"
+        ));
+    }
+    if assertions
+        .required_lod_level_sequence
+        .as_ref()
+        .is_some_and(|levels| {
+            levels.is_empty() || levels.iter().any(|level| *level > MAX_TERRAIN_LOD_LEVEL)
+        })
+    {
+        return Err(format!(
+            "required LOD level sequence must be non-empty and cannot exceed {MAX_TERRAIN_LOD_LEVEL}"
         ));
     }
     if matches!(
@@ -496,6 +546,27 @@ fn interpolated_sun_direction(waypoints: &[SunWaypoint], time_s: f64) -> [f64; 3
     normalize_array(waypoints[waypoints.len() - 1].direction)
 }
 
+fn interpolated_vertical_fov(waypoints: &[VerticalFovWaypoint], time_s: f64) -> f64 {
+    let first = &waypoints[0];
+    if time_s <= first.time_s {
+        return first.vertical_fov_degrees;
+    }
+    for pair in waypoints.windows(2) {
+        let start = &pair[0];
+        let end = &pair[1];
+        if time_s <= end.time_s {
+            let amount = (time_s - start.time_s) / (end.time_s - start.time_s);
+            if amount >= 1.0 {
+                return end.vertical_fov_degrees;
+            }
+            return (start.vertical_fov_degrees.ln()
+                + (end.vertical_fov_degrees.ln() - start.vertical_fov_degrees.ln()) * amount)
+                .exp();
+        }
+    }
+    waypoints[waypoints.len() - 1].vertical_fov_degrees
+}
+
 fn normalize_array(direction: [f64; 3]) -> [f64; 3] {
     let inverse_length = squared_length(direction).sqrt().recip();
     std::array::from_fn(|index| direction[index] * inverse_length)
@@ -510,7 +581,13 @@ fn squared_length(direction: [f64; 3]) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_TERRAIN_LOD_LEVEL, ScenarioRunner, interpolated_waypoint};
+    use glam::DVec3;
+
+    use crate::planet::{OrbitCamera, PlanetLod};
+
+    use super::{
+        MAX_TERRAIN_LOD_LEVEL, ScenarioRunner, interpolated_vertical_fov, interpolated_waypoint,
+    };
 
     #[test]
     fn still_scenario_has_three_deterministic_captures() {
@@ -567,6 +644,65 @@ mod tests {
         assert_eq!(
             scenario.assertions().required_peak_lod_level,
             Some(MAX_TERRAIN_LOD_LEVEL)
+        );
+    }
+
+    #[test]
+    fn orbital_zoom_scenario_interpolates_fov_logarithmically_and_returns_wide() {
+        let mut scenario = ScenarioRunner::load("orbital_zoom_lod").expect("scenario parses");
+        let waypoints = &scenario.definition.vertical_fov_waypoints;
+        let midpoint = interpolated_vertical_fov(waypoints, 3.25);
+        assert!((midpoint - (75.0_f64 * 0.000_05).sqrt()).abs() < 1.0e-9);
+
+        let mut frame = scenario.advance();
+        while !frame.complete {
+            frame = scenario.advance();
+        }
+        assert_eq!(frame.vertical_fov_degrees, Some(75.0));
+        assert_eq!(scenario.assertions().required_peak_lod_level, Some(18));
+        assert_eq!(
+            scenario.assertions().required_lod_level_sequence,
+            Some((2_u8..=18).chain((2_u8..18).rev()).collect::<Vec<_>>())
+        );
+        assert!(scenario.assertions().require_unlimited_lod_budget);
+    }
+
+    #[test]
+    fn orbital_zoom_scenario_keeps_the_full_ladder_in_a_short_viewport() {
+        let viewport_height = 240;
+        let mut scenario = ScenarioRunner::load("orbital_zoom_lod").expect("scenario parses");
+        let mut camera = OrbitCamera::default();
+        let mut lod = PlanetLod::default();
+        let mut observed_levels = Vec::new();
+
+        loop {
+            let frame = scenario.advance();
+            camera.set_world_pose(
+                DVec3::from_array(frame.camera_world_position),
+                DVec3::from_array(frame.camera_look_at),
+            );
+            camera.set_reference_vertical_fov_degrees_for_viewport(
+                frame.vertical_fov_degrees.expect("zoom scenario FOV"),
+                viewport_height,
+            );
+            let update = lod.update_for_view(
+                camera.world_position(),
+                camera.direction_dvec3(),
+                1.5,
+                viewport_height,
+                camera.vertical_fov_radians(),
+            );
+            if observed_levels.last() != Some(&update.metrics.max_level) {
+                observed_levels.push(update.metrics.max_level);
+            }
+            if frame.complete {
+                break;
+            }
+        }
+
+        assert_eq!(
+            observed_levels,
+            (2_u8..=18).chain((2_u8..18).rev()).collect::<Vec<_>>()
         );
     }
 
@@ -647,5 +783,26 @@ mod tests {
             .err()
             .expect("must fail");
         assert!(error.contains("sorted"));
+    }
+
+    #[test]
+    fn out_of_camera_range_fov_waypoints_are_rejected() {
+        let source = r#"{
+            "name": "bad-fov",
+            "fixed_timestep_seconds": 1.0,
+            "duration_seconds": 2.0,
+            "solid_color_screen": false,
+            "screenshot_times_seconds": [],
+            "waypoints": [
+                {"time_s": 0.0, "position": [10000000.0, 0.0, 0.0], "look_at": [0.0, 0.0, 0.0]}
+            ],
+            "vertical_fov_waypoints": [
+                {"time_s": 0.0, "vertical_fov_degrees": 0.000001}
+            ]
+        }"#;
+        let error = ScenarioRunner::from_source(source)
+            .err()
+            .expect("must fail");
+        assert!(error.contains("0.00005..=75"));
     }
 }
