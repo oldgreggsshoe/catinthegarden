@@ -13,7 +13,7 @@ const SOLAR_RADIANCE: f32 = 2.0;
 // Artistic surface exposure only: this does not alter sky scattering or the
 // camera-facing sun disc.
 const SURFACE_SUNLIGHT_SCALE: f32 = 5.0;
-const SKY_DIFFUSE_LIGHT_SCALE: f32 = 0.22;
+const SKY_DIFFUSE_LIGHT_SCALE: f32 = 0.18;
 
 struct Camera {
     view_projection: mat4x4<f32>,
@@ -291,6 +291,38 @@ fn sky_diffuse_irradiance(
         * (SKY_DIFFUSE_LIGHT_SCALE * daylight_weight);
 }
 
+fn aerial_view_transmittance(
+    start_altitude_meters: f32,
+    end_altitude_meters: f32,
+    atmospheric_view_length_meters: f32,
+    surface_to_camera_zenith_cosine: f32,
+) -> vec3<f32> {
+    let rayleigh_density = 0.5
+        * (density(start_altitude_meters, RAYLEIGH_SCALE_HEIGHT_METERS)
+            + density(end_altitude_meters, RAYLEIGH_SCALE_HEIGHT_METERS));
+    let mie_density = 0.5
+        * (density(start_altitude_meters, MIE_SCALE_HEIGHT_METERS)
+            + density(end_altitude_meters, MIE_SCALE_HEIGHT_METERS));
+    let air_mass = min(1.0 / max(surface_to_camera_zenith_cosine, 0.08), 12.0);
+
+    // This remains an endpoint-average optical-depth estimate, but a radial
+    // space-to-ground ray must not count the entire tall shell as half-dense.
+    // Two local scale heights reproduce that column using the same endpoint
+    // average, while the air-mass factor retains long, opaque horizon paths.
+    let rayleigh_path_length = min(
+        atmospheric_view_length_meters,
+        2.0 * RAYLEIGH_SCALE_HEIGHT_METERS * air_mass,
+    );
+    let mie_path_length = min(
+        atmospheric_view_length_meters,
+        2.0 * MIE_SCALE_HEIGHT_METERS * air_mass,
+    );
+    return exp(-(
+        RAYLEIGH_COEFFICIENT * rayleigh_density * rayleigh_path_length
+            + MIE_COEFFICIENT * mie_density * mie_path_length
+    ));
+}
+
 fn aerial_perspective(
     lit_surface_color: vec3<f32>,
     camera_relative_position: vec3<f32>,
@@ -329,10 +361,12 @@ fn aerial_perspective(
         vec3<f32>(0.0),
         sun_is_occluded(surface_radius, radial_dot_sun),
     );
-    let view_transmittance = transmittance(
+    let surface_to_camera_zenith_cosine = max(dot(surface_direction, -view_direction), 0.0);
+    let view_transmittance = aerial_view_transmittance(
         atmospheric_view_start_altitude,
         atmospheric_view_end_altitude,
         atmospheric_view_length,
+        surface_to_camera_zenith_cosine,
     );
     let average_rayleigh_density = 0.5
         * (density(
