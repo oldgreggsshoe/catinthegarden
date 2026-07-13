@@ -122,6 +122,9 @@ pub struct TerrainRenderer {
     queue: wgpu::Queue,
     pipeline: wgpu::RenderPipeline,
     terrain_bind_group_layout: wgpu::BindGroupLayout,
+    _environment_cubemap: wgpu::Texture,
+    environment_view: wgpu::TextureView,
+    environment_sampler: wgpu::Sampler,
     index_buffer: wgpu::Buffer,
     index_count: u32,
     instance_buffer: wgpu::Buffer,
@@ -158,6 +161,13 @@ impl TerrainRenderer {
                     texture_layout_entry(0, wgpu::TextureSampleType::Float { filterable: false }),
                     texture_layout_entry(1, wgpu::TextureSampleType::Uint),
                     texture_layout_entry(2, wgpu::TextureSampleType::Float { filterable: false }),
+                    cube_texture_layout_entry(3),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
                 ],
             });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -212,6 +222,8 @@ impl TerrainRenderer {
         });
         let instance_capacity = DEFAULT_MAX_ACTIVE_CHUNKS;
         let instance_buffer = create_instance_buffer(device, instance_capacity);
+        let (environment_cubemap, environment_view, environment_sampler) =
+            create_environment_cubemap(device, queue);
         let placeholder_tile = create_gpu_tile(
             device,
             queue,
@@ -220,6 +232,8 @@ impl TerrainRenderer {
             &vec![0.0; tile_sample_count()],
             &vec![0; tile_sample_count()],
             &vec![128; tile_sample_count()],
+            &environment_view,
+            &environment_sampler,
         );
 
         Ok(Self {
@@ -227,6 +241,9 @@ impl TerrainRenderer {
             queue: queue.clone(),
             pipeline,
             terrain_bind_group_layout,
+            _environment_cubemap: environment_cubemap,
+            environment_view,
+            environment_sampler,
             index_buffer,
             index_count: topology.indices.len() as u32,
             instance_buffer,
@@ -380,6 +397,8 @@ impl TerrainRenderer {
                 &tile.heights_meters,
                 &tile.biome_ids,
                 &tile.moisture,
+                &self.environment_view,
+                &self.environment_sampler,
             );
             self.tile_cache.insert(key, gpu_tile);
         }
@@ -639,6 +658,19 @@ fn texture_layout_entry(
     }
 }
 
+fn cube_texture_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::Cube,
+            multisampled: false,
+        },
+        count: None,
+    }
+}
+
 fn create_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("camera-relative terrain instances"),
@@ -656,6 +688,8 @@ fn create_gpu_tile(
     heights_meters: &[f32],
     biome_ids: &[u8],
     moisture: &[u8],
+    environment_view: &wgpu::TextureView,
+    environment_sampler: &wgpu::Sampler,
 ) -> GpuTile {
     debug_assert_eq!(heights_meters.len(), tile_sample_count());
     debug_assert_eq!(biome_ids.len(), tile_sample_count());
@@ -703,6 +737,14 @@ fn create_gpu_tile(
                 binding: 2,
                 resource: wgpu::BindingResource::TextureView(&moisture_view),
             },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(environment_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::Sampler(environment_sampler),
+            },
         ],
     });
     GpuTile {
@@ -712,6 +754,67 @@ fn create_gpu_tile(
         bind_group,
         heights_meters: heights_meters.to_vec(),
     }
+}
+
+fn create_environment_cubemap(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+) -> (wgpu::Texture, wgpu::TextureView, wgpu::Sampler) {
+    // A compact sky/ground cube is deliberately static for Phase 6: it proves
+    // cubemap reflection without introducing SSR or a dynamic environment pass.
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("ocean reflection cubemap"),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 6,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let faces: [u8; 24] = [
+        114, 158, 201, 255, // +X sky
+        93, 135, 184, 255, // -X sky
+        145, 181, 216, 255, // +Y zenith
+        25, 41, 48, 255, // -Y ground
+        104, 151, 195, 255, // +Z sky
+        83, 124, 171, 255, // -Z sky
+    ];
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &faces,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4),
+            rows_per_image: Some(1),
+        },
+        wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 6,
+        },
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::Cube),
+        ..Default::default()
+    });
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("ocean reflection cubemap sampler"),
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::MipmapFilterMode::Linear,
+        ..Default::default()
+    });
+    (texture, view, sampler)
 }
 
 fn create_and_upload_texture(

@@ -23,6 +23,7 @@ pub struct ScenarioAssertions {
     pub max_exposure: Option<f32>,
     pub max_exposure_delta_per_frame: Option<f32>,
     pub max_exposure_oscillation_events: Option<u32>,
+    pub min_ocean_wave_height_range_meters: Option<f32>,
 }
 
 impl Default for ScenarioAssertions {
@@ -45,6 +46,7 @@ impl Default for ScenarioAssertions {
             max_exposure: None,
             max_exposure_delta_per_frame: None,
             max_exposure_oscillation_events: None,
+            min_ocean_wave_height_range_meters: None,
         }
     }
 }
@@ -122,6 +124,7 @@ impl ScenarioRunner {
             "sunset_sweep" => include_str!("../scenarios/sunset_sweep.json"),
             "ground_to_orbit" => include_str!("../scenarios/ground_to_orbit.json"),
             "stare_at_sun" => include_str!("../scenarios/stare_at_sun.json"),
+            "ocean_flyover" => include_str!("../scenarios/ocean_flyover.json"),
             _ => return Err(format!("unknown scenario '{name}'")),
         };
         Self::from_source(source)
@@ -398,6 +401,10 @@ fn validate_assertions(
             "maximum exposure delta per frame",
             assertions.max_exposure_delta_per_frame,
         ),
+        (
+            "minimum ocean wave height range",
+            assertions.min_ocean_wave_height_range_meters,
+        ),
     ] {
         if value.is_some_and(|value| !value.is_finite() || value < 0.0) {
             return Err(format!("{name} must be finite and non-negative"));
@@ -560,6 +567,15 @@ mod tests {
         assert_eq!(stare_at_sun.expected_screenshots(), 3);
         assert_eq!(
             stare_at_sun.assertions().max_exposure_delta_per_frame,
+            Some(0.5)
+        );
+
+        let ocean_flyover = ScenarioRunner::load("ocean_flyover").expect("ocean scenario parses");
+        assert_eq!(ocean_flyover.expected_screenshots(), 5);
+        assert_eq!(
+            ocean_flyover
+                .assertions()
+                .min_ocean_wave_height_range_meters,
             Some(0.5)
         );
     }

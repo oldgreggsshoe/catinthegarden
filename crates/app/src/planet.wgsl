@@ -33,6 +33,12 @@ var biome_map: texture_2d<u32>;
 @group(1) @binding(2)
 var moisture_map: texture_2d<f32>;
 
+@group(1) @binding(3)
+var environment_map: texture_cube<f32>;
+
+@group(1) @binding(4)
+var environment_sampler: sampler;
+
 struct VertexInput {
     @location(0) anchor_relative_position: vec3<f32>,
     @location(1) sphere_direction: vec3<f32>,
@@ -51,6 +57,20 @@ struct VertexOutput {
     @location(1) world_normal: vec3<f32>,
     @location(2) aerial_color: vec3<f32>,
     @location(3) lod_transition: vec2<f32>,
+    @location(4) surface_direction: vec3<f32>,
+    @location(5) ocean: f32,
+}
+
+struct OceanWaveContribution {
+    horizontal_displacement: vec3<f32>,
+    vertical_displacement: f32,
+    slope: vec3<f32>,
+}
+
+struct OceanSurface {
+    horizontal_displacement: vec3<f32>,
+    vertical_displacement: f32,
+    normal: vec3<f32>,
 }
 
 fn uses_outmap(terrain_info: u32) -> bool {
@@ -102,6 +122,49 @@ fn terrain_height(outmap: bool, source_uv: vec2<f32>, direction: vec3<f32>) -> f
         return sample_height(source_uv);
     }
     return placeholder_height(direction);
+}
+
+fn gerstner_wave(
+    direction: vec3<f32>,
+    wave_axis: vec3<f32>,
+    wavelength_meters: f32,
+    amplitude_meters: f32,
+    speed_meters_per_second: f32,
+    steepness: f32,
+    time_seconds: f32,
+) -> OceanWaveContribution {
+    let axis = normalize(wave_axis);
+    let tangent_unnormalized = axis - direction * dot(axis, direction);
+    let tangent_length = length(tangent_unnormalized);
+    if tangent_length < 1.0e-4 {
+        return OceanWaveContribution(vec3<f32>(0.0), 0.0, vec3<f32>(0.0));
+    }
+    let tangent = tangent_unnormalized / tangent_length;
+    let wave_number = 6.2831853 / wavelength_meters;
+    let phase = wave_number
+        * (dot(direction, axis) * PLANET_RADIUS_METERS + speed_meters_per_second * time_seconds);
+    return OceanWaveContribution(
+        tangent * (steepness * amplitude_meters * cos(phase)),
+        amplitude_meters * sin(phase),
+        tangent * (amplitude_meters * wave_number * cos(phase)),
+    );
+}
+
+fn ocean_surface(direction: vec3<f32>, time_seconds: f32) -> OceanSurface {
+    let first = gerstner_wave(direction, vec3<f32>(0.9, 0.1, 0.4), 900.0, 1.5, 4.0, 0.45, time_seconds);
+    let second = gerstner_wave(direction, vec3<f32>(-0.3, 0.4, 0.85), 420.0, 0.85, 5.0, 0.40, time_seconds);
+    let third = gerstner_wave(direction, vec3<f32>(0.55, -0.75, 0.35), 160.0, 0.45, 6.5, 0.34, time_seconds);
+    let fourth = gerstner_wave(direction, vec3<f32>(-0.75, -0.2, 0.63), 65.0, 0.22, 8.0, 0.28, time_seconds);
+    let fifth = gerstner_wave(direction, vec3<f32>(0.2, 0.95, -0.24), 24.0, 0.11, 10.0, 0.20, time_seconds);
+    let sixth = gerstner_wave(direction, vec3<f32>(-0.5, 0.7, -0.5), 9.0, 0.05, 12.0, 0.14, time_seconds);
+    let horizontal = first.horizontal_displacement + second.horizontal_displacement
+        + third.horizontal_displacement + fourth.horizontal_displacement
+        + fifth.horizontal_displacement + sixth.horizontal_displacement;
+    let vertical = first.vertical_displacement + second.vertical_displacement
+        + third.vertical_displacement + fourth.vertical_displacement
+        + fifth.vertical_displacement + sixth.vertical_displacement;
+    let slope = first.slope + second.slope + third.slope + fourth.slope + fifth.slope + sixth.slope;
+    return OceanSurface(horizontal, vertical, normalize(direction - slope));
 }
 
 fn density(altitude_meters: f32, scale_height_meters: f32) -> f32 {
@@ -319,32 +382,62 @@ fn biome_color(biome: u32) -> vec3<f32> {
     }
 }
 
+fn ocean_lighting(
+    normal: vec3<f32>,
+    camera_relative_position: vec3<f32>,
+    sun_direction: vec3<f32>,
+    sun_transmittance: vec3<f32>,
+) -> vec3<f32> {
+    let view_direction = normalize(-camera_relative_position);
+    let reflection_direction = reflect(-view_direction, normal);
+    let reflected_color = textureSampleLevel(
+        environment_map,
+        environment_sampler,
+        reflection_direction,
+        0.0,
+    ).rgb;
+    let facing = max(dot(normal, view_direction), 0.0);
+    let fresnel = vec3<f32>(0.02) + vec3<f32>(0.98) * pow(1.0 - facing, 5.0);
+    let half_vector = normalize(sun_direction + view_direction);
+    let specular = pow(max(dot(normal, half_vector), 0.0), 128.0);
+    let diffuse = vec3<f32>(0.006, 0.035, 0.095)
+        * (vec3<f32>(0.035) + sun_transmittance * 0.18);
+    return diffuse + reflected_color * fresnel + sun_transmittance * specular * fresnel * 12.0;
+}
+
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
     let direction = normalize(input.sphere_direction);
     let source_uv = input.source_uv_offset + input.tile_uv * input.source_uv_scale;
     let outmap = uses_outmap(input.terrain_info);
     let height = terrain_height(outmap, source_uv, direction);
+    let ocean = height <= 0.0;
+    let wave_surface = ocean_surface(direction, camera.projection.z);
+    let surface_height = select(height, wave_surface.vertical_displacement, ocean);
     let camera_relative_position = input.anchor_relative_to_camera
         + input.anchor_relative_position
-        + direction * (height - input.skirt_depth_meters);
+        + direction * (surface_height - input.skirt_depth_meters)
+        + select(vec3<f32>(0.0), wave_surface.horizontal_displacement, ocean);
     var color = vec3<f32>(0.32, 0.58, 0.74);
     if outmap {
         let moisture = sample_moisture(source_uv);
         color = biome_color(sample_biome(source_uv)) * mix(0.88, 1.06, moisture);
     }
-    let normal = displaced_surface_normal(
+    var normal = displaced_surface_normal(
         direction,
         source_uv,
         input.source_uv_scale,
         input.terrain_info,
     );
+    if ocean {
+        normal = wave_surface.normal;
+    }
     let sun_direction = normalize(camera.sun_direction.xyz);
-    let surface_radius = PLANET_RADIUS_METERS + height;
+    let surface_radius = PLANET_RADIUS_METERS + surface_height;
     let radial_dot_sun = surface_radius * dot(direction, sun_direction);
     let direct_sun_transmittance = select(
         transmittance(
-            height,
+            surface_height,
             ATMOSPHERE_HEIGHT_METERS,
             atmosphere_exit_distance(surface_radius, radial_dot_sun),
         ),
@@ -352,13 +445,16 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         sun_is_occluded(surface_radius, radial_dot_sun),
     );
     let direct_light = max(dot(normal, sun_direction), 0.14);
-    let lit_surface_color = color * (vec3<f32>(0.14) + direct_sun_transmittance * direct_light);
+    let terrain_lighting = color * (vec3<f32>(0.14) + direct_sun_transmittance * direct_light);
+    let lit_surface_color = terrain_lighting;
     return VertexOutput(
         camera.view_projection * vec4<f32>(camera_relative_position, 1.0),
         camera_relative_position,
         normal,
-        aerial_perspective(lit_surface_color, camera_relative_position, direction, height),
+        aerial_perspective(lit_surface_color, camera_relative_position, direction, surface_height),
         input.lod_transition,
+        direction,
+        select(0.0, 1.0, ocean),
     );
 }
 
@@ -383,6 +479,38 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         || (!incoming && threshold < transition_progress)
     {
         discard;
+    }
+    if input.ocean > 0.5 {
+        let direction = normalize(input.surface_direction);
+        let surface = ocean_surface(direction, camera.projection.z);
+        let surface_height = surface.vertical_displacement;
+        let sun_direction = normalize(camera.sun_direction.xyz);
+        let surface_radius = PLANET_RADIUS_METERS + surface_height;
+        let radial_dot_sun = surface_radius * dot(direction, sun_direction);
+        let direct_sun_transmittance = select(
+            transmittance(
+                surface_height,
+                ATMOSPHERE_HEIGHT_METERS,
+                atmosphere_exit_distance(surface_radius, radial_dot_sun),
+            ),
+            vec3<f32>(0.0),
+            sun_is_occluded(surface_radius, radial_dot_sun),
+        );
+        let water_color = ocean_lighting(
+            surface.normal,
+            input.camera_relative_position,
+            sun_direction,
+            direct_sun_transmittance,
+        );
+        return vec4<f32>(
+            aerial_perspective(
+                water_color,
+                input.camera_relative_position,
+                direction,
+                surface_height,
+            ),
+            1.0,
+        );
     }
     return vec4<f32>(input.aerial_color, 1.0);
 }

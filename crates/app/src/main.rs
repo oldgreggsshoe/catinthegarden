@@ -1,6 +1,7 @@
 mod atmosphere;
 mod debug;
 mod hdr;
+mod ocean;
 mod outmap;
 mod planet;
 mod scenario;
@@ -572,6 +573,8 @@ impl State {
         } else {
             self.terrain_stats.draw_calls
         };
+        let ocean_wave_stats = ocean::wave_height_stats(sim_time);
+        let ocean_wave_range = ocean_wave_stats.range_meters();
         if write_log {
             let latitude_degrees = (camera_world_position.y / camera_radius)
                 .clamp(-1.0, 1.0)
@@ -612,6 +615,8 @@ impl State {
                     tiles_unloaded: self.terrain_stats.tiles_unloaded,
                     lod_thrash_events: self.terrain_stats.lod_thrash_events,
                     exposure: exposure_state.exposure,
+                    ocean_wave_min_meters: ocean_wave_stats.minimum_meters,
+                    ocean_wave_max_meters: ocean_wave_stats.maximum_meters,
                 });
         }
         let simulation_ms = profile_started.elapsed().as_secs_f32() * 1_000.0;
@@ -628,6 +633,7 @@ impl State {
             let vertical_fov_degrees = self.camera.vertical_fov_radians().to_degrees();
             let exposure = exposure_state.exposure;
             let average_luminance = exposure_state.average_luminance;
+            let ocean_wave_range = ocean_wave_range;
             let terrain_stats = self.terrain_stats.clone();
             let full_output = self.egui_context.run_ui(raw_input, |ui| {
                 if show_debug_overlay {
@@ -662,6 +668,7 @@ impl State {
                             ui.label(format!(
                                 "Exposure: {exposure:.3}  |  Average luminance: {average_luminance:.3}"
                             ));
+                            ui.label(format!("Ocean Gerstner range: {ocean_wave_range:.2} m"));
                             ui.label("F3: toggle overlay  |  F12: capture PNG");
                             ui.label("Default: auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc/Q: quit");
                         });
@@ -749,6 +756,7 @@ impl State {
             self.size.width as f32 / self.size.height as f32,
             self.sun_direction,
             planet_rotation_radians,
+            sim_time,
         );
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));

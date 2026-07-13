@@ -1313,6 +1313,7 @@ impl CameraUniform {
         aspect_ratio: f32,
         sun_direction: DVec3,
         planet_rotation_radians: f64,
+        sim_time: f64,
     ) -> Self {
         let forward = camera.planet_frame_direction(planet_rotation_radians);
         let right = forward.cross(Vec3::Y).normalize();
@@ -1340,7 +1341,7 @@ impl CameraUniform {
             projection: [
                 aspect_ratio,
                 (camera.vertical_fov_radians as f32 * 0.5).tan(),
-                0.0,
+                sim_time as f32,
                 0.0,
             ],
         }

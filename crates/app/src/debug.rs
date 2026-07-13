@@ -40,6 +40,8 @@ pub struct SpatialLogSample {
     pub tiles_unloaded: u32,
     pub lod_thrash_events: u32,
     pub exposure: f32,
+    pub ocean_wave_min_meters: f32,
+    pub ocean_wave_max_meters: f32,
 }
 
 #[derive(Clone)]
@@ -120,6 +122,7 @@ struct AssertionTracker {
     previous_exposure: Option<f32>,
     previous_exposure_delta: Option<f32>,
     previous_target_exposure: Option<f32>,
+    maximum_ocean_wave_range_meters: f32,
 }
 
 impl AssertionTracker {
@@ -146,6 +149,7 @@ impl AssertionTracker {
             previous_exposure: None,
             previous_exposure_delta: None,
             previous_target_exposure: None,
+            maximum_ocean_wave_range_meters: 0.0,
         }
     }
 
@@ -186,6 +190,9 @@ impl AssertionTracker {
         }
 
         self.lod_thrash_events += u64::from(sample.lod_thrash_events);
+        self.maximum_ocean_wave_range_meters = self
+            .maximum_ocean_wave_range_meters
+            .max(sample.ocean_wave_max_meters - sample.ocean_wave_min_meters);
         if sample.max_seam_delta_m.is_finite() {
             self.maximum_seam_delta_m = self.maximum_seam_delta_m.max(sample.max_seam_delta_m);
             if self
@@ -405,6 +412,16 @@ impl AssertionTracker {
                 ),
             ));
         }
+        if let Some(minimum_range) = self.config.min_ocean_wave_height_range_meters {
+            results.push(assertion_result(
+                "ocean_waves_have_required_height_range",
+                self.maximum_ocean_wave_range_meters >= minimum_range,
+                format!(
+                    "required range {minimum_range:.3}m, observed {:.3}m",
+                    self.maximum_ocean_wave_range_meters,
+                ),
+            ));
+        }
         results
     }
 }
@@ -436,6 +453,8 @@ fn sample_metrics_are_finite(sample: &SpatialLogSample) -> bool {
         && sample.frame_time_ms.is_finite()
         && sample.max_seam_delta_m.is_finite()
         && sample.exposure.is_finite()
+        && sample.ocean_wave_min_meters.is_finite()
+        && sample.ocean_wave_max_meters.is_finite()
 }
 
 fn assertion_result(name: &str, passed: bool, details: String) -> ScenarioAssertionResult {
@@ -545,6 +564,8 @@ impl RunArtifacts {
             tiles_unloaded: 0,
             lod_thrash_events: 0,
             exposure: 1.0,
+            ocean_wave_min_meters: 0.0,
+            ocean_wave_max_meters: 0.0,
         });
     }
 
@@ -580,6 +601,8 @@ impl RunArtifacts {
             tiles_unloaded = sample.tiles_unloaded,
             lod_thrash_events = sample.lod_thrash_events,
             exposure = sample.exposure,
+            ocean_wave_min_meters = sample.ocean_wave_min_meters,
+            ocean_wave_max_meters = sample.ocean_wave_max_meters,
             "spatial frame"
         );
     }
@@ -925,6 +948,7 @@ mod tests {
             max_exposure: None,
             max_exposure_delta_per_frame: None,
             max_exposure_oscillation_events: None,
+            min_ocean_wave_height_range_meters: None,
         }
     }
 
@@ -957,6 +981,8 @@ mod tests {
             tiles_unloaded: 0,
             lod_thrash_events: 0,
             exposure: 1.0,
+            ocean_wave_min_meters: 0.0,
+            ocean_wave_max_meters: 0.0,
         }
     }
 
