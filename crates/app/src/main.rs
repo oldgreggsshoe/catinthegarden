@@ -34,7 +34,7 @@ const HUD_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
 const HIDDEN_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 const GPU_PROFILE_RING_SIZE: usize = 3;
 const DEFAULT_OUTMAP_PATH: &str = "assets/outmaps/test-planet";
-const DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND: f64 = 0.08;
+const DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND: f64 = 0.4;
 const MOUSE_LOOK_RADIANS_PER_PIXEL: f64 = 0.0006;
 
 struct PendingGpuTimestamp {
