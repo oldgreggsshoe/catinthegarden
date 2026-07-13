@@ -5,7 +5,9 @@ use std::{
     path::PathBuf,
 };
 
-use catinthegarden_coretypes::{CubeFace, TILE_STORED_SIZE, TileKey};
+use catinthegarden_coretypes::{
+    CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
+};
 use glam::DVec3;
 use wgpu::util::DeviceExt;
 
@@ -17,10 +19,10 @@ use crate::{
     },
 };
 
-// The default detailed test planet contains 2,172 tiles. Keeping that working
-// set resident prevents a moving camera from continually uploading the same
-// L4 textures, while keeping GPU texture memory bounded for larger outmaps.
-const MAX_RESIDENT_TERRAIN_TILES: usize = 2_560;
+// Material tiles are 131x131 stored samples, independent of the 33x33 mesh.
+// Retain enough nearby L4 tiles to avoid camera-motion uploads while keeping
+// the three per-tile GPU textures and CPU height cache bounded.
+const MAX_RESIDENT_TERRAIN_TILES: usize = 384;
 const LOD_TRANSITION_DURATION_SECONDS: f64 = 0.5;
 
 #[derive(Clone, Debug)]
@@ -648,7 +650,7 @@ fn texture_layout_entry(
 ) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
-        visibility: wgpu::ShaderStages::VERTEX,
+        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
         ty: wgpu::BindingType::Texture {
             sample_type,
             view_dimension: wgpu::TextureViewDimension::D2,
@@ -957,8 +959,8 @@ fn max_outmap_seam_delta(
 
 fn sample_height_cpu(heights: &[f32], uv: [f32; 2]) -> f32 {
     let coordinate = [
-        1.0 + uv[0].clamp(0.0, 1.0) * CHUNK_GRID_QUADS as f32,
-        1.0 + uv[1].clamp(0.0, 1.0) * CHUNK_GRID_QUADS as f32,
+        TILE_GUTTER as f32 + uv[0].clamp(0.0, 1.0) * (TILE_LOGICAL_SIZE - 1) as f32,
+        TILE_GUTTER as f32 + uv[1].clamp(0.0, 1.0) * (TILE_LOGICAL_SIZE - 1) as f32,
     ];
     let lower = [
         coordinate[0].floor() as usize,
@@ -982,7 +984,9 @@ fn sample_height_cpu(heights: &[f32], uv: [f32; 2]) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use catinthegarden_coretypes::{CubeFace, TILE_STORED_SIZE, TileKey};
+    use catinthegarden_coretypes::{
+        CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
+    };
 
     use super::{
         fallback_uv_transform, lod_transition_progress, nodes_share_lod_transition,
@@ -1023,9 +1027,10 @@ mod tests {
         let heights: Vec<_> = (0..TILE_STORED_SIZE)
             .flat_map(|y| (0..TILE_STORED_SIZE).map(move |x| (x + y * TILE_STORED_SIZE) as f32))
             .collect();
-        let center = sample_height_cpu(&heights, [0.5, 0.5]);
-        let expected_index = 17 + 17 * TILE_STORED_SIZE;
-        assert_eq!(center, expected_index as f32);
+        let sampled_center = sample_height_cpu(&heights, [0.5, 0.5]);
+        let center_coordinate = TILE_GUTTER + (TILE_LOGICAL_SIZE - 1) / 2;
+        let expected_index = center_coordinate + center_coordinate * TILE_STORED_SIZE;
+        assert_eq!(sampled_center, expected_index as f32);
     }
 
     #[test]

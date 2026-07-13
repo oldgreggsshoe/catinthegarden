@@ -5,7 +5,9 @@ use std::{
 };
 
 use catinthegarden_baker::{BakeConfig, bake, validate_output};
-use catinthegarden_coretypes::{CubeFace, TILE_STORED_SIZE, TileKey};
+use catinthegarden_coretypes::{
+    CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
+};
 use image::{ColorType, ImageReader};
 
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
@@ -80,9 +82,11 @@ fn tiles_have_gutters_expected_channel_sizes_and_level_eighteen_refinement() {
     );
     assert!(!directory.join("normal.r8").exists());
     let height = fs::read(directory.join("height.r32f")).unwrap();
-    assert_eq!(height_sample(&height, 1, 1), -10.0);
-    let interior: Vec<f32> = (2..33)
-        .flat_map(|row| (2..33).map(move |column| (row, column)))
+    let first_logical = TILE_GUTTER as usize;
+    let last_logical = (TILE_GUTTER + TILE_LOGICAL_SIZE - 1) as usize;
+    assert_eq!(height_sample(&height, first_logical, first_logical), -10.0);
+    let interior: Vec<f32> = ((first_logical + 1)..last_logical)
+        .flat_map(|row| ((first_logical + 1)..last_logical).map(move |column| (row, column)))
         .map(|(row, column)| height_sample(&height, row, column))
         .collect();
     let minimum = interior.iter().copied().fold(f32::INFINITY, f32::min);
@@ -116,40 +120,43 @@ fn tile_edges_gutters_parent_samples_and_previews_are_consistent() {
     let right_height = read_channel(&output, right, "height.r32f");
     let left_biome = read_channel(&output, left, "biome.r8");
     let right_biome = read_channel(&output, right, "biome.r8");
+    let first_logical = TILE_GUTTER as usize;
+    let last_logical = (TILE_GUTTER + TILE_LOGICAL_SIZE - 1) as usize;
     for row in 0..TILE_STORED_SIZE as usize {
         assert_eq!(
-            height_sample(&left_height, row, 33),
-            height_sample(&right_height, row, 1)
+            height_sample(&left_height, row, last_logical),
+            height_sample(&right_height, row, first_logical)
         );
-        if (2..=32).contains(&row) {
+        if ((first_logical + 1)..last_logical).contains(&row) {
             assert_eq!(
-                height_sample(&left_height, row, 34),
-                height_sample(&right_height, row, 2)
+                height_sample(&left_height, row, last_logical + 1),
+                height_sample(&right_height, row, first_logical + 1)
             );
         }
         assert_eq!(
-            r8_sample(&left_biome, row, 33),
-            r8_sample(&right_biome, row, 1)
+            r8_sample(&left_biome, row, last_logical),
+            r8_sample(&right_biome, row, first_logical)
         );
     }
 
     let parent = TileKey::root(CubeFace::PositiveX);
     let parent_height = read_channel(&output, parent, "height.r32f");
-    for y in 0..=16 {
-        for x in 0..=16 {
+    let half_logical_quads = (TILE_LOGICAL_SIZE - 1) as usize / 2;
+    for y in 0..=half_logical_quads {
+        for x in 0..=half_logical_quads {
             assert_eq!(
-                height_sample(&parent_height, 1 + y, 1 + x),
-                height_sample(&left_height, 1 + y * 2, 1 + x * 2)
+                height_sample(&parent_height, first_logical + y, first_logical + x),
+                height_sample(&left_height, first_logical + y * 2, first_logical + x * 2)
             );
         }
     }
 
     let negative_z = TileKey::root(CubeFace::NegativeZ);
     let negative_z_height = read_channel(&output, negative_z, "height.r32f");
-    for row in 1..=33 {
+    for row in first_logical..=last_logical {
         assert_eq!(
-            height_sample(&parent_height, row, 33),
-            height_sample(&negative_z_height, row, 1)
+            height_sample(&parent_height, row, last_logical),
+            height_sample(&negative_z_height, row, first_logical)
         );
     }
 
@@ -167,10 +174,10 @@ fn tile_edges_gutters_parent_samples_and_previews_are_consistent() {
     };
     let positive_x_child_height = read_channel(&output, positive_x_edge_child, "height.r32f");
     let negative_z_child_height = read_channel(&output, negative_z_edge_child, "height.r32f");
-    for row in 1..=33 {
+    for row in first_logical..=last_logical {
         assert_eq!(
-            height_sample(&positive_x_child_height, row, 33),
-            height_sample(&negative_z_child_height, row, 1)
+            height_sample(&positive_x_child_height, row, last_logical),
+            height_sample(&negative_z_child_height, row, first_logical)
         );
     }
 
@@ -186,10 +193,10 @@ fn tile_edges_gutters_parent_samples_and_previews_are_consistent() {
     };
     let across_parent_left_height = read_channel(&output, across_parent_left, "height.r32f");
     let across_parent_right_height = read_channel(&output, across_parent_right, "height.r32f");
-    for row in 1..=33 {
+    for row in first_logical..=last_logical {
         assert_eq!(
-            height_sample(&across_parent_left_height, row, 33),
-            height_sample(&across_parent_right_height, row, 1)
+            height_sample(&across_parent_left_height, row, last_logical),
+            height_sample(&across_parent_right_height, row, first_logical)
         );
     }
 
@@ -254,11 +261,16 @@ fn deep_sparse_edge_matches_root_fallback_interpolation() {
 
     let deep_height = read_channel(&output, deep, "height.r32f");
     let root_height = read_channel(&output, fallback, "height.r32f");
-    for logical_y in 0..TILE_STORED_SIZE - 2 {
-        let global_y = u64::from(deep.y) * 32 + u64::from(logical_y);
+    for logical_y in 0..TILE_LOGICAL_SIZE {
+        let global_y = u64::from(deep.y) * u64::from(TILE_LOGICAL_SIZE - 1) + u64::from(logical_y);
         let root_y = global_y as f64 / side as f64;
-        let expected = bilinear_height(&root_height, 16.0, root_y);
-        let actual = height_sample(&deep_height, (logical_y + 1) as usize, 1);
+        let expected =
+            bilinear_height(&root_height, f64::from(TILE_LOGICAL_SIZE - 1) / 2.0, root_y);
+        let actual = height_sample(
+            &deep_height,
+            (logical_y + TILE_GUTTER) as usize,
+            TILE_GUTTER as usize,
+        );
         assert!(
             (actual - expected).abs() <= 0.001,
             "deep edge row {logical_y}: {actual} != root fallback {expected}"
@@ -278,14 +290,15 @@ fn height_sample(bytes: &[u8], row: usize, column: usize) -> f32 {
 fn bilinear_height(bytes: &[u8], x: f64, y: f64) -> f32 {
     let x0 = x.floor() as usize;
     let y0 = y.floor() as usize;
-    let x1 = (x0 + 1).min(32);
-    let y1 = (y0 + 1).min(32);
+    let x1 = (x0 + 1).min((TILE_LOGICAL_SIZE - 1) as usize);
+    let y1 = (y0 + 1).min((TILE_LOGICAL_SIZE - 1) as usize);
     let tx = (x - x0 as f64) as f32;
     let ty = (y - y0 as f64) as f32;
-    let top = height_sample(bytes, y0 + 1, x0 + 1) * (1.0 - tx)
-        + height_sample(bytes, y0 + 1, x1 + 1) * tx;
-    let bottom = height_sample(bytes, y1 + 1, x0 + 1) * (1.0 - tx)
-        + height_sample(bytes, y1 + 1, x1 + 1) * tx;
+    let gutter = TILE_GUTTER as usize;
+    let top = height_sample(bytes, y0 + gutter, x0 + gutter) * (1.0 - tx)
+        + height_sample(bytes, y0 + gutter, x1 + gutter) * tx;
+    let bottom = height_sample(bytes, y1 + gutter, x0 + gutter) * (1.0 - tx)
+        + height_sample(bytes, y1 + gutter, x1 + gutter) * tx;
     top * (1.0 - ty) + bottom * ty
 }
 

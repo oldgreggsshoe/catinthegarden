@@ -603,12 +603,16 @@ mod tests {
         let noise = Perlin::new(0xABCD_0123);
         let mut minimum = f64::INFINITY;
         let mut maximum = f64::NEG_INFINITY;
-        for y in 0..=32 {
-            for x in 0..=32 {
+        for y in 0..TILE_LOGICAL_SIZE {
+            for x in 0..TILE_LOGICAL_SIZE {
                 let direction = face_uv_to_direction(
                     key.face,
-                    -1.0 + 2.0 * (f64::from(key.x) + f64::from(x) / 32.0) / 16.0,
-                    -1.0 + 2.0 * (f64::from(key.y) + f64::from(y) / 32.0) / 16.0,
+                    -1.0 + 2.0
+                        * (f64::from(key.x) + f64::from(x) / f64::from(TILE_LOGICAL_SIZE - 1))
+                        / 16.0,
+                    -1.0 + 2.0
+                        * (f64::from(key.y) + f64::from(y) / f64::from(TILE_LOGICAL_SIZE - 1))
+                        / 16.0,
                 );
                 let detail = baked_surface_detail(key, direction, &noise);
                 minimum = minimum.min(detail);
@@ -640,13 +644,17 @@ mod tests {
             y: 8,
         };
         let noise = Perlin::new(0xABCD_0123);
-        let biomes: std::collections::BTreeSet<_> = (0..=32)
-            .flat_map(|y| (0..=32).map(move |x| (x, y)))
+        let biomes: std::collections::BTreeSet<_> = (0..TILE_LOGICAL_SIZE)
+            .flat_map(|y| (0..TILE_LOGICAL_SIZE).map(move |x| (x, y)))
             .map(|(x, y)| {
                 let direction = face_uv_to_direction(
                     key.face,
-                    -1.0 + 2.0 * (f64::from(key.x) + f64::from(x) / 32.0) / 16.0,
-                    -1.0 + 2.0 * (f64::from(key.y) + f64::from(y) / 32.0) / 16.0,
+                    -1.0 + 2.0
+                        * (f64::from(key.x) + f64::from(x) / f64::from(TILE_LOGICAL_SIZE - 1))
+                        / 16.0,
+                    -1.0 + 2.0
+                        * (f64::from(key.y) + f64::from(y) / f64::from(TILE_LOGICAL_SIZE - 1))
+                        / 16.0,
                 );
                 baked_biome_detail(
                     key,

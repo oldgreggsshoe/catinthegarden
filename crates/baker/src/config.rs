@@ -23,8 +23,8 @@ impl Default for BakeConfig {
             // make actual L4 tiles available globally. L4 is the current
             // coarsest rendered level, so a lower dense level only makes the
             // renderer spend geometry work on ancestor-fallback textures.
-            width: 1_024,
-            height: 512,
+            width: 4_096,
+            height: 2_048,
             dense_level: 4,
             max_level: QUADTREE_MAX_LEVEL,
             sparse_radius: 1,

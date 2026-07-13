@@ -3,11 +3,14 @@ use std::path::PathBuf;
 use glam::DVec3;
 use serde::{Deserialize, Serialize};
 
-pub const OUTMAP_SCHEMA_VERSION: u32 = 1;
+pub const OUTMAP_SCHEMA_VERSION: u32 = 2;
 pub const PLANET_RADIUS_METERS: f64 = 4_000_000.0;
 pub const QUADTREE_MAX_LEVEL: u8 = 18;
 pub const MAX_DENSE_LEVEL: u8 = 5;
-pub const TILE_LOGICAL_SIZE: u32 = 33;
+// Outmap samples are deliberately denser than the fixed 33x33 terrain mesh.
+// Height, normals, biomes, and shoreline material can therefore gain detail
+// without changing the Phase 2 chunk topology.
+pub const TILE_LOGICAL_SIZE: u32 = 129;
 pub const TILE_GUTTER: u32 = 1;
 pub const TILE_STORED_SIZE: u32 = TILE_LOGICAL_SIZE + TILE_GUTTER * 2;
 
