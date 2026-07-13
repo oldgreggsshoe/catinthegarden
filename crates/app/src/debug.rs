@@ -239,8 +239,8 @@ impl AssertionTracker {
                 });
             if target_is_stable
                 && self.previous_exposure_delta.is_some_and(|previous_delta| {
-                    previous_delta.abs() > 0.0001
-                        && delta.abs() > 0.0001
+                    previous_delta.abs() > 0.001
+                        && delta.abs() > 0.001
                         && previous_delta.signum() != delta.signum()
                 })
             {

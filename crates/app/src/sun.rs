@@ -29,7 +29,16 @@ impl SunRenderer {
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: hdr_format,
-                    blend: Some(wgpu::BlendState::REPLACE),
+                    // Keep the warm disc and halo overbright in the HDR scene,
+                    // instead of replacing the sky color beneath the halo.
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent::REPLACE,
+                    }),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),

@@ -1,10 +1,11 @@
 const PLANET_RADIUS_METERS: f32 = 4000000.0;
 const TILE_LOGICAL_QUADS: f32 = 32.0;
 const TILE_GUTTER: f32 = 1.0;
-const ATMOSPHERE_HEIGHT_METERS: f32 = 80000.0;
+const ATMOSPHERE_HEIGHT_METERS: f32 = 360000.0;
+const ATMOSPHERE_EDGE_FADE_METERS: f32 = 240000.0;
 const ATMOSPHERE_RADIUS_METERS: f32 = PLANET_RADIUS_METERS + ATMOSPHERE_HEIGHT_METERS;
-const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 8000.0;
-const MIE_SCALE_HEIGHT_METERS: f32 = 1200.0;
+const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 36000.0;
+const MIE_SCALE_HEIGHT_METERS: f32 = 4800.0;
 const RAYLEIGH_COEFFICIENT: vec3<f32> = vec3<f32>(5.8e-6, 13.5e-6, 33.1e-6);
 const MIE_COEFFICIENT: vec3<f32> = vec3<f32>(21.0e-6);
 const MIE_G: f32 = 0.76;
@@ -104,7 +105,13 @@ fn terrain_height(outmap: bool, source_uv: vec2<f32>, direction: vec3<f32>) -> f
 }
 
 fn density(altitude_meters: f32, scale_height_meters: f32) -> f32 {
-    return exp(-max(altitude_meters, 0.0) / scale_height_meters);
+    let clamped_altitude_meters = max(altitude_meters, 0.0);
+    let edge_fade = 1.0 - smoothstep(
+        ATMOSPHERE_HEIGHT_METERS - ATMOSPHERE_EDGE_FADE_METERS,
+        ATMOSPHERE_HEIGHT_METERS,
+        clamped_altitude_meters,
+    );
+    return exp(-clamped_altitude_meters / scale_height_meters) * edge_fade;
 }
 
 fn phase_rayleigh(cos_theta: f32) -> f32 {

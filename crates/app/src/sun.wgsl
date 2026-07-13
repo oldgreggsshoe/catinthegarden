@@ -1,5 +1,9 @@
-const SUN_ANGULAR_RADIUS_RADIANS: f32 = 0.004625;
-const SUN_RADIANCE: vec3<f32> = vec3<f32>(48.0, 43.0, 35.0);
+const PHYSICAL_SUN_ANGULAR_RADIUS_RADIANS: f32 = 0.004625;
+const VISUAL_SUN_SIZE_SCALE: f32 = 3.0;
+const SUN_ANGULAR_RADIUS_RADIANS: f32 = PHYSICAL_SUN_ANGULAR_RADIUS_RADIANS * VISUAL_SUN_SIZE_SCALE;
+const SUN_HALO_RADIUS_SCALE: f32 = 2.0;
+const SUN_CORE_RADIANCE: vec3<f32> = vec3<f32>(72.0, 65.0, 52.0);
+const SUN_HALO_RADIANCE: vec3<f32> = vec3<f32>(0.8, 0.7, 0.55);
 
 struct Camera {
     view_projection: mat4x4<f32>,
@@ -40,11 +44,14 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let alignment = dot(view_direction(input.ndc), normalize(camera.sun_direction.xyz));
-    let edge = cos(SUN_ANGULAR_RADIUS_RADIANS);
-    if alignment < edge {
+    let angular_distance = acos(clamp(alignment, -1.0, 1.0));
+    let normalized_distance = angular_distance / SUN_ANGULAR_RADIUS_RADIANS;
+    if normalized_distance > SUN_HALO_RADIUS_SCALE {
         discard;
     }
-    let normalized_disc_radius = clamp((1.0 - alignment) / (1.0 - edge), 0.0, 1.0);
-    let limb_darkening = 1.0 - 0.25 * normalized_disc_radius;
-    return vec4<f32>(SUN_RADIANCE * limb_darkening, 1.0);
+    let disc_coverage = 1.0 - smoothstep(0.92, 1.0, normalized_distance);
+    let limb_darkening = 1.0 - 0.25 * min(normalized_distance, 1.0);
+    let halo = pow(1.0 - normalized_distance / SUN_HALO_RADIUS_SCALE, 2.0);
+    let radiance = SUN_CORE_RADIANCE * disc_coverage * limb_darkening + SUN_HALO_RADIANCE * halo;
+    return vec4<f32>(radiance, 1.0);
 }
