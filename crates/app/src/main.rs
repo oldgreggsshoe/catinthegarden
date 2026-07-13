@@ -988,6 +988,19 @@ fn main() {
                     window.request_redraw();
                 }
 
+                // The 3D camera owns the wheel. Egui can otherwise retain a
+                // stale pointer over the HUD and consume every wheel event
+                // before zoom sees it.
+                if let WindowEvent::MouseWheel { delta, .. } = &event {
+                    let wheel_delta = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
+                        MouseScrollDelta::PixelDelta(position) => position.y / 80.0,
+                    };
+                    state.zoom_camera(wheel_delta);
+                    window.request_redraw();
+                    return;
+                }
+
                 if !egui_response.consumed {
                     match event {
                         WindowEvent::CloseRequested => event_loop.exit(),
@@ -1033,14 +1046,6 @@ fn main() {
                                 && event.physical_key == PhysicalKey::Code(KeyCode::ArrowDown) =>
                         {
                             state.rotate_camera(0.0, -0.05);
-                            window.request_redraw();
-                        }
-                        WindowEvent::MouseWheel { delta, .. } => {
-                            let wheel_delta = match delta {
-                                MouseScrollDelta::LineDelta(_, y) => f64::from(y),
-                                MouseScrollDelta::PixelDelta(position) => position.y / 80.0,
-                            };
-                            state.zoom_camera(wheel_delta);
                             window.request_redraw();
                         }
                         WindowEvent::RedrawRequested => {
