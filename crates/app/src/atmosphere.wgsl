@@ -8,7 +8,7 @@ const RAYLEIGH_COEFFICIENT: vec3<f32> = vec3<f32>(5.8e-6, 13.5e-6, 33.1e-6);
 const MIE_COEFFICIENT: vec3<f32> = vec3<f32>(21.0e-6);
 const MIE_G: f32 = 0.76;
 const SOLAR_RADIANCE: f32 = 2.0;
-const SKY_SAMPLE_COUNT: u32 = 8u;
+const SKY_SAMPLE_COUNT: u32 = 16u;
 
 struct Camera {
     view_projection: mat4x4<f32>,
@@ -138,9 +138,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let rayleigh_phase = phase_rayleigh(cos_theta);
     let mie_phase = phase_mie(cos_theta);
     // A binary shadow test per raymarch point produces visible concentric
-    // terminator bands. Blend over roughly one march interval instead, so the
-    // individual sample shadows reconstruct a continuous atmosphere limb.
-    let sun_shadow_transition_meters = max(20000.0, sample_length * 0.45);
+    // terminator bands. Sixteen samples let this tighter spacing-aware blend
+    // retain a naturally tapered directional limb without discrete contours.
+    let sun_shadow_transition_meters = max(12000.0, sample_length * 0.30);
     var radiance = vec3<f32>(0.0);
     for (var index = 0u; index < SKY_SAMPLE_COUNT; index += 1u) {
         let distance_meters = start_distance + (f32(index) + 0.5) * sample_length;
