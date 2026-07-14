@@ -211,7 +211,9 @@ Rgba16Float HDR scene + reversed-Z Depth32Float
   magnifications;
 - the mouse wheel changes FOV only and never moves the camera;
 - interactive mode auto-orbits while retaining the mouse look offset;
-- planet rotation period is 600 simulation seconds.
+- planet rotation period is 600 simulation seconds; interactive mode advances
+  it at 0.3×, so its apparent day is 2,000 wall-clock seconds and the
+  planet-relative flight camera sees the world-space sun move 2.7° per 15 s.
 
 Camera yaw/pitch, the planet-local forward vector, and its orthonormal
 forward/right/up basis remain f64 on the CPU. Terrain chunk anchors are
@@ -824,6 +826,26 @@ forbid deleting files without an explicit request.
 
 ## Next action
 
+An accidental 60,000-second axial period made the world-space sun appear
+stationary from the planet-relative flight camera: the newest manual log showed
+only 0.027° of rotation in about 15 seconds. The documented/original
+600-second base period is restored. Interactive mode retains its explicit 0.3×
+time scale, yielding 2.7° of relative sun motion per 15 seconds; deterministic
+scenarios retain their authored time scales. A focused regression pins this
+interactive rate so it cannot silently become imperceptible again. F10 still
+intentionally freezes all scene time.
+
+Verified on 2026-07-14 with
+`test-runs/manual/1784067862-68133/log.jsonl`: the normal interactive render
+path advanced the planet-relative sun angle by 3.049° over 16.939 seconds.
+`cargo check --workspace` and the focused sun-motion regression pass. The full
+workspace suite runs 66 app tests: 61 pass and the same five unrelated
+LOD-policy expectations fail (`orbit_selection_stays_coarse_and_bounded`,
+`quadtree_children_tile_the_parent_node`,
+`two_kilometer_selection_stays_below_finest_lod_and_budget`,
+`maximum_zoom_reaches_every_lod_at_any_viewport_height`, and
+`orbital_zoom_scenario_keeps_the_full_ladder_in_a_short_viewport`).
+
 The flight camera no longer advances automatically around a latitude parallel.
 Its planet-local position remains unchanged when no WASD key is held. W/S move
 exactly along/opposite the mouse-controlled view vector at 10,209m/s (Mach 30),
@@ -900,7 +922,7 @@ The bounded polar slice is implemented in `polar_ice_cap`: baked Ice overrides
 ocean at the poles, receives a cool diffuse floor, and a center-pixel assertion
 checks that the visible cap is bright and sufficiently neutral. The focused
 scenario passes. A full regression attempt was started, but the existing unit
-suite currently fails six LOD/rotation expectations unrelated to post effects;
+suite currently fails five LOD-policy expectations unrelated to post effects;
 do not describe Phase 7 as fully regressed until those policy/test mismatches
 are resolved and every named scenario completes from one clean HEAD.
 

@@ -38,6 +38,7 @@ const GPU_TIMESTAMP_COUNT: u32 = 12;
 const DEFAULT_OUTMAP_PATH: &str = "assets/outmaps/test-planet";
 const DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND: f64 = 0.4;
 const DEFAULT_CAMERA_ORBIT_INCLINATION_RADIANS: f64 = 28.5_f64.to_radians();
+const INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 = 0.3;
 const MOUSE_LOOK_RADIANS_PER_PIXEL: f64 = 0.0006;
 const LOW_FLIGHT_ALTITUDE_METERS: f64 = 5_000.0 * 0.3048;
 const LOW_FLIGHT_SPEED_METERS_PER_SECOND: f64 = 10_209.0;
@@ -667,7 +668,9 @@ impl State {
         let sim_time = self.interactive_sim_time();
         match self.camera_mode {
             CameraMode::Orbit => {
-                let planet_rotation_radians = planet::planet_rotation_radians(sim_time * 0.3);
+                let planet_rotation_radians = planet::planet_rotation_radians(
+                    sim_time * INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
+                );
                 let local_position = planet::planet_local_vector(
                     self.camera.world_position(),
                     planet_rotation_radians,
@@ -811,7 +814,17 @@ impl State {
                 self.next_log_time = sim_time + 0.5;
             }
             (
-                sim_time, write_log, false, false, false, false, false, None, None, None, 0.3,
+                sim_time,
+                write_log,
+                false,
+                false,
+                false,
+                false,
+                false,
+                None,
+                None,
+                None,
+                INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
             )
         };
         if let Some((position, look_at)) = scenario_pose {
@@ -1661,7 +1674,8 @@ mod tests {
     use glam::DVec3;
 
     use super::{
-        FlightMovementInput, LOW_FLIGHT_SPEED_METERS_PER_SECOND, flight_movement_direction,
+        FlightMovementInput, INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
+        LOW_FLIGHT_SPEED_METERS_PER_SECOND, flight_movement_direction,
     };
 
     #[test]
@@ -1715,5 +1729,16 @@ mod tests {
         assert!((direction.length() - 1.0).abs() < 1.0e-12);
         assert!(direction.dot(DVec3::Z) > 0.0);
         assert!(direction.dot(DVec3::X) > 0.0);
+    }
+
+    #[test]
+    fn interactive_world_space_sun_moves_relative_to_planet() {
+        let rotation =
+            crate::planet::planet_rotation_radians(15.0 * INTERACTIVE_PLANET_ROTATION_TIME_SCALE);
+        let initial_sun = crate::planet::planet_local_vector(DVec3::X, 0.0);
+        let later_sun = crate::planet::planet_local_vector(DVec3::X, rotation);
+        let relative_motion_degrees = initial_sun.angle_between(later_sun).to_degrees();
+
+        assert!((relative_motion_degrees - 2.7).abs() < 1.0e-12);
     }
 }

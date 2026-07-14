@@ -18,7 +18,7 @@ pub const MAX_LOD_LEVEL: u8 = 18;
 /// finer levels only when their geometric error can affect visible pixels.
 pub const MINIMUM_LOD_LEVEL: u8 = 1;
 /// Deliberately game-time-scaled so axial rotation is visible during normal play.
-pub const PLANET_ROTATION_PERIOD_SECONDS: f64 = 60_000.0;
+pub const PLANET_ROTATION_PERIOD_SECONDS: f64 = 600.0;
 pub const DEFAULT_MAX_ACTIVE_CHUNKS: usize = 2_048;
 pub const SKIRT_DEPTH_RATIO: f64 = 0.075;
 pub const PLACEHOLDER_HEIGHT_OCTAVES: [(f64, f64); 4] = [
