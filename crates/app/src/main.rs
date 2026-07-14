@@ -40,8 +40,27 @@ const DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND: f64 = 0.4;
 const DEFAULT_CAMERA_ORBIT_INCLINATION_RADIANS: f64 = 28.5_f64.to_radians();
 const MOUSE_LOOK_RADIANS_PER_PIXEL: f64 = 0.0006;
 const LOW_FLIGHT_ALTITUDE_METERS: f64 = 5_000.0 * 0.3048;
-const LOW_FLIGHT_SPEED_METERS_PER_SECOND: f64 = 3_403.0;
+const LOW_FLIGHT_SPEED_METERS_PER_SECOND: f64 = 10_209.0;
 const LOW_FLIGHT_VERTICAL_FOV_DEGREES: f64 = 60.0;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct FlightMovementInput {
+    forward: bool,
+    backward: bool,
+    left: bool,
+    right: bool,
+}
+
+fn flight_movement_direction(
+    input: FlightMovementInput,
+    camera_forward: glam::DVec3,
+    camera_right: glam::DVec3,
+) -> Option<glam::DVec3> {
+    let forward_amount = f64::from(i8::from(input.forward) - i8::from(input.backward));
+    let right_amount = f64::from(i8::from(input.right) - i8::from(input.left));
+    let movement = camera_forward * forward_amount + camera_right * right_amount;
+    (movement.length_squared() > 0.0).then(|| movement.normalize())
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CameraMode {
@@ -53,7 +72,7 @@ impl CameraMode {
     fn label(self) -> &'static str {
         match self {
             Self::Orbit => "orbit",
-            Self::LowFlight => "Mach 10 5,000 ft flight",
+            Self::LowFlight => "Mach 30 WASD flight",
         }
     }
 }
@@ -218,11 +237,11 @@ struct State {
     previous_sim_time: f64,
     last_auto_orbit_sim_time: f64,
     camera_mode: CameraMode,
-    flight_surface_azimuth_radians: f64,
-    flight_latitude_radians: f64,
+    flight_local_position: glam::DVec3,
     flight_surface_height_meters: f64,
     flight_look_yaw_radians: f64,
     flight_look_pitch_radians: f64,
+    flight_movement: FlightMovementInput,
     saved_orbit_camera_pose: Option<(glam::DVec3, glam::DVec3, f64)>,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
@@ -426,11 +445,12 @@ impl State {
             previous_sim_time: 0.0,
             last_auto_orbit_sim_time: 0.0,
             camera_mode: CameraMode::Orbit,
-            flight_surface_azimuth_radians: 0.0,
-            flight_latitude_radians: 0.0,
+            flight_local_position: glam::DVec3::X
+                * (planet::PLANET_RADIUS_METERS + LOW_FLIGHT_ALTITUDE_METERS),
             flight_surface_height_meters: 0.0,
             flight_look_yaw_radians: 0.0,
             flight_look_pitch_radians: 0.0,
+            flight_movement: FlightMovementInput::default(),
             saved_orbit_camera_pose: None,
             camera_buffer,
             camera_bind_group,
@@ -509,6 +529,7 @@ impl State {
                 tracing::warn!(%error, "cursor capture is unavailable");
             }
         } else {
+            self.flight_movement = FlightMovementInput::default();
             let _ = window.set_cursor_grab(CursorGrabMode::None);
             window.set_cursor_visible(true);
             self.mouse_captured = false;
@@ -570,38 +591,66 @@ impl State {
         }
     }
 
-    fn update_low_flight_camera(&mut self, planet_rotation_radians: f64) {
-        let latitude_cosine = self.flight_latitude_radians.cos().max(0.01);
-        let local_radial = glam::DVec3::new(
-            latitude_cosine * self.flight_surface_azimuth_radians.cos(),
-            self.flight_latitude_radians.sin(),
-            latitude_cosine * self.flight_surface_azimuth_radians.sin(),
+    fn low_flight_view_direction(&self, local_radial: glam::DVec3) -> glam::DVec3 {
+        let surface_azimuth_radians = local_radial.z.atan2(local_radial.x);
+        let local_tangent = glam::DVec3::new(
+            -surface_azimuth_radians.sin(),
+            0.0,
+            surface_azimuth_radians.cos(),
         );
+        let local_right = local_tangent.cross(local_radial).normalize();
+        let horizontal = self.flight_look_pitch_radians.cos();
+        (local_tangent * (self.flight_look_yaw_radians.cos() * horizontal)
+            + local_right * (self.flight_look_yaw_radians.sin() * horizontal)
+            + local_radial * self.flight_look_pitch_radians.sin())
+        .normalize()
+    }
+
+    fn set_flight_movement_key(&mut self, key_code: KeyCode, pressed: bool) -> bool {
+        let movement_key = match key_code {
+            KeyCode::KeyW => &mut self.flight_movement.forward,
+            KeyCode::KeyS => &mut self.flight_movement.backward,
+            KeyCode::KeyA => &mut self.flight_movement.left,
+            KeyCode::KeyD => &mut self.flight_movement.right,
+            _ => return false,
+        };
+        *movement_key = pressed;
+        true
+    }
+
+    fn advance_low_flight_camera(&mut self, delta_seconds: f64, planet_rotation_radians: f64) {
+        let local_radial = self.flight_local_position.normalize();
+        let local_forward = self.low_flight_view_direction(local_radial);
+        let local_right = local_forward.cross(local_radial).normalize();
+        if let Some(movement_direction) =
+            flight_movement_direction(self.flight_movement, local_forward, local_right)
+        {
+            self.flight_local_position +=
+                movement_direction * LOW_FLIGHT_SPEED_METERS_PER_SECOND * delta_seconds;
+            let moved_radial = self.flight_local_position.normalize();
+            if let Some(surface_height_meters) = self.terrain.surface_height_meters_at(moved_radial)
+            {
+                self.flight_surface_height_meters = surface_height_meters;
+            }
+            let minimum_radius = planet::PLANET_RADIUS_METERS
+                + self.flight_surface_height_meters
+                + LOW_FLIGHT_ALTITUDE_METERS;
+            if self.flight_local_position.length() < minimum_radius {
+                self.flight_local_position = moved_radial * minimum_radius;
+            }
+        }
+        self.update_low_flight_camera(planet_rotation_radians);
+    }
+
+    fn update_low_flight_camera(&mut self, planet_rotation_radians: f64) {
+        let local_radial = self.flight_local_position.normalize();
         if let Some(surface_height_meters) = self.terrain.surface_height_meters_at(local_radial) {
             self.flight_surface_height_meters = surface_height_meters;
         }
-        let flight_radius = planet::PLANET_RADIUS_METERS
-            + self.flight_surface_height_meters
-            + LOW_FLIGHT_ALTITUDE_METERS;
-        let local_position = local_radial * flight_radius;
-        let local_tangent = glam::DVec3::new(
-            -self.flight_surface_azimuth_radians.sin(),
-            0.0,
-            self.flight_surface_azimuth_radians.cos(),
-        );
-        // Level flight looks along the surface tangent. The true horizon sits
-        // naturally just below eye level; mouse yaw/pitch remains independent
-        // of the surface-locked flight path.
-        let local_right = local_tangent.cross(local_radial).normalize();
-        let horizontal = self.flight_look_pitch_radians.cos();
-        let local_horizon_direction = (local_tangent
-            * (self.flight_look_yaw_radians.cos() * horizontal)
-            + local_right * (self.flight_look_yaw_radians.sin() * horizontal)
-            + local_radial * self.flight_look_pitch_radians.sin())
-        .normalize();
+        let local_view_direction = self.low_flight_view_direction(local_radial);
         let planet_to_world = glam::DQuat::from_rotation_y(planet_rotation_radians);
-        let world_position = planet_to_world.mul_vec3(local_position);
-        let world_direction = planet_to_world.mul_vec3(local_horizon_direction);
+        let world_position = planet_to_world.mul_vec3(self.flight_local_position);
+        let world_direction = planet_to_world.mul_vec3(local_view_direction);
         let world_up = planet_to_world.mul_vec3(local_radial);
         self.camera.set_world_pose_with_up(
             world_position,
@@ -628,13 +677,18 @@ impl State {
                     self.camera.direction_dvec3(),
                     self.camera.vertical_fov_radians().to_degrees(),
                 ));
-                self.flight_surface_azimuth_radians = local_position.z.atan2(local_position.x);
-                self.flight_latitude_radians = (local_position.y / local_position.length())
-                    .clamp(-1.0, 1.0)
-                    .asin();
-                self.flight_surface_height_meters = 0.0;
+                let local_radial = local_position.normalize();
+                self.flight_surface_height_meters = self
+                    .terrain
+                    .surface_height_meters_at(local_radial)
+                    .unwrap_or(0.0);
+                self.flight_local_position = local_radial
+                    * (planet::PLANET_RADIUS_METERS
+                        + self.flight_surface_height_meters
+                        + LOW_FLIGHT_ALTITUDE_METERS);
                 self.flight_look_yaw_radians = 0.0;
                 self.flight_look_pitch_radians = 0.0;
+                self.flight_movement = FlightMovementInput::default();
                 self.camera_mode = CameraMode::LowFlight;
                 self.camera.set_vertical_fov_degrees_for_viewport(
                     LOW_FLIGHT_VERTICAL_FOV_DEGREES,
@@ -652,6 +706,7 @@ impl State {
                         self.size.height,
                     );
                 }
+                self.flight_movement = FlightMovementInput::default();
                 self.camera_mode = CameraMode::Orbit;
             }
         }
@@ -781,13 +836,7 @@ impl State {
                     DEFAULT_CAMERA_ORBIT_INCLINATION_RADIANS,
                 ),
                 CameraMode::LowFlight => {
-                    let flight_radius = planet::PLANET_RADIUS_METERS
-                        + self.flight_surface_height_meters
-                        + LOW_FLIGHT_ALTITUDE_METERS;
-                    self.flight_surface_azimuth_radians += LOW_FLIGHT_SPEED_METERS_PER_SECOND
-                        * orbit_delta_seconds
-                        / (flight_radius * self.flight_latitude_radians.cos().max(0.01));
-                    self.update_low_flight_camera(planet_rotation_radians);
+                    self.advance_low_flight_camera(orbit_delta_seconds, planet_rotation_radians)
                 }
             }
         }
@@ -977,7 +1026,7 @@ impl State {
                             ));
                             ui.label(format!("Ocean Gerstner range: {ocean_wave_range:.2} m"));
                             ui.label(
-                                "F3: overlay  |  F4: camera mode  |  F6: blur  |  F7: bloom  |  F8: HDR  |  F9: composition  |  F10: freeze  |  F12: capture PNG",
+                                "F3: overlay  |  F4: camera mode  |  WASD: fly  |  F6: blur  |  F7: bloom  |  F8: HDR  |  F9: composition  |  F10: freeze  |  F12: capture PNG",
                             );
                             ui.label("Default: auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc/Q: quit");
                         });
@@ -1368,6 +1417,12 @@ impl ApplicationHandler for App {
             event_loop.exit();
             return;
         }
+        if let WindowEvent::KeyboardInput { event, .. } = &event
+            && let PhysicalKey::Code(key_code) = event.physical_key
+            && state.set_flight_movement_key(key_code, event.state.is_pressed())
+        {
+            window.request_redraw();
+        }
         let egui_response = state.egui_state.on_window_event(window, &event);
         if egui_response.repaint && !matches!(&event, WindowEvent::RedrawRequested) {
             window.request_redraw();
@@ -1599,4 +1654,66 @@ fn create_depth_view(
             view_formats: &[],
         })
         .create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+#[cfg(test)]
+mod tests {
+    use glam::DVec3;
+
+    use super::{
+        FlightMovementInput, LOW_FLIGHT_SPEED_METERS_PER_SECOND, flight_movement_direction,
+    };
+
+    #[test]
+    fn idle_flight_has_no_movement_direction() {
+        assert_eq!(
+            flight_movement_direction(FlightMovementInput::default(), DVec3::Z, DVec3::X),
+            None
+        );
+    }
+
+    #[test]
+    fn flight_forward_and_backward_follow_the_camera_vector() {
+        let camera_forward = DVec3::new(0.2, 0.7, -0.4).normalize();
+        let forward = flight_movement_direction(
+            FlightMovementInput {
+                forward: true,
+                ..FlightMovementInput::default()
+            },
+            camera_forward,
+            DVec3::X,
+        )
+        .unwrap();
+        let backward = flight_movement_direction(
+            FlightMovementInput {
+                backward: true,
+                ..FlightMovementInput::default()
+            },
+            camera_forward,
+            DVec3::X,
+        )
+        .unwrap();
+
+        assert!(forward.distance(camera_forward) < 1.0e-12);
+        assert!(backward.distance(-camera_forward) < 1.0e-12);
+        assert_eq!(LOW_FLIGHT_SPEED_METERS_PER_SECOND, 3.0 * 3_403.0);
+    }
+
+    #[test]
+    fn diagonal_flight_is_normalized_and_strafes_camera_right() {
+        let direction = flight_movement_direction(
+            FlightMovementInput {
+                forward: true,
+                right: true,
+                ..FlightMovementInput::default()
+            },
+            DVec3::Z,
+            DVec3::X,
+        )
+        .unwrap();
+
+        assert!((direction.length() - 1.0).abs() < 1.0e-12);
+        assert!(direction.dot(DVec3::Z) > 0.0);
+        assert!(direction.dot(DVec3::X) > 0.0);
+    }
 }

@@ -233,7 +233,9 @@ Controls:
 | Left/Right arrows | Orbit azimuth by 0.08 radians |
 | Up/Down arrows | Orbit elevation by 0.05 radians |
 | F3 | Toggle debug HUD |
-| F4 | Toggle orbit / Mach 10 level-flight camera, held 5,000 ft above the streamed terrain plus mirrored global microrelief (or sea level over ocean); it starts level with a horizontal horizon, and mouse yaw/pitch maps to local left/right and sky/ground without changing the flight path |
+| F4 | Toggle orbit / Mach 30 free-flight camera; it starts level 5,000 ft above resident terrain, retains a terrain-aware minimum clearance, and restores the orbital pose when toggled back |
+| W / S | While in flight mode, move at Mach 30 exactly along / opposite the current camera-facing vector; releasing both stops forward/backward translation |
+| A / D | While in flight mode, strafe camera-left / camera-right at Mach 30; diagonal input is normalized |
 | F6/F7/F8 | Toggle blur/bloom/HDR filmic effect |
 | F9 | Cycle composition debug: raw albedo, surface lighting, aerial contribution, sky-only, final HDR |
 | F10 | Freeze/resume interactive scene time (orbit, rotation, ocean, exposure adaptation) for matched diagnostics |
@@ -821,6 +823,15 @@ forbid deleting files without an explicit request.
     above remains in the working tree pending explicit permission to remove it.
 
 ## Next action
+
+The flight camera no longer advances automatically around a latitude parallel.
+Its planet-local position remains unchanged when no WASD key is held. W/S move
+exactly along/opposite the mouse-controlled view vector at 10,209m/s (Mach 30),
+A/D strafe along camera-right/left, and diagonal input is normalized. Movement
+may climb or descend because pitch is part of the view vector, but an endpoint
+clamp retains at least 5,000ft clearance above the highest resident CPU-sampled
+terrain surface. Key releases are processed even when egui consumes keyboard
+input, and focus loss clears held movement state to avoid a stuck camera.
 
 Manual run `1784065154-40230` exposed large quadtree-shaped holes near the
 Mach-10 camera over roughly 3,012m baked terrain. The captured camera regression
