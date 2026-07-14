@@ -800,11 +800,12 @@ forbid deleting files without an explicit request.
    rich demonstration of metre-scale land detail; the maximum-zoom scenario
    capture is a uniform ocean-color image and must not be cited as pixel-level
    proof of added surface detail.
-4. SSE and approximate bounds still use placeholder estimates instead of
-   measured per-tile baked error/min/max height. The failed blanket 12.5km
-   bounds expansion was removed because it exhausted the low-flight leaf
-   budget; the current bounds include only the known 111.5m global detail
-   amplitude, so data-aware streamed bounds remain the correct future fix.
+4. SSE still uses placeholder geometric-error and distance estimates rather
+   than measured per-tile baked error. Horizon/frustum culling no longer uses
+   placeholder-only world-space spheres: it conservatively tests each node's
+   angular cone across the manifest's complete radial height range plus the
+   111.5m procedural amplitude. This fixes elevated near-field holes without
+   the leaf-budget explosion caused by the failed blanket 12.5km sphere margin.
 5. Runtime tile disk reads and GPU uploads are synchronous.
 6. Terrain currently performs one draw per active/fading render node.
 7. `limb_atmosphere` has no tier-2 pixel assertion and still relies on visual
@@ -820,6 +821,18 @@ forbid deleting files without an explicit request.
     above remains in the working tree pending explicit permission to remove it.
 
 ## Next action
+
+Manual run `1784065154-40230` exposed large quadtree-shaped holes near the
+Mach-10 camera over roughly 3,012m baked terrain. The captured camera regression
+proved that a +Z root could be culled while its descendant intersected the
+visible elevated shell: placeholder-only world-space bounds did not contain
+the baked surface. `TerrainHeightRange` now comes from the active outmap
+manifest (expanded by global microrelief), and horizon/frustum tests maximise
+each plane over the node's angular cone and radial range rather than inflating
+every fine node tangentially. The exact captured view and the general low-flight
+ray-coverage test both pass without leaf-budget pressure; `polar_ice_cap` also
+passes as a rendered wgpu smoke regression. Human replay of the same free-flight
+route remains the final visual sign-off.
 
 The low-flight detail experiment now covers the whole planet rather than a
 pre-baked corridor. `planet.wgsl` layers four bounded, direction-based relief

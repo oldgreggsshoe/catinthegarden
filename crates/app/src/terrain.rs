@@ -14,8 +14,9 @@ use wgpu::util::DeviceExt;
 use crate::{
     outmap::{Outmap, OutmapError, TileData},
     planet::{
-        CHUNK_GRID_QUADS, CameraViewBasis, ChunkVertex, DEFAULT_MAX_ACTIVE_CHUNKS, MAX_LOD_LEVEL,
-        PlanetLod, QuadtreeNode, build_chunk_mesh, cube_face_basis, cube_face_direction,
+        CHUNK_GRID_QUADS, CameraViewBasis, ChunkVertex, DEFAULT_MAX_ACTIVE_CHUNKS,
+        GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, MAX_LOD_LEVEL, PlanetLod, QuadtreeNode,
+        TerrainHeightRange, build_chunk_mesh, cube_face_basis, cube_face_direction,
         outmap_surface_height_meters, placeholder_height_meters,
     },
 };
@@ -157,6 +158,15 @@ impl TerrainRenderer {
             TerrainSource::Placeholder => TerrainDataSource::Placeholder,
             TerrainSource::Outmap(root) => TerrainDataSource::Outmap(Outmap::open(root)?),
         };
+        let terrain_height_range = match &source {
+            TerrainDataSource::Placeholder => TerrainHeightRange::default(),
+            TerrainDataSource::Outmap(outmap) => TerrainHeightRange::new(
+                f64::from(outmap.manifest().height_min_meters)
+                    - GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
+                f64::from(outmap.manifest().height_max_meters)
+                    + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
+            ),
+        };
         let terrain_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("terrain tile bind group layout"),
@@ -239,6 +249,8 @@ impl TerrainRenderer {
             &environment_sampler,
         );
 
+        let mut lod = PlanetLod::default();
+        lod.set_terrain_height_range(terrain_height_range);
         Ok(Self {
             device: device.clone(),
             queue: queue.clone(),
@@ -251,7 +263,7 @@ impl TerrainRenderer {
             index_count: topology.indices.len() as u32,
             instance_buffer,
             instance_capacity,
-            lod: PlanetLod::default(),
+            lod,
             source,
             placeholder_tile,
             tile_cache: HashMap::new(),

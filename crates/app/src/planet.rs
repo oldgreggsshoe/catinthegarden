@@ -331,6 +331,99 @@ pub struct NodeBounds {
     pub radius_meters: f64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TerrainHeightRange {
+    minimum_meters: f64,
+    maximum_meters: f64,
+}
+
+impl TerrainHeightRange {
+    pub fn new(minimum_meters: f64, maximum_meters: f64) -> Self {
+        assert!(minimum_meters.is_finite());
+        assert!(maximum_meters.is_finite());
+        assert!(minimum_meters <= maximum_meters);
+        Self {
+            minimum_meters,
+            maximum_meters,
+        }
+    }
+
+    fn minimum_radius(self) -> f64 {
+        PLANET_RADIUS_METERS + self.minimum_meters
+    }
+
+    fn maximum_radius(self) -> f64 {
+        PLANET_RADIUS_METERS + self.maximum_meters
+    }
+}
+
+impl Default for TerrainHeightRange {
+    fn default() -> Self {
+        Self::new(
+            -PLACEHOLDER_HEIGHT_AMPLITUDE_METERS,
+            PLACEHOLDER_HEIGHT_AMPLITUDE_METERS,
+        )
+    }
+}
+
+#[derive(Clone, Copy)]
+struct NodeDirectionalBounds {
+    center_direction: DVec3,
+    cosine_radius: f64,
+    sine_radius: f64,
+}
+
+fn node_directional_bounds(node: QuadtreeNode) -> NodeDirectionalBounds {
+    let [u_min, v_min, u_max, v_max] = node.uv_bounds();
+    let center_direction = node.center_direction();
+    let minimum_cosine = [
+        cube_face_direction(node.face, u_min, v_min),
+        cube_face_direction(node.face, u_max, v_min),
+        cube_face_direction(node.face, u_min, v_max),
+        cube_face_direction(node.face, u_max, v_max),
+    ]
+    .into_iter()
+    .map(|direction| center_direction.dot(direction))
+    .fold(1.0_f64, f64::min)
+    .clamp(-1.0, 1.0);
+    NodeDirectionalBounds {
+        center_direction,
+        cosine_radius: minimum_cosine,
+        sine_radius: (1.0 - minimum_cosine * minimum_cosine).max(0.0).sqrt(),
+    }
+}
+
+fn maximum_node_plane_value(
+    bounds: NodeDirectionalBounds,
+    camera_world: DVec3,
+    plane_normal: DVec3,
+    height_range: TerrainHeightRange,
+) -> f64 {
+    let plane_length = plane_normal.length();
+    let plane_direction = plane_normal / plane_length;
+    let center_dot = bounds
+        .center_direction
+        .dot(plane_direction)
+        .clamp(-1.0, 1.0);
+    // Maximise over the node's angular cone. This expands only angularly;
+    // unlike a height-inflated world-space sphere, a 14km radial range cannot
+    // make neighbouring fine nodes overlap the whole low-flight viewport.
+    let maximum_direction_dot = if center_dot >= bounds.cosine_radius {
+        // The plane direction lies inside the node's angular cone.
+        1.0
+    } else {
+        (center_dot * bounds.cosine_radius
+            + (1.0 - center_dot * center_dot).max(0.0).sqrt() * bounds.sine_radius)
+            .min(1.0)
+    };
+    let radius = if maximum_direction_dot >= 0.0 {
+        height_range.maximum_radius()
+    } else {
+        height_range.minimum_radius()
+    };
+    plane_length * (radius * maximum_direction_dot - camera_world.dot(plane_direction))
+}
+
 pub fn node_bounds(node: QuadtreeNode) -> NodeBounds {
     let [u_min, v_min, u_max, v_max] = node.uv_bounds();
     let center_direction = node.center_direction();
@@ -359,10 +452,17 @@ pub fn node_bounds(node: QuadtreeNode) -> NodeBounds {
     }
 }
 
-pub fn node_is_above_horizon(node: QuadtreeNode, camera_world: DVec3) -> bool {
-    let bounds = node_bounds(node);
-    camera_world.dot(bounds.center_world) + camera_world.length() * bounds.radius_meters
-        >= PLANET_RADIUS_METERS * PLANET_RADIUS_METERS
+fn node_is_above_horizon_with_height_range(
+    node: QuadtreeNode,
+    camera_world: DVec3,
+    height_range: TerrainHeightRange,
+) -> bool {
+    maximum_node_plane_value(
+        node_directional_bounds(node),
+        DVec3::ZERO,
+        camera_world,
+        height_range,
+    ) >= PLANET_RADIUS_METERS * PLANET_RADIUS_METERS
 }
 
 fn node_is_in_view_frustum(
@@ -371,30 +471,30 @@ fn node_is_in_view_frustum(
     camera_basis: CameraViewBasis,
     aspect_ratio: f64,
     vertical_fov_radians: f64,
+    height_range: TerrainHeightRange,
 ) -> bool {
-    let bounds = node_bounds(node);
-    let camera_to_center = bounds.center_world - camera_world;
+    let bounds = node_directional_bounds(node);
     let forward = camera_basis.forward;
-    let forward_distance = camera_to_center.dot(forward);
-    if forward_distance < -bounds.radius_meters {
+    if maximum_node_plane_value(bounds, camera_world, forward, height_range) < 0.0 {
         return false;
     }
 
     let vertical_tangent = (vertical_fov_radians * 0.5).tan();
     let horizontal_tangent = vertical_tangent * aspect_ratio;
 
-    // Test the node's conservative bounding sphere against all four side
-    // planes. This intentionally retains boundary chunks so a narrow optical
-    // zoom cannot create a visible hole at the viewport edge.
+    // Test the node's angular/radial volume against all four side planes.
     for (axis, tangent) in [
         (camera_basis.right, horizontal_tangent),
         (camera_basis.up, vertical_tangent),
     ] {
-        let normal_length = (1.0 + tangent * tangent).sqrt();
-        let plane_distance = forward_distance * tangent;
-        let side_distance = camera_to_center.dot(axis);
-        if plane_distance + side_distance < -bounds.radius_meters * normal_length
-            || plane_distance - side_distance < -bounds.radius_meters * normal_length
+        if maximum_node_plane_value(bounds, camera_world, forward * tangent + axis, height_range)
+            < 0.0
+            || maximum_node_plane_value(
+                bounds,
+                camera_world,
+                forward * tangent - axis,
+                height_range,
+            ) < 0.0
         {
             return false;
         }
@@ -531,6 +631,7 @@ pub struct PlanetLod {
     last_metrics: LodMetrics,
     update_index: u64,
     recent_lod_transitions: HashMap<QuadtreeNode, RecentLodTransition>,
+    terrain_height_range: TerrainHeightRange,
 }
 
 impl Default for PlanetLod {
@@ -556,6 +657,14 @@ impl PlanetLod {
             last_metrics: LodMetrics::default(),
             update_index: 0,
             recent_lod_transitions: HashMap::new(),
+            terrain_height_range: TerrainHeightRange::default(),
+        }
+    }
+
+    pub fn set_terrain_height_range(&mut self, terrain_height_range: TerrainHeightRange) {
+        if self.terrain_height_range != terrain_height_range {
+            self.terrain_height_range = terrain_height_range;
+            self.last_selection_input = None;
         }
     }
 
@@ -667,6 +776,7 @@ impl PlanetLod {
 
         let previous_active: HashSet<_> = self.active_nodes.iter().copied().collect();
         let previous_split = self.split_nodes.clone();
+        let terrain_height_range = self.terrain_height_range;
         let mut evaluations = HashMap::new();
         let mut culled_nodes = 0_u32;
         let mut leaves = HashSet::with_capacity(self.max_active_chunks);
@@ -679,6 +789,7 @@ impl PlanetLod {
                 aspect_ratio,
                 viewport_height,
                 vertical_fov_radians,
+                terrain_height_range,
                 &mut evaluations,
                 &mut culled_nodes,
             )
@@ -701,6 +812,7 @@ impl PlanetLod {
                 aspect_ratio,
                 viewport_height,
                 vertical_fov_radians,
+                terrain_height_range,
                 &mut evaluations,
                 &mut culled_nodes,
             ) {
@@ -729,6 +841,7 @@ impl PlanetLod {
                     aspect_ratio,
                     viewport_height,
                     vertical_fov_radians,
+                    terrain_height_range,
                     &mut evaluations,
                     &mut culled_nodes,
                 ) {
@@ -753,6 +866,7 @@ impl PlanetLod {
                             aspect_ratio,
                             viewport_height,
                             vertical_fov_radians,
+                            terrain_height_range,
                             &mut evaluations,
                             &mut culled_nodes,
                         )
@@ -783,6 +897,7 @@ impl PlanetLod {
                     aspect_ratio,
                     viewport_height,
                     vertical_fov_radians,
+                    terrain_height_range,
                     &mut evaluations,
                     &mut culled_nodes,
                 );
@@ -834,6 +949,7 @@ impl PlanetLod {
         aspect_ratio: f64,
         viewport_height: u32,
         vertical_fov_radians: f64,
+        terrain_height_range: TerrainHeightRange,
         evaluations: &mut HashMap<QuadtreeNode, NodeEvaluation>,
         culled_nodes: &mut u32,
     ) -> Option<SplitCandidate> {
@@ -847,6 +963,7 @@ impl PlanetLod {
             aspect_ratio,
             viewport_height,
             vertical_fov_radians,
+            terrain_height_range,
             evaluations,
             culled_nodes,
         );
@@ -871,6 +988,7 @@ impl PlanetLod {
                     aspect_ratio,
                     viewport_height,
                     vertical_fov_radians,
+                    terrain_height_range,
                     evaluations,
                     culled_nodes,
                 )
@@ -899,22 +1017,25 @@ impl PlanetLod {
         aspect_ratio: f64,
         viewport_height: u32,
         vertical_fov_radians: f64,
+        terrain_height_range: TerrainHeightRange,
         evaluations: &mut HashMap<QuadtreeNode, NodeEvaluation>,
         culled_nodes: &mut u32,
     ) -> NodeEvaluation {
         if let Some(evaluation) = evaluations.get(&node) {
             return *evaluation;
         }
-        let visible = node_is_above_horizon(node, camera_world)
-            && camera_basis.map_or(true, |camera_basis| {
-                node_is_in_view_frustum(
-                    node,
-                    camera_world,
-                    camera_basis,
-                    aspect_ratio,
-                    vertical_fov_radians,
-                )
-            });
+        let visible =
+            node_is_above_horizon_with_height_range(node, camera_world, terrain_height_range)
+                && camera_basis.map_or(true, |camera_basis| {
+                    node_is_in_view_frustum(
+                        node,
+                        camera_world,
+                        camera_basis,
+                        aspect_ratio,
+                        vertical_fov_radians,
+                        terrain_height_range,
+                    )
+                });
         if !visible {
             *culled_nodes += 1;
         }
@@ -1641,8 +1762,8 @@ mod tests {
         DEFAULT_VERTICAL_FOV_RADIANS, GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, LodPolicy,
         MAX_LOD_LEVEL, MAX_VERTICAL_FOV_RADIANS, MIN_VERTICAL_FOV_RADIANS, MINIMUM_LOD_LEVEL,
         OrbitCamera, PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode, RenderDebugMode,
-        SKIRT_DEPTH_RATIO, build_chunk_mesh, cube_face_basis, cube_face_direction,
-        detailed_outmap_land_height_meters, global_terrain_detail_meters,
+        SKIRT_DEPTH_RATIO, TerrainHeightRange, build_chunk_mesh, cube_face_basis,
+        cube_face_direction, detailed_outmap_land_height_meters, global_terrain_detail_meters,
         minimum_vertical_fov_radians_for_viewport, outmap_surface_height_meters,
         placeholder_height_meters, planet_local_vector, planet_rotation_radians,
         projected_error_pixels,
@@ -2222,6 +2343,10 @@ mod tests {
         let up = DVec3::X;
         let basis = CameraViewBasis::from_forward_and_up(forward, up);
         let mut lod = PlanetLod::default();
+        lod.set_terrain_height_range(TerrainHeightRange::new(
+            -5_000.0 - GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
+            9_000.0 + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
+        ));
         let update = lod.update_for_view_with_up(
             camera_position,
             forward,
@@ -2263,6 +2388,70 @@ mod tests {
                         u >= u_min && u <= u_max && v >= v_min && v <= v_max
                     }),
                     "no active terrain node covers screen ray ({screen_x}, {screen_y})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn captured_low_flight_view_covers_the_elevated_terrain_shell() {
+        // capture-012 from manual run 1784065154-40230. The camera was 1,524m
+        // above roughly 3,012m baked terrain when a near-field patch vanished.
+        let world_position = DVec3::new(
+            2_244_963.692_843_628,
+            1_492_510.400_237_098_6,
+            2_961_226.599_834_886,
+        );
+        let camera_position = planet_local_vector(world_position, 0.000_984_730_693_783_779_2);
+        let up = camera_position.normalize();
+        let forward = DVec3::new(-up.z, 0.0, up.x).normalize();
+        let basis = CameraViewBasis::from_forward_and_up(forward, up);
+        let mut lod = PlanetLod::default();
+        lod.set_terrain_height_range(TerrainHeightRange::new(
+            -5_000.0 - GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
+            9_000.0 + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
+        ));
+        let update = lod.update_for_view_with_up(
+            camera_position,
+            forward,
+            up,
+            1.5,
+            960,
+            60.0_f64.to_radians(),
+        );
+        assert!(!update.metrics.budget_limited);
+
+        let surface_radius = camera_position.length() - 1_524.0;
+        for horizontal_step in -27..=27 {
+            let screen_x = f64::from(horizontal_step) / 30.0;
+            for vertical_step in -27..=0 {
+                let screen_y = f64::from(vertical_step) / 30.0;
+                let ray = (basis.forward
+                    + basis.right * screen_x * (60.0_f64.to_radians() * 0.5).tan() * 1.5
+                    + basis.up * screen_y * (60.0_f64.to_radians() * 0.5).tan())
+                .normalize();
+                let closest_distance = -camera_position.dot(ray);
+                let discriminant = closest_distance * closest_distance
+                    - (camera_position.length_squared() - surface_radius.powi(2));
+                if discriminant < 0.0 {
+                    continue;
+                }
+                let surface_direction =
+                    (camera_position + ray * (closest_distance - discriminant.sqrt())).normalize();
+                let covered = update.active_nodes.iter().any(|node| {
+                    let (normal, tangent_u, tangent_v) = cube_face_basis(node.face);
+                    let normal_dot = surface_direction.dot(normal);
+                    if normal_dot <= 0.0 {
+                        return false;
+                    }
+                    let u = surface_direction.dot(tangent_u) / normal_dot;
+                    let v = surface_direction.dot(tangent_v) / normal_dot;
+                    let [u_min, v_min, u_max, v_max] = node.uv_bounds();
+                    u >= u_min && u <= u_max && v >= v_min && v <= v_max
+                });
+                assert!(
+                    covered,
+                    "no active terrain node covers elevated-shell screen ray ({screen_x}, {screen_y})"
                 );
             }
         }
