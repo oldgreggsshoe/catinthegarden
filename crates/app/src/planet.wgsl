@@ -4,19 +4,29 @@ const PLANET_RADIUS_METERS: f32 = 4000000.0;
 const MATERIAL_TILE_LOGICAL_QUADS: f32 = 128.0;
 const TILE_GUTTER: f32 = 1.0;
 const MATERIAL_TILE_LAST_STORED_COORD: i32 = 130;
-const ATMOSPHERE_HEIGHT_METERS: f32 = 360000.0;
-const ATMOSPHERE_EDGE_FADE_METERS: f32 = 240000.0;
+const GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS: f32 = 111.5;
+const ATMOSPHERE_HEIGHT_METERS: f32 = 720000.0;
+const ATMOSPHERE_EDGE_FADE_METERS: f32 = 480000.0;
 const ATMOSPHERE_RADIUS_METERS: f32 = PLANET_RADIUS_METERS + ATMOSPHERE_HEIGHT_METERS;
 const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 36000.0;
 const MIE_SCALE_HEIGHT_METERS: f32 = 4800.0;
 const RAYLEIGH_COEFFICIENT: vec3<f32> = vec3<f32>(5.8e-6, 13.5e-6, 33.1e-6);
-const MIE_COEFFICIENT: vec3<f32> = vec3<f32>(40.0e-6);
+const MIE_COEFFICIENT: vec3<f32> = vec3<f32>(0.01e-6);
 const MIE_G: f32 = 0.76;
-const SOLAR_RADIANCE: f32 = 4.0;
+const SOLAR_RADIANCE: f32 = 1.25;
 // Artistic surface exposure only: this does not alter sky scattering or the
 // camera-facing sun disc.
-const SURFACE_SUNLIGHT_SCALE: f32 = 5.0;
+const SURFACE_SUNLIGHT_SCALE: f32 = 2.0;
 const SKY_DIFFUSE_LIGHT_SCALE: f32 = 0.18;
+const AERIAL_IN_SCATTER_SAMPLE_COUNT: u32 = 2u;
+const AERIAL_DENSITY_SAMPLE_EXPONENT: f32 = 3.0;
+// Artistic aerial-only control, applied after physically bounded integration.
+// It does not alter extinction, direct terrain/ocean lighting, or the sky pass.
+const AERIAL_IN_SCATTER_GAIN: f32 = 3.0;
+const RENDER_DEBUG_FINAL: u32 = 0u;
+const RENDER_DEBUG_RAW_ALBEDO: u32 = 1u;
+const RENDER_DEBUG_SURFACE_LIGHTING: u32 = 2u;
+const RENDER_DEBUG_AERIAL_CONTRIBUTION: u32 = 3u;
 
 struct Camera {
     projection_matrix: mat4x4<f32>,
@@ -69,6 +79,8 @@ struct VertexOutput {
     @location(5) ocean: f32,
     @location(6) source_uv: vec2<f32>,
     @location(7) outmap: f32,
+    @location(8) surface_lighting: vec3<f32>,
+    @location(9) terrain_detail_meters: f32,
 }
 
 struct OceanWaveContribution {
@@ -123,6 +135,30 @@ fn placeholder_height(direction: vec3<f32>) -> f32 {
         + placeholder_octave(direction, 2097152.0, 3.0);
 }
 
+fn global_terrain_detail_octave(
+    direction: vec3<f32>,
+    frequency: f32,
+    amplitude_meters: f32,
+    axis: vec3<f32>,
+    phase: f32,
+) -> f32 {
+    return amplitude_meters * sin(frequency * dot(direction, axis) + phase);
+}
+
+// Planet-local direction makes this continuous across cube-face and tile
+// boundaries. The baked outmap still supplies all macro geography.
+fn global_terrain_detail(direction: vec3<f32>) -> f32 {
+    return global_terrain_detail_octave(
+        direction, 4096.0, 80.0, vec3<f32>(0.79, 0.52, -0.32), 0.37,
+    ) + global_terrain_detail_octave(
+        direction, 32768.0, 24.0, vec3<f32>(-0.23, 0.91, 0.41), 1.11,
+    ) + global_terrain_detail_octave(
+        direction, 262144.0, 6.0, vec3<f32>(0.61, -0.17, 0.77), 2.07,
+    ) + global_terrain_detail_octave(
+        direction, 2097152.0, 1.5, vec3<f32>(-0.48, -0.66, 0.58), 2.73,
+    );
+}
+
 fn sample_height(source_uv: vec2<f32>) -> f32 {
     let gutter_uv = 1.0 / MATERIAL_TILE_LOGICAL_QUADS;
     let coordinate = vec2<f32>(TILE_GUTTER)
@@ -145,11 +181,20 @@ fn sample_height(source_uv: vec2<f32>) -> f32 {
     );
 }
 
-fn terrain_height(outmap: bool, source_uv: vec2<f32>, direction: vec3<f32>) -> f32 {
+fn macro_terrain_height(outmap: bool, source_uv: vec2<f32>, direction: vec3<f32>) -> f32 {
     if outmap {
         return sample_height(source_uv);
     }
     return placeholder_height(direction);
+}
+
+fn terrain_height(outmap: bool, source_uv: vec2<f32>, direction: vec3<f32>) -> f32 {
+    let macro_height = macro_terrain_height(outmap, source_uv, direction);
+    if !outmap {
+        return macro_height;
+    }
+    let land_detail_weight = smoothstep(100.0, 400.0, macro_height);
+    return macro_height + global_terrain_detail(direction) * land_detail_weight;
 }
 
 fn gerstner_wave(
@@ -260,6 +305,22 @@ fn sun_is_occluded(radius_meters: f32, radial_dot_sun: f32) -> bool {
     return radial_dot_sun < 0.0 && discriminant >= 0.0;
 }
 
+fn sun_visibility(
+    radius_meters: f32,
+    radial_dot_sun: f32,
+    transition_meters: f32,
+) -> f32 {
+    if radial_dot_sun >= 0.0 {
+        return 1.0;
+    }
+    let closest_approach_meters = sqrt(max(
+        radius_meters * radius_meters - radial_dot_sun * radial_dot_sun,
+        0.0,
+    ));
+    let clearance_meters = closest_approach_meters - PLANET_RADIUS_METERS;
+    return smoothstep(-transition_meters, transition_meters, clearance_meters);
+}
+
 fn surface_direct_sun_transmittance(
     surface_direction: vec3<f32>,
     surface_altitude_meters: f32,
@@ -267,9 +328,11 @@ fn surface_direct_sun_transmittance(
 ) -> vec3<f32> {
     let surface_radius = PLANET_RADIUS_METERS + surface_altitude_meters;
     let radial_dot_sun = surface_radius * dot(surface_direction, sun_direction);
-    if sun_is_occluded(surface_radius, radial_dot_sun) {
-        return vec3<f32>(0.0);
-    }
+    let solar_visibility = smoothstep(
+        -0.01,
+        0.01,
+        dot(surface_direction, sun_direction),
+    );
 
     // The generic endpoint-average estimate spans the full 360km shell for
     // a noon surface point. That makes the near-zero density at its top count
@@ -287,32 +350,102 @@ fn surface_direct_sun_transmittance(
         * density(surface_altitude_meters, MIE_SCALE_HEIGHT_METERS)
         * MIE_SCALE_HEIGHT_METERS
         * air_mass;
-    return exp(-(rayleigh_optical_depth + mie_optical_depth));
+    return exp(-(rayleigh_optical_depth + mie_optical_depth)) * solar_visibility;
 }
 
-fn sky_diffuse_irradiance(
+fn sky_radiance(
+    normal: vec3<f32>,
     surface_direction: vec3<f32>,
     surface_altitude_meters: f32,
     sun_direction: vec3<f32>,
 ) -> vec3<f32> {
     let surface_radius = PLANET_RADIUS_METERS + surface_altitude_meters;
-    let radial_dot_sun = surface_radius * dot(surface_direction, sun_direction);
-    if sun_is_occluded(surface_radius, radial_dot_sun) {
+    let ray = normalize(normal + surface_direction * 0.05);
+    let radial_dot_ray = surface_radius * dot(surface_direction, ray);
+    let ray_length = atmosphere_exit_distance(surface_radius, radial_dot_ray);
+    if ray_length <= 0.0 {
         return vec3<f32>(0.0);
     }
 
-    // A compact hemispherical approximation of Rayleigh/Mie sky fill. The
-    // fraction removed from direct daylight is available as coloured diffuse
-    // illumination from the visible sky, so terrain is not direct-lit only.
-    let direct_transmittance = surface_direct_sun_transmittance(
-        surface_direction,
-        surface_altitude_meters,
-        sun_direction,
+    // Use one density-weighted representative for each local sky direction.
+    // A terrain-vertex raymarch multiplied by every visible chunk is too costly;
+    // scale-height path lengths retain the same colour-producing coefficients
+    // while keeping the work bounded to three analytic sky samples per vertex.
+    let zenith_cosine = max(dot(surface_direction, ray), 0.08);
+    let rayleigh_path_length = min(
+        ray_length,
+        RAYLEIGH_SCALE_HEIGHT_METERS / zenith_cosine,
     );
-    let sun_elevation = max(dot(surface_direction, sun_direction), 0.0);
-    let daylight_weight = mix(0.35, 1.0, smoothstep(0.0, 0.25, sun_elevation));
-    return (vec3<f32>(1.0) - direct_transmittance)
-        * (SKY_DIFFUSE_LIGHT_SCALE * daylight_weight);
+    let mie_path_length = min(
+        ray_length,
+        MIE_SCALE_HEIGHT_METERS / zenith_cosine,
+    );
+    let sample_distance = 0.5 * rayleigh_path_length;
+    let sample_position = surface_direction * surface_radius + ray * sample_distance;
+    let sample_radius = length(sample_position);
+    let sample_direction = sample_position / sample_radius;
+    let sample_altitude = sample_radius - PLANET_RADIUS_METERS;
+    let sample_radial_dot_sun = sample_radius * dot(sample_direction, sun_direction);
+    let sun_distance = atmosphere_exit_distance(sample_radius, sample_radial_dot_sun);
+    let lower_atmosphere_weight = density(sample_altitude, RAYLEIGH_SCALE_HEIGHT_METERS);
+    let shadow_transition_meters = 24000.0 * mix(1.0, 2.0, lower_atmosphere_weight);
+    let view_transmittance = transmittance(
+        surface_altitude_meters,
+        sample_altitude,
+        sample_distance,
+    );
+    let sun_transmittance = transmittance(
+        sample_altitude,
+        ATMOSPHERE_HEIGHT_METERS,
+        sun_distance,
+    ) * sun_visibility(
+        sample_radius,
+        sample_radial_dot_sun,
+        shadow_transition_meters,
+    );
+    let cos_theta = dot(ray, sun_direction);
+    let rayleigh_scattering = RAYLEIGH_COEFFICIENT
+        * density(sample_altitude, RAYLEIGH_SCALE_HEIGHT_METERS)
+        * phase_rayleigh(cos_theta)
+        * rayleigh_path_length;
+    let mie_scattering = MIE_COEFFICIENT
+        * density(sample_altitude, MIE_SCALE_HEIGHT_METERS)
+        * phase_mie(cos_theta)
+        * mie_path_length;
+    return view_transmittance * sun_transmittance
+        * (rayleigh_scattering + mie_scattering)
+        * SOLAR_RADIANCE;
+}
+
+fn sky_diffuse_irradiance(
+    normal: vec3<f32>,
+    surface_direction: vec3<f32>,
+    surface_altitude_meters: f32,
+    sun_direction: vec3<f32>,
+) -> vec3<f32> {
+    // Sample the atmosphere directly above the surface. Near-horizontal rays
+    // have extremely long optical paths and caused unstable, overbright bands
+    // when evaluated sparsely per terrain vertex. Preserve the overhead sky's
+    // colour while bounding its irradiance before HDR exposure and bloom.
+    let local_sky = max(
+        sky_radiance(normal, surface_direction, surface_altitude_meters, sun_direction),
+        vec3<f32>(0.0),
+    );
+    let sunward_tangent = sun_direction
+        - surface_direction * dot(surface_direction, sun_direction);
+    let sunward_sky = max(
+        sky_radiance(
+            normalize(normal + sunward_tangent * 0.45),
+            surface_direction,
+            surface_altitude_meters,
+            sun_direction,
+        ),
+        vec3<f32>(0.0),
+    );
+    let sky = max(local_sky, sunward_sky * 0.65);
+    let peak = max(max(sky.x, sky.y), sky.z);
+    let bounded_sky = sky / max(1.0, peak / 0.35);
+    return bounded_sky * SKY_DIFFUSE_LIGHT_SCALE;
 }
 
 fn aerial_view_transmittance(
@@ -347,6 +480,23 @@ fn aerial_view_transmittance(
     ));
 }
 
+fn aerial_density_sample_fraction(fraction: f32, closest_fraction: f32) -> f32 {
+    if closest_fraction <= 0.05 {
+        return pow(fraction, AERIAL_DENSITY_SAMPLE_EXPONENT);
+    }
+    if closest_fraction >= 0.95 {
+        return 1.0 - pow(1.0 - fraction, AERIAL_DENSITY_SAMPLE_EXPONENT);
+    }
+    if fraction <= 0.5 {
+        let local_fraction = fraction * 2.0;
+        return closest_fraction
+            * (1.0 - pow(1.0 - local_fraction, AERIAL_DENSITY_SAMPLE_EXPONENT));
+    }
+    let local_fraction = (fraction - 0.5) * 2.0;
+    return closest_fraction
+        + (1.0 - closest_fraction) * pow(local_fraction, AERIAL_DENSITY_SAMPLE_EXPONENT);
+}
+
 fn aerial_perspective(
     lit_surface_color: vec3<f32>,
     camera_relative_view_position: vec3<f32>,
@@ -378,14 +528,6 @@ fn aerial_perspective(
         radial_dot_view,
         view_end,
     );
-    let surface_radius = PLANET_RADIUS_METERS + surface_altitude_meters;
-    let radial_dot_sun = surface_radius * dot(surface_direction, sun_direction);
-    let sun_distance = atmosphere_exit_distance(surface_radius, radial_dot_sun);
-    let sun_transmittance = select(
-        transmittance(surface_altitude_meters, ATMOSPHERE_HEIGHT_METERS, sun_distance),
-        vec3<f32>(0.0),
-        sun_is_occluded(surface_radius, radial_dot_sun),
-    );
     let surface_to_camera_zenith_cosine = max(
         dot(planet_to_view(surface_direction), -view_direction),
         0.0,
@@ -396,23 +538,85 @@ fn aerial_perspective(
         atmospheric_view_length,
         surface_to_camera_zenith_cosine,
     );
-    let average_rayleigh_density = 0.5
-        * (density(
-            atmospheric_view_start_altitude,
-            RAYLEIGH_SCALE_HEIGHT_METERS,
-        ) + density(
-            atmospheric_view_end_altitude,
-            RAYLEIGH_SCALE_HEIGHT_METERS,
-        ));
-    let average_mie_density = 0.5
-        * (density(atmospheric_view_start_altitude, MIE_SCALE_HEIGHT_METERS)
-            + density(atmospheric_view_end_altitude, MIE_SCALE_HEIGHT_METERS));
+    // Use the same scale-height-limited columns as extinction. Applying the
+    // full horizon chord here added light from atmosphere that the matching
+    // transmittance had already treated as opaque, washing the surface out.
+    let view_air_mass = min(
+        1.0 / max(surface_to_camera_zenith_cosine, 0.08),
+        12.0,
+    );
+    let rayleigh_in_scatter_path_length = min(
+        atmospheric_view_length,
+        2.0 * RAYLEIGH_SCALE_HEIGHT_METERS * view_air_mass,
+    );
+    let mie_in_scatter_path_length = min(
+        atmospheric_view_length,
+        2.0 * MIE_SCALE_HEIGHT_METERS * view_air_mass,
+    );
     let cos_theta = dot(view_direction, sun_direction_view);
-    let in_scatter = sun_transmittance
-        * (RAYLEIGH_COEFFICIENT * average_rayleigh_density * phase_rayleigh(cos_theta)
-            + MIE_COEFFICIENT * average_mie_density * phase_mie(cos_theta))
-        * atmospheric_view_length
-        * SOLAR_RADIANCE;
+    let closest_distance = clamp(-radial_dot_view, view_start, view_end);
+    let closest_fraction = (closest_distance - view_start) / atmospheric_view_length;
+    var in_scatter = vec3<f32>(0.0);
+    for (var index = 0u; index < AERIAL_IN_SCATTER_SAMPLE_COUNT; index += 1u) {
+        let interval_start = f32(index) / f32(AERIAL_IN_SCATTER_SAMPLE_COUNT);
+        let interval_end = f32(index + 1u) / f32(AERIAL_IN_SCATTER_SAMPLE_COUNT);
+        let sample_start = aerial_density_sample_fraction(interval_start, closest_fraction);
+        let sample_end = aerial_density_sample_fraction(interval_end, closest_fraction);
+        let sample_fraction = 0.5 * (sample_start + sample_end);
+        let in_scatter_distance = view_start + sample_fraction * atmospheric_view_length;
+        let in_scatter_position_view = camera.camera_planet_direction_view_altitude.xyz
+            * camera_radius + view_direction * in_scatter_distance;
+        let in_scatter_radius = length(in_scatter_position_view);
+        let in_scatter_direction = view_to_planet(in_scatter_position_view / in_scatter_radius);
+        let in_scatter_altitude = in_scatter_radius - PLANET_RADIUS_METERS;
+        let radial_dot_sun = in_scatter_radius * dot(in_scatter_direction, sun_direction);
+        let solar_visibility = sun_visibility(
+            in_scatter_radius,
+            radial_dot_sun,
+            24000.0 * mix(
+                1.0,
+                2.0,
+                density(in_scatter_altitude, RAYLEIGH_SCALE_HEIGHT_METERS),
+            ),
+        );
+        let sun_zenith_cosine = max(dot(in_scatter_direction, sun_direction), 0.0);
+        let sun_air_mass = min(1.0 / max(sun_zenith_cosine, 0.08), 12.0);
+        let sun_transmittance = exp(-(
+            RAYLEIGH_COEFFICIENT
+                * density(in_scatter_altitude, RAYLEIGH_SCALE_HEIGHT_METERS)
+                * RAYLEIGH_SCALE_HEIGHT_METERS
+                * sun_air_mass
+                + MIE_COEFFICIENT
+                    * density(in_scatter_altitude, MIE_SCALE_HEIGHT_METERS)
+                    * MIE_SCALE_HEIGHT_METERS
+                    * sun_air_mass
+        )) * solar_visibility;
+        let view_transmittance_to_sample = aerial_view_transmittance(
+            atmospheric_view_start_altitude,
+            in_scatter_altitude,
+            sample_fraction * atmospheric_view_length,
+            surface_to_camera_zenith_cosine,
+        );
+        let rayleigh_optical_depth = RAYLEIGH_COEFFICIENT
+            * density(in_scatter_altitude, RAYLEIGH_SCALE_HEIGHT_METERS)
+            * rayleigh_in_scatter_path_length
+            / f32(AERIAL_IN_SCATTER_SAMPLE_COUNT);
+        let mie_optical_depth = MIE_COEFFICIENT
+            * density(in_scatter_altitude, MIE_SCALE_HEIGHT_METERS)
+            * mie_in_scatter_path_length
+            / f32(AERIAL_IN_SCATTER_SAMPLE_COUNT);
+        let total_optical_depth = rayleigh_optical_depth + mie_optical_depth;
+        let phase_weight = (
+            rayleigh_optical_depth * phase_rayleigh(cos_theta)
+                + mie_optical_depth * phase_mie(cos_theta)
+        ) / max(total_optical_depth, vec3<f32>(1.0e-6));
+        let scattered_fraction = vec3<f32>(1.0) - exp(-total_optical_depth);
+        in_scatter += view_transmittance_to_sample
+            * sun_transmittance
+            * phase_weight
+            * scattered_fraction;
+    }
+    in_scatter *= SOLAR_RADIANCE * AERIAL_IN_SCATTER_GAIN;
     return lit_surface_color * view_transmittance + in_scatter;
 }
 
@@ -508,19 +712,24 @@ fn biome_color(biome: u32) -> vec3<f32> {
     switch biome {
         case 0u: { display_color = vec3<f32>(20.0, 65.0, 150.0) / 255.0; }
         case 1u: { display_color = vec3<f32>(45.0, 115.0, 190.0) / 255.0; }
-        case 2u: { display_color = vec3<f32>(230.0, 240.0, 245.0) / 255.0; }
+        case 2u: { display_color = vec3<f32>(218.0, 238.0, 250.0) / 255.0; }
         case 3u: { display_color = vec3<f32>(130.0, 145.0, 120.0) / 255.0; }
         case 4u: { display_color = vec3<f32>(45.0, 105.0, 55.0) / 255.0; }
         case 5u: { display_color = vec3<f32>(105.0, 145.0, 65.0) / 255.0; }
         case 6u: { display_color = vec3<f32>(25.0, 125.0, 55.0) / 255.0; }
         case 7u: { display_color = vec3<f32>(205.0, 180.0, 105.0) / 255.0; }
         case 8u: { display_color = vec3<f32>(105.0, 100.0, 95.0) / 255.0; }
-        default: { display_color = vec3<f32>(205.0, 210.0, 210.0) / 255.0; }
+        default: { display_color = vec3<f32>(236.0, 240.0, 242.0) / 255.0; }
     }
     return srgb_to_linear(display_color);
 }
 
-fn terrain_material_color(outmap: bool, source_uv: vec2<f32>, height_meters: f32) -> vec3<f32> {
+fn terrain_material_color(
+    outmap: bool,
+    source_uv: vec2<f32>,
+    macro_height_meters: f32,
+    terrain_detail_meters: f32,
+) -> vec3<f32> {
     var color = vec3<f32>(0.32, 0.58, 0.74);
     if !outmap {
         return color;
@@ -532,10 +741,24 @@ fn terrain_material_color(outmap: bool, source_uv: vec2<f32>, height_meters: f32
     if biome != 2u {
         // Use bilinear terrain height, not a nearest biome class, for the
         // coast. This gives a continuous shallow-water/beach transition.
-        let beach = 1.0 - smoothstep(20.0, 220.0, height_meters);
+        let beach = 1.0 - smoothstep(20.0, 220.0, macro_height_meters);
         color = mix(color, srgb_to_linear(vec3<f32>(0.48, 0.40, 0.23)), beach * 0.65);
     }
+    // Break up a coarse ancestor material tile at flight altitude without
+    // changing its biome or coastline. Correlating this with the bounded
+    // relief keeps ridges readable under both direct and aerial lighting.
+    let detail_weight = smoothstep(100.0, 400.0, macro_height_meters);
+    let detail = clamp(
+        terrain_detail_meters / GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
+        -1.0,
+        1.0,
+    );
+    color *= 1.0 + detail * detail_weight * 0.22;
     return color;
+}
+
+fn debug_ocean_albedo() -> vec3<f32> {
+    return vec3<f32>(0.02, 0.12, 0.50);
 }
 
 fn outmap_ocean_coverage(outmap: bool, height_meters: f32) -> f32 {
@@ -587,6 +810,7 @@ fn ocean_with_aerial_perspective(
         sun_direction,
     );
     let sky_diffuse = sky_diffuse_irradiance(
+        surface.normal,
         direction,
         surface.vertical_displacement,
         sun_direction,
@@ -610,10 +834,20 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let direction = normalize(input.sphere_direction);
     let source_uv = input.source_uv_offset + input.tile_uv * input.source_uv_scale;
     let outmap = uses_outmap(input.terrain_info);
-    let height = terrain_height(outmap, source_uv, direction);
-    let ocean = height <= 0.0;
+    let macro_height = macro_terrain_height(outmap, source_uv, direction);
+    var terrain_detail_meters = 0.0;
+    if outmap {
+        terrain_detail_meters = global_terrain_detail(direction);
+    }
+    let height = macro_height
+        + terrain_detail_meters * smoothstep(100.0, 400.0, macro_height);
+    // Polar ice overrides ocean in the baked biome contract. Lift it just
+    // above sea level so the cap remains visible rather than becoming water.
+    let ice = outmap && sample_biome(source_uv) == 2u;
+    let ocean = macro_height <= 0.0 && !ice;
     let wave_surface = ocean_surface(direction, camera.projection.z);
-    let surface_height = select(height, wave_surface.vertical_displacement, ocean);
+    let land_height = select(height, max(height, 5.0), ice);
+    let surface_height = select(land_height, wave_surface.vertical_displacement, ocean);
     let local_planet_position = input.anchor_relative_position
         + direction * (surface_height - input.skirt_depth_meters)
         + select(vec3<f32>(0.0), wave_surface.horizontal_displacement, ocean);
@@ -634,11 +868,25 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         surface_height,
         sun_direction,
     );
-    let sky_diffuse = sky_diffuse_irradiance(direction, surface_height, sun_direction)
-        * max(dot(normal, direction), 0.0);
-    let direct_light = max(dot(normal, sun_direction), 0.14);
-    let lit_surface_color = terrain_material_color(outmap, source_uv, height)
+    let sky_diffuse = sky_diffuse_irradiance(
+        normal,
+        direction,
+        surface_height,
+        sun_direction,
+    );
+    let direct_light = max(dot(normal, sun_direction), 0.0);
+    var lit_surface_color = terrain_material_color(
+        outmap,
+        source_uv,
+        macro_height,
+        terrain_detail_meters,
+    )
         * (sky_diffuse + sun_transmittance * direct_light * SURFACE_SUNLIGHT_SCALE);
+    if ice {
+        // Snow is strongly diffuse and keeps a cool skylight floor even under
+        // warm low-angle direct light, preventing polar caps reading as sand.
+        lit_surface_color = max(lit_surface_color, biome_color(2u) * 0.65);
+    }
     return VertexOutput(
         camera.projection_matrix * vec4<f32>(camera_relative_view_position, 1.0),
         camera_relative_view_position,
@@ -654,6 +902,8 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         select(0.0, 1.0, ocean),
         source_uv,
         select(0.0, 1.0, outmap),
+        lit_surface_color,
+        terrain_detail_meters,
     );
 }
 
@@ -681,36 +931,104 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
     let direction = normalize(input.surface_direction);
     let sun_direction = normalize(camera.sun_direction.xyz);
+    let render_debug_mode = u32(camera.projection.w + 0.5);
     if input.ocean > 0.5 {
+        if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
+            return vec4<f32>(debug_ocean_albedo(), 1.0);
+        }
+        let surface = ocean_surface(direction, camera.projection.z);
+        let sun_transmittance = surface_direct_sun_transmittance(
+            direction,
+            surface.vertical_displacement,
+            sun_direction,
+        );
+        let sky_diffuse = sky_diffuse_irradiance(
+            surface.normal,
+            direction,
+            surface.vertical_displacement,
+            sun_direction,
+        );
+        let water_surface_color = ocean_lighting(
+            surface.normal,
+            input.camera_relative_view_position,
+            sun_transmittance,
+            sky_diffuse,
+        );
+        if render_debug_mode == RENDER_DEBUG_SURFACE_LIGHTING {
+            return vec4<f32>(water_surface_color, 1.0);
+        }
+        let water_aerial_color = aerial_perspective(
+            water_surface_color,
+            input.camera_relative_view_position,
+            direction,
+            surface.vertical_displacement,
+        );
+        if render_debug_mode == RENDER_DEBUG_AERIAL_CONTRIBUTION {
+            return vec4<f32>(max(water_aerial_color - water_surface_color, vec3<f32>(0.0)), 1.0);
+        }
+        return vec4<f32>(water_aerial_color, 1.0);
+    }
+    let outmap = input.outmap > 0.5;
+    let macro_height_meters = macro_terrain_height(outmap, input.source_uv, direction);
+    let ocean_coverage = outmap_ocean_coverage(outmap, macro_height_meters);
+    let terrain_albedo = terrain_material_color(
+        outmap,
+        input.source_uv,
+        macro_height_meters,
+        input.terrain_detail_meters,
+    );
+    if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
         return vec4<f32>(
-            ocean_with_aerial_perspective(
-                direction,
-                input.camera_relative_view_position,
-                sun_direction,
-            ),
+            mix(terrain_albedo, debug_ocean_albedo(), ocean_coverage),
             1.0,
         );
     }
-    let outmap = input.outmap > 0.5;
-    if !outmap {
-        return vec4<f32>(input.aerial_color, 1.0);
-    }
-    let terrain_height_meters = terrain_height(outmap, input.source_uv, direction);
-    let ocean_coverage = outmap_ocean_coverage(outmap, terrain_height_meters);
     if ocean_coverage <= 0.0 {
+        if render_debug_mode == RENDER_DEBUG_SURFACE_LIGHTING {
+            return vec4<f32>(input.surface_lighting, 1.0);
+        }
+        if render_debug_mode == RENDER_DEBUG_AERIAL_CONTRIBUTION {
+            return vec4<f32>(
+                max(input.aerial_color - input.surface_lighting, vec3<f32>(0.0)),
+                1.0,
+            );
+        }
         return vec4<f32>(input.aerial_color, 1.0);
     }
-    let water_with_aerial_perspective = ocean_with_aerial_perspective(
+    let surface = ocean_surface(direction, camera.projection.z);
+    let sun_transmittance = surface_direct_sun_transmittance(
         direction,
-        input.camera_relative_view_position,
+        surface.vertical_displacement,
         sun_direction,
     );
+    let sky_diffuse = sky_diffuse_irradiance(
+        surface.normal,
+        direction,
+        surface.vertical_displacement,
+        sun_direction,
+    );
+    let water_surface_color = ocean_lighting(
+        surface.normal,
+        input.camera_relative_view_position,
+        sun_transmittance,
+        sky_diffuse,
+    );
+    let water_aerial_color = aerial_perspective(
+        water_surface_color,
+        input.camera_relative_view_position,
+        direction,
+        surface.vertical_displacement,
+    );
+    let surface_color = mix(input.surface_lighting, water_surface_color, ocean_coverage);
+    let aerial_color = mix(input.aerial_color, water_aerial_color, ocean_coverage);
+    if render_debug_mode == RENDER_DEBUG_SURFACE_LIGHTING {
+        return vec4<f32>(surface_color, 1.0);
+    }
+    if render_debug_mode == RENDER_DEBUG_AERIAL_CONTRIBUTION {
+        return vec4<f32>(max(aerial_color - surface_color, vec3<f32>(0.0)), 1.0);
+    }
     return vec4<f32>(
-        mix(
-            input.aerial_color,
-            water_with_aerial_perspective,
-            ocean_coverage,
-        ),
+        aerial_color,
         1.0,
     );
 }

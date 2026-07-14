@@ -4,6 +4,8 @@ struct VertexOutput {
 
 struct Exposure {
     exposure: f32,
+    hdr_effect_enabled: u32,
+    _padding: vec2<f32>,
 }
 
 @group(0) @binding(0)
@@ -11,6 +13,9 @@ var source_texture: texture_2d<f32>;
 
 @group(0) @binding(1)
 var<uniform> exposure: Exposure;
+
+@group(0) @binding(2)
+var effect_texture: texture_2d<f32>;
 
 fn luminance(color: vec3<f32>) -> f32 {
     return dot(max(color, vec3<f32>(0.0)), vec3<f32>(0.2126, 0.7152, 0.0722));
@@ -62,5 +67,57 @@ fn luminance_downsample(@builtin(position) position: vec4<f32>) -> @location(0) 
 fn tone_map(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let pixel = vec2<i32>(position.xy);
     let hdr_color = textureLoad(source_texture, pixel, 0).rgb;
+    if (exposure.hdr_effect_enabled == 0u) {
+        // HDR-off is a display-curve toggle, not an exposure toggle. Preserve
+        // auto-exposure so dim atmospheric haze remains visible.
+        return vec4<f32>(hdr_color * exposure.exposure, 1.0);
+    }
     return vec4<f32>(aces_filmic(hdr_color * exposure.exposure), 1.0);
+}
+
+@fragment
+fn blur_scene(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let pixel = vec2<i32>(position.xy);
+    let size = vec2<i32>(textureDimensions(source_texture));
+    var color = vec3<f32>(0.0);
+    var weight = 0.0;
+    for (var y = -2; y <= 2; y += 1) {
+        for (var x = -2; x <= 2; x += 1) {
+            let offset = vec2<i32>(x, y);
+            let sample_weight = select(1.0, 2.0, x == 0 || y == 0);
+            color += textureLoad(source_texture, clamp(pixel + offset, vec2<i32>(0), size - vec2<i32>(1)), 0).rgb * sample_weight;
+            weight += sample_weight;
+        }
+    }
+    return vec4<f32>(color / weight, 1.0);
+}
+
+@fragment
+fn bloom_blur(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let pixel = vec2<i32>(position.xy);
+    let size = vec2<i32>(textureDimensions(source_texture));
+    var color = vec3<f32>(0.0);
+    var weight = 0.0;
+    for (var y = -2; y <= 2; y += 1) {
+        for (var x = -2; x <= 2; x += 1) {
+            let offset = vec2<i32>(x, y);
+            let sample_weight = select(1.0, 2.0, x == 0 || y == 0);
+            let sample_color = textureLoad(
+                source_texture,
+                clamp(pixel + offset, vec2<i32>(0), size - vec2<i32>(1)),
+                0,
+            ).rgb;
+            color += max(sample_color - vec3<f32>(1.0), vec3<f32>(0.0)) * sample_weight;
+            weight += sample_weight;
+        }
+    }
+    return vec4<f32>(color / weight, 1.0);
+}
+
+@fragment
+fn bloom_composite(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let pixel = vec2<i32>(position.xy);
+    let scene = textureLoad(source_texture, pixel, 0).rgb;
+    let bloom = textureLoad(effect_texture, pixel, 0).rgb;
+    return vec4<f32>(scene + bloom * 0.75, 1.0);
 }

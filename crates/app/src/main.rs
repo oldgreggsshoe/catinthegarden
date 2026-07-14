@@ -18,10 +18,11 @@ use std::{
     time::{Duration, Instant},
 };
 use winit::{
-    event::{DeviceEvent, Event, MouseScrollDelta, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
+    application::ApplicationHandler,
+    event::{DeviceEvent, WindowEvent},
+    event_loop::{ActiveEventLoop, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
-    window::{CursorGrabMode, Window, WindowAttributes},
+    window::{CursorGrabMode, Window, WindowAttributes, WindowId},
 };
 
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
@@ -33,9 +34,29 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
 const HUD_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
 const HIDDEN_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 const GPU_PROFILE_RING_SIZE: usize = 3;
+const GPU_TIMESTAMP_COUNT: u32 = 12;
 const DEFAULT_OUTMAP_PATH: &str = "assets/outmaps/test-planet";
 const DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND: f64 = 0.4;
+const DEFAULT_CAMERA_ORBIT_INCLINATION_RADIANS: f64 = 28.5_f64.to_radians();
 const MOUSE_LOOK_RADIANS_PER_PIXEL: f64 = 0.0006;
+const LOW_FLIGHT_ALTITUDE_METERS: f64 = 5_000.0 * 0.3048;
+const LOW_FLIGHT_SPEED_METERS_PER_SECOND: f64 = 3_403.0;
+const LOW_FLIGHT_VERTICAL_FOV_DEGREES: f64 = 60.0;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CameraMode {
+    Orbit,
+    LowFlight,
+}
+
+impl CameraMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Orbit => "orbit",
+            Self::LowFlight => "Mach 10 5,000 ft flight",
+        }
+    }
+}
 
 fn format_vertical_fov(vertical_fov_degrees: f64) -> String {
     if vertical_fov_degrees >= 10.0 {
@@ -67,6 +88,27 @@ struct GpuProfiler {
     timestamp_period_ns: f32,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct GpuStageTimings {
+    scene_ms: f64,
+    luminance_ms: f64,
+    blur_ms: f64,
+    bloom_ms: f64,
+    tone_map_ms: f64,
+    egui_ms: f64,
+}
+
+impl GpuStageTimings {
+    fn total_ms(self) -> f64 {
+        self.scene_ms
+            + self.luminance_ms
+            + self.blur_ms
+            + self.bloom_ms
+            + self.tone_map_ms
+            + self.egui_ms
+    }
+}
+
 impl GpuProfiler {
     fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
         let slots = (0..GPU_PROFILE_RING_SIZE)
@@ -74,17 +116,17 @@ impl GpuProfiler {
                 query_set: device.create_query_set(&wgpu::QuerySetDescriptor {
                     label: Some("render timestamps"),
                     ty: wgpu::QueryType::Timestamp,
-                    count: 2,
+                    count: GPU_TIMESTAMP_COUNT,
                 }),
                 resolve_buffer: device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("render timestamp resolve"),
-                    size: 16,
+                    size: u64::from(GPU_TIMESTAMP_COUNT) * 8,
                     usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
                     mapped_at_creation: false,
                 }),
                 readback_buffer: device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("render timestamp readback"),
-                    size: 16,
+                    size: u64::from(GPU_TIMESTAMP_COUNT) * 8,
                     usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                     mapped_at_creation: false,
                 }),
@@ -120,7 +162,7 @@ impl GpuProfiler {
         self.slots[index].pending = Some(PendingGpuTimestamp { sim_time, receiver });
     }
 
-    fn collect_completed(&mut self, device: &wgpu::Device) -> Vec<(f64, f64)> {
+    fn collect_completed(&mut self, device: &wgpu::Device) -> Vec<(f64, GpuStageTimings)> {
         let _ = device.poll(wgpu::PollType::Poll);
         let mut completed = Vec::new();
         for slot in &mut self.slots {
@@ -137,12 +179,22 @@ impl GpuProfiler {
             }
             let timestamps = slot.readback_buffer.slice(..).get_mapped_range();
             let values: &[u64] = bytemuck::cast_slice(&timestamps);
-            let elapsed_ms = values[1].saturating_sub(values[0]) as f64
-                * f64::from(self.timestamp_period_ns)
-                / 1_000_000.0;
+            let elapsed = |begin: usize, end: usize| {
+                values[end].saturating_sub(values[begin]) as f64
+                    * f64::from(self.timestamp_period_ns)
+                    / 1_000_000.0
+            };
+            let timings = GpuStageTimings {
+                scene_ms: elapsed(0, 1),
+                luminance_ms: elapsed(2, 3),
+                blur_ms: elapsed(4, 5),
+                bloom_ms: elapsed(6, 7),
+                tone_map_ms: elapsed(8, 9),
+                egui_ms: elapsed(10, 11),
+            };
             drop(timestamps);
             slot.readback_buffer.unmap();
-            completed.push((sim_time, elapsed_ms));
+            completed.push((sim_time, timings));
         }
         completed
     }
@@ -165,6 +217,13 @@ struct State {
     previous_camera_world_position: glam::DVec3,
     previous_sim_time: f64,
     last_auto_orbit_sim_time: f64,
+    camera_mode: CameraMode,
+    flight_surface_azimuth_radians: f64,
+    flight_latitude_radians: f64,
+    flight_surface_height_meters: f64,
+    flight_look_yaw_radians: f64,
+    flight_look_pitch_radians: f64,
+    saved_orbit_camera_pose: Option<(glam::DVec3, glam::DVec3, f64)>,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     started_at: Instant,
@@ -174,6 +233,10 @@ struct State {
     last_frame: Instant,
     fps: f32,
     debug_overlay_visible: bool,
+    render_debug_mode: planet::RenderDebugMode,
+    animation_frozen: bool,
+    frozen_sim_time: f64,
+    interactive_scene_time_offset_seconds: f64,
     manual_screenshot_requested: bool,
     next_log_time: f64,
     capture_number: usize,
@@ -362,6 +425,13 @@ impl State {
             previous_camera_world_position: initial_camera_world_position,
             previous_sim_time: 0.0,
             last_auto_orbit_sim_time: 0.0,
+            camera_mode: CameraMode::Orbit,
+            flight_surface_azimuth_radians: 0.0,
+            flight_latitude_radians: 0.0,
+            flight_surface_height_meters: 0.0,
+            flight_look_yaw_radians: 0.0,
+            flight_look_pitch_radians: 0.0,
+            saved_orbit_camera_pose: None,
             camera_buffer,
             camera_bind_group,
             started_at: Instant::now(),
@@ -371,6 +441,10 @@ impl State {
             last_frame: Instant::now(),
             fps: 0.0,
             debug_overlay_visible: true,
+            render_debug_mode: planet::RenderDebugMode::Final,
+            animation_frozen: false,
+            frozen_sim_time: 0.0,
+            interactive_scene_time_offset_seconds: 0.0,
             manual_screenshot_requested: false,
             next_log_time: 0.0,
             capture_number: 0,
@@ -409,8 +483,15 @@ impl State {
     }
 
     fn look_camera(&mut self, yaw_delta: f64, pitch_delta: f64) {
-        self.camera
-            .look_with_optical_sensitivity(yaw_delta, pitch_delta);
+        if self.camera_mode == CameraMode::LowFlight {
+            let sensitivity = self.camera.look_sensitivity_scale();
+            self.flight_look_yaw_radians += yaw_delta * sensitivity;
+            self.flight_look_pitch_radians =
+                (self.flight_look_pitch_radians + pitch_delta * sensitivity).clamp(-1.5, 1.5);
+        } else {
+            self.camera
+                .look_with_optical_sensitivity(yaw_delta, pitch_delta);
+        }
     }
 
     fn zoom_camera(&mut self, wheel_delta: f64) {
@@ -451,6 +532,154 @@ impl State {
             };
     }
 
+    fn toggle_blur(&mut self) {
+        self.hdr.set_effects(
+            &self.device,
+            !self.hdr.blur_enabled(),
+            self.hdr.bloom_enabled(),
+        );
+        self.mark_hud_dirty();
+    }
+
+    fn toggle_bloom(&mut self) {
+        self.hdr.set_effects(
+            &self.device,
+            self.hdr.blur_enabled(),
+            !self.hdr.bloom_enabled(),
+        );
+        self.mark_hud_dirty();
+    }
+
+    fn toggle_hdr_effect(&mut self) {
+        self.hdr
+            .set_hdr_effect_enabled(&self.queue, !self.hdr.hdr_effect_enabled());
+        self.mark_hud_dirty();
+    }
+
+    fn cycle_render_debug_mode(&mut self) {
+        self.render_debug_mode = self.render_debug_mode.next();
+        self.mark_hud_dirty();
+    }
+
+    fn interactive_sim_time(&self) -> f64 {
+        let elapsed_sim_time = self.started_at.elapsed().as_secs_f64();
+        if self.animation_frozen {
+            self.frozen_sim_time
+        } else {
+            elapsed_sim_time - self.interactive_scene_time_offset_seconds
+        }
+    }
+
+    fn update_low_flight_camera(&mut self, planet_rotation_radians: f64) {
+        let latitude_cosine = self.flight_latitude_radians.cos().max(0.01);
+        let local_radial = glam::DVec3::new(
+            latitude_cosine * self.flight_surface_azimuth_radians.cos(),
+            self.flight_latitude_radians.sin(),
+            latitude_cosine * self.flight_surface_azimuth_radians.sin(),
+        );
+        if let Some(surface_height_meters) = self.terrain.surface_height_meters_at(local_radial) {
+            self.flight_surface_height_meters = surface_height_meters;
+        }
+        let flight_radius = planet::PLANET_RADIUS_METERS
+            + self.flight_surface_height_meters
+            + LOW_FLIGHT_ALTITUDE_METERS;
+        let local_position = local_radial * flight_radius;
+        let local_tangent = glam::DVec3::new(
+            -self.flight_surface_azimuth_radians.sin(),
+            0.0,
+            self.flight_surface_azimuth_radians.cos(),
+        );
+        // Level flight looks along the surface tangent. The true horizon sits
+        // naturally just below eye level; mouse yaw/pitch remains independent
+        // of the surface-locked flight path.
+        let local_right = local_tangent.cross(local_radial).normalize();
+        let horizontal = self.flight_look_pitch_radians.cos();
+        let local_horizon_direction = (local_tangent
+            * (self.flight_look_yaw_radians.cos() * horizontal)
+            + local_right * (self.flight_look_yaw_radians.sin() * horizontal)
+            + local_radial * self.flight_look_pitch_radians.sin())
+        .normalize();
+        let planet_to_world = glam::DQuat::from_rotation_y(planet_rotation_radians);
+        let world_position = planet_to_world.mul_vec3(local_position);
+        let world_direction = planet_to_world.mul_vec3(local_horizon_direction);
+        let world_up = planet_to_world.mul_vec3(local_radial);
+        self.camera.set_world_pose_with_up(
+            world_position,
+            world_position + world_direction,
+            world_up,
+        );
+    }
+
+    fn toggle_camera_mode(&mut self) {
+        if self.scenario.is_some() {
+            return;
+        }
+
+        let sim_time = self.interactive_sim_time();
+        match self.camera_mode {
+            CameraMode::Orbit => {
+                let planet_rotation_radians = planet::planet_rotation_radians(sim_time * 0.3);
+                let local_position = planet::planet_local_vector(
+                    self.camera.world_position(),
+                    planet_rotation_radians,
+                );
+                self.saved_orbit_camera_pose = Some((
+                    self.camera.world_position(),
+                    self.camera.direction_dvec3(),
+                    self.camera.vertical_fov_radians().to_degrees(),
+                ));
+                self.flight_surface_azimuth_radians = local_position.z.atan2(local_position.x);
+                self.flight_latitude_radians = (local_position.y / local_position.length())
+                    .clamp(-1.0, 1.0)
+                    .asin();
+                self.flight_surface_height_meters = 0.0;
+                self.flight_look_yaw_radians = 0.0;
+                self.flight_look_pitch_radians = 0.0;
+                self.camera_mode = CameraMode::LowFlight;
+                self.camera.set_vertical_fov_degrees_for_viewport(
+                    LOW_FLIGHT_VERTICAL_FOV_DEGREES,
+                    self.size.height,
+                );
+                self.update_low_flight_camera(planet_rotation_radians);
+            }
+            CameraMode::LowFlight => {
+                if let Some((position, direction, vertical_fov_degrees)) =
+                    self.saved_orbit_camera_pose.take()
+                {
+                    self.camera.set_world_pose(position, position + direction);
+                    self.camera.set_vertical_fov_degrees_for_viewport(
+                        vertical_fov_degrees,
+                        self.size.height,
+                    );
+                }
+                self.camera_mode = CameraMode::Orbit;
+            }
+        }
+        self.last_auto_orbit_sim_time = sim_time;
+        self.mark_hud_dirty();
+    }
+
+    fn toggle_animation_freeze(&mut self) {
+        if self.scenario.is_some() {
+            return;
+        }
+
+        if self.animation_frozen {
+            let elapsed_sim_time = self.started_at.elapsed().as_secs_f64();
+            self.animation_frozen = false;
+            // Keep all scene-time users continuous after a diagnostic pause.
+            // In particular, neither the orbit nor planet rotation should jump
+            // by the time spent taking screenshots.
+            self.interactive_scene_time_offset_seconds = elapsed_sim_time - self.frozen_sim_time;
+            self.last_auto_orbit_sim_time = self.frozen_sim_time;
+        } else {
+            self.frozen_sim_time = self.started_at.elapsed().as_secs_f64()
+                - self.interactive_scene_time_offset_seconds;
+            self.animation_frozen = true;
+        }
+        self.mark_hud_dirty();
+    }
+
     fn flush_gpu_profile(&mut self) {
         if self.gpu_profiler.is_none() {
             return;
@@ -464,9 +693,8 @@ impl State {
             .as_mut()
             .expect("GPU profiler exists")
             .collect_completed(&self.device);
-        for (sample_time, gpu_render_ms) in completed {
-            self.artifacts
-                .record_gpu_timestamp(sample_time, gpu_render_ms);
+        for (sample_time, timings) in completed {
+            self.artifacts.record_gpu_timestamps(sample_time, timings);
         }
     }
 
@@ -478,9 +706,8 @@ impl State {
             .as_mut()
             .map(|profiler| profiler.collect_completed(&self.device))
             .unwrap_or_default();
-        for (sample_time, gpu_render_ms) in completed_gpu_samples {
-            self.artifacts
-                .record_gpu_timestamp(sample_time, gpu_render_ms);
+        for (sample_time, timings) in completed_gpu_samples {
+            self.artifacts.record_gpu_timestamps(sample_time, timings);
         }
         let frame_time = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
@@ -523,13 +750,13 @@ impl State {
                 frame.planet_rotation_time_scale,
             )
         } else {
-            let sim_time = self.started_at.elapsed().as_secs_f64();
+            let sim_time = self.interactive_sim_time();
             let write_log = sim_time >= self.next_log_time;
             if write_log {
                 self.next_log_time = sim_time + 0.5;
             }
             (
-                sim_time, write_log, false, false, false, false, false, None, None, None, 0.0,
+                sim_time, write_log, false, false, false, false, false, None, None, None, 0.3,
             )
         };
         if let Some((position, look_at)) = scenario_pose {
@@ -544,25 +771,42 @@ impl State {
         if let Some(sun_direction) = scenario_sun_direction {
             self.sun_direction = sun_direction.normalize();
         }
+        let planet_rotation_radians =
+            planet::planet_rotation_radians(sim_time * scenario_planet_rotation_time_scale);
         if self.scenario.is_none() {
             let orbit_delta_seconds = (sim_time - self.last_auto_orbit_sim_time).max(0.0);
-            /*self.camera.orbit(
-                DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND * orbit_delta_seconds,
-                0.0,
-            );*/
+            match self.camera_mode {
+                CameraMode::Orbit => self.camera.advance_inclined_orbit(
+                    DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND * orbit_delta_seconds,
+                    DEFAULT_CAMERA_ORBIT_INCLINATION_RADIANS,
+                ),
+                CameraMode::LowFlight => {
+                    let flight_radius = planet::PLANET_RADIUS_METERS
+                        + self.flight_surface_height_meters
+                        + LOW_FLIGHT_ALTITUDE_METERS;
+                    self.flight_surface_azimuth_radians += LOW_FLIGHT_SPEED_METERS_PER_SECOND
+                        * orbit_delta_seconds
+                        / (flight_radius * self.flight_latitude_radians.cos().max(0.01));
+                    self.update_low_flight_camera(planet_rotation_radians);
+                }
+            }
         }
         self.last_auto_orbit_sim_time = sim_time;
         let camera_world_position = self.camera.world_position();
-        let planet_rotation_radians =
-            planet::planet_rotation_radians(sim_time * scenario_planet_rotation_time_scale);
         let camera_planet_frame_position = self
             .camera
             .planet_frame_world_position(planet_rotation_radians);
         let camera_planet_frame_direction = self
             .camera
             .planet_frame_direction_dvec3(planet_rotation_radians);
+        let camera_planet_frame_up = self.camera.planet_frame_view_up(planet_rotation_radians);
         let camera_radius = camera_world_position.length();
-        let camera_altitude = camera_radius - planet::PLANET_RADIUS_METERS;
+        let camera_altitude =
+            if self.scenario.is_none() && self.camera_mode == CameraMode::LowFlight {
+                camera_radius - planet::PLANET_RADIUS_METERS - self.flight_surface_height_meters
+            } else {
+                camera_radius - planet::PLANET_RADIUS_METERS
+            };
         let delta_sim_time = (sim_time - self.previous_sim_time).max(f64::EPSILON);
         let velocity_meters_per_second =
             camera_world_position.distance(self.previous_camera_world_position) / delta_sim_time;
@@ -584,6 +828,7 @@ impl State {
                 .update(
                     camera_planet_frame_position,
                     camera_planet_frame_direction,
+                    camera_planet_frame_up,
                     sim_time,
                     [self.size.width, self.size.height],
                     self.camera.vertical_fov_radians(),
@@ -663,6 +908,11 @@ impl State {
             let exposure = exposure_state.exposure;
             let average_luminance = exposure_state.average_luminance;
             let ocean_wave_range = ocean_wave_range;
+            let blur_enabled = self.hdr.blur_enabled();
+            let bloom_enabled = self.hdr.bloom_enabled();
+            let render_debug_mode = self.render_debug_mode;
+            let animation_frozen = self.animation_frozen;
+            let camera_mode = self.camera_mode;
             let terrain_stats = self.terrain_stats.clone();
             let minimum_lod_level = terrain_stats
                 .level_histogram
@@ -695,6 +945,7 @@ impl State {
                                 "Altitude: {camera_altitude:.0} m  |  LOD: {lod_range}  |  Chunks: {}",
                                 terrain_stats.resident_chunks
                             ));
+                            ui.label(format!("Camera mode: {}", camera_mode.label()));
                             ui.label(format!(
                                 "Optical zoom: {vertical_fov_label}\u{00b0} vertical FOV"
                             ));
@@ -705,10 +956,29 @@ impl State {
                                 terrain_stats.max_seam_delta_meters
                             ));
                             ui.label(format!(
+                                "LOD work: {} splits  |  {} merges  |  {} culled",
+                                terrain_stats.splits, terrain_stats.merges, terrain_stats.culled_nodes
+                            ));
+                            ui.label(format!(
                                 "Exposure: {exposure:.3}  |  Average luminance: {average_luminance:.3}"
                             ));
+                            ui.label(format!(
+                                "Post: blur {}  |  bloom {}",
+                                if blur_enabled { "on" } else { "off" },
+                                if bloom_enabled { "on" } else { "off" },
+                            ));
+                            ui.label(format!(
+                                "Composition debug: {}",
+                                render_debug_mode.label(),
+                            ));
+                            ui.label(format!(
+                                "Animation: {}",
+                                if animation_frozen { "frozen" } else { "running" },
+                            ));
                             ui.label(format!("Ocean Gerstner range: {ocean_wave_range:.2} m"));
-                            ui.label("F3: toggle overlay  |  F12: capture PNG");
+                            ui.label(
+                                "F3: overlay  |  F4: camera mode  |  F6: blur  |  F7: bloom  |  F8: HDR  |  F9: composition  |  F10: freeze  |  F12: capture PNG",
+                            );
                             ui.label("Default: auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc/Q: quit");
                         });
                 }
@@ -796,6 +1066,7 @@ impl State {
             self.sun_direction,
             planet_rotation_radians,
             sim_time,
+            self.render_debug_mode,
         );
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
@@ -828,7 +1099,7 @@ impl State {
                     wgpu::RenderPassTimestampWrites {
                         query_set: &profiler.slots[slot_index].query_set,
                         beginning_of_pass_write_index: Some(0),
-                        end_of_pass_write_index: None,
+                        end_of_pass_write_index: Some(1),
                     }
                 }),
                 multiview_mask: None,
@@ -836,13 +1107,13 @@ impl State {
             if !solid_color_screen {
                 self.atmosphere
                     .draw(&mut render_pass, &self.camera_bind_group);
-                self.sun.draw(&mut render_pass, &self.camera_bind_group);
-                self.terrain.draw(&mut render_pass, &self.camera_bind_group);
+                if self.render_debug_mode != planet::RenderDebugMode::SkyOnly {
+                    self.sun.draw(&mut render_pass, &self.camera_bind_group);
+                    self.terrain.draw(&mut render_pass, &self.camera_bind_group);
+                }
             }
         }
-        self.hdr.encode_luminance(&mut encoder);
-        let hdr_luminance_readback_slot = self.hdr.encode_luminance_readback(&mut encoder);
-        let tone_map_timestamp_query_set = gpu_slot_index.map(|slot_index| {
+        let timestamp_query_set = gpu_slot_index.map(|slot_index| {
             &self
                 .gpu_profiler
                 .as_ref()
@@ -850,8 +1121,24 @@ impl State {
                 .slots[slot_index]
                 .query_set
         });
-        self.hdr
-            .encode_tone_map(&mut encoder, &view, tone_map_timestamp_query_set);
+        self.hdr.encode_luminance(
+            &mut encoder,
+            timestamp_query_set.map(|query_set| (query_set, 2, 3)),
+        );
+        let hdr_luminance_readback_slot = self.hdr.encode_luminance_readback(&mut encoder);
+        self.hdr.encode_blur(
+            &mut encoder,
+            timestamp_query_set.map(|query_set| (query_set, 4, 5)),
+        );
+        self.hdr.encode_bloom(
+            &mut encoder,
+            timestamp_query_set.map(|query_set| (query_set, 6, 7)),
+        );
+        self.hdr.encode_tone_map(
+            &mut encoder,
+            &view,
+            timestamp_query_set.map(|query_set| (query_set, 8, 9)),
+        );
         if let Some(paint_jobs) = &paint_jobs {
             let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("egui pass"),
@@ -866,7 +1153,13 @@ impl State {
                 })],
                 depth_stencil_attachment: None,
                 occlusion_query_set: None,
-                timestamp_writes: None,
+                timestamp_writes: timestamp_query_set.map(|query_set| {
+                    wgpu::RenderPassTimestampWrites {
+                        query_set,
+                        beginning_of_pass_write_index: Some(10),
+                        end_of_pass_write_index: Some(11),
+                    }
+                }),
                 multiview_mask: None,
             });
             self.egui_renderer.render(
@@ -896,8 +1189,20 @@ impl State {
         if let Some(slot_index) = gpu_slot_index {
             let profiler = self.gpu_profiler.as_ref().expect("GPU profiler exists");
             let slot = &profiler.slots[slot_index];
-            encoder.resolve_query_set(&slot.query_set, 0..2, &slot.resolve_buffer, 0);
-            encoder.copy_buffer_to_buffer(&slot.resolve_buffer, 0, &slot.readback_buffer, 0, 16);
+            let byte_size = u64::from(GPU_TIMESTAMP_COUNT) * 8;
+            encoder.resolve_query_set(
+                &slot.query_set,
+                0..GPU_TIMESTAMP_COUNT,
+                &slot.resolve_buffer,
+                0,
+            );
+            encoder.copy_buffer_to_buffer(
+                &slot.resolve_buffer,
+                0,
+                &slot.readback_buffer,
+                0,
+                byte_size,
+            );
         }
 
         let submit_started = Instant::now();
@@ -986,140 +1291,223 @@ impl State {
 
 fn main() {
     let launch_options = launch_options().unwrap_or_else(|error| panic!("{error}"));
-    let scenario_failed = Arc::new(AtomicBool::new(false));
-    let scenario_failed_in_loop = scenario_failed.clone();
     let event_loop = EventLoop::new().expect("failed to create event loop");
-    let window = Arc::new(
-        event_loop
-            .create_window(
-                WindowAttributes::default()
-                    .with_title("Cat in the Garden")
-                    .with_inner_size(winit::dpi::LogicalSize::new(960.0, 640.0)),
-            )
-            .expect("failed to create window"),
-    );
-    let mut state = pollster::block_on(State::new(
-        window.clone(),
-        launch_options.scenario_name,
-        launch_options.profile_render,
-        launch_options.vertical_fov_degrees,
-        launch_options.terrain_source,
-    ));
-    state.set_mouse_capture(&window, true);
+    let mut app = App::new(launch_options);
+    event_loop.run_app(&mut app).expect("event loop failed");
+    if app.scenario_failed.load(Ordering::Relaxed) {
+        std::process::exit(1);
+    }
+}
 
-    event_loop
-        .run(move |event, event_loop| match event {
-            Event::WindowEvent { window_id, event } if window_id == window.id() => {
-                if matches!(
-                    &event,
-                    WindowEvent::KeyboardInput { event, .. }
-                        if event.state.is_pressed()
-                            && matches!(
-                                event.physical_key,
-                                PhysicalKey::Code(KeyCode::Escape | KeyCode::KeyQ)
-                            )
-                ) {
-                    event_loop.exit();
-                    return;
-                }
-                let egui_response = state.egui_state.on_window_event(&window, &event);
-                if egui_response.repaint && !matches!(&event, WindowEvent::RedrawRequested) {
+struct App {
+    launch_options: LaunchOptions,
+    scenario_failed: Arc<AtomicBool>,
+    window: Option<Arc<Window>>,
+    state: Option<State>,
+}
+
+impl App {
+    fn new(launch_options: LaunchOptions) -> Self {
+        Self {
+            launch_options,
+            scenario_failed: Arc::new(AtomicBool::new(false)),
+            window: None,
+            state: None,
+        }
+    }
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+        let window = Arc::new(
+            event_loop
+                .create_window(
+                    WindowAttributes::default()
+                        .with_title("Cat in the Garden")
+                        .with_inner_size(winit::dpi::LogicalSize::new(960.0, 640.0)),
+                )
+                .expect("failed to create window"),
+        );
+        let mut state = pollster::block_on(State::new(
+            window.clone(),
+            self.launch_options.scenario_name.clone(),
+            self.launch_options.profile_render,
+            self.launch_options.vertical_fov_degrees,
+            self.launch_options.terrain_source.clone(),
+        ));
+        state.set_mouse_capture(&window, true);
+        self.state = Some(state);
+        self.window = Some(window);
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        if window_id != window.id() {
+            return;
+        }
+        let state = self.state.as_mut().expect("state initialized with window");
+        if matches!(
+            &event,
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state.is_pressed()
+                    && matches!(
+                        event.physical_key,
+                        PhysicalKey::Code(KeyCode::Escape | KeyCode::KeyQ)
+                    )
+        ) {
+            event_loop.exit();
+            return;
+        }
+        let egui_response = state.egui_state.on_window_event(window, &event);
+        if egui_response.repaint && !matches!(&event, WindowEvent::RedrawRequested) {
+            window.request_redraw();
+        }
+
+        if let WindowEvent::MouseWheel { delta, .. } = &event {
+            let wheel_delta = match delta {
+                winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
+                winit::event::MouseScrollDelta::PixelDelta(position) => position.y / 80.0,
+            };
+            state.zoom_camera(wheel_delta);
+            window.request_redraw();
+            return;
+        }
+
+        if !egui_response.consumed {
+            match event {
+                WindowEvent::CloseRequested => event_loop.exit(),
+                WindowEvent::Focused(focused) => state.set_mouse_capture(window, focused),
+                WindowEvent::Resized(size) => state.resize(size),
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::F3) =>
+                {
+                    state.toggle_debug_overlay();
                     window.request_redraw();
                 }
-
-                // The 3D camera owns the wheel. Egui can otherwise retain a
-                // stale pointer over the HUD and consume every wheel event
-                // before zoom sees it.
-                if let WindowEvent::MouseWheel { delta, .. } = &event {
-                    let wheel_delta = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
-                        MouseScrollDelta::PixelDelta(position) => position.y / 80.0,
-                    };
-                    state.zoom_camera(wheel_delta);
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::F4) =>
+                {
+                    state.toggle_camera_mode();
                     window.request_redraw();
-                    return;
                 }
-
-                if !egui_response.consumed {
-                    match event {
-                        WindowEvent::CloseRequested => event_loop.exit(),
-                        WindowEvent::Focused(focused) => state.set_mouse_capture(&window, focused),
-                        WindowEvent::Resized(size) => state.resize(size),
-                        WindowEvent::KeyboardInput { event, .. }
-                            if event.state.is_pressed()
-                                && event.physical_key == PhysicalKey::Code(KeyCode::F3) =>
-                        {
-                            state.toggle_debug_overlay();
-                            window.request_redraw();
-                        }
-                        WindowEvent::KeyboardInput { event, .. }
-                            if event.state.is_pressed()
-                                && event.physical_key == PhysicalKey::Code(KeyCode::F12) =>
-                        {
-                            state.manual_screenshot_requested = true;
-                            window.request_redraw();
-                        }
-                        WindowEvent::KeyboardInput { event, .. }
-                            if event.state.is_pressed()
-                                && event.physical_key == PhysicalKey::Code(KeyCode::ArrowLeft) =>
-                        {
-                            state.rotate_camera(-0.08, 0.0);
-                            window.request_redraw();
-                        }
-                        WindowEvent::KeyboardInput { event, .. }
-                            if event.state.is_pressed()
-                                && event.physical_key == PhysicalKey::Code(KeyCode::ArrowRight) =>
-                        {
-                            state.rotate_camera(0.08, 0.0);
-                            window.request_redraw();
-                        }
-                        WindowEvent::KeyboardInput { event, .. }
-                            if event.state.is_pressed()
-                                && event.physical_key == PhysicalKey::Code(KeyCode::ArrowUp) =>
-                        {
-                            state.rotate_camera(0.0, 0.05);
-                            window.request_redraw();
-                        }
-                        WindowEvent::KeyboardInput { event, .. }
-                            if event.state.is_pressed()
-                                && event.physical_key == PhysicalKey::Code(KeyCode::ArrowDown) =>
-                        {
-                            state.rotate_camera(0.0, -0.05);
-                            window.request_redraw();
-                        }
-                        WindowEvent::RedrawRequested => {
-                            if let Some(passed) = state.render(&window) {
-                                scenario_failed_in_loop.store(!passed, Ordering::Relaxed);
-                                event_loop.exit();
-                            }
-                        }
-                        _ => {}
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::F12) =>
+                {
+                    state.manual_screenshot_requested = true;
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::F6) =>
+                {
+                    state.toggle_blur();
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::F7) =>
+                {
+                    state.toggle_bloom();
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::F8) =>
+                {
+                    state.toggle_hdr_effect();
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::F9) =>
+                {
+                    state.cycle_render_debug_mode();
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::F10) =>
+                {
+                    state.toggle_animation_freeze();
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::ArrowLeft) =>
+                {
+                    state.rotate_camera(-0.08, 0.0);
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::ArrowRight) =>
+                {
+                    state.rotate_camera(0.08, 0.0);
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::ArrowUp) =>
+                {
+                    state.rotate_camera(0.0, 0.05);
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::ArrowDown) =>
+                {
+                    state.rotate_camera(0.0, -0.05);
+                    window.request_redraw();
+                }
+                WindowEvent::RedrawRequested => {
+                    if let Some(passed) = state.render(window) {
+                        self.scenario_failed.store(!passed, Ordering::Relaxed);
+                        event_loop.exit();
                     }
                 }
+                _ => {}
             }
-            Event::DeviceEvent {
-                event: DeviceEvent::MouseMotion { delta },
-                ..
-            } if state.mouse_captured => {
-                state.look_camera(
-                    delta.0 * MOUSE_LOOK_RADIANS_PER_PIXEL,
-                    -delta.1 * MOUSE_LOOK_RADIANS_PER_PIXEL,
-                );
-                window.request_redraw();
-            }
-            Event::AboutToWait => {
-                // Present mode is FIFO, so this remains display-paced while the cached HUD
-                // refreshes independently at its lower rate. Waiting for HUD refreshes here
-                // incorrectly made an otherwise idle scene render at 10 FPS.
-                event_loop.set_control_flow(ControlFlow::Poll);
-                window.request_redraw();
-            }
-            _ => {}
-        })
-        .expect("event loop failed");
+        }
+    }
 
-    if scenario_failed.load(Ordering::Relaxed) {
-        std::process::exit(1);
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: winit::event::DeviceId,
+        event: DeviceEvent,
+    ) {
+        let (Some(window), Some(state)) = (self.window.as_ref(), self.state.as_mut()) else {
+            return;
+        };
+        if let DeviceEvent::MouseMotion { delta } = event
+            && state.mouse_captured
+        {
+            state.look_camera(
+                delta.0 * MOUSE_LOOK_RADIANS_PER_PIXEL,
+                -delta.1 * MOUSE_LOOK_RADIANS_PER_PIXEL,
+            );
+            window.request_redraw();
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(window) = self.window.as_ref() {
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+            window.request_redraw();
+        }
     }
 }
 

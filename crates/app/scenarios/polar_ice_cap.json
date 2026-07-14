@@ -1,0 +1,26 @@
+{
+  "name": "polar_ice_cap",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 2.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "planet_rotation_time_scale": 0.0,
+  "screenshot_times_seconds": [2.0],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [0.0, 12000000.0, 0.0],
+      "look_at": [0.0, 0.0, 0.0]
+    }
+  ],
+  "sun_waypoints": [
+    { "time_s": 0.0, "direction": [0.2, 1.0, 0.2] }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 1,
+    "ice_sample_uv": [0.5, 0.5],
+    "min_ice_sample_luminance": 0.2,
+    "max_ice_sample_channel_spread": 0.3
+  }
+}

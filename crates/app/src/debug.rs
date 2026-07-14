@@ -91,6 +91,7 @@ struct ScreenshotEntry {
     seam_gap_verified: Option<bool>,
     sky_sample_rgb: Option<[u8; 3]>,
     day_night_surface_luminance_ratio: Option<f32>,
+    ice_sample_rgb: Option<[u8; 3]>,
 }
 
 pub struct RunArtifacts {
@@ -124,6 +125,7 @@ struct AssertionTracker {
     maximum_fallback_chunks: u32,
     sky_samples: Vec<[u8; 3]>,
     day_night_surface_luminance_ratios: Vec<f32>,
+    ice_samples: Vec<[u8; 3]>,
     exposure_sample_count: usize,
     exposure_bound_violations: usize,
     maximum_exposure_frame_delta: f32,
@@ -158,6 +160,7 @@ impl AssertionTracker {
             maximum_fallback_chunks: 0,
             sky_samples: Vec::new(),
             day_night_surface_luminance_ratios: Vec::new(),
+            ice_samples: Vec::new(),
             exposure_sample_count: 0,
             exposure_bound_violations: 0,
             maximum_exposure_frame_delta: 0.0,
@@ -538,6 +541,33 @@ impl AssertionTracker {
                 ),
             ));
         }
+        if self.config.min_ice_sample_luminance.is_some()
+            || self.config.max_ice_sample_channel_spread.is_some()
+        {
+            let sample = self.ice_samples.last().copied();
+            let luminance = sample.map(sky_luminance).unwrap_or(-1.0);
+            let spread = sample
+                .map(|rgb| {
+                    let minimum = *rgb.iter().min().expect("RGB has channels") as f32 / 255.0;
+                    let maximum = *rgb.iter().max().expect("RGB has channels") as f32 / 255.0;
+                    maximum - minimum
+                })
+                .unwrap_or(f32::INFINITY);
+            let passed = sample.is_some()
+                && self
+                    .config
+                    .min_ice_sample_luminance
+                    .is_none_or(|v| luminance >= v)
+                && self
+                    .config
+                    .max_ice_sample_channel_spread
+                    .is_none_or(|v| spread <= v);
+            results.push(assertion_result(
+                "polar_ice_is_bright_and_neutral",
+                passed,
+                format!("sample {sample:?}, luminance {luminance:.3}, channel spread {spread:.3}"),
+            ));
+        }
         results
     }
 }
@@ -590,6 +620,7 @@ pub struct PendingCapture {
     filename: String,
 }
 
+#[allow(dead_code)]
 impl RunArtifacts {
     pub fn create(scenario: &str) -> Result<(Self, SharedFile), String> {
         Self::create_with_assertions(scenario, ScenarioAssertions::default())
@@ -804,12 +835,18 @@ impl RunArtifacts {
         );
     }
 
-    pub fn record_gpu_timestamp(&self, sim_time: f64, gpu_render_ms: f64) {
+    pub fn record_gpu_timestamps(&self, sim_time: f64, timings: crate::GpuStageTimings) {
         tracing::info!(
             target: "catinthegarden::gpu_profile",
             sim_time,
-            gpu_render_ms,
-            "asynchronous GPU timing sample"
+            gpu_scene_ms = timings.scene_ms,
+            gpu_luminance_ms = timings.luminance_ms,
+            gpu_blur_ms = timings.blur_ms,
+            gpu_bloom_ms = timings.bloom_ms,
+            gpu_tone_map_ms = timings.tone_map_ms,
+            gpu_egui_ms = timings.egui_ms,
+            gpu_render_ms = timings.total_ms(),
+            "asynchronous GPU stage timing sample"
         );
     }
 
@@ -850,6 +887,7 @@ impl RunArtifacts {
         seam_gap_verified: Option<bool>,
         sky_sample_rgb: Option<[u8; 3]>,
         day_night_surface_luminance_ratio: Option<f32>,
+        ice_sample_rgb: Option<[u8; 3]>,
     ) -> Result<(), String> {
         self.screenshots.push(ScreenshotEntry {
             filename,
@@ -858,6 +896,7 @@ impl RunArtifacts {
             seam_gap_verified,
             sky_sample_rgb,
             day_night_surface_luminance_ratio,
+            ice_sample_rgb,
         });
         self.write_manifests()
     }
@@ -894,6 +933,17 @@ impl RunArtifacts {
         self.assertion_tracker
             .observe_day_night_surface_luminance_ratio(ratio);
         Some(ratio)
+    }
+
+    fn record_ice_sample(&mut self, pixels: &[u8], width: u32, height: u32) -> Option<[u8; 3]> {
+        let [u, v] = self.assertion_tracker.config.ice_sample_uv?;
+        let x = (u.clamp(0.0, 1.0) * (width - 1) as f32).round() as usize;
+        let y = (v.clamp(0.0, 1.0) * (height - 1) as f32).round() as usize;
+        let sample: [u8; 3] = pixels[(y * width as usize + x) * 4..][..3]
+            .try_into()
+            .expect("sample coordinate is inside the screenshot");
+        self.assertion_tracker.ice_samples.push(sample);
+        Some(sample)
     }
 
     fn write_manifests(&self) -> Result<(), String> {
@@ -1028,6 +1078,7 @@ pub fn finish_capture(
     let sky_sample_rgb = artifacts.record_sky_sample(&pixels, pending.width, pending.height);
     let day_night_surface_luminance_ratio =
         artifacts.record_day_night_surface_luminance_ratio(&pixels, pending.width, pending.height);
+    let ice_sample_rgb = artifacts.record_ice_sample(&pixels, pending.width, pending.height);
     artifacts.record_screenshot(
         pending.filename,
         sim_time,
@@ -1035,6 +1086,7 @@ pub fn finish_capture(
         seam_gap_verified,
         sky_sample_rgb,
         day_night_surface_luminance_ratio,
+        ice_sample_rgb,
     )?;
     Ok(solid_color_verified)
 }
@@ -1116,6 +1168,9 @@ mod tests {
             max_exposure_delta_per_frame: None,
             max_exposure_oscillation_events: None,
             min_ocean_wave_height_range_meters: None,
+            ice_sample_uv: None,
+            min_ice_sample_luminance: None,
+            max_ice_sample_channel_spread: None,
         }
     }
 

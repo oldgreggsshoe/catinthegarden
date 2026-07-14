@@ -12,7 +12,7 @@ Do not remove or weaken the maintenance requirement above.
 ## Handoff metadata
 
 - Repository: `/home/dad/catinthegarden`
-- Branch: `main`
+- Branch: `experiment/composition-debug`
 - Remote branch: `origin/main`
 - Implementation baseline reviewed: current working tree based on `f993fd8`
   (`Add canonical project handoff`)
@@ -87,8 +87,11 @@ These constraints come from `AGENTS.md` and current code. Preserve them.
 
 ### Terrain generation and streaming
 
-- The normal outmap path never generates baked terrain noise or erosion at
-  runtime; the baker owns that work.
+- The normal outmap path never generates macro geography, erosion, hydrology,
+  climate, or biome data at runtime; the baker owns that work. Phase 7 adds a
+  deliberately bounded four-octave direction field only as land microrelief
+  over the baked height, so sparse ancestor fallback has useful detail at any
+  longitude without changing the baked coastline or biome.
 - `--terrain placeholder` remains a Phase-2 diagnostic fallback and evaluates
   its analytic multiscale sine height at runtime.
 - Runtime normals are central differences from height. Do not add a baked
@@ -152,7 +155,7 @@ profilers. `State::render` is the main integration seam.
 Important constants:
 
 - `DEFAULT_OUTMAP_PATH = "assets/outmaps/test-planet"`
-- default auto-orbit speed: `0.4 rad/s`
+- default auto-orbit speed: `0.4 rad/s` in a 28.5-degree inclined plane
 - mouse-look sensitivity: `0.0006 rad/pixel`
 - visible HUD refresh: 100 ms
 - hidden HUD refresh bookkeeping: 500 ms
@@ -163,7 +166,7 @@ Per-frame flow:
 
 1. Collect completed GPU timestamps and luminance readbacks.
 2. Advance fixed scenario time or interactive elapsed time.
-3. Apply scenario pose/FOV/sun or automatic azimuth orbit.
+3. Apply scenario pose/FOV/sun or automatic inclined-plane orbit.
 4. Compute the planet's 600-second axial rotation.
 5. Transform camera position/direction into the rotating planet-local frame.
 6. Update smoothed exposure using the previous luminance result.
@@ -197,7 +200,8 @@ Rgba16Float HDR scene + reversed-Z Depth32Float
 `planet::OrbitCamera` stores an f64 orbit and an optical FOV:
 
 - default center radius: 10,000,000 m, therefore 6,000,000 m altitude;
-- default elevation: 20 degrees;
+- default orbit begins at its equatorial ascending node; interactive auto-orbit
+  has a 28.5-degree inclination;
 - FOV default: 45 degrees; maximum: 75 degrees; the 640px reference minimum
   is 0.00005 degrees and scales with viewport height as described below;
 - mouse look is a yaw/pitch offset in the local frame whose forward/down vector
@@ -229,6 +233,10 @@ Controls:
 | Left/Right arrows | Orbit azimuth by 0.08 radians |
 | Up/Down arrows | Orbit elevation by 0.05 radians |
 | F3 | Toggle debug HUD |
+| F4 | Toggle orbit / Mach 10 level-flight camera, held 5,000 ft above the streamed terrain plus mirrored global microrelief (or sea level over ocean); it starts level with a horizontal horizon, and mouse yaw/pitch maps to local left/right and sky/ground without changing the flight path |
+| F6/F7/F8 | Toggle blur/bloom/HDR filmic effect |
+| F9 | Cycle composition debug: raw albedo, surface lighting, aerial contribution, sky-only, final HDR |
+| F10 | Freeze/resume interactive scene time (orbit, rotation, ocean, exposure adaptation) for matched diagnostics |
 | F12 | Capture PNG into the current run directory |
 | Escape or Q | Quit |
 
@@ -427,8 +435,12 @@ aerial perspective, and LOD dither.
 - Authored palette values are converted from sRGB to linear before HDR light.
 - Beach tint uses continuous bilinear height rather than nearest biome class.
 - Ocean coverage blends roughly from -80 m to +120 m.
-- Surface direct sunlight has a 5x artistic scale.
-- Terrain receives a small blue-weighted analytic sky-diffuse fill.
+- Surface direct sunlight has a 2x artistic scale and clamps at zero on the
+  terminator, preventing direct light from washing terrain materials white.
+- Terrain and ocean receive diffuse fill from a bounded local-atmosphere sample
+  directly above the surface normal. This keeps nearby sky colour on the
+  surface through sunset independently of direct-sun visibility without the
+  unstable energy and vertex cost of sparsely sampled near-horizon paths.
 - Fully occulted direct and sky contributions become zero.
 
 ### Atmosphere
@@ -437,20 +449,25 @@ aerial perspective, and LOD dither.
 perspective is computed per vertex in `planet.wgsl`; ocean recomputes it per
 fragment. Current shared constants are:
 
-- atmosphere shell: 360 km;
-- top-edge density fade: 240 km;
+- atmosphere shell: 720 km;
+- top-edge density fade: 480 km;
 - Rayleigh scale height: 36 km;
 - Mie scale height: 4.8 km;
 - Rayleigh coefficient: `(5.8, 13.5, 33.1)e-6 / m`;
-- Mie coefficient: `21e-6 / m`;
+- Mie coefficient: `0.01e-6 / m`;
 - Mie g: 0.76;
-- visual solar radiance: 4.0, doubled from 2.0 in `75b5d1d`.
+- visual solar radiance: 1.25.
+- fullscreen and aerial scattering use the shared physical coefficients with no
+  separate visual brightness, forward-Mie, or artificial limb multiplier.
 
-The raymarch excludes space before atmosphere entry from optical depth and uses
-a density/spacing-aware penumbra for smooth directional occultation. Deep dark
-side samples receive no leaked direct in-scattering. The 4.0 scale changes only
-visible atmospheric in-scatter; it does not change extinction or direct surface
-light. Screen rays are generated as camera-local `(x, y, -1)` directions, and
+The raymarch excludes space before atmosphere entry from optical depth, stops
+at the solid-planet intersection, and uses a density/spacing-aware penumbra
+for smooth directional occultation. Deep dark-side samples receive no leaked
+direct in-scattering or far-side shell contribution. Aerial in-scatter uses the
+same scale-height- and air-mass-bounded Rayleigh/Mie path lengths as aerial
+extinction, and is limited to the finite fraction removed from the view ray;
+an opaque horizon chord therefore cannot add unbounded light. Screen rays are
+generated as camera-local `(x, y, -1)` directions, and
 the f64 CPU basis transforms camera radial/sun vectors into that frame before
 f32 upload; rebuilding tiny ray offsets from large planet-frame f32 basis
 vectors would quantize the maximum optical zoom.
@@ -481,6 +498,10 @@ It changes appearance only, not scene illumination.
 - minimum exposure: 0.05
 - maximum exposure: 4.0
 - tone map: Narkowicz ACES fitted approximation
+
+Disabling the HDR effect bypasses ACES but continues to apply the current
+auto-exposure value. This keeps dim atmospheric outlines visible without
+changing the surface-lighting inputs.
 
 The 4x cap prevents a mostly black orbital frame from washing out the visible
 planet. Egui is rendered after tonemapping and is not affected by exposure.
@@ -763,8 +784,10 @@ forbid deleting files without an explicit request.
 
 ## Known limitations and actionable risks
 
-1. Outmap detail above L4 exists only around +X. Deep geometry elsewhere often
-   samples L4 fallback and provides no new visual information.
+1. Baked outmap detail above L4 exists only around +X. Deep geometry elsewhere
+   still samples L4 macro height/material fallback, but now gains bounded
+   seam-safe land microrelief and material breakup from planet-local direction;
+   it is not equivalent to fully baked erosion or biome detail.
 2. The maximum orbital zoom covers about 5.24 m vertically at the 640px
    reference height (the physical span scales with viewport height to preserve
    metres per pixel). CPU f64 view-space rebasing and the one-pixel camera
@@ -778,7 +801,10 @@ forbid deleting files without an explicit request.
    capture is a uniform ocean-color image and must not be cited as pixel-level
    proof of added surface detail.
 4. SSE and approximate bounds still use placeholder estimates instead of
-   measured per-tile baked error/min/max height.
+   measured per-tile baked error/min/max height. The failed blanket 12.5km
+   bounds expansion was removed because it exhausted the low-flight leaf
+   budget; the current bounds include only the known 111.5m global detail
+   amplitude, so data-aware streamed bounds remain the correct future fix.
 5. Runtime tile disk reads and GPU uploads are synchronous.
 6. Terrain currently performs one draw per active/fading render node.
 7. `limb_atmosphere` has no tier-2 pixel assertion and still relies on visual
@@ -794,6 +820,67 @@ forbid deleting files without an explicit request.
     above remains in the working tree pending explicit permission to remove it.
 
 ## Next action
+
+The low-flight detail experiment now covers the whole planet rather than a
+pre-baked corridor. `planet.wgsl` layers four bounded, direction-based relief
+bands (about 6km through 12m wavelength) over baked land above the coastline
+and uses the same value for modest material variation. It costs four sine
+evaluations per height sample, with detail interpolated to the fragment stage
+instead of recomputed per pixel. `planet.rs` mirrors the exact field, and
+`TerrainRenderer::surface_height_meters_at` applies it to the highest resident
+tile while resolving below-sea samples to sea level. Focused CPU tests cover
+the amplitude, coastline/ocean behavior, and low-flight screen-ray coverage.
+The next visual check should fly away from +X and compare terrain readability
+and frame-stage profile samples before changing amplitudes or frequencies.
+
+Phase 7 now includes full-screen blur and bloom stages. Their startup defaults
+are `BLUR_ENABLED` and `BLOOM_ENABLED` in `crates/app/src/planet.rs`; F6 and F7
+toggle them at runtime. Bloom now thresholds and blurs the HDR scene in its own
+target before compositing it over the original (or standalone-blurred) scene,
+so neither effect disables the other. `--profile-render` logs separate
+asynchronous GPU times for scene, luminance, blur, bloom, tone-map, and egui
+stages. Terrain aerial perspective evaluates solar visibility at a
+representative air sample and adds bounded sunward skylight, retaining
+low-sun horizon haze when the terrain endpoint has just entered shadow. The
+debug panel also shows live effect state plus split/merge/cull work.
+
+The active experiment branch, `experiment/composition-debug`, adds F9
+composition diagnostics. They are deliberately rendered from the normal camera
+uniform and captured through the normal HDR path, so equivalent F12 captures
+can isolate whether an artifact originates in source material, surface
+lighting, aerial contribution, or the fullscreen sky before changing visual
+constants again.
+
+The first F9 capture set found detailed source albedo and surface lighting, but
+an overwhelmingly bright aerial-contribution view and nonphysical sky-only
+bands. The temporary 8× fullscreen brightness, 32× Mie forward lobe, and
+fullscreen artificial limb term were therefore removed. Re-capture the same
+five F9 modes before further colour tuning; terrain palette and direct surface
+lighting should remain untouched unless their own diagnostic modes regress.
+
+F10 freezes the interactive scene time before a diagnostic capture set, keeping
+the camera, planet rotation, ocean phase, and exposure fixed while F9/F12 are used. The
+sky raymarch retains its 16-sample budget but distributes samples cubically
+around a ray's lowest atmospheric point, where exponential density changes
+fastest. It also terminates at the solid planet rather than rendering the
+far-side atmosphere through it. Aerial in-scatter now uses the phase-weighted
+finite scattered view fraction rather than an unbounded emissive `beta *
+length` term. It uses two density-weighted samples along the bounded view
+column, each with local solar visibility and camera-to-sample transmittance,
+instead of applying one midpoint air sample to the whole column. These changes
+preserve the current fullscreen sample budget. `AERIAL_IN_SCATTER_GAIN` is a
+separate 3.0x visual control applied only after that bounded aerial result; it
+does not change extinction, direct terrain/ocean lighting, or the sky pass.
+
+The bounded polar slice is implemented in `polar_ice_cap`: baked Ice overrides
+ocean at the poles, receives a cool diffuse floor, and a center-pixel assertion
+checks that the visible cap is bright and sufficiently neutral. The focused
+scenario passes. A full regression attempt was started, but the existing unit
+suite currently fails six LOD/rotation expectations unrelated to post effects;
+do not describe Phase 7 as fully regressed until those policy/test mismatches
+are resolved and every named scenario completes from one clean HEAD.
+
+### Previous next action
 
 Begin Phase 7 with one bounded ice-cap visual slice:
 

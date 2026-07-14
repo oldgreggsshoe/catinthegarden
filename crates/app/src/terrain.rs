@@ -15,7 +15,8 @@ use crate::{
     outmap::{Outmap, OutmapError, TileData},
     planet::{
         CHUNK_GRID_QUADS, CameraViewBasis, ChunkVertex, DEFAULT_MAX_ACTIVE_CHUNKS, MAX_LOD_LEVEL,
-        PlanetLod, QuadtreeNode, build_chunk_mesh, cube_face_direction,
+        PlanetLod, QuadtreeNode, build_chunk_mesh, cube_face_basis, cube_face_direction,
+        outmap_surface_height_meters, placeholder_height_meters,
     },
 };
 
@@ -264,10 +265,36 @@ impl TerrainRenderer {
         })
     }
 
+    /// Returns the streamed terrain height under a planet-local radial
+    /// direction. Outmap sampling deliberately uses only resident CPU tile
+    /// data, so following terrain never adds disk I/O or GPU uploads to a
+    /// flight frame.
+    pub fn surface_height_meters_at(&self, local_surface_direction: DVec3) -> Option<f64> {
+        match &self.source {
+            TerrainDataSource::Placeholder => {
+                Some(placeholder_height_meters(local_surface_direction))
+            }
+            TerrainDataSource::Outmap(_) => {
+                let (face, face_uv) = cube_face_uv(local_surface_direction)?;
+                self.tile_cache
+                    .iter()
+                    .filter_map(|(key, tile)| {
+                        source_tile_uv(*key, face, face_uv)
+                            .map(|uv| (key.level, sample_height_cpu(&tile.heights_meters, uv)))
+                    })
+                    .max_by_key(|(level, _)| *level)
+                    .map(|(_, height)| {
+                        outmap_surface_height_meters(f64::from(height), local_surface_direction)
+                    })
+            }
+        }
+    }
+
     pub fn update(
         &mut self,
         camera_world: DVec3,
         camera_forward: DVec3,
+        camera_up: DVec3,
         sim_time: f64,
         viewport: [u32; 2],
         vertical_fov_radians: f64,
@@ -275,9 +302,10 @@ impl TerrainRenderer {
         assert!(sim_time.is_finite() && sim_time >= 0.0);
         self.tile_cache_tick = self.tile_cache_tick.wrapping_add(1);
         self.purge_expired_lod_transitions(sim_time);
-        let lod_update = self.lod.update_for_view(
+        let lod_update = self.lod.update_for_view_with_up(
             camera_world,
             camera_forward,
+            camera_up,
             f64::from(viewport[0].max(1)) / f64::from(viewport[1].max(1)),
             viewport[1].max(1),
             vertical_fov_radians,
@@ -432,7 +460,7 @@ impl TerrainRenderer {
         let mut instances = Vec::with_capacity(render_nodes.len());
         self.draw_items.clear();
         let mut fallback_chunks = 0_u32;
-        let camera_view_basis = CameraViewBasis::from_forward(camera_forward);
+        let camera_view_basis = CameraViewBasis::from_forward_and_up(camera_forward, camera_up);
         for (instance_index, (render_node, resolved)) in
             render_nodes.iter().zip(resolved_tiles.iter()).enumerate()
         {
@@ -878,6 +906,63 @@ fn tile_key(node: QuadtreeNode) -> Result<TileKey, TerrainError> {
     })
 }
 
+#[cfg(test)]
+fn source_tile_uv_at_direction(key: TileKey, direction: DVec3) -> Option<[f32; 2]> {
+    let (face, face_uv) = cube_face_uv(direction)?;
+    source_tile_uv(key, face, face_uv)
+}
+
+fn source_tile_uv(key: TileKey, face: CubeFace, face_uv: [f64; 2]) -> Option<[f32; 2]> {
+    (key.face == face).then_some(())?;
+
+    let tiles_per_side = 1_u32 << key.level;
+    let coordinates = face_uv.map(|coordinate| {
+        ((coordinate + 1.0) * 0.5 * f64::from(tiles_per_side)).clamp(0.0, f64::from(tiles_per_side))
+    });
+    let local_uv = [
+        coordinates[0] - f64::from(key.x),
+        coordinates[1] - f64::from(key.y),
+    ];
+    let contains = |coordinate: f64, index: u32| {
+        coordinate >= 0.0
+            && (coordinate < 1.0 || (index + 1 == tiles_per_side && coordinate <= 1.0))
+    };
+    (contains(local_uv[0], key.x) && contains(local_uv[1], key.y))
+        .then(|| [local_uv[0] as f32, local_uv[1] as f32])
+}
+
+fn cube_face_uv(direction: DVec3) -> Option<(CubeFace, [f64; 2])> {
+    if !direction.is_finite() || direction.length_squared() == 0.0 {
+        return None;
+    }
+    let direction = direction.normalize();
+    let mut selected_face = CubeFace::PositiveX;
+    let mut selected_normal = DVec3::X;
+    let mut selected_tangent_u = DVec3::NEG_Z;
+    let mut selected_tangent_v = DVec3::Y;
+    let mut largest_normal_dot = f64::NEG_INFINITY;
+    for face in CubeFace::ALL {
+        let (normal, tangent_u, tangent_v) = cube_face_basis(face.index());
+        let normal_dot = direction.dot(normal);
+        if normal_dot > largest_normal_dot {
+            selected_face = face;
+            selected_normal = normal;
+            selected_tangent_u = tangent_u;
+            selected_tangent_v = tangent_v;
+            largest_normal_dot = normal_dot;
+        }
+    }
+    (largest_normal_dot > 0.0).then(|| {
+        (
+            selected_face,
+            [
+                direction.dot(selected_tangent_u) / direction.dot(selected_normal),
+                direction.dot(selected_tangent_v) / direction.dot(selected_normal),
+            ],
+        )
+    })
+}
+
 fn fallback_uv_transform(requested: TileKey, source: TileKey) -> ([f32; 2], [f32; 2]) {
     debug_assert_eq!(requested.face, source.face);
     debug_assert!(source.level <= requested.level);
@@ -993,10 +1078,35 @@ mod tests {
     };
 
     use super::{
-        fallback_uv_transform, lod_transition_progress, nodes_share_lod_transition,
-        pack_terrain_info, sample_height_cpu,
+        cube_face_uv, fallback_uv_transform, lod_transition_progress, nodes_share_lod_transition,
+        pack_terrain_info, sample_height_cpu, source_tile_uv_at_direction,
     };
-    use crate::planet::{QuadtreeNode, build_chunk_mesh};
+    use crate::planet::{QuadtreeNode, build_chunk_mesh, cube_face_direction};
+
+    #[test]
+    fn cube_face_uv_inverts_cube_face_direction() {
+        for face in CubeFace::ALL {
+            let direction = cube_face_direction(face.index(), 0.37, -0.61);
+            let (sampled_face, [u, v]) = cube_face_uv(direction).expect("valid cube direction");
+            assert_eq!(sampled_face, face);
+            assert!((u - 0.37).abs() < 1.0e-12);
+            assert!((v + 0.61).abs() < 1.0e-12);
+        }
+    }
+
+    #[test]
+    fn direction_maps_to_its_resident_source_tile_uv() {
+        let key = TileKey {
+            face: CubeFace::PositiveX,
+            level: 3,
+            x: 5,
+            y: 1,
+        };
+        let direction = cube_face_direction(key.face.index(), 0.375, -0.625);
+        let uv = source_tile_uv_at_direction(key, direction).expect("direction is in tile");
+        assert!((uv[0] - 0.5).abs() < f32::EPSILON);
+        assert!((uv[1] - 0.5).abs() < f32::EPSILON);
+    }
 
     #[test]
     fn child_uv_maps_into_ancestor_quadrant() {
@@ -1047,6 +1157,26 @@ mod tests {
             y: 9,
         });
         assert_eq!(first.indices, second.indices);
+    }
+
+    #[test]
+    fn every_cube_face_chunk_winds_outward() {
+        for face in 0..6 {
+            let chunk = build_chunk_mesh(QuadtreeNode::root(face));
+            let [first, second, third] = [
+                chunk.indices[0] as usize,
+                chunk.indices[1] as usize,
+                chunk.indices[2] as usize,
+            ];
+            let first_position = chunk.vertex_world_position(first, false);
+            let second_position = chunk.vertex_world_position(second, false);
+            let third_position = chunk.vertex_world_position(third, false);
+            let normal = (second_position - first_position).cross(third_position - first_position);
+            assert!(
+                normal.dot(first_position) > 0.0,
+                "cube face {face} has inward-facing terrain triangles"
+            );
+        }
     }
 
     #[test]

@@ -1,14 +1,15 @@
 const PLANET_RADIUS_METERS: f32 = 4000000.0;
-const ATMOSPHERE_HEIGHT_METERS: f32 = 360000.0;
-const ATMOSPHERE_EDGE_FADE_METERS: f32 = 240000.0;
+const ATMOSPHERE_HEIGHT_METERS: f32 = 720000.0;
+const ATMOSPHERE_EDGE_FADE_METERS: f32 = 480000.0;
 const ATMOSPHERE_RADIUS_METERS: f32 = PLANET_RADIUS_METERS + ATMOSPHERE_HEIGHT_METERS;
 const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 36000.0;
 const MIE_SCALE_HEIGHT_METERS: f32 = 4800.0;
 const RAYLEIGH_COEFFICIENT: vec3<f32> = vec3<f32>(5.8e-6, 13.5e-6, 33.1e-6);
-const MIE_COEFFICIENT: vec3<f32> = vec3<f32>(40.0e-6);
+const MIE_COEFFICIENT: vec3<f32> = vec3<f32>(0.01e-6);
 const MIE_G: f32 = 0.76;
-const SOLAR_RADIANCE: f32 = 4.0;
+const SOLAR_RADIANCE: f32 = 1.25;
 const SKY_SAMPLE_COUNT: u32 = 16u;
+const SKY_DENSITY_SAMPLE_EXPONENT: f32 = 3.0;
 
 struct Camera {
     projection_matrix: mat4x4<f32>,
@@ -63,6 +64,25 @@ fn sphere_interval(radius_meters: f32, radial_dot_ray: f32) -> vec2<f32> {
     return vec2<f32>(-radial_dot_ray - root, -radial_dot_ray + root);
 }
 
+fn solid_planet_entry_distance(radius_meters: f32, radial_dot_ray: f32) -> f32 {
+    let discriminant = radial_dot_ray * radial_dot_ray
+        + PLANET_RADIUS_METERS * PLANET_RADIUS_METERS
+        - radius_meters * radius_meters;
+    if discriminant <= 0.0 {
+        return 1.0e30;
+    }
+    let root = sqrt(discriminant);
+    let near_distance = -radial_dot_ray - root;
+    if near_distance > 0.0 {
+        return near_distance;
+    }
+    let far_distance = -radial_dot_ray + root;
+    if far_distance > 0.0 {
+        return far_distance;
+    }
+    return 1.0e30;
+}
+
 fn altitude_along_ray(radius_meters: f32, radial_dot_ray: f32, distance_meters: f32) -> f32 {
     return sqrt(
         radius_meters * radius_meters
@@ -108,6 +128,26 @@ fn view_direction(ndc: vec2<f32>) -> vec3<f32> {
     return normalize(vec3<f32>(horizontal, vertical, -1.0));
 }
 
+fn density_sample_fraction(fraction: f32, closest_fraction: f32) -> f32 {
+    // Allocate the fixed sample budget around the ray's lowest atmospheric
+    // point, where the exponential density changes most rapidly. This avoids
+    // quantized colour rings without increasing the fullscreen raymarch cost.
+    if closest_fraction <= 0.05 {
+        return pow(fraction, SKY_DENSITY_SAMPLE_EXPONENT);
+    }
+    if closest_fraction >= 0.95 {
+        return 1.0 - pow(1.0 - fraction, SKY_DENSITY_SAMPLE_EXPONENT);
+    }
+    if fraction <= 0.5 {
+        let local_fraction = fraction * 2.0;
+        return closest_fraction
+            * (1.0 - pow(1.0 - local_fraction, SKY_DENSITY_SAMPLE_EXPONENT));
+    }
+    let local_fraction = (fraction - 0.5) * 2.0;
+    return closest_fraction
+        + (1.0 - closest_fraction) * pow(local_fraction, SKY_DENSITY_SAMPLE_EXPONENT);
+}
+
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     var positions = array<vec2<f32>, 3>(
@@ -128,12 +168,19 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         * dot(camera.camera_planet_direction_view_altitude.xyz, ray);
     let interval = sphere_interval(camera_radius, radial_dot_ray);
     let start_distance = max(interval.x, 0.0);
-    let end_distance = interval.y;
+    // The fullscreen pass is a background. Stop at the solid planet rather
+    // than integrating the far-side shell through an opaque surface.
+    let end_distance = min(
+        interval.y,
+        solid_planet_entry_distance(camera_radius, radial_dot_ray),
+    );
     if end_distance <= start_distance {
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
 
-    let sample_length = (end_distance - start_distance) / f32(SKY_SAMPLE_COUNT);
+    let atmosphere_path_length = end_distance - start_distance;
+    let closest_distance = clamp(-radial_dot_ray, start_distance, end_distance);
+    let closest_fraction = (closest_distance - start_distance) / atmosphere_path_length;
     let atmosphere_entry_altitude = altitude_along_ray(
         camera_radius,
         radial_dot_ray,
@@ -147,17 +194,22 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // terminator bands. Keep a wider penumbra at the dense lower layers so a
     // setting sun tapers smoothly all the way to full occultation, while
     // deeply shadowed samples still receive no direct in-scattering.
-    let sun_shadow_transition_meters = max(24000.0, sample_length * 0.50);
     var radiance = vec3<f32>(0.0);
     for (var index = 0u; index < SKY_SAMPLE_COUNT; index += 1u) {
-        let distance_meters = start_distance + (f32(index) + 0.5) * sample_length;
+        let fraction_start = f32(index) / f32(SKY_SAMPLE_COUNT);
+        let fraction_end = f32(index + 1u) / f32(SKY_SAMPLE_COUNT);
+        let sample_start = density_sample_fraction(fraction_start, closest_fraction);
+        let sample_end = density_sample_fraction(fraction_end, closest_fraction);
+        let sample_length = (sample_end - sample_start) * atmosphere_path_length;
+        let distance_meters = start_distance
+            + 0.5 * (sample_start + sample_end) * atmosphere_path_length;
         let sample_altitude = altitude_along_ray(camera_radius, radial_dot_ray, distance_meters);
         let sample_radius = PLANET_RADIUS_METERS + sample_altitude;
         let lower_atmosphere_weight = density(
             sample_altitude,
             RAYLEIGH_SCALE_HEIGHT_METERS,
         );
-        let sample_shadow_transition_meters = sun_shadow_transition_meters
+        let sample_shadow_transition_meters = max(24000.0, sample_length * 0.50)
             * mix(1.0, 2.0, lower_atmosphere_weight);
         let sample_radial_dot_sun = (
             camera_radius * dot(camera.camera_planet_direction_view_altitude.xyz, sun)

@@ -18,6 +18,7 @@ pub struct TileData {
     pub moisture: Vec<u8>,
 }
 
+#[allow(dead_code)]
 impl TileData {
     pub fn used_fallback(&self) -> bool {
         self.requested_key != self.source_key
@@ -30,6 +31,7 @@ pub struct Outmap {
     manifest: OutmapManifest,
 }
 
+#[allow(dead_code)]
 impl Outmap {
     pub fn open(root: impl AsRef<Path>) -> Result<Self, OutmapError> {
         let root = root.as_ref().to_path_buf();

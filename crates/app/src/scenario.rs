@@ -32,6 +32,9 @@ pub struct ScenarioAssertions {
     pub max_exposure_delta_per_frame: Option<f32>,
     pub max_exposure_oscillation_events: Option<u32>,
     pub min_ocean_wave_height_range_meters: Option<f32>,
+    pub ice_sample_uv: Option<[f32; 2]>,
+    pub min_ice_sample_luminance: Option<f32>,
+    pub max_ice_sample_channel_spread: Option<f32>,
 }
 
 impl Default for ScenarioAssertions {
@@ -61,6 +64,9 @@ impl Default for ScenarioAssertions {
             max_exposure_delta_per_frame: None,
             max_exposure_oscillation_events: None,
             min_ocean_wave_height_range_meters: None,
+            ice_sample_uv: None,
+            min_ice_sample_luminance: None,
+            max_ice_sample_channel_spread: None,
         }
     }
 }
@@ -123,6 +129,7 @@ pub struct FramePlan {
     pub write_log: bool,
     pub capture_screenshot: bool,
     pub complete: bool,
+    #[allow(dead_code)]
     pub orbit_azimuth_radians: Option<f64>,
     pub camera_world_position: [f64; 3],
     pub camera_look_at: [f64; 3],
@@ -138,6 +145,7 @@ pub struct ScenarioRunner {
     next_log_time: f64,
 }
 
+#[allow(dead_code)]
 impl ScenarioRunner {
     pub fn load(name: &str) -> Result<Self, String> {
         let source = match name {
@@ -151,6 +159,7 @@ impl ScenarioRunner {
             "stare_at_sun" => include_str!("../scenarios/stare_at_sun.json"),
             "ocean_flyover" => include_str!("../scenarios/ocean_flyover.json"),
             "orbital_zoom_lod" => include_str!("../scenarios/orbital_zoom_lod.json"),
+            "polar_ice_cap" => include_str!("../scenarios/polar_ice_cap.json"),
             _ => return Err(format!("unknown scenario '{name}'")),
         };
         Self::from_source(source)
