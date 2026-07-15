@@ -80,6 +80,19 @@ impl CameraMode {
     }
 }
 
+/// Scene time intentionally stops under F10, but low-flight navigation remains
+/// responsive so frozen composition diagnostics can be framed in place.
+fn interactive_camera_delta_seconds(
+    camera_mode: CameraMode,
+    scene_delta_seconds: f64,
+    frame_delta_seconds: f64,
+) -> f64 {
+    match camera_mode {
+        CameraMode::Orbit => scene_delta_seconds,
+        CameraMode::LowFlight => frame_delta_seconds,
+    }
+}
+
 fn format_vertical_fov(vertical_fov_degrees: f64) -> String {
     if vertical_fov_degrees >= 10.0 {
         format!("{vertical_fov_degrees:.1}")
@@ -843,15 +856,20 @@ impl State {
         }
         let planet_rotation_radians =
             planet::planet_rotation_radians(sim_time * scenario_planet_rotation_time_scale);
+        let scene_delta_seconds = (sim_time - self.last_auto_orbit_sim_time).max(0.0);
         if self.scenario.is_none() {
-            let orbit_delta_seconds = (sim_time - self.last_auto_orbit_sim_time).max(0.0);
+            let camera_delta_seconds = interactive_camera_delta_seconds(
+                self.camera_mode,
+                scene_delta_seconds,
+                f64::from(frame_time),
+            );
             match self.camera_mode {
                 CameraMode::Orbit => self.camera.advance_inclined_orbit(
-                    DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND * orbit_delta_seconds,
+                    DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND * camera_delta_seconds,
                     DEFAULT_CAMERA_ORBIT_INCLINATION_RADIANS,
                 ),
                 CameraMode::LowFlight => {
-                    self.advance_low_flight_camera(orbit_delta_seconds, planet_rotation_radians)
+                    self.advance_low_flight_camera(camera_delta_seconds, planet_rotation_radians)
                 }
             }
         }
@@ -872,8 +890,14 @@ impl State {
                 camera_radius - planet::PLANET_RADIUS_METERS
             };
         let delta_sim_time = (sim_time - self.previous_sim_time).max(f64::EPSILON);
-        let velocity_meters_per_second =
-            camera_world_position.distance(self.previous_camera_world_position) / delta_sim_time;
+        let delta_camera_motion_seconds = if self.scenario.is_none() {
+            f64::from(frame_time).max(f64::EPSILON)
+        } else {
+            delta_sim_time
+        };
+        let velocity_meters_per_second = camera_world_position
+            .distance(self.previous_camera_world_position)
+            / delta_camera_motion_seconds;
         self.previous_camera_world_position = camera_world_position;
         self.previous_sim_time = sim_time;
         self.hdr.collect_completed_luminance(&self.device);
@@ -1679,8 +1703,9 @@ mod tests {
     use glam::DVec3;
 
     use super::{
-        FlightMovementInput, INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
+        CameraMode, FlightMovementInput, INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
         LOW_FLIGHT_SPEED_METERS_PER_SECOND, flight_movement_direction,
+        interactive_camera_delta_seconds,
     };
 
     #[test]
@@ -1734,6 +1759,20 @@ mod tests {
         assert!((direction.length() - 1.0).abs() < 1.0e-12);
         assert!(direction.dot(DVec3::Z) > 0.0);
         assert!(direction.dot(DVec3::X) > 0.0);
+    }
+
+    #[test]
+    fn frozen_scene_keeps_low_flight_navigation_on_frame_time() {
+        let frame_delta_seconds = 1.0 / 60.0;
+
+        assert_eq!(
+            interactive_camera_delta_seconds(CameraMode::LowFlight, 0.0, frame_delta_seconds),
+            frame_delta_seconds
+        );
+        assert_eq!(
+            interactive_camera_delta_seconds(CameraMode::Orbit, 0.0, frame_delta_seconds),
+            0.0
+        );
     }
 
     #[test]

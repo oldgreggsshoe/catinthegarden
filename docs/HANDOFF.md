@@ -244,7 +244,7 @@ Controls:
 | A / D | While in flight mode, strafe camera-left / camera-right at Mach 30; diagonal input is normalized |
 | F6/F7/F8 | Toggle blur/bloom/HDR filmic effect |
 | F9 | Cycle composition debug: raw albedo, surface lighting, aerial contribution, sky-only, final HDR |
-| F10 | Freeze/resume interactive scene time (orbit, rotation, ocean, exposure adaptation) for matched diagnostics |
+| F10 | Freeze/resume scene time (orbit, rotation, ocean, exposure adaptation); low-flight camera movement remains active for framing |
 | F12 | Capture PNG into the current run directory |
 | Escape or Q | Quit |
 
@@ -871,7 +871,8 @@ only 0.027° of rotation in about 15 seconds. The documented/original
 time scale, yielding 2.7° of relative sun motion per 15 seconds; deterministic
 scenarios retain their authored time scales. A focused regression pins this
 interactive rate so it cannot silently become imperceptible again. F10 still
-intentionally freezes all scene time.
+intentionally freezes all scene animation time while preserving low-flight
+camera navigation for frozen-frame composition work.
 
 Verified on 2026-07-14 with
 `test-runs/manual/1784067862-68133/log.jsonl`: the normal interactive render
@@ -1016,8 +1017,10 @@ fullscreen artificial limb term were therefore removed. Re-capture the same
 five F9 modes before further colour tuning; terrain palette and direct surface
 lighting should remain untouched unless their own diagnostic modes regress.
 
-F10 freezes the interactive scene time before a diagnostic capture set, keeping
-the camera, planet rotation, ocean phase, and exposure fixed while F9/F12 are used. The
+F10 freezes interactive scene time before a diagnostic capture set, keeping
+planet rotation, ocean phase, and exposure fixed while F9/F12 are used.
+Low-flight WASD movement and mouse-look continue using wall-frame time so a
+frozen world can still be framed from another camera position. The
 sky raymarch retains its 16-sample budget but distributes samples cubically
 around a ray's lowest atmospheric point, where exponential density changes
 fastest. It also terminates at the solid planet rather than rendering the
