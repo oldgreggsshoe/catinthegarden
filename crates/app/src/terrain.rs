@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     error::Error,
     fmt,
     path::PathBuf,
@@ -16,8 +16,9 @@ use crate::{
     planet::{
         CHUNK_GRID_QUADS, CameraViewBasis, ChunkVertex, DEFAULT_MAX_ACTIVE_CHUNKS,
         GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, MAX_LOD_LEVEL, OUTMAP_TERRAIN_HEIGHT_SCALE,
-        PlanetLod, QuadtreeNode, TerrainHeightRange, build_chunk_mesh, cube_face_basis,
-        cube_face_direction, outmap_surface_height_meters, placeholder_height_meters,
+        PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode, TerrainHeightRange, build_chunk_mesh,
+        cube_face_basis, cube_face_direction, outmap_surface_height_meters,
+        placeholder_height_meters,
     },
 };
 
@@ -30,7 +31,14 @@ const LOD_TRANSITION_DURATION_SECONDS: f64 = 0.5;
 /// adjustments, but snap a large camera/zoom change to the complete active
 /// topology rather than carrying hundreds of obsolete chunks for half a
 /// second.
+#[cfg(test)]
 const MAX_ANIMATED_LOD_TOPOLOGY_CHANGES: usize = 64;
+/// Mesh creation allocates and uploads a 33x33 chunk vertex buffer. Bound that
+/// synchronous work so flight remains responsive while finer leaves stream in.
+const MAX_CHUNK_BUILDS_PER_FRAME: usize = 8;
+/// Retain recently used GPU chunks so a moving camera can reuse nearby detail,
+/// while keeping the one-buffer-per-chunk implementation bounded.
+const MAX_RESIDENT_GPU_CHUNKS: usize = 512;
 
 #[derive(Clone, Debug)]
 pub enum TerrainSource {
@@ -145,6 +153,7 @@ pub struct TerrainRenderer {
     tile_last_used: HashMap<TileKey, u64>,
     tile_cache_tick: u64,
     chunks: BTreeMap<QuadtreeNode, GpuChunk>,
+    chunk_last_used: HashMap<QuadtreeNode, u64>,
     fading_out_chunks: BTreeMap<QuadtreeNode, FadingChunk>,
     fade_in_started_at: HashMap<QuadtreeNode, f64>,
     draw_items: Vec<DrawItem>,
@@ -257,7 +266,7 @@ impl TerrainRenderer {
 
         let mut lod = PlanetLod::default();
         lod.set_terrain_height_range(terrain_height_range);
-        Ok(Self {
+        let mut renderer = Self {
             device: device.clone(),
             queue: queue.clone(),
             pipeline,
@@ -276,11 +285,23 @@ impl TerrainRenderer {
             tile_last_used: HashMap::new(),
             tile_cache_tick: 0,
             chunks: BTreeMap::new(),
+            chunk_last_used: HashMap::new(),
             fading_out_chunks: BTreeMap::new(),
             fade_in_started_at: HashMap::new(),
             draw_items: Vec::new(),
             max_outmap_seam_delta_meters: 0.0,
-        })
+        };
+        // Roots are always available as geometry fallbacks. Fine chunks can
+        // therefore be built over several frames without leaving holes when
+        // the camera enters a previously unseen part of the planet.
+        for face in CubeFace::ALL {
+            let node = QuadtreeNode::root(face.index());
+            renderer
+                .chunks
+                .insert(node, renderer.create_gpu_chunk(node));
+            renderer.chunk_last_used.insert(node, 0);
+        }
+        Ok(renderer)
     }
 
     /// Returns the streamed terrain height under a planet-local radial
@@ -330,67 +351,34 @@ impl TerrainRenderer {
         );
         let topology_changed =
             !lod_update.loaded_nodes.is_empty() || !lod_update.unloaded_nodes.is_empty();
-        let transition_loaded_nodes: HashSet<_> = lod_update
-            .loaded_nodes
-            .iter()
-            .copied()
-            .filter(|loaded| {
-                lod_update
-                    .unloaded_nodes
-                    .iter()
-                    .copied()
-                    .any(|unloaded| nodes_share_lod_transition(*loaded, unloaded))
-            })
-            .collect();
-        let transition_unloaded_nodes: HashSet<_> = lod_update
-            .unloaded_nodes
-            .iter()
-            .copied()
-            .filter(|unloaded| {
-                lod_update
-                    .loaded_nodes
-                    .iter()
-                    .copied()
-                    .any(|loaded| nodes_share_lod_transition(loaded, *unloaded))
-            })
-            .collect();
-        let animate_lod_transitions = should_animate_lod_transition(
-            self.fading_out_chunks.len(),
-            lod_update.loaded_nodes.len(),
-            lod_update.unloaded_nodes.len(),
+        let mut resident_nodes: BTreeSet<_> = self.chunks.keys().copied().collect();
+        // Selecting a leaf is cheap, but constructing its vertex buffer is
+        // not. Build only the highest-priority next descendants this frame;
+        // an already resident ancestor covers each remaining request.
+        let missing_nodes = prioritized_missing_chunks(
+            &lod_update.active_nodes,
+            &resident_nodes,
+            camera_world,
+            MAX_CHUNK_BUILDS_PER_FRAME,
         );
-        if !animate_lod_transitions {
-            self.fading_out_chunks.clear();
-            self.fade_in_started_at.clear();
+        for node in &missing_nodes {
+            let chunk = self.create_gpu_chunk(*node);
+            self.chunks.insert(*node, chunk);
+            self.chunk_last_used.insert(*node, self.tile_cache_tick);
+            resident_nodes.insert(*node);
         }
-
-        for node in &lod_update.unloaded_nodes {
-            let chunk = self
-                .chunks
-                .remove(node)
-                .expect("unloaded LOD leaf has a GPU chunk");
-            self.fade_in_started_at.remove(node);
-            if animate_lod_transitions && transition_unloaded_nodes.contains(node) {
-                self.fading_out_chunks.insert(
-                    *node,
-                    FadingChunk {
-                        chunk,
-                        started_at_sim_time: sim_time,
-                    },
-                );
-            }
+        let mut active_render_nodes = BTreeSet::new();
+        for &node in &lod_update.active_nodes {
+            active_render_nodes.insert(
+                resident_ancestor(node, &resident_nodes)
+                    .expect("root terrain chunk covers every active node"),
+            );
         }
-        for &node in &lod_update.loaded_nodes {
-            let chunk = self
-                .fading_out_chunks
-                .remove(&node)
-                .map(|fading| fading.chunk)
-                .unwrap_or_else(|| self.create_gpu_chunk(node));
-            self.chunks.insert(node, chunk);
-            if animate_lod_transitions && transition_loaded_nodes.contains(&node) {
-                self.fade_in_started_at.insert(node, sim_time);
-            }
+        for &node in &active_render_nodes {
+            self.chunk_last_used.insert(node, self.tile_cache_tick);
         }
+        let chunks_unloaded = self.evict_unused_chunks(&active_render_nodes);
+        let active_render_nodes: Vec<_> = active_render_nodes.into_iter().collect();
 
         self.fade_in_started_at.retain(|node, started_at_sim_time| {
             self.chunks.contains_key(node)
@@ -398,7 +386,7 @@ impl TerrainRenderer {
         });
 
         let mut render_nodes =
-            Vec::with_capacity(self.fading_out_chunks.len() + lod_update.active_nodes.len());
+            Vec::with_capacity(self.fading_out_chunks.len() + active_render_nodes.len());
         for (&node, fading) in &self.fading_out_chunks {
             render_nodes.push(RenderNode {
                 node,
@@ -408,7 +396,7 @@ impl TerrainRenderer {
                 transition_incoming: false,
             });
         }
-        for &node in &lod_update.active_nodes {
+        for &node in &active_render_nodes {
             let transition_progress = self
                 .fade_in_started_at
                 .get(&node)
@@ -554,9 +542,9 @@ impl TerrainRenderer {
             .filter_map(|(render_node, resolved)| render_node.active.then_some(*resolved))
             .collect();
         let max_seam_delta_meters = if matches!(&self.source, TerrainDataSource::Outmap(_)) {
-            if topology_changed {
+            if topology_changed || !missing_nodes.is_empty() {
                 self.max_outmap_seam_delta_meters = max_outmap_seam_delta(
-                    &lod_update.active_nodes,
+                    &active_render_nodes,
                     &active_resolved_tiles,
                     &self.tile_cache,
                 );
@@ -568,8 +556,8 @@ impl TerrainRenderer {
         Ok(TerrainStats {
             level_histogram: metrics.level_histogram,
             resident_chunks: metrics.active_chunks,
-            chunks_loaded: metrics.chunks_loaded,
-            chunks_unloaded: metrics.chunks_unloaded,
+            chunks_loaded: missing_nodes.len() as u32,
+            chunks_unloaded: chunks_unloaded as u32,
             splits: metrics.splits,
             merges: metrics.merges,
             culled_nodes: metrics.culled_nodes,
@@ -644,6 +632,27 @@ impl TerrainRenderer {
         }
     }
 
+    fn evict_unused_chunks(&mut self, protected_nodes: &BTreeSet<QuadtreeNode>) -> usize {
+        if self.chunks.len() <= MAX_RESIDENT_GPU_CHUNKS {
+            return 0;
+        }
+        let mut candidates: Vec<_> = self
+            .chunks
+            .keys()
+            .copied()
+            .filter(|node| node.level > 0 && !protected_nodes.contains(node))
+            .map(|node| (self.chunk_last_used.get(&node).copied().unwrap_or(0), node))
+            .collect();
+        candidates.sort_unstable();
+        let eviction_count = (self.chunks.len() - MAX_RESIDENT_GPU_CHUNKS).min(candidates.len());
+        for (_, node) in candidates.into_iter().take(eviction_count) {
+            self.chunks.remove(&node);
+            self.chunk_last_used.remove(&node);
+            self.fade_in_started_at.remove(&node);
+        }
+        eviction_count
+    }
+
     fn purge_expired_lod_transitions(&mut self, sim_time: f64) {
         self.fading_out_chunks.retain(|_, fading| {
             sim_time - fading.started_at_sim_time < LOD_TRANSITION_DURATION_SECONDS
@@ -655,10 +664,67 @@ impl TerrainRenderer {
     }
 }
 
+fn prioritized_missing_chunks(
+    active_nodes: &[QuadtreeNode],
+    resident_nodes: &BTreeSet<QuadtreeNode>,
+    camera_world: DVec3,
+    maximum_builds: usize,
+) -> Vec<QuadtreeNode> {
+    let mut missing: Vec<_> = active_nodes
+        .iter()
+        .copied()
+        .filter_map(|node| next_missing_descendant(node, resident_nodes))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    missing.sort_unstable_by(|left, right| {
+        let left_distance = (left.center_direction() * PLANET_RADIUS_METERS).distance(camera_world);
+        let right_distance =
+            (right.center_direction() * PLANET_RADIUS_METERS).distance(camera_world);
+        left_distance
+            .total_cmp(&right_distance)
+            .then_with(|| right.level.cmp(&left.level))
+            .then_with(|| left.cmp(right))
+    });
+    missing.truncate(maximum_builds);
+    missing
+}
+
+fn resident_ancestor(
+    mut node: QuadtreeNode,
+    resident_nodes: &BTreeSet<QuadtreeNode>,
+) -> Option<QuadtreeNode> {
+    loop {
+        if resident_nodes.contains(&node) {
+            return Some(node);
+        }
+        node = node.parent()?;
+    }
+}
+
+fn next_missing_descendant(
+    target: QuadtreeNode,
+    resident_nodes: &BTreeSet<QuadtreeNode>,
+) -> Option<QuadtreeNode> {
+    let ancestor = resident_ancestor(target, resident_nodes)?;
+    if ancestor == target {
+        return None;
+    }
+    let level = ancestor.level + 1;
+    let shift = target.level - level;
+    Some(QuadtreeNode {
+        face: target.face,
+        level,
+        x: target.x >> shift,
+        y: target.y >> shift,
+    })
+}
+
 fn lod_transition_progress(sim_time: f64, started_at_sim_time: f64) -> f32 {
     ((sim_time - started_at_sim_time) / LOD_TRANSITION_DURATION_SECONDS).clamp(0.0, 1.0) as f32
 }
 
+#[cfg(test)]
 fn should_animate_lod_transition(
     fading_nodes: usize,
     loaded_nodes: usize,
@@ -668,10 +734,12 @@ fn should_animate_lod_transition(
         && fading_nodes.saturating_add(unloaded_nodes) <= MAX_ANIMATED_LOD_TOPOLOGY_CHANGES
 }
 
+#[cfg(test)]
 fn nodes_share_lod_transition(first: QuadtreeNode, second: QuadtreeNode) -> bool {
     node_is_descendant_of(first, second) || node_is_descendant_of(second, first)
 }
 
+#[cfg(test)]
 fn node_is_descendant_of(mut node: QuadtreeNode, ancestor: QuadtreeNode) -> bool {
     while let Some(parent) = node.parent() {
         if parent == ancestor {
@@ -1109,16 +1177,20 @@ fn sample_height_cpu(heights: &[f32], uv: [f32; 2]) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
+    use super::{
+        cube_face_uv, fallback_uv_transform, lod_transition_progress, next_missing_descendant,
+        nodes_share_lod_transition, pack_terrain_info, prioritized_missing_chunks,
+        resident_ancestor, sample_height_cpu, should_animate_lod_transition,
+        source_tile_uv_at_direction,
+    };
+    use crate::planet::{
+        PLANET_RADIUS_METERS, QuadtreeNode, build_chunk_mesh, cube_face_direction,
+    };
     use catinthegarden_coretypes::{
         CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
     };
-
-    use super::{
-        cube_face_uv, fallback_uv_transform, lod_transition_progress, nodes_share_lod_transition,
-        pack_terrain_info, sample_height_cpu, should_animate_lod_transition,
-        source_tile_uv_at_direction,
-    };
-    use crate::planet::{QuadtreeNode, build_chunk_mesh, cube_face_direction};
 
     #[test]
     fn cube_face_uv_inverts_cube_face_direction() {
@@ -1251,5 +1323,42 @@ mod tests {
         assert!(!should_animate_lod_transition(0, 33, 32));
         assert!(!should_animate_lod_transition(40, 16, 25));
         assert!(!should_animate_lod_transition(usize::MAX, 0, 1));
+    }
+
+    #[test]
+    fn missing_chunks_stream_nearest_first_with_a_hard_per_frame_cap() {
+        let near_root = QuadtreeNode::root(0);
+        let far_root = QuadtreeNode::root(1);
+        let near = near_root.children()[0].children()[3];
+        let far = far_root.children()[2].children()[1];
+        let camera = near.center_direction() * (PLANET_RADIUS_METERS + 1_524.0);
+        let resident_nodes = BTreeSet::from([near_root, far_root]);
+
+        assert_eq!(
+            prioritized_missing_chunks(&[far, near], &resident_nodes, camera, 1),
+            vec![near_root.children()[0]]
+        );
+    }
+
+    #[test]
+    fn resident_parent_covers_an_unbuilt_child() {
+        let root = QuadtreeNode::root(3);
+        let parent = root.children()[1];
+        let child = parent.children()[2];
+        let resident_nodes = BTreeSet::from([root, parent]);
+
+        assert_eq!(resident_ancestor(child, &resident_nodes), Some(parent));
+    }
+
+    #[test]
+    fn streaming_refines_one_resident_level_at_a_time() {
+        let root = QuadtreeNode::root(2);
+        let target = root.children()[3].children()[1];
+        let resident_nodes = BTreeSet::from([root]);
+
+        assert_eq!(
+            next_missing_descendant(target, &resident_nodes),
+            Some(root.children()[3])
+        );
     }
 }

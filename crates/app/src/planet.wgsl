@@ -123,6 +123,14 @@ fn requested_level(terrain_info: u32) -> u32 {
     return (terrain_info >> 4u) & 0x1fu;
 }
 
+fn terrain_detail_lod_weight(terrain_info: u32) -> f32 {
+    // Do not sample kilometre-scale procedural detail on a coarse streamed
+    // fallback mesh: its 33x33 vertices would alias the relief into visible
+    // corrugations. Restore it as the parent-to-child build queue reaches a
+    // mesh spacing that can represent the field.
+    return smoothstep(8.0, 11.0, f32(requested_level(terrain_info)));
+}
+
 fn placeholder_octave(direction: vec3<f32>, frequency: f32, amplitude: f32) -> f32 {
     let wave = sin(frequency * direction.x) - direction.x * sin(frequency)
         + sin(1.375 * frequency * direction.y)
@@ -190,13 +198,19 @@ fn macro_terrain_height(outmap: bool, source_uv: vec2<f32>, direction: vec3<f32>
     return placeholder_height(direction);
 }
 
-fn terrain_height(outmap: bool, source_uv: vec2<f32>, direction: vec3<f32>) -> f32 {
+fn terrain_height(
+    outmap: bool,
+    source_uv: vec2<f32>,
+    direction: vec3<f32>,
+    detail_lod_weight: f32,
+) -> f32 {
     let macro_height = macro_terrain_height(outmap, source_uv, direction);
     if !outmap {
         return macro_height;
     }
     let land_detail_weight = smoothstep(100.0, 400.0, macro_height);
-    return (macro_height + global_terrain_detail(direction) * land_detail_weight)
+    return (macro_height
+        + global_terrain_detail(direction) * land_detail_weight * detail_lod_weight)
         * OUTMAP_TERRAIN_HEIGHT_SCALE;
 }
 
@@ -691,10 +705,31 @@ fn displaced_surface_normal(
     let up_direction = normalize(cube_position + tangent_v * cube_step);
     let uv_step = source_uv_scale / MATERIAL_TILE_LOGICAL_QUADS;
     let outmap = uses_outmap(terrain_info);
-    let left_height = terrain_height(outmap, source_uv - vec2<f32>(uv_step.x, 0.0), left_direction);
-    let right_height = terrain_height(outmap, source_uv + vec2<f32>(uv_step.x, 0.0), right_direction);
-    let down_height = terrain_height(outmap, source_uv - vec2<f32>(0.0, uv_step.y), down_direction);
-    let up_height = terrain_height(outmap, source_uv + vec2<f32>(0.0, uv_step.y), up_direction);
+    let detail_lod_weight = terrain_detail_lod_weight(terrain_info);
+    let left_height = terrain_height(
+        outmap,
+        source_uv - vec2<f32>(uv_step.x, 0.0),
+        left_direction,
+        detail_lod_weight,
+    );
+    let right_height = terrain_height(
+        outmap,
+        source_uv + vec2<f32>(uv_step.x, 0.0),
+        right_direction,
+        detail_lod_weight,
+    );
+    let down_height = terrain_height(
+        outmap,
+        source_uv - vec2<f32>(0.0, uv_step.y),
+        down_direction,
+        detail_lod_weight,
+    );
+    let up_height = terrain_height(
+        outmap,
+        source_uv + vec2<f32>(0.0, uv_step.y),
+        up_direction,
+        detail_lod_weight,
+    );
     let tangent_delta_u = (right_direction - left_direction) * PLANET_RADIUS_METERS
         + right_direction * right_height
         - left_direction * left_height;
@@ -838,9 +873,10 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let source_uv = input.source_uv_offset + input.tile_uv * input.source_uv_scale;
     let outmap = uses_outmap(input.terrain_info);
     let macro_height = macro_terrain_height(outmap, source_uv, direction);
+    let detail_lod_weight = terrain_detail_lod_weight(input.terrain_info);
     var terrain_detail_meters = 0.0;
     if outmap {
-        terrain_detail_meters = global_terrain_detail(direction);
+        terrain_detail_meters = global_terrain_detail(direction) * detail_lod_weight;
     }
     let unscaled_height = macro_height
         + terrain_detail_meters * smoothstep(100.0, 400.0, macro_height);

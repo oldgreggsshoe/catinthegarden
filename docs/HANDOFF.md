@@ -956,6 +956,41 @@ material breakup. Independently, replacing per-node vertex buffers/draws with
 a shared procedural grid and batched instances is the next structural terrain
 performance improvement; do not raise the leaf ceiling to hide either issue.
 
+Manual run `1784108282-187260` then showed that the 256-leaf ceiling alone did
+not bound movement cost: at Mach 30 it selected and synchronously built as many
+as 183 chunks in one sampled frame, causing 150-182ms frames. `TerrainRenderer`
+now keeps one root chunk per face as complete fallback coverage, builds at most
+eight nearest parent-to-child descendants per frame, and retains up to 512
+recent GPU chunks. A desired leaf that is not ready renders through its nearest
+resident ancestor instead of leaving a hole. The `chunks_loaded` spatial metric
+now means actual GPU chunk builds rather than requested LOD leaves.
+
+The deterministic 10km/s replay `1784109581-193023` reached L18 while keeping
+actual chunk builds at or below eight per frame. Its sampled frame maximum was
+17.6ms, GPU render median/maximum were 9.53/12.16ms, and draw calls topped out
+at 60 while descendants streamed in. Run `1784109783-194021` additionally
+verified the fallback-detail presentation after the same movement loop at a
+16.95ms sampled-frame maximum. This is a bounded-degradation result: motion is
+responsive and complete coverage remains, but unbuilt regions intentionally
+remain coarser until the camera stops long enough for the queue to catch up.
+
+The repeated ribbed pattern in low-flight captures was procedural relief being
+sampled by a coarse 33x33 fallback mesh. `planet.wgsl` now fades that visual
+detail from L8 through L11 and applies the same factor to displacement and
+normals, so streamed parents show macro shape rather than aliased corrugation.
+The CPU clearance/culling shell keeps the conservative full 4x field; this
+visual fade cannot make the camera enter terrain.
+
+The low-altitude sunset sky was separately dark because `atmosphere.wgsl`
+estimated solar transmittance from each dense raymarch sample to the top of the
+720km shell using endpoint-average density. At low solar elevation that erased
+all direct sky illumination, while ocean reflection used the already-correct
+local scale-height air-mass approximation. The fullscreen sky now uses that
+same bounded column and solar visibility, preserving warm attenuation without
+turning the ground-level horizon black. It requires visual sign-off with a
+frozen F10/F9 sky-only capture; do not compensate by raising terrain light,
+`AERIAL_IN_SCATTER_GAIN`, or global sky brightness.
+
 Phase 7 now includes full-screen blur and bloom stages. Their startup defaults
 are `BLUR_ENABLED` and `BLOOM_ENABLED` in `crates/app/src/planet.rs`; F6 and F7
 toggle them at runtime. Bloom now thresholds and blurs the HDR scene in its own
@@ -1037,7 +1072,8 @@ These are separate tasks, not permission to scope-creep:
 2. Add tier-2 limb/terminator image assertions.
 3. Decide whether to batch/indirect terrain draws without changing tile binding
    behavior.
-4. Move synchronous tile I/O/upload behind a bounded streaming queue.
+4. Replace the remaining per-chunk vertex buffers/draw calls with a shared
+   grid and batched instances without changing tile-binding behaviour.
 5. Complete Phase 7 ice-cap visuals, remaining debug-panel additions, and
    performance polish.
 6. Run every named scenario from a clean HEAD and record the regression result

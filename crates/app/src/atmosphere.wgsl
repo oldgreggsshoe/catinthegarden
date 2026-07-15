@@ -122,6 +122,34 @@ fn transmittance(
         * max(distance_meters, 0.0));
 }
 
+fn local_solar_transmittance(
+    sample_altitude: f32,
+    sample_radius: f32,
+    sample_radial_dot_sun: f32,
+    sample_direction: vec3<f32>,
+    sun: vec3<f32>,
+    shadow_transition_meters: f32,
+) -> vec3<f32> {
+    // A full shell endpoint-average treats the near-vacuum upper endpoint as
+    // half of a dense, near-ground solar path. At sunset that turns the entire
+    // lower sky black before its Rayleigh colour can scatter toward the camera.
+    // Match direct surface lighting's scale-height air-mass estimate instead:
+    // dense air still reddens and attenuates the low sun, but does not erase
+    // the illuminated horizon.
+    let sun_zenith_cosine = max(dot(sample_direction, sun), 0.0);
+    let air_mass = min(1.0 / max(sun_zenith_cosine, 0.08), 12.0);
+    let rayleigh_optical_depth = RAYLEIGH_COEFFICIENT
+        * density(sample_altitude, RAYLEIGH_SCALE_HEIGHT_METERS)
+        * RAYLEIGH_SCALE_HEIGHT_METERS
+        * air_mass;
+    let mie_optical_depth = MIE_COEFFICIENT
+        * density(sample_altitude, MIE_SCALE_HEIGHT_METERS)
+        * MIE_SCALE_HEIGHT_METERS
+        * air_mass;
+    return exp(-(rayleigh_optical_depth + mie_optical_depth))
+        * sun_visibility(sample_radius, sample_radial_dot_sun, shadow_transition_meters);
+}
+
 fn view_direction(ndc: vec2<f32>) -> vec3<f32> {
     let horizontal = ndc.x * camera.projection.x * camera.projection.y;
     let vertical = ndc.y * camera.projection.y;
@@ -215,8 +243,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             camera_radius * dot(camera.camera_planet_direction_view_altitude.xyz, sun)
                 + distance_meters * dot(ray, sun)
         );
-        let sun_interval = sphere_interval(sample_radius, sample_radial_dot_sun);
-        let sun_distance = max(sun_interval.y, 0.0);
         // The camera may be in space. Only the segment from the atmosphere
         // entry point to this sample has optical depth; treating the preceding
         // vacuum as half-density incorrectly darkened the lower atmosphere.
@@ -225,13 +251,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             sample_altitude,
             distance_meters - start_distance,
         );
-        let sun_transmittance = transmittance(
+        let sun_transmittance = local_solar_transmittance(
             sample_altitude,
-            ATMOSPHERE_HEIGHT_METERS,
-            sun_distance,
-        ) * sun_visibility(
             sample_radius,
             sample_radial_dot_sun,
+            normalize(
+                camera.camera_planet_direction_view_altitude.xyz * camera_radius
+                    + ray * distance_meters,
+            ),
+            sun,
             sample_shadow_transition_meters,
         );
         let rayleigh_scattering = RAYLEIGH_COEFFICIENT
