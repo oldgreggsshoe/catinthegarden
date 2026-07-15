@@ -1,5 +1,6 @@
 const PHYSICAL_SUN_ANGULAR_RADIUS_RADIANS: f32 = 0.004625;
-const VISUAL_SUN_SIZE_SCALE: f32 = 3.0;
+// Keep the visual sun and its corona at one tenth of their former diameter.
+const VISUAL_SUN_SIZE_SCALE: f32 = 0.3;
 const SUN_ANGULAR_RADIUS_RADIANS: f32 = PHYSICAL_SUN_ANGULAR_RADIUS_RADIANS * VISUAL_SUN_SIZE_SCALE;
 // The core tones to white under ACES, so apparent glare comes from a broad
 // HDR corona rather than increasing only the already-clipped disc centre.

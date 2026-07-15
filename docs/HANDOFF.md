@@ -492,7 +492,8 @@ vectors would quantize the maximum optical zoom.
 `sun.wgsl` draws an additive camera-facing angular disc:
 
 - physical angular radius: 0.004625 radians;
-- visual size multiplier: 3x, about 1.59 degrees apparent diameter;
+- visual size multiplier: 0.3x, about 0.159 degrees apparent diameter (one
+  tenth of the former presentation);
 - corona radius: eight visual radii;
 - camera-only radiance multiplier: 5x;
 - HDR core: `(72, 65, 52)` before the visual multiplier;
@@ -502,6 +503,9 @@ Sun-disc angular distance uses `atan2(length(cross(ray, sun)), dot(ray, sun))`
 rather than `acos(dot)`, retaining sub-microradian separation near alignment.
 
 It changes appearance only, not scene illumination.
+
+Verified on 2026-07-15: `cargo check --workspace` passed and `stare_at_sun`
+passed all five exposure/capture assertions after the diameter reduction.
 
 ### HDR and exposure
 
