@@ -935,6 +935,18 @@ samples to sea level. The shader mirrors the same ordering so biome/beach
 classification and coastlines remain based on unscaled baked height. Focused
 CPU tests cover the amplitude, coastline/ocean behavior, exaggeration, and
 low-flight screen-ray coverage.
+`OUTMAP_TERRAIN_HEIGHT_SCALE` now has one source of truth in `planet.rs` and is
+uploaded through the terrain-settings uniform. The vertex displacement and
+displaced-normal samples therefore use the same value as CPU camera clearance,
+culling bounds, and screen-error distance; do not restore a separate WGSL
+constant.
+The mismatch was reproduced with a local 40x CPU value while WGSL remained at
+4x: low-flight clearance followed the taller CPU surface but the rendered mesh
+did not. A local 40x `polar_ice_cap --terrain outmap` run now completes and
+visibly uses the stronger displacement. Exact-staged-tree formatting and
+workspace check pass; the app suite runs 71/76 with only the same five known
+LOD-policy failures, and the staged 4x `polar_ice_cap` smoke passes all three
+assertions. Human low-flight sign-off at the local 40x value remains useful.
 The next visual check should fly away from +X and compare terrain readability
 and frame-stage profile samples before changing amplitudes or frequencies.
 

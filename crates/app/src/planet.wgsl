@@ -5,8 +5,6 @@ const MATERIAL_TILE_LOGICAL_QUADS: f32 = 128.0;
 const TILE_GUTTER: f32 = 1.0;
 const MATERIAL_TILE_LAST_STORED_COORD: i32 = 130;
 const GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS: f32 = 111.5;
-// Keep synchronized with planet::OUTMAP_TERRAIN_HEIGHT_SCALE.
-const OUTMAP_TERRAIN_HEIGHT_SCALE: f32 = 4.0;
 const ATMOSPHERE_HEIGHT_METERS: f32 = 720000.0;
 const ATMOSPHERE_EDGE_FADE_METERS: f32 = 480000.0;
 const ATMOSPHERE_RADIUS_METERS: f32 = PLANET_RADIUS_METERS + ATMOSPHERE_HEIGHT_METERS;
@@ -59,6 +57,13 @@ var environment_map: texture_cube<f32>;
 
 @group(1) @binding(4)
 var environment_sampler: sampler;
+
+struct TerrainSettings {
+    outmap_height_scale: vec4<f32>,
+}
+
+@group(1) @binding(5)
+var<uniform> terrain_settings: TerrainSettings;
 
 struct VertexInput {
     @location(0) anchor_relative_position: vec3<f32>,
@@ -212,7 +217,7 @@ fn terrain_height(
     let land_detail_weight = smoothstep(100.0, 400.0, macro_height);
     return (macro_height
         + global_terrain_detail(direction) * land_detail_weight * detail_lod_weight)
-        * OUTMAP_TERRAIN_HEIGHT_SCALE;
+        * terrain_settings.outmap_height_scale.x;
 }
 
 fn gerstner_wave(
@@ -891,7 +896,11 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     }
     let unscaled_height = macro_height
         + terrain_detail_meters * smoothstep(100.0, 400.0, macro_height);
-    let height = select(unscaled_height, unscaled_height * OUTMAP_TERRAIN_HEIGHT_SCALE, outmap);
+    let height = select(
+        unscaled_height,
+        unscaled_height * terrain_settings.outmap_height_scale.x,
+        outmap,
+    );
     // Polar ice overrides ocean in the baked biome contract. Lift it just
     // above sea level so the cap remains visible rather than becoming water.
     let ice = outmap && sample_biome(source_uv) == 2u;

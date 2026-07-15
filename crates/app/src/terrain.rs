@@ -76,6 +76,20 @@ struct TerrainInstance {
     lod_transition: [f32; 2],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct TerrainSettings {
+    outmap_height_scale: [f32; 4],
+}
+
+impl TerrainSettings {
+    fn from_planet_constants() -> Self {
+        Self {
+            outmap_height_scale: [OUTMAP_TERRAIN_HEIGHT_SCALE as f32, 0.0, 0.0, 0.0],
+        }
+    }
+}
+
 impl TerrainInstance {
     const ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
         4 => Float32x3,
@@ -139,6 +153,7 @@ pub struct TerrainRenderer {
     queue: wgpu::Queue,
     pipeline: wgpu::RenderPipeline,
     terrain_bind_group_layout: wgpu::BindGroupLayout,
+    _terrain_settings_buffer: wgpu::Buffer,
     _environment_cubemap: wgpu::Texture,
     environment_view: wgpu::TextureView,
     environment_sampler: wgpu::Sampler,
@@ -182,6 +197,12 @@ impl TerrainRenderer {
                     * OUTMAP_TERRAIN_HEIGHT_SCALE,
             ),
         };
+        let terrain_settings_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("terrain settings"),
+                contents: bytemuck::bytes_of(&TerrainSettings::from_planet_constants()),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
         let terrain_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("terrain tile bind group layout"),
@@ -194,6 +215,16 @@ impl TerrainRenderer {
                         binding: 4,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
                         count: None,
                     },
                 ],
@@ -262,6 +293,7 @@ impl TerrainRenderer {
             &vec![128; tile_sample_count()],
             &environment_view,
             &environment_sampler,
+            &terrain_settings_buffer,
         );
 
         let mut lod = PlanetLod::default();
@@ -271,6 +303,7 @@ impl TerrainRenderer {
             queue: queue.clone(),
             pipeline,
             terrain_bind_group_layout,
+            _terrain_settings_buffer: terrain_settings_buffer,
             _environment_cubemap: environment_cubemap,
             environment_view,
             environment_sampler,
@@ -444,6 +477,7 @@ impl TerrainRenderer {
                 &tile.moisture,
                 &self.environment_view,
                 &self.environment_sampler,
+                &self._terrain_settings_buffer,
             );
             self.tile_cache.insert(key, gpu_tile);
         }
@@ -828,6 +862,7 @@ fn create_gpu_tile(
     moisture: &[u8],
     environment_view: &wgpu::TextureView,
     environment_sampler: &wgpu::Sampler,
+    terrain_settings_buffer: &wgpu::Buffer,
 ) -> GpuTile {
     debug_assert_eq!(heights_meters.len(), tile_sample_count());
     debug_assert_eq!(biome_ids.len(), tile_sample_count());
@@ -882,6 +917,10 @@ fn create_gpu_tile(
             wgpu::BindGroupEntry {
                 binding: 4,
                 resource: wgpu::BindingResource::Sampler(environment_sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: terrain_settings_buffer.as_entire_binding(),
             },
         ],
     });
@@ -1180,13 +1219,14 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::{
-        cube_face_uv, fallback_uv_transform, lod_transition_progress, next_missing_descendant,
-        nodes_share_lod_transition, pack_terrain_info, prioritized_missing_chunks,
-        resident_ancestor, sample_height_cpu, should_animate_lod_transition,
-        source_tile_uv_at_direction,
+        TerrainSettings, cube_face_uv, fallback_uv_transform, lod_transition_progress,
+        next_missing_descendant, nodes_share_lod_transition, pack_terrain_info,
+        prioritized_missing_chunks, resident_ancestor, sample_height_cpu,
+        should_animate_lod_transition, source_tile_uv_at_direction,
     };
     use crate::planet::{
-        PLANET_RADIUS_METERS, QuadtreeNode, build_chunk_mesh, cube_face_direction,
+        OUTMAP_TERRAIN_HEIGHT_SCALE, PLANET_RADIUS_METERS, QuadtreeNode, build_chunk_mesh,
+        cube_face_direction,
     };
     use catinthegarden_coretypes::{
         CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
@@ -1243,6 +1283,23 @@ mod tests {
         assert_eq!((packed >> 1) & 0x7, 5);
         assert_eq!((packed >> 4) & 0x1f, 18);
         assert_eq!((packed >> 9) & 0x1f, 7);
+    }
+
+    #[test]
+    fn shader_reads_outmap_height_scale_from_terrain_settings() {
+        let settings = TerrainSettings::from_planet_constants();
+        let shader = include_str!("planet.wgsl");
+        assert_eq!(
+            settings.outmap_height_scale[0],
+            OUTMAP_TERRAIN_HEIGHT_SCALE as f32
+        );
+        assert!(!shader.contains("const OUTMAP_TERRAIN_HEIGHT_SCALE"));
+        assert!(
+            shader
+                .matches("terrain_settings.outmap_height_scale.x")
+                .count()
+                >= 2
+        );
     }
 
     #[test]
