@@ -21,6 +21,7 @@ pub struct ScenarioAssertions {
     pub sky_sample_uv: Option<[f32; 2]>,
     pub min_sunset_red_blue_growth: Option<f32>,
     pub min_final_sunset_red_blue_ratio: Option<f32>,
+    pub min_solar_antisolar_sky_luminance_ratio: Option<f32>,
     pub max_adjacent_sky_luminance_delta: Option<f32>,
     pub max_sky_luminance: Option<f32>,
     pub day_surface_sample_uv: Option<[f32; 2]>,
@@ -53,6 +54,7 @@ impl Default for ScenarioAssertions {
             sky_sample_uv: None,
             min_sunset_red_blue_growth: None,
             min_final_sunset_red_blue_ratio: None,
+            min_solar_antisolar_sky_luminance_ratio: None,
             max_adjacent_sky_luminance_delta: None,
             max_sky_luminance: None,
             day_surface_sample_uv: None,
@@ -152,6 +154,9 @@ impl ScenarioRunner {
             "orbit_once" => include_str!("../scenarios/orbit_once.json"),
             "descent_to_10m" => include_str!("../scenarios/descent_to_10m.json"),
             "sunset_sweep" => include_str!("../scenarios/sunset_sweep.json"),
+            "twilight_directionality" => {
+                include_str!("../scenarios/twilight_directionality.json")
+            }
             "night_side_atmosphere" => include_str!("../scenarios/night_side_atmosphere.json"),
             "limb_atmosphere" => include_str!("../scenarios/limb_atmosphere.json"),
             "ground_to_orbit" => include_str!("../scenarios/ground_to_orbit.json"),
@@ -434,6 +439,7 @@ fn validate_assertions(
     }
     let needs_sky_sample = assertions.min_sunset_red_blue_growth.is_some()
         || assertions.min_final_sunset_red_blue_ratio.is_some()
+        || assertions.min_solar_antisolar_sky_luminance_ratio.is_some()
         || assertions.max_adjacent_sky_luminance_delta.is_some()
         || assertions.max_sky_luminance.is_some();
     if needs_sky_sample && assertions.sky_sample_uv.is_none() {
@@ -477,6 +483,10 @@ fn validate_assertions(
         (
             "minimum final sunset red/blue ratio",
             assertions.min_final_sunset_red_blue_ratio,
+        ),
+        (
+            "minimum solar/anti-solar sky luminance ratio",
+            assertions.min_solar_antisolar_sky_luminance_ratio,
         ),
         (
             "maximum adjacent sky luminance delta",
@@ -735,6 +745,17 @@ mod tests {
                 .is_some_and(|growth| growth > 1.0)
         );
         assert_eq!(sunset.definition.planet_rotation_time_scale, 1.0);
+
+        let directionality = ScenarioRunner::load("twilight_directionality")
+            .expect("twilight directionality scenario parses");
+        assert_eq!(directionality.expected_screenshots(), 2);
+        assert_eq!(directionality.definition.planet_rotation_time_scale, 0.0);
+        assert_eq!(
+            directionality
+                .assertions()
+                .min_solar_antisolar_sky_luminance_ratio,
+            Some(1.5)
+        );
 
         let night_side = ScenarioRunner::load("night_side_atmosphere")
             .expect("night-side atmosphere scenario parses");

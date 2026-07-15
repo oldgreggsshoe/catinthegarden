@@ -11,6 +11,7 @@ const SOLAR_RADIANCE: f32 = 1.25;
 const SKY_SAMPLE_COUNT: u32 = 16u;
 const SKY_DENSITY_SAMPLE_EXPONENT: f32 = 3.0;
 const TWILIGHT_SHADOW_TRANSITION_METERS: f32 = 36000.0;
+const ANTISOLAR_TWILIGHT_MIN_SCATTER: f32 = 0.55;
 
 struct Camera {
     projection_matrix: mat4x4<f32>,
@@ -52,6 +53,25 @@ fn phase_mie(cos_theta: f32) -> f32 {
     let denominator = max(1.0 + g_squared - 2.0 * MIE_G * cos_theta, 1.0e-4);
     return 3.0 * (1.0 - g_squared) * (1.0 + cos_theta * cos_theta)
         / (8.0 * 3.14159265 * (2.0 + g_squared) * pow(denominator, 1.5));
+}
+
+fn twilight_directional_weight(
+    cos_theta: f32,
+    camera_solar_zenith_cosine: f32,
+) -> f32 {
+    // This renderer only models direct single scattering. Its symmetric
+    // Rayleigh phase therefore leaves the anti-solar twilight almost as bright
+    // as the sunset direction, missing the directional contrast produced by
+    // the real atmosphere and the rising Earth shadow. Keep daytime unchanged,
+    // then smoothly restrain only the back hemisphere as the sun approaches
+    // the horizon. The forward Mie lobe and sunset-facing sky are untouched.
+    let twilight_amount = 1.0 - smoothstep(0.0, 0.25, camera_solar_zenith_cosine);
+    let antisolar_amount = smoothstep(0.0, 1.0, max(-cos_theta, 0.0));
+    return mix(
+        1.0,
+        ANTISOLAR_TWILIGHT_MIN_SCATTER,
+        twilight_amount * antisolar_amount,
+    );
 }
 
 fn twilight_solar_air_mass(solar_zenith_cosine: f32) -> f32 {
@@ -232,6 +252,14 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let cos_theta = dot(ray, sun);
     let rayleigh_phase = phase_rayleigh(cos_theta);
     let mie_phase = phase_mie(cos_theta);
+    let camera_solar_zenith_cosine = dot(
+        camera.camera_planet_direction_view_altitude.xyz,
+        sun,
+    );
+    let directional_weight = twilight_directional_weight(
+        cos_theta,
+        camera_solar_zenith_cosine,
+    );
     // A binary shadow test per raymarch point produces visible concentric
     // terminator bands. Keep a wider penumbra at the dense lower layers so a
     // setting sun tapers smoothly all the way to full occultation, while
@@ -288,5 +316,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             * (rayleigh_scattering + mie_scattering)
             * sample_length;
     }
-    return vec4<f32>(max(radiance * SOLAR_RADIANCE, vec3<f32>(0.0)), 1.0);
+    return vec4<f32>(
+        max(radiance * SOLAR_RADIANCE * directional_weight, vec3<f32>(0.0)),
+        1.0,
+    );
 }

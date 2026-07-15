@@ -597,6 +597,7 @@ and interactive FOV values remain actual viewport FOVs, not reference values.
 | `orbit_once` | Cube-sphere orbit | 4 s | 4 | chunk bounds and CPU seam delta |
 | `descent_to_10m` | Full LOD descent | 12 s | 7 | reaches L18, monotonic, no thrash, seam/fallback bounds |
 | `sunset_sweep` | Sunset color | 8 s | 4 | red/blue growth and warm final sample |
+| `twilight_directionality` | Solar/anti-solar twilight | 2 s | 2 | >=1.5x solar/anti-solar sky luminance |
 | `night_side_atmosphere` | Occlusion | 2 s | 1 | dark sky and >=5x day/night surface ratio |
 | `limb_atmosphere` | Orbital limb | 1 s | 1 | finite/count/seam/fallback; still visual-only |
 | `ground_to_orbit` | Sky-to-space/HDR | 8 s | 7 | continuous sky luminance and stable bounded exposure |
@@ -1065,10 +1066,22 @@ the shadow-side taper base is 36 km rather than 24 km. This delays the dark sky
 without adding samples or a global brightness multiplier: sunset stays brighter
 and orange, then reddens as the sun descends before fading to night. The shared
 Mie coefficient is a still-conservative `0.5e-6/m` (far below the original
-physical-order value), restoring a modest forward lobe. Rayleigh's symmetric
-phase term had made the solar and anti-solar directions look nearly identical
-with darker 90° side views; the forward Mie component now differentiates the
-sunset-facing sky while leaving the opposite horizon Rayleigh-dominated.
+physical-order value), restoring a modest forward lobe. That lobe alone was
+not enough to overcome Rayleigh's symmetric forward/back phase at sunset: a
+paired-direction render measured only 1.074x solar/anti-solar luminance. The
+fullscreen sky now applies a bounded twilight-only back-hemisphere weight,
+fading from unchanged at 90° to 0.55 directly anti-solar while the sun drops
+below about 14° elevation. This approximates the missing directional contrast
+from the rising planetary shadow and higher-order atmospheric transport without
+changing the sunset-facing sky, terrain/ocean lighting, or sample count.
+
+`twilight_directionality` captures the same 100m-altitude sky first toward and
+then away from a fixed low sun before exposure can materially adapt. The new
+weight raises its luminance ratio from 1.074x (`[110, 50, 1]` versus
+`[101, 47, 1]`) to 1.739x; the solar sample is unchanged and only the
+anti-solar sample falls to `[66, 28, 0]`. Removing the spacing-dependent shadow
+taper during diagnosis produced exactly the same 1.074x baseline, ruling that
+taper out as the source.
 
 Verified on 2026-07-15 from the exact staged tree: `cargo check --workspace`
 passed; the app suite ran 69/74 tests with only the five already-documented LOD
@@ -1079,7 +1092,15 @@ its four sampled sky colours progressed from `[166, 183, 139]` through warm
 around 0.13-0.14 ms on the Xvfb software path, proving the expanded timestamp
 layout and post-meter sun pass execute without validation errors. The latest
 manual 18-frame sequence visually confirmed the exposure rebound is gone;
-human sign-off remains needed for the new shadow-side-only twilight extent.
+human sign-off remains needed for the latest anti-solar twilight contrast.
+
+Latest exact-staged-tree verification on 2026-07-15: formatting and
+`cargo check --workspace` passed. The app suite ran 70/75 tests;
+only the same five documented LOD-policy expectations failed.
+`twilight_directionality`, `sunset_sweep`, and `night_side_atmosphere` all
+passed every assertion from the staged 600-second rotation baseline. The
+sunset-facing sequence retained its previous four sky samples, confirming the
+new weight does not globally darken or shorten the tuned sunset.
 
 The bounded polar slice is implemented in `polar_ice_cap`: baked Ice overrides
 ocean at the poles, receives a cool diffuse floor, and a center-pixel assertion

@@ -1,0 +1,41 @@
+{
+  "name": "twilight_directionality",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 2.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_rotation_time_scale": 0.0,
+  "screenshot_times_seconds": [1.0, 1.05],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [0.0, 4000100.0, 0.0],
+      "look_at": [0.0, 4000100.0, 100000.0]
+    },
+    {
+      "time_s": 1.0,
+      "position": [0.0, 4000100.0, 0.0],
+      "look_at": [0.0, 4000100.0, 100000.0]
+    },
+    {
+      "time_s": 1.0166666666666666,
+      "position": [0.0, 4000100.0, 0.0],
+      "look_at": [0.0, 4000100.0, -100000.0]
+    },
+    {
+      "time_s": 2.0,
+      "position": [0.0, 4000100.0, 0.0],
+      "look_at": [0.0, 4000100.0, -100000.0]
+    }
+  ],
+  "sun_waypoints": [
+    { "time_s": 0.0, "direction": [0.0, 0.02, 1.0] }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 2,
+    "sky_sample_uv": [0.5, 0.25],
+    "min_solar_antisolar_sky_luminance_ratio": 1.5
+  }
+}

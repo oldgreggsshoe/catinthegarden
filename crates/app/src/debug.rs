@@ -446,6 +446,25 @@ impl AssertionTracker {
                 ),
             ));
         }
+        if let Some(minimum_ratio) = self.config.min_solar_antisolar_sky_luminance_ratio {
+            let ratio = self
+                .sky_samples
+                .first()
+                .copied()
+                .zip(self.sky_samples.last().copied())
+                .map(|(solar, antisolar)| {
+                    sky_luminance(solar) / sky_luminance(antisolar).max(0.001)
+                });
+            results.push(assertion_result(
+                "solar_sky_is_brighter_than_antisolar_sky",
+                self.sky_samples.len() >= 2 && ratio.is_some_and(|ratio| ratio >= minimum_ratio),
+                format!(
+                    "required ratio {minimum_ratio:.3}, observed {} from {} samples",
+                    ratio.map_or_else(|| "none".to_owned(), |ratio| format!("{ratio:.3}")),
+                    self.sky_samples.len(),
+                ),
+            ));
+        }
         if let Some(maximum_delta) = self.config.max_adjacent_sky_luminance_delta {
             let maximum_observed = self
                 .sky_samples
@@ -1159,6 +1178,7 @@ mod tests {
             sky_sample_uv: None,
             min_sunset_red_blue_growth: None,
             min_final_sunset_red_blue_ratio: None,
+            min_solar_antisolar_sky_luminance_ratio: None,
             max_adjacent_sky_luminance_delta: None,
             max_sky_luminance: None,
             day_surface_sample_uv: None,
@@ -1322,6 +1342,24 @@ mod tests {
         ] {
             assert!(result(&results, name).passed, "{name} should pass");
         }
+    }
+
+    #[test]
+    fn image_assertions_require_directional_twilight() {
+        let mut config = assertions();
+        config.sky_sample_uv = Some([0.5, 0.25]);
+        config.min_solar_antisolar_sky_luminance_ratio = Some(1.5);
+        let mut tracker = AssertionTracker::new(config);
+        tracker.observe_sky_sample([180, 120, 40]);
+        tracker.observe_sky_sample([60, 50, 40]);
+
+        assert!(
+            result(
+                &tracker.results(2),
+                "solar_sky_is_brighter_than_antisolar_sky"
+            )
+            .passed
+        );
     }
 
     #[test]
