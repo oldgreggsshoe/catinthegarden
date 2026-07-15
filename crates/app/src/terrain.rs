@@ -15,9 +15,9 @@ use crate::{
     outmap::{Outmap, OutmapError, TileData},
     planet::{
         CHUNK_GRID_QUADS, CameraViewBasis, ChunkVertex, DEFAULT_MAX_ACTIVE_CHUNKS,
-        GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, MAX_LOD_LEVEL, PlanetLod, QuadtreeNode,
-        TerrainHeightRange, build_chunk_mesh, cube_face_basis, cube_face_direction,
-        outmap_surface_height_meters, placeholder_height_meters,
+        GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, MAX_LOD_LEVEL, OUTMAP_TERRAIN_HEIGHT_SCALE,
+        PlanetLod, QuadtreeNode, TerrainHeightRange, build_chunk_mesh, cube_face_basis,
+        cube_face_direction, outmap_surface_height_meters, placeholder_height_meters,
     },
 };
 
@@ -26,6 +26,11 @@ use crate::{
 // the three per-tile GPU textures and CPU height cache bounded.
 const MAX_RESIDENT_TERRAIN_TILES: usize = 384;
 const LOD_TRANSITION_DURATION_SECONDS: f64 = 0.5;
+/// Cross-fades deliberately duplicate terrain draws. Retain them for small LOD
+/// adjustments, but snap a large camera/zoom change to the complete active
+/// topology rather than carrying hundreds of obsolete chunks for half a
+/// second.
+const MAX_ANIMATED_LOD_TOPOLOGY_CHANGES: usize = 64;
 
 #[derive(Clone, Debug)]
 pub enum TerrainSource {
@@ -163,8 +168,9 @@ impl TerrainRenderer {
             TerrainDataSource::Outmap(outmap) => TerrainHeightRange::new(
                 f64::from(outmap.manifest().height_min_meters)
                     - GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
-                f64::from(outmap.manifest().height_max_meters)
-                    + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
+                (f64::from(outmap.manifest().height_max_meters)
+                    + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS)
+                    * OUTMAP_TERRAIN_HEIGHT_SCALE,
             ),
         };
         let terrain_bind_group_layout =
@@ -348,6 +354,15 @@ impl TerrainRenderer {
                     .any(|loaded| nodes_share_lod_transition(loaded, *unloaded))
             })
             .collect();
+        let animate_lod_transitions = should_animate_lod_transition(
+            self.fading_out_chunks.len(),
+            lod_update.loaded_nodes.len(),
+            lod_update.unloaded_nodes.len(),
+        );
+        if !animate_lod_transitions {
+            self.fading_out_chunks.clear();
+            self.fade_in_started_at.clear();
+        }
 
         for node in &lod_update.unloaded_nodes {
             let chunk = self
@@ -355,7 +370,7 @@ impl TerrainRenderer {
                 .remove(node)
                 .expect("unloaded LOD leaf has a GPU chunk");
             self.fade_in_started_at.remove(node);
-            if transition_unloaded_nodes.contains(node) {
+            if animate_lod_transitions && transition_unloaded_nodes.contains(node) {
                 self.fading_out_chunks.insert(
                     *node,
                     FadingChunk {
@@ -372,7 +387,7 @@ impl TerrainRenderer {
                 .map(|fading| fading.chunk)
                 .unwrap_or_else(|| self.create_gpu_chunk(node));
             self.chunks.insert(node, chunk);
-            if transition_loaded_nodes.contains(&node) {
+            if animate_lod_transitions && transition_loaded_nodes.contains(&node) {
                 self.fade_in_started_at.insert(node, sim_time);
             }
         }
@@ -642,6 +657,15 @@ impl TerrainRenderer {
 
 fn lod_transition_progress(sim_time: f64, started_at_sim_time: f64) -> f32 {
     ((sim_time - started_at_sim_time) / LOD_TRANSITION_DURATION_SECONDS).clamp(0.0, 1.0) as f32
+}
+
+fn should_animate_lod_transition(
+    fading_nodes: usize,
+    loaded_nodes: usize,
+    unloaded_nodes: usize,
+) -> bool {
+    loaded_nodes.saturating_add(unloaded_nodes) <= MAX_ANIMATED_LOD_TOPOLOGY_CHANGES
+        && fading_nodes.saturating_add(unloaded_nodes) <= MAX_ANIMATED_LOD_TOPOLOGY_CHANGES
 }
 
 fn nodes_share_lod_transition(first: QuadtreeNode, second: QuadtreeNode) -> bool {
@@ -1091,7 +1115,8 @@ mod tests {
 
     use super::{
         cube_face_uv, fallback_uv_transform, lod_transition_progress, nodes_share_lod_transition,
-        pack_terrain_info, sample_height_cpu, source_tile_uv_at_direction,
+        pack_terrain_info, sample_height_cpu, should_animate_lod_transition,
+        source_tile_uv_at_direction,
     };
     use crate::planet::{QuadtreeNode, build_chunk_mesh, cube_face_direction};
 
@@ -1218,5 +1243,13 @@ mod tests {
         assert!((lod_transition_progress(10.25, 10.0) - 0.5).abs() < f32::EPSILON);
         assert_eq!(lod_transition_progress(10.5, 10.0), 1.0);
         assert_eq!(lod_transition_progress(11.0, 10.0), 1.0);
+    }
+
+    #[test]
+    fn large_lod_changes_snap_instead_of_duplicating_draws() {
+        assert!(should_animate_lod_transition(0, 32, 32));
+        assert!(!should_animate_lod_transition(0, 33, 32));
+        assert!(!should_animate_lod_transition(40, 16, 25));
+        assert!(!should_animate_lod_transition(usize::MAX, 0, 1));
     }
 }

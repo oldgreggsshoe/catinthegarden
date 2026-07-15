@@ -19,7 +19,10 @@ pub const MAX_LOD_LEVEL: u8 = 18;
 pub const MINIMUM_LOD_LEVEL: u8 = 1;
 /// Deliberately game-time-scaled so axial rotation is visible during normal play.
 pub const PLANET_ROTATION_PERIOD_SECONDS: f64 = 600.0;
-pub const DEFAULT_MAX_ACTIVE_CHUNKS: usize = 2_048;
+/// Hard leaf budget for the current one-draw-call-per-chunk renderer. At the
+/// 640px reference size this still provides more mesh cells than pixels while
+/// preventing narrow optical zoom from expanding into thousands of draws.
+pub const DEFAULT_MAX_ACTIVE_CHUNKS: usize = 256;
 pub const SKIRT_DEPTH_RATIO: f64 = 0.075;
 pub const PLACEHOLDER_HEIGHT_OCTAVES: [(f64, f64); 4] = [
     (8.0, 2_800.0),
@@ -42,6 +45,9 @@ pub const GLOBAL_TERRAIN_DETAIL_OCTAVES: [(f64, f64, [f64; 3], f64); 4] = [
     (2_097_152.0, 1.5, [-0.48, -0.66, 0.58], 2.73),
 ];
 pub const GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS: f64 = 111.5;
+/// Visual exaggeration applied to baked land height and its microrelief. Sea
+/// level and ocean waves remain unscaled so the coastline does not move.
+pub const OUTMAP_TERRAIN_HEIGHT_SCALE: f64 = 4.0;
 const DEFAULT_VERTICAL_FOV_RADIANS: f64 = 45.0_f64.to_radians();
 /// The default 640px-high viewport needs roughly this optical field of view
 /// before screen-space error naturally requests L18 from a 6,000km orbit.
@@ -79,7 +85,6 @@ pub fn reference_vertical_fov_radians_for_viewport(
     )
 }
 const FACE_COUNT: u8 = 6;
-const NODE_BOUNDS_SAMPLE_STEPS: usize = 4;
 const FACE_BASES: [(DVec3, DVec3, DVec3); FACE_COUNT as usize] = [
     (DVec3::X, DVec3::NEG_Z, DVec3::Y),
     (DVec3::NEG_X, DVec3::Z, DVec3::Y),
@@ -275,7 +280,8 @@ pub fn global_terrain_detail_meters(direction: DVec3) -> f64 {
 /// deliberately complete well above the 200m beach blend used by the shader.
 pub fn detailed_outmap_land_height_meters(macro_height_meters: f64, direction: DVec3) -> f64 {
     let weight = smoothstep(100.0, 400.0, macro_height_meters);
-    macro_height_meters + global_terrain_detail_meters(direction) * weight
+    (macro_height_meters + global_terrain_detail_meters(direction) * weight)
+        * OUTMAP_TERRAIN_HEIGHT_SCALE
 }
 
 /// Height followed by the low-flight camera. Ocean floor is not the visible
@@ -323,12 +329,6 @@ impl LodPolicy {
     pub fn should_merge(&self, projected_error_pixels: f64, level: u8) -> bool {
         level >= self.minimum_level() && projected_error_pixels < self.merge_pixels
     }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct NodeBounds {
-    pub center_world: DVec3,
-    pub radius_meters: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -401,21 +401,7 @@ fn maximum_node_plane_value(
 ) -> f64 {
     let plane_length = plane_normal.length();
     let plane_direction = plane_normal / plane_length;
-    let center_dot = bounds
-        .center_direction
-        .dot(plane_direction)
-        .clamp(-1.0, 1.0);
-    // Maximise over the node's angular cone. This expands only angularly;
-    // unlike a height-inflated world-space sphere, a 14km radial range cannot
-    // make neighbouring fine nodes overlap the whole low-flight viewport.
-    let maximum_direction_dot = if center_dot >= bounds.cosine_radius {
-        // The plane direction lies inside the node's angular cone.
-        1.0
-    } else {
-        (center_dot * bounds.cosine_radius
-            + (1.0 - center_dot * center_dot).max(0.0).sqrt() * bounds.sine_radius)
-            .min(1.0)
-    };
+    let maximum_direction_dot = maximum_direction_dot_in_cone(bounds, plane_direction);
     let radius = if maximum_direction_dot >= 0.0 {
         height_range.maximum_radius()
     } else {
@@ -424,32 +410,38 @@ fn maximum_node_plane_value(
     plane_length * (radius * maximum_direction_dot - camera_world.dot(plane_direction))
 }
 
-pub fn node_bounds(node: QuadtreeNode) -> NodeBounds {
-    let [u_min, v_min, u_max, v_max] = node.uv_bounds();
-    let center_direction = node.center_direction();
-    let center_world =
-        center_direction * (PLANET_RADIUS_METERS + placeholder_height_meters(center_direction));
-    let mut radius_meters: f64 = 0.0;
-    for y in 0..=NODE_BOUNDS_SAMPLE_STEPS {
-        let v_fraction = y as f64 / NODE_BOUNDS_SAMPLE_STEPS as f64;
-        let v = v_min + (v_max - v_min) * v_fraction;
-        for x in 0..=NODE_BOUNDS_SAMPLE_STEPS {
-            let u_fraction = x as f64 / NODE_BOUNDS_SAMPLE_STEPS as f64;
-            let u = u_min + (u_max - u_min) * u_fraction;
-            let direction = cube_face_direction(node.face, u, v);
-            let world = direction * (PLANET_RADIUS_METERS + placeholder_height_meters(direction));
-            radius_meters = radius_meters.max(world.distance(center_world));
-        }
+fn maximum_direction_dot_in_cone(bounds: NodeDirectionalBounds, direction: DVec3) -> f64 {
+    let center_dot = bounds.center_direction.dot(direction).clamp(-1.0, 1.0);
+    // Maximise over the node's angular cone. This expands only angularly;
+    // unlike a height-inflated world-space sphere, a tall radial range cannot
+    // make neighbouring fine nodes overlap the whole low-flight viewport.
+    if center_dot >= bounds.cosine_radius {
+        // The direction lies inside the node's angular cone.
+        1.0
+    } else {
+        (center_dot * bounds.cosine_radius
+            + (1.0 - center_dot * center_dot).max(0.0).sqrt() * bounds.sine_radius)
+            .min(1.0)
     }
-    NodeBounds {
-        center_world,
-        // Cover the procedural detail without the previous contract-wide
-        // 12.5km sphere inflation, which made fine nodes overlap the entire
-        // low-flight view and exhausted the active-leaf budget.
-        radius_meters: radius_meters
-            + node.geometric_error_meters()
-            + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
+}
+
+fn minimum_node_distance_with_height_range(
+    node: QuadtreeNode,
+    camera_world: DVec3,
+    height_range: TerrainHeightRange,
+) -> f64 {
+    let camera_radius = camera_world.length();
+    if camera_radius <= f64::EPSILON {
+        return height_range.minimum_radius();
     }
+    let maximum_direction_dot =
+        maximum_direction_dot_in_cone(node_directional_bounds(node), camera_world / camera_radius);
+    let closest_radius = (camera_radius * maximum_direction_dot)
+        .clamp(height_range.minimum_radius(), height_range.maximum_radius());
+    (camera_radius * camera_radius + closest_radius * closest_radius
+        - 2.0 * camera_radius * closest_radius * maximum_direction_dot)
+        .max(0.0)
+        .sqrt()
 }
 
 fn node_is_above_horizon_with_height_range(
@@ -502,14 +494,15 @@ fn node_is_in_view_frustum(
     true
 }
 
-pub fn projected_error_pixels(
+fn projected_error_pixels_with_height_range(
     node: QuadtreeNode,
     camera_world: DVec3,
     viewport_height: u32,
     vertical_fov_radians: f64,
+    height_range: TerrainHeightRange,
 ) -> f64 {
-    let bounds = node_bounds(node);
-    let distance = (camera_world.distance(bounds.center_world) - bounds.radius_meters).max(1.0);
+    let distance =
+        minimum_node_distance_with_height_range(node, camera_world, height_range).max(1.0);
     let projection_scale = f64::from(viewport_height.max(1))
         / (2.0
             * (vertical_fov_radians.clamp(
@@ -1041,11 +1034,12 @@ impl PlanetLod {
         }
         let evaluation = NodeEvaluation {
             visible,
-            projected_error_pixels: projected_error_pixels(
+            projected_error_pixels: projected_error_pixels_with_height_range(
                 node,
                 camera_world,
                 viewport_height,
                 vertical_fov_radians,
+                terrain_height_range,
             ),
         };
         evaluations.insert(node, evaluation);
@@ -1761,13 +1755,28 @@ mod tests {
         CHUNK_GRID_QUADS, CHUNK_GRID_VERTICES, CameraUniform, CameraViewBasis, CubeSphereMesh,
         DEFAULT_VERTICAL_FOV_RADIANS, GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, LodPolicy,
         MAX_LOD_LEVEL, MAX_VERTICAL_FOV_RADIANS, MIN_VERTICAL_FOV_RADIANS, MINIMUM_LOD_LEVEL,
-        OrbitCamera, PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode, RenderDebugMode,
-        SKIRT_DEPTH_RATIO, TerrainHeightRange, build_chunk_mesh, cube_face_basis,
+        OUTMAP_TERRAIN_HEIGHT_SCALE, OrbitCamera, PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode,
+        RenderDebugMode, SKIRT_DEPTH_RATIO, TerrainHeightRange, build_chunk_mesh, cube_face_basis,
         cube_face_direction, detailed_outmap_land_height_meters, global_terrain_detail_meters,
         minimum_vertical_fov_radians_for_viewport, outmap_surface_height_meters,
         placeholder_height_meters, planet_local_vector, planet_rotation_radians,
-        projected_error_pixels,
+        projected_error_pixels_with_height_range,
     };
+
+    fn projected_error_pixels(
+        node: QuadtreeNode,
+        camera_world: DVec3,
+        viewport_height: u32,
+        vertical_fov_radians: f64,
+    ) -> f64 {
+        projected_error_pixels_with_height_range(
+            node,
+            camera_world,
+            viewport_height,
+            vertical_fov_radians,
+            TerrainHeightRange::default(),
+        )
+    }
 
     #[test]
     fn render_debug_mode_cycles_back_to_final() {
@@ -2345,7 +2354,7 @@ mod tests {
         let mut lod = PlanetLod::default();
         lod.set_terrain_height_range(TerrainHeightRange::new(
             -5_000.0 - GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
-            9_000.0 + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
+            (9_000.0 + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS) * OUTMAP_TERRAIN_HEIGHT_SCALE,
         ));
         let update = lod.update_for_view_with_up(
             camera_position,
@@ -2409,7 +2418,7 @@ mod tests {
         let mut lod = PlanetLod::default();
         lod.set_terrain_height_range(TerrainHeightRange::new(
             -5_000.0 - GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
-            9_000.0 + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
+            (9_000.0 + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS) * OUTMAP_TERRAIN_HEIGHT_SCALE,
         ));
         let update = lod.update_for_view_with_up(
             camera_position,
@@ -2476,11 +2485,70 @@ mod tests {
     fn outmap_detail_preserves_ocean_and_coastline() {
         let direction = DVec3::new(0.27, -0.61, 0.74).normalize();
         assert_eq!(outmap_surface_height_meters(-800.0, direction), 0.0);
-        assert_eq!(detailed_outmap_land_height_meters(100.0, direction), 100.0);
+        assert_eq!(detailed_outmap_land_height_meters(100.0, direction), 400.0);
         assert_eq!(
             detailed_outmap_land_height_meters(400.0, direction),
-            400.0 + global_terrain_detail_meters(direction)
+            OUTMAP_TERRAIN_HEIGHT_SCALE * (400.0 + global_terrain_detail_meters(direction))
         );
+    }
+
+    #[test]
+    fn projected_error_uses_the_exaggerated_land_shell() {
+        let node = QuadtreeNode::root(0);
+        let camera = DVec3::X * (PLANET_RADIUS_METERS + 12_000.0);
+        let baseline_error = projected_error_pixels_with_height_range(
+            node,
+            camera,
+            427,
+            60.0_f64.to_radians(),
+            TerrainHeightRange::default(),
+        );
+        let exaggerated_error = projected_error_pixels_with_height_range(
+            node,
+            camera,
+            427,
+            60.0_f64.to_radians(),
+            TerrainHeightRange::new(
+                -5_000.0 - GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
+                (9_000.0 + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS) * OUTMAP_TERRAIN_HEIGHT_SCALE,
+            ),
+        );
+
+        assert!(exaggerated_error > baseline_error * 100.0);
+    }
+
+    #[test]
+    fn captured_zoomed_low_flight_view_is_bounded() {
+        // Worst sustained sample from manual run 1784106903-166364: the
+        // 2.2-degree flight view selected 991 active chunks, retained 1,070
+        // draw calls, and took 705ms. A narrow optical FOV must spend a fixed
+        // terrain budget on the most useful leaves instead of expanding work.
+        let world_position = DVec3::new(
+            3_891_789.424_464_821,
+            434_429.081_719_413_6,
+            880_386.714_197_311_1,
+        );
+        let camera_position = planet_local_vector(world_position, 0.072_884_613_494_864_83);
+        let up = camera_position.normalize();
+        let forward = DVec3::new(-up.z, 0.0, up.x).normalize();
+        let mut lod = PlanetLod::default();
+        lod.set_terrain_height_range(TerrainHeightRange::new(
+            -5_000.0 - GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
+            (9_000.0 + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS) * OUTMAP_TERRAIN_HEIGHT_SCALE,
+        ));
+
+        let update = lod.update_for_view_with_up(
+            camera_position,
+            forward,
+            up,
+            640.0 / 427.0,
+            427,
+            2.236_187_176_989_754_f64.to_radians(),
+        );
+
+        assert!(update.metrics.budget_limited);
+        assert!(update.active_nodes.len() <= 256);
+        assert_eq!(update.metrics.max_level, MAX_LOD_LEVEL);
     }
 
     #[test]

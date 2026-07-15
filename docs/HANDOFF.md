@@ -91,7 +91,9 @@ These constraints come from `AGENTS.md` and current code. Preserve them.
   climate, or biome data at runtime; the baker owns that work. Phase 7 adds a
   deliberately bounded four-octave direction field only as land microrelief
   over the baked height, so sparse ancestor fallback has useful detail at any
-  longitude without changing the baked coastline or biome.
+  longitude without changing the baked coastline or biome. Positive baked land
+  height and that microrelief are visually exaggerated 4x after coastline and
+  material classification; ocean sea level remains zero.
 - `--terrain placeholder` remains a Phase-2 diagnostic fallback and evaluates
   its analytic multiscale sine height at runtime.
 - Runtime normals are central differences from height. Do not add a baked
@@ -362,7 +364,8 @@ Current schema facts:
 - working grid: 4096x2048
 - global dense coverage: L0-L4
 - sparse +X refinement: parent-complete through L18, radius 1
-- height range: -5,000 m to +9,000 m
+- baked height range: -5,000 m to +9,000 m; visible positive land is currently
+  exaggerated 4x at runtime, up to roughly +36,000 m before microrelief
 - listed tiles: 2,172
 - local disk use at review time: about 254 MiB
 
@@ -806,12 +809,13 @@ forbid deleting files without an explicit request.
    rich demonstration of metre-scale land detail; the maximum-zoom scenario
    capture is a uniform ocean-color image and must not be cited as pixel-level
    proof of added surface detail.
-4. SSE still uses placeholder geometric-error and distance estimates rather
-   than measured per-tile baked error. Horizon/frustum culling no longer uses
-   placeholder-only world-space spheres: it conservatively tests each node's
-   angular cone across the manifest's complete radial height range plus the
-   111.5m procedural amplitude. This fixes elevated near-field holes without
-   the leaf-budget explosion caused by the failed blanket 12.5km sphere margin.
+4. SSE still uses placeholder geometric-error rather than measured per-tile
+   baked error. Distance, horizon, and frustum evaluation no longer use
+   placeholder-only world-space spheres: they conservatively test each node's
+   angular cone across the complete exaggerated radial height range. This fixes
+   elevated near-field holes and keeps 4x land near the camera from being
+   treated as if it were still at the unscaled baked radius, without the
+   leaf-budget explosion caused by the failed blanket sphere margin.
 5. Runtime tile disk reads and GPU uploads are synchronous.
 6. Terrain currently performs one draw per active/fading render node.
 7. `limb_atmosphere` has no tier-2 pixel assertion and still relies on visual
@@ -827,6 +831,27 @@ forbid deleting files without an explicit request.
     above remains in the working tree pending explicit permission to remove it.
 
 ## Next action
+
+The 640x427 manual captures from run `1784105961-158941` showed kilometre-scale
+rectangular biome regions and repeated terrain ribs at about 12.45km zero-datum
+altitude. Their logs confirm the primary colour-block cause: 44-51 of roughly
+50-57 visible chunks were sampling ancestor tiles because dense baked material
+coverage ends at L4 outside the sparse +X corridor. That limitation remains;
+4x vertical exaggeration cannot invent finer categorical biome data.
+
+Positive baked land height and global microrelief are now multiplied by 4x for
+rendering, normals, atmospheric surface altitude, CPU flight clearance, radial
+LOD bounds, and SSE distance. Classification still uses unscaled macro height,
+so coastlines, beaches, biomes, ocean sea level, and Gerstner waves do not move.
+The focused exaggeration/shoreline and two low-flight shell regressions pass,
+`cargo check --workspace` is warning-free, and rendered run
+`test-runs/polar_ice_cap/1784106809-165655` passed all three assertions at
+640x427. The full dirty-working-tree suite has the same five known LOD-policy
+failures plus the sun-motion expectation affected by the user's separate
+uncommitted rotation-period override; none is introduced by height scaling.
+The next human check should repeat the same low-flight route. If rectangular
+colour blocks remain unacceptable, the next fix is higher-resolution global
+material coverage or continuous procedural material breakup, not more height.
 
 The default window now requests a 640x427 physical-pixel render surface instead
 of a 960x640 logical window. This preserves the previous 3:2 composition to the
@@ -873,12 +898,14 @@ Mach-10 camera over roughly 3,012m baked terrain. The captured camera regression
 proved that a +Z root could be culled while its descendant intersected the
 visible elevated shell: placeholder-only world-space bounds did not contain
 the baked surface. `TerrainHeightRange` now comes from the active outmap
-manifest (expanded by global microrelief), and horizon/frustum tests maximise
-each plane over the node's angular cone and radial range rather than inflating
-every fine node tangentially. The exact captured view and the general low-flight
-ray-coverage test both pass without leaf-budget pressure; `polar_ice_cap` also
-passes as a rendered wgpu smoke regression. Human replay of the same free-flight
-route remains the final visual sign-off.
+manifest, expands the positive limit by global microrelief and the 4x visual
+land scale, and leaves the conservative below-sea bound unscaled.
+Horizon/frustum tests maximise each plane over the node's angular cone and
+radial range rather than inflating every fine node tangentially. SSE distance
+uses that same angular/radial shell. The exact captured view and the general
+low-flight ray-coverage test both pass without leaf-budget pressure;
+`polar_ice_cap` also passes as a rendered wgpu smoke regression. Human replay
+of the same free-flight route remains the final visual sign-off.
 
 The low-flight detail experiment now covers the whole planet rather than a
 pre-baked corridor. `planet.wgsl` layers four bounded, direction-based relief
@@ -887,10 +914,47 @@ and uses the same value for modest material variation. It costs four sine
 evaluations per height sample, with detail interpolated to the fragment stage
 instead of recomputed per pixel. `planet.rs` mirrors the exact field, and
 `TerrainRenderer::surface_height_meters_at` applies it to the highest resident
-tile while resolving below-sea samples to sea level. Focused CPU tests cover
-the amplitude, coastline/ocean behavior, and low-flight screen-ray coverage.
+tile, multiplies positive land plus microrelief by 4x, and resolves below-sea
+samples to sea level. The shader mirrors the same ordering so biome/beach
+classification and coastlines remain based on unscaled baked height. Focused
+CPU tests cover the amplitude, coastline/ocean behavior, exaggeration, and
+low-flight screen-ray coverage.
 The next visual check should fly away from +X and compare terrain readability
 and frame-stage profile samples before changing amplitudes or frequencies.
+
+Manual run `1784106903-166364` exposed a separate LOD performance failure while
+zooming the low-flight camera. At 2.236 degrees vertical FOV the selector grew
+to 1,277 active chunks, retained as many as 1,664 terrain draws, created 425
+chunks in one sampled frame, and still reported `budget_limited=false`. Its
+sampled frame-time p95 was 110ms and the worst sample was 704.9ms (1.42 FPS).
+Almost every selected leaf used the same coarse ancestor material tile, so the
+cost did not improve the blocky material presentation.
+
+The one-draw-call-per-chunk renderer now has a production leaf ceiling of 256
+rather than 2,048. The priority queue still sends the budget to the nearest,
+deepest visible demands, while unsplit parents retain complete coarse coverage.
+Cross-fades remain enabled for small adjustments, but a change above 64 loaded
+plus unloaded nodes, or one that would retain more than 64 fading chunks,
+snaps to the complete active topology. This avoids both transition holes and
+an unbounded half-second tail of obsolete draw calls.
+
+Two temporary deterministic profile replays validated the guard and left the
+tracked scenario definitions unchanged. Run `1784107791-178486` reproduced the
+captured 2.236-degree stationary view at 254 chunks/draws: settled GPU render
+was 11.3ms median and 12.0ms maximum, with a one-time first-frame CPU/upload
+hitch. Run `1784107849-179134` moved the same low camera about 10km/s at 60
+degrees, reached L18, and recorded a 17.2ms maximum spatial sample; its sampled
+draw count stayed at or below 138. These short replays prove the former 1 FPS
+failure is bounded, not that long free-flight performance or visual quality
+has final human sign-off.
+
+The remaining rectangular colour regions are not a leaf-count problem. Dense
+global material data still ends at L4 outside the sparse +X bake, so more
+geometry repeatedly samples the same categorical source. The next material
+quality step needs higher-resolution global data or continuous procedural
+material breakup. Independently, replacing per-node vertex buffers/draws with
+a shared procedural grid and batched instances is the next structural terrain
+performance improvement; do not raise the leaf ceiling to hide either issue.
 
 Phase 7 now includes full-screen blur and bloom stages. Their startup defaults
 are `BLUR_ENABLED` and `BLOOM_ENABLED` in `crates/app/src/planet.rs`; F6 and F7
