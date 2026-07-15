@@ -104,7 +104,11 @@ fn sun_visibility(
         0.0,
     ));
     let clearance_meters = closest_approach_meters - PLANET_RADIUS_METERS;
-    return smoothstep(-transition_meters, transition_meters, clearance_meters);
+    // Keep geometrically unoccluded air fully lit up to the limb. The wide
+    // sample-spacing penumbra exists to hide bands behind the terminator; when
+    // centred on zero it incorrectly halves the sky as soon as the sun dips
+    // below a sample's local tangent plane, making sunset arrive too early.
+    return smoothstep(-transition_meters, 0.0, clearance_meters);
 }
 
 fn transmittance(

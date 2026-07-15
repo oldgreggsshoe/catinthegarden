@@ -46,12 +46,14 @@ impl SunRenderer {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 ..Default::default()
             },
-            // Draw before terrain. This always-pass skybox-style disc is then
-            // naturally hidden by the terrain depth pass where the planet is in front.
+            // Draw after the physical scene and its luminance meter. Equal
+            // matches only the untouched reversed-Z clear depth (0.0), so the
+            // planet still occludes the visual-only disc without letting it
+            // influence exposure.
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Always),
+                depth_compare: Some(wgpu::CompareFunction::Equal),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),

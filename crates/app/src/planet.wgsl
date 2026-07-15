@@ -335,7 +335,10 @@ fn sun_visibility(
         0.0,
     ));
     let clearance_meters = closest_approach_meters - PLANET_RADIUS_METERS;
-    return smoothstep(-transition_meters, transition_meters, clearance_meters);
+    // Preserve full illumination to the geometric limb, then use the broad
+    // anti-banding transition only inside the planet shadow. Centring it on
+    // zero made both aerial haze and the fullscreen sky fade too early.
+    return smoothstep(-transition_meters, 0.0, clearance_meters);
 }
 
 fn surface_direct_sun_transmittance(

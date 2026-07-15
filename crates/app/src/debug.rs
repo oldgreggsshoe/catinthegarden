@@ -841,6 +841,7 @@ impl RunArtifacts {
             sim_time,
             gpu_scene_ms = timings.scene_ms,
             gpu_luminance_ms = timings.luminance_ms,
+            gpu_sun_ms = timings.sun_ms,
             gpu_blur_ms = timings.blur_ms,
             gpu_bloom_ms = timings.bloom_ms,
             gpu_tone_map_ms = timings.tone_map_ms,

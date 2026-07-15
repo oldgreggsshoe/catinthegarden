@@ -179,21 +179,22 @@ Per-frame flow:
 8. Log exposure every rendered frame and spatial state about every 0.5 s.
 9. Refresh cached egui geometry only when the HUD is due.
 10. Acquire the swapchain and upload the camera uniform.
-11. Render atmosphere, sun, and terrain/ocean into the HDR/depth scene.
-12. Build the luminance mip chain and schedule its readback.
-13. ACES-tonemap HDR to the swapchain.
-14. Render egui after tonemapping.
-15. Optionally copy the swapchain texture for a PNG screenshot.
-16. Submit, map asynchronous buffers, present, and finalize captures/scenarios.
+11. Render atmosphere and terrain/ocean into the HDR/depth scene.
+12. Build the luminance mip chain from that physical scene and schedule its readback.
+13. Add the depth-tested visual sun disc/corona to HDR, after metering but before post effects.
+14. ACES-tonemap HDR to the swapchain.
+15. Render egui after tonemapping.
+16. Optionally copy the swapchain texture for a PNG screenshot.
+17. Submit, map asynchronous buffers, present, and finalize captures/scenarios.
 
 Render order:
 
 ```text
 Rgba16Float HDR scene + reversed-Z Depth32Float
   atmosphere fullscreen triangle: replace background, no depth write
-  sun fullscreen triangle: additive, no depth write
   terrain/ocean indexed chunks: depth compare Greater, depth write
   luminance extraction and mip downsample
+  sun fullscreen triangle: additive, depth-equal background-only, after luminance
   ACES tone map to swapchain
   egui directly to swapchain
   optional post-tonemap/post-egui screenshot readback
@@ -610,8 +611,8 @@ always zero, and terrain update work is included in `simulation_ms`.
 
 `catinthegarden::render_profile.fields.gpu_render_ms` is always the `-1.0`
 placeholder. Actual GPU time is a separate `catinthegarden::gpu_profile` event.
-Its timestamp interval spans the HDR scene through the end of tone mapping,
-including the luminance chain, but excludes egui and present. FIFO frame pacing
+GPU samples report scene, luminance, camera-only sun overlay, blur, bloom,
+tone-map, and egui separately; their sum excludes present. FIFO frame pacing
 can appear in acquire, submit, or present depending on the backend; inspect all
 three rather than misdiagnosing pacing as CPU encode time.
 
@@ -1032,6 +1033,33 @@ instead of applying one midpoint air sample to the whole column. These changes
 preserve the current fullscreen sample budget. `AERIAL_IN_SCATTER_GAIN` is a
 separate 3.0x visual control applied only after that bounded aerial result; it
 does not change extinction, direct terrain/ocean lighting, or the sky pass.
+
+The visual sun disc/corona is now composited in a depth-equal background-only
+HDR pass after luminance metering, rather than in the physical scene pass.
+This preserves terrain occultation and bloom while keeping camera-only glare
+out of auto-exposure: when the disc falls behind the horizon, the meter no
+longer jumps from its overbright halo to dark terrain and spuriously brightens
+the fading sunset sky. The GPU timestamp profile reports this pass separately
+as `gpu_sun_ms`.
+
+The atmospheric shadow penumbra now begins at the geometric limb and extends
+only into the planet shadow. Previously its wide anti-banding interval was
+centred on the limb, so sky and aerial samples fell immediately from full sun
+to roughly half strength when their solar direction crossed the local tangent
+plane. Keeping unoccluded air fully lit preserves a bright orange horizon at
+sunset, while the existing shadow-side taper carries progressively redder
+single scattering into twilight without changing direct terrain lighting.
+
+Verified on 2026-07-15 from the exact staged tree: `cargo check --workspace`
+passed; the app suite ran 68/73 tests with only the five already-documented LOD
+policy expectation failures. `sunset_sweep` passed all seven assertions and
+its four sampled sky colours progressed from `[166, 183, 139]` through warm
+`[156, 115, 19]` / `[174, 120, 8]` to twilight `[88, 8, 0]`.
+`still_5s --profile-render` also passed and emitted finite `gpu_sun_ms` samples
+around 0.13-0.14 ms on the Xvfb software path, proving the expanded timestamp
+layout and post-meter sun pass execute without validation errors. The latest
+manual 18-frame sequence visually confirmed the exposure rebound is gone;
+human sign-off remains needed for the new shadow-side-only twilight extent.
 
 The bounded polar slice is implemented in `polar_ice_cap`: baked Ice overrides
 ocean at the poles, receives a cool diffuse floor, and a center-pixel assertion

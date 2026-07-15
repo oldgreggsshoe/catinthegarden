@@ -34,7 +34,7 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
 const HUD_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
 const HIDDEN_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 const GPU_PROFILE_RING_SIZE: usize = 3;
-const GPU_TIMESTAMP_COUNT: u32 = 12;
+const GPU_TIMESTAMP_COUNT: u32 = 14;
 const DEFAULT_OUTMAP_PATH: &str = "assets/outmaps/test-planet";
 const DEFAULT_VIEWPORT_WIDTH: u32 = 640;
 const DEFAULT_VIEWPORT_HEIGHT: u32 = 427;
@@ -127,6 +127,7 @@ struct GpuProfiler {
 struct GpuStageTimings {
     scene_ms: f64,
     luminance_ms: f64,
+    sun_ms: f64,
     blur_ms: f64,
     bloom_ms: f64,
     tone_map_ms: f64,
@@ -137,6 +138,7 @@ impl GpuStageTimings {
     fn total_ms(self) -> f64 {
         self.scene_ms
             + self.luminance_ms
+            + self.sun_ms
             + self.blur_ms
             + self.bloom_ms
             + self.tone_map_ms
@@ -222,10 +224,11 @@ impl GpuProfiler {
             let timings = GpuStageTimings {
                 scene_ms: elapsed(0, 1),
                 luminance_ms: elapsed(2, 3),
-                blur_ms: elapsed(4, 5),
-                bloom_ms: elapsed(6, 7),
-                tone_map_ms: elapsed(8, 9),
-                egui_ms: elapsed(10, 11),
+                sun_ms: elapsed(4, 5),
+                blur_ms: elapsed(6, 7),
+                bloom_ms: elapsed(8, 9),
+                tone_map_ms: elapsed(10, 11),
+                egui_ms: elapsed(12, 13),
             };
             drop(timestamps);
             slot.readback_buffer.unmap();
@@ -1177,7 +1180,7 @@ impl State {
                     view: &self.depth_view,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(0.0),
-                        store: wgpu::StoreOp::Discard,
+                        store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,
                 }),
@@ -1196,7 +1199,6 @@ impl State {
                 self.atmosphere
                     .draw(&mut render_pass, &self.camera_bind_group);
                 if self.render_debug_mode != planet::RenderDebugMode::SkyOnly {
-                    self.sun.draw(&mut render_pass, &self.camera_bind_group);
                     self.terrain.draw(&mut render_pass, &self.camera_bind_group);
                 }
             }
@@ -1214,18 +1216,56 @@ impl State {
             timestamp_query_set.map(|query_set| (query_set, 2, 3)),
         );
         let hdr_luminance_readback_slot = self.hdr.encode_luminance_readback(&mut encoder);
+        // The disc and corona are a camera-only visual aid. Composite them
+        // after the meter has sampled the physical atmosphere/terrain scene so
+        // their terrain occlusion cannot drive a false exposure rebound at
+        // sunset. They remain HDR input for bloom and tone mapping below.
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("visual sun overlay pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: self.hdr.scene_view(),
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                occlusion_query_set: None,
+                timestamp_writes: timestamp_query_set.map(|query_set| {
+                    wgpu::RenderPassTimestampWrites {
+                        query_set,
+                        beginning_of_pass_write_index: Some(4),
+                        end_of_pass_write_index: Some(5),
+                    }
+                }),
+                multiview_mask: None,
+            });
+            if !solid_color_screen && self.render_debug_mode != planet::RenderDebugMode::SkyOnly {
+                self.sun.draw(&mut render_pass, &self.camera_bind_group);
+            }
+        }
         self.hdr.encode_blur(
             &mut encoder,
-            timestamp_query_set.map(|query_set| (query_set, 4, 5)),
+            timestamp_query_set.map(|query_set| (query_set, 6, 7)),
         );
         self.hdr.encode_bloom(
             &mut encoder,
-            timestamp_query_set.map(|query_set| (query_set, 6, 7)),
+            timestamp_query_set.map(|query_set| (query_set, 8, 9)),
         );
         self.hdr.encode_tone_map(
             &mut encoder,
             &view,
-            timestamp_query_set.map(|query_set| (query_set, 8, 9)),
+            timestamp_query_set.map(|query_set| (query_set, 10, 11)),
         );
         if let Some(paint_jobs) = &paint_jobs {
             let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1244,8 +1284,8 @@ impl State {
                 timestamp_writes: timestamp_query_set.map(|query_set| {
                     wgpu::RenderPassTimestampWrites {
                         query_set,
-                        beginning_of_pass_write_index: Some(10),
-                        end_of_pass_write_index: Some(11),
+                        beginning_of_pass_write_index: Some(12),
+                        end_of_pass_write_index: Some(13),
                     }
                 }),
                 multiview_mask: None,
