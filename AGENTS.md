@@ -5,6 +5,9 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## Version control
 
 -- You are working in active repo with a remote set. After each set of changes you make, following a prompt, commit and push the changes
+- Give every temporary/staged checkout its own `CARGO_TARGET_DIR`; never share
+  the worktree's `target/`, because that can replace the runnable binary with a
+  different source tree while Cargo incorrectly reports the worktree as fresh.
 
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*

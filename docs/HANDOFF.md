@@ -117,6 +117,10 @@ These constraints come from `AGENTS.md` and current code. Preserve them.
 - Do not delete files unless explicitly requested.
 - Do not stage unrelated changes.
 - Generated `test-runs/` and `assets/outmaps/` remain ignored.
+- Give temporary or exact-staged-tree checkouts a separate `CARGO_TARGET_DIR`.
+  Reusing this worktree's `target/` can leave its runnable binary compiled from
+  the other checkout even when a subsequent worktree `cargo build` reports it
+  as fresh; if that happens, touch the differing source and rebuild here.
 - Commit and push the focused changes made for every completed user prompt.
 
 ## Actual workspace layout
