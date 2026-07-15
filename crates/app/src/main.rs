@@ -459,7 +459,7 @@ impl State {
             terrain,
             terrain_stats: terrain::TerrainStats::default(),
             camera,
-            sun_direction: glam::DVec3::new(0.4, 0.7, 0.6).normalize(),
+            sun_direction: planet::default_sun_direction(),
             previous_camera_world_position: initial_camera_world_position,
             previous_sim_time: 0.0,
             last_auto_orbit_sim_time: 0.0,

@@ -19,6 +19,10 @@ pub const MAX_LOD_LEVEL: u8 = 18;
 pub const MINIMUM_LOD_LEVEL: u8 = 1;
 /// Deliberately game-time-scaled so axial rotation is visible during normal play.
 pub const PLANET_ROTATION_PERIOD_SECONDS: f64 = 600.0;
+/// Earth's mean obliquity. With no simulated annual orbit yet, the default sun
+/// uses the northern-solstice declination so the axial tilt is visible and
+/// stable rather than implying seasons that are not implemented.
+pub const EARTH_AXIAL_TILT_RADIANS: f64 = 23.439_281_f64.to_radians();
 /// Hard leaf budget for the current one-draw-call-per-chunk renderer. At the
 /// 640px reference size this still provides more mesh cells than pixels while
 /// preventing narrow optical zoom from expanding into thousands of draws.
@@ -59,6 +63,14 @@ const MAX_VERTICAL_FOV_RADIANS: f64 = MAX_VERTICAL_FOV_DEGREES.to_radians();
 const ZOOM_LOG_FOV_PER_WHEEL_STEP: f64 = 0.12;
 pub const PLACEHOLDER_GEOMETRIC_ERROR_RATIO: f64 = 0.02;
 pub const LOD_THRASH_WINDOW_UPDATES: u64 = 4;
+
+pub fn default_sun_direction() -> DVec3 {
+    // Preserve the established XZ azimuth while replacing its arbitrary 44
+    // degree declination with Earth's 23.44 degree solstice orientation.
+    let horizontal_direction = DVec3::new(0.4, 0.0, 0.6).normalize();
+    horizontal_direction * EARTH_AXIAL_TILT_RADIANS.cos()
+        + DVec3::Y * EARTH_AXIAL_TILT_RADIANS.sin()
+}
 
 pub fn minimum_vertical_fov_radians_for_viewport(viewport_height: u32) -> f64 {
     let reference_tangent = (MIN_VERTICAL_FOV_RADIANS * 0.5).tan();
@@ -1753,11 +1765,12 @@ mod tests {
 
     use super::{
         CHUNK_GRID_QUADS, CHUNK_GRID_VERTICES, CameraUniform, CameraViewBasis, CubeSphereMesh,
-        DEFAULT_VERTICAL_FOV_RADIANS, GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, LodPolicy,
-        MAX_LOD_LEVEL, MAX_VERTICAL_FOV_RADIANS, MIN_VERTICAL_FOV_RADIANS, MINIMUM_LOD_LEVEL,
-        OUTMAP_TERRAIN_HEIGHT_SCALE, OrbitCamera, PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode,
-        RenderDebugMode, SKIRT_DEPTH_RATIO, TerrainHeightRange, build_chunk_mesh, cube_face_basis,
-        cube_face_direction, detailed_outmap_land_height_meters, global_terrain_detail_meters,
+        DEFAULT_VERTICAL_FOV_RADIANS, EARTH_AXIAL_TILT_RADIANS,
+        GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, LodPolicy, MAX_LOD_LEVEL, MAX_VERTICAL_FOV_RADIANS,
+        MIN_VERTICAL_FOV_RADIANS, MINIMUM_LOD_LEVEL, OUTMAP_TERRAIN_HEIGHT_SCALE, OrbitCamera,
+        PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode, RenderDebugMode, SKIRT_DEPTH_RATIO,
+        TerrainHeightRange, build_chunk_mesh, cube_face_basis, cube_face_direction,
+        default_sun_direction, detailed_outmap_land_height_meters, global_terrain_detail_meters,
         minimum_vertical_fov_radians_for_viewport, outmap_surface_height_meters,
         placeholder_height_meters, planet_local_vector, planet_rotation_radians,
         projected_error_pixels_with_height_range,
@@ -2306,6 +2319,15 @@ mod tests {
                 .abs()
                 < 1.0e-12
         );
+    }
+
+    #[test]
+    fn default_sun_uses_earth_solstice_declination() {
+        let sun_direction = default_sun_direction();
+        let solar_declination = sun_direction.dot(DVec3::Y).asin();
+
+        assert!((sun_direction.length() - 1.0).abs() < 1.0e-12);
+        assert!((solar_declination - EARTH_AXIAL_TILT_RADIANS).abs() < 1.0e-12);
     }
 
     #[test]

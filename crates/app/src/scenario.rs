@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use crate::planet::{MAX_VERTICAL_FOV_DEGREES, MIN_VERTICAL_FOV_DEGREES};
 
 pub const MAX_TERRAIN_LOD_LEVEL: u8 = 18;
-const DEFAULT_SUN_DIRECTION: [f64; 3] = [0.4, 0.7, 0.6];
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
@@ -348,7 +347,7 @@ impl ScenarioRunner {
         let (mut camera_world_position, camera_look_at) =
             interpolated_waypoint(&self.definition.waypoints, self.sim_time);
         let sun_direction = if self.definition.sun_waypoints.is_empty() {
-            normalize_array(DEFAULT_SUN_DIRECTION)
+            crate::planet::default_sun_direction().to_array()
         } else {
             interpolated_sun_direction(&self.definition.sun_waypoints, self.sim_time)
         };

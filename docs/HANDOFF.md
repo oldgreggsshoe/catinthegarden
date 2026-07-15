@@ -219,6 +219,11 @@ Rgba16Float HDR scene + reversed-Z Depth32Float
 - planet rotation period is 600 simulation seconds; interactive mode advances
   it at 0.3×, so its apparent day is 2,000 wall-clock seconds and the
   planet-relative flight camera sees the world-space sun move 2.7° per 15 s.
+- the shared interactive/default sun direction uses Earth's 23.439281° northern
+  solstice declination relative to the planet's Y spin axis. There is no annual
+  orbital revolution yet, so the declination remains fixed rather than
+  inventing an incomplete season cycle; scenarios with authored sun waypoints
+  continue to override it.
 
 Camera yaw/pitch, the planet-local forward vector, and its orthonormal
 forward/right/up basis remain f64 on the CPU. Terrain chunk anchors are
@@ -464,7 +469,7 @@ fragment. Current shared constants are:
 - Rayleigh scale height: 36 km;
 - Mie scale height: 4.8 km;
 - Rayleigh coefficient: `(5.8, 13.5, 33.1)e-6 / m`;
-- Mie coefficient: `0.01e-6 / m`;
+- Mie coefficient: `0.5e-6 / m`;
 - Mie g: 0.76;
 - visual solar radiance: 1.25.
 - fullscreen and aerial scattering use the shared physical coefficients with no
@@ -1050,11 +1055,22 @@ plane. Keeping unoccluded air fully lit preserves a bright orange horizon at
 sunset, while the existing shadow-side taper carries progressively redder
 single scattering into twilight without changing direct terrain lighting.
 
+The twilight solar column now starts at 8x air mass at the geometric horizon
+and reaches the existing 12x red-extinction column by about 7° solar depression;
+the shadow-side taper base is 36 km rather than 24 km. This delays the dark sky
+without adding samples or a global brightness multiplier: sunset stays brighter
+and orange, then reddens as the sun descends before fading to night. The shared
+Mie coefficient is a still-conservative `0.5e-6/m` (far below the original
+physical-order value), restoring a modest forward lobe. Rayleigh's symmetric
+phase term had made the solar and anti-solar directions look nearly identical
+with darker 90° side views; the forward Mie component now differentiates the
+sunset-facing sky while leaving the opposite horizon Rayleigh-dominated.
+
 Verified on 2026-07-15 from the exact staged tree: `cargo check --workspace`
-passed; the app suite ran 68/73 tests with only the five already-documented LOD
+passed; the app suite ran 69/74 tests with only the five already-documented LOD
 policy expectation failures. `sunset_sweep` passed all seven assertions and
 its four sampled sky colours progressed from `[166, 183, 139]` through warm
-`[156, 115, 19]` / `[174, 120, 8]` to twilight `[88, 8, 0]`.
+`[157, 114, 19]` / `[184, 125, 8]` to twilight `[90, 10, 0]`.
 `still_5s --profile-render` also passed and emitted finite `gpu_sun_ms` samples
 around 0.13-0.14 ms on the Xvfb software path, proving the expanded timestamp
 layout and post-meter sun pass execute without validation errors. The latest

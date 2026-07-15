@@ -5,11 +5,12 @@ const ATMOSPHERE_RADIUS_METERS: f32 = PLANET_RADIUS_METERS + ATMOSPHERE_HEIGHT_M
 const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 36000.0;
 const MIE_SCALE_HEIGHT_METERS: f32 = 4800.0;
 const RAYLEIGH_COEFFICIENT: vec3<f32> = vec3<f32>(5.8e-6, 13.5e-6, 33.1e-6);
-const MIE_COEFFICIENT: vec3<f32> = vec3<f32>(0.01e-6);
+const MIE_COEFFICIENT: vec3<f32> = vec3<f32>(0.5e-6);
 const MIE_G: f32 = 0.76;
 const SOLAR_RADIANCE: f32 = 1.25;
 const SKY_SAMPLE_COUNT: u32 = 16u;
 const SKY_DENSITY_SAMPLE_EXPONENT: f32 = 3.0;
+const TWILIGHT_SHADOW_TRANSITION_METERS: f32 = 36000.0;
 
 struct Camera {
     projection_matrix: mat4x4<f32>,
@@ -51,6 +52,15 @@ fn phase_mie(cos_theta: f32) -> f32 {
     let denominator = max(1.0 + g_squared - 2.0 * MIE_G * cos_theta, 1.0e-4);
     return 3.0 * (1.0 - g_squared) * (1.0 + cos_theta * cos_theta)
         / (8.0 * 3.14159265 * (2.0 + g_squared) * pow(denominator, 1.5));
+}
+
+fn twilight_solar_air_mass(solar_zenith_cosine: f32) -> f32 {
+    // A 12x grazing column made the horizon almost black before sunset. Start
+    // with a brighter orange 8x column at the limb, then redden smoothly toward
+    // the existing 12x column over roughly seven degrees of solar depression.
+    let grazing_air_mass = min(1.0 / max(solar_zenith_cosine, 0.125), 8.0);
+    let twilight_depth = smoothstep(0.0, 0.12, max(-solar_zenith_cosine, 0.0));
+    return mix(grazing_air_mass, 12.0, twilight_depth);
 }
 
 fn sphere_interval(radius_meters: f32, radial_dot_ray: f32) -> vec2<f32> {
@@ -140,8 +150,8 @@ fn local_solar_transmittance(
     // Match direct surface lighting's scale-height air-mass estimate instead:
     // dense air still reddens and attenuates the low sun, but does not erase
     // the illuminated horizon.
-    let sun_zenith_cosine = max(dot(sample_direction, sun), 0.0);
-    let air_mass = min(1.0 / max(sun_zenith_cosine, 0.08), 12.0);
+    let sun_zenith_cosine = dot(sample_direction, sun);
+    let air_mass = twilight_solar_air_mass(sun_zenith_cosine);
     let rayleigh_optical_depth = RAYLEIGH_COEFFICIENT
         * density(sample_altitude, RAYLEIGH_SCALE_HEIGHT_METERS)
         * RAYLEIGH_SCALE_HEIGHT_METERS
@@ -241,7 +251,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             sample_altitude,
             RAYLEIGH_SCALE_HEIGHT_METERS,
         );
-        let sample_shadow_transition_meters = max(24000.0, sample_length * 0.50)
+        let sample_shadow_transition_meters = max(
+            TWILIGHT_SHADOW_TRANSITION_METERS,
+            sample_length * 0.50,
+        )
             * mix(1.0, 2.0, lower_atmosphere_weight);
         let sample_radial_dot_sun = (
             camera_radius * dot(camera.camera_planet_direction_view_altitude.xyz, sun)
