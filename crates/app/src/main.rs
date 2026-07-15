@@ -36,6 +36,8 @@ const HIDDEN_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 const GPU_PROFILE_RING_SIZE: usize = 3;
 const GPU_TIMESTAMP_COUNT: u32 = 12;
 const DEFAULT_OUTMAP_PATH: &str = "assets/outmaps/test-planet";
+const DEFAULT_VIEWPORT_WIDTH: u32 = 640;
+const DEFAULT_VIEWPORT_HEIGHT: u32 = 427;
 const DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND: f64 = 0.4;
 const DEFAULT_CAMERA_ORBIT_INCLINATION_RADIANS: f64 = 28.5_f64.to_radians();
 const INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 = 0.3;
@@ -1389,7 +1391,10 @@ impl ApplicationHandler for App {
                 .create_window(
                     WindowAttributes::default()
                         .with_title("Cat in the Garden")
-                        .with_inner_size(winit::dpi::LogicalSize::new(960.0, 640.0)),
+                        .with_inner_size(winit::dpi::PhysicalSize::new(
+                            DEFAULT_VIEWPORT_WIDTH,
+                            DEFAULT_VIEWPORT_HEIGHT,
+                        )),
                 )
                 .expect("failed to create window"),
         );

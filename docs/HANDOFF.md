@@ -155,6 +155,8 @@ profilers. `State::render` is the main integration seam.
 Important constants:
 
 - `DEFAULT_OUTMAP_PATH = "assets/outmaps/test-planet"`
+- default render surface: 640x427 physical pixels, preserving the previous 3:2
+  framing without display-scale multiplication
 - default auto-orbit speed: `0.4 rad/s` in a 28.5-degree inclined plane
 - mouse-look sensitivity: `0.0006 rad/pixel`
 - visible HUD refresh: 100 ms
@@ -294,9 +296,9 @@ lower clamp of 0.01 radians was replaced by the actual camera minimum FOV. The
 old clamp would otherwise have capped refinement around L5 even after widening
 the camera's zoom range.
 
-At the default camera and 960x640 viewport, representative zoom-in thresholds
-are approximately L3 at 3.699 degrees, L4 at 1.671 degrees, L10 at 0.02348
-degrees, L17 at 0.000183 degrees, and L18 at 0.00009155 degrees. Zoom-out occurs
+At the default camera and 640x427 viewport, representative zoom-in thresholds
+are approximately L3 at 2.468 degrees, L4 at 1.115 degrees, L10 at 0.01567
+degrees, L17 at 0.000122 degrees, and L18 at 0.0000611 degrees. Zoom-out occurs
 around 1.6 times wider because the normal 2.0-pixel split / 1.25-pixel merge
 hysteresis remains in control. No second FOV ladder or per-frame forced level
 exists.
@@ -825,6 +827,17 @@ forbid deleting files without an explicit request.
     above remains in the working tree pending explicit permission to remove it.
 
 ## Next action
+
+The default window now requests a 640x427 physical-pixel render surface instead
+of a 960x640 logical window. This preserves the previous 3:2 composition to the
+nearest whole pixel, reduces the unscaled default pixel count by 55.5%, and
+prevents a high-DPI scale factor from silently increasing the requested render
+resolution. Scenario captures therefore use the same 640x427 surface unless
+the window is explicitly resized.
+
+Verified on 2026-07-15: `cargo check --workspace` passed, and the rendered
+`polar_ice_cap` run at `test-runs/polar_ice_cap/1784105963-159411` passed all
+three assertions and wrote a 640x427 PNG.
 
 An accidental 60,000-second axial period made the world-space sun appear
 stationary from the planet-relative flight camera: the newest manual log showed
