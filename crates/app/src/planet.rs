@@ -8,9 +8,9 @@ use glam::{DQuat, DVec3, Mat4, Vec3, Vec4};
 pub const PLANET_RADIUS_METERS: f64 = 4_000_000.0;
 /// Full-screen post-processing switches. Keeping these beside the planet's
 /// other visual constants makes expensive presentation stages easy to bisect.
-pub const BLUR_ENABLED: bool = true;
-pub const BLOOM_ENABLED: bool = true;
-pub const HDR_EFFECT_ENABLED: bool = true;
+pub const BLUR_ENABLED: bool = false;
+pub const BLOOM_ENABLED: bool = false;
+pub const HDR_EFFECT_ENABLED: bool = false;
 pub const CHUNK_GRID_QUADS: usize = 32;
 pub const CHUNK_GRID_VERTICES: usize = CHUNK_GRID_QUADS + 1;
 pub const MAX_LOD_LEVEL: u8 = 18;
@@ -18,7 +18,7 @@ pub const MAX_LOD_LEVEL: u8 = 18;
 /// finer levels only when their geometric error can affect visible pixels.
 pub const MINIMUM_LOD_LEVEL: u8 = 1;
 /// Deliberately game-time-scaled so axial rotation is visible during normal play.
-pub const PLANET_ROTATION_PERIOD_SECONDS: f64 = 600.0;
+pub const PLANET_ROTATION_PERIOD_SECONDS: f64 = 15.0;
 /// Earth's mean obliquity. With no simulated annual orbit yet, the default sun
 /// uses the northern-solstice declination so the axial tilt is visible and
 /// stable rather than implying seasons that are not implemented.
@@ -51,7 +51,7 @@ pub const GLOBAL_TERRAIN_DETAIL_OCTAVES: [(f64, f64, [f64; 3], f64); 4] = [
 pub const GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS: f64 = 111.5;
 /// Visual exaggeration applied to baked land height and its microrelief. Sea
 /// level and ocean waves remain unscaled so the coastline does not move.
-pub const OUTMAP_TERRAIN_HEIGHT_SCALE: f64 = 4.0;
+pub const OUTMAP_TERRAIN_HEIGHT_SCALE: f64 = 40.0;
 const DEFAULT_VERTICAL_FOV_RADIANS: f64 = 45.0_f64.to_radians();
 /// The default 640px-high viewport needs roughly this optical field of view
 /// before screen-space error naturally requests L18 from a 6,000km orbit.
