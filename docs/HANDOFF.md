@@ -93,8 +93,8 @@ These constraints come from `AGENTS.md` and current code. Preserve them.
   deliberately bounded four-octave direction field only as land microrelief
   over the baked height, so sparse ancestor fallback has useful detail at any
   longitude without changing the baked coastline or biome. Positive baked land
-  height and that microrelief are visually exaggerated 4x after coastline and
-  material classification; ocean sea level remains zero.
+  height is visually exaggerated 40x after coastline/material classification,
+  while runtime microrelief uses a separate 4x scale; ocean sea level remains zero.
 - `--terrain placeholder` remains a Phase-2 diagnostic fallback and evaluates
   its analytic multiscale sine height at runtime.
 - Runtime normals are central differences from height. Do not add a baked
@@ -287,8 +287,9 @@ makes the 2-pixel SSE policy request L18. A regression exercises heights 1,
 - Maximum active leaf budget is 256.
 - Split threshold is 2.0 projected pixels.
 - Merge threshold is 1.25 pixels, providing hysteresis.
-- Skirt depth is 7.5% of the chunk edge length, capped at 50m so coarse
-  fallback skirts cannot become exposed planet-scale walls in low flight.
+- Skirt depth is 7.5% of the chunk edge length, capped at 10m. The former
+  50m cap removed planet-scale walls; continuous detail filtering now permits
+  shallower residual crack coverage without exposed coarse edge ribbons.
 
 `PlanetLod` starts from face roots, horizon/frustum-culls each node's angular
 footprint across the outmap's conservative radial height range, ranks split
@@ -377,7 +378,8 @@ Current schema facts:
 - global dense coverage: L0-L4
 - sparse +X refinement: parent-complete through L18, radius 1
 - baked height range: -5,000 m to +9,000 m; visible positive land is currently
-  exaggerated 4x at runtime, up to roughly +36,000 m before microrelief
+  exaggerated 40x at runtime, up to roughly +360,000 m, while bounded runtime
+  microrelief is independently scaled 4x
 - listed tiles: 2,172
 - local disk use at review time: about 254 MiB
 
@@ -1214,19 +1216,37 @@ lighting can become heavily green/cyan. No further renderer change was made
 from this review; treat those as the next terrain-presentation decisions rather
 than continuing to tune skirt depth.
 
+The follow-up terrain pass separates the requested 40x baked macro-height scale
+from a 4x runtime-detail scale, so the bounded +/-111.5m direction field can no
+longer become +/-4.46km knife-ridges. Shader octave visibility is now filtered
+by continuous FOV-aware camera distance instead of requested chunk level; the
+same shared-edge position therefore evaluates the same procedural height on
+mixed LODs. Clean interactive capture set `1784238213-171705` made the remaining
+50m skirt ribbons visible at sunset while logged sampled outmap seam delta
+remained 0.0m, so the coarse cap is now 10m. The full workspace suite passes
+(77 app, 22 baker, 5 coretypes), as do final rendered `orbit_once`
+`1784238536-175145` and `descent_to_10m` `1784238541-175262`. Earlier focused
+runs after the detail-filter change also passed `sunset_sweep`
+`1784238063-169957`, `twilight_directionality` `1784238072-170105`,
+`night_side_atmosphere` `1784238074-170205`, and `polar_ice_cap`
+`1784238077-170301`. Automated injection attempts did not produce a reliable
+like-for-like low-flight frame after the 10m cap, so its final visual claim is
+intentionally left for a fresh user capture rather than inferred from tests.
+
 ## Next action
 
 Obtain final human sign-off before promoting `experiment/composition-debug` to
 `main`:
 
-1. Decide whether the next terrain pass should first reduce/reshape runtime
-   microrelief or isolate the remaining dark chunk/LOD boundary slits. The 50m
-   skirt cap itself is visually confirmed.
+1. Capture the current build in low flight and confirm the 4x microrelief no
+   longer forms repeated kilometre-scale knife-ridges and the 10m skirt cap no
+   longer reads as dark/bright chunk-edge ribbons.
 2. Confirm the 2-60km terrain fog removes the low-flight horizon line without
    obscuring too much nearby terrain.
 3. Review sunset and the 1.538x solar/anti-solar twilight contrast.
-4. Toggle F6/F7 and HDR in an interactive capture set to approve blur, bloom,
-   and the current HDR-off startup presentation.
+4. Toggle F6/F7 and F8 in the same frozen framing to approve blur, bloom, and
+   the HDR-off startup presentation. Capture set `1784238213-171705` proves the
+   toggles execute, but its terrain predates the final 10m skirt cap.
 5. If those views are accepted, promote the branch to `main`; otherwise make
    only the specifically requested visual adjustment and rerun its focused
    scenarios.

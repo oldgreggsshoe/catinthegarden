@@ -29,9 +29,10 @@ pub const EARTH_AXIAL_TILT_RADIANS: f64 = 23.439_281_f64.to_radians();
 pub const DEFAULT_MAX_ACTIVE_CHUNKS: usize = 256;
 pub const SKIRT_DEPTH_RATIO: f64 = 0.075;
 /// Coarse fallback chunks can span hundreds of kilometres. Keep their skirts
-/// deep enough to cover LOD cracks without exposing planet-scale vertical
-/// sheets to a low camera between exaggerated mountains.
-pub const MAX_SKIRT_DEPTH_METERS: f64 = 50.0;
+/// deep enough to cover residual cracks without exposing coarse edge ribbons.
+/// Runtime detail is continuous across mixed LODs, so only a shallow cap is
+/// needed for mesh and tile sampling differences.
+pub const MAX_SKIRT_DEPTH_METERS: f64 = 10.0;
 pub const PLACEHOLDER_HEIGHT_OCTAVES: [(f64, f64); 4] = [
     (8.0, 2_800.0),
     (512.0, 600.0),
@@ -53,8 +54,11 @@ pub const GLOBAL_TERRAIN_DETAIL_OCTAVES: [(f64, f64, [f64; 3], f64); 4] = [
     (2_097_152.0, 1.5, [-0.48, -0.66, 0.58], 2.73),
 ];
 pub const GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS: f64 = 111.5;
-/// Visual exaggeration applied to baked land height and its microrelief. Sea
-/// level and ocean waves remain unscaled so the coastline does not move.
+/// Keep flight-scale relief readable without multiplying it by the experimental
+/// macro-geography exaggeration below.
+pub const GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE: f64 = 4.0;
+/// Visual exaggeration applied only to baked positive land height. Sea level,
+/// ocean waves, and the separately scaled microrelief remain independent.
 pub const OUTMAP_TERRAIN_HEIGHT_SCALE: f64 = 40.0;
 const DEFAULT_VERTICAL_FOV_RADIANS: f64 = 45.0_f64.to_radians();
 /// The default 640px-high viewport needs roughly this optical field of view
@@ -296,8 +300,8 @@ pub fn global_terrain_detail_meters(direction: DVec3) -> f64 {
 /// deliberately complete well above the 200m beach blend used by the shader.
 pub fn detailed_outmap_land_height_meters(macro_height_meters: f64, direction: DVec3) -> f64 {
     let weight = smoothstep(100.0, 400.0, macro_height_meters);
-    (macro_height_meters + global_terrain_detail_meters(direction) * weight)
-        * OUTMAP_TERRAIN_HEIGHT_SCALE
+    macro_height_meters * OUTMAP_TERRAIN_HEIGHT_SCALE
+        + global_terrain_detail_meters(direction) * weight * GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE
 }
 
 /// Height followed by the low-flight camera. Ocean floor is not the visible
@@ -1770,9 +1774,9 @@ mod tests {
     use super::{
         CHUNK_GRID_QUADS, CHUNK_GRID_VERTICES, CameraUniform, CameraViewBasis, CubeSphereMesh,
         DEFAULT_VERTICAL_FOV_RADIANS, EARTH_AXIAL_TILT_RADIANS,
-        GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, LodPolicy, MAX_LOD_LEVEL, MAX_SKIRT_DEPTH_METERS,
-        MAX_VERTICAL_FOV_RADIANS, MIN_VERTICAL_FOV_RADIANS, MINIMUM_LOD_LEVEL,
-        OUTMAP_TERRAIN_HEIGHT_SCALE, OrbitCamera, PLANET_RADIUS_METERS,
+        GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, LodPolicy,
+        MAX_LOD_LEVEL, MAX_SKIRT_DEPTH_METERS, MAX_VERTICAL_FOV_RADIANS, MIN_VERTICAL_FOV_RADIANS,
+        MINIMUM_LOD_LEVEL, OUTMAP_TERRAIN_HEIGHT_SCALE, OrbitCamera, PLANET_RADIUS_METERS,
         PLANET_ROTATION_PERIOD_SECONDS, PlanetLod, QuadtreeNode, RenderDebugMode,
         SKIRT_DEPTH_RATIO, TerrainHeightRange, build_chunk_mesh, cube_face_basis,
         cube_face_direction, default_sun_direction, detailed_outmap_land_height_meters,
@@ -2087,6 +2091,7 @@ mod tests {
 
     #[test]
     fn chunk_mesh_has_fixed_grid_and_proportional_skirts() {
+        assert_eq!(MAX_SKIRT_DEPTH_METERS, 10.0);
         let coarse_chunk = build_chunk_mesh(QuadtreeNode {
             face: 0,
             level: 4,
@@ -2391,7 +2396,8 @@ mod tests {
         let mut lod = PlanetLod::default();
         lod.set_terrain_height_range(TerrainHeightRange::new(
             -5_000.0 - GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
-            (9_000.0 + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS) * OUTMAP_TERRAIN_HEIGHT_SCALE,
+            9_000.0 * OUTMAP_TERRAIN_HEIGHT_SCALE
+                + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS * GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE,
         ));
         let update = lod.update_for_view_with_up(
             camera_position,
@@ -2455,7 +2461,8 @@ mod tests {
         let mut lod = PlanetLod::default();
         lod.set_terrain_height_range(TerrainHeightRange::new(
             -5_000.0 - GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
-            (9_000.0 + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS) * OUTMAP_TERRAIN_HEIGHT_SCALE,
+            9_000.0 * OUTMAP_TERRAIN_HEIGHT_SCALE
+                + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS * GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE,
         ));
         let update = lod.update_for_view_with_up(
             camera_position,
@@ -2528,7 +2535,8 @@ mod tests {
         );
         assert_eq!(
             detailed_outmap_land_height_meters(400.0, direction),
-            OUTMAP_TERRAIN_HEIGHT_SCALE * (400.0 + global_terrain_detail_meters(direction))
+            OUTMAP_TERRAIN_HEIGHT_SCALE * 400.0
+                + GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE * global_terrain_detail_meters(direction)
         );
     }
 
@@ -2550,7 +2558,8 @@ mod tests {
             60.0_f64.to_radians(),
             TerrainHeightRange::new(
                 -5_000.0 - GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
-                (9_000.0 + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS) * OUTMAP_TERRAIN_HEIGHT_SCALE,
+                9_000.0 * OUTMAP_TERRAIN_HEIGHT_SCALE
+                    + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS * GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE,
             ),
         );
 
@@ -2574,7 +2583,8 @@ mod tests {
         let mut lod = PlanetLod::default();
         lod.set_terrain_height_range(TerrainHeightRange::new(
             -5_000.0 - GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
-            (9_000.0 + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS) * OUTMAP_TERRAIN_HEIGHT_SCALE,
+            9_000.0 * OUTMAP_TERRAIN_HEIGHT_SCALE
+                + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS * GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE,
         ));
 
         let update = lod.update_for_view_with_up(

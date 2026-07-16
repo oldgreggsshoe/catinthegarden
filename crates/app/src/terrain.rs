@@ -15,10 +15,10 @@ use crate::{
     outmap::{Outmap, OutmapError, TileData},
     planet::{
         CHUNK_GRID_QUADS, CameraViewBasis, ChunkVertex, DEFAULT_MAX_ACTIVE_CHUNKS,
-        GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, MAX_LOD_LEVEL, OUTMAP_TERRAIN_HEIGHT_SCALE,
-        PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode, TerrainHeightRange, build_chunk_mesh,
-        cube_face_basis, cube_face_direction, outmap_surface_height_meters,
-        placeholder_height_meters,
+        GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, MAX_LOD_LEVEL,
+        OUTMAP_TERRAIN_HEIGHT_SCALE, PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode,
+        TerrainHeightRange, build_chunk_mesh, cube_face_basis, cube_face_direction,
+        outmap_surface_height_meters, placeholder_height_meters,
     },
 };
 
@@ -85,7 +85,12 @@ struct TerrainSettings {
 impl TerrainSettings {
     fn from_planet_constants() -> Self {
         Self {
-            outmap_height_scale: [OUTMAP_TERRAIN_HEIGHT_SCALE as f32, 0.0, 0.0, 0.0],
+            outmap_height_scale: [
+                OUTMAP_TERRAIN_HEIGHT_SCALE as f32,
+                GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE as f32,
+                0.0,
+                0.0,
+            ],
         }
     }
 }
@@ -192,9 +197,8 @@ impl TerrainRenderer {
             TerrainDataSource::Outmap(outmap) => TerrainHeightRange::new(
                 f64::from(outmap.manifest().height_min_meters)
                     - GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
-                (f64::from(outmap.manifest().height_max_meters)
-                    + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS)
-                    * OUTMAP_TERRAIN_HEIGHT_SCALE,
+                f64::from(outmap.manifest().height_max_meters) * OUTMAP_TERRAIN_HEIGHT_SCALE
+                    + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS * GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE,
             ),
         };
         let terrain_settings_buffer =
@@ -1225,8 +1229,8 @@ mod tests {
         should_animate_lod_transition, source_tile_uv_at_direction,
     };
     use crate::planet::{
-        OUTMAP_TERRAIN_HEIGHT_SCALE, PLANET_RADIUS_METERS, QuadtreeNode, build_chunk_mesh,
-        cube_face_direction,
+        GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, OUTMAP_TERRAIN_HEIGHT_SCALE, PLANET_RADIUS_METERS,
+        QuadtreeNode, build_chunk_mesh, cube_face_direction,
     };
     use catinthegarden_coretypes::{
         CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
@@ -1293,6 +1297,10 @@ mod tests {
             settings.outmap_height_scale[0],
             OUTMAP_TERRAIN_HEIGHT_SCALE as f32
         );
+        assert_eq!(
+            settings.outmap_height_scale[1],
+            GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE as f32
+        );
         assert!(!shader.contains("const OUTMAP_TERRAIN_HEIGHT_SCALE"));
         assert!(
             shader
@@ -1303,20 +1311,23 @@ mod tests {
     }
 
     #[test]
-    fn shader_gates_detail_octaves_and_snow_floor_by_resolvable_light() {
+    fn shader_filters_detail_by_continuous_camera_distance_and_real_light() {
         let shader = include_str!("planet.wgsl");
         assert_eq!(
-            shader.matches("terrain_detail_octave_lod_weight(").count(),
+            shader
+                .matches("terrain_detail_octave_distance_weight(")
+                .count(),
             5
         );
-        for resolved_level in [
-            "requested_lod_level, 8.0",
-            "requested_lod_level, 11.0",
-            "requested_lod_level, 14.0",
-            "requested_lod_level, 17.0",
+        for full_distance in [
+            "camera_distance_meters, 150000.0",
+            "camera_distance_meters, 20000.0",
+            "camera_distance_meters, 2500.0",
+            "camera_distance_meters, 300.0",
         ] {
-            assert!(shader.contains(resolved_level));
+            assert!(shader.contains(full_distance));
         }
+        assert!(!shader.contains("requested_lod_level: f32"));
         assert!(shader.contains("biome_color(2u) * 0.65 * ice_light_floor"));
         assert!(!shader.contains("max(lit_surface_color, biome_color(2u) * 0.65)"));
     }

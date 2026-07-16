@@ -134,17 +134,17 @@ fn requested_level(terrain_info: u32) -> u32 {
     return (terrain_info >> 4u) & 0x1fu;
 }
 
-fn terrain_detail_octave_lod_weight(
-    requested_lod_level: f32,
-    resolved_lod_level: f32,
+fn terrain_detail_octave_distance_weight(
+    camera_distance_meters: f32,
+    full_distance_meters: f32,
 ) -> f32 {
-    // Fade each octave in only when the fixed 33x33 grid has enough vertices
-    // to resolve its wavelength. Applying one shared L8-L11 weight made the
-    // highest-frequency octaves alias into large corrugations on coarse chunks.
-    return smoothstep(
-        resolved_lod_level - 1.0,
-        resolved_lod_level + 1.0,
-        requested_lod_level,
+    // Camera distance is continuous across mixed-LOD edges, unlike requested
+    // chunk level. Scale it by FOV so optical zoom retains resolvable detail.
+    let effective_distance = camera_distance_meters * camera.projection.y / 0.57735026;
+    return 1.0 - smoothstep(
+        full_distance_meters,
+        full_distance_meters * 2.0,
+        effective_distance,
     );
 }
 
@@ -174,23 +174,23 @@ fn global_terrain_detail_octave(
 
 // Planet-local direction makes this continuous across cube-face and tile
 // boundaries. The baked outmap still supplies all macro geography.
-fn global_terrain_detail(direction: vec3<f32>, requested_lod_level: f32) -> f32 {
+fn global_terrain_detail(direction: vec3<f32>, camera_distance_meters: f32) -> f32 {
     return global_terrain_detail_octave(
         direction, 4096.0, 80.0, vec3<f32>(0.79, 0.52, -0.32), 0.37,
-    ) * terrain_detail_octave_lod_weight(
-        requested_lod_level, 8.0,
+    ) * terrain_detail_octave_distance_weight(
+        camera_distance_meters, 150000.0,
     ) + global_terrain_detail_octave(
         direction, 32768.0, 24.0, vec3<f32>(-0.23, 0.91, 0.41), 1.11,
-    ) * terrain_detail_octave_lod_weight(
-        requested_lod_level, 11.0,
+    ) * terrain_detail_octave_distance_weight(
+        camera_distance_meters, 20000.0,
     ) + global_terrain_detail_octave(
         direction, 262144.0, 6.0, vec3<f32>(0.61, -0.17, 0.77), 2.07,
-    ) * terrain_detail_octave_lod_weight(
-        requested_lod_level, 14.0,
+    ) * terrain_detail_octave_distance_weight(
+        camera_distance_meters, 2500.0,
     ) + global_terrain_detail_octave(
         direction, 2097152.0, 1.5, vec3<f32>(-0.48, -0.66, 0.58), 2.73,
-    ) * terrain_detail_octave_lod_weight(
-        requested_lod_level, 17.0,
+    ) * terrain_detail_octave_distance_weight(
+        camera_distance_meters, 300.0,
     );
 }
 
@@ -227,16 +227,17 @@ fn terrain_height(
     outmap: bool,
     source_uv: vec2<f32>,
     direction: vec3<f32>,
-    requested_lod_level: f32,
+    camera_distance_meters: f32,
 ) -> f32 {
     let macro_height = macro_terrain_height(outmap, source_uv, direction);
     if !outmap {
         return macro_height;
     }
     let land_detail_weight = smoothstep(100.0, 400.0, macro_height);
-    return (macro_height
-        + global_terrain_detail(direction, requested_lod_level) * land_detail_weight)
-        * terrain_settings.outmap_height_scale.x;
+    return macro_height * terrain_settings.outmap_height_scale.x
+        + global_terrain_detail(direction, camera_distance_meters)
+            * land_detail_weight
+            * terrain_settings.outmap_height_scale.y;
 }
 
 fn gerstner_wave(
@@ -768,6 +769,7 @@ fn displaced_surface_normal(
     source_uv: vec2<f32>,
     source_uv_scale: vec2<f32>,
     terrain_info: u32,
+    camera_distance_meters: f32,
 ) -> vec3<f32> {
     let face = cube_face(terrain_info);
     let tangent_u = face_tangent_u(face);
@@ -781,30 +783,29 @@ fn displaced_surface_normal(
     let up_direction = normalize(cube_position + tangent_v * cube_step);
     let uv_step = source_uv_scale / MATERIAL_TILE_LOGICAL_QUADS;
     let outmap = uses_outmap(terrain_info);
-    let requested_lod_level = f32(requested_level(terrain_info));
     let left_height = terrain_height(
         outmap,
         source_uv - vec2<f32>(uv_step.x, 0.0),
         left_direction,
-        requested_lod_level,
+        camera_distance_meters,
     );
     let right_height = terrain_height(
         outmap,
         source_uv + vec2<f32>(uv_step.x, 0.0),
         right_direction,
-        requested_lod_level,
+        camera_distance_meters,
     );
     let down_height = terrain_height(
         outmap,
         source_uv - vec2<f32>(0.0, uv_step.y),
         down_direction,
-        requested_lod_level,
+        camera_distance_meters,
     );
     let up_height = terrain_height(
         outmap,
         source_uv + vec2<f32>(0.0, uv_step.y),
         up_direction,
-        requested_lod_level,
+        camera_distance_meters,
     );
     let tangent_delta_u = (right_direction - left_direction) * PLANET_RADIUS_METERS
         + right_direction * right_height
@@ -949,16 +950,21 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let source_uv = input.source_uv_offset + input.tile_uv * input.source_uv_scale;
     let outmap = uses_outmap(input.terrain_info);
     let macro_height = macro_terrain_height(outmap, source_uv, direction);
-    let requested_lod_level = f32(requested_level(input.terrain_info));
+    let base_camera_relative_view_position = input.anchor_view_position
+        + planet_to_view(input.anchor_relative_position);
+    let camera_distance_meters = length(base_camera_relative_view_position);
     var terrain_detail_meters = 0.0;
     if outmap {
-        terrain_detail_meters = global_terrain_detail(direction, requested_lod_level);
+        terrain_detail_meters = global_terrain_detail(direction, camera_distance_meters);
     }
-    let unscaled_height = macro_height
-        + terrain_detail_meters * smoothstep(100.0, 400.0, macro_height);
+    let detail_weight = smoothstep(100.0, 400.0, macro_height);
+    let unscaled_height = macro_height + terrain_detail_meters * detail_weight;
     let height = select(
         unscaled_height,
-        unscaled_height * terrain_settings.outmap_height_scale.x,
+        macro_height * terrain_settings.outmap_height_scale.x
+            + terrain_detail_meters
+                * detail_weight
+                * terrain_settings.outmap_height_scale.y,
         outmap,
     );
     // Polar ice overrides ocean in the baked biome contract. Lift it just
@@ -978,6 +984,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         source_uv,
         input.source_uv_scale,
         input.terrain_info,
+        camera_distance_meters,
     );
     if ocean {
         normal = wave_surface.normal;
