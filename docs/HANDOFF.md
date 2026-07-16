@@ -479,7 +479,9 @@ fragment. Current shared constants are:
 - Rayleigh coefficient: `(5.8, 13.5, 33.1)e-6 / m`;
 - Mie coefficient: `0.5e-6 / m`;
 - Mie g: 0.76;
-- visual solar radiance: 1.25.
+- visual solar radiance: 1.25;
+- HDR-off anti-solar twilight minimum scatter: 0.48, measured at 1.538x
+  solar/anti-solar display luminance.
 - fullscreen and aerial scattering use the shared physical coefficients with no
   separate visual brightness, forward-Mie, or artificial limb multiplier.
 
@@ -1127,6 +1129,15 @@ tests passed. Rendered outmap run `1784222171-26736` traversed the exact
 L2-L18-L2 ladder, reached 256 resident chunks and 248 ancestor fallbacks, had
 zero thrash, and passed its bounded assertions. Do not describe Phase 7 as
 fully regressed until every named scenario completes from one clean HEAD.
+
+The first clean-HEAD scenario sweep at `a47112c` passed 11 of 12 scenarios.
+Only `twilight_directionality` failed: the committed HDR-off presentation
+measured 1.428x solar/anti-solar display luminance against the existing 1.5x
+criterion. The isolated twilight-only anti-solar minimum was tightened from
+0.55 to 0.48; it leaves the solar-facing sky and terrain/ocean paths unchanged.
+Focused replay measured 1.538x from `[96, 57, 3]` versus `[63, 37, 1]`.
+`sunset_sweep` and `night_side_atmosphere` also remained green after the
+change. A new clean-HEAD complete sweep is still required.
 
 ## Next action
 
