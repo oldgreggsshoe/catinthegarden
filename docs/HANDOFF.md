@@ -14,16 +14,15 @@ Do not remove or weaken the maintenance requirement above.
 - Repository: `/home/dad/catinthegarden`
 - Branch: `experiment/composition-debug`
 - Remote branch: `origin/experiment/composition-debug`
-- Implementation baseline reviewed: `e6e7a4c` (`not sure`) plus the focused LOD
-  reconciliation documented below.
+- Implementation baseline reviewed and validated: `27ebd43` (`Preserve
+  twilight contrast without HDR`).
 - Last full source review: 2026-07-16
 - Current phase status: Phases 0 through 6, including 5.5, are complete.
 - Phase 7 status: in progress. Blur, bloom, per-stage profiling, HUD additions,
   the polar ice slice, free flight, and bounded terrain streaming are
-  implemented. A clean all-scenario regression has not completed.
-- Current bounded engineering issue: the L2/2.0px policy and focused zoom
-  replay are reconciled. Phase 7 still needs one clean-HEAD all-scenario
-  regression and final visual sign-off.
+  implemented. The clean all-scenario regression is complete.
+- Current bounded engineering issue: objective validation is green. Phase 7
+  still needs final human visual sign-off before promotion to `main`.
 
 This handoff synchronizes the canonical sections with the current experiment
 branch. Always use `git log -1 --oneline` and `git status --short` rather than
@@ -740,44 +739,47 @@ Other baker flags: positional output or `--output`, `--seed`, `--width`,
 | 5 | Complete | Analytic atmosphere, aerial perspective, transition scenarios |
 | 5.5 | Complete | Sun, HDR target, luminance chain, exposure, ACES |
 | 6 | Complete | Gerstner ocean, reflection, Fresnel, ocean scenario |
-| 7 | In progress | Blur/bloom, stage profiling, HUD polish, polar ice, free flight, atmosphere composition diagnostics, bounded terrain streaming, and LOD-policy reconciliation are implemented; one clean all-scenario regression remains |
+| 7 | In progress | Implementation and clean objective regression are complete; final human visual sign-off remains |
 
 ## Verification snapshot
 
-Latest focused working-tree checks on 2026-07-16, based on `e6e7a4c` plus the
-LOD reconciliation:
+Latest clean-HEAD checks on 2026-07-16 at `27ebd43`, using the separate
+`CARGO_TARGET_DIR=/home/dad/.cache/citg-target-a47112c`:
 
 - `cargo fmt --all -- --check`: passed.
 - `cargo check --workspace`: passed without warnings.
 - `cargo test --workspace`: passed: 76 app tests, 22 baker tests, and 5
   coretypes tests.
-- `orbital_zoom_lod --terrain outmap` run `1784222171-26736`: passed all eight
+- All 12 named outmap scenarios passed from the same clean HEAD. Run IDs:
+  `still_5s` `1784222988-47173`, `orbit_once` `1784222993-47317`,
+  `descent_to_10m` `1784222998-47430`, `sunset_sweep`
+  `1784223011-47623`, `twilight_directionality` `1784223019-47771`,
+  `night_side_atmosphere` `1784223022-47882`, `limb_atmosphere`
+  `1784223025-47994`, `ground_to_orbit` `1784223026-48092`,
+  `stare_at_sun` `1784223035-48239`, `ocean_flyover`
+  `1784223040-48367`, `orbital_zoom_lod` `1784223046-48499`, and
+  `polar_ice_cap` `1784223061-48692`.
+- The clean `orbital_zoom_lod --terrain outmap` replay passed all eight
   configured assertions. It observed the exact L2-L18-L2 ladder, no thrash,
   at most 256 resident chunks, at most 248 fallback chunks, eight or fewer
   actual GPU builds per frame, and a maximum seam delta of
   `0.00000762939453125m`.
-- A staged `polar_ice_cap --terrain outmap` smoke run passed all three
-  assertions. The latest retained local manifest is from `7b5524f`, not a
-  clean `d3ccdf4` replay.
-- `twilight_directionality`, `sunset_sweep`, and `night_side_atmosphere` passed
-  their focused assertions on the staged 600-second rotation baseline before
-  `d3ccdf4`; the later commits did not complete a unified scenario replay.
+- Clean profile run `still_5s` `1784223073-48883` passed and emitted 11 GPU
+  samples. Every sample contained all seven stage fields: scene, luminance,
+  sun, blur, bloom, tone-map, and egui. The first/last total GPU samples were
+  1.449/1.852ms on the current local path.
 - Temporary deterministic low-flight profiles bounded the former unbounded LOD
   workload: one settled stationary replay measured 11.3ms median / 12.0ms max
   GPU render at 254 draws, and a moving replay reached L18 with at most eight
   actual GPU chunk builds per frame and a 17.6ms maximum sampled frame.
 
 The old 80/80 optical-zoom result predates the Phase 7 experiment and is useful
-historical evidence only; it is not the current branch's test status. No clean
-HEAD run has yet executed every named scenario. Retained local profile logs
-also predate the added sun timestamp pair: code exposes
-`gpu_scene_ms`, `gpu_luminance_ms`, `gpu_sun_ms`, `gpu_blur_ms`,
-`gpu_bloom_ms`, `gpu_tone_map_ms`, and `gpu_egui_ms`, but a current clean-run
-sample for all seven stages is still required.
+historical evidence only; the clean results above are the current branch
+baseline.
 
 The current 15-second rotation, 40x terrain exaggeration, and disabled startup
-post effects are included in the passing unit suite and focused zoom replay,
-but have not yet completed the all-scenario regression.
+post effects are included in the passing unit suite and all-scenario
+regression.
 
 ## Working-tree safety snapshot
 
@@ -832,7 +834,8 @@ snapshot, not permission to delete or replace the captures.
 10. Atmosphere constants are duplicated between two shaders and can drift.
 11. `triangle.wgsl` and fixed `CubeSphereMesh` are Phase-0/1 leftovers; do not
     assume they drive the current terrain renderer.
-12. Phase 7 has not had a single clean-HEAD all-scenario regression run.
+12. Objective Phase 7 validation is complete, but the current visual
+    presentation still needs the human sign-off listed under Next action.
 13. The current 40x visual terrain exaggeration gives every outmap node a
     conservative possible height range up to roughly 364km. Telescope zoom
     therefore reaches the 256-leaf ceiling and can render through as many as
@@ -1137,27 +1140,30 @@ criterion. The isolated twilight-only anti-solar minimum was tightened from
 0.55 to 0.48; it leaves the solar-facing sky and terrain/ocean paths unchanged.
 Focused replay measured 1.538x from `[96, 57, 3]` versus `[63, 37, 1]`.
 `sunset_sweep` and `night_side_atmosphere` also remained green after the
-change. A new clean-HEAD complete sweep is still required.
+change, motivating the clean-HEAD complete sweep recorded below.
+
+Clean HEAD `27ebd43` then passed formatting, workspace check/tests, all 12
+named outmap scenarios, and `still_5s --profile-render`. The profile emitted
+11 samples with all seven GPU stage fields. This completes the objective Phase
+7 regression; remaining sign-off is visual and must not be inferred from the
+automated results.
 
 ## Next action
 
-Complete the clean Phase 7 regression before further visual tuning:
+Obtain final human sign-off before promoting `experiment/composition-debug` to
+`main`:
 
-1. Commit the focused LOD reconciliation, then validate that exact clean HEAD
-   with a separate `CARGO_TARGET_DIR`.
-2. Run formatting, workspace check/tests, every named scenario, and a
-   `still_5s --profile-render` sample containing all seven GPU stage fields.
-3. Record every objective result here. Do not weaken a scenario merely because
-   the committed 15-second/40x visual experiment changes its output; diagnose
-   any failure against the current intended presentation.
-4. Obtain final human sign-off on polar ice, low-flight terrain,
-   sunset/twilight, and blur/bloom presentation before promoting
-   `experiment/composition-debug` to `main`.
+1. Review polar ice and the 40x low-flight terrain presentation.
+2. Review sunset and the 1.538x solar/anti-solar twilight contrast.
+3. Toggle F6/F7 and HDR in an interactive capture set to approve blur, bloom,
+   and the current HDR-off startup presentation.
+4. If those views are accepted, promote the branch to `main`; otherwise make
+   only the specifically requested visual adjustment and rerun its focused
+   scenarios.
 
-Read first: the scenario/profiling sections of `main.rs` and `debug.rs`, the
-scenario JSON files, and the current verification snapshot above. Preserve the
-user's committed visual constants and reference captures unless explicitly
-asked to change them.
+Read first: the verification snapshot and current visual-experiment notes
+above. Preserve the user's committed constants and reference captures unless
+explicitly asked to change them.
 
 ## Longer-term follow-ups after the next action
 
