@@ -1202,16 +1202,26 @@ foreground skirt wall at 10,491m camera altitude. The diagnosis remains
 unchanged, but the bound was visually much too deep; it is now 50m, retaining
 shallow crack coverage without creating a terrain-sized face. This narrower
 bound passes the full workspace suite plus rendered `orbit_once`
-`1784237068-160253` and `descent_to_10m` `1784237072-160372`; it still requires
-a manual low-flight confirmation.
+`1784237068-160253` and `descent_to_10m` `1784237072-160372`; its subsequent
+manual confirmation is recorded below.
+
+Manual run `1784237334-162486` visually confirms the 50m cap removed the
+dominant kilometre-scale vertical skirt sheets. The broad terrain, distant
+silhouettes, haze, and scale read clearly. Remaining close-range issues are now
+separate: the procedural field forms repeated smooth knife-ridges, some
+chunk/LOD boundaries read as dark slits or abrupt shape changes, and nearby
+lighting can become heavily green/cyan. No further renderer change was made
+from this review; treat those as the next terrain-presentation decisions rather
+than continuing to tune skirt depth.
 
 ## Next action
 
 Obtain final human sign-off before promoting `experiment/composition-debug` to
 `main`:
 
-1. Review the per-octave LOD transition in a fresh 40x low-flight capture and
-   verify the capped skirts remove the repeated vertical sheets and teeth.
+1. Decide whether the next terrain pass should first reduce/reshape runtime
+   microrelief or isolate the remaining dark chunk/LOD boundary slits. The 50m
+   skirt cap itself is visually confirmed.
 2. Confirm the 2-60km terrain fog removes the low-flight horizon line without
    obscuring too much nearby terrain.
 3. Review sunset and the 1.538x solar/anti-solar twilight contrast.
