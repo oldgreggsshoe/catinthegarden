@@ -43,7 +43,7 @@ const DEFAULT_CAMERA_ORBIT_INCLINATION_RADIANS: f64 = 28.5_f64.to_radians();
 const INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 = 0.3;
 const MOUSE_LOOK_RADIANS_PER_PIXEL: f64 = 0.0006;
 const LOW_FLIGHT_ALTITUDE_METERS: f64 = 5_000.0 * 0.3048;
-const LOW_FLIGHT_SPEED_METERS_PER_SECOND: f64 = 10_209.0;
+const LOW_FLIGHT_SPEED_METERS_PER_SECOND: f64 = 102_090.0;
 const LOW_FLIGHT_VERTICAL_FOV_DEGREES: f64 = 60.0;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -75,7 +75,7 @@ impl CameraMode {
     fn label(self) -> &'static str {
         match self {
             Self::Orbit => "orbit",
-            Self::LowFlight => "Mach 30 WASD flight",
+            Self::LowFlight => "Mach 300 WASD flight",
         }
     }
 }
@@ -1781,7 +1781,7 @@ mod tests {
 
         assert!(forward.distance(camera_forward) < 1.0e-12);
         assert!(backward.distance(-camera_forward) < 1.0e-12);
-        assert_eq!(LOW_FLIGHT_SPEED_METERS_PER_SECOND, 3.0 * 3_403.0);
+        assert_eq!(LOW_FLIGHT_SPEED_METERS_PER_SECOND, 30.0 * 3_403.0);
     }
 
     #[test]

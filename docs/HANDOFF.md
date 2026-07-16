@@ -57,7 +57,7 @@ renders a rotating 8,000 km-diameter procedural planet with:
 - a visual HDR sun disc/corona, luminance mip chain, auto-exposure, and ACES;
 - independently toggleable full-screen blur and HDR bright-pass bloom;
 - a six-wave spherical Gerstner ocean with daylight-gated reflection;
-- orbit and terrain-relative Mach 30 free-flight cameras;
+- orbit and terrain-relative Mach 300 free-flight cameras;
 - deterministic scenarios, JSONL logging, PNG capture, assertions, and
   opt-in CPU/GPU render profiling broken down by render stage.
 
@@ -253,9 +253,9 @@ Controls:
 | Left/Right arrows | Orbit azimuth by 0.08 radians |
 | Up/Down arrows | Orbit elevation by 0.05 radians |
 | F3 | Toggle debug HUD |
-| F4 | Toggle orbit / Mach 30 free-flight camera; it starts level 5,000 ft above resident terrain, retains a terrain-aware minimum clearance, and restores the orbital pose when toggled back |
-| W / S | While in flight mode, move at Mach 30 exactly along / opposite the current camera-facing vector; releasing both stops forward/backward translation |
-| A / D | While in flight mode, strafe camera-left / camera-right at Mach 30; diagonal input is normalized |
+| F4 | Toggle orbit / Mach 300 free-flight camera; it starts level 5,000 ft above resident terrain, retains a terrain-aware minimum clearance, and restores the orbital pose when toggled back |
+| W / S | While in flight mode, move at Mach 300 exactly along / opposite the current camera-facing vector; releasing both stops forward/backward translation |
+| A / D | While in flight mode, strafe camera-left / camera-right at Mach 300; diagonal input is normalized |
 | F6/F7/F8 | Toggle blur/bloom/HDR filmic effect |
 | F9 | Cycle composition debug: raw albedo, surface lighting, aerial contribution, sky-only, final HDR |
 | F10 | Freeze/resume scene time (orbit, rotation, ocean, exposure adaptation); low-flight camera movement remains active for framing |
@@ -464,6 +464,9 @@ aerial perspective, and LOD dither.
   surface through sunset independently of direct-sun visibility without the
   unstable energy and vertex cost of sparsely sampled near-horizon paths.
 - Fully occulted direct and sky contributions become zero.
+- Below 100km camera altitude, terrain beyond 20km additionally blends toward
+  analytic local sky radiance, reaching full fog at 140km. This softens the
+  low-flight terrain/sky horizon without changing ocean or orbital views.
 
 ### Atmosphere
 
@@ -781,6 +784,12 @@ The current 15-second rotation, 40x terrain exaggeration, and disabled startup
 post effects are included in the passing unit suite and all-scenario
 regression.
 
+The subsequent Mach 300 WASD and low-altitude terrain-fog change passed
+`cargo fmt --all -- --check`, `cargo check --workspace`, and all workspace
+tests (76 app, 22 baker, 5 coretypes). Focused outmap replays also passed:
+`ground_to_orbit` `1784230726-106256`, `night_side_atmosphere`
+`1784230734-106414`, and `descent_to_10m` `1784230737-106531`.
+
 ## Working-tree safety snapshot
 
 At the start of the LOD reconciliation, `git status --short` was clean. Commit
@@ -900,7 +909,7 @@ mismatches fail (`orbit_selection_stays_coarse_and_bounded`,
 
 The flight camera no longer advances automatically around a latitude parallel.
 Its planet-local position remains unchanged when no WASD key is held. W/S move
-exactly along/opposite the mouse-controlled view vector at 10,209m/s (Mach 30),
+exactly along/opposite the mouse-controlled view vector at 102,090m/s (Mach 300),
 A/D strafe along camera-right/left, and diagonal input is normalized. Movement
 may climb or descend because pitch is part of the view vector, but an endpoint
 clamp retains at least 5,000ft clearance above the highest resident CPU-sampled
@@ -1154,10 +1163,12 @@ Obtain final human sign-off before promoting `experiment/composition-debug` to
 `main`:
 
 1. Review polar ice and the 40x low-flight terrain presentation.
-2. Review sunset and the 1.538x solar/anti-solar twilight contrast.
-3. Toggle F6/F7 and HDR in an interactive capture set to approve blur, bloom,
+2. Confirm the 20-140km terrain fog removes the low-flight horizon line without
+   obscuring too much nearby terrain.
+3. Review sunset and the 1.538x solar/anti-solar twilight contrast.
+4. Toggle F6/F7 and HDR in an interactive capture set to approve blur, bloom,
    and the current HDR-off startup presentation.
-4. If those views are accepted, promote the branch to `main`; otherwise make
+5. If those views are accepted, promote the branch to `main`; otherwise make
    only the specifically requested visual adjustment and rerun its focused
    scenarios.
 

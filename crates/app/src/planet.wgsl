@@ -24,6 +24,9 @@ const AERIAL_DENSITY_SAMPLE_EXPONENT: f32 = 3.0;
 // It does not alter extinction, direct terrain/ocean lighting, or the sky pass.
 const AERIAL_IN_SCATTER_GAIN: f32 = 3.0;
 const TWILIGHT_SHADOW_TRANSITION_METERS: f32 = 36000.0;
+const TERRAIN_FOG_START_METERS: f32 = 20000.0;
+const TERRAIN_FOG_END_METERS: f32 = 140000.0;
+const TERRAIN_FOG_MAX_CAMERA_ALTITUDE_METERS: f32 = 100000.0;
 const RENDER_DEBUG_FINAL: u32 = 0u;
 const RENDER_DEBUG_RAW_ALBEDO: u32 = 1u;
 const RENDER_DEBUG_SURFACE_LIGHTING: u32 = 2u;
@@ -653,6 +656,38 @@ fn aerial_perspective(
     return lit_surface_color * view_transmittance + in_scatter;
 }
 
+fn terrain_distance_fog(
+    aerial_color: vec3<f32>,
+    camera_relative_view_position: vec3<f32>,
+    surface_direction: vec3<f32>,
+    surface_altitude_meters: f32,
+) -> vec3<f32> {
+    let distance_amount = smoothstep(
+        TERRAIN_FOG_START_METERS,
+        TERRAIN_FOG_END_METERS,
+        length(camera_relative_view_position),
+    );
+    let low_altitude_amount = 1.0 - smoothstep(
+        0.0,
+        TERRAIN_FOG_MAX_CAMERA_ALTITUDE_METERS,
+        camera.camera_planet_direction_view_altitude.w,
+    );
+    let fog_amount = distance_amount * low_altitude_amount;
+    if fog_amount <= 0.0 {
+        return aerial_color;
+    }
+    let surface_to_camera_direction = view_to_planet(
+        normalize(-camera_relative_view_position),
+    );
+    let fog_color = sky_radiance(
+        surface_to_camera_direction,
+        surface_direction,
+        surface_altitude_meters,
+        normalize(camera.sun_direction.xyz),
+    );
+    return mix(aerial_color, fog_color, fog_amount);
+}
+
 fn sample_biome(source_uv: vec2<f32>) -> u32 {
     let coordinate = vec2<i32>(round(
         vec2<f32>(TILE_GUTTER)
@@ -947,16 +982,25 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         // warm low-angle direct light, preventing polar caps reading as sand.
         lit_surface_color = max(lit_surface_color, biome_color(2u) * 0.65);
     }
+    var aerial_color = aerial_perspective(
+        lit_surface_color,
+        camera_relative_view_position,
+        direction,
+        surface_height,
+    );
+    if !ocean {
+        aerial_color = terrain_distance_fog(
+            aerial_color,
+            camera_relative_view_position,
+            direction,
+            surface_height,
+        );
+    }
     return VertexOutput(
         camera.projection_matrix * vec4<f32>(camera_relative_view_position, 1.0),
         camera_relative_view_position,
         normal,
-        aerial_perspective(
-            lit_surface_color,
-            camera_relative_view_position,
-            direction,
-            surface_height,
-        ),
+        aerial_color,
         input.lod_transition,
         direction,
         select(0.0, 1.0, ocean),
