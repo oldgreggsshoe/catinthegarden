@@ -287,7 +287,8 @@ makes the 2-pixel SSE policy request L18. A regression exercises heights 1,
 - Maximum active leaf budget is 256.
 - Split threshold is 2.0 projected pixels.
 - Merge threshold is 1.25 pixels, providing hysteresis.
-- Skirt depth is 7.5% of the chunk edge length.
+- Skirt depth is 7.5% of the chunk edge length, capped at 2,000m so coarse
+  fallback skirts cannot become exposed planet-scale walls in low flight.
 
 `PlanetLod` starts from face roots, horizon/frustum-culls each node's angular
 footprint across the outmap's conservative radial height range, ranks split
@@ -1184,21 +1185,31 @@ the real surface irradiance. Workspace formatting/checks and all tests pass
 path was not logged after simulation time stopped, so a fresh interactive
 capture remains the honest visual verification for the LOD transition.
 
+Follow-up manual run `1784231904-119973` confirmed the snow lighting fix to the
+user's satisfaction, so night snow is visually signed off. It also showed that
+per-octave gating alone did not remove the dominant low-flight sheets and teeth:
+their straight chunk-edge walls identify the remaining cause as coarse skirts.
+Generated skirts remain 7.5% of chunk edge length but are now capped at 2,000m.
+The full workspace suite passes; rendered seam/LOD runs `orbit_once`
+`1784232186-123405` and `descent_to_10m` `1784232190-123529` pass. An
+`orbital_zoom_lod` attempt `1784232380-125013` reached simulation time 4.017s
+without an assertion failure but hit the 300s wall timeout before completion,
+so it is not recorded as a pass. A fresh low-flight capture is still required
+to verify that the exposed sheets are gone.
+
 ## Next action
 
 Obtain final human sign-off before promoting `experiment/composition-debug` to
 `main`:
 
 1. Review the per-octave LOD transition in a fresh 40x low-flight capture and
-   verify the repeated grid spikes no longer appear.
-2. Confirm snow is dark on the fully occulted night side while remaining
-   bright and neutral by day.
-3. Confirm the 2-60km terrain fog removes the low-flight horizon line without
+   verify the capped skirts remove the repeated vertical sheets and teeth.
+2. Confirm the 2-60km terrain fog removes the low-flight horizon line without
    obscuring too much nearby terrain.
-4. Review sunset and the 1.538x solar/anti-solar twilight contrast.
-5. Toggle F6/F7 and HDR in an interactive capture set to approve blur, bloom,
+3. Review sunset and the 1.538x solar/anti-solar twilight contrast.
+4. Toggle F6/F7 and HDR in an interactive capture set to approve blur, bloom,
    and the current HDR-off startup presentation.
-6. If those views are accepted, promote the branch to `main`; otherwise make
+5. If those views are accepted, promote the branch to `main`; otherwise make
    only the specifically requested visual adjustment and rerun its focused
    scenarios.
 

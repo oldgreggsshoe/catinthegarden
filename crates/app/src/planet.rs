@@ -28,6 +28,10 @@ pub const EARTH_AXIAL_TILT_RADIANS: f64 = 23.439_281_f64.to_radians();
 /// preventing narrow optical zoom from expanding into thousands of draws.
 pub const DEFAULT_MAX_ACTIVE_CHUNKS: usize = 256;
 pub const SKIRT_DEPTH_RATIO: f64 = 0.075;
+/// Coarse fallback chunks can span hundreds of kilometres. Keep their skirts
+/// deep enough to cover LOD cracks without exposing planet-scale vertical
+/// sheets to a low camera between exaggerated mountains.
+pub const MAX_SKIRT_DEPTH_METERS: f64 = 2_000.0;
 pub const PLACEHOLDER_HEIGHT_OCTAVES: [(f64, f64); 4] = [
     (8.0, 2_800.0),
     (512.0, 600.0),
@@ -1234,7 +1238,7 @@ pub fn build_chunk_mesh(node: QuadtreeNode) -> ChunkMesh {
         .max(corners[1].distance(corners[2]))
         .max(corners[2].distance(corners[3]))
         .max(corners[3].distance(corners[0]));
-    let skirt_depth_meters = edge_length_meters * SKIRT_DEPTH_RATIO;
+    let skirt_depth_meters = (edge_length_meters * SKIRT_DEPTH_RATIO).min(MAX_SKIRT_DEPTH_METERS);
     let top_vertex_count = CHUNK_GRID_VERTICES * CHUNK_GRID_VERTICES;
     let skirt_vertex_count = 4 * CHUNK_GRID_VERTICES;
     let mut vertices = Vec::with_capacity(top_vertex_count + skirt_vertex_count);
@@ -1766,10 +1770,11 @@ mod tests {
     use super::{
         CHUNK_GRID_QUADS, CHUNK_GRID_VERTICES, CameraUniform, CameraViewBasis, CubeSphereMesh,
         DEFAULT_VERTICAL_FOV_RADIANS, EARTH_AXIAL_TILT_RADIANS,
-        GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, LodPolicy, MAX_LOD_LEVEL, MAX_VERTICAL_FOV_RADIANS,
-        MIN_VERTICAL_FOV_RADIANS, MINIMUM_LOD_LEVEL, OUTMAP_TERRAIN_HEIGHT_SCALE, OrbitCamera,
-        PLANET_RADIUS_METERS, PLANET_ROTATION_PERIOD_SECONDS, PlanetLod, QuadtreeNode,
-        RenderDebugMode, SKIRT_DEPTH_RATIO, TerrainHeightRange, build_chunk_mesh, cube_face_basis,
+        GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, LodPolicy, MAX_LOD_LEVEL, MAX_SKIRT_DEPTH_METERS,
+        MAX_VERTICAL_FOV_RADIANS, MIN_VERTICAL_FOV_RADIANS, MINIMUM_LOD_LEVEL,
+        OUTMAP_TERRAIN_HEIGHT_SCALE, OrbitCamera, PLANET_RADIUS_METERS,
+        PLANET_ROTATION_PERIOD_SECONDS, PlanetLod, QuadtreeNode, RenderDebugMode,
+        SKIRT_DEPTH_RATIO, TerrainHeightRange, build_chunk_mesh, cube_face_basis,
         cube_face_direction, default_sun_direction, detailed_outmap_land_height_meters,
         global_terrain_detail_meters, minimum_vertical_fov_radians_for_viewport,
         outmap_surface_height_meters, placeholder_height_meters, planet_local_vector,
@@ -2082,7 +2087,7 @@ mod tests {
 
     #[test]
     fn chunk_mesh_has_fixed_grid_and_proportional_skirts() {
-        let chunk = build_chunk_mesh(QuadtreeNode {
+        let coarse_chunk = build_chunk_mesh(QuadtreeNode {
             face: 0,
             level: 4,
             x: 7,
@@ -2090,32 +2095,41 @@ mod tests {
         });
         let top_vertex_count = CHUNK_GRID_VERTICES * CHUNK_GRID_VERTICES;
         assert_eq!(
-            chunk.vertices.len(),
+            coarse_chunk.vertices.len(),
             top_vertex_count + 4 * CHUNK_GRID_VERTICES
         );
         assert_eq!(
-            chunk.indices.len(),
+            coarse_chunk.indices.len(),
             CHUNK_GRID_QUADS * CHUNK_GRID_QUADS * 6 + 4 * CHUNK_GRID_QUADS * 6
         );
         assert!(
-            chunk.vertices[..top_vertex_count]
+            coarse_chunk.vertices[..top_vertex_count]
                 .iter()
                 .all(|vertex| vertex.skirt_depth_meters == 0.0)
         );
         assert!(
-            chunk.vertices[top_vertex_count..]
+            coarse_chunk.vertices[top_vertex_count..]
                 .iter()
                 .all(|vertex| vertex.skirt_depth_meters > 0.0)
         );
+        assert_eq!(coarse_chunk.skirt_depth_meters, MAX_SKIRT_DEPTH_METERS);
+
+        let fine_chunk = build_chunk_mesh(QuadtreeNode {
+            face: 0,
+            level: 18,
+            x: 131_071,
+            y: 131_071,
+        });
         assert!(
-            (chunk.skirt_depth_meters / chunk.edge_length_meters - SKIRT_DEPTH_RATIO).abs()
+            (fine_chunk.skirt_depth_meters / fine_chunk.edge_length_meters - SKIRT_DEPTH_RATIO)
+                .abs()
                 < f64::EPSILON
         );
-        let top_world = chunk.vertex_world_position(0, false);
-        let skirt_world = chunk.vertex_world_position(top_vertex_count, false);
+        let top_world = coarse_chunk.vertex_world_position(0, false);
+        let skirt_world = coarse_chunk.vertex_world_position(top_vertex_count, false);
         assert!(
-            (top_world.distance(skirt_world) - chunk.skirt_depth_meters).abs()
-                < chunk.skirt_depth_meters * 0.001
+            (top_world.distance(skirt_world) - coarse_chunk.skirt_depth_meters).abs()
+                < coarse_chunk.skirt_depth_meters * 0.001
         );
     }
 
