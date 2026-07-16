@@ -1303,6 +1303,25 @@ mod tests {
     }
 
     #[test]
+    fn shader_gates_detail_octaves_and_snow_floor_by_resolvable_light() {
+        let shader = include_str!("planet.wgsl");
+        assert_eq!(
+            shader.matches("terrain_detail_octave_lod_weight(").count(),
+            5
+        );
+        for resolved_level in [
+            "requested_lod_level, 8.0",
+            "requested_lod_level, 11.0",
+            "requested_lod_level, 14.0",
+            "requested_lod_level, 17.0",
+        ] {
+            assert!(shader.contains(resolved_level));
+        }
+        assert!(shader.contains("biome_color(2u) * 0.65 * ice_light_floor"));
+        assert!(!shader.contains("max(lit_surface_color, biome_color(2u) * 0.65)"));
+    }
+
+    #[test]
     fn cpu_seam_sampling_matches_shader_bilinear_coordinates() {
         let heights: Vec<_> = (0..TILE_STORED_SIZE)
             .flat_map(|y| (0..TILE_STORED_SIZE).map(move |x| (x + y * TILE_STORED_SIZE) as f32))

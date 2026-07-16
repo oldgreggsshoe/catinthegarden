@@ -787,7 +787,7 @@ regression.
 
 The subsequent Mach 300 WASD and low-altitude terrain-fog change passed
 `cargo fmt --all -- --check`, `cargo check --workspace`, and all workspace
-tests (76 app, 22 baker, 5 coretypes). Focused outmap replays also passed:
+tests (77 app, 22 baker, 5 coretypes). Focused outmap replays also passed:
 `ground_to_orbit` `1784231212-111929`, `night_side_atmosphere`
 `1784231220-112074`, `descent_to_10m` `1784231173-111541`, and
 `sunset_sweep` `1784231223-112184`.
@@ -1012,11 +1012,13 @@ responsive and complete coverage remains, but unbuilt regions intentionally
 remain coarser until the camera stops long enough for the queue to catch up.
 
 The repeated ribbed pattern in low-flight captures was procedural relief being
-sampled by a coarse 33x33 fallback mesh. `planet.wgsl` now fades that visual
-detail from L8 through L11 and applies the same factor to displacement and
-normals, so streamed parents show macro shape rather than aliased corrugation.
-The CPU clearance/culling shell keeps the conservative full 4x field; this
-visual fade cannot make the camera enter terrain.
+sampled by a coarse 33x33 fallback mesh. A shared L8-L11 weight was insufficient
+because it introduced all four frequencies together, including wavelengths the
+mesh could not resolve. `planet.wgsl` now fades each octave in separately around
+its first resolvable level: L8, L11, L14, and L17. Displacement and normals use
+the same octave weights, while the CPU clearance/culling shell retains the
+conservative full 40x field; this visual fade cannot make the camera enter
+terrain.
 
 The low-altitude sunset sky was separately dark because `atmosphere.wgsl`
 estimated solar transmittance from each dense raymarch sample to the top of the
@@ -1128,9 +1130,10 @@ sunset-facing sequence retained its previous four sky samples, confirming the
 new weight does not globally darken or shorten the tuned sunset.
 
 The bounded polar slice is implemented in `polar_ice_cap`: baked Ice overrides
-ocean at the poles, receives a cool diffuse floor, and a center-pixel assertion
-checks that the visible cap is bright and sufficiently neutral. The focused
-scenario passes.
+ocean at the poles, receives a cool diffuse floor gated by the actual surface
+irradiance, and a center-pixel assertion checks that the daylight cap is bright
+and sufficiently neutral. The gate reaches zero with direct and atmospheric
+illumination, so snow has no emissive night floor. The focused scenario passes.
 
 The LOD policy was reconciled on 2026-07-16 by restoring the L2 floor and
 2.0/1.25px split/merge hysteresis. Tests now pin those exact defaults. The
@@ -1168,18 +1171,34 @@ remain green; the exact interactive camera path is not deterministic, so the
 skyline softness still requires a new manual capture rather than being inferred
 from those scenario assertions.
 
+Manual flight run `1784231285-112895` then exposed two separate issues. Its
+close captures showed high-frequency procedural octaves aliasing into repeated
+33x33-grid spikes as streamed LOD increased; each octave is now introduced only
+near its resolvable L8/L11/L14/L17 mesh level. Night capture `capture-001.png`
+also exposed the unconditional ice colour floor, which is now multiplied by
+the real surface irradiance. Workspace formatting/checks and all tests pass
+(77 app, 22 baker, 5 coretypes). Focused rendered runs pass:
+`night_side_atmosphere` `1784231702-117655`, `polar_ice_cap`
+`1784231705-117769`, `descent_to_10m` `1784231707-117877`, and
+`orbital_zoom_lod` `1784231720-118055`. The exact frozen-world manual flight
+path was not logged after simulation time stopped, so a fresh interactive
+capture remains the honest visual verification for the LOD transition.
+
 ## Next action
 
 Obtain final human sign-off before promoting `experiment/composition-debug` to
 `main`:
 
-1. Review polar ice and the 40x low-flight terrain presentation.
-2. Confirm the 2-60km terrain fog removes the low-flight horizon line without
+1. Review the per-octave LOD transition in a fresh 40x low-flight capture and
+   verify the repeated grid spikes no longer appear.
+2. Confirm snow is dark on the fully occulted night side while remaining
+   bright and neutral by day.
+3. Confirm the 2-60km terrain fog removes the low-flight horizon line without
    obscuring too much nearby terrain.
-3. Review sunset and the 1.538x solar/anti-solar twilight contrast.
-4. Toggle F6/F7 and HDR in an interactive capture set to approve blur, bloom,
+4. Review sunset and the 1.538x solar/anti-solar twilight contrast.
+5. Toggle F6/F7 and HDR in an interactive capture set to approve blur, bloom,
    and the current HDR-off startup presentation.
-5. If those views are accepted, promote the branch to `main`; otherwise make
+6. If those views are accepted, promote the branch to `main`; otherwise make
    only the specifically requested visual adjustment and rerun its focused
    scenarios.
 

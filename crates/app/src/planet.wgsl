@@ -134,12 +134,18 @@ fn requested_level(terrain_info: u32) -> u32 {
     return (terrain_info >> 4u) & 0x1fu;
 }
 
-fn terrain_detail_lod_weight(terrain_info: u32) -> f32 {
-    // Do not sample kilometre-scale procedural detail on a coarse streamed
-    // fallback mesh: its 33x33 vertices would alias the relief into visible
-    // corrugations. Restore it as the parent-to-child build queue reaches a
-    // mesh spacing that can represent the field.
-    return smoothstep(8.0, 11.0, f32(requested_level(terrain_info)));
+fn terrain_detail_octave_lod_weight(
+    requested_lod_level: f32,
+    resolved_lod_level: f32,
+) -> f32 {
+    // Fade each octave in only when the fixed 33x33 grid has enough vertices
+    // to resolve its wavelength. Applying one shared L8-L11 weight made the
+    // highest-frequency octaves alias into large corrugations on coarse chunks.
+    return smoothstep(
+        resolved_lod_level - 1.0,
+        resolved_lod_level + 1.0,
+        requested_lod_level,
+    );
 }
 
 fn placeholder_octave(direction: vec3<f32>, frequency: f32, amplitude: f32) -> f32 {
@@ -168,15 +174,23 @@ fn global_terrain_detail_octave(
 
 // Planet-local direction makes this continuous across cube-face and tile
 // boundaries. The baked outmap still supplies all macro geography.
-fn global_terrain_detail(direction: vec3<f32>) -> f32 {
+fn global_terrain_detail(direction: vec3<f32>, requested_lod_level: f32) -> f32 {
     return global_terrain_detail_octave(
         direction, 4096.0, 80.0, vec3<f32>(0.79, 0.52, -0.32), 0.37,
+    ) * terrain_detail_octave_lod_weight(
+        requested_lod_level, 8.0,
     ) + global_terrain_detail_octave(
         direction, 32768.0, 24.0, vec3<f32>(-0.23, 0.91, 0.41), 1.11,
+    ) * terrain_detail_octave_lod_weight(
+        requested_lod_level, 11.0,
     ) + global_terrain_detail_octave(
         direction, 262144.0, 6.0, vec3<f32>(0.61, -0.17, 0.77), 2.07,
+    ) * terrain_detail_octave_lod_weight(
+        requested_lod_level, 14.0,
     ) + global_terrain_detail_octave(
         direction, 2097152.0, 1.5, vec3<f32>(-0.48, -0.66, 0.58), 2.73,
+    ) * terrain_detail_octave_lod_weight(
+        requested_lod_level, 17.0,
     );
 }
 
@@ -213,7 +227,7 @@ fn terrain_height(
     outmap: bool,
     source_uv: vec2<f32>,
     direction: vec3<f32>,
-    detail_lod_weight: f32,
+    requested_lod_level: f32,
 ) -> f32 {
     let macro_height = macro_terrain_height(outmap, source_uv, direction);
     if !outmap {
@@ -221,7 +235,7 @@ fn terrain_height(
     }
     let land_detail_weight = smoothstep(100.0, 400.0, macro_height);
     return (macro_height
-        + global_terrain_detail(direction) * land_detail_weight * detail_lod_weight)
+        + global_terrain_detail(direction, requested_lod_level) * land_detail_weight)
         * terrain_settings.outmap_height_scale.x;
 }
 
@@ -767,30 +781,30 @@ fn displaced_surface_normal(
     let up_direction = normalize(cube_position + tangent_v * cube_step);
     let uv_step = source_uv_scale / MATERIAL_TILE_LOGICAL_QUADS;
     let outmap = uses_outmap(terrain_info);
-    let detail_lod_weight = terrain_detail_lod_weight(terrain_info);
+    let requested_lod_level = f32(requested_level(terrain_info));
     let left_height = terrain_height(
         outmap,
         source_uv - vec2<f32>(uv_step.x, 0.0),
         left_direction,
-        detail_lod_weight,
+        requested_lod_level,
     );
     let right_height = terrain_height(
         outmap,
         source_uv + vec2<f32>(uv_step.x, 0.0),
         right_direction,
-        detail_lod_weight,
+        requested_lod_level,
     );
     let down_height = terrain_height(
         outmap,
         source_uv - vec2<f32>(0.0, uv_step.y),
         down_direction,
-        detail_lod_weight,
+        requested_lod_level,
     );
     let up_height = terrain_height(
         outmap,
         source_uv + vec2<f32>(0.0, uv_step.y),
         up_direction,
-        detail_lod_weight,
+        requested_lod_level,
     );
     let tangent_delta_u = (right_direction - left_direction) * PLANET_RADIUS_METERS
         + right_direction * right_height
@@ -935,10 +949,10 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let source_uv = input.source_uv_offset + input.tile_uv * input.source_uv_scale;
     let outmap = uses_outmap(input.terrain_info);
     let macro_height = macro_terrain_height(outmap, source_uv, direction);
-    let detail_lod_weight = terrain_detail_lod_weight(input.terrain_info);
+    let requested_lod_level = f32(requested_level(input.terrain_info));
     var terrain_detail_meters = 0.0;
     if outmap {
-        terrain_detail_meters = global_terrain_detail(direction) * detail_lod_weight;
+        terrain_detail_meters = global_terrain_detail(direction, requested_lod_level);
     }
     let unscaled_height = macro_height
         + terrain_detail_meters * smoothstep(100.0, 400.0, macro_height);
@@ -981,17 +995,26 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         sun_direction,
     );
     let direct_light = max(dot(normal, sun_direction), 0.0);
+    let surface_irradiance = sky_diffuse
+        + sun_transmittance * direct_light * SURFACE_SUNLIGHT_SCALE;
     var lit_surface_color = terrain_material_color(
         outmap,
         source_uv,
         macro_height,
         terrain_detail_meters,
-    )
-        * (sky_diffuse + sun_transmittance * direct_light * SURFACE_SUNLIGHT_SCALE);
+    ) * surface_irradiance;
     if ice {
-        // Snow is strongly diffuse and keeps a cool skylight floor even under
-        // warm low-angle direct light, preventing polar caps reading as sand.
-        lit_surface_color = max(lit_surface_color, biome_color(2u) * 0.65);
+        // Keep daylight snow neutral without creating an emissive floor after
+        // direct and atmospheric illumination are fully occulted.
+        let ice_light_floor = clamp(
+            max(max(surface_irradiance.x, surface_irradiance.y), surface_irradiance.z),
+            0.0,
+            1.0,
+        );
+        lit_surface_color = max(
+            lit_surface_color,
+            biome_color(2u) * 0.65 * ice_light_floor,
+        );
     }
     var aerial_color = aerial_perspective(
         lit_surface_color,
