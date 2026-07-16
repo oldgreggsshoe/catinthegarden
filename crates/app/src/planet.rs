@@ -31,7 +31,7 @@ pub const SKIRT_DEPTH_RATIO: f64 = 0.075;
 /// Coarse fallback chunks can span hundreds of kilometres. Keep their skirts
 /// deep enough to cover LOD cracks without exposing planet-scale vertical
 /// sheets to a low camera between exaggerated mountains.
-pub const MAX_SKIRT_DEPTH_METERS: f64 = 2_000.0;
+pub const MAX_SKIRT_DEPTH_METERS: f64 = 50.0;
 pub const PLACEHOLDER_HEIGHT_OCTAVES: [(f64, f64); 4] = [
     (8.0, 2_800.0),
     (512.0, 600.0),

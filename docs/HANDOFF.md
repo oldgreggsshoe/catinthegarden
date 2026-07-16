@@ -287,7 +287,7 @@ makes the 2-pixel SSE policy request L18. A regression exercises heights 1,
 - Maximum active leaf budget is 256.
 - Split threshold is 2.0 projected pixels.
 - Merge threshold is 1.25 pixels, providing hysteresis.
-- Skirt depth is 7.5% of the chunk edge length, capped at 2,000m so coarse
+- Skirt depth is 7.5% of the chunk edge length, capped at 50m so coarse
   fallback skirts cannot become exposed planet-scale walls in low flight.
 
 `PlanetLod` starts from face roots, horizon/frustum-culls each node's angular
@@ -1189,13 +1189,21 @@ Follow-up manual run `1784231904-119973` confirmed the snow lighting fix to the
 user's satisfaction, so night snow is visually signed off. It also showed that
 per-octave gating alone did not remove the dominant low-flight sheets and teeth:
 their straight chunk-edge walls identify the remaining cause as coarse skirts.
-Generated skirts remain 7.5% of chunk edge length but are now capped at 2,000m.
+Generated skirts remain 7.5% of chunk edge length but are now capped at 50m.
 The full workspace suite passes; rendered seam/LOD runs `orbit_once`
 `1784232186-123405` and `descent_to_10m` `1784232190-123529` pass. An
 `orbital_zoom_lod` attempt `1784232380-125013` reached simulation time 4.017s
 without an assertion failure but hit the 300s wall timeout before completion,
 so it is not recorded as a pass. A fresh low-flight capture is still required
 to verify that the exposed sheets are gone.
+
+Manual capture `1784236902-158013` on the 2,000m cap still showed a large
+foreground skirt wall at 10,491m camera altitude. The diagnosis remains
+unchanged, but the bound was visually much too deep; it is now 50m, retaining
+shallow crack coverage without creating a terrain-sized face. This narrower
+bound passes the full workspace suite plus rendered `orbit_once`
+`1784237068-160253` and `descent_to_10m` `1784237072-160372`; it still requires
+a manual low-flight confirmation.
 
 ## Next action
 
