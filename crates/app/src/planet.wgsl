@@ -24,9 +24,11 @@ const AERIAL_DENSITY_SAMPLE_EXPONENT: f32 = 3.0;
 // It does not alter extinction, direct terrain/ocean lighting, or the sky pass.
 const AERIAL_IN_SCATTER_GAIN: f32 = 3.0;
 const TWILIGHT_SHADOW_TRANSITION_METERS: f32 = 36000.0;
-const TERRAIN_FOG_START_METERS: f32 = 20000.0;
-const TERRAIN_FOG_END_METERS: f32 = 140000.0;
+const TERRAIN_FOG_START_METERS: f32 = 2000.0;
+const TERRAIN_FOG_END_METERS: f32 = 60000.0;
 const TERRAIN_FOG_MAX_CAMERA_ALTITUDE_METERS: f32 = 100000.0;
+const TERRAIN_FOG_FULL_HORIZON_COSINE: f32 = 0.05;
+const TERRAIN_FOG_CLEAR_HORIZON_COSINE: f32 = 0.35;
 const RENDER_DEBUG_FINAL: u32 = 0u;
 const RENDER_DEBUG_RAW_ALBEDO: u32 = 1u;
 const RENDER_DEBUG_SURFACE_LIGHTING: u32 = 2u;
@@ -672,13 +674,22 @@ fn terrain_distance_fog(
         TERRAIN_FOG_MAX_CAMERA_ALTITUDE_METERS,
         camera.camera_planet_direction_view_altitude.w,
     );
-    let fog_amount = distance_amount * low_altitude_amount;
-    if fog_amount <= 0.0 {
-        return aerial_color;
-    }
     let surface_to_camera_direction = view_to_planet(
         normalize(-camera_relative_view_position),
     );
+    let horizon_cosine = max(
+        dot(surface_direction, surface_to_camera_direction),
+        0.0,
+    );
+    let horizon_amount = 1.0 - smoothstep(
+        TERRAIN_FOG_FULL_HORIZON_COSINE,
+        TERRAIN_FOG_CLEAR_HORIZON_COSINE,
+        horizon_cosine,
+    );
+    let fog_amount = distance_amount * low_altitude_amount * horizon_amount;
+    if fog_amount <= 0.0 {
+        return aerial_color;
+    }
     let fog_color = sky_radiance(
         surface_to_camera_direction,
         surface_direction,

@@ -464,8 +464,9 @@ aerial perspective, and LOD dither.
   surface through sunset independently of direct-sun visibility without the
   unstable energy and vertex cost of sparsely sampled near-horizon paths.
 - Fully occulted direct and sky contributions become zero.
-- Below 100km camera altitude, terrain beyond 20km additionally blends toward
-  analytic local sky radiance, reaching full fog at 140km. This softens the
+- Below 100km camera altitude, terrain beyond 2km additionally blends toward
+  analytic local sky radiance, reaching full fog at 60km for grazing
+  terrain-to-camera rays. Steeper ground views remain clear. This softens the
   low-flight terrain/sky horizon without changing ocean or orbital views.
 
 ### Atmosphere
@@ -787,8 +788,9 @@ regression.
 The subsequent Mach 300 WASD and low-altitude terrain-fog change passed
 `cargo fmt --all -- --check`, `cargo check --workspace`, and all workspace
 tests (76 app, 22 baker, 5 coretypes). Focused outmap replays also passed:
-`ground_to_orbit` `1784230726-106256`, `night_side_atmosphere`
-`1784230734-106414`, and `descent_to_10m` `1784230737-106531`.
+`ground_to_orbit` `1784231212-111929`, `night_side_atmosphere`
+`1784231220-112074`, `descent_to_10m` `1784231173-111541`, and
+`sunset_sweep` `1784231223-112184`.
 
 ## Working-tree safety snapshot
 
@@ -1157,13 +1159,22 @@ named outmap scenarios, and `still_5s --profile-render`. The profile emitted
 7 regression; remaining sign-off is visual and must not be inferred from the
 automated results.
 
+Manual near-surface capture `1784230809-107189` showed that the initial
+20-140km terrain-fog transition still left nearby skyline ridges sharply
+defined. The transition now begins at 2km and reaches full strength at 60km,
+but is weighted toward grazing terrain-to-camera rays so it does not blanket
+steeper ground views. Focused terrain, ascent, sunset, and night-side scenarios
+remain green; the exact interactive camera path is not deterministic, so the
+skyline softness still requires a new manual capture rather than being inferred
+from those scenario assertions.
+
 ## Next action
 
 Obtain final human sign-off before promoting `experiment/composition-debug` to
 `main`:
 
 1. Review polar ice and the 40x low-flight terrain presentation.
-2. Confirm the 20-140km terrain fog removes the low-flight horizon line without
+2. Confirm the 2-60km terrain fog removes the low-flight horizon line without
    obscuring too much nearby terrain.
 3. Review sunset and the 1.538x solar/anti-solar twilight contrast.
 4. Toggle F6/F7 and HDR in an interactive capture set to approve blur, bloom,
