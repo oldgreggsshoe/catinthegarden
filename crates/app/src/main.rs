@@ -1747,6 +1747,7 @@ mod tests {
         LOW_FLIGHT_SPEED_METERS_PER_SECOND, flight_movement_direction,
         interactive_camera_delta_seconds,
     };
+    use crate::planet::PLANET_ROTATION_PERIOD_SECONDS;
 
     #[test]
     fn idle_flight_has_no_movement_direction() {
@@ -1822,7 +1823,12 @@ mod tests {
         let initial_sun = crate::planet::planet_local_vector(DVec3::X, 0.0);
         let later_sun = crate::planet::planet_local_vector(DVec3::X, rotation);
         let relative_motion_degrees = initial_sun.angle_between(later_sun).to_degrees();
+        let unwrapped_motion_degrees =
+            360.0 * 15.0 * INTERACTIVE_PLANET_ROTATION_TIME_SCALE / PLANET_ROTATION_PERIOD_SECONDS;
+        let expected_motion_degrees = unwrapped_motion_degrees
+            .rem_euclid(360.0)
+            .min((-unwrapped_motion_degrees).rem_euclid(360.0));
 
-        assert!((relative_motion_degrees - 2.7).abs() < 1.0e-12);
+        assert!((relative_motion_degrees - expected_motion_degrees).abs() < 1.0e-12);
     }
 }

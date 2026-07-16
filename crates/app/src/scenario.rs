@@ -682,7 +682,8 @@ mod tests {
             scenario.assertions().required_lod_level_sequence,
             Some((2_u8..=18).chain((2_u8..18).rev()).collect::<Vec<_>>())
         );
-        assert!(scenario.assertions().require_unlimited_lod_budget);
+        assert!(!scenario.assertions().require_unlimited_lod_budget);
+        assert_eq!(scenario.assertions().max_fallback_chunks, Some(256));
     }
 
     #[test]

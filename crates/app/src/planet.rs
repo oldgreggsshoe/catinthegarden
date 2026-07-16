@@ -16,7 +16,7 @@ pub const CHUNK_GRID_VERTICES: usize = CHUNK_GRID_QUADS + 1;
 pub const MAX_LOD_LEVEL: u8 = 18;
 /// The coarsest rendered quadtree leaf. Screen-space error raises the LOD into
 /// finer levels only when their geometric error can affect visible pixels.
-pub const MINIMUM_LOD_LEVEL: u8 = 1;
+pub const MINIMUM_LOD_LEVEL: u8 = 2;
 /// Deliberately game-time-scaled so axial rotation is visible during normal play.
 pub const PLANET_ROTATION_PERIOD_SECONDS: f64 = 15.0;
 /// Earth's mean obliquity. With no simulated annual orbit yet, the default sun
@@ -322,8 +322,8 @@ pub struct LodPolicy {
 impl Default for LodPolicy {
     fn default() -> Self {
         Self {
-            split_pixels: 0.4,
-            merge_pixels: 0.25,
+            split_pixels: 2.0,
+            merge_pixels: 1.25,
             max_level: MAX_LOD_LEVEL,
         }
     }
@@ -1768,12 +1768,12 @@ mod tests {
         DEFAULT_VERTICAL_FOV_RADIANS, EARTH_AXIAL_TILT_RADIANS,
         GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, LodPolicy, MAX_LOD_LEVEL, MAX_VERTICAL_FOV_RADIANS,
         MIN_VERTICAL_FOV_RADIANS, MINIMUM_LOD_LEVEL, OUTMAP_TERRAIN_HEIGHT_SCALE, OrbitCamera,
-        PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode, RenderDebugMode, SKIRT_DEPTH_RATIO,
-        TerrainHeightRange, build_chunk_mesh, cube_face_basis, cube_face_direction,
-        default_sun_direction, detailed_outmap_land_height_meters, global_terrain_detail_meters,
-        minimum_vertical_fov_radians_for_viewport, outmap_surface_height_meters,
-        placeholder_height_meters, planet_local_vector, planet_rotation_radians,
-        projected_error_pixels_with_height_range,
+        PLANET_RADIUS_METERS, PLANET_ROTATION_PERIOD_SECONDS, PlanetLod, QuadtreeNode,
+        RenderDebugMode, SKIRT_DEPTH_RATIO, TerrainHeightRange, build_chunk_mesh, cube_face_basis,
+        cube_face_direction, default_sun_direction, detailed_outmap_land_height_meters,
+        global_terrain_detail_meters, minimum_vertical_fov_radians_for_viewport,
+        outmap_surface_height_meters, placeholder_height_meters, planet_local_vector,
+        planet_rotation_radians, projected_error_pixels_with_height_range,
     };
 
     fn projected_error_pixels(
@@ -1828,6 +1828,8 @@ mod tests {
             }
         );
         let policy = LodPolicy::default();
+        assert_eq!(policy.split_pixels, 2.0);
+        assert_eq!(policy.merge_pixels, 1.25);
         assert!(policy.should_split(2.1, 0));
         assert!(!policy.should_merge(1.0, MINIMUM_LOD_LEVEL - 1));
         assert!(policy.should_merge(1.0, MINIMUM_LOD_LEVEL));
@@ -2049,12 +2051,11 @@ mod tests {
     }
 
     #[test]
-    fn two_kilometer_selection_stays_below_finest_lod_and_budget() {
+    fn two_kilometer_selection_reaches_finest_lod_without_exhausting_budget() {
         let mut lod = PlanetLod::default();
         let camera = DVec3::X * (PLANET_RADIUS_METERS + 2_000.0);
         let update = lod.update(camera, 1_080, 45.0_f64.to_radians());
-        assert!(update.metrics.max_level >= 9);
-        assert!(update.metrics.max_level <= 13);
+        assert_eq!(update.metrics.max_level, MAX_LOD_LEVEL);
         assert!(!update.metrics.budget_limited);
         assert!(update.metrics.active_chunks < super::DEFAULT_MAX_ACTIVE_CHUNKS as u32);
     }
@@ -2305,7 +2306,7 @@ mod tests {
     #[test]
     fn planet_rotation_transforms_camera_and_sun_into_a_stable_local_frame() {
         let camera = OrbitCamera::default();
-        let rotation = planet_rotation_radians(150.0);
+        let rotation = planet_rotation_radians(PLANET_ROTATION_PERIOD_SECONDS * 0.25);
         let world_position = camera.world_position();
         let local_position = camera.planet_frame_world_position(rotation);
         assert!((local_position.length() - world_position.length()).abs() < 1.0e-8);
@@ -2507,7 +2508,10 @@ mod tests {
     fn outmap_detail_preserves_ocean_and_coastline() {
         let direction = DVec3::new(0.27, -0.61, 0.74).normalize();
         assert_eq!(outmap_surface_height_meters(-800.0, direction), 0.0);
-        assert_eq!(detailed_outmap_land_height_meters(100.0, direction), 400.0);
+        assert_eq!(
+            detailed_outmap_land_height_meters(100.0, direction),
+            OUTMAP_TERRAIN_HEIGHT_SCALE * 100.0
+        );
         assert_eq!(
             detailed_outmap_land_height_meters(400.0, direction),
             OUTMAP_TERRAIN_HEIGHT_SCALE * (400.0 + global_terrain_detail_meters(direction))
@@ -2543,8 +2547,8 @@ mod tests {
     fn captured_zoomed_low_flight_view_is_bounded() {
         // Worst sustained sample from manual run 1784106903-166364: the
         // 2.2-degree flight view selected 991 active chunks, retained 1,070
-        // draw calls, and took 705ms. A narrow optical FOV must spend a fixed
-        // terrain budget on the most useful leaves instead of expanding work.
+        // draw calls, and took 705ms. A narrow optical FOV must remain bounded
+        // while still reaching the finest useful detail.
         let world_position = DVec3::new(
             3_891_789.424_464_821,
             434_429.081_719_413_6,
@@ -2568,7 +2572,7 @@ mod tests {
             2.236_187_176_989_754_f64.to_radians(),
         );
 
-        assert!(update.metrics.budget_limited);
+        assert!(!update.metrics.budget_limited);
         assert!(update.active_nodes.len() <= 256);
         assert_eq!(update.metrics.max_level, MAX_LOD_LEVEL);
     }
