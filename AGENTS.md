@@ -31,6 +31,7 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 
 - Phase 7 visual tuning: the ocean body-scattering albedo is a darker blue while daylight reflections and sun glints remain unchanged; final capture sign-off remains.
 - Phase 7 visual tuning: ocean-only aerial perspective now retains 35% of the globally tuned atmospheric result, preserving a dark-blue final ocean while leaving terrain and sky atmosphere unchanged; fresh F9 stage captures remain required.
+- Phase 7 experiment `ground-readability`: terrain materials now retain baked biome/moisture ownership while continuously blending rendered steep slopes toward rock and high, latitude-adjusted ridges toward snow; no new macro geography or runtime terrain noise is introduced.
 
 ## Planet constants (test planet)
 

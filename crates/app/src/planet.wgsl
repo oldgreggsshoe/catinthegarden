@@ -895,6 +895,8 @@ fn terrain_material_color(
     source_uv: vec2<f32>,
     macro_height_meters: f32,
     terrain_detail_meters: f32,
+    surface_normal: vec3<f32>,
+    surface_direction: vec3<f32>,
 ) -> vec3<f32> {
     var color = vec3<f32>(0.32, 0.58, 0.74);
     if !outmap {
@@ -920,6 +922,24 @@ fn terrain_material_color(
         1.0,
     );
     color *= 1.0 + detail * detail_weight * 0.22;
+
+    // Preserve the baked biome as the base material, then use the rendered
+    // displacement normal and physical altitude to make nearby slopes read as
+    // rock and high ridges collect snow. These are continuous at tile edges
+    // and add no runtime macro geography.
+    let slope = 1.0 - clamp(dot(normalize(surface_normal), surface_direction), 0.0, 1.0);
+    let rock_amount = smoothstep(0.10, 0.42, slope);
+    let rock_color = srgb_to_linear(vec3<f32>(0.30, 0.28, 0.25));
+    color = mix(color, rock_color, rock_amount * 0.72);
+    let latitude_amount = abs(surface_direction.y);
+    let snowline_meters = mix(6200.0, 2200.0, latitude_amount);
+    let snow_amount = smoothstep(
+        snowline_meters,
+        snowline_meters + 900.0,
+        macro_height_meters,
+    ) * (1.0 - rock_amount * 0.35);
+    let snow_color = srgb_to_linear(vec3<f32>(0.82, 0.87, 0.90));
+    color = mix(color, snow_color, snow_amount);
     return color;
 }
 
@@ -1062,6 +1082,8 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         source_uv,
         macro_height,
         terrain_detail_meters,
+        normal,
+        direction,
     ) * surface_irradiance;
     if ice {
         // Keep daylight snow neutral without creating an emissive floor after

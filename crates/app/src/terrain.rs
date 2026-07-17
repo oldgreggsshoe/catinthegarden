@@ -1373,6 +1373,15 @@ mod tests {
     }
 
     #[test]
+    fn terrain_material_pass_uses_displaced_slope_and_latitude_snowline() {
+        let shader = include_str!("planet.wgsl");
+        assert!(shader.contains("let rock_amount = smoothstep(0.10, 0.42, slope);"));
+        assert!(shader.contains("let snowline_meters = mix(6200.0, 2200.0, latitude_amount);"));
+        assert!(shader.contains("normal,\n        direction,\n    ) * surface_irradiance;"));
+        assert!(shader.contains("input.normal,\n        direction,\n    );"));
+    }
+
+    #[test]
     fn fullscreen_sky_applies_the_requested_double_saturation() {
         let shader = include_str!("atmosphere.wgsl");
         assert!(shader.contains("const SKY_ATMOSPHERE_SATURATION: f32 = 2.0;"));

@@ -1311,6 +1311,14 @@ water surface. Terrain aerial perspective and the fullscreen sky remain
 unchanged. The focused shader regression pins the ocean-only helper; a fresh
 five-stage capture set remains the visual acceptance check.
 
+On experimental branch `experiment/ground-readability`, the first ground pass
+keeps the baked biome/moisture tile as terrain albedo ownership but blends the
+existing displaced normal into a continuous steep-slope rock material and uses
+physical height with latitude to add a continuous snowline. It adds no terrain
+macro geography or new runtime noise, so cube/tile seams and the outmap
+contract remain unchanged. A focused shader regression pins both inputs;
+daylight low-flight captures are the visual acceptance check.
+
 ## Next action
 
 Obtain final human sign-off before promoting `experiment/composition-debug` to
