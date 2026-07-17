@@ -104,8 +104,6 @@ struct VertexOutput {
     @location(7) outmap: f32,
     @location(8) surface_lighting: vec3<f32>,
     @location(9) terrain_detail_meters: f32,
-    @location(10) @interpolate(flat) terrain_info: u32,
-    @location(11) @interpolate(flat) source_uv_scale: vec2<f32>,
 }
 
 struct OceanWaveContribution {
@@ -1217,8 +1215,6 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         select(0.0, 1.0, outmap),
         lit_surface_color,
         terrain_detail_meters,
-        input.terrain_info,
-        input.source_uv_scale,
     );
 }
 
@@ -1286,74 +1282,17 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let outmap = input.outmap > 0.5;
     let macro_height_meters = macro_terrain_height(outmap, input.source_uv, direction);
     let ocean_coverage = outmap_ocean_coverage(outmap, macro_height_meters);
-    let camera_distance_meters = length(input.camera_relative_view_position);
-    var fragment_terrain_detail_meters = 0.0;
-    if outmap {
-        fragment_terrain_detail_meters = global_terrain_detail(direction, camera_distance_meters);
-    }
-    let detail_weight = smoothstep(100.0, 400.0, macro_height_meters);
-    let unscaled_height = macro_height_meters + fragment_terrain_detail_meters * detail_weight;
-    let fragment_terrain_height = select(
-        unscaled_height,
-        macro_height_meters * terrain_macro_height_scale()
-            + fragment_terrain_detail_meters
-                * detail_weight
-                * terrain_settings.outmap_height_scale.z,
-        outmap,
-    );
-    let ice = outmap && sample_biome(input.source_uv) == 2u;
-    let fragment_surface_height = select(
-        fragment_terrain_height,
-        max(fragment_terrain_height, 5.0),
-        ice,
-    );
-    let fragment_normal = displaced_surface_normal(
-        direction,
-        input.source_uv,
-        input.source_uv_scale,
-        input.terrain_info,
-        camera_distance_meters,
-    );
-    let fragment_sun_transmittance = surface_direct_sun_transmittance(
-        direction,
-        fragment_surface_height,
-        sun_direction,
-    );
-    let fragment_sky_diffuse = sky_diffuse_irradiance(
-        fragment_normal,
-        direction,
-        fragment_surface_height,
-        sun_direction,
-    );
-    let fragment_direct_light = max(dot(fragment_normal, sun_direction), 0.0);
-    let fragment_surface_irradiance = fragment_sky_diffuse
-        + fragment_sun_transmittance * fragment_direct_light * SURFACE_SUNLIGHT_SCALE;
     let terrain_albedo = terrain_material_color(
         outmap,
         input.source_uv,
         macro_height_meters,
-        fragment_terrain_detail_meters,
-        fragment_normal,
+        input.terrain_detail_meters,
+        input.world_normal,
         direction,
     );
-    var fragment_surface_lighting = terrain_albedo * fragment_surface_irradiance;
-    if ice {
-        let ice_light_floor = clamp(
-            max(
-                max(fragment_surface_irradiance.x, fragment_surface_irradiance.y),
-                fragment_surface_irradiance.z,
-            ),
-            0.0,
-            1.0,
-        );
-        fragment_surface_lighting = max(
-            fragment_surface_lighting,
-            biome_color(2u) * 0.65 * ice_light_floor,
-        );
-    }
     let detail_tint = terrain_detail_tint(
         direction,
-        fragment_normal,
+        input.world_normal,
         input.camera_relative_view_position,
     );
     let textured_terrain_albedo = terrain_albedo * detail_tint;
@@ -1363,7 +1302,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             1.0,
         );
     }
-    let textured_surface_lighting = fragment_surface_lighting * detail_tint;
+    let textured_surface_lighting = input.surface_lighting * detail_tint;
     let textured_aerial_color = textured_surface_lighting
         + max(input.aerial_color - input.surface_lighting, vec3<f32>(0.0));
     if ocean_coverage <= 0.0 {

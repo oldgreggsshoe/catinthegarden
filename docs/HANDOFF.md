@@ -1376,14 +1376,14 @@ resizes internal targets normally. The HUD and handoff controls table include
 it, and focused state-transition/resolution-preservation regressions cover the
 behavior.
 
-Land direct and sky-diffuse lighting formerly evaluated in `vs_main` and was
-interpolated between terrain vertices. `fs_main` now receives the flat tile
-metadata required to derive its own height-field normal and recomputes land
-irradiance/material lighting per fragment. It keeps the existing interpolated
-aerial contribution, avoiding a second per-pixel atmosphere integration, and
-does not make the mesh flat-shaded; ocean lighting was already per pixel. The
-shared terrain-settings uniform is consequently visible to both vertex and
-fragment stages, with a focused binding-visibility regression.
+Land direct and sky-diffuse lighting remains evaluated in `vs_main` and
+interpolated between terrain vertices. A per-fragment height-normal trial was
+run, but low-flight captures `1784318117-358812` and
+`1784318508-365675` showed it exposing coarse ancestor-tile samples as dark
+dimpled facets (112/123 and 90/93 fallback chunks respectively), so it was
+reverted. Ocean lighting remains per pixel. The correct long-term remedy is
+denser baked/streamed height coverage rather than sharper shading of sparse
+fallback height data.
 
 ## Next action
 
