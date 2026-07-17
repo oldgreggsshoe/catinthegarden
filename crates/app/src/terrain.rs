@@ -41,6 +41,9 @@ const MAX_CHUNK_BUILDS_PER_FRAME: usize = 8;
 /// Retain recently used GPU chunks so a moving camera can reuse nearby detail,
 /// while keeping the one-buffer-per-chunk implementation bounded.
 const MAX_RESIDENT_GPU_CHUNKS: usize = 512;
+/// One small, repeatable material texture adds close-range surface variation
+/// without pretending to add missing baked height data to ancestor tiles.
+const TERRAIN_DETAIL_TEXTURE_SIZE: u32 = 128;
 
 #[derive(Clone, Debug)]
 pub enum TerrainSource {
@@ -171,6 +174,9 @@ pub struct TerrainRenderer {
     _environment_cubemap: wgpu::Texture,
     environment_view: wgpu::TextureView,
     environment_sampler: wgpu::Sampler,
+    _terrain_detail_texture: wgpu::Texture,
+    terrain_detail_view: wgpu::TextureView,
+    terrain_detail_sampler: wgpu::Sampler,
     index_buffer: wgpu::Buffer,
     index_count: u32,
     instance_buffer: wgpu::Buffer,
@@ -246,6 +252,13 @@ impl TerrainRenderer {
                         },
                         count: None,
                     },
+                    texture_layout_entry(6, wgpu::TextureSampleType::Float { filterable: true }),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 7,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
                 ],
             });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -302,6 +315,8 @@ impl TerrainRenderer {
         let instance_buffer = create_instance_buffer(device, instance_capacity);
         let (environment_cubemap, environment_view, environment_sampler) =
             create_environment_cubemap(device, queue);
+        let (terrain_detail_texture, terrain_detail_view, terrain_detail_sampler) =
+            create_terrain_detail_texture(device, queue);
         let placeholder_tile = create_gpu_tile(
             device,
             queue,
@@ -313,6 +328,8 @@ impl TerrainRenderer {
             &environment_view,
             &environment_sampler,
             &terrain_settings_buffer,
+            &terrain_detail_view,
+            &terrain_detail_sampler,
         );
 
         let mut lod = PlanetLod::default();
@@ -326,6 +343,9 @@ impl TerrainRenderer {
             _environment_cubemap: environment_cubemap,
             environment_view,
             environment_sampler,
+            _terrain_detail_texture: terrain_detail_texture,
+            terrain_detail_view,
+            terrain_detail_sampler,
             index_buffer,
             index_count: topology.indices.len() as u32,
             instance_buffer,
@@ -505,6 +525,8 @@ impl TerrainRenderer {
                 &self.environment_view,
                 &self.environment_sampler,
                 &self._terrain_settings_buffer,
+                &self.terrain_detail_view,
+                &self.terrain_detail_sampler,
             );
             self.tile_cache.insert(key, gpu_tile);
         }
@@ -890,6 +912,8 @@ fn create_gpu_tile(
     environment_view: &wgpu::TextureView,
     environment_sampler: &wgpu::Sampler,
     terrain_settings_buffer: &wgpu::Buffer,
+    terrain_detail_view: &wgpu::TextureView,
+    terrain_detail_sampler: &wgpu::Sampler,
 ) -> GpuTile {
     debug_assert_eq!(heights_meters.len(), tile_sample_count());
     debug_assert_eq!(biome_ids.len(), tile_sample_count());
@@ -948,6 +972,14 @@ fn create_gpu_tile(
             wgpu::BindGroupEntry {
                 binding: 5,
                 resource: terrain_settings_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: wgpu::BindingResource::TextureView(terrain_detail_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: wgpu::BindingResource::Sampler(terrain_detail_sampler),
             },
         ],
     });
@@ -1019,6 +1051,100 @@ fn create_environment_cubemap(
         ..Default::default()
     });
     (texture, view, sampler)
+}
+
+fn create_terrain_detail_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+) -> (wgpu::Texture, wgpu::TextureView, wgpu::Sampler) {
+    let texture_size = TERRAIN_DETAIL_TEXTURE_SIZE as usize;
+    let mut texels = Vec::with_capacity(texture_size * texture_size * 4);
+    for y in 0..texture_size {
+        for x in 0..texture_size {
+            let broad = tileable_value_noise(x, y, 32, texture_size);
+            let medium = tileable_value_noise(x, y, 8, texture_size);
+            let fine = tileable_value_noise(x, y, 2, texture_size);
+            let value = (0.79 + broad * 0.18 + medium * 0.11 + fine * 0.04).clamp(0.55, 1.0);
+            texels.extend_from_slice(&[
+                (value * 0.91 * 255.0) as u8,
+                (value * 255.0) as u8,
+                (value * 0.84 * 255.0) as u8,
+                255,
+            ]);
+        }
+    }
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("tiled terrain detail albedo"),
+        size: wgpu::Extent3d {
+            width: TERRAIN_DETAIL_TEXTURE_SIZE,
+            height: TERRAIN_DETAIL_TEXTURE_SIZE,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &texels,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(TERRAIN_DETAIL_TEXTURE_SIZE * 4),
+            rows_per_image: Some(TERRAIN_DETAIL_TEXTURE_SIZE),
+        },
+        wgpu::Extent3d {
+            width: TERRAIN_DETAIL_TEXTURE_SIZE,
+            height: TERRAIN_DETAIL_TEXTURE_SIZE,
+            depth_or_array_layers: 1,
+        },
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("tiled terrain detail sampler"),
+        address_mode_u: wgpu::AddressMode::Repeat,
+        address_mode_v: wgpu::AddressMode::Repeat,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+        ..Default::default()
+    });
+    (texture, view, sampler)
+}
+
+fn tileable_value_noise(x: usize, y: usize, cell_size: usize, texture_size: usize) -> f32 {
+    let cells = texture_size / cell_size;
+    let cell_x = x / cell_size;
+    let cell_y = y / cell_size;
+    let amount_x = (x % cell_size) as f32 / cell_size as f32;
+    let amount_y = (y % cell_size) as f32 / cell_size as f32;
+    let fade_x = amount_x * amount_x * (3.0 - 2.0 * amount_x);
+    let fade_y = amount_y * amount_y * (3.0 - 2.0 * amount_y);
+    let sample = |offset_x, offset_y| {
+        let hash_x = (cell_x + offset_x) % cells;
+        let hash_y = (cell_y + offset_y) % cells;
+        tileable_detail_hash(hash_x as u32, hash_y as u32)
+    };
+    let lower = sample(0, 0) + (sample(1, 0) - sample(0, 0)) * fade_x;
+    let upper = sample(0, 1) + (sample(1, 1) - sample(0, 1)) * fade_x;
+    lower + (upper - lower) * fade_y
+}
+
+fn tileable_detail_hash(x: u32, y: u32) -> f32 {
+    let mut value = x
+        .wrapping_mul(0x9e37_79b9)
+        .wrapping_add(y.wrapping_mul(0x85eb_ca6b));
+    value ^= value >> 16;
+    value = value.wrapping_mul(0x7feb_352d);
+    value ^= value >> 15;
+    (value & 0xffff) as f32 / 65_535.0
 }
 
 fn create_and_upload_texture(
@@ -1249,7 +1375,7 @@ mod tests {
         TerrainSettings, cube_face_uv, fallback_uv_transform, lod_transition_progress,
         next_missing_descendant, nodes_share_lod_transition, pack_terrain_info,
         prioritized_missing_chunks, resident_ancestor, sample_height_cpu,
-        should_animate_lod_transition, source_tile_uv_at_direction,
+        should_animate_lod_transition, source_tile_uv_at_direction, tileable_value_noise,
     };
     use crate::planet::{
         GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE,
@@ -1359,13 +1485,32 @@ mod tests {
     #[test]
     fn shader_uses_seam_safe_value_noise_for_land_microrelief() {
         let shader = include_str!("planet.wgsl");
-        wgpu::naga::front::wgsl::parse_str(shader)
+        let module = wgpu::naga::front::wgsl::parse_str(shader)
             .expect("planet shader must parse before WGPU creates the pipeline");
+        wgpu::naga::valid::Validator::new(
+            wgpu::naga::valid::ValidationFlags::all(),
+            wgpu::naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("planet shader must validate before WGPU creates the pipeline");
         assert!(shader.contains("fn terrain_detail_value_noise(position: vec3<f32>) -> f32"));
         assert!(
             shader.contains("fn terrain_detail_noise_domain(direction: vec3<f32>) -> vec3<f32>")
         );
         assert!(!shader.contains("sin(frequency * dot(direction, axis) + phase)"));
+    }
+
+    #[test]
+    fn terrain_detail_material_is_tileable_and_bound_in_the_shader() {
+        for cell_size in [32, 8, 2] {
+            let edge = tileable_value_noise(0, 47, cell_size, 128);
+            assert!((0.0..=1.0).contains(&edge));
+            assert_eq!(edge, tileable_value_noise(128, 47, cell_size, 128));
+        }
+        let shader = include_str!("planet.wgsl");
+        assert!(shader.contains("@group(1) @binding(6)"));
+        assert!(shader.contains("var terrain_detail_albedo_map: texture_2d<f32>"));
+        assert!(shader.contains("fn terrain_detail_tint("));
     }
 
     #[test]

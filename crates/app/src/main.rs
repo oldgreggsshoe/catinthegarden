@@ -22,7 +22,7 @@ use winit::{
     event::{DeviceEvent, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
-    window::{CursorGrabMode, Window, WindowAttributes, WindowId},
+    window::{CursorGrabMode, Fullscreen, Window, WindowAttributes, WindowId},
 };
 
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
@@ -36,6 +36,10 @@ const HIDDEN_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 const GPU_PROFILE_RING_SIZE: usize = 3;
 const GPU_TIMESTAMP_COUNT: u32 = 14;
 const DEFAULT_OUTMAP_PATH: &str = "assets/outmaps/test-planet";
+
+fn should_enter_fullscreen(currently_fullscreen: bool) -> bool {
+    !currently_fullscreen
+}
 const DEFAULT_VIEWPORT_WIDTH: u32 = 640;
 const DEFAULT_VIEWPORT_HEIGHT: u32 = 427;
 const DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND: f64 = 0.4;
@@ -1130,7 +1134,7 @@ impl State {
                             ));
                             ui.label(format!("Ocean Gerstner range: {ocean_wave_range:.2} m"));
                             ui.label(
-                                "F3: overlay  |  F4: camera mode  |  WASD: fly  |  F6: blur  |  F7: bloom  |  F8: HDR  |  F9: composition  |  F10: freeze  |  F12: capture PNG",
+                                "F: fullscreen  |  F3: overlay  |  F4: camera mode  |  WASD: fly  |  F6: blur  |  F7: bloom  |  F8: HDR  |  F9: composition  |  F10: freeze  |  F12: capture PNG",
                             );
                             ui.label("Default: auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc/Q: quit");
                         });
@@ -1589,6 +1593,16 @@ impl ApplicationHandler for App {
                 WindowEvent::Resized(size) => state.resize(size),
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::KeyF) =>
+                {
+                    let entering = should_enter_fullscreen(window.fullscreen().is_some());
+                    window.set_fullscreen(
+                        entering.then_some(Fullscreen::Borderless(window.current_monitor())),
+                    );
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
                         && event.physical_key == PhysicalKey::Code(KeyCode::F3) =>
                 {
                     state.toggle_debug_overlay();
@@ -1807,7 +1821,7 @@ mod tests {
     use super::{
         CameraMode, FlightMovementInput, INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
         LOW_FLIGHT_SPEED_METERS_PER_SECOND, flight_movement_direction, initial_flight_tangent,
-        interactive_camera_delta_seconds, transport_flight_tangent,
+        interactive_camera_delta_seconds, should_enter_fullscreen, transport_flight_tangent,
     };
     use crate::planet::PLANET_ROTATION_PERIOD_SECONDS;
 
@@ -1817,6 +1831,12 @@ mod tests {
             flight_movement_direction(FlightMovementInput::default(), DVec3::Z, DVec3::X),
             None
         );
+    }
+
+    #[test]
+    fn fullscreen_key_toggles_windowed_state() {
+        assert!(should_enter_fullscreen(false));
+        assert!(!should_enter_fullscreen(true));
     }
 
     #[test]

@@ -258,6 +258,7 @@ Controls:
 | Up/Down arrows | Orbit elevation by 0.05 radians |
 | F3 | Toggle debug HUD |
 | F4 | Toggle orbit / 1,020,900 m/s free-flight camera; it starts level 5,000 ft above resident terrain, retains a terrain-aware minimum clearance, and restores the orbital pose when toggled back |
+| F | Toggle borderless fullscreen on the current monitor |
 | W / S | While in flight mode, move at 1,020,900 m/s exactly along / opposite the current camera-facing vector; releasing both stops forward/backward translation |
 | A / D | While in flight mode, strafe camera-left / camera-right at 1,020,900 m/s; diagonal input is normalized |
 | F6/F7/F8 | Toggle blur/bloom/HDR filmic effect |
@@ -1358,6 +1359,18 @@ biome ownership, and the CPU clearance contract remain unchanged. Focused
 value-noise/shader regressions, including Naga parsing of `planet.wgsl` before
 pipeline creation, plus the app unit suite pass; obtain a fresh low-flight
 daylight capture before accepting the new presentation.
+
+The terrain path now also binds a compact repeatable GPU albedo texture shared
+by all terrain tiles. `planet.wgsl` triplanar-samples it from planet direction
+and the displaced normal, then fades its biome-preserving tint beyond 140km.
+It adds close-range material variation only: the outmap remains authoritative
+for macro height, coastline, moisture, biome classification, and collision.
+This deliberately cannot conceal coarse fallback geometry, but avoids adding
+more false displacement while the bake/streaming coverage is addressed.
+
+`F` now toggles borderless fullscreen on the current monitor; pressing it
+again restores windowed mode. The HUD and handoff controls table include it,
+and a focused state-transition regression covers the toggle decision.
 
 ## Next action
 

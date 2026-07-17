@@ -74,6 +74,12 @@ struct TerrainSettings {
 @group(1) @binding(5)
 var<uniform> terrain_settings: TerrainSettings;
 
+@group(1) @binding(6)
+var terrain_detail_albedo_map: texture_2d<f32>;
+
+@group(1) @binding(7)
+var terrain_detail_sampler: sampler;
+
 struct VertexInput {
     @location(0) anchor_relative_position: vec3<f32>,
     @location(1) sphere_direction: vec3<f32>,
@@ -995,6 +1001,39 @@ fn terrain_material_color(
     return color;
 }
 
+fn terrain_detail_tint(
+    surface_direction: vec3<f32>,
+    surface_normal: vec3<f32>,
+    camera_relative_view_position: vec3<f32>,
+) -> vec3<f32> {
+    // Triplanar mapping avoids cube-face seams and does not depend on the
+    // sparse outmap tile level. It is albedo-only: macro terrain geometry and
+    // coastline ownership remain with the baker.
+    let weights = pow(abs(normalize(surface_normal)), vec3<f32>(6.0));
+    let normalized_weights = weights / max(weights.x + weights.y + weights.z, 1.0e-5);
+    let texture_scale = 320.0;
+    let x_projection = textureSample(
+        terrain_detail_albedo_map,
+        terrain_detail_sampler,
+        surface_direction.yz * texture_scale,
+    ).rgb;
+    let y_projection = textureSample(
+        terrain_detail_albedo_map,
+        terrain_detail_sampler,
+        surface_direction.xz * texture_scale,
+    ).rgb;
+    let z_projection = textureSample(
+        terrain_detail_albedo_map,
+        terrain_detail_sampler,
+        surface_direction.xy * texture_scale,
+    ).rgb;
+    let tint = x_projection * normalized_weights.x
+        + y_projection * normalized_weights.y
+        + z_projection * normalized_weights.z;
+    let fade = 1.0 - smoothstep(40000.0, 140000.0, length(camera_relative_view_position));
+    return mix(vec3<f32>(1.0), tint, fade * 0.65);
+}
+
 fn debug_ocean_albedo() -> vec3<f32> {
     return vec3<f32>(0.008, 0.055, 0.28);
 }
@@ -1251,23 +1290,32 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         input.world_normal,
         direction,
     );
+    let detail_tint = terrain_detail_tint(
+        direction,
+        input.world_normal,
+        input.camera_relative_view_position,
+    );
+    let textured_terrain_albedo = terrain_albedo * detail_tint;
     if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
         return vec4<f32>(
-            mix(terrain_albedo, debug_ocean_albedo(), ocean_coverage),
+            mix(textured_terrain_albedo, debug_ocean_albedo(), ocean_coverage),
             1.0,
         );
     }
+    let textured_surface_lighting = input.surface_lighting * detail_tint;
+    let textured_aerial_color = textured_surface_lighting
+        + max(input.aerial_color - input.surface_lighting, vec3<f32>(0.0));
     if ocean_coverage <= 0.0 {
         if render_debug_mode == RENDER_DEBUG_SURFACE_LIGHTING {
-            return vec4<f32>(input.surface_lighting, 1.0);
+            return vec4<f32>(textured_surface_lighting, 1.0);
         }
         if render_debug_mode == RENDER_DEBUG_AERIAL_CONTRIBUTION {
             return vec4<f32>(
-                max(input.aerial_color - input.surface_lighting, vec3<f32>(0.0)),
+                max(textured_aerial_color - textured_surface_lighting, vec3<f32>(0.0)),
                 1.0,
             );
         }
-        return vec4<f32>(input.aerial_color, 1.0);
+        return vec4<f32>(textured_aerial_color, 1.0);
     }
     let surface = ocean_surface(direction, camera.projection.z);
     let sun_transmittance = surface_direct_sun_transmittance(
@@ -1293,8 +1341,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         direction,
         surface.vertical_displacement,
     );
-    let surface_color = mix(input.surface_lighting, water_surface_color, ocean_coverage);
-    let aerial_color = mix(input.aerial_color, water_aerial_color, ocean_coverage);
+    let surface_color = mix(textured_surface_lighting, water_surface_color, ocean_coverage);
+    let aerial_color = mix(textured_aerial_color, water_aerial_color, ocean_coverage);
     if render_debug_mode == RENDER_DEBUG_SURFACE_LIGHTING {
         return vec4<f32>(surface_color, 1.0);
     }
