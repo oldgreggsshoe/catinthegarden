@@ -20,7 +20,7 @@ use crate::{
         OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS, OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE,
         PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode, TerrainHeightRange, build_chunk_mesh,
         cube_face_basis, cube_face_direction, outmap_surface_height_meters,
-        outmap_terrain_height_scale, placeholder_height_meters,
+        placeholder_height_meters,
     },
 };
 
@@ -177,7 +177,6 @@ pub struct TerrainRenderer {
     instance_capacity: usize,
     lod: PlanetLod,
     source: TerrainDataSource,
-    outmap_height_bounds: Option<(f64, f64)>,
     placeholder_tile: GpuTile,
     tile_cache: HashMap<TileKey, GpuTile>,
     tile_last_used: HashMap<TileKey, u64>,
@@ -333,7 +332,6 @@ impl TerrainRenderer {
             instance_capacity,
             lod,
             source,
-            outmap_height_bounds,
             placeholder_tile,
             tile_cache: HashMap::new(),
             tile_last_used: HashMap::new(),
@@ -403,14 +401,6 @@ impl TerrainRenderer {
         assert!(sim_time.is_finite() && sim_time >= 0.0);
         self.tile_cache_tick = self.tile_cache_tick.wrapping_add(1);
         self.purge_expired_lod_transitions(sim_time);
-        if let Some((height_min_meters, height_max_meters)) = self.outmap_height_bounds {
-            let camera_altitude_meters = (camera_world.length() - PLANET_RADIUS_METERS).max(0.0);
-            self.lod.set_terrain_height_range(TerrainHeightRange::new(
-                height_min_meters - GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
-                height_max_meters * outmap_terrain_height_scale(camera_altitude_meters)
-                    + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS * GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE,
-            ));
-        }
         let lod_update = self.lod.update_for_view_with_up(
             camera_world,
             camera_forward,

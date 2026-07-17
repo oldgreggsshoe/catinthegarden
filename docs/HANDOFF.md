@@ -1321,11 +1321,12 @@ contract remain unchanged. A focused shader regression pins both inputs;
 daylight low-flight captures are the visual acceptance check.
 
 The same experiment now continuously scales baked positive land from 4x at
-flight altitude through 40x above 1,000km. Its shared altitude function is
-used by GPU height displacement and normals, streamed CPU terrain clearance,
-and the per-frame LOD/culling height bounds, so the visible terrain cannot
-diverge from collision or selection. Focused CPU and shader regressions pin
-the endpoints and uniform contract; a daylight descent capture remains needed.
+flight altitude through 40x above 1,000km for GPU height displacement/normals
+and streamed CPU terrain clearance. LOD/culling deliberately retains the
+conservative 40x bound: it may request extra detail, but cannot under-refine
+the fixed 33x33 mesh during the visual transition. Focused CPU and shader
+regressions pin the endpoints and uniform contract; a daylight descent capture
+remains needed.
 
 The deterministic outmap `descent_to_10m` replay from the working tree based
 on `e2d7873` passed all eight assertions (`1784292311-174797`). At 10m it had 16 L18 leaves, 92 resident
@@ -1335,6 +1336,16 @@ eight-build-per-frame and 33x33-chunk policy; increasing streaming budgets or
 mesh density would be speculative rather than a measured fix. The prior poor
 manual close-up therefore needs a fresh final-mode daylight capture before any
 LOD policy change.
+
+Manual captures `1784292455-176279` exposed an experimental regression at
+about 153km altitude: dynamic LOD/culling bounds followed the 4x near visual
+scale, leaving only L3 resident geometry and producing coarse radial terrain
+waves. The visual scale remains correct for GPU displacement and CPU flight
+clearance, but culling now retains its conservative 40x far-orbit bound. The
+follow-up `descent_to_10m` replay `1784292675-178309` passed all eight
+assertions and selected through L18 by 198.5km (152 resident chunks), with
+zero thrash and zero seam delta. No streaming-budget or mesh-density increase
+is justified by the measured result; obtain fresh manual final-mode captures.
 
 ## Next action
 

@@ -16,7 +16,7 @@ pub const CHUNK_GRID_VERTICES: usize = CHUNK_GRID_QUADS + 1;
 pub const MAX_LOD_LEVEL: u8 = 18;
 /// The coarsest rendered quadtree leaf. Screen-space error raises the LOD into
 /// finer levels only when their geometric error can affect visible pixels.
-pub const MINIMUM_LOD_LEVEL: u8 = 3;
+pub const MINIMUM_LOD_LEVEL: u8 = 2;
 /// Deliberately game-time-scaled so axial rotation is visible during normal play.
 pub const PLANET_ROTATION_PERIOD_SECONDS: f64 = 15.0;
 /// Earth's mean obliquity. With no simulated annual orbit yet, the default sun
