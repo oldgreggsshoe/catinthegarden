@@ -25,6 +25,7 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 
 - Phase 7 update: WASD flight now uses the requested 10x former Mach-300 rate (1,020,900 m/s). Its local tangent frame is parallel-transported with the camera radial vector instead of rebuilt from longitude, so crossing either pole cannot flip the mouse-look or movement basis; a focused pole-crossing regression passes. Fresh long-flight human verification remains required.
 - Phase 7 update: user flight captures at roughly 120km altitude showed blue twilight that faded directly to night. Near the horizon, fullscreen sky, terrain aerial perspective, and terrain sky/fog fill now share an altitude-aware solar column that increases high-altitude red extinction without changing daytime illumination; focused sunset and night-side runs pass, while fresh human sunrise/sunset captures remain required.
+- Phase 7 update: terrain diffuse and ocean sun glints share RGB atmospheric transmittance. Their direct-sun visibility now fades from about 4.6 degrees above the geometric horizon through sunset, so the red-shifted direct term dims continuously instead of remaining bright until it abruptly vanishes; a focused shader regression passes.
 
 ## Planet constants (test planet)
 

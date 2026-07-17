@@ -1344,6 +1344,17 @@ mod tests {
     }
 
     #[test]
+    fn direct_surface_sunlight_fades_before_geometric_sunset() {
+        let shader = include_str!("planet.wgsl");
+        assert!(shader.contains("let solar_elevation = dot(surface_direction, sun_direction);"));
+        assert!(
+            shader.contains("smoothstep(\n        -0.01,\n        0.08,\n        solar_elevation,")
+        );
+        assert!(shader.contains("sun_transmittance * specular"));
+        assert!(shader.contains("sun_transmittance * direct_light"));
+    }
+
+    #[test]
     fn cpu_seam_sampling_matches_shader_bilinear_coordinates() {
         let heights: Vec<_> = (0..TILE_STORED_SIZE)
             .flat_map(|y| (0..TILE_STORED_SIZE).map(move |x| (x + y * TILE_STORED_SIZE) as f32))

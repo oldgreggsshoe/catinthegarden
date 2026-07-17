@@ -1272,15 +1272,25 @@ intended visible red/orange transition. A separate
 `twilight_directionality` attempt `1784286417-121184` produced an unexpected
 extra initial capture and is not recorded as passing.
 
+The direct terrain and ocean paths already use the RGB output of
+`surface_direct_sun_transmittance`, so their diffuse and specular terms inherit
+the low-sun red shift. Its scalar solar-visibility fade now spans from about
+4.6 degrees above the geometric horizon through sunset (`smoothstep(-0.01,
+0.08, solar_elevation)`), rather than beginning only at the limb. Direct
+terrain light and ocean glints therefore dim continuously while their blue
+channel is extinguished. Focused
+`direct_surface_sunlight_fades_before_geometric_sunset` passes; human
+sunrise/sunset capture review remains required.
+
 ## Next action
 
 Obtain final human sign-off before promoting `experiment/composition-debug` to
 `main`:
 
 1. Ask the user to explicitly accept or reject terrain edges, 4x microrelief,
-   horizon fog, red/orange high-altitude sunrise/sunset, and stable mouse/WASD
-   control through both poles. If a closer-than-76km view is needed, capture
-   only that missing near-surface case.
+   horizon fog, red/orange high-altitude sunrise/sunset with dimming direct
+   terrain/ocean light, and stable mouse/WASD control through both poles. If a
+   closer-than-76km view is needed, capture only that missing near-surface case.
 2. Confirm blur, bloom, and HDR independently with the overlay showing each
    state, because the clean set hides state and contains two identical frames.
 3. If those views are accepted, promote the branch to `main`; otherwise make

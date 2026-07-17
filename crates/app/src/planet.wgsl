@@ -382,11 +382,16 @@ fn surface_direct_sun_transmittance(
     sun_direction: vec3<f32>,
 ) -> vec3<f32> {
     let surface_radius = PLANET_RADIUS_METERS + surface_altitude_meters;
-    let radial_dot_sun = surface_radius * dot(surface_direction, sun_direction);
+    let solar_elevation = dot(surface_direction, sun_direction);
+    let radial_dot_sun = surface_radius * solar_elevation;
+    // The RGB transmittance below progressively removes blue at low solar
+    // elevation. Start reducing its intensity before geometric sunset too, so
+    // terrain diffuse and ocean glints become dim red rather than staying
+    // bright until they abruptly disappear behind the planet.
     let solar_visibility = smoothstep(
         -0.01,
-        0.01,
-        dot(surface_direction, sun_direction),
+        0.08,
+        solar_elevation,
     );
 
     // The generic endpoint-average estimate spans the full 360km shell for
@@ -395,7 +400,7 @@ fn surface_direct_sun_transmittance(
     // daylight before the existing surface-only intensity scale can matter.
     // Estimate a local scale-height air mass instead. It retains directional
     // warm attenuation near the terminator without altering sky scattering.
-    let sun_zenith_cosine = max(dot(surface_direction, sun_direction), 0.0);
+    let sun_zenith_cosine = max(solar_elevation, 0.0);
     let air_mass = min(1.0 / max(sun_zenith_cosine, 0.08), 12.0);
     let rayleigh_optical_depth = RAYLEIGH_COEFFICIENT
         * density(surface_altitude_meters, RAYLEIGH_SCALE_HEIGHT_METERS)
