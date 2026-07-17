@@ -23,6 +23,9 @@ const AERIAL_DENSITY_SAMPLE_EXPONENT: f32 = 3.0;
 // Artistic aerial-only control, applied after physically bounded integration.
 // It does not alter extinction, direct terrain/ocean lighting, or the sky pass.
 const AERIAL_IN_SCATTER_GAIN: f32 = 3.0;
+// Keep the intentionally strong global aerial effect from washing the ocean
+// body colour to grey in the final composition. Terrain and sky stay unchanged.
+const OCEAN_AERIAL_PERSPECTIVE_WEIGHT: f32 = 0.35;
 const TWILIGHT_SHADOW_TRANSITION_METERS: f32 = 36000.0;
 const TERRAIN_FOG_START_METERS: f32 = 2000.0;
 const TERRAIN_FOG_END_METERS: f32 = 60000.0;
@@ -702,6 +705,25 @@ fn aerial_perspective(
     return lit_surface_color * view_transmittance + in_scatter;
 }
 
+fn ocean_aerial_perspective(
+    water_surface_color: vec3<f32>,
+    camera_relative_view_position: vec3<f32>,
+    surface_direction: vec3<f32>,
+    surface_altitude_meters: f32,
+) -> vec3<f32> {
+    let aerial_color = aerial_perspective(
+        water_surface_color,
+        camera_relative_view_position,
+        surface_direction,
+        surface_altitude_meters,
+    );
+    return mix(
+        water_surface_color,
+        aerial_color,
+        OCEAN_AERIAL_PERSPECTIVE_WEIGHT,
+    );
+}
+
 fn terrain_distance_fog(
     aerial_color: vec3<f32>,
     camera_relative_view_position: vec3<f32>,
@@ -967,7 +989,7 @@ fn ocean_with_aerial_perspective(
         sun_transmittance,
         sky_diffuse,
     );
-    return aerial_perspective(
+    return ocean_aerial_perspective(
         water_color,
         camera_relative_view_position,
         direction,
@@ -1133,7 +1155,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         if render_debug_mode == RENDER_DEBUG_SURFACE_LIGHTING {
             return vec4<f32>(water_surface_color, 1.0);
         }
-        let water_aerial_color = aerial_perspective(
+        let water_aerial_color = ocean_aerial_perspective(
             water_surface_color,
             input.camera_relative_view_position,
             direction,
@@ -1189,7 +1211,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         sun_transmittance,
         sky_diffuse,
     );
-    let water_aerial_color = aerial_perspective(
+    let water_aerial_color = ocean_aerial_perspective(
         water_surface_color,
         input.camera_relative_view_position,
         direction,

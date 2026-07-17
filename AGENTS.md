@@ -30,6 +30,7 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 - Phase 7 update: direct terrain diffuse and ocean glints now retain physical RGB extinction but add a bounded low-sun tint through their shared transmittance path: orange at low positive solar elevation, red at the final limb fade, then darkness. A focused regression pins the ordered orange/red/visibility path; human capture review remains required.
 
 - Phase 7 visual tuning: the ocean body-scattering albedo is a darker blue while daylight reflections and sun glints remain unchanged; final capture sign-off remains.
+- Phase 7 visual tuning: ocean-only aerial perspective now retains 35% of the globally tuned atmospheric result, preserving a dark-blue final ocean while leaving terrain and sky atmosphere unchanged; fresh F9 stage captures remain required.
 
 ## Planet constants (test planet)
 

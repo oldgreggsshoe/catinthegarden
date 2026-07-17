@@ -1304,6 +1304,13 @@ blue (`vec3(0.008, 0.055, 0.28)`). Daylight sky reflection and direct sun
 glints are intentionally unchanged, so only the underlying water body is
 darkened. A fresh ocean capture remains the visual acceptance check.
 
+F9 capture stages then showed that the dark body appears correctly in surface
+lighting but is washed grey in the final composition by the shared aerial term.
+`ocean_aerial_perspective` now blends only 35% of that result over the dark
+water surface. Terrain aerial perspective and the fullscreen sky remain
+unchanged. The focused shader regression pins the ocean-only helper; a fresh
+five-stage capture set remains the visual acceptance check.
+
 ## Next action
 
 Obtain final human sign-off before promoting `experiment/composition-debug` to
@@ -1311,7 +1318,7 @@ Obtain final human sign-off before promoting `experiment/composition-debug` to
 
 1. Ask the user to explicitly accept or reject terrain edges, 4x microrelief,
    horizon fog, 2x saturated red/orange high-altitude sunrise/sunset with
-   orange-to-red terrain/ocean direct-light bands, dark-blue ocean body colour,
+   orange-to-red terrain/ocean direct-light bands, dark-blue final ocean colour,
    and stable mouse/WASD
    control through both poles. If a closer-than-76km view is needed, capture
    only that missing near-surface case.

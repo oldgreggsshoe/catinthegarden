@@ -1365,6 +1365,14 @@ mod tests {
     }
 
     #[test]
+    fn ocean_aerial_perspective_preserves_the_dark_water_body() {
+        let shader = include_str!("planet.wgsl");
+        assert!(shader.contains("const OCEAN_AERIAL_PERSPECTIVE_WEIGHT: f32 = 0.35;"));
+        assert_eq!(shader.matches("ocean_aerial_perspective(").count(), 4);
+        assert!(shader.contains("water_surface_color,\n        aerial_color,"));
+    }
+
+    #[test]
     fn fullscreen_sky_applies_the_requested_double_saturation() {
         let shader = include_str!("atmosphere.wgsl");
         assert!(shader.contains("const SKY_ATMOSPHERE_SATURATION: f32 = 2.0;"));
