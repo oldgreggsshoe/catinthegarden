@@ -32,6 +32,16 @@ const TERRAIN_FOG_END_METERS: f32 = 60000.0;
 const TERRAIN_FOG_MAX_CAMERA_ALTITUDE_METERS: f32 = 100000.0;
 const TERRAIN_FOG_FULL_HORIZON_COSINE: f32 = 0.05;
 const TERRAIN_FOG_CLEAR_HORIZON_COSINE: f32 = 0.35;
+const TERRAIN_MATERIAL_TILE_METERS: f32 = 8192.0;
+const TERRAIN_MATERIAL_WARP_FREQUENCY: f32 = 256.0;
+const TERRAIN_MATERIAL_WARP_TILES: f32 = 1.75;
+const TERRAIN_MATERIAL_FINE_SCALE: f32 = 5.37;
+const TERRAIN_MATERIAL_FINE_WEIGHT: f32 = 0.22;
+const TERRAIN_NORMAL_SAMPLE_METERS: f32 = 256.0;
+const TERRAIN_MATERIAL_VEGETATION: i32 = 0;
+const TERRAIN_MATERIAL_EARTH: i32 = 1;
+const TERRAIN_MATERIAL_ROCK: i32 = 2;
+const TERRAIN_MATERIAL_SNOW: i32 = 3;
 const RENDER_DEBUG_FINAL: u32 = 0u;
 const RENDER_DEBUG_RAW_ALBEDO: u32 = 1u;
 const RENDER_DEBUG_SURFACE_LIGHTING: u32 = 2u;
@@ -75,10 +85,10 @@ struct TerrainSettings {
 var<uniform> terrain_settings: TerrainSettings;
 
 @group(1) @binding(6)
-var terrain_detail_albedo_map: texture_2d<f32>;
+var terrain_material_map: texture_2d_array<f32>;
 
 @group(1) @binding(7)
-var terrain_detail_sampler: sampler;
+var terrain_material_sampler: sampler;
 
 struct VertexInput {
     @location(0) anchor_relative_position: vec3<f32>,
@@ -90,6 +100,7 @@ struct VertexInput {
     @location(6) source_uv_offset: vec2<f32>,
     @location(7) terrain_info: u32,
     @location(8) lod_transition: vec2<f32>,
+    @location(9) edge_stitch: u32,
 }
 
 struct VertexOutput {
@@ -832,13 +843,60 @@ fn sample_biome(source_uv: vec2<f32>) -> u32 {
     return textureLoad(biome_map, coordinate, 0).x;
 }
 
+struct BiomeBlendSample {
+    ids: vec4<u32>,
+    weights: vec4<f32>,
+}
+
+fn sample_biome_blend(source_uv: vec2<f32>) -> BiomeBlendSample {
+    // Biomes remain categorical in the baked outmap, but display-space
+    // materials should not expose their texel grid. Blend the four nearest
+    // baked owners exactly as the height channel is blended; the gutter keeps
+    // this continuous when the resident source changes at a tile edge.
+    let coordinate = vec2<f32>(TILE_GUTTER)
+        + clamp(source_uv, vec2<f32>(0.0), vec2<f32>(1.0))
+            * MATERIAL_TILE_LOGICAL_QUADS;
+    let lower = vec2<i32>(floor(coordinate));
+    let upper = min(
+        lower + vec2<i32>(1),
+        vec2<i32>(MATERIAL_TILE_LAST_STORED_COORD),
+    );
+    let amount = fract(coordinate);
+    return BiomeBlendSample(
+        vec4<u32>(
+            textureLoad(biome_map, lower, 0).x,
+            textureLoad(biome_map, vec2<i32>(upper.x, lower.y), 0).x,
+            textureLoad(biome_map, vec2<i32>(lower.x, upper.y), 0).x,
+            textureLoad(biome_map, upper, 0).x,
+        ),
+        vec4<f32>(
+            (1.0 - amount.x) * (1.0 - amount.y),
+            amount.x * (1.0 - amount.y),
+            (1.0 - amount.x) * amount.y,
+            amount.x * amount.y,
+        ),
+    );
+}
+
 fn sample_moisture(source_uv: vec2<f32>) -> f32 {
-    let coordinate = vec2<i32>(round(
-        vec2<f32>(TILE_GUTTER)
-            + clamp(source_uv, vec2<f32>(0.0), vec2<f32>(1.0))
-                * MATERIAL_TILE_LOGICAL_QUADS,
-    ));
-    return textureLoad(moisture_map, coordinate, 0).x;
+    let coordinate = vec2<f32>(TILE_GUTTER)
+        + clamp(source_uv, vec2<f32>(0.0), vec2<f32>(1.0))
+            * MATERIAL_TILE_LOGICAL_QUADS;
+    let lower = vec2<i32>(floor(coordinate));
+    let upper = min(
+        lower + vec2<i32>(1),
+        vec2<i32>(MATERIAL_TILE_LAST_STORED_COORD),
+    );
+    let amount = fract(coordinate);
+    let lower_left = textureLoad(moisture_map, lower, 0).x;
+    let lower_right = textureLoad(moisture_map, vec2<i32>(upper.x, lower.y), 0).x;
+    let upper_left = textureLoad(moisture_map, vec2<i32>(lower.x, upper.y), 0).x;
+    let upper_right = textureLoad(moisture_map, upper, 0).x;
+    return mix(
+        mix(lower_left, lower_right, amount.x),
+        mix(upper_left, upper_right, amount.x),
+        amount.y,
+    );
 }
 
 fn face_tangent_u(face: u32) -> vec3<f32> {
@@ -884,13 +942,19 @@ fn displaced_surface_normal(
     let tangent_u = face_tangent_u(face);
     let tangent_v = face_tangent_v(face);
     let cube_position = direction / max(face_component(direction, face), 1.0e-6);
-    let cube_step = 2.0
+    let requested_cube_step = 2.0
         / (MATERIAL_TILE_LOGICAL_QUADS * exp2(f32(requested_level(terrain_info))));
+    // A requested-level derivative made neighboring chunks evaluate visibly
+    // different lighting, and L18 approached f32 direction precision. Use one
+    // physical footprint everywhere so mixed LODs share the same normal field
+    // while retaining the deliberately smooth per-vertex lighting path.
+    let cube_step = TERRAIN_NORMAL_SAMPLE_METERS / PLANET_RADIUS_METERS;
+    let normal_step_scale = cube_step / requested_cube_step;
     let left_direction = normalize(cube_position - tangent_u * cube_step);
     let right_direction = normalize(cube_position + tangent_u * cube_step);
     let down_direction = normalize(cube_position - tangent_v * cube_step);
     let up_direction = normalize(cube_position + tangent_v * cube_step);
-    let uv_step = source_uv_scale / MATERIAL_TILE_LOGICAL_QUADS;
+    let uv_step = source_uv_scale / MATERIAL_TILE_LOGICAL_QUADS * normal_step_scale;
     let outmap = uses_outmap(terrain_info);
     let left_height = terrain_height(
         outmap,
@@ -948,6 +1012,14 @@ fn biome_color(biome: u32) -> vec3<f32> {
     return srgb_to_linear(display_color);
 }
 
+fn blended_biome_color(source_uv: vec2<f32>) -> vec3<f32> {
+    let blend = sample_biome_blend(source_uv);
+    return biome_color(blend.ids.x) * blend.weights.x
+        + biome_color(blend.ids.y) * blend.weights.y
+        + biome_color(blend.ids.z) * blend.weights.z
+        + biome_color(blend.ids.w) * blend.weights.w;
+}
+
 fn terrain_material_color(
     outmap: bool,
     source_uv: vec2<f32>,
@@ -963,7 +1035,7 @@ fn terrain_material_color(
 
     let biome = sample_biome(source_uv);
     let moisture = sample_moisture(source_uv);
-    color = biome_color(biome) * mix(0.88, 1.06, moisture);
+    color = blended_biome_color(source_uv) * mix(0.88, 1.06, moisture);
     if biome != 2u {
         // Use bilinear terrain height, not a nearest biome class, for the
         // coast. This gives a continuous shallow-water/beach transition.
@@ -1001,37 +1073,243 @@ fn terrain_material_color(
     return color;
 }
 
-fn terrain_detail_tint(
+fn triplanar_material_sample_at_position(
+    layer: i32,
+    texture_position: vec3<f32>,
+    weights: vec3<f32>,
+) -> vec4<f32> {
+    let x_projection = textureSample(
+        terrain_material_map,
+        terrain_material_sampler,
+        texture_position.yz,
+        layer,
+    );
+    let y_projection = textureSample(
+        terrain_material_map,
+        terrain_material_sampler,
+        texture_position.xz,
+        layer,
+    );
+    let z_projection = textureSample(
+        terrain_material_map,
+        terrain_material_sampler,
+        texture_position.xy,
+        layer,
+    );
+    return x_projection * weights.x
+        + y_projection * weights.y
+        + z_projection * weights.z;
+}
+
+fn triplanar_material_sample(
+    layer: i32,
+    surface_direction: vec3<f32>,
+    surface_normal: vec3<f32>,
+) -> vec4<f32> {
+    // Planet-local metre scale makes every LOD evaluate the same material at
+    // the same surface point. Triplanar projection avoids cube-face UV seams.
+    let axis_weights = pow(abs(normalize(surface_normal)), vec3<f32>(6.0));
+    let weights = axis_weights / max(dot(axis_weights, vec3<f32>(1.0)), 1.0e-5);
+    // A low-frequency, planet-direction domain warp breaks the obvious grid
+    // produced by repeating a compact texture. The warp is continuous across
+    // cube faces and independent of terrain LOD, so it cannot create seams or
+    // shimmer as chunks are replaced.
+    let warp_domain = terrain_detail_noise_domain(surface_direction)
+        * TERRAIN_MATERIAL_WARP_FREQUENCY;
+    let texture_warp = vec3<f32>(
+        terrain_detail_value_noise(warp_domain + vec3<f32>(17.3, 4.1, 9.7)),
+        terrain_detail_value_noise(warp_domain + vec3<f32>(3.8, 23.9, 14.2)),
+        terrain_detail_value_noise(warp_domain + vec3<f32>(11.6, 7.4, 29.1)),
+    ) * TERRAIN_MATERIAL_WARP_TILES;
+    let broad_position = surface_direction
+        * (PLANET_RADIUS_METERS / TERRAIN_MATERIAL_TILE_METERS)
+        + texture_warp;
+    let fine_position = broad_position * TERRAIN_MATERIAL_FINE_SCALE
+        + vec3<f32>(13.7, -8.3, 21.1);
+    let broad = triplanar_material_sample_at_position(layer, broad_position, weights);
+    let fine = triplanar_material_sample_at_position(layer, fine_position, weights);
+    return mix(broad, fine, TERRAIN_MATERIAL_FINE_WEIGHT);
+}
+
+fn biome_vegetation_amount(biome: u32, moisture: f32) -> f32 {
+    switch biome {
+        case 3u: { return mix(0.22, 0.48, moisture); }
+        case 4u: { return mix(0.68, 0.92, moisture); }
+        case 5u: { return mix(0.55, 0.82, moisture); }
+        case 6u: { return mix(0.78, 1.0, moisture); }
+        case 7u: { return mix(0.0, 0.10, moisture); }
+        case 8u: { return mix(0.02, 0.16, moisture); }
+        default: { return 0.0; }
+    }
+}
+
+fn terrain_material_weights_for_biome(
+    biome: u32,
+    moisture: f32,
+    macro_height_meters: f32,
+    surface_normal: vec3<f32>,
+    surface_direction: vec3<f32>,
+) -> vec4<f32> {
+    let slope = 1.0 - clamp(
+        dot(normalize(surface_normal), surface_direction),
+        0.0,
+        1.0,
+    );
+    var rock_amount = smoothstep(0.10, 0.42, slope);
+    if biome == 8u {
+        rock_amount = max(rock_amount, 0.78);
+    }
+
+    let latitude_amount = abs(surface_direction.y);
+    let snowline_meters = mix(6200.0, 2200.0, latitude_amount);
+    var snow_amount = smoothstep(
+        snowline_meters,
+        snowline_meters + 900.0,
+        macro_height_meters,
+    ) * (1.0 - rock_amount * 0.35);
+    if biome == 2u {
+        snow_amount = 1.0;
+    } else if biome == 9u {
+        snow_amount = max(snow_amount, 0.88);
+    }
+
+    let exposed_amount = 1.0 - snow_amount;
+    let base_amount = exposed_amount * (1.0 - rock_amount);
+    let vegetation_amount = biome_vegetation_amount(biome, moisture);
+    let weights = vec4<f32>(
+        base_amount * vegetation_amount,
+        base_amount * (1.0 - vegetation_amount),
+        exposed_amount * rock_amount,
+        snow_amount,
+    );
+    return weights / max(dot(weights, vec4<f32>(1.0)), 1.0e-5);
+}
+
+fn terrain_material_weights(
+    source_uv: vec2<f32>,
+    moisture: f32,
+    macro_height_meters: f32,
+    surface_normal: vec3<f32>,
+    surface_direction: vec3<f32>,
+) -> vec4<f32> {
+    let blend = sample_biome_blend(source_uv);
+    let weights = terrain_material_weights_for_biome(
+        blend.ids.x,
+        moisture,
+        macro_height_meters,
+        surface_normal,
+        surface_direction,
+    ) * blend.weights.x + terrain_material_weights_for_biome(
+        blend.ids.y,
+        moisture,
+        macro_height_meters,
+        surface_normal,
+        surface_direction,
+    ) * blend.weights.y + terrain_material_weights_for_biome(
+        blend.ids.z,
+        moisture,
+        macro_height_meters,
+        surface_normal,
+        surface_direction,
+    ) * blend.weights.z + terrain_material_weights_for_biome(
+        blend.ids.w,
+        moisture,
+        macro_height_meters,
+        surface_normal,
+        surface_direction,
+    ) * blend.weights.w;
+    return weights / max(dot(weights, vec4<f32>(1.0)), 1.0e-5);
+}
+
+fn height_blend_material_weights(
+    weights: vec4<f32>,
+    material_heights: vec4<f32>,
+) -> vec4<f32> {
+    // The alpha channel carries small-scale material height. It perturbs the
+    // continuous biome/slope weights so soil gathers in hollows and snow/rock
+    // edges break up naturally without changing geometry or ownership.
+    let candidates = weights + material_heights * 0.22;
+    let highest = max(max(candidates.x, candidates.y), max(candidates.z, candidates.w));
+    let blended = max(candidates - vec4<f32>(highest - 0.18), vec4<f32>(0.0)) * weights;
+    return blended / max(dot(blended, vec4<f32>(1.0)), 1.0e-5);
+}
+
+fn terrain_material_tint(
+    outmap: bool,
+    source_uv: vec2<f32>,
+    macro_height_meters: f32,
+    base_albedo: vec3<f32>,
     surface_direction: vec3<f32>,
     surface_normal: vec3<f32>,
     camera_relative_view_position: vec3<f32>,
 ) -> vec3<f32> {
-    // Triplanar mapping avoids cube-face seams and does not depend on the
-    // sparse outmap tile level. It is albedo-only: macro terrain geometry and
-    // coastline ownership remain with the baker.
-    let weights = pow(abs(normalize(surface_normal)), vec3<f32>(6.0));
-    let normalized_weights = weights / max(weights.x + weights.y + weights.z, 1.0e-5);
-    let texture_scale = 320.0;
-    let x_projection = textureSample(
-        terrain_detail_albedo_map,
-        terrain_detail_sampler,
-        surface_direction.yz * texture_scale,
-    ).rgb;
-    let y_projection = textureSample(
-        terrain_detail_albedo_map,
-        terrain_detail_sampler,
-        surface_direction.xz * texture_scale,
-    ).rgb;
-    let z_projection = textureSample(
-        terrain_detail_albedo_map,
-        terrain_detail_sampler,
-        surface_direction.xy * texture_scale,
-    ).rgb;
-    let tint = x_projection * normalized_weights.x
-        + y_projection * normalized_weights.y
-        + z_projection * normalized_weights.z;
-    let fade = 1.0 - smoothstep(40000.0, 140000.0, length(camera_relative_view_position));
-    return mix(vec3<f32>(1.0), tint, fade * 0.65);
+    if !outmap {
+        return vec3<f32>(1.0);
+    }
+    let fade = 1.0 - smoothstep(
+        40000.0,
+        140000.0,
+        length(camera_relative_view_position),
+    );
+    if fade <= 0.0 {
+        return vec3<f32>(1.0);
+    }
+    let moisture = sample_moisture(source_uv);
+    let base_weights = terrain_material_weights(
+        source_uv,
+        moisture,
+        macro_height_meters,
+        surface_normal,
+        surface_direction,
+    );
+    var vegetation = vec4<f32>(0.0);
+    var earth = vec4<f32>(0.0);
+    var rock = vec4<f32>(0.0);
+    var snow = vec4<f32>(0.0);
+    // Most ground uses only two layers. Coherent weight branches avoid paying
+    // three triplanar samples for a layer which contributes nothing.
+    if base_weights.x > 1.0e-4 {
+        vegetation = triplanar_material_sample(
+            TERRAIN_MATERIAL_VEGETATION,
+            surface_direction,
+            surface_normal,
+        );
+    }
+    if base_weights.y > 1.0e-4 {
+        earth = triplanar_material_sample(
+            TERRAIN_MATERIAL_EARTH,
+            surface_direction,
+            surface_normal,
+        );
+    }
+    if base_weights.z > 1.0e-4 {
+        rock = triplanar_material_sample(
+            TERRAIN_MATERIAL_ROCK,
+            surface_direction,
+            surface_normal,
+        );
+    }
+    if base_weights.w > 1.0e-4 {
+        snow = triplanar_material_sample(
+            TERRAIN_MATERIAL_SNOW,
+            surface_direction,
+            surface_normal,
+        );
+    }
+    let weights = height_blend_material_weights(
+        base_weights,
+        vec4<f32>(vegetation.a, earth.a, rock.a, snow.a),
+    );
+    let material_albedo = vegetation.rgb * weights.x
+        + earth.rgb * weights.y
+        + rock.rgb * weights.z
+        + snow.rgb * weights.w;
+    let tint = clamp(
+        material_albedo / max(base_albedo, vec3<f32>(0.015)),
+        vec3<f32>(0.35),
+        vec3<f32>(2.4),
+    );
+    return mix(vec3<f32>(1.0), tint, fade * 0.72);
 }
 
 fn debug_ocean_albedo() -> vec3<f32> {
@@ -1108,14 +1386,86 @@ fn ocean_with_aerial_perspective(
     );
 }
 
+fn edge_stitch_level_delta(edge_stitch: u32, edge: u32) -> u32 {
+    return (edge_stitch >> (edge * 3u)) & 0x7u;
+}
+
+fn snap_edge_coordinate(coordinate: f32, level_delta: u32) -> f32 {
+    if level_delta == 0u {
+        return coordinate;
+    }
+    let grid_coordinate = u32(round(coordinate * 32.0));
+    let stride = 1u << min(level_delta, 5u);
+    return f32((grid_coordinate / stride) * stride) / 32.0;
+}
+
+fn stitched_tile_uv(tile_uv: vec2<f32>, edge_stitch: u32) -> vec2<f32> {
+    var stitched = tile_uv;
+    if tile_uv.y <= 1.0e-5 {
+        stitched.x = snap_edge_coordinate(
+            stitched.x,
+            edge_stitch_level_delta(edge_stitch, 0u),
+        );
+    }
+    if tile_uv.x >= 1.0 - 1.0e-5 {
+        stitched.y = snap_edge_coordinate(
+            stitched.y,
+            edge_stitch_level_delta(edge_stitch, 1u),
+        );
+    }
+    if tile_uv.y >= 1.0 - 1.0e-5 {
+        stitched.x = snap_edge_coordinate(
+            stitched.x,
+            edge_stitch_level_delta(edge_stitch, 2u),
+        );
+    }
+    if tile_uv.x <= 1.0e-5 {
+        stitched.y = snap_edge_coordinate(
+            stitched.y,
+            edge_stitch_level_delta(edge_stitch, 3u),
+        );
+    }
+    return stitched;
+}
+
+fn stitched_surface_direction(
+    original_direction: vec3<f32>,
+    tile_uv: vec2<f32>,
+    stitched_uv: vec2<f32>,
+    terrain_info: u32,
+) -> vec3<f32> {
+    let uv_delta = stitched_uv - tile_uv;
+    if all(abs(uv_delta) <= vec2<f32>(1.0e-7)) {
+        return original_direction;
+    }
+    let face = cube_face(terrain_info);
+    let cube_position = original_direction
+        / max(face_component(original_direction, face), 1.0e-6);
+    let node_span = 2.0 / exp2(f32(requested_level(terrain_info)));
+    return normalize(
+        cube_position
+            + face_tangent_u(face) * uv_delta.x * node_span
+            + face_tangent_v(face) * uv_delta.y * node_span,
+    );
+}
+
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
-    let direction = normalize(input.sphere_direction);
-    let source_uv = input.source_uv_offset + input.tile_uv * input.source_uv_scale;
+    let original_direction = normalize(input.sphere_direction);
+    let tile_uv = stitched_tile_uv(input.tile_uv, input.edge_stitch);
+    let direction = stitched_surface_direction(
+        original_direction,
+        input.tile_uv,
+        tile_uv,
+        input.terrain_info,
+    );
+    let anchor_relative_position = input.anchor_relative_position
+        + (direction - original_direction) * PLANET_RADIUS_METERS;
+    let source_uv = input.source_uv_offset + tile_uv * input.source_uv_scale;
     let outmap = uses_outmap(input.terrain_info);
     let macro_height = macro_terrain_height(outmap, source_uv, direction);
     let base_camera_relative_view_position = input.anchor_view_position
-        + planet_to_view(input.anchor_relative_position);
+        + planet_to_view(anchor_relative_position);
     let camera_distance_meters = length(base_camera_relative_view_position);
     var terrain_detail_meters = 0.0;
     if outmap {
@@ -1138,7 +1488,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let wave_surface = ocean_surface(direction, camera.projection.z);
     let land_height = select(height, max(height, 5.0), ice);
     let surface_height = select(land_height, wave_surface.vertical_displacement, ocean);
-    let local_planet_position = input.anchor_relative_position
+    let local_planet_position = anchor_relative_position
         + direction * (surface_height - input.skirt_depth_meters)
         + select(vec3<f32>(0.0), wave_surface.horizontal_displacement, ocean);
     let camera_relative_view_position = input.anchor_view_position
@@ -1218,23 +1568,19 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     );
 }
 
-fn bayer_dither(fragment_position: vec4<f32>) -> f32 {
-    let pattern = array<u32, 16>(
-        0u, 8u, 2u, 10u,
-        12u, 4u, 14u, 6u,
-        3u, 11u, 1u, 9u,
-        15u, 7u, 13u, 5u,
-    );
-    let pixel = vec2<u32>(u32(fragment_position.x), u32(fragment_position.y));
-    let index = (pixel.y & 3u) * 4u + (pixel.x & 3u);
-    return (f32(pattern[index]) + 0.5) / 16.0;
+fn lod_dither_threshold(fragment_position: vec4<f32>) -> f32 {
+    // Stable interleaved-gradient noise avoids the visible checker/grid of an
+    // ordered matrix. Parent and child still evaluate the exact same threshold
+    // at a screen pixel, so their coverage remains complementary.
+    let pixel = floor(fragment_position.xy);
+    return fract(52.9829189 * fract(dot(pixel, vec2<f32>(0.06711056, 0.00583715))));
 }
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let transition_progress = input.lod_transition.x;
     let incoming = input.lod_transition.y > 0.5;
-    let threshold = bayer_dither(input.position);
+    let threshold = lod_dither_threshold(input.position);
     if (incoming && threshold >= transition_progress)
         || (!incoming && threshold < transition_progress)
     {
@@ -1290,7 +1636,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         input.world_normal,
         direction,
     );
-    let detail_tint = terrain_detail_tint(
+    let detail_tint = terrain_material_tint(
+        outmap,
+        input.source_uv,
+        macro_height_meters,
+        terrain_albedo,
         direction,
         input.world_normal,
         input.camera_relative_view_position,

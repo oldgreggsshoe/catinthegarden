@@ -52,7 +52,7 @@ renders a rotating 8,000 km-diameter procedural planet with:
 
 - f64 planet-centered world/camera math and f32 camera-relative GPU data;
 - a six-face cube-sphere quadtree with screen-space-error LOD and skirts;
-- 0.5-second dithered parent/child LOD transitions;
+- eased 0.5-second resident parent/child LOD transitions with stitched edges;
 - offline-baked, streamed height/biome/moisture outmap tiles;
 - height-derived terrain normals and Earth-like biome/ocean colors;
 - analytic Rayleigh/Mie atmosphere and aerial perspective without LUTs;
@@ -290,8 +290,8 @@ makes the 2-pixel SSE policy request L18. A regression exercises heights 1,
   renderable levels.
 - Every leaf uses 33x33 vertices / 32x32 quads plus skirts.
 - Maximum active leaf budget is 256.
-- Split threshold is 2.0 projected pixels.
-- Merge threshold is 1.25 pixels, providing hysteresis.
+- Split threshold is 1.5 projected pixels.
+- Merge threshold is 0.75 pixels, providing a wide stable hysteresis band.
 - Skirt depth is 7.5% of the chunk edge length, capped at 10m. The former
   50m cap removed planet-scale walls; continuous detail filtering now permits
   shallower residual crack coverage without exposed coarse edge ribbons.
@@ -319,7 +319,7 @@ lower clamp of 0.01 radians was replaced by the actual camera minimum FOV. The
 old clamp would otherwise have capped refinement around L5 even after widening
 the camera's zoom range.
 
-Under the L2, 2.0/1.25-pixel policy at the default camera and
+Under the earlier L2, 2.0/1.25-pixel policy at the default camera and
 640x427 viewport, representative zoom-in thresholds were approximately L3 at
 2.468 degrees, L4 at 1.115 degrees, L10 at 0.01567 degrees, L17 at 0.000122
 degrees, and L18 at 0.0000611 degrees.
@@ -340,9 +340,23 @@ motion rather than an f32 direction jump.
 
 ### LOD transitions and GPU representation
 
-`TerrainRenderer` keeps parent and child render nodes together for 0.5
-simulation seconds. `planet.wgsl` uses a 4x4 Bayer discard pattern to dither
-between them. Skirts remain active. All chunks share one index topology.
+`TerrainRenderer` derives a coherent, non-overlapping frontier from the
+requested leaves and resident GPU chunks. A parent is promoted only when every
+required child branch is resident, so an opaque parent and descendant cannot
+remain depth-competing while a sibling streams. Parent and children overlap
+only for an eased 0.5 simulation-second hand-off; `planet.wgsl` uses stable
+interleaved-gradient noise for complementary screen-space coverage without an
+ordered checker pattern.
+
+Each instance also packs the level difference to a coarser neighbour on all
+four edges. Fine boundary vertices collapse onto that neighbour's grid,
+including across cube faces, removing mixed-LOD T-junction gaps while retaining
+the shared vertex/index topology. The existing shallow skirts remain active as
+a fallback for residual height/tile differences and culled boundaries.
+Terrain remains smoothly vertex-lit, but every requested level now derives its
+normal from the same 256 m planet-local height footprint. This removes the
+level-dependent lighting grid (and avoids L18 f32-sized derivative steps)
+without restoring the rejected per-fragment fallback-height normal.
 
 Chunk vertices are static anchor-local f32 data. Each chunk anchor and the
 camera basis are f64; a per-frame instance carries the anchor transformed in
@@ -461,8 +475,20 @@ biome/moisture material lookup, coastline blending, terrain lighting, ocean,
 aerial perspective, and LOD dither.
 
 - Height is bilinear sampled.
-- Biome/moisture remain categorical at the 129x129 material resolution.
+- Biome IDs remain categorical in the baked 129x129 material tiles. The render
+  pass bilinearly blends the four nearest baked owners and moisture samples, so
+  classification remains authored while its texel grid is not exposed.
 - Authored palette values are converted from sRGB to linear before HDR light.
+- One shared four-layer `Rgba8UnormSrgb` texture array provides vegetation,
+  earth, rock, and snow albedo/height material detail. Its deterministic 256px
+  layers have a CPU-built, linear-correct full mip chain and 8x anisotropic
+  filtering.
+- The four layers are height-blended from baked biome/moisture ownership plus
+  continuous rendered slope, altitude, and latitude weights. Planet-local
+  metre-scale triplanar projection is independent of outmap UVs and requested
+  LOD, so the material cannot slide or seam at tile or cube-face boundaries.
+  A continuous direction-domain warp plus non-integer broad/fine sampling
+  scales suppress compact-texture repetition while retaining close detail.
 - Beach tint uses continuous bilinear height rather than nearest biome class.
 - Ocean coverage blends roughly from -80 m to +120 m.
 - Surface direct sunlight has a 2x artistic scale and clamps at zero on the
@@ -634,6 +660,7 @@ and interactive FOV values remain actual viewport FOVs, not reference values.
 | `ocean_flyover` | Gerstner ocean | 6 s | 5 | >=0.5 m mirrored wave-height range |
 | `orbital_zoom_lod` | Fixed-orbit optical zoom | 14 s | 5 | exact L2->L18->L2 sequence, no budget pressure/thrash, seam/fallback bounds |
 | `polar_ice_cap` | Polar ice presentation | 1 s | 1 | bright, sufficiently neutral center pixel plus finite/count checks |
+| `terrain_material_preview` | Low-flight material/LOD continuity | 2 s | 2 | finite/count, no thrash, seam/fallback bounds |
 
 Current scenario files have screenshot `seam_gap_check` disabled or defaulted
 off. CPU `max_seam_delta_m` assertions still run where configured. Do not claim
@@ -754,6 +781,26 @@ Other baker flags: positional output or `--output`, `--seed`, `--width`,
 | 7 | In progress | Implementation and clean objective regression are complete; final human visual sign-off remains |
 
 ## Verification snapshot
+
+Exact staged-tree checks for the terrain-material/LOD change on 2026-07-17,
+from base `e892ddb` with the user's separate unstaged height-scale override
+excluded, used
+`CARGO_TARGET_DIR=/home/dad/.cache/citg-final-staged-1784326416-90939`:
+
+- `cargo fmt --all -- --check`, `cargo check --workspace`, and
+  `cargo test --workspace` passed: 94 app tests, 22 baker tests, and 5
+  coretypes tests.
+- `terrain_material_preview` `1784326796-104804` passed with 120 or fewer
+  resident chunks, 117 or fewer ancestor fallbacks, zero LOD thrash, zero seam
+  delta, and both captures present.
+- `descent_to_10m` `1784326801-104931` reached L18 monotonically with 164 or
+  fewer resident chunks, 86 or fewer fallbacks, zero thrash, zero seam delta,
+  and all seven captures.
+- `orbit_once` `1784326818-105141` passed with 47 or fewer resident chunks,
+  zero seam delta, and all four captures.
+- `orbital_zoom_lod` `1784326823-105266` traversed the exact L2-L18-L2 ladder
+  with 256 or fewer resident chunks, 154 or fewer fallbacks, zero thrash, a
+  maximum seam delta of `0.00000762939453125m`, and all five captures.
 
 Latest clean-HEAD checks on 2026-07-16 at `27ebd43`, using the separate
 `CARGO_TARGET_DIR=/home/dad/.cache/citg-target-a47112c`:
@@ -1360,7 +1407,7 @@ value-noise/shader regressions, including Naga parsing of `planet.wgsl` before
 pipeline creation, plus the app unit suite pass; obtain a fresh low-flight
 daylight capture before accepting the new presentation.
 
-The terrain path now also binds a compact repeatable GPU albedo texture shared
+The initial ground-readability material pass bound one compact repeatable GPU albedo texture shared
 by all terrain tiles. `planet.wgsl` triplanar-samples it from planet direction
 and the displaced normal, then fades its biome-preserving tint beyond 140km.
 It adds close-range material variation only: the outmap remains authoritative
@@ -1391,24 +1438,58 @@ the terrain. Smooth vertex land lighting is restored; the actual remedy is
 denser near-surface baked/streamed height coverage, rather than sharpening the
 existing mesh or fallback data.
 
-The first continuity slice for the planned near-flight terrain work is now in
-place. The renderer records the *actually rendered* resident-node set rather
-than the requested quadtree set, so a parent remains dithered in for one second
-only when its resident child replacement is available. Unrelated camera-motion
-nodes do not cross-fade, and fading chunks are protected from cache eviction.
+The first continuity slice for the planned near-flight terrain work recorded
+the *actually rendered* resident-node set rather than the requested quadtree
+set, so a parent remained dithered in only when its resident child replacement
+was available. It initially used a one-second transition, shortened below after
+the retained low-flight replay made that opaque dither too conspicuous.
+Unrelated camera-motion nodes do not cross-fade, and fading chunks are
+protected from cache eviction.
 The selection policy requests a finer grid at 1.5px (formerly 2.0px) and does
 not merge it until 0.75px (formerly 1.25px), moving the detail hand-off farther
 from the camera with a wider hysteresis band. This preserves the 256-leaf and
 eight-build budgets while the separate geometry-clipmap/data-pyramid work is
 designed.
 
+The professional terrain-material follow-up replaces that single generic tint
+with four deterministic mipmapped sRGB material layers: vegetation, earth,
+rock, and snow. The shader triplanar-projects them in planet-local metres and
+height-blends them from the existing baked biome/moisture values plus
+continuous slope and snowline weights. This keeps the baker authoritative for
+macro geography, coastline, and material ownership while giving flight-height
+ground distinct natural surfaces. The material alpha affects blending only;
+no new displacement or per-fragment fallback-height normal was introduced.
+The categorical owners and moisture are display-blended bilinearly, while a
+planet-direction domain warp and non-integer broad/fine triplanar scales break
+up visible texture repetition.
+
+The new `terrain_material_preview` replay exposed three LOD artefacts that the
+zero-metre sampled seam metric did not detect. First, a resident parent could
+remain fully opaque beneath resident descendants while a sibling streamed,
+causing depth competition. The renderer now promotes only a coherent resident
+frontier. Second, mixed-grid T-junctions appeared as narrow background slits in
+both final and raw-albedo captures. A packed per-edge level delta now collapses
+fine boundary vertices onto the coarser neighbour grid across same-face and
+cube-face boundaries. Third, central-difference normals used the requested LOD
+as their footprint, exposing a different lighting grid on either side of an
+otherwise closed edge and approaching f32 precision at L18. All levels now use
+one 256 m planet-local vertex-normal footprint, retaining smooth land lighting
+while removing that level-dependent shading discontinuity. The settled
+low-flight capture is visually continuous;
+the coherent promotion uses an eased 0.5-second interleaved-noise dither so the
+transition remains brief without an ordered Bayer grid. Focused shader,
+material-mip, frontier, same-face stitch, and cross-face stitch regressions pass.
+
 ## Next action
 
-Obtain a fresh low-flight daylight capture before further terrain acceptance:
+Obtain a fresh user-controlled low-flight daylight capture before final terrain
+acceptance:
 
-1. Check that the coherent microrelief reads as irregular terrain rather than
-   parallel/periodic ridges, while retaining continuous mixed-LOD edges.
-2. If it is accepted, resume the remaining human checks for horizon fog,
+1. Check that vegetation, earth, exposed rock, and snow read as distinct
+   natural materials without visible triplanar repetition or sliding.
+2. Fly continuously through several LOD promotions and confirm no persistent
+   dark edge slits, hard topology pops, or distracting dither sparkle remain.
+3. If it is accepted, resume the remaining human checks for horizon fog,
    sunset bands, ocean colour, and pole-crossing flight control before branch
    promotion; otherwise tune only the requested terrain characteristic.
 

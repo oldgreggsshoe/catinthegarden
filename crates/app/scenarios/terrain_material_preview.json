@@ -1,0 +1,29 @@
+{
+  "name": "terrain_material_preview",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 2.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_rotation_time_scale": 0.0,
+  "screenshot_times_seconds": [1.0, 2.0],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [2871306.27715759, -2646985.474254653, 897283.2116117467],
+      "look_at": [2868081.700604755, -2644012.817745008, 896275.5314389858]
+    }
+  ],
+  "sun_waypoints": [
+    { "time_s": 0.0, "direction": [0.993663852656, -0.109725723239, -0.024339547738] }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "min_resident_chunks": 1,
+    "max_resident_chunks": 4096,
+    "max_lod_thrash_events": 0,
+    "max_seam_delta_m": 0.1,
+    "max_fallback_chunks": 192,
+    "expected_screenshots": 2
+  }
+}

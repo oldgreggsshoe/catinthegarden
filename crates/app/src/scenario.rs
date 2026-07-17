@@ -164,6 +164,9 @@ impl ScenarioRunner {
             "ocean_flyover" => include_str!("../scenarios/ocean_flyover.json"),
             "orbital_zoom_lod" => include_str!("../scenarios/orbital_zoom_lod.json"),
             "polar_ice_cap" => include_str!("../scenarios/polar_ice_cap.json"),
+            "terrain_material_preview" => {
+                include_str!("../scenarios/terrain_material_preview.json")
+            }
             _ => return Err(format!("unknown scenario '{name}'")),
         };
         Self::from_source(source)

@@ -28,10 +28,10 @@ use crate::{
 // Retain enough nearby L4 tiles to avoid camera-motion uploads while keeping
 // the three per-tile GPU textures and CPU height cache bounded.
 const MAX_RESIDENT_TERRAIN_TILES: usize = 384;
-/// A deliberately long dithered hand-off makes a newly resident grid appear
-/// before its parent disappears. The higher-detail request itself begins at a
-/// conservative lower screen-error threshold in `LodPolicy`.
-const LOD_TRANSITION_DURATION_SECONDS: f64 = 1.0;
+/// Half a second gives a newly resident grid time to replace its parent
+/// without leaving the opaque dither visible long enough to sparkle during
+/// normal flight. The higher-detail request itself begins early in `LodPolicy`.
+const LOD_TRANSITION_DURATION_SECONDS: f64 = 0.5;
 /// Cross-fades deliberately duplicate terrain draws. Retain them for small LOD
 /// adjustments, but snap a large camera/zoom change to the complete active
 /// topology rather than carrying hundreds of obsolete chunks for half a
@@ -43,9 +43,11 @@ const MAX_CHUNK_BUILDS_PER_FRAME: usize = 8;
 /// Retain recently used GPU chunks so a moving camera can reuse nearby detail,
 /// while keeping the one-buffer-per-chunk implementation bounded.
 const MAX_RESIDENT_GPU_CHUNKS: usize = 512;
-/// One small, repeatable material texture adds close-range surface variation
+/// Four compact, repeatable material layers add close-range surface variation
 /// without pretending to add missing baked height data to ancestor tiles.
-const TERRAIN_DETAIL_TEXTURE_SIZE: u32 = 128;
+/// A full mip chain keeps the triplanar samples stable as the camera climbs.
+const TERRAIN_MATERIAL_TEXTURE_SIZE: u32 = 256;
+const TERRAIN_MATERIAL_LAYER_COUNT: u32 = 4;
 
 #[derive(Clone, Debug)]
 pub enum TerrainSource {
@@ -81,6 +83,7 @@ struct TerrainInstance {
     source_uv_offset: [f32; 2],
     terrain_info: u32,
     lod_transition: [f32; 2],
+    edge_stitch: u32,
 }
 
 #[repr(C)]
@@ -110,12 +113,13 @@ impl TerrainSettings {
 }
 
 impl TerrainInstance {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+    const ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
         4 => Float32x3,
         5 => Float32x2,
         6 => Float32x2,
         7 => Uint32,
-        8 => Float32x2
+        8 => Float32x2,
+        9 => Uint32
     ];
 
     fn layout() -> wgpu::VertexBufferLayout<'static> {
@@ -175,9 +179,9 @@ pub struct TerrainRenderer {
     _environment_cubemap: wgpu::Texture,
     environment_view: wgpu::TextureView,
     environment_sampler: wgpu::Sampler,
-    _terrain_detail_texture: wgpu::Texture,
-    terrain_detail_view: wgpu::TextureView,
-    terrain_detail_sampler: wgpu::Sampler,
+    _terrain_material_texture: wgpu::Texture,
+    terrain_material_view: wgpu::TextureView,
+    terrain_material_sampler: wgpu::Sampler,
     index_buffer: wgpu::Buffer,
     index_count: u32,
     instance_buffer: wgpu::Buffer,
@@ -254,7 +258,10 @@ impl TerrainRenderer {
                         },
                         count: None,
                     },
-                    texture_layout_entry(6, wgpu::TextureSampleType::Float { filterable: true }),
+                    texture_array_layout_entry(
+                        6,
+                        wgpu::TextureSampleType::Float { filterable: true },
+                    ),
                     wgpu::BindGroupLayoutEntry {
                         binding: 7,
                         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -317,8 +324,8 @@ impl TerrainRenderer {
         let instance_buffer = create_instance_buffer(device, instance_capacity);
         let (environment_cubemap, environment_view, environment_sampler) =
             create_environment_cubemap(device, queue);
-        let (terrain_detail_texture, terrain_detail_view, terrain_detail_sampler) =
-            create_terrain_detail_texture(device, queue);
+        let (terrain_material_texture, terrain_material_view, terrain_material_sampler) =
+            create_terrain_material_texture(device, queue);
         let placeholder_tile = create_gpu_tile(
             device,
             queue,
@@ -330,8 +337,8 @@ impl TerrainRenderer {
             &environment_view,
             &environment_sampler,
             &terrain_settings_buffer,
-            &terrain_detail_view,
-            &terrain_detail_sampler,
+            &terrain_material_view,
+            &terrain_material_sampler,
         );
 
         let mut lod = PlanetLod::default();
@@ -345,9 +352,9 @@ impl TerrainRenderer {
             _environment_cubemap: environment_cubemap,
             environment_view,
             environment_sampler,
-            _terrain_detail_texture: terrain_detail_texture,
-            terrain_detail_view,
-            terrain_detail_sampler,
+            _terrain_material_texture: terrain_material_texture,
+            terrain_material_view,
+            terrain_material_sampler,
             index_buffer,
             index_count: topology.indices.len() as u32,
             instance_buffer,
@@ -450,13 +457,13 @@ impl TerrainRenderer {
             self.chunk_last_used.insert(*node, self.tile_cache_tick);
             resident_nodes.insert(*node);
         }
-        let mut active_render_nodes = BTreeSet::new();
-        for &node in &lod_update.active_nodes {
-            active_render_nodes.insert(
-                resident_ancestor(node, &resident_nodes)
-                    .expect("root terrain chunk covers every active node"),
-            );
-        }
+        // Promote a resident parent only as a coherent frontier. Rendering a
+        // full parent together with one of its descendants makes two opaque
+        // height surfaces compete for depth while a sibling is still
+        // streaming, which reads as a dark LOD seam. Waiting for every
+        // required child branch keeps coverage complete and non-overlapping.
+        let active_render_nodes =
+            coherent_resident_frontier(&lod_update.active_nodes, &resident_nodes);
         for &node in &active_render_nodes {
             self.chunk_last_used.insert(node, self.tile_cache_tick);
         }
@@ -529,8 +536,8 @@ impl TerrainRenderer {
                 &self.environment_view,
                 &self.environment_sampler,
                 &self._terrain_settings_buffer,
-                &self.terrain_detail_view,
-                &self.terrain_detail_sampler,
+                &self.terrain_material_view,
+                &self.terrain_material_sampler,
             );
             self.tile_cache.insert(key, gpu_tile);
         }
@@ -606,6 +613,11 @@ impl TerrainRenderer {
                         0.0
                     },
                 ],
+                edge_stitch: if render_node.active {
+                    edge_stitch_info(render_node.node, &active_render_nodes)
+                } else {
+                    0
+                },
             });
             self.draw_items.push(DrawItem {
                 node: render_node.node,
@@ -826,6 +838,122 @@ fn resident_ancestor(
     }
 }
 
+fn coherent_resident_frontier(
+    desired_nodes: &[QuadtreeNode],
+    resident_nodes: &BTreeSet<QuadtreeNode>,
+) -> BTreeSet<QuadtreeNode> {
+    let desired_nodes: BTreeSet<_> = desired_nodes.iter().copied().collect();
+    let mut frontier = BTreeSet::new();
+    for face in CubeFace::ALL {
+        collect_resident_frontier(
+            QuadtreeNode::root(face.index()),
+            &desired_nodes,
+            resident_nodes,
+            &mut frontier,
+        );
+    }
+    debug_assert!(frontier.iter().all(|node| resident_nodes.contains(node)));
+    debug_assert!(frontier.iter().all(|node| {
+        frontier
+            .iter()
+            .all(|other| node == other || !nodes_share_lod_transition(*node, *other))
+    }));
+    frontier
+}
+
+fn collect_resident_frontier(
+    node: QuadtreeNode,
+    desired_nodes: &BTreeSet<QuadtreeNode>,
+    resident_nodes: &BTreeSet<QuadtreeNode>,
+    frontier: &mut BTreeSet<QuadtreeNode>,
+) {
+    let contains_desired_node = |candidate: QuadtreeNode| {
+        desired_nodes
+            .iter()
+            .any(|desired| *desired == candidate || node_is_descendant_of(*desired, candidate))
+    };
+    if !contains_desired_node(node) {
+        return;
+    }
+    if desired_nodes.contains(&node) {
+        frontier.insert(node);
+        return;
+    }
+
+    let required_children: Vec<_> = node
+        .children()
+        .into_iter()
+        .filter(|child| contains_desired_node(*child))
+        .collect();
+    if required_children
+        .iter()
+        .all(|child| resident_nodes.contains(child))
+    {
+        for child in required_children {
+            collect_resident_frontier(child, desired_nodes, resident_nodes, frontier);
+        }
+    } else {
+        assert!(
+            resident_nodes.contains(&node),
+            "resident terrain frontier lost ancestor coverage for {node:?}"
+        );
+        frontier.insert(node);
+    }
+}
+
+fn edge_stitch_info(node: QuadtreeNode, active_nodes: &[QuadtreeNode]) -> u32 {
+    let [u_min, v_min, u_max, v_max] = node.uv_bounds();
+    let edge_span = u_max - u_min;
+    let outside = edge_span * 1.0e-5;
+    let mut packed = 0_u32;
+    for edge in 0..4_u32 {
+        let mut maximum_delta = 0_u8;
+        for sample in 0..8 {
+            let amount = (f64::from(sample) + 0.5) / 8.0;
+            let u = u_min + (u_max - u_min) * amount;
+            let v = v_min + (v_max - v_min) * amount;
+            let (outside_u, outside_v) = match edge {
+                0 => (u, v_min - outside),
+                1 => (u_max + outside, v),
+                2 => (u, v_max + outside),
+                _ => (u_min - outside, v),
+            };
+            let direction = cube_face_direction(node.face, outside_u, outside_v);
+            if let Some(neighbor) = active_node_at_direction(active_nodes, direction)
+                && neighbor.level < node.level
+            {
+                maximum_delta = maximum_delta.max((node.level - neighbor.level).min(5));
+            }
+        }
+        packed |= u32::from(maximum_delta) << (edge * 3);
+    }
+    packed
+}
+
+fn active_node_at_direction(
+    active_nodes: &[QuadtreeNode],
+    direction: DVec3,
+) -> Option<QuadtreeNode> {
+    let (face, face_uv) = cube_face_uv(direction)?;
+    active_nodes.iter().copied().find(|node| {
+        let Some(node_face) = CubeFace::from_index(node.face) else {
+            return false;
+        };
+        let key = TileKey {
+            face: node_face,
+            level: node.level,
+            x: node.x,
+            y: node.y,
+        };
+        source_tile_uv(key, face, face_uv).is_some()
+    })
+}
+
+#[cfg(test)]
+fn edge_stitch_level_delta(packed: u32, edge: u32) -> u8 {
+    ((packed >> (edge * 3)) & 0x7) as u8
+}
+
 fn next_missing_descendant(
     target: QuadtreeNode,
     resident_nodes: &BTreeSet<QuadtreeNode>,
@@ -845,7 +973,9 @@ fn next_missing_descendant(
 }
 
 fn lod_transition_progress(sim_time: f64, started_at_sim_time: f64) -> f32 {
-    ((sim_time - started_at_sim_time) / LOD_TRANSITION_DURATION_SECONDS).clamp(0.0, 1.0) as f32
+    let linear =
+        ((sim_time - started_at_sim_time) / LOD_TRANSITION_DURATION_SECONDS).clamp(0.0, 1.0);
+    (linear * linear * (3.0 - 2.0 * linear)) as f32
 }
 
 fn should_animate_lod_transition(
@@ -942,6 +1072,22 @@ fn texture_layout_entry(
     }
 }
 
+fn texture_array_layout_entry(
+    binding: u32,
+    sample_type: wgpu::TextureSampleType,
+) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type,
+            view_dimension: wgpu::TextureViewDimension::D2Array,
+            multisampled: false,
+        },
+        count: None,
+    }
+}
+
 fn cube_texture_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
@@ -975,8 +1121,8 @@ fn create_gpu_tile(
     environment_view: &wgpu::TextureView,
     environment_sampler: &wgpu::Sampler,
     terrain_settings_buffer: &wgpu::Buffer,
-    terrain_detail_view: &wgpu::TextureView,
-    terrain_detail_sampler: &wgpu::Sampler,
+    terrain_material_view: &wgpu::TextureView,
+    terrain_material_sampler: &wgpu::Sampler,
 ) -> GpuTile {
     debug_assert_eq!(heights_meters.len(), tile_sample_count());
     debug_assert_eq!(biome_ids.len(), tile_sample_count());
@@ -1038,11 +1184,11 @@ fn create_gpu_tile(
             },
             wgpu::BindGroupEntry {
                 binding: 6,
-                resource: wgpu::BindingResource::TextureView(terrain_detail_view),
+                resource: wgpu::BindingResource::TextureView(terrain_material_view),
             },
             wgpu::BindGroupEntry {
                 binding: 7,
-                resource: wgpu::BindingResource::Sampler(terrain_detail_sampler),
+                resource: wgpu::BindingResource::Sampler(terrain_material_sampler),
             },
         ],
     });
@@ -1116,73 +1262,212 @@ fn create_environment_cubemap(
     (texture, view, sampler)
 }
 
-fn create_terrain_detail_texture(
+fn create_terrain_material_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
 ) -> (wgpu::Texture, wgpu::TextureView, wgpu::Sampler) {
-    let texture_size = TERRAIN_DETAIL_TEXTURE_SIZE as usize;
-    let mut texels = Vec::with_capacity(texture_size * texture_size * 4);
-    for y in 0..texture_size {
-        for x in 0..texture_size {
-            let broad = tileable_value_noise(x, y, 32, texture_size);
-            let medium = tileable_value_noise(x, y, 8, texture_size);
-            let fine = tileable_value_noise(x, y, 2, texture_size);
-            let value = (0.79 + broad * 0.18 + medium * 0.11 + fine * 0.04).clamp(0.55, 1.0);
-            texels.extend_from_slice(&[
-                (value * 0.91 * 255.0) as u8,
-                (value * 255.0) as u8,
-                (value * 0.84 * 255.0) as u8,
-                255,
-            ]);
-        }
-    }
+    let mip_level_count = TERRAIN_MATERIAL_TEXTURE_SIZE.ilog2() + 1;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("tiled terrain detail albedo"),
+        label: Some("mipmapped terrain material array"),
         size: wgpu::Extent3d {
-            width: TERRAIN_DETAIL_TEXTURE_SIZE,
-            height: TERRAIN_DETAIL_TEXTURE_SIZE,
-            depth_or_array_layers: 1,
+            width: TERRAIN_MATERIAL_TEXTURE_SIZE,
+            height: TERRAIN_MATERIAL_TEXTURE_SIZE,
+            depth_or_array_layers: TERRAIN_MATERIAL_LAYER_COUNT,
         },
-        mip_level_count: 1,
+        mip_level_count,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
+        // The generated palettes are authored in display space. Sampling an
+        // sRGB texture gives the lighting shader linear albedo values.
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        &texels,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(TERRAIN_DETAIL_TEXTURE_SIZE * 4),
-            rows_per_image: Some(TERRAIN_DETAIL_TEXTURE_SIZE),
-        },
-        wgpu::Extent3d {
-            width: TERRAIN_DETAIL_TEXTURE_SIZE,
-            height: TERRAIN_DETAIL_TEXTURE_SIZE,
-            depth_or_array_layers: 1,
-        },
-    );
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+    for layer in 0..TERRAIN_MATERIAL_LAYER_COUNT {
+        let mut mip_size = TERRAIN_MATERIAL_TEXTURE_SIZE;
+        let mut texels = terrain_material_layer_texels(layer, mip_size as usize);
+        for mip_level in 0..mip_level_count {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level,
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: layer,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &texels,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(mip_size * 4),
+                    rows_per_image: Some(mip_size),
+                },
+                wgpu::Extent3d {
+                    width: mip_size,
+                    height: mip_size,
+                    depth_or_array_layers: 1,
+                },
+            );
+            if mip_size == 1 {
+                break;
+            }
+            texels = downsample_srgb_rgba8(&texels, mip_size as usize);
+            mip_size /= 2;
+        }
+    }
+
+    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("terrain material array view"),
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        ..Default::default()
+    });
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-        label: Some("tiled terrain detail sampler"),
+        label: Some("mipmapped terrain material sampler"),
         address_mode_u: wgpu::AddressMode::Repeat,
         address_mode_v: wgpu::AddressMode::Repeat,
         mag_filter: wgpu::FilterMode::Linear,
         min_filter: wgpu::FilterMode::Linear,
-        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+        mipmap_filter: wgpu::MipmapFilterMode::Linear,
+        anisotropy_clamp: 8,
         ..Default::default()
     });
     (texture, view, sampler)
 }
 
+fn terrain_material_layer_texels(layer: u32, texture_size: usize) -> Vec<u8> {
+    let mut texels = Vec::with_capacity(texture_size * texture_size * 4);
+    for y in 0..texture_size {
+        for x in 0..texture_size {
+            texels.extend_from_slice(&terrain_material_texel(layer, x, y, texture_size));
+        }
+    }
+    texels
+}
+
+fn terrain_material_texel(layer: u32, x: usize, y: usize, texture_size: usize) -> [u8; 4] {
+    debug_assert!(layer < TERRAIN_MATERIAL_LAYER_COUNT);
+    let seed = 0x51f1_5e5d_u32.wrapping_add(layer.wrapping_mul(0x9e37_79b9));
+    let broad = tileable_value_noise_seeded(x, y, 64, texture_size, seed);
+    let medium = tileable_value_noise_seeded(x, y, 16, texture_size, seed ^ 0xa511_e9b3);
+    let fine = tileable_value_noise_seeded(x, y, 4, texture_size, seed ^ 0x63d8_3595);
+    let grain = tileable_detail_hash(
+        (x % texture_size) as u32,
+        (y % texture_size) as u32,
+        seed ^ 0xc2b2_ae35,
+    );
+
+    let (low, high, color_amount, height) = match layer {
+        // Vegetation: dark organic ground with drier broad patches.
+        0 => (
+            [0.055, 0.12, 0.035],
+            [0.34, 0.33, 0.12],
+            (broad * 0.64 + medium * 0.28 + grain * 0.08).clamp(0.0, 1.0),
+            (0.24 + medium * 0.50 + fine * 0.20 + grain * 0.06).clamp(0.0, 1.0),
+        ),
+        // Earth: soil, sand, and exposed dry ground.
+        1 => (
+            [0.19, 0.105, 0.045],
+            [0.64, 0.48, 0.25],
+            (broad * 0.52 + medium * 0.36 + fine * 0.12).clamp(0.0, 1.0),
+            (0.18 + broad * 0.24 + medium * 0.42 + fine * 0.16).clamp(0.0, 1.0),
+        ),
+        // Rock: broad mineral variation with fine fracture-like contrast.
+        2 => {
+            let fracture = (2.0 * (medium - 0.5).abs()).powf(3.0);
+            (
+                [0.15, 0.145, 0.14],
+                [0.52, 0.49, 0.44],
+                (broad * 0.44 + fine * 0.28 + fracture * 0.28).clamp(0.0, 1.0),
+                (0.22 + broad * 0.30 + medium * 0.34 + fine * 0.14).clamp(0.0, 1.0),
+            )
+        }
+        // Snow: cool compacted hollows with warmer wind-polished ridges.
+        _ => (
+            [0.59, 0.69, 0.76],
+            [0.97, 0.975, 0.95],
+            (broad * 0.56 + medium * 0.30 + grain * 0.14).clamp(0.0, 1.0),
+            (0.38 + broad * 0.34 + medium * 0.20 + fine * 0.08).clamp(0.0, 1.0),
+        ),
+    };
+    let color = [
+        low[0] + (high[0] - low[0]) * color_amount,
+        low[1] + (high[1] - low[1]) * color_amount,
+        low[2] + (high[2] - low[2]) * color_amount,
+    ];
+    [
+        normalized_u8(color[0]),
+        normalized_u8(color[1]),
+        normalized_u8(color[2]),
+        normalized_u8(height),
+    ]
+}
+
+fn normalized_u8(value: f32) -> u8 {
+    (value.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+fn downsample_srgb_rgba8(texels: &[u8], texture_size: usize) -> Vec<u8> {
+    debug_assert!(texture_size.is_power_of_two());
+    debug_assert_eq!(texels.len(), texture_size * texture_size * 4);
+    let next_size = (texture_size / 2).max(1);
+    let mut downsampled = Vec::with_capacity(next_size * next_size * 4);
+    for y in 0..next_size {
+        for x in 0..next_size {
+            let mut linear_rgb = [0.0_f32; 3];
+            let mut alpha = 0.0_f32;
+            for offset_y in 0..2.min(texture_size) {
+                for offset_x in 0..2.min(texture_size) {
+                    let source_x = (x * 2 + offset_x).min(texture_size - 1);
+                    let source_y = (y * 2 + offset_y).min(texture_size - 1);
+                    let index = (source_x + source_y * texture_size) * 4;
+                    for channel in 0..3 {
+                        linear_rgb[channel] +=
+                            srgb_to_linear_channel(f32::from(texels[index + channel]) / 255.0);
+                    }
+                    alpha += f32::from(texels[index + 3]) / 255.0;
+                }
+            }
+            let sample_count = if texture_size == 1 { 1.0 } else { 4.0 };
+            for value in linear_rgb {
+                downsampled.push(normalized_u8(linear_to_srgb_channel(value / sample_count)));
+            }
+            downsampled.push(normalized_u8(alpha / sample_count));
+        }
+    }
+    downsampled
+}
+
+fn srgb_to_linear_channel(value: f32) -> f32 {
+    if value <= 0.04045 {
+        value / 12.92
+    } else {
+        ((value + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn linear_to_srgb_channel(value: f32) -> f32 {
+    if value <= 0.003_130_8 {
+        value * 12.92
+    } else {
+        1.055 * value.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+#[cfg(test)]
 fn tileable_value_noise(x: usize, y: usize, cell_size: usize, texture_size: usize) -> f32 {
+    tileable_value_noise_seeded(x, y, cell_size, texture_size, 0)
+}
+
+fn tileable_value_noise_seeded(
+    x: usize,
+    y: usize,
+    cell_size: usize,
+    texture_size: usize,
+    seed: u32,
+) -> f32 {
     let cells = texture_size / cell_size;
     let cell_x = x / cell_size;
     let cell_y = y / cell_size;
@@ -1193,17 +1478,18 @@ fn tileable_value_noise(x: usize, y: usize, cell_size: usize, texture_size: usiz
     let sample = |offset_x, offset_y| {
         let hash_x = (cell_x + offset_x) % cells;
         let hash_y = (cell_y + offset_y) % cells;
-        tileable_detail_hash(hash_x as u32, hash_y as u32)
+        tileable_detail_hash(hash_x as u32, hash_y as u32, seed)
     };
     let lower = sample(0, 0) + (sample(1, 0) - sample(0, 0)) * fade_x;
     let upper = sample(0, 1) + (sample(1, 1) - sample(0, 1)) * fade_x;
     lower + (upper - lower) * fade_y
 }
 
-fn tileable_detail_hash(x: u32, y: u32) -> f32 {
+fn tileable_detail_hash(x: u32, y: u32, seed: u32) -> f32 {
     let mut value = x
         .wrapping_mul(0x9e37_79b9)
-        .wrapping_add(y.wrapping_mul(0x85eb_ca6b));
+        .wrapping_add(y.wrapping_mul(0x85eb_ca6b))
+        .wrapping_add(seed);
     value ^= value >> 16;
     value = value.wrapping_mul(0x7feb_352d);
     value ^= value >> 15;
@@ -1435,10 +1721,13 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::{
-        TerrainSettings, cube_face_uv, fallback_uv_transform, lod_transition_nodes,
+        TERRAIN_MATERIAL_LAYER_COUNT, TERRAIN_MATERIAL_TEXTURE_SIZE, TerrainSettings,
+        coherent_resident_frontier, cube_face_uv, downsample_srgb_rgba8, edge_stitch_info,
+        edge_stitch_level_delta, fallback_uv_transform, lod_transition_nodes,
         lod_transition_progress, next_missing_descendant, nodes_share_lod_transition,
         pack_terrain_info, prioritized_missing_chunks, resident_ancestor, sample_height_cpu,
-        should_animate_lod_transition, source_tile_uv_at_direction, tileable_value_noise,
+        should_animate_lod_transition, source_tile_uv_at_direction, terrain_material_layer_texels,
+        terrain_material_texel, tileable_value_noise,
     };
     use crate::planet::{
         GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE,
@@ -1564,16 +1853,55 @@ mod tests {
     }
 
     #[test]
-    fn terrain_detail_material_is_tileable_and_bound_in_the_shader() {
+    fn terrain_material_layers_are_tileable_mipmapped_and_bound_in_the_shader() {
         for cell_size in [32, 8, 2] {
             let edge = tileable_value_noise(0, 47, cell_size, 128);
             assert!((0.0..=1.0).contains(&edge));
             assert_eq!(edge, tileable_value_noise(128, 47, cell_size, 128));
         }
+        let layer_samples: Vec<_> = (0..TERRAIN_MATERIAL_LAYER_COUNT)
+            .map(|layer| {
+                let first =
+                    terrain_material_texel(layer, 0, 47, TERRAIN_MATERIAL_TEXTURE_SIZE as usize);
+                assert_eq!(
+                    first,
+                    terrain_material_texel(
+                        layer,
+                        TERRAIN_MATERIAL_TEXTURE_SIZE as usize,
+                        47,
+                        TERRAIN_MATERIAL_TEXTURE_SIZE as usize,
+                    )
+                );
+                assert!(first[3] > 0);
+                first
+            })
+            .collect();
+        assert!(layer_samples.windows(2).all(|pair| pair[0] != pair[1]));
+
+        let mut mip_size = TERRAIN_MATERIAL_TEXTURE_SIZE as usize;
+        let mut mip = terrain_material_layer_texels(0, mip_size);
+        let mut mip_count = 1;
+        while mip_size > 1 {
+            mip = downsample_srgb_rgba8(&mip, mip_size);
+            mip_size /= 2;
+            mip_count += 1;
+            assert_eq!(mip.len(), mip_size * mip_size * 4);
+        }
+        assert_eq!(mip_count, TERRAIN_MATERIAL_TEXTURE_SIZE.ilog2() + 1);
+
         let shader = include_str!("planet.wgsl");
         assert!(shader.contains("@group(1) @binding(6)"));
-        assert!(shader.contains("var terrain_detail_albedo_map: texture_2d<f32>"));
-        assert!(shader.contains("fn terrain_detail_tint("));
+        assert!(shader.contains("var terrain_material_map: texture_2d_array<f32>"));
+        assert!(shader.contains("fn triplanar_material_sample_at_position("));
+        assert!(shader.contains("fn triplanar_material_sample("));
+        assert!(shader.contains("TERRAIN_MATERIAL_WARP_FREQUENCY"));
+        assert!(shader.contains("TERRAIN_MATERIAL_FINE_SCALE"));
+        assert!(shader.contains("texture_warp"));
+        assert!(shader.contains("fn sample_biome_blend("));
+        assert!(shader.contains("fn blended_biome_color("));
+        assert!(shader.contains("fn terrain_material_weights_for_biome("));
+        assert!(shader.contains("fn height_blend_material_weights("));
+        assert!(shader.contains("fn terrain_material_tint("));
     }
 
     #[test]
@@ -1621,6 +1949,8 @@ mod tests {
         let shader = include_str!("planet.wgsl");
         assert!(shader.contains("let rock_amount = smoothstep(0.10, 0.42, slope);"));
         assert!(shader.contains("let snowline_meters = mix(6200.0, 2200.0, latitude_amount);"));
+        assert!(shader.contains("const TERRAIN_NORMAL_SAMPLE_METERS: f32 = 256.0;"));
+        assert!(shader.contains("let normal_step_scale = cube_step / requested_cube_step;"));
         assert!(shader.contains("normal,\n        direction,\n    ) * surface_irradiance;"));
         assert!(shader.contains("input.world_normal,\n        direction,\n    );"));
     }
@@ -1677,6 +2007,51 @@ mod tests {
     }
 
     #[test]
+    fn fine_edges_stitch_to_the_coarser_resident_grid() {
+        let coarse = QuadtreeNode {
+            face: 0,
+            level: 1,
+            x: 0,
+            y: 0,
+        };
+        let fine = QuadtreeNode {
+            face: 0,
+            level: 3,
+            x: 4,
+            y: 0,
+        };
+        let active = [coarse, fine];
+        let stitch = edge_stitch_info(fine, &active);
+
+        assert_eq!(edge_stitch_level_delta(stitch, 0), 0);
+        assert_eq!(edge_stitch_level_delta(stitch, 1), 0);
+        assert_eq!(edge_stitch_level_delta(stitch, 2), 0);
+        assert_eq!(edge_stitch_level_delta(stitch, 3), 2);
+        assert_eq!(edge_stitch_info(coarse, &active), 0);
+
+        let face_edge_fine = QuadtreeNode {
+            face: CubeFace::PositiveX.index(),
+            level: 3,
+            x: 7,
+            y: 2,
+        };
+        let adjacent_face_coarse = QuadtreeNode {
+            face: CubeFace::NegativeZ.index(),
+            level: 1,
+            x: 0,
+            y: 0,
+        };
+        let face_edge_stitch =
+            edge_stitch_info(face_edge_fine, &[face_edge_fine, adjacent_face_coarse]);
+        assert_eq!(edge_stitch_level_delta(face_edge_stitch, 1), 2);
+
+        let shader = include_str!("planet.wgsl");
+        assert!(shader.contains("fn stitched_tile_uv("));
+        assert!(shader.contains("fn stitched_surface_direction("));
+        assert!(shader.contains("let stride = 1u << min(level_delta, 5u);"));
+    }
+
+    #[test]
     fn parent_child_replacements_are_lod_transitions() {
         let parent = QuadtreeNode {
             face: 2,
@@ -1698,11 +2073,19 @@ mod tests {
     }
 
     #[test]
-    fn lod_transition_progress_reaches_full_coverage_after_one_second() {
+    fn lod_transition_progress_eases_to_full_coverage_after_half_a_second() {
         assert_eq!(lod_transition_progress(10.0, 10.0), 0.0);
-        assert!((lod_transition_progress(10.5, 10.0) - 0.5).abs() < f32::EPSILON);
-        assert_eq!(lod_transition_progress(11.0, 10.0), 1.0);
+        assert!((lod_transition_progress(10.125, 10.0) - 0.15625).abs() < f32::EPSILON);
+        assert!((lod_transition_progress(10.25, 10.0) - 0.5).abs() < f32::EPSILON);
+        assert!((lod_transition_progress(10.375, 10.0) - 0.84375).abs() < f32::EPSILON);
+        assert_eq!(lod_transition_progress(10.5, 10.0), 1.0);
         assert_eq!(lod_transition_progress(12.0, 10.0), 1.0);
+
+        let shader = include_str!("planet.wgsl");
+        assert!(shader.contains("fn lod_dither_threshold("));
+        assert!(shader.contains("52.9829189 * fract(dot(pixel"));
+        assert!(shader.contains("incoming && threshold >= transition_progress"));
+        assert!(shader.contains("!incoming && threshold < transition_progress"));
     }
 
     #[test]
@@ -1762,6 +2145,31 @@ mod tests {
         let resident_nodes = BTreeSet::from([root, parent]);
 
         assert_eq!(resident_ancestor(child, &resident_nodes), Some(parent));
+    }
+
+    #[test]
+    fn resident_frontier_waits_for_required_siblings_and_never_overlaps() {
+        let root = QuadtreeNode::root(3);
+        let first_parent = root.children()[0];
+        let second_parent = root.children()[1];
+        let first_leaf = first_parent.children()[2];
+        let second_leaf = second_parent.children()[3];
+        let desired = [first_leaf, second_leaf];
+
+        let waiting =
+            coherent_resident_frontier(&desired, &BTreeSet::from([root, first_parent, first_leaf]));
+        assert_eq!(waiting, BTreeSet::from([root]));
+
+        let promoted = coherent_resident_frontier(
+            &desired,
+            &BTreeSet::from([root, first_parent, first_leaf, second_parent]),
+        );
+        assert_eq!(promoted, BTreeSet::from([first_leaf, second_parent]));
+        assert!(promoted.iter().all(|node| {
+            promoted
+                .iter()
+                .all(|other| node == other || !nodes_share_lod_transition(*node, *other))
+        }));
     }
 
     #[test]
