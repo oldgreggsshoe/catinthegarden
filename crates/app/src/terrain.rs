@@ -242,16 +242,7 @@ impl TerrainRenderer {
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 5,
-                        visibility: wgpu::ShaderStages::VERTEX,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
+                    terrain_settings_layout_entry(),
                     texture_layout_entry(6, wgpu::TextureSampleType::Float { filterable: true }),
                     wgpu::BindGroupLayoutEntry {
                         binding: 7,
@@ -892,6 +883,19 @@ fn cube_texture_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
+fn terrain_settings_layout_entry() -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding: 5,
+        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
+}
+
 fn create_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("camera-relative terrain instances"),
@@ -1375,7 +1379,8 @@ mod tests {
         TerrainSettings, cube_face_uv, fallback_uv_transform, lod_transition_progress,
         next_missing_descendant, nodes_share_lod_transition, pack_terrain_info,
         prioritized_missing_chunks, resident_ancestor, sample_height_cpu,
-        should_animate_lod_transition, source_tile_uv_at_direction, tileable_value_noise,
+        should_animate_lod_transition, source_tile_uv_at_direction, terrain_settings_layout_entry,
+        tileable_value_noise,
     };
     use crate::planet::{
         GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE,
@@ -1520,6 +1525,11 @@ mod tests {
         assert!(shader.contains("let fragment_normal = displaced_surface_normal("));
         assert!(shader.contains("let fragment_surface_irradiance = fragment_sky_diffuse"));
         assert!(shader.contains("var fragment_surface_lighting = terrain_albedo"));
+        assert!(
+            terrain_settings_layout_entry()
+                .visibility
+                .contains(wgpu::ShaderStages::FRAGMENT)
+        );
     }
 
     #[test]

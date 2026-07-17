@@ -1381,7 +1381,9 @@ interpolated between terrain vertices. `fs_main` now receives the flat tile
 metadata required to derive its own height-field normal and recomputes land
 irradiance/material lighting per fragment. It keeps the existing interpolated
 aerial contribution, avoiding a second per-pixel atmosphere integration, and
-does not make the mesh flat-shaded; ocean lighting was already per pixel.
+does not make the mesh flat-shaded; ocean lighting was already per pixel. The
+shared terrain-settings uniform is consequently visible to both vertex and
+fragment stages, with a focused binding-visibility regression.
 
 ## Next action
 
