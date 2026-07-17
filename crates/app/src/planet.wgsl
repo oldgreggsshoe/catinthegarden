@@ -166,33 +166,70 @@ fn placeholder_height(direction: vec3<f32>) -> f32 {
         + placeholder_octave(direction, 2097152.0, 3.0);
 }
 
+fn terrain_detail_noise_domain(direction: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        dot(direction, vec3<f32>(0.80, 0.48, -0.36)),
+        dot(direction, vec3<f32>(-0.30, 0.85, 0.43)),
+        dot(direction, vec3<f32>(0.52, -0.21, 0.82)),
+    );
+}
+
+fn terrain_detail_hash(cell: vec3<f32>) -> f32 {
+    return fract(sin(dot(cell, vec3<f32>(127.1, 311.7, 74.7))) * 43758.547) * 2.0 - 1.0;
+}
+
+fn terrain_detail_value_noise(position: vec3<f32>) -> f32 {
+    let cell = floor(position);
+    let amount = fract(position);
+    let fade = amount * amount * (vec3<f32>(3.0) - amount * 2.0);
+    let lower_lower = terrain_detail_hash(cell);
+    let lower_right = terrain_detail_hash(cell + vec3<f32>(1.0, 0.0, 0.0));
+    let upper_lower = terrain_detail_hash(cell + vec3<f32>(0.0, 1.0, 0.0));
+    let upper_right = terrain_detail_hash(cell + vec3<f32>(1.0, 1.0, 0.0));
+    let lower_plane = mix(lower_lower, lower_right, fade.x);
+    let upper_plane = mix(upper_lower, upper_right, fade.x);
+    let lower = mix(lower_plane, upper_plane, fade.y);
+
+    let lower_lower = terrain_detail_hash(cell + vec3<f32>(0.0, 0.0, 1.0));
+    let lower_right = terrain_detail_hash(cell + vec3<f32>(1.0, 0.0, 1.0));
+    let upper_lower = terrain_detail_hash(cell + vec3<f32>(0.0, 1.0, 1.0));
+    let upper_right = terrain_detail_hash(cell + vec3<f32>(1.0));
+    let lower_plane = mix(lower_lower, lower_right, fade.x);
+    let upper_plane = mix(upper_lower, upper_right, fade.x);
+    let upper = mix(lower_plane, upper_plane, fade.y);
+    return mix(lower, upper, fade.z);
+}
+
 fn global_terrain_detail_octave(
-    direction: vec3<f32>,
+    noise_domain: vec3<f32>,
     frequency: f32,
     amplitude_meters: f32,
     axis: vec3<f32>,
     phase: f32,
 ) -> f32 {
-    return amplitude_meters * sin(frequency * dot(direction, axis) + phase);
+    return amplitude_meters * terrain_detail_value_noise(
+        noise_domain * frequency + axis * phase,
+    );
 }
 
 // Planet-local direction makes this continuous across cube-face and tile
 // boundaries. The baked outmap still supplies all macro geography.
 fn global_terrain_detail(direction: vec3<f32>, camera_distance_meters: f32) -> f32 {
+    let noise_domain = terrain_detail_noise_domain(direction);
     return global_terrain_detail_octave(
-        direction, 4096.0, 80.0, vec3<f32>(0.79, 0.52, -0.32), 0.37,
+        noise_domain, 4096.0, 80.0, vec3<f32>(0.79, 0.52, -0.32), 0.37,
     ) * terrain_detail_octave_distance_weight(
         camera_distance_meters, 150000.0,
     ) + global_terrain_detail_octave(
-        direction, 32768.0, 24.0, vec3<f32>(-0.23, 0.91, 0.41), 1.11,
+        noise_domain, 32768.0, 24.0, vec3<f32>(-0.23, 0.91, 0.41), 1.11,
     ) * terrain_detail_octave_distance_weight(
         camera_distance_meters, 20000.0,
     ) + global_terrain_detail_octave(
-        direction, 262144.0, 6.0, vec3<f32>(0.61, -0.17, 0.77), 2.07,
+        noise_domain, 262144.0, 6.0, vec3<f32>(0.61, -0.17, 0.77), 2.07,
     ) * terrain_detail_octave_distance_weight(
         camera_distance_meters, 2500.0,
     ) + global_terrain_detail_octave(
-        direction, 2097152.0, 1.5, vec3<f32>(-0.48, -0.66, 0.58), 2.73,
+        noise_domain, 2097152.0, 1.5, vec3<f32>(-0.48, -0.66, 0.58), 2.73,
     ) * terrain_detail_octave_distance_weight(
         camera_distance_meters, 300.0,
     );

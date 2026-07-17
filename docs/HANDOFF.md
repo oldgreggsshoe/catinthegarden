@@ -12,8 +12,8 @@ Do not remove or weaken the maintenance requirement above.
 ## Handoff metadata
 
 - Repository: `/home/dad/catinthegarden`
-- Branch: `experiment/composition-debug`
-- Remote branch: `origin/experiment/composition-debug`
+- Branch: `experiment/ground-readability`
+- Remote branch: `origin/experiment/ground-readability`
 - Implementation baseline reviewed and validated: `27ebd43` (`Preserve
   twilight contrast without HDR`).
 - Last full source review: 2026-07-16
@@ -92,9 +92,10 @@ These constraints come from `AGENTS.md` and current code. Preserve them.
 
 - The normal outmap path never generates macro geography, erosion, hydrology,
   climate, or biome data at runtime; the baker owns that work. Phase 7 adds a
-  deliberately bounded four-octave direction field only as land microrelief
-  over the baked height, so sparse ancestor fallback has useful detail at any
-  longitude without changing the baked coastline or biome. Positive baked land
+  deliberately bounded four-octave coherent direction-field value noise only
+  as land microrelief over the baked height, so sparse ancestor fallback has
+  useful detail at any longitude without changing the baked coastline or biome.
+  Positive baked land
   height retains the established fixed 40x scale after coastline/material
   classification, while runtime microrelief uses a
   separate 4x scale; ocean sea level remains zero.
@@ -1346,22 +1347,26 @@ assertions and selected through L18 by 198.5km (152 resident chunks), with
 zero thrash and zero seam delta. No streaming-budget or mesh-density increase
 is justified by the measured result; obtain fresh manual final-mode captures.
 
+Manual low-flight capture `1784316405-340283/capture-001.png` made the
+remaining presentation defect unambiguous: regular, parallel ridges covered
+the visible ground, reading as a blanket rather than land. This was not baked
+terrain or a LOD transition: each runtime microrelief octave was one global
+sine wave. The four bounded planet-direction octaves now evaluate coherent
+value noise in a fixed rotated direction domain in both `planet.rs` and
+`planet.wgsl`. The octave bounds, camera-distance fading, baked coastline and
+biome ownership, and the CPU clearance contract remain unchanged. Focused
+value-noise/shader regressions plus the app unit suite pass; obtain a fresh
+low-flight daylight capture before accepting the new presentation.
+
 ## Next action
 
-Obtain final human sign-off before promoting `experiment/composition-debug` to
-`main`:
+Obtain a fresh low-flight daylight capture before further terrain acceptance:
 
-1. Ask the user to explicitly accept or reject terrain edges, 4x microrelief,
-   horizon fog, 2x saturated red/orange high-altitude sunrise/sunset with
-   orange-to-red terrain/ocean direct-light bands, dark-blue final ocean colour,
-   and stable mouse/WASD
-   control through both poles. If a closer-than-76km view is needed, capture
-   only that missing near-surface case.
-2. Confirm blur, bloom, and HDR independently with the overlay showing each
-   state, because the clean set hides state and contains two identical frames.
-3. If those views are accepted, promote the branch to `main`; otherwise make
-   only the specifically requested visual adjustment and rerun its focused
-   scenarios.
+1. Check that the coherent microrelief reads as irregular terrain rather than
+   parallel/periodic ridges, while retaining continuous mixed-LOD edges.
+2. If it is accepted, resume the remaining human checks for horizon fog,
+   sunset bands, ocean colour, and pole-crossing flight control before branch
+   promotion; otherwise tune only the requested terrain characteristic.
 
 Read first: the verification snapshot and current visual-experiment notes
 above. Preserve the user's committed constants and reference captures unless

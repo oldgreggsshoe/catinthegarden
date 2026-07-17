@@ -45,8 +45,10 @@ pub const PLACEHOLDER_HEIGHT_AMPLITUDE_METERS: f64 = 3_503.0;
 ///
 /// The baked outmap remains the source of macro geography. These bounded
 /// octaves keep ancestor tile fallback visually useful during low flight
-/// without privileging one pre-baked corridor. Keep this table in sync with
-/// `planet.wgsl` and mirror any changes in the CPU clearance tests below.
+/// without privileging one pre-baked corridor. Each octave is coherent value
+/// noise, rather than a single global sine wave: the latter created visibly
+/// parallel, blanket-like ridges. Keep this table in sync with `planet.wgsl`
+/// and mirror any changes in the CPU clearance tests below.
 pub const GLOBAL_TERRAIN_DETAIL_OCTAVES: [(f64, f64, [f64; 3], f64); 4] = [
     (4_096.0, 80.0, [0.79, 0.52, -0.32], 0.37),
     (32_768.0, 24.0, [-0.23, 0.91, 0.41], 1.11),
@@ -291,14 +293,55 @@ pub fn placeholder_height_meters(direction: DVec3) -> f64 {
 }
 
 pub fn global_terrain_detail_meters(direction: DVec3) -> f64 {
-    let direction = direction.normalize();
+    // Evaluate this deliberately in f32, matching the camera-relative GPU
+    // path closely enough for flight clearance. It remains direction-based,
+    // so it is continuous across cube faces and outmap tiles.
+    let direction = direction.normalize().as_vec3();
     GLOBAL_TERRAIN_DETAIL_OCTAVES
         .iter()
         .map(|(frequency, amplitude_meters, axis, phase)| {
-            let axis = DVec3::from_array(*axis);
-            amplitude_meters * (frequency * direction.dot(axis) + phase).sin()
+            let offset = Vec3::new(axis[0] as f32, axis[1] as f32, axis[2] as f32) * *phase as f32;
+            f64::from(*amplitude_meters as f32)
+                * f64::from(terrain_detail_value_noise(
+                    terrain_detail_noise_domain(direction) * *frequency as f32 + offset,
+                ))
         })
         .sum()
+}
+
+fn terrain_detail_noise_domain(direction: Vec3) -> Vec3 {
+    Vec3::new(
+        direction.dot(Vec3::new(0.80, 0.48, -0.36)),
+        direction.dot(Vec3::new(-0.30, 0.85, 0.43)),
+        direction.dot(Vec3::new(0.52, -0.21, 0.82)),
+    )
+}
+
+fn terrain_detail_hash(cell: Vec3) -> f32 {
+    let value = (cell.dot(Vec3::new(127.1, 311.7, 74.7))).sin() * 43_758.547;
+    (value - value.floor()) * 2.0 - 1.0
+}
+
+fn terrain_detail_value_noise(position: Vec3) -> f32 {
+    let cell = position.floor();
+    let amount = position - cell;
+    let fade = amount * amount * (Vec3::splat(3.0) - amount * 2.0);
+    let lower_lower = terrain_detail_hash(cell);
+    let lower_right = terrain_detail_hash(cell + Vec3::X);
+    let upper_lower = terrain_detail_hash(cell + Vec3::Y);
+    let upper_right = terrain_detail_hash(cell + Vec3::X + Vec3::Y);
+    let lower_plane = lower_lower + (lower_right - lower_lower) * fade.x;
+    let upper_plane = upper_lower + (upper_right - upper_lower) * fade.x;
+    let lower = lower_plane + (upper_plane - lower_plane) * fade.y;
+
+    let lower_lower = terrain_detail_hash(cell + Vec3::Z);
+    let lower_right = terrain_detail_hash(cell + Vec3::X + Vec3::Z);
+    let upper_lower = terrain_detail_hash(cell + Vec3::Y + Vec3::Z);
+    let upper_right = terrain_detail_hash(cell + Vec3::ONE);
+    let lower_plane = lower_lower + (lower_right - lower_lower) * fade.x;
+    let upper_plane = upper_lower + (upper_right - upper_lower) * fade.x;
+    let upper = lower_plane + (upper_plane - lower_plane) * fade.y;
+    lower + (upper - lower) * fade.z
 }
 
 /// Keep baked land at one visual scale across all camera distances. The
@@ -1805,6 +1848,7 @@ mod tests {
         global_terrain_detail_meters, minimum_vertical_fov_radians_for_viewport,
         outmap_surface_height_meters, outmap_terrain_height_scale, placeholder_height_meters,
         planet_local_vector, planet_rotation_radians, projected_error_pixels_with_height_range,
+        terrain_detail_value_noise,
     };
 
     fn projected_error_pixels(
@@ -2545,6 +2589,20 @@ mod tests {
             assert!(detail.abs() <= GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS);
             assert!((detail - global_terrain_detail_meters(direction * 7.0)).abs() < 1.0e-8);
         }
+    }
+
+    #[test]
+    fn global_terrain_detail_uses_continuous_non_periodic_value_noise() {
+        let position = Vec3::new(12.345, -67.89, 0.125);
+        let base = terrain_detail_value_noise(position);
+        assert!((-1.0..=1.0).contains(&base));
+        assert!(
+            (base - terrain_detail_value_noise(position + Vec3::new(0.03, 0.0, 0.0))).abs() < 0.2
+        );
+        assert_ne!(
+            terrain_detail_value_noise(position + Vec3::new(0.0, 0.4, 0.0)),
+            terrain_detail_value_noise(position + Vec3::new(0.0, 0.0, 0.4)),
+        );
     }
 
     #[test]

@@ -1357,6 +1357,16 @@ mod tests {
     }
 
     #[test]
+    fn shader_uses_seam_safe_value_noise_for_land_microrelief() {
+        let shader = include_str!("planet.wgsl");
+        assert!(shader.contains("fn terrain_detail_value_noise(position: vec3<f32>) -> f32"));
+        assert!(
+            shader.contains("fn terrain_detail_noise_domain(direction: vec3<f32>) -> vec3<f32>")
+        );
+        assert!(!shader.contains("sin(frequency * dot(direction, axis) + phase)"));
+    }
+
+    #[test]
     fn shaders_use_the_same_altitude_aware_twilight_column() {
         for shader in [include_str!("planet.wgsl"), include_str!("atmosphere.wgsl")] {
             assert!(shader.contains(
