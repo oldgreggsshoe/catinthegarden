@@ -23,7 +23,8 @@ Do not remove or weaken the maintenance requirement above.
   implemented. The clean all-scenario regression is complete.
 - Current bounded engineering issue: objective validation is green. Phase 7
   still needs final human visual sign-off, including a long free-flight pass
-  across both poles, before promotion to `main`.
+  across both poles and a high-altitude red sunrise/sunset pass, before
+  promotion to `main`.
 
 This handoff synchronizes the canonical sections with the current experiment
 branch. Always use `git log -1 --oneline` and `git status --short` rather than
@@ -1256,14 +1257,30 @@ Focused `flight_tangent_stays_continuous_across_a_pole` and the existing
 forward/backward movement regression pass; fresh human verification should fly
 across both poles before final visual sign-off.
 
+User flight captures `1784286169-118560` and `1784286010-116165` showed a
+blue 120km-altitude sky fading directly to black as the sun reached the horizon,
+with only a narrow pale horizon band. The local scale-height solar column had
+too little upper-atmosphere optical depth to extinguish blue at that altitude.
+`twilight_solar_air_mass` now receives sample altitude in both WGSL paths and
+adds a near-horizon-only upper-atmosphere multiplier. The same column now feeds
+the fullscreen sky, terrain aerial perspective, and terrain sky/fog fill;
+daytime remains unchanged. Focused shader-synchronization test,
+`sunset_sweep` run `1784286551-122809`, and `night_side_atmosphere` run
+`1784286580-123103` passed. `sunset_sweep` retains its existing low-signal
+sample assertion, so a fresh user capture is still required to confirm the
+intended visible red/orange transition. A separate
+`twilight_directionality` attempt `1784286417-121184` produced an unexpected
+extra initial capture and is not recorded as passing.
+
 ## Next action
 
 Obtain final human sign-off before promoting `experiment/composition-debug` to
 `main`:
 
 1. Ask the user to explicitly accept or reject terrain edges, 4x microrelief,
-   horizon fog, sunset, and stable mouse/WASD control through both poles. If a
-   closer-than-76km view is needed, capture only that missing near-surface case.
+   horizon fog, red/orange high-altitude sunrise/sunset, and stable mouse/WASD
+   control through both poles. If a closer-than-76km view is needed, capture
+   only that missing near-surface case.
 2. Confirm blur, bloom, and HDR independently with the overlay showing each
    state, because the clean set hides state and contains two identical frames.
 3. If those views are accepted, promote the branch to `main`; otherwise make

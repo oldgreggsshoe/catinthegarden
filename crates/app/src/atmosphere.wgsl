@@ -74,13 +74,20 @@ fn twilight_directional_weight(
     );
 }
 
-fn twilight_solar_air_mass(solar_zenith_cosine: f32) -> f32 {
+fn twilight_solar_air_mass(solar_zenith_cosine: f32, sample_altitude_meters: f32) -> f32 {
     // A 12x grazing column made the horizon almost black before sunset. Start
     // with a brighter orange 8x column at the limb, then redden smoothly toward
     // the existing 12x column over roughly seven degrees of solar depression.
     let grazing_air_mass = min(1.0 / max(solar_zenith_cosine, 0.125), 8.0);
     let twilight_depth = smoothstep(0.0, 0.12, max(-solar_zenith_cosine, 0.0));
-    return mix(grazing_air_mass, 12.0, twilight_depth);
+    let base_air_mass = mix(grazing_air_mass, 12.0, twilight_depth);
+    // A local scale-height column substantially underestimates extinction in
+    // the thin upper atmosphere near the limb. Increase only the near-horizon
+    // column there so a high-altitude sunrise/sunset still loses blue before
+    // fading to night; daytime illumination remains unchanged.
+    let horizon_amount = 1.0 - smoothstep(0.08, 0.30, solar_zenith_cosine);
+    let upper_atmosphere_amount = smoothstep(30000.0, 120000.0, sample_altitude_meters);
+    return base_air_mass * mix(1.0, 8.0, horizon_amount * upper_atmosphere_amount);
 }
 
 fn sphere_interval(radius_meters: f32, radial_dot_ray: f32) -> vec2<f32> {
@@ -171,7 +178,7 @@ fn local_solar_transmittance(
     // dense air still reddens and attenuates the low sun, but does not erase
     // the illuminated horizon.
     let sun_zenith_cosine = dot(sample_direction, sun);
-    let air_mass = twilight_solar_air_mass(sun_zenith_cosine);
+    let air_mass = twilight_solar_air_mass(sun_zenith_cosine, sample_altitude);
     let rayleigh_optical_depth = RAYLEIGH_COEFFICIENT
         * density(sample_altitude, RAYLEIGH_SCALE_HEIGHT_METERS)
         * RAYLEIGH_SCALE_HEIGHT_METERS

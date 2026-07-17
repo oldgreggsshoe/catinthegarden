@@ -304,10 +304,13 @@ fn phase_mie(cos_theta: f32) -> f32 {
         / (8.0 * 3.14159265 * (2.0 + g_squared) * pow(denominator, 1.5));
 }
 
-fn twilight_solar_air_mass(solar_zenith_cosine: f32) -> f32 {
+fn twilight_solar_air_mass(solar_zenith_cosine: f32, sample_altitude_meters: f32) -> f32 {
     let grazing_air_mass = min(1.0 / max(solar_zenith_cosine, 0.125), 8.0);
     let twilight_depth = smoothstep(0.0, 0.12, max(-solar_zenith_cosine, 0.0));
-    return mix(grazing_air_mass, 12.0, twilight_depth);
+    let base_air_mass = mix(grazing_air_mass, 12.0, twilight_depth);
+    let horizon_amount = 1.0 - smoothstep(0.08, 0.30, solar_zenith_cosine);
+    let upper_atmosphere_amount = smoothstep(30000.0, 120000.0, sample_altitude_meters);
+    return base_air_mass * mix(1.0, 8.0, horizon_amount * upper_atmosphere_amount);
 }
 
 fn transmittance(
@@ -438,7 +441,6 @@ fn sky_radiance(
     let sample_direction = sample_position / sample_radius;
     let sample_altitude = sample_radius - PLANET_RADIUS_METERS;
     let sample_radial_dot_sun = sample_radius * dot(sample_direction, sun_direction);
-    let sun_distance = atmosphere_exit_distance(sample_radius, sample_radial_dot_sun);
     let lower_atmosphere_weight = density(sample_altitude, RAYLEIGH_SCALE_HEIGHT_METERS);
     let shadow_transition_meters = TWILIGHT_SHADOW_TRANSITION_METERS
         * mix(1.0, 2.0, lower_atmosphere_weight);
@@ -447,11 +449,20 @@ fn sky_radiance(
         sample_altitude,
         sample_distance,
     );
-    let sun_transmittance = transmittance(
+    let sun_air_mass = twilight_solar_air_mass(
+        dot(sample_direction, sun_direction),
         sample_altitude,
-        ATMOSPHERE_HEIGHT_METERS,
-        sun_distance,
-    ) * sun_visibility(
+    );
+    let sun_transmittance = exp(-(
+        RAYLEIGH_COEFFICIENT
+            * density(sample_altitude, RAYLEIGH_SCALE_HEIGHT_METERS)
+            * RAYLEIGH_SCALE_HEIGHT_METERS
+            * sun_air_mass
+            + MIE_COEFFICIENT
+                * density(sample_altitude, MIE_SCALE_HEIGHT_METERS)
+                * MIE_SCALE_HEIGHT_METERS
+                * sun_air_mass
+    )) * sun_visibility(
         sample_radius,
         sample_radial_dot_sun,
         shadow_transition_meters,
@@ -633,7 +644,7 @@ fn aerial_perspective(
             ),
         );
         let sun_zenith_cosine = dot(in_scatter_direction, sun_direction);
-        let sun_air_mass = twilight_solar_air_mass(sun_zenith_cosine);
+        let sun_air_mass = twilight_solar_air_mass(sun_zenith_cosine, in_scatter_altitude);
         let sun_transmittance = exp(-(
             RAYLEIGH_COEFFICIENT
                 * density(in_scatter_altitude, RAYLEIGH_SCALE_HEIGHT_METERS)

@@ -1333,6 +1333,17 @@ mod tests {
     }
 
     #[test]
+    fn shaders_use_the_same_altitude_aware_twilight_column() {
+        for shader in [include_str!("planet.wgsl"), include_str!("atmosphere.wgsl")] {
+            assert!(shader.contains(
+                "fn twilight_solar_air_mass(solar_zenith_cosine: f32, sample_altitude_meters: f32)"
+            ));
+            assert!(shader.contains("upper_atmosphere_amount"));
+            assert!(shader.contains("horizon_amount"));
+        }
+    }
+
+    #[test]
     fn cpu_seam_sampling_matches_shader_bilinear_coordinates() {
         let heights: Vec<_> = (0..TILE_STORED_SIZE)
             .flat_map(|y| (0..TILE_STORED_SIZE).map(move |x| (x + y * TILE_STORED_SIZE) as f32))
