@@ -902,7 +902,7 @@ fn terrain_material_color(
 }
 
 fn debug_ocean_albedo() -> vec3<f32> {
-    return vec3<f32>(0.02, 0.12, 0.50);
+    return vec3<f32>(0.008, 0.055, 0.28);
 }
 
 fn outmap_ocean_coverage(outmap: bool, height_meters: f32) -> f32 {
@@ -933,7 +933,9 @@ fn ocean_lighting(
     let half_vector = normalize(sun_direction_view + view_direction);
     let specular = pow(max(dot(normal_view, half_vector), 0.0), 128.0);
     let daylight = max(max(sun_transmittance.x, sun_transmittance.y), sun_transmittance.z);
-    let diffuse = vec3<f32>(0.02, 0.12, 0.50)
+    // Keep the water body a dark blue; direct sunlight and reflection still
+    // provide the daylight highlights and glints.
+    let diffuse = vec3<f32>(0.008, 0.055, 0.28)
         * (sky_diffuse + sun_transmittance * (0.4 * SURFACE_SUNLIGHT_SCALE));
     // The Phase 6 cubemap is static. It represents daytime sky reflection, so
     // gate it by direct daylight instead of reflecting a bright blue sky from

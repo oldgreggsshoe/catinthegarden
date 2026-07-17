@@ -1299,6 +1299,11 @@ than a single desaturated band. Focused
 `direct_surface_sunlight_progresses_from_orange_to_red_before_darkness` passes;
 fresh space-view capture remains required.
 
+The ocean's body-scattering albedo and F9 raw-albedo diagnostic are now dark
+blue (`vec3(0.008, 0.055, 0.28)`). Daylight sky reflection and direct sun
+glints are intentionally unchanged, so only the underlying water body is
+darkened. A fresh ocean capture remains the visual acceptance check.
+
 ## Next action
 
 Obtain final human sign-off before promoting `experiment/composition-debug` to
@@ -1306,7 +1311,8 @@ Obtain final human sign-off before promoting `experiment/composition-debug` to
 
 1. Ask the user to explicitly accept or reject terrain edges, 4x microrelief,
    horizon fog, 2x saturated red/orange high-altitude sunrise/sunset with
-   orange-to-red terrain/ocean direct-light bands, and stable mouse/WASD
+   orange-to-red terrain/ocean direct-light bands, dark-blue ocean body colour,
+   and stable mouse/WASD
    control through both poles. If a closer-than-76km view is needed, capture
    only that missing near-surface case.
 2. Confirm blur, bloom, and HDR independently with the overlay showing each

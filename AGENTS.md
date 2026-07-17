@@ -29,6 +29,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 - Phase 7 update: fullscreen sky atmospheric radiance now applies a luminance-based 2x saturation transform after scattering integration. It affects the sky atmosphere only, not terrain, ocean, aerial perspective, exposure, or the sun disc; focused shader regression passes.
 - Phase 7 update: direct terrain diffuse and ocean glints now retain physical RGB extinction but add a bounded low-sun tint through their shared transmittance path: orange at low positive solar elevation, red at the final limb fade, then darkness. A focused regression pins the ordered orange/red/visibility path; human capture review remains required.
 
+- Phase 7 visual tuning: the ocean body-scattering albedo is a darker blue while daylight reflections and sun glints remain unchanged; final capture sign-off remains.
+
 ## Planet constants (test planet)
 
 - Diameter: 8,000,000 m (radius 4,000,000 m)
