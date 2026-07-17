@@ -1289,6 +1289,16 @@ aerial perspective, exposure, or sun-disc inputs. Focused
 `fullscreen_sky_applies_the_requested_double_saturation` passes; fresh visual
 captures remain the acceptance check.
 
+Manual capture `1784287568-133948` showed that the planetary ground-light
+terminator still read as yellow/olive directly into black. The shared direct
+terrain/ocean sunlight transmittance now retains its wavelength-dependent
+extinction while adding a bounded orange tint at low positive solar elevation
+and a red tint through the final existing limb fade. Terrain diffuse and ocean
+specular use this exact RGB term, producing orange → red → darkness rather
+than a single desaturated band. Focused
+`direct_surface_sunlight_progresses_from_orange_to_red_before_darkness` passes;
+fresh space-view capture remains required.
+
 ## Next action
 
 Obtain final human sign-off before promoting `experiment/composition-debug` to
@@ -1296,9 +1306,9 @@ Obtain final human sign-off before promoting `experiment/composition-debug` to
 
 1. Ask the user to explicitly accept or reject terrain edges, 4x microrelief,
    horizon fog, 2x saturated red/orange high-altitude sunrise/sunset with
-   dimming direct terrain/ocean light, and stable mouse/WASD control through
-   both poles. If a closer-than-76km view is needed, capture only that missing
-   near-surface case.
+   orange-to-red terrain/ocean direct-light bands, and stable mouse/WASD
+   control through both poles. If a closer-than-76km view is needed, capture
+   only that missing near-surface case.
 2. Confirm blur, bloom, and HDR independently with the overlay showing each
    state, because the clean set hides state and contains two identical frames.
 3. If those views are accepted, promote the branch to `main`; otherwise make

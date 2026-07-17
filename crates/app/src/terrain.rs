@@ -1355,6 +1355,16 @@ mod tests {
     }
 
     #[test]
+    fn direct_surface_sunlight_progresses_from_orange_to_red_before_darkness() {
+        let shader = include_str!("planet.wgsl");
+        assert!(shader.contains("let orange_tint = vec3<f32>(1.20, 0.55, 0.16);"));
+        assert!(shader.contains("let red_tint = vec3<f32>(1.35, 0.12, 0.03);"));
+        assert!(shader.contains("return transmitted_sunlight * low_sun_tint * solar_visibility;"));
+        assert!(shader.contains("sun_transmittance * specular"));
+        assert!(shader.contains("sun_transmittance * direct_light"));
+    }
+
+    #[test]
     fn fullscreen_sky_applies_the_requested_double_saturation() {
         let shader = include_str!("atmosphere.wgsl");
         assert!(shader.contains("const SKY_ATMOSPHERE_SATURATION: f32 = 2.0;"));

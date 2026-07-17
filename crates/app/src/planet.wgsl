@@ -410,7 +410,20 @@ fn surface_direct_sun_transmittance(
         * density(surface_altitude_meters, MIE_SCALE_HEIGHT_METERS)
         * MIE_SCALE_HEIGHT_METERS
         * air_mass;
-    return exp(-(rayleigh_optical_depth + mie_optical_depth)) * solar_visibility;
+    let transmitted_sunlight = exp(-(rayleigh_optical_depth + mie_optical_depth));
+    // Keep the physically wavelength-dependent extinction, then make its last
+    // visible range read as two distinct ground-light bands: orange first,
+    // then red as the existing visibility fade takes the sun below the limb.
+    let orange_amount = 1.0 - smoothstep(0.08, 0.30, max(solar_elevation, 0.0));
+    let red_amount = 1.0 - smoothstep(-0.01, 0.08, solar_elevation);
+    let orange_tint = vec3<f32>(1.20, 0.55, 0.16);
+    let red_tint = vec3<f32>(1.35, 0.12, 0.03);
+    let low_sun_tint = mix(
+        mix(vec3<f32>(1.0), orange_tint, orange_amount),
+        red_tint,
+        red_amount,
+    );
+    return transmitted_sunlight * low_sun_tint * solar_visibility;
 }
 
 fn sky_radiance(

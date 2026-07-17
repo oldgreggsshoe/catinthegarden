@@ -27,6 +27,7 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 - Phase 7 update: user flight captures at roughly 120km altitude showed blue twilight that faded directly to night. Near the horizon, fullscreen sky, terrain aerial perspective, and terrain sky/fog fill now share an altitude-aware solar column that increases high-altitude red extinction without changing daytime illumination; focused sunset and night-side runs pass, while fresh human sunrise/sunset captures remain required.
 - Phase 7 update: terrain diffuse and ocean sun glints share RGB atmospheric transmittance. Their direct-sun visibility now fades from about 4.6 degrees above the geometric horizon through sunset, so the red-shifted direct term dims continuously instead of remaining bright until it abruptly vanishes; a focused shader regression passes.
 - Phase 7 update: fullscreen sky atmospheric radiance now applies a luminance-based 2x saturation transform after scattering integration. It affects the sky atmosphere only, not terrain, ocean, aerial perspective, exposure, or the sun disc; focused shader regression passes.
+- Phase 7 update: direct terrain diffuse and ocean glints now retain physical RGB extinction but add a bounded low-sun tint through their shared transmittance path: orange at low positive solar elevation, red at the final limb fade, then darkness. A focused regression pins the ordered orange/red/visibility path; human capture review remains required.
 
 ## Planet constants (test planet)
 
