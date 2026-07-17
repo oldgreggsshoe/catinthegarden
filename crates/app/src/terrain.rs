@@ -16,9 +16,11 @@ use crate::{
     planet::{
         CHUNK_GRID_QUADS, CameraViewBasis, ChunkVertex, DEFAULT_MAX_ACTIVE_CHUNKS,
         GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, MAX_LOD_LEVEL,
-        OUTMAP_TERRAIN_HEIGHT_SCALE, PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode,
-        TerrainHeightRange, build_chunk_mesh, cube_face_basis, cube_face_direction,
-        outmap_surface_height_meters, placeholder_height_meters,
+        OUTMAP_TERRAIN_FAR_HEIGHT_SCALE, OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS,
+        OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS, OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE,
+        PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode, TerrainHeightRange, build_chunk_mesh,
+        cube_face_basis, cube_face_direction, outmap_surface_height_meters,
+        outmap_terrain_height_scale, placeholder_height_meters,
     },
 };
 
@@ -80,14 +82,21 @@ struct TerrainInstance {
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct TerrainSettings {
     outmap_height_scale: [f32; 4],
+    outmap_height_blend: [f32; 4],
 }
 
 impl TerrainSettings {
     fn from_planet_constants() -> Self {
         Self {
             outmap_height_scale: [
-                OUTMAP_TERRAIN_HEIGHT_SCALE as f32,
+                OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE as f32,
+                OUTMAP_TERRAIN_FAR_HEIGHT_SCALE as f32,
                 GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE as f32,
+                0.0,
+            ],
+            outmap_height_blend: [
+                OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS as f32,
+                OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS as f32,
                 0.0,
                 0.0,
             ],
@@ -168,6 +177,7 @@ pub struct TerrainRenderer {
     instance_capacity: usize,
     lod: PlanetLod,
     source: TerrainDataSource,
+    outmap_height_bounds: Option<(f64, f64)>,
     placeholder_tile: GpuTile,
     tile_cache: HashMap<TileKey, GpuTile>,
     tile_last_used: HashMap<TileKey, u64>,
@@ -192,14 +202,20 @@ impl TerrainRenderer {
             TerrainSource::Placeholder => TerrainDataSource::Placeholder,
             TerrainSource::Outmap(root) => TerrainDataSource::Outmap(Outmap::open(root)?),
         };
-        let terrain_height_range = match &source {
-            TerrainDataSource::Placeholder => TerrainHeightRange::default(),
-            TerrainDataSource::Outmap(outmap) => TerrainHeightRange::new(
-                f64::from(outmap.manifest().height_min_meters)
-                    - GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
-                f64::from(outmap.manifest().height_max_meters) * OUTMAP_TERRAIN_HEIGHT_SCALE
+        let outmap_height_bounds = match &source {
+            TerrainDataSource::Placeholder => None,
+            TerrainDataSource::Outmap(outmap) => Some((
+                f64::from(outmap.manifest().height_min_meters),
+                f64::from(outmap.manifest().height_max_meters),
+            )),
+        };
+        let terrain_height_range = match outmap_height_bounds {
+            Some((height_min_meters, height_max_meters)) => TerrainHeightRange::new(
+                height_min_meters - GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
+                height_max_meters * OUTMAP_TERRAIN_FAR_HEIGHT_SCALE
                     + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS * GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE,
             ),
+            None => TerrainHeightRange::default(),
         };
         let terrain_settings_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -317,6 +333,7 @@ impl TerrainRenderer {
             instance_capacity,
             lod,
             source,
+            outmap_height_bounds,
             placeholder_tile,
             tile_cache: HashMap::new(),
             tile_last_used: HashMap::new(),
@@ -345,7 +362,11 @@ impl TerrainRenderer {
     /// direction. Outmap sampling deliberately uses only resident CPU tile
     /// data, so following terrain never adds disk I/O or GPU uploads to a
     /// flight frame.
-    pub fn surface_height_meters_at(&self, local_surface_direction: DVec3) -> Option<f64> {
+    pub fn surface_height_meters_at(
+        &self,
+        local_surface_direction: DVec3,
+        camera_altitude_meters: f64,
+    ) -> Option<f64> {
         match &self.source {
             TerrainDataSource::Placeholder => {
                 Some(placeholder_height_meters(local_surface_direction))
@@ -360,7 +381,11 @@ impl TerrainRenderer {
                     })
                     .max_by_key(|(level, _)| *level)
                     .map(|(_, height)| {
-                        outmap_surface_height_meters(f64::from(height), local_surface_direction)
+                        outmap_surface_height_meters(
+                            f64::from(height),
+                            local_surface_direction,
+                            camera_altitude_meters,
+                        )
                     })
             }
         }
@@ -378,6 +403,14 @@ impl TerrainRenderer {
         assert!(sim_time.is_finite() && sim_time >= 0.0);
         self.tile_cache_tick = self.tile_cache_tick.wrapping_add(1);
         self.purge_expired_lod_transitions(sim_time);
+        if let Some((height_min_meters, height_max_meters)) = self.outmap_height_bounds {
+            let camera_altitude_meters = (camera_world.length() - PLANET_RADIUS_METERS).max(0.0);
+            self.lod.set_terrain_height_range(TerrainHeightRange::new(
+                height_min_meters - GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
+                height_max_meters * outmap_terrain_height_scale(camera_altitude_meters)
+                    + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS * GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE,
+            ));
+        }
         let lod_update = self.lod.update_for_view_with_up(
             camera_world,
             camera_forward,
@@ -1229,8 +1262,9 @@ mod tests {
         should_animate_lod_transition, source_tile_uv_at_direction,
     };
     use crate::planet::{
-        GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, OUTMAP_TERRAIN_HEIGHT_SCALE, PLANET_RADIUS_METERS,
-        QuadtreeNode, build_chunk_mesh, cube_face_direction,
+        GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE,
+        OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, PLANET_RADIUS_METERS, QuadtreeNode, build_chunk_mesh,
+        cube_face_direction,
     };
     use catinthegarden_coretypes::{
         CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
@@ -1295,19 +1329,19 @@ mod tests {
         let shader = include_str!("planet.wgsl");
         assert_eq!(
             settings.outmap_height_scale[0],
-            OUTMAP_TERRAIN_HEIGHT_SCALE as f32
+            OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE as f32
         );
         assert_eq!(
             settings.outmap_height_scale[1],
+            OUTMAP_TERRAIN_FAR_HEIGHT_SCALE as f32
+        );
+        assert_eq!(
+            settings.outmap_height_scale[2],
             GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE as f32
         );
-        assert!(!shader.contains("const OUTMAP_TERRAIN_HEIGHT_SCALE"));
-        assert!(
-            shader
-                .matches("terrain_settings.outmap_height_scale.x")
-                .count()
-                >= 2
-        );
+        assert_eq!(settings.outmap_height_blend[0], 100_000.0);
+        assert_eq!(settings.outmap_height_blend[1], 1_000_000.0);
+        assert!(shader.matches("terrain_macro_height_scale()").count() >= 2);
     }
 
     #[test]

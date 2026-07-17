@@ -95,8 +95,9 @@ These constraints come from `AGENTS.md` and current code. Preserve them.
   deliberately bounded four-octave direction field only as land microrelief
   over the baked height, so sparse ancestor fallback has useful detail at any
   longitude without changing the baked coastline or biome. Positive baked land
-  height is visually exaggerated 40x after coastline/material classification,
-  while runtime microrelief uses a separate 4x scale; ocean sea level remains zero.
+  height continuously blends from 4x at flight altitude to 40x above 1,000km
+  after coastline/material classification, while runtime microrelief uses a
+  separate 4x scale; ocean sea level remains zero.
 - `--terrain placeholder` remains a Phase-2 diagnostic fallback and evaluates
   its analytic multiscale sine height at runtime.
 - Runtime normals are central differences from height. Do not add a baked
@@ -1318,6 +1319,13 @@ physical height with latitude to add a continuous snowline. It adds no terrain
 macro geography or new runtime noise, so cube/tile seams and the outmap
 contract remain unchanged. A focused shader regression pins both inputs;
 daylight low-flight captures are the visual acceptance check.
+
+The same experiment now continuously scales baked positive land from 4x at
+flight altitude through 40x above 1,000km. Its shared altitude function is
+used by GPU height displacement and normals, streamed CPU terrain clearance,
+and the per-frame LOD/culling height bounds, so the visible terrain cannot
+diverge from collision or selection. Focused CPU and shader regressions pin
+the endpoints and uniform contract; a daylight descent capture remains needed.
 
 ## Next action
 

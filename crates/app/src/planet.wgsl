@@ -68,6 +68,7 @@ var environment_sampler: sampler;
 
 struct TerrainSettings {
     outmap_height_scale: vec4<f32>,
+    outmap_height_blend: vec4<f32>,
 }
 
 @group(1) @binding(5)
@@ -226,6 +227,20 @@ fn macro_terrain_height(outmap: bool, source_uv: vec2<f32>, direction: vec3<f32>
     return placeholder_height(direction);
 }
 
+fn terrain_macro_height_scale() -> f32 {
+    let camera_altitude_meters = max(camera.camera_planet_direction_view_altitude.w, 0.0);
+    let blend = smoothstep(
+        terrain_settings.outmap_height_blend.x,
+        terrain_settings.outmap_height_blend.y,
+        camera_altitude_meters,
+    );
+    return mix(
+        terrain_settings.outmap_height_scale.x,
+        terrain_settings.outmap_height_scale.y,
+        blend,
+    );
+}
+
 fn terrain_height(
     outmap: bool,
     source_uv: vec2<f32>,
@@ -237,10 +252,10 @@ fn terrain_height(
         return macro_height;
     }
     let land_detail_weight = smoothstep(100.0, 400.0, macro_height);
-    return macro_height * terrain_settings.outmap_height_scale.x
+    return macro_height * terrain_macro_height_scale()
         + global_terrain_detail(direction, camera_distance_meters)
             * land_detail_weight
-            * terrain_settings.outmap_height_scale.y;
+            * terrain_settings.outmap_height_scale.z;
 }
 
 fn gerstner_wave(
@@ -1034,10 +1049,10 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let unscaled_height = macro_height + terrain_detail_meters * detail_weight;
     let height = select(
         unscaled_height,
-        macro_height * terrain_settings.outmap_height_scale.x
+        macro_height * terrain_macro_height_scale()
             + terrain_detail_meters
                 * detail_weight
-                * terrain_settings.outmap_height_scale.y,
+                * terrain_settings.outmap_height_scale.z,
         outmap,
     );
     // Polar ice overrides ocean in the baked biome contract. Lift it just
@@ -1196,6 +1211,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         input.source_uv,
         macro_height_meters,
         input.terrain_detail_meters,
+        input.normal,
+        direction,
     );
     if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
         return vec4<f32>(

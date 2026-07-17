@@ -59,7 +59,12 @@ pub const GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS: f64 = 111.5;
 pub const GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE: f64 = 4.0;
 /// Visual exaggeration applied only to baked positive land height. Sea level,
 /// ocean waves, and the separately scaled microrelief remain independent.
-pub const OUTMAP_TERRAIN_HEIGHT_SCALE: f64 = 40.0;
+pub const OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE: f64 = 4.0;
+pub const OUTMAP_TERRAIN_FAR_HEIGHT_SCALE: f64 = 40.0;
+pub const OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS: f64 = 100_000.0;
+pub const OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS: f64 = 1_000_000.0;
+/// Compatibility alias for conservative far-orbit bounds.
+pub const OUTMAP_TERRAIN_HEIGHT_SCALE: f64 = OUTMAP_TERRAIN_FAR_HEIGHT_SCALE;
 const DEFAULT_VERTICAL_FOV_RADIANS: f64 = 45.0_f64.to_radians();
 /// The default 640px-high viewport needs roughly this optical field of view
 /// before screen-space error naturally requests L18 from a 6,000km orbit.
@@ -296,21 +301,42 @@ pub fn global_terrain_detail_meters(direction: DVec3) -> f64 {
         .sum()
 }
 
+/// Continuously reduce orbital terrain exaggeration before entering flight
+/// altitude. This is mirrored in the terrain shader, streamed-height camera
+/// clearance, and LOD bounds.
+pub fn outmap_terrain_height_scale(camera_altitude_meters: f64) -> f64 {
+    let blend = smoothstep(
+        OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS,
+        OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS,
+        camera_altitude_meters.max(0.0),
+    );
+    OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE
+        + (OUTMAP_TERRAIN_HEIGHT_SCALE - OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE) * blend
+}
+
 /// Adds global microrelief without moving the coastline. The transition is
 /// deliberately complete well above the 200m beach blend used by the shader.
-pub fn detailed_outmap_land_height_meters(macro_height_meters: f64, direction: DVec3) -> f64 {
+pub fn detailed_outmap_land_height_meters(
+    macro_height_meters: f64,
+    direction: DVec3,
+    camera_altitude_meters: f64,
+) -> f64 {
     let weight = smoothstep(100.0, 400.0, macro_height_meters);
-    macro_height_meters * OUTMAP_TERRAIN_HEIGHT_SCALE
+    macro_height_meters * outmap_terrain_height_scale(camera_altitude_meters)
         + global_terrain_detail_meters(direction) * weight * GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE
 }
 
 /// Height followed by the low-flight camera. Ocean floor is not the visible
 /// surface, so below-sea baked samples resolve to sea level.
-pub fn outmap_surface_height_meters(macro_height_meters: f64, direction: DVec3) -> f64 {
+pub fn outmap_surface_height_meters(
+    macro_height_meters: f64,
+    direction: DVec3,
+    camera_altitude_meters: f64,
+) -> f64 {
     if macro_height_meters <= 0.0 {
         0.0
     } else {
-        detailed_outmap_land_height_meters(macro_height_meters, direction)
+        detailed_outmap_land_height_meters(macro_height_meters, direction, camera_altitude_meters)
     }
 }
 
@@ -1776,13 +1802,14 @@ mod tests {
         DEFAULT_VERTICAL_FOV_RADIANS, EARTH_AXIAL_TILT_RADIANS,
         GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, LodPolicy,
         MAX_LOD_LEVEL, MAX_SKIRT_DEPTH_METERS, MAX_VERTICAL_FOV_RADIANS, MIN_VERTICAL_FOV_RADIANS,
-        MINIMUM_LOD_LEVEL, OUTMAP_TERRAIN_HEIGHT_SCALE, OrbitCamera, PLANET_RADIUS_METERS,
-        PLANET_ROTATION_PERIOD_SECONDS, PlanetLod, QuadtreeNode, RenderDebugMode,
-        SKIRT_DEPTH_RATIO, TerrainHeightRange, build_chunk_mesh, cube_face_basis,
+        MINIMUM_LOD_LEVEL, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE, OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS,
+        OUTMAP_TERRAIN_HEIGHT_SCALE, OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, OrbitCamera,
+        PLANET_RADIUS_METERS, PLANET_ROTATION_PERIOD_SECONDS, PlanetLod, QuadtreeNode,
+        RenderDebugMode, SKIRT_DEPTH_RATIO, TerrainHeightRange, build_chunk_mesh, cube_face_basis,
         cube_face_direction, default_sun_direction, detailed_outmap_land_height_meters,
         global_terrain_detail_meters, minimum_vertical_fov_radians_for_viewport,
-        outmap_surface_height_meters, placeholder_height_meters, planet_local_vector,
-        planet_rotation_radians, projected_error_pixels_with_height_range,
+        outmap_surface_height_meters, outmap_terrain_height_scale, placeholder_height_meters,
+        planet_local_vector, planet_rotation_radians, projected_error_pixels_with_height_range,
     };
 
     fn projected_error_pixels(
@@ -2528,15 +2555,34 @@ mod tests {
     #[test]
     fn outmap_detail_preserves_ocean_and_coastline() {
         let direction = DVec3::new(0.27, -0.61, 0.74).normalize();
-        assert_eq!(outmap_surface_height_meters(-800.0, direction), 0.0);
         assert_eq!(
-            detailed_outmap_land_height_meters(100.0, direction),
-            OUTMAP_TERRAIN_HEIGHT_SCALE * 100.0
+            outmap_surface_height_meters(-800.0, direction, 1_524.0),
+            0.0
         );
         assert_eq!(
-            detailed_outmap_land_height_meters(400.0, direction),
-            OUTMAP_TERRAIN_HEIGHT_SCALE * 400.0
+            detailed_outmap_land_height_meters(100.0, direction, 1_524.0),
+            OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE * 100.0
+        );
+        assert_eq!(
+            detailed_outmap_land_height_meters(400.0, direction, 1_524.0),
+            OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE * 400.0
                 + GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE * global_terrain_detail_meters(direction)
+        );
+    }
+
+    #[test]
+    fn terrain_height_scale_blends_from_flight_to_orbit() {
+        assert_eq!(
+            outmap_terrain_height_scale(0.0),
+            OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE
+        );
+        assert_eq!(
+            outmap_terrain_height_scale(OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS),
+            OUTMAP_TERRAIN_FAR_HEIGHT_SCALE
+        );
+        assert!(
+            outmap_terrain_height_scale(500_000.0) > OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE
+                && outmap_terrain_height_scale(500_000.0) < OUTMAP_TERRAIN_FAR_HEIGHT_SCALE
         );
     }
 

@@ -699,7 +699,11 @@ impl State {
             let moved_radial = self.flight_local_position.normalize();
             self.flight_local_tangent =
                 transport_flight_tangent(self.flight_local_tangent, local_radial, moved_radial);
-            if let Some(surface_height_meters) = self.terrain.surface_height_meters_at(moved_radial)
+            let moved_camera_altitude_meters =
+                (self.flight_local_position.length() - planet::PLANET_RADIUS_METERS).max(0.0);
+            if let Some(surface_height_meters) = self
+                .terrain
+                .surface_height_meters_at(moved_radial, moved_camera_altitude_meters)
             {
                 self.flight_surface_height_meters = surface_height_meters;
             }
@@ -715,7 +719,12 @@ impl State {
 
     fn update_low_flight_camera(&mut self, planet_rotation_radians: f64) {
         let local_radial = self.flight_local_position.normalize();
-        if let Some(surface_height_meters) = self.terrain.surface_height_meters_at(local_radial) {
+        let camera_altitude_meters =
+            (self.flight_local_position.length() - planet::PLANET_RADIUS_METERS).max(0.0);
+        if let Some(surface_height_meters) = self
+            .terrain
+            .surface_height_meters_at(local_radial, camera_altitude_meters)
+        {
             self.flight_surface_height_meters = surface_height_meters;
         }
         let local_view_direction = self.low_flight_view_direction(local_radial);
@@ -753,7 +762,7 @@ impl State {
                 let local_radial = local_position.normalize();
                 self.flight_surface_height_meters = self
                     .terrain
-                    .surface_height_meters_at(local_radial)
+                    .surface_height_meters_at(local_radial, LOW_FLIGHT_ALTITUDE_METERS)
                     .unwrap_or(0.0);
                 self.flight_local_position = local_radial
                     * (planet::PLANET_RADIUS_METERS
