@@ -40,6 +40,13 @@ const DEFAULT_OUTMAP_PATH: &str = "assets/outmaps/test-planet";
 fn should_enter_fullscreen(currently_fullscreen: bool) -> bool {
     !currently_fullscreen
 }
+
+fn render_size_for_surface_resize(
+    surface_size: winit::dpi::PhysicalSize<u32>,
+    fullscreen_render_size: Option<winit::dpi::PhysicalSize<u32>>,
+) -> winit::dpi::PhysicalSize<u32> {
+    fullscreen_render_size.unwrap_or(surface_size)
+}
 const DEFAULT_VIEWPORT_WIDTH: u32 = 640;
 const DEFAULT_VIEWPORT_HEIGHT: u32 = 427;
 const DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND: f64 = 0.4;
@@ -301,7 +308,11 @@ struct State {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    /// Internal HDR/depth/LOD resolution. This remains fixed while fullscreen.
     size: winit::dpi::PhysicalSize<u32>,
+    /// Native swapchain size, which can be larger than the internal scene.
+    surface_size: winit::dpi::PhysicalSize<u32>,
+    fullscreen_render_size: Option<winit::dpi::PhysicalSize<u32>>,
     depth_view: wgpu::TextureView,
     hdr: hdr::HdrRenderer,
     atmosphere: atmosphere::AtmosphereRenderer,
@@ -511,6 +522,8 @@ impl State {
             queue,
             config,
             size,
+            surface_size: size,
+            fullscreen_render_size: None,
             depth_view,
             hdr,
             atmosphere,
@@ -565,15 +578,31 @@ impl State {
             return;
         }
 
-        self.size = size;
-        self.camera
-            .clamp_vertical_fov_for_viewport(self.size.height);
+        self.surface_size = size;
         self.config.width = size.width;
         self.config.height = size.height;
         self.surface.configure(&self.device, &self.config);
+        self.hdr.set_presentation_size(&self.queue, size);
+        let render_size = render_size_for_surface_resize(size, self.fullscreen_render_size);
+        if render_size != self.size {
+            self.resize_render_targets(render_size);
+        }
+        self.egui_buffers_dirty = true;
+        self.mark_hud_dirty();
+    }
+
+    fn resize_render_targets(&mut self, size: winit::dpi::PhysicalSize<u32>) {
+        self.size = size;
+        self.camera
+            .clamp_vertical_fov_for_viewport(self.size.height);
         self.depth_view = create_depth_view(&self.device, size);
         self.hdr.resize(&self.device, size);
-        self.egui_buffers_dirty = true;
+    }
+
+    fn toggle_fullscreen(&mut self, window: &Window) {
+        let entering = should_enter_fullscreen(window.fullscreen().is_some());
+        self.fullscreen_render_size = entering.then_some(self.size);
+        window.set_fullscreen(entering.then_some(Fullscreen::Borderless(window.current_monitor())));
         self.mark_hud_dirty();
     }
 
@@ -1165,7 +1194,7 @@ impl State {
         }
         let egui_ms = profile_started.elapsed().as_secs_f32() * 1_000.0 - simulation_ms;
         let screen_descriptor = egui_wgpu::ScreenDescriptor {
-            size_in_pixels: [self.size.width, self.size.height],
+            size_in_pixels: [self.surface_size.width, self.surface_size.height],
             pixels_per_point: window.scale_factor() as f32,
         };
 
@@ -1178,7 +1207,7 @@ impl State {
                 output
             }
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                self.resize(self.size);
+                self.resize(self.surface_size);
                 return None;
             }
             wgpu::CurrentSurfaceTexture::Timeout
@@ -1371,8 +1400,8 @@ impl State {
                 &self.device,
                 &mut encoder,
                 &output.texture,
-                self.size.width,
-                self.size.height,
+                self.surface_size.width,
+                self.surface_size.height,
                 self.config.format,
                 self.capture_number,
             )
@@ -1455,7 +1484,7 @@ impl State {
         }
 
         if reconfigure_surface {
-            self.resize(self.size);
+            self.resize(self.surface_size);
         }
 
         if scenario_complete {
@@ -1595,10 +1624,7 @@ impl ApplicationHandler for App {
                     if event.state.is_pressed()
                         && event.physical_key == PhysicalKey::Code(KeyCode::KeyF) =>
                 {
-                    let entering = should_enter_fullscreen(window.fullscreen().is_some());
-                    window.set_fullscreen(
-                        entering.then_some(Fullscreen::Borderless(window.current_monitor())),
-                    );
+                    state.toggle_fullscreen(window);
                     window.request_redraw();
                 }
                 WindowEvent::KeyboardInput { event, .. }
@@ -1821,7 +1847,8 @@ mod tests {
     use super::{
         CameraMode, FlightMovementInput, INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
         LOW_FLIGHT_SPEED_METERS_PER_SECOND, flight_movement_direction, initial_flight_tangent,
-        interactive_camera_delta_seconds, should_enter_fullscreen, transport_flight_tangent,
+        interactive_camera_delta_seconds, render_size_for_surface_resize, should_enter_fullscreen,
+        transport_flight_tangent,
     };
     use crate::planet::PLANET_ROTATION_PERIOD_SECONDS;
 
@@ -1837,6 +1864,17 @@ mod tests {
     fn fullscreen_key_toggles_windowed_state() {
         assert!(should_enter_fullscreen(false));
         assert!(!should_enter_fullscreen(true));
+    }
+
+    #[test]
+    fn fullscreen_resize_preserves_the_prior_internal_render_resolution() {
+        let windowed = winit::dpi::PhysicalSize::new(320, 200);
+        let fullscreen = winit::dpi::PhysicalSize::new(1920, 1080);
+        assert_eq!(
+            render_size_for_surface_resize(fullscreen, Some(windowed)),
+            windowed
+        );
+        assert_eq!(render_size_for_surface_resize(windowed, None), windowed);
     }
 
     #[test]

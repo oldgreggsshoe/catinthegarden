@@ -16,7 +16,7 @@ const READBACK_RING_SIZE: usize = 3;
 struct ExposureUniform {
     exposure: f32,
     hdr_effect_enabled: u32,
-    _padding: [f32; 2],
+    presentation_size: [f32; 2],
 }
 
 struct PendingLuminanceReadback {
@@ -37,6 +37,7 @@ pub struct ExposureState {
 
 pub struct HdrRenderer {
     size: winit::dpi::PhysicalSize<u32>,
+    presentation_size: winit::dpi::PhysicalSize<u32>,
     _scene_texture: wgpu::Texture,
     scene_view: wgpu::TextureView,
     blur_texture: wgpu::Texture,
@@ -289,6 +290,7 @@ impl HdrRenderer {
         );
         let mut renderer = Self {
             size: winit::dpi::PhysicalSize::new(1, 1),
+            presentation_size: size,
             _scene_texture: placeholder_texture,
             scene_view: placeholder_view,
             blur_texture: placeholder_blur,
@@ -433,6 +435,20 @@ impl HdrRenderer {
         });
     }
 
+    /// The tone-map target can be larger than the HDR scene when fullscreen
+    /// preserves a deliberately low internal render resolution.
+    pub fn set_presentation_size(
+        &mut self,
+        queue: &wgpu::Queue,
+        presentation_size: winit::dpi::PhysicalSize<u32>,
+    ) {
+        self.presentation_size = winit::dpi::PhysicalSize::new(
+            presentation_size.width.max(1),
+            presentation_size.height.max(1),
+        );
+        self.write_exposure_uniform(queue);
+    }
+
     pub fn scene_view(&self) -> &wgpu::TextureView {
         &self.scene_view
     }
@@ -479,15 +495,7 @@ impl HdrRenderer {
 
     pub fn set_hdr_effect_enabled(&mut self, queue: &wgpu::Queue, hdr_effect_enabled: bool) {
         self.hdr_effect_enabled = hdr_effect_enabled;
-        queue.write_buffer(
-            &self.exposure_buffer,
-            0,
-            bytemuck::bytes_of(&ExposureUniform {
-                exposure: self.exposure,
-                hdr_effect_enabled: u32::from(hdr_effect_enabled),
-                _padding: [0.0; 2],
-            }),
-        );
+        self.write_exposure_uniform(queue);
     }
 
     pub fn collect_completed_luminance(&mut self, device: &wgpu::Device) {
@@ -519,13 +527,20 @@ impl HdrRenderer {
         let interpolation = 1.0 - (-delta_seconds * EXPOSURE_ADAPT_SPEED).exp();
         self.exposure = (self.exposure + (self.target_exposure - self.exposure) * interpolation)
             .clamp(MINIMUM_EXPOSURE, MAXIMUM_EXPOSURE);
+        self.write_exposure_uniform(queue);
+    }
+
+    fn write_exposure_uniform(&self, queue: &wgpu::Queue) {
         queue.write_buffer(
             &self.exposure_buffer,
             0,
             bytemuck::bytes_of(&ExposureUniform {
                 exposure: self.exposure,
                 hdr_effect_enabled: u32::from(self.hdr_effect_enabled),
-                _padding: [0.0; 2],
+                presentation_size: [
+                    self.presentation_size.width as f32,
+                    self.presentation_size.height as f32,
+                ],
             }),
         );
     }
@@ -937,5 +952,17 @@ mod tests {
     fn black_space_cannot_overexpose_a_visible_planet() {
         assert_eq!(target_exposure(0.0), 4.0);
         assert!((target_exposure(0.18) - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn tone_map_shader_supports_a_larger_presentation_target() {
+        let module = wgpu::naga::front::wgsl::parse_str(include_str!("hdr.wgsl"))
+            .expect("HDR shader must parse before WGPU creates the pipeline");
+        wgpu::naga::valid::Validator::new(
+            wgpu::naga::valid::ValidationFlags::all(),
+            wgpu::naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("HDR shader must validate before WGPU creates the pipeline");
     }
 }

@@ -258,7 +258,7 @@ Controls:
 | Up/Down arrows | Orbit elevation by 0.05 radians |
 | F3 | Toggle debug HUD |
 | F4 | Toggle orbit / 1,020,900 m/s free-flight camera; it starts level 5,000 ft above resident terrain, retains a terrain-aware minimum clearance, and restores the orbital pose when toggled back |
-| F | Toggle borderless fullscreen on the current monitor |
+| F | Toggle borderless fullscreen on the current monitor while retaining the current internal render resolution; only the final presentation scales to the monitor |
 | W / S | While in flight mode, move at 1,020,900 m/s exactly along / opposite the current camera-facing vector; releasing both stops forward/backward translation |
 | A / D | While in flight mode, strafe camera-left / camera-right at 1,020,900 m/s; diagonal input is normalized |
 | F6/F7/F8 | Toggle blur/bloom/HDR filmic effect |
@@ -1369,8 +1369,12 @@ This deliberately cannot conceal coarse fallback geometry, but avoids adding
 more false displacement while the bake/streaming coverage is addressed.
 
 `F` now toggles borderless fullscreen on the current monitor; pressing it
-again restores windowed mode. The HUD and handoff controls table include it,
-and a focused state-transition regression covers the toggle decision.
+again restores windowed mode. On entry it retains the prior window's internal
+HDR/depth/LOD render size (for example, 320x200 remains 320x200) and scales
+only the final tone-mapped presentation to the monitor. Windowed resizing still
+resizes internal targets normally. The HUD and handoff controls table include
+it, and focused state-transition/resolution-preservation regressions cover the
+behavior.
 
 ## Next action
 
