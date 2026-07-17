@@ -13,7 +13,7 @@ const MIE_SCALE_HEIGHT_METERS: f32 = 4800.0;
 const RAYLEIGH_COEFFICIENT: vec3<f32> = vec3<f32>(5.8e-6, 13.5e-6, 33.1e-6);
 const MIE_COEFFICIENT: vec3<f32> = vec3<f32>(0.5e-6);
 const MIE_G: f32 = 0.76;
-const SOLAR_RADIANCE: f32 = 1.25;
+const SOLAR_RADIANCE: f32 = 2.0;
 // Artistic surface exposure only: this does not alter sky scattering or the
 // camera-facing sun disc.
 const SURFACE_SUNLIGHT_SCALE: f32 = 2.0;
