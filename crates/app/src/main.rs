@@ -43,7 +43,7 @@ const DEFAULT_CAMERA_ORBIT_INCLINATION_RADIANS: f64 = 28.5_f64.to_radians();
 const INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 = 0.3;
 const MOUSE_LOOK_RADIANS_PER_PIXEL: f64 = 0.0006;
 const LOW_FLIGHT_ALTITUDE_METERS: f64 = 5_000.0 * 0.3048;
-const LOW_FLIGHT_SPEED_METERS_PER_SECOND: f64 = 102_090.0;
+const LOW_FLIGHT_SPEED_METERS_PER_SECOND: f64 = 300.0 * 3_403.0;
 const LOW_FLIGHT_VERTICAL_FOV_DEGREES: f64 = 60.0;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -65,6 +65,60 @@ fn flight_movement_direction(
     (movement.length_squared() > 0.0).then(|| movement.normalize())
 }
 
+/// Returns the initial tangent used by a planet-relative flight camera.
+///
+/// This longitude-derived value is safe only for initialization: longitude is
+/// undefined at the poles, so an active flight camera transports this tangent
+/// with its radial direction instead of rebuilding it each frame.
+fn initial_flight_tangent(local_radial: glam::DVec3) -> glam::DVec3 {
+    let surface_azimuth_radians = local_radial.z.atan2(local_radial.x);
+    glam::DVec3::new(
+        -surface_azimuth_radians.sin(),
+        0.0,
+        surface_azimuth_radians.cos(),
+    )
+}
+
+/// Parallel-transports a local tangent over the sphere as the camera moves.
+///
+/// Unlike recomputing a tangent from longitude, this keeps the camera frame
+/// continuous while crossing either pole.
+fn transport_flight_tangent(
+    local_tangent: glam::DVec3,
+    previous_radial: glam::DVec3,
+    next_radial: glam::DVec3,
+) -> glam::DVec3 {
+    let rotation_axis = previous_radial.cross(next_radial);
+    let transported = if rotation_axis.length_squared() > f64::EPSILON {
+        let angle = rotation_axis
+            .length()
+            .atan2(previous_radial.dot(next_radial));
+        glam::DQuat::from_axis_angle(rotation_axis.normalize(), angle).mul_vec3(local_tangent)
+    } else {
+        local_tangent
+    };
+    let tangent = transported - next_radial * transported.dot(next_radial);
+    if tangent.length_squared() > f64::EPSILON {
+        tangent.normalize()
+    } else {
+        initial_flight_tangent(next_radial)
+    }
+}
+
+fn flight_view_direction(
+    local_radial: glam::DVec3,
+    local_tangent: glam::DVec3,
+    yaw_radians: f64,
+    pitch_radians: f64,
+) -> glam::DVec3 {
+    let local_right = local_tangent.cross(local_radial).normalize();
+    let horizontal = pitch_radians.cos();
+    (local_tangent * (yaw_radians.cos() * horizontal)
+        + local_right * (yaw_radians.sin() * horizontal)
+        + local_radial * pitch_radians.sin())
+    .normalize()
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CameraMode {
     Orbit,
@@ -75,7 +129,7 @@ impl CameraMode {
     fn label(self) -> &'static str {
         match self {
             Self::Orbit => "orbit",
-            Self::LowFlight => "Mach 300 WASD flight",
+            Self::LowFlight => "10x Mach 300 WASD flight",
         }
     }
 }
@@ -257,6 +311,7 @@ struct State {
     last_auto_orbit_sim_time: f64,
     camera_mode: CameraMode,
     flight_local_position: glam::DVec3,
+    flight_local_tangent: glam::DVec3,
     flight_surface_height_meters: f64,
     flight_look_yaw_radians: f64,
     flight_look_pitch_radians: f64,
@@ -466,6 +521,7 @@ impl State {
             camera_mode: CameraMode::Orbit,
             flight_local_position: glam::DVec3::X
                 * (planet::PLANET_RADIUS_METERS + LOW_FLIGHT_ALTITUDE_METERS),
+            flight_local_tangent: glam::DVec3::Z,
             flight_surface_height_meters: 0.0,
             flight_look_yaw_radians: 0.0,
             flight_look_pitch_radians: 0.0,
@@ -611,18 +667,12 @@ impl State {
     }
 
     fn low_flight_view_direction(&self, local_radial: glam::DVec3) -> glam::DVec3 {
-        let surface_azimuth_radians = local_radial.z.atan2(local_radial.x);
-        let local_tangent = glam::DVec3::new(
-            -surface_azimuth_radians.sin(),
-            0.0,
-            surface_azimuth_radians.cos(),
-        );
-        let local_right = local_tangent.cross(local_radial).normalize();
-        let horizontal = self.flight_look_pitch_radians.cos();
-        (local_tangent * (self.flight_look_yaw_radians.cos() * horizontal)
-            + local_right * (self.flight_look_yaw_radians.sin() * horizontal)
-            + local_radial * self.flight_look_pitch_radians.sin())
-        .normalize()
+        flight_view_direction(
+            local_radial,
+            self.flight_local_tangent,
+            self.flight_look_yaw_radians,
+            self.flight_look_pitch_radians,
+        )
     }
 
     fn set_flight_movement_key(&mut self, key_code: KeyCode, pressed: bool) -> bool {
@@ -647,6 +697,8 @@ impl State {
             self.flight_local_position +=
                 movement_direction * LOW_FLIGHT_SPEED_METERS_PER_SECOND * delta_seconds;
             let moved_radial = self.flight_local_position.normalize();
+            self.flight_local_tangent =
+                transport_flight_tangent(self.flight_local_tangent, local_radial, moved_radial);
             if let Some(surface_height_meters) = self.terrain.surface_height_meters_at(moved_radial)
             {
                 self.flight_surface_height_meters = surface_height_meters;
@@ -707,6 +759,7 @@ impl State {
                     * (planet::PLANET_RADIUS_METERS
                         + self.flight_surface_height_meters
                         + LOW_FLIGHT_ALTITUDE_METERS);
+                self.flight_local_tangent = initial_flight_tangent(local_radial);
                 self.flight_look_yaw_radians = 0.0;
                 self.flight_look_pitch_radians = 0.0;
                 self.flight_movement = FlightMovementInput::default();
@@ -1744,8 +1797,8 @@ mod tests {
 
     use super::{
         CameraMode, FlightMovementInput, INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
-        LOW_FLIGHT_SPEED_METERS_PER_SECOND, flight_movement_direction,
-        interactive_camera_delta_seconds,
+        LOW_FLIGHT_SPEED_METERS_PER_SECOND, flight_movement_direction, initial_flight_tangent,
+        interactive_camera_delta_seconds, transport_flight_tangent,
     };
     use crate::planet::PLANET_ROTATION_PERIOD_SECONDS;
 
@@ -1781,7 +1834,7 @@ mod tests {
 
         assert!(forward.distance(camera_forward) < 1.0e-12);
         assert!(backward.distance(-camera_forward) < 1.0e-12);
-        assert_eq!(LOW_FLIGHT_SPEED_METERS_PER_SECOND, 30.0 * 3_403.0);
+        assert_eq!(LOW_FLIGHT_SPEED_METERS_PER_SECOND, 300.0 * 3_403.0);
     }
 
     #[test]
@@ -1800,6 +1853,19 @@ mod tests {
         assert!((direction.length() - 1.0).abs() < 1.0e-12);
         assert!(direction.dot(DVec3::Z) > 0.0);
         assert!(direction.dot(DVec3::X) > 0.0);
+    }
+
+    #[test]
+    fn flight_tangent_stays_continuous_across_a_pole() {
+        let before_pole = DVec3::new(0.0, 1.0, 0.001).normalize();
+        let after_pole = DVec3::new(0.0, 1.0, -0.001).normalize();
+        let tangent_before = initial_flight_tangent(before_pole);
+        let longitude_tangent_after = initial_flight_tangent(after_pole);
+        let transported_tangent = transport_flight_tangent(tangent_before, before_pole, after_pole);
+
+        assert!(tangent_before.dot(longitude_tangent_after) < -0.999);
+        assert!(tangent_before.dot(transported_tangent) > 0.999);
+        assert!(transported_tangent.dot(after_pole).abs() < 1.0e-12);
     }
 
     #[test]

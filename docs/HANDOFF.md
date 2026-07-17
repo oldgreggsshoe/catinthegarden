@@ -22,7 +22,8 @@ Do not remove or weaken the maintenance requirement above.
   the polar ice slice, free flight, and bounded terrain streaming are
   implemented. The clean all-scenario regression is complete.
 - Current bounded engineering issue: objective validation is green. Phase 7
-  still needs final human visual sign-off before promotion to `main`.
+  still needs final human visual sign-off, including a long free-flight pass
+  across both poles, before promotion to `main`.
 
 This handoff synchronizes the canonical sections with the current experiment
 branch. Always use `git log -1 --oneline` and `git status --short` rather than
@@ -57,7 +58,7 @@ renders a rotating 8,000 km-diameter procedural planet with:
 - a visual HDR sun disc/corona, luminance mip chain, auto-exposure, and ACES;
 - independently toggleable full-screen blur and HDR bright-pass bloom;
 - a six-wave spherical Gerstner ocean with daylight-gated reflection;
-- orbit and terrain-relative Mach 300 free-flight cameras;
+- orbit and terrain-relative 1,020,900 m/s free-flight cameras;
 - deterministic scenarios, JSONL logging, PNG capture, assertions, and
   opt-in CPU/GPU render profiling broken down by render stage.
 
@@ -253,9 +254,9 @@ Controls:
 | Left/Right arrows | Orbit azimuth by 0.08 radians |
 | Up/Down arrows | Orbit elevation by 0.05 radians |
 | F3 | Toggle debug HUD |
-| F4 | Toggle orbit / Mach 300 free-flight camera; it starts level 5,000 ft above resident terrain, retains a terrain-aware minimum clearance, and restores the orbital pose when toggled back |
-| W / S | While in flight mode, move at Mach 300 exactly along / opposite the current camera-facing vector; releasing both stops forward/backward translation |
-| A / D | While in flight mode, strafe camera-left / camera-right at Mach 300; diagonal input is normalized |
+| F4 | Toggle orbit / 1,020,900 m/s free-flight camera; it starts level 5,000 ft above resident terrain, retains a terrain-aware minimum clearance, and restores the orbital pose when toggled back |
+| W / S | While in flight mode, move at 1,020,900 m/s exactly along / opposite the current camera-facing vector; releasing both stops forward/backward translation |
+| A / D | While in flight mode, strafe camera-left / camera-right at 1,020,900 m/s; diagonal input is normalized |
 | F6/F7/F8 | Toggle blur/bloom/HDR filmic effect |
 | F9 | Cycle composition debug: raw albedo, surface lighting, aerial contribution, sky-only, final HDR |
 | F10 | Freeze/resume scene time (orbit, rotation, ocean, exposure adaptation); low-flight camera movement remains active for framing |
@@ -1246,13 +1247,22 @@ variant to bloom versus HDR or prove all three post states independently. This
 is positive tier-3 review evidence, not inferred user approval; explicit user
 sign-off still gates promotion.
 
+Low-flight movement now uses the requested 10x former Mach-300 rate of
+1,020,900 m/s. Its tangent reference is initialized from longitude only when
+entering flight, then parallel-transported as the camera radial direction
+changes. This avoids the former 180-degree longitude-frame flip at either pole
+that made mouse-look and WASD control appear uncontrollable after a long flight.
+Focused `flight_tangent_stays_continuous_across_a_pole` and the existing
+forward/backward movement regression pass; fresh human verification should fly
+across both poles before final visual sign-off.
+
 ## Next action
 
 Obtain final human sign-off before promoting `experiment/composition-debug` to
 `main`:
 
 1. Ask the user to explicitly accept or reject terrain edges, 4x microrelief,
-   horizon fog, and sunset from current-commit set `1784285110-106415`. If a
+   horizon fog, sunset, and stable mouse/WASD control through both poles. If a
    closer-than-76km view is needed, capture only that missing near-surface case.
 2. Confirm blur, bloom, and HDR independently with the overlay showing each
    state, because the clean set hides state and contains two identical frames.
