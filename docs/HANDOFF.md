@@ -1391,6 +1391,17 @@ the terrain. Smooth vertex land lighting is restored; the actual remedy is
 denser near-surface baked/streamed height coverage, rather than sharpening the
 existing mesh or fallback data.
 
+The first continuity slice for the planned near-flight terrain work is now in
+place. The renderer records the *actually rendered* resident-node set rather
+than the requested quadtree set, so a parent remains dithered in for one second
+only when its resident child replacement is available. Unrelated camera-motion
+nodes do not cross-fade, and fading chunks are protected from cache eviction.
+The selection policy requests a finer grid at 1.5px (formerly 2.0px) and does
+not merge it until 0.75px (formerly 1.25px), moving the detail hand-off farther
+from the camera with a wider hysteresis band. This preserves the 256-leaf and
+eight-build budgets while the separate geometry-clipmap/data-pyramid work is
+designed.
+
 ## Next action
 
 Obtain a fresh low-flight daylight capture before further terrain acceptance:

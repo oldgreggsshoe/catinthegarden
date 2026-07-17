@@ -28,12 +28,14 @@ use crate::{
 // Retain enough nearby L4 tiles to avoid camera-motion uploads while keeping
 // the three per-tile GPU textures and CPU height cache bounded.
 const MAX_RESIDENT_TERRAIN_TILES: usize = 384;
-const LOD_TRANSITION_DURATION_SECONDS: f64 = 0.5;
+/// A deliberately long dithered hand-off makes a newly resident grid appear
+/// before its parent disappears. The higher-detail request itself begins at a
+/// conservative lower screen-error threshold in `LodPolicy`.
+const LOD_TRANSITION_DURATION_SECONDS: f64 = 1.0;
 /// Cross-fades deliberately duplicate terrain draws. Retain them for small LOD
 /// adjustments, but snap a large camera/zoom change to the complete active
 /// topology rather than carrying hundreds of obsolete chunks for half a
 /// second.
-#[cfg(test)]
 const MAX_ANIMATED_LOD_TOPOLOGY_CHANGES: usize = 64;
 /// Mesh creation allocates and uploads a 33x33 chunk vertex buffer. Bound that
 /// synchronous work so flight remains responsive while finer leaves stream in.
@@ -131,7 +133,6 @@ struct GpuChunk {
 }
 
 struct FadingChunk {
-    chunk: GpuChunk,
     started_at_sim_time: f64,
 }
 
@@ -191,6 +192,7 @@ pub struct TerrainRenderer {
     chunk_last_used: HashMap<QuadtreeNode, u64>,
     fading_out_chunks: BTreeMap<QuadtreeNode, FadingChunk>,
     fade_in_started_at: HashMap<QuadtreeNode, f64>,
+    active_render_nodes: BTreeSet<QuadtreeNode>,
     draw_items: Vec<DrawItem>,
     max_outmap_seam_delta_meters: f64,
 }
@@ -360,6 +362,7 @@ impl TerrainRenderer {
             chunk_last_used: HashMap::new(),
             fading_out_chunks: BTreeMap::new(),
             fade_in_started_at: HashMap::new(),
+            active_render_nodes: BTreeSet::new(),
             draw_items: Vec::new(),
             max_outmap_seam_delta_meters: 0.0,
         };
@@ -457,6 +460,7 @@ impl TerrainRenderer {
         for &node in &active_render_nodes {
             self.chunk_last_used.insert(node, self.tile_cache_tick);
         }
+        self.update_lod_transitions(&active_render_nodes, sim_time);
         let chunks_unloaded = self.evict_unused_chunks(&active_render_nodes);
         let active_render_nodes: Vec<_> = active_render_nodes.into_iter().collect();
 
@@ -563,11 +567,9 @@ impl TerrainRenderer {
             render_nodes.iter().zip(resolved_tiles.iter()).enumerate()
         {
             let chunk = if render_node.fading_out {
-                &self
-                    .fading_out_chunks
+                self.chunks
                     .get(&render_node.node)
-                    .expect("fading LOD leaf has a GPU chunk")
-                    .chunk
+                    .expect("fading LOD leaf has a resident GPU chunk")
             } else {
                 self.chunks
                     .get(&render_node.node)
@@ -666,11 +668,9 @@ impl TerrainRenderer {
         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         for draw in &self.draw_items {
             let chunk = if draw.fading_out {
-                &self
-                    .fading_out_chunks
+                self.chunks
                     .get(&draw.node)
-                    .expect("draw item has a fading GPU chunk")
-                    .chunk
+                    .expect("fading draw item has a resident GPU chunk")
             } else {
                 self.chunks
                     .get(&draw.node)
@@ -723,7 +723,11 @@ impl TerrainRenderer {
             .chunks
             .keys()
             .copied()
-            .filter(|node| node.level > 0 && !protected_nodes.contains(node))
+            .filter(|node| {
+                node.level > 0
+                    && !protected_nodes.contains(node)
+                    && !self.fading_out_chunks.contains_key(node)
+            })
             .map(|node| (self.chunk_last_used.get(&node).copied().unwrap_or(0), node))
             .collect();
         candidates.sort_unstable();
@@ -734,6 +738,43 @@ impl TerrainRenderer {
             self.fade_in_started_at.remove(&node);
         }
         eviction_count
+    }
+
+    fn update_lod_transitions(
+        &mut self,
+        active_render_nodes: &BTreeSet<QuadtreeNode>,
+        sim_time: f64,
+    ) {
+        if self.active_render_nodes.is_empty() {
+            self.active_render_nodes = active_render_nodes.clone();
+            return;
+        }
+
+        // A node which becomes active again must stop fading out. This can
+        // happen when the camera reverses inside the LOD hysteresis band.
+        self.fading_out_chunks
+            .retain(|node, _| !active_render_nodes.contains(node));
+
+        let (outgoing, incoming) =
+            lod_transition_nodes(&self.active_render_nodes, active_render_nodes);
+        if should_animate_lod_transition(
+            self.fading_out_chunks.len(),
+            incoming.len(),
+            outgoing.len(),
+        ) {
+            for node in outgoing {
+                self.fading_out_chunks.insert(
+                    node,
+                    FadingChunk {
+                        started_at_sim_time: sim_time,
+                    },
+                );
+            }
+            for node in incoming {
+                self.fade_in_started_at.insert(node, sim_time);
+            }
+        }
+        self.active_render_nodes = active_render_nodes.clone();
     }
 
     fn purge_expired_lod_transitions(&mut self, sim_time: f64) {
@@ -807,7 +848,6 @@ fn lod_transition_progress(sim_time: f64, started_at_sim_time: f64) -> f32 {
     ((sim_time - started_at_sim_time) / LOD_TRANSITION_DURATION_SECONDS).clamp(0.0, 1.0) as f32
 }
 
-#[cfg(test)]
 fn should_animate_lod_transition(
     fading_nodes: usize,
     loaded_nodes: usize,
@@ -817,12 +857,10 @@ fn should_animate_lod_transition(
         && fading_nodes.saturating_add(unloaded_nodes) <= MAX_ANIMATED_LOD_TOPOLOGY_CHANGES
 }
 
-#[cfg(test)]
 fn nodes_share_lod_transition(first: QuadtreeNode, second: QuadtreeNode) -> bool {
     node_is_descendant_of(first, second) || node_is_descendant_of(second, first)
 }
 
-#[cfg(test)]
 fn node_is_descendant_of(mut node: QuadtreeNode, ancestor: QuadtreeNode) -> bool {
     while let Some(parent) = node.parent() {
         if parent == ancestor {
@@ -831,6 +869,31 @@ fn node_is_descendant_of(mut node: QuadtreeNode, ancestor: QuadtreeNode) -> bool
         node = parent;
     }
     false
+}
+
+fn lod_transition_nodes(
+    previous: &BTreeSet<QuadtreeNode>,
+    current: &BTreeSet<QuadtreeNode>,
+) -> (Vec<QuadtreeNode>, Vec<QuadtreeNode>) {
+    let incoming: Vec<_> = current
+        .difference(previous)
+        .copied()
+        .filter(|node| {
+            previous
+                .iter()
+                .any(|previous| nodes_share_lod_transition(*node, *previous))
+        })
+        .collect();
+    let outgoing = previous
+        .difference(current)
+        .copied()
+        .filter(|node| {
+            incoming
+                .iter()
+                .any(|incoming| nodes_share_lod_transition(*node, *incoming))
+        })
+        .collect();
+    (outgoing, incoming)
 }
 
 #[derive(Debug)]
@@ -1372,9 +1435,9 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::{
-        TerrainSettings, cube_face_uv, fallback_uv_transform, lod_transition_progress,
-        next_missing_descendant, nodes_share_lod_transition, pack_terrain_info,
-        prioritized_missing_chunks, resident_ancestor, sample_height_cpu,
+        TerrainSettings, cube_face_uv, fallback_uv_transform, lod_transition_nodes,
+        lod_transition_progress, next_missing_descendant, nodes_share_lod_transition,
+        pack_terrain_info, prioritized_missing_chunks, resident_ancestor, sample_height_cpu,
         should_animate_lod_transition, source_tile_uv_at_direction, tileable_value_noise,
     };
     use crate::planet::{
@@ -1635,11 +1698,37 @@ mod tests {
     }
 
     #[test]
-    fn lod_transition_progress_reaches_full_coverage_after_half_a_second() {
+    fn lod_transition_progress_reaches_full_coverage_after_one_second() {
         assert_eq!(lod_transition_progress(10.0, 10.0), 0.0);
-        assert!((lod_transition_progress(10.25, 10.0) - 0.5).abs() < f32::EPSILON);
-        assert_eq!(lod_transition_progress(10.5, 10.0), 1.0);
+        assert!((lod_transition_progress(10.5, 10.0) - 0.5).abs() < f32::EPSILON);
         assert_eq!(lod_transition_progress(11.0, 10.0), 1.0);
+        assert_eq!(lod_transition_progress(12.0, 10.0), 1.0);
+    }
+
+    #[test]
+    fn parent_child_replacement_cross_fades_but_unrelated_motion_does_not() {
+        let parent = QuadtreeNode {
+            face: 2,
+            level: 3,
+            x: 5,
+            y: 2,
+        };
+        let child = parent.children()[3];
+        let unrelated = QuadtreeNode {
+            face: 2,
+            level: 3,
+            x: 6,
+            y: 2,
+        };
+        let (outgoing, incoming) =
+            lod_transition_nodes(&BTreeSet::from([parent]), &BTreeSet::from([child]));
+        assert_eq!(outgoing, vec![parent]);
+        assert_eq!(incoming, vec![child]);
+
+        let (outgoing, incoming) =
+            lod_transition_nodes(&BTreeSet::from([parent]), &BTreeSet::from([unrelated]));
+        assert!(outgoing.is_empty());
+        assert!(incoming.is_empty());
     }
 
     #[test]

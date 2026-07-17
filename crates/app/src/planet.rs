@@ -394,8 +394,12 @@ pub struct LodPolicy {
 impl Default for LodPolicy {
     fn default() -> Self {
         Self {
-            split_pixels: 2.0,
-            merge_pixels: 1.25,
+            // Request the next grid before the current one reaches the former
+            // two-pixel limit.  This gives streamed geometry a wider visual
+            // hand-off zone, favouring stable ground detail over a late sharp
+            // change close to the flight camera.
+            split_pixels: 1.5,
+            merge_pixels: 0.75,
             max_level: MAX_LOD_LEVEL,
         }
     }
@@ -1903,11 +1907,11 @@ mod tests {
             }
         );
         let policy = LodPolicy::default();
-        assert_eq!(policy.split_pixels, 2.0);
-        assert_eq!(policy.merge_pixels, 1.25);
+        assert_eq!(policy.split_pixels, 1.5);
+        assert_eq!(policy.merge_pixels, 0.75);
         assert!(policy.should_split(2.1, 0));
         assert!(!policy.should_merge(1.0, MINIMUM_LOD_LEVEL - 1));
-        assert!(policy.should_merge(1.0, MINIMUM_LOD_LEVEL));
+        assert!(policy.should_merge(0.5, MINIMUM_LOD_LEVEL));
         assert_eq!(policy.max_level, MAX_LOD_LEVEL);
         assert_eq!(children[0].parent(), Some(QuadtreeNode::root(3)));
         assert!(children.iter().all(|child| child.is_valid()));
