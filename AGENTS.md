@@ -32,8 +32,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 - Phase 7 visual tuning: the ocean body-scattering albedo is a darker blue while daylight reflections and sun glints remain unchanged; final capture sign-off remains.
 - Phase 7 visual tuning: ocean-only aerial perspective now retains 35% of the globally tuned atmospheric result, preserving a dark-blue final ocean while leaving terrain and sky atmosphere unchanged; fresh F9 stage captures remain required.
 - Phase 7 experiment `ground-readability`: terrain materials now retain baked biome/moisture ownership while continuously blending rendered steep slopes toward rock and high, latitude-adjusted ridges toward snow; no new macro geography or runtime terrain noise is introduced.
-- Phase 7 experiment `ground-readability`: baked positive-land exaggeration now blends continuously from 4x at flight altitude to 40x above 1,000km for GPU displacement/normals and streamed-height clearance; LOD/culling deliberately retains the conservative 40x bound so close geometry cannot under-refine during the visual transition.
-- Phase 7 experiment `ground-readability`: deterministic outmap descent reaches L18 by 198.5km and at 10m with bounded ancestor fallback, zero LOD thrash, and zero seam delta; retaining the conservative 40x culling bound corrects the temporary L3 under-refinement seen at 153km without changing streaming budgets or mesh density.
+- Phase 7 experiment `ground-readability`: baked positive land retains the established fixed 40x exaggeration at every altitude, shared by GPU displacement/normals and streamed-height clearance; LOD/culling uses the same conservative 40x bound.
+- Phase 7 experiment `ground-readability`: deterministic outmap descent reaches L18 by 198.5km and at 10m with bounded ancestor fallback, zero LOD thrash, and zero seam delta; the fixed 40x culling bound prevents the temporary L3 under-refinement seen at 153km without changing streaming budgets or mesh density.
 
 ## Planet constants (test planet)
 

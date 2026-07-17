@@ -95,8 +95,8 @@ These constraints come from `AGENTS.md` and current code. Preserve them.
   deliberately bounded four-octave direction field only as land microrelief
   over the baked height, so sparse ancestor fallback has useful detail at any
   longitude without changing the baked coastline or biome. Positive baked land
-  height continuously blends from 4x at flight altitude to 40x above 1,000km
-  after coastline/material classification, while runtime microrelief uses a
+  height retains the established fixed 40x scale after coastline/material
+  classification, while runtime microrelief uses a
   separate 4x scale; ocean sea level remains zero.
 - `--terrain placeholder` remains a Phase-2 diagnostic fallback and evaluates
   its analytic multiscale sine height at runtime.
@@ -1320,13 +1320,12 @@ macro geography or new runtime noise, so cube/tile seams and the outmap
 contract remain unchanged. A focused shader regression pins both inputs;
 daylight low-flight captures are the visual acceptance check.
 
-The same experiment now continuously scales baked positive land from 4x at
-flight altitude through 40x above 1,000km for GPU height displacement/normals
-and streamed CPU terrain clearance. LOD/culling deliberately retains the
-conservative 40x bound: it may request extra detail, but cannot under-refine
-the fixed 33x33 mesh during the visual transition. Focused CPU and shader
-regressions pin the endpoints and uniform contract; a daylight descent capture
-remains needed.
+The same experiment now retains the established fixed 40x baked-land scale for
+GPU height displacement/normals and streamed CPU terrain clearance at every
+altitude. LOD/culling uses that same conservative bound, so the fixed 33x33
+mesh cannot under-refine during a visual scale transition. Focused CPU and
+shader regressions pin the shared contract; a daylight descent capture remains
+needed.
 
 The deterministic outmap `descent_to_10m` replay from the working tree based
 on `e2d7873` passed all eight assertions (`1784292311-174797`). At 10m it had 16 L18 leaves, 92 resident
@@ -1338,11 +1337,11 @@ manual close-up therefore needs a fresh final-mode daylight capture before any
 LOD policy change.
 
 Manual captures `1784292455-176279` exposed an experimental regression at
-about 153km altitude: dynamic LOD/culling bounds followed the 4x near visual
-scale, leaving only L3 resident geometry and producing coarse radial terrain
-waves. The visual scale remains correct for GPU displacement and CPU flight
-clearance, but culling now retains its conservative 40x far-orbit bound. The
-follow-up `descent_to_10m` replay `1784292675-178309` passed all eight
+about 153km altitude: dynamic LOD/culling bounds followed the former 4x near
+visual scale, leaving only L3 resident geometry and producing coarse radial
+terrain waves. The experiment now returns to the established fixed 40x visual
+scale and matching CPU flight clearance/culling bound. The follow-up
+`descent_to_10m` replay `1784292675-178309` passed all eight
 assertions and selected through L18 by 198.5km (152 resident chunks), with
 zero thrash and zero seam delta. No streaming-budget or mesh-density increase
 is justified by the measured result; obtain fresh manual final-mode captures.

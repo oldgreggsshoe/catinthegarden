@@ -59,7 +59,7 @@ pub const GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS: f64 = 111.5;
 pub const GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE: f64 = 4.0;
 /// Visual exaggeration applied only to baked positive land height. Sea level,
 /// ocean waves, and the separately scaled microrelief remain independent.
-pub const OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE: f64 = 4.0;
+pub const OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE: f64 = 40.0;
 pub const OUTMAP_TERRAIN_FAR_HEIGHT_SCALE: f64 = 40.0;
 pub const OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS: f64 = 100_000.0;
 pub const OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS: f64 = 1_000_000.0;
@@ -301,17 +301,12 @@ pub fn global_terrain_detail_meters(direction: DVec3) -> f64 {
         .sum()
 }
 
-/// Continuously reduce orbital terrain exaggeration before entering flight
-/// altitude. This is mirrored in the terrain shader, streamed-height camera
-/// clearance, and LOD bounds.
+/// Keep baked land at one visual scale across all camera distances. The
+/// altitude argument remains part of the shared CPU/GPU contract so flight
+/// clearance and terrain displacement cannot diverge if it is revisited.
 pub fn outmap_terrain_height_scale(camera_altitude_meters: f64) -> f64 {
-    let blend = smoothstep(
-        OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS,
-        OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS,
-        camera_altitude_meters.max(0.0),
-    );
-    OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE
-        + (OUTMAP_TERRAIN_HEIGHT_SCALE - OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE) * blend
+    let _ = camera_altitude_meters;
+    OUTMAP_TERRAIN_HEIGHT_SCALE
 }
 
 /// Adds global microrelief without moving the coastline. The transition is
@@ -2571,7 +2566,7 @@ mod tests {
     }
 
     #[test]
-    fn terrain_height_scale_blends_from_flight_to_orbit() {
+    fn terrain_height_scale_remains_fixed_at_every_altitude() {
         assert_eq!(
             outmap_terrain_height_scale(0.0),
             OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE
@@ -2580,9 +2575,9 @@ mod tests {
             outmap_terrain_height_scale(OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS),
             OUTMAP_TERRAIN_FAR_HEIGHT_SCALE
         );
-        assert!(
-            outmap_terrain_height_scale(500_000.0) > OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE
-                && outmap_terrain_height_scale(500_000.0) < OUTMAP_TERRAIN_FAR_HEIGHT_SCALE
+        assert_eq!(
+            outmap_terrain_height_scale(500_000.0),
+            OUTMAP_TERRAIN_FAR_HEIGHT_SCALE
         );
     }
 
