@@ -33,6 +33,7 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 - Phase 7 visual tuning: ocean-only aerial perspective now retains 35% of the globally tuned atmospheric result, preserving a dark-blue final ocean while leaving terrain and sky atmosphere unchanged; fresh F9 stage captures remain required.
 - Phase 7 experiment `ground-readability`: terrain materials now retain baked biome/moisture ownership while continuously blending rendered steep slopes toward rock and high, latitude-adjusted ridges toward snow; no new macro geography or runtime terrain noise is introduced.
 - Phase 7 experiment `ground-readability`: baked positive-land exaggeration now blends continuously from 4x at flight altitude to 40x above 1,000km, with the same scale used for GPU displacement/normals, streamed-height clearance, and camera-relative LOD/culling bounds.
+- Phase 7 experiment `ground-readability`: deterministic outmap descent reaches L18 at 10m with 92 resident chunks, 51 bounded ancestor fallbacks, zero LOD thrash, and zero seam delta; no streaming-budget or mesh-density increase is warranted by the measured low-flight path.
 
 ## Planet constants (test planet)
 

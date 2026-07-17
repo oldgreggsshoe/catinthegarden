@@ -1327,6 +1327,15 @@ and the per-frame LOD/culling height bounds, so the visible terrain cannot
 diverge from collision or selection. Focused CPU and shader regressions pin
 the endpoints and uniform contract; a daylight descent capture remains needed.
 
+The deterministic outmap `descent_to_10m` replay from the working tree based
+on `e2d7873` passed all eight assertions (`1784292311-174797`). At 10m it had 16 L18 leaves, 92 resident
+chunks, 51 bounded ancestor fallbacks, zero thrash, and zero seam delta. That
+confirms visible low-flight terrain reaches fine geometry under the existing
+eight-build-per-frame and 33x33-chunk policy; increasing streaming budgets or
+mesh density would be speculative rather than a measured fix. The prior poor
+manual close-up therefore needs a fresh final-mode daylight capture before any
+LOD policy change.
+
 ## Next action
 
 Obtain final human sign-off before promoting `experiment/composition-debug` to

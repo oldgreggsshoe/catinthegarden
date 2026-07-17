@@ -1412,7 +1412,7 @@ mod tests {
         assert!(shader.contains("let rock_amount = smoothstep(0.10, 0.42, slope);"));
         assert!(shader.contains("let snowline_meters = mix(6200.0, 2200.0, latitude_amount);"));
         assert!(shader.contains("normal,\n        direction,\n    ) * surface_irradiance;"));
-        assert!(shader.contains("input.normal,\n        direction,\n    );"));
+        assert!(shader.contains("input.world_normal,\n        direction,\n    );"));
     }
 
     #[test]

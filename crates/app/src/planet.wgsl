@@ -1211,7 +1211,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         input.source_uv,
         macro_height_meters,
         input.terrain_detail_meters,
-        input.normal,
+        input.world_normal,
         direction,
     );
     if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
