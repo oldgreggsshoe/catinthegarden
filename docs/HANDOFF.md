@@ -1282,15 +1282,23 @@ channel is extinguished. Focused
 `direct_surface_sunlight_fades_before_geometric_sunset` passes; human
 sunrise/sunset capture review remains required.
 
+The fullscreen atmospheric sky now applies `SKY_ATMOSPHERE_SATURATION = 2.0`
+after scattering integration, using luminance-based chroma expansion. This
+doubles sky-atmosphere colour saturation without changing terrain, ocean,
+aerial perspective, exposure, or sun-disc inputs. Focused
+`fullscreen_sky_applies_the_requested_double_saturation` passes; fresh visual
+captures remain the acceptance check.
+
 ## Next action
 
 Obtain final human sign-off before promoting `experiment/composition-debug` to
 `main`:
 
 1. Ask the user to explicitly accept or reject terrain edges, 4x microrelief,
-   horizon fog, red/orange high-altitude sunrise/sunset with dimming direct
-   terrain/ocean light, and stable mouse/WASD control through both poles. If a
-   closer-than-76km view is needed, capture only that missing near-surface case.
+   horizon fog, 2x saturated red/orange high-altitude sunrise/sunset with
+   dimming direct terrain/ocean light, and stable mouse/WASD control through
+   both poles. If a closer-than-76km view is needed, capture only that missing
+   near-surface case.
 2. Confirm blur, bloom, and HDR independently with the overlay showing each
    state, because the clean set hides state and contains two identical frames.
 3. If those views are accepted, promote the branch to `main`; otherwise make

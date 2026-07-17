@@ -12,6 +12,7 @@ const SKY_SAMPLE_COUNT: u32 = 16u;
 const SKY_DENSITY_SAMPLE_EXPONENT: f32 = 3.0;
 const TWILIGHT_SHADOW_TRANSITION_METERS: f32 = 36000.0;
 const ANTISOLAR_TWILIGHT_MIN_SCATTER: f32 = 0.48;
+const SKY_ATMOSPHERE_SATURATION: f32 = 2.0;
 
 struct Camera {
     projection_matrix: mat4x4<f32>,
@@ -53,6 +54,14 @@ fn phase_mie(cos_theta: f32) -> f32 {
     let denominator = max(1.0 + g_squared - 2.0 * MIE_G * cos_theta, 1.0e-4);
     return 3.0 * (1.0 - g_squared) * (1.0 + cos_theta * cos_theta)
         / (8.0 * 3.14159265 * (2.0 + g_squared) * pow(denominator, 1.5));
+}
+
+fn saturate_sky_color(color: vec3<f32>) -> vec3<f32> {
+    let luminance = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+    return max(
+        vec3<f32>(luminance) + (color - vec3<f32>(luminance)) * SKY_ATMOSPHERE_SATURATION,
+        vec3<f32>(0.0),
+    );
 }
 
 fn twilight_directional_weight(
@@ -323,8 +332,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             * (rayleigh_scattering + mie_scattering)
             * sample_length;
     }
-    return vec4<f32>(
-        max(radiance * SOLAR_RADIANCE * directional_weight, vec3<f32>(0.0)),
-        1.0,
+    let sky_radiance = max(
+        radiance * SOLAR_RADIANCE * directional_weight,
+        vec3<f32>(0.0),
     );
+    return vec4<f32>(saturate_sky_color(sky_radiance), 1.0);
 }

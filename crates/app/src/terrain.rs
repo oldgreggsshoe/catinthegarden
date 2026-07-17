@@ -1355,6 +1355,14 @@ mod tests {
     }
 
     #[test]
+    fn fullscreen_sky_applies_the_requested_double_saturation() {
+        let shader = include_str!("atmosphere.wgsl");
+        assert!(shader.contains("const SKY_ATMOSPHERE_SATURATION: f32 = 2.0;"));
+        assert!(shader.contains("fn saturate_sky_color(color: vec3<f32>)"));
+        assert!(shader.contains("saturate_sky_color(sky_radiance)"));
+    }
+
+    #[test]
     fn cpu_seam_sampling_matches_shader_bilinear_coordinates() {
         let heights: Vec<_> = (0..TILE_STORED_SIZE)
             .flat_map(|y| (0..TILE_STORED_SIZE).map(move |x| (x + y * TILE_STORED_SIZE) as f32))
