@@ -1233,21 +1233,30 @@ runs after the detail-filter change also passed `sunset_sweep`
 like-for-like low-flight frame after the 10m cap, so its final visual claim is
 intentionally left for a fresh user capture rather than inferred from tests.
 
+User capture set `1784285110-106415` is from current commit `492c9b3`, frozen
+at simulation time 111.854s with the last spatial sample at 76,366m altitude.
+The four clean 640x427 frames show no exposed dark/bright skirt ribbons, no
+former kilometre-scale smooth microrelief ridges, and a softly blended distant
+terrain/sky horizon. The sunset-facing water, mountain silhouettes, and haze
+remain coherent. `capture-002.png` visibly demonstrates blur and
+`capture-003.png` is a materially brighter post variant; `capture-001.png` and
+`capture-004.png` are byte-identical. Because the overlay is hidden and input
+toggles are not logged, this set cannot objectively attribute the brighter
+variant to bloom versus HDR or prove all three post states independently. This
+is positive tier-3 review evidence, not inferred user approval; explicit user
+sign-off still gates promotion.
+
 ## Next action
 
 Obtain final human sign-off before promoting `experiment/composition-debug` to
 `main`:
 
-1. Capture the current build in low flight and confirm the 4x microrelief no
-   longer forms repeated kilometre-scale knife-ridges and the 10m skirt cap no
-   longer reads as dark/bright chunk-edge ribbons.
-2. Confirm the 2-60km terrain fog removes the low-flight horizon line without
-   obscuring too much nearby terrain.
-3. Review sunset and the 1.538x solar/anti-solar twilight contrast.
-4. Toggle F6/F7 and F8 in the same frozen framing to approve blur, bloom, and
-   the HDR-off startup presentation. Capture set `1784238213-171705` proves the
-   toggles execute, but its terrain predates the final 10m skirt cap.
-5. If those views are accepted, promote the branch to `main`; otherwise make
+1. Ask the user to explicitly accept or reject terrain edges, 4x microrelief,
+   horizon fog, and sunset from current-commit set `1784285110-106415`. If a
+   closer-than-76km view is needed, capture only that missing near-surface case.
+2. Confirm blur, bloom, and HDR independently with the overlay showing each
+   state, because the clean set hides state and contains two identical frames.
+3. If those views are accepted, promote the branch to `main`; otherwise make
    only the specifically requested visual adjustment and rerun its focused
    scenarios.
 
