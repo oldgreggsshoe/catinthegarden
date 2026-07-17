@@ -1385,12 +1385,11 @@ reverted. Ocean lighting remains per pixel. The correct long-term remedy is
 denser baked/streamed height coverage rather than sharper shading of sparse
 fallback height data.
 
-A separate flat-shading trial is now available: `fs_main` derives a
-per-triangle terrain normal from `dpdx`/`dpdy` of the camera-relative position,
-orients it outward, and uses it for land material slope plus direct/skylight.
-This deliberately reveals the actual mesh facets without adding per-fragment
-height-map sampling; the interpolated aerial contribution and per-pixel ocean
-path remain unchanged. Fresh user capture is the acceptance check.
+The follow-up flat-shading trial was also rejected after low-flight capture
+`1784318741-369385/capture-001.png` exposed huge harsh triangles throughout
+the terrain. Smooth vertex land lighting is restored; the actual remedy is
+denser near-surface baked/streamed height coverage, rather than sharpening the
+existing mesh or fallback data.
 
 ## Next action
 
