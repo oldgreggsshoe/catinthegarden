@@ -1359,6 +1359,8 @@ mod tests {
     #[test]
     fn shader_uses_seam_safe_value_noise_for_land_microrelief() {
         let shader = include_str!("planet.wgsl");
+        wgpu::naga::front::wgsl::parse_str(shader)
+            .expect("planet shader must parse before WGPU creates the pipeline");
         assert!(shader.contains("fn terrain_detail_value_noise(position: vec3<f32>) -> f32"));
         assert!(
             shader.contains("fn terrain_detail_noise_domain(direction: vec3<f32>) -> vec3<f32>")

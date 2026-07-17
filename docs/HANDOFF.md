@@ -1355,8 +1355,9 @@ sine wave. The four bounded planet-direction octaves now evaluate coherent
 value noise in a fixed rotated direction domain in both `planet.rs` and
 `planet.wgsl`. The octave bounds, camera-distance fading, baked coastline and
 biome ownership, and the CPU clearance contract remain unchanged. Focused
-value-noise/shader regressions plus the app unit suite pass; obtain a fresh
-low-flight daylight capture before accepting the new presentation.
+value-noise/shader regressions, including Naga parsing of `planet.wgsl` before
+pipeline creation, plus the app unit suite pass; obtain a fresh low-flight
+daylight capture before accepting the new presentation.
 
 ## Next action
 

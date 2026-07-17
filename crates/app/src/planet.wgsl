@@ -190,13 +190,13 @@ fn terrain_detail_value_noise(position: vec3<f32>) -> f32 {
     let upper_plane = mix(upper_lower, upper_right, fade.x);
     let lower = mix(lower_plane, upper_plane, fade.y);
 
-    let lower_lower = terrain_detail_hash(cell + vec3<f32>(0.0, 0.0, 1.0));
-    let lower_right = terrain_detail_hash(cell + vec3<f32>(1.0, 0.0, 1.0));
-    let upper_lower = terrain_detail_hash(cell + vec3<f32>(0.0, 1.0, 1.0));
-    let upper_right = terrain_detail_hash(cell + vec3<f32>(1.0));
-    let lower_plane = mix(lower_lower, lower_right, fade.x);
-    let upper_plane = mix(upper_lower, upper_right, fade.x);
-    let upper = mix(lower_plane, upper_plane, fade.y);
+    let upper_lower_lower = terrain_detail_hash(cell + vec3<f32>(0.0, 0.0, 1.0));
+    let upper_lower_right = terrain_detail_hash(cell + vec3<f32>(1.0, 0.0, 1.0));
+    let upper_upper_lower = terrain_detail_hash(cell + vec3<f32>(0.0, 1.0, 1.0));
+    let upper_upper_right = terrain_detail_hash(cell + vec3<f32>(1.0));
+    let upper_lower_plane = mix(upper_lower_lower, upper_lower_right, fade.x);
+    let upper_upper_plane = mix(upper_upper_lower, upper_upper_right, fade.x);
+    let upper = mix(upper_lower_plane, upper_upper_plane, fade.y);
     return mix(lower, upper, fade.z);
 }
 
