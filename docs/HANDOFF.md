@@ -1376,6 +1376,13 @@ resizes internal targets normally. The HUD and handoff controls table include
 it, and focused state-transition/resolution-preservation regressions cover the
 behavior.
 
+Land direct and sky-diffuse lighting formerly evaluated in `vs_main` and was
+interpolated between terrain vertices. `fs_main` now receives the flat tile
+metadata required to derive its own height-field normal and recomputes land
+irradiance/material lighting per fragment. It keeps the existing interpolated
+aerial contribution, avoiding a second per-pixel atmosphere integration, and
+does not make the mesh flat-shaded; ocean lighting was already per pixel.
+
 ## Next action
 
 Obtain a fresh low-flight daylight capture before further terrain acceptance:
