@@ -1514,6 +1514,15 @@ mod tests {
     }
 
     #[test]
+    fn shader_uses_geometric_derivatives_for_flat_land_shading() {
+        let shader = include_str!("planet.wgsl");
+        assert!(shader.contains("fn flat_terrain_normal("));
+        assert!(shader.contains("dpdx(camera_relative_view_position)"));
+        assert!(shader.contains("dpdy(camera_relative_view_position)"));
+        assert!(shader.contains("var flat_surface_lighting = terrain_albedo"));
+    }
+
+    #[test]
     fn shaders_use_the_same_altitude_aware_twilight_column() {
         for shader in [include_str!("planet.wgsl"), include_str!("atmosphere.wgsl")] {
             assert!(shader.contains(
@@ -1559,7 +1568,7 @@ mod tests {
         assert!(shader.contains("let rock_amount = smoothstep(0.10, 0.42, slope);"));
         assert!(shader.contains("let snowline_meters = mix(6200.0, 2200.0, latitude_amount);"));
         assert!(shader.contains("normal,\n        direction,\n    ) * surface_irradiance;"));
-        assert!(shader.contains("input.world_normal,\n        direction,\n    );"));
+        assert!(shader.contains("terrain_normal,\n        direction,\n    );"));
     }
 
     #[test]

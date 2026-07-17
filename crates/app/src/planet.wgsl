@@ -104,6 +104,7 @@ struct VertexOutput {
     @location(7) outmap: f32,
     @location(8) surface_lighting: vec3<f32>,
     @location(9) terrain_detail_meters: f32,
+    @location(10) surface_height: f32,
 }
 
 struct OceanWaveContribution {
@@ -1215,6 +1216,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         select(0.0, 1.0, outmap),
         lit_surface_color,
         terrain_detail_meters,
+        surface_height,
     );
 }
 
@@ -1228,6 +1230,26 @@ fn bayer_dither(fragment_position: vec4<f32>) -> f32 {
     let pixel = vec2<u32>(u32(fragment_position.x), u32(fragment_position.y));
     let index = (pixel.y & 3u) * 4u + (pixel.x & 3u);
     return (f32(pattern[index]) + 0.5) / 16.0;
+}
+
+fn flat_terrain_normal(
+    camera_relative_view_position: vec3<f32>,
+    surface_direction: vec3<f32>,
+    fallback_normal: vec3<f32>,
+) -> vec3<f32> {
+    let geometric_normal_view = cross(
+        dpdx(camera_relative_view_position),
+        dpdy(camera_relative_view_position),
+    );
+    if length(geometric_normal_view) < 1.0e-5 {
+        return fallback_normal;
+    }
+    let geometric_normal = normalize(view_to_planet(geometric_normal_view));
+    return select(
+        -geometric_normal,
+        geometric_normal,
+        dot(geometric_normal, surface_direction) >= 0.0,
+    );
 }
 
 @fragment
@@ -1282,17 +1304,52 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let outmap = input.outmap > 0.5;
     let macro_height_meters = macro_terrain_height(outmap, input.source_uv, direction);
     let ocean_coverage = outmap_ocean_coverage(outmap, macro_height_meters);
+    let terrain_normal = flat_terrain_normal(
+        input.camera_relative_view_position,
+        direction,
+        input.world_normal,
+    );
+    let terrain_sun_transmittance = surface_direct_sun_transmittance(
+        direction,
+        input.surface_height,
+        sun_direction,
+    );
+    let terrain_sky_diffuse = sky_diffuse_irradiance(
+        terrain_normal,
+        direction,
+        input.surface_height,
+        sun_direction,
+    );
+    let terrain_direct_light = max(dot(terrain_normal, sun_direction), 0.0);
+    let terrain_surface_irradiance = terrain_sky_diffuse
+        + terrain_sun_transmittance * terrain_direct_light * SURFACE_SUNLIGHT_SCALE;
     let terrain_albedo = terrain_material_color(
         outmap,
         input.source_uv,
         macro_height_meters,
         input.terrain_detail_meters,
-        input.world_normal,
+        terrain_normal,
         direction,
     );
+    var flat_surface_lighting = terrain_albedo * terrain_surface_irradiance;
+    let ice = outmap && sample_biome(input.source_uv) == 2u;
+    if ice {
+        let ice_light_floor = clamp(
+            max(
+                max(terrain_surface_irradiance.x, terrain_surface_irradiance.y),
+                terrain_surface_irradiance.z,
+            ),
+            0.0,
+            1.0,
+        );
+        flat_surface_lighting = max(
+            flat_surface_lighting,
+            biome_color(2u) * 0.65 * ice_light_floor,
+        );
+    }
     let detail_tint = terrain_detail_tint(
         direction,
-        input.world_normal,
+        terrain_normal,
         input.camera_relative_view_position,
     );
     let textured_terrain_albedo = terrain_albedo * detail_tint;
@@ -1302,7 +1359,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             1.0,
         );
     }
-    let textured_surface_lighting = input.surface_lighting * detail_tint;
+    let textured_surface_lighting = flat_surface_lighting * detail_tint;
     let textured_aerial_color = textured_surface_lighting
         + max(input.aerial_color - input.surface_lighting, vec3<f32>(0.0));
     if ocean_coverage <= 0.0 {
