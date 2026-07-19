@@ -76,6 +76,72 @@ pub fn face_uv_to_direction(face: CubeFace, u: f64, v: f64) -> DVec3 {
     (normal + tangent_u * u + tangent_v * v).normalize()
 }
 
+/// Projects a normalized direction onto its dominant cube face.
+pub fn direction_to_face_uv(direction: DVec3) -> (CubeFace, f64, f64) {
+    let direction = direction.normalize();
+    let absolute = direction.abs();
+    if absolute.x >= absolute.y && absolute.x >= absolute.z {
+        if direction.x >= 0.0 {
+            (
+                CubeFace::PositiveX,
+                -direction.z / direction.x,
+                direction.y / direction.x,
+            )
+        } else {
+            let scale = -direction.x;
+            (
+                CubeFace::NegativeX,
+                direction.z / scale,
+                direction.y / scale,
+            )
+        }
+    } else if absolute.y >= absolute.z {
+        if direction.y >= 0.0 {
+            (
+                CubeFace::PositiveY,
+                direction.x / direction.y,
+                -direction.z / direction.y,
+            )
+        } else {
+            let scale = -direction.y;
+            (
+                CubeFace::NegativeY,
+                direction.x / scale,
+                direction.z / scale,
+            )
+        }
+    } else if direction.z >= 0.0 {
+        (
+            CubeFace::PositiveZ,
+            direction.x / direction.z,
+            direction.y / direction.z,
+        )
+    } else {
+        let scale = -direction.z;
+        (
+            CubeFace::NegativeZ,
+            -direction.x / scale,
+            direction.y / scale,
+        )
+    }
+}
+
+/// Returns the quadtree tile containing a planet direction at `level`.
+pub fn tile_key_for_direction(direction: DVec3, level: u8) -> TileKey {
+    assert!(level <= QUADTREE_MAX_LEVEL);
+    let (face, u, v) = direction_to_face_uv(direction);
+    let side = 1_u32 << level;
+    let coordinate = |value: f64| {
+        (((value.clamp(-1.0, 1.0) + 1.0) * 0.5 * f64::from(side)).floor() as u32).min(side - 1)
+    };
+    TileKey {
+        face,
+        level,
+        x: coordinate(u),
+        y: coordinate(v),
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct TileKey {
     pub face: CubeFace,
@@ -355,13 +421,11 @@ impl OutmapManifest {
                 }
             }
         }
-        if self.max_level > self.dense_level
-            && !self
-                .available_tiles
-                .iter()
-                .any(|key| key.face == CubeFace::PositiveX && key.level == self.max_level)
-        {
-            return Err("sparse refinement does not reach max level on +X".to_owned());
+        if self.max_level > self.dense_level {
+            let landing_tile = tile_key_for_direction(landing, self.max_level);
+            if self.available_tiles.binary_search(&landing_tile).is_err() {
+                return Err("sparse refinement does not reach the landing direction".to_owned());
+            }
         }
         Ok(())
     }
@@ -402,6 +466,21 @@ mod tests {
         for face in CubeFace::ALL {
             let direction = face_uv_to_direction(face, 1.0, -1.0);
             assert!((direction.length() - 1.0).abs() < 1.0e-12);
+        }
+    }
+
+    #[test]
+    fn cube_direction_projection_round_trips_and_selects_its_tile() {
+        for face in CubeFace::ALL {
+            let direction = face_uv_to_direction(face, 0.37, -0.61);
+            let (projected_face, u, v) = direction_to_face_uv(direction);
+            assert_eq!(projected_face, face);
+            assert!((u - 0.37).abs() < 1.0e-12);
+            assert!((v + 0.61).abs() < 1.0e-12);
+            let key = tile_key_for_direction(direction, 4);
+            assert_eq!(key.face, face);
+            assert_eq!(key.x, 10);
+            assert_eq!(key.y, 3);
         }
     }
 

@@ -955,6 +955,22 @@ mod tests {
     }
 
     #[test]
+    fn odd_luminance_mips_partition_every_source_texel() {
+        for source_size in 1..=641_i32 {
+            let output_size = (source_size / 2).max(1);
+            let mut previous_end = 0;
+            for output_pixel in 0..output_size {
+                let begin = output_pixel * source_size / output_size;
+                let end = (output_pixel + 1) * source_size / output_size;
+                assert_eq!(begin, previous_end);
+                assert!(end > begin);
+                previous_end = end;
+            }
+            assert_eq!(previous_end, source_size);
+        }
+    }
+
+    #[test]
     fn tone_map_shader_supports_a_larger_presentation_target() {
         let module = wgpu::naga::front::wgsl::parse_str(include_str!("hdr.wgsl"))
             .expect("HDR shader must parse before WGPU creates the pipeline");

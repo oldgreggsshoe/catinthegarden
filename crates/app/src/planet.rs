@@ -10,7 +10,7 @@ pub const PLANET_RADIUS_METERS: f64 = 4_000_000.0;
 /// other visual constants makes expensive presentation stages easy to bisect.
 pub const BLUR_ENABLED: bool = false;
 pub const BLOOM_ENABLED: bool = false;
-pub const HDR_EFFECT_ENABLED: bool = false;
+pub const HDR_EFFECT_ENABLED: bool = true;
 pub const CHUNK_GRID_QUADS: usize = 32;
 pub const CHUNK_GRID_VERTICES: usize = CHUNK_GRID_QUADS + 1;
 pub const MAX_LOD_LEVEL: u8 = 18;
@@ -56,16 +56,19 @@ pub const GLOBAL_TERRAIN_DETAIL_OCTAVES: [(f64, f64, [f64; 3], f64); 4] = [
     (2_097_152.0, 1.5, [-0.48, -0.66, 0.58], 2.73),
 ];
 pub const GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS: f64 = 111.5;
-/// Keep flight-scale relief readable without multiplying it by the experimental
-/// macro-geography exaggeration below.
-pub const GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE: f64 = 4.0;
-/// Visual exaggeration applied only to baked positive land height. Sea level,
-/// ocean waves, and the separately scaled microrelief remain independent.
-pub const OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE: f64 = 40.0;
-pub const OUTMAP_TERRAIN_FAR_HEIGHT_SCALE: f64 = 40.0;
+/// Keep the direction-field noise in the material path, not geometry. Even at
+/// physical amplitude its repeated hills overwhelmed the already detailed
+/// baked landing tiles and read as an endless field of cones.
+pub const GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE: f64 = 0.0;
+/// Keep ground flight physically scaled. A restrained far-orbit boost preserves
+/// readable relief when the whole planet occupies only a few hundred pixels.
+/// Sea level and ocean waves remain unscaled.
+pub const OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE: f64 = 9.0;
+pub const OUTMAP_TERRAIN_FAR_HEIGHT_SCALE: f64 = 36.0;
 pub const OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS: f64 = 100_000.0;
 pub const OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS: f64 = 1_000_000.0;
 /// Compatibility alias for conservative far-orbit bounds.
+#[cfg(test)]
 pub const OUTMAP_TERRAIN_HEIGHT_SCALE: f64 = OUTMAP_TERRAIN_FAR_HEIGHT_SCALE;
 const DEFAULT_VERTICAL_FOV_RADIANS: f64 = 45.0_f64.to_radians();
 /// The default 640px-high viewport needs roughly this optical field of view
@@ -78,7 +81,10 @@ const MAX_VERTICAL_FOV_RADIANS: f64 = MAX_VERTICAL_FOV_DEGREES.to_radians();
 const ZOOM_LOG_FOV_PER_WHEEL_STEP: f64 = 0.12;
 pub const PLACEHOLDER_GEOMETRIC_ERROR_RATIO: f64 = 0.02;
 pub const LOD_THRASH_WINDOW_UPDATES: u64 = 4;
-
+/// Fine edges already stitch to a grid two levels coarser. Source-aware LOD
+/// balancing enforces the same bound so a sparse high-detail patch cannot sit
+/// directly beside a giant fallback node.
+pub const MAX_ADJACENT_LOD_LEVEL_DELTA: u8 = 2;
 pub fn default_sun_direction() -> DVec3 {
     // Preserve the established XZ azimuth while replacing its arbitrary 44
     // degree declination with Earth's 23.44 degree solstice orientation.
@@ -246,13 +252,18 @@ impl QuadtreeNode {
         cube_face_direction(self.face, (u_min + u_max) * 0.5, (v_min + v_max) * 0.5)
     }
 
+    #[cfg(test)]
     pub fn geometric_error_meters(self) -> f64 {
+        self.geometric_error_meters_with_ratio(PLACEHOLDER_GEOMETRIC_ERROR_RATIO)
+    }
+
+    fn geometric_error_meters_with_ratio(self, geometric_error_ratio: f64) -> f64 {
         let root_triangle_spacing =
             PLANET_RADIUS_METERS * std::f64::consts::FRAC_PI_2 / CHUNK_GRID_QUADS as f64;
         // Triangle spacing is resolution, not approximation error. For the smooth analytic
         // placeholder, 2% of the edge is a conservative combined curvature and unresolved-sine
         // bound. Phase 4 replaces this with the baker's per-tile measured geometric error.
-        root_triangle_spacing * PLACEHOLDER_GEOMETRIC_ERROR_RATIO / f64::from(1_u32 << self.level)
+        root_triangle_spacing * geometric_error_ratio / f64::from(1_u32 << self.level)
     }
 }
 
@@ -344,12 +355,14 @@ fn terrain_detail_value_noise(position: Vec3) -> f32 {
     lower + (upper - lower) * fade.z
 }
 
-/// Keep baked land at one visual scale across all camera distances. The
-/// altitude argument remains part of the shared CPU/GPU contract so flight
-/// clearance and terrain displacement cannot diverge if it is revisited.
 pub fn outmap_terrain_height_scale(camera_altitude_meters: f64) -> f64 {
-    let _ = camera_altitude_meters;
-    OUTMAP_TERRAIN_HEIGHT_SCALE
+    let blend = smoothstep(
+        OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS,
+        OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS,
+        camera_altitude_meters,
+    );
+    OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE
+        + (OUTMAP_TERRAIN_FAR_HEIGHT_SCALE - OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE) * blend
 }
 
 /// Adds global microrelief without moving the coastline. The transition is
@@ -582,12 +595,80 @@ fn node_is_in_view_frustum(
     true
 }
 
+fn node_contains_direction(node: QuadtreeNode, direction: DVec3) -> bool {
+    let (normal, tangent_u, tangent_v) = cube_face_basis(node.face);
+    let normal_dot = direction.dot(normal);
+    if normal_dot <= 0.0 {
+        return false;
+    }
+    let u = direction.dot(tangent_u) / normal_dot;
+    let v = direction.dot(tangent_v) / normal_dot;
+    let [u_min, v_min, u_max, v_max] = node.uv_bounds();
+    u >= u_min && u <= u_max && v >= v_min && v <= v_max
+}
+
+fn direction_across_node_edge(node: QuadtreeNode, edge: usize) -> DVec3 {
+    let [u_min, v_min, u_max, v_max] = node.uv_bounds();
+    let u_mid = (u_min + u_max) * 0.5;
+    let v_mid = (v_min + v_max) * 0.5;
+    let outside = (u_max - u_min) * 1.0e-4 + f64::EPSILON;
+    let (u, v) = match edge {
+        0 => (u_mid, v_min - outside),
+        1 => (u_max + outside, v_mid),
+        2 => (u_mid, v_max + outside),
+        3 => (u_min - outside, v_mid),
+        _ => unreachable!("a quadtree node has four edges"),
+    };
+    cube_face_direction(node.face, u, v)
+}
+
+/// Returns coarse visible leaves that must split to keep every shared edge
+/// within the mesh stitcher's supported level delta.
+fn unbalanced_coarse_neighbors(leaves: &HashSet<QuadtreeNode>) -> Vec<QuadtreeNode> {
+    let mut coarse = HashSet::new();
+    for node in leaves {
+        for edge in 0..4 {
+            let direction = direction_across_node_edge(*node, edge);
+            let Some(neighbor) = leaves.iter().copied().find(|candidate| {
+                *candidate != *node && node_contains_direction(*candidate, direction)
+            }) else {
+                continue;
+            };
+            if node.level > neighbor.level.saturating_add(MAX_ADJACENT_LOD_LEVEL_DELTA) {
+                coarse.insert(neighbor);
+            }
+        }
+    }
+    let mut coarse: Vec<_> = coarse.into_iter().collect();
+    coarse.sort_unstable();
+    coarse
+}
+
+#[cfg(test)]
 fn projected_error_pixels_with_height_range(
     node: QuadtreeNode,
     camera_world: DVec3,
     viewport_height: u32,
     vertical_fov_radians: f64,
     height_range: TerrainHeightRange,
+) -> f64 {
+    projected_error_pixels_with_height_range_and_ratio(
+        node,
+        camera_world,
+        viewport_height,
+        vertical_fov_radians,
+        height_range,
+        PLACEHOLDER_GEOMETRIC_ERROR_RATIO,
+    )
+}
+
+fn projected_error_pixels_with_height_range_and_ratio(
+    node: QuadtreeNode,
+    camera_world: DVec3,
+    viewport_height: u32,
+    vertical_fov_radians: f64,
+    height_range: TerrainHeightRange,
+    geometric_error_ratio: f64,
 ) -> f64 {
     let distance =
         minimum_node_distance_with_height_range(node, camera_world, height_range).max(1.0);
@@ -598,7 +679,7 @@ fn projected_error_pixels_with_height_range(
                 std::f64::consts::PI - f64::EPSILON,
             ) * 0.5)
                 .tan());
-    node.geometric_error_meters() * projection_scale / distance
+    node.geometric_error_meters_with_ratio(geometric_error_ratio) * projection_scale / distance
 }
 
 #[derive(Clone, Debug)]
@@ -677,6 +758,9 @@ struct SelectionInput {
     aspect_ratio: f64,
     viewport_height: u32,
     vertical_fov_radians: f64,
+    geometric_error_ratio: f64,
+    distance_reference_height_meters: f64,
+    source_level_limited: bool,
 }
 
 impl PartialEq for SplitCandidate {
@@ -713,6 +797,7 @@ pub struct PlanetLod {
     update_index: u64,
     recent_lod_transitions: HashMap<QuadtreeNode, RecentLodTransition>,
     terrain_height_range: TerrainHeightRange,
+    distance_reference_height_meters: f64,
 }
 
 impl Default for PlanetLod {
@@ -739,12 +824,25 @@ impl PlanetLod {
             update_index: 0,
             recent_lod_transitions: HashMap::new(),
             terrain_height_range: TerrainHeightRange::default(),
+            distance_reference_height_meters: 0.0,
         }
     }
 
     pub fn set_terrain_height_range(&mut self, terrain_height_range: TerrainHeightRange) {
         if self.terrain_height_range != terrain_height_range {
             self.terrain_height_range = terrain_height_range;
+            self.last_selection_input = None;
+        }
+    }
+
+    /// Sets the local terrain height used solely for screen-error distance.
+    /// Culling still uses the full conservative terrain shell. Separating the
+    /// two prevents a low camera inside that global shell from measuring every
+    /// node at zero metres and requesting L18 regardless of screen distance.
+    pub fn set_distance_reference_height(&mut self, height_meters: f64) {
+        assert!(height_meters.is_finite());
+        if self.distance_reference_height_meters != height_meters {
+            self.distance_reference_height_meters = height_meters;
             self.last_selection_input = None;
         }
     }
@@ -769,6 +867,8 @@ impl PlanetLod {
             1.0,
             viewport_height,
             vertical_fov_radians,
+            PLACEHOLDER_GEOMETRIC_ERROR_RATIO,
+            None,
         )
     }
 
@@ -813,6 +913,69 @@ impl PlanetLod {
             aspect_ratio,
             viewport_height,
             vertical_fov_radians,
+            PLACEHOLDER_GEOMETRIC_ERROR_RATIO,
+            None,
+        )
+    }
+
+    /// Selects visible leaves while allowing the terrain source to stop
+    /// refinement once a node has enough mesh cells to represent its texels.
+    /// This prevents a coarse ancestor tile from being repeated across many
+    /// progressively finer chunks which contain no additional height data.
+    pub fn update_for_view_with_up_and_level_limit(
+        &mut self,
+        camera_world: DVec3,
+        camera_forward: DVec3,
+        camera_up: DVec3,
+        aspect_ratio: f64,
+        viewport_height: u32,
+        vertical_fov_radians: f64,
+        node_level_limit: &dyn Fn(QuadtreeNode) -> u8,
+    ) -> LodUpdate {
+        self.update_for_view_with_constraints(
+            camera_world,
+            camera_forward,
+            camera_up,
+            aspect_ratio,
+            viewport_height,
+            vertical_fov_radians,
+            PLACEHOLDER_GEOMETRIC_ERROR_RATIO,
+            node_level_limit,
+        )
+    }
+
+    /// Applies screen-space LOD inside the view frustum while constraining
+    /// refinement to useful source resolution. A balancing pass may add the
+    /// small number of intermediate nodes needed to keep topology graded.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_for_view_with_constraints(
+        &mut self,
+        camera_world: DVec3,
+        camera_forward: DVec3,
+        camera_up: DVec3,
+        aspect_ratio: f64,
+        viewport_height: u32,
+        vertical_fov_radians: f64,
+        geometric_error_ratio: f64,
+        node_level_limit: &dyn Fn(QuadtreeNode) -> u8,
+    ) -> LodUpdate {
+        assert!(camera_world.is_finite());
+        assert!(camera_world.length() > PLANET_RADIUS_METERS);
+        assert!(camera_forward.is_finite() && camera_forward.length_squared() > 0.0);
+        assert!(camera_up.is_finite() && camera_up.length_squared() > 0.0);
+        assert!(aspect_ratio.is_finite() && aspect_ratio > 0.0);
+        assert!(geometric_error_ratio.is_finite() && geometric_error_ratio > 0.0);
+        self.update_internal(
+            camera_world,
+            Some(CameraViewBasis::from_forward_and_up(
+                camera_forward,
+                camera_up,
+            )),
+            aspect_ratio,
+            viewport_height,
+            vertical_fov_radians,
+            geometric_error_ratio,
+            Some(node_level_limit),
         )
     }
 
@@ -823,11 +986,14 @@ impl PlanetLod {
         aspect_ratio: f64,
         viewport_height: u32,
         vertical_fov_radians: f64,
+        geometric_error_ratio: f64,
+        node_level_limit: Option<&dyn Fn(QuadtreeNode) -> u8>,
     ) -> LodUpdate {
         assert!(camera_world.is_finite());
         assert!(camera_world.length() > PLANET_RADIUS_METERS);
         assert!(aspect_ratio.is_finite() && aspect_ratio > 0.0);
         assert!(vertical_fov_radians.is_finite() && vertical_fov_radians > 0.0);
+        assert!(geometric_error_ratio.is_finite() && geometric_error_ratio > 0.0);
         self.update_index += 1;
         self.recent_lod_transitions.retain(|_, transition| {
             self.update_index.saturating_sub(transition.update_index) <= LOD_THRASH_WINDOW_UPDATES
@@ -838,6 +1004,9 @@ impl PlanetLod {
             aspect_ratio,
             viewport_height,
             vertical_fov_radians,
+            geometric_error_ratio,
+            distance_reference_height_meters: self.distance_reference_height_meters,
+            source_level_limited: node_level_limit.is_some(),
         };
         if self.last_selection_input == Some(selection_input) {
             let mut metrics = self.last_metrics.clone();
@@ -858,6 +1027,10 @@ impl PlanetLod {
         let previous_active: HashSet<_> = self.active_nodes.iter().copied().collect();
         let previous_split = self.split_nodes.clone();
         let terrain_height_range = self.terrain_height_range;
+        let distance_height_range = TerrainHeightRange::new(
+            self.distance_reference_height_meters,
+            self.distance_reference_height_meters,
+        );
         let mut evaluations = HashMap::new();
         let mut culled_nodes = 0_u32;
         let mut leaves = HashSet::with_capacity(self.max_active_chunks);
@@ -871,6 +1044,8 @@ impl PlanetLod {
                 viewport_height,
                 vertical_fov_radians,
                 terrain_height_range,
+                distance_height_range,
+                geometric_error_ratio,
                 &mut evaluations,
                 &mut culled_nodes,
             )
@@ -888,12 +1063,15 @@ impl PlanetLod {
                 &self.policy,
                 root,
                 &previous_split,
+                node_level_limit,
                 camera_world,
                 camera_basis,
                 aspect_ratio,
                 viewport_height,
                 vertical_fov_radians,
                 terrain_height_range,
+                distance_height_range,
+                geometric_error_ratio,
                 &mut evaluations,
                 &mut culled_nodes,
             ) {
@@ -917,12 +1095,15 @@ impl PlanetLod {
                     &self.policy,
                     child,
                     &previous_split,
+                    node_level_limit,
                     camera_world,
                     camera_basis,
                     aspect_ratio,
                     viewport_height,
                     vertical_fov_radians,
                     terrain_height_range,
+                    distance_height_range,
+                    geometric_error_ratio,
                     &mut evaluations,
                     &mut culled_nodes,
                 ) {
@@ -948,12 +1129,68 @@ impl PlanetLod {
                             viewport_height,
                             vertical_fov_radians,
                             terrain_height_range,
+                            distance_height_range,
+                            geometric_error_ratio,
                             &mut evaluations,
                             &mut culled_nodes,
                         )
                         .visible
                     })
             });
+        }
+
+        // Sparse source coverage can stop a coarse neighbour several levels
+        // before a detailed tile. Grade that boundary before rendering: the
+        // shared mesh can stitch two levels, but a larger jump exposes giant
+        // triangles and skirt walls. Balancing deliberately overrides the
+        // source cap only for the narrow transition band; SSE still decides
+        // which detailed nodes are wanted in the view frustum.
+        loop {
+            let nodes_to_split = unbalanced_coarse_neighbors(&leaves);
+            if nodes_to_split.is_empty() {
+                break;
+            }
+            let mut changed = false;
+            for node in nodes_to_split {
+                if !leaves.contains(&node) || node.level >= self.policy.max_level {
+                    continue;
+                }
+                let visible_children: Vec<_> = node
+                    .children()
+                    .into_iter()
+                    .filter(|child| {
+                        Self::evaluate(
+                            *child,
+                            camera_world,
+                            camera_basis,
+                            aspect_ratio,
+                            viewport_height,
+                            vertical_fov_radians,
+                            terrain_height_range,
+                            distance_height_range,
+                            geometric_error_ratio,
+                            &mut evaluations,
+                            &mut culled_nodes,
+                        )
+                        .visible
+                    })
+                    .collect();
+                if visible_children.is_empty() {
+                    continue;
+                }
+                let next_len = leaves.len() - 1 + visible_children.len();
+                if next_len > self.max_active_chunks {
+                    budget_limited = true;
+                    continue;
+                }
+                leaves.remove(&node);
+                next_split.insert(node);
+                leaves.extend(visible_children);
+                changed = true;
+            }
+            if !changed {
+                break;
+            }
         }
 
         let mut leaves: Vec<_> = leaves.into_iter().collect();
@@ -979,6 +1216,8 @@ impl PlanetLod {
                     viewport_height,
                     vertical_fov_radians,
                     terrain_height_range,
+                    distance_height_range,
+                    geometric_error_ratio,
                     &mut evaluations,
                     &mut culled_nodes,
                 );
@@ -1025,16 +1264,22 @@ impl PlanetLod {
         policy: &LodPolicy,
         node: QuadtreeNode,
         previous_split: &HashSet<QuadtreeNode>,
+        node_level_limit: Option<&dyn Fn(QuadtreeNode) -> u8>,
         camera_world: DVec3,
         camera_basis: Option<CameraViewBasis>,
         aspect_ratio: f64,
         viewport_height: u32,
         vertical_fov_radians: f64,
         terrain_height_range: TerrainHeightRange,
+        distance_height_range: TerrainHeightRange,
+        geometric_error_ratio: f64,
         evaluations: &mut HashMap<QuadtreeNode, NodeEvaluation>,
         culled_nodes: &mut u32,
     ) -> Option<SplitCandidate> {
-        if node.level >= policy.max_level {
+        let maximum_level = node_level_limit
+            .map_or(policy.max_level, |limit| limit(node))
+            .min(policy.max_level);
+        if node.level >= maximum_level {
             return None;
         }
         let evaluation = Self::evaluate(
@@ -1045,12 +1290,15 @@ impl PlanetLod {
             viewport_height,
             vertical_fov_radians,
             terrain_height_range,
+            distance_height_range,
+            geometric_error_ratio,
             evaluations,
             culled_nodes,
         );
+        let was_split = previous_split.contains(&node);
         let refine = if node.level < policy.minimum_level() {
             true
-        } else if previous_split.contains(&node) {
+        } else if was_split {
             !policy.should_merge(evaluation.projected_error_pixels, node.level)
         } else {
             policy.should_split(evaluation.projected_error_pixels, node.level)
@@ -1070,6 +1318,8 @@ impl PlanetLod {
                     viewport_height,
                     vertical_fov_radians,
                     terrain_height_range,
+                    distance_height_range,
+                    geometric_error_ratio,
                     evaluations,
                     culled_nodes,
                 )
@@ -1079,10 +1329,9 @@ impl PlanetLod {
         if visible_children.is_empty() {
             return None;
         }
-        // Once the global leaf budget is approached, favour the nearest/deepest demand
-        // instead of breadth-refining the entire horizon at a lower level. Multiplying by
-        // 2^level removes the nominal level-halving from geometric error, leaving camera
-        // distance as the dominant priority signal.
+        // Once the global leaf budget is approached, favour the
+        // nearest/deepest visible demand instead of breadth-refining the
+        // horizon.
         let priority = evaluation.projected_error_pixels * f64::from(1_u32 << node.level);
         Some(SplitCandidate {
             node,
@@ -1099,6 +1348,8 @@ impl PlanetLod {
         viewport_height: u32,
         vertical_fov_radians: f64,
         terrain_height_range: TerrainHeightRange,
+        distance_height_range: TerrainHeightRange,
+        geometric_error_ratio: f64,
         evaluations: &mut HashMap<QuadtreeNode, NodeEvaluation>,
         culled_nodes: &mut u32,
     ) -> NodeEvaluation {
@@ -1122,12 +1373,13 @@ impl PlanetLod {
         }
         let evaluation = NodeEvaluation {
             visible,
-            projected_error_pixels: projected_error_pixels_with_height_range(
+            projected_error_pixels: projected_error_pixels_with_height_range_and_ratio(
                 node,
                 camera_world,
                 viewport_height,
                 vertical_fov_radians,
-                terrain_height_range,
+                distance_height_range,
+                geometric_error_ratio,
             ),
         };
         evaluations.insert(node, evaluation);
@@ -1845,9 +2097,10 @@ mod tests {
         GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, LodPolicy,
         MAX_LOD_LEVEL, MAX_SKIRT_DEPTH_METERS, MAX_VERTICAL_FOV_RADIANS, MIN_VERTICAL_FOV_RADIANS,
         MINIMUM_LOD_LEVEL, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE, OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS,
-        OUTMAP_TERRAIN_HEIGHT_SCALE, OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, OrbitCamera,
-        PLANET_RADIUS_METERS, PLANET_ROTATION_PERIOD_SECONDS, PlanetLod, QuadtreeNode,
-        RenderDebugMode, SKIRT_DEPTH_RATIO, TerrainHeightRange, build_chunk_mesh, cube_face_basis,
+        OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS, OUTMAP_TERRAIN_HEIGHT_SCALE,
+        OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, OrbitCamera, PLANET_RADIUS_METERS,
+        PLANET_ROTATION_PERIOD_SECONDS, PlanetLod, QuadtreeNode, RenderDebugMode,
+        SKIRT_DEPTH_RATIO, TerrainHeightRange, build_chunk_mesh, cube_face_basis,
         cube_face_direction, default_sun_direction, detailed_outmap_land_height_meters,
         global_terrain_detail_meters, minimum_vertical_fov_radians_for_viewport,
         outmap_surface_height_meters, outmap_terrain_height_scale, placeholder_height_meters,
@@ -2130,13 +2383,40 @@ mod tests {
     }
 
     #[test]
-    fn two_kilometer_selection_reaches_finest_lod_without_exhausting_budget() {
+    fn two_kilometer_selection_uses_screen_distance_without_exhausting_budget() {
         let mut lod = PlanetLod::default();
         let camera = DVec3::X * (PLANET_RADIUS_METERS + 2_000.0);
         let update = lod.update(camera, 1_080, 45.0_f64.to_radians());
-        assert_eq!(update.metrics.max_level, MAX_LOD_LEVEL);
+        assert!(update.metrics.max_level > MINIMUM_LOD_LEVEL);
+        assert!(update.metrics.max_level < MAX_LOD_LEVEL);
         assert!(!update.metrics.budget_limited);
         assert!(update.metrics.active_chunks < super::DEFAULT_MAX_ACTIVE_CHUNKS as u32);
+    }
+
+    #[test]
+    fn terrain_source_level_limit_prevents_empty_refinement() {
+        let mut lod = PlanetLod::default();
+        let camera = DVec3::X * (PLANET_RADIUS_METERS + 2_000.0);
+        let maximum_useful_level = 6;
+        let update = lod.update_for_view_with_up_and_level_limit(
+            camera,
+            -DVec3::X,
+            DVec3::Y,
+            16.0 / 9.0,
+            1_080,
+            60.0_f64.to_radians(),
+            &|_| maximum_useful_level,
+        );
+
+        assert_eq!(update.metrics.max_level, maximum_useful_level);
+        assert!(!update.metrics.budget_limited);
+        assert!(update.metrics.active_chunks < super::DEFAULT_MAX_ACTIVE_CHUNKS as u32);
+        assert!(
+            update
+                .active_nodes
+                .iter()
+                .all(|node| node.level <= maximum_useful_level)
+        );
     }
 
     #[test]
@@ -2516,7 +2796,72 @@ mod tests {
     }
 
     #[test]
-    fn captured_low_flight_view_covers_the_elevated_terrain_shell() {
+    fn downward_low_flight_sse_has_no_multi_level_topology_cliffs() {
+        let camera_position = DVec3::X * (PLANET_RADIUS_METERS + 2_198.0);
+        let forward = -DVec3::X;
+        let up = DVec3::Z;
+        let mut lod = PlanetLod::default();
+        let update = lod.update_for_view_with_up(
+            camera_position,
+            forward,
+            up,
+            16.0 / 9.0,
+            1_080,
+            60.0_f64.to_radians(),
+        );
+
+        assert!(!update.metrics.budget_limited);
+        assert!(update.metrics.max_level >= 10);
+        assert!(update.metrics.max_level < MAX_LOD_LEVEL);
+        for node in &update.active_nodes {
+            let [u_min, v_min, u_max, v_max] = node.uv_bounds();
+            let outside = (u_max - u_min) * 1.0e-5;
+            for edge in 0..4 {
+                for sample in 0..8 {
+                    let amount = (f64::from(sample) + 0.5) / 8.0;
+                    let u = u_min + (u_max - u_min) * amount;
+                    let v = v_min + (v_max - v_min) * amount;
+                    let (outside_u, outside_v) = match edge {
+                        0 => (u, v_min - outside),
+                        1 => (u_max + outside, v),
+                        2 => (u, v_max + outside),
+                        _ => (u_min - outside, v),
+                    };
+                    let direction = cube_face_direction(node.face, outside_u, outside_v);
+                    let Some(neighbor) = update.active_nodes.iter().find(|candidate| {
+                        let (normal, tangent_u, tangent_v) = cube_face_basis(candidate.face);
+                        let normal_dot = direction.dot(normal);
+                        if normal_dot <= 0.0 {
+                            return false;
+                        }
+                        let candidate_u = direction.dot(tangent_u) / normal_dot;
+                        let candidate_v = direction.dot(tangent_v) / normal_dot;
+                        let [
+                            candidate_u_min,
+                            candidate_v_min,
+                            candidate_u_max,
+                            candidate_v_max,
+                        ] = candidate.uv_bounds();
+                        candidate_u >= candidate_u_min
+                            && candidate_u <= candidate_u_max
+                            && candidate_v >= candidate_v_min
+                            && candidate_v <= candidate_v_max
+                    }) else {
+                        continue;
+                    };
+                    assert!(
+                        node.level.abs_diff(neighbor.level) <= 2,
+                        "L{} node touched L{} neighbor",
+                        node.level,
+                        neighbor.level,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn source_limited_selection_covers_the_elevated_terrain_shell() {
         // capture-012 from manual run 1784065154-40230. The camera was 1,524m
         // above roughly 3,012m baked terrain when a near-field patch vanished.
         let world_position = DVec3::new(
@@ -2534,13 +2879,18 @@ mod tests {
             9_000.0 * OUTMAP_TERRAIN_HEIGHT_SCALE
                 + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS * GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE,
         ));
-        let update = lod.update_for_view_with_up(
+        // Preserve coverage for the source-limited selector used by orbital
+        // SSE. Near flight deliberately bypasses this cap so sparse texture
+        // availability cannot create a multi-level geometry cliff.
+        let maximum_global_outmap_level = 6;
+        let update = lod.update_for_view_with_up_and_level_limit(
             camera_position,
             forward,
             up,
             1.5,
             960,
             60.0_f64.to_radians(),
+            &|_| maximum_global_outmap_level,
         );
         assert!(!update.metrics.budget_limited);
 
@@ -2628,17 +2978,24 @@ mod tests {
     }
 
     #[test]
-    fn terrain_height_scale_remains_fixed_at_every_altitude() {
+    fn terrain_height_scale_blends_only_after_leaving_low_flight() {
         assert_eq!(
             outmap_terrain_height_scale(0.0),
             OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE
         );
         assert_eq!(
-            outmap_terrain_height_scale(OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS),
-            OUTMAP_TERRAIN_FAR_HEIGHT_SCALE
+            outmap_terrain_height_scale(OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS),
+            OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE
         );
         assert_eq!(
-            outmap_terrain_height_scale(500_000.0),
+            outmap_terrain_height_scale(
+                (OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS + OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS)
+                    * 0.5,
+            ),
+            (OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE + OUTMAP_TERRAIN_FAR_HEIGHT_SCALE) * 0.5,
+        );
+        assert_eq!(
+            outmap_terrain_height_scale(OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS),
             OUTMAP_TERRAIN_FAR_HEIGHT_SCALE
         );
     }
@@ -2674,7 +3031,7 @@ mod tests {
         // Worst sustained sample from manual run 1784106903-166364: the
         // 2.2-degree flight view selected 991 active chunks, retained 1,070
         // draw calls, and took 705ms. A narrow optical FOV must remain bounded
-        // while still reaching the finest useful detail.
+        // while still reaching the detail justified by its projected error.
         let world_position = DVec3::new(
             3_891_789.424_464_821,
             434_429.081_719_413_6,
@@ -2701,7 +3058,8 @@ mod tests {
 
         assert!(!update.metrics.budget_limited);
         assert!(update.active_nodes.len() <= 256);
-        assert_eq!(update.metrics.max_level, MAX_LOD_LEVEL);
+        assert!(update.metrics.max_level >= 10);
+        assert!(update.metrics.max_level < MAX_LOD_LEVEL);
     }
 
     #[test]

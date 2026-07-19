@@ -8,7 +8,7 @@ use std::{
 use catinthegarden_coretypes::{
     BiomeId, BiomeManifestEntry, ChannelManifest, CubeFace, OUTMAP_SCHEMA_VERSION, OutmapManifest,
     PLANET_RADIUS_METERS, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
-    face_uv_to_direction,
+    direction_to_face_uv, face_uv_to_direction, tile_key_for_direction,
 };
 use glam::DVec3;
 use image::{GrayImage, ImageBuffer, ImageReader, Luma, Rgb, RgbImage};
@@ -23,24 +23,34 @@ use crate::{
 const HEIGHT_FILE: &str = "height.r32f";
 const BIOME_FILE: &str = "biome.r8";
 const MOISTURE_FILE: &str = "moisture.r8";
-const MICRORELIEF_START_LEVEL: u8 = 12;
-const MICRORELIEF_MAX_AMPLITUDE_METERS: f64 = 2.0;
-const MICRORELIEF_FREQUENCY: f64 = 220_000.0;
 const BAKED_DETAIL_START_LEVEL: u8 = 3;
 const BAKED_DETAIL_MAX_AMPLITUDE_METERS: f64 = 300.0;
 const BAKED_DETAIL_BASE_FREQUENCY: f64 = 40.0;
-const LANDING_DETAIL_PROTECTION_METERS: f64 = 500.0;
+const LANDING_DETAIL_PROTECTION_METERS: f64 = 30.0;
+/// Progressively stored, band-limited detail. Each octave appears only once
+/// its tile sampling can resolve it; all frequencies are planet-direction
+/// based, so cube-face and tile boundaries remain deterministic.
+const SPARSE_DETAIL_BANDS: [(u8, f64, f64); 7] = [
+    (6, 512.0, 120.0),
+    (8, 2_048.0, 45.0),
+    (10, 8_192.0, 14.0),
+    (12, 32_768.0, 4.0),
+    (14, 131_072.0, 1.0),
+    (16, 524_288.0, 0.25),
+    (18, 2_097_152.0, 0.06),
+];
 const BAKED_BIOME_DETAIL_START_LEVEL: u8 = 3;
 const BAKED_BIOME_DETAIL_FREQUENCY: f64 = 280.0;
 
 pub fn export_outmap(config: &BakeConfig, terrain: &Terrain) -> BakeResult<OutmapManifest> {
     fs::create_dir_all(&config.output)?;
     write_previews(&config.output.join("previews"), terrain)?;
-    let available_tiles = available_tile_keys(config);
+    let landing_direction = terrain.sparse_landing_direction();
+    let available_tiles = available_tile_keys(config, landing_direction);
     let mut generated_tiles = BTreeMap::new();
     let microrelief = Perlin::new(config.seed ^ 0x4D49_4352);
     for &key in &available_tiles {
-        let mut tile = sample_tile(config, terrain, key, &microrelief);
+        let mut tile = sample_tile(terrain, key, landing_direction, &microrelief);
         if let Some(parent) = key.parent() {
             let parent_tile = generated_tiles
                 .get(&parent)
@@ -50,7 +60,7 @@ pub fn export_outmap(config: &BakeConfig, terrain: &Terrain) -> BakeResult<Outma
         write_tile(&config.output, key, &tile)?;
         generated_tiles.insert(key, tile);
     }
-    let manifest = build_manifest(config, available_tiles);
+    let manifest = build_manifest(config, landing_direction, available_tiles);
     manifest
         .validate()
         .map_err(|message| io::Error::new(ErrorKind::InvalidData, message))?;
@@ -58,6 +68,75 @@ pub fn export_outmap(config: &BakeConfig, terrain: &Terrain) -> BakeResult<Outma
         config.output.join("manifest.json"),
         serde_json::to_vec_pretty(&manifest)?,
     )?;
+    Ok(manifest)
+}
+
+/// Expands the sparse high-resolution corridor without rerunning the global
+/// erosion pipeline. Existing dense tiles remain the authoritative macro
+/// terrain; new sparse tiles bilinearly refine those samples and add only the
+/// deterministic, level-band-limited detail defined above.
+pub fn refine_existing_outmap(output: &Path) -> BakeResult<OutmapManifest> {
+    let existing: OutmapManifest =
+        serde_json::from_slice(&fs::read(output.join("manifest.json"))?)?;
+    existing
+        .validate()
+        .map_err(|message| io::Error::new(ErrorKind::InvalidData, message))?;
+    let config = BakeConfig {
+        output: output.to_path_buf(),
+        seed: existing.seed,
+        width: existing.working_width as usize,
+        height: existing.working_height as usize,
+        dense_level: existing.dense_level,
+        max_level: existing.max_level,
+        sparse_radius: None,
+        // This path does not regenerate the global terrain, but retaining a
+        // valid non-zero value keeps BakeConfig's invariants explicit.
+        erosion_iterations: 1,
+    };
+    config
+        .validate()
+        .map_err(|message| io::Error::new(ErrorKind::InvalidInput, message))?;
+
+    let landing_direction = DVec3::from_array(existing.sparse_landing_direction);
+    let available_tiles = available_tile_keys(&config, landing_direction);
+    let detail_noise = Perlin::new(config.seed ^ 0x4D49_4352);
+    let mut dense_tiles = BTreeMap::new();
+    let mut generated_tiles = BTreeMap::new();
+    for &key in available_tiles
+        .iter()
+        .filter(|key| key.level > config.dense_level)
+    {
+        let mut tile = sample_refined_tile_from_dense(
+            output,
+            config.dense_level,
+            key,
+            landing_direction,
+            &detail_noise,
+            &mut dense_tiles,
+        )?;
+        let parent = key.parent().expect("sparse tiles have a parent");
+        let parent_tile = if parent.level <= config.dense_level {
+            load_tile_cached(output, parent, &mut dense_tiles)?.clone()
+        } else {
+            generated_tiles
+                .get(&parent)
+                .cloned()
+                .expect("available tile ordering must place parents before children")
+        };
+        constrain_logical_border_to_parent(&mut tile, key, &parent_tile);
+        write_tile(output, key, &tile)?;
+        generated_tiles.insert(key, tile);
+    }
+
+    let manifest = build_manifest(&config, landing_direction, available_tiles);
+    manifest
+        .validate()
+        .map_err(|message| io::Error::new(ErrorKind::InvalidData, message))?;
+    fs::write(
+        output.join("manifest.json"),
+        serde_json::to_vec_pretty(&manifest)?,
+    )?;
+    validate_output(output)?;
     Ok(manifest)
 }
 
@@ -203,27 +282,35 @@ fn validate_previews(output: &Path, manifest: &OutmapManifest) -> BakeResult<()>
 
 fn validate_landing_height(output: &Path, manifest: &OutmapManifest) -> BakeResult<()> {
     let level = manifest.max_level;
-    let side = 1_u32 << level;
-    let key = TileKey {
-        face: CubeFace::PositiveX,
-        level,
-        x: side / 2,
-        y: side / 2,
-    };
+    let landing_direction = DVec3::from_array(manifest.sparse_landing_direction);
+    let key = tile_key_for_direction(landing_direction, level);
     if !manifest.has_tile(key) {
-        return Err(invalid_data("missing +X landing tile at maximum level"));
+        return Err(invalid_data("missing landing tile at maximum level"));
     }
-    let bytes = fs::read(output.join(key.relative_path()).join(HEIGHT_FILE))?;
-    let sample_index = (TILE_STORED_SIZE + 1) as usize;
+    let (_, u, v) = direction_to_face_uv(landing_direction);
+    let side = f64::from(1_u32 << level);
+    let tile_u = ((u + 1.0) * 0.5 * side - f64::from(key.x)).clamp(0.0, 1.0);
+    let tile_v = ((v + 1.0) * 0.5 * side - f64::from(key.y)).clamp(0.0, 1.0);
+    let stored_x = TILE_GUTTER + (tile_u * f64::from(TILE_LOGICAL_SIZE - 1)).round() as u32;
+    let stored_y = TILE_GUTTER + (tile_v * f64::from(TILE_LOGICAL_SIZE - 1)).round() as u32;
+    let sample_index = (stored_y * TILE_STORED_SIZE + stored_x) as usize;
+    let directory = output.join(key.relative_path());
+    let bytes = fs::read(directory.join(HEIGHT_FILE))?;
     let start = sample_index * size_of::<f32>();
     let height = f32::from_le_bytes(
         bytes[start..start + size_of::<f32>()]
             .try_into()
             .expect("height sample has four bytes"),
     );
-    if height > 0.0 {
+    let biome = fs::read(directory.join(BIOME_FILE))?[sample_index];
+    if height <= 0.0
+        || matches!(
+            BiomeId::try_from(biome),
+            Ok(BiomeId::Ocean | BiomeId::Lake | BiomeId::Ice)
+        )
+    {
         return Err(invalid_data(format!(
-            "+X landing height must be at or below sea level, got {height}"
+            "sparse landing site must be dry land, got height {height}m and biome {biome}"
         )));
     }
     Ok(())
@@ -233,7 +320,11 @@ fn invalid_data(message: impl Into<String>) -> Box<dyn std::error::Error + Send 
     Box::new(io::Error::new(ErrorKind::InvalidData, message.into()))
 }
 
-fn build_manifest(config: &BakeConfig, available_tiles: Vec<TileKey>) -> OutmapManifest {
+fn build_manifest(
+    config: &BakeConfig,
+    landing_direction: DVec3,
+    available_tiles: Vec<TileKey>,
+) -> OutmapManifest {
     OutmapManifest {
         schema_version: OUTMAP_SCHEMA_VERSION,
         generator: format!("catinthegarden-baker {}", env!("CARGO_PKG_VERSION")),
@@ -248,7 +339,7 @@ fn build_manifest(config: &BakeConfig, available_tiles: Vec<TileKey>) -> OutmapM
         tile_gutter: TILE_GUTTER,
         height_min_meters: MIN_HEIGHT_METERS as f32,
         height_max_meters: MAX_HEIGHT_METERS as f32,
-        sparse_landing_direction: DVec3::X.to_array(),
+        sparse_landing_direction: landing_direction.to_array(),
         channels: vec![
             ChannelManifest {
                 name: "height".to_owned(),
@@ -278,7 +369,7 @@ fn build_manifest(config: &BakeConfig, available_tiles: Vec<TileKey>) -> OutmapM
     }
 }
 
-pub fn available_tile_keys(config: &BakeConfig) -> Vec<TileKey> {
+pub fn available_tile_keys(config: &BakeConfig, landing_direction: DVec3) -> Vec<TileKey> {
     let mut keys = BTreeSet::new();
     for level in 0..=config.dense_level {
         let side = 1_u32 << level;
@@ -290,17 +381,22 @@ pub fn available_tile_keys(config: &BakeConfig) -> Vec<TileKey> {
             }
         }
     }
+    let (landing_face, landing_u, landing_v) = direction_to_face_uv(landing_direction);
     for level in config.dense_level.saturating_add(1)..=config.max_level {
         let side = 1_u32 << level;
-        let center = side / 2;
-        let start_x = center.saturating_sub(config.sparse_radius);
-        let start_y = center.saturating_sub(config.sparse_radius);
-        let end_x = center.saturating_add(config.sparse_radius).min(side - 1);
-        let end_y = center.saturating_add(config.sparse_radius).min(side - 1);
+        let center = tile_key_for_direction(landing_direction, level);
+        let sparse_radius = sparse_radius_for_level(config, level);
+        debug_assert_eq!(center.face, landing_face);
+        debug_assert!((-1.0..=1.0).contains(&landing_u));
+        debug_assert!((-1.0..=1.0).contains(&landing_v));
+        let start_x = center.x.saturating_sub(sparse_radius);
+        let start_y = center.y.saturating_sub(sparse_radius);
+        let end_x = center.x.saturating_add(sparse_radius).min(side - 1);
+        let end_y = center.y.saturating_add(sparse_radius).min(side - 1);
         for y in start_y..=end_y {
             for x in start_x..=end_x {
                 let mut key = Some(TileKey {
-                    face: CubeFace::PositiveX,
+                    face: landing_face,
                     level,
                     x,
                     y,
@@ -313,6 +409,26 @@ pub fn available_tile_keys(config: &BakeConfig) -> Vec<TileKey> {
         }
     }
     keys.into_iter().collect()
+}
+
+/// Default sparse coverage grows in tile count while individual tiles shrink,
+/// then tapers at the metre-scale levels. This keeps several kilometres of
+/// real source data in a low-flight view instead of a fixed 3x3 footprint that
+/// collapses to only a few metres at L18.
+pub fn sparse_radius_for_level(config: &BakeConfig, level: u8) -> u32 {
+    if let Some(radius) = config.sparse_radius {
+        return radius;
+    }
+    match level {
+        0..=10 => 1,
+        11 => 2,
+        12 => 3,
+        13 => 4,
+        14 => 6,
+        15 | 16 => 8,
+        17 => 6,
+        _ => 4,
+    }
 }
 
 fn write_previews(output: &Path, terrain: &Terrain) -> BakeResult<()> {
@@ -346,10 +462,104 @@ struct TileData {
     moisture: Vec<u8>,
 }
 
+fn load_tile_cached<'a>(
+    output: &Path,
+    key: TileKey,
+    cache: &'a mut BTreeMap<TileKey, TileData>,
+) -> BakeResult<&'a TileData> {
+    if !cache.contains_key(&key) {
+        let directory = output.join(key.relative_path());
+        let height_bytes = fs::read(directory.join(HEIGHT_FILE))?;
+        let biome = fs::read(directory.join(BIOME_FILE))?;
+        let moisture = fs::read(directory.join(MOISTURE_FILE))?;
+        let sample_count = (TILE_STORED_SIZE * TILE_STORED_SIZE) as usize;
+        if height_bytes.len() != sample_count * size_of::<f32>()
+            || biome.len() != sample_count
+            || moisture.len() != sample_count
+        {
+            return Err(invalid_data(format!("bad source tile payload for {key:?}")));
+        }
+        let height = height_bytes
+            .chunks_exact(size_of::<f32>())
+            .map(|bytes| {
+                f32::from_le_bytes(bytes.try_into().expect("height sample has four bytes"))
+            })
+            .collect();
+        cache.insert(
+            key,
+            TileData {
+                height,
+                biome,
+                moisture,
+            },
+        );
+    }
+    Ok(cache.get(&key).expect("tile was inserted into cache"))
+}
+
+fn sample_refined_tile_from_dense(
+    output: &Path,
+    dense_level: u8,
+    key: TileKey,
+    landing_direction: DVec3,
+    noise: &Perlin,
+    dense_tiles: &mut BTreeMap<TileKey, TileData>,
+) -> BakeResult<TileData> {
+    let sample_count = (TILE_STORED_SIZE * TILE_STORED_SIZE) as usize;
+    let mut height = Vec::with_capacity(sample_count);
+    let mut biome = Vec::with_capacity(sample_count);
+    let mut moisture = Vec::with_capacity(sample_count);
+    let side = 1_u64 << key.level;
+    let denominator = u64::from(TILE_LOGICAL_SIZE - 1) * side;
+    for stored_y in 0..TILE_STORED_SIZE {
+        let local_y = i64::from(stored_y) - i64::from(TILE_GUTTER);
+        let global_y = i64::from(key.y) * i64::from(TILE_LOGICAL_SIZE - 1) + local_y;
+        let v = -1.0 + 2.0 * global_y as f64 / denominator as f64;
+        for stored_x in 0..TILE_STORED_SIZE {
+            let local_x = i64::from(stored_x) - i64::from(TILE_GUTTER);
+            let global_x = i64::from(key.x) * i64::from(TILE_LOGICAL_SIZE - 1) + local_x;
+            let u = -1.0 + 2.0 * global_x as f64 / denominator as f64;
+            let direction = face_uv_to_direction(key.face, u, v);
+            let source_key = tile_key_for_direction(direction, dense_level);
+            let source = load_tile_cached(output, source_key, dense_tiles)?;
+            let (_, source_u, source_v) = direction_to_face_uv(direction);
+            let source_side = f64::from(1_u32 << dense_level);
+            let source_x = ((source_u + 1.0) * 0.5 * source_side - f64::from(source_key.x))
+                * f64::from(TILE_LOGICAL_SIZE - 1);
+            let source_y = ((source_v + 1.0) * 0.5 * source_side - f64::from(source_key.y))
+                * f64::from(TILE_LOGICAL_SIZE - 1);
+            let source_x = source_x.clamp(0.0, f64::from(TILE_LOGICAL_SIZE - 1));
+            let source_y = source_y.clamp(0.0, f64::from(TILE_LOGICAL_SIZE - 1));
+            let macro_height = f64::from(sample_parent_f32(&source.height, source_x, source_y));
+            let old_landing_ramp =
+                landing_detail_ramp_with_radius(direction, landing_direction, 500.0);
+            let broad_detail_correction = unprotected_baked_surface_detail(direction, noise)
+                * (landing_detail_ramp(direction, landing_direction) - old_landing_ramp);
+            let detail = broad_detail_correction
+                + sparse_surface_detail(key, direction, landing_direction, noise);
+            let sampled_height = (macro_height + detail * smoothstep(25.0, 150.0, macro_height))
+                .clamp(MIN_HEIGHT_METERS, MAX_HEIGHT_METERS)
+                as f32;
+            height.push(sampled_height);
+            biome.push(sample_parent_u8_nearest(&source.biome, source_x, source_y));
+            moisture.push(sample_parent_u8_linear(
+                &source.moisture,
+                source_x,
+                source_y,
+            ));
+        }
+    }
+    Ok(TileData {
+        height,
+        biome,
+        moisture,
+    })
+}
+
 fn sample_tile(
-    config: &BakeConfig,
     terrain: &Terrain,
     key: TileKey,
+    landing_direction: DVec3,
     microrelief: &Perlin,
 ) -> TileData {
     let sample_count = (TILE_STORED_SIZE * TILE_STORED_SIZE) as usize;
@@ -369,9 +579,14 @@ fn sample_tile(
             let u = -1.0 + 2.0 * global_x as f64 / denominator as f64;
             let direction = face_uv_to_direction(key.face, u, v);
             let sampled_moisture = terrain.grid.sample_u8_linear(&terrain.moisture, direction);
-            let sampled_height = terrain.grid.sample_f64(&terrain.height_meters, direction)
-                + baked_surface_detail(key, direction, microrelief)
-                + sparse_microrelief(config, key, direction, microrelief);
+            let macro_height = terrain.grid.sample_f64(&terrain.height_meters, direction);
+            let detail = baked_surface_detail(key, direction, landing_direction, microrelief)
+                + sparse_surface_detail(key, direction, landing_direction, microrelief);
+            // Do not move the coastline: introduce relief only after the base
+            // baker has established dry land, then reach full strength at the
+            // selected low-flight site's modest coastal elevation.
+            let land_weight = smoothstep(25.0, 150.0, macro_height);
+            let sampled_height = macro_height + detail * land_weight;
             let sampled_height = sampled_height.clamp(MIN_HEIGHT_METERS, MAX_HEIGHT_METERS) as f32;
             height.push(sampled_height);
             let sampled_biome = terrain.grid.sample_u8_nearest(&biome_ids, direction);
@@ -446,11 +661,26 @@ fn baked_biome_detail(
     biome as u8
 }
 
-fn baked_surface_detail(key: TileKey, direction: DVec3, noise: &Perlin) -> f64 {
+fn baked_surface_detail(
+    key: TileKey,
+    direction: DVec3,
+    landing_direction: DVec3,
+    noise: &Perlin,
+) -> f64 {
     if key.level < BAKED_DETAIL_START_LEVEL {
         return 0.0;
     }
 
+    let level_ramp = (f64::from(key.level - BAKED_DETAIL_START_LEVEL + 1) / 2.0).min(1.0);
+
+    // Keep the deterministic inspection centre locally safe while retaining
+    // the generated coastal terrain around it.
+    unprotected_baked_surface_detail(direction, noise)
+        * level_ramp
+        * landing_detail_ramp(direction, landing_direction)
+}
+
+fn unprotected_baked_surface_detail(direction: DVec3, noise: &Perlin) -> f64 {
     // The equirectangular terrain atlas carries continental features and
     // erosion. These three 3D-noise bands are sampled only by the baker, then
     // stored in higher-level tiles, providing kilometre-scale terrain rather
@@ -462,41 +692,56 @@ fn baked_surface_detail(key: TileKey, direction: DVec3, noise: &Perlin) -> f64 {
             direction.z * frequency,
         ])
     };
-    let detail = sample(BAKED_DETAIL_BASE_FREQUENCY) * 0.58
+    (sample(BAKED_DETAIL_BASE_FREQUENCY) * 0.58
         + sample(BAKED_DETAIL_BASE_FREQUENCY * 2.0) * 0.29
-        + sample(BAKED_DETAIL_BASE_FREQUENCY * 4.0) * 0.13;
-    let level_ramp = (f64::from(key.level - BAKED_DETAIL_START_LEVEL + 1) / 2.0).min(1.0);
-
-    // Keep the deterministic descent target locally flat, without leaving the
-    // old multi-degree landing disc as the only detail visible after zooming.
-    let landing_angle = direction.dot(DVec3::X).clamp(-1.0, 1.0).acos();
-    let protection_angle = LANDING_DETAIL_PROTECTION_METERS / PLANET_RADIUS_METERS;
-    let landing_ramp = (landing_angle / protection_angle).clamp(0.0, 1.0);
-    let landing_ramp = landing_ramp * landing_ramp * (3.0 - 2.0 * landing_ramp);
-
-    detail * BAKED_DETAIL_MAX_AMPLITUDE_METERS * level_ramp * landing_ramp
+        + sample(BAKED_DETAIL_BASE_FREQUENCY * 4.0) * 0.13)
+        * BAKED_DETAIL_MAX_AMPLITUDE_METERS
 }
 
-fn sparse_microrelief(config: &BakeConfig, key: TileKey, direction: DVec3, noise: &Perlin) -> f64 {
-    if key.face != CubeFace::PositiveX
-        || key.level <= config.dense_level
-        || key.level < MICRORELIEF_START_LEVEL
-    {
-        return 0.0;
-    }
-    let progress = (f64::from(key.level - MICRORELIEF_START_LEVEL)
-        / f64::from(catinthegarden_coretypes::QUADTREE_MAX_LEVEL - MICRORELIEF_START_LEVEL))
-    .clamp(0.0, 1.0);
-    let ramp = progress * progress * (3.0 - 2.0 * progress);
-    let sample = |sample_direction: DVec3| {
-        noise.get([
-            sample_direction.x * MICRORELIEF_FREQUENCY,
-            sample_direction.y * MICRORELIEF_FREQUENCY,
-            sample_direction.z * MICRORELIEF_FREQUENCY,
-        ])
-    };
-    let centered = (sample(direction) - sample(DVec3::X)).clamp(-1.0, 1.0);
-    centered * MICRORELIEF_MAX_AMPLITUDE_METERS * ramp
+fn sparse_surface_detail(
+    key: TileKey,
+    direction: DVec3,
+    landing_direction: DVec3,
+    noise: &Perlin,
+) -> f64 {
+    let detail = SPARSE_DETAIL_BANDS
+        .iter()
+        .filter(|(minimum_level, _, _)| key.level >= *minimum_level)
+        .map(|(_, frequency, amplitude_meters)| {
+            let sample = |sample_direction: DVec3| {
+                noise.get([
+                    sample_direction.x * frequency,
+                    sample_direction.y * frequency,
+                    sample_direction.z * frequency,
+                ])
+            };
+            (sample(direction) - sample(landing_direction)).clamp(-1.0, 1.0) * amplitude_meters
+        })
+        .sum::<f64>();
+    detail * landing_detail_ramp(direction, landing_direction)
+}
+
+fn landing_detail_ramp(direction: DVec3, landing_direction: DVec3) -> f64 {
+    landing_detail_ramp_with_radius(
+        direction,
+        landing_direction,
+        LANDING_DETAIL_PROTECTION_METERS,
+    )
+}
+
+fn landing_detail_ramp_with_radius(
+    direction: DVec3,
+    landing_direction: DVec3,
+    protection_radius_meters: f64,
+) -> f64 {
+    let landing_distance_meters =
+        direction.dot(landing_direction).clamp(-1.0, 1.0).acos() * PLANET_RADIUS_METERS;
+    smoothstep(0.0, protection_radius_meters, landing_distance_meters)
+}
+
+fn smoothstep(edge0: f64, edge1: f64, value: f64) -> f64 {
+    let amount = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    amount * amount * (3.0 - 2.0 * amount)
 }
 
 fn constrain_logical_border_to_parent(tile: &mut TileData, key: TileKey, parent: &TileData) {
@@ -580,16 +825,51 @@ mod tests {
     #[test]
     fn sparse_keys_reach_level_eighteen_and_have_parents() {
         let config = BakeConfig::default();
-        let keys = available_tile_keys(&config);
+        let landing = face_uv_to_direction(CubeFace::PositiveZ, 0.31, -0.27);
+        let keys = available_tile_keys(&config, landing);
         assert!(
-            keys.iter()
-                .any(|key| { key.face == CubeFace::PositiveX && key.level == config.max_level })
+            keys.binary_search(&tile_key_for_direction(landing, config.max_level))
+                .is_ok()
         );
         for key in &keys {
             if let Some(parent) = key.parent() {
                 assert!(keys.binary_search(&parent).is_ok());
             }
         }
+    }
+
+    #[test]
+    fn adaptive_sparse_radius_preserves_low_flight_source_coverage() {
+        let config = BakeConfig::default();
+        assert_eq!(sparse_radius_for_level(&config, 10), 1);
+        assert_eq!(sparse_radius_for_level(&config, 13), 4);
+        assert_eq!(sparse_radius_for_level(&config, 15), 8);
+        assert_eq!(sparse_radius_for_level(&config, 18), 4);
+
+        let mut overridden = config;
+        overridden.sparse_radius = Some(2);
+        assert_eq!(sparse_radius_for_level(&overridden, 15), 2);
+    }
+
+    #[test]
+    fn sparse_height_bands_add_resolvable_detail_without_roughening_the_spawn_point() {
+        let noise = Perlin::new(0xABCD_0123);
+        let landing = DVec3::X;
+        let nearby = face_uv_to_direction(CubeFace::PositiveX, 0.002, -0.001);
+        let node = |level| TileKey {
+            face: CubeFace::PositiveX,
+            level,
+            x: 1_u32 << (level - 1),
+            y: 1_u32 << (level - 1),
+        };
+
+        assert_eq!(sparse_surface_detail(node(5), nearby, landing, &noise), 0.0);
+        assert_ne!(sparse_surface_detail(node(6), nearby, landing, &noise), 0.0);
+        assert_eq!(
+            sparse_surface_detail(node(18), landing, landing, &noise),
+            0.0
+        );
+        assert!(LANDING_DETAIL_PROTECTION_METERS < 50.0);
     }
 
     #[test]
@@ -614,7 +894,7 @@ mod tests {
                         * (f64::from(key.y) + f64::from(y) / f64::from(TILE_LOGICAL_SIZE - 1))
                         / 16.0,
                 );
-                let detail = baked_surface_detail(key, direction, &noise);
+                let detail = baked_surface_detail(key, direction, DVec3::X, &noise);
                 minimum = minimum.min(detail);
                 maximum = maximum.max(detail);
             }
@@ -628,6 +908,7 @@ mod tests {
                     x: 1 << 17,
                     y: 1 << 17,
                 },
+                DVec3::X,
                 DVec3::X,
                 &noise,
             ),

@@ -3,7 +3,7 @@ use std::{
     collections::{BinaryHeap, VecDeque},
 };
 
-use catinthegarden_coretypes::BiomeId;
+use catinthegarden_coretypes::{BiomeId, direction_to_face_uv};
 use noise::{NoiseFn, Perlin};
 use rayon::prelude::*;
 
@@ -52,7 +52,6 @@ impl Terrain {
         terrain.carve_rivers();
         terrain.fill_lakes();
         terrain.carve_glacial_valleys();
-        terrain.apply_landing_patch();
         terrain.compute_moisture();
         terrain.classify_biomes();
         terrain
@@ -334,32 +333,82 @@ impl Terrain {
         }
     }
 
-    fn apply_landing_patch(&mut self) {
-        let center = glam::DVec3::X;
-        // Cover at least the four working-grid samples surrounding +X so
-        // bilinear tile export cannot interpolate the landing point upward.
-        let inner_radius = 2.0_f64
-            .to_radians()
-            .max(std::f64::consts::PI / self.grid.height() as f64);
-        let outer_radius = inner_radius + 4.0_f64.to_radians();
-        self.height_meters
-            .par_iter_mut()
-            .enumerate()
-            .for_each(|(index, height)| {
-                let angle = self
-                    .grid
-                    .direction(index)
-                    .dot(center)
-                    .clamp(-1.0, 1.0)
-                    .acos();
-                if angle >= outer_radius {
-                    return;
+    /// Chooses a deterministic, dry coastal site for sparse high-resolution
+    /// refinement. The cube-face margin keeps every sparse-radius tile on one
+    /// face, while the minimum elevation leaves room for baked relief without
+    /// allowing the inspection point to become water.
+    pub fn sparse_landing_direction(&self) -> glam::DVec3 {
+        for minimum_height in [450.0, 100.0, 0.0] {
+            let mut best: Option<(f64, usize)> = None;
+            for index in 0..self.grid.len() {
+                let biome = self.biome[index];
+                let height = self.height_meters[index];
+                if matches!(biome, BiomeId::Ocean | BiomeId::Lake | BiomeId::Ice)
+                    || height <= minimum_height
+                {
+                    continue;
                 }
-                let normalized =
-                    ((angle - inner_radius) / (outer_radius - inner_radius)).clamp(0.0, 1.0);
-                let smooth = normalized * normalized * (3.0 - 2.0 * normalized);
-                *height = -10.0 * (1.0 - smooth) + *height * smooth;
-            });
+                let direction = self.grid.direction(index);
+                if direction.y.abs() > 0.88 {
+                    continue;
+                }
+                let (_, u, v) = direction_to_face_uv(direction);
+                if u.abs() > 0.8 || v.abs() > 0.8 {
+                    continue;
+                }
+
+                let mut touches_water = false;
+                let mut touches_ocean = false;
+                let mut minimum_dry_height = height;
+                let mut maximum_dry_height = height;
+                for neighbor in (0..8).filter_map(|slot| self.grid.neighbor(index, slot)) {
+                    let neighbor_biome = self.biome[neighbor];
+                    if matches!(neighbor_biome, BiomeId::Ocean | BiomeId::Lake) {
+                        touches_water = true;
+                        touches_ocean |= neighbor_biome == BiomeId::Ocean;
+                    } else if neighbor_biome != BiomeId::Ice {
+                        let neighbor_height = self.height_meters[neighbor];
+                        minimum_dry_height = minimum_dry_height.min(neighbor_height);
+                        maximum_dry_height = maximum_dry_height.max(neighbor_height);
+                    }
+                }
+                if !touches_water {
+                    continue;
+                }
+                let relief = maximum_dry_height - minimum_dry_height;
+                let biome_bonus = match biome {
+                    BiomeId::TemperateForest | BiomeId::TropicalForest => 400.0,
+                    BiomeId::TemperateGrassland => 300.0,
+                    BiomeId::Tundra | BiomeId::Desert => 100.0,
+                    BiomeId::MountainRock | BiomeId::MountainSnow => -200.0,
+                    BiomeId::Ocean | BiomeId::Lake | BiomeId::Ice => unreachable!(),
+                };
+                let score = biome_bonus
+                    + if touches_ocean { 500.0 } else { 0.0 }
+                    + relief.min(2_000.0) * 0.25
+                    - (height - 800.0).abs() * 0.08
+                    - direction.y.abs() * 150.0;
+                if !matches!(best, Some((best_score, _)) if score <= best_score) {
+                    best = Some((score, index));
+                }
+            }
+            if let Some((_, index)) = best {
+                return self.grid.direction(index);
+            }
+        }
+
+        self.biome
+            .iter()
+            .enumerate()
+            .find_map(|(index, &biome)| {
+                if matches!(biome, BiomeId::Ocean | BiomeId::Lake | BiomeId::Ice) {
+                    return None;
+                }
+                let direction = self.grid.direction(index);
+                let (_, u, v) = direction_to_face_uv(direction);
+                (u.abs() <= 0.8 && v.abs() <= 0.8).then_some(direction)
+            })
+            .unwrap_or(glam::DVec3::X)
     }
 
     fn classify_biomes(&mut self) {
@@ -612,7 +661,7 @@ mod tests {
     }
 
     #[test]
-    fn landing_patch_keeps_nominal_ten_meter_descent_above_ground() {
+    fn sparse_landing_selection_returns_dry_terrain() {
         let config = BakeConfig {
             width: 64,
             height: 32,
@@ -620,10 +669,21 @@ mod tests {
             ..BakeConfig::quick(std::path::PathBuf::new())
         };
         let terrain = Terrain::generate(&config);
-        let height = terrain
-            .grid
-            .sample_f64(&terrain.height_meters, glam::DVec3::X);
-        assert!(height <= 0.0, "landing height was {height}");
+        let direction = terrain.sparse_landing_direction();
+        let height = terrain.grid.sample_f64(&terrain.height_meters, direction);
+        let biome = terrain.grid.sample_u8_nearest(
+            &terrain
+                .biome
+                .iter()
+                .map(|biome| *biome as u8)
+                .collect::<Vec<_>>(),
+            direction,
+        );
+        assert!(height > 0.0, "landing height was {height}");
+        assert!(!matches!(
+            BiomeId::try_from(biome),
+            Ok(BiomeId::Ocean | BiomeId::Lake | BiomeId::Ice)
+        ));
     }
 
     #[test]

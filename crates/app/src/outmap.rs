@@ -25,7 +25,7 @@ impl TileData {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Outmap {
     root: PathBuf,
     manifest: OutmapManifest,

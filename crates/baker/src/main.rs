@@ -1,6 +1,9 @@
 use std::{env, path::PathBuf, process::ExitCode};
 
-use catinthegarden_baker::{BakeConfig, bake, validate_output};
+use catinthegarden_baker::{
+    BakeConfig, bake, refine_existing_outmap, sparse_radius_for_level, validate_output,
+};
+use catinthegarden_coretypes::{PLANET_RADIUS_METERS, TILE_LOGICAL_SIZE};
 
 fn main() -> ExitCode {
     match run() {
@@ -36,6 +39,21 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         );
         return Ok(());
     }
+    if let Some(index) = arguments
+        .iter()
+        .position(|argument| argument == "--refine-existing")
+    {
+        let output = arguments
+            .get(index + 1)
+            .ok_or("--refine-existing requires an outmap directory")?;
+        let manifest = refine_existing_outmap(PathBuf::from(output).as_path())?;
+        println!(
+            "refined and validated {} tiles at {}",
+            manifest.available_tiles.len(),
+            output
+        );
+        return Ok(());
+    }
 
     let config = parse_config(&arguments)?;
     println!(
@@ -46,13 +64,31 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config.dense_level,
         config.max_level
     );
+    print_sparse_coverage(&config);
     let manifest = bake(&config)?;
+    let [landing_x, landing_y, landing_z] = manifest.sparse_landing_direction;
+    println!("selected dry coastal sparse centre [{landing_x:.6}, {landing_y:.6}, {landing_z:.6}]");
     println!(
         "wrote and validated {} tiles plus previews at {}",
         manifest.available_tiles.len(),
         config.output.display()
     );
     Ok(())
+}
+
+fn print_sparse_coverage(config: &BakeConfig) {
+    println!("sparse source coverage (approximate face-centre widths):");
+    for level in config.dense_level.saturating_add(1)..=config.max_level {
+        let radius = sparse_radius_for_level(config, level);
+        let tile_width_meters =
+            PLANET_RADIUS_METERS * std::f64::consts::FRAC_PI_2 / f64::from(1_u32 << level);
+        let coverage_width_meters = tile_width_meters * f64::from(radius * 2 + 1);
+        let sample_spacing_meters =
+            tile_width_meters / f64::from(TILE_LOGICAL_SIZE.saturating_sub(1));
+        println!(
+            "  L{level:02}: radius {radius:>2}, coverage {coverage_width_meters:>9.1}m, sample spacing {sample_spacing_meters:>7.3}m"
+        );
+    }
 }
 
 fn parse_config(arguments: &[String]) -> Result<BakeConfig, String> {
@@ -101,7 +137,7 @@ fn parse_config(arguments: &[String]) -> Result<BakeConfig, String> {
                 index += 2;
             }
             "--sparse-radius" => {
-                config.sparse_radius = parse(value(arguments, index, argument)?, argument)?;
+                config.sparse_radius = Some(parse(value(arguments, index, argument)?, argument)?);
                 index += 2;
             }
             "--erosion-iterations" => {
@@ -146,11 +182,12 @@ fn print_help() {
            --width N                  Working equirectangular grid width\n\
            --height N                 Working grid height\n\
            --dense-level N            Highest globally dense quadtree level\n\
-           --max-level N              Sparse +X refinement depth (maximum 18)\n\
-           --sparse-radius N          Tile radius around the +X landing area\n\
+          --max-level N              Sparse coastal refinement depth (maximum 18)\n\
+          --sparse-radius N          Constant tile radius (default: adaptive coverage)\n\
            --erosion-iterations N     Hydraulic iteration count\n\
            --quick                    Small deterministic development bake\n\
            --validate PATH            Validate an existing outmap and exit\n\
+           --refine-existing PATH     Expand sparse detail from existing dense macro tiles\
            -h, --help                 Show this help"
     );
 }

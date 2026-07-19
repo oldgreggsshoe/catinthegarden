@@ -10,7 +10,9 @@ pub struct BakeConfig {
     pub height: usize,
     pub dense_level: u8,
     pub max_level: u8,
-    pub sparse_radius: u32,
+    /// Constant sparse radius override. `None` uses the default physical-
+    /// coverage profile, whose tile radius grows as tiles become smaller.
+    pub sparse_radius: Option<u32>,
     pub erosion_iterations: usize,
 }
 
@@ -27,7 +29,7 @@ impl Default for BakeConfig {
             height: 2_048,
             dense_level: 4,
             max_level: QUADTREE_MAX_LEVEL,
-            sparse_radius: 1,
+            sparse_radius: None,
             erosion_iterations: 2_048,
         }
     }
@@ -41,7 +43,7 @@ impl BakeConfig {
             height: 32,
             dense_level: 1,
             max_level: 4,
-            sparse_radius: 0,
+            sparse_radius: Some(0),
             erosion_iterations: 16,
             ..Self::default()
         }
@@ -64,8 +66,8 @@ impl BakeConfig {
                 "dense levels above {MAX_DENSE_LEVEL} are intentionally unsupported"
             ));
         }
-        if self.sparse_radius > 4 {
-            return Err("sparse radius above 4 is intentionally unsupported".to_owned());
+        if self.sparse_radius.is_some_and(|radius| radius > 8) {
+            return Err("sparse radius above 8 is intentionally unsupported".to_owned());
         }
         if self.erosion_iterations == 0 {
             return Err("erosion iterations must be positive".to_owned());

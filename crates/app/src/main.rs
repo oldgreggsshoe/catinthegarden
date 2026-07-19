@@ -54,8 +54,77 @@ const DEFAULT_CAMERA_ORBIT_INCLINATION_RADIANS: f64 = 28.5_f64.to_radians();
 const INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 = 0.3;
 const MOUSE_LOOK_RADIANS_PER_PIXEL: f64 = 0.0006;
 const LOW_FLIGHT_ALTITUDE_METERS: f64 = 5_000.0 * 0.3048;
-const LOW_FLIGHT_SPEED_METERS_PER_SECOND: f64 = 300.0 * 3_403.0;
+/// Flight begins gently enough for surface inspection, then acceleration
+/// doubles while a movement key remains held so the same controls can leave
+/// the planet. Shift accelerates the ramp without changing its shape.
+const LOW_FLIGHT_BASE_ACCELERATION_METERS_PER_SECOND_SQUARED: f64 = 50.0;
+const LOW_FLIGHT_ACCELERATION_DOUBLING_SECONDS: f64 = 0.75;
+const LOW_FLIGHT_BOOST_ACCELERATION_MULTIPLIER: f64 = 4.0;
+const LOW_FLIGHT_MAX_ACCELERATION_METERS_PER_SECOND_SQUARED: f64 = 4_000_000.0;
+const LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND: f64 = 8_000_000.0;
+/// Releasing all movement keys halves speed every 80ms. This gives short taps
+/// precise stopping while still allowing a brief, readable coast at speed.
+const LOW_FLIGHT_RELEASE_BRAKE_HALF_LIFE_SECONDS: f64 = 0.08;
 const LOW_FLIGHT_VERTICAL_FOV_DEGREES: f64 = 60.0;
+/// Start with the landing site visibly below the horizon. A tangent view at
+/// 5,000 ft spent most of the frame on atmosphere and made the finest sparse
+/// terrain patch effectively invisible even though the camera was above it.
+const LOW_FLIGHT_INITIAL_PITCH_RADIANS: f64 = -18.0_f64.to_radians();
+/// Prevent a slow render frame from turning into a much larger terrain jump on
+/// the next frame. This is a visual navigation mode rather than a physics
+/// integrator, so bounded slowdown is preferable to a performance feedback
+/// loop while boosted across streamed terrain.
+const MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS: f64 = 1.0 / 30.0;
+
+fn adapter_preference(info: &wgpu::AdapterInfo) -> (u8, bool, bool) {
+    let device_rank = match info.device_type {
+        wgpu::DeviceType::DiscreteGpu => 4,
+        wgpu::DeviceType::IntegratedGpu => 3,
+        wgpu::DeviceType::VirtualGpu => 2,
+        wgpu::DeviceType::Other => 1,
+        wgpu::DeviceType::Cpu => 0,
+    };
+    (
+        device_rank,
+        info.vendor == 0x10de || info.name.to_ascii_lowercase().contains("nvidia"),
+        info.backend == wgpu::Backend::Vulkan,
+    )
+}
+
+async fn select_render_adapter(
+    instance: &wgpu::Instance,
+    surface: &wgpu::Surface<'_>,
+) -> wgpu::Adapter {
+    let mut adapters: Vec<_> = instance
+        .enumerate_adapters(wgpu::Backends::all())
+        .await
+        .into_iter()
+        .filter(|adapter| adapter.is_surface_supported(surface))
+        .collect();
+    if let Ok(requested_name) = std::env::var("WGPU_ADAPTER_NAME") {
+        let requested_name = requested_name.to_ascii_lowercase();
+        if let Some(index) = adapters.iter().position(|adapter| {
+            adapter
+                .get_info()
+                .name
+                .to_ascii_lowercase()
+                .contains(&requested_name)
+        }) {
+            return adapters.swap_remove(index);
+        }
+        tracing::warn!(
+            target: "catinthegarden::adapter",
+            requested_name,
+            "requested WGPU adapter is unavailable; using the best compatible adapter"
+        );
+    }
+    adapters
+        .into_iter()
+        .max_by_key(|adapter| adapter_preference(&adapter.get_info()))
+        .unwrap_or_else(|| {
+            panic!("no surface-compatible GPU adapter found");
+        })
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct FlightMovementInput {
@@ -63,6 +132,52 @@ struct FlightMovementInput {
     backward: bool,
     left: bool,
     right: bool,
+    boost: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct FlightSpeedState {
+    speed_meters_per_second: f64,
+    acceleration_time_seconds: f64,
+}
+
+fn advance_flight_speed(
+    state: FlightSpeedState,
+    movement_held: bool,
+    boost: bool,
+    delta_seconds: f64,
+) -> FlightSpeedState {
+    if delta_seconds <= 0.0 {
+        return state;
+    }
+    if movement_held {
+        let acceleration_time_seconds = state.acceleration_time_seconds + delta_seconds;
+        let boost_multiplier = if boost {
+            LOW_FLIGHT_BOOST_ACCELERATION_MULTIPLIER
+        } else {
+            1.0
+        };
+        let acceleration = (LOW_FLIGHT_BASE_ACCELERATION_METERS_PER_SECOND_SQUARED
+            * 2.0_f64.powf(acceleration_time_seconds / LOW_FLIGHT_ACCELERATION_DOUBLING_SECONDS)
+            * boost_multiplier)
+            .min(LOW_FLIGHT_MAX_ACCELERATION_METERS_PER_SECOND_SQUARED);
+        FlightSpeedState {
+            speed_meters_per_second: (state.speed_meters_per_second + acceleration * delta_seconds)
+                .min(LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND),
+            acceleration_time_seconds,
+        }
+    } else {
+        let speed_meters_per_second = state.speed_meters_per_second
+            * 0.5_f64.powf(delta_seconds / LOW_FLIGHT_RELEASE_BRAKE_HALF_LIFE_SECONDS);
+        FlightSpeedState {
+            speed_meters_per_second: if speed_meters_per_second < 0.01 {
+                0.0
+            } else {
+                speed_meters_per_second
+            },
+            acceleration_time_seconds: 0.0,
+        }
+    }
 }
 
 fn flight_movement_direction(
@@ -116,6 +231,23 @@ fn transport_flight_tangent(
     }
 }
 
+fn transport_flight_direction(
+    direction: glam::DVec3,
+    previous_radial: glam::DVec3,
+    next_radial: glam::DVec3,
+) -> glam::DVec3 {
+    let rotation_axis = previous_radial.cross(next_radial);
+    if rotation_axis.length_squared() <= f64::EPSILON {
+        return direction;
+    }
+    let angle = rotation_axis
+        .length()
+        .atan2(previous_radial.dot(next_radial));
+    glam::DQuat::from_axis_angle(rotation_axis.normalize(), angle)
+        .mul_vec3(direction)
+        .normalize()
+}
+
 fn flight_view_direction(
     local_radial: glam::DVec3,
     local_tangent: glam::DVec3,
@@ -140,7 +272,7 @@ impl CameraMode {
     fn label(self) -> &'static str {
         match self {
             Self::Orbit => "orbit",
-            Self::LowFlight => "10x Mach 300 WASD flight",
+            Self::LowFlight => "accelerating WASD flight (Shift: 4x acceleration)",
         }
     }
 }
@@ -154,8 +286,26 @@ fn interactive_camera_delta_seconds(
 ) -> f64 {
     match camera_mode {
         CameraMode::Orbit => scene_delta_seconds,
-        CameraMode::LowFlight => frame_delta_seconds,
+        CameraMode::LowFlight => frame_delta_seconds.min(MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS),
     }
+}
+
+fn advance_flight_position_on_sphere(
+    position: glam::DVec3,
+    movement_direction: glam::DVec3,
+    distance_meters: f64,
+) -> glam::DVec3 {
+    let radial = position.normalize();
+    let radial_distance = movement_direction.dot(radial) * distance_meters;
+    let tangent = movement_direction - radial * movement_direction.dot(radial);
+    let next_radius = (position.length() + radial_distance).max(planet::PLANET_RADIUS_METERS);
+    if tangent.length_squared() <= f64::EPSILON || distance_meters <= 0.0 {
+        return radial * next_radius;
+    }
+    let tangent_direction = tangent.normalize();
+    let rotation_axis = radial.cross(tangent_direction).normalize();
+    let angular_distance = tangent.length() * distance_meters / next_radius;
+    glam::DQuat::from_axis_angle(rotation_axis, angular_distance).mul_vec3(radial) * next_radius
 }
 
 fn format_vertical_fov(vertical_fov_degrees: f64) -> String {
@@ -319,6 +469,7 @@ struct State {
     sun: sun::SunRenderer,
     terrain: terrain::TerrainRenderer,
     terrain_stats: terrain::TerrainStats,
+    adapter_label: String,
     camera: planet::OrbitCamera,
     sun_direction: glam::DVec3,
     previous_camera_world_position: glam::DVec3,
@@ -331,6 +482,8 @@ struct State {
     flight_look_yaw_radians: f64,
     flight_look_pitch_radians: f64,
     flight_movement: FlightMovementInput,
+    flight_speed: FlightSpeedState,
+    flight_travel_direction: glam::DVec3,
     saved_orbit_camera_pose: Option<(glam::DVec3, glam::DVec3, f64)>,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
@@ -346,7 +499,7 @@ struct State {
     frozen_sim_time: f64,
     interactive_scene_time_offset_seconds: f64,
     manual_screenshot_requested: bool,
-    next_log_time: f64,
+    next_spatial_log_presentation_time: f64,
     capture_number: usize,
     scenario: Option<scenario::ScenarioRunner>,
     artifacts: debug::RunArtifacts,
@@ -368,7 +521,7 @@ impl State {
         vertical_fov_degrees: Option<f64>,
         terrain_source: terrain::TerrainSource,
     ) -> Self {
-        let scenario = scenario_name
+        let mut scenario = scenario_name
             .as_deref()
             .map(scenario::ScenarioRunner::load)
             .transpose()
@@ -391,14 +544,30 @@ impl State {
         let surface = instance
             .create_surface(window.clone())
             .expect("the window must provide a compatible surface");
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            })
-            .await
-            .expect("no suitable GPU adapter found");
+        let adapter = select_render_adapter(&instance, &surface).await;
+        let adapter_info = adapter.get_info();
+        let adapter_label = format!(
+            "{} ({:?}, {:?})",
+            adapter_info.name, adapter_info.device_type, adapter_info.backend
+        );
+        tracing::info!(
+            target: "catinthegarden::adapter",
+            name = adapter_info.name,
+            vendor = adapter_info.vendor,
+            device = adapter_info.device,
+            device_type = ?adapter_info.device_type,
+            backend = ?adapter_info.backend,
+            driver = adapter_info.driver,
+            driver_info = adapter_info.driver_info,
+            "selected render adapter"
+        );
+        if adapter_info.device_type != wgpu::DeviceType::DiscreteGpu {
+            tracing::warn!(
+                target: "catinthegarden::adapter",
+                name = adapter_info.name,
+                "no compatible discrete GPU is available; rendering on a non-discrete adapter"
+            );
+        }
         let timestamp_features =
             wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES;
         let requested_features =
@@ -490,6 +659,11 @@ impl State {
             terrain_source,
         )
         .expect("terrain renderer must initialize");
+        if let (Some(scenario), Some(landing_direction)) =
+            (&mut scenario, terrain.preferred_landing_direction())
+        {
+            scenario.retarget_sparse_landing_direction(landing_direction);
+        }
         let atmosphere = atmosphere::AtmosphereRenderer::new(
             &device,
             hdr::HdrRenderer::SCENE_FORMAT,
@@ -530,6 +704,7 @@ impl State {
             sun,
             terrain,
             terrain_stats: terrain::TerrainStats::default(),
+            adapter_label,
             camera,
             sun_direction: planet::default_sun_direction(),
             previous_camera_world_position: initial_camera_world_position,
@@ -543,6 +718,8 @@ impl State {
             flight_look_yaw_radians: 0.0,
             flight_look_pitch_radians: 0.0,
             flight_movement: FlightMovementInput::default(),
+            flight_speed: FlightSpeedState::default(),
+            flight_travel_direction: glam::DVec3::ZERO,
             saved_orbit_camera_pose: None,
             camera_buffer,
             camera_bind_group,
@@ -558,7 +735,7 @@ impl State {
             frozen_sim_time: 0.0,
             interactive_scene_time_offset_seconds: 0.0,
             manual_screenshot_requested: false,
-            next_log_time: 0.0,
+            next_spatial_log_presentation_time: 0.0,
             capture_number: 0,
             scenario,
             artifacts,
@@ -714,6 +891,7 @@ impl State {
             KeyCode::KeyS => &mut self.flight_movement.backward,
             KeyCode::KeyA => &mut self.flight_movement.left,
             KeyCode::KeyD => &mut self.flight_movement.right,
+            KeyCode::ShiftLeft | KeyCode::ShiftRight => &mut self.flight_movement.boost,
             _ => return false,
         };
         *movement_key = pressed;
@@ -724,28 +902,33 @@ impl State {
         let local_radial = self.flight_local_position.normalize();
         let local_forward = self.low_flight_view_direction(local_radial);
         let local_right = local_forward.cross(local_radial).normalize();
-        if let Some(movement_direction) =
-            flight_movement_direction(self.flight_movement, local_forward, local_right)
+        let movement_direction =
+            flight_movement_direction(self.flight_movement, local_forward, local_right);
+        self.flight_speed = advance_flight_speed(
+            self.flight_speed,
+            movement_direction.is_some(),
+            self.flight_movement.boost,
+            delta_seconds,
+        );
+        if let Some(movement_direction) = movement_direction {
+            self.flight_travel_direction = movement_direction;
+        }
+        if self.flight_speed.speed_meters_per_second > 0.0
+            && self.flight_travel_direction.length_squared() > 0.0
         {
-            self.flight_local_position +=
-                movement_direction * LOW_FLIGHT_SPEED_METERS_PER_SECOND * delta_seconds;
+            self.flight_local_position = advance_flight_position_on_sphere(
+                self.flight_local_position,
+                self.flight_travel_direction,
+                self.flight_speed.speed_meters_per_second * delta_seconds,
+            );
             let moved_radial = self.flight_local_position.normalize();
             self.flight_local_tangent =
                 transport_flight_tangent(self.flight_local_tangent, local_radial, moved_radial);
-            let moved_camera_altitude_meters =
-                (self.flight_local_position.length() - planet::PLANET_RADIUS_METERS).max(0.0);
-            if let Some(surface_height_meters) = self
-                .terrain
-                .surface_height_meters_at(moved_radial, moved_camera_altitude_meters)
-            {
-                self.flight_surface_height_meters = surface_height_meters;
-            }
-            let minimum_radius = planet::PLANET_RADIUS_METERS
-                + self.flight_surface_height_meters
-                + LOW_FLIGHT_ALTITUDE_METERS;
-            if self.flight_local_position.length() < minimum_radius {
-                self.flight_local_position = moved_radial * minimum_radius;
-            }
+            self.flight_travel_direction = transport_flight_direction(
+                self.flight_travel_direction,
+                local_radial,
+                moved_radial,
+            );
         }
         self.update_low_flight_camera(planet_rotation_radians);
     }
@@ -759,6 +942,15 @@ impl State {
             .surface_height_meters_at(local_radial, camera_altitude_meters)
         {
             self.flight_surface_height_meters = surface_height_meters;
+        }
+        // Terrain tiles can become resident while the camera is idle. Enforce
+        // clearance every frame so a newly resolved higher surface cannot
+        // leave the camera underground until the next movement key is pressed.
+        let minimum_radius = planet::PLANET_RADIUS_METERS
+            + self.flight_surface_height_meters
+            + LOW_FLIGHT_ALTITUDE_METERS;
+        if self.flight_local_position.length() < minimum_radius {
+            self.flight_local_position = local_radial * minimum_radius;
         }
         let local_view_direction = self.low_flight_view_direction(local_radial);
         let planet_to_world = glam::DQuat::from_rotation_y(planet_rotation_radians);
@@ -792,7 +984,12 @@ impl State {
                     self.camera.direction_dvec3(),
                     self.camera.vertical_fov_radians().to_degrees(),
                 ));
-                let local_radial = local_position.normalize();
+                // Enter inspection mode at the baker-selected dry landing
+                // site backed by the sparse high-resolution tile chain.
+                let local_radial = self
+                    .terrain
+                    .preferred_landing_direction()
+                    .unwrap_or_else(|| local_position.normalize());
                 self.flight_surface_height_meters = self
                     .terrain
                     .surface_height_meters_at(local_radial, LOW_FLIGHT_ALTITUDE_METERS)
@@ -803,8 +1000,10 @@ impl State {
                         + LOW_FLIGHT_ALTITUDE_METERS);
                 self.flight_local_tangent = initial_flight_tangent(local_radial);
                 self.flight_look_yaw_radians = 0.0;
-                self.flight_look_pitch_radians = 0.0;
+                self.flight_look_pitch_radians = LOW_FLIGHT_INITIAL_PITCH_RADIANS;
                 self.flight_movement = FlightMovementInput::default();
+                self.flight_speed = FlightSpeedState::default();
+                self.flight_travel_direction = glam::DVec3::ZERO;
                 self.camera_mode = CameraMode::LowFlight;
                 self.camera.set_vertical_fov_degrees_for_viewport(
                     LOW_FLIGHT_VERTICAL_FOV_DEGREES,
@@ -823,6 +1022,8 @@ impl State {
                     );
                 }
                 self.flight_movement = FlightMovementInput::default();
+                self.flight_speed = FlightSpeedState::default();
+                self.flight_travel_direction = glam::DVec3::ZERO;
                 self.camera_mode = CameraMode::Orbit;
             }
         }
@@ -888,6 +1089,7 @@ impl State {
 
         let (
             sim_time,
+            presentation_time,
             write_log,
             scenario_capture,
             scenario_complete,
@@ -909,6 +1111,7 @@ impl State {
             });
             (
                 frame.sim_time,
+                frame.sim_time,
                 frame.write_log,
                 frame.capture_screenshot,
                 frame.complete,
@@ -922,12 +1125,14 @@ impl State {
             )
         } else {
             let sim_time = self.interactive_sim_time();
-            let write_log = sim_time >= self.next_log_time;
+            let presentation_time = self.started_at.elapsed().as_secs_f64();
+            let write_log = presentation_time >= self.next_spatial_log_presentation_time;
             if write_log {
-                self.next_log_time = sim_time + 0.5;
+                self.next_spatial_log_presentation_time = presentation_time + 0.5;
             }
             (
                 sim_time,
+                presentation_time,
                 write_log,
                 false,
                 false,
@@ -941,7 +1146,16 @@ impl State {
             )
         };
         if let Some((position, look_at)) = scenario_pose {
-            self.camera.set_world_pose(position, look_at);
+            if self
+                .scenario
+                .as_ref()
+                .is_some_and(|scenario| scenario.name() == "low_flight_performance")
+            {
+                self.camera
+                    .set_world_pose_with_up(position, look_at, position.normalize());
+            } else {
+                self.camera.set_world_pose(position, look_at);
+            }
         }
         if let Some(vertical_fov_degrees) = scenario_vertical_fov_degrees {
             self.camera.set_reference_vertical_fov_degrees_for_viewport(
@@ -999,7 +1213,9 @@ impl State {
         self.previous_camera_world_position = camera_world_position;
         self.previous_sim_time = sim_time;
         self.hdr.collect_completed_luminance(&self.device);
-        self.hdr.update_exposure(&self.queue, delta_sim_time);
+        // Eye adaptation is a presentation effect, not simulation state. It
+        // must continue to converge while F10 freezes planet animation.
+        self.hdr.update_exposure(&self.queue, f64::from(frame_time));
         let exposure_state = self.hdr.exposure_state();
         self.artifacts.record_exposure_sample(
             sim_time,
@@ -1015,7 +1231,7 @@ impl State {
                     camera_planet_frame_position,
                     camera_planet_frame_direction,
                     camera_planet_frame_up,
-                    sim_time,
+                    presentation_time,
                     [self.size.width, self.size.height],
                     self.camera.vertical_fov_radians(),
                 )
@@ -1068,7 +1284,10 @@ impl State {
                     draw_calls,
                     max_seam_delta_m: self.terrain_stats.max_seam_delta_meters,
                     resident_chunks: self.terrain_stats.resident_chunks,
+                    drawn_chunks: self.terrain_stats.drawn_chunks,
+                    terrain_triangles: self.terrain_stats.terrain_triangles,
                     fallback_chunks: self.terrain_stats.fallback_chunks,
+                    source_level_delta_histogram: self.terrain_stats.source_level_delta_histogram,
                     resident_tiles: self.terrain_stats.resident_tiles,
                     tiles_loaded: self.terrain_stats.tiles_loaded,
                     tiles_unloaded: self.terrain_stats.tiles_unloaded,
@@ -1099,6 +1318,8 @@ impl State {
             let render_debug_mode = self.render_debug_mode;
             let animation_frozen = self.animation_frozen;
             let camera_mode = self.camera_mode;
+            let flight_speed_meters_per_second = self.flight_speed.speed_meters_per_second;
+            let adapter_label = self.adapter_label.clone();
             let terrain_stats = self.terrain_stats.clone();
             let minimum_lod_level = terrain_stats
                 .level_histogram
@@ -1118,6 +1339,7 @@ impl State {
                         .default_pos([12.0, 12.0])
                         .show(&context, |ui| {
                             ui.label("Quadtree terrain renderer");
+                            ui.label(format!("GPU: {adapter_label}"));
                             ui.label(format!("Render FPS: {fps:.0}"));
                             ui.label(format!(
                                 "Camera: [{:.0}, {:.0}, {:.0}] m",
@@ -1128,10 +1350,21 @@ impl State {
                                 camera_direction.x, camera_direction.y, camera_direction.z
                             ));
                             ui.label(format!(
-                                "Altitude: {camera_altitude:.0} m  |  LOD: {lod_range}  |  Chunks: {}",
-                                terrain_stats.resident_chunks
+                                "Altitude: {camera_altitude:.0} m  |  LOD: {lod_range}"
+                            ));
+                            ui.label(format!(
+                                "Terrain: {} active  |  {} drawn  |  {} triangles  |  {} draws",
+                                terrain_stats.resident_chunks,
+                                terrain_stats.drawn_chunks,
+                                terrain_stats.terrain_triangles,
+                                terrain_stats.draw_calls,
                             ));
                             ui.label(format!("Camera mode: {}", camera_mode.label()));
+                            if camera_mode == CameraMode::LowFlight {
+                                ui.label(format!(
+                                    "Flight speed: {flight_speed_meters_per_second:.0} m/s"
+                                ));
+                            }
                             ui.label(format!(
                                 "Optical zoom: {vertical_fov_label}\u{00b0} vertical FOV"
                             ));
@@ -1845,10 +2078,12 @@ mod tests {
     use glam::DVec3;
 
     use super::{
-        CameraMode, FlightMovementInput, INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
-        LOW_FLIGHT_SPEED_METERS_PER_SECOND, flight_movement_direction, initial_flight_tangent,
-        interactive_camera_delta_seconds, render_size_for_surface_resize, should_enter_fullscreen,
-        transport_flight_tangent,
+        CameraMode, FlightMovementInput, FlightSpeedState, INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
+        LOW_FLIGHT_INITIAL_PITCH_RADIANS, LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND,
+        MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS, advance_flight_position_on_sphere,
+        advance_flight_speed, flight_movement_direction, flight_view_direction,
+        initial_flight_tangent, interactive_camera_delta_seconds, render_size_for_surface_resize,
+        should_enter_fullscreen, transport_flight_tangent,
     };
     use crate::planet::PLANET_ROTATION_PERIOD_SECONDS;
 
@@ -1901,7 +2136,44 @@ mod tests {
 
         assert!(forward.distance(camera_forward) < 1.0e-12);
         assert!(backward.distance(-camera_forward) < 1.0e-12);
-        assert_eq!(LOW_FLIGHT_SPEED_METERS_PER_SECOND, 300.0 * 3_403.0);
+    }
+
+    #[test]
+    fn held_flight_input_increases_acceleration_over_time() {
+        let first = advance_flight_speed(FlightSpeedState::default(), true, false, 0.5);
+        let second = advance_flight_speed(first, true, false, 0.5);
+        let third = advance_flight_speed(second, true, false, 0.5);
+
+        let first_gain = first.speed_meters_per_second;
+        let second_gain = second.speed_meters_per_second - first.speed_meters_per_second;
+        let third_gain = third.speed_meters_per_second - second.speed_meters_per_second;
+        assert!(second_gain > first_gain);
+        assert!(third_gain > second_gain);
+    }
+
+    #[test]
+    fn releasing_flight_input_brakes_quickly_and_resets_the_ramp() {
+        let mut held = FlightSpeedState::default();
+        for _ in 0..180 {
+            held = advance_flight_speed(held, true, false, 1.0 / 60.0);
+        }
+        let released = advance_flight_speed(held, false, false, 0.4);
+
+        assert!(released.speed_meters_per_second < held.speed_meters_per_second / 30.0);
+        assert_eq!(released.acceleration_time_seconds, 0.0);
+    }
+
+    #[test]
+    fn accelerated_flight_has_a_finite_interplanetary_speed_cap() {
+        let mut state = FlightSpeedState::default();
+        for _ in 0..1_800 {
+            state = advance_flight_speed(state, true, true, 1.0 / 60.0);
+        }
+
+        assert_eq!(
+            state.speed_meters_per_second,
+            LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND
+        );
     }
 
     #[test]
@@ -1936,6 +2208,26 @@ mod tests {
     }
 
     #[test]
+    fn tangent_flight_follows_the_sphere_without_gaining_altitude() {
+        let altitude = 1_524.0;
+        let position = DVec3::X * (crate::planet::PLANET_RADIUS_METERS + altitude);
+        let moved = advance_flight_position_on_sphere(position, DVec3::Z, 25_000.0);
+
+        assert!((moved.length() - position.length()).abs() < 1.0e-9);
+        assert!(moved.z > 0.0);
+    }
+
+    #[test]
+    fn low_flight_starts_looking_down_at_the_landing_site() {
+        let radial = DVec3::X;
+        let direction =
+            flight_view_direction(radial, DVec3::Z, 0.0, LOW_FLIGHT_INITIAL_PITCH_RADIANS);
+
+        assert!(direction.dot(radial) < -0.25);
+        assert!(direction.dot(DVec3::Z) > 0.9);
+    }
+
+    #[test]
     fn frozen_scene_keeps_low_flight_navigation_on_frame_time() {
         let frame_delta_seconds = 1.0 / 60.0;
 
@@ -1946,6 +2238,14 @@ mod tests {
         assert_eq!(
             interactive_camera_delta_seconds(CameraMode::Orbit, 0.0, frame_delta_seconds),
             0.0
+        );
+    }
+
+    #[test]
+    fn slow_frames_cannot_amplify_low_flight_terrain_churn() {
+        assert_eq!(
+            interactive_camera_delta_seconds(CameraMode::LowFlight, 0.0, 0.25),
+            MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS,
         );
     }
 

@@ -6,7 +6,9 @@ pub mod terrain;
 use catinthegarden_coretypes::OutmapManifest;
 
 pub use config::BakeConfig;
-pub use export::{available_tile_keys, validate_output};
+pub use export::{
+    available_tile_keys, refine_existing_outmap, sparse_radius_for_level, validate_output,
+};
 pub use terrain::Terrain;
 
 pub type BakeResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;

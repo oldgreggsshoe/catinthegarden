@@ -44,23 +44,39 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 fn luminance_from_scene(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let pixel = vec2<i32>(position.xy);
     let value = luminance(textureLoad(source_texture, pixel, 0).rgb);
-    return vec4<f32>(value, value, value, 1.0);
+    // R carries the local weighted average and G its relative source-pixel
+    // weight. The weight is renormalized at every mip, which keeps it in the
+    // useful Rgba16Float range even for 4K+ render targets. Empty black space
+    // has no photographic bearing on the visible planet, so smoothly reject
+    // it while retaining dim terrain and the atmospheric limb.
+    let metering_weight = smoothstep(0.002, 0.02, value);
+    return vec4<f32>(value, metering_weight, 0.0, 1.0);
 }
 
 @fragment
 fn luminance_downsample(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let output_pixel = vec2<i32>(position.xy);
-    let source_pixel = output_pixel * 2;
     let source_size = vec2<i32>(textureDimensions(source_texture));
-    var total = vec3<f32>(0.0);
-    for (var y = 0; y < 2; y += 1) {
-        for (var x = 0; x < 2; x += 1) {
-            let sample_pixel = min(source_pixel + vec2<i32>(x, y), source_size - vec2<i32>(1));
-            total += textureLoad(source_texture, sample_pixel, 0).rgb;
+    let output_size = max(source_size / 2, vec2<i32>(1));
+    let source_begin = output_pixel * source_size / output_size;
+    let source_end = (output_pixel + vec2<i32>(1)) * source_size / output_size;
+    var weighted_luminance_sum = 0.0;
+    var texel_weight = 0.0;
+    for (var y = source_begin.y; y < source_end.y; y += 1) {
+        for (var x = source_begin.x; x < source_end.x; x += 1) {
+            let sample_value = textureLoad(source_texture, vec2<i32>(x, y), 0).rg;
+            weighted_luminance_sum += sample_value.x * sample_value.y;
+            texel_weight += sample_value.y;
         }
     }
-    let value = luminance(total * 0.25);
-    return vec4<f32>(value, value, value, 1.0);
+    let max_samples_per_axis = (source_size + output_size - vec2<i32>(1)) / output_size;
+    let max_samples_per_output = max_samples_per_axis.x * max_samples_per_axis.y;
+    return vec4<f32>(
+        weighted_luminance_sum / max(texel_weight, 1.0e-8),
+        texel_weight / f32(max_samples_per_output),
+        0.0,
+        1.0,
+    );
 }
 
 @fragment

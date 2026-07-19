@@ -167,6 +167,9 @@ impl ScenarioRunner {
             "terrain_material_preview" => {
                 include_str!("../scenarios/terrain_material_preview.json")
             }
+            "low_flight_performance" => {
+                include_str!("../scenarios/low_flight_performance.json")
+            }
             _ => return Err(format!("unknown scenario '{name}'")),
         };
         Self::from_source(source)
@@ -314,6 +317,36 @@ impl ScenarioRunner {
 
     pub fn assertions(&self) -> &ScenarioAssertions {
         &self.definition.assertions
+    }
+
+    /// Keep the LOD zoom regression centred on the same sparse tile chain
+    /// selected by the baker. Other scenarios retain their authored poses.
+    pub fn retarget_sparse_landing_direction(&mut self, landing_direction: glam::DVec3) {
+        if !matches!(
+            self.definition.name.as_str(),
+            "orbital_zoom_lod" | "low_flight_performance"
+        ) {
+            return;
+        }
+        let Some(landing_direction) = landing_direction.try_normalize() else {
+            return;
+        };
+        let rotation = glam::DQuat::from_rotation_arc(glam::DVec3::X, landing_direction);
+        for waypoint in &mut self.definition.waypoints {
+            waypoint.position = rotation
+                .mul_vec3(glam::DVec3::from_array(waypoint.position))
+                .to_array();
+            waypoint.look_at = rotation
+                .mul_vec3(glam::DVec3::from_array(waypoint.look_at))
+                .to_array();
+        }
+        if self.definition.name == "low_flight_performance" {
+            for waypoint in &mut self.definition.sun_waypoints {
+                waypoint.direction = rotation
+                    .mul_vec3(glam::DVec3::from_array(waypoint.direction))
+                    .to_array();
+            }
+        }
     }
 
     pub fn hides_overlay(&self) -> bool {
@@ -687,6 +720,34 @@ mod tests {
         );
         assert!(!scenario.assertions().require_unlimited_lod_budget);
         assert_eq!(scenario.assertions().max_fallback_chunks, Some(256));
+    }
+
+    #[test]
+    fn orbital_zoom_scenario_retargets_to_the_baked_sparse_direction() {
+        let mut scenario = ScenarioRunner::load("orbital_zoom_lod").expect("scenario parses");
+        let original_radius = DVec3::from_array(scenario.definition.waypoints[0].position).length();
+
+        scenario.retarget_sparse_landing_direction(DVec3::Z);
+        let frame = scenario.advance();
+        let position = DVec3::from_array(frame.camera_world_position);
+        let look_at = DVec3::from_array(frame.camera_look_at);
+
+        assert!((position.length() - original_radius).abs() < 1.0e-6);
+        assert!((look_at.normalize().dot(DVec3::Z) - 1.0).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn low_flight_performance_retargets_camera_and_daylight_to_the_sparse_site() {
+        let mut scenario = ScenarioRunner::load("low_flight_performance").expect("scenario parses");
+        scenario.retarget_sparse_landing_direction(DVec3::Z);
+        let frame = scenario.advance();
+        let position = DVec3::from_array(frame.camera_world_position).normalize();
+        let sun = DVec3::from_array(frame.sun_direction).normalize();
+
+        assert!(position.dot(DVec3::Z) > 1.0 - 1.0e-12);
+        assert!(sun.dot(DVec3::Z) > 0.7);
+        assert_eq!(scenario.expected_screenshots(), 2);
+        assert!(scenario.assertions().require_unlimited_lod_budget);
     }
 
     #[test]

@@ -4,9 +4,9 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use catinthegarden_baker::{BakeConfig, bake, validate_output};
+use catinthegarden_baker::{BakeConfig, bake, refine_existing_outmap, validate_output};
 use catinthegarden_coretypes::{
-    CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
+    CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey, tile_key_for_direction,
 };
 use image::{ColorType, ImageReader};
 
@@ -27,7 +27,7 @@ fn small_config(output: PathBuf) -> BakeConfig {
         height: 16,
         dense_level: 0,
         max_level: 3,
-        sparse_radius: 0,
+        sparse_radius: Some(0),
         erosion_iterations: 4,
         ..BakeConfig::default()
     }
@@ -46,6 +46,21 @@ fn complete_bake_validates_and_is_byte_deterministic() {
 }
 
 #[test]
+fn existing_dense_macro_tiles_can_expand_into_an_adaptive_sparse_corridor() {
+    let output = temporary_output("incremental-refine");
+    let original = bake(&small_config(output.clone())).unwrap();
+    let refined = refine_existing_outmap(&output).unwrap();
+
+    assert!(refined.available_tiles.len() > original.available_tiles.len());
+    assert!(
+        glam::DVec3::from_array(refined.sparse_landing_direction)
+            .distance(glam::DVec3::from_array(original.sparse_landing_direction))
+            < 1.0e-12
+    );
+    validate_output(&output).unwrap();
+}
+
+#[test]
 fn tiles_have_gutters_expected_channel_sizes_and_level_eighteen_refinement() {
     let output = temporary_output("formats");
     let config = BakeConfig {
@@ -54,17 +69,15 @@ fn tiles_have_gutters_expected_channel_sizes_and_level_eighteen_refinement() {
         height: 16,
         dense_level: 0,
         max_level: 18,
-        sparse_radius: 0,
+        sparse_radius: Some(0),
         erosion_iterations: 2,
         ..BakeConfig::default()
     };
     let manifest = bake(&config).unwrap();
-    let level_eighteen = TileKey {
-        face: CubeFace::PositiveX,
-        level: 18,
-        x: (1 << 18) / 2,
-        y: (1 << 18) / 2,
-    };
+    let level_eighteen = tile_key_for_direction(
+        glam::DVec3::from_array(manifest.sparse_landing_direction),
+        18,
+    );
     assert!(manifest.has_tile(level_eighteen));
     let directory = output.join(level_eighteen.relative_path());
     let samples = (TILE_STORED_SIZE * TILE_STORED_SIZE) as u64;
@@ -84,7 +97,6 @@ fn tiles_have_gutters_expected_channel_sizes_and_level_eighteen_refinement() {
     let height = fs::read(directory.join("height.r32f")).unwrap();
     let first_logical = TILE_GUTTER as usize;
     let last_logical = (TILE_GUTTER + TILE_LOGICAL_SIZE - 1) as usize;
-    assert_eq!(height_sample(&height, first_logical, first_logical), -10.0);
     let interior: Vec<f32> = ((first_logical + 1)..last_logical)
         .flat_map(|row| ((first_logical + 1)..last_logical).map(move |column| (row, column)))
         .map(|(row, column)| height_sample(&height, row, column))
@@ -92,7 +104,7 @@ fn tiles_have_gutters_expected_channel_sizes_and_level_eighteen_refinement() {
     let minimum = interior.iter().copied().fold(f32::INFINITY, f32::min);
     let maximum = interior.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     assert!(maximum - minimum > 0.1, "L18 microrelief was flat");
-    assert!(minimum >= -12.001 && maximum <= -7.999);
+    assert!(maximum > 0.0, "L18 refinement did not contain dry terrain");
 }
 
 #[test]
@@ -104,7 +116,7 @@ fn tile_edges_gutters_parent_samples_and_previews_are_consistent() {
         height: 16,
         dense_level: 2,
         max_level: 2,
-        sparse_radius: 0,
+        sparse_radius: Some(0),
         erosion_iterations: 2,
         ..BakeConfig::default()
     };
@@ -238,42 +250,73 @@ fn deep_sparse_edge_matches_root_fallback_interpolation() {
         height: 16,
         dense_level: 0,
         max_level: 8,
-        sparse_radius: 0,
+        sparse_radius: Some(0),
         erosion_iterations: 2,
         ..BakeConfig::default()
     };
     let manifest = bake(&config).unwrap();
     let side = 1_u32 << config.max_level;
-    let deep = TileKey {
-        face: CubeFace::PositiveX,
-        level: config.max_level,
-        x: side / 2,
-        y: side / 2,
-    };
-    let missing_neighbor = TileKey {
-        x: deep.x - 1,
-        ..deep
-    };
+    let deep = tile_key_for_direction(
+        glam::DVec3::from_array(manifest.sparse_landing_direction),
+        config.max_level,
+    );
+    let (missing_neighbor, edge) = [
+        (deep.x.checked_sub(1).map(|x| TileKey { x, ..deep }), 0_u8),
+        (
+            (deep.x + 1 < side).then(|| TileKey {
+                x: deep.x + 1,
+                ..deep
+            }),
+            1,
+        ),
+        (deep.y.checked_sub(1).map(|y| TileKey { y, ..deep }), 2),
+        (
+            (deep.y + 1 < side).then(|| TileKey {
+                y: deep.y + 1,
+                ..deep
+            }),
+            3,
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(neighbor, edge)| neighbor.map(|neighbor| (neighbor, edge)))
+    .filter(|(neighbor, _)| !manifest.has_tile(*neighbor))
+    .min_by_key(|(neighbor, _)| {
+        manifest
+            .best_available_ancestor(*neighbor)
+            .expect("face root fallback exists")
+            .level
+    })
+    .expect("a radius-zero deep tile has a missing edge neighbor");
     let fallback = manifest
         .best_available_ancestor(missing_neighbor)
-        .expect("root fallback exists");
-    assert_eq!(fallback, TileKey::root(CubeFace::PositiveX));
+        .expect("face root fallback exists");
 
     let deep_height = read_channel(&output, deep, "height.r32f");
     let root_height = read_channel(&output, fallback, "height.r32f");
-    for logical_y in 0..TILE_LOGICAL_SIZE {
+    for offset in 0..TILE_LOGICAL_SIZE {
+        let (logical_x, logical_y) = match edge {
+            0 => (0, offset),
+            1 => (TILE_LOGICAL_SIZE - 1, offset),
+            2 => (offset, 0),
+            3 => (offset, TILE_LOGICAL_SIZE - 1),
+            _ => unreachable!(),
+        };
+        let global_x = u64::from(deep.x) * u64::from(TILE_LOGICAL_SIZE - 1) + u64::from(logical_x);
         let global_y = u64::from(deep.y) * u64::from(TILE_LOGICAL_SIZE - 1) + u64::from(logical_y);
-        let root_y = global_y as f64 / side as f64;
-        let expected =
-            bilinear_height(&root_height, f64::from(TILE_LOGICAL_SIZE - 1) / 2.0, root_y);
+        let scale = f64::from(1_u32 << fallback.level) / f64::from(side);
+        let fallback_x = global_x as f64 * scale - f64::from(fallback.x * (TILE_LOGICAL_SIZE - 1));
+        let fallback_y = global_y as f64 * scale - f64::from(fallback.y * (TILE_LOGICAL_SIZE - 1));
+        let expected = bilinear_height(&root_height, fallback_x, fallback_y);
         let actual = height_sample(
             &deep_height,
             (logical_y + TILE_GUTTER) as usize,
-            TILE_GUTTER as usize,
+            (logical_x + TILE_GUTTER) as usize,
         );
         assert!(
             (actual - expected).abs() <= 0.001,
-            "deep edge row {logical_y}: {actual} != root fallback {expected}"
+            "deep edge sample {offset}: {actual} != L{} fallback {expected}",
+            fallback.level
         );
     }
 }

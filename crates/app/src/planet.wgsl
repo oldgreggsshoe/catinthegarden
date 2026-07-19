@@ -5,6 +5,8 @@ const MATERIAL_TILE_LOGICAL_QUADS: f32 = 128.0;
 const TILE_GUTTER: f32 = 1.0;
 const MATERIAL_TILE_LAST_STORED_COORD: i32 = 130;
 const GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS: f32 = 111.5;
+const TERRAIN_SKIRT_DEPTH_RATIO: f32 = 0.075;
+const MAX_TERRAIN_SKIRT_DEPTH_METERS: f32 = 10.0;
 const ATMOSPHERE_HEIGHT_METERS: f32 = 720000.0;
 const ATMOSPHERE_EDGE_FADE_METERS: f32 = 480000.0;
 const ATMOSPHERE_RADIUS_METERS: f32 = PLANET_RADIUS_METERS + ATMOSPHERE_HEIGHT_METERS;
@@ -26,18 +28,17 @@ const AERIAL_IN_SCATTER_GAIN: f32 = 3.0;
 // Keep the intentionally strong global aerial effect from washing the ocean
 // body colour to grey in the final composition. Terrain and sky stay unchanged.
 const OCEAN_AERIAL_PERSPECTIVE_WEIGHT: f32 = 0.35;
+const OCEAN_REFLECTION_SCALE: f32 = 0.35;
+const OCEAN_SUN_GLINT_SCALE: f32 = 3.0;
 const TWILIGHT_SHADOW_TRANSITION_METERS: f32 = 36000.0;
 const TERRAIN_FOG_START_METERS: f32 = 2000.0;
 const TERRAIN_FOG_END_METERS: f32 = 60000.0;
 const TERRAIN_FOG_MAX_CAMERA_ALTITUDE_METERS: f32 = 100000.0;
 const TERRAIN_FOG_FULL_HORIZON_COSINE: f32 = 0.05;
 const TERRAIN_FOG_CLEAR_HORIZON_COSINE: f32 = 0.35;
-const TERRAIN_MATERIAL_TILE_METERS: f32 = 8192.0;
-const TERRAIN_MATERIAL_WARP_FREQUENCY: f32 = 256.0;
-const TERRAIN_MATERIAL_WARP_TILES: f32 = 1.75;
-const TERRAIN_MATERIAL_FINE_SCALE: f32 = 5.37;
-const TERRAIN_MATERIAL_FINE_WEIGHT: f32 = 0.22;
-const TERRAIN_NORMAL_SAMPLE_METERS: f32 = 256.0;
+const TERRAIN_MATERIAL_TILE_METERS: f32 = 2048.0;
+const TERRAIN_NORMAL_MIN_SAMPLE_METERS: f32 = 8.0;
+const TERRAIN_NORMAL_MAX_SAMPLE_METERS: f32 = 256.0;
 const TERRAIN_MATERIAL_VEGETATION: i32 = 0;
 const TERRAIN_MATERIAL_EARTH: i32 = 1;
 const TERRAIN_MATERIAL_ROCK: i32 = 2;
@@ -101,6 +102,8 @@ struct VertexInput {
     @location(7) terrain_info: u32,
     @location(8) lod_transition: vec2<f32>,
     @location(9) edge_stitch: u32,
+    @location(10) node_uv_origin_span: vec4<f32>,
+    @location(11) node_anchor_direction_cube_length: vec4<f32>,
 }
 
 struct VertexOutput {
@@ -115,6 +118,7 @@ struct VertexOutput {
     @location(7) outmap: f32,
     @location(8) surface_lighting: vec3<f32>,
     @location(9) terrain_detail_meters: f32,
+    @location(10) surface_irradiance: vec3<f32>,
 }
 
 struct OceanWaveContribution {
@@ -155,20 +159,6 @@ fn requested_level(terrain_info: u32) -> u32 {
     return (terrain_info >> 4u) & 0x1fu;
 }
 
-fn terrain_detail_octave_distance_weight(
-    camera_distance_meters: f32,
-    full_distance_meters: f32,
-) -> f32 {
-    // Camera distance is continuous across mixed-LOD edges, unlike requested
-    // chunk level. Scale it by FOV so optical zoom retains resolvable detail.
-    let effective_distance = camera_distance_meters * camera.projection.y / 0.57735026;
-    return 1.0 - smoothstep(
-        full_distance_meters,
-        full_distance_meters * 2.0,
-        effective_distance,
-    );
-}
-
 fn placeholder_octave(direction: vec3<f32>, frequency: f32, amplitude: f32) -> f32 {
     let wave = sin(frequency * direction.x) - direction.x * sin(frequency)
         + sin(1.375 * frequency * direction.y)
@@ -181,75 +171,6 @@ fn placeholder_height(direction: vec3<f32>) -> f32 {
         + placeholder_octave(direction, 512.0, 600.0)
         + placeholder_octave(direction, 32768.0, 100.0)
         + placeholder_octave(direction, 2097152.0, 3.0);
-}
-
-fn terrain_detail_noise_domain(direction: vec3<f32>) -> vec3<f32> {
-    return vec3<f32>(
-        dot(direction, vec3<f32>(0.80, 0.48, -0.36)),
-        dot(direction, vec3<f32>(-0.30, 0.85, 0.43)),
-        dot(direction, vec3<f32>(0.52, -0.21, 0.82)),
-    );
-}
-
-fn terrain_detail_hash(cell: vec3<f32>) -> f32 {
-    return fract(sin(dot(cell, vec3<f32>(127.1, 311.7, 74.7))) * 43758.547) * 2.0 - 1.0;
-}
-
-fn terrain_detail_value_noise(position: vec3<f32>) -> f32 {
-    let cell = floor(position);
-    let amount = fract(position);
-    let fade = amount * amount * (vec3<f32>(3.0) - amount * 2.0);
-    let lower_lower = terrain_detail_hash(cell);
-    let lower_right = terrain_detail_hash(cell + vec3<f32>(1.0, 0.0, 0.0));
-    let upper_lower = terrain_detail_hash(cell + vec3<f32>(0.0, 1.0, 0.0));
-    let upper_right = terrain_detail_hash(cell + vec3<f32>(1.0, 1.0, 0.0));
-    let lower_plane = mix(lower_lower, lower_right, fade.x);
-    let upper_plane = mix(upper_lower, upper_right, fade.x);
-    let lower = mix(lower_plane, upper_plane, fade.y);
-
-    let upper_lower_lower = terrain_detail_hash(cell + vec3<f32>(0.0, 0.0, 1.0));
-    let upper_lower_right = terrain_detail_hash(cell + vec3<f32>(1.0, 0.0, 1.0));
-    let upper_upper_lower = terrain_detail_hash(cell + vec3<f32>(0.0, 1.0, 1.0));
-    let upper_upper_right = terrain_detail_hash(cell + vec3<f32>(1.0));
-    let upper_lower_plane = mix(upper_lower_lower, upper_lower_right, fade.x);
-    let upper_upper_plane = mix(upper_upper_lower, upper_upper_right, fade.x);
-    let upper = mix(upper_lower_plane, upper_upper_plane, fade.y);
-    return mix(lower, upper, fade.z);
-}
-
-fn global_terrain_detail_octave(
-    noise_domain: vec3<f32>,
-    frequency: f32,
-    amplitude_meters: f32,
-    axis: vec3<f32>,
-    phase: f32,
-) -> f32 {
-    return amplitude_meters * terrain_detail_value_noise(
-        noise_domain * frequency + axis * phase,
-    );
-}
-
-// Planet-local direction makes this continuous across cube-face and tile
-// boundaries. The baked outmap still supplies all macro geography.
-fn global_terrain_detail(direction: vec3<f32>, camera_distance_meters: f32) -> f32 {
-    let noise_domain = terrain_detail_noise_domain(direction);
-    return global_terrain_detail_octave(
-        noise_domain, 4096.0, 80.0, vec3<f32>(0.79, 0.52, -0.32), 0.37,
-    ) * terrain_detail_octave_distance_weight(
-        camera_distance_meters, 150000.0,
-    ) + global_terrain_detail_octave(
-        noise_domain, 32768.0, 24.0, vec3<f32>(-0.23, 0.91, 0.41), 1.11,
-    ) * terrain_detail_octave_distance_weight(
-        camera_distance_meters, 20000.0,
-    ) + global_terrain_detail_octave(
-        noise_domain, 262144.0, 6.0, vec3<f32>(0.61, -0.17, 0.77), 2.07,
-    ) * terrain_detail_octave_distance_weight(
-        camera_distance_meters, 2500.0,
-    ) + global_terrain_detail_octave(
-        noise_domain, 2097152.0, 1.5, vec3<f32>(-0.48, -0.66, 0.58), 2.73,
-    ) * terrain_detail_octave_distance_weight(
-        camera_distance_meters, 300.0,
-    );
 }
 
 fn sample_height(source_uv: vec2<f32>) -> f32 {
@@ -305,11 +226,7 @@ fn terrain_height(
     if !outmap {
         return macro_height;
     }
-    let land_detail_weight = smoothstep(100.0, 400.0, macro_height);
-    return macro_height * terrain_macro_height_scale()
-        + global_terrain_detail(direction, camera_distance_meters)
-            * land_detail_weight
-            * terrain_settings.outmap_height_scale.z;
+    return macro_height * terrain_macro_height_scale();
 }
 
 fn gerstner_wave(
@@ -339,12 +256,12 @@ fn gerstner_wave(
 }
 
 fn ocean_surface(direction: vec3<f32>, time_seconds: f32) -> OceanSurface {
-    let first = gerstner_wave(direction, vec3<f32>(0.9, 0.1, 0.4), 900.0, 1.5, 4.0, 0.45, time_seconds);
-    let second = gerstner_wave(direction, vec3<f32>(-0.3, 0.4, 0.85), 420.0, 0.85, 5.0, 0.40, time_seconds);
-    let third = gerstner_wave(direction, vec3<f32>(0.55, -0.75, 0.35), 160.0, 0.45, 6.5, 0.34, time_seconds);
-    let fourth = gerstner_wave(direction, vec3<f32>(-0.75, -0.2, 0.63), 65.0, 0.22, 8.0, 0.28, time_seconds);
-    let fifth = gerstner_wave(direction, vec3<f32>(0.2, 0.95, -0.24), 24.0, 0.11, 10.0, 0.20, time_seconds);
-    let sixth = gerstner_wave(direction, vec3<f32>(-0.5, 0.7, -0.5), 9.0, 0.05, 12.0, 0.14, time_seconds);
+    let first = gerstner_wave(direction, vec3<f32>(0.9, 0.1, 0.4), 900.0, 0.375, 4.0, 0.45, time_seconds);
+    let second = gerstner_wave(direction, vec3<f32>(-0.3, 0.4, 0.85), 420.0, 0.2125, 5.0, 0.40, time_seconds);
+    let third = gerstner_wave(direction, vec3<f32>(0.55, -0.75, 0.35), 160.0, 0.1125, 6.5, 0.34, time_seconds);
+    let fourth = gerstner_wave(direction, vec3<f32>(-0.75, -0.2, 0.63), 65.0, 0.055, 8.0, 0.28, time_seconds);
+    let fifth = gerstner_wave(direction, vec3<f32>(0.2, 0.95, -0.24), 24.0, 0.0275, 10.0, 0.20, time_seconds);
+    let sixth = gerstner_wave(direction, vec3<f32>(-0.5, 0.7, -0.5), 9.0, 0.0125, 12.0, 0.14, time_seconds);
     let horizontal = first.horizontal_displacement + second.horizontal_displacement
         + third.horizontal_displacement + fourth.horizontal_displacement
         + fifth.horizontal_displacement + sixth.horizontal_displacement;
@@ -921,6 +838,10 @@ fn face_tangent_v(face: u32) -> vec3<f32> {
     }
 }
 
+fn face_normal(face: u32) -> vec3<f32> {
+    return cross(face_tangent_u(face), face_tangent_v(face));
+}
+
 fn face_component(direction: vec3<f32>, face: u32) -> f32 {
     if face <= 1u {
         return abs(direction.x);
@@ -944,11 +865,16 @@ fn displaced_surface_normal(
     let cube_position = direction / max(face_component(direction, face), 1.0e-6);
     let requested_cube_step = 2.0
         / (MATERIAL_TILE_LOGICAL_QUADS * exp2(f32(requested_level(terrain_info))));
-    // A requested-level derivative made neighboring chunks evaluate visibly
-    // different lighting, and L18 approached f32 direction precision. Use one
-    // physical footprint everywhere so mixed LODs share the same normal field
-    // while retaining the deliberately smooth per-vertex lighting path.
-    let cube_step = TERRAIN_NORMAL_SAMPLE_METERS / PLANET_RADIUS_METERS;
+    // Filter normals continuously by camera distance, never by node level.
+    // Shared positions therefore retain the same lighting across mixed LODs,
+    // while nearby baked relief is no longer blurred through a fixed 256m
+    // footprint.
+    let normal_sample_meters = clamp(
+        camera_distance_meters * 0.01,
+        TERRAIN_NORMAL_MIN_SAMPLE_METERS,
+        TERRAIN_NORMAL_MAX_SAMPLE_METERS,
+    );
+    let cube_step = normal_sample_meters / PLANET_RADIUS_METERS;
     let normal_step_scale = cube_step / requested_cube_step;
     let left_direction = normalize(cube_position - tangent_u * cube_step);
     let right_direction = normalize(cube_position + tangent_u * cube_step);
@@ -1110,25 +1036,12 @@ fn triplanar_material_sample(
     // the same surface point. Triplanar projection avoids cube-face UV seams.
     let axis_weights = pow(abs(normalize(surface_normal)), vec3<f32>(6.0));
     let weights = axis_weights / max(dot(axis_weights, vec3<f32>(1.0)), 1.0e-5);
-    // A low-frequency, planet-direction domain warp breaks the obvious grid
-    // produced by repeating a compact texture. The warp is continuous across
-    // cube faces and independent of terrain LOD, so it cannot create seams or
-    // shimmer as chunks are replaced.
-    let warp_domain = terrain_detail_noise_domain(surface_direction)
-        * TERRAIN_MATERIAL_WARP_FREQUENCY;
-    let texture_warp = vec3<f32>(
-        terrain_detail_value_noise(warp_domain + vec3<f32>(17.3, 4.1, 9.7)),
-        terrain_detail_value_noise(warp_domain + vec3<f32>(3.8, 23.9, 14.2)),
-        terrain_detail_value_noise(warp_domain + vec3<f32>(11.6, 7.4, 29.1)),
-    ) * TERRAIN_MATERIAL_WARP_TILES;
-    let broad_position = surface_direction
-        * (PLANET_RADIUS_METERS / TERRAIN_MATERIAL_TILE_METERS)
-        + texture_warp;
-    let fine_position = broad_position * TERRAIN_MATERIAL_FINE_SCALE
-        + vec3<f32>(13.7, -8.3, 21.1);
-    let broad = triplanar_material_sample_at_position(layer, broad_position, weights);
-    let fine = triplanar_material_sample_at_position(layer, fine_position, weights);
-    return mix(broad, fine, TERRAIN_MATERIAL_FINE_WEIGHT);
+    // One seam-safe triplanar lookup per axis is enough at flight speed. The
+    // retired domain warp and second scale repeated 24 sine hashes and six
+    // texture samples for every contributing material layer.
+    let texture_position = surface_direction
+        * (PLANET_RADIUS_METERS / TERRAIN_MATERIAL_TILE_METERS);
+    return triplanar_material_sample_at_position(layer, texture_position, weights);
 }
 
 fn biome_vegetation_amount(biome: u32, moisture: f32) -> f32 {
@@ -1309,7 +1222,7 @@ fn terrain_material_tint(
         vec3<f32>(0.35),
         vec3<f32>(2.4),
     );
-    return mix(vec3<f32>(1.0), tint, fade * 0.72);
+    return mix(vec3<f32>(1.0), tint, fade * 0.95);
 }
 
 fn debug_ocean_albedo() -> vec3<f32> {
@@ -1351,8 +1264,12 @@ fn ocean_lighting(
     // The Phase 6 cubemap is static. It represents daytime sky reflection, so
     // gate it by direct daylight instead of reflecting a bright blue sky from
     // the fully occluded hemisphere.
-    return diffuse + reflected_color * fresnel * daylight
-        + sun_transmittance * specular * fresnel * (12.0 * SURFACE_SUNLIGHT_SCALE);
+    return diffuse
+        + reflected_color * fresnel * daylight * OCEAN_REFLECTION_SCALE
+        + sun_transmittance
+            * specular
+            * fresnel
+            * (OCEAN_SUN_GLINT_SCALE * SURFACE_SUNLIGHT_SCALE);
 }
 
 fn ocean_with_aerial_perspective(
@@ -1395,7 +1312,10 @@ fn snap_edge_coordinate(coordinate: f32, level_delta: u32) -> f32 {
         return coordinate;
     }
     let grid_coordinate = u32(round(coordinate * 32.0));
-    let stride = 1u << min(level_delta, 5u);
+    // Never collapse more than four fine edge quads into one segment. Large
+    // LOD gaps use skirts; collapsing all 32 quads produces a giant fan that
+    // is far more conspicuous than the residual T-junction it tries to hide.
+    let stride = 1u << min(level_delta, 2u);
     return f32((grid_coordinate / stride) * stride) / 32.0;
 }
 
@@ -1428,6 +1348,17 @@ fn stitched_tile_uv(tile_uv: vec2<f32>, edge_stitch: u32) -> vec2<f32> {
     return stitched;
 }
 
+fn lod_morphed_tile_uv(tile_uv: vec2<f32>, lod_transition: vec2<f32>) -> vec2<f32> {
+    if lod_transition.y <= 0.5 || lod_transition.x >= 1.0 {
+        return tile_uv;
+    }
+    // A child covers half of its parent, so the parent's vertices inside the
+    // child footprint lie on a 16x16 grid. Grow the odd child vertices out of
+    // that grid while the complementary parent fades away.
+    let parent_grid_uv = round(tile_uv * 16.0) / 16.0;
+    return mix(parent_grid_uv, tile_uv, lod_transition.x);
+}
+
 fn stitched_surface_direction(
     original_direction: vec3<f32>,
     tile_uv: vec2<f32>,
@@ -1451,45 +1382,90 @@ fn stitched_surface_direction(
 
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
-    let original_direction = normalize(input.sphere_direction);
-    let tile_uv = stitched_tile_uv(input.tile_uv, input.edge_stitch);
-    let direction = stitched_surface_direction(
-        original_direction,
-        input.tile_uv,
-        tile_uv,
-        input.terrain_info,
+    let face = cube_face(input.terrain_info);
+    let morphed_tile_uv = lod_morphed_tile_uv(input.tile_uv, input.lod_transition);
+    let tile_uv = stitched_tile_uv(morphed_tile_uv, input.edge_stitch);
+    let anchor_direction = input.node_anchor_direction_cube_length.xyz;
+    let anchor_cube = anchor_direction * input.node_anchor_direction_cube_length.w;
+    let cube_offset = face_tangent_u(face)
+            * (tile_uv.x - 0.5)
+            * input.node_uv_origin_span.z
+        + face_tangent_v(face)
+            * (tile_uv.y - 0.5)
+            * input.node_uv_origin_span.w;
+    let surface_cube = anchor_cube + cube_offset;
+    let parallel = dot(surface_cube, anchor_direction);
+    let tangent = surface_cube - anchor_direction * parallel;
+    let tangent_length_squared = dot(tangent, tangent);
+    let surface_cube_length = sqrt(
+        parallel * parallel + tangent_length_squared,
     );
-    let anchor_relative_position = input.anchor_relative_position
-        + (direction - original_direction) * PLANET_RADIUS_METERS;
+    let radial_scale = -tangent_length_squared / max(
+        surface_cube_length * (parallel + surface_cube_length),
+        1.0e-8,
+    );
+    var direction = normalize(surface_cube);
+    // Evaluate the tiny direction difference in an anchor-local form. Direct
+    // subtraction of two absolute f32 directions loses most of an L18
+    // triangle to cancellation near cube-face UV +/-1.
+    var anchor_relative_position = (
+        tangent / surface_cube_length + anchor_direction * radial_scale
+    ) * PLANET_RADIUS_METERS;
+    if tile_uv.x <= 1.0e-5 || tile_uv.x >= 1.0 - 1.0e-5
+        || tile_uv.y <= 1.0e-5 || tile_uv.y >= 1.0 - 1.0e-5 {
+        // Evaluate shared boundaries from their global dyadic face UV. Both
+        // neighbours then produce identical edge positions; the stable
+        // anchor-local path above retains sub-metre precision in the interior.
+        let node_uv = input.node_uv_origin_span.xy
+            + tile_uv * input.node_uv_origin_span.zw;
+        direction = normalize(
+            face_normal(face)
+                + face_tangent_u(face) * node_uv.x
+                + face_tangent_v(face) * node_uv.y,
+        );
+        anchor_relative_position =
+            (direction - anchor_direction) * PLANET_RADIUS_METERS;
+    }
     let source_uv = input.source_uv_offset + tile_uv * input.source_uv_scale;
     let outmap = uses_outmap(input.terrain_info);
     let macro_height = macro_terrain_height(outmap, source_uv, direction);
     let base_camera_relative_view_position = input.anchor_view_position
         + planet_to_view(anchor_relative_position);
     let camera_distance_meters = length(base_camera_relative_view_position);
-    var terrain_detail_meters = 0.0;
-    if outmap {
-        terrain_detail_meters = global_terrain_detail(direction, camera_distance_meters);
-    }
-    let detail_weight = smoothstep(100.0, 400.0, macro_height);
-    let unscaled_height = macro_height + terrain_detail_meters * detail_weight;
+    // Baked tiles own geometric detail. Retain this zero varying for the
+    // material interface without evaluating the retired runtime noise.
+    let terrain_detail_meters = 0.0;
     let height = select(
-        unscaled_height,
-        macro_height * terrain_macro_height_scale()
-            + terrain_detail_meters
-                * detail_weight
-                * terrain_settings.outmap_height_scale.z,
+        macro_height,
+        macro_height * terrain_macro_height_scale(),
         outmap,
     );
     // Polar ice overrides ocean in the baked biome contract. Lift it just
     // above sea level so the cap remains visible rather than becoming water.
-    let ice = outmap && sample_biome(source_uv) == 2u;
-    let ocean = macro_height <= 0.0 && !ice;
+    let biome_id = sample_biome(source_uv);
+    let ice = outmap && biome_id == 2u;
+    let lake = outmap && biome_id == 1u;
+    let ocean = (macro_height <= 0.0 || lake) && !ice;
     let wave_surface = ocean_surface(direction, camera.projection.z);
     let land_height = select(height, max(height, 5.0), ice);
-    let surface_height = select(land_height, wave_surface.vertical_displacement, ocean);
+    let water_base_height = select(0.0, height, lake);
+    let surface_height = select(
+        land_height,
+        water_base_height + wave_surface.vertical_displacement,
+        ocean,
+    );
+    let skirt_depth_meters = select(
+        0.0,
+        min(
+            input.node_uv_origin_span.z
+                * PLANET_RADIUS_METERS
+                * TERRAIN_SKIRT_DEPTH_RATIO,
+            MAX_TERRAIN_SKIRT_DEPTH_METERS,
+        ),
+        input.skirt_depth_meters > 0.0,
+    );
     let local_planet_position = anchor_relative_position
-        + direction * (surface_height - input.skirt_depth_meters)
+        + direction * (surface_height - skirt_depth_meters)
         + select(vec3<f32>(0.0), wave_surface.horizontal_displacement, ocean);
     let camera_relative_view_position = input.anchor_view_position
         + planet_to_view(local_planet_position);
@@ -1565,6 +1541,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         select(0.0, 1.0, outmap),
         lit_surface_color,
         terrain_detail_meters,
+        surface_irradiance,
     );
 }
 
@@ -1581,9 +1558,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let transition_progress = input.lod_transition.x;
     let incoming = input.lod_transition.y > 0.5;
     let threshold = lod_dither_threshold(input.position);
-    if (incoming && threshold >= transition_progress)
-        || (!incoming && threshold < transition_progress)
-    {
+    if ((incoming && threshold >= transition_progress)
+        || (!incoming && threshold < transition_progress)) {
         discard;
     }
     let direction = normalize(input.surface_direction);
@@ -1594,15 +1570,28 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             return vec4<f32>(debug_ocean_albedo(), 1.0);
         }
         let surface = ocean_surface(direction, camera.projection.z);
+        let outmap = input.outmap > 0.5;
+        let lake = outmap && sample_biome(input.source_uv) == 1u;
+        let water_base_height = select(
+            0.0,
+            terrain_height(
+                outmap,
+                input.source_uv,
+                direction,
+                length(input.camera_relative_view_position),
+            ),
+            lake,
+        );
+        let water_surface_height = water_base_height + surface.vertical_displacement;
         let sun_transmittance = surface_direct_sun_transmittance(
             direction,
-            surface.vertical_displacement,
+            water_surface_height,
             sun_direction,
         );
         let sky_diffuse = sky_diffuse_irradiance(
             surface.normal,
             direction,
-            surface.vertical_displacement,
+            water_surface_height,
             sun_direction,
         );
         let water_surface_color = ocean_lighting(
@@ -1618,7 +1607,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             water_surface_color,
             input.camera_relative_view_position,
             direction,
-            surface.vertical_displacement,
+            water_surface_height,
         );
         if render_debug_mode == RENDER_DEBUG_AERIAL_CONTRIBUTION {
             return vec4<f32>(max(water_aerial_color - water_surface_color, vec3<f32>(0.0)), 1.0);
@@ -1652,7 +1641,25 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             1.0,
         );
     }
-    let textured_surface_lighting = input.surface_lighting * detail_tint;
+    // Biome, moisture and triplanar material are fragment-frequency values.
+    // Apply the interpolated illumination to the fragment albedo instead of
+    // tinting a vertex-frequency biome colour; the latter made coarse leaves
+    // read as large Gouraud-shaded software-rendered triangles.
+    var textured_surface_lighting = textured_terrain_albedo * input.surface_irradiance;
+    if outmap && sample_biome(input.source_uv) == 2u {
+        let ice_light_floor = clamp(
+            max(
+                max(input.surface_irradiance.x, input.surface_irradiance.y),
+                input.surface_irradiance.z,
+            ),
+            0.0,
+            1.0,
+        );
+        textured_surface_lighting = max(
+            textured_surface_lighting,
+            biome_color(2u) * 0.65 * ice_light_floor,
+        );
+    }
     let textured_aerial_color = textured_surface_lighting
         + max(input.aerial_color - input.surface_lighting, vec3<f32>(0.0));
     if ocean_coverage <= 0.0 {

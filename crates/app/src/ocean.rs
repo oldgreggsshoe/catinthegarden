@@ -14,37 +14,37 @@ const WAVES: [GerstnerWave; 6] = [
     GerstnerWave {
         direction: DVec3::new(0.9, 0.1, 0.4),
         wavelength_meters: 900.0,
-        amplitude_meters: 1.5,
+        amplitude_meters: 0.375,
         speed_meters_per_second: 4.0,
     },
     GerstnerWave {
         direction: DVec3::new(-0.3, 0.4, 0.85),
         wavelength_meters: 420.0,
-        amplitude_meters: 0.85,
+        amplitude_meters: 0.2125,
         speed_meters_per_second: 5.0,
     },
     GerstnerWave {
         direction: DVec3::new(0.55, -0.75, 0.35),
         wavelength_meters: 160.0,
-        amplitude_meters: 0.45,
+        amplitude_meters: 0.1125,
         speed_meters_per_second: 6.5,
     },
     GerstnerWave {
         direction: DVec3::new(-0.75, -0.2, 0.63),
         wavelength_meters: 65.0,
-        amplitude_meters: 0.22,
+        amplitude_meters: 0.055,
         speed_meters_per_second: 8.0,
     },
     GerstnerWave {
         direction: DVec3::new(0.2, 0.95, -0.24),
         wavelength_meters: 24.0,
-        amplitude_meters: 0.11,
+        amplitude_meters: 0.0275,
         speed_meters_per_second: 10.0,
     },
     GerstnerWave {
         direction: DVec3::new(-0.5, 0.7, -0.5),
         wavelength_meters: 9.0,
-        amplitude_meters: 0.05,
+        amplitude_meters: 0.0125,
         speed_meters_per_second: 12.0,
     },
 ];
