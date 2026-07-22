@@ -12,6 +12,8 @@ use crate::{
 
 const FIELD_LEVEL: u8 = 4;
 const FACE_COUNT: u32 = 6;
+const WARP_SCALE_NUMERATOR: u32 = 3;
+const WARP_SCALE_DENOMINATOR: u32 = 4;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -29,10 +31,26 @@ struct RayUniform {
     _padding: [u32; 2],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct WarpUniform {
+    debug_view: u32,
+    _padding: [u32; 3],
+}
+
 pub struct FoveatedRenderer {
-    pipeline: wgpu::RenderPipeline,
+    direct_pipeline: wgpu::RenderPipeline,
+    warp_pipeline: wgpu::RenderPipeline,
+    unwarp_pipeline: wgpu::RenderPipeline,
     fields_bind_group: wgpu::BindGroup,
+    unwarp_bind_group_layout: wgpu::BindGroupLayout,
+    unwarp_bind_group: wgpu::BindGroup,
     ray_uniform_buffer: wgpu::Buffer,
+    warp_uniform_buffer: wgpu::Buffer,
+    warp_sampler: wgpu::Sampler,
+    warp_color_format: wgpu::TextureFormat,
+    warp_size: winit::dpi::PhysicalSize<u32>,
+    warp_debug_visible: bool,
     height_min_meters: f32,
     height_max_meters: f32,
     face_quads: u32,
@@ -41,6 +59,10 @@ pub struct FoveatedRenderer {
     _max_height_texture: wgpu::Texture,
     _biome_texture: wgpu::Texture,
     _moisture_texture: wgpu::Texture,
+    warp_color_texture: wgpu::Texture,
+    warp_color_view: wgpu::TextureView,
+    warp_distance_texture: wgpu::Texture,
+    warp_distance_view: wgpu::TextureView,
 }
 
 impl FoveatedRenderer {
@@ -48,6 +70,7 @@ impl FoveatedRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         surface_format: wgpu::TextureFormat,
+        size: winit::dpi::PhysicalSize<u32>,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
         shared_bind_group_layout: &wgpu::BindGroupLayout,
         terrain_source: TerrainSource,
@@ -216,7 +239,7 @@ impl FoveatedRenderer {
             label: Some("full-resolution terrain raymarch shader"),
             source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let direct_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("full-resolution terrain raymarch pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -251,10 +274,167 @@ impl FoveatedRenderer {
             cache: None,
         });
 
+        let warp_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("warped terrain raymarch pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_warp"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format: surface_format,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::R32Float,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                ],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let unwarp_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("foveated unwarp layout"),
+                entries: &[
+                    texture_2d_layout_entry(0, wgpu::TextureSampleType::Float { filterable: true }),
+                    texture_2d_layout_entry(
+                        1,
+                        wgpu::TextureSampleType::Float { filterable: false },
+                    ),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let unwarp_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("foveated unwarp pipeline layout"),
+                bind_group_layouts: &[
+                    Some(camera_bind_group_layout),
+                    Some(&unwarp_bind_group_layout),
+                ],
+                immediate_size: 0,
+            });
+        let unwarp_shader =
+            device.create_shader_module(wgpu::include_wgsl!("foveated_unwarp.wgsl"));
+        let unwarp_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("foveated unwarp pipeline"),
+            layout: Some(&unwarp_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &unwarp_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &unwarp_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let warp_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("foveated warp sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let warp_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("foveated warp uniform"),
+            size: size_of::<WarpUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(
+            &warp_uniform_buffer,
+            0,
+            bytemuck::bytes_of(&WarpUniform {
+                debug_view: 0,
+                _padding: [0; 3],
+            }),
+        );
+        let warp_size = warp_size_for(size);
+        let (warp_color_texture, warp_color_view) =
+            create_warp_texture(device, "foveated warp color", warp_size, surface_format);
+        let (warp_distance_texture, warp_distance_view) = create_warp_texture(
+            device,
+            "foveated warp distance",
+            warp_size,
+            wgpu::TextureFormat::R32Float,
+        );
+        let unwarp_bind_group = create_unwarp_bind_group(
+            device,
+            &unwarp_bind_group_layout,
+            &warp_color_view,
+            &warp_distance_view,
+            &warp_sampler,
+            &warp_uniform_buffer,
+        );
+
         Ok(Self {
-            pipeline,
+            direct_pipeline,
+            warp_pipeline,
+            unwarp_pipeline,
             fields_bind_group,
+            unwarp_bind_group_layout,
+            unwarp_bind_group,
             ray_uniform_buffer,
+            warp_uniform_buffer,
+            warp_sampler,
+            warp_color_format: surface_format,
+            warp_size,
+            warp_debug_visible: false,
             height_min_meters,
             height_max_meters,
             face_quads,
@@ -263,6 +443,10 @@ impl FoveatedRenderer {
             _max_height_texture: max_height_texture,
             _biome_texture: biome_texture,
             _moisture_texture: moisture_texture,
+            warp_color_texture,
+            warp_color_view,
+            warp_distance_texture,
+            warp_distance_view,
         })
     }
 
@@ -277,16 +461,100 @@ impl FoveatedRenderer {
         queue.write_buffer(&self.ray_uniform_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 
-    pub fn draw<'pass>(
+    pub fn resize(&mut self, device: &wgpu::Device, size: winit::dpi::PhysicalSize<u32>) {
+        let warp_size = warp_size_for(size);
+        if warp_size == self.warp_size {
+            return;
+        }
+        let (warp_color_texture, warp_color_view) = create_warp_texture(
+            device,
+            "foveated warp color",
+            warp_size,
+            self.warp_color_format,
+        );
+        let (warp_distance_texture, warp_distance_view) = create_warp_texture(
+            device,
+            "foveated warp distance",
+            warp_size,
+            wgpu::TextureFormat::R32Float,
+        );
+        self.unwarp_bind_group = create_unwarp_bind_group(
+            device,
+            &self.unwarp_bind_group_layout,
+            &warp_color_view,
+            &warp_distance_view,
+            &self.warp_sampler,
+            &self.warp_uniform_buffer,
+        );
+        self.warp_size = warp_size;
+        self.warp_color_texture = warp_color_texture;
+        self.warp_color_view = warp_color_view;
+        self.warp_distance_texture = warp_distance_texture;
+        self.warp_distance_view = warp_distance_view;
+    }
+
+    pub fn toggle_warp_debug(&mut self, queue: &wgpu::Queue) {
+        self.warp_debug_visible = !self.warp_debug_visible;
+        queue.write_buffer(
+            &self.warp_uniform_buffer,
+            0,
+            bytemuck::bytes_of(&WarpUniform {
+                debug_view: u32::from(self.warp_debug_visible),
+                _padding: [0; 3],
+            }),
+        );
+    }
+
+    pub const fn warp_debug_visible(&self) -> bool {
+        self.warp_debug_visible
+    }
+
+    pub const fn warp_size(&self) -> winit::dpi::PhysicalSize<u32> {
+        self.warp_size
+    }
+
+    pub fn warp_color_view(&self) -> &wgpu::TextureView {
+        &self.warp_color_view
+    }
+
+    pub fn warp_distance_view(&self) -> &wgpu::TextureView {
+        &self.warp_distance_view
+    }
+
+    pub fn draw_direct<'pass>(
         &'pass self,
         render_pass: &mut wgpu::RenderPass<'pass>,
         camera_bind_group: &'pass wgpu::BindGroup,
         shared_bind_group: &'pass wgpu::BindGroup,
     ) {
-        render_pass.set_pipeline(&self.pipeline);
+        render_pass.set_pipeline(&self.direct_pipeline);
         render_pass.set_bind_group(0, camera_bind_group, &[]);
         render_pass.set_bind_group(1, &self.fields_bind_group, &[]);
         render_pass.set_bind_group(2, shared_bind_group, &[]);
+        render_pass.draw(0..3, 0..1);
+    }
+
+    pub fn draw_warped<'pass>(
+        &'pass self,
+        render_pass: &mut wgpu::RenderPass<'pass>,
+        camera_bind_group: &'pass wgpu::BindGroup,
+        shared_bind_group: &'pass wgpu::BindGroup,
+    ) {
+        render_pass.set_pipeline(&self.warp_pipeline);
+        render_pass.set_bind_group(0, camera_bind_group, &[]);
+        render_pass.set_bind_group(1, &self.fields_bind_group, &[]);
+        render_pass.set_bind_group(2, shared_bind_group, &[]);
+        render_pass.draw(0..3, 0..1);
+    }
+
+    pub fn draw_unwarp<'pass>(
+        &'pass self,
+        render_pass: &mut wgpu::RenderPass<'pass>,
+        camera_bind_group: &'pass wgpu::BindGroup,
+    ) {
+        render_pass.set_pipeline(&self.unwarp_pipeline);
+        render_pass.set_bind_group(0, camera_bind_group, &[]);
+        render_pass.set_bind_group(1, &self.unwarp_bind_group, &[]);
         render_pass.draw(0..3, 0..1);
     }
 }
@@ -345,6 +613,85 @@ fn texture_layout_entry(
         },
         count: None,
     }
+}
+
+fn texture_2d_layout_entry(
+    binding: u32,
+    sample_type: wgpu::TextureSampleType,
+) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type,
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    }
+}
+
+fn warp_size_for(size: winit::dpi::PhysicalSize<u32>) -> winit::dpi::PhysicalSize<u32> {
+    winit::dpi::PhysicalSize::new(
+        (size.width * WARP_SCALE_NUMERATOR / WARP_SCALE_DENOMINATOR).max(1),
+        (size.height * WARP_SCALE_NUMERATOR / WARP_SCALE_DENOMINATOR).max(1),
+    )
+}
+
+fn create_warp_texture(
+    device: &wgpu::Device,
+    label: &str,
+    size: winit::dpi::PhysicalSize<u32>,
+    format: wgpu::TextureFormat,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: size.width,
+            height: size.height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
+fn create_unwarp_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    color_view: &wgpu::TextureView,
+    distance_view: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+    uniform_buffer: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("foveated unwarp bind group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(color_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(distance_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: uniform_buffer.as_entire_binding(),
+            },
+        ],
+    })
 }
 
 fn create_face_texture(
@@ -624,11 +971,24 @@ impl From<OutmapError> for FoveatedError {
 #[cfg(test)]
 mod tests {
     use super::{
-        FIELD_LEVEL, RayUniform, face_sample_source, max_height_mips, raymarch_shader_source,
+        FIELD_LEVEL, RayUniform, WarpUniform, face_sample_source, max_height_mips,
+        raymarch_shader_source, warp_size_for,
     };
     use catinthegarden_coretypes::{TILE_LOGICAL_SIZE, TILE_STORED_SIZE};
 
     const PLANET_RADIUS_METERS: f64 = 4_000_000.0;
+
+    fn warp_axis(value: f32) -> f32 {
+        let core = 0.5_f32;
+        let denominator = (1.0 + core).powi(2) - core.powi(2);
+        value.signum() * (((value.abs() + core).powi(2) - core.powi(2)) / denominator)
+    }
+
+    fn unwarp_axis(value: f32) -> f32 {
+        let core = 0.5_f32;
+        let denominator = (1.0 + core).powi(2) - core.powi(2);
+        value.signum() * ((value.abs() * denominator + core.powi(2)).sqrt() - core)
+    }
 
     fn sphere_entry_distance_f64(camera_radius: f64, ray_inward_cosine: f64) -> Option<f64> {
         let radial_dot_ray = -camera_radius * ray_inward_cosine;
@@ -690,6 +1050,44 @@ mod tests {
     }
 
     #[test]
+    fn separable_warp_round_trips_and_keeps_a_linear_center() {
+        for value in [-1.0_f32, -0.75, -0.25, -0.01, 0.0, 0.01, 0.25, 0.75, 1.0] {
+            let round_trip = unwarp_axis(warp_axis(value));
+            assert!((round_trip - value).abs() <= 1.0e-6);
+        }
+        assert!(warp_axis(0.01).abs() > 0.0);
+    }
+
+    #[test]
+    fn warp_targets_track_three_quarters_of_internal_size() {
+        assert_eq!(
+            warp_size_for(winit::dpi::PhysicalSize::new(640, 427)),
+            winit::dpi::PhysicalSize::new(480, 320),
+        );
+        assert_eq!(
+            warp_size_for(winit::dpi::PhysicalSize::new(1, 1)),
+            winit::dpi::PhysicalSize::new(1, 1),
+        );
+        assert_eq!(size_of::<WarpUniform>(), 16);
+    }
+
+    #[test]
+    fn unwarp_shader_is_valid_and_writes_webgpu_reversed_depth() {
+        let shader = include_str!("foveated_unwarp.wgsl");
+        let module =
+            wgpu::naga::front::wgsl::parse_str(shader).expect("foveated unwarp shader must parse");
+        wgpu::naga::valid::Validator::new(
+            wgpu::naga::valid::ValidationFlags::all(),
+            wgpu::naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("foveated unwarp shader must validate");
+        assert!(shader.contains("clip.z / clip.w"));
+        assert!(!shader.contains("clip.z / clip.w * 0.5"));
+        assert!(shader.contains("return FragmentOutput(color, 0.0)"));
+    }
+
+    #[test]
     fn full_resolution_raymarch_shader_is_valid_wgsl() {
         let shader = raymarch_shader_source();
         let module = wgpu::naga::front::wgsl::parse_str(&shader)
@@ -706,6 +1104,7 @@ mod tests {
         assert!(shader.contains("fn sample_max_height("));
         assert!(shader.contains("fn adaptive_step_distance("));
         assert!(shader.contains("exp2(f32(min(iteration, 6u)))"));
+        assert!(shader.contains("fn fs_warp("));
         assert!(shader.contains(
             "+ 2.0 * distance_meters * radial_dot_ray\n            + distance_meters * distance_meters"
         ));

@@ -699,6 +699,7 @@ impl State {
             &device,
             &queue,
             hdr::HdrRenderer::SCENE_FORMAT,
+            size,
             &camera_bind_group_layout,
             &shared_planet_bind_group_layout,
             terrain_source.clone(),
@@ -830,6 +831,7 @@ impl State {
             .clamp_vertical_fov_for_viewport(self.size.height);
         self.depth_view = create_depth_view(&self.device, size);
         self.hdr.resize(&self.device, size);
+        self.foveated.resize(&self.device, size);
     }
 
     fn toggle_fullscreen(&mut self, window: &Window) {
@@ -925,6 +927,11 @@ impl State {
 
     fn cycle_render_debug_mode(&mut self) {
         self.render_debug_mode = self.render_debug_mode.next();
+        self.mark_hud_dirty();
+    }
+
+    fn toggle_warp_debug(&mut self) {
+        self.foveated.toggle_warp_debug(&self.queue);
         self.mark_hud_dirty();
     }
 
@@ -1378,6 +1385,8 @@ impl State {
             let bloom_enabled = self.hdr.bloom_enabled();
             let render_path = self.render_path;
             let render_debug_mode = self.render_debug_mode;
+            let warp_size = self.foveated.warp_size();
+            let warp_debug_visible = self.foveated.warp_debug_visible();
             let animation_frozen = self.animation_frozen;
             let camera_mode = self.camera_mode;
             let flight_speed_meters_per_second = self.flight_speed.speed_meters_per_second;
@@ -1454,12 +1463,18 @@ impl State {
                             ));
                             ui.label(format!("Render path: {} (F5)", render_path.label()));
                             ui.label(format!(
+                                "Ray warp: {}x{}  |  debug {} (F11)",
+                                warp_size.width,
+                                warp_size.height,
+                                if warp_debug_visible { "on" } else { "off" },
+                            ));
+                            ui.label(format!(
                                 "Animation: {}",
                                 if animation_frozen { "frozen" } else { "running" },
                             ));
                             ui.label(format!("Ocean Gerstner range: {ocean_wave_range:.2} m"));
                             ui.label(
-                                "F: fullscreen  |  F3: overlay  |  F4: camera mode  |  F5: render path  |  WASD: fly  |  F6: blur  |  F7: bloom  |  F8: HDR  |  F9: composition  |  F10: freeze  |  F12: capture PNG",
+                                "F: fullscreen  |  F3: overlay  |  F4: camera mode  |  F5: render path  |  WASD: fly  |  F6: blur  |  F7: bloom  |  F8: HDR  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
                             );
                             ui.label("Default: auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc/Q: quit");
                         });
@@ -1580,14 +1595,20 @@ impl State {
                     stencil_ops: None,
                 }),
                 occlusion_query_set: None,
-                timestamp_writes: gpu_slot_index.map(|slot_index| {
-                    let profiler = self.gpu_profiler.as_ref().expect("GPU profiler exists");
-                    wgpu::RenderPassTimestampWrites {
-                        query_set: &profiler.slots[slot_index].query_set,
-                        beginning_of_pass_write_index: Some(0),
-                        end_of_pass_write_index: Some(1),
-                    }
-                }),
+                timestamp_writes: gpu_slot_index
+                    .filter(|_| {
+                        self.render_path == RenderPath::Raster
+                            || self.render_debug_mode != planet::RenderDebugMode::Final
+                            || solid_color_screen
+                    })
+                    .map(|slot_index| {
+                        let profiler = self.gpu_profiler.as_ref().expect("GPU profiler exists");
+                        wgpu::RenderPassTimestampWrites {
+                            query_set: &profiler.slots[slot_index].query_set,
+                            beginning_of_pass_write_index: Some(0),
+                            end_of_pass_write_index: Some(1),
+                        }
+                    }),
                 multiview_mask: None,
             });
             if !solid_color_screen && self.render_path == RenderPath::Raster {
@@ -1597,12 +1618,97 @@ impl State {
                     self.terrain.draw(&mut render_pass, &self.camera_bind_group);
                 }
             } else if !solid_color_screen && self.render_path == RenderPath::FoveatedRay {
-                self.foveated.draw(
+                if self.render_debug_mode != planet::RenderDebugMode::Final {
+                    self.foveated.draw_direct(
+                        &mut render_pass,
+                        &self.camera_bind_group,
+                        self.terrain.shared_bind_group(),
+                    );
+                }
+            }
+        }
+        if !solid_color_screen
+            && self.render_path == RenderPath::FoveatedRay
+            && self.render_debug_mode == planet::RenderDebugMode::Final
+        {
+            {
+                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("warped raymarch pass"),
+                    color_attachments: &[
+                        Some(wgpu::RenderPassColorAttachment {
+                            view: self.foveated.warp_color_view(),
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        }),
+                        Some(wgpu::RenderPassColorAttachment {
+                            view: self.foveated.warp_distance_view(),
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color {
+                                    r: -1.0,
+                                    g: 0.0,
+                                    b: 0.0,
+                                    a: 0.0,
+                                }),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        }),
+                    ],
+                    depth_stencil_attachment: None,
+                    occlusion_query_set: None,
+                    timestamp_writes: gpu_slot_index.map(|slot_index| {
+                        let profiler = self.gpu_profiler.as_ref().expect("GPU profiler exists");
+                        wgpu::RenderPassTimestampWrites {
+                            query_set: &profiler.slots[slot_index].query_set,
+                            beginning_of_pass_write_index: Some(0),
+                            end_of_pass_write_index: None,
+                        }
+                    }),
+                    multiview_mask: None,
+                });
+                self.foveated.draw_warped(
                     &mut render_pass,
                     &self.camera_bind_group,
                     self.terrain.shared_bind_group(),
                 );
             }
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("foveated unwarp pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: self.hdr.scene_view(),
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                occlusion_query_set: None,
+                timestamp_writes: gpu_slot_index.map(|slot_index| {
+                    let profiler = self.gpu_profiler.as_ref().expect("GPU profiler exists");
+                    wgpu::RenderPassTimestampWrites {
+                        query_set: &profiler.slots[slot_index].query_set,
+                        beginning_of_pass_write_index: None,
+                        end_of_pass_write_index: Some(1),
+                    }
+                }),
+                multiview_mask: None,
+            });
+            self.foveated
+                .draw_unwarp(&mut render_pass, &self.camera_bind_group);
         }
         let timestamp_query_set = gpu_slot_index.map(|slot_index| {
             &self
@@ -1651,7 +1757,12 @@ impl State {
                 }),
                 multiview_mask: None,
             });
-            if !solid_color_screen && self.render_debug_mode != planet::RenderDebugMode::SkyOnly {
+            if !solid_color_screen
+                && self.render_debug_mode != planet::RenderDebugMode::SkyOnly
+                && !(self.render_path == RenderPath::FoveatedRay
+                    && self.render_debug_mode == planet::RenderDebugMode::Final
+                    && self.foveated.warp_debug_visible())
+            {
                 self.sun.draw(&mut render_pass, &self.camera_bind_group);
             }
         }
@@ -1994,6 +2105,13 @@ impl ApplicationHandler for App {
                         && event.physical_key == PhysicalKey::Code(KeyCode::F10) =>
                 {
                     state.toggle_animation_freeze();
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::F11) =>
+                {
+                    state.toggle_warp_debug();
                     window.request_redraw();
                 }
                 WindowEvent::KeyboardInput { event, .. }

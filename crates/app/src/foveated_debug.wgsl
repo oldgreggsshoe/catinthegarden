@@ -41,6 +41,16 @@ struct FragmentOutput {
     @builtin(frag_depth) depth: f32,
 }
 
+struct WarpFragmentOutput {
+    @location(0) color: vec4<f32>,
+    @location(1) distance_meters: f32,
+}
+
+struct RayResult {
+    color: vec4<f32>,
+    distance_meters: f32,
+}
+
 struct FaceUv {
     face: u32,
     uv: vec2<f32>,
@@ -55,6 +65,22 @@ fn view_direction(ndc: vec2<f32>) -> vec3<f32> {
     let horizontal = ndc.x * camera.projection.x * camera.projection.y;
     let vertical = ndc.y * camera.projection.y;
     return normalize(vec3<f32>(horizontal, vertical, -1.0));
+}
+
+fn warp_axis(coordinate: f32) -> f32 {
+    const EXPONENT: f32 = 2.0;
+    const LINEAR_CORE: f32 = 0.5;
+    let magnitude = abs(coordinate);
+    let core_power = pow(LINEAR_CORE, EXPONENT);
+    let denominator = pow(1.0 + LINEAR_CORE, EXPONENT) - core_power;
+    let warped = (
+        pow(magnitude + LINEAR_CORE, EXPONENT) - core_power
+    ) / denominator;
+    return sign(coordinate) * warped;
+}
+
+fn warped_screen_ndc(warp_ndc: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(warp_axis(warp_ndc.x), warp_axis(warp_ndc.y));
 }
 
 fn direction_to_face_uv(direction: vec3<f32>) -> FaceUv {
@@ -709,17 +735,15 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     return VertexOutput(vec4<f32>(position, 0.0, 1.0), position);
 }
 
-@fragment
-fn fs_main(input: VertexOutput) -> FragmentOutput {
-    let ray = view_direction(input.ndc);
+fn trace_ray(ray: vec3<f32>) -> RayResult {
     let camera_position_view = camera.camera_planet_direction_view_altitude.xyz
         * ray_settings.camera_radius_meters;
     let radial_dot_ray = dot(camera_position_view, ray);
     let render_debug_mode = u32(camera.projection.w + 0.5);
     if render_debug_mode == RENDER_DEBUG_SKY_ONLY {
-        return FragmentOutput(
+        return RayResult(
             vec4<f32>(ray_atmosphere_radiance(ray, radial_dot_ray), 1.0),
-            0.0,
+            -1.0,
         );
     }
     let interval = shell_interval(radial_dot_ray);
@@ -728,15 +752,15 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
     if interval.x < 0.0
         && ray_settings.camera_radius_meters > ray_settings.maximum_shell_radius_meters
     {
-        return FragmentOutput(
+        return RayResult(
             vec4<f32>(ray_atmosphere_radiance(ray, radial_dot_ray), 1.0),
-            0.0,
+            -1.0,
         );
     }
     if end_distance <= start_distance {
-        return FragmentOutput(
+        return RayResult(
             vec4<f32>(ray_atmosphere_radiance(ray, radial_dot_ray), 1.0),
-            0.0,
+            -1.0,
         );
     }
 
@@ -803,14 +827,12 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
             );
             color = mix(terrain_color, color, water_hit.coverage);
         }
-        let clip = camera.projection_matrix
-            * vec4<f32>(ray * water_hit.distance_meters, 1.0);
-        return FragmentOutput(vec4<f32>(color, 1.0), clip.z / clip.w);
+        return RayResult(vec4<f32>(color, 1.0), water_hit.distance_meters);
     }
     if hit_distance < 0.0 {
-        return FragmentOutput(
+        return RayResult(
             vec4<f32>(ray_atmosphere_radiance(ray, radial_dot_ray), 1.0),
-            0.0,
+            -1.0,
         );
     }
 
@@ -836,6 +858,24 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
         );
         color = mix(terrain_color, ocean_color, ocean_coverage);
     }
-    let clip = camera.projection_matrix * vec4<f32>(ray * hit_distance, 1.0);
-    return FragmentOutput(vec4<f32>(color, 1.0), clip.z / clip.w);
+    return RayResult(vec4<f32>(color, 1.0), hit_distance);
+}
+
+@fragment
+fn fs_main(input: VertexOutput) -> FragmentOutput {
+    let ray = view_direction(input.ndc);
+    let result = trace_ray(ray);
+    if result.distance_meters < 0.0 {
+        return FragmentOutput(result.color, 0.0);
+    }
+    let clip = camera.projection_matrix
+        * vec4<f32>(ray * result.distance_meters, 1.0);
+    return FragmentOutput(result.color, clip.z / clip.w);
+}
+
+@fragment
+fn fs_warp(input: VertexOutput) -> WarpFragmentOutput {
+    let ray = view_direction(warped_screen_ndc(input.ndc));
+    let result = trace_ray(ray);
+    return WarpFragmentOutput(result.color, result.distance_meters);
 }
