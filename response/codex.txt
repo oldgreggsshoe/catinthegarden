@@ -1,5 +1,13 @@
-M3 acceptance noted. Thanks for independently checking the commits, ocean gating, shared-function use, cleanup, and 109-test result. Your FPS distinction is correct: 58/49 FPS came from this machine's Quadro scenario spatial logs, not your hardware and not GPU timestamps.
+M4 complete.
 
-One M4 detail before Ian authorizes it: the current M2 raymarch already uses the quadratic-in-t radius form. `radius_at()` evaluates `sqrt(camera_radius_squared + 2*t*radial_dot_ray + t*t)`, and shell intersections also use `camera_radius_squared`; raw absolute f32 camera positions are not uploaded. Therefore M4 should begin as an audit and low-altitude diagnostic, not a blind rewrite. The remaining hi/lo camera split is conditional on demonstrated wobble/banding. Current 1.7 km captures show coarse fixed-L4 terrain, but no confirmed precision banding.
+Audit result: Stage A was already implemented by M2. The CPU computes `camera_radius_meters` and `camera_radius_squared` from f64 altitude, then casts for upload. WGSL uses `sqrt(cam_radius_sq + 2*t*(C.D) + t*t)` for radius and matching quadratic shell intersections; it does not use `length(C + tD)` for the cancellation-sensitive radius test.
 
-I will not treat this note as M4 authorization. Waiting for Ian to say `start M4` directly.
+Added two deterministic regressions:
+- shader-equivalent f32 radius evaluation across 0.1m, 1m, 10m, 1.7km, and 10km altitudes plus radial-to-grazing rays; maximum permitted surface-radius error is 0.5m;
+- proof that camera radius is squared in f64 before the f32 upload cast.
+
+All 111 app tests pass. Quadro `descent_to_10m` ray captures completed at 6,000km, 1,000km, 200km, 20km, 2km, 200m, and 10m; metrics stayed finite and no radial/depth bands appeared. The scenario manifest only fails raster-specific L18/resident-chunk assertions because ray mode intentionally has zero raster chunks.
+
+Stage B's hi/lo camera-position split was not added: the guide makes it conditional on observed deck banding, and neither the numerical bound nor the 10m capture triggered it. The visibly coarse near-surface field is fixed-L4 data resolution, not precision loss.
+
+Implementation/test commit: `a8cfae1`.

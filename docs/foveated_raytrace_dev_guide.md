@@ -420,6 +420,18 @@ foveate this further in the experiments.
 
 ### M4. Precision hardening
 
+**Completed on `experiment/ground-readability` (2026-07-22).** Stage A was
+already present in the M2 implementation: the CPU computes camera radius and
+its square in f64 before upload, and WGSL evaluates radius with the
+quadratic-in-t form rather than `length(C + tD)`. Regression coverage now
+emulates the shader over 0.1 m to 10 km camera altitudes and radial-to-grazing
+rays, bounding surface-radius error to 0.5 m; it also prevents the radius from
+being cast to f32 before squaring. A Quadro descent captured every milestone
+through 10 m altitude with finite metrics and no visible depth bands. Stage B's
+hi/lo split was deliberately not added because its documented trigger was not
+observed. The fixed L4 field remains visually coarse and is unrelated to
+camera-position precision.
+
 **Goal:** kill low-altitude wobble.
 
 - Switch the radius test to the quadratic-in-`t` form using `cam_radius` and
