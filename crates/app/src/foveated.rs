@@ -541,6 +541,30 @@ mod tests {
     use super::{FIELD_LEVEL, RayUniform, face_sample_source, raymarch_shader_source};
     use catinthegarden_coretypes::{TILE_LOGICAL_SIZE, TILE_STORED_SIZE};
 
+    const PLANET_RADIUS_METERS: f64 = 4_000_000.0;
+
+    fn sphere_entry_distance_f64(camera_radius: f64, ray_inward_cosine: f64) -> Option<f64> {
+        let radial_dot_ray = -camera_radius * ray_inward_cosine;
+        let discriminant = radial_dot_ray * radial_dot_ray
+            - (camera_radius * camera_radius - PLANET_RADIUS_METERS * PLANET_RADIUS_METERS);
+        (discriminant >= 0.0).then(|| -radial_dot_ray - discriminant.sqrt())
+    }
+
+    fn shader_radius_at_surface(
+        camera_radius: f64,
+        ray_inward_cosine: f64,
+        distance_meters: f64,
+    ) -> f32 {
+        let camera_radius_squared = camera_radius.powi(2) as f32;
+        let radial_dot_ray = (camera_radius as f32) * (-(ray_inward_cosine as f32));
+        let distance_meters = distance_meters as f32;
+        (camera_radius_squared
+            + 2.0 * distance_meters * radial_dot_ray
+            + distance_meters * distance_meters)
+            .max(0.0)
+            .sqrt()
+    }
+
     #[test]
     fn stitched_face_coordinates_keep_one_gutter_and_shared_tile_edges() {
         let side = 1_u32 << FIELD_LEVEL;
@@ -569,6 +593,9 @@ mod tests {
         assert!(shader.contains("for (var index = 0u; index < 192u; index += 1u)"));
         assert!(shader.contains("refine_hit("));
         assert!(shader.contains("terrain_normal("));
+        assert!(shader.contains(
+            "+ 2.0 * distance_meters * radial_dot_ray\n            + distance_meters * distance_meters"
+        ));
         assert!(shader.contains("fn shade_terrain("));
         assert!(shader.contains("let terrain_color = shade_terrain("));
         assert!(shader.contains("fn ocean_hit("));
@@ -589,5 +616,39 @@ mod tests {
         assert_eq!(far.maximum_shell_radius_meters, 4_036_000.0);
         assert_eq!(near.camera_radius_meters, 4_010_000.0);
         assert_eq!(near.camera_radius_squared, 4_010_000.0_f32.powi(2));
+    }
+
+    #[test]
+    fn quadratic_radius_stays_sub_meter_at_low_altitude() {
+        for altitude_meters in [0.1, 1.0, 10.0, 1_700.0, 10_000.0] {
+            let camera_radius = PLANET_RADIUS_METERS + altitude_meters;
+            for angle_degrees in [0.0_f64, 30.0, 60.0, 80.0, 88.0, 89.0] {
+                let ray_inward_cosine = angle_degrees.to_radians().cos();
+                let Some(distance_meters) =
+                    sphere_entry_distance_f64(camera_radius, ray_inward_cosine)
+                else {
+                    continue;
+                };
+                let radius =
+                    shader_radius_at_surface(camera_radius, ray_inward_cosine, distance_meters);
+                let error_meters = (f64::from(radius) - PLANET_RADIUS_METERS).abs();
+                assert!(
+                    error_meters <= 0.5,
+                    "altitude={altitude_meters}m angle={angle_degrees}deg error={error_meters}m"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn camera_radius_squared_is_rounded_only_after_f64_multiplication() {
+        let uniform = RayUniform::for_camera(-5_000.0, 9_000.0, 2_048, 0.1);
+        let camera_radius = PLANET_RADIUS_METERS + 0.1;
+        assert_eq!(uniform.camera_radius_squared, camera_radius.powi(2) as f32);
+        assert_ne!(
+            uniform.camera_radius_squared,
+            (camera_radius as f32).powi(2),
+            "squaring after the f32 cast discards the low-altitude contribution"
+        );
     }
 }
