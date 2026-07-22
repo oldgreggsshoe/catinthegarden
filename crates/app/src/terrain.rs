@@ -1301,6 +1301,7 @@ fn create_terrain_material_texture(
         let mut mip_size = TERRAIN_MATERIAL_TEXTURE_SIZE;
         let mut texels = terrain_material_layer_texels(layer, mip_size as usize);
         for mip_level in 0..mip_level_count {
+            let padded_texels = padded_texture_rows(&texels, mip_size, mip_size, 4);
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &texture,
@@ -1312,10 +1313,10 @@ fn create_terrain_material_texture(
                     },
                     aspect: wgpu::TextureAspect::All,
                 },
-                &texels,
+                &padded_texels,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(mip_size * 4),
+                    bytes_per_row: Some(aligned_texture_row_bytes(mip_size * 4)),
                     rows_per_image: Some(mip_size),
                 },
                 wgpu::Extent3d {
@@ -1532,6 +1533,8 @@ fn create_and_upload_texture(
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
+    let padded_bytes =
+        padded_texture_rows(bytes, TILE_STORED_SIZE, TILE_STORED_SIZE, bytes_per_texel);
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
             texture: &texture,
@@ -1539,15 +1542,38 @@ fn create_and_upload_texture(
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        bytes,
+        &padded_bytes,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(TILE_STORED_SIZE * bytes_per_texel),
+            bytes_per_row: Some(aligned_texture_row_bytes(
+                TILE_STORED_SIZE * bytes_per_texel,
+            )),
             rows_per_image: Some(TILE_STORED_SIZE),
         },
         extent,
     );
     texture
+}
+
+fn aligned_texture_row_bytes(row_bytes: u32) -> u32 {
+    row_bytes.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT
+}
+
+fn padded_texture_rows(bytes: &[u8], width: u32, height: u32, bytes_per_texel: u32) -> Vec<u8> {
+    let row_bytes = width * bytes_per_texel;
+    assert_eq!(bytes.len(), (row_bytes * height) as usize);
+    let aligned_row_bytes = aligned_texture_row_bytes(row_bytes);
+    if aligned_row_bytes == row_bytes {
+        return bytes.to_vec();
+    }
+    let mut padded = vec![0; (aligned_row_bytes * height) as usize];
+    for row in 0..height as usize {
+        let source_start = row * row_bytes as usize;
+        let target_start = row * aligned_row_bytes as usize;
+        padded[target_start..target_start + row_bytes as usize]
+            .copy_from_slice(&bytes[source_start..source_start + row_bytes as usize]);
+    }
+    padded
 }
 
 fn tile_sample_count() -> usize {
@@ -1767,12 +1793,12 @@ mod tests {
     use super::{
         FadingChunk, LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS,
         OUTMAP_TILE_GRID_SUBDIVISION_LEVELS, TERRAIN_MATERIAL_LAYER_COUNT,
-        TERRAIN_MATERIAL_TEXTURE_SIZE, TerrainSettings, cube_face_uv, downsample_srgb_rgba8,
-        edge_stitch_info, edge_stitch_level_delta, fallback_uv_transform, lod_transition_nodes,
-        lod_transition_progress, nodes_share_lod_transition, pack_terrain_info,
-        purge_expired_lod_transitions, sample_height_cpu, should_animate_lod_transition,
-        source_tile_uv_at_direction, terrain_material_layer_texels, terrain_material_texel,
-        tileable_value_noise,
+        TERRAIN_MATERIAL_TEXTURE_SIZE, TerrainSettings, aligned_texture_row_bytes, cube_face_uv,
+        downsample_srgb_rgba8, edge_stitch_info, edge_stitch_level_delta, fallback_uv_transform,
+        lod_transition_nodes, lod_transition_progress, nodes_share_lod_transition,
+        pack_terrain_info, padded_texture_rows, purge_expired_lod_transitions, sample_height_cpu,
+        should_animate_lod_transition, source_tile_uv_at_direction, terrain_material_layer_texels,
+        terrain_material_texel, tileable_value_noise,
     };
     use crate::planet::{
         GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, MAX_LOD_LEVEL, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE,
@@ -1945,6 +1971,16 @@ mod tests {
         assert!(shader.contains("fn terrain_material_weights_for_biome("));
         assert!(shader.contains("fn height_blend_material_weights("));
         assert!(shader.contains("fn terrain_material_tint("));
+    }
+
+    #[test]
+    fn texture_upload_rows_are_padded_without_changing_texels() {
+        let source: Vec<_> = (0..(3 * 2)).collect();
+        let padded = padded_texture_rows(&source, 3, 2, 1);
+        assert_eq!(aligned_texture_row_bytes(3), 256);
+        assert_eq!(padded.len(), 512);
+        assert_eq!(&padded[..3], &[0, 1, 2]);
+        assert_eq!(&padded[256..259], &[3, 4, 5]);
     }
 
     #[test]
