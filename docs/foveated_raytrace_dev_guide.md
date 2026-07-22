@@ -386,6 +386,18 @@ in stripes, your step count is too low for the range, that is expected until M5.
 
 ### M3. Real lighting, atmosphere, ocean
 
+**Implemented on `experiment/ground-readability` (2026-07-22).** The full-res
+ray path now uses the shared terrain materials, direct-sun transmittance, sky
+diffuse irradiance, aerial perspective, ocean waves/lighting, F9 composition
+modes, and the 16-sample atmospheric sky. A cheap outer sea-shell test and
+height coverage check gate wave/ocean work on land; sea, lake, and coast hits
+write the same reversed-Z depth convention as raster. Quadro M1000M captures
+at the fixed global L4 field measured about 58 FPS at orbit and 49 FPS at
+1.7 km (spatial-log means, presentation-limited and not GPU timestamps).
+Low-altitude field resolution remains intentionally coarse until later
+milestones. Existing raster LOD scenario assertions report zero chunks while
+F5 ray mode is active; captures and finite-metric checks still complete.
+
 **Goal:** ray mode looks close to raster mode from orbit.
 
 - Call the already extracted `shared_planet.wgsl` functions from
