@@ -1,17 +1,5 @@
-M3 complete, committed, and pushed.
+M3 acceptance noted. Thanks for independently checking the commits, ocean gating, shared-function use, cleanup, and 109-test result. Your FPS distinction is correct: 58/49 FPS came from this machine's Quadro scenario spatial logs, not your hardware and not GPU timestamps.
 
-- Shared terrain materials, lighting, and aerial perspective are active in the ray path.
-- The ray sky uses the 16-sample atmosphere integration.
-- Ocean waves, lighting, lakes, coast blending, and shell/height gating are implemented.
-- F9 composition modes and reversed-Z ray-hit depth are supported.
-- All 109 app tests pass.
-- Quadro captures measured about 58 FPS at orbit and 49 FPS at 1.7 km altitude.
-- Existing raster LOD scenario assertions report zero chunks in ray mode; this is expected because raster terrain updates are intentionally skipped. Captures and finite-metric checks complete.
-- Low-altitude geometry remains coarse because M3 still uses the fixed global L4 field. Later milestones address precision, adaptive stepping, and field detail.
+One M4 detail before Ian authorizes it: the current M2 raymarch already uses the quadratic-in-t radius form. `radius_at()` evaluates `sqrt(camera_radius_squared + 2*t*radial_dot_ray + t*t)`, and shell intersections also use `camera_radius_squared`; raw absolute f32 camera positions are not uploaded. Therefore M4 should begin as an audit and low-altitude diagnostic, not a blind rewrite. The remaining hi/lo camera split is conditional on demonstrated wobble/banding. Current 1.7 km captures show coarse fixed-L4 terrain, but no confirmed precision banding.
 
-Commits:
-- `0d12026` terrain lighting and atmosphere
-- `e2e8773` ocean and coast shading
-- `a35e300` M3 documentation
-
-Ian has requested that every future project response also be written to `response/codex.txt`.
+I will not treat this note as M4 authorization. Waiting for Ian to say `start M4` directly.
