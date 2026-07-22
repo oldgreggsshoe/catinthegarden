@@ -14,6 +14,7 @@ const FIELD_LEVEL: u8 = 4;
 const FACE_COUNT: u32 = 6;
 const WARP_SCALE_NUMERATOR: u32 = 3;
 const WARP_SCALE_DENOMINATOR: u32 = 4;
+const FOVEA_FOLLOW_RATE_PER_SECOND: f32 = 5.0;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -28,14 +29,15 @@ struct RayUniform {
     maximum_shell_radius_meters: f32,
     max_height_mip_count: u32,
     minimum_step_meters: f32,
-    _padding: [u32; 2],
+    fovea_ndc: [f32; 2],
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct WarpUniform {
+    fovea_ndc: [f32; 2],
     debug_view: u32,
-    _padding: [u32; 3],
+    _padding: u32,
 }
 
 pub struct FoveatedRenderer {
@@ -51,6 +53,7 @@ pub struct FoveatedRenderer {
     warp_color_format: wgpu::TextureFormat,
     warp_size: winit::dpi::PhysicalSize<u32>,
     warp_debug_visible: bool,
+    fovea_ndc: [f32; 2],
     height_min_meters: f32,
     height_max_meters: f32,
     face_quads: u32,
@@ -400,8 +403,9 @@ impl FoveatedRenderer {
             &warp_uniform_buffer,
             0,
             bytemuck::bytes_of(&WarpUniform {
+                fovea_ndc: [0.0; 2],
                 debug_view: 0,
-                _padding: [0; 3],
+                _padding: 0,
             }),
         );
         let warp_size = warp_size_for(size);
@@ -435,6 +439,7 @@ impl FoveatedRenderer {
             warp_color_format: surface_format,
             warp_size,
             warp_debug_visible: false,
+            fovea_ndc: [0.0; 2],
             height_min_meters,
             height_max_meters,
             face_quads,
@@ -450,15 +455,29 @@ impl FoveatedRenderer {
         })
     }
 
-    pub fn update(&self, queue: &wgpu::Queue, camera_altitude_meters: f64) {
-        let uniform = RayUniform::for_camera(
+    pub fn update(
+        &mut self,
+        queue: &wgpu::Queue,
+        camera_altitude_meters: f64,
+        target_fovea_ndc: [f32; 2],
+        delta_seconds: f32,
+    ) {
+        self.fovea_ndc = eased_fovea_ndc(
+            self.fovea_ndc,
+            target_fovea_ndc,
+            delta_seconds,
+            FOVEA_FOLLOW_RATE_PER_SECOND,
+        );
+        let mut uniform = RayUniform::for_camera(
             self.height_min_meters,
             self.height_max_meters,
             self.face_quads,
             self.max_height_mip_count,
             camera_altitude_meters,
         );
+        uniform.fovea_ndc = self.fovea_ndc;
         queue.write_buffer(&self.ray_uniform_buffer, 0, bytemuck::bytes_of(&uniform));
+        self.write_warp_uniform(queue);
     }
 
     pub fn resize(&mut self, device: &wgpu::Device, size: winit::dpi::PhysicalSize<u32>) {
@@ -495,12 +514,17 @@ impl FoveatedRenderer {
 
     pub fn toggle_warp_debug(&mut self, queue: &wgpu::Queue) {
         self.warp_debug_visible = !self.warp_debug_visible;
+        self.write_warp_uniform(queue);
+    }
+
+    fn write_warp_uniform(&self, queue: &wgpu::Queue) {
         queue.write_buffer(
             &self.warp_uniform_buffer,
             0,
             bytemuck::bytes_of(&WarpUniform {
+                fovea_ndc: self.fovea_ndc,
                 debug_view: u32::from(self.warp_debug_visible),
-                _padding: [0; 3],
+                _padding: 0,
             }),
         );
     }
@@ -511,6 +535,10 @@ impl FoveatedRenderer {
 
     pub const fn warp_size(&self) -> winit::dpi::PhysicalSize<u32> {
         self.warp_size
+    }
+
+    pub const fn fovea_ndc(&self) -> [f32; 2] {
+        self.fovea_ndc
     }
 
     pub fn warp_color_view(&self) -> &wgpu::TextureView {
@@ -586,9 +614,22 @@ impl RayUniform {
                 as f32,
             max_height_mip_count,
             minimum_step_meters: (PLANET_RADIUS_METERS * 2.0 / f64::from(face_quads)) as f32 * 0.5,
-            _padding: [0; 2],
+            fovea_ndc: [0.0; 2],
         }
     }
+}
+
+fn eased_fovea_ndc(
+    current: [f32; 2],
+    target: [f32; 2],
+    delta_seconds: f32,
+    follow_rate_per_second: f32,
+) -> [f32; 2] {
+    let blend = 1.0 - (-follow_rate_per_second * delta_seconds.max(0.0)).exp();
+    [
+        current[0] + (target[0] - current[0]) * blend,
+        current[1] + (target[1] - current[1]) * blend,
+    ]
 }
 
 fn raymarch_shader_source() -> String {
@@ -971,7 +1012,7 @@ impl From<OutmapError> for FoveatedError {
 #[cfg(test)]
 mod tests {
     use super::{
-        FIELD_LEVEL, RayUniform, WarpUniform, face_sample_source, max_height_mips,
+        FIELD_LEVEL, RayUniform, WarpUniform, eased_fovea_ndc, face_sample_source, max_height_mips,
         raymarch_shader_source, warp_size_for,
     };
     use catinthegarden_coretypes::{TILE_LOGICAL_SIZE, TILE_STORED_SIZE};
@@ -988,6 +1029,25 @@ mod tests {
         let core = 0.5_f32;
         let denominator = (1.0 + core).powi(2) - core.powi(2);
         value.signum() * ((value.abs() * denominator + core.powi(2)).sqrt() - core)
+    }
+
+    fn warped_screen_axis(value: f32, fovea: f32) -> f32 {
+        let side_extent = if value >= 0.0 {
+            1.0 - fovea
+        } else {
+            1.0 + fovea
+        };
+        fovea + warp_axis(value) * side_extent
+    }
+
+    fn unwarped_texture_axis(value: f32, fovea: f32) -> f32 {
+        let offset = value - fovea;
+        let side_extent = if offset >= 0.0 {
+            1.0 - fovea
+        } else {
+            1.0 + fovea
+        };
+        unwarp_axis(offset / side_extent)
     }
 
     fn sphere_entry_distance_f64(camera_radius: f64, ray_inward_cosine: f64) -> Option<f64> {
@@ -1050,12 +1110,30 @@ mod tests {
     }
 
     #[test]
-    fn separable_warp_round_trips_and_keeps_a_linear_center() {
-        for value in [-1.0_f32, -0.75, -0.25, -0.01, 0.0, 0.01, 0.25, 0.75, 1.0] {
-            let round_trip = unwarp_axis(warp_axis(value));
-            assert!((round_trip - value).abs() <= 1.0e-6);
+    fn separable_warp_round_trips_around_an_off_center_fovea() {
+        for fovea in [-0.7_f32, -0.25, 0.0, 0.4, 0.7] {
+            for value in [-1.0_f32, -0.75, -0.25, -0.01, 0.0, 0.01, 0.25, 0.75, 1.0] {
+                let screen = warped_screen_axis(value, fovea);
+                let round_trip = unwarped_texture_axis(screen, fovea);
+                assert!((round_trip - value).abs() <= 2.0e-6);
+            }
+            assert!((warped_screen_axis(0.0, fovea) - fovea).abs() <= f32::EPSILON);
         }
         assert!(warp_axis(0.01).abs() > 0.0);
+    }
+
+    #[test]
+    fn fovea_easing_is_frame_rate_independent_and_returns_toward_center() {
+        let one_step = eased_fovea_ndc([0.0; 2], [0.7, -0.4], 1.0, 5.0);
+        let mut ten_steps = [0.0; 2];
+        for _ in 0..10 {
+            ten_steps = eased_fovea_ndc(ten_steps, [0.7, -0.4], 0.1, 5.0);
+        }
+        assert!((one_step[0] - ten_steps[0]).abs() <= 1.0e-6);
+        assert!((one_step[1] - ten_steps[1]).abs() <= 1.0e-6);
+        let returning = eased_fovea_ndc(one_step, [0.0; 2], 0.1, 5.0);
+        assert!(returning[0].abs() < one_step[0].abs());
+        assert!(returning[1].abs() < one_step[1].abs());
     }
 
     #[test]

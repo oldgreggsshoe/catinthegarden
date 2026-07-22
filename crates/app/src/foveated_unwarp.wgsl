@@ -10,7 +10,9 @@ struct Camera {
 }
 
 struct WarpUniform {
-    values: vec4<u32>,
+    fovea_ndc: vec2<f32>,
+    debug_view: u32,
+    _padding: u32,
 }
 
 @group(0) @binding(0)
@@ -53,6 +55,12 @@ fn unwarp_axis(coordinate: f32) -> f32 {
     return sign(coordinate) * unwarped;
 }
 
+fn unwarped_texture_axis(screen_coordinate: f32, fovea: f32) -> f32 {
+    let offset = screen_coordinate - fovea;
+    let side_extent = select(1.0 + fovea, 1.0 - fovea, offset >= 0.0);
+    return unwarp_axis(offset / side_extent);
+}
+
 fn texture_uv(ndc: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
 }
@@ -71,13 +79,13 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 @fragment
 fn fs_main(input: VertexOutput) -> FragmentOutput {
     let warped_ndc = vec2<f32>(
-        unwarp_axis(input.ndc.x),
-        unwarp_axis(input.ndc.y),
+        unwarped_texture_axis(input.ndc.x, warp_settings.fovea_ndc.x),
+        unwarped_texture_axis(input.ndc.y, warp_settings.fovea_ndc.y),
     );
-    let sample_ndc = select(warped_ndc, input.ndc, warp_settings.values.x != 0u);
+    let sample_ndc = select(warped_ndc, input.ndc, warp_settings.debug_view != 0u);
     let uv = texture_uv(sample_ndc);
     let color = textureSampleLevel(warp_color, warp_sampler, uv, 0.0);
-    if warp_settings.values.x != 0u {
+    if warp_settings.debug_view != 0u {
         return FragmentOutput(color, 0.0);
     }
 

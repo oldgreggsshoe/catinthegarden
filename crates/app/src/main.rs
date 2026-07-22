@@ -76,6 +76,9 @@ const LOW_FLIGHT_INITIAL_PITCH_RADIANS: f64 = -18.0_f64.to_radians();
 /// integrator, so bounded slowdown is preferable to a performance feedback
 /// loop while boosted across streamed terrain.
 const MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS: f64 = 1.0 / 30.0;
+const FOVEA_MINIMUM_SPEED_METERS_PER_SECOND: f64 = 1.0;
+const FOVEA_MINIMUM_FORWARD_COSINE: f64 = 0.1;
+const FOVEA_MAXIMUM_NDC_OFFSET: f64 = 0.7;
 
 fn adapter_preference(info: &wgpu::AdapterInfo) -> (u8, bool, bool) {
     let device_rank = match info.device_type {
@@ -316,6 +319,47 @@ fn interactive_camera_delta_seconds(
         CameraMode::Orbit => scene_delta_seconds,
         CameraMode::LowFlight => frame_delta_seconds.min(MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS),
     }
+}
+
+fn focus_of_expansion_ndc(
+    camera_mode: CameraMode,
+    velocity_planet_frame: glam::DVec3,
+    camera: &planet::CameraUniform,
+) -> [f32; 2] {
+    if camera_mode != CameraMode::LowFlight
+        || velocity_planet_frame.length() < FOVEA_MINIMUM_SPEED_METERS_PER_SECOND
+    {
+        return [0.0; 2];
+    }
+    let velocity_direction = velocity_planet_frame.normalize();
+    let forward = glam::DVec3::new(
+        f64::from(camera.camera_forward[0]),
+        f64::from(camera.camera_forward[1]),
+        f64::from(camera.camera_forward[2]),
+    );
+    let forward_cosine = velocity_direction.dot(forward);
+    if forward_cosine <= FOVEA_MINIMUM_FORWARD_COSINE {
+        return [0.0; 2];
+    }
+    let right = glam::DVec3::new(
+        f64::from(camera.camera_right[0]),
+        f64::from(camera.camera_right[1]),
+        f64::from(camera.camera_right[2]),
+    );
+    let up = glam::DVec3::new(
+        f64::from(camera.camera_up[0]),
+        f64::from(camera.camera_up[1]),
+        f64::from(camera.camera_up[2]),
+    );
+    let aspect_ratio = f64::from(camera.projection[0]);
+    let vertical_tangent = f64::from(camera.projection[1]);
+    let horizontal =
+        velocity_direction.dot(right) / (forward_cosine * vertical_tangent * aspect_ratio);
+    let vertical = velocity_direction.dot(up) / (forward_cosine * vertical_tangent);
+    [
+        horizontal.clamp(-FOVEA_MAXIMUM_NDC_OFFSET, FOVEA_MAXIMUM_NDC_OFFSET) as f32,
+        vertical.clamp(-FOVEA_MAXIMUM_NDC_OFFSET, FOVEA_MAXIMUM_NDC_OFFSET) as f32,
+    ]
 }
 
 fn advance_flight_position_on_sphere(
@@ -1095,6 +1139,7 @@ impl State {
                 self.camera_mode = CameraMode::Orbit;
             }
         }
+        self.previous_camera_world_position = self.camera.world_position();
         self.last_auto_orbit_sim_time = sim_time;
         self.mark_hud_dirty();
     }
@@ -1275,9 +1320,9 @@ impl State {
         } else {
             delta_sim_time
         };
-        let velocity_meters_per_second = camera_world_position
-            .distance(self.previous_camera_world_position)
+        let camera_velocity_world = (camera_world_position - self.previous_camera_world_position)
             / delta_camera_motion_seconds;
+        let velocity_meters_per_second = camera_velocity_world.length();
         self.previous_camera_world_position = camera_world_position;
         self.previous_sim_time = sim_time;
         self.hdr.collect_completed_luminance(&self.device);
@@ -1387,6 +1432,7 @@ impl State {
             let render_debug_mode = self.render_debug_mode;
             let warp_size = self.foveated.warp_size();
             let warp_debug_visible = self.foveated.warp_debug_visible();
+            let fovea_ndc = self.foveated.fovea_ndc();
             let animation_frozen = self.animation_frozen;
             let camera_mode = self.camera_mode;
             let flight_speed_meters_per_second = self.flight_speed.speed_meters_per_second;
@@ -1463,9 +1509,11 @@ impl State {
                             ));
                             ui.label(format!("Render path: {} (F5)", render_path.label()));
                             ui.label(format!(
-                                "Ray warp: {}x{}  |  debug {} (F11)",
+                                "Ray warp: {}x{}  |  fovea {:+.2}, {:+.2} NDC  |  debug {} (F11)",
                                 warp_size.width,
                                 warp_size.height,
+                                fovea_ndc[0],
+                                fovea_ndc[1],
                                 if warp_debug_visible { "on" } else { "off" },
                             ));
                             ui.label(format!(
@@ -1568,8 +1616,23 @@ impl State {
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
         if self.render_path == RenderPath::FoveatedRay {
-            self.foveated
-                .update(&self.queue, camera_radius - planet::PLANET_RADIUS_METERS);
+            let flight_velocity_planet_frame =
+                if self.scenario.is_none() && self.camera_mode == CameraMode::LowFlight {
+                    self.flight_travel_direction * self.flight_speed.speed_meters_per_second
+                } else {
+                    glam::DVec3::ZERO
+                };
+            let target_fovea_ndc = focus_of_expansion_ndc(
+                self.camera_mode,
+                flight_velocity_planet_frame,
+                &camera_uniform,
+            );
+            self.foveated.update(
+                &self.queue,
+                camera_radius - planet::PLANET_RADIUS_METERS,
+                target_fovea_ndc,
+                frame_time,
+            );
         }
         let vertex_rebase_ms = 0.0;
         let vertex_upload_ms = upload_started.elapsed().as_secs_f32() * 1_000.0;
@@ -2280,10 +2343,13 @@ mod tests {
         LOW_FLIGHT_INITIAL_PITCH_RADIANS, LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND,
         MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS, RenderPath, advance_flight_position_on_sphere,
         advance_flight_speed, flight_movement_direction, flight_view_direction,
-        initial_flight_tangent, interactive_camera_delta_seconds, render_size_for_surface_resize,
-        should_enter_fullscreen, transport_flight_tangent,
+        focus_of_expansion_ndc, initial_flight_tangent, interactive_camera_delta_seconds,
+        render_size_for_surface_resize, should_enter_fullscreen, transport_flight_tangent,
     };
-    use crate::planet::PLANET_ROTATION_PERIOD_SECONDS;
+    use crate::planet::{
+        CameraUniform, OrbitCamera, PLANET_ROTATION_PERIOD_SECONDS, RenderDebugMode,
+        default_sun_direction,
+    };
 
     #[test]
     fn idle_flight_has_no_movement_direction() {
@@ -2297,6 +2363,55 @@ mod tests {
     fn fullscreen_key_toggles_windowed_state() {
         assert!(should_enter_fullscreen(false));
         assert!(!should_enter_fullscreen(true));
+    }
+
+    #[test]
+    fn flight_focus_projects_forward_motion_and_rejects_orbit_or_backward_motion() {
+        let camera = OrbitCamera::default();
+        let uniform = CameraUniform::from_camera(
+            &camera,
+            16.0 / 9.0,
+            default_sun_direction(),
+            0.0,
+            0.0,
+            RenderDebugMode::Final,
+        );
+        let axis = |values: [f32; 4]| {
+            DVec3::new(
+                f64::from(values[0]),
+                f64::from(values[1]),
+                f64::from(values[2]),
+            )
+        };
+        let forward = axis(uniform.camera_forward);
+        let right = axis(uniform.camera_right);
+        let up = axis(uniform.camera_up);
+
+        assert_eq!(
+            focus_of_expansion_ndc(CameraMode::Orbit, forward * 1_000.0, &uniform),
+            [0.0; 2]
+        );
+        assert_eq!(
+            focus_of_expansion_ndc(CameraMode::LowFlight, -forward * 1_000.0, &uniform),
+            [0.0; 2]
+        );
+        assert_eq!(
+            focus_of_expansion_ndc(CameraMode::LowFlight, forward * 0.5, &uniform),
+            [0.0; 2]
+        );
+        let projected = focus_of_expansion_ndc(
+            CameraMode::LowFlight,
+            (forward + right * 0.2 + up * 0.1).normalize() * 1_000.0,
+            &uniform,
+        );
+        assert!(projected[0] > 0.0);
+        assert!(projected[1] > 0.0);
+        let clamped = focus_of_expansion_ndc(
+            CameraMode::LowFlight,
+            (forward * 0.11 + right).normalize() * 1_000.0,
+            &uniform,
+        );
+        assert_eq!(clamped[0], 0.7);
     }
 
     #[test]

@@ -17,7 +17,7 @@ struct RayUniform {
     maximum_shell_radius_meters: f32,
     max_height_mip_count: u32,
     minimum_step_meters: f32,
-    _padding: vec2<u32>,
+    fovea_ndc: vec2<f32>,
 }
 
 @group(1) @binding(0)
@@ -79,8 +79,16 @@ fn warp_axis(coordinate: f32) -> f32 {
     return sign(coordinate) * warped;
 }
 
+fn warped_screen_axis(coordinate: f32, fovea: f32) -> f32 {
+    let side_extent = select(1.0 + fovea, 1.0 - fovea, coordinate >= 0.0);
+    return fovea + warp_axis(coordinate) * side_extent;
+}
+
 fn warped_screen_ndc(warp_ndc: vec2<f32>) -> vec2<f32> {
-    return vec2<f32>(warp_axis(warp_ndc.x), warp_axis(warp_ndc.y));
+    return vec2<f32>(
+        warped_screen_axis(warp_ndc.x, ray_settings.fovea_ndc.x),
+        warped_screen_axis(warp_ndc.y, ray_settings.fovea_ndc.y),
+    );
 }
 
 fn direction_to_face_uv(direction: vec3<f32>) -> FaceUv {
