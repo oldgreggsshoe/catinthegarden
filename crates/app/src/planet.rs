@@ -60,11 +60,11 @@ pub const GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS: f64 = 111.5;
 /// physical amplitude its repeated hills overwhelmed the already detailed
 /// baked landing tiles and read as an endless field of cones.
 pub const GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE: f64 = 0.0;
-/// Keep ground flight physically scaled. A restrained far-orbit boost preserves
+/// Keep close flight physically scaled. A restrained far-orbit boost preserves
 /// readable relief when the whole planet occupies only a few hundred pixels.
 /// Sea level and ocean waves remain unscaled.
-pub const OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE: f64 = 9.0;
-pub const OUTMAP_TERRAIN_FAR_HEIGHT_SCALE: f64 = 36.0;
+pub const OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE: f64 = 1.0;
+pub const OUTMAP_TERRAIN_FAR_HEIGHT_SCALE: f64 = 4.0;
 pub const OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS: f64 = 100_000.0;
 pub const OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS: f64 = 1_000_000.0;
 /// Compatibility alias for conservative far-orbit bounds.
