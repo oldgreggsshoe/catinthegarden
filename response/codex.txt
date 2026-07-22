@@ -1,26 +1,23 @@
-M6 complete. Implementation pushed as `1f5642f`.
+M7 complete. Implementation pushed as `bd95e08`.
+
+Claude's M6 acceptance and Ian's decision to keep guide order were followed; no M8 orbit optimization was pulled forward.
 
 Implemented:
-- Final ray mode shades a 75%-per-axis warp target: 480x320 at 640x427, 960x540 in 1280x720 scenarios, 56.25% ray count.
-- Exact separable offset-quadratic forward/inverse warp; finite-density sharp center, progressively softer edges.
-- Ray pass writes Rgba16Float HDR color plus R32Float hit distance.
-- Full-resolution unwarp bilinearly samples color, nearest-loads distance, and reconstructs WebGPU reversed-Z with `clip.z / clip.w`; sky writes 0.
-- F9 non-Final modes bypass warp and remain full resolution.
-- F11 displays the raw warp buffer; sun overlay is suppressed only for that Final-mode diagnostic.
-- F12 remains downstream and captures the final result.
-- Resize rebuilds warp textures and bindings from the internal render size.
-
-Measured on Quadro M1000M, warm-up-excluded spatial means:
-- 1.7km: M5 20.447ms / 48.9 FPS -> M6 16.046ms / 62.3 FPS. 21.5% frame-time improvement; target 59 FPS reached.
-- Orbit: M5 14.994ms / 66.7 FPS -> M6 18.131ms / 55.2 FPS. The center-weighted warp preserves nearly all costly planet-hit rays while adding the unwarp pass; this is a real measured regression, not hidden. Content-adaptive orbit bypass belongs in M8.
+- Low-flight fovea target comes from the controller's planet-local travel velocity, not world-position delta. This avoids false motion from planet rotation while the camera is idle.
+- Velocity is projected with the current camera forward/right/up basis and FOV/aspect projection.
+- Tracking requires at least 1m/s and a positive forward component; backward, behind-view, stopped, orbit, and scenario motion target center.
+- Target is clamped to +/-0.7 NDC, keeping margin at every edge.
+- Fovea follows with frame-rate-independent exponential easing at 5/s.
+- Ray forward warp and full-resolution inverse unwarp use matching side-normalized off-center math.
+- HUD now reports live fovea NDC.
 
 Validation:
-- Fresh Final orbit and low-flight captures: intact silhouette, sharp center, softer periphery.
-- F11 raw-warp capture verified.
-- F9 RawAlbedo capture verified direct full-resolution bypass.
-- F12 final capture verified.
-- WGSL runtime validation passed after correcting R32Float blend state and uniform alignment.
+- Manual W+D low-flight run `1784748963-1492275`: F11 raw-warp capture showed fovea +0.68, +0.00 NDC while moving; after release, normal output capture showed +0.00, +0.00.
+- Off-center warp round-trips exactly at fovea positions from -0.7 through +0.7.
+- Easing test proves one 1-second step matches ten 0.1-second steps and returns monotonically toward center.
+- Projection test covers orbit, stopped, backward, diagonal, and edge-clamped movement.
+- Both WGSL modules validate.
 - `cargo fmt --all -- --check` passed.
-- All 116 app tests passed.
+- All 118 app tests passed.
 
-Known harness behavior remains: raster-only resident-chunk assertions fail in F5 ray scenarios because ray mode intentionally selects zero raster chunks. The `--profile-render` timestamp readback still stalls in this remote-X setup, so reported values are spatial-log means, not GPU timestamps.
+M7 changes sample placement only, not ray count. M6's measured orbit regression remains intentionally open for M8 content-adaptive work.

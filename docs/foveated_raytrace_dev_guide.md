@@ -517,6 +517,21 @@ front of terrain.
 
 ### M7. Fovea follows where you are going
 
+**Completed on `experiment/ground-readability` (2026-07-22).** Interactive
+low-flight mode now projects the controller's planet-local travel velocity into
+screen NDC using the current camera forward/right/up basis and projection. The
+target is accepted only above 1 m/s and while motion has a positive forward
+component, clamped to +/-0.7 NDC, then followed with a frame-rate-independent
+5/s exponential ease. Orbit, scenarios, stopped flight, backward travel, and
+motion behind the view all target screen center. Using controller-local
+velocity is deliberate: world-position deltas include the rotating planet and
+would falsely displace an idle surface camera. Both forward ray placement and
+inverse unwarp normalize the two sides around the same moving fovea. Manual
+W+D capture `1784748963-1492275` showed +0.68, 0.00 NDC while moving and 0.00,
+0.00 after release, with the raw F11 and normal output paths intact. The HUD
+reports live fovea NDC; 118 app tests pass. M7 changes sample placement, not ray
+count, and does not address M6's measured orbit regression.
+
 **Goal:** the sharp spot tracks travel, not screen center.
 
 - Compute the focus of expansion: project the camera velocity direction onto the
