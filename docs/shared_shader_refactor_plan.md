@@ -438,21 +438,23 @@ shared shading from the raymarcher.
 
 ## 7. The golden test, concretely
 
-You need a deterministic render to hash. The repo already has a scenario system
-(`scenario.rs`) and a capture path. Use `still_5s`, which schedules its own
-captures, so there is no animation jitter. Capture the baseline on the target
-Quadro, with the same driver, executable settings, internal render size, and
-scenario data that will be used after every stage.
+You need a deterministic rendered scene to compare. The repo already has a
+scenario system (`scenario.rs`) and a capture path. Do **not** use `still_5s`:
+that scenario deliberately renders a solid test colour and cannot detect a
+terrain shader regression. Use `polar_ice_cap`, which fixes its camera, sun, and
+planet rotation and schedules one capture after exposure settles. Capture the
+baseline on the target Quadro, with the same driver, executable settings,
+internal render size, and scenario data that will be used after every stage.
 
 ```bash
 export CARGO_TARGET_DIR=/home/dad/catingard-target
 
 # Baseline before Stage 1, then repeat after every stage.
 cargo run --release -p catinthegarden-app -- \
-    --scenario still_5s
+    --scenario polar_ice_cap
 ```
 
-The run is written under `test-runs/still_5s/<run_id>/`. Record the baseline
+The run is written under `test-runs/polar_ice_cap/<run_id>/`. Record the baseline
 manifest and hashes of all files under `screenshots/` outside the run directory,
 then compare the corresponding captures after each stage. Do not use a baseline
 from another GPU or driver.

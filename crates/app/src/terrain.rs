@@ -33,6 +33,14 @@ const MAX_RESIDENT_TERRAIN_TILES: usize = 384;
 /// Bound main-thread texture creation even if the I/O worker completed a burst
 /// while rendering was paused or slow.
 const MAX_TILE_UPLOADS_PER_FRAME: usize = 4;
+
+fn planet_shader_source() -> String {
+    [
+        include_str!("shared_planet.wgsl"),
+        include_str!("planet.wgsl"),
+    ]
+    .join("\n")
+}
 const MAX_PENDING_TILE_LOADS: usize = 32;
 /// Half a second gives a newly resident grid time to replace its parent
 /// without leaving the opaque dither visible long enough to sparkle during
@@ -316,7 +324,11 @@ impl TerrainRenderer {
             ],
             immediate_size: 0,
         });
-        let shader = device.create_shader_module(wgpu::include_wgsl!("planet.wgsl"));
+        let shader_source = planet_shader_source();
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("planet raster shader"),
+            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+        });
         let create_pipeline = |label, fragment_entry_point| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
@@ -1807,9 +1819,10 @@ mod tests {
         TERRAIN_MATERIAL_TEXTURE_SIZE, TerrainSettings, aligned_texture_row_bytes, cube_face_uv,
         downsample_srgb_rgba8, edge_stitch_info, edge_stitch_level_delta, fallback_uv_transform,
         lod_transition_nodes, lod_transition_progress, nodes_share_lod_transition,
-        pack_terrain_info, padded_texture_rows, purge_expired_lod_transitions, sample_height_cpu,
-        should_animate_lod_transition, source_tile_uv_at_direction, terrain_material_layer_texels,
-        terrain_material_texel, tileable_value_noise,
+        pack_terrain_info, padded_texture_rows, planet_shader_source,
+        purge_expired_lod_transitions, sample_height_cpu, should_animate_lod_transition,
+        source_tile_uv_at_direction, terrain_material_layer_texels, terrain_material_texel,
+        tileable_value_noise,
     };
     use crate::planet::{
         GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, MAX_LOD_LEVEL, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE,
@@ -1884,7 +1897,7 @@ mod tests {
     #[test]
     fn shader_reads_outmap_height_scale_from_terrain_settings() {
         let settings = TerrainSettings::from_planet_constants();
-        let shader = include_str!("planet.wgsl");
+        let shader = planet_shader_source();
         assert_eq!(
             settings.outmap_height_scale[0],
             OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE as f32
@@ -1904,7 +1917,7 @@ mod tests {
 
     #[test]
     fn shader_uses_baked_displacement_and_real_light() {
-        let shader = include_str!("planet.wgsl");
+        let shader = planet_shader_source();
         let terrain_height = shader
             .split("fn terrain_height(")
             .nth(1)
@@ -1919,8 +1932,8 @@ mod tests {
 
     #[test]
     fn planet_shader_validates_without_runtime_detail_noise() {
-        let shader = include_str!("planet.wgsl");
-        let module = wgpu::naga::front::wgsl::parse_str(shader)
+        let shader = planet_shader_source();
+        let module = wgpu::naga::front::wgsl::parse_str(&shader)
             .expect("planet shader must parse before WGPU creates the pipeline");
         wgpu::naga::valid::Validator::new(
             wgpu::naga::valid::ValidationFlags::all(),
@@ -1970,7 +1983,7 @@ mod tests {
         }
         assert_eq!(mip_count, TERRAIN_MATERIAL_TEXTURE_SIZE.ilog2() + 1);
 
-        let shader = include_str!("planet.wgsl");
+        let shader = planet_shader_source();
         assert!(shader.contains("@group(1) @binding(6)"));
         assert!(shader.contains("var terrain_material_map: texture_2d_array<f32>"));
         assert!(shader.contains("fn triplanar_material_sample_at_position("));
@@ -1997,7 +2010,8 @@ mod tests {
 
     #[test]
     fn shaders_use_the_same_altitude_aware_twilight_column() {
-        for shader in [include_str!("planet.wgsl"), include_str!("atmosphere.wgsl")] {
+        let planet_shader = planet_shader_source();
+        for shader in [planet_shader.as_str(), include_str!("atmosphere.wgsl")] {
             assert!(shader.contains(
                 "fn twilight_solar_air_mass(solar_zenith_cosine: f32, sample_altitude_meters: f32)"
             ));
@@ -2008,7 +2022,7 @@ mod tests {
 
     #[test]
     fn direct_surface_sunlight_fades_before_geometric_sunset() {
-        let shader = include_str!("planet.wgsl");
+        let shader = planet_shader_source();
         let normalized_shader = shader.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(shader.contains("let solar_elevation = dot(surface_direction, sun_direction);"));
         assert!(
@@ -2020,7 +2034,7 @@ mod tests {
 
     #[test]
     fn direct_surface_sunlight_progresses_from_orange_to_red_before_darkness() {
-        let shader = include_str!("planet.wgsl");
+        let shader = planet_shader_source();
         let normalized_shader = shader.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(shader.contains("let orange_tint = vec3<f32>(1.20, 0.55, 0.16);"));
         assert!(shader.contains("let red_tint = vec3<f32>(1.35, 0.12, 0.03);"));
@@ -2031,7 +2045,7 @@ mod tests {
 
     #[test]
     fn ocean_aerial_perspective_preserves_the_dark_water_body() {
-        let shader = include_str!("planet.wgsl");
+        let shader = planet_shader_source();
         assert!(shader.contains("const OCEAN_AERIAL_PERSPECTIVE_WEIGHT: f32 = 0.35;"));
         assert_eq!(shader.matches("ocean_aerial_perspective(").count(), 4);
         assert!(shader.contains("water_surface_color,\n        aerial_color,"));
@@ -2039,7 +2053,7 @@ mod tests {
 
     #[test]
     fn terrain_material_pass_uses_displaced_slope_and_latitude_snowline() {
-        let shader = include_str!("planet.wgsl");
+        let shader = planet_shader_source();
         assert!(shader.contains("let rock_amount = smoothstep(0.10, 0.42, slope);"));
         assert!(shader.contains("let snowline_meters = mix(6200.0, 2200.0, latitude_amount);"));
         assert!(shader.contains("camera_distance_meters * 0.01"));
@@ -2148,7 +2162,7 @@ mod tests {
         let extreme_stitch = edge_stitch_info(extreme_fine, &[coarse, extreme_fine]);
         assert_eq!(edge_stitch_level_delta(extreme_stitch, 3), 2);
 
-        let shader = include_str!("planet.wgsl");
+        let shader = planet_shader_source();
         assert!(shader.contains("fn stitched_tile_uv("));
         assert!(shader.contains("fn stitched_surface_direction("));
         assert!(shader.contains("fn lod_morphed_tile_uv("));
@@ -2210,7 +2224,7 @@ mod tests {
         assert_eq!(lod_transition_progress(10.5, 10.0), 1.0);
         assert_eq!(lod_transition_progress(12.0, 10.0), 1.0);
 
-        let shader = include_str!("planet.wgsl");
+        let shader = planet_shader_source();
         assert!(shader.contains("fn lod_dither_threshold("));
         assert!(shader.contains("52.9829189 * fract(dot(pixel"));
         assert!(shader.contains("incoming && threshold >= transition_progress"));
