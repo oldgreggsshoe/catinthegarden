@@ -188,7 +188,8 @@ enum TerrainDataSource {
 pub struct TerrainRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    pipeline: wgpu::RenderPipeline,
+    transition_pipeline: wgpu::RenderPipeline,
+    stable_pipeline: wgpu::RenderPipeline,
     terrain_bind_group_layout: wgpu::BindGroupLayout,
     _terrain_settings_buffer: wgpu::Buffer,
     _environment_cubemap: wgpu::Texture,
@@ -316,40 +317,44 @@ impl TerrainRenderer {
             immediate_size: 0,
         });
         let shader = device.create_shader_module(wgpu::include_wgsl!("planet.wgsl"));
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("LOD terrain pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[ChunkVertex::layout(), TerrainInstance::layout()],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                cull_mode: Some(wgpu::Face::Back),
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Greater),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let create_pipeline = |label, fragment_entry_point| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &[ChunkVertex::layout(), TerrainInstance::layout()],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(fragment_entry_point),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: surface_format,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: Some(wgpu::Face::Back),
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Greater),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let transition_pipeline = create_pipeline("LOD terrain transition pipeline", "fs_main");
+        let stable_pipeline = create_pipeline("LOD terrain stable pipeline", "fs_main_stable");
 
         let topology = build_chunk_mesh(QuadtreeNode::root(0));
         // Every quadtree leaf has the same 33x33 topology. Node bounds now
@@ -422,7 +427,8 @@ impl TerrainRenderer {
         let renderer = Self {
             device: device.clone(),
             queue: queue.clone(),
-            pipeline,
+            transition_pipeline,
+            stable_pipeline,
             terrain_bind_group_layout,
             _terrain_settings_buffer: terrain_settings_buffer,
             _environment_cubemap: environment_cubemap,
@@ -837,7 +843,12 @@ impl TerrainRenderer {
         render_pass: &mut wgpu::RenderPass<'pass>,
         camera_bind_group: &'pass wgpu::BindGroup,
     ) {
-        render_pass.set_pipeline(&self.pipeline);
+        let pipeline = if self.fading_out_chunks.is_empty() && self.fade_in_started_at.is_empty() {
+            &self.stable_pipeline
+        } else {
+            &self.transition_pipeline
+        };
+        render_pass.set_pipeline(pipeline);
         render_pass.set_bind_group(0, camera_bind_group, &[]);
         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         render_pass.set_vertex_buffer(0, self.chunk_vertex_buffer.slice(..));
@@ -1917,6 +1928,7 @@ mod tests {
         )
         .validate(&module)
         .expect("planet shader must validate before WGPU creates the pipeline");
+        assert!(shader.contains("fn fs_main_stable("));
         assert!(!shader.contains("fn terrain_detail_value_noise("));
         assert!(!shader.contains("fn global_terrain_detail("));
     }

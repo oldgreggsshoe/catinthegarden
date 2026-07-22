@@ -1566,6 +1566,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         || (!incoming && threshold < transition_progress)) {
         discard;
     }
+    return terrain_fragment_color(input);
+}
+
+@fragment
+fn fs_main_stable(input: VertexOutput) -> @location(0) vec4<f32> {
+    return terrain_fragment_color(input);
+}
+
+fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let direction = normalize(input.surface_direction);
     let sun_direction = normalize(camera.sun_direction.xyz);
     let render_debug_mode = u32(camera.projection.w + 0.5);
