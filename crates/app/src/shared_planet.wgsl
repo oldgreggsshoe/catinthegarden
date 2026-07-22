@@ -62,6 +62,26 @@ struct Camera {
 @group(0) @binding(0)
 var<uniform> camera: Camera;
 
+@group(2) @binding(3)
+var environment_map: texture_cube<f32>;
+
+@group(2) @binding(4)
+var environment_sampler: sampler;
+
+struct TerrainSettings {
+    outmap_height_scale: vec4<f32>,
+    outmap_height_blend: vec4<f32>,
+}
+
+@group(2) @binding(5)
+var<uniform> terrain_settings: TerrainSettings;
+
+@group(2) @binding(6)
+var terrain_material_map: texture_2d_array<f32>;
+
+@group(2) @binding(7)
+var terrain_material_sampler: sampler;
+
 struct OceanWaveContribution {
     horizontal_displacement: vec3<f32>,
     vertical_displacement: f32,
@@ -955,4 +975,85 @@ fn terrain_material_tint(
         vec3<f32>(2.4),
     );
     return mix(vec3<f32>(1.0), tint, fade * 0.95);
+}
+
+fn triplanar_material_sample_at_position(
+    layer: i32,
+    texture_position: vec3<f32>,
+    weights: vec3<f32>,
+) -> vec4<f32> {
+    let x_projection = textureSample(
+        terrain_material_map,
+        terrain_material_sampler,
+        texture_position.yz,
+        layer,
+    );
+    let y_projection = textureSample(
+        terrain_material_map,
+        terrain_material_sampler,
+        texture_position.xz,
+        layer,
+    );
+    let z_projection = textureSample(
+        terrain_material_map,
+        terrain_material_sampler,
+        texture_position.xy,
+        layer,
+    );
+    return x_projection * weights.x
+        + y_projection * weights.y
+        + z_projection * weights.z;
+}
+
+fn triplanar_material_sample(
+    layer: i32,
+    surface_direction: vec3<f32>,
+    surface_normal: vec3<f32>,
+) -> vec4<f32> {
+    // Planet-local metre scale makes every LOD evaluate the same material at
+    // the same surface point. Triplanar projection avoids cube-face UV seams.
+    let axis_weights = pow(abs(normalize(surface_normal)), vec3<f32>(6.0));
+    let weights = axis_weights / max(dot(axis_weights, vec3<f32>(1.0)), 1.0e-5);
+    // One seam-safe triplanar lookup per axis is enough at flight speed. The
+    // retired domain warp and second scale repeated 24 sine hashes and six
+    // texture samples for every contributing material layer.
+    let texture_position = surface_direction
+        * (PLANET_RADIUS_METERS / TERRAIN_MATERIAL_TILE_METERS);
+    return triplanar_material_sample_at_position(layer, texture_position, weights);
+}
+
+fn ocean_lighting(
+    normal: vec3<f32>,
+    camera_relative_view_position: vec3<f32>,
+    sun_transmittance: vec3<f32>,
+    sky_diffuse: vec3<f32>,
+) -> vec3<f32> {
+    let view_direction = normalize(-camera_relative_view_position);
+    let normal_view = normalize(planet_to_view(normal));
+    let sun_direction_view = normalize(camera.sun_direction_view.xyz);
+    let reflection_direction = view_to_planet(reflect(-view_direction, normal_view));
+    let reflected_color = textureSampleLevel(
+        environment_map,
+        environment_sampler,
+        reflection_direction,
+        0.0,
+    ).rgb;
+    let facing = max(dot(normal_view, view_direction), 0.0);
+    let fresnel = vec3<f32>(0.02) + vec3<f32>(0.98) * pow(1.0 - facing, 5.0);
+    let half_vector = normalize(sun_direction_view + view_direction);
+    let specular = pow(max(dot(normal_view, half_vector), 0.0), 128.0);
+    let daylight = max(max(sun_transmittance.x, sun_transmittance.y), sun_transmittance.z);
+    // Keep the water body a dark blue; direct sunlight and reflection still
+    // provide the daylight highlights and glints.
+    let diffuse = vec3<f32>(0.008, 0.055, 0.28)
+        * (sky_diffuse + sun_transmittance * (0.4 * SURFACE_SUNLIGHT_SCALE));
+    // The Phase 6 cubemap is static. It represents daytime sky reflection, so
+    // gate it by direct daylight instead of reflecting a bright blue sky from
+    // the fully occluded hemisphere.
+    return diffuse
+        + reflected_color * fresnel * daylight * OCEAN_REFLECTION_SCALE
+        + sun_transmittance
+            * specular
+            * fresnel
+            * (OCEAN_SUN_GLINT_SCALE * SURFACE_SUNLIGHT_SCALE);
 }

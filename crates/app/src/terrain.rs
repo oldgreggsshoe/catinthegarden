@@ -198,14 +198,11 @@ pub struct TerrainRenderer {
     queue: wgpu::Queue,
     transition_pipeline: wgpu::RenderPipeline,
     stable_pipeline: wgpu::RenderPipeline,
-    terrain_bind_group_layout: wgpu::BindGroupLayout,
+    terrain_tile_bind_group_layout: wgpu::BindGroupLayout,
+    shared_bind_group: wgpu::BindGroup,
     _terrain_settings_buffer: wgpu::Buffer,
     _environment_cubemap: wgpu::Texture,
-    environment_view: wgpu::TextureView,
-    environment_sampler: wgpu::Sampler,
     _terrain_material_texture: wgpu::Texture,
-    terrain_material_view: wgpu::TextureView,
-    terrain_material_sampler: wgpu::Sampler,
     chunk_vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
@@ -277,13 +274,19 @@ impl TerrainRenderer {
                 contents: bytemuck::bytes_of(&TerrainSettings::from_planet_constants()),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
-        let terrain_bind_group_layout =
+        let terrain_tile_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("terrain tile bind group layout"),
                 entries: &[
                     texture_layout_entry(0, wgpu::TextureSampleType::Float { filterable: false }),
                     texture_layout_entry(1, wgpu::TextureSampleType::Uint),
                     texture_layout_entry(2, wgpu::TextureSampleType::Float { filterable: false }),
+                ],
+            });
+        let shared_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("shared planet bind group layout"),
+                entries: &[
                     cube_texture_layout_entry(3),
                     wgpu::BindGroupLayoutEntry {
                         binding: 4,
@@ -320,7 +323,8 @@ impl TerrainRenderer {
             label: Some("terrain pipeline layout"),
             bind_group_layouts: &[
                 Some(camera_bind_group_layout),
-                Some(&terrain_bind_group_layout),
+                Some(&terrain_tile_bind_group_layout),
+                Some(&shared_bind_group_layout),
             ],
             immediate_size: 0,
         });
@@ -389,19 +393,40 @@ impl TerrainRenderer {
             create_environment_cubemap(device, queue);
         let (terrain_material_texture, terrain_material_view, terrain_material_sampler) =
             create_terrain_material_texture(device, queue);
+        let shared_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("shared planet bind group"),
+            layout: &shared_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&environment_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&environment_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: terrain_settings_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(&terrain_material_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::Sampler(&terrain_material_sampler),
+                },
+            ],
+        });
         let placeholder_tile = create_gpu_tile(
             device,
             queue,
-            &terrain_bind_group_layout,
+            &terrain_tile_bind_group_layout,
             "placeholder terrain tile",
             &vec![0.0; tile_sample_count()],
             &vec![0; tile_sample_count()],
             &vec![128; tile_sample_count()],
-            &environment_view,
-            &environment_sampler,
-            &terrain_settings_buffer,
-            &terrain_material_view,
-            &terrain_material_sampler,
         );
         // Keep one complete coarse surface resident before the first frame.
         // Background streaming can then refine from real baked geography
@@ -418,16 +443,11 @@ impl TerrainRenderer {
                     create_gpu_tile(
                         device,
                         queue,
-                        &terrain_bind_group_layout,
+                        &terrain_tile_bind_group_layout,
                         &label,
                         &tile.heights_meters,
                         &tile.biome_ids,
                         &tile.moisture,
-                        &environment_view,
-                        &environment_sampler,
-                        &terrain_settings_buffer,
-                        &terrain_material_view,
-                        &terrain_material_sampler,
                     ),
                 );
             }
@@ -441,14 +461,11 @@ impl TerrainRenderer {
             queue: queue.clone(),
             transition_pipeline,
             stable_pipeline,
-            terrain_bind_group_layout,
+            terrain_tile_bind_group_layout,
+            shared_bind_group,
             _terrain_settings_buffer: terrain_settings_buffer,
             _environment_cubemap: environment_cubemap,
-            environment_view,
-            environment_sampler,
             _terrain_material_texture: terrain_material_texture,
-            terrain_material_view,
-            terrain_material_sampler,
             chunk_vertex_buffer,
             index_buffer,
             index_count: topology.indices.len() as u32,
@@ -631,16 +648,11 @@ impl TerrainRenderer {
             let gpu_tile = create_gpu_tile(
                 &self.device,
                 &self.queue,
-                &self.terrain_bind_group_layout,
+                &self.terrain_tile_bind_group_layout,
                 &label,
                 &tile.heights_meters,
                 &tile.biome_ids,
                 &tile.moisture,
-                &self.environment_view,
-                &self.environment_sampler,
-                &self._terrain_settings_buffer,
-                &self.terrain_material_view,
-                &self.terrain_material_sampler,
             );
             self.tile_cache.insert(key, gpu_tile);
         }
@@ -862,6 +874,7 @@ impl TerrainRenderer {
         };
         render_pass.set_pipeline(pipeline);
         render_pass.set_bind_group(0, camera_bind_group, &[]);
+        render_pass.set_bind_group(2, &self.shared_bind_group, &[]);
         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         render_pass.set_vertex_buffer(0, self.chunk_vertex_buffer.slice(..));
         render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
@@ -1154,11 +1167,6 @@ fn create_gpu_tile(
     heights_meters: &[f32],
     biome_ids: &[u8],
     moisture: &[u8],
-    environment_view: &wgpu::TextureView,
-    environment_sampler: &wgpu::Sampler,
-    terrain_settings_buffer: &wgpu::Buffer,
-    terrain_material_view: &wgpu::TextureView,
-    terrain_material_sampler: &wgpu::Sampler,
 ) -> GpuTile {
     debug_assert_eq!(heights_meters.len(), tile_sample_count());
     debug_assert_eq!(biome_ids.len(), tile_sample_count());
@@ -1205,26 +1213,6 @@ fn create_gpu_tile(
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: wgpu::BindingResource::TextureView(&moisture_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: wgpu::BindingResource::TextureView(environment_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 4,
-                resource: wgpu::BindingResource::Sampler(environment_sampler),
-            },
-            wgpu::BindGroupEntry {
-                binding: 5,
-                resource: terrain_settings_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 6,
-                resource: wgpu::BindingResource::TextureView(terrain_material_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 7,
-                resource: wgpu::BindingResource::Sampler(terrain_material_sampler),
             },
         ],
     });
@@ -1984,7 +1972,8 @@ mod tests {
         assert_eq!(mip_count, TERRAIN_MATERIAL_TEXTURE_SIZE.ilog2() + 1);
 
         let shader = planet_shader_source();
-        assert!(shader.contains("@group(1) @binding(6)"));
+        assert!(shader.contains("@group(2) @binding(6)"));
+        assert!(shader.contains("@group(1) @binding(0)\nvar height_map"));
         assert!(shader.contains("var terrain_material_map: texture_2d_array<f32>"));
         assert!(shader.contains("fn triplanar_material_sample_at_position("));
         assert!(shader.contains("fn triplanar_material_sample("));
