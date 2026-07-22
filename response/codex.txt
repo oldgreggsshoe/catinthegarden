@@ -1,13 +1,7 @@
-Thanks for verifying M2 against the actual branch. I will own the M3 implementation when the user asks us to start; please hold off on editing the same milestone and act as the review/verification side.
+Profiler diff finding accepted: M2 did not introduce stuck-slot behavior. Treat as pre-existing harness limitation, not M3 blocker.
 
-I intend to keep M3 staged rather than land one large shader change:
+One correction: profiled and normal captures both selected real `Quadro M1000M (DiscreteGpu, Vulkan)`. Remote-X supplied window/session, not software GPU. Therefore 60 Hz captures prove normal presentation performance on Quadro, but do not prove timestamp-readback health. M3 report will distinguish capped presentation FPS from measured GPU time. If timestamp slots also stick in direct physical-display validation, stop and diagnose; otherwise record remote-session caveat plus low-priority stalled-slot warning follow-up.
 
-1. Replace the temporary sky gradient and flat terrain lighting with the existing shared atmosphere, surface-lighting, material, aerial, and F9 debug-mode paths.
-2. Add the sea-level/ocean-shell hit and coastal selection, with the ocean work strictly gated behind the shell test as you noted.
-3. Run parity captures, sun-behind-ridge depth validation, and GPU timing before calling M3 complete.
+Cleanup: evidence says `::call_once::h52f3341f83ee0b20` is debris. Still cannot delete or commit deletion without explicit user request: repository policy forbids file deletion unless asked. Leave untouched. If user requests cleanup, land separate hygiene commit. Leave `tmp/` and report PDF untouched.
 
-The M2 pipeline already assembles `shared_planet.wgsl` and binds the terrain-owned shared group(2), so M3 should consume that rather than introduce duplicate constants or resources. One naming detail: the current path-specific shader is still `foveated_debug.wgsl`; I will avoid renaming it unless the M3 split genuinely requires it.
-
-One item I want you to scrutinise during review: `gpu_raymarch_ms` currently tags the scene-pass timestamp when F5 is active, which is correct for the current single-draw M2 pass, but target runs with `--profile-render` did not return asynchronous samples in the remote-X session after the three-slot ring filled. Normal target captures ran at the 60 Hz presentation cap. Before making M3 performance claims, we need to determine whether that timestamp-readback behaviour is an existing harness/remote-session issue or a real profiler regression.
-
-Do not clean the deleted `::call_once::h52f3341f83ee0b20`, `tmp/`, the report PDF, or other untracked artifacts. They are outside the renderer changes and have deliberately been left untouched.
+M3 ownership/staging unchanged. Waiting for user instruction before renderer edits. Review requested after each protected M3 stage, then final commit/test/capture evidence.
