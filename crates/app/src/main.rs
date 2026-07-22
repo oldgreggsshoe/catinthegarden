@@ -79,6 +79,7 @@ const MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS: f64 = 1.0 / 30.0;
 const FOVEA_MINIMUM_SPEED_METERS_PER_SECOND: f64 = 1.0;
 const FOVEA_MINIMUM_FORWARD_COSINE: f64 = 0.1;
 const FOVEA_MAXIMUM_NDC_OFFSET: f64 = 0.7;
+const CONTENT_ADAPTIVE_WARP_MINIMUM_PLANET_COVERAGE: f64 = 0.65;
 
 fn adapter_preference(info: &wgpu::AdapterInfo) -> (u8, bool, bool) {
     let device_rank = match info.device_type {
@@ -360,6 +361,21 @@ fn focus_of_expansion_ndc(
         horizontal.clamp(-FOVEA_MAXIMUM_NDC_OFFSET, FOVEA_MAXIMUM_NDC_OFFSET) as f32,
         vertical.clamp(-FOVEA_MAXIMUM_NDC_OFFSET, FOVEA_MAXIMUM_NDC_OFFSET) as f32,
     ]
+}
+
+fn projected_planet_coverage(
+    camera_radius_meters: f64,
+    vertical_fov_radians: f64,
+    aspect_ratio: f64,
+) -> f64 {
+    if camera_radius_meters <= planet::PLANET_RADIUS_METERS {
+        return 1.0;
+    }
+    let sine_radius = (planet::PLANET_RADIUS_METERS / camera_radius_meters).clamp(0.0, 1.0);
+    let tangent_radius = sine_radius / (1.0 - sine_radius * sine_radius).max(1.0e-12).sqrt();
+    let vertical_radius = tangent_radius / (vertical_fov_radians * 0.5).tan();
+    let horizontal_radius = vertical_radius / aspect_ratio;
+    std::f64::consts::PI * horizontal_radius.clamp(0.0, 1.0) * vertical_radius.clamp(0.0, 1.0) / 4.0
 }
 
 fn advance_flight_position_on_sphere(
@@ -979,6 +995,11 @@ impl State {
         self.mark_hud_dirty();
     }
 
+    fn toggle_ray_experiment(&mut self, index: u8) {
+        self.foveated.toggle_experiment(&self.queue, index);
+        self.mark_hud_dirty();
+    }
+
     fn interactive_sim_time(&self) -> f64 {
         let elapsed_sim_time = self.started_at.elapsed().as_secs_f64();
         if self.animation_frozen {
@@ -1433,6 +1454,8 @@ impl State {
             let warp_size = self.foveated.warp_size();
             let warp_debug_visible = self.foveated.warp_debug_visible();
             let fovea_ndc = self.foveated.fovea_ndc();
+            let experiment_states =
+                [1_u8, 2, 3, 4, 5].map(|index| self.foveated.experiment_enabled(index));
             let animation_frozen = self.animation_frozen;
             let camera_mode = self.camera_mode;
             let flight_speed_meters_per_second = self.flight_speed.speed_meters_per_second;
@@ -1515,6 +1538,14 @@ impl State {
                                 fovea_ndc[0],
                                 fovea_ndc[1],
                                 if warp_debug_visible { "on" } else { "off" },
+                            ));
+                            ui.label(format!(
+                                "M8: 1 horizon {} | 2 temporal {} | 3 adaptive {} | 4 shading {} | 5 blur {}",
+                                if experiment_states[0] { "on" } else { "off" },
+                                if experiment_states[1] { "on" } else { "off" },
+                                if experiment_states[2] { "on" } else { "off" },
+                                if experiment_states[3] { "on" } else { "off" },
+                                if experiment_states[4] { "on" } else { "off" },
                             ));
                             ui.label(format!(
                                 "Animation: {}",
@@ -1632,8 +1663,28 @@ impl State {
                 camera_radius - planet::PLANET_RADIUS_METERS,
                 target_fovea_ndc,
                 frame_time,
+                camera_uniform.camera_forward[..3]
+                    .try_into()
+                    .expect("camera forward has three components"),
+                camera_uniform.camera_right[..3]
+                    .try_into()
+                    .expect("camera right has three components"),
+                camera_uniform.camera_up[..3]
+                    .try_into()
+                    .expect("camera up has three components"),
+                camera_planet_frame_position.to_array(),
             );
         }
+        let planet_coverage = projected_planet_coverage(
+            camera_radius,
+            self.camera.vertical_fov_radians(),
+            self.size.width as f64 / self.size.height as f64,
+        );
+        let use_foveated_warp = self.render_path == RenderPath::FoveatedRay
+            && self.render_debug_mode == planet::RenderDebugMode::Final
+            && (!self.foveated.experiment_enabled(3)
+                || planet_coverage >= CONTENT_ADAPTIVE_WARP_MINIMUM_PLANET_COVERAGE
+                || self.foveated.warp_debug_visible());
         let vertex_rebase_ms = 0.0;
         let vertex_upload_ms = upload_started.elapsed().as_secs_f32() * 1_000.0;
         let encode_started = Instant::now();
@@ -1662,6 +1713,7 @@ impl State {
                     .filter(|_| {
                         self.render_path == RenderPath::Raster
                             || self.render_debug_mode != planet::RenderDebugMode::Final
+                            || !use_foveated_warp
                             || solid_color_screen
                     })
                     .map(|slot_index| {
@@ -1681,7 +1733,7 @@ impl State {
                     self.terrain.draw(&mut render_pass, &self.camera_bind_group);
                 }
             } else if !solid_color_screen && self.render_path == RenderPath::FoveatedRay {
-                if self.render_debug_mode != planet::RenderDebugMode::Final {
+                if self.render_debug_mode != planet::RenderDebugMode::Final || !use_foveated_warp {
                     self.foveated.draw_direct(
                         &mut render_pass,
                         &self.camera_bind_group,
@@ -1690,10 +1742,7 @@ impl State {
                 }
             }
         }
-        if !solid_color_screen
-            && self.render_path == RenderPath::FoveatedRay
-            && self.render_debug_mode == planet::RenderDebugMode::Final
-        {
+        if !solid_color_screen && use_foveated_warp {
             {
                 let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("warped raymarch pass"),
@@ -1740,38 +1789,43 @@ impl State {
                     self.terrain.shared_bind_group(),
                 );
             }
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("foveated unwarp pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: self.hdr.scene_view(),
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
+            {
+                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("foveated unwarp pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: self.hdr.scene_view(),
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &self.depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
                     }),
-                    stencil_ops: None,
-                }),
-                occlusion_query_set: None,
-                timestamp_writes: gpu_slot_index.map(|slot_index| {
-                    let profiler = self.gpu_profiler.as_ref().expect("GPU profiler exists");
-                    wgpu::RenderPassTimestampWrites {
-                        query_set: &profiler.slots[slot_index].query_set,
-                        beginning_of_pass_write_index: None,
-                        end_of_pass_write_index: Some(1),
-                    }
-                }),
-                multiview_mask: None,
-            });
-            self.foveated
-                .draw_unwarp(&mut render_pass, &self.camera_bind_group);
+                    occlusion_query_set: None,
+                    timestamp_writes: gpu_slot_index.map(|slot_index| {
+                        let profiler = self.gpu_profiler.as_ref().expect("GPU profiler exists");
+                        wgpu::RenderPassTimestampWrites {
+                            query_set: &profiler.slots[slot_index].query_set,
+                            beginning_of_pass_write_index: None,
+                            end_of_pass_write_index: Some(1),
+                        }
+                    }),
+                    multiview_mask: None,
+                });
+                self.foveated
+                    .draw_unwarp(&mut render_pass, &self.camera_bind_group);
+            }
+            if self.foveated.experiment_enabled(2) {
+                self.foveated.copy_to_history(&mut encoder);
+            }
         }
         let timestamp_query_set = gpu_slot_index.map(|slot_index| {
             &self
@@ -2179,6 +2233,32 @@ impl ApplicationHandler for App {
                 }
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state.is_pressed()
+                        && matches!(
+                            event.physical_key,
+                            PhysicalKey::Code(
+                                KeyCode::Digit1
+                                    | KeyCode::Digit2
+                                    | KeyCode::Digit3
+                                    | KeyCode::Digit4
+                                    | KeyCode::Digit5
+                            )
+                        ) =>
+                {
+                    let experiment = match event.physical_key {
+                        PhysicalKey::Code(KeyCode::Digit1) => Some(1),
+                        PhysicalKey::Code(KeyCode::Digit2) => Some(2),
+                        PhysicalKey::Code(KeyCode::Digit3) => Some(3),
+                        PhysicalKey::Code(KeyCode::Digit4) => Some(4),
+                        PhysicalKey::Code(KeyCode::Digit5) => Some(5),
+                        _ => None,
+                    };
+                    if let Some(experiment) = experiment {
+                        state.toggle_ray_experiment(experiment);
+                        window.request_redraw();
+                    }
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
                         && event.physical_key == PhysicalKey::Code(KeyCode::ArrowLeft) =>
                 {
                     state.rotate_camera(-0.08, 0.0);
@@ -2344,7 +2424,8 @@ mod tests {
         MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS, RenderPath, advance_flight_position_on_sphere,
         advance_flight_speed, flight_movement_direction, flight_view_direction,
         focus_of_expansion_ndc, initial_flight_tangent, interactive_camera_delta_seconds,
-        render_size_for_surface_resize, should_enter_fullscreen, transport_flight_tangent,
+        projected_planet_coverage, render_size_for_surface_resize, should_enter_fullscreen,
+        transport_flight_tangent,
     };
     use crate::planet::{
         CameraUniform, OrbitCamera, PLANET_ROTATION_PERIOD_SECONDS, RenderDebugMode,
@@ -2412,6 +2493,16 @@ mod tests {
             &uniform,
         );
         assert_eq!(clamped[0], 0.7);
+    }
+
+    #[test]
+    fn projected_planet_coverage_distinguishes_orbit_from_low_flight() {
+        let aspect = 16.0 / 9.0;
+        let fov = 45.0_f64.to_radians();
+        let orbit = projected_planet_coverage(10_000_000.0, fov, aspect);
+        let low_flight = projected_planet_coverage(4_002_000.0, fov, aspect);
+        assert!(orbit < super::CONTENT_ADAPTIVE_WARP_MINIMUM_PLANET_COVERAGE);
+        assert!(low_flight >= super::CONTENT_ADAPTIVE_WARP_MINIMUM_PLANET_COVERAGE);
     }
 
     #[test]

@@ -5,6 +5,9 @@ const RAY_ANTISOLAR_TWILIGHT_MIN_SCATTER: f32 = 0.48;
 const RAY_SKY_ATMOSPHERE_SATURATION: f32 = 2.0;
 const RAY_OCEAN_SHELL_RADIUS_METERS: f32 = PLANET_RADIUS_METERS + 1.0;
 const RENDER_DEBUG_SKY_ONLY: u32 = 4u;
+const EXPERIMENT_HORIZON_DENSITY: u32 = 1u << 0u;
+const EXPERIMENT_TEMPORAL_REUSE: u32 = 1u << 1u;
+const EXPERIMENT_FOVEATED_SHADING: u32 = 1u << 3u;
 
 struct RayUniform {
     height_min_meters: f32,
@@ -18,6 +21,15 @@ struct RayUniform {
     max_height_mip_count: u32,
     minimum_step_meters: f32,
     fovea_ndc: vec2<f32>,
+    experiment_flags: u32,
+    frame_index: u32,
+    _padding: vec2<u32>,
+    previous_fovea_ndc: vec2<f32>,
+    temporal_valid: u32,
+    _temporal_padding: u32,
+    previous_camera_forward: vec4<f32>,
+    previous_camera_right: vec4<f32>,
+    previous_camera_up: vec4<f32>,
 }
 
 @group(1) @binding(0)
@@ -30,6 +42,12 @@ var moisture_faces: texture_2d_array<f32>;
 var<uniform> ray_settings: RayUniform;
 @group(1) @binding(4)
 var max_height_faces: texture_2d_array<f32>;
+@group(3) @binding(0)
+var history_color: texture_2d<f32>;
+@group(3) @binding(1)
+var history_distance: texture_2d<f32>;
+@group(3) @binding(2)
+var history_sampler: sampler;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -89,6 +107,52 @@ fn warped_screen_ndc(warp_ndc: vec2<f32>) -> vec2<f32> {
         warped_screen_axis(warp_ndc.x, ray_settings.fovea_ndc.x),
         warped_screen_axis(warp_ndc.y, ray_settings.fovea_ndc.y),
     );
+}
+
+fn unwarp_axis(coordinate: f32) -> f32 {
+    const EXPONENT: f32 = 2.0;
+    const LINEAR_CORE: f32 = 0.5;
+    let magnitude = abs(coordinate);
+    let core_power = pow(LINEAR_CORE, EXPONENT);
+    let denominator = pow(1.0 + LINEAR_CORE, EXPONENT) - core_power;
+    let unwarped = pow(
+        clamp(magnitude, 0.0, 1.0) * denominator + core_power,
+        1.0 / EXPONENT,
+    ) - LINEAR_CORE;
+    return sign(coordinate) * unwarped;
+}
+
+fn history_coordinates(ray: vec3<f32>) -> vec3<f32> {
+    let planet_ray = view_to_planet(ray);
+    let previous_ray = vec3<f32>(
+        dot(planet_ray, ray_settings.previous_camera_right.xyz),
+        dot(planet_ray, ray_settings.previous_camera_up.xyz),
+        -dot(planet_ray, ray_settings.previous_camera_forward.xyz),
+    );
+    if previous_ray.z >= -1.0e-5 {
+        return vec3<f32>(0.0);
+    }
+    let screen_ndc = vec2<f32>(
+        previous_ray.x / -previous_ray.z / (camera.projection.x * camera.projection.y),
+        previous_ray.y / -previous_ray.z / camera.projection.y,
+    );
+    let offset = screen_ndc - ray_settings.previous_fovea_ndc;
+    let side_extent = select(
+        vec2<f32>(1.0) + ray_settings.previous_fovea_ndc,
+        vec2<f32>(1.0) - ray_settings.previous_fovea_ndc,
+        offset >= vec2<f32>(0.0),
+    );
+    let warp_ndc = vec2<f32>(
+        unwarp_axis(offset.x / side_extent.x),
+        unwarp_axis(offset.y / side_extent.y),
+    );
+    let uv = vec2<f32>(warp_ndc.x * 0.5 + 0.5, 0.5 - warp_ndc.y * 0.5);
+    let valid = select(
+        0.0,
+        1.0,
+        all(uv >= vec2<f32>(0.0)) && all(uv <= vec2<f32>(1.0)),
+    );
+    return vec3<f32>(uv, valid);
 }
 
 fn direction_to_face_uv(direction: vec3<f32>) -> FaceUv {
@@ -409,6 +473,7 @@ fn ocean_hit(
     radial_dot_ray: f32,
     camera_position_view: vec3<f32>,
     ray: vec3<f32>,
+    detail: f32,
 ) -> OceanHit {
     let shell_distance = sphere_entry_distance(
         RAY_OCEAN_SHELL_RADIUS_METERS,
@@ -426,17 +491,21 @@ fn ocean_hit(
     }
 
     var distance_meters = shell_distance;
-    for (var index = 0u; index < 2u; index += 1u) {
-        let direction = normalize(view_to_planet(
-            camera_position_view + ray * distance_meters,
-        ));
-        let surface = ocean_surface(direction, camera.projection.z);
-        distance_meters = sphere_entry_distance(
-            PLANET_RADIUS_METERS + surface.vertical_displacement,
-            radial_dot_ray,
-        );
-        if distance_meters < 0.0 {
-            return OceanHit(-1.0, 0.0);
+    let use_waves = (ray_settings.experiment_flags & EXPERIMENT_FOVEATED_SHADING) == 0u
+        || detail >= 0.45;
+    if use_waves {
+        for (var index = 0u; index < 2u; index += 1u) {
+            let direction = normalize(view_to_planet(
+                camera_position_view + ray * distance_meters,
+            ));
+            let surface = ocean_surface(direction, camera.projection.z);
+            distance_meters = sphere_entry_distance(
+                PLANET_RADIUS_METERS + surface.vertical_displacement,
+                radial_dot_ray,
+            );
+            if distance_meters < 0.0 {
+                return OceanHit(-1.0, 0.0);
+            }
         }
     }
     return OceanHit(distance_meters, coverage);
@@ -522,7 +591,7 @@ fn ray_local_solar_transmittance(
         * sun_visibility(sample_radius, sample_radial_dot_sun, shadow_transition_meters);
 }
 
-fn ray_atmosphere_radiance(ray: vec3<f32>, radial_dot_ray: f32) -> vec3<f32> {
+fn ray_atmosphere_radiance(ray: vec3<f32>, radial_dot_ray: f32, detail: f32) -> vec3<f32> {
     let interval = atmosphere_interval(ray_settings.camera_radius_meters, radial_dot_ray);
     let start_distance = max(interval.x, 0.0);
     let end_distance = min(interval.y, solid_planet_entry_distance(radial_dot_ray));
@@ -548,10 +617,15 @@ fn ray_atmosphere_radiance(ray: vec3<f32>, radial_dot_ray: f32) -> vec3<f32> {
     );
     let camera_position_view = camera.camera_planet_direction_view_altitude.xyz
         * ray_settings.camera_radius_meters;
+    let foveated_shading = (ray_settings.experiment_flags & EXPERIMENT_FOVEATED_SHADING) != 0u;
+    let sample_count = select(16u, 6u, foveated_shading && detail < 0.45);
     var radiance = vec3<f32>(0.0);
     for (var index = 0u; index < RAY_SKY_SAMPLE_COUNT; index += 1u) {
-        let fraction_start = f32(index) / f32(RAY_SKY_SAMPLE_COUNT);
-        let fraction_end = f32(index + 1u) / f32(RAY_SKY_SAMPLE_COUNT);
+        if index >= sample_count {
+            break;
+        }
+        let fraction_start = f32(index) / f32(sample_count);
+        let fraction_end = f32(index + 1u) / f32(sample_count);
         let sample_start = ray_density_sample_fraction(fraction_start, closest_fraction);
         let sample_end = ray_density_sample_fraction(fraction_end, closest_fraction);
         let sample_length = (sample_end - sample_start) * path_length;
@@ -692,12 +766,18 @@ fn shade_ocean(
     surface_direction: vec3<f32>,
     hit_view_position: vec3<f32>,
     water_base_height: f32,
+    detail: f32,
 ) -> vec3<f32> {
     let render_debug_mode = u32(camera.projection.w + 0.5);
     if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
         return debug_ocean_albedo();
     }
-    let surface = ocean_surface(surface_direction, camera.projection.z);
+    var surface = OceanSurface(vec3<f32>(0.0), 0.0, surface_direction);
+    if (ray_settings.experiment_flags & EXPERIMENT_FOVEATED_SHADING) == 0u
+        || detail >= 0.45
+    {
+        surface = ocean_surface(surface_direction, camera.projection.z);
+    }
     let water_surface_height = water_base_height + surface.vertical_displacement;
     let sun_direction = normalize(camera.sun_direction.xyz);
     let sun_transmittance = surface_direct_sun_transmittance(
@@ -743,14 +823,14 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     return VertexOutput(vec4<f32>(position, 0.0, 1.0), position);
 }
 
-fn trace_ray(ray: vec3<f32>) -> RayResult {
+fn trace_ray(ray: vec3<f32>, detail: f32) -> RayResult {
     let camera_position_view = camera.camera_planet_direction_view_altitude.xyz
         * ray_settings.camera_radius_meters;
     let radial_dot_ray = dot(camera_position_view, ray);
     let render_debug_mode = u32(camera.projection.w + 0.5);
     if render_debug_mode == RENDER_DEBUG_SKY_ONLY {
         return RayResult(
-            vec4<f32>(ray_atmosphere_radiance(ray, radial_dot_ray), 1.0),
+            vec4<f32>(ray_atmosphere_radiance(ray, radial_dot_ray, detail), 1.0),
             -1.0,
         );
     }
@@ -761,13 +841,13 @@ fn trace_ray(ray: vec3<f32>) -> RayResult {
         && ray_settings.camera_radius_meters > ray_settings.maximum_shell_radius_meters
     {
         return RayResult(
-            vec4<f32>(ray_atmosphere_radiance(ray, radial_dot_ray), 1.0),
+            vec4<f32>(ray_atmosphere_radiance(ray, radial_dot_ray, detail), 1.0),
             -1.0,
         );
     }
     if end_distance <= start_distance {
         return RayResult(
-            vec4<f32>(ray_atmosphere_radiance(ray, radial_dot_ray), 1.0),
+            vec4<f32>(ray_atmosphere_radiance(ray, radial_dot_ray, detail), 1.0),
             -1.0,
         );
     }
@@ -814,7 +894,7 @@ fn trace_ray(ray: vec3<f32>) -> RayResult {
         previous_distance = distance;
         previous_value = value;
     }
-    let water_hit = ocean_hit(radial_dot_ray, camera_position_view, ray);
+    let water_hit = ocean_hit(radial_dot_ray, camera_position_view, ray, detail);
     if water_hit.distance_meters >= 0.0
         && (hit_distance < 0.0 || water_hit.distance_meters <= hit_distance)
     {
@@ -824,6 +904,7 @@ fn trace_ray(ray: vec3<f32>) -> RayResult {
             water_direction,
             ray * water_hit.distance_meters,
             0.0,
+            detail,
         );
         if water_hit.coverage < 1.0 && hit_distance >= 0.0 {
             let terrain_view = camera_position_view + ray * hit_distance;
@@ -839,7 +920,7 @@ fn trace_ray(ray: vec3<f32>) -> RayResult {
     }
     if hit_distance < 0.0 {
         return RayResult(
-            vec4<f32>(ray_atmosphere_radiance(ray, radial_dot_ray), 1.0),
+            vec4<f32>(ray_atmosphere_radiance(ray, radial_dot_ray, detail), 1.0),
             -1.0,
         );
     }
@@ -857,12 +938,14 @@ fn trace_ray(ray: vec3<f32>) -> RayResult {
             surface_direction,
             ray * hit_distance,
             macro_height * terrain_macro_height_scale(),
+            detail,
         );
     } else if ocean_coverage > 0.0 {
         let ocean_color = shade_ocean(
             surface_direction,
             ray * hit_distance,
             0.0,
+            detail,
         );
         color = mix(terrain_color, ocean_color, ocean_coverage);
     }
@@ -872,7 +955,7 @@ fn trace_ray(ray: vec3<f32>) -> RayResult {
 @fragment
 fn fs_main(input: VertexOutput) -> FragmentOutput {
     let ray = view_direction(input.ndc);
-    let result = trace_ray(ray);
+    let result = trace_ray(ray, 1.0);
     if result.distance_meters < 0.0 {
         return FragmentOutput(result.color, 0.0);
     }
@@ -883,7 +966,55 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
 
 @fragment
 fn fs_warp(input: VertexOutput) -> WarpFragmentOutput {
-    let ray = view_direction(warped_screen_ndc(input.ndc));
-    let result = trace_ray(ray);
+    let detail = 1.0 - smoothstep(0.25, 1.0, length(input.ndc));
+    let screen_ndc = warped_screen_ndc(input.ndc);
+    let ray = view_direction(screen_ndc);
+    let camera_position_view = camera.camera_planet_direction_view_altitude.xyz
+        * ray_settings.camera_radius_meters;
+    let radial_dot_ray = dot(camera_position_view, ray);
+    let closest_radius = sqrt(max(
+        ray_settings.camera_radius_squared - radial_dot_ray * radial_dot_ray,
+        0.0,
+    ));
+    let near_horizon = abs(closest_radius - PLANET_RADIUS_METERS) < 50000.0;
+    let checker = (
+        u32(input.position.x) / 8u
+        + u32(input.position.y) / 8u
+        + ray_settings.frame_index
+    ) & 1u;
+    if (ray_settings.experiment_flags & EXPERIMENT_TEMPORAL_REUSE) != 0u
+        && ray_settings.temporal_valid != 0u
+        && detail < 0.45
+        && !near_horizon
+        && checker == 0u
+    {
+        let history = history_coordinates(ray);
+        if history.z > 0.5 {
+            let uv = history.xy;
+            let color = textureSampleLevel(history_color, history_sampler, uv, 0.0);
+            let dimensions = textureDimensions(history_distance);
+            let texel = clamp(
+                vec2<i32>(floor(uv * vec2<f32>(dimensions))),
+                vec2<i32>(0),
+                vec2<i32>(dimensions) - vec2<i32>(1),
+            );
+            let distance_meters = textureLoad(history_distance, texel, 0).x;
+            return WarpFragmentOutput(color, distance_meters);
+        }
+    }
+    var result = trace_ray(ray, detail);
+    if (ray_settings.experiment_flags & EXPERIMENT_HORIZON_DENSITY) != 0u {
+        if abs(closest_radius - PLANET_RADIUS_METERS) < 30000.0 {
+            let neighbor_warp_ndc = input.ndc + vec2<f32>(
+                dpdx(input.ndc.x),
+                dpdy(input.ndc.y),
+            ) * 0.35;
+            let neighbor = trace_ray(
+                view_direction(warped_screen_ndc(neighbor_warp_ndc)),
+                detail,
+            );
+            result.color = mix(result.color, neighbor.color, 0.5);
+        }
+    }
     return WarpFragmentOutput(result.color, result.distance_meters);
 }

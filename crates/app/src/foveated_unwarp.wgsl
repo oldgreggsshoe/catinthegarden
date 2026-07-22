@@ -12,8 +12,10 @@ struct Camera {
 struct WarpUniform {
     fovea_ndc: vec2<f32>,
     debug_view: u32,
-    _padding: u32,
+    experiment_flags: u32,
 }
+
+const EXPERIMENT_RADIAL_BLUR: u32 = 1u << 4u;
 
 @group(0) @binding(0)
 var<uniform> camera: Camera;
@@ -65,6 +67,13 @@ fn texture_uv(ndc: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
 }
 
+fn texture_ndc_for_screen(screen_ndc: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(
+        unwarped_texture_axis(screen_ndc.x, warp_settings.fovea_ndc.x),
+        unwarped_texture_axis(screen_ndc.y, warp_settings.fovea_ndc.y),
+    );
+}
+
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     var positions = array<vec2<f32>, 3>(
@@ -78,15 +87,43 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 
 @fragment
 fn fs_main(input: VertexOutput) -> FragmentOutput {
-    let warped_ndc = vec2<f32>(
-        unwarped_texture_axis(input.ndc.x, warp_settings.fovea_ndc.x),
-        unwarped_texture_axis(input.ndc.y, warp_settings.fovea_ndc.y),
-    );
+    let warped_ndc = texture_ndc_for_screen(input.ndc);
     let sample_ndc = select(warped_ndc, input.ndc, warp_settings.debug_view != 0u);
     let uv = texture_uv(sample_ndc);
-    let color = textureSampleLevel(warp_color, warp_sampler, uv, 0.0);
+    var color = textureSampleLevel(warp_color, warp_sampler, uv, 0.0);
     if warp_settings.debug_view != 0u {
         return FragmentOutput(color, 0.0);
+    }
+    if (warp_settings.experiment_flags & EXPERIMENT_RADIAL_BLUR) != 0u {
+        let screen_offset = input.ndc - warp_settings.fovea_ndc;
+        let eccentricity = length(warped_ndc);
+        let blur_distance = smoothstep(0.35, 1.0, eccentricity) * 0.018;
+        if blur_distance > 0.0 && length(screen_offset) > 1.0e-4 {
+            let radial = normalize(screen_offset);
+            let inner_screen = clamp(
+                input.ndc - radial * blur_distance,
+                vec2<f32>(-1.0),
+                vec2<f32>(1.0),
+            );
+            let outer_screen = clamp(
+                input.ndc + radial * blur_distance,
+                vec2<f32>(-1.0),
+                vec2<f32>(1.0),
+            );
+            let inner = textureSampleLevel(
+                warp_color,
+                warp_sampler,
+                texture_uv(texture_ndc_for_screen(inner_screen)),
+                0.0,
+            );
+            let outer = textureSampleLevel(
+                warp_color,
+                warp_sampler,
+                texture_uv(texture_ndc_for_screen(outer_screen)),
+                0.0,
+            );
+            color = inner * 0.25 + color * 0.5 + outer * 0.25;
+        }
     }
 
     let dimensions = textureDimensions(warp_distance);

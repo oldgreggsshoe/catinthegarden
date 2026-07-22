@@ -15,6 +15,11 @@ const FACE_COUNT: u32 = 6;
 const WARP_SCALE_NUMERATOR: u32 = 3;
 const WARP_SCALE_DENOMINATOR: u32 = 4;
 const FOVEA_FOLLOW_RATE_PER_SECOND: f32 = 5.0;
+const EXPERIMENT_HORIZON_DENSITY: u32 = 1 << 0;
+const EXPERIMENT_TEMPORAL_REUSE: u32 = 1 << 1;
+const EXPERIMENT_CONTENT_ADAPTIVE: u32 = 1 << 2;
+const EXPERIMENT_FOVEATED_SHADING: u32 = 1 << 3;
+const EXPERIMENT_RADIAL_BLUR: u32 = 1 << 4;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -30,6 +35,15 @@ struct RayUniform {
     max_height_mip_count: u32,
     minimum_step_meters: f32,
     fovea_ndc: [f32; 2],
+    experiment_flags: u32,
+    frame_index: u32,
+    _padding: [u32; 2],
+    previous_fovea_ndc: [f32; 2],
+    temporal_valid: u32,
+    _temporal_padding: u32,
+    previous_camera_forward: [f32; 4],
+    previous_camera_right: [f32; 4],
+    previous_camera_up: [f32; 4],
 }
 
 #[repr(C)]
@@ -37,7 +51,7 @@ struct RayUniform {
 struct WarpUniform {
     fovea_ndc: [f32; 2],
     debug_view: u32,
-    _padding: u32,
+    experiment_flags: u32,
 }
 
 pub struct FoveatedRenderer {
@@ -45,6 +59,8 @@ pub struct FoveatedRenderer {
     warp_pipeline: wgpu::RenderPipeline,
     unwarp_pipeline: wgpu::RenderPipeline,
     fields_bind_group: wgpu::BindGroup,
+    temporal_bind_group_layout: wgpu::BindGroupLayout,
+    temporal_bind_group: wgpu::BindGroup,
     unwarp_bind_group_layout: wgpu::BindGroupLayout,
     unwarp_bind_group: wgpu::BindGroup,
     ray_uniform_buffer: wgpu::Buffer,
@@ -54,6 +70,11 @@ pub struct FoveatedRenderer {
     warp_size: winit::dpi::PhysicalSize<u32>,
     warp_debug_visible: bool,
     fovea_ndc: [f32; 2],
+    experiment_flags: u32,
+    frame_index: u32,
+    previous_camera_basis: Option<[[f32; 3]; 3]>,
+    previous_camera_position: Option<[f64; 3]>,
+    history_valid: bool,
     height_min_meters: f32,
     height_max_meters: f32,
     face_quads: u32,
@@ -66,6 +87,10 @@ pub struct FoveatedRenderer {
     warp_color_view: wgpu::TextureView,
     warp_distance_texture: wgpu::Texture,
     warp_distance_view: wgpu::TextureView,
+    history_color_texture: wgpu::Texture,
+    history_color_view: wgpu::TextureView,
+    history_distance_texture: wgpu::Texture,
+    history_distance_view: wgpu::TextureView,
 }
 
 impl FoveatedRenderer {
@@ -228,12 +253,30 @@ impl FoveatedRenderer {
                 },
             ],
         });
+        let temporal_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("foveated temporal history layout"),
+                entries: &[
+                    texture_2d_layout_entry(0, wgpu::TextureSampleType::Float { filterable: true }),
+                    texture_2d_layout_entry(
+                        1,
+                        wgpu::TextureSampleType::Float { filterable: false },
+                    ),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("ray field debug pipeline layout"),
             bind_group_layouts: &[
                 Some(camera_bind_group_layout),
                 Some(&fields_bind_group_layout),
                 Some(shared_bind_group_layout),
+                Some(&temporal_bind_group_layout),
             ],
             immediate_size: 0,
         });
@@ -405,7 +448,7 @@ impl FoveatedRenderer {
             bytemuck::bytes_of(&WarpUniform {
                 fovea_ndc: [0.0; 2],
                 debug_view: 0,
-                _padding: 0,
+                experiment_flags: 0,
             }),
         );
         let warp_size = warp_size_for(size);
@@ -416,6 +459,21 @@ impl FoveatedRenderer {
             "foveated warp distance",
             warp_size,
             wgpu::TextureFormat::R32Float,
+        );
+        let (history_color_texture, history_color_view) =
+            create_warp_texture(device, "foveated history color", warp_size, surface_format);
+        let (history_distance_texture, history_distance_view) = create_warp_texture(
+            device,
+            "foveated history distance",
+            warp_size,
+            wgpu::TextureFormat::R32Float,
+        );
+        let temporal_bind_group = create_temporal_bind_group(
+            device,
+            &temporal_bind_group_layout,
+            &history_color_view,
+            &history_distance_view,
+            &warp_sampler,
         );
         let unwarp_bind_group = create_unwarp_bind_group(
             device,
@@ -431,6 +489,8 @@ impl FoveatedRenderer {
             warp_pipeline,
             unwarp_pipeline,
             fields_bind_group,
+            temporal_bind_group_layout,
+            temporal_bind_group,
             unwarp_bind_group_layout,
             unwarp_bind_group,
             ray_uniform_buffer,
@@ -440,6 +500,11 @@ impl FoveatedRenderer {
             warp_size,
             warp_debug_visible: false,
             fovea_ndc: [0.0; 2],
+            experiment_flags: 0,
+            frame_index: 0,
+            previous_camera_basis: None,
+            previous_camera_position: None,
+            history_valid: false,
             height_min_meters,
             height_max_meters,
             face_quads,
@@ -452,6 +517,10 @@ impl FoveatedRenderer {
             warp_color_view,
             warp_distance_texture,
             warp_distance_view,
+            history_color_texture,
+            history_color_view,
+            history_distance_texture,
+            history_distance_view,
         })
     }
 
@@ -461,13 +530,32 @@ impl FoveatedRenderer {
         camera_altitude_meters: f64,
         target_fovea_ndc: [f32; 2],
         delta_seconds: f32,
+        camera_forward: [f32; 3],
+        camera_right: [f32; 3],
+        camera_up: [f32; 3],
+        camera_position: [f64; 3],
     ) {
+        let previous_fovea_ndc = self.fovea_ndc;
+        let camera_displacement_meters = self.previous_camera_position.map_or(f64::INFINITY, |p| {
+            ((camera_position[0] - p[0]).powi(2)
+                + (camera_position[1] - p[1]).powi(2)
+                + (camera_position[2] - p[2]).powi(2))
+            .sqrt()
+        });
+        let temporal_valid = self.history_valid
+            && self.previous_camera_basis.is_some_and(|previous| {
+                dot3(previous[0], camera_forward) > 0.999_85
+                    && dot3(previous[1], camera_right) > 0.999_85
+                    && dot3(previous[2], camera_up) > 0.999_85
+                    && camera_displacement_meters <= 10.0
+            });
         self.fovea_ndc = eased_fovea_ndc(
             self.fovea_ndc,
             target_fovea_ndc,
             delta_seconds,
             FOVEA_FOLLOW_RATE_PER_SECOND,
         );
+        self.frame_index = self.frame_index.wrapping_add(1);
         let mut uniform = RayUniform::for_camera(
             self.height_min_meters,
             self.height_max_meters,
@@ -476,8 +564,19 @@ impl FoveatedRenderer {
             camera_altitude_meters,
         );
         uniform.fovea_ndc = self.fovea_ndc;
+        uniform.experiment_flags = self.experiment_flags;
+        uniform.frame_index = self.frame_index;
+        uniform.previous_fovea_ndc = previous_fovea_ndc;
+        uniform.temporal_valid = u32::from(temporal_valid);
+        if let Some(previous) = self.previous_camera_basis {
+            uniform.previous_camera_forward[..3].copy_from_slice(&previous[0]);
+            uniform.previous_camera_right[..3].copy_from_slice(&previous[1]);
+            uniform.previous_camera_up[..3].copy_from_slice(&previous[2]);
+        }
         queue.write_buffer(&self.ray_uniform_buffer, 0, bytemuck::bytes_of(&uniform));
         self.write_warp_uniform(queue);
+        self.previous_camera_basis = Some([camera_forward, camera_right, camera_up]);
+        self.previous_camera_position = Some(camera_position);
     }
 
     pub fn resize(&mut self, device: &wgpu::Device, size: winit::dpi::PhysicalSize<u32>) {
@@ -497,6 +596,25 @@ impl FoveatedRenderer {
             warp_size,
             wgpu::TextureFormat::R32Float,
         );
+        let (history_color_texture, history_color_view) = create_warp_texture(
+            device,
+            "foveated history color",
+            warp_size,
+            self.warp_color_format,
+        );
+        let (history_distance_texture, history_distance_view) = create_warp_texture(
+            device,
+            "foveated history distance",
+            warp_size,
+            wgpu::TextureFormat::R32Float,
+        );
+        self.temporal_bind_group = create_temporal_bind_group(
+            device,
+            &self.temporal_bind_group_layout,
+            &history_color_view,
+            &history_distance_view,
+            &self.warp_sampler,
+        );
         self.unwarp_bind_group = create_unwarp_bind_group(
             device,
             &self.unwarp_bind_group_layout,
@@ -510,11 +628,29 @@ impl FoveatedRenderer {
         self.warp_color_view = warp_color_view;
         self.warp_distance_texture = warp_distance_texture;
         self.warp_distance_view = warp_distance_view;
+        self.history_color_texture = history_color_texture;
+        self.history_color_view = history_color_view;
+        self.history_distance_texture = history_distance_texture;
+        self.history_distance_view = history_distance_view;
+        self.history_valid = false;
     }
 
     pub fn toggle_warp_debug(&mut self, queue: &wgpu::Queue) {
         self.warp_debug_visible = !self.warp_debug_visible;
         self.write_warp_uniform(queue);
+    }
+
+    pub fn toggle_experiment(&mut self, queue: &wgpu::Queue, index: u8) {
+        let flag = experiment_flag(index);
+        self.experiment_flags ^= flag;
+        if index == 2 {
+            self.history_valid = false;
+        }
+        self.write_warp_uniform(queue);
+    }
+
+    pub fn experiment_enabled(&self, index: u8) -> bool {
+        self.experiment_flags & experiment_flag(index) != 0
     }
 
     fn write_warp_uniform(&self, queue: &wgpu::Queue) {
@@ -524,7 +660,7 @@ impl FoveatedRenderer {
             bytemuck::bytes_of(&WarpUniform {
                 fovea_ndc: self.fovea_ndc,
                 debug_view: u32::from(self.warp_debug_visible),
-                _padding: 0,
+                experiment_flags: self.experiment_flags,
             }),
         );
     }
@@ -549,6 +685,25 @@ impl FoveatedRenderer {
         &self.warp_distance_view
     }
 
+    pub fn copy_to_history(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        let extent = wgpu::Extent3d {
+            width: self.warp_size.width,
+            height: self.warp_size.height,
+            depth_or_array_layers: 1,
+        };
+        encoder.copy_texture_to_texture(
+            self.warp_color_texture.as_image_copy(),
+            self.history_color_texture.as_image_copy(),
+            extent,
+        );
+        encoder.copy_texture_to_texture(
+            self.warp_distance_texture.as_image_copy(),
+            self.history_distance_texture.as_image_copy(),
+            extent,
+        );
+        self.history_valid = true;
+    }
+
     pub fn draw_direct<'pass>(
         &'pass self,
         render_pass: &mut wgpu::RenderPass<'pass>,
@@ -559,6 +714,7 @@ impl FoveatedRenderer {
         render_pass.set_bind_group(0, camera_bind_group, &[]);
         render_pass.set_bind_group(1, &self.fields_bind_group, &[]);
         render_pass.set_bind_group(2, shared_bind_group, &[]);
+        render_pass.set_bind_group(3, &self.temporal_bind_group, &[]);
         render_pass.draw(0..3, 0..1);
     }
 
@@ -572,6 +728,7 @@ impl FoveatedRenderer {
         render_pass.set_bind_group(0, camera_bind_group, &[]);
         render_pass.set_bind_group(1, &self.fields_bind_group, &[]);
         render_pass.set_bind_group(2, shared_bind_group, &[]);
+        render_pass.set_bind_group(3, &self.temporal_bind_group, &[]);
         render_pass.draw(0..3, 0..1);
     }
 
@@ -615,7 +772,27 @@ impl RayUniform {
             max_height_mip_count,
             minimum_step_meters: (PLANET_RADIUS_METERS * 2.0 / f64::from(face_quads)) as f32 * 0.5,
             fovea_ndc: [0.0; 2],
+            experiment_flags: 0,
+            frame_index: 0,
+            _padding: [0; 2],
+            previous_fovea_ndc: [0.0; 2],
+            temporal_valid: 0,
+            _temporal_padding: 0,
+            previous_camera_forward: [0.0; 4],
+            previous_camera_right: [0.0; 4],
+            previous_camera_up: [0.0; 4],
         }
+    }
+}
+
+fn experiment_flag(index: u8) -> u32 {
+    match index {
+        1 => EXPERIMENT_HORIZON_DENSITY,
+        2 => EXPERIMENT_TEMPORAL_REUSE,
+        3 => EXPERIMENT_CONTENT_ADAPTIVE,
+        4 => EXPERIMENT_FOVEATED_SHADING,
+        5 => EXPERIMENT_RADIAL_BLUR,
+        _ => panic!("M8 experiment index must be in 1..=5"),
     }
 }
 
@@ -630,6 +807,10 @@ fn eased_fovea_ndc(
         current[0] + (target[0] - current[0]) * blend,
         current[1] + (target[1] - current[1]) * blend,
     ]
+}
+
+fn dot3(left: [f32; 3], right: [f32; 3]) -> f32 {
+    left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
 }
 
 fn raymarch_shader_source() -> String {
@@ -696,11 +877,41 @@ fn create_warp_texture(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     (texture, view)
+}
+
+fn create_temporal_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    color_view: &wgpu::TextureView,
+    distance_view: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("foveated temporal history bind group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(color_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(distance_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    })
 }
 
 fn create_unwarp_bind_group(
@@ -1012,7 +1223,9 @@ impl From<OutmapError> for FoveatedError {
 #[cfg(test)]
 mod tests {
     use super::{
-        FIELD_LEVEL, RayUniform, WarpUniform, eased_fovea_ndc, face_sample_source, max_height_mips,
+        EXPERIMENT_CONTENT_ADAPTIVE, EXPERIMENT_FOVEATED_SHADING, EXPERIMENT_HORIZON_DENSITY,
+        EXPERIMENT_RADIAL_BLUR, EXPERIMENT_TEMPORAL_REUSE, FIELD_LEVEL, RayUniform, WarpUniform,
+        eased_fovea_ndc, experiment_flag, face_sample_source, max_height_mips,
         raymarch_shader_source, warp_size_for,
     };
     use catinthegarden_coretypes::{TILE_LOGICAL_SIZE, TILE_STORED_SIZE};
@@ -1147,6 +1360,22 @@ mod tests {
             winit::dpi::PhysicalSize::new(1, 1),
         );
         assert_eq!(size_of::<WarpUniform>(), 16);
+        assert_eq!(size_of::<RayUniform>(), 128);
+    }
+
+    #[test]
+    fn experiment_indices_map_to_independent_bits() {
+        assert_eq!(experiment_flag(1), EXPERIMENT_HORIZON_DENSITY);
+        assert_eq!(experiment_flag(2), EXPERIMENT_TEMPORAL_REUSE);
+        assert_eq!(experiment_flag(3), EXPERIMENT_CONTENT_ADAPTIVE);
+        assert_eq!(experiment_flag(4), EXPERIMENT_FOVEATED_SHADING);
+        assert_eq!(experiment_flag(5), EXPERIMENT_RADIAL_BLUR);
+        assert_eq!(
+            (1..=5)
+                .map(experiment_flag)
+                .fold(0, |flags, flag| flags | flag),
+            0b1_1111
+        );
     }
 
     #[test]
