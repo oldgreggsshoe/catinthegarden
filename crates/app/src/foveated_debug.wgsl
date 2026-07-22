@@ -15,6 +15,9 @@ struct RayUniform {
     camera_radius_squared: f32,
     minimum_shell_radius_meters: f32,
     maximum_shell_radius_meters: f32,
+    max_height_mip_count: u32,
+    minimum_step_meters: f32,
+    _padding: vec2<u32>,
 }
 
 @group(1) @binding(0)
@@ -25,6 +28,8 @@ var biome_faces: texture_2d_array<u32>;
 var moisture_faces: texture_2d_array<f32>;
 @group(1) @binding(3)
 var<uniform> ray_settings: RayUniform;
+@group(1) @binding(4)
+var max_height_faces: texture_2d_array<f32>;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -191,6 +196,91 @@ fn radius_at(distance_meters: f32, radial_dot_ray: f32) -> f32 {
             + distance_meters * distance_meters,
         0.0,
     ));
+}
+
+fn sample_max_height(
+    start_direction: vec3<f32>,
+    end_direction: vec3<f32>,
+    desired_step_meters: f32,
+) -> f32 {
+    let start_face_uv = direction_to_face_uv(start_direction);
+    let end_face_uv = direction_to_face_uv(end_direction);
+    if start_face_uv.face != end_face_uv.face {
+        return ray_settings.height_max_meters;
+    }
+    let base_extent = textureDimensions(max_height_faces, 0).x;
+    let base_texel_span_meters = ray_settings.minimum_step_meters * 2.0;
+    let mip_level = u32(clamp(
+        ceil(log2(max(desired_step_meters / base_texel_span_meters, 1.0))) + 2.0,
+        0.0,
+        f32(ray_settings.max_height_mip_count - 1u),
+    ));
+    let mip_dimensions = textureDimensions(max_height_faces, i32(mip_level));
+    let start_coordinate = face_texel_coordinate(start_face_uv)
+        * vec2<f32>(mip_dimensions)
+        / f32(base_extent);
+    let end_coordinate = face_texel_coordinate(end_face_uv)
+        * vec2<f32>(mip_dimensions)
+        / f32(base_extent);
+    let start_texel = vec2<i32>(floor(start_coordinate));
+    let end_texel = vec2<i32>(floor(end_coordinate));
+    if any(start_texel != end_texel)
+        || start_texel.x < 0
+        || start_texel.y < 0
+        || start_texel.x >= i32(mip_dimensions.x)
+        || start_texel.y >= i32(mip_dimensions.y)
+    {
+        return ray_settings.height_max_meters;
+    }
+    return textureLoad(
+        max_height_faces,
+        start_texel,
+        i32(start_face_uv.face),
+        i32(mip_level),
+    ).x;
+}
+
+fn adaptive_step_distance(
+    iteration: u32,
+    distance_meters: f32,
+    baseline_step_meters: f32,
+    radial_dot_ray: f32,
+    camera_position_view: vec3<f32>,
+    ray: vec3<f32>,
+) -> f32 {
+    if iteration == 0u {
+        return baseline_step_meters;
+    }
+    let desired_step_meters = baseline_step_meters
+        * exp2(f32(min(iteration, 6u)));
+    let point_view = camera_position_view + ray * distance_meters;
+    let end_point_view = point_view + ray * desired_step_meters;
+    let maximum_height_meters = sample_max_height(
+        normalize(view_to_planet(point_view)),
+        normalize(view_to_planet(end_point_view)),
+        desired_step_meters,
+    ) * terrain_macro_height_scale();
+    let maximum_radius_meters = PLANET_RADIUS_METERS + maximum_height_meters;
+    let discriminant = radial_dot_ray * radial_dot_ray
+        + maximum_radius_meters * maximum_radius_meters
+        - ray_settings.camera_radius_squared;
+    if discriminant < 0.0 {
+        return desired_step_meters;
+    }
+    let root = sqrt(discriminant);
+    let near_distance = -radial_dot_ray - root;
+    let far_distance = -radial_dot_ray + root;
+    if distance_meters < near_distance {
+        return clamp(
+            (near_distance - distance_meters) * 0.8,
+            baseline_step_meters,
+            desired_step_meters,
+        );
+    }
+    if distance_meters > far_distance {
+        return desired_step_meters;
+    }
+    return baseline_step_meters;
 }
 
 fn sphere_entry_distance(radius_meters: f32, radial_dot_ray: f32) -> f32 {
@@ -658,12 +748,24 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
         ray,
     );
     var hit_distance = -1.0;
+    let baseline_step_meters = (end_distance - start_distance)
+        / f32(ray_settings.march_steps);
     for (var index = 0u; index < 192u; index += 1u) {
         if index >= ray_settings.march_steps {
             break;
         }
-        let amount = f32(index + 1u) / f32(ray_settings.march_steps);
-        let distance = mix(start_distance, end_distance, amount);
+        let step_distance = adaptive_step_distance(
+            index,
+            previous_distance,
+            baseline_step_meters,
+            radial_dot_ray,
+            camera_position_view,
+            ray,
+        );
+        let distance = min(previous_distance + step_distance, end_distance);
+        if distance <= previous_distance {
+            break;
+        }
         let value = surface_function(distance, radial_dot_ray, camera_position_view, ray);
         if value <= 0.0 && previous_value >= 0.0 {
             hit_distance = refine_hit(

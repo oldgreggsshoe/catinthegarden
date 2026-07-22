@@ -24,6 +24,9 @@ struct RayUniform {
     camera_radius_squared: f32,
     minimum_shell_radius_meters: f32,
     maximum_shell_radius_meters: f32,
+    max_height_mip_count: u32,
+    minimum_step_meters: f32,
+    _padding: [u32; 2],
 }
 
 pub struct FoveatedRenderer {
@@ -33,7 +36,9 @@ pub struct FoveatedRenderer {
     height_min_meters: f32,
     height_max_meters: f32,
     face_quads: u32,
+    max_height_mip_count: u32,
     _height_texture: wgpu::Texture,
+    _max_height_texture: wgpu::Texture,
     _biome_texture: wgpu::Texture,
     _moisture_texture: wgpu::Texture,
 }
@@ -55,23 +60,34 @@ impl FoveatedRenderer {
             height: extent,
             depth_or_array_layers: FACE_COUNT,
         };
+        let max_height_mip_count = extent.ilog2() + 1;
         let height_texture = create_face_texture(
             device,
             "ray height faces",
             texture_extent,
             wgpu::TextureFormat::R32Float,
+            1,
+        );
+        let max_height_texture = create_face_texture(
+            device,
+            "ray max-height faces",
+            texture_extent,
+            wgpu::TextureFormat::R32Float,
+            max_height_mip_count,
         );
         let biome_texture = create_face_texture(
             device,
             "ray biome faces",
             texture_extent,
             wgpu::TextureFormat::R8Uint,
+            1,
         );
         let moisture_texture = create_face_texture(
             device,
             "ray moisture faces",
             texture_extent,
             wgpu::TextureFormat::R8Unorm,
+            1,
         );
 
         for face in CubeFace::ALL {
@@ -80,14 +96,31 @@ impl FoveatedRenderer {
                 queue,
                 &height_texture,
                 face.index() as u32,
+                0,
                 extent,
                 bytemuck::cast_slice(&fields.heights_meters),
                 size_of::<f32>() as u32,
             );
+            for (mip_level, mip) in max_height_mips(&fields.heights_meters, extent)
+                .into_iter()
+                .enumerate()
+            {
+                let mip_extent = (extent >> mip_level).max(1);
+                upload_face_layer(
+                    queue,
+                    &max_height_texture,
+                    face.index() as u32,
+                    mip_level as u32,
+                    mip_extent,
+                    bytemuck::cast_slice(&mip),
+                    size_of::<f32>() as u32,
+                );
+            }
             upload_face_layer(
                 queue,
                 &biome_texture,
                 face.index() as u32,
+                0,
                 extent,
                 &fields.biome_ids,
                 size_of::<u8>() as u32,
@@ -96,6 +129,7 @@ impl FoveatedRenderer {
                 queue,
                 &moisture_texture,
                 face.index() as u32,
+                0,
                 extent,
                 &fields.moisture,
                 size_of::<u8>() as u32,
@@ -119,12 +153,18 @@ impl FoveatedRenderer {
                         },
                         count: None,
                     },
+                    texture_layout_entry(4, wgpu::TextureSampleType::Float { filterable: false }),
                 ],
             });
         let height_min_meters = source.height_min_meters();
         let height_max_meters = source.height_max_meters();
-        let initial_uniform =
-            RayUniform::for_camera(height_min_meters, height_max_meters, face_quads, 0.0);
+        let initial_uniform = RayUniform::for_camera(
+            height_min_meters,
+            height_max_meters,
+            face_quads,
+            max_height_mip_count,
+            0.0,
+        );
         let ray_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("raymarch uniform"),
             size: size_of::<RayUniform>() as u64,
@@ -153,6 +193,12 @@ impl FoveatedRenderer {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: ray_uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&face_array_view(
+                        &max_height_texture,
+                    )),
                 },
             ],
         });
@@ -212,7 +258,9 @@ impl FoveatedRenderer {
             height_min_meters,
             height_max_meters,
             face_quads,
+            max_height_mip_count,
             _height_texture: height_texture,
+            _max_height_texture: max_height_texture,
             _biome_texture: biome_texture,
             _moisture_texture: moisture_texture,
         })
@@ -223,6 +271,7 @@ impl FoveatedRenderer {
             self.height_min_meters,
             self.height_max_meters,
             self.face_quads,
+            self.max_height_mip_count,
             camera_altitude_meters,
         );
         queue.write_buffer(&self.ray_uniform_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -249,6 +298,7 @@ impl RayUniform {
         height_min_meters: f32,
         height_max_meters: f32,
         face_quads: u32,
+        max_height_mip_count: u32,
         camera_altitude_meters: f64,
     ) -> Self {
         let height_scale = outmap_terrain_height_scale(camera_altitude_meters);
@@ -266,6 +316,9 @@ impl RayUniform {
             maximum_shell_radius_meters: (PLANET_RADIUS_METERS
                 + f64::from(height_max_meters) * height_scale)
                 as f32,
+            max_height_mip_count,
+            minimum_step_meters: (PLANET_RADIUS_METERS * 2.0 / f64::from(face_quads)) as f32 * 0.5,
+            _padding: [0; 2],
         }
     }
 }
@@ -299,11 +352,12 @@ fn create_face_texture(
     label: &str,
     size: wgpu::Extent3d,
     format: wgpu::TextureFormat,
+    mip_level_count: u32,
 ) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size,
-        mip_level_count: 1,
+        mip_level_count,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format,
@@ -323,6 +377,7 @@ fn upload_face_layer(
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
     layer: u32,
+    mip_level: u32,
     extent: u32,
     bytes: &[u8],
     bytes_per_texel: u32,
@@ -331,7 +386,7 @@ fn upload_face_layer(
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
             texture,
-            mip_level: 0,
+            mip_level,
             origin: wgpu::Origin3d {
                 x: 0,
                 y: 0,
@@ -372,6 +427,36 @@ fn padded_texture_rows(bytes: &[u8], width: u32, height: u32, bytes_per_texel: u
             .copy_from_slice(&bytes[source_start..source_start + row_bytes as usize]);
     }
     padded
+}
+
+fn max_height_mips(base: &[f32], extent: u32) -> Vec<Vec<f32>> {
+    assert_eq!(base.len(), (extent * extent) as usize);
+    let mut mips = vec![base.to_vec()];
+    let mut source_extent = extent;
+    while source_extent > 1 {
+        let target_extent = (source_extent / 2).max(1);
+        let source = mips.last().expect("base mip exists");
+        let mut target = Vec::with_capacity((target_extent * target_extent) as usize);
+        for target_y in 0..target_extent {
+            let source_y_start = target_y * source_extent / target_extent;
+            let source_y_end = (target_y + 1) * source_extent / target_extent;
+            for target_x in 0..target_extent {
+                let source_x_start = target_x * source_extent / target_extent;
+                let source_x_end = (target_x + 1) * source_extent / target_extent;
+                let mut maximum = f32::NEG_INFINITY;
+                for source_y in source_y_start..source_y_end {
+                    for source_x in source_x_start..source_x_end {
+                        maximum =
+                            maximum.max(source[(source_y * source_extent + source_x) as usize]);
+                    }
+                }
+                target.push(maximum);
+            }
+        }
+        mips.push(target);
+        source_extent = target_extent;
+    }
+    mips
 }
 
 struct FaceFields {
@@ -538,7 +623,9 @@ impl From<OutmapError> for FoveatedError {
 
 #[cfg(test)]
 mod tests {
-    use super::{FIELD_LEVEL, RayUniform, face_sample_source, raymarch_shader_source};
+    use super::{
+        FIELD_LEVEL, RayUniform, face_sample_source, max_height_mips, raymarch_shader_source,
+    };
     use catinthegarden_coretypes::{TILE_LOGICAL_SIZE, TILE_STORED_SIZE};
 
     const PLANET_RADIUS_METERS: f64 = 4_000_000.0;
@@ -580,6 +667,29 @@ mod tests {
     }
 
     #[test]
+    fn max_height_mips_cover_odd_edges_conservatively() {
+        let mut base = vec![0.0; 25];
+        base[4] = 7.0;
+        base[24] = 11.0;
+        let mips = max_height_mips(&base, 5);
+        assert_eq!(mips.iter().map(Vec::len).collect::<Vec<_>>(), [25, 4, 1]);
+        assert_eq!(mips[1], [0.0, 7.0, 0.0, 11.0]);
+        assert_eq!(mips[2], [11.0]);
+    }
+
+    #[test]
+    fn adaptive_growth_crosses_a_fixed_march_in_nine_steps() {
+        let mut crossed_intervals = 0_u32;
+        let mut iterations = 0_u32;
+        while crossed_intervals < RayUniform::MARCH_STEPS {
+            crossed_intervals += 1_u32 << iterations.min(6);
+            iterations += 1;
+        }
+        assert_eq!(iterations, 9);
+        assert!(iterations <= RayUniform::MARCH_STEPS / 20);
+    }
+
+    #[test]
     fn full_resolution_raymarch_shader_is_valid_wgsl() {
         let shader = raymarch_shader_source();
         let module = wgpu::naga::front::wgsl::parse_str(&shader)
@@ -593,6 +703,9 @@ mod tests {
         assert!(shader.contains("for (var index = 0u; index < 192u; index += 1u)"));
         assert!(shader.contains("refine_hit("));
         assert!(shader.contains("terrain_normal("));
+        assert!(shader.contains("fn sample_max_height("));
+        assert!(shader.contains("fn adaptive_step_distance("));
+        assert!(shader.contains("exp2(f32(min(iteration, 6u)))"));
         assert!(shader.contains(
             "+ 2.0 * distance_meters * radial_dot_ray\n            + distance_meters * distance_meters"
         ));
@@ -607,9 +720,11 @@ mod tests {
 
     #[test]
     fn ray_shell_bounds_use_the_shared_altitude_height_scale() {
-        let near = RayUniform::for_camera(-5_000.0, 9_000.0, 2_048, 10_000.0);
-        let far = RayUniform::for_camera(-5_000.0, 9_000.0, 2_048, 2_000_000.0);
+        let near = RayUniform::for_camera(-5_000.0, 9_000.0, 2_048, 12, 10_000.0);
+        let far = RayUniform::for_camera(-5_000.0, 9_000.0, 2_048, 12, 2_000_000.0);
         assert_eq!(near.march_steps, 192);
+        assert_eq!(near.max_height_mip_count, 12);
+        assert_eq!(near.minimum_step_meters, 1_953.125);
         assert_eq!(near.minimum_shell_radius_meters, 3_995_000.0);
         assert_eq!(near.maximum_shell_radius_meters, 4_009_000.0);
         assert_eq!(far.minimum_shell_radius_meters, 3_980_000.0);
@@ -642,7 +757,7 @@ mod tests {
 
     #[test]
     fn camera_radius_squared_is_rounded_only_after_f64_multiplication() {
-        let uniform = RayUniform::for_camera(-5_000.0, 9_000.0, 2_048, 0.1);
+        let uniform = RayUniform::for_camera(-5_000.0, 9_000.0, 2_048, 12, 0.1);
         let camera_radius = PLANET_RADIUS_METERS + 0.1;
         assert_eq!(uniform.camera_radius_squared, camera_radius.powi(2) as f32);
         assert_ne!(
