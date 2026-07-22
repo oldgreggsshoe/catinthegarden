@@ -1,4 +1,9 @@
 const RAYMARCH_REFINEMENT_COUNT: u32 = 5u;
+const RAY_SKY_SAMPLE_COUNT: u32 = 16u;
+const RAY_SKY_DENSITY_SAMPLE_EXPONENT: f32 = 3.0;
+const RAY_ANTISOLAR_TWILIGHT_MIN_SCATTER: f32 = 0.48;
+const RAY_SKY_ATMOSPHERE_SATURATION: f32 = 2.0;
+const RENDER_DEBUG_SKY_ONLY: u32 = 4u;
 
 struct RayUniform {
     height_min_meters: f32,
@@ -108,6 +113,59 @@ fn sample_biome(direction: vec3<f32>) -> u32 {
     return textureLoad(biome_faces, coordinate, i32(face_uv.face), 0).x;
 }
 
+fn sample_biome_blend(direction: vec3<f32>) -> BiomeBlendSample {
+    let face_uv = direction_to_face_uv(direction);
+    let coordinate = face_texel_coordinate(face_uv);
+    let lower = vec2<i32>(floor(coordinate));
+    let upper = lower + vec2<i32>(1);
+    let amount = fract(coordinate);
+    return BiomeBlendSample(
+        vec4<u32>(
+            textureLoad(biome_faces, lower, i32(face_uv.face), 0).x,
+            textureLoad(biome_faces, vec2<i32>(upper.x, lower.y), i32(face_uv.face), 0).x,
+            textureLoad(biome_faces, vec2<i32>(lower.x, upper.y), i32(face_uv.face), 0).x,
+            textureLoad(biome_faces, upper, i32(face_uv.face), 0).x,
+        ),
+        vec4<f32>(
+            (1.0 - amount.x) * (1.0 - amount.y),
+            amount.x * (1.0 - amount.y),
+            (1.0 - amount.x) * amount.y,
+            amount.x * amount.y,
+        ),
+    );
+}
+
+fn sample_moisture(direction: vec3<f32>) -> f32 {
+    let face_uv = direction_to_face_uv(direction);
+    let coordinate = face_texel_coordinate(face_uv);
+    let lower = vec2<i32>(floor(coordinate));
+    let amount = fract(coordinate);
+    let lower_left = textureLoad(moisture_faces, lower, i32(face_uv.face), 0).x;
+    let lower_right = textureLoad(
+        moisture_faces,
+        lower + vec2<i32>(1, 0),
+        i32(face_uv.face),
+        0,
+    ).x;
+    let upper_left = textureLoad(
+        moisture_faces,
+        lower + vec2<i32>(0, 1),
+        i32(face_uv.face),
+        0,
+    ).x;
+    let upper_right = textureLoad(
+        moisture_faces,
+        lower + vec2<i32>(1),
+        i32(face_uv.face),
+        0,
+    ).x;
+    return mix(
+        mix(lower_left, lower_right, amount.x),
+        mix(upper_left, upper_right, amount.x),
+        amount.y,
+    );
+}
+
 fn shell_interval(radial_dot_ray: f32) -> vec2<f32> {
     let discriminant = radial_dot_ray * radial_dot_ray
         - (ray_settings.camera_radius_squared
@@ -201,9 +259,250 @@ fn terrain_normal(surface_direction: vec3<f32>) -> vec3<f32> {
     return normalize(cross(east_point - center, north_point - center));
 }
 
-fn sky_color(ray: vec3<f32>) -> vec3<f32> {
-    let zenith = clamp(ray.y * 0.5 + 0.5, 0.0, 1.0);
-    return mix(vec3<f32>(0.004, 0.008, 0.018), vec3<f32>(0.035, 0.075, 0.16), zenith);
+fn solid_planet_entry_distance(radial_dot_ray: f32) -> f32 {
+    let discriminant = radial_dot_ray * radial_dot_ray
+        + PLANET_RADIUS_METERS * PLANET_RADIUS_METERS
+        - ray_settings.camera_radius_squared;
+    if discriminant <= 0.0 {
+        return 1.0e30;
+    }
+    let root = sqrt(discriminant);
+    let near_distance = -radial_dot_ray - root;
+    if near_distance > 0.0 {
+        return near_distance;
+    }
+    let far_distance = -radial_dot_ray + root;
+    return select(1.0e30, far_distance, far_distance > 0.0);
+}
+
+fn ray_saturate_sky_color(color: vec3<f32>) -> vec3<f32> {
+    let luminance = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+    return max(
+        vec3<f32>(luminance)
+            + (color - vec3<f32>(luminance)) * RAY_SKY_ATMOSPHERE_SATURATION,
+        vec3<f32>(0.0),
+    );
+}
+
+fn ray_twilight_directional_weight(
+    cos_theta: f32,
+    camera_solar_zenith_cosine: f32,
+) -> f32 {
+    let twilight_amount = 1.0 - smoothstep(0.0, 0.25, camera_solar_zenith_cosine);
+    let antisolar_amount = smoothstep(0.0, 1.0, max(-cos_theta, 0.0));
+    return mix(
+        1.0,
+        RAY_ANTISOLAR_TWILIGHT_MIN_SCATTER,
+        twilight_amount * antisolar_amount,
+    );
+}
+
+fn ray_density_sample_fraction(fraction: f32, closest_fraction: f32) -> f32 {
+    if closest_fraction <= 0.05 {
+        return pow(fraction, RAY_SKY_DENSITY_SAMPLE_EXPONENT);
+    }
+    if closest_fraction >= 0.95 {
+        return 1.0 - pow(1.0 - fraction, RAY_SKY_DENSITY_SAMPLE_EXPONENT);
+    }
+    if fraction <= 0.5 {
+        let local_fraction = fraction * 2.0;
+        return closest_fraction
+            * (1.0 - pow(1.0 - local_fraction, RAY_SKY_DENSITY_SAMPLE_EXPONENT));
+    }
+    let local_fraction = (fraction - 0.5) * 2.0;
+    return closest_fraction
+        + (1.0 - closest_fraction)
+            * pow(local_fraction, RAY_SKY_DENSITY_SAMPLE_EXPONENT);
+}
+
+fn ray_local_solar_transmittance(
+    sample_altitude: f32,
+    sample_radius: f32,
+    sample_radial_dot_sun: f32,
+    sample_direction_view: vec3<f32>,
+    sun_view: vec3<f32>,
+    shadow_transition_meters: f32,
+) -> vec3<f32> {
+    let air_mass = twilight_solar_air_mass(
+        dot(sample_direction_view, sun_view),
+        sample_altitude,
+    );
+    let rayleigh_optical_depth = RAYLEIGH_COEFFICIENT
+        * density(sample_altitude, RAYLEIGH_SCALE_HEIGHT_METERS)
+        * RAYLEIGH_SCALE_HEIGHT_METERS
+        * air_mass;
+    let mie_optical_depth = MIE_COEFFICIENT
+        * density(sample_altitude, MIE_SCALE_HEIGHT_METERS)
+        * MIE_SCALE_HEIGHT_METERS
+        * air_mass;
+    return exp(-(rayleigh_optical_depth + mie_optical_depth))
+        * sun_visibility(sample_radius, sample_radial_dot_sun, shadow_transition_meters);
+}
+
+fn ray_atmosphere_radiance(ray: vec3<f32>, radial_dot_ray: f32) -> vec3<f32> {
+    let interval = atmosphere_interval(ray_settings.camera_radius_meters, radial_dot_ray);
+    let start_distance = max(interval.x, 0.0);
+    let end_distance = min(interval.y, solid_planet_entry_distance(radial_dot_ray));
+    if end_distance <= start_distance {
+        return vec3<f32>(0.0);
+    }
+
+    let path_length = end_distance - start_distance;
+    let closest_distance = clamp(-radial_dot_ray, start_distance, end_distance);
+    let closest_fraction = (closest_distance - start_distance) / path_length;
+    let entry_altitude = altitude_along_ray(
+        ray_settings.camera_radius_meters,
+        radial_dot_ray,
+        start_distance,
+    );
+    let sun_view = normalize(camera.sun_direction_view.xyz);
+    let cos_theta = dot(ray, sun_view);
+    let rayleigh_phase = phase_rayleigh(cos_theta);
+    let mie_phase = phase_mie(cos_theta);
+    let directional_weight = ray_twilight_directional_weight(
+        cos_theta,
+        dot(camera.camera_planet_direction_view_altitude.xyz, sun_view),
+    );
+    let camera_position_view = camera.camera_planet_direction_view_altitude.xyz
+        * ray_settings.camera_radius_meters;
+    var radiance = vec3<f32>(0.0);
+    for (var index = 0u; index < RAY_SKY_SAMPLE_COUNT; index += 1u) {
+        let fraction_start = f32(index) / f32(RAY_SKY_SAMPLE_COUNT);
+        let fraction_end = f32(index + 1u) / f32(RAY_SKY_SAMPLE_COUNT);
+        let sample_start = ray_density_sample_fraction(fraction_start, closest_fraction);
+        let sample_end = ray_density_sample_fraction(fraction_end, closest_fraction);
+        let sample_length = (sample_end - sample_start) * path_length;
+        let distance_meters = start_distance
+            + 0.5 * (sample_start + sample_end) * path_length;
+        let sample_altitude = altitude_along_ray(
+            ray_settings.camera_radius_meters,
+            radial_dot_ray,
+            distance_meters,
+        );
+        let sample_radius = PLANET_RADIUS_METERS + sample_altitude;
+        let lower_atmosphere_weight = density(
+            sample_altitude,
+            RAYLEIGH_SCALE_HEIGHT_METERS,
+        );
+        let shadow_transition_meters = max(
+            TWILIGHT_SHADOW_TRANSITION_METERS,
+            sample_length * 0.5,
+        ) * mix(1.0, 2.0, lower_atmosphere_weight);
+        let sample_position_view = camera_position_view + ray * distance_meters;
+        let sample_direction_view = normalize(sample_position_view);
+        let sample_radial_dot_sun = dot(sample_position_view, sun_view);
+        let view_transmittance = transmittance(
+            entry_altitude,
+            sample_altitude,
+            distance_meters - start_distance,
+        );
+        let sun_transmittance = ray_local_solar_transmittance(
+            sample_altitude,
+            sample_radius,
+            sample_radial_dot_sun,
+            sample_direction_view,
+            sun_view,
+            shadow_transition_meters,
+        );
+        let rayleigh_scattering = RAYLEIGH_COEFFICIENT
+            * density(sample_altitude, RAYLEIGH_SCALE_HEIGHT_METERS)
+            * rayleigh_phase;
+        let mie_scattering = MIE_COEFFICIENT
+            * density(sample_altitude, MIE_SCALE_HEIGHT_METERS)
+            * mie_phase;
+        radiance += view_transmittance * sun_transmittance
+            * (rayleigh_scattering + mie_scattering)
+            * sample_length;
+    }
+    return ray_saturate_sky_color(max(
+        radiance * SOLAR_RADIANCE * directional_weight,
+        vec3<f32>(0.0),
+    ));
+}
+
+fn shade_terrain(
+    surface_direction: vec3<f32>,
+    normal: vec3<f32>,
+    hit_view_position: vec3<f32>,
+) -> vec3<f32> {
+    let render_debug_mode = u32(camera.projection.w + 0.5);
+    let macro_height_meters = sample_height(surface_direction);
+    let biome = sample_biome(surface_direction);
+    let biome_blend = sample_biome_blend(surface_direction);
+    let moisture = sample_moisture(surface_direction);
+    let base_biome_color = blended_biome_color(biome_blend);
+    let terrain_albedo = terrain_material_color(
+        true,
+        biome,
+        moisture,
+        base_biome_color,
+        macro_height_meters,
+        0.0,
+        normal,
+        surface_direction,
+    );
+    let detail_tint = terrain_material_tint(
+        true,
+        moisture,
+        biome_blend,
+        macro_height_meters,
+        terrain_albedo,
+        surface_direction,
+        normal,
+        hit_view_position,
+    );
+    let textured_albedo = terrain_albedo * detail_tint;
+    if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
+        return textured_albedo;
+    }
+
+    let surface_height = macro_height_meters * terrain_macro_height_scale();
+    let sun_direction = normalize(camera.sun_direction.xyz);
+    let sun_transmittance = surface_direct_sun_transmittance(
+        surface_direction,
+        surface_height,
+        sun_direction,
+    );
+    let sky_diffuse = sky_diffuse_irradiance(
+        normal,
+        surface_direction,
+        surface_height,
+        sun_direction,
+    );
+    let surface_irradiance = sky_diffuse
+        + sun_transmittance
+            * max(dot(normal, sun_direction), 0.0)
+            * SURFACE_SUNLIGHT_SCALE;
+    var surface_lighting = textured_albedo * surface_irradiance;
+    if biome == 2u {
+        let ice_light_floor = clamp(
+            max(max(surface_irradiance.x, surface_irradiance.y), surface_irradiance.z),
+            0.0,
+            1.0,
+        );
+        surface_lighting = max(
+            surface_lighting,
+            biome_color(2u) * 0.65 * ice_light_floor,
+        );
+    }
+    if render_debug_mode == RENDER_DEBUG_SURFACE_LIGHTING {
+        return surface_lighting;
+    }
+    let aerial = terrain_distance_fog(
+        aerial_perspective(
+            surface_lighting,
+            hit_view_position,
+            surface_direction,
+            surface_height,
+        ),
+        hit_view_position,
+        surface_direction,
+        surface_height,
+    );
+    if render_debug_mode == RENDER_DEBUG_AERIAL_CONTRIBUTION {
+        return max(aerial - surface_lighting, vec3<f32>(0.0));
+    }
+    return aerial;
 }
 
 @vertex
@@ -223,16 +522,29 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
     let camera_position_view = camera.camera_planet_direction_view_altitude.xyz
         * ray_settings.camera_radius_meters;
     let radial_dot_ray = dot(camera_position_view, ray);
+    let render_debug_mode = u32(camera.projection.w + 0.5);
+    if render_debug_mode == RENDER_DEBUG_SKY_ONLY {
+        return FragmentOutput(
+            vec4<f32>(ray_atmosphere_radiance(ray, radial_dot_ray), 1.0),
+            0.0,
+        );
+    }
     let interval = shell_interval(radial_dot_ray);
     let start_distance = max(interval.x, 0.0);
     let end_distance = interval.y;
     if interval.x < 0.0
         && ray_settings.camera_radius_meters > ray_settings.maximum_shell_radius_meters
     {
-        return FragmentOutput(vec4<f32>(sky_color(ray), 1.0), 0.0);
+        return FragmentOutput(
+            vec4<f32>(ray_atmosphere_radiance(ray, radial_dot_ray), 1.0),
+            0.0,
+        );
     }
     if end_distance <= start_distance {
-        return FragmentOutput(vec4<f32>(sky_color(ray), 1.0), 0.0);
+        return FragmentOutput(
+            vec4<f32>(ray_atmosphere_radiance(ray, radial_dot_ray), 1.0),
+            0.0,
+        );
     }
 
     var previous_distance = start_distance;
@@ -266,15 +578,16 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
         previous_value = value;
     }
     if hit_distance < 0.0 {
-        return FragmentOutput(vec4<f32>(sky_color(ray), 1.0), 0.0);
+        return FragmentOutput(
+            vec4<f32>(ray_atmosphere_radiance(ray, radial_dot_ray), 1.0),
+            0.0,
+        );
     }
 
     let hit_view = camera_position_view + ray * hit_distance;
     let surface_direction = normalize(view_to_planet(hit_view));
     let normal = terrain_normal(surface_direction);
-    let sunlight = max(dot(normal, normalize(camera.sun_direction.xyz)), 0.0);
-    let albedo = biome_color(sample_biome(surface_direction));
-    let color = albedo * sunlight;
+    let color = shade_terrain(surface_direction, normal, ray * hit_distance);
     let clip = camera.projection_matrix * vec4<f32>(ray * hit_distance, 1.0);
     return FragmentOutput(vec4<f32>(color, 1.0), clip.z / clip.w);
 }
