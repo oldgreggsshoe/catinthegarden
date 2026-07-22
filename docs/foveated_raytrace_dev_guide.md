@@ -567,10 +567,21 @@ horizon supersampling cost 21.295ms, so it remains a quality-only experiment;
 foveated shading measured 16.615ms and radial blur 16.911ms in their isolated
 runs. Enabling all quality experiments measured 19.694ms because the extra
 horizon rays dominate. Orbit content-adaptive direct rendering measured
-16.804ms (59.5 FPS): it recovers the presentation target and closes the
-historical M6 18.131ms result, but a same-build warped run also reached the
-vsync ceiling at 16.470ms, so no current relative speedup is claimed. All 120
-app tests and all 151 workspace tests pass. Existing raster-residency scenario
+16.804ms (59.5 FPS), but that single sample does not establish a win.
+
+A follow-up audit corrected the apparent plain-warp change from M6's historical
+18.131ms sample to M8's initial 16.470ms sample. Eight back-to-back release runs
+per commit, each discarding the first spatial sample, measured 16.466ms for M6
+`1f5642f` (run means 15.930-17.188), 16.504ms for M7 `bd95e08`
+(15.703-17.039), and 16.670ms for M8 `a93931e` (16.206-17.099). The overlapping
+distributions show no M8 speedup; M8 was about 1.2% slower than rebuilt M6 and
+the difference is below one combined run-mean standard error. The old 18.131ms
+result is not reproducible in the current environment and should be treated as
+a non-representative single run, not as a stable baseline. With all M8 toggles
+off the output path is behaviorally equivalent but not shader-identical: the
+larger uniform/bind layout, gated experiment branches, and unconditional detail
+and limb calculations can add overhead, not explain an improvement. All 120 app
+tests and all 151 workspace tests pass. Existing raster-residency scenario
 assertions still fail intentionally after F5 reports zero raster chunks.
 
 The fun part, section 12. Each is a sub-toggle so you can A/B them:

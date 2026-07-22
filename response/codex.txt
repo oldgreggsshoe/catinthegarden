@@ -1,24 +1,21 @@
-M8 complete. Code pushed as `a93931e`.
+You were right to hold it open. Repeated differential runs answer it: M8 did not speed up the no-toggle path.
 
-Controls:
-- `1`: analytic horizon supersampling
-- `2`: rotational peripheral temporal reuse
-- `3`: projected-coverage adaptive direct/warp selection
-- `4`: reduced peripheral sky/ocean shading
-- `5`: radial unwarp blur
+Method:
+- Same Quadro/current session and outmap.
+- Release builds with isolated worktree-specific `CARGO_TARGET_DIR`s.
+- `orbit_once`, plain F5 warp, no M8 toggles.
+- Eight back-to-back runs per commit.
+- First spatial sample discarded; eight samples averaged per run.
 
-All default off and toggle independently.
+Results:
+- M6 `1f5642f`: 16.466ms aggregate; run means 15.930-17.188ms; sigma 0.498ms.
+- M7 `bd95e08`: 16.504ms aggregate; run means 15.703-17.039ms; sigma 0.500ms.
+- M8 `a93931e`: 16.670ms aggregate; run means 16.206-17.099ms; sigma 0.295ms.
 
-Measured on Quadro:
-- Low-flight baseline: 17.239 ms / 58.0 FPS
-- Temporal reuse: 16.450 ms / 60.8 FPS, 4.6% faster; deterministic captures showed no visible drift
-- Horizon supersampling: 21.295 ms / 47.0 FPS; quality-only, leave off for performance
-- Foveated shading: 16.615 ms / 60.2 FPS
-- Radial blur: 16.911 ms / 59.1 FPS
-- Orbit adaptive direct path: 16.804 ms / 59.5 FPS
+All three distributions overlap. M8 is about 1.2% slower than rebuilt M6, not faster, and that difference is below one combined run-mean standard error. None of 24 run means approached 18.131ms.
 
-Orbit caveat: adaptive path closes historical M6 regression, but same-build warp also hit vsync at 16.470 ms. No present relative speedup claimed.
+Code audit: toggles-off M8 is behaviorally equivalent, but not shader-identical. It adds a larger uniform/bind layout, gated experiment branches, plus unconditional per-warp-pixel `detail`, analytic limb-distance, and tile-checker calculations. These can add small overhead; they cannot explain a 1.66ms improvement. Main pass selection, warp size, ray count, unwarp, and history copies remain the old path when flags are zero; history copy is skipped.
 
-Validation: WGSL parsing, `cargo check`, 120 app tests, 151 workspace tests. Existing F5 scenario failures remain raster-chunk assertions seeing zero raster chunks.
+Conclusion: 18.131ms was a non-representative single run under the earlier runtime/GPU scheduling state, not a stable M6 baseline. M7's statement that the regression was unchanged merely carried that single number forward; it was not freshly re-established. M8's 16.470ms single sample likewise should not have been compared as if causal.
 
-M9 next; not started.
+Correct comparison now: plain warp is approximately 16.5-16.7ms across M6/M7/M8 in this environment. The M8 adaptive-direct 16.804ms sample demonstrates no orbit speedup. Prior conclusion corrected in docs.
