@@ -120,11 +120,6 @@ fn sample_biome(source_uv: vec2<f32>) -> u32 {
     return textureLoad(biome_map, coordinate, 0).x;
 }
 
-struct BiomeBlendSample {
-    ids: vec4<u32>,
-    weights: vec4<f32>,
-}
-
 fn sample_biome_blend(source_uv: vec2<f32>) -> BiomeBlendSample {
     // Biomes remain categorical in the baked outmap, but display-space
     // materials should not expose their texel grid. Blend the four nearest
@@ -239,67 +234,6 @@ fn displaced_surface_normal(
     return normalize(cross(tangent_delta_u, tangent_delta_v));
 }
 
-fn blended_biome_color(source_uv: vec2<f32>) -> vec3<f32> {
-    let blend = sample_biome_blend(source_uv);
-    return biome_color(blend.ids.x) * blend.weights.x
-        + biome_color(blend.ids.y) * blend.weights.y
-        + biome_color(blend.ids.z) * blend.weights.z
-        + biome_color(blend.ids.w) * blend.weights.w;
-}
-
-fn terrain_material_color(
-    outmap: bool,
-    source_uv: vec2<f32>,
-    macro_height_meters: f32,
-    terrain_detail_meters: f32,
-    surface_normal: vec3<f32>,
-    surface_direction: vec3<f32>,
-) -> vec3<f32> {
-    var color = vec3<f32>(0.32, 0.58, 0.74);
-    if !outmap {
-        return color;
-    }
-
-    let biome = sample_biome(source_uv);
-    let moisture = sample_moisture(source_uv);
-    color = blended_biome_color(source_uv) * mix(0.88, 1.06, moisture);
-    if biome != 2u {
-        // Use bilinear terrain height, not a nearest biome class, for the
-        // coast. This gives a continuous shallow-water/beach transition.
-        let beach = 1.0 - smoothstep(20.0, 220.0, macro_height_meters);
-        color = mix(color, srgb_to_linear(vec3<f32>(0.48, 0.40, 0.23)), beach * 0.65);
-    }
-    // Break up a coarse ancestor material tile at flight altitude without
-    // changing its biome or coastline. Correlating this with the bounded
-    // relief keeps ridges readable under both direct and aerial lighting.
-    let detail_weight = smoothstep(100.0, 400.0, macro_height_meters);
-    let detail = clamp(
-        terrain_detail_meters / GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
-        -1.0,
-        1.0,
-    );
-    color *= 1.0 + detail * detail_weight * 0.22;
-
-    // Preserve the baked biome as the base material, then use the rendered
-    // displacement normal and physical altitude to make nearby slopes read as
-    // rock and high ridges collect snow. These are continuous at tile edges
-    // and add no runtime macro geography.
-    let slope = 1.0 - clamp(dot(normalize(surface_normal), surface_direction), 0.0, 1.0);
-    let rock_amount = smoothstep(0.10, 0.42, slope);
-    let rock_color = srgb_to_linear(vec3<f32>(0.30, 0.28, 0.25));
-    color = mix(color, rock_color, rock_amount * 0.72);
-    let latitude_amount = abs(surface_direction.y);
-    let snowline_meters = mix(6200.0, 2200.0, latitude_amount);
-    let snow_amount = smoothstep(
-        snowline_meters,
-        snowline_meters + 900.0,
-        macro_height_meters,
-    ) * (1.0 - rock_amount * 0.35);
-    let snow_color = srgb_to_linear(vec3<f32>(0.82, 0.87, 0.90));
-    color = mix(color, snow_color, snow_amount);
-    return color;
-}
-
 fn triplanar_material_sample_at_position(
     layer: i32,
     texture_position: vec3<f32>,
@@ -343,124 +277,6 @@ fn triplanar_material_sample(
     let texture_position = surface_direction
         * (PLANET_RADIUS_METERS / TERRAIN_MATERIAL_TILE_METERS);
     return triplanar_material_sample_at_position(layer, texture_position, weights);
-}
-
-fn terrain_material_weights(
-    source_uv: vec2<f32>,
-    moisture: f32,
-    macro_height_meters: f32,
-    surface_normal: vec3<f32>,
-    surface_direction: vec3<f32>,
-) -> vec4<f32> {
-    let blend = sample_biome_blend(source_uv);
-    let weights = terrain_material_weights_for_biome(
-        blend.ids.x,
-        moisture,
-        macro_height_meters,
-        surface_normal,
-        surface_direction,
-    ) * blend.weights.x + terrain_material_weights_for_biome(
-        blend.ids.y,
-        moisture,
-        macro_height_meters,
-        surface_normal,
-        surface_direction,
-    ) * blend.weights.y + terrain_material_weights_for_biome(
-        blend.ids.z,
-        moisture,
-        macro_height_meters,
-        surface_normal,
-        surface_direction,
-    ) * blend.weights.z + terrain_material_weights_for_biome(
-        blend.ids.w,
-        moisture,
-        macro_height_meters,
-        surface_normal,
-        surface_direction,
-    ) * blend.weights.w;
-    return weights / max(dot(weights, vec4<f32>(1.0)), 1.0e-5);
-}
-
-fn terrain_material_tint(
-    outmap: bool,
-    source_uv: vec2<f32>,
-    macro_height_meters: f32,
-    base_albedo: vec3<f32>,
-    surface_direction: vec3<f32>,
-    surface_normal: vec3<f32>,
-    camera_relative_view_position: vec3<f32>,
-) -> vec3<f32> {
-    if !outmap {
-        return vec3<f32>(1.0);
-    }
-    // The tileable close-range texture is useful below a few kilometres, but
-    // its 2 km repeat becomes a visible checkerboard while climbing away from
-    // the landing site. Let the baked biome/material data take over before
-    // that repetition reaches the orbital views.
-    let fade = 1.0 - smoothstep(
-        4000.0,
-        32000.0,
-        length(camera_relative_view_position),
-    );
-    if fade <= 0.0 {
-        return vec3<f32>(1.0);
-    }
-    let moisture = sample_moisture(source_uv);
-    let base_weights = terrain_material_weights(
-        source_uv,
-        moisture,
-        macro_height_meters,
-        surface_normal,
-        surface_direction,
-    );
-    var vegetation = vec4<f32>(0.0);
-    var earth = vec4<f32>(0.0);
-    var rock = vec4<f32>(0.0);
-    var snow = vec4<f32>(0.0);
-    // Most ground uses only two layers. Coherent weight branches avoid paying
-    // three triplanar samples for a layer which contributes nothing.
-    if base_weights.x > 1.0e-4 {
-        vegetation = triplanar_material_sample(
-            TERRAIN_MATERIAL_VEGETATION,
-            surface_direction,
-            surface_normal,
-        );
-    }
-    if base_weights.y > 1.0e-4 {
-        earth = triplanar_material_sample(
-            TERRAIN_MATERIAL_EARTH,
-            surface_direction,
-            surface_normal,
-        );
-    }
-    if base_weights.z > 1.0e-4 {
-        rock = triplanar_material_sample(
-            TERRAIN_MATERIAL_ROCK,
-            surface_direction,
-            surface_normal,
-        );
-    }
-    if base_weights.w > 1.0e-4 {
-        snow = triplanar_material_sample(
-            TERRAIN_MATERIAL_SNOW,
-            surface_direction,
-            surface_normal,
-        );
-    }
-    let weights = height_blend_material_weights(
-        base_weights,
-        vec4<f32>(vegetation.a, earth.a, rock.a, snow.a),
-    );
-    let material_albedo = vegetation.rgb * weights.x
-        + earth.rgb * weights.y
-        + rock.rgb * weights.z
-        + snow.rgb * weights.w;
-    let tint = clamp(
-        material_albedo / max(base_albedo, vec3<f32>(0.015)),
-        vec3<f32>(0.35),
-        vec3<f32>(2.4),
-    );
-    return mix(vec3<f32>(1.0), tint, fade * 0.95);
 }
 
 fn ocean_lighting(
@@ -670,6 +486,9 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     // Polar ice overrides ocean in the baked biome contract. Lift it just
     // above sea level so the cap remains visible rather than becoming water.
     let biome_id = sample_biome(source_uv);
+    let biome_blend = sample_biome_blend(source_uv);
+    let moisture = sample_moisture(source_uv);
+    let base_biome_color = blended_biome_color(biome_blend);
     let ice = outmap && biome_id == 2u;
     let lake = outmap && biome_id == 1u;
     let ocean = (macro_height <= 0.0 || lake) && !ice;
@@ -723,7 +542,9 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         + sun_transmittance * direct_light * SURFACE_SUNLIGHT_SCALE;
     var lit_surface_color = terrain_material_color(
         outmap,
-        source_uv,
+        biome_id,
+        moisture,
+        base_biome_color,
         macro_height,
         terrain_detail_meters,
         normal,
@@ -853,9 +674,15 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let outmap = input.outmap > 0.5;
     let macro_height_meters = macro_terrain_height(outmap, input.source_uv, direction);
     let ocean_coverage = outmap_ocean_coverage(outmap, macro_height_meters);
+    let biome_id = sample_biome(input.source_uv);
+    let biome_blend = sample_biome_blend(input.source_uv);
+    let moisture = sample_moisture(input.source_uv);
+    let base_biome_color = blended_biome_color(biome_blend);
     let terrain_albedo = terrain_material_color(
         outmap,
-        input.source_uv,
+        biome_id,
+        moisture,
+        base_biome_color,
         macro_height_meters,
         input.terrain_detail_meters,
         input.world_normal,
@@ -863,7 +690,8 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     );
     let detail_tint = terrain_material_tint(
         outmap,
-        input.source_uv,
+        moisture,
+        biome_blend,
         macro_height_meters,
         terrain_albedo,
         direction,
@@ -882,7 +710,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     // tinting a vertex-frequency biome colour; the latter made coarse leaves
     // read as large Gouraud-shaded software-rendered triangles.
     var textured_surface_lighting = textured_terrain_albedo * input.surface_irradiance;
-    if outmap && sample_biome(input.source_uv) == 2u {
+    if outmap && biome_id == 2u {
         let ice_light_floor = clamp(
             max(
                 max(input.surface_irradiance.x, input.surface_irradiance.y),
