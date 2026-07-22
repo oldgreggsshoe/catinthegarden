@@ -107,7 +107,7 @@ struct VertexInput {
 }
 
 struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
+    @invariant @builtin(position) position: vec4<f32>,
     @location(0) camera_relative_view_position: vec3<f32>,
     @location(1) world_normal: vec3<f32>,
     @location(2) aerial_color: vec3<f32>,
