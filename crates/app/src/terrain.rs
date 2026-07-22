@@ -57,7 +57,7 @@ const OUTMAP_TILE_GRID_SUBDIVISION_LEVELS: u8 = 2;
 /// the former near-flight rings, this is projected from each visible node's
 /// actual camera distance. The source-level cap below prevents spending this
 /// error budget on repeated samples from a coarse ancestor tile.
-const OUTMAP_GEOMETRIC_ERROR_RATIO: f64 = 0.10;
+const OUTMAP_GEOMETRIC_ERROR_RATIO: f64 = 0.15;
 /// Below this altitude the camera is close enough that geometry density matters
 /// more than source texel uniqueness. Ancestor tiles may feed finer grids while
 /// the worker streams better sources; otherwise low flight stalls at L6 and

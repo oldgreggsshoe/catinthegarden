@@ -1159,9 +1159,13 @@ fn terrain_material_tint(
     if !outmap {
         return vec3<f32>(1.0);
     }
+    // The tileable close-range texture is useful below a few kilometres, but
+    // its 2 km repeat becomes a visible checkerboard while climbing away from
+    // the landing site. Let the baked biome/material data take over before
+    // that repetition reaches the orbital views.
     let fade = 1.0 - smoothstep(
-        40000.0,
-        140000.0,
+        4000.0,
+        32000.0,
         length(camera_relative_view_position),
     );
     if fade <= 0.0 {

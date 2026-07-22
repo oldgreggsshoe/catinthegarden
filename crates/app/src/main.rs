@@ -47,8 +47,8 @@ fn render_size_for_surface_resize(
 ) -> winit::dpi::PhysicalSize<u32> {
     fullscreen_render_size.unwrap_or(surface_size)
 }
-const DEFAULT_VIEWPORT_WIDTH: u32 = 640;
-const DEFAULT_VIEWPORT_HEIGHT: u32 = 427;
+const DEFAULT_VIEWPORT_WIDTH: u32 = 1280;
+const DEFAULT_VIEWPORT_HEIGHT: u32 = 720;
 const DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND: f64 = 0.4;
 const DEFAULT_CAMERA_ORBIT_INCLINATION_RADIANS: f64 = 28.5_f64.to_radians();
 const INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 = 0.3;
