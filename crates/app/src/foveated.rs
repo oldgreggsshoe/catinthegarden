@@ -6,6 +6,7 @@ use catinthegarden_coretypes::{
 
 use crate::{
     outmap::{Outmap, OutmapError, TileData},
+    planet::{PLANET_RADIUS_METERS, outmap_terrain_height_scale},
     terrain::TerrainSource,
 };
 
@@ -14,16 +15,24 @@ const FACE_COUNT: u32 = 6;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct FieldUniform {
+struct RayUniform {
     height_min_meters: f32,
     height_max_meters: f32,
     face_quads: u32,
-    _padding: u32,
+    march_steps: u32,
+    camera_radius_meters: f32,
+    camera_radius_squared: f32,
+    minimum_shell_radius_meters: f32,
+    maximum_shell_radius_meters: f32,
 }
 
 pub struct FoveatedRenderer {
     pipeline: wgpu::RenderPipeline,
     fields_bind_group: wgpu::BindGroup,
+    ray_uniform_buffer: wgpu::Buffer,
+    height_min_meters: f32,
+    height_max_meters: f32,
+    face_quads: u32,
     _height_texture: wgpu::Texture,
     _biome_texture: wgpu::Texture,
     _moisture_texture: wgpu::Texture,
@@ -35,6 +44,7 @@ impl FoveatedRenderer {
         queue: &wgpu::Queue,
         surface_format: wgpu::TextureFormat,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
+        shared_bind_group_layout: &wgpu::BindGroupLayout,
         terrain_source: TerrainSource,
     ) -> Result<Self, FoveatedError> {
         let source = FieldSource::new(terrain_source)?;
@@ -111,19 +121,17 @@ impl FoveatedRenderer {
                     },
                 ],
             });
-        let field_uniform = FieldUniform {
-            height_min_meters: source.height_min_meters(),
-            height_max_meters: source.height_max_meters(),
-            face_quads,
-            _padding: 0,
-        };
-        let field_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("ray face fields uniform"),
-            size: size_of::<FieldUniform>() as u64,
+        let height_min_meters = source.height_min_meters();
+        let height_max_meters = source.height_max_meters();
+        let initial_uniform =
+            RayUniform::for_camera(height_min_meters, height_max_meters, face_quads, 0.0);
+        let ray_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("raymarch uniform"),
+            size: size_of::<RayUniform>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        queue.write_buffer(&field_uniform_buffer, 0, bytemuck::bytes_of(&field_uniform));
+        queue.write_buffer(&ray_uniform_buffer, 0, bytemuck::bytes_of(&initial_uniform));
         let fields_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ray face fields bind group"),
             layout: &fields_bind_group_layout,
@@ -144,7 +152,7 @@ impl FoveatedRenderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: field_uniform_buffer.as_entire_binding(),
+                    resource: ray_uniform_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -153,12 +161,17 @@ impl FoveatedRenderer {
             bind_group_layouts: &[
                 Some(camera_bind_group_layout),
                 Some(&fields_bind_group_layout),
+                Some(shared_bind_group_layout),
             ],
             immediate_size: 0,
         });
-        let shader = device.create_shader_module(wgpu::include_wgsl!("foveated_debug.wgsl"));
+        let shader_source = raymarch_shader_source();
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("full-resolution terrain raymarch shader"),
+            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+        });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("ray field debug pipeline"),
+            label: Some("full-resolution terrain raymarch pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -183,7 +196,7 @@ impl FoveatedRenderer {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Greater),
+                depth_compare: Some(wgpu::CompareFunction::Always),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -195,22 +208,74 @@ impl FoveatedRenderer {
         Ok(Self {
             pipeline,
             fields_bind_group,
+            ray_uniform_buffer,
+            height_min_meters,
+            height_max_meters,
+            face_quads,
             _height_texture: height_texture,
             _biome_texture: biome_texture,
             _moisture_texture: moisture_texture,
         })
     }
 
-    pub fn draw_debug<'pass>(
+    pub fn update(&self, queue: &wgpu::Queue, camera_altitude_meters: f64) {
+        let uniform = RayUniform::for_camera(
+            self.height_min_meters,
+            self.height_max_meters,
+            self.face_quads,
+            camera_altitude_meters,
+        );
+        queue.write_buffer(&self.ray_uniform_buffer, 0, bytemuck::bytes_of(&uniform));
+    }
+
+    pub fn draw<'pass>(
         &'pass self,
         render_pass: &mut wgpu::RenderPass<'pass>,
         camera_bind_group: &'pass wgpu::BindGroup,
+        shared_bind_group: &'pass wgpu::BindGroup,
     ) {
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, camera_bind_group, &[]);
         render_pass.set_bind_group(1, &self.fields_bind_group, &[]);
+        render_pass.set_bind_group(2, shared_bind_group, &[]);
         render_pass.draw(0..3, 0..1);
     }
+}
+
+impl RayUniform {
+    const MARCH_STEPS: u32 = 192;
+
+    fn for_camera(
+        height_min_meters: f32,
+        height_max_meters: f32,
+        face_quads: u32,
+        camera_altitude_meters: f64,
+    ) -> Self {
+        let height_scale = outmap_terrain_height_scale(camera_altitude_meters);
+        let camera_radius_meters = PLANET_RADIUS_METERS + camera_altitude_meters;
+        Self {
+            height_min_meters,
+            height_max_meters,
+            face_quads,
+            march_steps: Self::MARCH_STEPS,
+            camera_radius_meters: camera_radius_meters as f32,
+            camera_radius_squared: camera_radius_meters.powi(2) as f32,
+            minimum_shell_radius_meters: (PLANET_RADIUS_METERS
+                + f64::from(height_min_meters) * height_scale)
+                as f32,
+            maximum_shell_radius_meters: (PLANET_RADIUS_METERS
+                + f64::from(height_max_meters) * height_scale)
+                as f32,
+        }
+    }
+}
+
+fn raymarch_shader_source() -> String {
+    [
+        include_str!("shared_planet.wgsl"),
+        include_str!("foveated_debug.wgsl"),
+    ]
+    .join("\n")
 }
 
 fn texture_layout_entry(
@@ -473,7 +538,7 @@ impl From<OutmapError> for FoveatedError {
 
 #[cfg(test)]
 mod tests {
-    use super::{FIELD_LEVEL, face_sample_source};
+    use super::{FIELD_LEVEL, RayUniform, face_sample_source, raymarch_shader_source};
     use catinthegarden_coretypes::{TILE_LOGICAL_SIZE, TILE_STORED_SIZE};
 
     #[test]
@@ -491,14 +556,32 @@ mod tests {
     }
 
     #[test]
-    fn ray_field_debug_shader_is_valid_wgsl() {
-        let module = wgpu::naga::front::wgsl::parse_str(include_str!("foveated_debug.wgsl"))
-            .expect("ray field debug shader must parse");
+    fn full_resolution_raymarch_shader_is_valid_wgsl() {
+        let shader = raymarch_shader_source();
+        let module = wgpu::naga::front::wgsl::parse_str(&shader)
+            .expect("full-resolution raymarch shader must parse");
         wgpu::naga::valid::Validator::new(
             wgpu::naga::valid::ValidationFlags::all(),
             wgpu::naga::valid::Capabilities::all(),
         )
         .validate(&module)
-        .expect("ray field debug shader must validate");
+        .expect("full-resolution raymarch shader must validate");
+        assert!(shader.contains("for (var index = 0u; index < 192u; index += 1u)"));
+        assert!(shader.contains("refine_hit("));
+        assert!(shader.contains("terrain_normal("));
+        assert!(shader.contains("@builtin(frag_depth) depth: f32"));
+    }
+
+    #[test]
+    fn ray_shell_bounds_use_the_shared_altitude_height_scale() {
+        let near = RayUniform::for_camera(-5_000.0, 9_000.0, 2_048, 10_000.0);
+        let far = RayUniform::for_camera(-5_000.0, 9_000.0, 2_048, 2_000_000.0);
+        assert_eq!(near.march_steps, 192);
+        assert_eq!(near.minimum_shell_radius_meters, 3_995_000.0);
+        assert_eq!(near.maximum_shell_radius_meters, 4_009_000.0);
+        assert_eq!(far.minimum_shell_radius_meters, 3_980_000.0);
+        assert_eq!(far.maximum_shell_radius_meters, 4_036_000.0);
+        assert_eq!(near.camera_radius_meters, 4_010_000.0);
+        assert_eq!(near.camera_radius_squared, 4_010_000.0_f32.powi(2));
     }
 }

@@ -299,6 +299,10 @@ impl RenderPath {
             Self::FoveatedRay => "foveated ray",
         }
     }
+
+    fn updates_raster_terrain(self) -> bool {
+        self == Self::Raster
+    }
 }
 
 /// Scene time intentionally stops under F10, but low-flight navigation remains
@@ -346,6 +350,7 @@ fn format_vertical_fov(vertical_fov_degrees: f64) -> String {
 
 struct PendingGpuTimestamp {
     sim_time: f64,
+    render_path: RenderPath,
     receiver: mpsc::Receiver<bool>,
 }
 
@@ -365,6 +370,7 @@ struct GpuProfiler {
 #[derive(Clone, Copy, Debug)]
 struct GpuStageTimings {
     scene_ms: f64,
+    raymarch_ms: f64,
     luminance_ms: f64,
     sun_ms: f64,
     blur_ms: f64,
@@ -427,7 +433,7 @@ impl GpuProfiler {
         None
     }
 
-    fn begin_readback(&mut self, index: usize, sim_time: f64) {
+    fn begin_readback(&mut self, index: usize, sim_time: f64, render_path: RenderPath) {
         let (sender, receiver) = mpsc::channel();
         self.slots[index]
             .readback_buffer
@@ -435,7 +441,11 @@ impl GpuProfiler {
             .map_async(wgpu::MapMode::Read, move |result| {
                 let _ = sender.send(result.is_ok());
             });
-        self.slots[index].pending = Some(PendingGpuTimestamp { sim_time, receiver });
+        self.slots[index].pending = Some(PendingGpuTimestamp {
+            sim_time,
+            render_path,
+            receiver,
+        });
     }
 
     fn collect_completed(&mut self, device: &wgpu::Device) -> Vec<(f64, GpuStageTimings)> {
@@ -449,6 +459,7 @@ impl GpuProfiler {
                 continue;
             };
             let sim_time = pending.sim_time;
+            let render_path = pending.render_path;
             slot.pending = None;
             if !mapped_ok {
                 continue;
@@ -460,8 +471,14 @@ impl GpuProfiler {
                     * f64::from(self.timestamp_period_ns)
                     / 1_000_000.0
             };
+            let scene_ms = elapsed(0, 1);
             let timings = GpuStageTimings {
-                scene_ms: elapsed(0, 1),
+                scene_ms,
+                raymarch_ms: if render_path == RenderPath::FoveatedRay {
+                    scene_ms
+                } else {
+                    0.0
+                },
                 luminance_ms: elapsed(2, 3),
                 sun_ms: elapsed(4, 5),
                 blur_ms: elapsed(6, 7),
@@ -677,11 +694,13 @@ impl State {
                 resource: camera_buffer.as_entire_binding(),
             }],
         });
+        let shared_planet_bind_group_layout = terrain::create_shared_bind_group_layout(&device);
         let foveated = foveated::FoveatedRenderer::new(
             &device,
             &queue,
             hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
+            &shared_planet_bind_group_layout,
             terrain_source.clone(),
         )
         .expect("foveated renderer must initialize");
@@ -690,6 +709,7 @@ impl State {
             &queue,
             hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
+            shared_planet_bind_group_layout,
             terrain_source,
         )
         .expect("terrain renderer must initialize");
@@ -1264,7 +1284,7 @@ impl State {
             exposure_state.target_exposure,
             exposure_state.average_luminance,
         );
-        self.terrain_stats = if solid_color_screen {
+        self.terrain_stats = if solid_color_screen || !self.render_path.updates_raster_terrain() {
             terrain::TerrainStats::default()
         } else {
             self.terrain
@@ -1532,6 +1552,10 @@ impl State {
         );
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
+        if self.render_path == RenderPath::FoveatedRay {
+            self.foveated
+                .update(&self.queue, camera_radius - planet::PLANET_RADIUS_METERS);
+        }
         let vertex_rebase_ms = 0.0;
         let vertex_upload_ms = upload_started.elapsed().as_secs_f32() * 1_000.0;
         let encode_started = Instant::now();
@@ -1573,8 +1597,11 @@ impl State {
                     self.terrain.draw(&mut render_pass, &self.camera_bind_group);
                 }
             } else if !solid_color_screen && self.render_path == RenderPath::FoveatedRay {
-                self.foveated
-                    .draw_debug(&mut render_pass, &self.camera_bind_group);
+                self.foveated.draw(
+                    &mut render_pass,
+                    &self.camera_bind_group,
+                    self.terrain.shared_bind_group(),
+                );
             }
         }
         let timestamp_query_set = gpu_slot_index.map(|slot_index| {
@@ -1718,7 +1745,7 @@ impl State {
             self.gpu_profiler
                 .as_mut()
                 .expect("GPU profiler exists")
-                .begin_readback(slot_index, sim_time);
+                .begin_readback(slot_index, sim_time, self.render_path);
         }
         let gpu_timestamp_readback_ms = gpu_readback_started.elapsed().as_secs_f32() * 1_000.0;
         let present_started = Instant::now();
@@ -2171,6 +2198,8 @@ mod tests {
         assert_eq!(path, RenderPath::Raster);
         assert_eq!(path.toggled(), RenderPath::FoveatedRay);
         assert_eq!(path.toggled().toggled(), RenderPath::Raster);
+        assert!(RenderPath::Raster.updates_raster_terrain());
+        assert!(!RenderPath::FoveatedRay.updates_raster_terrain());
     }
 
     #[test]

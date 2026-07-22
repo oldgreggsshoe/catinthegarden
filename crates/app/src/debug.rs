@@ -868,6 +868,7 @@ impl RunArtifacts {
             target: "catinthegarden::gpu_profile",
             sim_time,
             gpu_scene_ms = timings.scene_ms,
+            gpu_raymarch_ms = timings.raymarch_ms,
             gpu_luminance_ms = timings.luminance_ms,
             gpu_sun_ms = timings.sun_ms,
             gpu_blur_ms = timings.blur_ms,

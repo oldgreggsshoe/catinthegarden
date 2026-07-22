@@ -1,5 +1,7 @@
 # AGENTS.md
 
+every time you respond, put your response in a file /home/dad/catingard/response/codex.txt and whenever I say 'ok ready', look for a file at /home/dad/catingard/response/codex.txt and use that as your next prompt
+
 Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the whole architecture in one page so you don't need the full design doc pasted in every session.
 
 ## Version control
@@ -51,6 +53,7 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 - Phase 7 alternative renderer M0: F5 toggles between the unchanged default raster path and a foveated-ray placeholder that clears HDR scene colour and reversed-Z depth without drawing raster atmosphere or terrain; the downstream exposure, sun, post, capture, and egui passes remain shared. The HUD reports the active path and a focused default/toggle regression passes.
 - Phase 7 alternative renderer R0: raster and future ray shaders now assemble from `shared_planet.wgsl` plus path-specific WGSL. Pure atmosphere/ocean/material math consumes fetched surface values, while per-tile height/biome/moisture sampling and LOD entry points remain raster-only; shared environment/material/settings resources moved to one group(2) bind group instead of being duplicated per tile. All 106 app tests pass, and the target Quadro `polar_ice_cap` capture remains pixel-identical to the pre-refactor golden after every protected stage.
 - Phase 7 alternative renderer M1: startup stitches the globally dense outmap level into six-layer R32Float height, R8Uint biome, and R8Unorm moisture arrays with one stored cross-face gutter. F5 now draws a full-resolution analytic sphere diagnostic, manually bilinearly samples height through the WGSL cube-face mapping, and writes matching reversed-Z depth; the target Quadro capture shows correctly oriented continent/coastline detail, while the raster `polar_ice_cap` capture remains pixel-identical to the protected golden.
+- Phase 7 alternative renderer M2: F5 now runs a full-resolution 192-step terrain raymarch through tight altitude-scaled height shells, detects the signed height-field crossing, performs five secant refinements, derives normals from tangent height samples, shades by baked biome and direct sun, supplies a temporary sky gradient, and writes reversed-Z hit depth for the shared sun/post path. Ray mode suspends raster quadtree selection, tile streaming, and chunk uploads; the existing scene timestamp is separately logged as `gpu_raymarch_ms`. Quadro captures are recognisable at orbit and coarse but stable at 1.5km from the fixed L4 field, both reaching the 60Hz presentation cap; 109 app tests pass, and raster golden drift is bounded to one 8-bit value from exposure timing with no structural difference.
 
 ## Planet constants (test planet)
 

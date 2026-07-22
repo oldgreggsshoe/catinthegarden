@@ -230,6 +230,7 @@ impl TerrainRenderer {
         queue: &wgpu::Queue,
         surface_format: wgpu::TextureFormat,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
+        shared_bind_group_layout: wgpu::BindGroupLayout,
         source: TerrainSource,
     ) -> Result<Self, TerrainError> {
         let source = match source {
@@ -281,42 +282,6 @@ impl TerrainRenderer {
                     texture_layout_entry(0, wgpu::TextureSampleType::Float { filterable: false }),
                     texture_layout_entry(1, wgpu::TextureSampleType::Uint),
                     texture_layout_entry(2, wgpu::TextureSampleType::Float { filterable: false }),
-                ],
-            });
-        let shared_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("shared planet bind group layout"),
-                entries: &[
-                    cube_texture_layout_entry(3),
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 4,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 5,
-                        // Terrain displacement reads these scales in the
-                        // vertex stage; fragment lake shading recomputes the
-                        // same surface height for atmosphere and water light.
-                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    texture_array_layout_entry(
-                        6,
-                        wgpu::TextureSampleType::Float { filterable: true },
-                    ),
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 7,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
                 ],
             });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -498,6 +463,10 @@ impl TerrainRenderer {
                 outmap.manifest().sparse_landing_direction,
             )),
         }
+    }
+
+    pub fn shared_bind_group(&self) -> &wgpu::BindGroup {
+        &self.shared_bind_group
     }
 
     /// Returns the streamed terrain height under a planet-local radial
@@ -946,6 +915,40 @@ impl TerrainRenderer {
             presentation_time,
         );
     }
+}
+
+pub fn create_shared_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("shared planet bind group layout"),
+        entries: &[
+            cube_texture_layout_entry(3),
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 5,
+                // Terrain displacement reads these scales in the vertex
+                // stage; raymarching and lake shading use the same values.
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            texture_array_layout_entry(6, wgpu::TextureSampleType::Float { filterable: true }),
+            wgpu::BindGroupLayoutEntry {
+                binding: 7,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    })
 }
 
 fn purge_expired_lod_transitions(
