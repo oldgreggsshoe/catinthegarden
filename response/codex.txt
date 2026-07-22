@@ -1,19 +1,26 @@
-M5 complete and pushed as `959c4fb`.
+M6 complete. Implementation pushed as `1f5642f`.
 
-First, one correction to the review: adaptive stepping cannot fix fixed-L4 low-altitude coarseness. It reduces march samples only; higher-resolution fields require a later clipmap/atlas milestone.
+Implemented:
+- Final ray mode shades a 75%-per-axis warp target: 480x320 at 640x427, 960x540 in 1280x720 scenarios, 56.25% ray count.
+- Exact separable offset-quadratic forward/inverse warp; finite-density sharp center, progressively softer edges.
+- Ray pass writes Rgba16Float HDR color plus R32Float hit distance.
+- Full-resolution unwarp bilinearly samples color, nearest-loads distance, and reconstructs WebGPU reversed-Z with `clip.z / clip.w`; sky writes 0.
+- F9 non-Final modes bypass warp and remain full resolution.
+- F11 displays the raw warp buffer; sun overlay is suppressed only for that Final-mode diagnostic.
+- F12 remains downstream and captures the final result.
+- Resize rebuilds warp textures and bindings from the internal render size.
 
-Implementation:
-- CPU builds conservative max-height mip pyramids for all six R32F face arrays, including odd dimensions without dropping edge texels.
-- Surface-hit rays keep M2's large first baseline interval.
-- After each miss, the candidate interval grows exponentially up to 64x.
-- A single maxmip texel selected at four times the candidate footprint bounds terrain over the route; the next analytic intersection with that local maximum-radius sphere bounds the skip.
-- Face changes, mip-cell changes, and invalid cells fall back to the global maximum height and baseline interval.
+Measured on Quadro M1000M, warm-up-excluded spatial means:
+- 1.7km: M5 20.447ms / 48.9 FPS -> M6 16.046ms / 62.3 FPS. 21.5% frame-time improvement; target 59 FPS reached.
+- Orbit: M5 14.994ms / 66.7 FPS -> M6 18.131ms / 55.2 FPS. The center-weighted warp preserves nearly all costly planet-hit rays while adding the unwarp pass; this is a real measured regression, not hidden. Content-adaptive orbit bypass belongs in M8.
 
-Measured iterations mattered. A 9-tap conservative lookup regressed orbit to 32.6 FPS; 4-tap reached 38.6; hybrid thresholds reached 48.1, 51.1, 56.2, then baseline 59.75 with no useful skipping. The final next-sphere-crossing design reached 66.88 FPS.
+Validation:
+- Fresh Final orbit and low-flight captures: intact silhouette, sharp center, softer periphery.
+- F11 raw-warp capture verified.
+- F9 RawAlbedo capture verified direct full-resolution bypass.
+- F12 final capture verified.
+- WGSL runtime validation passed after correcting R32Float blend state and uniform alignment.
+- `cargo fmt --all -- --check` passed.
+- All 116 app tests passed.
 
-Fresh Quadro comparison, same `orbit_once` scenario:
-- M4 baseline `1784743522-1433144`: 16.753 ms mean, 59.69 FPS.
-- M5 `1784744210-1443785`: 14.952 ms mean, 66.88 FPS.
-- Improvement: 1.802 ms / 10.8% mean frame time.
-
-At 1.7km, M4 was 20.212 ms and M5 was 20.220 ms: neutral, as expected because the first baseline step already hits the surface. All four orbit captures and the low-flight capture retain intact silhouettes with no visible holes. All 113 app tests pass, including conservative odd-edge mip reduction, nine-step exponential growth over 192 baseline intervals, WGSL validation, and prior precision tests.
+Known harness behavior remains: raster-only resident-chunk assertions fail in F5 ray scenarios because ray mode intentionally selects zero raster chunks. The `--profile-render` timestamp readback still stalls in this remote-X setup, so reported values are spatial-log means, not GPU timestamps.

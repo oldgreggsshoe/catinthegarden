@@ -474,6 +474,25 @@ time at full res, foveation becomes pure headroom for effects.
 
 ### M6. Introduce the warp
 
+**Completed on `experiment/ground-readability` (2026-07-22).** Final ray mode
+now shades a runtime-sized warp target at 75% per axis (56.25% as many rays;
+480x320 at the 640x427 default and 960x540 in the 1280x720 scenarios). A
+separable offset-quadratic mapping with an exact inverse keeps a finite-density
+center while progressively undersampling the periphery. The ray pass writes
+HDR color plus R32F hit distance; a full-resolution pass bilinearly unwarps
+color, nearest-loads distance, and reconstructs WebGPU reversed-Z as
+`clip.z / clip.w`, with sky at 0. F9 non-Final inspection remains direct and
+full resolution, F11 shows the raw warp buffer, F12 captures the downstream
+final image, and resize rebuilds both targets and bindings. Quadro warm-up-
+excluded spatial means improved at 1.7 km from 20.447 ms to 16.046 ms (21.5%,
+48.9 to 62.3 FPS). Orbit changed from 14.994 ms to 18.131 ms because the
+center-weighted warp preserves nearly all expensive planet-hit rays while
+adding the unwarp pass; content-adaptive orbit bypass is intentionally left for
+M8 rather than hidden in this correctness milestone. Captures verified the
+unwarped Final path, raw F11 buffer, full-resolution F9 path, and F12 parity;
+116 app tests pass. Existing raster-only scenario chunk-count assertions still
+report zero chunks when F5 ray mode is active.
+
 **Goal:** center sharp, edges cheap.
 
 - Render the raymarch into `warp_color` / `warp_dist` at runtime-derived
