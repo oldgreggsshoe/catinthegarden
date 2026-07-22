@@ -1,13 +1,19 @@
-M4 complete.
+M5 complete and pushed as `959c4fb`.
 
-Audit result: Stage A was already implemented by M2. The CPU computes `camera_radius_meters` and `camera_radius_squared` from f64 altitude, then casts for upload. WGSL uses `sqrt(cam_radius_sq + 2*t*(C.D) + t*t)` for radius and matching quadratic shell intersections; it does not use `length(C + tD)` for the cancellation-sensitive radius test.
+First, one correction to the review: adaptive stepping cannot fix fixed-L4 low-altitude coarseness. It reduces march samples only; higher-resolution fields require a later clipmap/atlas milestone.
 
-Added two deterministic regressions:
-- shader-equivalent f32 radius evaluation across 0.1m, 1m, 10m, 1.7km, and 10km altitudes plus radial-to-grazing rays; maximum permitted surface-radius error is 0.5m;
-- proof that camera radius is squared in f64 before the f32 upload cast.
+Implementation:
+- CPU builds conservative max-height mip pyramids for all six R32F face arrays, including odd dimensions without dropping edge texels.
+- Surface-hit rays keep M2's large first baseline interval.
+- After each miss, the candidate interval grows exponentially up to 64x.
+- A single maxmip texel selected at four times the candidate footprint bounds terrain over the route; the next analytic intersection with that local maximum-radius sphere bounds the skip.
+- Face changes, mip-cell changes, and invalid cells fall back to the global maximum height and baseline interval.
 
-All 111 app tests pass. Quadro `descent_to_10m` ray captures completed at 6,000km, 1,000km, 200km, 20km, 2km, 200m, and 10m; metrics stayed finite and no radial/depth bands appeared. The scenario manifest only fails raster-specific L18/resident-chunk assertions because ray mode intentionally has zero raster chunks.
+Measured iterations mattered. A 9-tap conservative lookup regressed orbit to 32.6 FPS; 4-tap reached 38.6; hybrid thresholds reached 48.1, 51.1, 56.2, then baseline 59.75 with no useful skipping. The final next-sphere-crossing design reached 66.88 FPS.
 
-Stage B's hi/lo camera-position split was not added: the guide makes it conditional on observed deck banding, and neither the numerical bound nor the 10m capture triggered it. The visibly coarse near-surface field is fixed-L4 data resolution, not precision loss.
+Fresh Quadro comparison, same `orbit_once` scenario:
+- M4 baseline `1784743522-1433144`: 16.753 ms mean, 59.69 FPS.
+- M5 `1784744210-1443785`: 14.952 ms mean, 66.88 FPS.
+- Improvement: 1.802 ms / 10.8% mean frame time.
 
-Implementation/test commit: `a8cfae1`.
+At 1.7km, M4 was 20.212 ms and M5 was 20.220 ms: neutral, as expected because the first baseline step already hits the surface. All four orbit captures and the low-flight capture retain intact silhouettes with no visible holes. All 113 app tests pass, including conservative odd-edge mip reduction, nine-step exponential growth over 192 baseline intervals, WGSL validation, and prior precision tests.

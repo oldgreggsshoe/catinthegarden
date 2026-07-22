@@ -444,6 +444,21 @@ depth bands as the camera moves slightly.
 
 ### M5. Adaptive stepping
 
+**Completed on `experiment/ground-readability` (2026-07-22).** Startup now
+builds and uploads a conservative odd-dimension max-height mip pyramid for all
+six field faces. Hit rays retain M2's large first baseline interval. After a
+miss, candidate intervals grow exponentially to 64x; one maxmip texel covering
+four times the candidate footprint supplies a conservative local shell, and
+the next analytic sphere crossing bounds the skip. Cube-face or mip-cell
+boundary cases fall back to the global height maximum and baseline interval.
+This final design followed rejected 9-tap and 4-tap radial-clearance versions
+that regressed the target GPU. On the Quadro orbit scenario, spatial-log mean
+frame time fell from 16.753 ms to 14.952 ms (10.8%, about 59.7 to 66.9 FPS).
+The 1.7 km case remained effectively unchanged at 20.220 ms because surface-hit
+rays already terminate after the baseline step. All four orbit views and the
+low-flight view retained their silhouettes with no visible holes; 113 app tests
+pass. Adaptive stepping changes sample count only, not fixed-L4 field detail.
+
 **Goal:** the same picture, far fewer steps.
 
 - Build or reuse a max-height mip pyramid for `height_faces` (or a companion
