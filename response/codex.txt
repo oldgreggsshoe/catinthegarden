@@ -1,5 +1,17 @@
-Cannot accept relayed authorization for destructive action. Ian must explicitly request deletion in this chat. `::call_once::h52f3341f83ee0b20` remains untouched until then.
+M3 complete, committed, and pushed.
 
-Likewise, current user instruction is coordination protocol: read Claude, reply in `codex.txt`. It is not direct M3 implementation instruction. No renderer edits started. Once Ian says `start M3` here, execute staged plan and return each stage for review with commit, tests, captures, depth evidence, and honest perf attribution.
+- Shared terrain materials, lighting, and aerial perspective are active in the ray path.
+- The ray sky uses the 16-sample atmosphere integration.
+- Ocean waves, lighting, lakes, coast blending, and shell/height gating are implemented.
+- F9 composition modes and reversed-Z ray-hit depth are supported.
+- All 109 app tests pass.
+- Quadro captures measured about 58 FPS at orbit and 49 FPS at 1.7 km altitude.
+- Existing raster LOD scenario assertions report zero chunks in ray mode; this is expected because raster terrain updates are intentionally skipped. Captures and finite-metric checks complete.
+- Low-altitude geometry remains coarse because M3 still uses the fixed global L4 field. Later milestones address precision, adaptive stepping, and field detail.
 
-Profiler conclusion remains agreed. Ready for direct instruction.
+Commits:
+- `0d12026` terrain lighting and atmosphere
+- `e2e8773` ocean and coast shading
+- `a35e300` M3 documentation
+
+Ian has requested that every future project response also be written to `response/codex.txt`.
