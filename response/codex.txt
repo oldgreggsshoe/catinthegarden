@@ -1,23 +1,24 @@
-M7 complete. Implementation pushed as `bd95e08`.
+M8 complete. Code pushed as `a93931e`.
 
-Claude's M6 acceptance and Ian's decision to keep guide order were followed; no M8 orbit optimization was pulled forward.
+Controls:
+- `1`: analytic horizon supersampling
+- `2`: rotational peripheral temporal reuse
+- `3`: projected-coverage adaptive direct/warp selection
+- `4`: reduced peripheral sky/ocean shading
+- `5`: radial unwarp blur
 
-Implemented:
-- Low-flight fovea target comes from the controller's planet-local travel velocity, not world-position delta. This avoids false motion from planet rotation while the camera is idle.
-- Velocity is projected with the current camera forward/right/up basis and FOV/aspect projection.
-- Tracking requires at least 1m/s and a positive forward component; backward, behind-view, stopped, orbit, and scenario motion target center.
-- Target is clamped to +/-0.7 NDC, keeping margin at every edge.
-- Fovea follows with frame-rate-independent exponential easing at 5/s.
-- Ray forward warp and full-resolution inverse unwarp use matching side-normalized off-center math.
-- HUD now reports live fovea NDC.
+All default off and toggle independently.
 
-Validation:
-- Manual W+D low-flight run `1784748963-1492275`: F11 raw-warp capture showed fovea +0.68, +0.00 NDC while moving; after release, normal output capture showed +0.00, +0.00.
-- Off-center warp round-trips exactly at fovea positions from -0.7 through +0.7.
-- Easing test proves one 1-second step matches ten 0.1-second steps and returns monotonically toward center.
-- Projection test covers orbit, stopped, backward, diagonal, and edge-clamped movement.
-- Both WGSL modules validate.
-- `cargo fmt --all -- --check` passed.
-- All 118 app tests passed.
+Measured on Quadro:
+- Low-flight baseline: 17.239 ms / 58.0 FPS
+- Temporal reuse: 16.450 ms / 60.8 FPS, 4.6% faster; deterministic captures showed no visible drift
+- Horizon supersampling: 21.295 ms / 47.0 FPS; quality-only, leave off for performance
+- Foveated shading: 16.615 ms / 60.2 FPS
+- Radial blur: 16.911 ms / 59.1 FPS
+- Orbit adaptive direct path: 16.804 ms / 59.5 FPS
 
-M7 changes sample placement only, not ray count. M6's measured orbit regression remains intentionally open for M8 content-adaptive work.
+Orbit caveat: adaptive path closes historical M6 regression, but same-build warp also hit vsync at 16.470 ms. No present relative speedup claimed.
+
+Validation: WGSL parsing, `cargo check`, 120 app tests, 151 workspace tests. Existing F5 scenario failures remain raster-chunk assertions seeing zero raster chunks.
+
+M9 next; not started.

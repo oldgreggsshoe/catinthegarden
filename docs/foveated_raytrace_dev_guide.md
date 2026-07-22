@@ -543,6 +543,36 @@ are flying toward. Stop and it drifts back to center.
 
 ### M8. Experiments
 
+**Completed on `experiment/ground-readability` (2026-07-22).** Number keys
+1-5 independently toggle the five experiments below; all remain off by default
+so none silently changes the accepted M7 presentation. The HUD reports every
+state. Horizon density analytically identifies a 30km limb band and blends a
+second derivative-offset ray there. Temporal reuse rotationally reprojects the
+previous warped color/distance through the prior camera basis, then alternates
+coherent 8x8 peripheral tiles so skipped lanes remain coherent on the GPU; it
+always refreshes the fovea and 50km horizon band and rejects history after more
+than 10m translation or roughly one degree of basis rotation. Content-adaptive
+selection is currently frame-level rather than maxmip-per-region: below 65%
+projected planet coverage it bypasses the center-weighted warp and renders the
+ray path directly, while F11 still forces the raw warp for inspection.
+Foveated shading reduces peripheral sky integration from 16 to 6 samples and
+omits the two ocean hit refinements in favor of flat water. Radial style blur is
+a three-tap eccentricity-weighted unwarp filter and does not blur hit distance.
+
+Quadro warm-up-excluded spatial means measured 17.239ms (58.0 FPS) for the
+current low-flight warp and 16.450ms (60.8 FPS) with temporal reuse, a 4.6%
+improvement; deterministic captures were visually unchanged and their mean
+absolute 8-bit channel delta stayed below 0.24 including HUD text. Isolated
+horizon supersampling cost 21.295ms, so it remains a quality-only experiment;
+foveated shading measured 16.615ms and radial blur 16.911ms in their isolated
+runs. Enabling all quality experiments measured 19.694ms because the extra
+horizon rays dominate. Orbit content-adaptive direct rendering measured
+16.804ms (59.5 FPS): it recovers the presentation target and closes the
+historical M6 18.131ms result, but a same-build warped run also reached the
+vsync ceiling at 16.470ms, so no current relative speedup is claimed. All 120
+app tests and all 151 workspace tests pass. Existing raster-residency scenario
+assertions still fail intentionally after F5 reports zero raster chunks.
+
 The fun part, section 12. Each is a sub-toggle so you can A/B them:
 
 - Horizon-aligned sample density.
