@@ -277,6 +277,29 @@ impl CameraMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum RenderPath {
+    #[default]
+    Raster,
+    FoveatedRay,
+}
+
+impl RenderPath {
+    fn toggled(self) -> Self {
+        match self {
+            Self::Raster => Self::FoveatedRay,
+            Self::FoveatedRay => Self::Raster,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Raster => "raster",
+            Self::FoveatedRay => "foveated ray",
+        }
+    }
+}
+
 /// Scene time intentionally stops under F10, but low-flight navigation remains
 /// responsive so frozen composition diagnostics can be framed in place.
 fn interactive_camera_delta_seconds(
@@ -494,6 +517,7 @@ struct State {
     last_frame: Instant,
     fps: f32,
     debug_overlay_visible: bool,
+    render_path: RenderPath,
     render_debug_mode: planet::RenderDebugMode,
     animation_frozen: bool,
     frozen_sim_time: f64,
@@ -730,6 +754,7 @@ impl State {
             last_frame: Instant::now(),
             fps: 0.0,
             debug_overlay_visible: true,
+            render_path: RenderPath::default(),
             render_debug_mode: planet::RenderDebugMode::Final,
             animation_frozen: false,
             frozen_sim_time: 0.0,
@@ -859,6 +884,11 @@ impl State {
     fn toggle_hdr_effect(&mut self) {
         self.hdr
             .set_hdr_effect_enabled(&self.queue, !self.hdr.hdr_effect_enabled());
+        self.mark_hud_dirty();
+    }
+
+    fn toggle_render_path(&mut self) {
+        self.render_path = self.render_path.toggled();
         self.mark_hud_dirty();
     }
 
@@ -1315,6 +1345,7 @@ impl State {
             let ocean_wave_range = ocean_wave_range;
             let blur_enabled = self.hdr.blur_enabled();
             let bloom_enabled = self.hdr.bloom_enabled();
+            let render_path = self.render_path;
             let render_debug_mode = self.render_debug_mode;
             let animation_frozen = self.animation_frozen;
             let camera_mode = self.camera_mode;
@@ -1390,13 +1421,14 @@ impl State {
                                 "Composition debug: {}",
                                 render_debug_mode.label(),
                             ));
+                            ui.label(format!("Render path: {} (F5)", render_path.label()));
                             ui.label(format!(
                                 "Animation: {}",
                                 if animation_frozen { "frozen" } else { "running" },
                             ));
                             ui.label(format!("Ocean Gerstner range: {ocean_wave_range:.2} m"));
                             ui.label(
-                                "F: fullscreen  |  F3: overlay  |  F4: camera mode  |  WASD: fly  |  F6: blur  |  F7: bloom  |  F8: HDR  |  F9: composition  |  F10: freeze  |  F12: capture PNG",
+                                "F: fullscreen  |  F3: overlay  |  F4: camera mode  |  F5: render path  |  WASD: fly  |  F6: blur  |  F7: bloom  |  F8: HDR  |  F9: composition  |  F10: freeze  |  F12: capture PNG",
                             );
                             ui.label("Default: auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc/Q: quit");
                         });
@@ -1523,7 +1555,7 @@ impl State {
                 }),
                 multiview_mask: None,
             });
-            if !solid_color_screen {
+            if !solid_color_screen && self.render_path == RenderPath::Raster {
                 self.atmosphere
                     .draw(&mut render_pass, &self.camera_bind_group);
                 if self.render_debug_mode != planet::RenderDebugMode::SkyOnly {
@@ -1876,6 +1908,13 @@ impl ApplicationHandler for App {
                 }
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::F5) =>
+                {
+                    state.toggle_render_path();
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
                         && event.physical_key == PhysicalKey::Code(KeyCode::F12) =>
                 {
                     state.manual_screenshot_requested = true;
@@ -2080,7 +2119,7 @@ mod tests {
     use super::{
         CameraMode, FlightMovementInput, FlightSpeedState, INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
         LOW_FLIGHT_INITIAL_PITCH_RADIANS, LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND,
-        MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS, advance_flight_position_on_sphere,
+        MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS, RenderPath, advance_flight_position_on_sphere,
         advance_flight_speed, flight_movement_direction, flight_view_direction,
         initial_flight_tangent, interactive_camera_delta_seconds, render_size_for_surface_resize,
         should_enter_fullscreen, transport_flight_tangent,
@@ -2110,6 +2149,14 @@ mod tests {
             windowed
         );
         assert_eq!(render_size_for_surface_resize(windowed, None), windowed);
+    }
+
+    #[test]
+    fn render_path_defaults_to_raster_and_toggles_both_ways() {
+        let path = RenderPath::default();
+        assert_eq!(path, RenderPath::Raster);
+        assert_eq!(path.toggled(), RenderPath::FoveatedRay);
+        assert_eq!(path.toggled().toggled(), RenderPath::Raster);
     }
 
     #[test]
