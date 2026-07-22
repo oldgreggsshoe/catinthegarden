@@ -570,7 +570,9 @@ mod tests {
         assert!(shader.contains("refine_hit("));
         assert!(shader.contains("terrain_normal("));
         assert!(shader.contains("fn shade_terrain("));
-        assert!(shader.contains("let color = shade_terrain("));
+        assert!(shader.contains("let terrain_color = shade_terrain("));
+        assert!(shader.contains("fn ocean_hit("));
+        assert!(shader.contains("let water_hit = ocean_hit("));
         assert!(shader.contains("ray_atmosphere_radiance("));
         assert!(shader.contains("RENDER_DEBUG_SKY_ONLY"));
         assert!(shader.contains("@builtin(frag_depth) depth: f32"));

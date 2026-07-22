@@ -3,6 +3,7 @@ const RAY_SKY_SAMPLE_COUNT: u32 = 16u;
 const RAY_SKY_DENSITY_SAMPLE_EXPONENT: f32 = 3.0;
 const RAY_ANTISOLAR_TWILIGHT_MIN_SCATTER: f32 = 0.48;
 const RAY_SKY_ATMOSPHERE_SATURATION: f32 = 2.0;
+const RAY_OCEAN_SHELL_RADIUS_METERS: f32 = PLANET_RADIUS_METERS + 1.0;
 const RENDER_DEBUG_SKY_ONLY: u32 = 4u;
 
 struct RayUniform {
@@ -38,6 +39,11 @@ struct FragmentOutput {
 struct FaceUv {
     face: u32,
     uv: vec2<f32>,
+}
+
+struct OceanHit {
+    distance_meters: f32,
+    coverage: f32,
 }
 
 fn view_direction(ndc: vec2<f32>) -> vec3<f32> {
@@ -187,6 +193,22 @@ fn radius_at(distance_meters: f32, radial_dot_ray: f32) -> f32 {
     ));
 }
 
+fn sphere_entry_distance(radius_meters: f32, radial_dot_ray: f32) -> f32 {
+    let discriminant = radial_dot_ray * radial_dot_ray
+        + radius_meters * radius_meters
+        - ray_settings.camera_radius_squared;
+    if discriminant < 0.0 {
+        return -1.0;
+    }
+    let root = sqrt(discriminant);
+    let near_distance = -radial_dot_ray - root;
+    if near_distance > 0.0 {
+        return near_distance;
+    }
+    let far_distance = -radial_dot_ray + root;
+    return select(-1.0, far_distance, far_distance > 0.0);
+}
+
 fn surface_function(
     distance_meters: f32,
     radial_dot_ray: f32,
@@ -257,6 +279,43 @@ fn terrain_normal(surface_direction: vec3<f32>) -> vec3<f32> {
     let east_point = east_direction * (PLANET_RADIUS_METERS + east_height);
     let north_point = north_direction * (PLANET_RADIUS_METERS + north_height);
     return normalize(cross(east_point - center, north_point - center));
+}
+
+fn ocean_hit(
+    radial_dot_ray: f32,
+    camera_position_view: vec3<f32>,
+    ray: vec3<f32>,
+) -> OceanHit {
+    let shell_distance = sphere_entry_distance(
+        RAY_OCEAN_SHELL_RADIUS_METERS,
+        radial_dot_ray,
+    );
+    if shell_distance < 0.0 {
+        return OceanHit(-1.0, 0.0);
+    }
+    let shell_direction = normalize(view_to_planet(
+        camera_position_view + ray * shell_distance,
+    ));
+    let coverage = outmap_ocean_coverage(true, sample_height(shell_direction));
+    if coverage <= 0.0 {
+        return OceanHit(-1.0, 0.0);
+    }
+
+    var distance_meters = shell_distance;
+    for (var index = 0u; index < 2u; index += 1u) {
+        let direction = normalize(view_to_planet(
+            camera_position_view + ray * distance_meters,
+        ));
+        let surface = ocean_surface(direction, camera.projection.z);
+        distance_meters = sphere_entry_distance(
+            PLANET_RADIUS_METERS + surface.vertical_displacement,
+            radial_dot_ray,
+        );
+        if distance_meters < 0.0 {
+            return OceanHit(-1.0, 0.0);
+        }
+    }
+    return OceanHit(distance_meters, coverage);
 }
 
 fn solid_planet_entry_distance(radial_dot_ray: f32) -> f32 {
@@ -505,6 +564,50 @@ fn shade_terrain(
     return aerial;
 }
 
+fn shade_ocean(
+    surface_direction: vec3<f32>,
+    hit_view_position: vec3<f32>,
+    water_base_height: f32,
+) -> vec3<f32> {
+    let render_debug_mode = u32(camera.projection.w + 0.5);
+    if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
+        return debug_ocean_albedo();
+    }
+    let surface = ocean_surface(surface_direction, camera.projection.z);
+    let water_surface_height = water_base_height + surface.vertical_displacement;
+    let sun_direction = normalize(camera.sun_direction.xyz);
+    let sun_transmittance = surface_direct_sun_transmittance(
+        surface_direction,
+        water_surface_height,
+        sun_direction,
+    );
+    let sky_diffuse = sky_diffuse_irradiance(
+        surface.normal,
+        surface_direction,
+        water_surface_height,
+        sun_direction,
+    );
+    let surface_color = ocean_lighting(
+        surface.normal,
+        hit_view_position,
+        sun_transmittance,
+        sky_diffuse,
+    );
+    if render_debug_mode == RENDER_DEBUG_SURFACE_LIGHTING {
+        return surface_color;
+    }
+    let aerial_color = ocean_aerial_perspective(
+        surface_color,
+        hit_view_position,
+        surface_direction,
+        water_surface_height,
+    );
+    if render_debug_mode == RENDER_DEBUG_AERIAL_CONTRIBUTION {
+        return max(aerial_color - surface_color, vec3<f32>(0.0));
+    }
+    return aerial_color;
+}
+
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     var positions = array<vec2<f32>, 3>(
@@ -577,6 +680,31 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
         previous_distance = distance;
         previous_value = value;
     }
+    let water_hit = ocean_hit(radial_dot_ray, camera_position_view, ray);
+    if water_hit.distance_meters >= 0.0
+        && (hit_distance < 0.0 || water_hit.distance_meters <= hit_distance)
+    {
+        let water_view = camera_position_view + ray * water_hit.distance_meters;
+        let water_direction = normalize(view_to_planet(water_view));
+        var color = shade_ocean(
+            water_direction,
+            ray * water_hit.distance_meters,
+            0.0,
+        );
+        if water_hit.coverage < 1.0 && hit_distance >= 0.0 {
+            let terrain_view = camera_position_view + ray * hit_distance;
+            let terrain_direction = normalize(view_to_planet(terrain_view));
+            let terrain_color = shade_terrain(
+                terrain_direction,
+                terrain_normal(terrain_direction),
+                ray * hit_distance,
+            );
+            color = mix(terrain_color, color, water_hit.coverage);
+        }
+        let clip = camera.projection_matrix
+            * vec4<f32>(ray * water_hit.distance_meters, 1.0);
+        return FragmentOutput(vec4<f32>(color, 1.0), clip.z / clip.w);
+    }
     if hit_distance < 0.0 {
         return FragmentOutput(
             vec4<f32>(ray_atmosphere_radiance(ray, radial_dot_ray), 1.0),
@@ -587,7 +715,25 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
     let hit_view = camera_position_view + ray * hit_distance;
     let surface_direction = normalize(view_to_planet(hit_view));
     let normal = terrain_normal(surface_direction);
-    let color = shade_terrain(surface_direction, normal, ray * hit_distance);
+    let macro_height = sample_height(surface_direction);
+    let biome = sample_biome(surface_direction);
+    let ocean_coverage = outmap_ocean_coverage(true, macro_height);
+    let terrain_color = shade_terrain(surface_direction, normal, ray * hit_distance);
+    var color = terrain_color;
+    if biome == 1u {
+        color = shade_ocean(
+            surface_direction,
+            ray * hit_distance,
+            macro_height * terrain_macro_height_scale(),
+        );
+    } else if ocean_coverage > 0.0 {
+        let ocean_color = shade_ocean(
+            surface_direction,
+            ray * hit_distance,
+            0.0,
+        );
+        color = mix(terrain_color, ocean_color, ocean_coverage);
+    }
     let clip = camera.projection_matrix * vec4<f32>(ray * hit_distance, 1.0);
     return FragmentOutput(vec4<f32>(color, 1.0), clip.z / clip.w);
 }
