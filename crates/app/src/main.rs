@@ -1,5 +1,6 @@
 mod atmosphere;
 mod debug;
+mod foveated;
 mod hdr;
 mod ocean;
 mod outmap;
@@ -490,6 +491,7 @@ struct State {
     hdr: hdr::HdrRenderer,
     atmosphere: atmosphere::AtmosphereRenderer,
     sun: sun::SunRenderer,
+    foveated: foveated::FoveatedRenderer,
     terrain: terrain::TerrainRenderer,
     terrain_stats: terrain::TerrainStats,
     adapter_label: String,
@@ -675,6 +677,14 @@ impl State {
                 resource: camera_buffer.as_entire_binding(),
             }],
         });
+        let foveated = foveated::FoveatedRenderer::new(
+            &device,
+            &queue,
+            hdr::HdrRenderer::SCENE_FORMAT,
+            &camera_bind_group_layout,
+            terrain_source.clone(),
+        )
+        .expect("foveated renderer must initialize");
         let terrain = terrain::TerrainRenderer::new(
             &device,
             &queue,
@@ -726,6 +736,7 @@ impl State {
             hdr,
             atmosphere,
             sun,
+            foveated,
             terrain,
             terrain_stats: terrain::TerrainStats::default(),
             adapter_label,
@@ -1561,6 +1572,9 @@ impl State {
                 if self.render_debug_mode != planet::RenderDebugMode::SkyOnly {
                     self.terrain.draw(&mut render_pass, &self.camera_bind_group);
                 }
+            } else if !solid_color_screen && self.render_path == RenderPath::FoveatedRay {
+                self.foveated
+                    .draw_debug(&mut render_pass, &self.camera_bind_group);
             }
         }
         let timestamp_query_set = gpu_slot_index.map(|slot_index| {
