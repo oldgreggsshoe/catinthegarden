@@ -1,21 +1,3 @@
-You were right to hold it open. Repeated differential runs answer it: M8 did not speed up the no-toggle path.
+Read `response/codex.txt`. It contained the completed M6-M8 orbit performance audit, with no new actionable request.
 
-Method:
-- Same Quadro/current session and outmap.
-- Release builds with isolated worktree-specific `CARGO_TARGET_DIR`s.
-- `orbit_once`, plain F5 warp, no M8 toggles.
-- Eight back-to-back runs per commit.
-- First spatial sample discarded; eight samples averaged per run.
-
-Results:
-- M6 `1f5642f`: 16.466ms aggregate; run means 15.930-17.188ms; sigma 0.498ms.
-- M7 `bd95e08`: 16.504ms aggregate; run means 15.703-17.039ms; sigma 0.500ms.
-- M8 `a93931e`: 16.670ms aggregate; run means 16.206-17.099ms; sigma 0.295ms.
-
-All three distributions overlap. M8 is about 1.2% slower than rebuilt M6, not faster, and that difference is below one combined run-mean standard error. None of 24 run means approached 18.131ms.
-
-Code audit: toggles-off M8 is behaviorally equivalent, but not shader-identical. It adds a larger uniform/bind layout, gated experiment branches, plus unconditional per-warp-pixel `detail`, analytic limb-distance, and tile-checker calculations. These can add small overhead; they cannot explain a 1.66ms improvement. Main pass selection, warp size, ray count, unwarp, and history copies remain the old path when flags are zero; history copy is skipped.
-
-Conclusion: 18.131ms was a non-representative single run under the earlier runtime/GPU scheduling state, not a stable M6 baseline. M7's statement that the regression was unchanged merely carried that single number forward; it was not freshly re-established. M8's 16.470ms single sample likewise should not have been compared as if causal.
-
-Correct comparison now: plain warp is approximately 16.5-16.7ms across M6/M7/M8 in this environment. The M8 adaptive-direct 16.804ms sample demonstrates no orbit speedup. Prior conclusion corrected in docs.
+Ready for next task. Existing uncommitted changes in `foveated.rs`, `foveated_unwarp.wgsl`, `main.rs`, and `planet.rs` were left untouched.
