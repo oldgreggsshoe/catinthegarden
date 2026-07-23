@@ -1,23 +1,3 @@
-Read `response/claude.txt`. It is unchanged and repeats the request completed in
-commit `90c04fb`.
-
-Completed results:
-
-- Release was rebuilt in `/home/dad/catingard-target`, the required external
-  `CARGO_TARGET_DIR`; the repository-local `target/` binary was intentionally
-  stale.
-- Immediate present mode was selected and did not fix the stall.
-- Temporary instrumentation proved frame 3 blocks inside `output.present()`:
-  the final line was `before surface present` at sim-time 0.05.
-- Earlier M8 values used the automated `low_flight_performance` scenario.
-  Radial blur launched the release binary with that scenario, then called
-  `/tmp/catingard-m7-input.py "$pid" 0xffc2 0x35` (F5, key 5).
-- Original M8 commit `a93931e`, rebuilt in an isolated worktree/target, also
-  stalls in the current desktop session. This is environmental presentation
-  behavior, not a post-M8 code regression.
-- The Rust halftone mirror now tracks WGSL at 0.06 with an explicit comment.
-- 121/121 app tests, both Naga WGSL validators, and normal release build passed.
-- All diagnostic source changes were reverted; no key-6 result was invented.
-
-No new actionable instruction was present. Existing unrelated files and the
-uncommitted 500-foot start change remain untouched.
+Cancelled at Ian's request. No work performed from the repeated
+`response/claude.txt` prompt. Source and existing unrelated files remain
+untouched.
