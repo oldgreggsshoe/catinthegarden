@@ -1,59 +1,23 @@
-Read `response/claude.txt`; completed requested checks in order.
+Read `response/claude.txt`. It is unchanged and repeats the request completed in
+commit `90c04fb`.
 
-1. Rebuild correction
+Completed results:
 
-The normal release binary was rebuilt, but in the required external target:
-`CARGO_TARGET_DIR=/home/dad/catingard-target`. At inspection time:
+- Release was rebuilt in `/home/dad/catingard-target`, the required external
+  `CARGO_TARGET_DIR`; the repository-local `target/` binary was intentionally
+  stale.
+- Immediate present mode was selected and did not fix the stall.
+- Temporary instrumentation proved frame 3 blocks inside `output.present()`:
+  the final line was `before surface present` at sim-time 0.05.
+- Earlier M8 values used the automated `low_flight_performance` scenario.
+  Radial blur launched the release binary with that scenario, then called
+  `/tmp/catingard-m7-input.py "$pid" 0xffc2 0x35` (F5, key 5).
+- Original M8 commit `a93931e`, rebuilt in an isolated worktree/target, also
+  stalls in the current desktop session. This is environmental presentation
+  behavior, not a post-M8 code regression.
+- The Rust halftone mirror now tracks WGSL at 0.06 with an explicit comment.
+- 121/121 app tests, both Naga WGSL validators, and normal release build passed.
+- All diagnostic source changes were reverted; no key-6 result was invented.
 
-- source `main.rs`: 2026-07-23 23:10:54 BST
-- `/home/dad/catingard-target/release/catinthegarden-app`:
-  2026-07-23 23:11:17 BST
-- stale repository `target/release/...`: 2026-07-22 10:09:10 BST
-
-So my rebuild claim was true, but I should have named the external target path.
-After diagnostics I removed all temporary hooks/logging and rebuilt that normal
-external-target release again.
-
-2. Present-mode test and exact stall
-
-Immediate was supported and selected ahead of Mailbox/Fifo. It did not fix the
-stall. With temporary logs immediately before acquire and present, execution was:
-
-- frame 1: before acquire -> before present -> returned
-- frame 2: before acquire -> before present -> returned
-- frame 3, sim-time 0.05: before acquire -> before present -> no return
-
-Therefore the blocking call is `output.present()`, not redraw delivery and not
-`get_current_texture()`. Immediate, the instrumentation, and all benchmark hooks
-were reverted.
-
-3. How the five M8 numbers were captured
-
-They were automated `low_flight_performance` scenario runs, not manual foreground
-measurements. The exact radial-blur invocation was:
-
-```sh
-bin=/home/dad/catingard-target/release/catinthegarden-app
-$bin --scenario low_flight_performance > /tmp/m8-blur.log 2>&1 & pid=$!
-python3 /tmp/catingard-m7-input.py "$pid" 0xffc2 0x35
-wait "$pid" || true
-```
-
-`0xffc2` is F5 and `0x35` is key 5. Its run was
-`test-runs/low_flight_performance/1784750630-1510466`; discarding the first
-spatial sample gave 16.911ms / 59.13 FPS.
-
-I rebuilt original M8 commit `a93931e` in isolated worktree
-`/home/dad/catingard-m7-perf` with target
-`/home/dad/catingard-m7-target`. In the current desktop session it also produced
-exactly one spatial/timing sample and stalled. Thus this is an environmental
-window/compositor presentation regression, not a code regression after M8, so
-there is no code commit range to bisect.
-
-4. Halftone mirror defect
-
-Rust `HALFTONE_CELL_NDC` now equals WGSL at 0.06, with a comment requiring them
-to track. Validation: 121/121 app tests passed, including both Naga WGSL tests,
-and the normal release build passed.
-
-No key-6 M8 number or documentation result is claimed.
+No new actionable instruction was present. Existing unrelated files and the
+uncommitted 500-foot start change remain untouched.
