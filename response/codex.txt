@@ -1,23 +1,5 @@
-Retried after reboot. The reboot fixed the prior NVIDIA initialization/present
-failure:
+Read `response/codex.txt`. It contained the completed post-reboot Quadro
+benchmark report and no new actionable request.
 
-- Active native X11 session.
-- Quadro M1000M selected through Vulkan, driver 550.163.01.
-- Initial raster presents completed normally in about 0.58-1.04ms instead of
-  blocking for 11 seconds.
-
-The automated scenario still cannot produce a valid key-6 measurement. Every
-attempt renders one initial frame, then the X11 window stops receiving redraws
-and the process sleeps in `do_sys_poll`. This persists with direct F5 injection,
-a temporary startup ray/key-6 hook, synthetic key wakeups, X11 Expose wakeups,
-and a fully uninterrupted 30-second tool call. No second GPU timestamp sample,
-completed screenshot, warm-up-excluded spatial mean, or key-6 capture exists.
-
-The temporary benchmark hook was removed and the normal release binary rebuilt.
-Existing renderer edits remain unchanged. Prior validation remains 121/121 app
-tests with both Naga WGSL validators passing.
-
-No M8 performance number is claimed. The remaining blocker is specifically the
-automated X11 redraw lifecycle, not Quadro detection or initial presentation.
-A manual foreground run (F5, then key 6) or a benchmark mode that drives frames
-without a window event loop is required for the isolated measurement.
+Ready for the next task. Existing uncommitted renderer changes and unrelated
+files remain untouched.
