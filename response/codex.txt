@@ -1,3 +1,58 @@
-Cancelled at Ian's request. No work performed from the repeated
-`response/claude.txt` prompt. Source and existing unrelated files remain
-untouched.
+Read `response/claude.txt`; ran diagnostics a/b/c in order with no source
+changes.
+
+## a. NVIDIA Vulkan offload variables: failed
+
+Command environment:
+
+```sh
+__NV_PRIME_RENDER_OFFLOAD=1 __VK_LAYER_NV_optimus=NVIDIA_only
+```
+
+The app selected Quadro M1000M / Vulkan / NVIDIA 550.163.01. F5 and key 5 were
+injected successfully, but the run produced one spatial sample and then stalled
+in presentation as before.
+
+- Run: `test-runs/low_flight_performance/1784849246-56597`
+- Manifest: `passed: null`
+- Process ended only through the 30-second watchdog.
+
+## b. Xvfb: failed
+
+The app again selected Quadro M1000M. NVIDIA Vulkan WSI reported:
+
+```text
+vulkan: No DRI3 support detected - required for presentation
+Note: you can probably enable DRI3 in your Xorg config
+```
+
+Its first present blocked for 11.215 seconds. Later near-zero spatial values were
+surface-failure CPU-loop samples, not rendered frames; screenshot completion and
+the manifest never completed.
+
+- Run: `test-runs/low_flight_performance/1784849305-57162`
+- Manifest: `passed: null`
+- Process ended through the 30-second watchdog.
+
+## c. Intel adapter: worked
+
+With `WGPU_ADAPTER_NAME=Intel`, the physical-display scenario completed all 4.0
+seconds, wrote nine spatial samples, and captured both screenshots:
+
+- Run: `test-runs/low_flight_performance/1784849362-57749`
+- Adapter: Intel HD Graphics 530 / Vulkan
+- Spatial samples: 30.041, 57.918, 51.811, 49.684, 49.048, 39.720, 45.588,
+  40.143, 47.227ms
+- Captures: 2/2
+
+The manifest completed `passed: false` only because the raster diagnostic
+reported one 556.37m seam sample and fallback count 193 versus allowed 192;
+presentation, timing, and capture completion all worked.
+
+Conclusion: this confirms the Quadro-to-Intel Optimus/PRIME presentation path is
+the blocker. The same scenario/display path works when rendering directly on the
+Intel display GPU. Since (a) did not restore Quadro presentation, no valid key-6
+Quadro measurement or capture comparison was possible. No M8 number was
+invented and no guide update was made.
+
+Existing uncommitted 500-foot start and unrelated files remain untouched.
