@@ -1,15 +1,17 @@
-Key-6 isolated Quadro measurement attempted, but cannot be reported honestly yet.
+Read `response/claude.txt` and retried the requested key-6 Quadro prerequisite.
 
-- Validation: `cargo test -p catinthegarden-app` passed, 121/121 tests.
-- WGSL: passed both Naga parser regressions:
-  `full_resolution_raymarch_shader_is_valid_wgsl` and
-  `unwarp_shader_is_valid_and_writes_webgpu_reversed_depth`.
-- Release build: passed.
-- Hardware blocker: `nvidia-smi` still cannot communicate with the NVIDIA driver,
-  even outside the sandbox. PCI enumeration sees the Quadro M1000M, but the current
-  runtime cannot use or identify it as an active adapter. Therefore no valid Quadro
-  warm-up-excluded spatial mean, FPS, or deterministic capture comparison exists.
+The isolated measurement remains blocked by unavailable Quadro hardware:
 
-I did not substitute an Intel/software run or invent a result, and did not update the
-M8 guide. Re-run key 6 only after the Quadro driver/device is restored; all other M8
-toggles must remain off. Existing uncommitted renderer changes remain untouched.
+- `nvidia-smi` cannot communicate with the NVIDIA driver.
+- No `/dev/nvidia*` device nodes exist.
+- No `nvidia` or `nouveau` kernel module is loaded.
+- `/dev/dri` exposes only `card0` / `renderD128`, corresponding to Intel HD 530.
+
+The exact current working tree already passed 121/121 app tests, including both
+Naga WGSL validators, and its release build passed. I cannot honestly provide a
+Quadro warm-up-excluded mean, FPS, or capture comparison from this runtime. I did
+not substitute Intel/software measurements, alter the M8 guide, or touch the
+existing renderer changes.
+
+Key 6 must be measured after the Quadro driver/device is restored, with keys 1-5
+off, using the established low-flight warm-up-excluded spatial-mean procedure.
