@@ -1,17 +1,21 @@
-Read `response/claude.txt` and retried the requested key-6 Quadro prerequisite.
+Retried after the Quadro driver came up. The device is now visible and selected:
 
-The isolated measurement remains blocked by unavailable Quadro hardware:
+- Quadro M1000M, NVIDIA 550.163.01, P0.
+- `/dev/nvidia*` nodes and the `nvidia` kernel modules are present.
+- Both attempted runs logged the Quadro M1000M Vulkan adapter.
 
-- `nvidia-smi` cannot communicate with the NVIDIA driver.
-- No `/dev/nvidia*` device nodes exist.
-- No `nvidia` or `nouveau` kernel module is loaded.
-- `/dev/dri` exposes only `card0` / `renderD128`, corresponding to Intel HD 530.
+The graphics presentation path is still unusable for measurement. On both the
+normal Wayland path and forced X11 path, the first NVIDIA `present()` blocked for
+about 11.16-11.20 seconds. Subsequent surface frames did not present, screenshot
+readback never completed, and no valid GPU timestamp samples were produced. The
+resulting near-zero spatial entries are skipped/error-loop CPU frames, not render
+times, so they cannot be reported as key-6 performance.
 
-The exact current working tree already passed 121/121 app tests, including both
-Naga WGSL validators, and its release build passed. I cannot honestly provide a
-Quadro warm-up-excluded mean, FPS, or capture comparison from this runtime. I did
-not substitute Intel/software measurements, alter the M8 guide, or touch the
-existing renderer changes.
+I tested a temporary environment hook to select ray mode/key 6 without unreliable
+input injection, then removed that hook and rebuilt the normal release binary.
+Existing renderer edits remain unchanged. The current tree's prior validation
+still stands at 121/121 app tests with both Naga WGSL validators passing.
 
-Key 6 must be measured after the Quadro driver/device is restored, with keys 1-5
-off, using the established low-flight warm-up-excluded spatial-mean procedure.
+No M8 number or capture comparison is claimed. The display session/compositor
+needs restarting after the NVIDIA module load (or the machine needs rebooting)
+before rerunning the isolated baseline and key-6 scenario.
