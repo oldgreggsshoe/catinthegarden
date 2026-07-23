@@ -1455,7 +1455,7 @@ impl State {
             let warp_debug_visible = self.foveated.warp_debug_visible();
             let fovea_ndc = self.foveated.fovea_ndc();
             let experiment_states =
-                [1_u8, 2, 3, 4, 5].map(|index| self.foveated.experiment_enabled(index));
+                [1_u8, 2, 3, 4, 5, 6].map(|index| self.foveated.experiment_enabled(index));
             let animation_frozen = self.animation_frozen;
             let camera_mode = self.camera_mode;
             let flight_speed_meters_per_second = self.flight_speed.speed_meters_per_second;
@@ -1540,12 +1540,13 @@ impl State {
                                 if warp_debug_visible { "on" } else { "off" },
                             ));
                             ui.label(format!(
-                                "M8: 1 horizon {} | 2 temporal {} | 3 adaptive {} | 4 shading {} | 5 blur {}",
+                                "M8: 1 horizon {} | 2 temporal {} | 3 adaptive {} | 4 shading {} | 5 blur {} | 6 halftone {}",
                                 if experiment_states[0] { "on" } else { "off" },
                                 if experiment_states[1] { "on" } else { "off" },
                                 if experiment_states[2] { "on" } else { "off" },
                                 if experiment_states[3] { "on" } else { "off" },
                                 if experiment_states[4] { "on" } else { "off" },
+                                if experiment_states[5] { "on" } else { "off" },
                             ));
                             ui.label(format!(
                                 "Animation: {}",
@@ -2241,6 +2242,7 @@ impl ApplicationHandler for App {
                                     | KeyCode::Digit3
                                     | KeyCode::Digit4
                                     | KeyCode::Digit5
+                                    | KeyCode::Digit6
                             )
                         ) =>
                 {
@@ -2250,6 +2252,7 @@ impl ApplicationHandler for App {
                         PhysicalKey::Code(KeyCode::Digit3) => Some(3),
                         PhysicalKey::Code(KeyCode::Digit4) => Some(4),
                         PhysicalKey::Code(KeyCode::Digit5) => Some(5),
+                        PhysicalKey::Code(KeyCode::Digit6) => Some(6),
                         _ => None,
                     };
                     if let Some(experiment) = experiment {

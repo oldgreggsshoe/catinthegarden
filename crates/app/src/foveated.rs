@@ -20,6 +20,7 @@ const EXPERIMENT_TEMPORAL_REUSE: u32 = 1 << 1;
 const EXPERIMENT_CONTENT_ADAPTIVE: u32 = 1 << 2;
 const EXPERIMENT_FOVEATED_SHADING: u32 = 1 << 3;
 const EXPERIMENT_RADIAL_BLUR: u32 = 1 << 4;
+const EXPERIMENT_HALFTONE: u32 = 1 << 5;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -792,7 +793,8 @@ fn experiment_flag(index: u8) -> u32 {
         3 => EXPERIMENT_CONTENT_ADAPTIVE,
         4 => EXPERIMENT_FOVEATED_SHADING,
         5 => EXPERIMENT_RADIAL_BLUR,
-        _ => panic!("M8 experiment index must be in 1..=5"),
+        6 => EXPERIMENT_HALFTONE,
+        _ => panic!("M8 experiment index must be in 1..=6"),
     }
 }
 
@@ -1223,10 +1225,10 @@ impl From<OutmapError> for FoveatedError {
 #[cfg(test)]
 mod tests {
     use super::{
-        EXPERIMENT_CONTENT_ADAPTIVE, EXPERIMENT_FOVEATED_SHADING, EXPERIMENT_HORIZON_DENSITY,
-        EXPERIMENT_RADIAL_BLUR, EXPERIMENT_TEMPORAL_REUSE, FIELD_LEVEL, RayUniform, WarpUniform,
-        eased_fovea_ndc, experiment_flag, face_sample_source, max_height_mips,
-        raymarch_shader_source, warp_size_for,
+        EXPERIMENT_CONTENT_ADAPTIVE, EXPERIMENT_FOVEATED_SHADING, EXPERIMENT_HALFTONE,
+        EXPERIMENT_HORIZON_DENSITY, EXPERIMENT_RADIAL_BLUR, EXPERIMENT_TEMPORAL_REUSE, FIELD_LEVEL,
+        RayUniform, WarpUniform, eased_fovea_ndc, experiment_flag, face_sample_source,
+        max_height_mips, raymarch_shader_source, warp_size_for,
     };
     use catinthegarden_coretypes::{TILE_LOGICAL_SIZE, TILE_STORED_SIZE};
 
@@ -1335,6 +1337,45 @@ mod tests {
         assert!(warp_axis(0.01).abs() > 0.0);
     }
 
+    // Must track HALFTONE_CELL_NDC in foveated_unwarp.wgsl.
+    const HALFTONE_CELL_NDC: f32 = 0.06;
+
+    fn halftone_cell_center_ndc(screen_ndc: [f32; 2], aspect_ratio: f32) -> [f32; 2] {
+        let corrected = [screen_ndc[0] * aspect_ratio, screen_ndc[1]];
+        let cell = [
+            (corrected[0] / HALFTONE_CELL_NDC).floor(),
+            (corrected[1] / HALFTONE_CELL_NDC).floor(),
+        ];
+        let center_corrected = [
+            (cell[0] + 0.5) * HALFTONE_CELL_NDC,
+            (cell[1] + 0.5) * HALFTONE_CELL_NDC,
+        ];
+        [center_corrected[0] / aspect_ratio, center_corrected[1]]
+    }
+
+    #[test]
+    fn halftone_cells_share_a_center_and_correct_for_aspect_ratio() {
+        let aspect_ratio = 1.6_f32;
+        let base = halftone_cell_center_ndc([0.10, 0.10], aspect_ratio);
+        let nearby = halftone_cell_center_ndc([0.105, 0.105], aspect_ratio);
+        assert_eq!(
+            base, nearby,
+            "points inside the same cell must share a center"
+        );
+
+        // Cells are square in aspect-corrected space, so stepping one cell
+        // width along screen-space x (which the shader scales by the aspect
+        // ratio before quantizing) must move the center by less than a
+        // step along y, exactly in proportion to the aspect ratio.
+        let center_origin = halftone_cell_center_ndc([0.0, 0.0], aspect_ratio);
+        let center_x_step = halftone_cell_center_ndc([HALFTONE_CELL_NDC, 0.0], aspect_ratio);
+        let center_y_step = halftone_cell_center_ndc([0.0, HALFTONE_CELL_NDC], aspect_ratio);
+        let x_step_ndc = center_x_step[0] - center_origin[0];
+        let y_step_ndc = center_y_step[1] - center_origin[1];
+        assert!((x_step_ndc - HALFTONE_CELL_NDC / aspect_ratio).abs() <= 1.0e-6);
+        assert!((y_step_ndc - HALFTONE_CELL_NDC).abs() <= 1.0e-6);
+    }
+
     #[test]
     fn fovea_easing_is_frame_rate_independent_and_returns_toward_center() {
         let one_step = eased_fovea_ndc([0.0; 2], [0.7, -0.4], 1.0, 5.0);
@@ -1370,11 +1411,12 @@ mod tests {
         assert_eq!(experiment_flag(3), EXPERIMENT_CONTENT_ADAPTIVE);
         assert_eq!(experiment_flag(4), EXPERIMENT_FOVEATED_SHADING);
         assert_eq!(experiment_flag(5), EXPERIMENT_RADIAL_BLUR);
+        assert_eq!(experiment_flag(6), EXPERIMENT_HALFTONE);
         assert_eq!(
-            (1..=5)
+            (1..=6)
                 .map(experiment_flag)
                 .fold(0, |flags, flag| flags | flag),
-            0b1_1111
+            0b11_1111
         );
     }
 

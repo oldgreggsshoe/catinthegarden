@@ -16,6 +16,13 @@ struct WarpUniform {
 }
 
 const EXPERIMENT_RADIAL_BLUR: u32 = 1u << 4u;
+const EXPERIMENT_HALFTONE: u32 = 1u << 5u;
+const HALFTONE_CELL_NDC: f32 = 0.06;
+const HALFTONE_MIN_DOT_FRACTION: f32 = 0.12;
+const HALFTONE_MAX_DOT_FRACTION: f32 = 0.92;
+const HALFTONE_TONE_COMPRESSION: f32 = 0.12;
+const HALFTONE_EDGE_SOFTNESS_NDC: f32 = 0.004;
+const HALFTONE_BACKGROUND_WEIGHT: f32 = 0.08;
 
 @group(0) @binding(0)
 var<uniform> camera: Camera;
@@ -74,6 +81,49 @@ fn texture_ndc_for_screen(screen_ndc: vec2<f32>) -> vec2<f32> {
     );
 }
 
+// Quantizes the screen into aspect-correct square cells and, in each cell,
+// samples one color and draws it as a filled circle sized by that sample's
+// tone (bright cells get large dots, dark cells get small ones) rather than
+// shading every pixel independently. This is a real halftone/Ben-Day screen,
+// not just a dot-shaped tint: dot *size* carries the tonal variation, the
+// way it does in print, instead of every dot being the same size. It turns
+// per-pixel undersampling noise (the coarse-field/material shimmer at low
+// altitude) into a deliberate stipple pattern instead of raw grain.
+fn halftone_cell_center_ndc(screen_ndc: vec2<f32>, aspect_ratio: f32) -> vec2<f32> {
+    let corrected = vec2<f32>(screen_ndc.x * aspect_ratio, screen_ndc.y);
+    let cell = floor(corrected / HALFTONE_CELL_NDC);
+    let cell_center_corrected = (cell + vec2<f32>(0.5)) * HALFTONE_CELL_NDC;
+    return vec2<f32>(cell_center_corrected.x / aspect_ratio, cell_center_corrected.y);
+}
+
+fn halftone_color(screen_ndc: vec2<f32>) -> vec3<f32> {
+    let aspect_ratio = camera.projection.x;
+    let cell_center_ndc = halftone_cell_center_ndc(screen_ndc, aspect_ratio);
+    let cell_uv = texture_uv(texture_ndc_for_screen(cell_center_ndc));
+    let cell_color = textureSampleLevel(warp_color, warp_sampler, cell_uv, 0.0).rgb;
+    let corrected = vec2<f32>(screen_ndc.x * aspect_ratio, screen_ndc.y);
+    let cell_center_corrected = vec2<f32>(
+        cell_center_ndc.x * aspect_ratio,
+        cell_center_ndc.y,
+    );
+
+    // Reinhard-style local response: maps any HDR radiance (this samples the
+    // pre-tonemap scene color) into 0..1 without needing the real exposure
+    // value, so dot size still varies sensibly however bright the frame is.
+    let luminance = dot(cell_color, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let tone = luminance / (luminance + HALFTONE_TONE_COMPRESSION);
+    let dot_fraction = mix(HALFTONE_MIN_DOT_FRACTION, HALFTONE_MAX_DOT_FRACTION, saturate(tone));
+    let radius = HALFTONE_CELL_NDC * 0.5 * dot_fraction;
+
+    let distance_from_center = length(corrected - cell_center_corrected);
+    let coverage = 1.0 - smoothstep(
+        radius - HALFTONE_EDGE_SOFTNESS_NDC,
+        radius + HALFTONE_EDGE_SOFTNESS_NDC,
+        distance_from_center,
+    );
+    return mix(cell_color * HALFTONE_BACKGROUND_WEIGHT, cell_color, coverage);
+}
+
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     var positions = array<vec2<f32>, 3>(
@@ -124,6 +174,9 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
             );
             color = inner * 0.25 + color * 0.5 + outer * 0.25;
         }
+    }
+    if (warp_settings.experiment_flags & EXPERIMENT_HALFTONE) != 0u {
+        color = vec4<f32>(halftone_color(input.ndc), color.a);
     }
 
     let dimensions = textureDimensions(warp_distance);
