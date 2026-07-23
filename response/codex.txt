@@ -1,3 +1,15 @@
-Read `response/codex.txt`. It contained the completed M6-M8 orbit performance audit, with no new actionable request.
+Key-6 isolated Quadro measurement attempted, but cannot be reported honestly yet.
 
-Ready for next task. Existing uncommitted changes in `foveated.rs`, `foveated_unwarp.wgsl`, `main.rs`, and `planet.rs` were left untouched.
+- Validation: `cargo test -p catinthegarden-app` passed, 121/121 tests.
+- WGSL: passed both Naga parser regressions:
+  `full_resolution_raymarch_shader_is_valid_wgsl` and
+  `unwarp_shader_is_valid_and_writes_webgpu_reversed_depth`.
+- Release build: passed.
+- Hardware blocker: `nvidia-smi` still cannot communicate with the NVIDIA driver,
+  even outside the sandbox. PCI enumeration sees the Quadro M1000M, but the current
+  runtime cannot use or identify it as an active adapter. Therefore no valid Quadro
+  warm-up-excluded spatial mean, FPS, or deterministic capture comparison exists.
+
+I did not substitute an Intel/software run or invent a result, and did not update the
+M8 guide. Re-run key 6 only after the Quadro driver/device is restored; all other M8
+toggles must remain off. Existing uncommitted renderer changes remain untouched.
