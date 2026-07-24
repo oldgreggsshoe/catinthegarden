@@ -21,6 +21,11 @@ const EXPERIMENT_CONTENT_ADAPTIVE: u32 = 1 << 2;
 const EXPERIMENT_FOVEATED_SHADING: u32 = 1 << 3;
 const EXPERIMENT_RADIAL_BLUR: u32 = 1 << 4;
 const EXPERIMENT_HALFTONE: u32 = 1 << 5;
+const HALFTONE_LAYOUT_EXTENT: u32 = 128;
+const HALFTONE_MIN_SPACING_CELLS: f32 = 0.62;
+const HALFTONE_RELAX_TARGET_SPACING_CELLS: f32 = 1.10;
+const HALFTONE_RELAX_MAX_ITERATIONS: u32 = 30;
+const HALFTONE_INITIAL_JITTER_CELLS: f32 = 1.0 - HALFTONE_MIN_SPACING_CELLS;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -84,6 +89,8 @@ pub struct FoveatedRenderer {
     _max_height_texture: wgpu::Texture,
     _biome_texture: wgpu::Texture,
     _moisture_texture: wgpu::Texture,
+    _halftone_offset_texture: wgpu::Texture,
+    halftone_offset_view: wgpu::TextureView,
     warp_color_texture: wgpu::Texture,
     warp_color_view: wgpu::TextureView,
     warp_distance_texture: wgpu::Texture,
@@ -382,6 +389,10 @@ impl FoveatedRenderer {
                         },
                         count: None,
                     },
+                    texture_2d_layout_entry(
+                        4,
+                        wgpu::TextureSampleType::Float { filterable: false },
+                    ),
                 ],
             });
         let unwarp_pipeline_layout =
@@ -476,6 +487,9 @@ impl FoveatedRenderer {
             &history_distance_view,
             &warp_sampler,
         );
+        let halftone_layout = relaxed_halftone_layout();
+        let (halftone_offset_texture, halftone_offset_view) =
+            create_halftone_offset_texture(device, queue, &halftone_layout.encoded);
         let unwarp_bind_group = create_unwarp_bind_group(
             device,
             &unwarp_bind_group_layout,
@@ -483,6 +497,7 @@ impl FoveatedRenderer {
             &warp_distance_view,
             &warp_sampler,
             &warp_uniform_buffer,
+            &halftone_offset_view,
         );
 
         Ok(Self {
@@ -514,6 +529,8 @@ impl FoveatedRenderer {
             _max_height_texture: max_height_texture,
             _biome_texture: biome_texture,
             _moisture_texture: moisture_texture,
+            _halftone_offset_texture: halftone_offset_texture,
+            halftone_offset_view,
             warp_color_texture,
             warp_color_view,
             warp_distance_texture,
@@ -623,6 +640,7 @@ impl FoveatedRenderer {
             &warp_distance_view,
             &self.warp_sampler,
             &self.warp_uniform_buffer,
+            &self.halftone_offset_view,
         );
         self.warp_size = warp_size;
         self.warp_color_texture = warp_color_texture;
@@ -862,6 +880,208 @@ fn warp_size_for(size: winit::dpi::PhysicalSize<u32>) -> winit::dpi::PhysicalSiz
     )
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+struct HalftoneLayout {
+    offsets: Vec<[f32; 2]>,
+    encoded: Vec<u8>,
+    iterations: u32,
+}
+
+#[derive(Clone, Copy)]
+#[cfg_attr(not(test), allow(dead_code))]
+struct NearestNeighbourStats {
+    minimum: f32,
+    mean: f32,
+    variance: f32,
+}
+
+fn relaxed_halftone_layout() -> HalftoneLayout {
+    let extent = HALFTONE_LAYOUT_EXTENT;
+    let mut offsets = Vec::with_capacity((extent * extent) as usize);
+    for y in 0..extent {
+        for x in 0..extent {
+            offsets.push([
+                halftone_seed_offset(x, y, 0x9e37_79b9),
+                halftone_seed_offset(x, y, 0x85eb_ca6b),
+            ]);
+        }
+    }
+
+    let mut iterations = 0;
+    let mut previous_minimum = nearest_neighbour_stats(&offsets, extent).minimum;
+    let mut stalled_iterations = 0;
+    while iterations < HALFTONE_RELAX_MAX_ITERATIONS {
+        let mut corrections = vec![[0.0; 2]; offsets.len()];
+        for y in 0..extent {
+            for x in 0..extent {
+                let index = halftone_layout_index(x, y, extent);
+                for (dx, dy) in [(1_i32, 0_i32), (0, 1), (1, 1), (1, -1)] {
+                    let neighbour_x = (x as i32 + dx).rem_euclid(extent as i32) as u32;
+                    let neighbour_y = (y as i32 + dy).rem_euclid(extent as i32) as u32;
+                    let neighbour_index = halftone_layout_index(neighbour_x, neighbour_y, extent);
+                    let delta = [
+                        dx as f32 + offsets[neighbour_index][0] - offsets[index][0],
+                        dy as f32 + offsets[neighbour_index][1] - offsets[index][1],
+                    ];
+                    let distance = delta[0].hypot(delta[1]);
+                    if distance >= HALFTONE_RELAX_TARGET_SPACING_CELLS {
+                        continue;
+                    }
+                    let correction =
+                        0.375 * (HALFTONE_RELAX_TARGET_SPACING_CELLS - distance) / distance;
+                    let push = [delta[0] * correction, delta[1] * correction];
+                    corrections[index][0] -= push[0];
+                    corrections[index][1] -= push[1];
+                    corrections[neighbour_index][0] += push[0];
+                    corrections[neighbour_index][1] += push[1];
+                }
+            }
+        }
+
+        for (offset, correction) in offsets.iter_mut().zip(corrections) {
+            // Point ownership is invariant: relaxation can move a point only
+            // within half a cell of its own cell centre.
+            offset[0] = (offset[0] + correction[0]).clamp(-0.5, 0.5);
+            offset[1] = (offset[1] + correction[1]).clamp(-0.5, 0.5);
+        }
+        iterations += 1;
+
+        let minimum = nearest_neighbour_stats(&offsets, extent).minimum;
+        if minimum - previous_minimum <= 0.000_25 {
+            stalled_iterations += 1;
+        } else {
+            stalled_iterations = 0;
+        }
+        previous_minimum = minimum;
+        if stalled_iterations == 3 && minimum >= HALFTONE_MIN_SPACING_CELLS {
+            break;
+        }
+    }
+
+    // Rg8Unorm stores each cell-local offset by mapping [-0.5, +0.5] cells to
+    // [0, 255]. Width 128 makes each tightly packed row exactly 256 bytes.
+    let encoded = offsets
+        .iter()
+        .flat_map(|offset| offset.map(|component| ((component + 0.5) * 255.0).round() as u8))
+        .collect();
+    HalftoneLayout {
+        offsets,
+        encoded,
+        iterations,
+    }
+}
+
+fn halftone_seed_offset(x: u32, y: u32, salt: u32) -> f32 {
+    let mut hash = x
+        .wrapping_mul(0x8da6_b343)
+        .wrapping_add(y.wrapping_mul(0xd816_3841))
+        ^ salt;
+    hash ^= hash >> 16;
+    hash = hash.wrapping_mul(0x7feb_352d);
+    hash ^= hash >> 15;
+    hash = hash.wrapping_mul(0x846c_a68b);
+    hash ^= hash >> 16;
+    let unit = (hash & 0x00ff_ffff) as f32 / 0x00ff_ffff_u32 as f32;
+    (unit - 0.5) * HALFTONE_INITIAL_JITTER_CELLS
+}
+
+fn halftone_layout_index(x: u32, y: u32, extent: u32) -> usize {
+    (y * extent + x) as usize
+}
+
+#[cfg(test)]
+fn decoded_halftone_offsets(encoded: &[u8]) -> Vec<[f32; 2]> {
+    encoded
+        .chunks_exact(2)
+        .map(|texel| {
+            [
+                f32::from(texel[0]) / 255.0 - 0.5,
+                f32::from(texel[1]) / 255.0 - 0.5,
+            ]
+        })
+        .collect()
+}
+
+fn nearest_neighbour_stats(offsets: &[[f32; 2]], extent: u32) -> NearestNeighbourStats {
+    assert_eq!(offsets.len(), (extent * extent) as usize);
+    let mut minimum = f32::MAX;
+    let mut sum = 0.0;
+    let mut sum_squared = 0.0;
+    for y in 0..extent {
+        for x in 0..extent {
+            let here = offsets[halftone_layout_index(x, y, extent)];
+            let mut nearest = f32::MAX;
+            for dy in -1_i32..=1 {
+                for dx in -1_i32..=1 {
+                    if dx == 0 && dy == 0 {
+                        continue;
+                    }
+                    let neighbour_x = (x as i32 + dx).rem_euclid(extent as i32) as u32;
+                    let neighbour_y = (y as i32 + dy).rem_euclid(extent as i32) as u32;
+                    let neighbour =
+                        offsets[halftone_layout_index(neighbour_x, neighbour_y, extent)];
+                    let delta = [
+                        dx as f32 + neighbour[0] - here[0],
+                        dy as f32 + neighbour[1] - here[1],
+                    ];
+                    nearest = nearest.min(delta[0].hypot(delta[1]));
+                }
+            }
+            minimum = minimum.min(nearest);
+            sum += nearest;
+            sum_squared += nearest * nearest;
+        }
+    }
+    let count = offsets.len() as f32;
+    let mean = sum / count;
+    NearestNeighbourStats {
+        minimum,
+        mean,
+        variance: (sum_squared / count - mean * mean).max(0.0),
+    }
+}
+
+fn create_halftone_offset_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    encoded: &[u8],
+) -> (wgpu::Texture, wgpu::TextureView) {
+    assert_eq!(
+        encoded.len(),
+        (HALFTONE_LAYOUT_EXTENT * HALFTONE_LAYOUT_EXTENT * 2) as usize
+    );
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("relaxed halftone cell offsets"),
+        size: wgpu::Extent3d {
+            width: HALFTONE_LAYOUT_EXTENT,
+            height: HALFTONE_LAYOUT_EXTENT,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rg8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        texture.as_image_copy(),
+        encoded,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(HALFTONE_LAYOUT_EXTENT * 2),
+            rows_per_image: Some(HALFTONE_LAYOUT_EXTENT),
+        },
+        wgpu::Extent3d {
+            width: HALFTONE_LAYOUT_EXTENT,
+            height: HALFTONE_LAYOUT_EXTENT,
+            depth_or_array_layers: 1,
+        },
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
 fn create_warp_texture(
     device: &wgpu::Device,
     label: &str,
@@ -923,6 +1143,7 @@ fn create_unwarp_bind_group(
     distance_view: &wgpu::TextureView,
     sampler: &wgpu::Sampler,
     uniform_buffer: &wgpu::Buffer,
+    halftone_offset_view: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("foveated unwarp bind group"),
@@ -943,6 +1164,10 @@ fn create_unwarp_bind_group(
             wgpu::BindGroupEntry {
                 binding: 3,
                 resource: uniform_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::TextureView(halftone_offset_view),
             },
         ],
     })
@@ -1227,8 +1452,10 @@ mod tests {
     use super::{
         EXPERIMENT_CONTENT_ADAPTIVE, EXPERIMENT_FOVEATED_SHADING, EXPERIMENT_HALFTONE,
         EXPERIMENT_HORIZON_DENSITY, EXPERIMENT_RADIAL_BLUR, EXPERIMENT_TEMPORAL_REUSE, FIELD_LEVEL,
-        RayUniform, WarpUniform, eased_fovea_ndc, experiment_flag, face_sample_source,
-        max_height_mips, raymarch_shader_source, warp_size_for,
+        HALFTONE_LAYOUT_EXTENT, HALFTONE_MIN_SPACING_CELLS, RayUniform, WarpUniform,
+        decoded_halftone_offsets, eased_fovea_ndc, experiment_flag, face_sample_source,
+        max_height_mips, nearest_neighbour_stats, raymarch_shader_source, relaxed_halftone_layout,
+        warp_size_for,
     };
     use catinthegarden_coretypes::{TILE_LOGICAL_SIZE, TILE_STORED_SIZE};
 
@@ -1338,7 +1565,13 @@ mod tests {
     }
 
     // Must track HALFTONE_CELL_NDC in foveated_unwarp.wgsl.
-    const HALFTONE_CELL_NDC: f32 = 0.06;
+    const HALFTONE_CELL_NDC: f32 = 0.028;
+    // Must track HALFTONE_DOT_SCALE, HALFTONE_MAX_DOT_FRACTION and
+    // HALFTONE_JITTER in foveated_unwarp.wgsl.
+    const HALFTONE_DOT_SCALE: f32 = 1.5;
+    const HALFTONE_MAX_DOT_FRACTION: f32 = 0.92;
+    const HALFTONE_MIN_SPACING: f32 = 0.62;
+    const HALFTONE_JITTER: f32 = 1.0 - HALFTONE_MIN_SPACING;
 
     fn halftone_cell_center_ndc(screen_ndc: [f32; 2], aspect_ratio: f32) -> [f32; 2] {
         let corrected = [screen_ndc[0] * aspect_ratio, screen_ndc[1]];
@@ -1374,6 +1607,119 @@ mod tests {
         let y_step_ndc = center_y_step[1] - center_origin[1];
         assert!((x_step_ndc - HALFTONE_CELL_NDC / aspect_ratio).abs() <= 1.0e-6);
         assert!((y_step_ndc - HALFTONE_CELL_NDC).abs() <= 1.0e-6);
+    }
+
+    #[test]
+    fn halftone_dot_scale_makes_the_brightest_dots_overlap_their_neighbours() {
+        // Dot radius at full tone, mirroring halftone_dot_radius in the shader.
+        let radius = HALFTONE_CELL_NDC * 0.5 * HALFTONE_MAX_DOT_FRACTION * HALFTONE_DOT_SCALE;
+
+        // Neighbouring cell centers sit exactly one cell apart, so dots touch at
+        // half a cell of radius and overlap beyond it. This is the whole point
+        // of the scale: without it the radius caps at 0.46 of a cell and dots
+        // can never meet.
+        assert!(
+            radius > HALFTONE_CELL_NDC * 0.5,
+            "brightest dots must overlap: radius {radius} vs half-cell {}",
+            HALFTONE_CELL_NDC * 0.5
+        );
+
+        // The shader only searches a 3x3 neighbourhood, so a dot from an
+        // unsearched cell must never be able to reach this pixel. Measured in
+        // max-norm: the pixel sits up to half a cell from its own cell center,
+        // the nearest unsearched center is two cells away, and jitter can drag
+        // that dot up to half its jitter span back toward the pixel.
+        let reach_limit = HALFTONE_CELL_NDC * (2.0 - 0.5 - 0.5);
+        assert!(
+            radius < reach_limit,
+            "dots must stay within the 3x3 search: radius {radius} vs limit {reach_limit}"
+        );
+    }
+
+    fn old_hash_halftone_offsets() -> Vec<[f32; 2]> {
+        let fract = |value: f32| value - value.floor();
+        (0..HALFTONE_LAYOUT_EXTENT)
+            .flat_map(|y| {
+                (0..HALFTONE_LAYOUT_EXTENT).map(move |x| {
+                    let cell = [x as f32, y as f32];
+                    let seeded = [
+                        cell[0] * 127.1 + cell[1] * 311.7,
+                        cell[0] * 269.5 + cell[1] * 183.3,
+                    ];
+                    [
+                        (fract(seeded[0].sin() * 43758.5453) - 0.5) * HALFTONE_JITTER,
+                        (fract(seeded[1].sin() * 43758.5453) - 0.5) * HALFTONE_JITTER,
+                    ]
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn relaxed_halftone_keeps_exactly_one_point_owned_by_each_cell() {
+        let layout = relaxed_halftone_layout();
+        let offsets = decoded_halftone_offsets(&layout.encoded);
+        assert_eq!(
+            offsets.len(),
+            (HALFTONE_LAYOUT_EXTENT * HALFTONE_LAYOUT_EXTENT) as usize
+        );
+        for y in 0..HALFTONE_LAYOUT_EXTENT {
+            for x in 0..HALFTONE_LAYOUT_EXTENT {
+                let offset = offsets[(y * HALFTONE_LAYOUT_EXTENT + x) as usize];
+                let owner = [
+                    (x as f32 + 0.5 + offset[0]).floor() as u32,
+                    (y as f32 + 0.5 + offset[1]).floor() as u32,
+                ];
+                assert_eq!(owner, [x, y], "point at ({x}, {y}) changed cell");
+            }
+        }
+    }
+
+    #[test]
+    fn relaxed_halftone_offsets_stay_within_half_a_cell() {
+        let layout = relaxed_halftone_layout();
+        for offset in layout.offsets {
+            assert!(offset[0].abs() <= 0.5 && offset[1].abs() <= 0.5);
+        }
+    }
+
+    #[test]
+    fn quantized_relaxed_halftone_respects_the_spacing_floor() {
+        let layout = relaxed_halftone_layout();
+        let offsets = decoded_halftone_offsets(&layout.encoded);
+        let stats = nearest_neighbour_stats(&offsets, HALFTONE_LAYOUT_EXTENT);
+        assert!(
+            stats.minimum >= HALFTONE_MIN_SPACING_CELLS,
+            "quantized minimum spacing {} fell below {} after {} iterations",
+            stats.minimum,
+            HALFTONE_MIN_SPACING_CELLS,
+            layout.iterations
+        );
+    }
+
+    #[test]
+    fn relaxed_halftone_generation_is_deterministic() {
+        let first = relaxed_halftone_layout();
+        let second = relaxed_halftone_layout();
+        assert_eq!(first.encoded, second.encoded);
+        assert_eq!(first.iterations, second.iterations);
+    }
+
+    #[test]
+    fn relaxed_halftone_has_lower_nearest_neighbour_variance_than_the_hash() {
+        let layout = relaxed_halftone_layout();
+        let relaxed = nearest_neighbour_stats(
+            &decoded_halftone_offsets(&layout.encoded),
+            HALFTONE_LAYOUT_EXTENT,
+        );
+        let hashed = nearest_neighbour_stats(&old_hash_halftone_offsets(), HALFTONE_LAYOUT_EXTENT);
+        assert!(
+            relaxed.variance < hashed.variance,
+            "relaxed variance {} did not improve hash variance {}",
+            relaxed.variance,
+            hashed.variance
+        );
+        assert!(relaxed.mean >= hashed.mean);
     }
 
     #[test]
