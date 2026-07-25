@@ -5,6 +5,16 @@ const MATERIAL_TILE_LOGICAL_QUADS: f32 = 128.0;
 const TILE_GUTTER: f32 = 1.0;
 const MATERIAL_TILE_LAST_STORED_COORD: i32 = 130;
 const GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS: f32 = 111.5;
+// Must track TERRAIN_DETAIL_* in planet.rs.
+// Amplitude/wavelength for every detail octave, matching the baker's sparse
+// bands so baked and synthesised relief describe the same kind of ground.
+const TERRAIN_DETAIL_ROUGHNESS: f32 = 0.10;
+const TERRAIN_DETAIL_START_WAVELENGTH_METERS: f32 = 512.0;
+// Floor is ~4m, not 1m: the noise domain is direction * (radius / wavelength),
+// which at 1m reaches 4e6 where f32 quantises the cell fraction to 0.25 -- four
+// steps per wavelength, which reads as faceted. Going finer needs the domain
+// rebased per chunk into a local frame.
+const TERRAIN_DETAIL_OCTAVES: i32 = 8;
 const TERRAIN_SKIRT_DEPTH_RATIO: f32 = 0.075;
 const MAX_TERRAIN_SKIRT_DEPTH_METERS: f32 = 10.0;
 const ATMOSPHERE_HEIGHT_METERS: f32 = 720000.0;
@@ -37,8 +47,15 @@ const TERRAIN_FOG_MAX_CAMERA_ALTITUDE_METERS: f32 = 100000.0;
 const TERRAIN_FOG_FULL_HORIZON_COSINE: f32 = 0.05;
 const TERRAIN_FOG_CLEAR_HORIZON_COSINE: f32 = 0.35;
 const TERRAIN_MATERIAL_TILE_METERS: f32 = 2048.0;
-const TERRAIN_NORMAL_MIN_SAMPLE_METERS: f32 = 8.0;
+// The probe spacing normals are central-differenced over. This is the sharpest
+// relief the surface can ever show: an 8m floor discarded everything finer than
+// ~16m, which flattened both the 0.375m baked tiles and any synthesised detail.
+const TERRAIN_NORMAL_MIN_SAMPLE_METERS: f32 = 0.5;
 const TERRAIN_NORMAL_MAX_SAMPLE_METERS: f32 = 256.0;
+// Normal probes are camera_distance * this, and detail octaves are filtered to
+// the same spacing so displacement and shading never disagree about an octave.
+const TERRAIN_DETAIL_FILTER_RATIO: f32 = 0.01;
+const TERRAIN_DETAIL_MIN_FILTER_METERS: f32 = TERRAIN_NORMAL_MIN_SAMPLE_METERS;
 const TERRAIN_MATERIAL_VEGETATION: i32 = 0;
 const TERRAIN_MATERIAL_EARTH: i32 = 1;
 const TERRAIN_MATERIAL_ROCK: i32 = 2;
@@ -120,6 +137,77 @@ fn placeholder_height(direction: vec3<f32>) -> f32 {
         + placeholder_octave(direction, 512.0, 600.0)
         + placeholder_octave(direction, 32768.0, 100.0)
         + placeholder_octave(direction, 2097152.0, 3.0);
+}
+
+// Fractal relief continuing below whatever the baked outmap can store. The
+// outmap cannot carry this: 1m samples over a 4000km planet would be 800TB, so
+// everything finer than the macro terrain has to be synthesised here.
+//
+// Amplitude is a fixed fraction of wavelength, so the field is self-similar and
+// every octave contributes the same characteristic slope. That is what keeps
+// orbit and ground looking like the same planet rather than two different ones.
+// Measured on the M1000M (Maxwell): an integer bit-mix hash costs ~11% more
+// frame time than this, because Maxwell runs 32-bit integer multiply at quarter
+// rate while sin is one SFU instruction. Keep the trigonometric hash here, and
+// keep it identical to terrain_detail_hash in planet.rs.
+fn terrain_detail_hash(cell: vec3<f32>) -> f32 {
+    let value = sin(dot(cell, vec3<f32>(127.1, 311.7, 74.7))) * 43758.547;
+    return fract(value) * 2.0 - 1.0;
+}
+
+fn terrain_detail_value_noise(position: vec3<f32>) -> f32 {
+    let cell = floor(position);
+    let amount = position - cell;
+    let fade = amount * amount * (vec3<f32>(3.0) - amount * 2.0);
+    let x0y0 = terrain_detail_hash(cell);
+    let x1y0 = terrain_detail_hash(cell + vec3<f32>(1.0, 0.0, 0.0));
+    let x0y1 = terrain_detail_hash(cell + vec3<f32>(0.0, 1.0, 0.0));
+    let x1y1 = terrain_detail_hash(cell + vec3<f32>(1.0, 1.0, 0.0));
+    let near = mix(mix(x0y0, x1y0, fade.x), mix(x0y1, x1y1, fade.x), fade.y);
+    let x0y0z1 = terrain_detail_hash(cell + vec3<f32>(0.0, 0.0, 1.0));
+    let x1y0z1 = terrain_detail_hash(cell + vec3<f32>(1.0, 0.0, 1.0));
+    let x0y1z1 = terrain_detail_hash(cell + vec3<f32>(0.0, 1.0, 1.0));
+    let x1y1z1 = terrain_detail_hash(cell + vec3<f32>(1.0));
+    let far = mix(mix(x0y0z1, x1y0z1, fade.x), mix(x0y1z1, x1y1z1, fade.x), fade.y);
+    return mix(near, far, fade.z);
+}
+
+fn terrain_detail_domain(direction: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        dot(direction, vec3<f32>(0.80, 0.48, -0.36)),
+        dot(direction, vec3<f32>(-0.30, 0.85, 0.43)),
+        dot(direction, vec3<f32>(0.52, -0.21, 0.82)),
+    );
+}
+
+/// `filter_meters` is the spacing this height is about to be sampled at --
+/// vertex spacing when displacing, normal-probe spacing when shading. Octaves
+/// shorter than the filter are faded out rather than dropped, so pulling the
+/// camera back removes them smoothly instead of popping, and nothing aliases.
+fn terrain_detail_meters(direction: vec3<f32>, filter_meters: f32) -> f32 {
+    let domain = terrain_detail_domain(direction);
+    // Everything below the filter contributes nothing, so bound the loop rather
+    // than iterating the full ladder and multiplying by zero. From orbit this is
+    // one or two octaves; only at ground level does it run the whole set.
+    let span = TERRAIN_DETAIL_START_WAVELENGTH_METERS / max(filter_meters * 2.0, 1.0e-6);
+    let active_octaves = clamp(i32(ceil(log2(max(span, 1.0)))) + 1, 1, TERRAIN_DETAIL_OCTAVES);
+    var total = 0.0;
+    var wavelength = TERRAIN_DETAIL_START_WAVELENGTH_METERS;
+    for (var octave = 0; octave < active_octaves; octave = octave + 1) {
+        // Two texels per wavelength is the Nyquist limit; fade across an octave
+        // above it so the cut is never visible.
+        let fade = smoothstep(filter_meters * 2.0, filter_meters * 4.0, wavelength);
+        if fade > 0.0 {
+            let frequency = PLANET_RADIUS_METERS / wavelength;
+            total = total
+                + terrain_detail_value_noise(domain * frequency)
+                    * wavelength
+                    * TERRAIN_DETAIL_ROUGHNESS
+                    * fade;
+        }
+        wavelength = wavelength * 0.5;
+    }
+    return total;
 }
 
 fn terrain_macro_height_scale() -> f32 {

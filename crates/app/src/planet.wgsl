@@ -88,7 +88,21 @@ fn terrain_height(
     if !outmap {
         return macro_height;
     }
-    return macro_height * terrain_macro_height_scale();
+    let scaled_macro_height = macro_height * terrain_macro_height_scale();
+    // Detail rides on land only, and fades out before the coastline so it
+    // cannot push the shore around, matching the baker's own land weighting.
+    let land_weight = smoothstep(25.0, 150.0, scaled_macro_height);
+    if land_weight <= 0.0 {
+        return scaled_macro_height;
+    }
+    // Sampling spacing tracks camera distance the same way the normal probes
+    // do, so displacement and shading agree about which octaves exist here.
+    let filter_meters = max(
+        camera_distance_meters * TERRAIN_DETAIL_FILTER_RATIO,
+        TERRAIN_DETAIL_MIN_FILTER_METERS,
+    );
+    return scaled_macro_height
+        + terrain_detail_meters(direction, filter_meters) * land_weight;
 }
 
 fn sample_biome(source_uv: vec2<f32>) -> u32 {
@@ -374,14 +388,17 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let base_camera_relative_view_position = input.anchor_view_position
         + planet_to_view(anchor_relative_position);
     let camera_distance_meters = length(base_camera_relative_view_position);
-    // Baked tiles own geometric detail. Retain this zero varying for the
-    // material interface without evaluating the retired runtime noise.
-    let terrain_detail_meters = 0.0;
-    let height = select(
-        macro_height,
-        macro_height * terrain_macro_height_scale(),
-        outmap,
-    );
+    // Displace through the same function the normal probes use, so the mesh and
+    // the shading agree about which octaves exist at this distance. Evaluating
+    // the two differently is what makes procedural relief shade like a flat
+    // texture painted on smooth ground.
+    let height = terrain_height(outmap, source_uv, direction, camera_distance_meters);
+    let terrain_detail_meters = height
+        - select(
+            macro_height,
+            macro_height * terrain_macro_height_scale(),
+            outmap,
+        );
     // Polar ice overrides ocean in the baked biome contract. Lift it just
     // above sea level so the cap remains visible rather than becoming water.
     let biome_id = sample_biome(source_uv);

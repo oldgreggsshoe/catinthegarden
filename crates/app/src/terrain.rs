@@ -1914,15 +1914,19 @@ mod tests {
             .nth(1)
             .and_then(|source| source.split("fn gerstner_wave(").next())
             .expect("terrain height function is present");
-        assert!(!terrain_height.contains("global_terrain_detail("));
         assert!(terrain_height.contains("macro_height * terrain_macro_height_scale()"));
+        // Baked macro terrain still drives the shape; synthesised relief is
+        // added on top because the outmap cannot store metre-scale detail for a
+        // whole planet. It must be filtered, never raw, or it aliases.
+        assert!(terrain_height.contains("terrain_detail_meters("));
+        assert!(terrain_height.contains("filter_meters"));
         assert!(!shader.contains("requested_lod_level: f32"));
         assert!(shader.contains("biome_color(2u) * 0.65 * ice_light_floor"));
         assert!(!shader.contains("max(lit_surface_color, biome_color(2u) * 0.65)"));
     }
 
     #[test]
-    fn planet_shader_validates_without_runtime_detail_noise() {
+    fn planet_shader_validates_with_filtered_runtime_detail_noise() {
         let shader = planet_shader_source();
         let module = wgpu::naga::front::wgsl::parse_str(&shader)
             .expect("planet shader must parse before WGPU creates the pipeline");
@@ -1933,8 +1937,33 @@ mod tests {
         .validate(&module)
         .expect("planet shader must validate before WGPU creates the pipeline");
         assert!(shader.contains("fn fs_main_stable("));
-        assert!(!shader.contains("fn terrain_detail_value_noise("));
-        assert!(!shader.contains("fn global_terrain_detail("));
+        assert!(shader.contains("fn terrain_detail_value_noise("));
+        // Every octave has to be faded against the sampling spacing. Without
+        // this the detail aliases into crawling noise as the camera moves.
+        let detail = shader
+            .split("fn terrain_detail_meters(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("detail function is present");
+        assert!(detail.contains("smoothstep(filter_meters"));
+    }
+
+    /// Normals are central-differenced over this spacing, so it is a hard limit
+    /// on the finest relief the planet can display. It was 8m, which erased the
+    /// 0.375m baked tiles entirely.
+    #[test]
+    fn normal_probe_spacing_resolves_metre_scale_relief() {
+        let shader = planet_shader_source();
+        let minimum = shader
+            .split("const TERRAIN_NORMAL_MIN_SAMPLE_METERS: f32 = ")
+            .nth(1)
+            .and_then(|source| source.split(';').next())
+            .and_then(|value| value.trim().parse::<f32>().ok())
+            .expect("normal probe floor is declared");
+        assert!(
+            minimum <= 1.0,
+            "normal probe floor {minimum}m cannot resolve metre-scale ground detail"
+        );
     }
 
     #[test]
