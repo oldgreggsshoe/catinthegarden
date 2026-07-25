@@ -660,6 +660,13 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         direction,
         input.world_normal,
         input.camera_relative_view_position,
+        terrain_material_fine_position(
+            input.detail_anchor_direction,
+            input.detail_local_meters,
+        ),
+        terrain_material_fine_weight(
+            length(input.camera_relative_view_position),
+        ),
     );
     let textured_terrain_albedo = terrain_albedo * detail_tint;
     if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {

@@ -354,9 +354,7 @@ impl ScenarioRunner {
         // grazing angle chosen to reveal relief is lost.
         if matches!(
             self.definition.name.as_str(),
-            "low_flight_performance"
-                | "landing_site_ground_detail"
-                | "landing_site_eye_level"
+            "low_flight_performance" | "landing_site_ground_detail" | "landing_site_eye_level"
         ) {
             for waypoint in &mut self.definition.sun_waypoints {
                 waypoint.direction = rotation

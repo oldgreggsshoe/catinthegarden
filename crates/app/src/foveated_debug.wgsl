@@ -707,6 +707,12 @@ fn shade_terrain(
         surface_direction,
         normal,
         hit_view_position,
+        // The ray path marches an analytic surface and has no node anchor, so
+        // it has nothing exact to build the close-range tile coordinate from.
+        // Zero weight keeps it on the 2km tile rather than sampling a
+        // coordinate f32 has already quantised to whole texels.
+        vec3<f32>(0.0),
+        0.0,
     );
     let textured_albedo = terrain_albedo * detail_tint;
     if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {

@@ -1,0 +1,13 @@
+{
+  "screenshots": [
+    {
+      "filename": "capture-001.png",
+      "log_entry_sim_time": 4.257119733,
+      "solid_color_verified": false,
+      "seam_gap_verified": null,
+      "sky_sample_rgb": null,
+      "day_night_surface_luminance_ratio": null,
+      "ice_sample_rgb": null
+    }
+  ]
+}

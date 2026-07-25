@@ -1951,6 +1951,38 @@ mod tests {
         assert!(detail.contains("smoothstep(filter_meters"));
     }
 
+    /// The close-range material tile is the only thing that gives the ground
+    /// texture underfoot, and it only works because it is never expressed as an
+    /// absolute planet coordinate: 4e6/6 needs 7e5 tiles, where f32 quantises
+    /// the lookup to whole texels and the texture stops varying per pixel.
+    #[test]
+    fn close_range_material_tile_is_built_anchor_locally_and_stays_fine() {
+        let shader = planet_shader_source();
+        let tile_meters = shader
+            .split("const TERRAIN_MATERIAL_DETAIL_TILE_METERS: f32 = ")
+            .nth(1)
+            .and_then(|source| source.split(';').next())
+            .and_then(|value| value.trim().parse::<f32>().ok())
+            .expect("close-range material tile is declared");
+        assert!(
+            tile_meters <= 16.0,
+            "a {tile_meters}m material tile is too coarse to read as ground texture"
+        );
+
+        let fine_position = shader
+            .split("fn terrain_material_fine_position(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("close-range tile coordinate is built by its own function");
+        // Only the fraction of the anchor's tile coordinate may survive; the
+        // per-pixel variation has to come from the short local offset.
+        assert!(fine_position.contains("fract(anchor_tiles)"));
+        assert!(fine_position.contains("local_meters / TERRAIN_MATERIAL_DETAIL_TILE_METERS"));
+        // Without the warp the repeat lands on a regular lattice, which reads
+        // as wallpaper however fine the tile is.
+        assert!(fine_position.contains("warp"));
+    }
+
     /// Normals are central-differenced over this spacing, so it is a hard limit
     /// on the finest relief the planet can display. It was 8m, which erased the
     /// 0.375m baked tiles entirely.

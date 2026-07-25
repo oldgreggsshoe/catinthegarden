@@ -51,6 +51,33 @@ const TERRAIN_FOG_MAX_CAMERA_ALTITUDE_METERS: f32 = 100000.0;
 const TERRAIN_FOG_FULL_HORIZON_COSINE: f32 = 0.05;
 const TERRAIN_FOG_CLEAR_HORIZON_COSINE: f32 = 0.35;
 const TERRAIN_MATERIAL_TILE_METERS: f32 = 2048.0;
+// Close-range material repeat. The 2km tile above covers a whole landscape, so
+// standing on the ground it is one flat colour; this is the tile that actually
+// reads as ground texture underfoot. It cannot be formed from an absolute
+// planet coordinate -- 4e6/8 needs 5e5 tiles, where f32 quantises the lookup to
+// whole texels -- so it is built anchor-locally, the same split the detail noise
+// uses. See terrain_material_fine_position.
+// 8m read as wallpaper: the layer textures carry strong 64-cell content, which
+// at that scale becomes a 2m motif repeating on a plainly visible lattice. Kept
+// small enough that the coarsest thing it can repeat is sub-metre grain, and
+// mixed in as a brightness ratio rather than as colour, so what tiles is the
+// texture's contrast and not its hue.
+const TERRAIN_MATERIAL_DETAIL_TILE_METERS: f32 = 6.0;
+// The lookup is warped by a noise this long before it is tiled, so the repeat
+// no longer lands on a regular lattice -- which is what actually gives tiling
+// away. One noise evaluation is much cheaper than the second set of triplanar
+// fetches an incommensurate second scale would need, and its gradient is a
+// smooth 3D offset that comes free with the value.
+const TERRAIN_MATERIAL_DETAIL_WARP_WAVELENGTH_METERS: f32 = 37.0;
+const TERRAIN_MATERIAL_DETAIL_WARP_TILES: f32 = 0.85;
+// How far the close-range grain may push the albedo either side of the colour
+// the biome and the 2km tile already agreed on.
+const TERRAIN_MATERIAL_DETAIL_STRENGTH: f32 = 0.55;
+// Where the fine tile hands back to the 2km one. Past the far end an 8m repeat
+// is below a pixel and mips to its own average, so blending it out costs
+// nothing visually and saves the second set of triplanar fetches.
+const TERRAIN_MATERIAL_DETAIL_NEAR_METERS: f32 = 150.0;
+const TERRAIN_MATERIAL_DETAIL_FAR_METERS: f32 = 900.0;
 // The probe spacing normals are central-differenced over. This is the sharpest
 // relief the surface can ever show: an 8m floor discarded everything finer than
 // ~16m, which flattened both the 0.375m baked tiles and any synthesised detail.
@@ -1104,6 +1131,11 @@ fn terrain_material_tint(
     surface_direction: vec3<f32>,
     surface_normal: vec3<f32>,
     camera_relative_view_position: vec3<f32>,
+    // Close-range tile coordinate and how much of it to use. Supplied by the
+    // caller because only the raster path has a node anchor to build an exact
+    // one from; the ray path passes zero weight and keeps the 2km tile.
+    fine_position: vec3<f32>,
+    fine_weight: f32,
 ) -> vec3<f32> {
     if !outmap {
         return vec3<f32>(1.0);
@@ -1138,6 +1170,8 @@ fn terrain_material_tint(
             TERRAIN_MATERIAL_VEGETATION,
             surface_direction,
             surface_normal,
+            fine_position,
+            fine_weight,
         );
     }
     if base_weights.y > 1.0e-4 {
@@ -1145,6 +1179,8 @@ fn terrain_material_tint(
             TERRAIN_MATERIAL_EARTH,
             surface_direction,
             surface_normal,
+            fine_position,
+            fine_weight,
         );
     }
     if base_weights.z > 1.0e-4 {
@@ -1152,6 +1188,8 @@ fn terrain_material_tint(
             TERRAIN_MATERIAL_ROCK,
             surface_direction,
             surface_normal,
+            fine_position,
+            fine_weight,
         );
     }
     if base_weights.w > 1.0e-4 {
@@ -1159,6 +1197,8 @@ fn terrain_material_tint(
             TERRAIN_MATERIAL_SNOW,
             surface_direction,
             surface_normal,
+            fine_position,
+            fine_weight,
         );
     }
     let weights = height_blend_material_weights(
@@ -1205,10 +1245,51 @@ fn triplanar_material_sample_at_position(
         + z_projection * weights.z;
 }
 
+/// Tile coordinate for the close-range repeat, kept exact by never forming the
+/// absolute one. The texture wraps, so the whole tile index is irrelevant and
+/// only the fraction matters: take that from the node anchor, then add the
+/// short anchor-relative offset, which is a handful of metres and so keeps full
+/// f32 precision. The anchor fraction is itself quantised to a few centimetres,
+/// which shows only as a small registration step between neighbouring nodes.
+fn terrain_material_fine_position(
+    anchor_direction: vec3<f32>,
+    local_meters: vec3<f32>,
+) -> vec3<f32> {
+    let anchor_tiles = anchor_direction
+        * (PLANET_RADIUS_METERS / TERRAIN_MATERIAL_DETAIL_TILE_METERS);
+    // Warp built the same way the detail octaves are, so it reconstructs the
+    // same absolute cell from any anchor and stays continuous across node
+    // boundaries -- unlike the tile fraction below, which inherits the anchor
+    // direction's own ~0.2m quantisation.
+    let inverse_warp = 1.0 / TERRAIN_MATERIAL_DETAIL_WARP_WAVELENGTH_METERS;
+    let warp_cells = terrain_detail_domain(anchor_direction)
+        * (PLANET_RADIUS_METERS * inverse_warp);
+    let warp_cell_index = floor(warp_cells);
+    let warp = terrain_detail_value_noise(
+        warp_cell_index,
+        (warp_cells - warp_cell_index)
+            + terrain_detail_domain(local_meters) * inverse_warp,
+    );
+    return fract(anchor_tiles)
+        + local_meters / TERRAIN_MATERIAL_DETAIL_TILE_METERS
+        + terrain_detail_domain_transpose(warp.gradient)
+            * TERRAIN_MATERIAL_DETAIL_WARP_TILES;
+}
+
+fn terrain_material_fine_weight(camera_distance_meters: f32) -> f32 {
+    return 1.0 - smoothstep(
+        TERRAIN_MATERIAL_DETAIL_NEAR_METERS,
+        TERRAIN_MATERIAL_DETAIL_FAR_METERS,
+        camera_distance_meters,
+    );
+}
+
 fn triplanar_material_sample(
     layer: i32,
     surface_direction: vec3<f32>,
     surface_normal: vec3<f32>,
+    fine_position: vec3<f32>,
+    fine_weight: f32,
 ) -> vec4<f32> {
     // Planet-local metre scale makes every LOD evaluate the same material at
     // the same surface point. Triplanar projection avoids cube-face UV seams.
@@ -1219,7 +1300,26 @@ fn triplanar_material_sample(
     // texture samples for every contributing material layer.
     let texture_position = surface_direction
         * (PLANET_RADIUS_METERS / TERRAIN_MATERIAL_TILE_METERS);
-    return triplanar_material_sample_at_position(layer, texture_position, weights);
+    let coarse = triplanar_material_sample_at_position(layer, texture_position, weights);
+    if fine_weight <= 0.0 {
+        return coarse;
+    }
+    let fine = triplanar_material_sample_at_position(layer, fine_position, weights);
+    // Modulate rather than replace. Both samples come from the same layer, so
+    // their brightness ratio has a mean of one whatever that layer's palette
+    // is, and the close-range tile can add grain without dragging the hue --
+    // and without its repeat showing up as repeating colour.
+    let luminance = vec3<f32>(0.2126, 0.7152, 0.0722);
+    let ratio = clamp(
+        dot(fine.rgb, luminance) / max(dot(coarse.rgb, luminance), 1.0e-4),
+        0.4,
+        2.2,
+    );
+    let gain = 1.0 + TERRAIN_MATERIAL_DETAIL_STRENGTH * fine_weight * (ratio - 1.0);
+    // Height stays on the coarse tile: it drives which layer wins the blend,
+    // and letting a 3m repeat decide that would tile the material boundaries
+    // themselves, which is far more visible than tiling the grain.
+    return vec4<f32>(coarse.rgb * gain, coarse.a);
 }
 
 fn ocean_lighting(
