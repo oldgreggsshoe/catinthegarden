@@ -660,6 +660,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         direction,
         input.world_normal,
         input.camera_relative_view_position,
+        input.terrain_detail_meters,
         terrain_material_fine_position(
             input.detail_anchor_direction,
             input.detail_local_meters,

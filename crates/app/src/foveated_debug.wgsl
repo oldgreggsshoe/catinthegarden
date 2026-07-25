@@ -707,6 +707,7 @@ fn shade_terrain(
         surface_direction,
         normal,
         hit_view_position,
+        0.0,
         // The ray path marches an analytic surface and has no node anchor, so
         // it has nothing exact to build the close-range tile coordinate from.
         // Zero weight keeps it on the 2km tile rather than sampling a

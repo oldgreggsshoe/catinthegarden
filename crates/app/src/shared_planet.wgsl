@@ -19,6 +19,12 @@ const TERRAIN_DETAIL_START_WAVELENGTH_METERS: f32 = 256.0;
 // where f32 would quantise it to 0.25 -- see terrain_detail_value_noise.
 
 const TERRAIN_DETAIL_OCTAVES: i32 = 9;
+// What the whole ladder can reach: amplitude halves with wavelength, so the
+// geometric series sums to twice its first term. Anything normalising against
+// the detail field has to use this and not the retired CPU field's 111.5m,
+// which is an order of magnitude larger and silently scales the result away.
+const TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS: f32 =
+    TERRAIN_DETAIL_START_WAVELENGTH_METERS * TERRAIN_DETAIL_ROUGHNESS * 2.0;
 const TERRAIN_SKIRT_DEPTH_RATIO: f32 = 0.075;
 const MAX_TERRAIN_SKIRT_DEPTH_METERS: f32 = 10.0;
 const ATMOSPHERE_HEIGHT_METERS: f32 = 720000.0;
@@ -73,6 +79,12 @@ const TERRAIN_MATERIAL_DETAIL_WARP_TILES: f32 = 0.85;
 // How far the close-range grain may push the albedo either side of the colour
 // the biome and the 2km tile already agreed on.
 const TERRAIN_MATERIAL_DETAIL_STRENGTH: f32 = 0.55;
+// How much of the layer-blend height comes from the close-range tile rather
+// than the 2km one. This is what varies the material boundaries themselves at
+// metre scale instead of only shading a single material.
+const TERRAIN_MATERIAL_DETAIL_HEIGHT_SHARE: f32 = 0.7;
+// How far relief may shift the vegetation/bare-ground split either way.
+const TERRAIN_MATERIAL_RELIEF_VEGETATION: f32 = 0.34;
 // Where the fine tile hands back to the 2km one. Past the far end an 8m repeat
 // is below a pixel and mips to its own average, so blending it out costs
 // nothing visually and saves the second set of triplanar fetches.
@@ -962,6 +974,12 @@ fn terrain_material_weights_for_biome(
     macro_height_meters: f32,
     surface_normal: vec3<f32>,
     surface_direction: vec3<f32>,
+    // Synthesised relief at this point, normalised to the ladder's own range.
+    // Hollows hold water, so they carry the vegetation and the exposed rises
+    // are where bare ground shows. Without this the split is a function of
+    // biome and moisture alone, both of which vary over kilometres, so a
+    // grassland renders as one unbroken colour from any distance.
+    relief: f32,
 ) -> vec4<f32> {
     let slope = 1.0 - clamp(
         dot(normalize(surface_normal), surface_direction),
@@ -988,7 +1006,12 @@ fn terrain_material_weights_for_biome(
 
     let exposed_amount = 1.0 - snow_amount;
     let base_amount = exposed_amount * (1.0 - rock_amount);
-    let vegetation_amount = biome_vegetation_amount(biome, moisture);
+    let vegetation_amount = clamp(
+        biome_vegetation_amount(biome, moisture)
+            - relief * TERRAIN_MATERIAL_RELIEF_VEGETATION,
+        0.0,
+        1.0,
+    );
     let weights = vec4<f32>(
         base_amount * vegetation_amount,
         base_amount * (1.0 - vegetation_amount),
@@ -1061,7 +1084,7 @@ fn terrain_material_color(
     // relief keeps ridges readable under both direct and aerial lighting.
     let detail_weight = smoothstep(100.0, 400.0, macro_height_meters);
     let detail = clamp(
-        terrain_detail_meters / GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
+        terrain_detail_meters / TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS,
         -1.0,
         1.0,
     );
@@ -1093,6 +1116,7 @@ fn terrain_material_weights(
     macro_height_meters: f32,
     surface_normal: vec3<f32>,
     surface_direction: vec3<f32>,
+    relief: f32,
 ) -> vec4<f32> {
     let weights = terrain_material_weights_for_biome(
         blend.ids.x,
@@ -1100,24 +1124,28 @@ fn terrain_material_weights(
         macro_height_meters,
         surface_normal,
         surface_direction,
+        relief,
     ) * blend.weights.x + terrain_material_weights_for_biome(
         blend.ids.y,
         moisture,
         macro_height_meters,
         surface_normal,
         surface_direction,
+        relief,
     ) * blend.weights.y + terrain_material_weights_for_biome(
         blend.ids.z,
         moisture,
         macro_height_meters,
         surface_normal,
         surface_direction,
+        relief,
     ) * blend.weights.z + terrain_material_weights_for_biome(
         blend.ids.w,
         moisture,
         macro_height_meters,
         surface_normal,
         surface_direction,
+        relief,
     ) * blend.weights.w;
     return weights / max(dot(weights, vec4<f32>(1.0)), 1.0e-5);
 }
@@ -1131,6 +1159,8 @@ fn terrain_material_tint(
     surface_direction: vec3<f32>,
     surface_normal: vec3<f32>,
     camera_relative_view_position: vec3<f32>,
+    // Synthesised relief here, already filtered to this pixel's scale.
+    terrain_detail_meters: f32,
     // Close-range tile coordinate and how much of it to use. Supplied by the
     // caller because only the raster path has a node anchor to build an exact
     // one from; the ray path passes zero weight and keeps the 2km tile.
@@ -1158,6 +1188,11 @@ fn terrain_material_tint(
         macro_height_meters,
         surface_normal,
         surface_direction,
+        clamp(
+            terrain_detail_meters / TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS,
+            -1.0,
+            1.0,
+        ),
     );
     var vegetation = vec4<f32>(0.0);
     var earth = vec4<f32>(0.0);
@@ -1316,10 +1351,17 @@ fn triplanar_material_sample(
         2.2,
     );
     let gain = 1.0 + TERRAIN_MATERIAL_DETAIL_STRENGTH * fine_weight * (ratio - 1.0);
-    // Height stays on the coarse tile: it drives which layer wins the blend,
-    // and letting a 3m repeat decide that would tile the material boundaries
-    // themselves, which is far more visible than tiling the grain.
-    return vec4<f32>(coarse.rgb * gain, coarse.a);
+    // The alpha channel decides which layer wins the height blend, so taking it
+    // partly from the fine tile is what puts soil in metre-scale hollows and
+    // lets earth break through grass at all. Partly, not wholly: at full
+    // strength the material boundaries follow the tile, and a tiled boundary is
+    // far more visible than tiled grain.
+    let height = mix(
+        coarse.a,
+        fine.a,
+        fine_weight * TERRAIN_MATERIAL_DETAIL_HEIGHT_SHARE,
+    );
+    return vec4<f32>(coarse.rgb * gain, height);
 }
 
 fn ocean_lighting(

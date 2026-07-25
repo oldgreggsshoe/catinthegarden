@@ -1,0 +1,46 @@
+{
+  "scenario": "low_flight_performance",
+  "git_commit": "8b8b904b33f927b3e1cdc95a7455460c24a8168d",
+  "timestamp_unix_seconds": 1784986379,
+  "passed": false,
+  "assertion_results": [
+    {
+      "name": "finite_metrics",
+      "passed": true,
+      "details": "0 of 9 spatial samples contained non-finite metrics"
+    },
+    {
+      "name": "lod_stays_within_chunk_budget",
+      "passed": true,
+      "details": "observed 0 budget-limited frames"
+    },
+    {
+      "name": "resident_chunk_count_is_bounded",
+      "passed": false,
+      "details": "bounds Some(1)..=Some(256), maximum observed 0, violations 241"
+    },
+    {
+      "name": "lod_does_not_thrash",
+      "passed": true,
+      "details": "allowed 0 LOD thrash events, observed 0"
+    },
+    {
+      "name": "seam_delta_is_within_tolerance",
+      "passed": true,
+      "details": "tolerance 0.1m, maximum observed 0m, violations 0"
+    },
+    {
+      "name": "fallback_chunk_count_is_bounded",
+      "passed": true,
+      "details": "allowed 192, maximum observed 0, violations 0"
+    },
+    {
+      "name": "expected_screenshots_were_captured",
+      "passed": true,
+      "details": "expected 2, captured 2"
+    }
+  ],
+  "failure_reasons": [
+    "resident_chunk_count_is_bounded: bounds Some(1)..=Some(256), maximum observed 0, violations 241"
+  ]
+}

@@ -778,12 +778,19 @@ mod tests {
             end_radius = DVec3::from_array(frame.camera_world_position).length();
         }
 
-        // The approach has to end above the flattened landing pad. The baked
-        // pad sits near 4_000_980 m and the shader adds roughly +-10 m of
-        // synthesised relief the CPU cannot see, so anything under 4_001_000 m
-        // risks putting the camera inside a detail crest.
+        // The approach has to end above the rendered ground, which is not the
+        // baked ground. Read straight out of the outmap the pad is at 919.8 m,
+        // but the shader adds up to about +17 m of synthesised relief on top
+        // that the CPU never sees. Measured against the render: 922 m is
+        // inside the surface, 940 m clears it.
         assert!(start_radius > end_radius);
-        assert!(end_radius >= 4_001_000.0, "ended at {end_radius} m");
+        // Waypoint interpolation lands a rounding step short of the authored
+        // endpoint, so compare with a tolerance far below the metre this is
+        // actually about.
+        assert!(
+            end_radius >= 4_000_940.0 - 1.0e-3,
+            "ended at {end_radius} m"
+        );
         assert_eq!(scenario.expected_screenshots(), 5);
     }
 
