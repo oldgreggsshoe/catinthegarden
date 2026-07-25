@@ -1333,7 +1333,9 @@ impl State {
             if self.scenario.as_ref().is_some_and(|scenario| {
                 matches!(
                     scenario.name(),
-                    "low_flight_performance" | "landing_site_ground_detail"
+                    "low_flight_performance"
+                        | "landing_site_ground_detail"
+                        | "landing_site_eye_level"
                 )
             }) {
                 self.camera

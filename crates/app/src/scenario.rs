@@ -173,6 +173,9 @@ impl ScenarioRunner {
             "landing_site_ground_detail" => {
                 include_str!("../scenarios/landing_site_ground_detail.json")
             }
+            "landing_site_eye_level" => {
+                include_str!("../scenarios/landing_site_eye_level.json")
+            }
             _ => return Err(format!("unknown scenario '{name}'")),
         };
         Self::from_source(source)
@@ -327,7 +330,10 @@ impl ScenarioRunner {
     pub fn retarget_sparse_landing_direction(&mut self, landing_direction: glam::DVec3) {
         if !matches!(
             self.definition.name.as_str(),
-            "orbital_zoom_lod" | "low_flight_performance" | "landing_site_ground_detail"
+            "orbital_zoom_lod"
+                | "low_flight_performance"
+                | "landing_site_ground_detail"
+                | "landing_site_eye_level"
         ) {
             return;
         }
@@ -348,7 +354,9 @@ impl ScenarioRunner {
         // grazing angle chosen to reveal relief is lost.
         if matches!(
             self.definition.name.as_str(),
-            "low_flight_performance" | "landing_site_ground_detail"
+            "low_flight_performance"
+                | "landing_site_ground_detail"
+                | "landing_site_eye_level"
         ) {
             for waypoint in &mut self.definition.sun_waypoints {
                 waypoint.direction = rotation
@@ -757,6 +765,28 @@ mod tests {
         assert!(sun.dot(DVec3::Z) > 0.7);
         assert_eq!(scenario.expected_screenshots(), 2);
         assert!(scenario.assertions().require_unlimited_lod_budget);
+    }
+
+    #[test]
+    fn eye_level_scenario_descends_toward_the_landing_site_without_burying_the_camera() {
+        let mut scenario = ScenarioRunner::load("landing_site_eye_level").expect("scenario parses");
+        scenario.retarget_sparse_landing_direction(DVec3::Z);
+
+        let mut frame = scenario.advance();
+        let start_radius = DVec3::from_array(frame.camera_world_position).length();
+        let mut end_radius = start_radius;
+        while !frame.complete {
+            frame = scenario.advance();
+            end_radius = DVec3::from_array(frame.camera_world_position).length();
+        }
+
+        // The approach has to end above the flattened landing pad. The baked
+        // pad sits near 4_000_980 m and the shader adds roughly +-10 m of
+        // synthesised relief the CPU cannot see, so anything under 4_001_000 m
+        // risks putting the camera inside a detail crest.
+        assert!(start_radius > end_radius);
+        assert!(end_radius >= 4_001_000.0, "ended at {end_radius} m");
+        assert_eq!(scenario.expected_screenshots(), 5);
     }
 
     #[test]
