@@ -708,6 +708,18 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             let detail_lambert = max(dot(detail_normal, sun_direction), 0.0);
             textured_surface_lighting *= (detail_lambert + ambient)
                 / (vertex_lambert + ambient);
+            // Close-range surface texture from the same field, rather than a
+            // finer material tile: a 12m tile needs a 3e5 domain coordinate,
+            // where f32 quantises the lookup to whole texels. This field is
+            // already anchor-local and exact here, and costs nothing extra.
+            // Normalised by the filter so the variation is scale-free.
+            let surface_texture = clamp(
+                fine_detail.height_meters / max(pixel_filter_meters, 0.05),
+                -1.0,
+                1.0,
+            );
+            textured_surface_lighting *= 1.0
+                + surface_texture * TERRAIN_DETAIL_ALBEDO_STRENGTH;
         }
     }
     if outmap && biome_id == 2u {

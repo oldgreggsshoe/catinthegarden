@@ -6,15 +6,19 @@ const TILE_GUTTER: f32 = 1.0;
 const MATERIAL_TILE_LAST_STORED_COORD: i32 = 130;
 const GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS: f32 = 111.5;
 // Must track TERRAIN_DETAIL_* in planet.rs.
-// Amplitude/wavelength for every detail octave, matching the baker's sparse
-// bands so baked and synthesised relief describe the same kind of ground.
-const TERRAIN_DETAIL_ROUGHNESS: f32 = 0.10;
-const TERRAIN_DETAIL_START_WAVELENGTH_METERS: f32 = 1024.0;
+// Amplitude/wavelength for every detail octave. This is the baker's own
+// measured band ratio, so baked and synthesised relief describe the same kind
+// of ground. Raising it is tempting and wrong: at 0.10 starting from 1024m the
+// top octave alone is 102m and the ladder sums to ~118m RMS, which is the same
+// order as the entire baked terrain -- it stops being detail and becomes a
+// second planet laid over the baked erosion and hydrology.
+const TERRAIN_DETAIL_ROUGHNESS: f32 = 0.0328;
+const TERRAIN_DETAIL_START_WAVELENGTH_METERS: f32 = 256.0;
 // Floor is 1m. The octave ladder is evaluated from an anchor-local offset, so
 // the in-cell fraction never has to survive an absolute 4e6 domain coordinate
 // where f32 would quantise it to 0.25 -- see terrain_detail_value_noise.
 
-const TERRAIN_DETAIL_OCTAVES: i32 = 11;
+const TERRAIN_DETAIL_OCTAVES: i32 = 9;
 const TERRAIN_SKIRT_DEPTH_RATIO: f32 = 0.075;
 const MAX_TERRAIN_SKIRT_DEPTH_METERS: f32 = 10.0;
 const ATMOSPHERE_HEIGHT_METERS: f32 = 720000.0;
@@ -58,6 +62,9 @@ const TERRAIN_DETAIL_FILTER_RATIO: f32 = 0.01;
 const TERRAIN_DETAIL_MIN_FILTER_METERS: f32 = TERRAIN_NORMAL_MIN_SAMPLE_METERS;
 // Must track CHUNK_GRID_QUADS in planet.rs.
 const TERRAIN_CHUNK_QUADS: f32 = 32.0;
+// How much sub-mesh relief darkens and lightens the albedo, on top of the
+// shading it already drives. Surface texture, not shadowing, so keep it modest.
+const TERRAIN_DETAIL_ALBEDO_STRENGTH: f32 = 0.18;
 const TERRAIN_MATERIAL_VEGETATION: i32 = 0;
 const TERRAIN_MATERIAL_EARTH: i32 = 1;
 const TERRAIN_MATERIAL_ROCK: i32 = 2;
