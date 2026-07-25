@@ -40,8 +40,12 @@ struct VertexOutput {
     // interpolating it would defeat the exact-integer cell it provides.
     @location(11) @interpolate(flat) detail_anchor_direction: vec3<f32>,
     @location(12) detail_local_meters: vec3<f32>,
-    // Where the vertex ladder stopped, so the pixel knows where to start.
-    @location(13) @interpolate(flat) detail_vertex_filter_meters: f32,
+    // Mesh vertex spacing for this node. Flat because it is genuinely constant
+    // across the node -- it depends only on the node's level. The rest of the
+    // handover cutoff is recomputed per pixel from camera distance: passing that
+    // flat instead made every triangle take its provoking vertex's distance, so
+    // the band boundary stepped per triangle and shaded as hard facets.
+    @location(13) @interpolate(flat) detail_vertex_spacing_meters: f32,
 }
 
 fn uses_outmap(terrain_info: u32) -> bool {
@@ -194,9 +198,17 @@ fn displaced_surface_normal(
     // Shared positions therefore retain the same lighting across mixed LODs,
     // while nearby baked relief is no longer blurred through a fixed 256m
     // footprint.
+    //
+    // Never probe finer than one source texel. sample_height is manually
+    // bilinear, so the height field is piecewise bilinear and its gradient is
+    // piecewise constant within a texel: differencing below texel width returns
+    // that constant and the surface shades as flat texel-sized facets. This is
+    // a floor, not a filter width -- it only binds where the LOD is coarser than
+    // the probe, which is most of the ground beyond a few hundred metres.
+    let source_texel_meters = requested_cube_step * PLANET_RADIUS_METERS;
     let normal_sample_meters = clamp(
         camera_distance_meters * 0.01,
-        TERRAIN_NORMAL_MIN_SAMPLE_METERS,
+        max(TERRAIN_NORMAL_MIN_SAMPLE_METERS, source_texel_meters),
         TERRAIN_NORMAL_MAX_SAMPLE_METERS,
     );
     let cube_step = normal_sample_meters / PLANET_RADIUS_METERS;
@@ -409,9 +421,12 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     // in-cell fraction for metre-scale octaves without losing it to f32.
     // The mesh cannot represent relief finer than its own vertex spacing, so it
     // stops there and the fragment shader picks up the rest as a normal detail.
+    let vertex_spacing_meters = terrain_vertex_spacing_meters(
+        requested_level(input.terrain_info),
+    );
     let vertex_filter_meters = max(
         terrain_detail_filter_meters(camera_distance_meters),
-        terrain_vertex_spacing_meters(requested_level(input.terrain_info)),
+        vertex_spacing_meters,
     );
     let detail = terrain_detail(
         anchor_direction,
@@ -537,7 +552,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         surface_irradiance,
         anchor_direction,
         anchor_relative_position,
-        select(0.0, vertex_filter_meters, detail_weight > 0.0),
+        select(0.0, vertex_spacing_meters, detail_weight > 0.0),
     );
 }
 
@@ -664,16 +679,23 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     // Lambert already folded in, so re-light by the ratio the detail normal
     // would have produced. The offset keeps the divisor away from zero at the
     // terminator and stops grazing light exploding into white speckle.
-    if input.detail_vertex_filter_meters > 0.0 {
+    if input.detail_vertex_spacing_meters > 0.0 {
+        // Rebuild the vertex's cutoff from this pixel's own camera distance,
+        // using the same expression vs_main used. Both are continuous in
+        // distance, so the handover slides smoothly instead of stepping.
         let pixel_filter_meters = terrain_detail_filter_meters(
             length(input.camera_relative_view_position),
         );
-        if pixel_filter_meters < input.detail_vertex_filter_meters {
+        let vertex_filter_meters = max(
+            pixel_filter_meters,
+            input.detail_vertex_spacing_meters,
+        );
+        if pixel_filter_meters < vertex_filter_meters {
             let fine_detail = terrain_detail_band(
                 input.detail_anchor_direction,
                 input.detail_local_meters,
                 pixel_filter_meters,
-                input.detail_vertex_filter_meters,
+                vertex_filter_meters,
             );
             let vertex_normal = normalize(input.world_normal);
             let detail_normal = terrain_detail_perturbed_normal(
