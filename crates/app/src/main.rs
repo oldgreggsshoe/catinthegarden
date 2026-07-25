@@ -55,6 +55,13 @@ const DEFAULT_CAMERA_ORBIT_INCLINATION_RADIANS: f64 = 28.5_f64.to_radians();
 const INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 = 0.3;
 const MOUSE_LOOK_RADIANS_PER_PIXEL: f64 = 0.0006;
 const LOW_FLIGHT_ALTITUDE_METERS: f64 = 500.0 * 0.3048;
+/// How close to the ground flight may descend. This used to be the entry
+/// altitude above, doing double duty, so the camera could never get nearer the
+/// surface than 500 ft and eye-level views of the terrain were unreachable.
+/// Separating them is only safe now that CPU clearance evaluates the same
+/// synthesised relief the shader displaces with; against baked heights alone a
+/// floor this low would have put the camera inside the ground.
+const LOW_FLIGHT_MINIMUM_CLEARANCE_METERS: f64 = 2.0;
 /// Flight begins gently enough for surface inspection, then acceleration
 /// doubles while a movement key remains held so the same controls can leave
 /// the planet. Shift accelerates the ramp without changing its shape.
@@ -1128,7 +1135,7 @@ impl State {
         // leave the camera underground until the next movement key is pressed.
         let minimum_radius = planet::PLANET_RADIUS_METERS
             + self.flight_surface_height_meters
-            + LOW_FLIGHT_ALTITUDE_METERS;
+            + LOW_FLIGHT_MINIMUM_CLEARANCE_METERS;
         if self.flight_local_position.length() < minimum_radius {
             self.flight_local_position = local_radial * minimum_radius;
         }
@@ -2473,7 +2480,8 @@ mod tests {
 
     use super::{
         CameraMode, FlightMovementInput, FlightSpeedState, INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
-        LOW_FLIGHT_INITIAL_PITCH_RADIANS, LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND,
+        LOW_FLIGHT_ALTITUDE_METERS, LOW_FLIGHT_INITIAL_PITCH_RADIANS,
+        LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND, LOW_FLIGHT_MINIMUM_CLEARANCE_METERS,
         MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS, RenderPath, advance_flight_position_on_sphere,
         advance_flight_speed, flight_movement_direction, flight_view_direction,
         focus_of_expansion_ndc, initial_flight_tangent, interactive_camera_delta_seconds,
@@ -2692,6 +2700,26 @@ mod tests {
 
         assert!(direction.dot(radial) < -0.25);
         assert!(direction.dot(DVec3::Z) > 0.9);
+    }
+
+    /// Entry altitude and minimum clearance are separate concerns. While they
+    /// shared one constant the camera could not descend below 500 ft, so the
+    /// ground was only ever seen from the air.
+    #[test]
+    fn flight_may_descend_to_eye_level_but_not_into_the_ground() {
+        assert!(LOW_FLIGHT_MINIMUM_CLEARANCE_METERS > 0.0);
+        assert!(
+            LOW_FLIGHT_MINIMUM_CLEARANCE_METERS < 3.0,
+            "a {LOW_FLIGHT_MINIMUM_CLEARANCE_METERS}m floor is too high to stand on the ground"
+        );
+        assert!(LOW_FLIGHT_MINIMUM_CLEARANCE_METERS < LOW_FLIGHT_ALTITUDE_METERS);
+        // The floor is only safe because clearance sees the synthesised relief.
+        // If that ever regresses to baked heights alone, the ladder can put
+        // ground up to its full amplitude above where the CPU thinks it is.
+        let ladder_amplitude = crate::planet::TERRAIN_DETAIL_START_WAVELENGTH_METERS
+            * crate::planet::TERRAIN_DETAIL_ROUGHNESS
+            * 2.0;
+        assert!(ladder_amplitude > LOW_FLIGHT_MINIMUM_CLEARANCE_METERS);
     }
 
     #[test]
