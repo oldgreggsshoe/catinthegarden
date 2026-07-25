@@ -1951,6 +1951,44 @@ mod tests {
         assert!(detail.contains("smoothstep(filter_meters"));
     }
 
+    /// The CPU decides where the camera may fly and where it is placed; the
+    /// shader decides where the ground actually is. They synthesise the same
+    /// relief from two separate copies of the same four numbers, so if those
+    /// drift the camera ends up inside the terrain -- which is exactly what
+    /// happened while the CPU had no detail ladder at all.
+    #[test]
+    fn shader_detail_ladder_matches_the_cpu_clearance_ladder() {
+        let shader = planet_shader_source();
+        let declared = |name: &str| -> f32 {
+            shader
+                .split(&format!("const {name}: f32 = "))
+                .nth(1)
+                .and_then(|source| source.split(';').next())
+                .and_then(|value| value.trim().parse::<f32>().ok())
+                .unwrap_or_else(|| panic!("{name} is declared in the shader"))
+        };
+        assert_eq!(
+            declared("TERRAIN_DETAIL_ROUGHNESS"),
+            crate::planet::TERRAIN_DETAIL_ROUGHNESS as f32,
+        );
+        assert_eq!(
+            declared("TERRAIN_DETAIL_START_WAVELENGTH_METERS"),
+            crate::planet::TERRAIN_DETAIL_START_WAVELENGTH_METERS as f32,
+        );
+        assert_eq!(
+            declared("TERRAIN_NORMAL_MIN_SAMPLE_METERS"),
+            crate::planet::TERRAIN_DETAIL_MIN_FILTER_METERS as f32,
+            "the shader floors its detail filter at the normal probe spacing",
+        );
+        let octaves = shader
+            .split("const TERRAIN_DETAIL_OCTAVES: i32 = ")
+            .nth(1)
+            .and_then(|source| source.split(';').next())
+            .and_then(|value| value.trim().parse::<u32>().ok())
+            .expect("octave count is declared in the shader");
+        assert_eq!(octaves, crate::planet::TERRAIN_DETAIL_OCTAVES);
+    }
+
     /// The close-range material tile is the only thing that gives the ground
     /// texture underfoot, and it only works because it is never expressed as an
     /// absolute planet coordinate: 4e6/6 needs 7e5 tiles, where f32 quantises

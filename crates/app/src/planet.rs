@@ -303,6 +303,91 @@ pub fn placeholder_height_meters(direction: DVec3) -> f64 {
         .sum()
 }
 
+/// The synthesised detail ladder, mirrored from `shared_planet.wgsl`. These
+/// four must track the shader's `TERRAIN_DETAIL_*`; `shader_detail_ladder_
+/// matches_the_cpu_clearance_ladder` in terrain.rs reads them back out of the
+/// shader source and fails if they drift.
+pub const TERRAIN_DETAIL_ROUGHNESS: f64 = 0.0328;
+pub const TERRAIN_DETAIL_START_WAVELENGTH_METERS: f64 = 256.0;
+pub const TERRAIN_DETAIL_OCTAVES: u32 = 9;
+pub const TERRAIN_DETAIL_MIN_FILTER_METERS: f64 = 0.5;
+
+/// What the GPU actually puts under the camera, evaluated on the CPU so flight
+/// clearance and camera placement agree with the render.
+///
+/// The shader fades each octave against the spacing it is about to be sampled
+/// at, so the rendered surface is smoother far away than it is underfoot.
+/// Clearance takes the finest filter regardless: that is the tallest surface
+/// the renderer can ever produce here, which is the conservative choice for
+/// deciding whether a camera is inside the ground.
+///
+/// Evaluated straight from the absolute direction in f64. The shader has to
+/// split cell index from in-cell fraction to survive f32 at metre wavelengths;
+/// f64 carries the whole domain coordinate outright, so the two agree on
+/// amplitude and character without agreeing bit for bit.
+pub fn terrain_detail_meters(direction: DVec3) -> f64 {
+    let domain = terrain_detail_domain(direction.normalize());
+    let mut total = 0.0;
+    let mut wavelength = TERRAIN_DETAIL_START_WAVELENGTH_METERS;
+    for _ in 0..TERRAIN_DETAIL_OCTAVES {
+        // Matches the shader's low cut. There is no high cut here: the ladder
+        // starts an octave below `terrain_detail`'s coarsest bound, so that
+        // term is one throughout.
+        let fade = smoothstep(
+            TERRAIN_DETAIL_MIN_FILTER_METERS * 2.0,
+            TERRAIN_DETAIL_MIN_FILTER_METERS * 4.0,
+            wavelength,
+        );
+        if fade > 0.0 {
+            let cells = domain * (PLANET_RADIUS_METERS / wavelength);
+            total += terrain_detail_value_noise_f64(cells)
+                * wavelength
+                * TERRAIN_DETAIL_ROUGHNESS
+                * fade;
+        }
+        wavelength *= 0.5;
+    }
+    total
+}
+
+/// Detail rides on land only and fades out before the coastline, matching
+/// `terrain_detail_land_weight` in planet.wgsl so the CPU and the shader agree
+/// about where relief stops.
+pub fn terrain_detail_land_weight(scaled_macro_height_meters: f64) -> f64 {
+    smoothstep(25.0, 150.0, scaled_macro_height_meters)
+}
+
+fn terrain_detail_domain(direction: DVec3) -> DVec3 {
+    DVec3::new(
+        direction.dot(DVec3::new(0.80, 0.48, -0.36)),
+        direction.dot(DVec3::new(-0.30, 0.85, 0.43)),
+        direction.dot(DVec3::new(0.52, -0.21, 0.82)),
+    )
+}
+
+fn terrain_detail_hash_f64(cell: DVec3) -> f64 {
+    let value = cell.dot(DVec3::new(127.1, 311.7, 74.7)).sin() * 43_758.547;
+    (value - value.floor()) * 2.0 - 1.0
+}
+
+fn terrain_detail_value_noise_f64(position: DVec3) -> f64 {
+    let cell = position.floor();
+    let amount = position - cell;
+    let fade = amount * amount * (DVec3::splat(3.0) - amount * 2.0);
+    let mut planes = [0.0; 2];
+    for (index, plane) in planes.iter_mut().enumerate() {
+        let base = cell + DVec3::Z * index as f64;
+        let lower_left = terrain_detail_hash_f64(base);
+        let lower_right = terrain_detail_hash_f64(base + DVec3::X);
+        let upper_left = terrain_detail_hash_f64(base + DVec3::Y);
+        let upper_right = terrain_detail_hash_f64(base + DVec3::X + DVec3::Y);
+        let lower = lower_left + (lower_right - lower_left) * fade.x;
+        let upper = upper_left + (upper_right - upper_left) * fade.x;
+        *plane = lower + (upper - lower) * fade.y;
+    }
+    planes[0] + (planes[1] - planes[0]) * fade.z
+}
+
 pub fn global_terrain_detail_meters(direction: DVec3) -> f64 {
     // Evaluate this deliberately in f32, matching the camera-relative GPU
     // path closely enough for flight clearance. It remains direction-based,
@@ -373,8 +458,15 @@ pub fn detailed_outmap_land_height_meters(
     camera_altitude_meters: f64,
 ) -> f64 {
     let weight = smoothstep(100.0, 400.0, macro_height_meters);
-    macro_height_meters * outmap_terrain_height_scale(camera_altitude_meters)
+    let scaled_macro_height =
+        macro_height_meters * outmap_terrain_height_scale(camera_altitude_meters);
+    // Two separate fields. The first is the retired direction-noise, kept gated
+    // at zero. The second is the ladder the shader actually displaces with, and
+    // without it the CPU believes in a surface up to 17m below the rendered one
+    // -- which is what put ground-level cameras inside the terrain.
+    scaled_macro_height
         + global_terrain_detail_meters(direction) * weight * GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE
+        + terrain_detail_meters(direction) * terrain_detail_land_weight(scaled_macro_height)
 }
 
 /// Height followed by the low-flight camera. Ocean floor is not the visible
@@ -2100,11 +2192,12 @@ mod tests {
         OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS, OUTMAP_TERRAIN_HEIGHT_SCALE,
         OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, OrbitCamera, PLANET_RADIUS_METERS,
         PLANET_ROTATION_PERIOD_SECONDS, PlanetLod, QuadtreeNode, RenderDebugMode,
-        SKIRT_DEPTH_RATIO, TerrainHeightRange, build_chunk_mesh, cube_face_basis,
-        cube_face_direction, default_sun_direction, detailed_outmap_land_height_meters,
-        global_terrain_detail_meters, minimum_vertical_fov_radians_for_viewport,
-        outmap_surface_height_meters, outmap_terrain_height_scale, placeholder_height_meters,
-        planet_local_vector, planet_rotation_radians, projected_error_pixels_with_height_range,
+        SKIRT_DEPTH_RATIO, TERRAIN_DETAIL_ROUGHNESS, TERRAIN_DETAIL_START_WAVELENGTH_METERS,
+        TerrainHeightRange, build_chunk_mesh, cube_face_basis, cube_face_direction,
+        default_sun_direction, detailed_outmap_land_height_meters, global_terrain_detail_meters,
+        minimum_vertical_fov_radians_for_viewport, outmap_surface_height_meters,
+        outmap_terrain_height_scale, placeholder_height_meters, planet_local_vector,
+        planet_rotation_radians, projected_error_pixels_with_height_range, terrain_detail_meters,
         terrain_detail_value_noise,
     };
 
@@ -2966,15 +3059,57 @@ mod tests {
             outmap_surface_height_meters(-800.0, direction, 1_524.0),
             0.0
         );
+        // Detail must not be able to push the shore around, so it is held off
+        // entirely until well above sea level. This is the shader's own
+        // 25m..150m land weighting, not the retired field's 100m..400m one.
         assert_eq!(
-            detailed_outmap_land_height_meters(100.0, direction, 1_524.0),
-            OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE * 100.0
+            detailed_outmap_land_height_meters(25.0, direction, 1_524.0),
+            OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE * 25.0
         );
+        // Above the weighting it is applied whole.
         assert_eq!(
             detailed_outmap_land_height_meters(400.0, direction, 1_524.0),
             OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE * 400.0
                 + GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE * global_terrain_detail_meters(direction)
+                + terrain_detail_meters(direction)
         );
+    }
+
+    /// The whole point of the CPU ladder: it has to see the relief the shader
+    /// displaces with. A camera placed from a surface height that ignores it
+    /// ends up inside the ground.
+    #[test]
+    fn cpu_clearance_sees_the_synthesised_relief() {
+        // The measured landing site: biome 6, 919.8m baked.
+        let direction =
+            DVec3::new(-0.9859869836836004, 0.07585910343295443, -0.148576796414729).normalize();
+        let baked_meters = 919.8;
+        let surface = outmap_surface_height_meters(baked_meters, direction, 40.0);
+        let detail = surface - baked_meters;
+        assert!(
+            detail.abs() > 0.5,
+            "clearance saw only {detail}m of synthesised relief at the landing site"
+        );
+        // Measured against the render: a camera at 922m is inside the surface
+        // there and one at 940m clears it. The CPU has to land in that bracket,
+        // or it is still describing a different planet from the shader.
+        assert!(
+            (920.0..=940.0).contains(&surface),
+            "clearance puts the landing site at {surface}m, outside the 920..940m \
+             bracket measured from the render"
+        );
+        // Self-similar amplitude sums to twice the first octave, so nothing the
+        // ladder produces may exceed that however the octaves line up.
+        let bound = TERRAIN_DETAIL_START_WAVELENGTH_METERS * TERRAIN_DETAIL_ROUGHNESS * 2.0;
+        for offset in [0.0_f64, 0.3, 1.1, 2.7] {
+            let probe = DVec3::new(
+                direction.x + offset * 1.0e-4,
+                direction.y - offset * 0.7e-4,
+                direction.z + offset * 0.4e-4,
+            )
+            .normalize();
+            assert!(terrain_detail_meters(probe).abs() <= bound);
+        }
     }
 
     #[test]
