@@ -54,7 +54,7 @@ const DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND: f64 = 0.4;
 const DEFAULT_CAMERA_ORBIT_INCLINATION_RADIANS: f64 = 28.5_f64.to_radians();
 const INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 = 0.3;
 const MOUSE_LOOK_RADIANS_PER_PIXEL: f64 = 0.0006;
-const LOW_FLIGHT_ALTITUDE_METERS: f64 = 5_000.0 * 0.3048;
+const LOW_FLIGHT_ALTITUDE_METERS: f64 = 500.0 * 0.3048;
 /// Flight begins gently enough for surface inspection, then acceleration
 /// doubles while a movement key remains held so the same controls can leave
 /// the planet. Shift accelerates the ramp without changing its shape.
@@ -712,11 +712,28 @@ impl State {
             format: surface_format,
             width: size.width.max(1),
             height: size.height.max(1),
-            present_mode: wgpu::PresentMode::Fifo,
+            present_mode: match std::env::var("CATINGARDEN_PRESENT_MODE").as_deref() {
+                Ok("immediate") => wgpu::PresentMode::Immediate,
+                Ok("mailbox") => wgpu::PresentMode::Mailbox,
+                Ok("fifo_relaxed") => wgpu::PresentMode::FifoRelaxed,
+                Ok("auto_vsync") => wgpu::PresentMode::AutoVsync,
+                Ok("auto_no_vsync") => wgpu::PresentMode::AutoNoVsync,
+                _ => wgpu::PresentMode::Fifo,
+            },
             alpha_mode: surface_capabilities.alpha_modes[0],
             view_formats: vec![],
-            desired_maximum_frame_latency: 2,
+            desired_maximum_frame_latency: std::env::var("CATINGARDEN_FRAME_LATENCY")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(2),
         };
+        tracing::info!(
+            target: "catinthegarden::adapter",
+            supported_present_modes = ?surface_capabilities.present_modes,
+            selected_present_mode = ?config.present_mode,
+            surface_usage = ?config.usage,
+            "configured surface"
+        );
         surface.configure(&device, &config);
         let depth_view = create_depth_view(&device, size);
         let hdr = hdr::HdrRenderer::new(&device, size, config.format);
@@ -805,7 +822,7 @@ impl State {
             egui_wgpu::RendererOptions::default(),
         );
 
-        Self {
+        let mut state = Self {
             surface,
             device,
             queue,
@@ -864,7 +881,37 @@ impl State {
             egui_buffers_dirty: true,
             next_hud_update: Instant::now(),
             hud_dirty: true,
+        };
+        state.apply_startup_experiment_overrides();
+        state
+    }
+
+    /// Applies the render path and ray-experiment toggles requested through the
+    /// environment, so an automated benchmark can reach the same state a human
+    /// gets by pressing F5 and a number key. These call the identical toggle
+    /// helpers the key handlers use, and the resulting state is logged so every
+    /// run records which configuration produced its samples.
+    fn apply_startup_experiment_overrides(&mut self) {
+        if std::env::var("CATINGARDEN_RENDER_PATH").as_deref() == Ok("ray") {
+            self.toggle_render_path();
         }
+        if let Ok(experiments) = std::env::var("CATINGARDEN_RAY_EXPERIMENTS") {
+            for index in experiments
+                .split(',')
+                .filter_map(|value| value.trim().parse::<u8>().ok())
+            {
+                self.toggle_ray_experiment(index);
+            }
+        }
+        let enabled: Vec<u8> = (1..=5)
+            .filter(|index| self.foveated.experiment_enabled(*index))
+            .collect();
+        tracing::info!(
+            target: "catinthegarden::experiment",
+            render_path = self.render_path.label(),
+            enabled_experiments = ?enabled,
+            "render configuration"
+        );
     }
 
     fn resize(&mut self, size: winit::dpi::PhysicalSize<u32>) {
