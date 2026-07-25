@@ -56,6 +56,8 @@ const TERRAIN_NORMAL_MAX_SAMPLE_METERS: f32 = 256.0;
 // the same spacing so displacement and shading never disagree about an octave.
 const TERRAIN_DETAIL_FILTER_RATIO: f32 = 0.01;
 const TERRAIN_DETAIL_MIN_FILTER_METERS: f32 = TERRAIN_NORMAL_MIN_SAMPLE_METERS;
+// Must track CHUNK_GRID_QUADS in planet.rs.
+const TERRAIN_CHUNK_QUADS: f32 = 32.0;
 const TERRAIN_MATERIAL_VEGETATION: i32 = 0;
 const TERRAIN_MATERIAL_EARTH: i32 = 1;
 const TERRAIN_MATERIAL_ROCK: i32 = 2;
@@ -239,10 +241,14 @@ struct TerrainDetail {
 /// `filter_meters` is the spacing this height is about to be sampled at.
 /// Octaves shorter than the filter are faded out rather than dropped, so pulling
 /// the camera back retires them smoothly instead of aliasing.
-fn terrain_detail(
+/// `coarsest_meters` excludes octaves at or above it, so the mesh and the pixel
+/// can split the ladder between them without either double-counting: the vertex
+/// takes everything it can actually represent, the pixel takes the rest.
+fn terrain_detail_band(
     anchor_direction: vec3<f32>,
     local_meters: vec3<f32>,
     filter_meters: f32,
+    coarsest_meters: f32,
 ) -> TerrainDetail {
     let anchor_domain = terrain_detail_domain(anchor_direction);
     let local_domain = terrain_detail_domain(local_meters);
@@ -257,7 +263,11 @@ fn terrain_detail(
     for (var octave = 0; octave < active_octaves; octave = octave + 1) {
         // Two samples per wavelength is the Nyquist limit; fade across an octave
         // above it so the cut is never visible.
-        let fade = smoothstep(filter_meters * 2.0, filter_meters * 4.0, wavelength);
+        // Complementary fades: the low cut retires octaves the sampling cannot
+        // carry, the high cut hands coarse octaves back to whoever owns them.
+        // The two are mirror images so a split ladder sums to the whole.
+        let fade = smoothstep(filter_meters * 2.0, filter_meters * 4.0, wavelength)
+            * (1.0 - smoothstep(coarsest_meters * 2.0, coarsest_meters * 4.0, wavelength));
         if fade > 0.0 {
             let inverse_wavelength = 1.0 / wavelength;
             let anchor_cells = anchor_domain * (PLANET_RADIUS_METERS * inverse_wavelength);
@@ -272,6 +282,37 @@ fn terrain_detail(
         wavelength = wavelength * 0.5;
     }
     return TerrainDetail(total, terrain_detail_domain_transpose(gradient));
+}
+
+fn terrain_detail(
+    anchor_direction: vec3<f32>,
+    local_meters: vec3<f32>,
+    filter_meters: f32,
+) -> TerrainDetail {
+    return terrain_detail_band(
+        anchor_direction,
+        local_meters,
+        filter_meters,
+        TERRAIN_DETAIL_START_WAVELENGTH_METERS * 4.0,
+    );
+}
+
+/// Distance between mesh vertices for a node at this level. Relief finer than
+/// this cannot exist in the geometry, so it is the handover point between the
+/// vertex ladder and the per-pixel one.
+fn terrain_vertex_spacing_meters(level: u32) -> f32 {
+    return (2.0 / exp2(f32(level))) * PLANET_RADIUS_METERS / TERRAIN_CHUNK_QUADS;
+}
+
+/// Tilts a surface normal by a detail slope. Only the tangential part matters;
+/// the radial component is the normal already.
+fn terrain_detail_perturbed_normal(
+    normal: vec3<f32>,
+    direction: vec3<f32>,
+    slope: vec3<f32>,
+) -> vec3<f32> {
+    let tangential_slope = slope - direction * dot(slope, direction);
+    return normalize(normal - tangential_slope);
 }
 
 fn terrain_macro_height_scale() -> f32 {

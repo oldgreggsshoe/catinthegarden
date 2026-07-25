@@ -35,6 +35,13 @@ struct VertexOutput {
     @location(8) surface_lighting: vec3<f32>,
     @location(9) terrain_detail_meters: f32,
     @location(10) surface_irradiance: vec3<f32>,
+    // Detail is evaluated anchor-locally for precision, so the pixel needs the
+    // same anchor the vertex used. Flat: it is constant across the node, and
+    // interpolating it would defeat the exact-integer cell it provides.
+    @location(11) @interpolate(flat) detail_anchor_direction: vec3<f32>,
+    @location(12) detail_local_meters: vec3<f32>,
+    // Where the vertex ladder stopped, so the pixel knows where to start.
+    @location(13) @interpolate(flat) detail_vertex_filter_meters: f32,
 }
 
 fn uses_outmap(terrain_info: u32) -> bool {
@@ -400,10 +407,16 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     );
     // Anchor-local metres, not an absolute direction: this is what carries the
     // in-cell fraction for metre-scale octaves without losing it to f32.
+    // The mesh cannot represent relief finer than its own vertex spacing, so it
+    // stops there and the fragment shader picks up the rest as a normal detail.
+    let vertex_filter_meters = max(
+        terrain_detail_filter_meters(camera_distance_meters),
+        terrain_vertex_spacing_meters(requested_level(input.terrain_info)),
+    );
     let detail = terrain_detail(
         anchor_direction,
         anchor_relative_position,
-        terrain_detail_filter_meters(camera_distance_meters),
+        vertex_filter_meters,
     );
     let detail_weight = select(0.0, terrain_detail_land_weight(base_height), outmap);
     let terrain_detail_meters = detail.height_meters * detail_weight;
@@ -448,11 +461,11 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         camera_distance_meters,
     );
     if detail_weight > 0.0 {
-        // Tilt the baked normal by the detail's own slope. Only the component
-        // along the surface matters; the radial part is already the normal.
-        let slope = detail.slope * detail_weight;
-        let tangential_slope = slope - direction * dot(slope, direction);
-        normal = normalize(normal - tangential_slope);
+        normal = terrain_detail_perturbed_normal(
+            normal,
+            direction,
+            detail.slope * detail_weight,
+        );
     }
     if ocean {
         normal = wave_surface.normal;
@@ -522,6 +535,9 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         lit_surface_color,
         terrain_detail_meters,
         surface_irradiance,
+        anchor_direction,
+        anchor_relative_position,
+        select(0.0, vertex_filter_meters, detail_weight > 0.0),
     );
 }
 
@@ -642,6 +658,36 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     // tinting a vertex-frequency biome colour; the latter made coarse leaves
     // read as large Gouraud-shaded software-rendered triangles.
     var textured_surface_lighting = textured_terrain_albedo * input.surface_irradiance;
+    // Relief finer than the mesh can hold, shaded per pixel. The vertex ladder
+    // stopped at its own spacing, so this picks up exactly the octaves it left.
+    // Irradiance arrives as one interpolated term with the vertex normal's
+    // Lambert already folded in, so re-light by the ratio the detail normal
+    // would have produced. The offset keeps the divisor away from zero at the
+    // terminator and stops grazing light exploding into white speckle.
+    if input.detail_vertex_filter_meters > 0.0 {
+        let pixel_filter_meters = terrain_detail_filter_meters(
+            length(input.camera_relative_view_position),
+        );
+        if pixel_filter_meters < input.detail_vertex_filter_meters {
+            let fine_detail = terrain_detail_band(
+                input.detail_anchor_direction,
+                input.detail_local_meters,
+                pixel_filter_meters,
+                input.detail_vertex_filter_meters,
+            );
+            let vertex_normal = normalize(input.world_normal);
+            let detail_normal = terrain_detail_perturbed_normal(
+                vertex_normal,
+                direction,
+                fine_detail.slope,
+            );
+            let ambient = 0.18;
+            let vertex_lambert = max(dot(vertex_normal, sun_direction), 0.0);
+            let detail_lambert = max(dot(detail_normal, sun_direction), 0.0);
+            textured_surface_lighting *= (detail_lambert + ambient)
+                / (vertex_lambert + ambient);
+        }
+    }
     if outmap && biome_id == 2u {
         let ice_light_floor = clamp(
             max(

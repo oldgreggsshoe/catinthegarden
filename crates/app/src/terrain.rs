@@ -1944,7 +1944,7 @@ mod tests {
         // Every octave has to be faded against the sampling spacing. Without
         // this the detail aliases into crawling noise as the camera moves.
         let detail = shader
-            .split("fn terrain_detail(")
+            .split("fn terrain_detail_band(")
             .nth(1)
             .and_then(|source| source.split("\nfn ").next())
             .expect("detail function is present");
