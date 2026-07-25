@@ -1909,17 +1909,20 @@ mod tests {
     #[test]
     fn shader_uses_baked_displacement_and_real_light() {
         let shader = planet_shader_source();
+        // Bound this at the next top-level item. Splitting on a named function
+        // is unreliable here: the shared shader is concatenated ahead of this
+        // one, so anything named in it has already been passed and the slice
+        // silently ran to end of file.
         let terrain_height = shader
             .split("fn terrain_height(")
             .nth(1)
-            .and_then(|source| source.split("fn gerstner_wave(").next())
+            .and_then(|source| source.split("\nfn ").next())
             .expect("terrain height function is present");
         assert!(terrain_height.contains("macro_height * terrain_macro_height_scale()"));
-        // Baked macro terrain still drives the shape; synthesised relief is
-        // added on top because the outmap cannot store metre-scale detail for a
-        // whole planet. It must be filtered, never raw, or it aliases.
-        assert!(terrain_height.contains("terrain_detail_meters("));
-        assert!(terrain_height.contains("filter_meters"));
+        // terrain_height stays macro-only on purpose: detail is added once in
+        // vs_main with an analytic slope, so the four normal probes remain pure
+        // texture reads rather than each re-running the octave ladder.
+        assert!(!terrain_height.contains("terrain_detail("));
         assert!(!shader.contains("requested_lod_level: f32"));
         assert!(shader.contains("biome_color(2u) * 0.65 * ice_light_floor"));
         assert!(!shader.contains("max(lit_surface_color, biome_color(2u) * 0.65)"));
@@ -1941,7 +1944,7 @@ mod tests {
         // Every octave has to be faded against the sampling spacing. Without
         // this the detail aliases into crawling noise as the camera moves.
         let detail = shader
-            .split("fn terrain_detail_meters(")
+            .split("fn terrain_detail(")
             .nth(1)
             .and_then(|source| source.split("\nfn ").next())
             .expect("detail function is present");

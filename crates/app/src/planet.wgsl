@@ -88,21 +88,26 @@ fn terrain_height(
     if !outmap {
         return macro_height;
     }
-    let scaled_macro_height = macro_height * terrain_macro_height_scale();
-    // Detail rides on land only, and fades out before the coastline so it
-    // cannot push the shore around, matching the baker's own land weighting.
-    let land_weight = smoothstep(25.0, 150.0, scaled_macro_height);
-    if land_weight <= 0.0 {
-        return scaled_macro_height;
-    }
-    // Sampling spacing tracks camera distance the same way the normal probes
-    // do, so displacement and shading agree about which octaves exist here.
-    let filter_meters = max(
+    // Macro only. Synthesised detail is added once in vs_main with an analytic
+    // slope, rather than here, so the four normal probes stay pure texture reads
+    // instead of each re-running the whole octave ladder.
+    return macro_height * terrain_macro_height_scale();
+}
+
+/// Detail rides on land only and fades out before the coastline so it cannot
+/// push the shore around, matching the baker's own land weighting.
+fn terrain_detail_land_weight(scaled_macro_height: f32) -> f32 {
+    return smoothstep(25.0, 150.0, scaled_macro_height);
+}
+
+/// The spacing detail is about to be sampled at. Tracks camera distance the
+/// same way the normal probes do, so displacement and shading never disagree
+/// about which octaves exist here.
+fn terrain_detail_filter_meters(camera_distance_meters: f32) -> f32 {
+    return max(
         camera_distance_meters * TERRAIN_DETAIL_FILTER_RATIO,
         TERRAIN_DETAIL_MIN_FILTER_METERS,
     );
-    return scaled_macro_height
-        + terrain_detail_meters(direction, filter_meters) * land_weight;
 }
 
 fn sample_biome(source_uv: vec2<f32>) -> u32 {
@@ -388,17 +393,21 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let base_camera_relative_view_position = input.anchor_view_position
         + planet_to_view(anchor_relative_position);
     let camera_distance_meters = length(base_camera_relative_view_position);
-    // Displace through the same function the normal probes use, so the mesh and
-    // the shading agree about which octaves exist at this distance. Evaluating
-    // the two differently is what makes procedural relief shade like a flat
-    // texture painted on smooth ground.
-    let height = terrain_height(outmap, source_uv, direction, camera_distance_meters);
-    let terrain_detail_meters = height
-        - select(
-            macro_height,
-            macro_height * terrain_macro_height_scale(),
-            outmap,
-        );
+    let base_height = select(
+        macro_height,
+        macro_height * terrain_macro_height_scale(),
+        outmap,
+    );
+    // Anchor-local metres, not an absolute direction: this is what carries the
+    // in-cell fraction for metre-scale octaves without losing it to f32.
+    let detail = terrain_detail(
+        anchor_direction,
+        anchor_relative_position,
+        terrain_detail_filter_meters(camera_distance_meters),
+    );
+    let detail_weight = select(0.0, terrain_detail_land_weight(base_height), outmap);
+    let terrain_detail_meters = detail.height_meters * detail_weight;
+    let height = base_height + terrain_detail_meters;
     // Polar ice overrides ocean in the baked biome contract. Lift it just
     // above sea level so the cap remains visible rather than becoming water.
     let biome_id = sample_biome(source_uv);
@@ -438,6 +447,13 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         input.terrain_info,
         camera_distance_meters,
     );
+    if detail_weight > 0.0 {
+        // Tilt the baked normal by the detail's own slope. Only the component
+        // along the surface matters; the radial part is already the normal.
+        let slope = detail.slope * detail_weight;
+        let tangential_slope = slope - direction * dot(slope, direction);
+        normal = normalize(normal - tangential_slope);
+    }
     if ocean {
         normal = wave_surface.normal;
     }

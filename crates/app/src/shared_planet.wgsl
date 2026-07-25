@@ -9,12 +9,12 @@ const GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS: f32 = 111.5;
 // Amplitude/wavelength for every detail octave, matching the baker's sparse
 // bands so baked and synthesised relief describe the same kind of ground.
 const TERRAIN_DETAIL_ROUGHNESS: f32 = 0.10;
-const TERRAIN_DETAIL_START_WAVELENGTH_METERS: f32 = 512.0;
-// Floor is ~4m, not 1m: the noise domain is direction * (radius / wavelength),
-// which at 1m reaches 4e6 where f32 quantises the cell fraction to 0.25 -- four
-// steps per wavelength, which reads as faceted. Going finer needs the domain
-// rebased per chunk into a local frame.
-const TERRAIN_DETAIL_OCTAVES: i32 = 8;
+const TERRAIN_DETAIL_START_WAVELENGTH_METERS: f32 = 1024.0;
+// Floor is 1m. The octave ladder is evaluated from an anchor-local offset, so
+// the in-cell fraction never has to survive an absolute 4e6 domain coordinate
+// where f32 would quantise it to 0.25 -- see terrain_detail_value_noise.
+
+const TERRAIN_DETAIL_OCTAVES: i32 = 11;
 const TERRAIN_SKIRT_DEPTH_RATIO: f32 = 0.075;
 const MAX_TERRAIN_SKIRT_DEPTH_METERS: f32 = 10.0;
 const ATMOSPHERE_HEIGHT_METERS: f32 = 720000.0;
@@ -155,21 +155,56 @@ fn terrain_detail_hash(cell: vec3<f32>) -> f32 {
     return fract(value) * 2.0 - 1.0;
 }
 
-fn terrain_detail_value_noise(position: vec3<f32>) -> f32 {
-    let cell = floor(position);
-    let amount = position - cell;
+struct DetailNoise {
+    value: f32,
+    // d(value) / d(position), in cell units.
+    gradient: vec3<f32>,
+}
+
+/// Cell index and in-cell fraction are supplied separately because the caller
+/// cannot form `position` at metre wavelengths without losing it: the domain
+/// coordinate reaches 4e6 there, where f32 quantises the fraction to 0.25.
+/// Splitting keeps the cell exact (integers are exact well past 4e6) and lets
+/// the fraction be built from a short anchor-local offset at full precision.
+///
+/// Returns the analytic gradient alongside the value. Central-differencing this
+/// instead costs four more evaluations of the whole octave ladder per normal.
+fn terrain_detail_value_noise(cell_index: vec3<f32>, cell_fraction: vec3<f32>) -> DetailNoise {
+    let carry = floor(cell_fraction);
+    let cell = cell_index + carry;
+    let amount = cell_fraction - carry;
     let fade = amount * amount * (vec3<f32>(3.0) - amount * 2.0);
-    let x0y0 = terrain_detail_hash(cell);
-    let x1y0 = terrain_detail_hash(cell + vec3<f32>(1.0, 0.0, 0.0));
-    let x0y1 = terrain_detail_hash(cell + vec3<f32>(0.0, 1.0, 0.0));
-    let x1y1 = terrain_detail_hash(cell + vec3<f32>(1.0, 1.0, 0.0));
-    let near = mix(mix(x0y0, x1y0, fade.x), mix(x0y1, x1y1, fade.x), fade.y);
-    let x0y0z1 = terrain_detail_hash(cell + vec3<f32>(0.0, 0.0, 1.0));
-    let x1y0z1 = terrain_detail_hash(cell + vec3<f32>(1.0, 0.0, 1.0));
-    let x0y1z1 = terrain_detail_hash(cell + vec3<f32>(0.0, 1.0, 1.0));
-    let x1y1z1 = terrain_detail_hash(cell + vec3<f32>(1.0));
-    let far = mix(mix(x0y0z1, x1y0z1, fade.x), mix(x0y1z1, x1y1z1, fade.x), fade.y);
-    return mix(near, far, fade.z);
+    let fade_slope = 6.0 * amount * (vec3<f32>(1.0) - amount);
+    let a = terrain_detail_hash(cell);
+    let b = terrain_detail_hash(cell + vec3<f32>(1.0, 0.0, 0.0));
+    let c = terrain_detail_hash(cell + vec3<f32>(0.0, 1.0, 0.0));
+    let d = terrain_detail_hash(cell + vec3<f32>(1.0, 1.0, 0.0));
+    let e = terrain_detail_hash(cell + vec3<f32>(0.0, 0.0, 1.0));
+    let f = terrain_detail_hash(cell + vec3<f32>(1.0, 0.0, 1.0));
+    let g = terrain_detail_hash(cell + vec3<f32>(0.0, 1.0, 1.0));
+    let h = terrain_detail_hash(cell + vec3<f32>(1.0));
+    let k1 = b - a;
+    let k2 = c - a;
+    let k3 = e - a;
+    let k4 = a - b - c + d;
+    let k5 = a - c - e + g;
+    let k6 = a - b - e + f;
+    let k7 = -a + b + c - d + e - f - g + h;
+    let value = a
+        + k1 * fade.x
+        + k2 * fade.y
+        + k3 * fade.z
+        + k4 * fade.x * fade.y
+        + k5 * fade.y * fade.z
+        + k6 * fade.z * fade.x
+        + k7 * fade.x * fade.y * fade.z;
+    let gradient = fade_slope
+        * vec3<f32>(
+            k1 + k4 * fade.y + k6 * fade.z + k7 * fade.y * fade.z,
+            k2 + k5 * fade.z + k4 * fade.x + k7 * fade.z * fade.x,
+            k3 + k6 * fade.x + k5 * fade.y + k7 * fade.x * fade.y,
+        );
+    return DetailNoise(value, gradient);
 }
 
 fn terrain_detail_domain(direction: vec3<f32>) -> vec3<f32> {
@@ -180,34 +215,63 @@ fn terrain_detail_domain(direction: vec3<f32>) -> vec3<f32> {
     );
 }
 
-/// `filter_meters` is the spacing this height is about to be sampled at --
-/// vertex spacing when displacing, normal-probe spacing when shading. Octaves
-/// shorter than the filter are faded out rather than dropped, so pulling the
-/// camera back removes them smoothly instead of popping, and nothing aliases.
-fn terrain_detail_meters(direction: vec3<f32>, filter_meters: f32) -> f32 {
-    let domain = terrain_detail_domain(direction);
+/// The domain map is linear, so a world offset transforms the same way a
+/// direction does. That is what lets the fine octaves be built from a short
+/// anchor-local offset instead of an absolute direction.
+fn terrain_detail_domain_transpose(gradient: vec3<f32>) -> vec3<f32> {
+    return gradient.x * vec3<f32>(0.80, 0.48, -0.36)
+        + gradient.y * vec3<f32>(-0.30, 0.85, 0.43)
+        + gradient.z * vec3<f32>(0.52, -0.21, 0.82);
+}
+
+struct TerrainDetail {
+    height_meters: f32,
+    // d(height) / d(world offset), metres per metre, i.e. a slope.
+    slope: vec3<f32>,
+}
+
+/// `local_meters` is the offset from `anchor_direction`'s surface point, in
+/// metres. Supplying it separately is what makes metre-scale octaves possible:
+/// `anchor_direction * frequency` is huge but lands on an exact integer cell,
+/// and the fraction is then carried entirely by `local_meters / wavelength`,
+/// which stays small and keeps full f32 precision.
+///
+/// `filter_meters` is the spacing this height is about to be sampled at.
+/// Octaves shorter than the filter are faded out rather than dropped, so pulling
+/// the camera back retires them smoothly instead of aliasing.
+fn terrain_detail(
+    anchor_direction: vec3<f32>,
+    local_meters: vec3<f32>,
+    filter_meters: f32,
+) -> TerrainDetail {
+    let anchor_domain = terrain_detail_domain(anchor_direction);
+    let local_domain = terrain_detail_domain(local_meters);
     // Everything below the filter contributes nothing, so bound the loop rather
     // than iterating the full ladder and multiplying by zero. From orbit this is
     // one or two octaves; only at ground level does it run the whole set.
     let span = TERRAIN_DETAIL_START_WAVELENGTH_METERS / max(filter_meters * 2.0, 1.0e-6);
     let active_octaves = clamp(i32(ceil(log2(max(span, 1.0)))) + 1, 1, TERRAIN_DETAIL_OCTAVES);
     var total = 0.0;
+    var gradient = vec3<f32>(0.0);
     var wavelength = TERRAIN_DETAIL_START_WAVELENGTH_METERS;
     for (var octave = 0; octave < active_octaves; octave = octave + 1) {
-        // Two texels per wavelength is the Nyquist limit; fade across an octave
+        // Two samples per wavelength is the Nyquist limit; fade across an octave
         // above it so the cut is never visible.
         let fade = smoothstep(filter_meters * 2.0, filter_meters * 4.0, wavelength);
         if fade > 0.0 {
-            let frequency = PLANET_RADIUS_METERS / wavelength;
-            total = total
-                + terrain_detail_value_noise(domain * frequency)
-                    * wavelength
-                    * TERRAIN_DETAIL_ROUGHNESS
-                    * fade;
+            let inverse_wavelength = 1.0 / wavelength;
+            let anchor_cells = anchor_domain * (PLANET_RADIUS_METERS * inverse_wavelength);
+            let cell_index = floor(anchor_cells);
+            let cell_fraction = (anchor_cells - cell_index)
+                + local_domain * inverse_wavelength;
+            let noise = terrain_detail_value_noise(cell_index, cell_fraction);
+            let amplitude = wavelength * TERRAIN_DETAIL_ROUGHNESS * fade;
+            total = total + noise.value * amplitude;
+            gradient = gradient + noise.gradient * (amplitude * inverse_wavelength);
         }
         wavelength = wavelength * 0.5;
     }
-    return total;
+    return TerrainDetail(total, terrain_detail_domain_transpose(gradient));
 }
 
 fn terrain_macro_height_scale() -> f32 {
