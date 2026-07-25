@@ -170,6 +170,9 @@ impl ScenarioRunner {
             "low_flight_performance" => {
                 include_str!("../scenarios/low_flight_performance.json")
             }
+            "landing_site_ground_detail" => {
+                include_str!("../scenarios/landing_site_ground_detail.json")
+            }
             _ => return Err(format!("unknown scenario '{name}'")),
         };
         Self::from_source(source)
@@ -324,7 +327,7 @@ impl ScenarioRunner {
     pub fn retarget_sparse_landing_direction(&mut self, landing_direction: glam::DVec3) {
         if !matches!(
             self.definition.name.as_str(),
-            "orbital_zoom_lod" | "low_flight_performance"
+            "orbital_zoom_lod" | "low_flight_performance" | "landing_site_ground_detail"
         ) {
             return;
         }
@@ -340,7 +343,13 @@ impl ScenarioRunner {
                 .mul_vec3(glam::DVec3::from_array(waypoint.look_at))
                 .to_array();
         }
-        if self.definition.name == "low_flight_performance" {
+        // These scenarios author their sun in the same landing-relative frame
+        // as their camera, so the light has to rotate with the pose or the
+        // grazing angle chosen to reveal relief is lost.
+        if matches!(
+            self.definition.name.as_str(),
+            "low_flight_performance" | "landing_site_ground_detail"
+        ) {
             for waypoint in &mut self.definition.sun_waypoints {
                 waypoint.direction = rotation
                     .mul_vec3(glam::DVec3::from_array(waypoint.direction))

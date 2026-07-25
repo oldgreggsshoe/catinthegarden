@@ -1327,11 +1327,15 @@ impl State {
             )
         };
         if let Some((position, look_at)) = scenario_pose {
-            if self
-                .scenario
-                .as_ref()
-                .is_some_and(|scenario| scenario.name() == "low_flight_performance")
-            {
+            // Surface-level scenarios need the horizon level, so their up axis
+            // is pinned to the local radial. Orbital scenarios keep the default
+            // basis, where a radial up is degenerate when looking straight down.
+            if self.scenario.as_ref().is_some_and(|scenario| {
+                matches!(
+                    scenario.name(),
+                    "low_flight_performance" | "landing_site_ground_detail"
+                )
+            }) {
                 self.camera
                     .set_world_pose_with_up(position, look_at, position.normalize());
             } else {
