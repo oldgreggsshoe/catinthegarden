@@ -533,7 +533,10 @@ fn sample_refined_tile_from_dense(
             let macro_height = f64::from(sample_parent_f32(&source.height, source_x, source_y));
             let old_landing_ramp =
                 landing_detail_ramp_with_radius(direction, landing_direction, 500.0);
-            let broad_detail_correction = unprotected_baked_surface_detail(direction, noise)
+            // Difference of two flattened fields, so the migration path agrees
+            // with `baked_surface_detail` and neither radius carves a crater.
+            let broad_detail_correction = (unprotected_baked_surface_detail(direction, noise)
+                - unprotected_baked_surface_detail(landing_direction, noise))
                 * (landing_detail_ramp(direction, landing_direction) - old_landing_ramp);
             let detail = broad_detail_correction
                 + sparse_surface_detail(key, direction, landing_direction, noise);
@@ -674,10 +677,23 @@ fn baked_surface_detail(
     let level_ramp = (f64::from(key.level - BAKED_DETAIL_START_LEVEL + 1) / 2.0).min(1.0);
 
     // Keep the deterministic inspection centre locally safe while retaining
-    // the generated coastal terrain around it.
-    unprotected_baked_surface_detail(direction, noise)
-        * level_ramp
-        * landing_detail_ramp(direction, landing_direction)
+    // the generated coastal terrain around it. The centre settles at the
+    // landing point's own detail height rather than at zero: this band is an
+    // absolute offset, so ramping it to zero subtracts the local relief
+    // outright and sinks a crater as deep as the detail happens to be there.
+    landing_flattened_detail(
+        unprotected_baked_surface_detail(direction, noise),
+        unprotected_baked_surface_detail(landing_direction, noise),
+        landing_detail_ramp(direction, landing_direction),
+    ) * level_ramp
+}
+
+/// Blends an absolute detail band toward its value at the landing point, so the
+/// protected disc reads as a level pad at local grade instead of a pit. The
+/// band-limited sparse detail needs no such treatment: it is already expressed
+/// relative to the landing point, so ramping it to zero is already "flat".
+fn landing_flattened_detail(here_meters: f64, landing_meters: f64, ramp: f64) -> f64 {
+    landing_meters + (here_meters - landing_meters) * ramp
 }
 
 fn unprotected_baked_surface_detail(direction: DVec3, noise: &Perlin) -> f64 {
@@ -870,6 +886,55 @@ mod tests {
             0.0
         );
         assert!(LANDING_DETAIL_PROTECTION_METERS < 50.0);
+    }
+
+    /// The protected disc must be a level pad, not a pit. Ramping the absolute
+    /// baked band to zero used to drop the landing point a hundred metres below
+    /// its own surroundings, which read as a conical crater in every
+    /// ground-level view.
+    #[test]
+    fn landing_protection_flattens_without_carving_a_crater() {
+        let noise = Perlin::new(0xABCD_0123);
+        // A real landing direction, not an axis: Perlin noise is identically
+        // zero on its integer lattice, so DVec3::X would make this vacuous.
+        let landing = DVec3::new(-0.985_986_98, 0.075_859_10, -0.148_576_80).normalize();
+        let key = TileKey {
+            face: CubeFace::NegativeX,
+            level: 18,
+            x: 1_u32 << 17,
+            y: 1_u32 << 17,
+        };
+
+        // The band really is large here, so everything below is load-bearing
+        // rather than trivially satisfied.
+        let unprotected = unprotected_baked_surface_detail(landing, &noise);
+        assert!(
+            unprotected.abs() > 10.0,
+            "expected a substantial detail offset at the landing point, got {unprotected:.1}m"
+        );
+
+        // The pad settles at local grade, which is exactly what ramping to zero
+        // failed to do: it would leave the centre `unprotected` metres low.
+        let at_landing = baked_surface_detail(key, landing, landing, &noise);
+        assert!(
+            (at_landing - unprotected).abs() < 1.0e-9,
+            "landing pad should sit at the local detail height {unprotected:.1}m, got {at_landing:.1}m"
+        );
+
+        // Walking outward past the protection radius must not step off a rim.
+        let basis = landing.any_orthonormal_vector();
+        for offset_radians in [1.0e-5_f64, 5.0e-5, 1.0e-4] {
+            let direction =
+                (landing * offset_radians.cos() + basis * offset_radians.sin()).normalize();
+            let sample = baked_surface_detail(key, direction, landing, &noise);
+            let step = (sample - at_landing).abs();
+            assert!(
+                step < 20.0,
+                "landing pad sits {step:.1}m below terrain {:.0}m away; the protection ramp \
+                 must blend toward the landing value, not toward zero",
+                offset_radians * PLANET_RADIUS_METERS
+            );
+        }
     }
 
     #[test]
