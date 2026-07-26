@@ -2124,6 +2124,27 @@ impl State {
 
 fn main() {
     let launch_options = launch_options().unwrap_or_else(|error| panic!("{error}"));
+    // Both of these produce a picture that looks like a different, much worse
+    // renderer, and neither used to say anything at all about why.
+    if matches!(
+        launch_options.terrain_source,
+        terrain::TerrainSource::Placeholder
+    ) {
+        eprintln!(
+            "WARNING: no baked planet found ({DEFAULT_OUTMAP_PATH} in this directory or any \
+             parent), so this is running on placeholder terrain. Synthesised ground detail, \
+             close-range materials and per-pixel relief are all disabled -- they are gated on \
+             the outmap. Bake a planet or run from a directory under the repository root."
+        );
+    }
+    if cfg!(debug_assertions) {
+        eprintln!(
+            "WARNING: debug build. Measured about 7x slower than release (215 ms vs 32 ms per \
+             frame at ground level), which is slow enough that terrain streaming cannot keep up \
+             while the camera moves and the ground stays on coarse fallback chunks. Use \
+             --release."
+        );
+    }
     let event_loop = EventLoop::new().expect("failed to create event loop");
     let mut app = App::new(launch_options);
     event_loop.run_app(&mut app).expect("event loop failed");
@@ -2407,16 +2428,35 @@ struct LaunchOptions {
     terrain_source: terrain::TerrainSource,
 }
 
+/// Finds the baked planet by walking up from the working directory.
+///
+/// `DEFAULT_OUTMAP_PATH` is relative, so running from anywhere but the repo
+/// root used to miss it and fall back to placeholder terrain -- four sine
+/// octaves, with the detail ladder, material tiling and per-pixel normals all
+/// switched off together, because every one of them is gated on `outmap`. It
+/// looks like a different program and says nothing about why.
+fn find_default_outmap() -> Option<PathBuf> {
+    let mut directory = std::env::current_dir().ok()?;
+    loop {
+        let candidate = directory.join(DEFAULT_OUTMAP_PATH);
+        if candidate.join("manifest.json").is_file() {
+            return Some(candidate);
+        }
+        if !directory.pop() {
+            return None;
+        }
+    }
+}
+
 fn launch_options() -> Result<LaunchOptions, String> {
-    let default_outmap = PathBuf::from(DEFAULT_OUTMAP_PATH);
+    let default_outmap = find_default_outmap();
     let mut options = LaunchOptions {
         scenario_name: None,
         profile_render: false,
         vertical_fov_degrees: None,
-        terrain_source: if default_outmap.join("manifest.json").is_file() {
-            terrain::TerrainSource::Outmap(default_outmap.clone())
-        } else {
-            terrain::TerrainSource::Placeholder
+        terrain_source: match &default_outmap {
+            Some(path) => terrain::TerrainSource::Outmap(path.clone()),
+            None => terrain::TerrainSource::Placeholder,
         },
     };
     let mut arguments = std::env::args().skip(1);
@@ -2451,7 +2491,14 @@ fn launch_options() -> Result<LaunchOptions, String> {
                     .as_str()
                 {
                     "placeholder" => terrain::TerrainSource::Placeholder,
-                    "outmap" => terrain::TerrainSource::Outmap(default_outmap.clone()),
+                    "outmap" => {
+                        terrain::TerrainSource::Outmap(default_outmap.clone().ok_or_else(|| {
+                            format!(
+                                "--terrain outmap was requested but no {DEFAULT_OUTMAP_PATH} \
+                                 was found in this directory or any parent"
+                            )
+                        })?)
+                    }
                     value => return Err(format!("unsupported terrain source '{value}'")),
                 };
             }
@@ -2495,14 +2542,14 @@ mod tests {
     use glam::DVec3;
 
     use super::{
-        CameraMode, FlightMovementInput, FlightSpeedState, INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
-        LOW_FLIGHT_ALTITUDE_METERS, LOW_FLIGHT_INITIAL_PITCH_RADIANS,
-        LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND, LOW_FLIGHT_MINIMUM_CLEARANCE_METERS,
-        MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS, RenderPath, advance_flight_position_on_sphere,
-        advance_flight_speed, flight_movement_direction, flight_view_direction,
-        focus_of_expansion_ndc, initial_flight_tangent, interactive_camera_delta_seconds,
-        projected_planet_coverage, render_size_for_surface_resize, should_enter_fullscreen,
-        transport_flight_tangent,
+        CameraMode, DEFAULT_OUTMAP_PATH, FlightMovementInput, FlightSpeedState,
+        INTERACTIVE_PLANET_ROTATION_TIME_SCALE, LOW_FLIGHT_ALTITUDE_METERS,
+        LOW_FLIGHT_INITIAL_PITCH_RADIANS, LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND,
+        LOW_FLIGHT_MINIMUM_CLEARANCE_METERS, MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS, RenderPath,
+        advance_flight_position_on_sphere, advance_flight_speed, find_default_outmap,
+        flight_movement_direction, flight_view_direction, focus_of_expansion_ndc,
+        initial_flight_tangent, interactive_camera_delta_seconds, projected_planet_coverage,
+        render_size_for_surface_resize, should_enter_fullscreen, transport_flight_tangent,
     };
     use crate::planet::{
         CameraUniform, OrbitCamera, PLANET_ROTATION_PERIOD_SECONDS, RenderDebugMode,
@@ -2722,6 +2769,25 @@ mod tests {
     /// Entry altitude and minimum clearance are separate concerns. While they
     /// shared one constant the camera could not descend below 500 ft, so the
     /// ground was only ever seen from the air.
+    /// Running from a subdirectory used to silently fall back to placeholder
+    /// terrain, which disables the detail ladder, close-range materials and
+    /// per-pixel relief in one go because all three are gated on `outmap`.
+    #[test]
+    fn the_baked_planet_is_found_from_any_directory_under_the_root() {
+        let root = std::env::current_dir().expect("cargo runs tests with a working directory");
+        if !root
+            .join(DEFAULT_OUTMAP_PATH)
+            .join("manifest.json")
+            .is_file()
+        {
+            // Tests run from the crate directory in some layouts; the walk-up
+            // is what this is checking, so only assert when a planet exists.
+            return;
+        }
+        let found = find_default_outmap().expect("the planet is found from the root itself");
+        assert!(found.join("manifest.json").is_file());
+    }
+
     #[test]
     fn flight_may_descend_to_eye_level_but_not_into_the_ground() {
         assert!(LOW_FLIGHT_MINIMUM_CLEARANCE_METERS > 0.0);
