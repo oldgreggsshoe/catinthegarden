@@ -3,7 +3,7 @@ use std::{
     collections::{BinaryHeap, HashMap, HashSet},
 };
 
-use glam::{DQuat, DVec3, Mat4, Vec3, Vec4};
+use glam::{DQuat, DVec3, IVec3, Mat4, Vec3, Vec4};
 
 pub const PLANET_RADIUS_METERS: f64 = 4_000_000.0;
 /// Full-screen post-processing switches. Keeping these beside the planet's
@@ -348,7 +348,13 @@ pub fn terrain_detail_meters(direction: DVec3) -> f64 {
         );
         if fade > 0.0 {
             let cells = domain * (PLANET_RADIUS_METERS / wavelength);
-            total += terrain_detail_value_noise_f64(cells)
+            let cell_floor = cells.floor();
+            let cell_index = IVec3::new(
+                cell_floor.x as i32,
+                cell_floor.y as i32,
+                cell_floor.z as i32,
+            );
+            total += terrain_detail_value_noise_f64(cell_index, cells - cell_floor)
                 * wavelength
                 * TERRAIN_DETAIL_ROUGHNESS
                 * fade;
@@ -373,22 +379,68 @@ fn terrain_detail_domain(direction: DVec3) -> DVec3 {
     )
 }
 
-fn terrain_detail_hash_f64(cell: DVec3) -> f64 {
-    let value = cell.dot(DVec3::new(127.1, 311.7, 74.7)).sin() * 43_758.547;
-    (value - value.floor()) * 2.0 - 1.0
+/// Bit-for-bit mirror of `detail_mix` in shared_planet.wgsl.
+///
+/// The previous hash was `fract(sin(dot(cell, k)) * 43758)`, computed here in
+/// f64 and in the shader in f32. At the finest octave the sin argument reaches
+/// 1e9, where neighbouring f32 values are 64 radians apart, so the two sides
+/// were evaluating unrelated numbers -- and because `fract` folds any
+/// difference to a full-scale one, there was no "close enough" to fall back on.
+/// The surface probe measured the correlation between the CPU's relief and the
+/// rendered relief at 0.02. Both looked like plausible terrain; they were not
+/// the same terrain, and the camera collided with the one it could not see.
+///
+/// Integer arithmetic is the only thing specified identically on both sides.
+///
+/// A multiply-free chain of shifts and adds was tried first, because Maxwell
+/// runs 32-bit integer multiply at quarter rate. It needed so many full-rate
+/// operations to diffuse that it cost 2ms in the raster path and up to 13ms in
+/// the raymarch path, taking the ground-level scenarios over the 33ms budget.
+/// One wide multiply diffuses further than a dozen shifts.
+fn detail_mix(value: u32) -> u32 {
+    let h = value.wrapping_mul(0x9e37_79b1);
+    h ^ (h >> 15)
 }
 
-fn terrain_detail_value_noise_f64(position: DVec3) -> f64 {
-    let cell = position.floor();
-    let amount = position - cell;
+/// Mirror of `detail_avalanche` in shared_planet.wgsl.
+fn detail_avalanche(value: u32) -> u32 {
+    let h = value.wrapping_mul(0x85eb_ca6b);
+    h ^ (h >> 16)
+}
+
+/// Mirror of `detail_axis_hashes`: one cell coordinate and its successor.
+fn detail_axis_hashes(coordinate: i32, salt: u32) -> [u32; 2] {
+    [
+        detail_mix(coordinate as u32 ^ salt),
+        detail_mix(coordinate.wrapping_add(1) as u32 ^ salt),
+    ]
+}
+
+/// Mirror of `detail_corner`. The rotations break the symmetry of `x ^ y ^ z`,
+/// which would otherwise put a diagonal lattice through the whole planet.
+fn detail_corner(x: u32, y: u32, z: u32) -> f64 {
+    let combined = detail_avalanche(x ^ y.rotate_left(11) ^ z.rotate_left(22));
+    f64::from(combined >> 8) * (2.0 / 16_777_216.0) - 1.0
+}
+
+/// Mirror of `terrain_detail_value_noise`. Takes the integer cell and the
+/// in-cell fraction separately for the same reason the shader does, and so the
+/// two agree about which cell a point belongs to.
+fn terrain_detail_value_noise_f64(cell_index: IVec3, cell_fraction: DVec3) -> f64 {
+    let carry = cell_fraction.floor();
+    let cell = cell_index + IVec3::new(carry.x as i32, carry.y as i32, carry.z as i32);
+    let amount = cell_fraction - carry;
     let fade = amount * amount * (DVec3::splat(3.0) - amount * 2.0);
+    let hx = detail_axis_hashes(cell.x, 0x27d4_eb2f);
+    let hy = detail_axis_hashes(cell.y, 0x9e37_79b9);
+    let hz = detail_axis_hashes(cell.z, 0x85eb_ca6b);
     let mut planes = [0.0; 2];
     for (index, plane) in planes.iter_mut().enumerate() {
-        let base = cell + DVec3::Z * index as f64;
-        let lower_left = terrain_detail_hash_f64(base);
-        let lower_right = terrain_detail_hash_f64(base + DVec3::X);
-        let upper_left = terrain_detail_hash_f64(base + DVec3::Y);
-        let upper_right = terrain_detail_hash_f64(base + DVec3::X + DVec3::Y);
+        let z_hash = hz[index];
+        let lower_left = detail_corner(hx[0], hy[0], z_hash);
+        let lower_right = detail_corner(hx[1], hy[0], z_hash);
+        let upper_left = detail_corner(hx[0], hy[1], z_hash);
+        let upper_right = detail_corner(hx[1], hy[1], z_hash);
         let lower = lower_left + (lower_right - lower_left) * fade.x;
         let upper = upper_left + (upper_right - upper_left) * fade.x;
         *plane = lower + (upper - lower) * fade.y;
@@ -2790,6 +2842,85 @@ mod tests {
         let packed_view = basis.world_to_view(orbital_offset).as_vec3();
         assert!((f64::from(packed_view.x) - 0.0125).abs() < 1.0e-7);
         assert!((f64::from(packed_view.y) + 0.021).abs() < 1.0e-7);
+    }
+
+    /// The whole point of the integer hash is that both sides can reproduce it
+    /// exactly. These are the values this build produces; if a refactor moves
+    /// them, the shader has to move with it or the camera goes back to
+    /// colliding with terrain nobody can see.
+    #[test]
+    fn the_detail_hash_is_pinned_and_reproducible() {
+        assert_eq!(super::detail_mix(1), 0x9e36_45df);
+        assert_eq!(super::detail_mix(0xffff_ffff), 0x61c8_45de);
+        assert_eq!(super::detail_avalanche(0x9e37_79b9), 0xc10e_1b5d);
+        // A bare multiply fixes zero, which is why every axis carries its own
+        // salt rather than leaving one able to hash to zero.
+        assert_eq!(super::detail_mix(0), 0);
+    }
+
+    /// A hash that is merely "noise of the right amplitude" is what put the
+    /// CPU and the renderer on different planets, so check the properties the
+    /// ladder actually relies on rather than assuming them.
+    #[test]
+    fn the_detail_hash_is_centred_and_decorrelates_between_neighbours() {
+        let corner = |x: i32, y: i32, z: i32| {
+            super::detail_corner(
+                super::detail_axis_hashes(x, 0x27d4_eb2f)[0],
+                super::detail_axis_hashes(y, 0x9e37_79b9)[0],
+                super::detail_axis_hashes(z, 0x85eb_ca6b)[0],
+            )
+        };
+        let mut values = Vec::new();
+        let mut neighbours = Vec::new();
+        let mut diagonal = Vec::new();
+        for x in -12..12 {
+            for y in -12..12 {
+                for z in -12..12 {
+                    values.push(corner(x, y, z));
+                    neighbours.push(corner(x + 1, y, z));
+                    // Cells on the diagonal are where a symmetric combine
+                    // (plain x ^ y ^ z) collapses, and it shows as a lattice.
+                    diagonal.push(corner(y, x, z));
+                }
+            }
+        }
+        let count = values.len() as f64;
+        let mean = values.iter().sum::<f64>() / count;
+        assert!(mean.abs() < 0.02, "hash is off-centre: {mean}");
+        let variance = values
+            .iter()
+            .map(|value| (value - mean).powi(2))
+            .sum::<f64>()
+            / count;
+        // Uniform on [-1, 1) has variance 1/3.
+        assert!((variance - 1.0 / 3.0).abs() < 0.02, "variance {variance}");
+        assert!(values.iter().all(|value| (-1.0..1.0).contains(value)));
+
+        let correlation = |other: &[f64]| {
+            let other_mean = other.iter().sum::<f64>() / count;
+            let covariance: f64 = values
+                .iter()
+                .zip(other)
+                .map(|(left, right)| (left - mean) * (right - other_mean))
+                .sum::<f64>()
+                / count;
+            let other_variance = other
+                .iter()
+                .map(|value| (value - other_mean).powi(2))
+                .sum::<f64>()
+                / count;
+            covariance / (variance * other_variance).sqrt()
+        };
+        assert!(
+            correlation(&neighbours).abs() < 0.05,
+            "adjacent cells correlate: {}",
+            correlation(&neighbours)
+        );
+        assert!(
+            correlation(&diagonal).abs() < 0.05,
+            "the combine is symmetric in x and y: {}",
+            correlation(&diagonal)
+        );
     }
 
     #[test]

@@ -222,17 +222,38 @@ fn ray_detail_anchor() -> vec3<f32> {
     return normalize(view_to_planet(camera.camera_planet_direction_view_altitude.xyz));
 }
 
-/// Offset from that anchor's surface point to a point on the ray, in metres.
-/// `view_offset` is the camera-relative view-space offset the marcher already
-/// carries, so this is exact where it matters.
+/// Offset from that anchor's surface point to a point on the ray, in metres,
+/// **projected back onto the reference sphere**.
+///
+/// The projection is the whole point. The detail field is a function of
+/// direction alone -- the CPU evaluates `domain(direction) * PLANET_RADIUS` and
+/// the raster path passes `(direction - anchor_direction) * PLANET_RADIUS`,
+/// which sums to the same thing. This used to pass the true 3D offset instead,
+/// which carries the terrain's own elevation, so the ray path sampled the field
+/// at `domain(direction) * (PLANET_RADIUS + height)`. Over 2900m of ground that
+/// is eleven whole cells at the coarsest octave: a completely different piece of
+/// noise, of exactly the right amplitude and character, sliding as the elevation
+/// changes. The surface probe measured its correlation with the raster path's
+/// relief at 0.0 while the raster reached 0.96.
 ///
 /// Built additively rather than by subtracting two absolute positions. The
 /// camera sits 4e6 m from the planet centre, so differencing absolute points
 /// loses the metre-scale offset the fine octaves live in; the altitude and the
 /// camera-relative offset are both small and stay exact.
 fn ray_detail_local_meters(view_offset: vec3<f32>) -> vec3<f32> {
-    return ray_detail_anchor() * camera.camera_planet_direction_view_altitude.w
+    let anchor = ray_detail_anchor();
+    let offset_meters = anchor * camera.camera_planet_direction_view_altitude.w
         + view_to_planet(view_offset);
+    // Work in planet radii, where the anchor is the unit vector, so the
+    // projection is a normalize of `anchor + relative`.
+    let relative = offset_meters * (1.0 / PLANET_RADIUS_METERS);
+    // `length(anchor + relative)^2 - 1`, formed without ever computing the
+    // near-one length and subtracting: for a point a few metres away that
+    // cancellation would take the entire offset with it.
+    let excess = 2.0 * dot(anchor, relative) + dot(relative, relative);
+    let scale = sqrt(1.0 + excess);
+    let one_minus_scale = -excess / (1.0 + scale);
+    return (relative + anchor * one_minus_scale) * (PLANET_RADIUS_METERS / scale);
 }
 
 /// Synthesised relief at a point on the ray, filtered to the spacing that point

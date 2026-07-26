@@ -194,13 +194,62 @@ fn placeholder_height(direction: vec3<f32>) -> f32 {
 // Amplitude is a fixed fraction of wavelength, so the field is self-similar and
 // every octave contributes the same characteristic slope. That is what keeps
 // orbit and ground looking like the same planet rather than two different ones.
-// Measured on the M1000M (Maxwell): an integer bit-mix hash costs ~11% more
-// frame time than this, because Maxwell runs 32-bit integer multiply at quarter
-// rate while sin is one SFU instruction. Keep the trigonometric hash here, and
-// keep it identical to terrain_detail_hash in planet.rs.
-fn terrain_detail_hash(cell: vec3<f32>) -> f32 {
-    let value = sin(dot(cell, vec3<f32>(127.1, 311.7, 74.7))) * 43758.547;
-    return fract(value) * 2.0 - 1.0;
+//
+// THE HASH MUST BE EXACT, not merely equivalent. This was `fract(sin(dot(cell,
+// k)) * 43758)`, in f32 here and f64 in planet.rs. The sin argument reaches 1e9
+// at the finest octave, where consecutive f32 values are 64 radians apart, so
+// the two evaluations were unrelated numbers. Both produced correct-looking
+// noise of the right amplitude, and the surface probe measured the correlation
+// between them at 0.02: the ground the camera collided with was not the ground
+// it could see. Anything folded by `fract` amplifies a last-bit difference into
+// a completely different value, so "close enough" is not a category that exists
+// here -- only integer arithmetic is specified identically on both sides.
+//
+// Two multiplies per corner rather than a long shift/add chain. Maxwell runs
+// 32-bit integer multiply at quarter rate, which is why the multiply-free form
+// was tried first -- but it needed so many full-rate operations to diffuse
+// properly that it measured 2ms slower in the raster path and up to 13ms slower
+// in the raymarch path, which put the ground-level scenarios over budget. One
+// wide multiply diffuses further than a dozen shifts.
+fn detail_mix(value: u32) -> u32 {
+    var h = value * 0x9e3779b1u;
+    h = h ^ (h >> 15u);
+    return h;
+}
+
+fn detail_avalanche(value: u32) -> u32 {
+    var h = value * 0x85ebca6bu;
+    h = h ^ (h >> 16u);
+    return h;
+}
+
+fn detail_rotate_left(value: u32, amount: u32) -> u32 {
+    return (value << amount) | (value >> (32u - amount));
+}
+
+/// Per-axis hashes for a cell and its successor, so the eight corners of a
+/// value-noise cell cost six mixes between them rather than eight apiece.
+struct DetailAxisHashes {
+    lower: u32,
+    upper: u32,
+}
+
+fn detail_axis_hashes(coordinate: i32, salt: u32) -> DetailAxisHashes {
+    return DetailAxisHashes(
+        detail_mix(bitcast<u32>(coordinate) ^ salt),
+        detail_mix(bitcast<u32>(coordinate + 1) ^ salt),
+    );
+}
+
+/// Combines three per-axis hashes into one corner value in [-1, 1). The
+/// rotations are what stop `x ^ y ^ z` being symmetric in its arguments, which
+/// would put a visible diagonal lattice through the whole planet.
+fn detail_corner(x: u32, y: u32, z: u32) -> f32 {
+    let combined = detail_avalanche(
+        x ^ detail_rotate_left(y, 11u) ^ detail_rotate_left(z, 22u),
+    );
+    // Top 24 bits, which is all an f32 mantissa can hold anyway.
+    return f32(combined >> 8u) * (2.0 / 16777216.0) - 1.0;
 }
 
 struct DetailNoise {
@@ -217,20 +266,25 @@ struct DetailNoise {
 ///
 /// Returns the analytic gradient alongside the value. Central-differencing this
 /// instead costs four more evaluations of the whole octave ladder per normal.
-fn terrain_detail_value_noise(cell_index: vec3<f32>, cell_fraction: vec3<f32>) -> DetailNoise {
+fn terrain_detail_value_noise(cell_index: vec3<i32>, cell_fraction: vec3<f32>) -> DetailNoise {
     let carry = floor(cell_fraction);
-    let cell = cell_index + carry;
+    let cell = cell_index + vec3<i32>(carry);
     let amount = cell_fraction - carry;
     let fade = amount * amount * (vec3<f32>(3.0) - amount * 2.0);
     let fade_slope = 6.0 * amount * (vec3<f32>(1.0) - amount);
-    let a = terrain_detail_hash(cell);
-    let b = terrain_detail_hash(cell + vec3<f32>(1.0, 0.0, 0.0));
-    let c = terrain_detail_hash(cell + vec3<f32>(0.0, 1.0, 0.0));
-    let d = terrain_detail_hash(cell + vec3<f32>(1.0, 1.0, 0.0));
-    let e = terrain_detail_hash(cell + vec3<f32>(0.0, 0.0, 1.0));
-    let f = terrain_detail_hash(cell + vec3<f32>(1.0, 0.0, 1.0));
-    let g = terrain_detail_hash(cell + vec3<f32>(0.0, 1.0, 1.0));
-    let h = terrain_detail_hash(cell + vec3<f32>(1.0));
+    // Distinct salts per axis, so a cell on the diagonal does not hash the
+    // same value three times over.
+    let hx = detail_axis_hashes(cell.x, 0x27d4eb2fu);
+    let hy = detail_axis_hashes(cell.y, 0x9e3779b9u);
+    let hz = detail_axis_hashes(cell.z, 0x85ebca6bu);
+    let a = detail_corner(hx.lower, hy.lower, hz.lower);
+    let b = detail_corner(hx.upper, hy.lower, hz.lower);
+    let c = detail_corner(hx.lower, hy.upper, hz.lower);
+    let d = detail_corner(hx.upper, hy.upper, hz.lower);
+    let e = detail_corner(hx.lower, hy.lower, hz.upper);
+    let f = detail_corner(hx.upper, hy.lower, hz.upper);
+    let g = detail_corner(hx.lower, hy.upper, hz.upper);
+    let h = detail_corner(hx.upper, hy.upper, hz.upper);
     let k1 = b - a;
     let k2 = c - a;
     let k3 = e - a;
@@ -317,8 +371,9 @@ fn terrain_detail_band(
         if fade > 0.0 {
             let inverse_wavelength = 1.0 / wavelength;
             let anchor_cells = anchor_domain * (PLANET_RADIUS_METERS * inverse_wavelength);
-            let cell_index = floor(anchor_cells);
-            let cell_fraction = (anchor_cells - cell_index)
+            let cell_floor = floor(anchor_cells);
+            let cell_index = vec3<i32>(cell_floor);
+            let cell_fraction = (anchor_cells - cell_floor)
                 + local_domain * inverse_wavelength;
             let noise = terrain_detail_value_noise(cell_index, cell_fraction);
             let amplitude = wavelength * TERRAIN_DETAIL_ROUGHNESS * fade;
@@ -1315,10 +1370,10 @@ fn terrain_material_fine_position(
     let inverse_warp = 1.0 / TERRAIN_MATERIAL_DETAIL_WARP_WAVELENGTH_METERS;
     let warp_cells = terrain_detail_domain(anchor_direction)
         * (PLANET_RADIUS_METERS * inverse_warp);
-    let warp_cell_index = floor(warp_cells);
+    let warp_cell_floor = floor(warp_cells);
     let warp = terrain_detail_value_noise(
-        warp_cell_index,
-        (warp_cells - warp_cell_index)
+        vec3<i32>(warp_cell_floor),
+        (warp_cells - warp_cell_floor)
             + terrain_detail_domain(local_meters) * inverse_warp,
     );
     return fract(anchor_tiles)

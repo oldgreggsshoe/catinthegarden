@@ -2025,6 +2025,31 @@ mod tests {
             .and_then(|value| value.trim().parse::<u32>().ok())
             .expect("octave count is declared in the shader");
         assert_eq!(octaves, crate::planet::TERRAIN_DETAIL_OCTAVES);
+
+        // The hash has to be reproducible on the CPU, not merely similar. A
+        // float hash folded by fract cannot be: the shader evaluates it in f32
+        // and the clearance ladder in f64, and at the finest octave those are
+        // unrelated numbers. Pin the integer form and its salts here, because
+        // the failure is invisible -- both sides keep producing plausible
+        // terrain, just not the same terrain.
+        let mix_body = shader
+            .split("fn detail_mix(value: u32) -> u32 {")
+            .nth(1)
+            .and_then(|source| source.split('}').next())
+            .expect("the shader hashes with detail_mix");
+        assert!(
+            !mix_body.contains("sin(") && !mix_body.contains("fract("),
+            "the detail hash must stay integer-only: {mix_body}"
+        );
+        for step in ["value * 0x9e3779b1u", "h ^ (h >> 15u)"] {
+            assert!(mix_body.contains(step), "detail_mix lost `{step}`");
+        }
+        for salt in ["0x27d4eb2fu", "0x9e3779b9u"] {
+            assert!(
+                shader.contains(salt),
+                "the per-axis salt {salt} must match planet.rs"
+            );
+        }
     }
 
     /// The close-range material tile is the only thing that gives the ground
