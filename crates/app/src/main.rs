@@ -2148,7 +2148,12 @@ fn main() {
     let event_loop = EventLoop::new().expect("failed to create event loop");
     let mut app = App::new(launch_options);
     event_loop.run_app(&mut app).expect("event loop failed");
-    if app.scenario_failed.load(Ordering::Relaxed) {
+    let scenario_failed = app.scenario_failed.load(Ordering::Relaxed);
+    // Release the GPU device before exiting. process::exit runs no
+    // destructors, so taking it with wgpu resources still live leaves the
+    // driver to be torn down by the OS underneath its own in-flight work.
+    drop(app);
+    if scenario_failed {
         std::process::exit(1);
     }
 }
