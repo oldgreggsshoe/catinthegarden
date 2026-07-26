@@ -1,0 +1,75 @@
+{
+  "name": "tour_grassland",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 6.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_rotation_time_scale": 0.0,
+  "screenshot_times_seconds": [
+    2.0,
+    4.0,
+    6.0
+  ],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [
+        2654851.6884511732,
+        -2827472.53204092,
+        1002755.2415629961
+      ],
+      "look_at": [
+        2657206.455542149,
+        -2816428.8141263644,
+        1003644.6528447664
+      ]
+    },
+    {
+      "time_s": 2.0,
+      "position": [
+        2651670.6697632507,
+        -2824084.6806580587,
+        1001553.7495260962
+      ],
+      "look_at": [
+        2652142.848203322,
+        -2821877.23425557,
+        1001732.0944814072
+      ]
+    },
+    {
+      "time_s": 4.0,
+      "position": [
+        2651074.228759265,
+        -2823449.4585237727,
+        1001328.4697691774
+      ],
+      "look_at": [
+        2651192.330662408,
+        -2822897.657868347,
+        1001373.0776480018
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        0.6881146441253243,
+        -0.43759747028621043,
+        -0.5787976248563806
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 55.0
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 3
+  }
+}

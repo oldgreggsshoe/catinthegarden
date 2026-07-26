@@ -1,0 +1,75 @@
+{
+  "name": "tour_desert",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 6.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_rotation_time_scale": 0.0,
+  "screenshot_times_seconds": [
+    2.0,
+    4.0,
+    6.0
+  ],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [
+        2749623.3648495423,
+        -1031098.731675274,
+        -2733655.3767092014
+      ],
+      "look_at": [
+        2744866.972452703,
+        -1009447.8107639014,
+        -2728926.606283558
+      ]
+    },
+    {
+      "time_s": 2.0,
+      "position": [
+        2743112.606739934,
+        -1028657.2211342737,
+        -2727182.4287628355
+      ],
+      "look_at": [
+        2742126.9082369376,
+        -1024148.5231977287,
+        -2726202.454542737
+      ]
+    },
+    {
+      "time_s": 4.0,
+      "position": [
+        2741810.4551180126,
+        -1028168.9190260735,
+        -2725887.8391735624
+      ],
+      "look_at": [
+        2741574.137575106,
+        -1027086.9248389917,
+        -2725652.894006149
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        0.04766404456120449,
+        -0.19275083218423933,
+        -0.9800894120172663
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 55.0
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 3
+  }
+}

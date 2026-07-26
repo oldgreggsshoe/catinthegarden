@@ -177,6 +177,11 @@ impl ScenarioRunner {
                 include_str!("../scenarios/landing_site_eye_level.json")
             }
             "path_parity_ridge" => include_str!("../scenarios/path_parity_ridge.json"),
+            "tour_mountains" => include_str!("../scenarios/tour_mountains.json"),
+            "tour_desert" => include_str!("../scenarios/tour_desert.json"),
+            "tour_coast" => include_str!("../scenarios/tour_coast.json"),
+            "tour_grassland" => include_str!("../scenarios/tour_grassland.json"),
+            "tour_tundra" => include_str!("../scenarios/tour_tundra.json"),
             _ => return Err(format!("unknown scenario '{name}'")),
         };
         Self::from_source(source)

@@ -1,0 +1,75 @@
+{
+  "name": "tour_tundra",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 6.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_rotation_time_scale": 0.0,
+  "screenshot_times_seconds": [
+    2.0,
+    4.0,
+    6.0
+  ],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [
+        1322206.0326019279,
+        -3668069.6936392584,
+        959651.4204674888
+      ],
+      "look_at": [
+        1339906.9005885639,
+        -3646655.490337016,
+        954048.9722226225
+      ]
+    },
+    {
+      "time_s": 2.0,
+      "position": [
+        1318254.6835048704,
+        -3657107.843886249,
+        956783.5483807974
+      ],
+      "look_at": [
+        1321798.729028885,
+        -3652835.5010268018,
+        955665.8051980813
+      ]
+    },
+    {
+      "time_s": 4.0,
+      "position": [
+        1317530.2695037432,
+        -3655098.1714315303,
+        956257.7718315705
+      ],
+      "look_at": [
+        1318475.5345894662,
+        -3653959.394263792,
+        955959.8415254722
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        0.1580539638822992,
+        -0.6605144157259463,
+        -0.7339888630757996
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 55.0
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 3
+  }
+}
