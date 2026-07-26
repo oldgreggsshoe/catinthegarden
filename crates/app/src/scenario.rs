@@ -842,18 +842,33 @@ mod tests {
             end_radius = DVec3::from_array(frame.camera_world_position).length();
         }
 
-        // The approach ends at eye level, which is only knowable now that CPU
-        // clearance evaluates the same relief the shader displaces with: the
-        // landing point measures 923.08 m -- 919.8 m baked plus 3.28 m
-        // synthesised -- so 926 m leaves about 3 m of headroom. Against baked
-        // heights alone this floor would have been inside the ground.
+        // What this can check without a GPU is that the descent actually
+        // arrives where it was authored to. Whether that endpoint is *above
+        // the ground* is a different question, it depends on the detail
+        // ladder, and pinning a literal for it here made this test go stale
+        // every time the ladder changed. The surface probe answers it directly
+        // now: `min_camera_clearance_m` on this scenario holds the camera
+        // above the drawn ground in both render paths.
         assert!(start_radius > end_radius);
+        let authored: serde_json::Value =
+            serde_json::from_str(include_str!("../scenarios/landing_site_eye_level.json"))
+                .expect("scenario parses");
+        let final_waypoint = authored["waypoints"]
+            .as_array()
+            .and_then(|waypoints| waypoints.last())
+            .expect("the descent has waypoints");
+        let authored_radius = DVec3::new(
+            final_waypoint["position"][0].as_f64().expect("x"),
+            final_waypoint["position"][1].as_f64().expect("y"),
+            final_waypoint["position"][2].as_f64().expect("z"),
+        )
+        .length();
         // Waypoint interpolation lands a rounding step short of the authored
         // endpoint, so compare with a tolerance far below the metre this is
         // actually about.
         assert!(
-            end_radius >= 4_000_925.0 - 1.0e-3,
-            "ended at {end_radius} m"
+            end_radius >= authored_radius - 1.0e-3,
+            "ended at {end_radius} m, authored {authored_radius} m"
         );
         assert_eq!(scenario.expected_screenshots(), 5);
     }

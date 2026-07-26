@@ -319,6 +319,14 @@ pub const TERRAIN_DETAIL_ROUGHNESS: f64 = 0.0328;
 pub const TERRAIN_DETAIL_START_WAVELENGTH_METERS: f64 = 256.0;
 pub const TERRAIN_DETAIL_OCTAVES: u32 = 9;
 pub const TERRAIN_DETAIL_MIN_FILTER_METERS: f64 = 0.5;
+/// Ridge fold and multifractal attenuation. Mirrors of the shader constants of
+/// the same names; see shared_planet.wgsl for where the two ridge numbers come
+/// from and why folding without them would lift every coastline.
+pub const TERRAIN_DETAIL_RIDGE_CENTRE: f64 = 0.297_473;
+pub const TERRAIN_DETAIL_RIDGE_SCALE: f64 = 1.778_140;
+pub const TERRAIN_DETAIL_RIDGE_STRENGTH: f64 = 0.7;
+pub const TERRAIN_DETAIL_RIDGE_NORMALISATION: f64 = 1.313_064;
+pub const TERRAIN_DETAIL_ATTENUATION_SLOPE: f64 = 0.25;
 
 /// What the GPU actually puts under the camera, evaluated on the CPU so flight
 /// clearance and camera placement agree with the render.
@@ -336,6 +344,7 @@ pub const TERRAIN_DETAIL_MIN_FILTER_METERS: f64 = 0.5;
 pub fn terrain_detail_meters(direction: DVec3) -> f64 {
     let domain = terrain_detail_domain(direction.normalize());
     let mut total = 0.0;
+    let mut gradient = DVec3::ZERO;
     let mut wavelength = TERRAIN_DETAIL_START_WAVELENGTH_METERS;
     for _ in 0..TERRAIN_DETAIL_OCTAVES {
         // Matches the shader's low cut. There is no high cut here: the ladder
@@ -347,21 +356,70 @@ pub fn terrain_detail_meters(direction: DVec3) -> f64 {
             wavelength,
         );
         if fade > 0.0 {
-            let cells = domain * (PLANET_RADIUS_METERS / wavelength);
+            let inverse_wavelength = 1.0 / wavelength;
+            let cells = domain * (PLANET_RADIUS_METERS * inverse_wavelength);
             let cell_floor = cells.floor();
             let cell_index = IVec3::new(
                 cell_floor.x as i32,
                 cell_floor.y as i32,
                 cell_floor.z as i32,
             );
-            total += terrain_detail_value_noise_f64(cell_index, cells - cell_floor)
-                * wavelength
-                * TERRAIN_DETAIL_ROUGHNESS
-                * fade;
+            let noise = terrain_detail_ridge(terrain_detail_value_noise_f64(
+                cell_index,
+                cells - cell_floor,
+            ));
+            // Mirrors the shader's multifractal attenuation. The gradient is
+            // only accumulated because this needs it; nothing on the CPU side
+            // consumes a slope directly.
+            let attenuation = 1.0 / (1.0 + gradient.length() / TERRAIN_DETAIL_ATTENUATION_SLOPE);
+            let amplitude = wavelength * TERRAIN_DETAIL_ROUGHNESS * fade * attenuation;
+            total += noise.value * amplitude;
+            gradient += noise.gradient * (amplitude * inverse_wavelength);
         }
         wavelength *= 0.5;
     }
     total
+}
+
+/// Value and slope of one noise octave, in cell units. Mirror of `DetailNoise`
+/// in shared_planet.wgsl.
+#[derive(Clone, Copy)]
+struct DetailNoise {
+    value: f64,
+    gradient: DVec3,
+}
+
+/// Mirror of `terrain_detail_ridge` in shared_planet.wgsl.
+fn terrain_detail_ridge(noise: DetailNoise) -> DetailNoise {
+    let folded_value =
+        (TERRAIN_DETAIL_RIDGE_CENTRE - noise.value.abs()) * TERRAIN_DETAIL_RIDGE_SCALE;
+    // `signum` is not `sign`: it returns 1.0 for +0.0 where WGSL's sign returns
+    // 0.0. The gradient is multiplied by the noise gradient, which is itself
+    // zero wherever that distinction could be reached, so the two agree.
+    let folded_gradient = noise.gradient * (-TERRAIN_DETAIL_RIDGE_SCALE * sign(noise.value));
+    DetailNoise {
+        value: lerp(noise.value, folded_value, TERRAIN_DETAIL_RIDGE_STRENGTH)
+            * TERRAIN_DETAIL_RIDGE_NORMALISATION,
+        gradient: noise
+            .gradient
+            .lerp(folded_gradient, TERRAIN_DETAIL_RIDGE_STRENGTH)
+            * TERRAIN_DETAIL_RIDGE_NORMALISATION,
+    }
+}
+
+/// WGSL `sign`, which is zero at zero rather than `f64::signum`'s one.
+fn sign(value: f64) -> f64 {
+    if value > 0.0 {
+        1.0
+    } else if value < 0.0 {
+        -1.0
+    } else {
+        0.0
+    }
+}
+
+fn lerp(from: f64, to: f64, amount: f64) -> f64 {
+    from + (to - from) * amount
 }
 
 /// Detail rides on land only and fades out before the coastline, matching
@@ -426,26 +484,45 @@ fn detail_corner(x: u32, y: u32, z: u32) -> f64 {
 /// Mirror of `terrain_detail_value_noise`. Takes the integer cell and the
 /// in-cell fraction separately for the same reason the shader does, and so the
 /// two agree about which cell a point belongs to.
-fn terrain_detail_value_noise_f64(cell_index: IVec3, cell_fraction: DVec3) -> f64 {
+fn terrain_detail_value_noise_f64(cell_index: IVec3, cell_fraction: DVec3) -> DetailNoise {
     let carry = cell_fraction.floor();
     let cell = cell_index + IVec3::new(carry.x as i32, carry.y as i32, carry.z as i32);
     let amount = cell_fraction - carry;
     let fade = amount * amount * (DVec3::splat(3.0) - amount * 2.0);
+    let fade_slope = 6.0 * amount * (DVec3::ONE - amount);
     let hx = detail_axis_hashes(cell.x, 0x27d4_eb2f);
     let hy = detail_axis_hashes(cell.y, 0x9e37_79b9);
     let hz = detail_axis_hashes(cell.z, 0x85eb_ca6b);
-    let mut planes = [0.0; 2];
-    for (index, plane) in planes.iter_mut().enumerate() {
-        let z_hash = hz[index];
-        let lower_left = detail_corner(hx[0], hy[0], z_hash);
-        let lower_right = detail_corner(hx[1], hy[0], z_hash);
-        let upper_left = detail_corner(hx[0], hy[1], z_hash);
-        let upper_right = detail_corner(hx[1], hy[1], z_hash);
-        let lower = lower_left + (lower_right - lower_left) * fade.x;
-        let upper = upper_left + (upper_right - upper_left) * fade.x;
-        *plane = lower + (upper - lower) * fade.y;
-    }
-    planes[0] + (planes[1] - planes[0]) * fade.z
+    let a = detail_corner(hx[0], hy[0], hz[0]);
+    let b = detail_corner(hx[1], hy[0], hz[0]);
+    let c = detail_corner(hx[0], hy[1], hz[0]);
+    let d = detail_corner(hx[1], hy[1], hz[0]);
+    let e = detail_corner(hx[0], hy[0], hz[1]);
+    let f = detail_corner(hx[1], hy[0], hz[1]);
+    let g = detail_corner(hx[0], hy[1], hz[1]);
+    let h = detail_corner(hx[1], hy[1], hz[1]);
+    let k1 = b - a;
+    let k2 = c - a;
+    let k3 = e - a;
+    let k4 = a - b - c + d;
+    let k5 = a - c - e + g;
+    let k6 = a - b - e + f;
+    let k7 = -a + b + c - d + e - f - g + h;
+    let value = a
+        + k1 * fade.x
+        + k2 * fade.y
+        + k3 * fade.z
+        + k4 * fade.x * fade.y
+        + k5 * fade.y * fade.z
+        + k6 * fade.z * fade.x
+        + k7 * fade.x * fade.y * fade.z;
+    let gradient = fade_slope
+        * DVec3::new(
+            k1 + k4 * fade.y + k6 * fade.z + k7 * fade.y * fade.z,
+            k2 + k5 * fade.z + k4 * fade.x + k7 * fade.z * fade.x,
+            k3 + k6 * fade.x + k5 * fade.y + k7 * fade.x * fade.y,
+        );
+    DetailNoise { value, gradient }
 }
 
 pub fn global_terrain_detail_meters(direction: DVec3) -> f64 {
@@ -2271,9 +2348,11 @@ mod tests {
         OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS, OUTMAP_TERRAIN_HEIGHT_SCALE,
         OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, OrbitCamera, PLANET_RADIUS_METERS,
         PLANET_ROTATION_PERIOD_SECONDS, PlanetLod, QuadtreeNode, RenderDebugMode,
-        SKIRT_DEPTH_RATIO, TERRAIN_DETAIL_ROUGHNESS, TERRAIN_DETAIL_START_WAVELENGTH_METERS,
-        TerrainHeightRange, build_chunk_mesh, cube_face_basis, cube_face_direction,
-        default_sun_direction, detailed_outmap_land_height_meters, global_terrain_detail_meters,
+        SKIRT_DEPTH_RATIO, TERRAIN_DETAIL_RIDGE_CENTRE, TERRAIN_DETAIL_RIDGE_NORMALISATION,
+        TERRAIN_DETAIL_RIDGE_SCALE, TERRAIN_DETAIL_RIDGE_STRENGTH, TERRAIN_DETAIL_ROUGHNESS,
+        TERRAIN_DETAIL_START_WAVELENGTH_METERS, TerrainHeightRange, build_chunk_mesh,
+        cube_face_basis, cube_face_direction, default_sun_direction,
+        detailed_outmap_land_height_meters, global_terrain_detail_meters,
         minimum_vertical_fov_radians_for_viewport, near_plane_meters, outmap_surface_height_meters,
         outmap_terrain_height_scale, placeholder_height_meters, planet_local_vector,
         planet_rotation_radians, projected_error_pixels_with_height_range, terrain_detail_meters,
@@ -2844,6 +2923,84 @@ mod tests {
         assert!((f64::from(packed_view.y) + 0.021).abs() < 1.0e-7);
     }
 
+    /// The ridge fold subtracts the noise's mean absolute value and rescales by
+    /// its spread, so that folding changes the field's character and nothing
+    /// else. Both constants are properties of the noise, so if the noise ever
+    /// changes they stop being true -- and the symptom would be ~10m of silent
+    /// uplift on all land, varying wherever the land weight ramps.
+    #[test]
+    fn the_ridge_fold_is_centred_against_the_noise_it_folds() {
+        let mut values = Vec::new();
+        for x in 0..60 {
+            for y in 0..60 {
+                for z in 0..60 {
+                    let fraction = DVec3::new(
+                        f64::from(x) * 0.0173,
+                        f64::from(y) * 0.0311,
+                        f64::from(z) * 0.0511,
+                    );
+                    values.push(
+                        super::terrain_detail_value_noise_f64(
+                            glam::IVec3::new(x / 7, y / 7, z / 7),
+                            fraction,
+                        )
+                        .value,
+                    );
+                }
+            }
+        }
+        let count = values.len() as f64;
+        let mean = values.iter().sum::<f64>() / count;
+        let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / count;
+        let absolute: Vec<f64> = values.iter().map(|v| v.abs()).collect();
+        let mean_abs = absolute.iter().sum::<f64>() / count;
+        let variance_abs = absolute.iter().map(|v| (v - mean_abs).powi(2)).sum::<f64>() / count;
+        let sd = variance.sqrt();
+        let sd_ratio = sd / variance_abs.sqrt();
+        assert!(
+            (mean_abs - TERRAIN_DETAIL_RIDGE_CENTRE).abs() < 0.005,
+            "ridge centre {TERRAIN_DETAIL_RIDGE_CENTRE} but the noise averages {mean_abs}"
+        );
+        assert!(
+            (sd_ratio - TERRAIN_DETAIL_RIDGE_SCALE).abs() < 0.02,
+            "ridge scale {TERRAIN_DETAIL_RIDGE_SCALE} but the noise ratio is {sd_ratio}"
+        );
+
+        // And the fold itself must come out centred and the same size, which is
+        // what keeps the amplitude discipline above intact.
+        let folded: Vec<f64> = values
+            .iter()
+            .map(|value| {
+                super::terrain_detail_ridge(super::DetailNoise {
+                    value: *value,
+                    gradient: DVec3::ZERO,
+                })
+                .value
+            })
+            .collect();
+        let folded_mean = folded.iter().sum::<f64>() / count;
+        let folded_sd = (folded
+            .iter()
+            .map(|v| (v - folded_mean).powi(2))
+            .sum::<f64>()
+            / count)
+            .sqrt();
+        assert!(
+            folded_mean.abs() < 0.01,
+            "fold is off-centre: {folded_mean}"
+        );
+        assert!(
+            (folded_sd / sd - 1.0).abs() < 0.05,
+            "fold changed the RMS: {folded_sd} vs {sd}"
+        );
+        let strength = TERRAIN_DETAIL_RIDGE_STRENGTH;
+        let expected = 1.0 / ((1.0 - strength).powi(2) + strength.powi(2)).sqrt();
+        assert!(
+            (TERRAIN_DETAIL_RIDGE_NORMALISATION - expected).abs() < 1.0e-5,
+            "normalisation {TERRAIN_DETAIL_RIDGE_NORMALISATION} does not match strength {strength}"
+        );
+    }
+
     /// The whole point of the integer hash is that both sides can reproduce it
     /// exactly. These are the values this build produces; if a refactor moves
     /// them, the shader has to move with it or the camera goes back to
@@ -3277,13 +3434,19 @@ mod tests {
             detail.abs() > 0.5,
             "clearance saw only {detail}m of synthesised relief at the landing site"
         );
-        // Measured against the render: a camera at 922m is inside the surface
-        // there and one at 940m clears it. The CPU has to land in that bracket,
-        // or it is still describing a different planet from the shader.
+        // This used to pin a 920..940m bracket read off a render. That number
+        // was a property of one particular noise field, so it went stale the
+        // moment the ladder changed, and it only ever checked one point.
+        // Agreement with the render is now measured directly and continuously
+        // by the surface probe -- see the `stand_on_ground` scenario, which
+        // holds the camera's clearance above the *drawn* ground to 2m +/- 0.5m
+        // in both render paths. What is left here is what can be checked
+        // without a GPU: that the ladder contributes, and that it stays inside
+        // the amplitude its own constants allow.
         assert!(
-            (920.0..=940.0).contains(&surface),
-            "clearance puts the landing site at {surface}m, outside the 920..940m \
-             bracket measured from the render"
+            (baked_meters - 40.0..=baked_meters + 40.0).contains(&surface),
+            "clearance puts the landing site at {surface}m, implausibly far from \
+             the {baked_meters}m of baked terrain under it"
         );
         // Self-similar amplitude sums to twice the first octave, so nothing the
         // ladder produces may exceed that however the octaves line up.

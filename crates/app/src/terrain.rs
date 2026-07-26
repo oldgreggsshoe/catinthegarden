@@ -2018,6 +2018,34 @@ mod tests {
             crate::planet::TERRAIN_DETAIL_MIN_FILTER_METERS as f32,
             "the shader floors its detail filter at the normal probe spacing",
         );
+        // The erosion shaping is two knobs plus two constants derived from the
+        // noise's own distribution. A drift in any of them makes the CPU's
+        // clearance surface a different surface again, which is exactly the
+        // failure M2a existed to remove.
+        for (name, value) in [
+            (
+                "TERRAIN_DETAIL_RIDGE_CENTRE",
+                crate::planet::TERRAIN_DETAIL_RIDGE_CENTRE,
+            ),
+            (
+                "TERRAIN_DETAIL_RIDGE_SCALE",
+                crate::planet::TERRAIN_DETAIL_RIDGE_SCALE,
+            ),
+            (
+                "TERRAIN_DETAIL_RIDGE_STRENGTH",
+                crate::planet::TERRAIN_DETAIL_RIDGE_STRENGTH,
+            ),
+            (
+                "TERRAIN_DETAIL_RIDGE_NORMALISATION",
+                crate::planet::TERRAIN_DETAIL_RIDGE_NORMALISATION,
+            ),
+            (
+                "TERRAIN_DETAIL_ATTENUATION_SLOPE",
+                crate::planet::TERRAIN_DETAIL_ATTENUATION_SLOPE,
+            ),
+        ] {
+            assert_eq!(declared(name), value as f32, "{name} drifted");
+        }
         let octaves = shader
             .split("const TERRAIN_DETAIL_OCTAVES: i32 = ")
             .nth(1)

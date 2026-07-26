@@ -25,6 +25,34 @@ const TERRAIN_DETAIL_OCTAVES: i32 = 9;
 // which is an order of magnitude larger and silently scales the result away.
 const TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS: f32 =
     TERRAIN_DETAIL_START_WAVELENGTH_METERS * TERRAIN_DETAIL_ROUGHNESS * 2.0;
+// Erosion-like structure. Two knobs, both mirrored in planet.rs.
+//
+// The fold: `|n|` creases the field at every zero crossing of the noise, and
+// creases are what eroded ground is made of -- a plain fBm sum only ever makes
+// rounded blobs, whatever its amplitude. The value stays continuous across the
+// crease and only the slope flips, which is exactly what a ridgeline is.
+//
+// CENTRE and SCALE come from the value noise's own measured distribution
+// (mean |n| = 0.297473, sd(n) / sd(|n|) = 1.778140, over 216000 samples; the
+// test `the_ridge_fold_is_centred_against_the_noise_it_folds` re-derives them).
+// They matter: folding naively leaves a mean of ~0.6 per octave, which would
+// lift all land by ~10m and, worse, lift it by a *varying* amount wherever the
+// land weight ramps, inventing slopes along every coastline. Centred and
+// rescaled this way, the fold changes character while leaving mean and RMS
+// exactly where the amplitude discipline above put them.
+const TERRAIN_DETAIL_RIDGE_CENTRE: f32 = 0.297473;
+const TERRAIN_DETAIL_RIDGE_SCALE: f32 = 1.778140;
+const TERRAIN_DETAIL_RIDGE_STRENGTH: f32 = 0.7;
+// Blending two uncorrelated fields of equal variance shrinks the result to
+// sqrt((1-s)^2 + s^2) of it -- 76% at s = 0.7. Undo that, or the ladder
+// quietly loses a quarter of its relief the moment the fold is switched on and
+// the loss silently tracks the strength knob.
+const TERRAIN_DETAIL_RIDGE_NORMALISATION: f32 = 1.313064;
+// Multifractal attenuation: the slope at which the next octave is halved.
+// Fine relief is suppressed where the accumulated surface is already steep and
+// left to run where it is flat, which is what separates a smooth valley wall
+// and a flat plain from uniform crumple.
+const TERRAIN_DETAIL_ATTENUATION_SLOPE: f32 = 0.25;
 const TERRAIN_SKIRT_DEPTH_RATIO: f32 = 0.075;
 const MAX_TERRAIN_SKIRT_DEPTH_METERS: f32 = 10.0;
 const ATMOSPHERE_HEIGHT_METERS: f32 = 720000.0;
@@ -309,6 +337,21 @@ fn terrain_detail_value_noise(cell_index: vec3<i32>, cell_fraction: vec3<f32>) -
     return DetailNoise(value, gradient);
 }
 
+/// Folds one octave toward a ridged form. Must stay identical to
+/// `terrain_detail_ridge` in planet.rs -- the camera stands on this.
+fn terrain_detail_ridge(noise: DetailNoise) -> DetailNoise {
+    let folded_value =
+        (TERRAIN_DETAIL_RIDGE_CENTRE - abs(noise.value)) * TERRAIN_DETAIL_RIDGE_SCALE;
+    let folded_gradient =
+        noise.gradient * (-TERRAIN_DETAIL_RIDGE_SCALE * sign(noise.value));
+    return DetailNoise(
+        mix(noise.value, folded_value, TERRAIN_DETAIL_RIDGE_STRENGTH)
+            * TERRAIN_DETAIL_RIDGE_NORMALISATION,
+        mix(noise.gradient, folded_gradient, TERRAIN_DETAIL_RIDGE_STRENGTH)
+            * TERRAIN_DETAIL_RIDGE_NORMALISATION,
+    );
+}
+
 fn terrain_detail_domain(direction: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(
         dot(direction, vec3<f32>(0.80, 0.48, -0.36)),
@@ -375,8 +418,19 @@ fn terrain_detail_band(
             let cell_index = vec3<i32>(cell_floor);
             let cell_fraction = (anchor_cells - cell_floor)
                 + local_domain * inverse_wavelength;
-            let noise = terrain_detail_value_noise(cell_index, cell_fraction);
-            let amplitude = wavelength * TERRAIN_DETAIL_ROUGHNESS * fade;
+            let noise = terrain_detail_ridge(
+                terrain_detail_value_noise(cell_index, cell_fraction),
+            );
+            // Damp this octave where the surface built so far is already steep.
+            // The amplitude therefore depends on the accumulated gradient,
+            // which strictly adds a product-rule term to the gradient itself;
+            // that term needs second derivatives of the whole ladder and is
+            // omitted. It perturbs shading normals only -- the *height*, which
+            // is what the camera stands on and what the surface probe measures,
+            // is exact either way.
+            let attenuation = 1.0
+                / (1.0 + length(gradient) / TERRAIN_DETAIL_ATTENUATION_SLOPE);
+            let amplitude = wavelength * TERRAIN_DETAIL_ROUGHNESS * fade * attenuation;
             total = total + noise.value * amplitude;
             gradient = gradient + noise.gradient * (amplitude * inverse_wavelength);
         }
