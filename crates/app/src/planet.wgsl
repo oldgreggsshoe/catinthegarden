@@ -105,22 +105,6 @@ fn terrain_height(
     return macro_height * terrain_macro_height_scale();
 }
 
-/// Detail rides on land only and fades out before the coastline so it cannot
-/// push the shore around, matching the baker's own land weighting.
-fn terrain_detail_land_weight(scaled_macro_height: f32) -> f32 {
-    return smoothstep(25.0, 150.0, scaled_macro_height);
-}
-
-/// The spacing detail is about to be sampled at. Tracks camera distance the
-/// same way the normal probes do, so displacement and shading never disagree
-/// about which octaves exist here.
-fn terrain_detail_filter_meters(camera_distance_meters: f32) -> f32 {
-    return max(
-        camera_distance_meters * TERRAIN_DETAIL_FILTER_RATIO,
-        TERRAIN_DETAIL_MIN_FILTER_METERS,
-    );
-}
-
 fn sample_biome(source_uv: vec2<f32>) -> u32 {
     let coordinate = vec2<i32>(round(
         vec2<f32>(TILE_GUTTER)

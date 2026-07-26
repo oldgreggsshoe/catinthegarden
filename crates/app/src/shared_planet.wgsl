@@ -361,6 +361,22 @@ fn terrain_detail_perturbed_normal(
     return normalize(normal - tangential_slope);
 }
 
+/// Detail rides on land only and fades out before the coastline so it cannot
+/// push the shore around, matching the baker's own land weighting.
+fn terrain_detail_land_weight(scaled_macro_height: f32) -> f32 {
+    return smoothstep(25.0, 150.0, scaled_macro_height);
+}
+
+/// The spacing detail is about to be sampled at. Tracks camera distance the
+/// same way the normal probes do, so displacement and shading never disagree
+/// about which octaves exist here.
+fn terrain_detail_filter_meters(camera_distance_meters: f32) -> f32 {
+    return max(
+        camera_distance_meters * TERRAIN_DETAIL_FILTER_RATIO,
+        TERRAIN_DETAIL_MIN_FILTER_METERS,
+    );
+}
+
 fn terrain_macro_height_scale() -> f32 {
     let camera_altitude_meters = max(camera.camera_planet_direction_view_altitude.w, 0.0);
     let blend = smoothstep(

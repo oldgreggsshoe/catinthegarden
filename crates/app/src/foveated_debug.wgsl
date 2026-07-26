@@ -1,4 +1,14 @@
 const RAYMARCH_REFINEMENT_COUNT: u32 = 5u;
+// How many ray footprints wide the detail filter is. The raster path's
+// TERRAIN_DETAIL_FILTER_RATIO of 0.01 works out to about seven of its pixels at
+// a 60 degree vertical field over 720 lines, and that oversampling is why its
+// ground does not crawl. The ray path has to match it against its own footprint
+// rather than inherit the constant: it renders into a smaller warped buffer, so
+// a ray covers more angle than a raster pixel, and more again in the periphery.
+const RAY_DETAIL_FILTER_OVERSAMPLE: f32 = 7.0;
+// Floor on the grazing-angle widening below. Without it the filter runs away to
+// infinity at the horizon and takes the whole ladder with it.
+const RAY_DETAIL_MIN_INCIDENCE: f32 = 0.06;
 const RAY_SKY_SAMPLE_COUNT: u32 = 16u;
 const RAY_SKY_DENSITY_SAMPLE_EXPONENT: f32 = 3.0;
 const RAY_ANTISOLAR_TWILIGHT_MIN_SCATTER: f32 = 0.48;
@@ -202,6 +212,62 @@ fn direction_to_face_uv(direction: vec3<f32>) -> FaceUv {
 fn face_texel_coordinate(face_uv: FaceUv) -> vec2<f32> {
     return vec2<f32>(1.0)
         + (face_uv.uv * 0.5 + vec2<f32>(0.5)) * f32(ray_settings.face_quads);
+}
+
+/// The camera's own surface point, used as the anchor for the synthesised
+/// detail ladder. The ladder needs an exact cell index plus a short local
+/// offset; the raster path takes both from its node, and the ray path has no
+/// node, so the camera serves instead.
+fn ray_detail_anchor() -> vec3<f32> {
+    return normalize(view_to_planet(camera.camera_planet_direction_view_altitude.xyz));
+}
+
+/// Offset from that anchor's surface point to a point on the ray, in metres.
+/// `view_offset` is the camera-relative view-space offset the marcher already
+/// carries, so this is exact where it matters.
+///
+/// Built additively rather than by subtracting two absolute positions. The
+/// camera sits 4e6 m from the planet centre, so differencing absolute points
+/// loses the metre-scale offset the fine octaves live in; the altitude and the
+/// camera-relative offset are both small and stay exact.
+fn ray_detail_local_meters(view_offset: vec3<f32>) -> vec3<f32> {
+    return ray_detail_anchor() * camera.camera_planet_direction_view_altitude.w
+        + view_to_planet(view_offset);
+}
+
+/// Synthesised relief at a point on the ray, filtered to the spacing that point
+/// is being sampled at. Same ladder and same filter the raster path displaces
+/// with, so the two describe one planet rather than two.
+fn ray_terrain_detail(
+    view_offset: vec3<f32>,
+    surface_direction: vec3<f32>,
+    scaled_macro_height_meters: f32,
+    footprint_radians: f32,
+) -> TerrainDetail {
+    let weight = terrain_detail_land_weight(scaled_macro_height_meters);
+    if weight <= 0.0 {
+        return TerrainDetail(0.0, vec3<f32>(0.0));
+    }
+    let distance_meters = length(view_offset);
+    // Footprint measured across the ray is not the footprint on the ground. At
+    // eye level rays graze the surface, and a grazing ray's projected footprint
+    // is wider by 1/sin(incidence) -- unbounded at the horizon. Filtering by the
+    // across-ray width alone left the finest octaves far below the true ground
+    // spacing, which is what stippled the distance.
+    let incidence = max(
+        abs(dot(normalize(view_to_planet(view_offset)), surface_direction)),
+        RAY_DETAIL_MIN_INCIDENCE,
+    );
+    let filter_meters = max(
+        distance_meters * footprint_radians * RAY_DETAIL_FILTER_OVERSAMPLE / incidence,
+        TERRAIN_DETAIL_MIN_FILTER_METERS,
+    );
+    let detail = terrain_detail(
+        ray_detail_anchor(),
+        ray_detail_local_meters(view_offset),
+        filter_meters,
+    );
+    return TerrainDetail(detail.height_meters * weight, detail.slope * weight);
 }
 
 fn sample_height(direction: vec3<f32>) -> f32 {
@@ -681,9 +747,26 @@ fn shade_terrain(
     surface_direction: vec3<f32>,
     normal: vec3<f32>,
     hit_view_position: vec3<f32>,
+    // Angular width of this ray, from screen-space derivatives, so foveated
+    // periphery filters harder than the fovea without being told about warping.
+    footprint_radians: f32,
 ) -> vec3<f32> {
     let render_debug_mode = u32(camera.projection.w + 0.5);
     let macro_height_meters = sample_height(surface_direction);
+    // Same synthesised ladder the raster path uses, anchored on the camera
+    // rather than on a node. This is what the ray path was missing entirely:
+    // its height field is the dense level only, about 3 km per texel.
+    let detail = ray_terrain_detail(
+        hit_view_position,
+        surface_direction,
+        macro_height_meters * terrain_macro_height_scale(),
+        footprint_radians,
+    );
+    let detail_normal = terrain_detail_perturbed_normal(
+        normal,
+        surface_direction,
+        detail.slope,
+    );
     let biome = sample_biome(surface_direction);
     let biome_blend = sample_biome_blend(surface_direction);
     let moisture = sample_moisture(surface_direction);
@@ -694,8 +777,8 @@ fn shade_terrain(
         moisture,
         base_biome_color,
         macro_height_meters,
-        0.0,
-        normal,
+        detail.height_meters,
+        detail_normal,
         surface_direction,
     );
     let detail_tint = terrain_material_tint(
@@ -705,15 +788,17 @@ fn shade_terrain(
         macro_height_meters,
         terrain_albedo,
         surface_direction,
-        normal,
+        detail_normal,
         hit_view_position,
-        0.0,
-        // The ray path marches an analytic surface and has no node anchor, so
-        // it has nothing exact to build the close-range tile coordinate from.
-        // Zero weight keeps it on the 2km tile rather than sampling a
-        // coordinate f32 has already quantised to whole texels.
-        vec3<f32>(0.0),
-        0.0,
+        detail.height_meters,
+        // The close-range tile is now addressable here too: the camera anchor
+        // plus the camera-relative hit offset gives the same exact split the
+        // raster path builds from its node.
+        terrain_material_fine_position(
+            ray_detail_anchor(),
+            ray_detail_local_meters(hit_view_position),
+        ),
+        terrain_material_fine_weight(length(hit_view_position)),
     );
     let textured_albedo = terrain_albedo * detail_tint;
     if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
@@ -728,14 +813,16 @@ fn shade_terrain(
         sun_direction,
     );
     let sky_diffuse = sky_diffuse_irradiance(
-        normal,
+        detail_normal,
         surface_direction,
         surface_height,
         sun_direction,
     );
+    // Lit by the detail normal, not the macro one. Shading the relief is the
+    // whole point of evaluating it -- the raster path does the same, per pixel.
     let surface_irradiance = sky_diffuse
         + sun_transmittance
-            * max(dot(normal, sun_direction), 0.0)
+            * max(dot(detail_normal, sun_direction), 0.0)
             * SURFACE_SUNLIGHT_SCALE;
     var surface_lighting = textured_albedo * surface_irradiance;
     if biome == 2u {
@@ -830,7 +917,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     return VertexOutput(vec4<f32>(position, 0.0, 1.0), position);
 }
 
-fn trace_ray(ray: vec3<f32>, detail: f32) -> RayResult {
+fn trace_ray(ray: vec3<f32>, detail: f32, footprint_radians: f32) -> RayResult {
     let camera_position_view = camera.camera_planet_direction_view_altitude.xyz
         * ray_settings.camera_radius_meters;
     let radial_dot_ray = dot(camera_position_view, ray);
@@ -920,6 +1007,7 @@ fn trace_ray(ray: vec3<f32>, detail: f32) -> RayResult {
                 terrain_direction,
                 terrain_normal(terrain_direction),
                 ray * hit_distance,
+                footprint_radians,
             );
             color = mix(terrain_color, color, water_hit.coverage);
         }
@@ -938,7 +1026,12 @@ fn trace_ray(ray: vec3<f32>, detail: f32) -> RayResult {
     let macro_height = sample_height(surface_direction);
     let biome = sample_biome(surface_direction);
     let ocean_coverage = outmap_ocean_coverage(true, macro_height);
-    let terrain_color = shade_terrain(surface_direction, normal, ray * hit_distance);
+    let terrain_color = shade_terrain(
+        surface_direction,
+        normal,
+        ray * hit_distance,
+        footprint_radians,
+    );
     var color = terrain_color;
     if biome == 1u {
         color = shade_ocean(
@@ -962,7 +1055,10 @@ fn trace_ray(ray: vec3<f32>, detail: f32) -> RayResult {
 @fragment
 fn fs_main(input: VertexOutput) -> FragmentOutput {
     let ray = view_direction(input.ndc);
-    let result = trace_ray(ray, 1.0);
+    // Derivatives must be taken in uniform control flow, so the footprint is
+    // measured here before any of the marching branches.
+    let footprint_radians = max(length(dpdx(ray)), length(dpdy(ray)));
+    let result = trace_ray(ray, 1.0, footprint_radians);
     if result.distance_meters < 0.0 {
         return FragmentOutput(result.color, 0.0);
     }
@@ -976,6 +1072,9 @@ fn fs_warp(input: VertexOutput) -> WarpFragmentOutput {
     let detail = 1.0 - smoothstep(0.25, 1.0, length(input.ndc));
     let screen_ndc = warped_screen_ndc(input.ndc);
     let ray = view_direction(screen_ndc);
+    // Taken from the warped ray, so peripheral rays report the wider footprint
+    // the warp actually gives them and filter themselves accordingly.
+    let footprint_radians = max(length(dpdx(ray)), length(dpdy(ray)));
     let camera_position_view = camera.camera_planet_direction_view_altitude.xyz
         * ray_settings.camera_radius_meters;
     let radial_dot_ray = dot(camera_position_view, ray);
@@ -1009,7 +1108,7 @@ fn fs_warp(input: VertexOutput) -> WarpFragmentOutput {
             return WarpFragmentOutput(color, distance_meters);
         }
     }
-    var result = trace_ray(ray, detail);
+    var result = trace_ray(ray, detail, footprint_radians);
     if (ray_settings.experiment_flags & EXPERIMENT_HORIZON_DENSITY) != 0u {
         if abs(closest_radius - PLANET_RADIUS_METERS) < 30000.0 {
             let neighbor_warp_ndc = input.ndc + vec2<f32>(
@@ -1019,6 +1118,7 @@ fn fs_warp(input: VertexOutput) -> WarpFragmentOutput {
             let neighbor = trace_ray(
                 view_direction(warped_screen_ndc(neighbor_warp_ndc)),
                 detail,
+                footprint_radians,
             );
             result.color = mix(result.color, neighbor.color, 0.5);
         }
