@@ -2106,6 +2106,21 @@ impl RenderDebugMode {
     }
 }
 
+/// Distance to the near plane. Scaling it with the camera's height keeps depth
+/// precision usable across the whole range from orbit to ground, but the height
+/// that matters is the one above the *terrain*, not above the reference sphere.
+///
+/// Measured from sea level, standing on 920 m of ground put the near plane 9.2 m
+/// out and quietly clipped away everything within 9.2 m of the camera -- the
+/// entire foreground at eye level -- leaving cleared background that reads
+/// convincingly as unlit terrain. Any camera near high ground had the same hole
+/// in front of it, in proportion to the ground's elevation.
+pub fn near_plane_meters(camera_altitude_meters: f64, surface_height_meters: f64) -> f64 {
+    let clearance_meters = (camera_altitude_meters - surface_height_meters.max(0.0))
+        .clamp(0.0, camera_altitude_meters.max(0.0));
+    (clearance_meters * 0.01).clamp(0.05, 10.0)
+}
+
 impl CameraUniform {
     pub fn from_camera(
         camera: &OrbitCamera,
@@ -2114,6 +2129,10 @@ impl CameraUniform {
         planet_rotation_radians: f64,
         sim_time: f64,
         render_debug_mode: RenderDebugMode,
+        // Terrain height under the camera, so the near plane can be set from
+        // how far the ground actually is rather than from sea level. Pass 0.0
+        // when it is not known; that is the old behaviour.
+        surface_height_meters: f64,
     ) -> Self {
         let basis = CameraViewBasis::from_forward_and_up(
             camera.planet_frame_direction_dvec3(planet_rotation_radians),
@@ -2131,7 +2150,7 @@ impl CameraUniform {
         let right = basis.right.as_vec3();
         let up = basis.up.as_vec3();
         let sun_direction = sun_direction.as_vec3();
-        let near = (camera_altitude * 0.01).clamp(0.05, 10.0) as f32;
+        let near = near_plane_meters(camera_altitude, surface_height_meters) as f32;
         Self {
             projection_matrix: reversed_z_infinite_perspective(
                 camera.vertical_fov_radians as f32,
@@ -2195,7 +2214,7 @@ mod tests {
         SKIRT_DEPTH_RATIO, TERRAIN_DETAIL_ROUGHNESS, TERRAIN_DETAIL_START_WAVELENGTH_METERS,
         TerrainHeightRange, build_chunk_mesh, cube_face_basis, cube_face_direction,
         default_sun_direction, detailed_outmap_land_height_meters, global_terrain_detail_meters,
-        minimum_vertical_fov_radians_for_viewport, outmap_surface_height_meters,
+        minimum_vertical_fov_radians_for_viewport, near_plane_meters, outmap_surface_height_meters,
         outmap_terrain_height_scale, placeholder_height_meters, planet_local_vector,
         planet_rotation_radians, projected_error_pixels_with_height_range, terrain_detail_meters,
         terrain_detail_value_noise,
@@ -2815,6 +2834,7 @@ mod tests {
             0.0,
             0.0,
             RenderDebugMode::Final,
+            0.0,
         );
 
         assert!(
@@ -3110,6 +3130,28 @@ mod tests {
             .normalize();
             assert!(terrain_detail_meters(probe).abs() <= bound);
         }
+    }
+
+    /// The near plane used to scale with height above *sea level*, so standing
+    /// on 920 m of ground pushed it 9.2 m out and clipped the whole foreground.
+    /// The hole read convincingly as unlit terrain, which is how it survived
+    /// being looked at.
+    #[test]
+    fn near_plane_follows_height_above_ground_not_sea_level() {
+        // Eye level on high ground has to clip at centimetres, not metres.
+        let standing = near_plane_meters(923.0, 920.0);
+        assert!(
+            standing <= 0.1,
+            "near plane {standing}m clips the foreground of a camera 3m above the ground"
+        );
+        // Sea-level ground is unaffected: same height, same near plane as before.
+        assert_eq!(near_plane_meters(3.0, 0.0), near_plane_meters(923.0, 920.0));
+        // Distance still scales with clearance below the 10m ceiling, which the
+        // old formula reached at 1km and everything above it shares.
+        assert!(near_plane_meters(900.0, 0.0) > near_plane_meters(100.0, 0.0));
+        assert_eq!(near_plane_meters(400_000.0, 0.0), 10.0);
+        // A camera below the surface must not produce a negative or zero plane.
+        assert!(near_plane_meters(900.0, 920.0) >= 0.05);
     }
 
     #[test]

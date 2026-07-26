@@ -1703,6 +1703,22 @@ impl State {
             planet_rotation_radians,
             sim_time,
             self.render_debug_mode,
+            // The near plane has to be set from the camera's clearance above
+            // the ground, so scenarios and orbit need this as much as flight
+            // does -- any camera over high terrain clips its own foreground
+            // otherwise.
+            {
+                let local_position = planet::planet_local_vector(
+                    self.camera.world_position(),
+                    planet_rotation_radians,
+                );
+                // Sea-level altitude, which is what this argument selects the
+                // height scale by -- not the above-ground figure the HUD uses.
+                let sea_level_altitude = local_position.length() - planet::PLANET_RADIUS_METERS;
+                self.terrain
+                    .surface_height_meters_at(local_position.normalize(), sea_level_altitude)
+                    .unwrap_or(0.0)
+            },
         );
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
@@ -2517,6 +2533,7 @@ mod tests {
             0.0,
             0.0,
             RenderDebugMode::Final,
+            0.0,
         );
         let axis = |values: [f32; 4]| {
             DVec3::new(
