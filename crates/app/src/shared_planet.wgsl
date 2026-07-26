@@ -13,6 +13,21 @@ const GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS: f32 = 111.5;
 // order as the entire baked terrain -- it stops being detail and becomes a
 // second planet laid over the baked erosion and hydrology.
 const TERRAIN_DETAIL_ROUGHNESS: f32 = 0.0328;
+// 0.06 was tried after the ridge fold landed, on the reasoning that the ladder
+// was well inside its amplitude budget (17.7m RMS against 900-2900m of baked
+// relief) and the planet reads too gently. It is not the amplitude budget that
+// stops it: the *mesh* cannot carry it. At 0.06 every lobe in the mountain view
+// gained a hard stair-stepped silhouette, and the surface probe agreed --
+// raster max |rendered - CPU| went 4.84m to 7.88m at the mountains and 2.67m to
+// 4.65m at the parity ridge, which is the geometry falling behind the field it
+// is supposed to represent.
+//
+// The ridge fold is part of why. `|n|` has harmonics well above its octave's
+// fundamental, so folding broadens each octave's spectrum, and the vertex
+// ladder's Nyquist fade (smoothstep over filter*2 .. filter*4) was tuned for
+// smooth noise and is now optimistic. Raising roughness needs either a finer
+// near-field mesh or a more conservative geometry fade first; it is gated on
+// geometry, not on how loud the field is allowed to be.
 const TERRAIN_DETAIL_START_WAVELENGTH_METERS: f32 = 256.0;
 // Floor is 1m. The octave ladder is evaluated from an anchor-local offset, so
 // the in-cell fraction never has to survive an absolute 4e6 domain coordinate
