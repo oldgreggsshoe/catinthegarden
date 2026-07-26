@@ -9,6 +9,13 @@ const RAY_DETAIL_FILTER_OVERSAMPLE: f32 = 7.0;
 // Floor on the grazing-angle widening below. Without it the filter runs away to
 // infinity at the horizon and takes the whole ladder with it.
 const RAY_DETAIL_MIN_INCIDENCE: f32 = 0.06;
+// Steps used to walk from the macro hit onto the detailed surface, and secant
+// iterations to land on it. The ladder is far too expensive to evaluate at all
+// 192 march steps, but the macro hit is already within one detail amplitude of
+// the answer and the search direction is known from the sign there, so a short
+// directed walk from it is enough.
+const RAY_DETAIL_HIT_STEPS: i32 = 6;
+const RAY_DETAIL_HIT_REFINEMENTS: i32 = 3;
 const RAY_SKY_SAMPLE_COUNT: u32 = 16u;
 const RAY_SKY_DENSITY_SAMPLE_EXPONENT: f32 = 3.0;
 const RAY_ANTISOLAR_TWILIGHT_MIN_SCATTER: f32 = 0.48;
@@ -474,6 +481,111 @@ fn surface_function(
     let surface_radius = PLANET_RADIUS_METERS
         + sample_height(surface_direction) * terrain_macro_height_scale();
     return radius_at(distance_meters, radial_dot_ray) - surface_radius;
+}
+
+/// The macro surface plus synthesised detail, as a signed distance along the ray.
+fn detail_surface_function(
+    distance_meters: f32,
+    radial_dot_ray: f32,
+    camera_position_view: vec3<f32>,
+    ray: vec3<f32>,
+    footprint_radians: f32,
+) -> f32 {
+    let view_offset = ray * distance_meters;
+    let point_view = camera_position_view + view_offset;
+    let surface_direction = normalize(view_to_planet(point_view));
+    let macro_height = sample_height(surface_direction) * terrain_macro_height_scale();
+    let detail = ray_terrain_detail(
+        view_offset,
+        surface_direction,
+        macro_height,
+        footprint_radians,
+    );
+    return radius_at(distance_meters, radial_dot_ray)
+        - (PLANET_RADIUS_METERS + macro_height + detail.height_meters);
+}
+
+/// Walks from the macro hit onto the detailed surface.
+///
+/// At the macro hit the macro function is zero, so the detailed function there
+/// equals minus the detail height: its sign says at once whether the ladder has
+/// raised the ground above the ray (search back) or dropped it away (search
+/// on). That turns what would be a search into a short directed walk, which is
+/// what makes this affordable -- the ladder cannot be evaluated at every one of
+/// the 192 march steps.
+///
+/// The walk is scaled by 1/sin(incidence) because a metre of relief moves the
+/// crossing much further along a grazing ray than a steep one.
+fn refine_detail_hit(
+    macro_hit_meters: f32,
+    radial_dot_ray: f32,
+    camera_position_view: vec3<f32>,
+    ray: vec3<f32>,
+    footprint_radians: f32,
+) -> f32 {
+    var value = detail_surface_function(
+        macro_hit_meters,
+        radial_dot_ray,
+        camera_position_view,
+        ray,
+        footprint_radians,
+    );
+    let hit_direction = normalize(view_to_planet(camera_position_view + ray * macro_hit_meters));
+    let incidence = max(
+        abs(dot(normalize(view_to_planet(ray)), hit_direction)),
+        RAY_DETAIL_MIN_INCIDENCE,
+    );
+    let span_meters = TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS / incidence;
+    let step_meters = (span_meters / f32(RAY_DETAIL_HIT_STEPS))
+        * select(-1.0, 1.0, value > 0.0);
+    var bracket_near = macro_hit_meters;
+    var value_near = value;
+    var bracket_far = macro_hit_meters;
+    var found = false;
+    for (var step = 1; step <= RAY_DETAIL_HIT_STEPS; step = step + 1) {
+        let candidate = macro_hit_meters + step_meters * f32(step);
+        if candidate <= 0.0 {
+            break;
+        }
+        let candidate_value = detail_surface_function(
+            candidate,
+            radial_dot_ray,
+            camera_position_view,
+            ray,
+            footprint_radians,
+        );
+        if (candidate_value > 0.0) != (value_near > 0.0) {
+            bracket_far = candidate;
+            found = true;
+            break;
+        }
+        bracket_near = candidate;
+        value_near = candidate_value;
+    }
+    if !found {
+        // The ladder never crossed the ray inside its own amplitude. Keep the
+        // macro hit rather than inventing a surface that is not there.
+        return macro_hit_meters;
+    }
+    var lower = min(bracket_near, bracket_far);
+    var upper = max(bracket_near, bracket_far);
+    for (var index = 0; index < RAY_DETAIL_HIT_REFINEMENTS; index = index + 1) {
+        let middle = 0.5 * (lower + upper);
+        let middle_value = detail_surface_function(
+            middle,
+            radial_dot_ray,
+            camera_position_view,
+            ray,
+            footprint_radians,
+        );
+        // Above the surface means the crossing is further along the ray.
+        if middle_value > 0.0 {
+            lower = middle;
+        } else {
+            upper = middle;
+        }
+    }
+    return 0.5 * (lower + upper);
 }
 
 fn refine_hit(
@@ -987,6 +1099,18 @@ fn trace_ray(ray: vec3<f32>, detail: f32, footprint_radians: f32) -> RayResult {
         }
         previous_distance = distance;
         previous_value = value;
+    }
+    // Step from the macro crossing onto the detailed surface before anything
+    // depends on the distance -- the ocean comparison below, the depth written
+    // for the shared passes, and the position the terrain is shaded at.
+    if hit_distance >= 0.0 {
+        hit_distance = refine_detail_hit(
+            hit_distance,
+            radial_dot_ray,
+            camera_position_view,
+            ray,
+            footprint_radians,
+        );
     }
     let water_hit = ocean_hit(radial_dot_ray, camera_position_view, ray, detail);
     if water_hit.distance_meters >= 0.0
