@@ -9,6 +9,7 @@ use std::{
 use serde::Serialize;
 use tracing_subscriber::fmt::MakeWriter;
 
+use crate::probe::SurfaceProbeReport;
 use crate::scenario::{MAX_TERRAIN_LOD_LEVEL, ScenarioAssertionResult, ScenarioAssertions};
 
 pub const LOD_LEVEL_COUNT: usize = MAX_TERRAIN_LOD_LEVEL as usize + 1;
@@ -79,6 +80,7 @@ struct RunManifest {
     passed: Option<bool>,
     assertion_results: Vec<ScenarioAssertionResult>,
     failure_reasons: Vec<String>,
+    surface_probes: Vec<SurfaceProbeReport>,
 }
 
 #[derive(Serialize)]
@@ -137,6 +139,13 @@ struct AssertionTracker {
     previous_exposure_delta: Option<f32>,
     previous_target_exposure: Option<f32>,
     maximum_ocean_wave_range_meters: f32,
+    surface_probe_count: usize,
+    compared_probe_points: usize,
+    maximum_surface_probe_delta_m: f64,
+    surface_probe_delta_violations: usize,
+    minimum_camera_clearance_m: f64,
+    maximum_camera_clearance_m: f64,
+    camera_clearance_violations: usize,
 }
 
 impl AssertionTracker {
@@ -172,6 +181,51 @@ impl AssertionTracker {
             previous_exposure_delta: None,
             previous_target_exposure: None,
             maximum_ocean_wave_range_meters: 0.0,
+            surface_probe_count: 0,
+            compared_probe_points: 0,
+            maximum_surface_probe_delta_m: 0.0,
+            surface_probe_delta_violations: 0,
+            minimum_camera_clearance_m: f64::INFINITY,
+            maximum_camera_clearance_m: f64::NEG_INFINITY,
+            camera_clearance_violations: 0,
+        }
+    }
+
+    fn observe_surface_probe(&mut self, report: &SurfaceProbeReport) {
+        self.surface_probe_count += 1;
+        self.compared_probe_points += report.compared_points;
+        self.minimum_camera_clearance_m = self
+            .minimum_camera_clearance_m
+            .min(report.camera_clearance_meters);
+        self.maximum_camera_clearance_m = self
+            .maximum_camera_clearance_m
+            .max(report.camera_clearance_meters);
+        if self
+            .config
+            .min_camera_clearance_m
+            .is_some_and(|minimum| report.camera_clearance_meters < minimum)
+            || self
+                .config
+                .max_camera_clearance_m
+                .is_some_and(|maximum| report.camera_clearance_meters > maximum)
+        {
+            self.camera_clearance_violations += 1;
+        }
+        // A frame that probed nothing must not contribute a zero delta; the
+        // separate point-count assertion is what stops an empty probe reading
+        // as perfect agreement.
+        if report.compared_points == 0 {
+            return;
+        }
+        self.maximum_surface_probe_delta_m = self
+            .maximum_surface_probe_delta_m
+            .max(report.max_abs_delta_meters);
+        if self
+            .config
+            .max_surface_probe_delta_m
+            .is_some_and(|maximum| report.max_abs_delta_meters > maximum)
+        {
+            self.surface_probe_delta_violations += 1;
         }
     }
 
@@ -412,6 +466,46 @@ impl AssertionTracker {
                 format!(
                     "allowed {maximum}, maximum observed {}, violations {}",
                     self.maximum_fallback_chunks, self.fallback_violations
+                ),
+            ));
+        }
+        if let Some(maximum) = self.config.max_surface_probe_delta_m {
+            results.push(assertion_result(
+                "rendered_surface_matches_terrain_truth",
+                self.surface_probe_delta_violations == 0 && self.compared_probe_points > 0,
+                format!(
+                    "tolerance {maximum}m, maximum observed {}m over {} points in {} frames, violations {}",
+                    self.maximum_surface_probe_delta_m,
+                    self.compared_probe_points,
+                    self.surface_probe_count,
+                    self.surface_probe_delta_violations
+                ),
+            ));
+        }
+        if self.config.min_camera_clearance_m.is_some()
+            || self.config.max_camera_clearance_m.is_some()
+        {
+            results.push(assertion_result(
+                "camera_stands_on_the_ground",
+                self.camera_clearance_violations == 0 && self.surface_probe_count > 0,
+                format!(
+                    "bounds {:?}..={:?}m, observed {}..={}m over {} frames, violations {}",
+                    self.config.min_camera_clearance_m,
+                    self.config.max_camera_clearance_m,
+                    self.minimum_camera_clearance_m,
+                    self.maximum_camera_clearance_m,
+                    self.surface_probe_count,
+                    self.camera_clearance_violations
+                ),
+            ));
+        }
+        if let Some(minimum) = self.config.min_surface_probe_points {
+            results.push(assertion_result(
+                "surface_probe_sampled_enough_ground",
+                self.compared_probe_points >= minimum,
+                format!(
+                    "required {minimum} compared points, observed {} over {} frames",
+                    self.compared_probe_points, self.surface_probe_count
                 ),
             ));
         }
@@ -673,6 +767,7 @@ impl RunArtifacts {
             passed: None,
             assertion_results: Vec::new(),
             failure_reasons: Vec::new(),
+            surface_probes: Vec::new(),
         };
         let artifacts = Self {
             root,
@@ -740,6 +835,14 @@ impl RunArtifacts {
             ocean_wave_min_meters: 0.0,
             ocean_wave_max_meters: 0.0,
         });
+    }
+
+    pub fn record_surface_probe(&mut self, report: SurfaceProbeReport) {
+        self.assertion_tracker.observe_surface_probe(&report);
+        self.manifest.surface_probes.push(report);
+        if let Err(error) = self.write_manifests() {
+            tracing::error!(%error, "could not record surface probe");
+        }
     }
 
     pub fn record_spatial_sample(&mut self, sample: SpatialLogSample) {
@@ -1169,7 +1272,7 @@ fn git_commit() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{AssertionTracker, LOD_LEVEL_COUNT, SpatialLogSample};
+    use super::{AssertionTracker, LOD_LEVEL_COUNT, SpatialLogSample, SurfaceProbeReport};
     use crate::scenario::ScenarioAssertions;
 
     fn assertions() -> ScenarioAssertions {
@@ -1202,6 +1305,10 @@ mod tests {
             ice_sample_uv: None,
             min_ice_sample_luminance: None,
             max_ice_sample_channel_spread: None,
+            max_surface_probe_delta_m: None,
+            min_camera_clearance_m: None,
+            max_camera_clearance_m: None,
+            min_surface_probe_points: None,
         }
     }
 
@@ -1313,6 +1420,90 @@ mod tests {
         tracker.observe_lod_frame(&histogram, 2, 0, true);
         assert!(!result(&tracker.results(0), "lod_stays_within_chunk_budget").passed);
         assert!(!result(&tracker.results(0), "resident_chunk_count_is_bounded").passed);
+    }
+
+    fn probe_report(
+        clearance_meters: f64,
+        max_abs_delta_meters: f64,
+        compared: usize,
+    ) -> SurfaceProbeReport {
+        SurfaceProbeReport {
+            sim_time: 0.0,
+            render_path: "raster".to_owned(),
+            camera_altitude_meters: 1_000.0,
+            camera_surface_height_meters: 1_000.0 - clearance_meters,
+            camera_clearance_meters: clearance_meters,
+            sampled_points: 81,
+            surface_hits: compared,
+            compared_points: compared,
+            center: None,
+            max_abs_delta_meters,
+            median_abs_delta_meters: max_abs_delta_meters,
+            mean_delta_meters: max_abs_delta_meters,
+            mean_delta_from_macro_meters: max_abs_delta_meters,
+            detail_correlation: None,
+            detail_slope: None,
+            nearest_hit_distance_meters: 5.0,
+            comparisons: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn surface_probe_assertions_catch_a_camera_that_sinks_or_floats() {
+        let mut config = ScenarioAssertions::default();
+        config.min_camera_clearance_m = Some(1.5);
+        config.max_camera_clearance_m = Some(2.5);
+        let mut tracker = AssertionTracker::new(config.clone());
+
+        tracker.observe_surface_probe(&probe_report(2.0, 0.1, 40));
+        assert!(result(&tracker.results(0), "camera_stands_on_the_ground").passed);
+
+        // Sunk: the raymarch path reported -63.9m here before terrain
+        // streaming was made path-independent.
+        let mut sunk = AssertionTracker::new(config.clone());
+        sunk.observe_surface_probe(&probe_report(-63.9, 0.1, 40));
+        assert!(!result(&sunk.results(0), "camera_stands_on_the_ground").passed);
+
+        let mut floating = AssertionTracker::new(config);
+        floating.observe_surface_probe(&probe_report(84.4, 0.1, 40));
+        assert!(!result(&floating.results(0), "camera_stands_on_the_ground").passed);
+    }
+
+    #[test]
+    fn a_probe_that_saw_no_ground_is_not_evidence_of_agreement() {
+        let mut config = ScenarioAssertions::default();
+        config.max_surface_probe_delta_m = Some(5.0);
+        config.min_surface_probe_points = Some(10);
+        let mut tracker = AssertionTracker::new(config.clone());
+
+        // Every frame looked at sky. A zero maximum delta must not read as a
+        // pass, or a scenario could satisfy the tolerance by seeing nothing.
+        tracker.observe_surface_probe(&probe_report(2.0, 0.0, 0));
+        let results = tracker.results(0);
+        assert!(!result(&results, "rendered_surface_matches_terrain_truth").passed);
+        assert!(!result(&results, "surface_probe_sampled_enough_ground").passed);
+
+        let mut seen = AssertionTracker::new(config);
+        seen.observe_surface_probe(&probe_report(2.0, 4.0, 40));
+        let results = seen.results(0);
+        assert!(result(&results, "rendered_surface_matches_terrain_truth").passed);
+        assert!(result(&results, "surface_probe_sampled_enough_ground").passed);
+    }
+
+    #[test]
+    fn a_surface_probe_delta_beyond_tolerance_fails() {
+        let mut config = ScenarioAssertions::default();
+        config.max_surface_probe_delta_m = Some(5.0);
+        config.min_surface_probe_points = Some(10);
+        let mut tracker = AssertionTracker::new(config);
+        tracker.observe_surface_probe(&probe_report(2.0, 5.5, 40));
+        assert!(
+            !result(
+                &tracker.results(0),
+                "rendered_surface_matches_terrain_truth"
+            )
+            .passed
+        );
     }
 
     #[test]

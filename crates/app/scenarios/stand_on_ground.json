@@ -1,43 +1,43 @@
 {
-  "name": "landing_site_eye_level",
+  "name": "stand_on_ground",
   "fixed_timestep_seconds": 0.016666666666666666,
-  "duration_seconds": 10.0,
+  "duration_seconds": 5.0,
   "solid_color_screen": false,
   "hide_overlay": true,
   "seam_gap_check": false,
   "planet_rotation_time_scale": 0.0,
   "screenshot_times_seconds": [
+    1.0,
     2.0,
+    3.0,
     4.0,
-    6.0,
-    8.0,
-    10.0
+    5.0
   ],
   "waypoints": [
     {
       "time_s": 0.0,
       "position": [
-        4001000.0,
+        4000925.1,
         0.0,
         0.0
       ],
       "look_at": [
-        4000985.0,
+        4000924.1,
         0.0,
-        150.0
+        1.0
       ]
     },
     {
-      "time_s": 10.0,
+      "time_s": 5.0,
       "position": [
-        4000926.0,
+        4000925.1,
         0.0,
         0.0
       ],
       "look_at": [
-        4000925.0,
+        4000924.1,
         0.0,
-        150.0
+        1.0
       ]
     }
   ],
@@ -59,8 +59,10 @@
   ],
   "assertions": {
     "require_finite_metrics": true,
-    "max_lod_thrash_events": 0,
     "expected_screenshots": 5,
-    "min_camera_clearance_m": 2.0
+    "min_surface_probe_points": 300,
+    "min_camera_clearance_m": 1.5,
+    "max_camera_clearance_m": 2.5,
+    "max_surface_probe_delta_m": 120.0
   }
 }

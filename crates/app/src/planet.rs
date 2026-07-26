@@ -163,6 +163,14 @@ impl CameraViewBasis {
             -vector.dot(self.forward),
         )
     }
+
+    /// Inverse of [`Self::world_to_view`]. The surface probe turns depth
+    /// samples back into planet-frame points, and has to invert this exact
+    /// convention rather than restate it -- a sign slip here would move every
+    /// probed point without making any of them look wrong.
+    pub(crate) fn view_to_world(self, vector: DVec3) -> DVec3 {
+        self.right * vector.x + self.up * vector.y - self.forward * vector.z
+    }
 }
 
 /// A leaf in one of the six face-local quadtrees. Coordinates address a node
@@ -2782,6 +2790,34 @@ mod tests {
         let packed_view = basis.world_to_view(orbital_offset).as_vec3();
         assert!((f64::from(packed_view.x) - 0.0125).abs() < 1.0e-7);
         assert!((f64::from(packed_view.y) + 0.021).abs() < 1.0e-7);
+    }
+
+    #[test]
+    fn view_space_round_trips_back_to_the_world_it_came_from() {
+        // The surface probe reconstructs planet-frame points from view-space
+        // rays, so a sign slip in the inverse would displace every probed
+        // point consistently -- which is exactly the kind of error that still
+        // produces plausible-looking numbers.
+        let basis = CameraViewBasis::from_forward_and_up(
+            DVec3::new(0.3, -0.9, 0.31).normalize(),
+            DVec3::new(0.1, 0.2, 0.97).normalize(),
+        );
+        for vector in [
+            DVec3::new(1.0, 0.0, 0.0),
+            DVec3::new(0.0, 1.0, 0.0),
+            DVec3::new(0.0, 0.0, 1.0),
+            DVec3::new(-1_234.5, 6_789.0, -42.0),
+        ] {
+            let round_trip = basis.view_to_world(basis.world_to_view(vector));
+            assert!(
+                round_trip.distance(vector) < 1.0e-9,
+                "{vector} {round_trip}"
+            );
+        }
+        // Straight ahead in view space is -z, and it must come back as the
+        // camera's forward axis rather than its opposite.
+        let ahead = basis.view_to_world(DVec3::new(0.0, 0.0, -100.0));
+        assert!(ahead.normalize().dot(basis.forward) > 0.999_999_999);
     }
 
     #[test]

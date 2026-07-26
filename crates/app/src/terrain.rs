@@ -22,7 +22,7 @@ use crate::{
         OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS, OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE,
         PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode, TerrainHeightRange, build_chunk_mesh,
         cube_face_basis, cube_face_direction, outmap_surface_height_meters,
-        placeholder_height_meters,
+        outmap_terrain_height_scale, placeholder_height_meters,
     },
 };
 
@@ -71,6 +71,19 @@ const OUTMAP_GEOMETRIC_ERROR_RATIO: f64 = 0.15;
 /// the worker streams better sources; otherwise low flight stalls at L6 and
 /// exposes huge terrain facets.
 const LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS: f64 = 250_000.0;
+
+/// A terrain height alongside the parts it was made of.
+#[derive(Clone, Copy, Debug)]
+pub struct SurfaceHeightBreakdown {
+    pub height_meters: f64,
+    /// Baked data only, with the altitude height scale applied and ocean
+    /// resolved to sea level -- what the surface would be with no synthesised
+    /// detail at all.
+    pub macro_height_meters: f64,
+    /// Pyramid level of the tile this came from. A coarse level here is the
+    /// usual reason two sides of a comparison disagree about the macro shape.
+    pub source_level: u8,
+}
 
 #[derive(Clone, Debug)]
 pub enum TerrainSource {
@@ -478,10 +491,26 @@ impl TerrainRenderer {
         local_surface_direction: DVec3,
         camera_altitude_meters: f64,
     ) -> Option<f64> {
+        self.surface_height_breakdown_at(local_surface_direction, camera_altitude_meters)
+            .map(|breakdown| breakdown.height_meters)
+    }
+
+    /// The same height, split into the part that came from baked data and the
+    /// part the detail ladder synthesised. The surface probe needs the split to
+    /// attribute a disagreement: a renderer drawing the macro surface alone
+    /// looks exactly like one whose detail has the wrong amplitude, until the
+    /// two terms are reported separately.
+    pub fn surface_height_breakdown_at(
+        &self,
+        local_surface_direction: DVec3,
+        camera_altitude_meters: f64,
+    ) -> Option<SurfaceHeightBreakdown> {
         match &self.source {
-            TerrainDataSource::Placeholder => {
-                Some(placeholder_height_meters(local_surface_direction))
-            }
+            TerrainDataSource::Placeholder => Some(SurfaceHeightBreakdown {
+                height_meters: placeholder_height_meters(local_surface_direction),
+                macro_height_meters: placeholder_height_meters(local_surface_direction),
+                source_level: 0,
+            }),
             TerrainDataSource::Outmap(_) => {
                 let (face, face_uv) = cube_face_uv(local_surface_direction)?;
                 self.tile_cache
@@ -491,12 +520,21 @@ impl TerrainRenderer {
                             .map(|uv| (key.level, sample_height_cpu(&tile.heights_meters, uv)))
                     })
                     .max_by_key(|(level, _)| *level)
-                    .map(|(_, height)| {
-                        outmap_surface_height_meters(
-                            f64::from(height),
-                            local_surface_direction,
-                            camera_altitude_meters,
-                        )
+                    .map(|(level, height)| {
+                        let baked_meters = f64::from(height);
+                        SurfaceHeightBreakdown {
+                            height_meters: outmap_surface_height_meters(
+                                baked_meters,
+                                local_surface_direction,
+                                camera_altitude_meters,
+                            ),
+                            macro_height_meters: if baked_meters <= 0.0 {
+                                0.0
+                            } else {
+                                baked_meters * outmap_terrain_height_scale(camera_altitude_meters)
+                            },
+                            source_level: level,
+                        }
                     })
             }
         }

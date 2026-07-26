@@ -5,6 +5,7 @@ mod hdr;
 mod ocean;
 mod outmap;
 mod planet;
+mod probe;
 mod scenario;
 mod sun;
 mod terrain;
@@ -311,7 +312,9 @@ impl RenderPath {
         }
     }
 
-    fn updates_raster_terrain(self) -> bool {
+    /// Whether this path draws the streamed chunk meshes. Terrain *data* is
+    /// updated in every path regardless -- see the call site.
+    fn draws_terrain_meshes(self) -> bool {
         self == Self::Raster
     }
 }
@@ -571,6 +574,7 @@ struct State {
     /// Native swapchain size, which can be larger than the internal scene.
     surface_size: winit::dpi::PhysicalSize<u32>,
     fullscreen_render_size: Option<winit::dpi::PhysicalSize<u32>>,
+    depth_texture: wgpu::Texture,
     depth_view: wgpu::TextureView,
     hdr: hdr::HdrRenderer,
     atmosphere: atmosphere::AtmosphereRenderer,
@@ -742,7 +746,7 @@ impl State {
             "configured surface"
         );
         surface.configure(&device, &config);
-        let depth_view = create_depth_view(&device, size);
+        let (depth_texture, depth_view) = create_depth_texture(&device, size);
         let hdr = hdr::HdrRenderer::new(&device, size, config.format);
 
         let mut camera = planet::OrbitCamera::default();
@@ -837,6 +841,7 @@ impl State {
             size,
             surface_size: size,
             fullscreen_render_size: None,
+            depth_texture,
             depth_view,
             hdr,
             atmosphere,
@@ -943,7 +948,9 @@ impl State {
         self.size = size;
         self.camera
             .clamp_vertical_fov_for_viewport(self.size.height);
-        self.depth_view = create_depth_view(&self.device, size);
+        let (depth_texture, depth_view) = create_depth_texture(&self.device, size);
+        self.depth_texture = depth_texture;
+        self.depth_view = depth_view;
         self.hdr.resize(&self.device, size);
         self.foveated.resize(&self.device, size);
     }
@@ -1417,7 +1424,22 @@ impl State {
             exposure_state.target_exposure,
             exposure_state.average_luminance,
         );
-        self.terrain_stats = if solid_color_screen || !self.render_path.updates_raster_terrain() {
+        // Terrain streaming runs in every render path, not just the one that
+        // draws the meshes.
+        //
+        // The raymarch path used to skip this to save the quadtree's cost, and
+        // the saving was real, but it also froze the CPU's tile cache: the
+        // camera's collision height, the near plane and the LOD reference all
+        // came from whatever tiles happened to be resident at startup. At the
+        // landing site that put the CPU's ground at 989.9m instead of 923.1m,
+        // so a camera placed 2m above the ground reported itself 64m *inside*
+        // it. Terrain truth cannot depend on which path is drawing.
+        //
+        // It is also cheaper than it looks: measured at 22.4ms for eye level
+        // and 17.9ms at orbit in ray mode, unchanged from suspending it,
+        // because the expensive part of a raster frame is drawing the chunks
+        // rather than selecting them.
+        self.terrain_stats = if solid_color_screen {
             terrain::TerrainStats::default()
         } else {
             self.terrain
@@ -1437,11 +1459,15 @@ impl State {
             self.terrain_stats.lod_thrash_events,
             self.terrain_stats.budget_limited,
         );
-        let draw_calls = if solid_color_screen {
-            0
-        } else {
-            self.terrain_stats.draw_calls
-        };
+        // The chunk mesh statistics describe drawing, so a path that streams
+        // terrain without drawing it reports none.
+        let draws_terrain_meshes = !solid_color_screen && self.render_path.draws_terrain_meshes();
+        if !draws_terrain_meshes {
+            self.terrain_stats.drawn_chunks = 0;
+            self.terrain_stats.terrain_triangles = 0;
+            self.terrain_stats.draw_calls = 0;
+        }
+        let draw_calls = self.terrain_stats.draw_calls;
         let ocean_wave_stats = ocean::wave_height_stats(sim_time);
         let ocean_wave_range = ocean_wave_stats.range_meters();
         if write_log {
@@ -1696,32 +1722,51 @@ impl State {
         let egui_upload_ms = egui_upload_started.elapsed().as_secs_f32() * 1_000.0;
 
         let upload_started = Instant::now();
+        // The near plane has to be set from the camera's clearance above the
+        // ground, so scenarios and orbit need this as much as flight does --
+        // any camera over high terrain clips its own foreground otherwise.
+        // The surface probe reports its clearance from the same number, so the
+        // two can never drift apart.
+        // Sea-level altitude, which is what this argument selects the height
+        // scale by -- not the above-ground figure the HUD uses.
+        let camera_sea_level_altitude_meters =
+            camera_planet_frame_position.length() - planet::PLANET_RADIUS_METERS;
+        let camera_surface_height_meters = self
+            .terrain
+            .surface_height_meters_at(
+                camera_planet_frame_position.normalize(),
+                camera_sea_level_altitude_meters,
+            )
+            .unwrap_or(0.0);
+        let aspect_ratio = self.size.width as f32 / self.size.height as f32;
         let camera_uniform = planet::CameraUniform::from_camera(
             &self.camera,
-            self.size.width as f32 / self.size.height as f32,
+            aspect_ratio,
             self.sun_direction,
             planet_rotation_radians,
             sim_time,
             self.render_debug_mode,
-            // The near plane has to be set from the camera's clearance above
-            // the ground, so scenarios and orbit need this as much as flight
-            // does -- any camera over high terrain clips its own foreground
-            // otherwise.
-            {
-                let local_position = planet::planet_local_vector(
-                    self.camera.world_position(),
-                    planet_rotation_radians,
-                );
-                // Sea-level altitude, which is what this argument selects the
-                // height scale by -- not the above-ground figure the HUD uses.
-                let sea_level_altitude = local_position.length() - planet::PLANET_RADIUS_METERS;
-                self.terrain
-                    .surface_height_meters_at(local_position.normalize(), sea_level_altitude)
-                    .unwrap_or(0.0)
-            },
+            camera_surface_height_meters,
         );
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
+        // Probe on the frames that produce a screenshot, so a measured
+        // disagreement always has the picture that goes with it.
+        let probe_requested =
+            !solid_color_screen && (scenario_capture || self.manual_screenshot_requested);
+        let probe_geometry = probe_requested.then(|| {
+            probe::ProbeGeometry::new(
+                planet::near_plane_meters(
+                    camera_sea_level_altitude_meters,
+                    camera_surface_height_meters,
+                ),
+                self.camera.vertical_fov_radians(),
+                f64::from(aspect_ratio),
+                camera_planet_frame_position,
+                camera_planet_frame_direction,
+                camera_planet_frame_up,
+            )
+        });
         if self.render_path == RenderPath::FoveatedRay {
             let flight_velocity_planet_frame =
                 if self.scenario.is_none() && self.camera_mode == CameraMode::LowFlight {
@@ -1903,6 +1948,18 @@ impl State {
                 self.foveated.copy_to_history(&mut encoder);
             }
         }
+        // Read the depth attachment back while it still holds the terrain, and
+        // only the terrain: the visual sun overlay pass below discards depth on
+        // store, and atmosphere and sun both write no depth at all.
+        let pending_depth_probe = probe_requested.then(|| {
+            probe::schedule_depth_readback(
+                &self.device,
+                &mut encoder,
+                &self.depth_texture,
+                self.size.width,
+                self.size.height,
+            )
+        });
         let timestamp_query_set = gpu_slot_index.map(|slot_index| {
             &self
                 .gpu_profiler
@@ -2070,6 +2127,43 @@ impl State {
             }
         }
         let capture_readback_ms = capture_started.elapsed().as_secs_f32() * 1_000.0;
+        if let (Some(pending), Some(geometry)) = (pending_depth_probe, probe_geometry) {
+            match probe::finish_depth_readback(&self.device, pending) {
+                Ok(depth) => {
+                    let terrain = &self.terrain;
+                    let report = probe::compare_surface(
+                        sim_time,
+                        self.render_path.label(),
+                        &geometry,
+                        &depth,
+                        camera_sea_level_altitude_meters,
+                        camera_surface_height_meters,
+                        |direction| {
+                            terrain.surface_height_breakdown_at(
+                                direction,
+                                camera_sea_level_altitude_meters,
+                            )
+                        },
+                    );
+                    tracing::info!(
+                        render_path = report.render_path.as_str(),
+                        clearance_m = report.camera_clearance_meters,
+                        compared = report.compared_points,
+                        max_abs_delta_m = report.max_abs_delta_meters,
+                        median_abs_delta_m = report.median_abs_delta_meters,
+                        mean_delta_m = report.mean_delta_meters,
+                        mean_delta_from_macro_m = report.mean_delta_from_macro_meters,
+                        detail_correlation = report.detail_correlation,
+                        "surface probe"
+                    );
+                    self.artifacts.record_surface_probe(report);
+                }
+                Err(error) => {
+                    self.scenario_capture_failed = true;
+                    tracing::error!(%error, "surface probe readback failed");
+                }
+            }
+        }
         if self.profile_render && write_log {
             self.artifacts.record_render_profile(
                 sim_time,
@@ -2520,26 +2614,29 @@ fn launch_options() -> Result<LaunchOptions, String> {
     Ok(options)
 }
 
-fn create_depth_view(
+fn create_depth_texture(
     device: &wgpu::Device,
     size: winit::dpi::PhysicalSize<u32>,
-) -> wgpu::TextureView {
-    device
-        .create_texture(&wgpu::TextureDescriptor {
-            label: Some("reversed-z depth texture"),
-            size: wgpu::Extent3d {
-                width: size.width.max(1),
-                height: size.height.max(1),
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Depth32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        })
-        .create_view(&wgpu::TextureViewDescriptor::default())
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("reversed-z depth texture"),
+        size: wgpu::Extent3d {
+            width: size.width.max(1),
+            height: size.height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Depth32Float,
+        // COPY_SRC is for the surface probe, which reads this attachment back
+        // to compare the drawn ground against the ground the camera collides
+        // with.
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
 }
 
 #[cfg(test)]
@@ -2652,8 +2749,8 @@ mod tests {
         assert_eq!(path, RenderPath::Raster);
         assert_eq!(path.toggled(), RenderPath::FoveatedRay);
         assert_eq!(path.toggled().toggled(), RenderPath::Raster);
-        assert!(RenderPath::Raster.updates_raster_terrain());
-        assert!(!RenderPath::FoveatedRay.updates_raster_terrain());
+        assert!(RenderPath::Raster.draws_terrain_meshes());
+        assert!(!RenderPath::FoveatedRay.draws_terrain_meshes());
     }
 
     #[test]

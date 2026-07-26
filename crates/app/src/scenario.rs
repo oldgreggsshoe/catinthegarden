@@ -35,6 +35,17 @@ pub struct ScenarioAssertions {
     pub ice_sample_uv: Option<[f32; 2]>,
     pub min_ice_sample_luminance: Option<f32>,
     pub max_ice_sample_channel_spread: Option<f32>,
+    /// Largest tolerated gap between the surface the renderer drew and the
+    /// surface the CPU would collide with, over the probe's sample grid.
+    pub max_surface_probe_delta_m: Option<f64>,
+    /// Bounds on how far the camera sits above the CPU's terrain. Setting both
+    /// is what pins "standing on the ground" rather than sunk or floating.
+    pub min_camera_clearance_m: Option<f64>,
+    pub max_camera_clearance_m: Option<f64>,
+    /// Floor on how many probe points were actually compared. Without it a
+    /// scenario that happened to see only sky would pass the delta assertion
+    /// on no evidence at all.
+    pub min_surface_probe_points: Option<usize>,
 }
 
 impl Default for ScenarioAssertions {
@@ -68,6 +79,10 @@ impl Default for ScenarioAssertions {
             ice_sample_uv: None,
             min_ice_sample_luminance: None,
             max_ice_sample_channel_spread: None,
+            max_surface_probe_delta_m: None,
+            min_camera_clearance_m: None,
+            max_camera_clearance_m: None,
+            min_surface_probe_points: None,
         }
     }
 }
@@ -176,6 +191,7 @@ impl ScenarioRunner {
             "landing_site_eye_level" => {
                 include_str!("../scenarios/landing_site_eye_level.json")
             }
+            "stand_on_ground" => include_str!("../scenarios/stand_on_ground.json"),
             "path_parity_ridge" => include_str!("../scenarios/path_parity_ridge.json"),
             "tour_mountains" => include_str!("../scenarios/tour_mountains.json"),
             "tour_desert" => include_str!("../scenarios/tour_desert.json"),
@@ -340,6 +356,7 @@ impl ScenarioRunner {
                 | "low_flight_performance"
                 | "landing_site_ground_detail"
                 | "landing_site_eye_level"
+                | "stand_on_ground"
         ) {
             return;
         }
@@ -360,7 +377,10 @@ impl ScenarioRunner {
         // grazing angle chosen to reveal relief is lost.
         if matches!(
             self.definition.name.as_str(),
-            "low_flight_performance" | "landing_site_ground_detail" | "landing_site_eye_level"
+            "low_flight_performance"
+                | "landing_site_ground_detail"
+                | "landing_site_eye_level"
+                | "stand_on_ground"
         ) {
             for waypoint in &mut self.definition.sun_waypoints {
                 waypoint.direction = rotation
@@ -487,6 +507,44 @@ fn validate_assertions(
         .is_some_and(|tolerance| !tolerance.is_finite() || tolerance < 0.0)
     {
         return Err("maximum seam delta must be finite and non-negative".to_owned());
+    }
+    if assertions
+        .max_surface_probe_delta_m
+        .is_some_and(|tolerance| !tolerance.is_finite() || tolerance < 0.0)
+    {
+        return Err("maximum surface probe delta must be finite and non-negative".to_owned());
+    }
+    if matches!(
+        (
+            assertions.min_camera_clearance_m,
+            assertions.max_camera_clearance_m
+        ),
+        (Some(minimum), Some(maximum)) if minimum > maximum
+    ) {
+        return Err("minimum camera clearance cannot exceed the maximum".to_owned());
+    }
+    for (name, value) in [
+        (
+            "minimum camera clearance",
+            assertions.min_camera_clearance_m,
+        ),
+        (
+            "maximum camera clearance",
+            assertions.max_camera_clearance_m,
+        ),
+    ] {
+        if value.is_some_and(|value| !value.is_finite()) {
+            return Err(format!("{name} must be finite"));
+        }
+    }
+    // A delta tolerance with no evidence requirement is the failure mode this
+    // whole probe exists to avoid, so the two are wired together here.
+    if assertions.max_surface_probe_delta_m.is_some()
+        && assertions.min_surface_probe_points.is_none()
+    {
+        return Err(
+            "a surface probe delta tolerance requires min_surface_probe_points as well".to_owned(),
+        );
     }
     if assertions
         .expected_screenshots
