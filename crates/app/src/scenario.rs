@@ -176,6 +176,7 @@ impl ScenarioRunner {
             "landing_site_eye_level" => {
                 include_str!("../scenarios/landing_site_eye_level.json")
             }
+            "path_parity_ridge" => include_str!("../scenarios/path_parity_ridge.json"),
             _ => return Err(format!("unknown scenario '{name}'")),
         };
         Self::from_source(source)

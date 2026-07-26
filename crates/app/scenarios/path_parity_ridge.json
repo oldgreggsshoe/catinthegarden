@@ -1,0 +1,48 @@
+{
+  "name": "path_parity_ridge",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 4.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_rotation_time_scale": 0.0,
+  "screenshot_times_seconds": [
+    2.0,
+    4.0
+  ],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [
+        857005.1771573876,
+        3865080.241129037,
+        592204.2350062542
+      ],
+      "look_at": [
+        843121.0705553718,
+        3867119.84770126,
+        592059.9158029105
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        0.9328212817356548,
+        0.3511082083902614,
+        0.0810400045781747
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 55.0
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 2
+  }
+}
