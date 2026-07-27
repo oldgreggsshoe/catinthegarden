@@ -150,6 +150,12 @@ Results land in `test-runs/<scenario>/<unix>-<id>/{manifest.json,log.jsonl,scree
 - **Measure frame times only on an idle machine.** `pgrep -f catinthegarden-app` first — Ian often
   has his own instance running, and contended readings run 2–10× high. A 3.9 ms figure quoted to him
   was contaminated this way; the clean number was 2.5 ms.
+- **`CATINGARDEN_PRESENT_MODE=immediate` is not optional for any timing measurement.** The default
+  `Fifo` pins to the 60 Hz refresh (~16.7 ms floor, hiding anything cheaper) **and throttles to ~1 Hz
+  when the window is not visible** — a blanked screen or an unfocused window turns every frame into
+  a flat ~1000 ms. That reads exactly like a catastrophic regression. If you see suspiciously round
+  frame times near 1000 ms with `nvidia-smi` showing 0% util and P8, it is the throttle, not the
+  renderer. Confirm by re-running with `immediate` before reporting anything.
 - Benchmarks build to `/home/dad/catingard-target`, not the in-repo `target/`.
 - Other flags: `--terrain placeholder|outmap`, `--outmap <path>`, `--vertical-fov-degrees`,
   `CATINGARDEN_RAY_EXPERIMENTS`, `WGPU_ADAPTER_NAME`.

@@ -198,6 +198,7 @@ impl ScenarioRunner {
             }
             "stand_on_ground" => include_str!("../scenarios/stand_on_ground.json"),
             "path_parity_ridge" => include_str!("../scenarios/path_parity_ridge.json"),
+            "low_pass_bands" => include_str!("../scenarios/low_pass_bands.json"),
             "tour_mountains" => include_str!("../scenarios/tour_mountains.json"),
             "tour_desert" => include_str!("../scenarios/tour_desert.json"),
             "tour_coast" => include_str!("../scenarios/tour_coast.json"),
