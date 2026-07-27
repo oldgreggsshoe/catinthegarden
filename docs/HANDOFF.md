@@ -66,8 +66,28 @@ regressions from this work.
 | `low_flight_performance` | `lod_stays_within_chunk_budget` + seam + fallback | 241 budget-limited frames |
 | `orbital_zoom_lod` | `lod_reaches_required_level` | peak L16, required L18 |
 
-**Read that table again — five of the six are one bug.** Every one of them saturates the chunk
-budget and falls back to ancestor tiles. That is item 1 of §6.
+**These are not one bug, and `fallback_chunk_count_is_bounded` is largely measuring the
+architecture rather than a defect.** An earlier revision of this document claimed all five fallback
+failures shared a chunk-budget root cause. Per-frame logs say otherwise — they have three separate
+causes:
+
+1. **Frame 0 warm-up.** `low_flight_performance` reads 256/256 fallback at t=0 with 6 tiles resident,
+   then settles to a steady **66** once streaming catches up. The assertion takes a maximum over all
+   frames, so one unstreamed frame fails the run.
+2. **No fine data exists there, and none ever will.** `ocean_flyover` holds 10 resident tiles and 254
+   fallbacks for its whole run. The bake is dense L0–L4 globally plus one sparse L5–L18 corridor, so
+   any near-ground camera outside that corridor *must* draw from ancestors. That is the hybrid design
+   (§1.2), not a failure — the runtime ladder is what fills the gap, and the probe confirms it does
+   (`path_parity_ridge` sits outside the corridor and agrees to 1.93 m p90 raster).
+3. **Descent outrunning streaming.** `descent_to_10m` pins at 262 resident tiles while altitude falls
+   5958 km → 0.
+
+**These assertions encode the superseded "baked displacement only" architecture.** They ask for
+resolved baked tiles at levels the planet was never baked at. Rewriting them to assert what actually
+matters — probe agreement — is real work worth doing, but it is a harness repair, not a renderer fix,
+and it should not be confused with the chunk budget.
+
+Only `low_flight_performance` genuinely fails `lod_stays_within_chunk_budget`.
 
 `orbit_once` in ray mode also fails `resident_chunk_count_is_bounded` because ray mode used to
 suspend the raster quadtree. That is a harness assumption, not a bug.
@@ -142,14 +162,43 @@ you need one.
 
 ## 6. Next, in order
 
-### 1. The chunk budget — Ian asked for this and it was not started
+### 1. The chunk budget — MEASURED, and it must not be raised
 
-`planet.rs:30` — `DEFAULT_MAX_ACTIVE_CHUNKS = 256`. `budget_limited` is true on **16 of 17**
-`tour_mountains` frames (it was 8/17 before roughness went to 0.06). The selector wants more chunks
-than it may have, so the finer tessellation the LOD budget now asks for is not actually delivered.
+`planet.rs:30` — `DEFAULT_MAX_ACTIVE_CHUNKS = 256`. `budget_limited` is true on every
+`tour_mountains` and `low_flight_performance` frame, so the selector is permanently suppressed. It is
+tempting to read that as a ceiling to lift. **It is not. It is the only thing holding the mountains
+at 38 ms instead of 59 ms.** Measured on an idle machine, `CATINGARDEN_PRESENT_MODE=immediate`,
+raster, cap 256 vs a temporary 1024:
 
-This is also the likely root of five of the six red scenarios in §3, which makes it the highest-value
-thing on the list: it is both a feature and a test-suite repair.
+| | cap 256 | cap 1024 (demand satisfied) |
+|---|---|---|
+| `low_flight_performance` | 256 chunks, 590 k tri, **30.5 ms** | 352 chunks, 811 k tri, **38.3 ms** |
+| `tour_mountains` | 256–318 chunks, 645 k tri, **38.0 ms** | 512 median / 677 peak, 1.18 M tri, **58.6 ms** (p90 72.3) |
+
+**Cost is triangles, linearly, at ~50 ns each.** `draw_calls` stays at 12 across the entire
+266→677-chunk range — the renderer is instanced, so there is no per-chunk overhead to reclaim and no
+batching win available. Cost per triangle is flat at 48–52 ns over that whole range.
+
+**1.18 M triangles for a 921,600-pixel frame is 1.3 triangles per pixel.** Even the 256-chunk
+baseline is already 0.7. The selector is asking for sub-pixel geometry.
+
+**The demand is legitimate under the current model — this was checked, there is no free win.**
+`tour_mountains` reads 5800 m altitude, but that is above the *reference sphere*; the surface is at
+4721 m, so true clearance is **1079 m**. An L13 node splits at `spacing × ratio × projection / d > 2 px`,
+i.e. within 1905 m. 1079 < 1905, so the 151 chunks observed at L14 are exactly what the model orders.
+The arithmetic is consistent; the model is simply expensive.
+
+**Where the expense comes from.** `OUTMAP_GEOMETRIC_ERROR_RATIO = 0.0536 + ROUGHNESS × 2.9395` = 0.23
+at roughness 0.06, of which the ladder term is **77%**. At the mountains, 151 of 256 chunks sit at
+L14 with a source-level delta of **10** — an L14 mesh (12 m vertices) sampling L4 baked data (~1953 m
+texels). Everything at that scale is the runtime ladder, and the model credits every further split
+with resolving more of it, all the way down.
+
+**So the real lever is the ratio or the 2 px split threshold, and both are quality-versus-cost
+trades, not bug fixes.** Reducing error demand by ×0.77 (dropping the baked term, which cannot
+resolve anything past L4 out here anyway) would cut demand to ~0.59 of current. That is the most
+defensible saving available because it removes work that provably produces nothing. It needs Ian's
+call: he has previously said to absorb budget breaches in favour of appearance.
 
 ### 2. Materials
 
