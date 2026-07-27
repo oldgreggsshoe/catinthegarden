@@ -226,9 +226,26 @@ Under a stop of range across the whole ground. Ambient already exists — `sky_d
 adding more would flatten the picture further, which is the actual defect. It is not auto-exposure
 either: that sits pinned at its 1.0–4.0 rail in these scenes.
 
-`tour_mountains` at 1 km renders as a uniform yellow-tan dune field. **Two other artefacts are
-visible in it and want their own investigation:** hard rectangular pale patches on tile boundaries,
-and regular diagonal moiré across the ground.
+`tour_mountains` at 1 km renders as a uniform yellow-tan dune field, with regular diagonal moiré
+across the ground that wants its own investigation.
+
+**Coastlines are now the coarsest thing in the picture, and that is structural.** The pale angular
+patches in that capture are *water* — not, as an earlier revision of this file guessed, a material
+seam on a tile boundary. What makes them read as wrong is that their edges are straight lines at
+kilometre scale. The ray path decides land-versus-water from the cube-face height texture at
+`face_quads = 128 × 2⁴ = 2048`, i.e. **3906 m per texel**, and the raster path is no better outside
+the sparse corridor (`baked_sample_spacing_meters(4)` is the same 3906 m). A shoreline can therefore
+only change direction every 3.9 km, and inside one texel the bilinear zero-crossing is a straight
+line — which is exactly the polygon shape seen.
+
+**Runtime detail cannot rescue it, by construction.** `ray_terrain_detail` returns zero when
+`scaled_macro_height_meters <= 0.0`, and the per-octave headroom `smoothstep(0, 2A, h)` takes the
+ladder to nothing as macro height approaches sea level. That gate is deliberate — it is the safety
+proof that the ladder can never push the shoreline (§7) — but its consequence is that **every other
+surface on the planet got 1 m detail while the coastline stayed at bake resolution**. A shoreline
+needs relief that is *symmetric* about sea level, able to cut inland as well as build seaward, and
+the current one-sided proof forbids exactly that. Resolving this needs a different safety argument,
+not a bigger amplitude.
 
 **The cause is the same one this branch keeps rediscovering** — gentle slopes mean `N·L` barely
 varies, and nothing casts a shadow, so no dark region can exist. **So the lever worth pulling is the
