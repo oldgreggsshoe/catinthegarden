@@ -64,6 +64,6 @@
     "min_camera_clearance_m": 1.5,
     "max_camera_clearance_m": 2.5,
     "max_surface_probe_delta_m": 210.0,
-    "max_surface_probe_p90_delta_m": 6.0
+    "max_surface_probe_p90_delta_m": 2.0
   }
 }

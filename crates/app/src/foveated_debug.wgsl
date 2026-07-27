@@ -9,6 +9,11 @@ const RAY_DETAIL_FILTER_OVERSAMPLE: f32 = 7.0;
 const RAY_DETAIL_MIN_INCIDENCE: f32 = 0.06;
 const RAY_DETAIL_HIT_STEPS: i32 = 6;
 const RAY_DETAIL_HIT_REFINEMENTS: i32 = 3;
+/// How much further than the relief measured at the macro hit the detail walk
+/// may reach, to cover the ladder standing taller further along the ray.
+const RAY_DETAIL_HIT_REACH_FACTOR: f32 = 3.0;
+/// Relief below which the macro hit is already the answer.
+const RAY_DETAIL_HIT_MIN_RELIEF_METERS: f32 = 0.05;
 const RAY_SKY_SAMPLE_COUNT: u32 = 16u;
 const RAY_SKY_DENSITY_SAMPLE_EXPONENT: f32 = 3.0;
 const RAY_ANTISOLAR_TWILIGHT_MIN_SCATTER: f32 = 0.48;
@@ -647,12 +652,35 @@ fn refine_detail_hit(
         ray,
         footprint_radians,
     );
+    // No relief here means the macro hit already is the detailed surface.
+    // Walking would find nothing and cost six ladder evaluations doing it.
+    // Inside the sparse corridor the ladder's high cut zeroes the detail
+    // outright, so this is the common case there rather than an edge case.
+    if abs(value) < RAY_DETAIL_HIT_MIN_RELIEF_METERS {
+        return macro_hit_meters;
+    }
     let hit_direction = normalize(view_to_planet(camera_position_view + ray * macro_hit_meters));
     let incidence = max(
         abs(dot(normalize(view_to_planet(ray)), hit_direction)),
         RAY_DETAIL_MIN_INCIDENCE,
     );
-    let span_meters = TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS / incidence;
+    // Walk by the relief that is actually here, not by the most the ladder
+    // could ever produce anywhere. At the macro hit `value` is minus the local
+    // detail height, and a ray closes a height gap at a rate set by its
+    // incidence, so |value| / incidence is where the crossing should sit. The
+    // global amplitude stays on as a ceiling, because the ladder can be taller
+    // further along the ray than it is at this one point.
+    //
+    // This is worst exactly where it shows: the hill band took
+    // TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS from 16.8m to 491m without
+    // rescaling the walk, so a grazing ray combed 1365m at a time hunting a
+    // crossing of a field with tens of metres of relief, and placed its hit
+    // within +/-512m of the truth. The quality steps that produced are locked
+    // to viewing angle, hence to distance, so terrain slides through them.
+    let span_meters = min(
+        abs(value) * RAY_DETAIL_HIT_REACH_FACTOR,
+        TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS,
+    ) / incidence;
     let step_meters = (span_meters / f32(RAY_DETAIL_HIT_STEPS))
         * select(-1.0, 1.0, value > 0.0);
     var bracket_near = macro_hit_meters;

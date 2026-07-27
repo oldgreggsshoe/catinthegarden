@@ -34,14 +34,15 @@ cargo test --workspace   →  182 passed, 0 failed, 1 ignored
                             (app 150, baker lib 20, baker bin 1, baker integration 5, coretypes 6)
 ```
 
-Scenario probe results, worst frame, from `test-runs/*/*/manifest.json` at `8aaafeb`:
+Scenario probe results, worst frame, from `test-runs/*/*/manifest.json`:
 
 | scenario | path | p90 delta | median delta | tolerance | clearance |
 |---|---|---:|---:|---:|---:|
-| `stand_on_ground` | raster | **0.25 m** | 0.10 m | 6 m | 2.0000 m |
-| `stand_on_ground` | ray | **4.48 m** | 0.55 m | 6 m | 2.0000 m |
-| `path_parity_ridge` | raster | **1.93 m** | 0.97 m | 8 m | 133 m |
-| `path_parity_ridge` | ray | **7.25 m** | 2.93 m | 8 m | 133 m |
+| `stand_on_ground` | raster | **0.25 m** | 0.10 m | 2 m | 2.0000 m |
+| `stand_on_ground` | ray | **0.64 m** | 0.45 m | 2 m | 2.0000 m |
+| `path_parity_ridge` | raster | **1.93 m** | 0.97 m | 6 m | 133 m |
+| `path_parity_ridge` | ray | **3.47 m** | 1.13 m | 6 m | 133 m |
+| `low_pass_bands` | ray | **9.05 m** | 1.78 m | 12 m | 205–230 m |
 
 The camera stands exactly 2.0 m above the ground it is drawn on, in both paths. That was the point
 of the whole exercise.
@@ -288,6 +289,33 @@ The LOD error budget knows about all this: `OUTMAP_GEOMETRIC_ERROR_RATIO` is
 `0.0536 + ROUGHNESS * 2.9395` (`terrain.rs:84-90`), derived rather than tuned. Before that it was a
 flat 0.15 — a function of level and nothing else — so a louder ladder never made the selector split
 further, which is why raising roughness used to produce stair-stepping.
+
+**The ray path's detail walk is sized by the relief actually present, not the ladder's maximum.**
+`refine_detail_hit` finds the detailed surface by combing outward from the macro hit, and the comb
+used to span `TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS / incidence`. The hill band took that amplitude
+from 16.8 m to **491 m** without rescaling the walk, so a grazing ray combed **1365 m at a time**
+hunting a crossing of a field with tens of metres of relief, and landed its hit within ±512 m of the
+truth. Because incidence is fixed by viewing angle, and therefore by distance, the resulting quality
+steps are **camera-locked while the terrain flows through them** — which is what Ian saw as bands
+sliding under one another in a low forward pass.
+
+The first `detail_surface_function` evaluation at the macro hit already returns minus the local
+detail height, and a ray closes a height gap at a rate set by its incidence, so `|value| / incidence`
+is where the crossing should sit. That is now the span, with the global amplitude kept only as a
+ceiling (the ladder can stand taller further along the ray) and an early-out when there is no relief
+to find. Measured, ray path, `PRESENT_MODE=immediate`:
+
+| | p90 before | p90 after | frame before | frame after |
+|---|---:|---:|---:|---:|
+| `stand_on_ground` | 4.48 m | **0.64 m** | 19.9 ms | 31.5 ms |
+| `path_parity_ridge` | 7.25 m | **3.47 m** | 31.5 ms | 34.4 ms |
+| `low_pass_bands` | 7.24 m pooled | **5.05 m pooled** | 31.9 ms | 33.8 ms |
+
+**The landing site costs +11.6 ms because it is now doing work it previously failed at.** With the
+old span the comb never bracketed a crossing and fell back to the macro hit after six wasted
+evaluations; with the correct span it brackets and bisects, so the three refinements actually run.
+Raster is untouched by all of this (the code is ray-only) and re-measures bit-identically at 0.25 and
+1.93.
 
 **The raymarch path's near-field window** (`terrain.rs` / `foveated.rs`) is an 8×8 block of L12 tiles
 resampled into a 1025² R32Float texture, because L12 already reads within 0.5 m of L18 at the landing
