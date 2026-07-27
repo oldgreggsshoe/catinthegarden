@@ -2081,6 +2081,11 @@ fn source_tile_uv(key: TileKey, face: CubeFace, face_uv: [f64; 2]) -> Option<[f3
         .then(|| [local_uv[0] as f32, local_uv[1] as f32])
 }
 
+#[cfg(test)]
+pub fn cube_face_uv_for_survey(direction: DVec3) -> Option<(CubeFace, [f64; 2])> {
+    cube_face_uv(direction)
+}
+
 fn cube_face_uv(direction: DVec3) -> Option<(CubeFace, [f64; 2])> {
     if !direction.is_finite() || direction.length_squared() == 0.0 {
         return None;
@@ -2603,6 +2608,22 @@ mod tests {
             (
                 "TERRAIN_DETAIL_HEADROOM_FACTOR",
                 crate::planet::TERRAIN_DETAIL_HEADROOM_FACTOR,
+            ),
+            // The spectral tilt. Both halves matter: the gain sets how much
+            // taller a massif is than the plain around it, and the taper sets
+            // where that extra amplitude stops so the fine band -- which the
+            // LOD budget is charged for -- is left alone.
+            (
+                "TERRAIN_DETAIL_LONG_GAIN",
+                crate::planet::TERRAIN_DETAIL_LONG_GAIN,
+            ),
+            (
+                "TERRAIN_DETAIL_TILT_TAPER_METERS",
+                crate::planet::TERRAIN_DETAIL_TILT_TAPER_METERS,
+            ),
+            (
+                "TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS",
+                crate::planet::TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS,
             ),
         ] {
             assert_eq!(declared(name), value as f32, "{name} drifted");

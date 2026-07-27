@@ -30,8 +30,10 @@ A renderer that "looks like a modernish (2015 on) game", consistent from orbit t
 ## 2. State: what is green
 
 ```
-cargo test --workspace   →  182 passed, 0 failed, 1 ignored
-                            (app 150, baker lib 20, baker bin 1, baker integration 5, coretypes 6)
+cargo test --workspace   →  186 passed, 0 failed, 4 ignored
+                            (app 154, baker lib 20, baker bin 1, baker integration 5, coretypes 6)
+                            the 4 ignored are the relief_survey instruments -- run them with
+                            `cargo test -- --ignored --nocapture <name>`
 ```
 
 Scenario probe results, worst frame, from `test-runs/*/*/manifest.json`:
@@ -39,10 +41,14 @@ Scenario probe results, worst frame, from `test-runs/*/*/manifest.json`:
 | scenario | path | p90 delta | median delta | tolerance | clearance |
 |---|---|---:|---:|---:|---:|
 | `stand_on_ground` | raster | **0.25 m** | 0.10 m | 2 m | 2.0000 m |
-| `stand_on_ground` | ray | **0.64 m** | 0.45 m | 2 m | 2.0000 m |
-| `path_parity_ridge` | raster | **1.93 m** | 0.97 m | 6 m | 133 m |
-| `path_parity_ridge` | ray | **3.47 m** | 1.13 m | 6 m | 133 m |
-| `low_pass_bands` | ray | **6.24 m** | 1.78 m | 9 m | 205–230 m |
+| `stand_on_ground` | ray | **0.89 m** | 0.62 m | 2 m | 2.0000 m |
+| `path_parity_ridge` | raster | **4.24 m** | 1.25 m | 6 m | 133 m |
+| `path_parity_ridge` | ray | **10.68 m** | 2.17 m | 6 m — **FAILS, see §6b** | 133 m |
+| `tour_mountains` | ray | 22.6 m | 11.7 m | none | ~1 km |
+
+These moved with the mountain work in §6b: the terrain now has three times the relief, so the same
+mesh disagrees with truth by more in absolute metres. Raster still holds well inside tolerance
+everywhere; the ray path does not, on the ridge.
 
 The camera stands exactly 2.0 m above the ground it is drawn on, in both paths. That was the point
 of the whole exercise.
@@ -362,6 +368,87 @@ The ray path's jump (21.5 → 34.5 ms) is four more octaves evaluated at every m
 
 ---
 
+## 6b. The mountains — Cairngorm to Ben Nevis
+
+Ian: *"What we have now is cairngorm mountain or black mountain. What we need is ben nevis or
+yr wyddfa."* Measured, that was exactly right, and the number is almost comic:
+
+| at the `tour_mountains` site | before | after | real |
+|---|---:|---:|---|
+| max relief within 2 km | **313 m** | **1001 m** | Ben Nevis ~1200 m, Cairn Gorm ~300 m |
+| max relief within 1 km | 206 m | 669 m | |
+| slope p50 / p90 / max | 4.6 / 11.8 / 23.9° | **14.1 / 33.5 / 50.0°** | Ben Nevis flanks 30–40° |
+| ground steeper than 25° | **0.000%** | **23.6%** | |
+| ground steeper than 35° | 0.000% | 8.5% | |
+
+**Where the relief had to come from.** The baker's working grid is 4096 × 2048 on a 25,000 km
+circumference — **6.1 km per cell** — so a Ben Nevis (~5 km across) is below the bake's resolution
+entirely and the macro can only ever make 12 km swells. It does: 843 m of relief over 60 km at that
+site, a high plateau at 3792–4635 m with nothing sharp in it. Prominence at the scale a mountain is
+judged by is therefore the *ladder's* job, not the baker's, and no re-bake at this grid would help.
+
+**What was actually holding it flat, in the order the measurements found it.**
+
+1. **A single roughness makes a self-similar field** — the same character on a plain as on a summit,
+   because amplitude is proportional to wavelength at every scale. Real ranges are far steeper at
+   massif scale than at boulder scale. Fixed by a **spectral tilt**: `TERRAIN_DETAIL_LONG_GAIN` 8.0
+   tapering to nothing by `TERRAIN_DETAIL_TILT_TAPER_METERS` 256 m. The long end is deliberately the
+   half that is free — see the cost note below.
+2. **The ridge fold was mixed back with the smooth noise it folds** at strength 0.7, rounding off
+   every crease. A mountain's defining feature is that its ridgelines are not rounded. Now 1.0.
+3. **`TERRAIN_DETAIL_ATTENUATION_SLOPE` was 0.25**, halving every octave on ground past ~14° — it was
+   smoothing precisely the crags it was meant to leave alone. Now 4.0. *On its own this is a weak
+   knob* (0.25 → 8.0 moves relief 313 → 335 m); it matters only under a raised ladder.
+4. **The headroom gate was the real ceiling.** At gain 8 the 4 km octave was being asked for 15.7 km
+   of elevation beneath it — more than the planet's highest ground — and ran at 22% amplitude on a
+   4.7 km mountain. `TERRAIN_DETAIL_HEADROOM_FACTOR` 8.0 → **5.5**.
+
+**5.5 is not a taste setting; it is the tightest value that keeps the sea-level proof.** The worst
+case is not on the mountain but at the shoreline, around 4 m of elevation, where the fine octaves are
+all fully admitted and the tilted long ones are gated off entirely. There the ladder admits 0.77 of
+the elevation it stands on. At 4.0 it admits **1.06** — a coastline cut below its own sea. The walk
+in `outmap_detail_preserves_ocean_and_coastline` is what enforces this; it caught the 4.0 attempt.
+
+**It cost no LOD demand, which was a surprise worth keeping.** `what_the_mesh_drops` measures the
+chord residual between vertices — which *is* the geometric error — at 0.027–0.064 of a vertex
+spacing, against the 0.230 the selector charges. **The analytic ladder term overstates the real
+error by about 4×**, so the new ladder fits inside the existing budget with 3.6× to spare and
+`LADDER_GEOMETRIC_ERROR_PER_ROUGHNESS` needed no change. Raster frame time is unmoved: the mountains
+are 36.3 ms against 36.9 before. *(That 4× conservatism is a real saving sitting there, but §6.1's
+lesson applies — do not spend it without checking the silhouettes, since the flat-constant version of
+this budget is what caused the stair-stepping in the first place.)*
+
+**What it cost in the picture, measured on the captures rather than described.** Over the ground
+region the luminance p01 falls **0.452 → 0.186** and the spread widens **0.157 → 0.504**, while the
+fine shading-gradient RMS is flat (0.00371 → 0.00361). Broad light-and-shade appeared without adding
+fine crumple — and that is the same defect §6.2 diagnosed from the other end. Its conclusion was that
+no dark region could exist because gentle slopes make `N·L` barely vary, so the only lever left was
+albedo. **Steepness turned out to be available after all**, and it delivered the dark end that
+ambient could not. §6.2's albedo work is still worth doing; it is no longer the only option.
+
+**Two things this broke, both fixed, both predicted by §9.**
+
+- `path_parity_ridge` put its camera **24.9 m underground** — fixed-position waypoints against ground
+  that rose 158 m. Re-authored, clearance back to 133 m. This is §9's "re-author scenario camera
+  heights after any ladder change", and it will happen again. Note the scenarios are `include_str!`d,
+  so editing the JSON without rebuilding silently re-runs the old one.
+- The ray path's hit comb takes `TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS` as its search ceiling and
+  spreads a fixed sample count across it. Two faults: the constant was `start × roughness × 2`, which
+  the tilt makes wrong by 1.49× because the series no longer halves at the long end (now the measured
+  sum, 2646.4 m, re-derived by a test); and six samples across three times the relief is three times
+  coarser. `RAY_DETAIL_HIT_STEPS` 6 → 12.
+
+**Open: the ray path is not at parity on the ridge.** `path_parity_ridge` in ray mode reads p90
+**10.68 m** against a 6 m tolerance (was 20.2 m before the comb fix, and the raster path holds at
+4.24 m on the identical terrain). The comb change also cost 5–8 ms in ray mode. Do not widen the
+tolerance to make it pass — the gap between 4.24 raster and 10.68 ray is exactly what the scenario
+exists to measure. `RAY_DETAIL_HIT_STEPS` is the obvious next knob and it trades directly against
+that 5–8 ms.
+
+**Unrelated but now much better:** ray `tour_mountains`, which §6.1 flagged as reading p90 1529 m at
+`detail_correlation` −0.501, now reads **22.6 m at 0.999**. The anomaly was real and terrain-shaped,
+not an instrument artefact.
+
 ## 7. What the terrain actually is now
 
 `shared_planet.wgsl`, mirrored in `planet.rs`, guarded by
@@ -369,16 +456,19 @@ The ray path's jump (21.5 → 34.5 ms) is four more octaves evaluated at every m
 shader source so the two cannot drift).
 
 ```
-TERRAIN_DETAIL_ROUGHNESS            0.06      amplitude = roughness × wavelength
+TERRAIN_DETAIL_ROUGHNESS            0.06      amplitude = roughness × wavelength × tilt
 TERRAIN_DETAIL_START_WAVELENGTH     4096 m    starts where the baked data stops
 TERRAIN_DETAIL_OCTAVES              13        down to 1 m
+TERRAIN_DETAIL_LONG_GAIN            8.0       ┐ spectral tilt: the field is not
+TERRAIN_DETAIL_TILT_TAPER_METERS    256 m     ┘ self-similar, massifs beat plains
 TERRAIN_DETAIL_RIDGE_SOFTNESS       0.15      sqrt(n² + s²), not abs(n)
 TERRAIN_DETAIL_RIDGE_CENTRE         0.348609  ┐ properties of the *softened* fold —
-TERRAIN_DETAIL_RIDGE_SCALE          2.063534  │ re-derive these if the fold changes
-TERRAIN_DETAIL_RIDGE_NORMALISATION  1.313064  ┘
-TERRAIN_DETAIL_RIDGE_STRENGTH       0.7
-TERRAIN_DETAIL_ATTENUATION_SLOPE    0.25      multifractal damping by slope so far
-TERRAIN_DETAIL_HEADROOM_FACTOR      8.0       per-octave land weighting
+TERRAIN_DETAIL_RIDGE_SCALE          2.063534  ┘ re-derive these if the fold changes
+TERRAIN_DETAIL_RIDGE_STRENGTH       1.0       fully folded: creases stay creases
+TERRAIN_DETAIL_RIDGE_NORMALISATION  1.0       DERIVED: 1/sqrt((1-s)² + s²)
+TERRAIN_DETAIL_ATTENUATION_SLOPE    4.0       multifractal damping by slope so far
+TERRAIN_DETAIL_HEADROOM_FACTOR      5.5       per-octave land weighting
+TERRAIN_DETAIL_TOTAL_AMPLITUDE      2646.4 m  DERIVED: the tilted series, not 2× its head
 ```
 
 Four things about it that are load-bearing and non-obvious:
@@ -395,6 +485,10 @@ Four things about it that are load-bearing and non-obvious:
   cut, a 4096 m start stacks a 246 m octave on top of the corridor's own erosion — the same hills
   twice. Raster reads the source level out of its packed `terrain_info`; ray derives it from the
   dense faces or the near-field window.
+- **The ridge normalisation is derived from the strength and is not a free knob.** It exists only to
+  undo the variance a two-field blend loses, `1/sqrt((1-s)² + s²)`. Setting the strength without
+  following it here adds silent amplitude to every octave — a parameter sweep that missed this
+  overstated its own result by 31% and nearly became the design premise.
 - **Headroom is per-octave, not a scalar land weight.** A 492 m ladder gated on its total reach
   strips a 40 m plain of the 4 m hummocks it does have room for. Each octave asks separately, which
   gives relief-correlated amplitude for free. Factor 8 because each octave alone is safe at 2 but

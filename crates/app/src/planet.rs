@@ -382,6 +382,14 @@ pub const TERRAIN_DETAIL_ROUGHNESS: f64 = 0.06;
 /// 3.9km texels, so it carries nothing below about 7.8km, and the ladder used
 /// to start at 256m -- leaving three octaves of hill-scale relief empty.
 pub const TERRAIN_DETAIL_START_WAVELENGTH_METERS: f64 = 4096.0;
+/// Spectral tilt. A single roughness makes amplitude proportional to wavelength
+/// at every scale, which is a self-similar field: the same character on a plain
+/// as on a summit. Measured, that put 313m of relief within 2km at the
+/// mountains -- Cairn Gorm is ~300m and Ben Nevis ~1200m. Extra amplitude goes
+/// into the long octaves only, because relief within 2km is a coarse-scale
+/// quantity while the LOD error budget is charged a fine-scale one.
+pub const TERRAIN_DETAIL_LONG_GAIN: f64 = 8.0;
+pub const TERRAIN_DETAIL_TILT_TAPER_METERS: f64 = 256.0;
 pub const TERRAIN_DETAIL_OCTAVES: u32 = 13;
 pub const TERRAIN_DETAIL_MIN_FILTER_METERS: f64 = 0.5;
 /// Ridge fold and multifractal attenuation. Mirrors of the shader constants of
@@ -390,9 +398,12 @@ pub const TERRAIN_DETAIL_MIN_FILTER_METERS: f64 = 0.5;
 pub const TERRAIN_DETAIL_RIDGE_SOFTNESS: f64 = 0.15;
 pub const TERRAIN_DETAIL_RIDGE_CENTRE: f64 = 0.348_609;
 pub const TERRAIN_DETAIL_RIDGE_SCALE: f64 = 2.063_534;
-pub const TERRAIN_DETAIL_RIDGE_STRENGTH: f64 = 0.7;
-pub const TERRAIN_DETAIL_RIDGE_NORMALISATION: f64 = 1.313_064;
-pub const TERRAIN_DETAIL_ATTENUATION_SLOPE: f64 = 0.25;
+pub const TERRAIN_DETAIL_RIDGE_STRENGTH: f64 = 1.0;
+/// Derived from the strength above -- `1 / sqrt((1-s)^2 + s^2)` -- because it
+/// exists only to undo the variance a two-field blend loses. At full strength
+/// there is no blend left to undo.
+pub const TERRAIN_DETAIL_RIDGE_NORMALISATION: f64 = 1.0;
+pub const TERRAIN_DETAIL_ATTENUATION_SLOPE: f64 = 4.0;
 
 /// What the GPU actually puts under the camera, evaluated on the CPU so flight
 /// clearance and camera placement agree with the render.
@@ -453,7 +464,8 @@ pub fn terrain_detail_meters(
             // only accumulated because this needs it; nothing on the CPU side
             // consumes a slope directly.
             let attenuation = 1.0 / (1.0 + gradient.length() / TERRAIN_DETAIL_ATTENUATION_SLOPE);
-            let octave_amplitude = wavelength * TERRAIN_DETAIL_ROUGHNESS;
+            let octave_amplitude =
+                wavelength * TERRAIN_DETAIL_ROUGHNESS * terrain_detail_octave_tilt(wavelength);
             let amplitude = octave_amplitude
                 * fade
                 * attenuation
@@ -498,13 +510,26 @@ fn lerp(from: f64, to: f64, amount: f64) -> f64 {
     from + (to - from) * amount
 }
 
-pub const TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS: f64 =
-    TERRAIN_DETAIL_START_WAVELENGTH_METERS * TERRAIN_DETAIL_ROUGHNESS * 2.0;
+/// The most the ladder can reach, summed over the octaves it actually has.
+/// Not twice the first term: the spectral tilt means the series does not halve
+/// at the long end. Mirrors the shader constant of the same name.
+#[cfg_attr(not(test), allow(dead_code))]
+pub const TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS: f64 = 2646.4;
 /// How much elevation an octave needs before it appears at full amplitude,
 /// as a multiple of its own amplitude. Asked per octave rather than per ladder;
 /// see `terrain_detail_octave_headroom` in shared_planet.wgsl for why, and for
 /// where the factor of eight comes from.
-pub const TERRAIN_DETAIL_HEADROOM_FACTOR: f64 = 8.0;
+pub const TERRAIN_DETAIL_HEADROOM_FACTOR: f64 = 5.5;
+
+/// Mirror of `terrain_detail_octave_tilt` in shared_planet.wgsl.
+pub fn terrain_detail_octave_tilt(wavelength_meters: f64) -> f64 {
+    1.0 + (TERRAIN_DETAIL_LONG_GAIN - 1.0)
+        * smoothstep(
+            TERRAIN_DETAIL_TILT_TAPER_METERS,
+            TERRAIN_DETAIL_START_WAVELENGTH_METERS,
+            wavelength_meters,
+        )
+}
 
 pub fn terrain_detail_octave_headroom(
     scaled_macro_height_meters: f64,
@@ -3053,6 +3078,77 @@ mod tests {
     /// else. Both constants are properties of the noise, so if the noise ever
     /// changes they stop being true -- and the symptom would be ~10m of silent
     /// uplift on all land, varying wherever the land weight ramps.
+    /// The normalisation undoes the variance a two-field blend loses, so it is
+    /// a function of the strength and not a free knob. Setting the strength
+    /// without following it here adds silent amplitude to every octave -- which
+    /// is exactly the mistake the mountain-relief sweep made before this test
+    /// existed, overstating the result by 31%.
+    #[test]
+    fn the_ridge_normalisation_follows_the_strength_it_undoes() {
+        let strength = TERRAIN_DETAIL_RIDGE_STRENGTH;
+        let expected = 1.0 / ((1.0 - strength) * (1.0 - strength) + strength * strength).sqrt();
+        assert!(
+            (TERRAIN_DETAIL_RIDGE_NORMALISATION - expected).abs() < 1.0e-4,
+            "at strength {strength} the normalisation should be {expected}, not {}",
+            TERRAIN_DETAIL_RIDGE_NORMALISATION
+        );
+    }
+
+    /// A literal read off a spreadsheet goes stale the moment an octave count,
+    /// a roughness or a tilt moves. Re-derive it from the series it bounds.
+    #[test]
+    fn the_ladder_amplitude_bound_is_the_series_it_bounds() {
+        use super::{
+            TERRAIN_DETAIL_OCTAVES, TERRAIN_DETAIL_ROUGHNESS,
+            TERRAIN_DETAIL_START_WAVELENGTH_METERS, TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS,
+            terrain_detail_octave_tilt,
+        };
+        let mut sum = 0.0;
+        let mut wavelength = TERRAIN_DETAIL_START_WAVELENGTH_METERS;
+        for _ in 0..TERRAIN_DETAIL_OCTAVES {
+            sum += wavelength * TERRAIN_DETAIL_ROUGHNESS * terrain_detail_octave_tilt(wavelength);
+            wavelength *= 0.5;
+        }
+        assert!(
+            (TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS - sum).abs() < 1.0,
+            "the ladder sums to {sum}m, not {TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS}m"
+        );
+        // It is a ceiling the ray path searches to, so it must not be loose:
+        // an overstated reach is spread over the same fixed sample count.
+        assert!(TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS >= sum * 0.99);
+    }
+
+    /// The tilt must leave the fine octaves alone. Everything below the taper
+    /// is what the mesh filters out and the LOD budget is charged for; if the
+    /// gain reaches down there the budget silently under-tessellates.
+    #[test]
+    fn the_spectral_tilt_lifts_only_the_long_octaves() {
+        use super::{
+            TERRAIN_DETAIL_LONG_GAIN, TERRAIN_DETAIL_TILT_TAPER_METERS, terrain_detail_octave_tilt,
+        };
+        assert!(
+            (terrain_detail_octave_tilt(TERRAIN_DETAIL_TILT_TAPER_METERS) - 1.0).abs() < 1.0e-6
+        );
+        assert!(terrain_detail_octave_tilt(TERRAIN_DETAIL_TILT_TAPER_METERS * 0.5) == 1.0);
+        assert!(terrain_detail_octave_tilt(1.0) == 1.0);
+        assert!(
+            (terrain_detail_octave_tilt(TERRAIN_DETAIL_START_WAVELENGTH_METERS)
+                - TERRAIN_DETAIL_LONG_GAIN)
+                .abs()
+                < 1.0e-6
+        );
+        // Monotone, so no octave is louder than a longer one.
+        let mut previous = f64::MAX;
+        let mut wavelength = TERRAIN_DETAIL_START_WAVELENGTH_METERS;
+        for _ in 0..TERRAIN_DETAIL_OCTAVES {
+            let amplitude =
+                wavelength * TERRAIN_DETAIL_ROUGHNESS * terrain_detail_octave_tilt(wavelength);
+            assert!(amplitude < previous, "octave {wavelength}m is not quieter");
+            previous = amplitude;
+            wavelength *= 0.5;
+        }
+    }
+
     #[test]
     fn the_ridge_fold_is_centred_against_the_noise_it_folds() {
         let mut values = Vec::new();

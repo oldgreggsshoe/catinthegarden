@@ -6,6 +6,8 @@ mod ocean;
 mod outmap;
 mod planet;
 mod probe;
+#[cfg(test)]
+mod relief_survey;
 mod scenario;
 mod sun;
 mod terrain;

@@ -7,7 +7,12 @@ const RAYMARCH_REFINEMENT_COUNT: u32 = 5u;
 // a ray covers more angle than a raster pixel, and more again in the periphery.
 const RAY_DETAIL_FILTER_OVERSAMPLE: f32 = 7.0;
 const RAY_DETAIL_MIN_INCIDENCE: f32 = 0.06;
-const RAY_DETAIL_HIT_STEPS: i32 = 6;
+// Twelve, not six. The comb's resolution is its span over this count, and the
+// span tracks the relief actually present. When the mountains went from 313m
+// of relief within 2km to 1001m, six samples became three times coarser
+// without anything saying so -- p90 on path_parity_ridge went to 20m against a
+// 6m tolerance while the raster path held.
+const RAY_DETAIL_HIT_STEPS: i32 = 12;
 const RAY_DETAIL_HIT_REFINEMENTS: i32 = 3;
 /// How much further than the relief measured at the macro hit the detail walk
 /// may reach, to cover the ladder standing taller further along the ray.

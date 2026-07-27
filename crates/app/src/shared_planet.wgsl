@@ -43,13 +43,47 @@ const TERRAIN_DETAIL_ROUGHNESS: f32 = 0.06;
 // ROUGHNESS the ladder already uses.
 const TERRAIN_DETAIL_START_WAVELENGTH_METERS: f32 = 4096.0;
 
+// Spectral tilt: extra amplitude at the long end only, fading to none by
+// TILT_TAPER. A single ROUGHNESS makes amplitude proportional to wavelength at
+// every scale, which is a self-similar field -- the same character on a plain
+// and on a summit, and measurably so: the mountains carried 313m of relief
+// within 2km, against Cairn Gorm's ~300m and Ben Nevis's ~1200m. Real ranges
+// are not self-similar; they are far steeper at massif scale than at boulder
+// scale.
+//
+// The tilt is applied at the long end specifically because that is the half
+// that costs nothing. The LOD error budget is charged ROUGHNESS * 2.9395,
+// which is the RMS of the octaves the *mesh filters out* -- a fine-scale
+// quantity. Relief within 2km is a coarse-scale one. Measured, gain 8 with the
+// taper at 256m moves relief 313m -> 1434m while the 1m band moves 0.0308 ->
+// 0.0486 RMS, and most of that fine-band rise is the ridge and attenuation
+// changes below rather than the tilt, which on its own leaves it *lower*.
+const TERRAIN_DETAIL_LONG_GAIN: f32 = 8.0;
+const TERRAIN_DETAIL_TILT_TAPER_METERS: f32 = 256.0;
+
+fn terrain_detail_octave_tilt(wavelength_meters: f32) -> f32 {
+    return 1.0
+        + (TERRAIN_DETAIL_LONG_GAIN - 1.0)
+            * smoothstep(
+                TERRAIN_DETAIL_TILT_TAPER_METERS,
+                TERRAIN_DETAIL_START_WAVELENGTH_METERS,
+                wavelength_meters,
+            );
+}
+
 const TERRAIN_DETAIL_OCTAVES: i32 = 13;
 // What the whole ladder can reach: amplitude halves with wavelength, so the
 // geometric series sums to twice its first term. Anything normalising against
 // the detail field has to use this and not the retired CPU field's 111.5m,
 // which is an order of magnitude larger and silently scales the result away.
-const TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS: f32 =
-    TERRAIN_DETAIL_START_WAVELENGTH_METERS * TERRAIN_DETAIL_ROUGHNESS * 2.0;
+// Twice the first term is the sum of a halving series, but the spectral tilt
+// makes this series *not* halving at the long end -- it falls 1966, 510, 106,
+// 33 -- so doubling the first term overstates the reach by 1.49x. The ray
+// path's hit comb takes this as the ceiling on how far to search, and an
+// overstated ceiling is spread over the same six samples, which is the exact
+// failure the comb was rewritten to remove. `the_ladder_amplitude_bound_is_the
+// _series_it_bounds` re-derives this from the octaves.
+const TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS: f32 = 2646.4;
 // Erosion-like structure. Two knobs, both mirrored in planet.rs.
 //
 // The fold: `|n|` creases the field at every zero crossing of the noise, and
@@ -75,17 +109,36 @@ const TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS: f32 =
 const TERRAIN_DETAIL_RIDGE_SOFTNESS: f32 = 0.15;
 const TERRAIN_DETAIL_RIDGE_CENTRE: f32 = 0.348609;
 const TERRAIN_DETAIL_RIDGE_SCALE: f32 = 2.063534;
-const TERRAIN_DETAIL_RIDGE_STRENGTH: f32 = 0.7;
+// Fully folded. At 0.7 the fold was mixed back with the smooth noise it folds,
+// which rounds every crease off; a mountain's defining feature is that its
+// ridgelines are *not* rounded. Measured at the mountains this is what turns
+// relief into steepness: at gain 8 it takes ground past 25 degrees from 8.6%
+// to 16.6%, and the aretes are the visible part.
+const TERRAIN_DETAIL_RIDGE_STRENGTH: f32 = 1.0;
 // Blending two uncorrelated fields of equal variance shrinks the result to
 // sqrt((1-s)^2 + s^2) of it -- 76% at s = 0.7. Undo that, or the ladder
 // quietly loses a quarter of its relief the moment the fold is switched on and
 // the loss silently tracks the strength knob.
-const TERRAIN_DETAIL_RIDGE_NORMALISATION: f32 = 1.313064;
+//
+// This is *derived from* the strength above and is not free to set: at s = 1.0
+// there is no blend left to undo and the factor is exactly 1.0. Leaving 1.313
+// here while raising the strength would add 31% of unaccounted amplitude to
+// every octave. `the_ridge_normalisation_follows_the_strength_it_undoes`
+// re-derives it.
+const TERRAIN_DETAIL_RIDGE_NORMALISATION: f32 = 1.0;
 // Multifractal attenuation: the slope at which the next octave is halved.
 // Fine relief is suppressed where the accumulated surface is already steep and
 // left to run where it is flat, which is what separates a smooth valley wall
 // and a flat plain from uniform crumple.
-const TERRAIN_DETAIL_ATTENUATION_SLOPE: f32 = 0.25;
+//
+// At 0.25 this was halving every octave on any ground past about 14 degrees,
+// which is precisely the ground a mountain is made of -- the term was rounding
+// off the crags it was meant to leave alone. Measured on its own it is a weak
+// knob (0.25 -> 8.0 moves relief 313m -> 335m), but under a raised ladder it
+// is the difference between the long octaves carrying the fine ones and
+// smothering them. 4.0 keeps the smooth-valley behaviour for genuinely gentle
+// ground while letting a face stay a face.
+const TERRAIN_DETAIL_ATTENUATION_SLOPE: f32 = 4.0;
 const TERRAIN_SKIRT_DEPTH_RATIO: f32 = 0.075;
 const MAX_TERRAIN_SKIRT_DEPTH_METERS: f32 = 10.0;
 const ATMOSPHERE_HEIGHT_METERS: f32 = 720000.0;
@@ -467,7 +520,8 @@ fn terrain_detail_band(
             // is exact either way.
             let attenuation = 1.0
                 / (1.0 + length(gradient) / TERRAIN_DETAIL_ATTENUATION_SLOPE);
-            let octave_amplitude = wavelength * TERRAIN_DETAIL_ROUGHNESS;
+            let octave_amplitude =
+                wavelength * TERRAIN_DETAIL_ROUGHNESS * terrain_detail_octave_tilt(wavelength);
             let amplitude = octave_amplitude
                 * fade
                 * attenuation
@@ -539,10 +593,23 @@ fn terrain_detail_perturbed_normal(
 /// mountains their big hills and plains their small ones, which is the same
 /// answer relief-correlated amplitude would give and costs nothing extra.
 ///
-/// The factor of eight is what keeps the *sum* safe. Each octave alone would be
-/// safe at two, but thirteen of them are not; at eight the worst case sums to
-/// about 0.64 of the elevation, and a test walks the heights to confirm it.
-const TERRAIN_DETAIL_HEADROOM_FACTOR: f32 = 8.0;
+/// The factor is what keeps the *sum* safe. Each octave alone would be safe at
+/// two, but thirteen of them are not; a test walks the heights to confirm the
+/// worst case stays under the elevation it is standing on.
+///
+/// Eight was the figure while every octave had the same roughness. Under the
+/// spectral tilt the ladder is dominated by its longest octaves, so eight was
+/// asking a 4km octave for 15.7km of elevation beneath it -- more than the
+/// planet's highest ground -- and running it at 22% amplitude on a 4.7km
+/// mountain. That gate, not the amplitude, was what held the mountains at
+/// Cairngorm scale.
+///
+/// 5.5 is the tightest value that keeps the proof with margin. The worst case
+/// is not on the mountain but at the shoreline, around 4m of elevation, where
+/// the fine octaves are all fully admitted and the tilted long ones are gated
+/// off entirely; there the ladder admits 0.77 of the elevation it stands on.
+/// Four admits 1.06 of it, which is a coastline cut below its own sea.
+const TERRAIN_DETAIL_HEADROOM_FACTOR: f32 = 5.5;
 
 fn terrain_detail_octave_headroom(
     scaled_macro_height: f32,
