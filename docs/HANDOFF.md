@@ -207,7 +207,35 @@ resolve anything past L4 out here anyway) would cut demand to ~0.59 of current. 
 defensible saving available because it removes work that provably produces nothing. It needs Ian's
 call: he has previously said to absorb budget breaches in favour of appearance.
 
-### 2. Materials
+### 2. Materials — and the ambient idea that this measurement killed
+
+An earlier revision of this file said the biggest remaining gap was that unlit ground goes to
+near-black, with no ambient term worth the name, and recommended adding one. **That is measurably
+false and the opposite of the truth.** Across every ground scene there are **zero pixels below 0.05
+luminance, and none below 0.02**; the darkest 1% of a frame sits at 0.09–0.42. The ranges are narrow,
+not dark:
+
+| scene | p01 | p50 | p95 |
+|---|---:|---:|---:|
+| `stand_on_ground` | 0.256 | 0.373 | 0.440 |
+| `tour_grassland` | 0.422 | 0.505 | 0.699 |
+| `tour_mountains` | 0.094 | 0.564 | 0.600 |
+
+Under a stop of range across the whole ground. Ambient already exists — `sky_diffuse_irradiance`,
+`SKY_DIFFUSE_LIGHT_SCALE` 0.18 against `SURFACE_SUNLIGHT_SCALE` 2.0, roughly **4% of direct** — and
+adding more would flatten the picture further, which is the actual defect. It is not auto-exposure
+either: that sits pinned at its 1.0–4.0 rail in these scenes.
+
+`tour_mountains` at 1 km renders as a uniform yellow-tan dune field. **Two other artefacts are
+visible in it and want their own investigation:** hard rectangular pale patches on tile boundaries,
+and regular diagonal moiré across the ground.
+
+**The cause is the same one this branch keeps rediscovering** — gentle slopes mean `N·L` barely
+varies, and nothing casts a shadow, so no dark region can exist. **So the lever worth pulling is the
+one that does not depend on steepness: albedo variation.** Patchiness at 5–50 m driven by moisture,
+curvature and noise, since slope-driven rock is measured dead below.
+
+
 
 `terrain_material_weights_for_biome` has `rock_amount = smoothstep(0.10, 0.42, slope)` where slope is
 `1 - dot(normal, radial)`. Measured over 90 000 samples at 1 m spacing: p50 0.0041, p99 0.0217,
