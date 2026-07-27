@@ -2296,23 +2296,33 @@ mod tests {
             "ladder error factor {LADDER_GEOMETRIC_ERROR_PER_ROUGHNESS} should be {expected}"
         );
 
-        // The current roughness must reproduce the 0.15 that was in use, so
-        // this removes a ceiling without moving what is on screen today.
-        assert!(
-            (OUTMAP_GEOMETRIC_ERROR_RATIO - 0.15).abs() < 0.002,
-            "budget moved to {OUTMAP_GEOMETRIC_ERROR_RATIO} at the current roughness"
-        );
-
-        // And a steeper ladder must widen it, or the selector under-tessellates
-        // exactly as it did at roughness 0.06.
         let at = |roughness: f64| {
             OUTMAP_BAKED_GEOMETRIC_ERROR_RATIO + roughness * LADDER_GEOMETRIC_ERROR_PER_ROUGHNESS
         };
+        // The budget must cover what the ladder needs at *whatever* roughness
+        // is set, which is the whole point of deriving it. Anything less and
+        // the selector under-tessellates without saying so, which is what the
+        // stair-stepped silhouettes at 0.06 were.
+        for roughness in [0.0328_f64, 0.06, 0.10, 0.15] {
+            let needed = roughness * expected;
+            assert!(
+                at(roughness) >= needed,
+                "at roughness {roughness} the ladder needs {needed} and the budget gives {}",
+                at(roughness)
+            );
+        }
         assert!(at(0.06) > at(0.0328));
+        // 0.15 at roughness 0.0328 is the calibration point: that budget was in
+        // use and measured good, and the baked term is back-calculated from it.
         assert!(
-            at(0.06) > 0.176,
-            "roughness 0.06 needs at least 0.176, budget gives {}",
-            at(0.06)
+            (at(0.0328) - 0.15).abs() < 0.002,
+            "calibration point moved to {}",
+            at(0.0328)
+        );
+        // And it has to be the budget the selector is actually using.
+        assert_eq!(
+            OUTMAP_GEOMETRIC_ERROR_RATIO,
+            at(crate::planet::TERRAIN_DETAIL_ROUGHNESS)
         );
     }
 

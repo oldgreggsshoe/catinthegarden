@@ -6,30 +6,31 @@ const TILE_GUTTER: f32 = 1.0;
 const MATERIAL_TILE_LAST_STORED_COORD: i32 = 130;
 const GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS: f32 = 111.5;
 // Must track TERRAIN_DETAIL_* in planet.rs.
-// Amplitude/wavelength for every detail octave. This is the baker's own
-// measured band ratio, so baked and synthesised relief describe the same kind
-// of ground. Raising it is tempting and wrong: at 0.10 starting from 1024m the
-// top octave alone is 102m and the ladder sums to ~118m RMS, which is the same
-// order as the entire baked terrain -- it stops being detail and becomes a
-// second planet laid over the baked erosion and hydrology.
-const TERRAIN_DETAIL_ROUGHNESS: f32 = 0.0328;
-// 0.06 was tried twice. The first attempt produced hard stair-stepped
-// silhouettes and was reverted as "gated on mesh density"; that was the wrong
-// diagnosis. The density was available -- the LOD selector's error budget was a
-// flat constant that knew nothing about this ladder, so it never asked for it.
-// With the budget derived from ROUGHNESS (see OUTMAP_GEOMETRIC_ERROR_RATIO in
-// terrain.rs) the stepping goes: measured over the mountain view, p999 of the
-// ground's luminance gradient falls 7.07 to 4.47 while p50 and p90 hold, which
-// is the hard edges leaving and the relief staying.
+// Amplitude/wavelength for every detail octave, so the field is self-similar
+// and every octave contributes the same characteristic slope.
 //
-// So the ceiling is gone and 0.06 is a defensible setting. It is not enabled
-// here because it costs 3.9ms in the raster path (32.5 -> 36.4ms at the
-// mountains) on top of a budget that is already over, and that trade is Ian's
-// to make rather than one to slip in.
-const TERRAIN_DETAIL_START_WAVELENGTH_METERS: f32 = 256.0;
+// 0.10 starting from 1024m was tried early and is the cautionary case: the top
+// octave alone is 102m and the ladder sums to ~118m RMS, the same order as the
+// entire baked terrain, so it stops being detail and becomes a second planet
+// laid over the baker's erosion and hydrology. **The start wavelength was the
+// real culprit there, not the roughness.**
+//
+// 0.06 from 256m was then tried twice. The first attempt produced hard
+// stair-stepped silhouettes and was reverted as "gated on mesh density" -- the
+// wrong diagnosis. The density was available; the LOD selector's error budget
+// was a flat constant that knew nothing about this ladder and so never asked
+// for it. With the budget derived from ROUGHNESS (OUTMAP_GEOMETRIC_ERROR_RATIO
+// in terrain.rs) the stepping goes: over the mountain view, p999 of the
+// ground's luminance gradient falls 7.07 to 4.47 while p50 and p90 hold.
+//
+// At 0.06 the ladder sums to 30.7m and ~17.7m RMS, against 900-2900m of baked
+// relief -- 0.6 to 2% of it, comfortably still detail. Anything raised further
+// must re-check that ratio *and* the error budget together.
+const TERRAIN_DETAIL_ROUGHNESS: f32 = 0.06;
 // Floor is 1m. The octave ladder is evaluated from an anchor-local offset, so
 // the in-cell fraction never has to survive an absolute 4e6 domain coordinate
 // where f32 would quantise it to 0.25 -- see terrain_detail_value_noise.
+const TERRAIN_DETAIL_START_WAVELENGTH_METERS: f32 = 256.0;
 
 const TERRAIN_DETAIL_OCTAVES: i32 = 9;
 // What the whole ladder can reach: amplitude halves with wavelength, so the

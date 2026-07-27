@@ -315,7 +315,7 @@ pub fn placeholder_height_meters(direction: DVec3) -> f64 {
 /// four must track the shader's `TERRAIN_DETAIL_*`; `shader_detail_ladder_
 /// matches_the_cpu_clearance_ladder` in terrain.rs reads them back out of the
 /// shader source and fails if they drift.
-pub const TERRAIN_DETAIL_ROUGHNESS: f64 = 0.0328;
+pub const TERRAIN_DETAIL_ROUGHNESS: f64 = 0.06;
 pub const TERRAIN_DETAIL_START_WAVELENGTH_METERS: f64 = 256.0;
 pub const TERRAIN_DETAIL_OCTAVES: u32 = 9;
 pub const TERRAIN_DETAIL_MIN_FILTER_METERS: f64 = 0.5;

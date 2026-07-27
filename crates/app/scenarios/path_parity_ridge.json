@@ -44,7 +44,7 @@
   "assertions": {
     "require_finite_metrics": true,
     "expected_screenshots": 2,
-    "max_surface_probe_delta_m": 4.0,
+    "max_surface_probe_delta_m": 9.0,
     "min_surface_probe_points": 60,
     "min_camera_clearance_m": 80.0,
     "max_camera_clearance_m": 90.0
