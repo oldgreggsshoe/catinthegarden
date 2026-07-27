@@ -322,8 +322,9 @@ pub const TERRAIN_DETAIL_MIN_FILTER_METERS: f64 = 0.5;
 /// Ridge fold and multifractal attenuation. Mirrors of the shader constants of
 /// the same names; see shared_planet.wgsl for where the two ridge numbers come
 /// from and why folding without them would lift every coastline.
-pub const TERRAIN_DETAIL_RIDGE_CENTRE: f64 = 0.297_473;
-pub const TERRAIN_DETAIL_RIDGE_SCALE: f64 = 1.778_140;
+pub const TERRAIN_DETAIL_RIDGE_SOFTNESS: f64 = 0.15;
+pub const TERRAIN_DETAIL_RIDGE_CENTRE: f64 = 0.348_609;
+pub const TERRAIN_DETAIL_RIDGE_SCALE: f64 = 2.063_534;
 pub const TERRAIN_DETAIL_RIDGE_STRENGTH: f64 = 0.7;
 pub const TERRAIN_DETAIL_RIDGE_NORMALISATION: f64 = 1.313_064;
 pub const TERRAIN_DETAIL_ATTENUATION_SLOPE: f64 = 0.25;
@@ -391,12 +392,14 @@ struct DetailNoise {
 
 /// Mirror of `terrain_detail_ridge` in shared_planet.wgsl.
 fn terrain_detail_ridge(noise: DetailNoise) -> DetailNoise {
-    let folded_value =
-        (TERRAIN_DETAIL_RIDGE_CENTRE - noise.value.abs()) * TERRAIN_DETAIL_RIDGE_SCALE;
-    // `signum` is not `sign`: it returns 1.0 for +0.0 where WGSL's sign returns
-    // 0.0. The gradient is multiplied by the noise gradient, which is itself
-    // zero wherever that distinction could be reached, so the two agree.
-    let folded_gradient = noise.gradient * (-TERRAIN_DETAIL_RIDGE_SCALE * sign(noise.value));
+    let softened = (noise.value * noise.value
+        + TERRAIN_DETAIL_RIDGE_SOFTNESS * TERRAIN_DETAIL_RIDGE_SOFTNESS)
+        .sqrt();
+    let folded_value = (TERRAIN_DETAIL_RIDGE_CENTRE - softened) * TERRAIN_DETAIL_RIDGE_SCALE;
+    // Softening also removes the `sign` discontinuity the hard fold had, so
+    // there is no longer a case where WGSL's `sign(0.0) == 0.0` and Rust's
+    // `signum` disagree.
+    let folded_gradient = noise.gradient * (-TERRAIN_DETAIL_RIDGE_SCALE * noise.value / softened);
     DetailNoise {
         value: lerp(noise.value, folded_value, TERRAIN_DETAIL_RIDGE_STRENGTH)
             * TERRAIN_DETAIL_RIDGE_NORMALISATION,
@@ -404,17 +407,6 @@ fn terrain_detail_ridge(noise: DetailNoise) -> DetailNoise {
             .gradient
             .lerp(folded_gradient, TERRAIN_DETAIL_RIDGE_STRENGTH)
             * TERRAIN_DETAIL_RIDGE_NORMALISATION,
-    }
-}
-
-/// WGSL `sign`, which is zero at zero rather than `f64::signum`'s one.
-fn sign(value: f64) -> f64 {
-    if value > 0.0 {
-        1.0
-    } else if value < 0.0 {
-        -1.0
-    } else {
-        0.0
     }
 }
 
@@ -2349,9 +2341,9 @@ mod tests {
         OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, OrbitCamera, PLANET_RADIUS_METERS,
         PLANET_ROTATION_PERIOD_SECONDS, PlanetLod, QuadtreeNode, RenderDebugMode,
         SKIRT_DEPTH_RATIO, TERRAIN_DETAIL_RIDGE_CENTRE, TERRAIN_DETAIL_RIDGE_NORMALISATION,
-        TERRAIN_DETAIL_RIDGE_SCALE, TERRAIN_DETAIL_RIDGE_STRENGTH, TERRAIN_DETAIL_ROUGHNESS,
-        TERRAIN_DETAIL_START_WAVELENGTH_METERS, TerrainHeightRange, build_chunk_mesh,
-        cube_face_basis, cube_face_direction, default_sun_direction,
+        TERRAIN_DETAIL_RIDGE_SCALE, TERRAIN_DETAIL_RIDGE_SOFTNESS, TERRAIN_DETAIL_RIDGE_STRENGTH,
+        TERRAIN_DETAIL_ROUGHNESS, TERRAIN_DETAIL_START_WAVELENGTH_METERS, TerrainHeightRange,
+        build_chunk_mesh, cube_face_basis, cube_face_direction, default_sun_direction,
         detailed_outmap_land_height_meters, global_terrain_detail_meters,
         minimum_vertical_fov_radians_for_viewport, near_plane_meters, outmap_surface_height_meters,
         outmap_terrain_height_scale, placeholder_height_meters, planet_local_vector,
@@ -2952,18 +2944,32 @@ mod tests {
         let count = values.len() as f64;
         let mean = values.iter().sum::<f64>() / count;
         let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / count;
-        let absolute: Vec<f64> = values.iter().map(|v| v.abs()).collect();
-        let mean_abs = absolute.iter().sum::<f64>() / count;
-        let variance_abs = absolute.iter().map(|v| (v - mean_abs).powi(2)).sum::<f64>() / count;
         let sd = variance.sqrt();
-        let sd_ratio = sd / variance_abs.sqrt();
+        // The fold works on a *softened* absolute value, so the centring and
+        // rescaling constants are properties of that, not of `abs`.
+        let softened: Vec<f64> = values
+            .iter()
+            .map(|value| {
+                (value * value + TERRAIN_DETAIL_RIDGE_SOFTNESS * TERRAIN_DETAIL_RIDGE_SOFTNESS)
+                    .sqrt()
+            })
+            .collect();
+        let softened_mean = softened.iter().sum::<f64>() / count;
+        let softened_sd = (softened
+            .iter()
+            .map(|value| (value - softened_mean).powi(2))
+            .sum::<f64>()
+            / count)
+            .sqrt();
+        let sd_ratio = sd / softened_sd;
         assert!(
-            (mean_abs - TERRAIN_DETAIL_RIDGE_CENTRE).abs() < 0.005,
-            "ridge centre {TERRAIN_DETAIL_RIDGE_CENTRE} but the noise averages {mean_abs}"
+            (softened_mean - TERRAIN_DETAIL_RIDGE_CENTRE).abs() < 0.005,
+            "ridge centre {TERRAIN_DETAIL_RIDGE_CENTRE} but the softened fold averages \
+             {softened_mean}"
         );
         assert!(
             (sd_ratio - TERRAIN_DETAIL_RIDGE_SCALE).abs() < 0.02,
-            "ridge scale {TERRAIN_DETAIL_RIDGE_SCALE} but the noise ratio is {sd_ratio}"
+            "ridge scale {TERRAIN_DETAIL_RIDGE_SCALE} but the softened ratio is {sd_ratio}"
         );
 
         // And the fold itself must come out centred and the same size, which is

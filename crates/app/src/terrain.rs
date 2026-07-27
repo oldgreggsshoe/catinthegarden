@@ -2256,12 +2256,6 @@ mod tests {
         assert!(detail.contains("smoothstep(filter_meters"));
     }
 
-    /// The CPU decides where the camera may fly and where it is placed; the
-    /// shader decides where the ground actually is. They synthesise the same
-    /// relief from two separate copies of the same four numbers, so if those
-    /// drift the camera ends up inside the terrain -- which is exactly what
-    /// happened while the CPU had no detail ladder at all.
-    #[test]
     /// The window has to be finer than the pyramid the raymarch path already
     /// holds, or it is a slower copy of data that is already bound; and it has
     /// to stay wide enough to cover what the camera can see.
@@ -2359,6 +2353,10 @@ mod tests {
         // clearance surface a different surface again, which is exactly the
         // failure M2a existed to remove.
         for (name, value) in [
+            (
+                "TERRAIN_DETAIL_RIDGE_SOFTNESS",
+                crate::planet::TERRAIN_DETAIL_RIDGE_SOFTNESS,
+            ),
             (
                 "TERRAIN_DETAIL_RIDGE_CENTRE",
                 crate::planet::TERRAIN_DETAIL_RIDGE_CENTRE,

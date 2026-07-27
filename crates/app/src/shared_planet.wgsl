@@ -47,16 +47,24 @@ const TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS: f32 =
 // rounded blobs, whatever its amplitude. The value stays continuous across the
 // crease and only the slope flips, which is exactly what a ridgeline is.
 //
-// CENTRE and SCALE come from the value noise's own measured distribution
-// (mean |n| = 0.297473, sd(n) / sd(|n|) = 1.778140, over 216000 samples; the
+// CENTRE and SCALE come from the *softened* fold's measured distribution
+// (mean = 0.348609, sd(n) / sd(fold) = 2.063534, over 216000 samples; the
 // test `the_ridge_fold_is_centred_against_the_noise_it_folds` re-derives them).
 // They matter: folding naively leaves a mean of ~0.6 per octave, which would
 // lift all land by ~10m and, worse, lift it by a *varying* amount wherever the
 // land weight ramps, inventing slopes along every coastline. Centred and
 // rescaled this way, the fold changes character while leaving mean and RMS
 // exactly where the amplitude discipline above put them.
-const TERRAIN_DETAIL_RIDGE_CENTRE: f32 = 0.297473;
-const TERRAIN_DETAIL_RIDGE_SCALE: f32 = 1.778140;
+// The fold uses a softened absolute value, sqrt(n*n + softness*softness),
+// rather than abs(n). A hard fold creases every octave at its zero crossing
+// with a slope discontinuity, and stacked across nine octaves that reads as
+// contour terracing -- flat shelves bounded by hard edges -- rather than as
+// landform. Softening rounds each crease over a fixed width and, as a bonus,
+// makes the octave's analytic gradient continuous, which the shading normals
+// were previously getting a sign flip from.
+const TERRAIN_DETAIL_RIDGE_SOFTNESS: f32 = 0.15;
+const TERRAIN_DETAIL_RIDGE_CENTRE: f32 = 0.348609;
+const TERRAIN_DETAIL_RIDGE_SCALE: f32 = 2.063534;
 const TERRAIN_DETAIL_RIDGE_STRENGTH: f32 = 0.7;
 // Blending two uncorrelated fields of equal variance shrinks the result to
 // sqrt((1-s)^2 + s^2) of it -- 76% at s = 0.7. Undo that, or the ladder
@@ -355,10 +363,13 @@ fn terrain_detail_value_noise(cell_index: vec3<i32>, cell_fraction: vec3<f32>) -
 /// Folds one octave toward a ridged form. Must stay identical to
 /// `terrain_detail_ridge` in planet.rs -- the camera stands on this.
 fn terrain_detail_ridge(noise: DetailNoise) -> DetailNoise {
-    let folded_value =
-        (TERRAIN_DETAIL_RIDGE_CENTRE - abs(noise.value)) * TERRAIN_DETAIL_RIDGE_SCALE;
+    let softened = sqrt(
+        noise.value * noise.value
+            + TERRAIN_DETAIL_RIDGE_SOFTNESS * TERRAIN_DETAIL_RIDGE_SOFTNESS,
+    );
+    let folded_value = (TERRAIN_DETAIL_RIDGE_CENTRE - softened) * TERRAIN_DETAIL_RIDGE_SCALE;
     let folded_gradient =
-        noise.gradient * (-TERRAIN_DETAIL_RIDGE_SCALE * sign(noise.value));
+        noise.gradient * (-TERRAIN_DETAIL_RIDGE_SCALE * noise.value / softened);
     return DetailNoise(
         mix(noise.value, folded_value, TERRAIN_DETAIL_RIDGE_STRENGTH)
             * TERRAIN_DETAIL_RIDGE_NORMALISATION,
