@@ -61,11 +61,33 @@ const TERRAIN_MATERIAL_LAYER_COUNT: u32 = 4;
 /// 4x4 set of chunks and therefore consume every available height sample.
 /// Refining farther only repeats the same bilinear source data.
 const OUTMAP_TILE_GRID_SUBDIVISION_LEVELS: u8 = 2;
-/// Conservative unresolved-height error relative to one geometry cell. Unlike
-/// the former near-flight rings, this is projected from each visible node's
-/// actual camera distance. The source-level cap below prevents spending this
-/// error budget on repeated samples from a coarse ancestor tile.
-const OUTMAP_GEOMETRIC_ERROR_RATIO: f64 = 0.15;
+/// Unresolved-height error relative to one geometry cell, projected from each
+/// visible node's actual camera distance. The source-level cap below prevents
+/// spending this error budget on repeated samples from a coarse ancestor tile.
+///
+/// Two contributions, and the second is the one that used to be missing.
+///
+/// The baked macro surface contributes curvature and resampling error. The
+/// *synthesised ladder* contributes everything the mesh filtered out of its own
+/// displacement: the vertex ladder fades octaves shorter than twice the vertex
+/// spacing, and what it drops has RMS `ROUGHNESS * 2 * sqrt(4/3)` of that
+/// spacing. Converted into this ratio's units (error is `pi/4 * ratio * vertex
+/// spacing`) that is `ROUGHNESS * 2.9395`.
+///
+/// It has to be derived, because a constant here silently caps how steep the
+/// terrain is allowed to be. At ROUGHNESS 0.0328 the ladder needs 0.0964 and
+/// the flat 0.15 this replaces covered it -- by luck, since nothing connected
+/// the two. At 0.06 it needs 0.1764, the selector went on believing 0.15, and
+/// the result was the stair-stepped silhouettes the roughness experiment hit
+/// and blamed on mesh density. The density was available; the selector was
+/// simply not asking for it.
+const LADDER_GEOMETRIC_ERROR_PER_ROUGHNESS: f64 = 2.939_5;
+/// Back-calculated so the total reproduces the 0.15 that was in use and known
+/// good at the current roughness: this change is meant to remove a ceiling, not
+/// to move the tessellation everyone has been looking at.
+const OUTMAP_BAKED_GEOMETRIC_ERROR_RATIO: f64 = 0.053_6;
+const OUTMAP_GEOMETRIC_ERROR_RATIO: f64 = OUTMAP_BAKED_GEOMETRIC_ERROR_RATIO
+    + crate::planet::TERRAIN_DETAIL_ROUGHNESS * LADDER_GEOMETRIC_ERROR_PER_ROUGHNESS;
 /// Below this altitude the camera is close enough that geometry density matters
 /// more than source texel uniqueness. Ancestor tiles may feed finer grids while
 /// the worker streams better sources; otherwise low flight stalls at L6 and
@@ -2254,6 +2276,44 @@ mod tests {
             .and_then(|source| source.split("\nfn ").next())
             .expect("detail function is present");
         assert!(detail.contains("smoothstep(filter_meters"));
+    }
+
+    /// The LOD selector's error budget has to know about the synthesised
+    /// ladder, or it caps how steep the terrain may be without anyone saying
+    /// so. This is the arithmetic that connects them.
+    #[test]
+    fn geometric_error_budget_tracks_the_detail_ladder() {
+        use super::{
+            LADDER_GEOMETRIC_ERROR_PER_ROUGHNESS, OUTMAP_BAKED_GEOMETRIC_ERROR_RATIO,
+            OUTMAP_GEOMETRIC_ERROR_RATIO,
+        };
+        // Error is `pi/4 * ratio` of a vertex spacing, and the ladder drops
+        // octaves shorter than twice that spacing, whose RMS is
+        // `ROUGHNESS * 2 * sqrt(4/3)` of it.
+        let expected = 2.0 * (4.0_f64 / 3.0).sqrt() / (std::f64::consts::PI / 4.0);
+        assert!(
+            (LADDER_GEOMETRIC_ERROR_PER_ROUGHNESS - expected).abs() < 1.0e-3,
+            "ladder error factor {LADDER_GEOMETRIC_ERROR_PER_ROUGHNESS} should be {expected}"
+        );
+
+        // The current roughness must reproduce the 0.15 that was in use, so
+        // this removes a ceiling without moving what is on screen today.
+        assert!(
+            (OUTMAP_GEOMETRIC_ERROR_RATIO - 0.15).abs() < 0.002,
+            "budget moved to {OUTMAP_GEOMETRIC_ERROR_RATIO} at the current roughness"
+        );
+
+        // And a steeper ladder must widen it, or the selector under-tessellates
+        // exactly as it did at roughness 0.06.
+        let at = |roughness: f64| {
+            OUTMAP_BAKED_GEOMETRIC_ERROR_RATIO + roughness * LADDER_GEOMETRIC_ERROR_PER_ROUGHNESS
+        };
+        assert!(at(0.06) > at(0.0328));
+        assert!(
+            at(0.06) > 0.176,
+            "roughness 0.06 needs at least 0.176, budget gives {}",
+            at(0.06)
+        );
     }
 
     /// The window has to be finer than the pyramid the raymarch path already
