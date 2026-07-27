@@ -106,6 +106,72 @@ mod tests {
         );
     }
 
+    /// Does the rock material fire now?
+    ///
+    /// `rock_amount = smoothstep(0.10, 0.42, slope)` where slope is
+    /// `1 - dot(normal, radial)`. HANDOFF 6.2 measured that at p50 0.0041,
+    /// p99 0.0217, max 0.159 -- crossing 0.10 over 0.004% of the surface, so
+    /// the path was wired in and had essentially never run. The mountain work
+    /// moved the slope distribution a long way, so that premise needs
+    /// re-measuring before anything is built on it either way.
+    #[test]
+    #[ignore = "instrument: cargo test -- --ignored --nocapture rock_fires"]
+    fn does_the_rock_material_fire() {
+        let centre = mountain_direction();
+        let east = centre.cross(DVec3::Y).normalize();
+        let north = centre.cross(east).normalize();
+        let baked_spacing = crate::planet::baked_sample_spacing_meters(4);
+
+        for (label, macro_height) in [("mountain", 4_721.0_f64), ("plain", 300.0)] {
+            let step = 4.0_f64;
+            let mut slopes = Vec::new();
+            for iy in 0..300 {
+                for ix in 0..300 {
+                    let at = |dx: f64, dy: f64| {
+                        let offset = east * ((ix as f64 * step + dx) / PLANET_RADIUS_METERS)
+                            + north * ((iy as f64 * step + dy) / PLANET_RADIUS_METERS);
+                        terrain_detail_meters(
+                            (centre + offset).normalize(),
+                            baked_spacing,
+                            macro_height,
+                        )
+                    };
+                    let centre_h = at(0.0, 0.0);
+                    let dhdx = (at(step, 0.0) - centre_h) / step;
+                    let dhdy = (at(0.0, step) - centre_h) / step;
+                    // 1 - cos(angle between the surface normal and the radial)
+                    let gradient = (dhdx * dhdx + dhdy * dhdy).sqrt();
+                    slopes.push(1.0 - 1.0 / (1.0 + gradient * gradient).sqrt());
+                }
+            }
+            slopes.sort_by(f64::total_cmp);
+            let rock = |slope: f64| {
+                let t = ((slope - 0.10) / 0.32).clamp(0.0, 1.0);
+                t * t * (3.0 - 2.0 * t)
+            };
+            let firing =
+                slopes.iter().filter(|s| **s > 0.10).count() as f64 / slopes.len() as f64 * 100.0;
+            println!("\n== {label} ({} samples at {step}m)", slopes.len());
+            println!(
+                "   slope (1 - N.radial)  p50 {:.4}  p90 {:.4}  p99 {:.4}  max {:.4}",
+                percentile(&slopes, 0.50),
+                percentile(&slopes, 0.90),
+                percentile(&slopes, 0.99),
+                percentile(&slopes, 1.00),
+            );
+            println!("   ground past the 0.10 rock threshold : {firing:6.3}%");
+            println!(
+                "   rock_amount           p50 {:.3}  p90 {:.3}  p99 {:.3}  max {:.3}",
+                rock(percentile(&slopes, 0.50)),
+                rock(percentile(&slopes, 0.90)),
+                rock(percentile(&slopes, 0.99)),
+                rock(percentile(&slopes, 1.00)),
+            );
+        }
+        println!("\n   HANDOFF 6.2 measured, before the mountain work:");
+        println!("   p50 0.0041, p99 0.0217, max 0.159, crossing 0.10 over 0.004% of surface");
+    }
+
     /// What the mesh drops, measured rather than assumed.
     ///
     /// `OUTMAP_GEOMETRIC_ERROR_RATIO` is `error = pi/4 * ratio * vertex
