@@ -2325,16 +2325,29 @@ mod tests {
         }
     }
 
+    #[test]
     fn shader_detail_ladder_matches_the_cpu_clearance_ladder() {
         let shader = planet_shader_source();
-        let declared = |name: &str| -> f32 {
-            shader
-                .split(&format!("const {name}: f32 = "))
+        // Resolves `const NAME: f32 = <literal>` and the one derived form the
+        // ladder uses, `<OTHER> * <literal>`. Constants that are derived rather
+        // than restated cannot drift, which is worth more than the parser is
+        // worth avoiding.
+        fn declared_in(shader: &str, name: &str, depth: u32) -> f32 {
+            assert!(depth < 4, "{name} is defined circularly");
+            let text = shader
+                .split(&format!("const {name}: f32 ="))
                 .nth(1)
                 .and_then(|source| source.split(';').next())
-                .and_then(|value| value.trim().parse::<f32>().ok())
-                .unwrap_or_else(|| panic!("{name} is declared in the shader"))
-        };
+                .unwrap_or_else(|| panic!("{name} is declared in the shader"));
+            text.split('*')
+                .map(|part| {
+                    let part = part.trim();
+                    part.parse::<f32>()
+                        .unwrap_or_else(|_| declared_in(shader, part, depth + 1))
+                })
+                .product()
+        }
+        let declared = |name: &str| -> f32 { declared_in(&shader, name, 0) };
         assert_eq!(
             declared("TERRAIN_DETAIL_ROUGHNESS"),
             crate::planet::TERRAIN_DETAIL_ROUGHNESS as f32,
@@ -2376,6 +2389,10 @@ mod tests {
             (
                 "TERRAIN_DETAIL_ATTENUATION_SLOPE",
                 crate::planet::TERRAIN_DETAIL_ATTENUATION_SLOPE,
+            ),
+            (
+                "TERRAIN_DETAIL_LAND_WEIGHT_FULL_METERS",
+                crate::planet::TERRAIN_DETAIL_LAND_WEIGHT_FULL_METERS,
             ),
         ] {
             assert_eq!(declared(name), value as f32, "{name} drifted");

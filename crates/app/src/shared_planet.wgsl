@@ -496,10 +496,25 @@ fn terrain_detail_perturbed_normal(
     return normalize(normal - tangential_slope);
 }
 
-/// Detail rides on land only and fades out before the coastline so it cannot
-/// push the shore around, matching the baker's own land weighting.
+/// How much of the ladder this ground can carry without being pushed into the
+/// sea.
+///
+/// Not a gate but a headroom scale. What has to be prevented is detail moving
+/// the shoreline, and the ladder's reach is `TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS`,
+/// so ground with less elevation than that gets proportionally less relief
+/// rather than none. Ramping over twice the reach is safe everywhere:
+/// `A * smoothstep(0, 2A, h) <= h` has no solution the other way round.
+///
+/// It used to be a flat `smoothstep(25, 150, h)` -- six times the ladder's
+/// reach, and a hard cutoff besides. Measured, that left the weight at 0.04 at
+/// 40m of elevation, so desert came out with 0.0% synthesised relief and
+/// grassland 0.3%. Those biomes were not flat because the terrain was flat;
+/// they were flat because this held the ladder off them entirely.
+const TERRAIN_DETAIL_LAND_WEIGHT_FULL_METERS: f32 =
+    TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS * 2.0;
+
 fn terrain_detail_land_weight(scaled_macro_height: f32) -> f32 {
-    return smoothstep(25.0, 150.0, scaled_macro_height);
+    return smoothstep(0.0, TERRAIN_DETAIL_LAND_WEIGHT_FULL_METERS, scaled_macro_height);
 }
 
 /// The spacing detail is about to be sampled at. Tracks camera distance the

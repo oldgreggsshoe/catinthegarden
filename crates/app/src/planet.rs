@@ -415,10 +415,23 @@ fn lerp(from: f64, to: f64, amount: f64) -> f64 {
 }
 
 /// Detail rides on land only and fades out before the coastline, matching
-/// `terrain_detail_land_weight` in planet.wgsl so the CPU and the shader agree
-/// about where relief stops.
+/// `terrain_detail_land_weight` in shared_planet.wgsl so the CPU and the shader
+/// agree about where relief stops.
+///
+/// A headroom scale, not a gate: ground with less elevation than the ladder's
+/// reach gets proportionally less relief rather than none. See the shader for
+/// the safety argument, and for why the flat 25m..150m this replaced cost every
+/// low-lying biome its relief entirely.
+pub const TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS: f64 =
+    TERRAIN_DETAIL_START_WAVELENGTH_METERS * TERRAIN_DETAIL_ROUGHNESS * 2.0;
+pub const TERRAIN_DETAIL_LAND_WEIGHT_FULL_METERS: f64 = TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS * 2.0;
+
 pub fn terrain_detail_land_weight(scaled_macro_height_meters: f64) -> f64 {
-    smoothstep(25.0, 150.0, scaled_macro_height_meters)
+    smoothstep(
+        0.0,
+        TERRAIN_DETAIL_LAND_WEIGHT_FULL_METERS,
+        scaled_macro_height_meters,
+    )
 }
 
 fn terrain_detail_domain(direction: DVec3) -> DVec3 {
@@ -3007,6 +3020,54 @@ mod tests {
         );
     }
 
+    #[test]
+    #[ignore = "diagnostic: what slopes the synthesised ladder actually produces"]
+    fn print_detail_slope_distribution() {
+        // Finite-difference the ladder over a metre, which is the scale the
+        // per-pixel normal works at, and report the distribution of
+        // `1 - cos(angle)` -- the exact quantity the material rock threshold
+        // is compared against.
+        let base =
+            DVec3::new(-0.9859869836836004, 0.07585910343295443, -0.148576796414729).normalize();
+        let east = base.cross(DVec3::Y).normalize();
+        let north = base.cross(east).normalize();
+        let step_meters = 1.0;
+        let mut slopes = Vec::new();
+        for i in 0..300 {
+            for j in 0..300 {
+                let offset = east * (f64::from(i) * 7.0) + north * (f64::from(j) * 7.0);
+                let here = (base * PLANET_RADIUS_METERS + offset).normalize();
+                let along_east =
+                    (base * PLANET_RADIUS_METERS + offset + east * step_meters).normalize();
+                let along_north =
+                    (base * PLANET_RADIUS_METERS + offset + north * step_meters).normalize();
+                let h = terrain_detail_meters(here);
+                let grade_east = (terrain_detail_meters(along_east) - h) / step_meters;
+                let grade_north = (terrain_detail_meters(along_north) - h) / step_meters;
+                let grade = (grade_east * grade_east + grade_north * grade_north).sqrt();
+                slopes.push(1.0 - 1.0 / (1.0 + grade * grade).sqrt());
+            }
+        }
+        slopes.sort_by(f64::total_cmp);
+        let at = |q: f64| slopes[((slopes.len() - 1) as f64 * q) as usize];
+        println!(
+            "slope 1-cos:  p50={:.5} p90={:.5} p99={:.5} p999={:.5} max={:.5}",
+            at(0.5),
+            at(0.9),
+            at(0.99),
+            at(0.999),
+            slopes[slopes.len() - 1]
+        );
+        let above = |t: f64| {
+            slopes.iter().filter(|s| **s >= t).count() as f64 / slopes.len() as f64 * 100.0
+        };
+        println!(
+            "  above rock threshold 0.10: {:.3}%   fully rock at 0.42: {:.4}%",
+            above(0.10),
+            above(0.42)
+        );
+    }
+
     /// The whole point of the integer hash is that both sides can reproduce it
     /// exactly. These are the values this build produces; if a refactor moves
     /// them, the shader has to move with it or the camera goes back to
@@ -3409,12 +3470,24 @@ mod tests {
             outmap_surface_height_meters(-800.0, direction, 1_524.0),
             0.0
         );
-        // Detail must not be able to push the shore around, so it is held off
-        // entirely until well above sea level. This is the shader's own
-        // 25m..150m land weighting, not the retired field's 100m..400m one.
-        assert_eq!(
-            detailed_outmap_land_height_meters(25.0, direction, 1_524.0),
-            OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE * 25.0
+        // The weighting is a headroom scale, so the relief it admits can never
+        // exceed the elevation it rides on. That is what stops detail pushing
+        // the shoreline around -- at every height, rather than above one.
+        let reach = TERRAIN_DETAIL_START_WAVELENGTH_METERS * TERRAIN_DETAIL_ROUGHNESS * 2.0;
+        for step in 0..400 {
+            let height = f64::from(step) * 0.25;
+            let admitted = reach * super::terrain_detail_land_weight(height);
+            assert!(
+                admitted <= height,
+                "at {height}m the weighting admits {admitted}m of relief"
+            );
+        }
+        // And a lowland biome must actually get some. The flat 25m..150m this
+        // replaced left desert at 0.0% relief and grassland at 0.3%.
+        assert!(
+            super::terrain_detail_land_weight(40.0) > 0.5,
+            "40m of elevation still gets only {} of the ladder",
+            super::terrain_detail_land_weight(40.0)
         );
         // Above the weighting it is applied whole.
         assert_eq!(
