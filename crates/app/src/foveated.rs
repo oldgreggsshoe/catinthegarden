@@ -7,7 +7,7 @@ use catinthegarden_coretypes::{
 use crate::{
     outmap::{Outmap, OutmapError, TileData},
     planet::{PLANET_RADIUS_METERS, outmap_terrain_height_scale},
-    terrain::TerrainSource,
+    terrain::{NEAR_FIELD_WINDOW_SAMPLES, NearFieldSources, NearFieldWindow, TerrainSource},
 };
 
 const FIELD_LEVEL: u8 = 4;
@@ -44,6 +44,26 @@ struct RayUniform {
     previous_camera_forward: [f32; 4],
     previous_camera_right: [f32; 4],
     previous_camera_up: [f32; 4],
+    /// Near-field window, in the same [-1, 1] face UV the marcher already uses.
+    near_field_uv_origin: [f32; 2],
+    near_field_uv_span: f32,
+    /// Conservative bound for empty-space skipping inside the window. Without
+    /// it the marcher keeps the coarse pyramid's maximum and steps straight
+    /// through ground the window has raised by a hundred metres.
+    near_field_max_height_meters: f32,
+    near_field_face: u32,
+    near_field_enabled: u32,
+    near_field_samples: u32,
+    _near_field_padding: u32,
+}
+
+/// Where the resident near-field window sits, once uploaded.
+#[derive(Clone)]
+struct NearFieldPlacement {
+    sources: NearFieldSources,
+    uv_origin: [f32; 2],
+    uv_span: f32,
+    max_height_meters: f32,
 }
 
 #[repr(C)]
@@ -55,6 +75,8 @@ struct WarpUniform {
 }
 
 pub struct FoveatedRenderer {
+    near_field_texture: wgpu::Texture,
+    near_field: Option<NearFieldPlacement>,
     direct_pipeline: wgpu::RenderPipeline,
     warp_pipeline: wgpu::RenderPipeline,
     unwarp_pipeline: wgpu::RenderPipeline,
@@ -187,6 +209,25 @@ impl FoveatedRenderer {
             );
         }
 
+        // The near-field window starts empty and stays unused until a camera
+        // low enough to need it uploads one; `near_field_enabled` gates it.
+        let near_field_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ray near-field height window"),
+            size: wgpu::Extent3d {
+                width: NEAR_FIELD_WINDOW_SAMPLES,
+                height: NEAR_FIELD_WINDOW_SAMPLES,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let near_field_view =
+            near_field_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
         let fields_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("ray face fields layout"),
@@ -205,6 +246,16 @@ impl FoveatedRenderer {
                         count: None,
                     },
                     texture_layout_entry(4, wgpu::TextureSampleType::Float { filterable: false }),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
                 ],
             });
         let height_min_meters = source.height_min_meters();
@@ -250,6 +301,10 @@ impl FoveatedRenderer {
                     resource: wgpu::BindingResource::TextureView(&face_array_view(
                         &max_height_texture,
                     )),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&near_field_view),
                 },
             ],
         });
@@ -485,6 +540,8 @@ impl FoveatedRenderer {
         );
 
         Ok(Self {
+            near_field_texture,
+            near_field: None,
             direct_pipeline,
             warp_pipeline,
             unwarp_pipeline,
@@ -573,10 +630,51 @@ impl FoveatedRenderer {
             uniform.previous_camera_right[..3].copy_from_slice(&previous[1]);
             uniform.previous_camera_up[..3].copy_from_slice(&previous[2]);
         }
+        if let Some(near_field) = self.near_field.as_ref() {
+            uniform.near_field_uv_origin = near_field.uv_origin;
+            uniform.near_field_uv_span = near_field.uv_span;
+            uniform.near_field_max_height_meters = near_field.max_height_meters;
+            uniform.near_field_face = near_field.sources.key.face.index() as u32;
+            uniform.near_field_enabled = 1;
+        }
         queue.write_buffer(&self.ray_uniform_buffer, 0, bytemuck::bytes_of(&uniform));
         self.write_warp_uniform(queue);
         self.previous_camera_basis = Some([camera_forward, camera_right, camera_up]);
         self.previous_camera_position = Some(camera_position);
+    }
+
+    /// The window the raymarch path is currently sampling, if any. Compared
+    /// against a freshly resolved set so a window built from coarse ancestors
+    /// is replaced once the real tiles arrive underneath it.
+    pub fn near_field_sources(&self) -> Option<&NearFieldSources> {
+        self.near_field
+            .as_ref()
+            .map(|near_field| &near_field.sources)
+    }
+
+    /// Uploads a freshly assembled window and starts sampling it.
+    pub fn set_near_field(&mut self, queue: &wgpu::Queue, window: &NearFieldWindow) {
+        // f64 throughout: level reaches 18, where the tile index needs 19 bits
+        // and the face UV step is 4e-6, both of which f32 loses.
+        let key = window.sources.key;
+        let tiles_per_side = f64::from(1_u32 << key.level);
+        // Face UV runs -1..1, which is the convention `direction_to_face_uv`
+        // returns and the marcher already works in.
+        let to_face_uv = |tile: u32| (f64::from(tile) / tiles_per_side * 2.0 - 1.0) as f32;
+        upload_near_field(queue, &self.near_field_texture, &window.heights_meters);
+        self.near_field = Some(NearFieldPlacement {
+            sources: window.sources.clone(),
+            uv_origin: [to_face_uv(key.tile_x), to_face_uv(key.tile_y)],
+            uv_span: (f64::from(crate::terrain::NEAR_FIELD_WINDOW_TILES) / tiles_per_side * 2.0)
+                as f32,
+            max_height_meters: window.max_height_meters,
+        });
+    }
+
+    /// Stops sampling the window, for a camera high enough that the dense
+    /// pyramid already covers what it can see.
+    pub fn clear_near_field(&mut self) {
+        self.near_field = None;
     }
 
     pub fn resize(&mut self, device: &wgpu::Device, size: winit::dpi::PhysicalSize<u32>) {
@@ -781,6 +879,13 @@ impl RayUniform {
             previous_camera_forward: [0.0; 4],
             previous_camera_right: [0.0; 4],
             previous_camera_up: [0.0; 4],
+            near_field_uv_origin: [0.0; 2],
+            near_field_uv_span: 0.0,
+            near_field_max_height_meters: 0.0,
+            near_field_face: 0,
+            near_field_enabled: 0,
+            near_field_samples: NEAR_FIELD_WINDOW_SAMPLES,
+            _near_field_padding: 0,
         }
     }
 }
@@ -970,6 +1075,29 @@ fn face_array_view(texture: &wgpu::Texture) -> wgpu::TextureView {
         dimension: Some(wgpu::TextureViewDimension::D2Array),
         ..Default::default()
     })
+}
+
+fn upload_near_field(queue: &wgpu::Queue, texture: &wgpu::Texture, heights_meters: &[f32]) {
+    let extent = NEAR_FIELD_WINDOW_SAMPLES;
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        bytemuck::cast_slice(heights_meters),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(extent * size_of::<f32>() as u32),
+            rows_per_image: Some(extent),
+        },
+        wgpu::Extent3d {
+            width: extent,
+            height: extent,
+            depth_or_array_layers: 1,
+        },
+    );
 }
 
 fn upload_face_layer(
@@ -1360,7 +1488,7 @@ mod tests {
             winit::dpi::PhysicalSize::new(1, 1),
         );
         assert_eq!(size_of::<WarpUniform>(), 16);
-        assert_eq!(size_of::<RayUniform>(), 128);
+        assert_eq!(size_of::<RayUniform>(), 160);
     }
 
     #[test]

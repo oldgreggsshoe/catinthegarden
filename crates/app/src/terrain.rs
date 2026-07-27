@@ -72,7 +72,91 @@ const OUTMAP_GEOMETRIC_ERROR_RATIO: f64 = 0.15;
 /// exposes huge terrain facets.
 const LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS: f64 = 250_000.0;
 
+/// Near-field window: a square of baked macro height around the camera, at a
+/// level far finer than the six whole-face arrays the raymarch path holds.
+///
+/// The raymarch path samples the dense L0-L4 pyramid, which is 3068m per texel.
+/// Measured at the landing site, that reads 815.3m where the finest baked data
+/// reads 919.8m -- a 104m error, and the whole of the raymarch path's
+/// disagreement with the ground the camera stands on. It is not a crater or a
+/// missing feature: it is a coarse level averaging a local high away.
+///
+/// The fix does not need the finest data. The same measurement shows the
+/// pyramid converging fast: L12 gives 919.34m, within half a metre of L18, and
+/// an L12 tile spans 1.5km so eight of them cover 12.3km around the camera in a
+/// single 1025-square texture. Everything below that is the analytic detail
+/// ladder's job, and both paths already share it.
+pub const NEAR_FIELD_WINDOW_TILES: u32 = 8;
+pub const NEAR_FIELD_WINDOW_SAMPLES: u32 = NEAR_FIELD_WINDOW_TILES * (TILE_LOGICAL_SIZE - 1) + 1;
+/// Metres of face arc, i.e. a quarter of the great circle.
+const CUBE_FACE_ARC_METERS: f64 = std::f64::consts::PI * PLANET_RADIUS_METERS / 2.0;
+/// The window never shrinks below this, so a camera on the ground always has
+/// fine data out past its own horizon (4km at 2m of eye height).
+const NEAR_FIELD_MIN_EXTENT_METERS: f64 = 12_000.0;
+/// ...and it grows with height, so a climbing camera keeps fine data across
+/// what it can actually see rather than a shrinking island under it.
+const NEAR_FIELD_EXTENT_PER_CLEARANCE: f64 = 30.0;
+
+/// Which square of which face the near-field window should cover.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NearFieldKey {
+    pub face: CubeFace,
+    pub level: u8,
+    pub tile_x: u32,
+    pub tile_y: u32,
+}
+
+/// The tiles a window would be assembled from. Cheap to compute (one resolve
+/// per block) and the thing that decides whether a rebuild is needed: the key
+/// alone is not enough, because a stationary camera keeps the same key while
+/// streaming replaces coarse ancestors with the real thing underneath it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NearFieldSources {
+    pub key: NearFieldKey,
+    /// Row-major, `NEAR_FIELD_WINDOW_TILES` squared.
+    source_keys: Vec<TileKey>,
+}
+
+pub struct NearFieldWindow {
+    pub sources: NearFieldSources,
+    /// `NEAR_FIELD_WINDOW_SAMPLES` square, row-major.
+    pub heights_meters: Vec<f32>,
+    /// Conservative bound for the ray marcher's empty-space skipping. Without
+    /// it the marcher keeps the coarse pyramid's maximum and steps straight
+    /// through ground the window has raised.
+    /// A single ceiling for the whole window. Per-block ceilings were built and
+    /// measured: no faster. The marcher's cost here is resolving ground a few
+    /// metres away, not the empty space above it.
+    pub max_height_meters: f32,
+}
+
+/// Finest window level whose extent still covers what the camera can see.
+///
+/// Returns `None` when that is no finer than the dense pyramid the raymarch
+/// path already holds, which is the case from orbit -- there the window would
+/// be a slower copy of data already bound.
+pub fn near_field_window_level(
+    clearance_meters: f64,
+    dense_level: u8,
+    max_level: u8,
+) -> Option<u8> {
+    let required_extent_meters = NEAR_FIELD_MIN_EXTENT_METERS
+        .max(clearance_meters.max(0.0) * NEAR_FIELD_EXTENT_PER_CLEARANCE);
+    let tiles_per_side =
+        f64::from(NEAR_FIELD_WINDOW_TILES) * CUBE_FACE_ARC_METERS / required_extent_meters;
+    if !tiles_per_side.is_finite() || tiles_per_side < 1.0 {
+        return None;
+    }
+    let level = tiles_per_side.log2().floor();
+    if !level.is_finite() || level < 0.0 {
+        return None;
+    }
+    let level = (level as u32).min(u32::from(max_level)) as u8;
+    (level > dense_level).then_some(level)
+}
+
 /// A terrain height alongside the parts it was made of.
+
 #[derive(Clone, Copy, Debug)]
 pub struct SurfaceHeightBreakdown {
     pub height_meters: f64,
@@ -538,6 +622,177 @@ impl TerrainRenderer {
                     })
             }
         }
+    }
+
+    /// Where the near-field window should sit for this camera, or `None` when
+    /// the dense pyramid already covers what it can see.
+    pub fn near_field_key(
+        &self,
+        camera_local_direction: DVec3,
+        clearance_meters: f64,
+    ) -> Option<NearFieldKey> {
+        let TerrainDataSource::Outmap(outmap) = &self.source else {
+            return None;
+        };
+        let manifest = outmap.manifest();
+        let level =
+            near_field_window_level(clearance_meters, manifest.dense_level, manifest.max_level)?;
+        let (face, face_uv) = cube_face_uv(camera_local_direction)?;
+        let tiles_per_side = 1_u32 << level;
+        // Centre the window on the camera, then pull it inside the face. A
+        // window that hangs over an edge would need the neighbouring face's
+        // tiles, and cube faces do not share a tile grid.
+        let last_origin = tiles_per_side.saturating_sub(NEAR_FIELD_WINDOW_TILES);
+        let origin = |coordinate: f64| -> u32 {
+            let centre = (coordinate + 1.0) * 0.5 * f64::from(tiles_per_side);
+            let low = centre - f64::from(NEAR_FIELD_WINDOW_TILES) * 0.5;
+            (low.max(0.0) as u32).min(last_origin)
+        };
+        Some(NearFieldKey {
+            face,
+            level,
+            tile_x: origin(face_uv[0]),
+            tile_y: origin(face_uv[1]),
+        })
+    }
+
+    /// Assembles the window from resident tiles.
+    ///
+    /// Each of the tile blocks is resolved once to the finest resident source
+    /// covering it, then sampled per texel. Outside the sparse corridor that
+    /// source is an L4 ancestor and the window is simply a resampled copy of
+    /// what the raymarch path already had -- no better, but no worse, and the
+    /// shader needs no coverage mask because the window is always complete.
+    ///
+    /// Returns `None` when any block has no resident source at all, in which
+    /// case the caller keeps whatever window it already had rather than
+    /// uploading a hole.
+    /// Streams the tiles the near-field window needs, and keeps them resident.
+    ///
+    /// Nothing else asks for them. The quadtree streams what it draws, which at
+    /// ground level is the L17/L18 corridor and, further out, L4 -- so the
+    /// window's own level is skipped entirely and every block resolves to a
+    /// coarse ancestor. Left to that, the window at the landing site was filled
+    /// from the L0 tile and read 986m where the ground is 920m, which is worse
+    /// than the pyramid it was meant to replace.
+    pub fn request_near_field_tiles(&mut self, key: NearFieldKey) {
+        let TerrainDataSource::Outmap(outmap) = &self.source else {
+            return;
+        };
+        let mut wanted =
+            Vec::with_capacity((NEAR_FIELD_WINDOW_TILES * NEAR_FIELD_WINDOW_TILES) as usize);
+        for block_y in 0..NEAR_FIELD_WINDOW_TILES {
+            for block_x in 0..NEAR_FIELD_WINDOW_TILES {
+                let requested = TileKey {
+                    face: key.face,
+                    level: key.level,
+                    x: key.tile_x + block_x,
+                    y: key.tile_y + block_y,
+                };
+                if let Ok(preferred) = outmap.resolve_tile(requested) {
+                    wanted.push(preferred);
+                }
+            }
+        }
+        for source_key in wanted {
+            // Touch it either way: the eviction sweep only sees tiles the
+            // render nodes used, and would drop the window's out from under it.
+            if self.tile_cache.contains_key(&source_key) {
+                self.tile_last_used.insert(source_key, self.tile_cache_tick);
+                continue;
+            }
+            if self.pending_tile_loads.len() >= MAX_PENDING_TILE_LOADS {
+                break;
+            }
+            if !self.pending_tile_loads.contains(&source_key)
+                && self
+                    .tile_load_requests
+                    .as_ref()
+                    .is_some_and(|requests| requests.send(source_key).is_ok())
+            {
+                self.pending_tile_loads.insert(source_key);
+            }
+        }
+    }
+
+    /// Which resident tile currently backs each block of the window.
+    ///
+    /// Returns `None` if any block has no resident source at all, in which case
+    /// there is nothing to build yet and the caller keeps what it has.
+    pub fn near_field_sources(&self, key: NearFieldKey) -> Option<NearFieldSources> {
+        let TerrainDataSource::Outmap(outmap) = &self.source else {
+            return None;
+        };
+        let manifest_dense_level = outmap.manifest().dense_level;
+        let mut source_keys =
+            Vec::with_capacity((NEAR_FIELD_WINDOW_TILES * NEAR_FIELD_WINDOW_TILES) as usize);
+        for block_y in 0..NEAR_FIELD_WINDOW_TILES {
+            for block_x in 0..NEAR_FIELD_WINDOW_TILES {
+                let requested = TileKey {
+                    face: key.face,
+                    level: key.level,
+                    x: key.tile_x + block_x,
+                    y: key.tile_y + block_y,
+                };
+                let preferred = outmap.resolve_tile(requested).ok()?;
+                let source_key = cached_tile_ancestor(requested, preferred, &self.tile_cache)?;
+                // A block backed by the dense pyramid or coarser has nothing to
+                // add: the raymarch path already samples that data directly,
+                // and a resampled copy of it only buys a fade seam. Refusing
+                // the whole window keeps it off outside the sparse corridor,
+                // and keeps it off inside until the corridor has streamed.
+                if source_key.level <= manifest_dense_level {
+                    return None;
+                }
+                source_keys.push(source_key);
+            }
+        }
+        Some(NearFieldSources { key, source_keys })
+    }
+
+    pub fn near_field_window(&self, sources: &NearFieldSources) -> Option<NearFieldWindow> {
+        let key = sources.key;
+        let samples = NEAR_FIELD_WINDOW_SAMPLES as usize;
+        let logical = TILE_LOGICAL_SIZE as usize;
+        let quads = logical - 1;
+        let tiles_per_side = f64::from(1_u32 << key.level);
+        let mut heights_meters = vec![0.0_f32; samples * samples];
+        let mut max_height_meters = f32::NEG_INFINITY;
+        for block_y in 0..NEAR_FIELD_WINDOW_TILES {
+            for block_x in 0..NEAR_FIELD_WINDOW_TILES {
+                let source_key =
+                    sources.source_keys[(block_y * NEAR_FIELD_WINDOW_TILES + block_x) as usize];
+                let tile = self.tile_cache.get(&source_key)?;
+                for sample_y in 0..logical {
+                    let face_v = ((f64::from(key.tile_y + block_y)
+                        + sample_y as f64 / quads as f64)
+                        / tiles_per_side)
+                        * 2.0
+                        - 1.0;
+                    let row = (block_y as usize * quads + sample_y) * samples;
+                    for sample_x in 0..logical {
+                        let face_u = ((f64::from(key.tile_x + block_x)
+                            + sample_x as f64 / quads as f64)
+                            / tiles_per_side)
+                            * 2.0
+                            - 1.0;
+                        // Not `source_tile_uv`: that rejects a coordinate
+                        // sitting exactly on a tile's far edge, which is where
+                        // every block boundary in this window lands whenever
+                        // the source resolves at the requested level.
+                        let uv = source_tile_local_uv(source_key, [face_u, face_v]);
+                        let height = sample_height_cpu(&tile.heights_meters, uv);
+                        heights_meters[row + block_x as usize * quads + sample_x] = height;
+                        max_height_meters = max_height_meters.max(height);
+                    }
+                }
+            }
+        }
+        Some(NearFieldWindow {
+            sources: sources.clone(),
+            heights_meters,
+            max_height_meters: max_height_meters.max(0.0),
+        })
     }
 
     pub fn update(
@@ -1677,6 +1932,18 @@ fn source_tile_uv_at_direction(key: TileKey, direction: DVec3) -> Option<[f32; 2
     source_tile_uv(key, face, face_uv)
 }
 
+/// Where a face coordinate falls inside a tile, clamped rather than rejected.
+///
+/// The near-field window walks tile blocks and needs the shared edge sample at
+/// each boundary; `source_tile_uv` treats that exact coordinate as outside.
+fn source_tile_local_uv(key: TileKey, face_uv: [f64; 2]) -> [f32; 2] {
+    let tiles_per_side = f64::from(1_u64.wrapping_shl(u32::from(key.level)) as u32);
+    [
+        (((face_uv[0] + 1.0) * 0.5 * tiles_per_side) - f64::from(key.x)).clamp(0.0, 1.0) as f32,
+        (((face_uv[1] + 1.0) * 0.5 * tiles_per_side) - f64::from(key.y)).clamp(0.0, 1.0) as f32,
+    ]
+}
+
 fn source_tile_uv(key: TileKey, face: CubeFace, face_uv: [f64; 2]) -> Option<[f32; 2]> {
     (key.face == face).then_some(())?;
 
@@ -1995,6 +2262,75 @@ mod tests {
     /// drift the camera ends up inside the terrain -- which is exactly what
     /// happened while the CPU had no detail ladder at all.
     #[test]
+    /// The window has to be finer than the pyramid the raymarch path already
+    /// holds, or it is a slower copy of data that is already bound; and it has
+    /// to stay wide enough to cover what the camera can see.
+    #[test]
+    fn near_field_window_level_tracks_what_the_camera_can_see() {
+        use super::{
+            CUBE_FACE_ARC_METERS, NEAR_FIELD_MIN_EXTENT_METERS, NEAR_FIELD_WINDOW_TILES,
+            near_field_window_level,
+        };
+        let extent = |level: u8| {
+            f64::from(NEAR_FIELD_WINDOW_TILES) / f64::from(1_u32 << level) * CUBE_FACE_ARC_METERS
+        };
+
+        // Standing on the ground, the window must still reach past the horizon,
+        // which is sqrt(2 * R * h) -- about 4km at 2m of eye height.
+        let ground = near_field_window_level(2.0, 4, 18).expect("ground gets a window");
+        assert!(
+            extent(ground) >= NEAR_FIELD_MIN_EXTENT_METERS,
+            "level {ground} covers only {}m",
+            extent(ground)
+        );
+        assert!(extent(ground) < NEAR_FIELD_MIN_EXTENT_METERS * 2.0);
+
+        // Climbing widens it, and never narrows it.
+        let mut previous = ground;
+        for clearance in [100.0, 1_000.0, 10_000.0, 100_000.0] {
+            let Some(level) = near_field_window_level(clearance, 4, 18) else {
+                continue;
+            };
+            assert!(
+                level <= previous,
+                "window narrowed climbing to {clearance}m"
+            );
+            assert!(
+                extent(level) >= clearance * 20.0,
+                "at {clearance}m the window covers only {}m",
+                extent(level)
+            );
+            previous = level;
+        }
+
+        // From orbit it would be no finer than the dense pyramid, so it is not
+        // worth building at all.
+        assert_eq!(near_field_window_level(4_000_000.0, 4, 18), None);
+        // And a dense pyramid that already reached this fine leaves nothing to add.
+        assert_eq!(near_field_window_level(2.0, 18, 18), None);
+    }
+
+    /// The window is addressed by whole tiles, so it must never hang over a
+    /// face edge: cube faces do not share a tile grid, and the missing blocks
+    /// would have no source.
+    #[test]
+    fn near_field_window_stays_inside_its_cube_face() {
+        use super::{NEAR_FIELD_WINDOW_TILES, near_field_window_level};
+        let level = near_field_window_level(2.0, 4, 18).expect("ground gets a window");
+        let tiles_per_side = 1_u32 << level;
+        assert!(tiles_per_side >= NEAR_FIELD_WINDOW_TILES);
+        let last_origin = tiles_per_side - NEAR_FIELD_WINDOW_TILES;
+        for coordinate in [-1.0_f64, -0.999, 0.0, 0.999, 1.0] {
+            let centre = (coordinate + 1.0) * 0.5 * f64::from(tiles_per_side);
+            let low = centre - f64::from(NEAR_FIELD_WINDOW_TILES) * 0.5;
+            let origin = (low.max(0.0) as u32).min(last_origin);
+            assert!(
+                origin + NEAR_FIELD_WINDOW_TILES <= tiles_per_side,
+                "window at uv {coordinate} runs off the face"
+            );
+        }
+    }
+
     fn shader_detail_ladder_matches_the_cpu_clearance_ladder() {
         let shader = planet_shader_source();
         let declared = |name: &str| -> f32 {

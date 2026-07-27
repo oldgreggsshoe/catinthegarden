@@ -1768,6 +1768,45 @@ impl State {
             )
         });
         if self.render_path == RenderPath::FoveatedRay {
+            // Keep the raymarch path's near-field window under the camera. The
+            // dense pyramid it otherwise samples is 3068m per texel, which at
+            // the landing site reads 104m below the ground the camera stands
+            // on; the window is the only thing that closes that.
+            //
+            // Rebuilt only when the camera leaves the square it was built for,
+            // which at ground level is kilometres of travel. Assembly reads
+            // resident tiles only, so a window that cannot be completed yet
+            // leaves the previous one in place rather than uploading a hole.
+            let clearance_meters =
+                (camera_sea_level_altitude_meters - camera_surface_height_meters).max(0.0);
+            match self
+                .terrain
+                .near_field_key(camera_planet_frame_position.normalize(), clearance_meters)
+            {
+                // Rebuild against the tiles actually backing the window, not
+                // just its position. A stationary camera keeps the same key
+                // while streaming replaces coarse ancestors underneath it, and
+                // the first assembly of a run is always the coarse one -- at
+                // the parity ridge that reads 290m below the settled surface.
+                Some(key) => {
+                    self.terrain.request_near_field_tiles(key);
+                    if let Some(sources) = self.terrain.near_field_sources(key)
+                        && self.foveated.near_field_sources() != Some(&sources)
+                        && let Some(window) = self.terrain.near_field_window(&sources)
+                    {
+                        tracing::info!(
+                            level = key.level,
+                            face = key.face.index(),
+                            max_height_m = window.max_height_meters,
+                            "near-field window built"
+                        );
+                        self.foveated.set_near_field(&self.queue, &window);
+                    }
+                }
+                // Only a camera high enough to stop needing the window turns it
+                // off. A momentary gap in residency keeps whatever is loaded.
+                None => self.foveated.clear_near_field(),
+            }
             let flight_velocity_planet_frame =
                 if self.scenario.is_none() && self.camera_mode == CameraMode::LowFlight {
                     self.flight_travel_direction * self.flight_speed.speed_meters_per_second

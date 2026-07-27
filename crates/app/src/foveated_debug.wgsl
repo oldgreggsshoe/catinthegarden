@@ -40,6 +40,13 @@ struct RayUniform {
     previous_camera_forward: vec4<f32>,
     previous_camera_right: vec4<f32>,
     previous_camera_up: vec4<f32>,
+    near_field_uv_origin: vec2<f32>,
+    near_field_uv_span: f32,
+    near_field_max_height_meters: f32,
+    near_field_face: u32,
+    near_field_enabled: u32,
+    near_field_samples: u32,
+    _near_field_padding: u32,
 }
 
 @group(1) @binding(0)
@@ -52,6 +59,8 @@ var moisture_faces: texture_2d_array<f32>;
 var<uniform> ray_settings: RayUniform;
 @group(1) @binding(4)
 var max_height_faces: texture_2d_array<f32>;
+@group(1) @binding(5)
+var near_field_height: texture_2d<f32>;
 @group(3) @binding(0)
 var history_color: texture_2d<f32>;
 @group(3) @binding(1)
@@ -288,6 +297,47 @@ fn ray_terrain_detail(
     return TerrainDetail(detail.height_meters * weight, detail.slope * weight);
 }
 
+/// Fraction of this point that the near-field window covers.
+///
+/// Zero outside the window and one well inside it, with a fade band at the
+/// border so the hundred-metre step between the fine window and the coarse
+/// pyramid arrives as a ramp rather than a wall. The band is a fixed fraction
+/// of the window, so it scales with whatever level the window is at.
+const NEAR_FIELD_FADE: f32 = 0.06;
+
+fn near_field_weight(face_uv: FaceUv) -> f32 {
+    if ray_settings.near_field_enabled == 0u
+        || face_uv.face != ray_settings.near_field_face
+        || ray_settings.near_field_uv_span <= 0.0 {
+        return 0.0;
+    }
+    let window_uv = (face_uv.uv - ray_settings.near_field_uv_origin)
+        / ray_settings.near_field_uv_span;
+    if any(window_uv < vec2<f32>(0.0)) || any(window_uv > vec2<f32>(1.0)) {
+        return 0.0;
+    }
+    let edge = min(
+        min(window_uv.x, 1.0 - window_uv.x),
+        min(window_uv.y, 1.0 - window_uv.y),
+    );
+    return smoothstep(0.0, NEAR_FIELD_FADE, edge);
+}
+
+fn near_field_sample_height(face_uv: FaceUv) -> f32 {
+    let window_uv = (face_uv.uv - ray_settings.near_field_uv_origin)
+        / ray_settings.near_field_uv_span;
+    let last = f32(ray_settings.near_field_samples - 1u);
+    let coordinate = clamp(window_uv, vec2<f32>(0.0), vec2<f32>(1.0)) * last;
+    let lower = vec2<i32>(floor(coordinate));
+    let upper = min(lower + vec2<i32>(1), vec2<i32>(i32(last)));
+    let amount = fract(coordinate);
+    let h00 = textureLoad(near_field_height, lower, 0).x;
+    let h10 = textureLoad(near_field_height, vec2<i32>(upper.x, lower.y), 0).x;
+    let h01 = textureLoad(near_field_height, vec2<i32>(lower.x, upper.y), 0).x;
+    let h11 = textureLoad(near_field_height, upper, 0).x;
+    return mix(mix(h00, h10, amount.x), mix(h01, h11, amount.x), amount.y);
+}
+
 fn sample_height(direction: vec3<f32>) -> f32 {
     let face_uv = direction_to_face_uv(direction);
     let coordinate = face_texel_coordinate(face_uv);
@@ -297,7 +347,15 @@ fn sample_height(direction: vec3<f32>) -> f32 {
     let h10 = textureLoad(height_faces, lower + vec2<i32>(1, 0), i32(face_uv.face), 0).x;
     let h01 = textureLoad(height_faces, lower + vec2<i32>(0, 1), i32(face_uv.face), 0).x;
     let h11 = textureLoad(height_faces, lower + vec2<i32>(1, 1), i32(face_uv.face), 0).x;
-    return mix(mix(h00, h10, amount.x), mix(h01, h11, amount.x), amount.y);
+    let coarse = mix(mix(h00, h10, amount.x), mix(h01, h11, amount.x), amount.y);
+    // The dense pyramid is 3068m per texel, which reads 815m at the landing
+    // site where the finest baked data reads 920m. That gap was the whole of
+    // this path's disagreement with the ground the camera stands on.
+    let weight = near_field_weight(face_uv);
+    if weight <= 0.0 {
+        return coarse;
+    }
+    return mix(coarse, near_field_sample_height(face_uv), weight);
 }
 
 fn sample_biome(direction: vec3<f32>) -> u32 {
@@ -414,12 +472,40 @@ fn sample_max_height(
     {
         return ray_settings.height_max_meters;
     }
-    return textureLoad(
+    let coarse_bound = textureLoad(
         max_height_faces,
         start_texel,
         i32(start_face_uv.face),
         i32(mip_level),
     ).x;
+    // The window can raise the ground a hundred metres above what the coarse
+    // pyramid's maximum promised. Empty-space skipping trusts that maximum, so
+    // without this the marcher steps straight through the terrain it is meant
+    // to be finding.
+    return max(coarse_bound, near_field_max_height_bound(start_face_uv, end_face_uv));
+}
+
+/// The window's own conservative ceiling, or a floor when this step is nowhere
+/// near it. The rectangle is widened by the fade band, so a step that clips a
+/// corner is still covered.
+fn near_field_max_height_bound(start_face_uv: FaceUv, end_face_uv: FaceUv) -> f32 {
+    if ray_settings.near_field_enabled == 0u {
+        return ray_settings.height_min_meters;
+    }
+    let margin = ray_settings.near_field_uv_span * NEAR_FIELD_FADE;
+    let low = ray_settings.near_field_uv_origin - vec2<f32>(margin);
+    let high = ray_settings.near_field_uv_origin
+        + vec2<f32>(ray_settings.near_field_uv_span + margin);
+    let inside_start = start_face_uv.face == ray_settings.near_field_face
+        && all(start_face_uv.uv >= low)
+        && all(start_face_uv.uv <= high);
+    let inside_end = end_face_uv.face == ray_settings.near_field_face
+        && all(end_face_uv.uv >= low)
+        && all(end_face_uv.uv <= high);
+    if inside_start || inside_end {
+        return ray_settings.near_field_max_height_meters;
+    }
+    return ray_settings.height_min_meters;
 }
 
 fn adaptive_step_distance(
@@ -1077,10 +1163,37 @@ fn trace_ray(ray: vec3<f32>, detail: f32, footprint_radians: f32) -> RayResult {
         ray,
     );
     var hit_distance = -1.0;
+    // The camera can stand above the detailed surface while sitting below the
+    // macro one: the ladder subtracts as well as adds, and at the landing site
+    // it is -2.3m under a camera standing 2m up. The macro march is only an
+    // accelerator and it assumes it starts outside its own shell, so when that
+    // is false there is no macro crossing to find and the detail walk is the
+    // only thing that can answer. It reports "no bracket" by returning its own
+    // starting distance, which is the case to fall through on -- a ray looking
+    // out at the horizon from here leaves the shell without ever crossing it,
+    // and a camera genuinely underground has no hit to find either.
+    //
+    // This only became reachable once the near-field window raised the macro
+    // surface to where it belongs. Against the 3068m pyramid the ground sat a
+    // hundred metres below any camera and the question never arose.
+    var started_inside_macro_shell = false;
+    if previous_value < 0.0 {
+        let near_hit = refine_detail_hit(
+            start_distance,
+            radial_dot_ray,
+            camera_position_view,
+            ray,
+            footprint_radians,
+        );
+        if near_hit > start_distance {
+            hit_distance = near_hit;
+            started_inside_macro_shell = true;
+        }
+    }
     let baseline_step_meters = (end_distance - start_distance)
         / f32(ray_settings.march_steps);
     for (var index = 0u; index < 192u; index += 1u) {
-        if index >= ray_settings.march_steps {
+        if index >= ray_settings.march_steps || started_inside_macro_shell {
             break;
         }
         let step_distance = adaptive_step_distance(
@@ -1111,7 +1224,7 @@ fn trace_ray(ray: vec3<f32>, detail: f32, footprint_radians: f32) -> RayResult {
         previous_distance = distance;
         previous_value = value;
     }
-    if hit_distance >= 0.0 {
+    if hit_distance >= 0.0 && !started_inside_macro_shell {
         hit_distance = refine_detail_hit(
             hit_distance,
             radial_dot_ray,
