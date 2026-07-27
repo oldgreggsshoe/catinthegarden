@@ -42,7 +42,7 @@ Scenario probe results, worst frame, from `test-runs/*/*/manifest.json`:
 | `stand_on_ground` | ray | **0.64 m** | 0.45 m | 2 m | 2.0000 m |
 | `path_parity_ridge` | raster | **1.93 m** | 0.97 m | 6 m | 133 m |
 | `path_parity_ridge` | ray | **3.47 m** | 1.13 m | 6 m | 133 m |
-| `low_pass_bands` | ray | **9.05 m** | 1.78 m | 12 m | 205–230 m |
+| `low_pass_bands` | ray | **6.24 m** | 1.78 m | 9 m | 205–230 m |
 
 The camera stands exactly 2.0 m above the ground it is drawn on, in both paths. That was the point
 of the whole exercise.
@@ -316,6 +316,16 @@ old span the comb never bracketed a crossing and fell back to the macro hit afte
 evaluations; with the correct span it brackets and bisects, so the three refinements actually run.
 Raster is untouched by all of this (the code is ray-only) and re-measures bit-identically at 0.25 and
 1.93.
+
+**Do not assume this closed Ian's complaint — the rendered image says otherwise.** Per-row horizontal
+detail energy over the `low_pass_bands` captures is *unchanged* by the fix: the same rows (343, 350,
+353, 363–369, 375) carry the same 15–24% jumps before and after. Height accuracy improved a lot; the
+visible row structure did not move. Either the metric is measuring the site's terrain gradient rather
+than an artefact, or the bands have a second cause. **A static per-row profile also cannot see the
+symptom as described** — Ian's report is about motion, detail flowing toward the camera faster than
+the edge it flows under. The instrument that would settle it asks whether the detail-quality profile
+stays fixed in screen space while image content shifts between frames; that has not been built.
+Cheapest oracle remains asking Ian to fly it.
 
 **The raymarch path's near-field window** (`terrain.rs` / `foveated.rs`) is an 8×8 block of L12 tiles
 resampled into a 1025² R32Float texture, because L12 already reads within 0.5 m of L18 at the landing
