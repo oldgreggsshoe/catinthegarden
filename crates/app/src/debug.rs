@@ -143,6 +143,8 @@ struct AssertionTracker {
     compared_probe_points: usize,
     maximum_surface_probe_delta_m: f64,
     surface_probe_delta_violations: usize,
+    maximum_surface_probe_p90_delta_m: f64,
+    surface_probe_p90_violations: usize,
     minimum_camera_clearance_m: f64,
     maximum_camera_clearance_m: f64,
     camera_clearance_violations: usize,
@@ -185,6 +187,8 @@ impl AssertionTracker {
             compared_probe_points: 0,
             maximum_surface_probe_delta_m: 0.0,
             surface_probe_delta_violations: 0,
+            maximum_surface_probe_p90_delta_m: 0.0,
+            surface_probe_p90_violations: 0,
             minimum_camera_clearance_m: f64::INFINITY,
             maximum_camera_clearance_m: f64::NEG_INFINITY,
             camera_clearance_violations: 0,
@@ -226,6 +230,16 @@ impl AssertionTracker {
             .is_some_and(|maximum| report.max_abs_delta_meters > maximum)
         {
             self.surface_probe_delta_violations += 1;
+        }
+        self.maximum_surface_probe_p90_delta_m = self
+            .maximum_surface_probe_p90_delta_m
+            .max(report.p90_abs_delta_meters);
+        if self
+            .config
+            .max_surface_probe_p90_delta_m
+            .is_some_and(|maximum| report.p90_abs_delta_meters > maximum)
+        {
+            self.surface_probe_p90_violations += 1;
         }
     }
 
@@ -479,6 +493,19 @@ impl AssertionTracker {
                     self.compared_probe_points,
                     self.surface_probe_count,
                     self.surface_probe_delta_violations
+                ),
+            ));
+        }
+        if let Some(maximum) = self.config.max_surface_probe_p90_delta_m {
+            results.push(assertion_result(
+                "rendered_surface_matches_terrain_truth_p90",
+                self.surface_probe_p90_violations == 0 && self.compared_probe_points > 0,
+                format!(
+                    "tolerance {maximum}m, worst frame p90 {}m over {} points in {} frames, violations {}",
+                    self.maximum_surface_probe_p90_delta_m,
+                    self.compared_probe_points,
+                    self.surface_probe_count,
+                    self.surface_probe_p90_violations
                 ),
             ));
         }
@@ -1306,6 +1333,7 @@ mod tests {
             min_ice_sample_luminance: None,
             max_ice_sample_channel_spread: None,
             max_surface_probe_delta_m: None,
+            max_surface_probe_p90_delta_m: None,
             min_camera_clearance_m: None,
             max_camera_clearance_m: None,
             min_surface_probe_points: None,
@@ -1438,6 +1466,7 @@ mod tests {
             compared_points: compared,
             center: None,
             max_abs_delta_meters,
+            p90_abs_delta_meters: max_abs_delta_meters,
             median_abs_delta_meters: max_abs_delta_meters,
             mean_delta_meters: max_abs_delta_meters,
             mean_delta_from_macro_meters: max_abs_delta_meters,

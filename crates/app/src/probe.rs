@@ -155,6 +155,14 @@ pub struct SurfaceProbeReport {
     pub compared_points: usize,
     pub center: Option<ProbeComparison>,
     pub max_abs_delta_meters: f64,
+    /// The statistic the assertions should read. A maximum over the sample grid
+    /// is dominated by whichever point happened to graze the horizon: at 2m of
+    /// eye height the horizon is 4km, the probe compares out to 4km, and a ray
+    /// arriving there at a fraction of a degree turns a metre of ground into
+    /// hundreds of metres of reconstructed height. Measured at the landing site
+    /// in the raymarch path, 75 of 77 points sat inside 5m while two grazing
+    /// points at 2-3km read 25m and 195m.
+    pub p90_abs_delta_meters: f64,
     pub median_abs_delta_meters: f64,
     pub mean_delta_meters: f64,
     /// Mean gap against baked data alone, over the same points.
@@ -274,11 +282,15 @@ pub fn compare_surface(
         .map(|comparison| comparison.delta_meters.abs())
         .collect();
     absolute.sort_by(f64::total_cmp);
-    let median_abs_delta_meters = if absolute.is_empty() {
-        0.0
-    } else {
-        absolute[absolute.len() / 2]
+    let quantile = |fraction: f64| {
+        if absolute.is_empty() {
+            0.0
+        } else {
+            absolute[((absolute.len() - 1) as f64 * fraction) as usize]
+        }
     };
+    let median_abs_delta_meters = quantile(0.5);
+    let p90_abs_delta_meters = quantile(0.9);
     let mean = |select: fn(&ProbeComparison) -> f64| {
         if comparisons.is_empty() {
             0.0
@@ -301,6 +313,7 @@ pub fn compare_surface(
         compared_points: comparisons.len(),
         center,
         max_abs_delta_meters: absolute.last().copied().unwrap_or(0.0),
+        p90_abs_delta_meters,
         median_abs_delta_meters,
         mean_delta_meters,
         mean_delta_from_macro_meters,

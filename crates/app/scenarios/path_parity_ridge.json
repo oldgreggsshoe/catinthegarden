@@ -47,6 +47,7 @@
     "max_surface_probe_delta_m": 20.0,
     "min_surface_probe_points": 60,
     "min_camera_clearance_m": 128.0,
-    "max_camera_clearance_m": 138.0
+    "max_camera_clearance_m": 138.0,
+    "max_surface_probe_p90_delta_m": 8.0
   }
 }

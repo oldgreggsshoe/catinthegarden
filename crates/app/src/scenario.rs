@@ -36,8 +36,12 @@ pub struct ScenarioAssertions {
     pub min_ice_sample_luminance: Option<f32>,
     pub max_ice_sample_channel_spread: Option<f32>,
     /// Largest tolerated gap between the surface the renderer drew and the
-    /// surface the CPU would collide with, over the probe's sample grid.
+    /// surface the CPU would collide with, over the probe's sample grid. This
+    /// is an outlier guard and should be set loosely; horizon-grazing samples
+    /// dominate it. `max_surface_probe_p90_delta_m` is the one that means
+    /// something.
     pub max_surface_probe_delta_m: Option<f64>,
+    pub max_surface_probe_p90_delta_m: Option<f64>,
     /// Bounds on how far the camera sits above the CPU's terrain. Setting both
     /// is what pins "standing on the ground" rather than sunk or floating.
     pub min_camera_clearance_m: Option<f64>,
@@ -80,6 +84,7 @@ impl Default for ScenarioAssertions {
             min_ice_sample_luminance: None,
             max_ice_sample_channel_spread: None,
             max_surface_probe_delta_m: None,
+            max_surface_probe_p90_delta_m: None,
             min_camera_clearance_m: None,
             max_camera_clearance_m: None,
             min_surface_probe_points: None,

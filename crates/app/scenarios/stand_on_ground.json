@@ -1,17 +1,17 @@
 {
   "name": "stand_on_ground",
   "fixed_timestep_seconds": 0.016666666666666666,
-  "duration_seconds": 5.0,
+  "duration_seconds": 6.0,
   "solid_color_screen": false,
   "hide_overlay": true,
   "seam_gap_check": false,
   "planet_rotation_time_scale": 0.0,
   "screenshot_times_seconds": [
-    1.0,
     2.0,
     3.0,
     4.0,
-    5.0
+    5.0,
+    6.0
   ],
   "waypoints": [
     {
@@ -63,6 +63,7 @@
     "min_surface_probe_points": 300,
     "min_camera_clearance_m": 1.5,
     "max_camera_clearance_m": 2.5,
-    "max_surface_probe_delta_m": 210.0
+    "max_surface_probe_delta_m": 210.0,
+    "max_surface_probe_p90_delta_m": 6.0
   }
 }
