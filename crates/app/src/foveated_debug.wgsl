@@ -268,14 +268,32 @@ fn ray_detail_local_meters(view_offset: vec3<f32>) -> vec3<f32> {
 /// Synthesised relief at a point on the ray, filtered to the spacing that point
 /// is being sampled at. Same ladder and same filter the raster path displaces
 /// with, so the two describe one planet rather than two.
+/// Spacing of the baked samples this point is being drawn from, so the ladder
+/// starts where the baked data stops. The window is much finer than the dense
+/// faces, so this follows the same blend the height sampling does.
+fn ray_baked_spacing_meters(surface_direction: vec3<f32>) -> f32 {
+    let face_spacing = 2.0 * PLANET_RADIUS_METERS / f32(ray_settings.face_quads);
+    if ray_settings.near_field_enabled == 0u {
+        return face_spacing;
+    }
+    let weight = near_field_weight(direction_to_face_uv(surface_direction));
+    if weight <= 0.0 {
+        return face_spacing;
+    }
+    // The window spans `near_field_uv_span` of a face UV that runs -1..1 over
+    // 2R of arc, across `near_field_samples` texels.
+    let window_spacing = ray_settings.near_field_uv_span * PLANET_RADIUS_METERS
+        / f32(ray_settings.near_field_samples - 1u);
+    return mix(face_spacing, window_spacing, weight);
+}
+
 fn ray_terrain_detail(
     view_offset: vec3<f32>,
     surface_direction: vec3<f32>,
     scaled_macro_height_meters: f32,
     footprint_radians: f32,
 ) -> TerrainDetail {
-    let weight = terrain_detail_land_weight(scaled_macro_height_meters);
-    if weight <= 0.0 {
+    if scaled_macro_height_meters <= 0.0 {
         return TerrainDetail(0.0, vec3<f32>(0.0));
     }
     let distance_meters = length(view_offset);
@@ -293,8 +311,10 @@ fn ray_terrain_detail(
         ray_detail_anchor(),
         ray_detail_local_meters(view_offset),
         filter_meters,
+        ray_baked_spacing_meters(surface_direction),
+        scaled_macro_height_meters,
     );
-    return TerrainDetail(detail.height_meters * weight, detail.slope * weight);
+    return detail;
 }
 
 /// Fraction of this point that the near-field window covers.

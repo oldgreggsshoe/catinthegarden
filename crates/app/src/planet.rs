@@ -3,6 +3,7 @@ use std::{
     collections::{BinaryHeap, HashMap, HashSet},
 };
 
+use catinthegarden_coretypes::TILE_LOGICAL_SIZE;
 use glam::{DQuat, DVec3, IVec3, Mat4, Vec3, Vec4};
 
 pub const PLANET_RADIUS_METERS: f64 = 4_000_000.0;
@@ -316,8 +317,12 @@ pub fn placeholder_height_meters(direction: DVec3) -> f64 {
 /// matches_the_cpu_clearance_ladder` in terrain.rs reads them back out of the
 /// shader source and fails if they drift.
 pub const TERRAIN_DETAIL_ROUGHNESS: f64 = 0.06;
-pub const TERRAIN_DETAIL_START_WAVELENGTH_METERS: f64 = 256.0;
-pub const TERRAIN_DETAIL_OCTAVES: u32 = 9;
+/// Starts where the *coarsest* baked pyramid runs out, not the finest. See
+/// shared_planet.wgsl: away from the sparse corridor the baked data is L4 with
+/// 3.9km texels, so it carries nothing below about 7.8km, and the ladder used
+/// to start at 256m -- leaving three octaves of hill-scale relief empty.
+pub const TERRAIN_DETAIL_START_WAVELENGTH_METERS: f64 = 4096.0;
+pub const TERRAIN_DETAIL_OCTAVES: u32 = 13;
 pub const TERRAIN_DETAIL_MIN_FILTER_METERS: f64 = 0.5;
 /// Ridge fold and multifractal attenuation. Mirrors of the shader constants of
 /// the same names; see shared_planet.wgsl for where the two ridge numbers come
@@ -342,20 +347,35 @@ pub const TERRAIN_DETAIL_ATTENUATION_SLOPE: f64 = 0.25;
 /// split cell index from in-cell fraction to survive f32 at metre wavelengths;
 /// f64 carries the whole domain coordinate outright, so the two agree on
 /// amplitude and character without agreeing bit for bit.
-pub fn terrain_detail_meters(direction: DVec3) -> f64 {
+/// Spacing of the baked samples at a pyramid level: the scale below which the
+/// baked data carries nothing, and therefore where the ladder starts.
+pub fn baked_sample_spacing_meters(source_level: u8) -> f64 {
+    2.0 * PLANET_RADIUS_METERS
+        / (f64::from(1_u32 << source_level) * f64::from(TILE_LOGICAL_SIZE - 1))
+}
+
+pub fn terrain_detail_meters(
+    direction: DVec3,
+    baked_spacing_meters: f64,
+    scaled_macro_height_meters: f64,
+) -> f64 {
     let domain = terrain_detail_domain(direction.normalize());
     let mut total = 0.0;
     let mut gradient = DVec3::ZERO;
     let mut wavelength = TERRAIN_DETAIL_START_WAVELENGTH_METERS;
     for _ in 0..TERRAIN_DETAIL_OCTAVES {
-        // Matches the shader's low cut. There is no high cut here: the ladder
-        // starts an octave below `terrain_detail`'s coarsest bound, so that
-        // term is one throughout.
+        // Low cut as the shader's, and the same high cut: octaves the baked
+        // data already carries must not be synthesised on top of it.
         let fade = smoothstep(
             TERRAIN_DETAIL_MIN_FILTER_METERS * 2.0,
             TERRAIN_DETAIL_MIN_FILTER_METERS * 4.0,
             wavelength,
-        );
+        ) * (1.0
+            - smoothstep(
+                baked_spacing_meters * 2.0,
+                baked_spacing_meters * 4.0,
+                wavelength,
+            ));
         if fade > 0.0 {
             let inverse_wavelength = 1.0 / wavelength;
             let cells = domain * (PLANET_RADIUS_METERS * inverse_wavelength);
@@ -373,7 +393,11 @@ pub fn terrain_detail_meters(direction: DVec3) -> f64 {
             // only accumulated because this needs it; nothing on the CPU side
             // consumes a slope directly.
             let attenuation = 1.0 / (1.0 + gradient.length() / TERRAIN_DETAIL_ATTENUATION_SLOPE);
-            let amplitude = wavelength * TERRAIN_DETAIL_ROUGHNESS * fade * attenuation;
+            let octave_amplitude = wavelength * TERRAIN_DETAIL_ROUGHNESS;
+            let amplitude = octave_amplitude
+                * fade
+                * attenuation
+                * terrain_detail_octave_headroom(scaled_macro_height_meters, octave_amplitude);
             total += noise.value * amplitude;
             gradient += noise.gradient * (amplitude * inverse_wavelength);
         }
@@ -414,22 +438,21 @@ fn lerp(from: f64, to: f64, amount: f64) -> f64 {
     from + (to - from) * amount
 }
 
-/// Detail rides on land only and fades out before the coastline, matching
-/// `terrain_detail_land_weight` in shared_planet.wgsl so the CPU and the shader
-/// agree about where relief stops.
-///
-/// A headroom scale, not a gate: ground with less elevation than the ladder's
-/// reach gets proportionally less relief rather than none. See the shader for
-/// the safety argument, and for why the flat 25m..150m this replaced cost every
-/// low-lying biome its relief entirely.
 pub const TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS: f64 =
     TERRAIN_DETAIL_START_WAVELENGTH_METERS * TERRAIN_DETAIL_ROUGHNESS * 2.0;
-pub const TERRAIN_DETAIL_LAND_WEIGHT_FULL_METERS: f64 = TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS * 2.0;
+/// How much elevation an octave needs before it appears at full amplitude,
+/// as a multiple of its own amplitude. Asked per octave rather than per ladder;
+/// see `terrain_detail_octave_headroom` in shared_planet.wgsl for why, and for
+/// where the factor of eight comes from.
+pub const TERRAIN_DETAIL_HEADROOM_FACTOR: f64 = 8.0;
 
-pub fn terrain_detail_land_weight(scaled_macro_height_meters: f64) -> f64 {
+pub fn terrain_detail_octave_headroom(
+    scaled_macro_height_meters: f64,
+    octave_amplitude_meters: f64,
+) -> f64 {
     smoothstep(
         0.0,
-        TERRAIN_DETAIL_LAND_WEIGHT_FULL_METERS,
+        octave_amplitude_meters * TERRAIN_DETAIL_HEADROOM_FACTOR,
         scaled_macro_height_meters,
     )
 }
@@ -598,6 +621,7 @@ pub fn detailed_outmap_land_height_meters(
     macro_height_meters: f64,
     direction: DVec3,
     camera_altitude_meters: f64,
+    baked_spacing_meters: f64,
 ) -> f64 {
     let weight = smoothstep(100.0, 400.0, macro_height_meters);
     let scaled_macro_height =
@@ -608,7 +632,7 @@ pub fn detailed_outmap_land_height_meters(
     // -- which is what put ground-level cameras inside the terrain.
     scaled_macro_height
         + global_terrain_detail_meters(direction) * weight * GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE
-        + terrain_detail_meters(direction) * terrain_detail_land_weight(scaled_macro_height)
+        + terrain_detail_meters(direction, baked_spacing_meters, scaled_macro_height)
 }
 
 /// Height followed by the low-flight camera. Ocean floor is not the visible
@@ -617,11 +641,17 @@ pub fn outmap_surface_height_meters(
     macro_height_meters: f64,
     direction: DVec3,
     camera_altitude_meters: f64,
+    baked_spacing_meters: f64,
 ) -> f64 {
     if macro_height_meters <= 0.0 {
         0.0
     } else {
-        detailed_outmap_land_height_meters(macro_height_meters, direction, camera_altitude_meters)
+        detailed_outmap_land_height_meters(
+            macro_height_meters,
+            direction,
+            camera_altitude_meters,
+            baked_spacing_meters,
+        )
     }
 }
 
@@ -2353,10 +2383,11 @@ mod tests {
         OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS, OUTMAP_TERRAIN_HEIGHT_SCALE,
         OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, OrbitCamera, PLANET_RADIUS_METERS,
         PLANET_ROTATION_PERIOD_SECONDS, PlanetLod, QuadtreeNode, RenderDebugMode,
-        SKIRT_DEPTH_RATIO, TERRAIN_DETAIL_RIDGE_CENTRE, TERRAIN_DETAIL_RIDGE_NORMALISATION,
-        TERRAIN_DETAIL_RIDGE_SCALE, TERRAIN_DETAIL_RIDGE_SOFTNESS, TERRAIN_DETAIL_RIDGE_STRENGTH,
-        TERRAIN_DETAIL_ROUGHNESS, TERRAIN_DETAIL_START_WAVELENGTH_METERS, TerrainHeightRange,
-        build_chunk_mesh, cube_face_basis, cube_face_direction, default_sun_direction,
+        SKIRT_DEPTH_RATIO, TERRAIN_DETAIL_OCTAVES, TERRAIN_DETAIL_RIDGE_CENTRE,
+        TERRAIN_DETAIL_RIDGE_NORMALISATION, TERRAIN_DETAIL_RIDGE_SCALE,
+        TERRAIN_DETAIL_RIDGE_SOFTNESS, TERRAIN_DETAIL_RIDGE_STRENGTH, TERRAIN_DETAIL_ROUGHNESS,
+        TERRAIN_DETAIL_START_WAVELENGTH_METERS, TerrainHeightRange, build_chunk_mesh,
+        cube_face_basis, cube_face_direction, default_sun_direction,
         detailed_outmap_land_height_meters, global_terrain_detail_meters,
         minimum_vertical_fov_radians_for_viewport, near_plane_meters, outmap_surface_height_meters,
         outmap_terrain_height_scale, placeholder_height_meters, planet_local_vector,
@@ -3041,9 +3072,14 @@ mod tests {
                     (base * PLANET_RADIUS_METERS + offset + east * step_meters).normalize();
                 let along_north =
                     (base * PLANET_RADIUS_METERS + offset + north * step_meters).normalize();
-                let h = terrain_detail_meters(here);
-                let grade_east = (terrain_detail_meters(along_east) - h) / step_meters;
-                let grade_north = (terrain_detail_meters(along_north) - h) / step_meters;
+                let spacing = super::baked_sample_spacing_meters(4);
+                // A mountain, so every octave has its headroom.
+                let macro_height = 3_000.0;
+                let h = terrain_detail_meters(here, spacing, macro_height);
+                let grade_east =
+                    (terrain_detail_meters(along_east, spacing, macro_height) - h) / step_meters;
+                let grade_north =
+                    (terrain_detail_meters(along_north, spacing, macro_height) - h) / step_meters;
                 let grade = (grade_east * grade_east + grade_north * grade_north).sqrt();
                 slopes.push(1.0 - 1.0 / (1.0 + grade * grade).sqrt());
             }
@@ -3465,36 +3501,52 @@ mod tests {
 
     #[test]
     fn outmap_detail_preserves_ocean_and_coastline() {
+        // Most of the planet draws from the dense L4 pyramid.
+        const L4_SPACING: f64 = 2.0 * PLANET_RADIUS_METERS / (16.0 * 128.0);
         let direction = DVec3::new(0.27, -0.61, 0.74).normalize();
         assert_eq!(
-            outmap_surface_height_meters(-800.0, direction, 1_524.0),
+            outmap_surface_height_meters(-800.0, direction, 1_524.0, L4_SPACING),
             0.0
         );
-        // The weighting is a headroom scale, so the relief it admits can never
-        // exceed the elevation it rides on. That is what stops detail pushing
-        // the shoreline around -- at every height, rather than above one.
-        let reach = TERRAIN_DETAIL_START_WAVELENGTH_METERS * TERRAIN_DETAIL_ROUGHNESS * 2.0;
-        for step in 0..400 {
-            let height = f64::from(step) * 0.25;
-            let admitted = reach * super::terrain_detail_land_weight(height);
+        // Headroom is asked per octave, and what has to hold is that the whole
+        // ladder's worst case still cannot reach sea level -- thirteen octaves
+        // each individually safe are not collectively safe, which is where the
+        // factor of eight comes from.
+        for step in 1..2000 {
+            let height = f64::from(step) * 2.0;
+            let mut admitted = 0.0;
+            let mut wavelength = TERRAIN_DETAIL_START_WAVELENGTH_METERS;
+            for _ in 0..TERRAIN_DETAIL_OCTAVES {
+                let amplitude = wavelength * TERRAIN_DETAIL_ROUGHNESS;
+                admitted += amplitude * super::terrain_detail_octave_headroom(height, amplitude);
+                wavelength *= 0.5;
+            }
             assert!(
                 admitted <= height,
-                "at {height}m the weighting admits {admitted}m of relief"
+                "at {height}m the ladder can admit {admitted}m of relief"
             );
         }
-        // And a lowland biome must actually get some. The flat 25m..150m this
-        // replaced left desert at 0.0% relief and grassland at 0.3%.
+        // And low ground must still get its *small* hills, which is what a
+        // single scalar weight took away once the ladder reached 4km.
+        let hummock = 16.0 * TERRAIN_DETAIL_ROUGHNESS;
         assert!(
-            super::terrain_detail_land_weight(40.0) > 0.5,
-            "40m of elevation still gets only {} of the ladder",
-            super::terrain_detail_land_weight(40.0)
+            super::terrain_detail_octave_headroom(40.0, hummock) > 0.9,
+            "a 40m plain gets only {} of its 16m hummocks",
+            super::terrain_detail_octave_headroom(40.0, hummock)
         );
+        // ...and none of the hills it has no room for.
+        let big_hill = TERRAIN_DETAIL_START_WAVELENGTH_METERS * TERRAIN_DETAIL_ROUGHNESS;
+        assert!(super::terrain_detail_octave_headroom(40.0, big_hill) < 0.02);
         // Above the weighting it is applied whole.
         assert_eq!(
-            detailed_outmap_land_height_meters(400.0, direction, 1_524.0),
+            detailed_outmap_land_height_meters(400.0, direction, 1_524.0, L4_SPACING),
             OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE * 400.0
                 + GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE * global_terrain_detail_meters(direction)
-                + terrain_detail_meters(direction)
+                + terrain_detail_meters(
+                    direction,
+                    L4_SPACING,
+                    400.0 * OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE
+                )
         );
     }
 
@@ -3507,11 +3559,36 @@ mod tests {
         let direction =
             DVec3::new(-0.9859869836836004, 0.07585910343295443, -0.148576796414729).normalize();
         let baked_meters = 919.8;
-        let surface = outmap_surface_height_meters(baked_meters, direction, 40.0);
-        let detail = surface - baked_meters;
+        // The ladder fills exactly the band the baked data cannot carry, so
+        // what it contributes depends on which pyramid level is under the
+        // point. The sparse corridor reaches L18, whose samples are 0.24m
+        // apart, and there the ladder must add essentially nothing: the baker's
+        // erosion already describes that ground and synthesising over it would
+        // be the same hills twice.
+        let corridor = outmap_surface_height_meters(
+            baked_meters,
+            direction,
+            40.0,
+            super::baked_sample_spacing_meters(18),
+        );
+        assert!(
+            (corridor - baked_meters).abs() < 0.5,
+            "the ladder added {}m on top of L18 baked erosion",
+            corridor - baked_meters
+        );
+        // Away from the corridor the finest baked data is L4, 3.9km samples,
+        // which carries nothing below about 7.8km. There the ladder is the only
+        // thing there is, and it has to deliver.
+        let dense = outmap_surface_height_meters(
+            baked_meters,
+            direction,
+            40.0,
+            super::baked_sample_spacing_meters(4),
+        );
+        let detail = dense - baked_meters;
         assert!(
             detail.abs() > 0.5,
-            "clearance saw only {detail}m of synthesised relief at the landing site"
+            "clearance saw only {detail}m of synthesised relief over L4 data"
         );
         // This used to pin a 920..940m bracket read off a render. That number
         // was a property of one particular noise field, so it went stale the
@@ -3523,8 +3600,8 @@ mod tests {
         // without a GPU: that the ladder contributes, and that it stays inside
         // the amplitude its own constants allow.
         assert!(
-            (baked_meters - 40.0..=baked_meters + 40.0).contains(&surface),
-            "clearance puts the landing site at {surface}m, implausibly far from \
+            (baked_meters - 400.0..=baked_meters + 400.0).contains(&dense),
+            "clearance puts the landing site at {dense}m, implausibly far from \
              the {baked_meters}m of baked terrain under it"
         );
         // Self-similar amplitude sums to twice the first octave, so nothing the
@@ -3537,7 +3614,10 @@ mod tests {
                 direction.z + offset * 0.4e-4,
             )
             .normalize();
-            assert!(terrain_detail_meters(probe).abs() <= bound);
+            assert!(
+                terrain_detail_meters(probe, super::baked_sample_spacing_meters(4), 3_000.0).abs()
+                    <= bound
+            );
         }
     }
 

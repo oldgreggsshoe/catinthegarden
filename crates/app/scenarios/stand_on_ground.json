@@ -17,12 +17,12 @@
     {
       "time_s": 0.0,
       "position": [
-        4000917.87,
+        4000921.81,
         0.0,
         0.0
       ],
       "look_at": [
-        4000916.87,
+        4000920.81,
         0.0,
         1.0
       ]
@@ -30,12 +30,12 @@
     {
       "time_s": 5.0,
       "position": [
-        4000917.87,
+        4000921.81,
         0.0,
         0.0
       ],
       "look_at": [
-        4000916.87,
+        4000920.81,
         0.0,
         1.0
       ]
@@ -63,6 +63,6 @@
     "min_surface_probe_points": 300,
     "min_camera_clearance_m": 1.5,
     "max_camera_clearance_m": 2.5,
-    "max_surface_probe_delta_m": 110.0
+    "max_surface_probe_delta_m": 210.0
   }
 }

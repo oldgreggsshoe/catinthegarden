@@ -31,7 +31,10 @@ struct VertexOutput {
     @location(4) surface_direction: vec3<f32>,
     @location(5) ocean: f32,
     @location(6) source_uv: vec2<f32>,
-    @location(7) outmap: f32,
+    // Outmap flag and the scaled baked height, packed: the fragment stage
+    // needs the height for each octave's headroom and the inter-stage location
+    // budget is full.
+    @location(7) outmap_and_macro_height: vec2<f32>,
     @location(8) surface_lighting: vec3<f32>,
     @location(9) terrain_detail_meters: f32,
     @location(10) surface_irradiance: vec3<f32>,
@@ -58,6 +61,13 @@ fn cube_face(terrain_info: u32) -> u32 {
 
 fn requested_level(terrain_info: u32) -> u32 {
     return (terrain_info >> 4u) & 0x1fu;
+}
+
+/// Pyramid level of the tile this node is actually reading. Coarser than the
+/// requested level whenever the node fell back to an ancestor, which is the
+/// common case away from the sparse corridor.
+fn source_level(terrain_info: u32) -> u32 {
+    return (terrain_info >> 9u) & 0x1fu;
 }
 
 fn sample_height(source_uv: vec2<f32>) -> f32 {
@@ -416,9 +426,12 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         anchor_direction,
         anchor_relative_position,
         vertex_filter_meters,
+        baked_sample_spacing_meters(source_level(input.terrain_info)),
+        // Each octave asks this separately for its own headroom, so the
+        // ladder no longer needs a single scalar weight on the outside.
+        select(0.0, base_height, outmap),
     );
-    let detail_weight = select(0.0, terrain_detail_land_weight(base_height), outmap);
-    let terrain_detail_meters = detail.height_meters * detail_weight;
+    let terrain_detail_meters = detail.height_meters;
     let height = base_height + terrain_detail_meters;
     // Polar ice overrides ocean in the baked biome contract. Lift it just
     // above sea level so the cap remains visible rather than becoming water.
@@ -459,12 +472,10 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         input.terrain_info,
         camera_distance_meters,
     );
-    if detail_weight > 0.0 {
-        normal = terrain_detail_perturbed_normal(
-            normal,
-            direction,
-            detail.slope * detail_weight,
-        );
+    if outmap {
+        // The slope already carries each octave's own headroom, so there is no
+        // scalar weight left to apply here.
+        normal = terrain_detail_perturbed_normal(normal, direction, detail.slope);
     }
     if ocean {
         normal = wave_surface.normal;
@@ -530,13 +541,13 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         direction,
         select(0.0, 1.0, ocean),
         source_uv,
-        select(0.0, 1.0, outmap),
+        vec2<f32>(select(0.0, 1.0, outmap), select(0.0, base_height, outmap)),
         lit_surface_color,
         terrain_detail_meters,
         surface_irradiance,
         anchor_direction,
         anchor_relative_position,
-        select(0.0, vertex_spacing_meters, detail_weight > 0.0),
+        select(0.0, vertex_spacing_meters, outmap),
     );
 }
 
@@ -574,7 +585,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             return vec4<f32>(debug_ocean_albedo(), 1.0);
         }
         let surface = ocean_surface(direction, camera.projection.z);
-        let outmap = input.outmap > 0.5;
+        let outmap = input.outmap_and_macro_height.x > 0.5;
         let lake = outmap && sample_biome(input.source_uv) == 1u;
         let water_base_height = select(
             0.0,
@@ -618,7 +629,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         }
         return vec4<f32>(water_aerial_color, 1.0);
     }
-    let outmap = input.outmap > 0.5;
+    let outmap = input.outmap_and_macro_height.x > 0.5;
     let macro_height_meters = macro_terrain_height(outmap, input.source_uv, direction);
     let ocean_coverage = outmap_ocean_coverage(outmap, macro_height_meters);
     let biome_id = sample_biome(input.source_uv);
@@ -688,6 +699,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
                 input.detail_local_meters,
                 pixel_filter_meters,
                 vertex_filter_meters,
+                input.outmap_and_macro_height.y,
             );
             let vertex_normal = normalize(input.world_normal);
             let detail_normal = terrain_detail_perturbed_normal(

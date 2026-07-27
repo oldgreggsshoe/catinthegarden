@@ -20,9 +20,9 @@ use crate::{
         GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, MAX_LOD_LEVEL,
         OUTMAP_TERRAIN_FAR_HEIGHT_SCALE, OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS,
         OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS, OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE,
-        PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode, TerrainHeightRange, build_chunk_mesh,
-        cube_face_basis, cube_face_direction, outmap_surface_height_meters,
-        outmap_terrain_height_scale, placeholder_height_meters,
+        PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode, TerrainHeightRange,
+        baked_sample_spacing_meters, build_chunk_mesh, cube_face_basis, cube_face_direction,
+        outmap_surface_height_meters, outmap_terrain_height_scale, placeholder_height_meters,
     },
 };
 
@@ -633,6 +633,10 @@ impl TerrainRenderer {
                                 baked_meters,
                                 local_surface_direction,
                                 camera_altitude_meters,
+                                // The ladder starts where this tile's samples
+                                // stop, so the CPU's surface covers the same
+                                // band the renderer displaces with.
+                                baked_sample_spacing_meters(level),
                             ),
                             macro_height_meters: if baked_meters <= 0.0 {
                                 0.0
@@ -2461,8 +2465,8 @@ mod tests {
                 crate::planet::TERRAIN_DETAIL_ATTENUATION_SLOPE,
             ),
             (
-                "TERRAIN_DETAIL_LAND_WEIGHT_FULL_METERS",
-                crate::planet::TERRAIN_DETAIL_LAND_WEIGHT_FULL_METERS,
+                "TERRAIN_DETAIL_HEADROOM_FACTOR",
+                crate::planet::TERRAIN_DETAIL_HEADROOM_FACTOR,
             ),
         ] {
             assert_eq!(declared(name), value as f32, "{name} drifted");

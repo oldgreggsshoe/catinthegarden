@@ -30,9 +30,20 @@ const TERRAIN_DETAIL_ROUGHNESS: f32 = 0.06;
 // Floor is 1m. The octave ladder is evaluated from an anchor-local offset, so
 // the in-cell fraction never has to survive an absolute 4e6 domain coordinate
 // where f32 would quantise it to 0.25 -- see terrain_detail_value_noise.
-const TERRAIN_DETAIL_START_WAVELENGTH_METERS: f32 = 256.0;
+// Starts at the scale the *coarsest* baked pyramid runs out at, not at the
+// scale the finest one does. Away from the sparse corridor the baked data is
+// L4, whose texels are 3.9km, so it carries nothing below about 7.8km -- and
+// the ladder used to start at 256m. That left over three octaves with nothing
+// in them at all, which is why a mountain read as a smooth ramp with fine
+// texture on it and no hills in between.
+//
+// The amplitude law needed no change to cover them. Measured off the baker's
+// own eroded corridor, RMS height difference is 0.080 of the separation at
+// every scale from 12m to 767m -- self-affine, and within a factor of the
+// ROUGHNESS the ladder already uses.
+const TERRAIN_DETAIL_START_WAVELENGTH_METERS: f32 = 4096.0;
 
-const TERRAIN_DETAIL_OCTAVES: i32 = 9;
+const TERRAIN_DETAIL_OCTAVES: i32 = 13;
 // What the whole ladder can reach: amplitude halves with wavelength, so the
 // geometric series sums to twice its first term. Anything normalising against
 // the detail field has to use this and not the retired CPU field's 111.5m,
@@ -417,6 +428,7 @@ fn terrain_detail_band(
     local_meters: vec3<f32>,
     filter_meters: f32,
     coarsest_meters: f32,
+    scaled_macro_height_meters: f32,
 ) -> TerrainDetail {
     let anchor_domain = terrain_detail_domain(anchor_direction);
     let local_domain = terrain_detail_domain(local_meters);
@@ -455,7 +467,14 @@ fn terrain_detail_band(
             // is exact either way.
             let attenuation = 1.0
                 / (1.0 + length(gradient) / TERRAIN_DETAIL_ATTENUATION_SLOPE);
-            let amplitude = wavelength * TERRAIN_DETAIL_ROUGHNESS * fade * attenuation;
+            let octave_amplitude = wavelength * TERRAIN_DETAIL_ROUGHNESS;
+            let amplitude = octave_amplitude
+                * fade
+                * attenuation
+                * terrain_detail_octave_headroom(
+                    scaled_macro_height_meters,
+                    octave_amplitude,
+                );
             total = total + noise.value * amplitude;
             gradient = gradient + noise.gradient * (amplitude * inverse_wavelength);
         }
@@ -464,16 +483,31 @@ fn terrain_detail_band(
     return TerrainDetail(total, terrain_detail_domain_transpose(gradient));
 }
 
+/// Spacing of the baked samples a node is drawing from. This is the scale the
+/// baked data stops carrying information at, and therefore the scale the
+/// synthesised ladder has to start at if the two are not to describe the same
+/// hills twice.
+fn baked_sample_spacing_meters(source_level: u32) -> f32 {
+    return 2.0 * PLANET_RADIUS_METERS / (exp2(f32(source_level)) * MATERIAL_TILE_LOGICAL_QUADS);
+}
+
 fn terrain_detail(
     anchor_direction: vec3<f32>,
     local_meters: vec3<f32>,
     filter_meters: f32,
+    baked_spacing_meters: f32,
+    scaled_macro_height_meters: f32,
 ) -> TerrainDetail {
     return terrain_detail_band(
         anchor_direction,
         local_meters,
         filter_meters,
-        TERRAIN_DETAIL_START_WAVELENGTH_METERS * 4.0,
+        // The high cut removes octaves the baked data already carries. Without
+        // it, extending the ladder to 4096m would stack a 246m octave on top of
+        // the sparse corridor's own erosion, which has real structure down to
+        // 0.24m -- the same hills twice, at two hundred metres of amplitude.
+        baked_spacing_meters,
+        scaled_macro_height_meters,
     );
 }
 
@@ -495,25 +529,30 @@ fn terrain_detail_perturbed_normal(
     return normalize(normal - tangential_slope);
 }
 
-/// How much of the ladder this ground can carry without being pushed into the
+/// How much of one octave this ground can carry without being pushed into the
 /// sea.
 ///
-/// Not a gate but a headroom scale. What has to be prevented is detail moving
-/// the shoreline, and the ladder's reach is `TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS`,
-/// so ground with less elevation than that gets proportionally less relief
-/// rather than none. Ramping over twice the reach is safe everywhere:
-/// `A * smoothstep(0, 2A, h) <= h` has no solution the other way round.
+/// Per octave, not per ladder. A single scalar weight is what a 16m ladder could
+/// get away with; a 492m one cannot, because gating every octave on the whole
+/// ladder's reach means a 40m coastal plain loses its 4m hummocks along with the
+/// 4km hills it genuinely has no room for. Asking each scale separately gives
+/// mountains their big hills and plains their small ones, which is the same
+/// answer relief-correlated amplitude would give and costs nothing extra.
 ///
-/// It used to be a flat `smoothstep(25, 150, h)` -- six times the ladder's
-/// reach, and a hard cutoff besides. Measured, that left the weight at 0.04 at
-/// 40m of elevation, so desert came out with 0.0% synthesised relief and
-/// grassland 0.3%. Those biomes were not flat because the terrain was flat;
-/// they were flat because this held the ladder off them entirely.
-const TERRAIN_DETAIL_LAND_WEIGHT_FULL_METERS: f32 =
-    TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS * 2.0;
+/// The factor of eight is what keeps the *sum* safe. Each octave alone would be
+/// safe at two, but thirteen of them are not; at eight the worst case sums to
+/// about 0.64 of the elevation, and a test walks the heights to confirm it.
+const TERRAIN_DETAIL_HEADROOM_FACTOR: f32 = 8.0;
 
-fn terrain_detail_land_weight(scaled_macro_height: f32) -> f32 {
-    return smoothstep(0.0, TERRAIN_DETAIL_LAND_WEIGHT_FULL_METERS, scaled_macro_height);
+fn terrain_detail_octave_headroom(
+    scaled_macro_height: f32,
+    octave_amplitude_meters: f32,
+) -> f32 {
+    return smoothstep(
+        0.0,
+        octave_amplitude_meters * TERRAIN_DETAIL_HEADROOM_FACTOR,
+        scaled_macro_height,
+    );
 }
 
 /// The spacing detail is about to be sampled at. Tracks camera distance the
