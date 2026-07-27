@@ -28,6 +28,18 @@ pub const EARTH_AXIAL_TILT_RADIANS: f64 = 23.439_281_f64.to_radians();
 /// 640px reference size this still provides more mesh cells than pixels while
 /// preventing narrow optical zoom from expanding into thousands of draws.
 pub const DEFAULT_MAX_ACTIVE_CHUNKS: usize = 256;
+/// Measurement hook for the budget itself. The cap is load-bearing -- it is the
+/// only thing holding the mountains under 40ms -- so the question that keeps
+/// coming up is not "what should it be" but "is it binding, and by how much".
+/// Answering that needs a run with the budget lifted clear of demand, and
+/// rebuilding with an edited constant makes that a different binary each time.
+pub fn max_active_chunks_from_env() -> usize {
+    std::env::var("CATINGARDEN_MAX_ACTIVE_CHUNKS")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .map(|value| value.max(FACE_COUNT as usize))
+        .unwrap_or(DEFAULT_MAX_ACTIVE_CHUNKS)
+}
 pub const SKIRT_DEPTH_RATIO: f64 = 0.075;
 /// Coarse fallback chunks can span hundreds of kilometres. Keep their skirts
 /// deep enough to cover residual cracks without exposing coarse edge ribbons.
@@ -81,6 +93,54 @@ const MIN_VERTICAL_FOV_RADIANS: f64 = MIN_VERTICAL_FOV_DEGREES.to_radians();
 const MAX_VERTICAL_FOV_RADIANS: f64 = MAX_VERTICAL_FOV_DEGREES.to_radians();
 const ZOOM_LOG_FOV_PER_WHEEL_STEP: f64 = 0.12;
 pub const PLACEHOLDER_GEOMETRIC_ERROR_RATIO: f64 = 0.02;
+
+/// Unresolved height error, separated by what is able to resolve it.
+///
+/// `baked` is the macro surface's own curvature and resampling error. A split
+/// only pays it back while the child grid still has source texels it has not
+/// read: past that point the child resamples the same bilinear patch as its
+/// parent and returns exactly the same surface. `ladder` is what the runtime
+/// detail ladder has left to show, and every split does resolve more of that,
+/// all the way down to the finest octave.
+///
+/// Charging both terms everywhere is what made the selector ask for sub-pixel
+/// geometry out at the mountains, where 151 of 256 chunks sat at L14 -- a 12m
+/// mesh -- against L4 baked data at ~1953m per texel. The baked term there is
+/// a demand no amount of splitting can satisfy.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GeometricErrorRatio {
+    pub baked: f64,
+    pub ladder: f64,
+}
+
+impl GeometricErrorRatio {
+    /// One indivisible error term, always resolvable. The analytic placeholder
+    /// has no baked source to run out of.
+    pub const fn uniform(ratio: f64) -> Self {
+        Self {
+            baked: ratio,
+            ladder: 0.0,
+        }
+    }
+
+    pub fn total(self) -> f64 {
+        self.baked + self.ladder
+    }
+
+    fn for_node(self, baked_is_resolvable: bool) -> f64 {
+        if baked_is_resolvable {
+            self.total()
+        } else {
+            self.ladder
+        }
+    }
+
+    #[cfg(test)]
+    pub fn for_node_for_test(self, baked_is_resolvable: bool) -> f64 {
+        self.for_node(baked_is_resolvable)
+    }
+}
+
 pub const LOD_THRASH_WINDOW_UPDATES: u64 = 4;
 /// Fine edges already stitch to a grid two levels coarser. Source-aware LOD
 /// balancing enforces the same bound so a sparse high-detail patch cannot sit
@@ -1022,9 +1082,10 @@ struct SelectionInput {
     aspect_ratio: f64,
     viewport_height: u32,
     vertical_fov_radians: f64,
-    geometric_error_ratio: f64,
+    geometric_error_ratio: GeometricErrorRatio,
     distance_reference_height_meters: f64,
     source_level_limited: bool,
+    baked_error_limited: bool,
 }
 
 impl PartialEq for SplitCandidate {
@@ -1066,7 +1127,7 @@ pub struct PlanetLod {
 
 impl Default for PlanetLod {
     fn default() -> Self {
-        Self::new(LodPolicy::default(), DEFAULT_MAX_ACTIVE_CHUNKS)
+        Self::new(LodPolicy::default(), max_active_chunks_from_env())
     }
 }
 
@@ -1131,7 +1192,8 @@ impl PlanetLod {
             1.0,
             viewport_height,
             vertical_fov_radians,
-            PLACEHOLDER_GEOMETRIC_ERROR_RATIO,
+            GeometricErrorRatio::uniform(PLACEHOLDER_GEOMETRIC_ERROR_RATIO),
+            None,
             None,
         )
     }
@@ -1177,7 +1239,8 @@ impl PlanetLod {
             aspect_ratio,
             viewport_height,
             vertical_fov_radians,
-            PLACEHOLDER_GEOMETRIC_ERROR_RATIO,
+            GeometricErrorRatio::uniform(PLACEHOLDER_GEOMETRIC_ERROR_RATIO),
+            None,
             None,
         )
     }
@@ -1203,8 +1266,9 @@ impl PlanetLod {
             aspect_ratio,
             viewport_height,
             vertical_fov_radians,
-            PLACEHOLDER_GEOMETRIC_ERROR_RATIO,
+            GeometricErrorRatio::uniform(PLACEHOLDER_GEOMETRIC_ERROR_RATIO),
             node_level_limit,
+            None,
         )
     }
 
@@ -1220,15 +1284,15 @@ impl PlanetLod {
         aspect_ratio: f64,
         viewport_height: u32,
         vertical_fov_radians: f64,
-        geometric_error_ratio: f64,
+        geometric_error_ratio: GeometricErrorRatio,
         node_level_limit: &dyn Fn(QuadtreeNode) -> u8,
+        baked_error_limit: Option<&dyn Fn(QuadtreeNode) -> u8>,
     ) -> LodUpdate {
         assert!(camera_world.is_finite());
         assert!(camera_world.length() > PLANET_RADIUS_METERS);
         assert!(camera_forward.is_finite() && camera_forward.length_squared() > 0.0);
         assert!(camera_up.is_finite() && camera_up.length_squared() > 0.0);
         assert!(aspect_ratio.is_finite() && aspect_ratio > 0.0);
-        assert!(geometric_error_ratio.is_finite() && geometric_error_ratio > 0.0);
         self.update_internal(
             camera_world,
             Some(CameraViewBasis::from_forward_and_up(
@@ -1240,6 +1304,7 @@ impl PlanetLod {
             vertical_fov_radians,
             geometric_error_ratio,
             Some(node_level_limit),
+            baked_error_limit,
         )
     }
 
@@ -1250,14 +1315,22 @@ impl PlanetLod {
         aspect_ratio: f64,
         viewport_height: u32,
         vertical_fov_radians: f64,
-        geometric_error_ratio: f64,
+        geometric_error_ratio: GeometricErrorRatio,
         node_level_limit: Option<&dyn Fn(QuadtreeNode) -> u8>,
+        baked_error_limit: Option<&dyn Fn(QuadtreeNode) -> u8>,
     ) -> LodUpdate {
         assert!(camera_world.is_finite());
         assert!(camera_world.length() > PLANET_RADIUS_METERS);
         assert!(aspect_ratio.is_finite() && aspect_ratio > 0.0);
         assert!(vertical_fov_radians.is_finite() && vertical_fov_radians > 0.0);
-        assert!(geometric_error_ratio.is_finite() && geometric_error_ratio > 0.0);
+        assert!(geometric_error_ratio.total().is_finite() && geometric_error_ratio.total() > 0.0);
+        // Past the baked limit the ladder term is the whole error budget, so a
+        // source that supplies a limit must also supply something for the mesh
+        // to keep resolving -- otherwise refinement stops dead at that level.
+        assert!(
+            baked_error_limit.is_none()
+                || (geometric_error_ratio.ladder.is_finite() && geometric_error_ratio.ladder > 0.0)
+        );
         self.update_index += 1;
         self.recent_lod_transitions.retain(|_, transition| {
             self.update_index.saturating_sub(transition.update_index) <= LOD_THRASH_WINDOW_UPDATES
@@ -1271,6 +1344,7 @@ impl PlanetLod {
             geometric_error_ratio,
             distance_reference_height_meters: self.distance_reference_height_meters,
             source_level_limited: node_level_limit.is_some(),
+            baked_error_limited: baked_error_limit.is_some(),
         };
         if self.last_selection_input == Some(selection_input) {
             let mut metrics = self.last_metrics.clone();
@@ -1310,6 +1384,7 @@ impl PlanetLod {
                 terrain_height_range,
                 distance_height_range,
                 geometric_error_ratio,
+                baked_error_limit,
                 &mut evaluations,
                 &mut culled_nodes,
             )
@@ -1336,6 +1411,7 @@ impl PlanetLod {
                 terrain_height_range,
                 distance_height_range,
                 geometric_error_ratio,
+                baked_error_limit,
                 &mut evaluations,
                 &mut culled_nodes,
             ) {
@@ -1368,6 +1444,7 @@ impl PlanetLod {
                     terrain_height_range,
                     distance_height_range,
                     geometric_error_ratio,
+                    baked_error_limit,
                     &mut evaluations,
                     &mut culled_nodes,
                 ) {
@@ -1395,6 +1472,7 @@ impl PlanetLod {
                             terrain_height_range,
                             distance_height_range,
                             geometric_error_ratio,
+                            baked_error_limit,
                             &mut evaluations,
                             &mut culled_nodes,
                         )
@@ -1433,6 +1511,7 @@ impl PlanetLod {
                             terrain_height_range,
                             distance_height_range,
                             geometric_error_ratio,
+                            baked_error_limit,
                             &mut evaluations,
                             &mut culled_nodes,
                         )
@@ -1482,6 +1561,7 @@ impl PlanetLod {
                     terrain_height_range,
                     distance_height_range,
                     geometric_error_ratio,
+                    baked_error_limit,
                     &mut evaluations,
                     &mut culled_nodes,
                 );
@@ -1536,7 +1616,8 @@ impl PlanetLod {
         vertical_fov_radians: f64,
         terrain_height_range: TerrainHeightRange,
         distance_height_range: TerrainHeightRange,
-        geometric_error_ratio: f64,
+        geometric_error_ratio: GeometricErrorRatio,
+        baked_error_limit: Option<&dyn Fn(QuadtreeNode) -> u8>,
         evaluations: &mut HashMap<QuadtreeNode, NodeEvaluation>,
         culled_nodes: &mut u32,
     ) -> Option<SplitCandidate> {
@@ -1556,6 +1637,7 @@ impl PlanetLod {
             terrain_height_range,
             distance_height_range,
             geometric_error_ratio,
+            baked_error_limit,
             evaluations,
             culled_nodes,
         );
@@ -1584,6 +1666,7 @@ impl PlanetLod {
                     terrain_height_range,
                     distance_height_range,
                     geometric_error_ratio,
+                    baked_error_limit,
                     evaluations,
                     culled_nodes,
                 )
@@ -1613,7 +1696,8 @@ impl PlanetLod {
         vertical_fov_radians: f64,
         terrain_height_range: TerrainHeightRange,
         distance_height_range: TerrainHeightRange,
-        geometric_error_ratio: f64,
+        geometric_error_ratio: GeometricErrorRatio,
+        baked_error_limit: Option<&dyn Fn(QuadtreeNode) -> u8>,
         evaluations: &mut HashMap<QuadtreeNode, NodeEvaluation>,
         culled_nodes: &mut u32,
     ) -> NodeEvaluation {
@@ -1635,6 +1719,11 @@ impl PlanetLod {
         if !visible {
             *culled_nodes += 1;
         }
+        // A split resolves more baked detail only while the child grid still
+        // has unread source texels; past that limit the baked term is a debt
+        // that refinement cannot pay off, so it must not drive refinement.
+        let baked_is_resolvable =
+            baked_error_limit.map_or(true, |limit| node.level < limit(node).min(MAX_LOD_LEVEL));
         let evaluation = NodeEvaluation {
             visible,
             projected_error_pixels: projected_error_pixels_with_height_range_and_ratio(
@@ -1643,7 +1732,7 @@ impl PlanetLod {
                 viewport_height,
                 vertical_fov_radians,
                 distance_height_range,
-                geometric_error_ratio,
+                geometric_error_ratio.for_node(baked_is_resolvable),
             ),
         };
         evaluations.insert(node, evaluation);

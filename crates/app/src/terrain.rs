@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet, HashMap},
     error::Error,
     fmt,
@@ -16,13 +17,14 @@ use wgpu::util::DeviceExt;
 use crate::{
     outmap::{Outmap, OutmapError, TileData},
     planet::{
-        CHUNK_GRID_QUADS, CameraViewBasis, ChunkVertex, DEFAULT_MAX_ACTIVE_CHUNKS,
-        GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, MAX_LOD_LEVEL,
+        CHUNK_GRID_QUADS, CameraViewBasis, ChunkVertex, GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
+        GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, GeometricErrorRatio, MAX_LOD_LEVEL,
         OUTMAP_TERRAIN_FAR_HEIGHT_SCALE, OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS,
         OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS, OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE,
         PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode, TerrainHeightRange,
         baked_sample_spacing_meters, build_chunk_mesh, cube_face_basis, cube_face_direction,
-        outmap_surface_height_meters, outmap_terrain_height_scale, placeholder_height_meters,
+        max_active_chunks_from_env, outmap_surface_height_meters, outmap_terrain_height_scale,
+        placeholder_height_meters,
     },
 };
 
@@ -86,8 +88,25 @@ const LADDER_GEOMETRIC_ERROR_PER_ROUGHNESS: f64 = 2.939_5;
 /// good at the current roughness: this change is meant to remove a ceiling, not
 /// to move the tessellation everyone has been looking at.
 const OUTMAP_BAKED_GEOMETRIC_ERROR_RATIO: f64 = 0.053_6;
-const OUTMAP_GEOMETRIC_ERROR_RATIO: f64 = OUTMAP_BAKED_GEOMETRIC_ERROR_RATIO
-    + crate::planet::TERRAIN_DETAIL_ROUGHNESS * LADDER_GEOMETRIC_ERROR_PER_ROUGHNESS;
+const OUTMAP_LADDER_GEOMETRIC_ERROR_RATIO: f64 =
+    crate::planet::TERRAIN_DETAIL_ROUGHNESS * LADDER_GEOMETRIC_ERROR_PER_ROUGHNESS;
+/// What a node is charged while its children still have source texels to read.
+/// Only the tests name it now; the selector takes the two terms apart.
+#[cfg(test)]
+const OUTMAP_GEOMETRIC_ERROR_RATIO: f64 =
+    OUTMAP_BAKED_GEOMETRIC_ERROR_RATIO + OUTMAP_LADDER_GEOMETRIC_ERROR_RATIO;
+/// The same two numbers, kept apart so the selector can stop charging for the
+/// baked term once a node's children have read every source texel under them.
+///
+/// Charging it past that point is what made the mountains ask for sub-pixel
+/// geometry: out there 151 of 256 chunks sit at L14 against L4 baked data, a
+/// source-level delta of 10, and no split at that depth can resolve one more
+/// texel of the macro surface. The ladder term is the part that stays honest
+/// all the way down, because the ladder really does have another octave.
+const OUTMAP_GEOMETRIC_ERROR: GeometricErrorRatio = GeometricErrorRatio {
+    baked: OUTMAP_BAKED_GEOMETRIC_ERROR_RATIO,
+    ladder: OUTMAP_LADDER_GEOMETRIC_ERROR_RATIO,
+};
 /// Below this altitude the camera is close enough that geometry density matters
 /// more than source texel uniqueness. Ancestor tiles may feed finer grids while
 /// the worker streams better sources; otherwise low flight stalls at L6 and
@@ -471,7 +490,9 @@ impl TerrainRenderer {
             contents: bytemuck::cast_slice(&topology.indices),
             usage: wgpu::BufferUsages::INDEX,
         });
-        let instance_capacity = DEFAULT_MAX_ACTIVE_CHUNKS;
+        // The selector's budget and the instance buffer have to be the same
+        // number, or a lifted budget silently draws only the first 256 chunks.
+        let instance_capacity = max_active_chunks_from_env();
         let instance_buffer = create_instance_buffer(device, instance_capacity);
         let (environment_cubemap, environment_view, environment_sampler) =
             create_environment_cubemap(device, queue);
@@ -850,6 +871,13 @@ impl TerrainRenderer {
                 vertical_fov_radians,
             ),
             TerrainDataSource::Outmap(outmap) => {
+                // The baked error limit is asked in both branches, and it is
+                // not the same question as the split cap. Low flight
+                // deliberately lets a node refine past its source so the
+                // camera does not sit on huge facets while better tiles
+                // stream; that bypass says the mesh may keep splitting, not
+                // that the baked surface acquired detail it does not have.
+                let baked_error_limit = BakedErrorLimit::new(outmap);
                 if camera_altitude_meters < LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS {
                     self.lod.update_for_view_with_constraints(
                         camera_world,
@@ -858,8 +886,9 @@ impl TerrainRenderer {
                         aspect_ratio,
                         viewport[1].max(1),
                         vertical_fov_radians,
-                        OUTMAP_GEOMETRIC_ERROR_RATIO,
+                        OUTMAP_GEOMETRIC_ERROR,
                         &|_| MAX_LOD_LEVEL,
+                        Some(&|node| baked_error_limit.level_limit(node)),
                     )
                 } else {
                     self.lod.update_for_view_with_constraints(
@@ -869,8 +898,9 @@ impl TerrainRenderer {
                         aspect_ratio,
                         viewport[1].max(1),
                         vertical_fov_radians,
-                        OUTMAP_GEOMETRIC_ERROR_RATIO,
+                        OUTMAP_GEOMETRIC_ERROR,
                         &|node| outmap_node_level_limit(outmap, node),
+                        Some(&|node| baked_error_limit.level_limit(node)),
                     )
                 }
             }
@@ -1923,6 +1953,68 @@ fn tile_key(node: QuadtreeNode) -> Result<TileKey, TerrainError> {
     })
 }
 
+/// Answers "how deep can baked data still resolve anything here" for every
+/// node the selector evaluates, which is thousands per update.
+///
+/// `resolve_tile` walks from the requested key to the best available ancestor
+/// and each step is a binary search over the manifest's tile list, so a node
+/// ten levels below its source pays ten of them. Recording every key the walk
+/// passes through collapses that: a sibling checks itself, hits the shared
+/// parent in the map, and stops. Nothing is assumed about the tile pyramid --
+/// the walk still tests each key itself before consulting an ancestor's entry,
+/// so a lone tile with no parent would still be found.
+struct BakedErrorLimit<'a> {
+    outmap: &'a Outmap,
+    source_levels: RefCell<HashMap<TileKey, u8>>,
+}
+
+impl<'a> BakedErrorLimit<'a> {
+    fn new(outmap: &'a Outmap) -> Self {
+        Self {
+            outmap,
+            source_levels: RefCell::new(HashMap::new()),
+        }
+    }
+
+    fn source_level(&self, requested: TileKey) -> u8 {
+        let mut source_levels = self.source_levels.borrow_mut();
+        let mut walked = Vec::new();
+        let mut key = requested;
+        let source_level = loop {
+            if let Some(&level) = source_levels.get(&key) {
+                break level;
+            }
+            if self.outmap.manifest().has_tile(key) {
+                walked.push(key);
+                break key.level;
+            }
+            walked.push(key);
+            match key.parent() {
+                Some(parent) => key = parent,
+                // A validated outmap has a root tile for every face, so this is
+                // unreachable; level 0 is the honest answer if it ever is not.
+                None => break 0,
+            }
+        };
+        for key in walked {
+            source_levels.insert(key, source_level);
+        }
+        source_level
+    }
+
+    /// The level past which splitting reads no new source texels. Two extra
+    /// quadtree levels consume one tile's samples, which is the same bound
+    /// `outmap_node_level_limit` enforces when it is enforced at all.
+    fn level_limit(&self, node: QuadtreeNode) -> u8 {
+        let Ok(requested) = tile_key(node) else {
+            return MAX_LOD_LEVEL;
+        };
+        self.source_level(requested)
+            .saturating_add(OUTMAP_TILE_GRID_SUBDIVISION_LEVELS)
+            .min(MAX_LOD_LEVEL)
+    }
+}
+
 fn outmap_node_level_limit(outmap: &Outmap, node: QuadtreeNode) -> u8 {
     debug_assert_eq!(
         (TILE_LOGICAL_SIZE - 1) / CHUNK_GRID_QUADS as u32,
@@ -2323,10 +2415,54 @@ mod tests {
             "calibration point moved to {}",
             at(0.0328)
         );
-        // And it has to be the budget the selector is actually using.
+        // And it has to be the budget the selector is actually using, which it
+        // now carries in two parts.
         assert_eq!(
             OUTMAP_GEOMETRIC_ERROR_RATIO,
             at(crate::planet::TERRAIN_DETAIL_ROUGHNESS)
+        );
+        assert_eq!(
+            super::OUTMAP_GEOMETRIC_ERROR.total(),
+            OUTMAP_GEOMETRIC_ERROR_RATIO
+        );
+        assert_eq!(
+            super::OUTMAP_GEOMETRIC_ERROR.baked,
+            OUTMAP_BAKED_GEOMETRIC_ERROR_RATIO
+        );
+        // The ladder alone must still drive refinement, because past the baked
+        // limit it is the entire budget. A zero there stops the mesh dead at
+        // the source level and gives back the facets the ladder exists to hide.
+        assert!(super::OUTMAP_GEOMETRIC_ERROR.ladder > 0.0);
+    }
+
+    /// The baked term is charged only where a split can still read a source
+    /// texel it has not read. Past that the macro surface is fully resolved and
+    /// further refinement returns the same bilinear patch, so charging for it
+    /// buys geometry that provably cannot differ from its parent's.
+    #[test]
+    fn the_baked_error_term_stops_at_the_source_limit() {
+        use crate::planet::GeometricErrorRatio;
+
+        let error = super::OUTMAP_GEOMETRIC_ERROR;
+        assert_eq!(error.for_node_for_test(true), error.total());
+        assert_eq!(error.for_node_for_test(false), error.ladder);
+        assert!(error.for_node_for_test(false) < error.for_node_for_test(true));
+
+        // The saving is a property of the two terms, not a tuned number: split
+        // distance scales with the ratio and chunk count with its square.
+        let demand_scale = (error.ladder / error.total()).powi(2);
+        assert!(
+            (0.55..0.62).contains(&demand_scale),
+            "dropping the baked term should leave ~0.59 of the chunk demand, got {demand_scale}"
+        );
+
+        // The placeholder terrain has no baked source to exhaust, so it must
+        // never lose its budget: it passes no limit and stays uniform.
+        let placeholder =
+            GeometricErrorRatio::uniform(crate::planet::PLACEHOLDER_GEOMETRIC_ERROR_RATIO);
+        assert_eq!(
+            placeholder.for_node_for_test(true),
+            crate::planet::PLACEHOLDER_GEOMETRIC_ERROR_RATIO
         );
     }
 
@@ -2792,8 +2928,9 @@ mod tests {
             16.0 / 9.0,
             1_080,
             60.0_f64.to_radians(),
-            super::OUTMAP_GEOMETRIC_ERROR_RATIO,
+            super::OUTMAP_GEOMETRIC_ERROR,
             &|_| MAX_LOD_LEVEL,
+            None,
         );
 
         assert!(16_000.0 < LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS);

@@ -1,7 +1,7 @@
 # Handoff — ground readability / render modernisation
 
-**Branch:** `experiment/ground-readability` (32 commits ahead of `origin`, **not pushed**)
-**Head:** `1847f63` "Assert the probe on p90, not max: the maximum was measuring the horizon"
+**Branch:** `experiment/ground-readability` (pushed; `origin` is level with local)
+**Head:** "Charge the baked error only where a split can still resolve it"
 **Written:** 27 July 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
@@ -160,6 +160,11 @@ Results land in `test-runs/<scenario>/<unix>-<id>/{manifest.json,log.jsonl,scree
 - Benchmarks build to `/home/dad/catingard-target`, not the in-repo `target/`.
 - Other flags: `--terrain placeholder|outmap`, `--outmap <path>`, `--vertical-fov-degrees`,
   `CATINGARDEN_RAY_EXPERIMENTS`, `WGPU_ADAPTER_NAME`.
+- **`CATINGARDEN_MAX_ACTIVE_CHUNKS` lifts the chunk budget** (selector and instance buffer together)
+  so a run can show what the selector actually wants rather than what the cap allows. `budget_limited`
+  going to 0 is how you know demand is satisfied and the number is real. Do not read a demand
+  reduction as a frame-time saving without checking this: at the default 256 the cap binds on every
+  frame of every scenario, and a change that cuts demand by a third can leave the frame untouched.
 
 There is no env hook for the debug shading modes (F9 cycles them interactively, but scenarios cannot
 press keys). Add a temporary `CATINGARDEN_DEBUG_MODE` match on `render_debug_mode` in `main.rs` when
@@ -169,7 +174,69 @@ you need one.
 
 ## 6. Next, in order
 
-### 1. The chunk budget — MEASURED, and it must not be raised
+### 1. The chunk budget — DONE, and it bought less at the cap than the demand figure suggests
+
+**Ian took the call and the baked term is now dropped where it cannot resolve anything.** The
+selector carries its error in two parts (`GeometricErrorRatio` in `planet.rs`): the baked macro
+surface's own curvature and resampling error, and the runtime ladder's. A node is charged the baked
+term only while its children still have unread source texels — `source_level + 2`, the same bound
+`outmap_node_level_limit` enforces when it is enforced at all. Past that a split resamples the same
+bilinear patch and returns its parent's surface exactly, so the demand was for geometry that
+provably could not differ. The ladder term is charged all the way down, because the ladder really
+does have another octave.
+
+The limit is asked for every evaluated node, which is thousands per update, and `resolve_tile` is a
+binary search per level walked. `BakedErrorLimit` memoises every key each walk passes through, so a
+sibling checks itself, hits the shared parent, and stops. It still tests each key itself before
+consulting an ancestor's entry, so it assumes nothing about the tile pyramid.
+
+**Measured, raster, idle machine, `PRESENT_MODE=immediate`, one binary per column:**
+
+| | cap 256 before | cap 256 after | cap 1024 before | cap 1024 after |
+|---|---:|---:|---:|---:|
+| `tour_mountains` frame | 39.2 ms | **36.9 ms** | 66.4 ms | **45.4 ms** |
+| `tour_mountains` chunks / tri | 256 / 679 k | 255 / **604 k** | 530 / 1.29 M | **356** / 848 k |
+| `tour_mountains` budget-limited | 14/14 | **11/14** | 0/14 | 0/14 |
+| `low_flight_performance` frame | 30.4 ms | 30.7 ms | 38.2 ms | **37.3 ms** |
+| `low_flight_performance` chunks | 256 | 256 | 352 | **345** |
+
+**Read the two halves of that table differently.** With the budget lifted clear of demand the change
+is large and does what the model predicted: mountain demand falls 530 → 356 chunks (0.67×, against a
+0.59 prediction from ratio² — the gap is the balancing pass, which adds graded nodes the ratio does
+not govern) and 21 ms comes off the frame. **At the shipping cap of 256 almost none of that reaches
+the frame, because the cap was already binding and still is.** The mountains keep 2.3 ms, all of it
+from the balancing overshoot shrinking (679 k → 604 k triangles); every other scenario is pinned at
+256 chunks exactly as before and does not move at all.
+
+**`low_flight_performance` barely moved even at cap 1024 — 352 → 345 — and that is the change working
+correctly, not failing.** It flies the sparse corridor, where fine baked data really exists, so the
+baked term is still legitimately charged there. The saving appears only where the data has run out.
+
+Quality, raster: `tour_mountains` probe p90 **4.04 → 3.83 m** at cap 256 (the same budget spent
+where it resolves something), `stand_on_ground` unchanged at 0.25 m, `path_parity_ridge` 1.93 → 1.97 m
+with its median improving 0.97 → 0.88 m. `detail_correlation` stays 1.000. At cap 1024 the mountains
+cost 3.70 → 3.83 m, which is the honest price of the removed demand and is 0.13 m.
+
+Ray path: `stand_on_ground` unchanged at 0.64 / 0.45 m; `tour_mountains` 37.3 → 36.7 ms.
+
+**What is still true:** the cap is load-bearing and must not be raised — cap 1024 is 45 ms even after
+this. The mountains are still over budget at 36.9 ms against 33 ms. The remaining levers are the
+2 px split threshold and the ladder term itself, and both are quality trades with no free win in
+them. The measurement below is why.
+
+**Ray `tour_mountains` reads p90 1529 m, median 1377 m, `detail_correlation` −0.501.** That is
+pre-existing — it re-measures bit-identically with this change reverted — and nothing asserts on it,
+so it has never been looked at. A negative correlation is the instrument saying the marcher's relief
+runs *opposite* to the CPU's, which is not what altitude or grazing geometry alone would do. It
+deserves its own investigation; see §9 on not reading a single statistic as a verdict.
+
+### 1b. The measurement hook this needed
+
+`CATINGARDEN_MAX_ACTIVE_CHUNKS` overrides `DEFAULT_MAX_ACTIVE_CHUNKS` and the instance buffer
+together, so "is the cap binding, and by how much" is now one run rather than an edited constant and
+a rebuild. The two have to move together or a lifted budget silently draws only the first 256 chunks.
+
+### 1c. The original diagnosis, kept because the reasoning still governs
 
 `planet.rs:30` — `DEFAULT_MAX_ACTIVE_CHUNKS = 256`. `budget_limited` is true on every
 `tour_mountains` and `low_flight_performance` frame, so the selector is permanently suppressed. It is
@@ -204,8 +271,11 @@ with resolving more of it, all the way down.
 **So the real lever is the ratio or the 2 px split threshold, and both are quality-versus-cost
 trades, not bug fixes.** Reducing error demand by ×0.77 (dropping the baked term, which cannot
 resolve anything past L4 out here anyway) would cut demand to ~0.59 of current. That is the most
-defensible saving available because it removes work that provably produces nothing. It needs Ian's
-call: he has previously said to absorb budget breaches in favour of appearance.
+defensible saving available because it removes work that provably produces nothing.
+
+*(Done — see §6.1. The prediction was close: measured 0.67, not 0.59. The lesson worth keeping is
+that a demand reduction is not a frame-time saving while the cap is binding, and it was binding on
+every frame of every scenario. Only the mountains saw any of it at cap 256.)*
 
 ### 2. Materials — and the ambient idea that this measurement killed
 
@@ -459,8 +529,8 @@ These are the mistakes that actually cost time on this branch.
 
 ## 10. Working agreements
 
-- **Commit and push after each set of changes** (`AGENTS.md`). The branch is currently **32 commits
-  ahead of `origin` and unpushed** — decide whether to push before starting new work.
+- **Commit and push after each set of changes** (`AGENTS.md`). The branch is pushed and `origin` is
+  level with local; keep it that way rather than letting a stack build up again.
 - Update `AGENTS.md` "What exists now" at the end of a session, and keep **this file** current in the
   same change as any behaviour, architecture, command, risk or next-action change.
 - Give every temporary/staged checkout its own `CARGO_TARGET_DIR`. Sharing the worktree's `target/`
