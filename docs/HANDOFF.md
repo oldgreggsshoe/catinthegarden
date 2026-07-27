@@ -247,10 +247,22 @@ while streaming replaces coarse ancestors underneath it.
 
 Each was built, measured, and rejected on evidence.
 
-- **Cast shadows.** Prototyped and reverted: +8.2 ms for 0.12% of pixels changed. Shadows need grade
-  > tan(sun elevation); the synthesised ladder's characteristic grade is 6.6%, so it casts only below
-  3.8°, and below ~8° the atmosphere has already taken the ground to near-black. There is nothing to
-  shadow. Do not rebuild without new terrain.
+- **Cast shadows — but this verdict is now stale evidence, see below.** Prototyped and reverted:
+  +8.2 ms for 0.12% of pixels changed. Shadows need grade > tan(sun elevation), and below ~8° the
+  atmosphere has already taken the ground to near-black, so the window was empty.
+  **That was measured at roughness 0.0328, before the 0.06 change and the hill band — i.e. the "new
+  terrain" its own do-not-rebuild condition asked for has since arrived.** Slope statistics
+  (`1 − dot(normal, radial)`) roughly quadrupled at the tail:
+
+  | | p50 grade | p99 grade | max grade | p99 casts below |
+  |---|---:|---:|---:|---:|
+  | roughness 0.0328 | 9.1% | 21.2% | 29.6% | 12.0° sun |
+  | roughness 0.06 | 15.4% | 34.2% | 64.3% | **18.9° sun** |
+
+  So the top 1% of terrain now has a genuine ~8–19° window instead of essentially none. **Re-measure
+  before rebuilding, and expect the cost objection to have got worse, not better** — 8.2 ms lands on
+  a frame already ~5 ms over budget (§6.4). The geometric argument weakened; the budget argument
+  hardened. Do not rebuild on the strength of the table alone.
 - **A multiply-free integer hash.** 2 ms slower in raster, 13 ms in ray, and it failed its own
   quality test on an adjacent-cell correlation of −0.09.
 - **Per-block max-height ceilings for the marcher.** Measured no faster and reverted. An earlier
