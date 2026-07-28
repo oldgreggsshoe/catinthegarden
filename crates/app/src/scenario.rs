@@ -182,6 +182,7 @@ impl ScenarioRunner {
             "ground_to_orbit" => include_str!("../scenarios/ground_to_orbit.json"),
             "stare_at_sun" => include_str!("../scenarios/stare_at_sun.json"),
             "ocean_flyover" => include_str!("../scenarios/ocean_flyover.json"),
+            "ocean_coastline" => include_str!("../scenarios/ocean_coastline.json"),
             "orbital_zoom_lod" => include_str!("../scenarios/orbital_zoom_lod.json"),
             "polar_ice_cap" => include_str!("../scenarios/polar_ice_cap.json"),
             "terrain_material_preview" => {

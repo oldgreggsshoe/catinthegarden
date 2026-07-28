@@ -336,6 +336,8 @@ pub struct TerrainRenderer {
     queue: wgpu::Queue,
     transition_pipeline: wgpu::RenderPipeline,
     stable_pipeline: wgpu::RenderPipeline,
+    ocean_transition_pipeline: wgpu::RenderPipeline,
+    ocean_stable_pipeline: wgpu::RenderPipeline,
     terrain_tile_bind_group_layout: wgpu::BindGroupLayout,
     shared_bind_group: wgpu::BindGroup,
     _terrain_settings_buffer: wgpu::Buffer,
@@ -436,13 +438,13 @@ impl TerrainRenderer {
             label: Some("planet raster shader"),
             source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
-        let create_pipeline = |label, fragment_entry_point| {
+        let create_pipeline = |label, vertex_entry_point, fragment_entry_point| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
-                    entry_point: Some("vs_main"),
+                    entry_point: Some(vertex_entry_point),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                     buffers: &[ChunkVertex::layout(), TerrainInstance::layout()],
                 },
@@ -472,8 +474,14 @@ impl TerrainRenderer {
                 cache: None,
             })
         };
-        let transition_pipeline = create_pipeline("LOD terrain transition pipeline", "fs_main");
-        let stable_pipeline = create_pipeline("LOD terrain stable pipeline", "fs_main_stable");
+        let transition_pipeline =
+            create_pipeline("LOD terrain transition pipeline", "vs_main", "fs_main");
+        let stable_pipeline =
+            create_pipeline("LOD terrain stable pipeline", "vs_main", "fs_main_stable");
+        let ocean_transition_pipeline =
+            create_pipeline("LOD ocean transition pipeline", "vs_ocean", "fs_ocean");
+        let ocean_stable_pipeline =
+            create_pipeline("LOD ocean stable pipeline", "vs_ocean", "fs_ocean_stable");
 
         let topology = build_chunk_mesh(QuadtreeNode::root(0));
         // Every quadtree leaf has the same 33x33 topology. Node bounds now
@@ -566,6 +574,8 @@ impl TerrainRenderer {
             queue: queue.clone(),
             transition_pipeline,
             stable_pipeline,
+            ocean_transition_pipeline,
+            ocean_stable_pipeline,
             terrain_tile_bind_group_layout,
             shared_bind_group,
             _terrain_settings_buffer: terrain_settings_buffer,
@@ -1176,7 +1186,9 @@ impl TerrainRenderer {
             fallback_chunks,
             source_level_delta_histogram,
             lod_thrash_events: metrics.lod_thrash_events,
-            draw_calls: self.draw_batches.len() as u32,
+            // Each resolved-tile batch is drawn once as land/bathymetry and
+            // once as the independent depth-tested ocean shell.
+            draw_calls: (self.draw_batches.len() * 2) as u32,
         })
     }
 
@@ -1190,12 +1202,35 @@ impl TerrainRenderer {
         } else {
             &self.transition_pipeline
         };
+        let ocean_pipeline =
+            if self.fading_out_chunks.is_empty() && self.fade_in_started_at.is_empty() {
+                &self.ocean_stable_pipeline
+            } else {
+                &self.ocean_transition_pipeline
+            };
         render_pass.set_pipeline(pipeline);
         render_pass.set_bind_group(0, camera_bind_group, &[]);
         render_pass.set_bind_group(2, &self.shared_bind_group, &[]);
         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         render_pass.set_vertex_buffer(0, self.chunk_vertex_buffer.slice(..));
         render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+        for batch in &self.draw_batches {
+            let tile = batch.tile_key.map_or(&self.placeholder_tile, |key| {
+                self.tile_cache
+                    .get(&key)
+                    .expect("draw batch has a resident terrain tile")
+            });
+            render_pass.set_bind_group(1, &tile.bind_group, &[]);
+            render_pass.draw_indexed(
+                0..self.index_count,
+                0,
+                batch.first_instance..batch.first_instance + batch.instance_count,
+            );
+        }
+        // Open water is independent sea-shell geometry. Drawing it after the
+        // land/bathymetry batches lets reversed-Z keep raised terrain in front,
+        // while the ocean fragment stage clips the shell to the sampled coast.
+        render_pass.set_pipeline(ocean_pipeline);
         for batch in &self.draw_batches {
             let tile = batch.tile_key.map_or(&self.placeholder_tile, |key| {
                 self.tile_cache
@@ -2408,13 +2443,44 @@ mod tests {
             .expect("close material coordinate is present");
         assert!(distance_bailout < fine_coordinate);
         assert!(material.contains("if fine_weight > 0.0"));
+    }
 
-        let vertex = shader
+    #[test]
+    fn raster_ocean_uses_a_separate_analytic_shell() {
+        let shader = planet_shader_source();
+        let terrain_vertex = shader
             .split("fn vs_main(")
             .nth(1)
             .and_then(|source| source.split("\nfn ").next())
             .expect("terrain vertex function is present");
-        assert!(vertex.contains("if ocean {\n        wave_surface = ocean_surface("));
+        assert!(
+            !terrain_vertex.contains("ocean_surface("),
+            "terrain vertices must stay on land/bathymetry geometry"
+        );
+        assert!(
+            shader.contains("fn vs_ocean("),
+            "the raster ocean needs independent sea-shell geometry"
+        );
+        assert!(
+            shader.contains("fn fs_ocean_stable("),
+            "the raster ocean needs an independently depth-tested fragment stage"
+        );
+        let terrain_fragment = shader
+            .split("fn terrain_fragment_color(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("terrain fragment function is present");
+        let ocean_fragment = shader
+            .split("fn ocean_fragment_color(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("ocean fragment function is present");
+        assert!(terrain_fragment.contains(
+            "if is_open_ocean_surface(outmap, macro_height_meters, biome_id) {\n        discard;"
+        ));
+        assert!(ocean_fragment.contains(
+            "if !is_open_ocean_surface(outmap, macro_height_meters, biome_id) {\n        discard;"
+        ));
     }
 
     /// The LOD selector's error budget has to know about the synthesised
@@ -2852,7 +2918,7 @@ mod tests {
     fn ocean_aerial_perspective_preserves_the_dark_water_body() {
         let shader = planet_shader_source();
         assert!(shader.contains("const OCEAN_AERIAL_PERSPECTIVE_WEIGHT: f32 = 0.35;"));
-        assert_eq!(shader.matches("ocean_aerial_perspective(").count(), 4);
+        assert_eq!(shader.matches("ocean_aerial_perspective(").count(), 5);
         assert!(shader.contains("water_surface_color,\n        aerial_color,"));
     }
 

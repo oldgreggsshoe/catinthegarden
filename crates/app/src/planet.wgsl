@@ -29,7 +29,6 @@ struct VertexOutput {
     @location(2) aerial_color: vec3<f32>,
     @location(3) lod_transition: vec2<f32>,
     @location(4) surface_direction: vec3<f32>,
-    @location(5) ocean: f32,
     @location(6) source_uv: vec2<f32>,
     // Outmap flag and the scaled baked height, packed: the fragment stage
     // needs the height for each octave's headroom and the inter-stage location
@@ -51,6 +50,15 @@ struct VertexOutput {
     @location(13) @interpolate(flat) detail_vertex_spacing_meters: f32,
 }
 
+struct OceanVertexOutput {
+    @invariant @builtin(position) position: vec4<f32>,
+    @location(0) camera_relative_view_position: vec3<f32>,
+    @location(1) lod_transition: vec2<f32>,
+    @location(2) surface_direction: vec3<f32>,
+    @location(3) source_uv: vec2<f32>,
+    @location(4) @interpolate(flat) outmap: f32,
+}
+
 fn uses_outmap(terrain_info: u32) -> bool {
     return (terrain_info & 1u) != 0u;
 }
@@ -68,6 +76,12 @@ fn requested_level(terrain_info: u32) -> u32 {
 /// common case away from the sparse corridor.
 fn source_level(terrain_info: u32) -> u32 {
     return (terrain_info >> 9u) & 0x1fu;
+}
+
+fn is_open_ocean_surface(outmap: bool, macro_height_meters: f32, biome_id: u32) -> bool {
+    let ice = outmap && biome_id == 2u;
+    let lake = outmap && biome_id == 1u;
+    return macro_height_meters <= 0.0 && !ice && !lake;
 }
 
 fn sample_height(source_uv: vec2<f32>) -> f32 {
@@ -354,8 +368,13 @@ fn stitched_surface_direction(
     );
 }
 
-@vertex
-fn vs_main(input: VertexInput) -> VertexOutput {
+struct PatchVertex {
+    direction: vec3<f32>,
+    anchor_relative_position: vec3<f32>,
+    tile_uv: vec2<f32>,
+}
+
+fn project_patch_vertex(input: VertexInput) -> PatchVertex {
     let face = cube_face(input.terrain_info);
     let morphed_tile_uv = lod_morphed_tile_uv(input.tile_uv, input.lod_transition);
     let tile_uv = stitched_tile_uv(morphed_tile_uv, input.edge_stitch);
@@ -400,6 +419,16 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         anchor_relative_position =
             (direction - anchor_direction) * PLANET_RADIUS_METERS;
     }
+    return PatchVertex(direction, anchor_relative_position, tile_uv);
+}
+
+@vertex
+fn vs_main(input: VertexInput) -> VertexOutput {
+    let projected = project_patch_vertex(input);
+    let direction = projected.direction;
+    let anchor_relative_position = projected.anchor_relative_position;
+    let tile_uv = projected.tile_uv;
+    let anchor_direction = input.node_anchor_direction_cube_length.xyz;
     let source_uv = input.source_uv_offset + tile_uv * input.source_uv_scale;
     let outmap = uses_outmap(input.terrain_info);
     let macro_height = macro_terrain_height(outmap, source_uv, direction);
@@ -441,20 +470,8 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let base_biome_color = blended_biome_color(biome_blend);
     let ice = outmap && biome_id == 2u;
     let lake = outmap && biome_id == 1u;
-    let ocean = (macro_height <= 0.0 || lake) && !ice;
-    // Six trigonometric waves are visible only on water. Keep land vertices
-    // out of that work rather than evaluating both arms of a select.
-    var wave_surface = OceanSurface(vec3<f32>(0.0), 0.0, direction);
-    if ocean {
-        wave_surface = ocean_surface(direction, camera.projection.z);
-    }
     let land_height = select(height, max(height, 5.0), ice);
-    let water_base_height = select(0.0, height, lake);
-    let surface_height = select(
-        land_height,
-        water_base_height + wave_surface.vertical_displacement,
-        ocean,
-    );
+    let surface_height = land_height;
     let skirt_depth_meters = select(
         0.0,
         min(
@@ -466,8 +483,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         input.skirt_depth_meters > 0.0,
     );
     let local_planet_position = anchor_relative_position
-        + direction * (surface_height - skirt_depth_meters)
-        + select(vec3<f32>(0.0), wave_surface.horizontal_displacement, ocean);
+        + direction * (surface_height - skirt_depth_meters);
     let camera_relative_view_position = input.anchor_view_position
         + planet_to_view(local_planet_position);
     var normal = displaced_surface_normal(
@@ -481,9 +497,6 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         // The slope already carries each octave's own headroom, so there is no
         // scalar weight left to apply here.
         normal = terrain_detail_perturbed_normal(normal, direction, detail.slope);
-    }
-    if ocean {
-        normal = wave_surface.normal;
     }
     let sun_direction = normalize(camera.sun_direction.xyz);
     let sun_transmittance = surface_direct_sun_transmittance(
@@ -529,7 +542,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         direction,
         surface_height,
     );
-    if !ocean {
+    if !lake {
         aerial_color = terrain_distance_fog(
             aerial_color,
             camera_relative_view_position,
@@ -544,7 +557,6 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         aerial_color,
         input.lod_transition,
         direction,
-        select(0.0, 1.0, ocean),
         source_uv,
         vec2<f32>(select(0.0, 1.0, outmap), select(0.0, base_height, outmap)),
         lit_surface_color,
@@ -553,6 +565,26 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         anchor_direction,
         anchor_relative_position,
         select(0.0, vertex_spacing_meters, outmap),
+    );
+}
+
+@vertex
+fn vs_ocean(input: VertexInput) -> OceanVertexOutput {
+    let projected = project_patch_vertex(input);
+    let source_uv = input.source_uv_offset + projected.tile_uv * input.source_uv_scale;
+    let surface = ocean_surface(projected.direction, camera.projection.z);
+    let local_planet_position = projected.anchor_relative_position
+        + projected.direction * surface.vertical_displacement
+        + surface.horizontal_displacement;
+    let camera_relative_view_position = input.anchor_view_position
+        + planet_to_view(local_planet_position);
+    return OceanVertexOutput(
+        camera.projection_matrix * vec4<f32>(camera_relative_view_position, 1.0),
+        camera_relative_view_position,
+        input.lod_transition,
+        projected.direction,
+        source_uv,
+        select(0.0, 1.0, uses_outmap(input.terrain_info)),
     );
 }
 
@@ -581,26 +613,101 @@ fn fs_main_stable(input: VertexOutput) -> @location(0) vec4<f32> {
     return terrain_fragment_color(input);
 }
 
+@fragment
+fn fs_ocean(input: OceanVertexOutput) -> @location(0) vec4<f32> {
+    let transition_progress = input.lod_transition.x;
+    let incoming = input.lod_transition.y > 0.5;
+    let threshold = lod_dither_threshold(input.position);
+    if ((incoming && threshold >= transition_progress)
+        || (!incoming && threshold < transition_progress)) {
+        discard;
+    }
+    return ocean_fragment_color(input);
+}
+
+@fragment
+fn fs_ocean_stable(input: OceanVertexOutput) -> @location(0) vec4<f32> {
+    return ocean_fragment_color(input);
+}
+
+fn ocean_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
+    let direction = normalize(input.surface_direction);
+    let outmap = input.outmap > 0.5;
+    let macro_height_meters = macro_terrain_height(outmap, input.source_uv, direction);
+    let biome_id = sample_biome(input.source_uv);
+    // This draw is a geometric sea shell, not another material arm on the
+    // terrain mesh. Sample ownership per fragment so a coastline triangle
+    // cannot lift water between a sea-level and a raised land vertex.
+    if !is_open_ocean_surface(outmap, macro_height_meters, biome_id) {
+        discard;
+    }
+
+    let render_debug_mode = u32(camera.projection.w + 0.5);
+    if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
+        return vec4<f32>(debug_ocean_albedo(), 1.0);
+    }
+    let surface = ocean_surface(direction, camera.projection.z);
+    let sun_direction = normalize(camera.sun_direction.xyz);
+    let sun_transmittance = surface_direct_sun_transmittance(
+        direction,
+        surface.vertical_displacement,
+        sun_direction,
+    );
+    let sky_diffuse = sky_diffuse_irradiance(
+        surface.normal,
+        direction,
+        surface.vertical_displacement,
+        sun_direction,
+    );
+    let water_surface_color = ocean_lighting(
+        surface.normal,
+        input.camera_relative_view_position,
+        sun_transmittance,
+        sky_diffuse,
+    );
+    if render_debug_mode == RENDER_DEBUG_SURFACE_LIGHTING {
+        return vec4<f32>(water_surface_color, 1.0);
+    }
+    let water_aerial_color = ocean_aerial_perspective(
+        water_surface_color,
+        input.camera_relative_view_position,
+        direction,
+        surface.vertical_displacement,
+    );
+    if render_debug_mode == RENDER_DEBUG_AERIAL_CONTRIBUTION {
+        return vec4<f32>(
+            max(water_aerial_color - water_surface_color, vec3<f32>(0.0)),
+            1.0,
+        );
+    }
+    return vec4<f32>(water_aerial_color, 1.0);
+}
+
 fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let direction = normalize(input.surface_direction);
     let sun_direction = normalize(camera.sun_direction.xyz);
     let render_debug_mode = u32(camera.projection.w + 0.5);
-    if input.ocean > 0.5 {
+    let outmap = input.outmap_and_macro_height.x > 0.5;
+    let macro_height_meters = macro_terrain_height(outmap, input.source_uv, direction);
+    let biome_id = sample_biome(input.source_uv);
+    let ice = outmap && biome_id == 2u;
+    let lake = outmap && biome_id == 1u;
+    // Open sea belongs exclusively to the analytic shell drawn after this
+    // pass. Keeping bathymetry out of the depth buffer prevents a mixed
+    // coastline triangle from occluding the level water surface.
+    if is_open_ocean_surface(outmap, macro_height_meters, biome_id) {
+        discard;
+    }
+    if lake {
         if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
             return vec4<f32>(debug_ocean_albedo(), 1.0);
         }
         let surface = ocean_surface(direction, camera.projection.z);
-        let outmap = input.outmap_and_macro_height.x > 0.5;
-        let lake = outmap && sample_biome(input.source_uv) == 1u;
-        let water_base_height = select(
-            0.0,
-            terrain_height(
-                outmap,
-                input.source_uv,
-                direction,
-                length(input.camera_relative_view_position),
-            ),
-            lake,
+        let water_base_height = terrain_height(
+            outmap,
+            input.source_uv,
+            direction,
+            length(input.camera_relative_view_position),
         );
         let water_surface_height = water_base_height + surface.vertical_displacement;
         let sun_transmittance = surface_direct_sun_transmittance(
@@ -634,10 +741,10 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         }
         return vec4<f32>(water_aerial_color, 1.0);
     }
-    let outmap = input.outmap_and_macro_height.x > 0.5;
-    let macro_height_meters = macro_terrain_height(outmap, input.source_uv, direction);
+    // Preserve the established shallow beach colour on positive terrain.
+    // Actual open sea (macro height <= 0) was discarded above and is drawn by
+    // the level shell, so this blend can no longer raise the ocean silhouette.
     let ocean_coverage = outmap_ocean_coverage(outmap, macro_height_meters);
-    let biome_id = sample_biome(input.source_uv);
     let biome_blend = sample_biome_blend(input.source_uv);
     let moisture = sample_moisture(input.source_uv);
     let base_biome_color = blended_biome_color(biome_blend);
@@ -811,8 +918,5 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     if render_debug_mode == RENDER_DEBUG_AERIAL_CONTRIBUTION {
         return vec4<f32>(max(aerial_color - surface_color, vec3<f32>(0.0)), 1.0);
     }
-    return vec4<f32>(
-        aerial_color,
-        1.0,
-    );
+    return vec4<f32>(aerial_color, 1.0);
 }

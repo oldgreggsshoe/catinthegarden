@@ -1,7 +1,7 @@
 # Handoff — ground readability / render modernisation
 
 **Branch:** `diagnose/ocean-terrain-blockiness`
-**Head:** "Skip shader work with zero visual contribution"
+**Head:** "Depth-test raster ocean against land"
 **Written:** 28 July 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
@@ -30,8 +30,8 @@ A renderer that "looks like a modernish (2015 on) game", consistent from orbit t
 ## 2. State: what is green
 
 ```
-cargo test --workspace   →  192 passed, 0 failed, 5 ignored
-                            (app 160, baker lib 20, baker bin 1, baker integration 5, coretypes 6)
+cargo test --workspace   →  193 passed, 0 failed, 5 ignored
+                            (app 161, baker lib 20, baker bin 1, baker integration 5, coretypes 6)
                             the 5 ignored are the relief_survey/terrain instruments -- run them with
                             `cargo test -- --ignored --nocapture <name>`
 ```
@@ -665,9 +665,25 @@ The ray path does not have this fault: `foveated_debug.wgsl::ocean_hit` intersec
 sea-level shell, iterates the wave height, and chooses it only when it is in front of the terrain
 hit. **The correct raster fix is the same separation:** draw land/bathymetry as terrain, then draw a
 dedicated sea-level ocean shell/pass with its own depth, clipped by the sampled coast and depth-tested
-against land. This is real render-path work, not a constant change, and remains open. Do not try to
-hide it by reducing the already-one-metre waves, making the interpolant `flat`, or spending more
-global LOD on coastal triangles; those leave the mixed geometry wrong.
+against land. This is real render-path work, not a constant change. Do not try to hide it by
+reducing the already-one-metre waves, making the interpolant `flat`, or spending more global LOD on
+coastal triangles; those leave the mixed geometry wrong.
+
+That separation is now implemented in raster. `vs_main` always produces land/bathymetry geometry;
+the terrain fragment stage discards open-sea ownership. A separate `vs_ocean` projects the same
+canonical, instanced, edge-stitched patches onto the analytic Gerstner shell. Its fragment stage
+uses the exact complementary sampled-height/biome predicate, excluding polar ice and elevated
+lakes, and it is drawn after terrain with the existing reversed-Z `Greater` depth test and depth
+writes. The existing positive-height shallow-beach colour blend is retained, but it can no longer
+raise the sea silhouette because all true open sea comes from the shell. LOD morphs and transition
+dither are shared by both stages; the HUD's draw-call metric now counts both real batch draws.
+
+`raster_ocean_uses_a_separate_analytic_shell` locks down the separated shader entry points and
+complementary coast clipping. Deterministic scenario `ocean_coastline` replays the camera position,
+view direction, 75° FOV, sun, and frozen planet-local location from the original 232m-clearance
+manual capture. Run `1785237137-2559195` passes and its two stable probes read p90 **1.765m**,
+maximum **3.264m**, across 43 compared points; the captured ocean is a sea-level shell rather than
+the former land-to-water ramp.
 
 ### The high view has run out of source data, not mesh LOD
 
@@ -718,9 +734,16 @@ Before/after captures differ by 0–3 8-bit values, while independent repeat run
 0–2 from exposure/frame timing; later ocean captures are pixel-identical. There is no structural
 image change.
 
-Validation: **192 workspace tests pass, 5 diagnostic instruments ignored**. Raster `orbit_once`
-passes. Ray `orbit_once` passes and ray `ocean_flyover` remains finite; the latter fails only the
-pre-existing §3 fallback assertion (256 observed vs 192), not a shader or image assertion.
+The bailout-only commit validated **192 workspace tests, with 5 diagnostic instruments ignored**.
+Raster `orbit_once` passed. Ray `orbit_once` passed and ray `ocean_flyover` remained finite; the
+latter failed only the pre-existing §3 fallback assertion (256 observed vs 192), not a shader or
+image assertion.
+
+After adding the ocean shell, three-run Quadro raster means remain below the output-identical
+bailout measurements rather than regressing: `ocean_flyover` is **24.990ms** and `orbit_once` is
+**20.543ms**. The current full workspace result is **193 passed, 5 ignored**. Raster
+`ocean_coastline` and `orbit_once` pass; raster `ocean_flyover` remains finite and still fails only
+the same pre-existing fallback-count assertion.
 
 ## 7. What the terrain actually is now
 

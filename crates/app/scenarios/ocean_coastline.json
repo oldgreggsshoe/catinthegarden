@@ -1,0 +1,48 @@
+{
+  "name": "ocean_coastline",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 2.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_rotation_time_scale": 0.0,
+  "screenshot_times_seconds": [
+    1.0,
+    2.0
+  ],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [
+        -3994447.8654284626,
+        239646.72573845612,
+        -8111.575041993521
+      ],
+      "look_at": [
+        -3991985.181535307,
+        332957.50375578355,
+        27763.679575129834
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        -0.4797724734321358,
+        0.397776994021848,
+        0.7820433726870608
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 75.0
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 2
+  }
+}
