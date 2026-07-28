@@ -442,7 +442,12 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let ice = outmap && biome_id == 2u;
     let lake = outmap && biome_id == 1u;
     let ocean = (macro_height <= 0.0 || lake) && !ice;
-    let wave_surface = ocean_surface(direction, camera.projection.z);
+    // Six trigonometric waves are visible only on water. Keep land vertices
+    // out of that work rather than evaluating both arms of a select.
+    var wave_surface = OceanSurface(vec3<f32>(0.0), 0.0, direction);
+    if ocean {
+        wave_surface = ocean_surface(direction, camera.projection.z);
+    }
     let land_height = select(height, max(height, 5.0), ice);
     let water_base_height = select(0.0, height, lake);
     let surface_height = select(
@@ -656,10 +661,8 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         input.world_normal,
         input.camera_relative_view_position,
         input.terrain_detail_meters,
-        terrain_material_fine_position(
-            input.detail_anchor_direction,
-            input.detail_local_meters,
-        ),
+        input.detail_anchor_direction,
+        input.detail_local_meters,
         terrain_material_fine_weight(
             length(input.camera_relative_view_position),
         ),

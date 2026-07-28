@@ -2379,6 +2379,44 @@ mod tests {
         assert!(detail.contains("smoothstep(filter_meters"));
     }
 
+    #[test]
+    fn shader_skips_surface_work_that_cannot_affect_the_image() {
+        let shader = planet_shader_source();
+        let detail = shader
+            .split("fn terrain_detail_band(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("detail function is present");
+        let ocean_bailout = detail
+            .find("if scaled_macro_height_meters <= 0.0")
+            .expect("non-positive terrain exits before detail noise");
+        let noise_domain = detail
+            .find("let anchor_domain = terrain_detail_domain(anchor_direction);")
+            .expect("detail noise domain is present");
+        assert!(ocean_bailout < noise_domain);
+
+        let material = shader
+            .split("fn terrain_material_tint(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("material tint function is present");
+        let distance_bailout = material
+            .find("if fade <= 0.0")
+            .expect("distant material exits before texture work");
+        let fine_coordinate = material
+            .find("fine_position = terrain_material_fine_position(")
+            .expect("close material coordinate is present");
+        assert!(distance_bailout < fine_coordinate);
+        assert!(material.contains("if fine_weight > 0.0"));
+
+        let vertex = shader
+            .split("fn vs_main(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("terrain vertex function is present");
+        assert!(vertex.contains("if ocean {\n        wave_surface = ocean_surface("));
+    }
+
     /// The LOD selector's error budget has to know about the synthesised
     /// ladder, or it caps how steep the terrain may be without anyone saying
     /// so. This is the arithmetic that connects them.

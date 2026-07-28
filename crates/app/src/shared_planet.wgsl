@@ -483,6 +483,12 @@ fn terrain_detail_band(
     coarsest_meters: f32,
     scaled_macro_height_meters: f32,
 ) -> TerrainDetail {
+    // Every octave's headroom is exactly zero at and below sea level. Return
+    // before the integer noise walk instead of evaluating a field whose final
+    // amplitude is guaranteed to be zero.
+    if scaled_macro_height_meters <= 0.0 {
+        return TerrainDetail(0.0, vec3<f32>(0.0));
+    }
     let anchor_domain = terrain_detail_domain(anchor_direction);
     let local_domain = terrain_detail_domain(local_meters);
     // Everything below the filter contributes nothing, so bound the loop rather
@@ -1452,9 +1458,10 @@ fn terrain_material_tint(
     // Synthesised relief here, already filtered to this pixel's scale.
     terrain_detail_meters: f32,
     // Close-range tile coordinate and how much of it to use. Supplied by the
-    // caller because only the raster path has a node anchor to build an exact
-    // one from; the ray path passes zero weight and keeps the 2km tile.
-    fine_position: vec3<f32>,
+    // caller as an exact anchor/local split. The coordinate itself is built
+    // only when its close-range contribution is non-zero.
+    fine_anchor_direction: vec3<f32>,
+    fine_local_meters: vec3<f32>,
     fine_weight: f32,
 ) -> vec3<f32> {
     if !outmap {
@@ -1471,6 +1478,13 @@ fn terrain_material_tint(
     );
     if fade <= 0.0 {
         return vec3<f32>(1.0);
+    }
+    var fine_position = vec3<f32>(0.0);
+    if fine_weight > 0.0 {
+        fine_position = terrain_material_fine_position(
+            fine_anchor_direction,
+            fine_local_meters,
+        );
     }
     let base_weights = terrain_material_weights(
         blend,

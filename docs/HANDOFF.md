@@ -1,8 +1,8 @@
 # Handoff — ground readability / render modernisation
 
-**Branch:** `experiment/ground-readability` (pushed; `origin` is level with local)
-**Head:** "Charge the baked error only where a split can still resolve it"
-**Written:** 27 July 2026
+**Branch:** `diagnose/ocean-terrain-blockiness`
+**Head:** "Skip shader work with zero visual contribution"
+**Written:** 28 July 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
 
@@ -30,9 +30,9 @@ A renderer that "looks like a modernish (2015 on) game", consistent from orbit t
 ## 2. State: what is green
 
 ```
-cargo test --workspace   →  186 passed, 0 failed, 4 ignored
-                            (app 154, baker lib 20, baker bin 1, baker integration 5, coretypes 6)
-                            the 4 ignored are the relief_survey instruments -- run them with
+cargo test --workspace   →  192 passed, 0 failed, 5 ignored
+                            (app 160, baker lib 20, baker bin 1, baker integration 5, coretypes 6)
+                            the 5 ignored are the relief_survey/terrain instruments -- run them with
                             `cargo test -- --ignored --nocapture <name>`
 ```
 
@@ -643,6 +643,84 @@ that 5–8 ms.
 **Unrelated but now much better:** ray `tour_mountains`, which §6.1 flagged as reading p90 1529 m at
 `detail_correlation` −0.501, now reads **22.6 m at 0.999**. The anomaly was real and terrain-shaped,
 not an instrument artefact.
+
+## 6c. The 28 July ocean/block diagnosis, and the visual-free work it exposed
+
+Manual run `test-runs/manual/1785231815-2501476` is the reproduction. `capture-001`/`002` show the
+raster ocean rising in broad hills at 232 m and 1,043 m clearance; `capture-003` shows the angular,
+cell-like land and water ownership at 105.5 km. The run is current head `69cd04d9`, raster, frozen
+scene time, and the wave diagnostic spans only **1.011 m** (`-0.485..+0.526 m`).
+
+### The raster ocean is not mountainous because of its waves
+
+`planet.wgsl::vs_main` classifies each mesh vertex independently as land or ocean. It puts a land
+vertex at its displaced terrain height, an ocean vertex at sea level, and passes the result through
+the ordinary interpolated `@location(5) ocean: f32`. A triangle crossing the coast therefore has
+both its position and its land/water flag interpolated. The fragment becomes water when that flag
+crosses 0.5, but it is still standing on the triangle between the zero-metre water vertex and the
+raised land vertex. On a zero-to-2,000 m edge, the first water fragment can consequently be about
+1,000 m high. The logged one-metre Gerstner range cannot produce the silhouette in the capture.
+
+The ray path does not have this fault: `foveated_debug.wgsl::ocean_hit` intersects an analytic
+sea-level shell, iterates the wave height, and chooses it only when it is in front of the terrain
+hit. **The correct raster fix is the same separation:** draw land/bathymetry as terrain, then draw a
+dedicated sea-level ocean shell/pass with its own depth, clipped by the sampled coast and depth-tested
+against land. This is real render-path work, not a constant change, and remains open. Do not try to
+hide it by reducing the already-one-metre waves, making the interpolant `flat`, or spending more
+global LOD on coastal triangles; those leave the mixed geometry wrong.
+
+### The high view has run out of source data, not mesh LOD
+
+At the 105.5 km capture the raster selector draws L3–L8, but its source-delta histogram shows the
+fine nodes falling back to the globally dense **L4** data. L4 is 128 × 2⁴ = 2,048 samples per cube
+face edge, or **3,906.25 m per height/biome sample**. The baker's 4,096 × 2,048 working grid is
+coarser still at about 6.1 km per cell. Splitting the mesh past that point only resamples the same
+bilinear height cell and categorical biome neighbourhood, so it cannot round the coastline or
+invent a less angular macro shape. The far-height scale is not the cause: at 105,492 m its
+100–1,000 km smooth blend is only **1.00033×**.
+
+The defensible quality options, in order:
+
+1. Re-bake genuinely denser global source data. L5 plus an 8,192 × 4,096 working grid halves the
+   block scale; exporting L5 from the existing working grid would only interpolate the same input.
+   Validate memory before committing to it: the ray path's six height/max-height/biome/moisture face
+   textures grow from about **0.286 GB at L4 to 1.142 GB at L5**. L6 is about 4.57 GB and is not
+   viable on the 2 GB Quadro.
+2. If L5 memory is too high, first quantise only the ray path's stitched height and conservative
+   max-height textures to a tested fixed-range 16-bit representation. This can retain sub-metre
+   height precision while making room for L5; the depth probe must prove raster/ray surface parity.
+3. A monotone bicubic height reconstruction could soften L4 cell facets without more data, but it
+   does not add coastline/biome information, costs more samples, and must be mirrored in CPU
+   clearance plus both render paths. Treat it as a fallback, not as a replacement for source detail.
+
+### Output-identical shader work removed now
+
+Three calculations were paid after their contribution was mathematically zero:
+
+- below-sea vertices ran the integer runtime-detail noise walk even though every octave's headroom
+  was exactly zero;
+- every land vertex evaluated all six Gerstner waves before selecting the non-water arm;
+- raster and ray fragments built the close-material warped coordinate even after its weight reached
+  zero.
+
+Those are now explicit early/conditional paths in `shared_planet.wgsl`, `planet.wgsl`, and
+`foveated_debug.wgsl`. Three-run Quadro means, raster, idle GPU,
+`CATINGARDEN_PRESENT_MODE=immediate`, same release target:
+
+| scenario | before | after | change |
+|---|---:|---:|---:|
+| `ocean_flyover` | 35.134 ms | **26.695 ms** | **−24.0%** |
+| `orbit_once` | 23.584 ms | **22.431 ms** | **−4.9%** |
+
+The ocean case isolates the important bailout: it has no land material work to skip and its water
+vertices still need the six waves, so the removed cost is the zero-amplitude terrain-detail walk.
+Before/after captures differ by 0–3 8-bit values, while independent repeat runs already differ by
+0–2 from exposure/frame timing; later ocean captures are pixel-identical. There is no structural
+image change.
+
+Validation: **192 workspace tests pass, 5 diagnostic instruments ignored**. Raster `orbit_once`
+passes. Ray `orbit_once` passes and ray `ocean_flyover` remains finite; the latter fails only the
+pre-existing §3 fallback assertion (256 observed vs 192), not a shader or image assertion.
 
 ## 7. What the terrain actually is now
 

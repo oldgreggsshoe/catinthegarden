@@ -1056,10 +1056,8 @@ fn shade_terrain(
         // The close-range tile is now addressable here too: the camera anchor
         // plus the camera-relative hit offset gives the same exact split the
         // raster path builds from its node.
-        terrain_material_fine_position(
-            ray_detail_anchor(),
-            ray_detail_local_meters(hit_view_position),
-        ),
+        ray_detail_anchor(),
+        ray_detail_local_meters(hit_view_position),
         terrain_material_fine_weight(length(hit_view_position)),
     );
     let textured_albedo = terrain_albedo * detail_tint;
