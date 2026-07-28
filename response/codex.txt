@@ -1,22 +1,14 @@
-Done and pushed.
+Next I would return to raster/ray terrain parity, specifically the mixed-source ray surface window.
 
-The ocean shell now omits only chunks whose complete bilinear R32F footprint is provably finite and above sea level. Coastline, ocean, placeholder, and uncertain chunks retain the old shader-owned path.
+Why:
+- Raster is now visually clean and near the 33 ms target.
+- Ray still rejects its entire 8x8 near-field window when even one block is coarse. At 14-30km that leaves it on global L4 and produces roughly 4.3km p90 surface error; at 738m the current one-sided hit comb still accepts wrong crossings and leaves about 51m p90 error.
+- This is a measured geometry/source-data defect, not a lighting issue.
 
-Comparison on the exact three mountain views, immediate mode:
+Order:
+1. Build one mixed-source ray window containing height, biome, moisture, and actual resolved source level per block, using the raster ancestor resolver.
+2. Replace the one-sided detail-hit comb with a front-to-back first-visible-crossing search.
+3. Match ray normal filtering and exact ocean ownership to raster.
+4. Re-run the existing paired `render_path_parity` matrix after each step, targeting low-view ray p90 within a few metres of raster and detail correlation at least 0.95 before any more visual tuning.
 
-| view | before, two-run mean | after, three-run mean | gain |
-|---|---:|---:|---:|
-| 001 | 33.567 ms | 32.703 ms | 0.864 ms / 2.6% |
-| 002 | 31.173 ms | 28.661 ms | 2.512 ms / 8.1% |
-| 003 | 33.724 ms | 32.844 ms | 0.880 ms / 2.6% |
-| equal-view mean | 32.821 ms | 31.403 ms | 1.418 ms / 4.3% |
-
-Final committed run `mountain_render_faults/1785273384-106648` passed at 32.844 / 28.902 / 33.328 ms.
-
-- Ocean work fell from 256 chunks / 589,824 triangles in every view to 1 / 0 / 1 chunks and 2,304 / 0 / 2,304 triangles.
-- Terrain remains unchanged at 256 chunks / 589,824 triangles.
-- Before/after captures differ by at most one 8-bit value from normal exposure timing; there is no structural visual change.
-- `ocean_flyover` retained all 256 ocean chunks and visible waves. Its wave check passed; the scenario still reports only its pre-existing fallback-limit failure.
-- 199 workspace tests passed; release build passed.
-
-Commit: `7189090`.
+I would do item 1 next; it is the highest-confidence remaining correctness gain.
