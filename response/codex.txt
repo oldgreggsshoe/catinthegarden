@@ -1,46 +1,15 @@
-Yes—much closer parity is achievable. The screenshots show that this is primarily a surface-data and ray-hit problem, not a colour-grading problem.
+No—not fully.
 
-I treated the newest 16 captures as eight frozen raster/ray pairs. They are good comparisons: camera, FOV, scene time, exposure, and post settings match within each pair.
+`docs/HANDOFF.md` is current through renderer commit `2ca5faf` (the depth-tested raster ocean pass), so its architecture and ocean diagnosis match the code. However, it does not contain the latest manual run `1785238000-2567254`, the measured raster/ray discrepancies, or the resulting parity work sequence.
 
-### What the pairs show
+It is also internally stale at the summary level: the opening scenario table reports `path_parity_ridge` ray p90 as 10.68 m, while a later section records the subsequent 3.47 m result.
 
-- **162.6 km is already close** (`005` raster / `006` ray). On the non-HUD half of the image, luminance correlation is 0.961. This says the shared atmosphere, lighting, tone mapping, and global L4 data can produce parity.
-- **70.8–14.0 km exposes ray-only contour/hatching bands** (`007–012`). These are consistent with screen/distance-locked quality steps in the ray detailed-hit reconstruction; the handoff already records that this moving-band symptom was not closed. The ray coastline also uses different ownership/blending rules from the newly corrected raster ocean, which adds a second definite coast mismatch.
-- **The first two low pairs have no ray near-field window at all.** Raster is reading local L16/L17 tiles while ray remains on the globally dense L4 faces. The measurements are decisive:
-  - 316 m clearance: ray p90 **72.7 m**, correlation **-0.19**; raster p90 **1.16 m**.
-  - 2.57 km clearance: ray p90 **142.5 m**, correlation **0.045**; raster p90 **5.31 m**, correlation **0.835**.
-- **The final pair proves a second fault after the near-field does load.** An L12 ray window is built immediately before `016`. The ray then agrees with the CPU macro surface to **0.16 m mean**, but misses the roughly **24 m mean** fine relief: ray p90 is **56.8 m**, correlation **0.478**, versus raster **2.29 m / 0.998**. That is why `016` is much flatter than `015`. `refine_detail_hit` is often finding the wrong detailed crossing or falling back to its macro hit.
+Before implementing the parity pass, the handoff should be updated with:
 
-### Concrete causes in code
+- the eight latest raster/ray pairs and their probe results;
+- the all-or-nothing, height-only ray near-field limitation;
+- the detailed-hit/macro-fallback evidence;
+- the ray normal and ocean-ownership mismatches;
+- the recommended implementation and validation order.
 
-1. **Near-field residency is all-or-nothing.** If any of its 8x8 blocks resolves only to L4, the entire ray window is refused, even when raster has fine data over most of the visible ground.
-2. **The ray near-field carries height only.** Biome and moisture always remain global L4, so close material ownership cannot match raster even when height does.
-3. **The detailed ray hit is a one-direction comb from the macro hit.** The synthesized field is non-monotonic along a grazing ray; a local sign does not guarantee that direction contains the first visible crossing. Twelve steps plus three bisections only refine a bracket if the correct bracket was found.
-4. **Ray macro normals remain L4-sized.** `terrain_normal` always uses `2 / face_quads`, even while sampling an active L12 height window. Raster instead chooses a camera-distance/source-texel-aware normal footprint. This directly explains some of the smoother ray shading and different slope-material weights.
-5. **Ocean ownership has drifted.** Raster now uses exact complementary land/open-sea predicates and a separately depth-tested shell. Ray still applies soft `outmap_ocean_coverage` at the shell and mixes ocean again at the terrain hit.
-6. **Presentation is not identical.** Final ray output is rendered through the 75%-per-axis warp/unwarp path; raster is direct. That should be evaluated last—it cannot explain the large depth errors, and the 162 km pair shows it is not the primary issue.
-
-### Recommended parity pass, in order
-
-1. **Add one deterministic paired parity scenario** using these camera poses. Capture depth plus F9 raw albedo, surface lighting, aerial, and final output for both paths. Extend the diagnostic probe far enough to cover the 14–71 km views, and expose near-field coverage plus detailed-hit bracket/fallback status. This will turn the hatching attribution from a strong inference into proof.
-2. **Make a unified ray surface window:** height, biome, moisture, and actual resolved source level/coverage, assembled through the same ancestor resolver as raster. Permit mixed fine/coarse blocks instead of disabling the whole window. The source-level channel is important so an L4 block resampled into the window does not pretend to be L12 and suppress the runtime ladder.
-3. **Replace the one-sided comb with a first-visible-crossing search.** Search front-to-back over a conservative detailed-surface interval, then refine the first sign change. Merely increasing `RAY_DETAIL_HIT_STEPS` may reduce error, but it preserves the topology bug and directly spends the already-tight GPU budget.
-4. **Share the raster normal-footprint rule with ray**, using camera distance and resolved sample spacing. Then derive the ray detail filter from the raster transfer function rather than independently tuning `RAY_DETAIL_FILTER_OVERSAMPLE`.
-5. **Make ray ocean ownership identical to raster:** exact open-sea predicate, analytic shell compared against terrain depth, lake/ice exclusions, and shallow beach blending only on positive terrain.
-6. **Only then compare direct full-resolution ray against warped ray.** Any remaining difference is genuinely the foveation quality/performance trade-off rather than terrain disagreement.
-
-Acceptance should be geometric before aesthetic: ray p90 no more than a few metres above raster at the low poses, detail correlation at least 0.95, no bracket-fallback bands during motion, matching F9 raw albedo ownership, and then Quadro timing against the 33 ms target.
-
-One limitation will remain even at perfect path parity: the shared angular macro geography in `005/006` comes from global L4 data. Both paths can match it, but making it less blocky requires denser global source data (the separate L5/rebake decision), not renderer parity work.
-
-No renderer files were changed in this pass; this was diagnosis and an implementation sequence.
-
-<oai-mem-citation>
-<citation_entries>
-MEMORY.md:42-46|note=[used prior renderer architecture and L4 coverage pointer]
-rollout_summaries/2026-07-17T20-49-16-HDn7-terrain_realism_multimaterial_lod_fade_investigation.md:22-32|note=[used read-first workflow and L4 geometry limit context]
-</citation_entries>
-<rollout_ids>
-019f71d7-3184-7f30-af0e-566be3d9aefd
-</rollout_ids>
-</oai-mem-citation>
+The current handoff remains useful, but it is not a complete current-state handoff.
