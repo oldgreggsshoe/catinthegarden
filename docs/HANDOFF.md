@@ -509,6 +509,36 @@ a unilateral number. `AERIAL_IN_SCATTER_SAMPLE_COUNT` is also only 2.*)
 near ground where little haze is correct, and would have supported the same conclusion for the wrong
 reason. The bands above are the measurement that means something.*
 
+### 2e. Colours and textures: the fine scale is missing, the coarse scale is not
+
+First measurement of the material system across the biomes §6.2 said to check and nobody had.
+Rendered with `CATINGARDEN_DEBUG_MODE=albedo` so lighting is excluded; `fine` is mean
+adjacent-pixel luminance difference, `coarse sd` is the spread between 32x32 block means.
+
+| scene (albedo) | sat sd | hue sd | fine | coarse sd |
+|---|---:|---:|---:|---:|
+| `tour_grassland` | 0.054 | 27.0 | **0.0001** | 0.0335 |
+| `tour_mountains` | 0.022 | 34.2 | 0.0023 | 0.0812 |
+| `tour_coast` | 0.193 | 60.1 | 0.0011 | 0.0585 |
+| `tour_tundra` | 0.273 | 38.2 | 0.0025 | 0.1132 |
+| `terrain_material_preview` | 0.019 | 1.1 | 0.0005 | 0.0187 |
+
+**Coarse variation exists; fine variation is essentially absent everywhere** — 0.0001 to 0.0025,
+against 0.0014–0.0051 in the same frames *with* lighting. So nearly all the metre-scale texture in
+the rendered image is shading, not albedo. Grassland is the extreme: 2,549 distinct ground colours
+in the frame, and adjacent pixels differing by 0.0001.
+
+**The leading suspect is documented behaviour rather than a defect** — and it is unverified, so
+verify it before building on it. `TERRAIN_MATERIAL_DETAIL_NEAR_METERS` 150 and
+`TERRAIN_MATERIAL_DETAIL_FAR_METERS` 900 fade the close-range material tile out past 900 m, and the
+shader's own comment says the remaining 2 km tile then "mips to its own average". If that is what is
+happening, everything past 900 m is a per-biome flat colour by construction, which is exactly the
+distance band a tour or a low pass spends its time in.
+
+**`tour_desert` is not a desert.** Its albedo frame is a single colour, (30, 133, 226), which is
+`debug_ocean_albedo` — the camera is over water. It was nearly reported here as the worst material
+result in the set. Re-author or re-aim it before using it to judge anything.
+
 ### 3. Near-field window streaming rate
 
 The window needs 64 L12 tiles and `MAX_TILE_UPLOADS_PER_FRAME = 4` is shared with the raster
