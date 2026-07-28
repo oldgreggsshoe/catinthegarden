@@ -476,8 +476,25 @@ pre-existing §3 assertions.
 `SKY_ATMOSPHERE_SATURATION = 2.0` and clamps at zero. On an already-warm horizon that drives blue
 **negative, and it clips to exactly 0.000** — which is the literal value the haze probe reads for the
 horizon sky, before and after the fix above. AGENTS.md records that 2× as a deliberate visual choice.
-It is now measurably destroying the blue end at low elevation, but lowering it changes the look of
-every sky in the project and wants Ian's eye.
+It was measurably destroying the blue end at low elevation. **Swept, and set to 1.3.**
+
+| `SKY_ATMOSPHERE_SATURATION` | horizon sky RGB | blue/red | `sunset_red_over_blue_grows` |
+|---:|---|---:|---|
+| 2.0 (was) | [0.259 0.155 **0.000**] | 0.00 | passes |
+| 1.6 | — | — | passes |
+| **1.3 (now)** | [0.229 0.159 0.028] | **0.12** | **passes** |
+| 1.0 | [0.215 0.161 0.065] | 0.30 | **fails**: required 1.100, observed 1.000 |
+
+1.0 gives the best horizon and costs the sunset outright — the boost is what makes red and blue
+diverge as the sun goes down, which is the job it was added for. 1.3 is the most that can come off
+while that still holds. Ray reads blue/red 0.35 at the same setting against raster's 0.12, which is
+a parity gap in the sky worth its own look.
+
+**Read the convergence numbers here with care.** They rise 0.704 → 0.758 → 0.810 across the sweep,
+but the far terrain band is *identical* at all three (saturation 0.219, luminance 0.211). The score
+moved because the sky reference moved toward the terrain, not because the terrain hazed better. The
+metric is symmetric by construction — it asks whether the two agree — so it must not be read as
+"haze improved" without checking which end moved.
 
 The haze probe is the way to judge any change to it: convergence and the far-band saturation are
 both in `manifest.json` now, so the question is a number rather than an argument.

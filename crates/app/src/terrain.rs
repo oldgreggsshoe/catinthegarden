@@ -2833,7 +2833,7 @@ mod tests {
     #[test]
     fn fullscreen_sky_applies_the_requested_double_saturation() {
         let shader = include_str!("atmosphere.wgsl");
-        assert!(shader.contains("const SKY_ATMOSPHERE_SATURATION: f32 = 2.0;"));
+        assert!(shader.contains("const SKY_ATMOSPHERE_SATURATION: f32 = 1.3;"));
         assert!(shader.contains("fn saturate_sky_color(color: vec3<f32>)"));
         assert!(shader.contains("saturate_sky_color(sky_radiance)"));
     }
