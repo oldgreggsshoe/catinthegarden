@@ -892,17 +892,36 @@ fn sky_radiance(
         shadow_transition_meters,
     );
     let cos_theta = dot(ray, sun_direction);
-    let rayleigh_scattering = RAYLEIGH_COEFFICIENT
+    // Optical depth of the representative column, then the fraction of it that
+    // actually scatters. This has to saturate, and the form it replaces did
+    // not: `transmittance * coefficient * path_length` multiplies a term
+    // growing linearly in path by one decaying exponentially in it, so the
+    // product peaks and then collapses back toward zero. The channel with the
+    // largest coefficient enters that collapse first, which is blue -- so the
+    // horizon, where the column is longest, lost precisely the wavelength that
+    // should dominate it. Measured before this: the horizon sky read
+    // [0.640 0.627 0.083], a blue-to-red ratio of 0.13 under a 45-degree sun,
+    // and terrain hazing correctly toward it therefore read as dimming rather
+    // than as distance.
+    //
+    // `1 - exp(-optical_depth)` is the same form `aerial_perspective` has been
+    // using all along; these two are one model and disagreed about it.
+    let rayleigh_optical_depth = RAYLEIGH_COEFFICIENT
         * density(sample_altitude, RAYLEIGH_SCALE_HEIGHT_METERS)
-        * phase_rayleigh(cos_theta)
         * rayleigh_path_length;
-    let mie_scattering = MIE_COEFFICIENT
+    let mie_optical_depth = MIE_COEFFICIENT
         * density(sample_altitude, MIE_SCALE_HEIGHT_METERS)
-        * phase_mie(cos_theta)
         * mie_path_length;
-    return view_transmittance * sun_transmittance
-        * (rayleigh_scattering + mie_scattering)
-        * SOLAR_RADIANCE;
+    let total_optical_depth = rayleigh_optical_depth + mie_optical_depth;
+    let phase_weight = (
+        rayleigh_optical_depth * phase_rayleigh(cos_theta)
+            + mie_optical_depth * phase_mie(cos_theta)
+    ) / max(total_optical_depth, vec3<f32>(1.0e-6));
+    let scattered_fraction = vec3<f32>(1.0) - exp(-total_optical_depth);
+    // No view transmittance here: the saturating fraction already accounts for
+    // attenuation along the column it integrates. Applying both extinguished
+    // the column twice, which is what drove the collapse.
+    return sun_transmittance * phase_weight * scattered_fraction * SOLAR_RADIANCE;
 }
 
 fn sky_diffuse_irradiance(

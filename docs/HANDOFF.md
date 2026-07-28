@@ -456,6 +456,32 @@ converging onto is wrong, which is why distance reads as dimming rather than as 
 sky model at low elevation angles before touching `AERIAL_IN_SCATTER_GAIN`** — the gain would only
 push terrain harder toward a colour that is itself the defect.
 
+### 2d. The sky's scattering did not saturate, and a saturation boost clips what is left
+
+Two stacked faults, found by following §2c's sky reading.
+
+**One, fixed.** `sky_radiance` returned `view_transmittance * scattering_coefficient *
+path_length` — a term growing linearly in path multiplied by one decaying exponentially in it, so
+the product peaks and then collapses back toward zero. The channel with the largest coefficient
+enters that collapse first, which is blue, so the horizon lost precisely the wavelength that should
+dominate it. It now uses `1 - exp(-optical_depth)`, which is **the form `aerial_perspective` has
+been using all along**: these are one model and disagreed about it. Measured effect on terrain
+haze at `tour_mountains`, 80–200 km band: saturation **0.461 → 0.194**, i.e. distance now
+desaturates as it should. 159 tests pass; `night_side_atmosphere` and `polar_ice_cap` — the two most
+sensitive to sky brightness — both still pass, and `sunset_sweep` / `ground_to_orbit` fail only their
+pre-existing §3 assertions.
+
+**Two, not fixed, because it is an authored knob and not ours to set.** The visible sky comes through
+`atmosphere.wgsl`, whose `saturate_sky_color` pushes colour away from its own luminance by
+`SKY_ATMOSPHERE_SATURATION = 2.0` and clamps at zero. On an already-warm horizon that drives blue
+**negative, and it clips to exactly 0.000** — which is the literal value the haze probe reads for the
+horizon sky, before and after the fix above. AGENTS.md records that 2× as a deliberate visual choice.
+It is now measurably destroying the blue end at low elevation, but lowering it changes the look of
+every sky in the project and wants Ian's eye.
+
+The haze probe is the way to judge any change to it: convergence and the far-band saturation are
+both in `manifest.json` now, so the question is a number rather than an argument.
+
 *(Superseded reasoning, kept because the measurement below is still valid on its own terms:* In-scatter lands around 0.10 against a surface at 0.5; a distant range reads pale because
 in-scatter dominates. `AERIAL_IN_SCATTER_GAIN` is 3.0 and §8 records that it affects neither
 extinction nor the sky, which makes it the isolated lever — but it is a tuning knob on a physical
