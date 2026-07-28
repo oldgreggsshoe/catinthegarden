@@ -379,6 +379,39 @@ albedo at this site will be working on the wrong end of the pipe.
 *(Also: the pale angular patches here are biome 9, not water as §6.2 guessed. Whether §6.2's
 coastline patches elsewhere are water or ice was not re-checked and should not be assumed either way.)*
 
+### 2c. The mountains are flat because there is no aerial perspective, not because of materials
+
+Following §2b's finding to the lighting, with `CATINGARDEN_DEBUG_MODE` at the `tour_mountains`
+mid-tour frame, sampled in three distance bands so near ground cannot mask the horizon:
+
+| band | albedo hue | lit hue | aerial contribution (lum) | `final` vs `lighting` |
+|---|---:|---:|---:|---|
+| far (horizon) | 199° | 41° | **0.015** | 0.559 vs 0.558 |
+| mid | 199° | 47° | **0.000** | identical |
+| near | 198° | 48° | 0.004 | identical |
+
+**Two things, and the second is the actionable one.**
+
+1. The warm tan is the *surface lighting* term, not the atmosphere. Albedo sits at hue 198–199° —
+   pale blue-white — at every distance, and the lit result is 41–48°. The lighting swings hue by
+   about 150°. §6.2's instinct to reach for albedo would not have touched this.
+2. **Aerial perspective contributes essentially nothing at any distance.** `RENDER_DEBUG_AERIAL_
+   CONTRIBUTION` returns `max(aerial − lighting, 0)`, so it shows only in-scatter; but `final`
+   equals `lighting` to three decimals in every band, which rules out extinction as well. Ground
+   luminance is flat with range — far 0.502, mid 0.565, near 0.533 — where a real range at tens of
+   km lifts toward the sky and desaturates with distance.
+
+**That absent depth cue is why the range still reads flat now that it genuinely has relief**, and it
+is the most likely single thing standing between this and "looks like a modernish game" from the
+air. Phase 5 built terrain aerial perspective and §8 records a lot of tuning of it; something in
+that path is evidently not firing at ~1 km clearance over a 4 km plateau. Start by finding whether
+the in-scatter is being computed and then discarded, or never computed, at these view distances —
+`AERIAL_IN_SCATTER_GAIN` is 3.0, so a zero result is not a gain problem.
+
+*Caveat on method: the first pass at this sampled only the bottom 65% of the frame, which is all
+near ground where little haze is correct, and would have supported the same conclusion for the wrong
+reason. The bands above are the measurement that means something.*
+
 ### 3. Near-field window streaming rate
 
 The window needs 64 L12 tiles and `MAX_TILE_UPLOADS_PER_FRAME = 4` is shared with the raster
