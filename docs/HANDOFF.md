@@ -6,7 +6,7 @@ the diagnosis branch and pushed to `origin/diagnose/ocean-terrain-blockiness`
 **Renderer state:** current branch — the raster selector admits only two-level-graded frontiers
 inside the 256-leaf budget, and mixed-LOD edges evaluate one continuous runtime-detail displacement
 **Latest evidence:** deterministic raster mountain repair run
-`test-runs/mountain_render_faults/1785271500-88705`
+`test-runs/mountain_render_faults/1785271707-90557`
 **Written:** 28 July 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
@@ -261,13 +261,14 @@ collapse remains capped at two levels; the fine displacement filter fades to the
 over the representable coarse footprint. This preserves the anti-alias filter in chunk interiors
 without reopening a height wall at the edge.
 
-Final deterministic raster run `1785271500-88705` passes all assertions and visually removes the
+Final committed-HEAD raster run `1785271707-90557` passes all assertions and visually removes the
 voids, sheets, false overhead terrain, and giant fans. Capture 002 is correctly sky-only in its
 strongly outward-looking orientation. Captures 001/003 measure p90 **9.509/9.349 m** and maxima
-**12.918/17.793 m**; their capture frames were **32.84/34.07 ms**, with capture 002 at **29.20 ms**.
+**12.918/17.793 m**; their capture frames were **37.77/34.27 ms**, with capture 002 at **29.03 ms**.
 The exact-pose balanced-frontier regression, packed-edge/WGSL validation, and all **198** workspace
-tests pass. The third view remains about 1 ms over the nominal 33 ms budget, so this is a correctness
-repair rather than a claim that the mountain performance work is finished.
+tests pass. A preceding identical-source run measured capture 001 at 32.84 ms, so the first view is
+near the budget but variable; capture 003 remains about 1 ms over it. This is a correctness repair,
+not a claim that the mountain performance work is finished.
 
 ---
 

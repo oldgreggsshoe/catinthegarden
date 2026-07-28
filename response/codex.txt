@@ -1,7 +1,10 @@
-The new mountain faults are reproduced and the cause is isolated.
+Fixed and pushed.
 
-- Raising the leaf budget from 256 to 1024 did not remove the holes, so this was not simply missing geometry.
-- Making runtime displacement use one continuous filter removed the holes, proving that neighboring LODs were evaluating the mountain-scale detail at incompatible filters.
-- The final fix keeps the 256-leaf frontier balanced before admitting refinement and blends a fine edge to its actual coarse-neighbor displacement filter.
+- Root cause: the 256-leaf selector exhausted its budget before topology balancing, and adjacent LODs filtered the amplified mountain displacement at incompatible vertex spacings.
+- Fix: requested splits now reserve their required two-level grading inside the unchanged budget; fine edges blend to the actual coarse-neighbor displacement filter.
+- Exact replay: `mountain_render_faults/1785271707-90557` at the three recorded locations, orientations, and FOVs passed. The black voids, giant sheets, false overhead terrain, and giant fan polygons are gone.
+- Validation: 198 workspace tests passed; focused Rust/WGSL regressions passed.
+- Performance: committed-run capture frames were 37.77, 29.03, and 34.27 ms. The first was 32.84 ms in the preceding identical-source run, so mountain performance remains close to, but not consistently within, the 33 ms target.
+- Fix commit: `b28d9e3`.
 
-The repaired replay at the original three positions/FOVs is clean: the black voids, giant sheets, false overhead terrain, and giant fan polygons are gone. The exact-pose scenario and focused Rust/WGSL regressions pass. I’m completing the full workspace validation and documentation before committing and pushing.
+Only the pre-existing untracked screenshots/report/Claude/tmp files remain untouched.
