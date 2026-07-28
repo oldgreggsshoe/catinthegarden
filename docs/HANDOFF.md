@@ -34,8 +34,8 @@ A renderer that "looks like a modernish (2015 on) game", consistent from orbit t
 ## 2. State: what is green
 
 ```
-cargo test --workspace   →  193 passed, 0 failed, 5 ignored
-                            (app 161, baker lib 20, baker bin 1, baker integration 5, coretypes 6)
+cargo test --workspace   →  194 passed, 0 failed, 5 ignored
+                            (app 162, baker lib 20, baker bin 1, baker integration 5, coretypes 6)
                             the 5 ignored are the relief_survey/terrain instruments -- run them with
                             `cargo test -- --ignored --nocapture <name>`
 ```
@@ -137,7 +137,7 @@ floor — a run that saw only sky would otherwise pass on no evidence.
 **Trap:** schedule the depth copy *before* the visual sun overlay pass; that pass has
 `StoreOp::Discard` on depth.
 
-`p90` is in the manifest but **not** in the `"surface probe"` tracing line — worth adding.
+`p90_abs_delta_m` is also emitted on the `"surface probe"` tracing line.
 
 ---
 
@@ -155,6 +155,9 @@ CATINGARDEN_RENDER_PATH=ray target/release/catinthegarden-app --scenario stand_o
 
 # Real frame times (Fifo pins everything to 16.67 ms and hides the truth)
 CATINGARDEN_PRESENT_MODE=immediate target/release/catinthegarden-app --scenario tour_mountains
+
+# Deterministic paired raster/ray composition and hit-status matrix
+CARGO_TARGET_DIR=/home/dad/catingard-target scripts/run-render-path-parity.sh
 ```
 
 Results land in `test-runs/<scenario>/<unix>-<id>/{manifest.json,log.jsonl,screenshots/}`.
@@ -172,9 +175,10 @@ Results land in `test-runs/<scenario>/<unix>-<id>/{manifest.json,log.jsonl,scree
   frame times near 1000 ms with `nvidia-smi` showing 0% util and P8, it is the throttle, not the
   renderer. Confirm by re-running with `immediate` before reporting anything.
 - Benchmarks build to `/home/dad/catingard-target`, not the in-repo `target/`.
-- **`CATINGARDEN_DEBUG_MODE=albedo|lighting|aerial|sky`** selects a render debug mode for a scenario,
-  which F9 could previously only reach interactively. `albedo` is how you tell a material problem
-  from a lighting one, and at the mountains it says the warm tan is lighting.
+- **`CATINGARDEN_DEBUG_MODE=albedo|lighting|aerial|sky|ray_hit`** selects a render debug mode for a
+  scenario. `albedo` is how you tell a material problem from a lighting one; `ray_hit` is an
+  env-only ray diagnostic where green is a bracketed detail hit, red is macro fallback, yellow is
+  no local relief, blue is ocean, and black is no hit.
 - Other flags: `--terrain placeholder|outmap`, `--outmap <path>`, `--vertical-fov-degrees`,
   `CATINGARDEN_RAY_EXPERIMENTS`, `WGPU_ADAPTER_NAME`.
 - **`CATINGARDEN_MAX_ACTIVE_CHUNKS` lifts the chunk budget** (selector and instance buffer together)
@@ -183,17 +187,13 @@ Results land in `test-runs/<scenario>/<unix>-<id>/{manifest.json,log.jsonl,scree
   reduction as a frame-time saving without checking this: at the default 256 the cap binds on every
   frame of every scenario, and a change that cuts demand by a third can leave the frame untouched.
 
-There is no env hook for the debug shading modes (F9 cycles them interactively, but scenarios cannot
-press keys). Add a temporary `CATINGARDEN_DEBUG_MODE` match on `render_debug_mode` in `main.rs` when
-you need one.
-
 ---
 
 ## 6. Next, in order
 
-**Current next session: start with the paired raster/ray parity work in §6d.** The numbered material,
-LOD and frame-budget entries below retain the measurements and decisions that produced the current
-renderer; they are not a newer priority list than §6d.
+**Current next session: continue §6d with the mixed-source ray window, then first-visible-crossing
+hit refinement.** The numbered material, LOD and frame-budget entries below retain the measurements
+and decisions that produced the current renderer; they are not a newer priority list than §6d.
 
 ### 1. The chunk budget — DONE, and it bought less at the cap than the demand figure suggests
 
@@ -753,11 +753,11 @@ image assertion.
 
 After adding the ocean shell, three-run Quadro raster means remain below the output-identical
 bailout measurements rather than regressing: `ocean_flyover` is **24.990ms** and `orbit_once` is
-**20.543ms**. The current full workspace result is **193 passed, 5 ignored**. Raster
+**20.543ms**. The current full workspace result is **194 passed, 5 ignored**. Raster
 `ocean_coastline` and `orbit_once` pass; raster `ocean_flyover` remains finite and still fails only
 the same pre-existing fallback-count assertion.
 
-## 6d. The 28 July paired raster/ray parity diagnosis — current next work
+## 6d. The 28 July paired raster/ray parity diagnosis — diagnostic complete, solver next
 
 Manual run `test-runs/manual/1785238000-2567254` contains 16 captures arranged as eight frozen
 raster/ray pairs. Within each pair the camera, 60-degree FOV, scene clock, exposure, blur/bloom,
@@ -777,9 +777,9 @@ The pairs, in order:
 | `013` raster / `014` ray | 5.0 km altitude | closer in silhouette, but ray material/relief remains smoother |
 | `015` raster / `016` ray | 392 m clearance | ray p90 **56.790 m**, correlation **0.478**; raster p90 **2.289 m**, correlation **0.998** |
 
-The probe currently reports zero comparable points for the 5–163 km captures because its diagnostic
-distance cap excludes those hits. That is a harness limitation, not evidence that the surfaces
-agree there.
+The original probe reported zero comparable points for the 5–163 km captures because its diagnostic
+distance cap excluded those hits. The deterministic scenario below opts into a 200 km comparison
+limit; ordinary probe scenarios retain the conservative 4 km default.
 
 ### What the low pairs prove
 
@@ -820,13 +820,46 @@ correspondingly much flatter in ray. This isolates a second problem after reside
    the 75%-per-axis warp/unwarp path while raster is direct. It cannot explain 57–142 m depth error,
    and the close 162.6 km pair shows it is secondary, but it sets the final pixel-parity ceiling.
 
+### Deterministic staged diagnostic — DONE
+
+`render_path_parity.json` replays four static planet-relative poses from the manual run at 70.8 km,
+29.9 km, 14.0 km, and 738 m altitude. `scripts/run-render-path-parity.sh` builds into the isolated
+target and runs raster and ray through final, raw-albedo, surface-lighting, and aerial modes, then
+runs the env-only ray hit-status view. The exact committed `6328a7d` Quadro set is:
+
+| path/mode | run |
+|---|---|
+| raster final / albedo / lighting / aerial | `1785249825-2674511` / `1785249848-2674713` / `1785249865-2674850` / `1785249885-2675034` |
+| ray final / albedo / lighting / aerial | `1785249906-2675210` / `1785249934-2675469` / `1785249979-2675856` / `1785250026-2676228` |
+| ray hit status | `1785250076-2676645` |
+
+All nine scenario runs pass their finite/screenshot/sample-floor assertions. The extended probe
+makes the geometric disagreement explicit:
+
+| altitude | raster p90 | direct ray p90 | ray near-field state |
+|---:|---:|---:|---|
+| 70.8 km | 51.422 m | 4416.316 m | no requested window |
+| 29.9 km | 45.530 m | 4358.699 m | requested L5; 9/64 blocks above L4; rejected |
+| 14.0 km | 24.472 m | 4332.534 m | requested L6; 30/64 blocks above L4; rejected |
+| 738 m | 2.585 m | 51.247 m | active L12 window; all blocks resolve only to L5 |
+
+The final warped ray p90 values are 4368.859, 4368.185, 4338.407, and 50.094 m. Their difference
+from the direct debug path is negligible beside the 4.3 km high-view and 51 m low-view errors, so
+the warp is not the primary defect. Raw-albedo full-frame raster/ray correlation falls to 0.510 at
+14 km and the contour pattern is already present there, before lighting or aerial composition.
+
+Hit status resolves the remaining ambiguity. At 70.8/29.9/14.0 km, every probe sample at or above
+p90 is a red macro fallback (9 of 81 at each pose), directly tying the kilometre errors to failed
+detail brackets while the all-or-nothing window is unavailable. At 738 m, none of the 54 comparable
+probe points is fallback: 48 are reported bracketed and six have no relief, yet all seven samples at
+or above the 51.247 m p90 are green “bracketed” hits. The loaded window therefore does not cure the
+geometry; the one-sided comb is also accepting the wrong crossing. This is measured evidence for
+both of the next two solver changes below, not a speculative shader rewrite.
+
 ### Implement and validate in this order
 
-1. **Add one deterministic paired parity scenario** from these logged camera poses. Capture depth
-   plus F9 raw albedo, surface lighting, aerial contribution and final output for both paths. Extend
-   the diagnostic probe far enough to cover the 14–71 km views, and expose near-field
-   level/coverage plus detailed-hit bracket/fallback state. This should prove the source of the
-   ray-only hatching before changing its solver.
+1. **DONE: deterministic paired parity scenario and staged diagnostics.** The committed run set and
+   conclusions are above. Keep this harness unchanged as the solver regression loop.
 2. **Build one unified ray surface window:** height, biome, moisture and actual resolved source
    level/coverage, assembled through the same ancestor resolver as raster. Permit mixed fine/coarse
    blocks rather than disabling the whole window. The source-level channel is required so an L4

@@ -1,6 +1,13 @@
-Read all 1,039 lines of the authoritative `docs/HANDOFF.md`. It explicitly supersedes the older root `PLANET_SIM_HANDOFF.md`.
+Done — §6d’s diagnostic milestone is implemented, validated, documented, committed, and pushed.
 
-I understand the current state and next priority: begin §6d with a deterministic paired raster/ray parity scenario and better diagnostics before changing the ray solver. The main unresolved defect is close-surface ray parity—ray p90 error is roughly 57–142 m where raster is about 1–5 m—followed by the mixed-resolution surface window, first-visible-hit search, normal footprint, and ocean-ownership fixes. I will preserve the existing untracked files and use an isolated `CARGO_TARGET_DIR`.
+- Added deterministic four-pose raster/ray parity replay, staged composition captures, a 200 km scenario-local depth probe, near-field coverage telemetry, and an env-only ray hit-status view.
+- The committed nine-run Quadro matrix shows direct-ray p90 errors of 4.42/4.36/4.33 km at 70.8/29.9/14.0 km, versus raster 51.4/45.5/24.5 m. Mixed L4–L6 windows are being rejected there, and every p90 outlier is a macro fallback.
+- At 738 m, raster is 2.58 m p90 and ray is 51.25 m. The ray window is active at L12 but contains only L5 data; none of the probe points falls back, and every p90 outlier is reported as a bracketed hit. That proves the one-sided comb is also accepting the wrong crossing.
+- The 14 km hatching already exists in raw albedo; warp/unwarp changes are negligible beside the geometric error.
+- Validation: 194 workspace tests passed with 5 diagnostic tests ignored; all nine parity scenario runs passed.
+- Code commit: `6328a7d`. The handoff, phase ledger, and this status were committed and pushed separately. Unrelated dirty files were left untouched.
+
+Next: build the mixed-source height/biome/moisture/source-level window, then replace the comb with a front-to-back first-visible-crossing search.
 
 <oai-mem-citation>
 <citation_entries>
