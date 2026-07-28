@@ -1,20 +1,10 @@
-Yes. This session's work was done on the separate branch `diagnose/ocean-terrain-blockiness`, forked from `experiment/ground-readability` at `69cd04d`. It is pushed to `origin/diagnose/ocean-terrain-blockiness`; `main` and the parent experiment branch were not changed.
+Read all 1,039 lines of the authoritative `docs/HANDOFF.md`. It explicitly supersedes the older root `PLANET_SIM_HANDOFF.md`.
 
-I updated the authoritative handoff and pushed it. `docs/HANDOFF.md` now includes:
-
-- the branch base and current renderer/evidence commits;
-- the latest eight paired raster/ray comparisons from manual run `1785238000-2567254`;
-- the measured low-flight surface errors and near-field evidence;
-- the all-or-nothing, height-only ray window limitation;
-- the detailed-hit, normal-footprint, ocean-ownership, and foveated-presentation gaps;
-- the exact recommended implementation and validation order for the next session;
-- clarification that the shared high-altitude L4 blockiness remains a separate L5/rebake decision.
-
-`AGENTS.md` also has a concise Phase 7 parity-diagnosis status line. The recorded manifest values and branch ancestry were verified; this was documentation-only, so renderer tests were not rerun. Unrelated local files remain untouched.
+I understand the current state and next priority: begin §6d with a deterministic paired raster/ray parity scenario and better diagnostics before changing the ray solver. The main unresolved defect is close-surface ray parity—ray p90 error is roughly 57–142 m where raster is about 1–5 m—followed by the mixed-resolution surface window, first-visible-hit search, normal footprint, and ocean-ownership fixes. I will preserve the existing untracked files and use an isolated `CARGO_TARGET_DIR`.
 
 <oai-mem-citation>
 <citation_entries>
-MEMORY.md:1-4|note=[used checkout-specific branch and dirty-tree verification guidance]
+MEMORY.md:1-4|note=[used checkout-specific path and dirty-tree verification guidance]
 </citation_entries>
 <rollout_ids>
 019f5337-5e4a-7af3-a2ad-6249f767c0f9
