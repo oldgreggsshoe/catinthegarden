@@ -109,6 +109,16 @@ pub struct ScenarioDefinition {
     pub hide_overlay: bool,
     #[serde(default)]
     pub seam_gap_check: bool,
+    /// Keep the camera roll aligned with the planet surface instead of the
+    /// global Y axis. Low-flight parity captures need the same local horizon
+    /// frame as the interactive F4 camera they were recorded from.
+    #[serde(default)]
+    pub planet_relative_up: bool,
+    /// Per-scenario override for the depth probe's comparison range. Ordinary
+    /// ground-contact checks intentionally stay near the camera; path-parity
+    /// diagnosis opts into the longer range it is trying to compare.
+    #[serde(default)]
+    pub surface_probe_max_distance_meters: Option<f64>,
     /// Test scenarios default to a static planet so terrain/LOD regressions
     /// remain focused; atmosphere scenarios opt in explicitly.
     #[serde(default)]
@@ -199,6 +209,7 @@ impl ScenarioRunner {
             }
             "stand_on_ground" => include_str!("../scenarios/stand_on_ground.json"),
             "path_parity_ridge" => include_str!("../scenarios/path_parity_ridge.json"),
+            "render_path_parity" => include_str!("../scenarios/render_path_parity.json"),
             "low_pass_bands" => include_str!("../scenarios/low_pass_bands.json"),
             "tour_mountains" => include_str!("../scenarios/tour_mountains.json"),
             "tour_desert" => include_str!("../scenarios/tour_desert.json"),
@@ -219,6 +230,12 @@ impl ScenarioRunner {
             || definition.duration_seconds <= 0.0
         {
             return Err("scenario timings must be positive".to_owned());
+        }
+        if definition
+            .surface_probe_max_distance_meters
+            .is_some_and(|distance| !distance.is_finite() || distance <= 0.0)
+        {
+            return Err("surface probe maximum distance must be finite and positive".to_owned());
         }
         if definition
             .screenshot_times_seconds
@@ -403,6 +420,20 @@ impl ScenarioRunner {
 
     pub fn needs_seam_gap_check(&self) -> bool {
         self.definition.seam_gap_check
+    }
+
+    pub fn uses_planet_relative_up(&self) -> bool {
+        self.definition.planet_relative_up
+            || matches!(
+                self.definition.name.as_str(),
+                "low_flight_performance" | "landing_site_ground_detail" | "landing_site_eye_level"
+            )
+    }
+
+    pub fn surface_probe_max_distance_meters(&self) -> f64 {
+        self.definition
+            .surface_probe_max_distance_meters
+            .unwrap_or(crate::probe::MAX_COMPARISON_DISTANCE_METERS)
     }
 
     pub fn orbit_settings(&self) -> Option<(f64, f64)> {
@@ -834,6 +865,37 @@ mod tests {
         assert!(sun.dot(DVec3::Z) > 0.7);
         assert_eq!(scenario.expected_screenshots(), 2);
         assert!(scenario.assertions().require_unlimited_lod_budget);
+    }
+
+    #[test]
+    fn render_path_parity_replays_the_logged_altitude_ladder() {
+        let mut scenario = ScenarioRunner::load("render_path_parity").expect("scenario parses");
+        let mut capture_altitudes = Vec::new();
+        loop {
+            let frame = scenario.advance();
+            if frame.capture_screenshot {
+                capture_altitudes.push(
+                    DVec3::from_array(frame.camera_world_position).length()
+                        - crate::planet::PLANET_RADIUS_METERS,
+                );
+            }
+            if frame.complete {
+                break;
+            }
+        }
+
+        assert_eq!(scenario.expected_screenshots(), 4);
+        assert!(scenario.uses_planet_relative_up());
+        assert_eq!(scenario.surface_probe_max_distance_meters(), 200_000.0);
+        for (observed, expected) in capture_altitudes
+            .iter()
+            .zip([70_792.6, 29_873.5, 13_993.6, 737.9])
+        {
+            assert!(
+                (observed - expected).abs() < 0.1,
+                "expected {expected}m, observed {observed}m"
+            );
+        }
     }
 
     #[test]

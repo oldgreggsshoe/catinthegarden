@@ -887,6 +887,7 @@ impl State {
                 "lighting" => planet::RenderDebugMode::SurfaceLighting,
                 "aerial" => planet::RenderDebugMode::AerialContribution,
                 "sky" => planet::RenderDebugMode::SkyOnly,
+                "ray_hit" => planet::RenderDebugMode::RayHitStatus,
                 _ => planet::RenderDebugMode::Final,
             },
             animation_frozen: false,
@@ -933,6 +934,7 @@ impl State {
         tracing::info!(
             target: "catinthegarden::experiment",
             render_path = self.render_path.label(),
+            render_debug_mode = self.render_debug_mode.label(),
             enabled_experiments = ?enabled,
             "render configuration"
         );
@@ -1304,6 +1306,8 @@ impl State {
             hide_overlay,
             seam_gap_check,
             scenario_pose,
+            scenario_planet_relative_up,
+            surface_probe_max_distance_meters,
             scenario_vertical_fov_degrees,
             scenario_sun_direction,
             scenario_planet_rotation_time_scale,
@@ -1326,6 +1330,8 @@ impl State {
                 scenario.hides_overlay(),
                 scenario.needs_seam_gap_check(),
                 scenario_pose,
+                scenario.uses_planet_relative_up(),
+                scenario.surface_probe_max_distance_meters(),
                 frame.vertical_fov_degrees,
                 Some(glam::DVec3::from_array(frame.sun_direction)),
                 frame.planet_rotation_time_scale,
@@ -1347,6 +1353,8 @@ impl State {
                 false,
                 false,
                 None,
+                false,
+                probe::MAX_COMPARISON_DISTANCE_METERS,
                 None,
                 None,
                 INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
@@ -1356,14 +1364,7 @@ impl State {
             // Surface-level scenarios need the horizon level, so their up axis
             // is pinned to the local radial. Orbital scenarios keep the default
             // basis, where a radial up is degenerate when looking straight down.
-            if self.scenario.as_ref().is_some_and(|scenario| {
-                matches!(
-                    scenario.name(),
-                    "low_flight_performance"
-                        | "landing_site_ground_detail"
-                        | "landing_site_eye_level"
-                )
-            }) {
+            if scenario_planet_relative_up {
                 self.camera
                     .set_world_pose_with_up(position, look_at, position.normalize());
             } else {
@@ -1779,6 +1780,7 @@ impl State {
                 camera_planet_frame_up,
             )
         });
+        let mut ray_near_field_coverage = None;
         if self.render_path == RenderPath::FoveatedRay {
             // Keep the raymarch path's near-field window under the camera. The
             // dense pyramid it otherwise samples is 3068m per texel, which at
@@ -1813,6 +1815,26 @@ impl State {
                             "near-field window built"
                         );
                         self.foveated.set_near_field(&self.queue, &window);
+                    }
+                    if probe_requested {
+                        ray_near_field_coverage =
+                            self.terrain.near_field_coverage(key).map(|mut coverage| {
+                                coverage.active_window_level = self
+                                    .foveated
+                                    .near_field_sources()
+                                    .map(|sources| sources.key.level);
+                                tracing::info!(
+                                    requested_level = coverage.requested_level,
+                                    resident_blocks = coverage.resident_blocks,
+                                    fine_blocks = coverage.finer_than_dense_blocks,
+                                    minimum_source_level = coverage.minimum_source_level,
+                                    maximum_source_level = coverage.maximum_source_level,
+                                    window_eligible = coverage.window_eligible,
+                                    active_window_level = coverage.active_window_level,
+                                    "ray near-field coverage"
+                                );
+                                coverage
+                            });
                     }
                 }
                 // Only a camera high enough to stop needing the window turns it
@@ -2186,13 +2208,14 @@ impl State {
             match probe::finish_depth_readback(&self.device, pending) {
                 Ok(depth) => {
                     let terrain = &self.terrain;
-                    let report = probe::compare_surface(
+                    let mut report = probe::compare_surface_with_limit(
                         sim_time,
                         self.render_path.label(),
                         &geometry,
                         &depth,
                         camera_sea_level_altitude_meters,
                         camera_surface_height_meters,
+                        surface_probe_max_distance_meters,
                         |direction| {
                             terrain.surface_height_breakdown_at(
                                 direction,
@@ -2200,6 +2223,8 @@ impl State {
                             )
                         },
                     );
+                    report.render_debug_mode = self.render_debug_mode.label().to_owned();
+                    report.ray_near_field = ray_near_field_coverage;
                     // Same depth image, different question: the probe asks
                     // whether the surface is where it should be, this asks
                     // whether distance reads on it.
@@ -2226,6 +2251,7 @@ impl State {
                         clearance_m = report.camera_clearance_meters,
                         compared = report.compared_points,
                         max_abs_delta_m = report.max_abs_delta_meters,
+                        p90_abs_delta_m = report.p90_abs_delta_meters,
                         median_abs_delta_m = report.median_abs_delta_meters,
                         mean_delta_m = report.mean_delta_meters,
                         mean_delta_from_macro_m = report.mean_delta_from_macro_meters,

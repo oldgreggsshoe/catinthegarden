@@ -1549,6 +1549,9 @@ mod tests {
         assert!(shader.contains("let water_hit = ocean_hit("));
         assert!(shader.contains("ray_atmosphere_radiance("));
         assert!(shader.contains("RENDER_DEBUG_SKY_ONLY"));
+        assert!(shader.contains("RENDER_DEBUG_RAY_HIT_STATUS"));
+        assert!(shader.contains("DETAIL_HIT_STATUS_BRACKETED"));
+        assert!(shader.contains("DETAIL_HIT_STATUS_FALLBACK"));
         assert!(shader.contains("@builtin(frag_depth) depth: f32"));
     }
 

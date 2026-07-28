@@ -25,6 +25,11 @@ const RAY_ANTISOLAR_TWILIGHT_MIN_SCATTER: f32 = 0.48;
 const RAY_SKY_ATMOSPHERE_SATURATION: f32 = 1.3;
 const RAY_OCEAN_SHELL_RADIUS_METERS: f32 = PLANET_RADIUS_METERS + 1.0;
 const RENDER_DEBUG_SKY_ONLY: u32 = 4u;
+const RENDER_DEBUG_RAY_HIT_STATUS: u32 = 5u;
+const DETAIL_HIT_STATUS_NONE: u32 = 0u;
+const DETAIL_HIT_STATUS_NO_RELIEF: u32 = 1u;
+const DETAIL_HIT_STATUS_BRACKETED: u32 = 2u;
+const DETAIL_HIT_STATUS_FALLBACK: u32 = 3u;
 const EXPERIMENT_HORIZON_DENSITY: u32 = 1u << 0u;
 const EXPERIMENT_TEMPORAL_REUSE: u32 = 1u << 1u;
 const EXPERIMENT_FOVEATED_SHADING: u32 = 1u << 3u;
@@ -96,6 +101,11 @@ struct WarpFragmentOutput {
 struct RayResult {
     color: vec4<f32>,
     distance_meters: f32,
+}
+
+struct DetailHit {
+    distance_meters: f32,
+    status: u32,
 }
 
 struct FaceUv {
@@ -649,7 +659,7 @@ fn refine_detail_hit(
     camera_position_view: vec3<f32>,
     ray: vec3<f32>,
     footprint_radians: f32,
-) -> f32 {
+) -> DetailHit {
     var value = detail_surface_function(
         macro_hit_meters,
         radial_dot_ray,
@@ -662,7 +672,7 @@ fn refine_detail_hit(
     // Inside the sparse corridor the ladder's high cut zeroes the detail
     // outright, so this is the common case there rather than an edge case.
     if abs(value) < RAY_DETAIL_HIT_MIN_RELIEF_METERS {
-        return macro_hit_meters;
+        return DetailHit(macro_hit_meters, DETAIL_HIT_STATUS_NO_RELIEF);
     }
     let hit_direction = normalize(view_to_planet(camera_position_view + ray * macro_hit_meters));
     let incidence = max(
@@ -715,7 +725,7 @@ fn refine_detail_hit(
     if !found {
         // The ladder never crossed the ray inside its own amplitude. Keep the
         // macro hit rather than inventing a surface that is not there.
-        return macro_hit_meters;
+        return DetailHit(macro_hit_meters, DETAIL_HIT_STATUS_FALLBACK);
     }
     var lower = min(bracket_near, bracket_far);
     var upper = max(bracket_near, bracket_far);
@@ -735,7 +745,23 @@ fn refine_detail_hit(
             upper = middle;
         }
     }
-    return 0.5 * (lower + upper);
+    return DetailHit(
+        0.5 * (lower + upper),
+        DETAIL_HIT_STATUS_BRACKETED,
+    );
+}
+
+fn detail_hit_status_color(status: u32) -> vec3<f32> {
+    if status == DETAIL_HIT_STATUS_BRACKETED {
+        return vec3<f32>(0.0, 1.0, 0.0);
+    }
+    if status == DETAIL_HIT_STATUS_FALLBACK {
+        return vec3<f32>(1.0, 0.0, 0.0);
+    }
+    if status == DETAIL_HIT_STATUS_NO_RELIEF {
+        return vec3<f32>(1.0, 0.75, 0.0);
+    }
+    return vec3<f32>(0.0);
 }
 
 fn refine_hit(
@@ -1214,6 +1240,7 @@ fn trace_ray(ray: vec3<f32>, detail: f32, footprint_radians: f32) -> RayResult {
         ray,
     );
     var hit_distance = -1.0;
+    var detail_hit_status = DETAIL_HIT_STATUS_NONE;
     // The camera can stand above the detailed surface while sitting below the
     // macro one: the ladder subtracts as well as adds, and at the landing site
     // it is -2.3m under a camera standing 2m up. The macro march is only an
@@ -1236,8 +1263,9 @@ fn trace_ray(ray: vec3<f32>, detail: f32, footprint_radians: f32) -> RayResult {
             ray,
             footprint_radians,
         );
-        if near_hit > start_distance {
-            hit_distance = near_hit;
+        detail_hit_status = near_hit.status;
+        if near_hit.distance_meters > start_distance {
+            hit_distance = near_hit.distance_meters;
             started_inside_macro_shell = true;
         }
     }
@@ -1276,18 +1304,26 @@ fn trace_ray(ray: vec3<f32>, detail: f32, footprint_radians: f32) -> RayResult {
         previous_value = value;
     }
     if hit_distance >= 0.0 && !started_inside_macro_shell {
-        hit_distance = refine_detail_hit(
+        let detail_hit = refine_detail_hit(
             hit_distance,
             radial_dot_ray,
             camera_position_view,
             ray,
             footprint_radians,
         );
+        hit_distance = detail_hit.distance_meters;
+        detail_hit_status = detail_hit.status;
     }
     let water_hit = ocean_hit(radial_dot_ray, camera_position_view, ray, detail);
     if water_hit.distance_meters >= 0.0
         && (hit_distance < 0.0 || water_hit.distance_meters <= hit_distance)
     {
+        if render_debug_mode == RENDER_DEBUG_RAY_HIT_STATUS {
+            return RayResult(
+                vec4<f32>(0.0, 0.5, 1.0, 1.0),
+                water_hit.distance_meters,
+            );
+        }
         let water_view = camera_position_view + ray * water_hit.distance_meters;
         let water_direction = normalize(view_to_planet(water_view));
         var color = shade_ocean(
@@ -1310,9 +1346,22 @@ fn trace_ray(ray: vec3<f32>, detail: f32, footprint_radians: f32) -> RayResult {
         return RayResult(vec4<f32>(color, 1.0), water_hit.distance_meters);
     }
     if hit_distance < 0.0 {
+        if render_debug_mode == RENDER_DEBUG_RAY_HIT_STATUS {
+            return RayResult(
+                vec4<f32>(detail_hit_status_color(detail_hit_status), 1.0),
+                -1.0,
+            );
+        }
         return RayResult(
             vec4<f32>(ray_atmosphere_radiance(ray, radial_dot_ray, detail), 1.0),
             -1.0,
+        );
+    }
+
+    if render_debug_mode == RENDER_DEBUG_RAY_HIT_STATUS {
+        return RayResult(
+            vec4<f32>(detail_hit_status_color(detail_hit_status), 1.0),
+            hit_distance,
         );
     }
 

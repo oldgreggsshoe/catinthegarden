@@ -2368,6 +2368,7 @@ pub enum RenderDebugMode {
     SurfaceLighting = 2,
     AerialContribution = 3,
     SkyOnly = 4,
+    RayHitStatus = 5,
 }
 
 impl RenderDebugMode {
@@ -2377,7 +2378,7 @@ impl RenderDebugMode {
             Self::RawAlbedo => Self::SurfaceLighting,
             Self::SurfaceLighting => Self::AerialContribution,
             Self::AerialContribution => Self::SkyOnly,
-            Self::SkyOnly => Self::Final,
+            Self::SkyOnly | Self::RayHitStatus => Self::Final,
         }
     }
 
@@ -2388,6 +2389,7 @@ impl RenderDebugMode {
             Self::SurfaceLighting => "surface lighting",
             Self::AerialContribution => "aerial contribution",
             Self::SkyOnly => "sky only",
+            Self::RayHitStatus => "ray detail-hit status",
         }
     }
 }

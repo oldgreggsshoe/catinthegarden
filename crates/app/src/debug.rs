@@ -1481,6 +1481,9 @@ mod tests {
         SurfaceProbeReport {
             sim_time: 0.0,
             render_path: "raster".to_owned(),
+            render_debug_mode: "final HDR scene".to_owned(),
+            ray_near_field: None,
+            comparison_distance_limit_meters: crate::probe::MAX_COMPARISON_DISTANCE_METERS,
             camera_altitude_meters: 1_000.0,
             camera_surface_height_meters: 1_000.0 - clearance_meters,
             camera_clearance_meters: clearance_meters,

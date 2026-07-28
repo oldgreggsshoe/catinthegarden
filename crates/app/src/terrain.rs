@@ -171,6 +171,22 @@ pub struct NearFieldWindow {
     pub max_height_meters: f32,
 }
 
+/// Residency behind the ray path's requested near-field window. Kept in the
+/// capture manifest so an all-or-nothing window rejection can be distinguished
+/// from a hit-refinement failure after a window was actually active.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct NearFieldCoverage {
+    pub requested_face: u8,
+    pub requested_level: u8,
+    pub total_blocks: u32,
+    pub resident_blocks: u32,
+    pub finer_than_dense_blocks: u32,
+    pub minimum_source_level: Option<u8>,
+    pub maximum_source_level: Option<u8>,
+    pub window_eligible: bool,
+    pub active_window_level: Option<u8>,
+}
+
 /// Finest window level whose extent still covers what the camera can see.
 ///
 /// Returns `None` when that is no finer than the dense pyramid the raymarch
@@ -805,6 +821,56 @@ impl TerrainRenderer {
             }
         }
         Some(NearFieldSources { key, source_keys })
+    }
+
+    pub fn near_field_coverage(&self, key: NearFieldKey) -> Option<NearFieldCoverage> {
+        let TerrainDataSource::Outmap(outmap) = &self.source else {
+            return None;
+        };
+        let dense_level = outmap.manifest().dense_level;
+        let mut resident_blocks = 0;
+        let mut finer_than_dense_blocks = 0;
+        let mut minimum_source_level: Option<u8> = None;
+        let mut maximum_source_level: Option<u8> = None;
+        for block_y in 0..NEAR_FIELD_WINDOW_TILES {
+            for block_x in 0..NEAR_FIELD_WINDOW_TILES {
+                let requested = TileKey {
+                    face: key.face,
+                    level: key.level,
+                    x: key.tile_x + block_x,
+                    y: key.tile_y + block_y,
+                };
+                let Ok(preferred) = outmap.resolve_tile(requested) else {
+                    continue;
+                };
+                let Some(source_key) = cached_tile_ancestor(requested, preferred, &self.tile_cache)
+                else {
+                    continue;
+                };
+                resident_blocks += 1;
+                finer_than_dense_blocks += u32::from(source_key.level > dense_level);
+                minimum_source_level = Some(
+                    minimum_source_level
+                        .map_or(source_key.level, |level| level.min(source_key.level)),
+                );
+                maximum_source_level = Some(
+                    maximum_source_level
+                        .map_or(source_key.level, |level| level.max(source_key.level)),
+                );
+            }
+        }
+        let total_blocks = NEAR_FIELD_WINDOW_TILES * NEAR_FIELD_WINDOW_TILES;
+        Some(NearFieldCoverage {
+            requested_face: key.face.index() as u8,
+            requested_level: key.level,
+            total_blocks,
+            resident_blocks,
+            finer_than_dense_blocks,
+            minimum_source_level,
+            maximum_source_level,
+            window_eligible: finer_than_dense_blocks == total_blocks,
+            active_window_level: None,
+        })
     }
 
     pub fn near_field_window(&self, sources: &NearFieldSources) -> Option<NearFieldWindow> {

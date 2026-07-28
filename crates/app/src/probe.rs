@@ -22,7 +22,7 @@ use std::time::Duration;
 use glam::{DVec2, DVec3};
 
 use crate::planet::{CameraViewBasis, PLANET_RADIUS_METERS};
-use crate::terrain::SurfaceHeightBreakdown;
+use crate::terrain::{NearFieldCoverage, SurfaceHeightBreakdown};
 
 /// Grid resolution of the screen-space sample pattern, per axis.
 pub const PROBE_GRID: u32 = 9;
@@ -147,6 +147,9 @@ fn comparison(hit: &ProbeHit, cpu: SurfaceHeightBreakdown) -> ProbeComparison {
 pub struct SurfaceProbeReport {
     pub sim_time: f64,
     pub render_path: String,
+    pub render_debug_mode: String,
+    pub ray_near_field: Option<NearFieldCoverage>,
+    pub comparison_distance_limit_meters: f64,
     pub camera_altitude_meters: f64,
     pub camera_surface_height_meters: f64,
     pub camera_clearance_meters: f64,
@@ -241,6 +244,7 @@ impl DepthImage {
 ///
 /// `cpu_height` is the same lookup the camera follows, so a zero delta here is
 /// exactly the statement "what you can see is what you would stand on".
+#[cfg(test)]
 pub fn compare_surface(
     sim_time: f64,
     render_path: &str,
@@ -250,6 +254,31 @@ pub fn compare_surface(
     camera_surface_height_meters: f64,
     cpu_height: impl Fn(DVec3) -> Option<SurfaceHeightBreakdown>,
 ) -> SurfaceProbeReport {
+    compare_surface_with_limit(
+        sim_time,
+        render_path,
+        geometry,
+        depth,
+        camera_altitude_meters,
+        camera_surface_height_meters,
+        MAX_COMPARISON_DISTANCE_METERS,
+        cpu_height,
+    )
+}
+
+pub fn compare_surface_with_limit(
+    sim_time: f64,
+    render_path: &str,
+    geometry: &ProbeGeometry,
+    depth: &DepthImage,
+    camera_altitude_meters: f64,
+    camera_surface_height_meters: f64,
+    maximum_comparison_distance_meters: f64,
+    cpu_height: impl Fn(DVec3) -> Option<SurfaceHeightBreakdown>,
+) -> SurfaceProbeReport {
+    assert!(
+        maximum_comparison_distance_meters.is_finite() && maximum_comparison_distance_meters > 0.0
+    );
     let points = probe_ndc_grid();
     let mut comparisons: Vec<ProbeComparison> = Vec::with_capacity(points.len());
     let mut surface_hits = 0usize;
@@ -263,7 +292,7 @@ pub fn compare_surface(
         };
         surface_hits += 1;
         nearest_hit_distance_meters = nearest_hit_distance_meters.min(hit.distance_meters);
-        if hit.distance_meters > MAX_COMPARISON_DISTANCE_METERS {
+        if hit.distance_meters > maximum_comparison_distance_meters {
             continue;
         }
         let Some(cpu) = cpu_height(hit.direction) else {
@@ -305,6 +334,9 @@ pub fn compare_surface(
     SurfaceProbeReport {
         sim_time,
         render_path: render_path.to_owned(),
+        render_debug_mode: "final HDR scene".to_owned(),
+        ray_near_field: None,
+        comparison_distance_limit_meters: maximum_comparison_distance_meters,
         camera_altitude_meters,
         camera_surface_height_meters,
         camera_clearance_meters: camera_altitude_meters - camera_surface_height_meters,
@@ -467,7 +499,7 @@ mod tests {
 
     use super::{
         DepthImage, MAX_COMPARISON_DISTANCE_METERS, PROBE_GRID, ProbeGeometry, compare_surface,
-        probe_ndc_grid,
+        compare_surface_with_limit, probe_ndc_grid,
     };
     use crate::planet::PLANET_RADIUS_METERS;
     use crate::terrain::SurfaceHeightBreakdown;
@@ -746,5 +778,18 @@ mod tests {
         );
         assert!(report.surface_hits > 0);
         assert_eq!(report.compared_points, 0);
+
+        let extended = compare_surface_with_limit(
+            0.0,
+            "raster",
+            &geometry,
+            &depth,
+            altitude,
+            0.0,
+            far_meters * 2.0,
+            flat_truth(0.0),
+        );
+        assert_eq!(extended.compared_points, extended.surface_hits);
+        assert_eq!(extended.comparison_distance_limit_meters, far_meters * 2.0);
     }
 }
