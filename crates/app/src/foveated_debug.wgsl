@@ -13,7 +13,8 @@ const RAY_DETAIL_MIN_INCIDENCE: f32 = 0.06;
 // without anything saying so -- p90 on path_parity_ridge went to 20m against a
 // 6m tolerance while the raster path held.
 const RAY_DETAIL_HIT_STEPS: i32 = 12;
-const RAY_DETAIL_HIT_REFINEMENTS: i32 = 3;
+const RAY_DETAIL_HIT_REFINEMENTS: i32 = 4;
+const RAY_DETAIL_FRONT_SEARCH_STEPS: i32 = 8;
 /// How much further than the relief measured at the macro hit the detail walk
 /// may reach, to cover the ladder standing taller further along the ray.
 const RAY_DETAIL_HIT_REACH_FACTOR: f32 = 3.0;
@@ -24,6 +25,7 @@ const RAY_SKY_DENSITY_SAMPLE_EXPONENT: f32 = 3.0;
 const RAY_ANTISOLAR_TWILIGHT_MIN_SCATTER: f32 = 0.48;
 const RAY_SKY_ATMOSPHERE_SATURATION: f32 = 1.3;
 const RAY_OCEAN_SHELL_RADIUS_METERS: f32 = PLANET_RADIUS_METERS + 1.0;
+const NEAR_FIELD_BLOCKS: u32 = 8u;
 const RENDER_DEBUG_SKY_ONLY: u32 = 4u;
 const RENDER_DEBUG_RAY_HIT_STATUS: u32 = 5u;
 const DETAIL_HIT_STATUS_NONE: u32 = 0u;
@@ -62,6 +64,7 @@ struct RayUniform {
     near_field_enabled: u32,
     near_field_samples: u32,
     _near_field_padding: u32,
+    near_field_source_levels: array<vec4<u32>, 16>,
 }
 
 @group(1) @binding(0)
@@ -76,6 +79,10 @@ var<uniform> ray_settings: RayUniform;
 var max_height_faces: texture_2d_array<f32>;
 @group(1) @binding(5)
 var near_field_height: texture_2d<f32>;
+@group(1) @binding(6)
+var near_field_biome: texture_2d<u32>;
+@group(1) @binding(7)
+var near_field_moisture: texture_2d<f32>;
 @group(3) @binding(0)
 var history_color: texture_2d<f32>;
 @group(3) @binding(1)
@@ -115,7 +122,6 @@ struct FaceUv {
 
 struct OceanHit {
     distance_meters: f32,
-    coverage: f32,
 }
 
 fn view_direction(ndc: vec2<f32>) -> vec3<f32> {
@@ -300,11 +306,14 @@ fn ray_baked_spacing_meters(surface_direction: vec3<f32>) -> f32 {
     if weight <= 0.0 {
         return face_spacing;
     }
-    // The window spans `near_field_uv_span` of a face UV that runs -1..1 over
-    // 2R of arc, across `near_field_samples` texels.
-    let window_spacing = ray_settings.near_field_uv_span * PLANET_RADIUS_METERS
-        / f32(ray_settings.near_field_samples - 1u);
-    return mix(face_spacing, window_spacing, weight);
+    let face_uv = direction_to_face_uv(surface_direction);
+    let source_level = near_field_sample_source_level(face_uv);
+    let source_spacing = continuous_baked_sample_spacing_meters(
+        face_uv.uv,
+        source_level,
+        true,
+    );
+    return mix(face_spacing, source_spacing, weight);
 }
 
 fn ray_terrain_detail(
@@ -378,6 +387,77 @@ fn near_field_sample_height(face_uv: FaceUv) -> f32 {
     return mix(mix(h00, h10, amount.x), mix(h01, h11, amount.x), amount.y);
 }
 
+fn near_field_texel_coordinate(face_uv: FaceUv) -> vec2<f32> {
+    let window_uv = (face_uv.uv - ray_settings.near_field_uv_origin)
+        / ray_settings.near_field_uv_span;
+    let last = f32(ray_settings.near_field_samples - 1u);
+    return clamp(window_uv, vec2<f32>(0.0), vec2<f32>(1.0)) * last;
+}
+
+fn near_field_sample_source_level(face_uv: FaceUv) -> u32 {
+    let window_uv = clamp(
+        (face_uv.uv - ray_settings.near_field_uv_origin)
+            / ray_settings.near_field_uv_span,
+        vec2<f32>(0.0),
+        vec2<f32>(0.999999),
+    );
+    let block = vec2<u32>(floor(window_uv * f32(NEAR_FIELD_BLOCKS)));
+    let index = block.y * NEAR_FIELD_BLOCKS + block.x;
+    return ray_settings.near_field_source_levels[index / 4u][index % 4u];
+}
+
+fn near_field_sample_biome(face_uv: FaceUv) -> u32 {
+    let coordinate = vec2<i32>(round(near_field_texel_coordinate(face_uv)));
+    return textureLoad(near_field_biome, coordinate, 0).x;
+}
+
+fn near_field_sample_biome_blend(face_uv: FaceUv) -> BiomeBlendSample {
+    let coordinate = near_field_texel_coordinate(face_uv);
+    let lower = vec2<i32>(floor(coordinate));
+    let last = i32(ray_settings.near_field_samples - 1u);
+    let upper = min(lower + vec2<i32>(1), vec2<i32>(last));
+    let amount = fract(coordinate);
+    return BiomeBlendSample(
+        vec4<u32>(
+            textureLoad(near_field_biome, lower, 0).x,
+            textureLoad(near_field_biome, vec2<i32>(upper.x, lower.y), 0).x,
+            textureLoad(near_field_biome, vec2<i32>(lower.x, upper.y), 0).x,
+            textureLoad(near_field_biome, upper, 0).x,
+        ),
+        vec4<f32>(
+            (1.0 - amount.x) * (1.0 - amount.y),
+            amount.x * (1.0 - amount.y),
+            (1.0 - amount.x) * amount.y,
+            amount.x * amount.y,
+        ),
+    );
+}
+
+fn near_field_sample_moisture(face_uv: FaceUv) -> f32 {
+    let coordinate = near_field_texel_coordinate(face_uv);
+    let lower = vec2<i32>(floor(coordinate));
+    let last = i32(ray_settings.near_field_samples - 1u);
+    let upper = min(lower + vec2<i32>(1), vec2<i32>(last));
+    let amount = fract(coordinate);
+    let lower_left = textureLoad(near_field_moisture, lower, 0).x;
+    let lower_right = textureLoad(
+        near_field_moisture,
+        vec2<i32>(upper.x, lower.y),
+        0,
+    ).x;
+    let upper_left = textureLoad(
+        near_field_moisture,
+        vec2<i32>(lower.x, upper.y),
+        0,
+    ).x;
+    let upper_right = textureLoad(near_field_moisture, upper, 0).x;
+    return mix(
+        mix(lower_left, lower_right, amount.x),
+        mix(upper_left, upper_right, amount.x),
+        amount.y,
+    );
+}
+
 fn sample_height(direction: vec3<f32>) -> f32 {
     let face_uv = direction_to_face_uv(direction);
     let coordinate = face_texel_coordinate(face_uv);
@@ -401,7 +481,11 @@ fn sample_height(direction: vec3<f32>) -> f32 {
 fn sample_biome(direction: vec3<f32>) -> u32 {
     let face_uv = direction_to_face_uv(direction);
     let coordinate = vec2<i32>(round(face_texel_coordinate(face_uv)));
-    return textureLoad(biome_faces, coordinate, i32(face_uv.face), 0).x;
+    let coarse = textureLoad(biome_faces, coordinate, i32(face_uv.face), 0).x;
+    if near_field_weight(face_uv) < 0.5 {
+        return coarse;
+    }
+    return near_field_sample_biome(face_uv);
 }
 
 fn sample_biome_blend(direction: vec3<f32>) -> BiomeBlendSample {
@@ -410,7 +494,7 @@ fn sample_biome_blend(direction: vec3<f32>) -> BiomeBlendSample {
     let lower = vec2<i32>(floor(coordinate));
     let upper = lower + vec2<i32>(1);
     let amount = fract(coordinate);
-    return BiomeBlendSample(
+    let coarse = BiomeBlendSample(
         vec4<u32>(
             textureLoad(biome_faces, lower, i32(face_uv.face), 0).x,
             textureLoad(biome_faces, vec2<i32>(upper.x, lower.y), i32(face_uv.face), 0).x,
@@ -424,6 +508,10 @@ fn sample_biome_blend(direction: vec3<f32>) -> BiomeBlendSample {
             amount.x * amount.y,
         ),
     );
+    if near_field_weight(face_uv) < 0.5 {
+        return coarse;
+    }
+    return near_field_sample_biome_blend(face_uv);
 }
 
 fn sample_moisture(direction: vec3<f32>) -> f32 {
@@ -450,11 +538,16 @@ fn sample_moisture(direction: vec3<f32>) -> f32 {
         i32(face_uv.face),
         0,
     ).x;
-    return mix(
+    let coarse = mix(
         mix(lower_left, lower_right, amount.x),
         mix(upper_left, upper_right, amount.x),
         amount.y,
     );
+    let weight = near_field_weight(face_uv);
+    if weight <= 0.0 {
+        return coarse;
+    }
+    return mix(coarse, near_field_sample_moisture(face_uv), weight);
 }
 
 fn shell_interval(radial_dot_ray: f32) -> vec2<f32> {
@@ -642,17 +735,13 @@ fn detail_surface_function(
         - (PLANET_RADIUS_METERS + macro_height + detail.height_meters);
 }
 
-/// Walks from the macro hit onto the detailed surface.
+/// Finds the first detailed-surface entry around the macro hit.
 ///
-/// At the macro hit the macro function is zero, so the detailed function there
-/// equals minus the detail height: its sign says at once whether the ladder has
-/// raised the ground above the ray (search back) or dropped it away (search
-/// on). That turns what would be a search into a short directed walk, which is
-/// what makes this affordable -- the ladder cannot be evaluated at every one of
-/// the 192 march steps.
-///
-/// The walk is scaled by 1/sin(incidence) because a metre of relief moves the
-/// crossing much further along a grazing ray than a steep one.
+/// The old comb trusted the detail sign at the macro crossing and searched
+/// only one direction. A non-monotonic relief field can rise through the ray
+/// and fall out again before that point, so the sign does not identify the
+/// first visible crossing. Search the same bounded interval from front to back
+/// instead, then refine its first outside-to-inside sign change.
 fn refine_detail_hit(
     macro_hit_meters: f32,
     radial_dot_ray: f32,
@@ -660,7 +749,7 @@ fn refine_detail_hit(
     ray: vec3<f32>,
     footprint_radians: f32,
 ) -> DetailHit {
-    var value = detail_surface_function(
+    let value = detail_surface_function(
         macro_hit_meters,
         radial_dot_ray,
         camera_position_view,
@@ -696,17 +785,72 @@ fn refine_detail_hit(
         abs(value) * RAY_DETAIL_HIT_REACH_FACTOR,
         TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS,
     ) / incidence;
-    let step_meters = (span_meters / f32(RAY_DETAIL_HIT_STEPS))
-        * select(-1.0, 1.0, value > 0.0);
-    var bracket_near = macro_hit_meters;
-    var value_near = value;
-    var bracket_far = macro_hit_meters;
+    let conservative_start = max(
+        macro_hit_meters - TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS / incidence,
+        0.0,
+    );
+    let conservative_end =
+        macro_hit_meters + TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS / incidence;
+    let search_start = max(macro_hit_meters - span_meters, 0.0);
+    let search_end = macro_hit_meters + span_meters;
+    var bracket_near = search_start;
+    var value_near = detail_surface_function(
+        search_start,
+        radial_dot_ray,
+        camera_position_view,
+        ray,
+        footprint_radians,
+    );
+    var bracket_far = search_end;
     var found = false;
-    for (var step = 1; step <= RAY_DETAIL_HIT_STEPS; step = step + 1) {
-        let candidate = macro_hit_meters + step_meters * f32(step);
-        if candidate <= 0.0 {
-            break;
+    if value_near <= 0.0 {
+        // Local relief can already have risen through the ray before the
+        // value-sized interval. Expand toward the conservative amplitude
+        // bound until the outside side of that first encountered entry is
+        // found; returning the macro hit here produced the camera-locked red
+        // fallback bands in the parity diagnostic.
+        var front_distance = search_start;
+        var front_step = max(span_meters, RAY_DETAIL_HIT_MIN_RELIEF_METERS);
+        for (
+            var step = 0;
+            step < RAY_DETAIL_FRONT_SEARCH_STEPS && !found;
+            step = step + 1
+        ) {
+            let candidate = max(
+                front_distance - front_step,
+                conservative_start,
+            );
+            let candidate_value = detail_surface_function(
+                candidate,
+                radial_dot_ray,
+                camera_position_view,
+                ray,
+                footprint_radians,
+            );
+            if candidate_value > 0.0 {
+                bracket_near = candidate;
+                value_near = candidate_value;
+                bracket_far = front_distance;
+                found = true;
+                break;
+            }
+            front_distance = candidate;
+            front_step = front_step * 2.0;
+            if front_distance <= conservative_start {
+                break;
+            }
         }
+    }
+    for (
+        var step = 1;
+        step <= RAY_DETAIL_HIT_STEPS && !found;
+        step = step + 1
+    ) {
+        let candidate = mix(
+            search_start,
+            search_end,
+            f32(step) / f32(RAY_DETAIL_HIT_STEPS),
+        );
         let candidate_value = detail_surface_function(
             candidate,
             radial_dot_ray,
@@ -714,13 +858,53 @@ fn refine_detail_hit(
             ray,
             footprint_radians,
         );
-        if (candidate_value > 0.0) != (value_near > 0.0) {
+        if candidate_value <= 0.0 && value_near > 0.0 {
             bracket_far = candidate;
             found = true;
             break;
         }
-        bracket_near = candidate;
-        value_near = candidate_value;
+        if value_near > 0.0 {
+            bracket_near = candidate;
+            value_near = candidate_value;
+        }
+    }
+    if !found && value_near > 0.0 {
+        // Negative local relief can move the entry farther behind the macro
+        // root than the value-sized interval predicted. Continue in
+        // front-to-back order, doubling the reach but never exceeding the
+        // ladder's conservative amplitude bound.
+        var back_distance = search_end;
+        var back_step = max(span_meters, RAY_DETAIL_HIT_MIN_RELIEF_METERS);
+        for (
+            var step = 0;
+            step < RAY_DETAIL_FRONT_SEARCH_STEPS && !found;
+            step = step + 1
+        ) {
+            let candidate = min(
+                back_distance + back_step,
+                conservative_end,
+            );
+            let candidate_value = detail_surface_function(
+                candidate,
+                radial_dot_ray,
+                camera_position_view,
+                ray,
+                footprint_radians,
+            );
+            if candidate_value <= 0.0 {
+                bracket_near = back_distance;
+                bracket_far = candidate;
+                found = true;
+                break;
+            }
+            back_distance = candidate;
+            bracket_near = candidate;
+            value_near = candidate_value;
+            back_step = back_step * 2.0;
+            if back_distance >= conservative_end {
+                break;
+            }
+        }
     }
     if !found {
         // The ladder never crossed the ray inside its own amplitude. Keep the
@@ -802,7 +986,10 @@ fn refine_hit(
     return 0.5 * (lower + upper);
 }
 
-fn terrain_normal(surface_direction: vec3<f32>) -> vec3<f32> {
+fn terrain_normal(
+    surface_direction: vec3<f32>,
+    hit_view_position: vec3<f32>,
+) -> vec3<f32> {
     let reference_axis = select(
         vec3<f32>(0.0, 1.0, 0.0),
         vec3<f32>(1.0, 0.0, 0.0),
@@ -810,7 +997,18 @@ fn terrain_normal(surface_direction: vec3<f32>) -> vec3<f32> {
     );
     let east = normalize(cross(reference_axis, surface_direction));
     let north = normalize(cross(surface_direction, east));
-    let epsilon = 2.0 / f32(ray_settings.face_quads);
+    // Match raster's continuously distance-filtered normal footprint while
+    // never probing below the resolved baked sample spacing.
+    let source_sample_meters = min(
+        ray_baked_spacing_meters(surface_direction),
+        TERRAIN_NORMAL_MAX_SAMPLE_METERS,
+    );
+    let normal_sample_meters = clamp(
+        length(hit_view_position) * 0.01,
+        max(TERRAIN_NORMAL_MIN_SAMPLE_METERS, source_sample_meters),
+        TERRAIN_NORMAL_MAX_SAMPLE_METERS,
+    );
+    let epsilon = normal_sample_meters / PLANET_RADIUS_METERS;
     let east_direction = normalize(surface_direction + east * epsilon);
     let north_direction = normalize(surface_direction + north * epsilon);
     let height_scale = terrain_macro_height_scale();
@@ -834,14 +1032,15 @@ fn ocean_hit(
         radial_dot_ray,
     );
     if shell_distance < 0.0 {
-        return OceanHit(-1.0, 0.0);
+        return OceanHit(-1.0);
     }
     let shell_direction = normalize(view_to_planet(
         camera_position_view + ray * shell_distance,
     ));
-    let coverage = outmap_ocean_coverage(true, sample_height(shell_direction));
-    if coverage <= 0.0 {
-        return OceanHit(-1.0, 0.0);
+    let macro_height = sample_height(shell_direction);
+    let biome_id = sample_biome(shell_direction);
+    if !is_open_ocean_surface(true, macro_height, biome_id) {
+        return OceanHit(-1.0);
     }
 
     var distance_meters = shell_distance;
@@ -858,11 +1057,11 @@ fn ocean_hit(
                 radial_dot_ray,
             );
             if distance_meters < 0.0 {
-                return OceanHit(-1.0, 0.0);
+                return OceanHit(-1.0);
             }
         }
     }
-    return OceanHit(distance_meters, coverage);
+    return OceanHit(distance_meters);
 }
 
 fn solid_planet_entry_distance(radial_dot_ray: f32) -> f32 {
@@ -1326,23 +1525,12 @@ fn trace_ray(ray: vec3<f32>, detail: f32, footprint_radians: f32) -> RayResult {
         }
         let water_view = camera_position_view + ray * water_hit.distance_meters;
         let water_direction = normalize(view_to_planet(water_view));
-        var color = shade_ocean(
+        let color = shade_ocean(
             water_direction,
             ray * water_hit.distance_meters,
             0.0,
             detail,
         );
-        if water_hit.coverage < 1.0 && hit_distance >= 0.0 {
-            let terrain_view = camera_position_view + ray * hit_distance;
-            let terrain_direction = normalize(view_to_planet(terrain_view));
-            let terrain_color = shade_terrain(
-                terrain_direction,
-                terrain_normal(terrain_direction),
-                ray * hit_distance,
-                footprint_radians,
-            );
-            color = mix(terrain_color, color, water_hit.coverage);
-        }
         return RayResult(vec4<f32>(color, 1.0), water_hit.distance_meters);
     }
     if hit_distance < 0.0 {
@@ -1367,10 +1555,9 @@ fn trace_ray(ray: vec3<f32>, detail: f32, footprint_radians: f32) -> RayResult {
 
     let hit_view = camera_position_view + ray * hit_distance;
     let surface_direction = normalize(view_to_planet(hit_view));
-    let normal = terrain_normal(surface_direction);
+    let normal = terrain_normal(surface_direction, ray * hit_distance);
     let macro_height = sample_height(surface_direction);
     let biome = sample_biome(surface_direction);
-    let ocean_coverage = outmap_ocean_coverage(true, macro_height);
     let terrain_color = shade_terrain(
         surface_direction,
         normal,
@@ -1385,14 +1572,6 @@ fn trace_ray(ray: vec3<f32>, detail: f32, footprint_radians: f32) -> RayResult {
             macro_height * terrain_macro_height_scale(),
             detail,
         );
-    } else if ocean_coverage > 0.0 {
-        let ocean_color = shade_ocean(
-            surface_direction,
-            ray * hit_distance,
-            0.0,
-            detail,
-        );
-        color = mix(terrain_color, ocean_color, ocean_coverage);
     }
     return RayResult(vec4<f32>(color, 1.0), hit_distance);
 }

@@ -1,14 +1,17 @@
-Next I would return to raster/ray terrain parity, specifically the mixed-source ray surface window.
+Done — all four repairs are implemented, documented, committed, and pushed.
 
-Why:
-- Raster is now visually clean and near the 33 ms target.
-- Ray still rejects its entire 8x8 near-field window when even one block is coarse. At 14-30km that leaves it on global L4 and produces roughly 4.3km p90 surface error; at 738m the current one-sided hit comb still accepts wrong crossings and leaves about 51m p90 error.
-- This is a measured geometry/source-data defect, not a lighting issue.
+- Mixed ray windows now carry height, biome, moisture, and each block’s real resolved source level.
+- Detail hits use a front-to-back first-crossing search instead of the one-sided comb.
+- Ray macro normals use raster’s distance/source-spacing footprint.
+- Raster and ray share the exact open-ocean predicate; ray no longer soft-blends ocean at terrain hits.
 
-Order:
-1. Build one mixed-source ray window containing height, biome, moisture, and actual resolved source level per block, using the raster ancestor resolver.
-2. Replace the one-sided detail-hit comb with a front-to-back first-visible-crossing search.
-3. Match ray normal filtering and exact ocean ownership to raster.
-4. Re-run the existing paired `render_path_parity` matrix after each step, targeting low-view ray p90 within a few metres of raster and detail correlation at least 0.95 before any more visual tuning.
+**Measured Quadro result at 738m**
+- Final ray p90: **50.094m → 3.574m**; raster remains 2.585m.
+- Detail correlation: **0.394 → 0.997**.
+- Direct raw-albedo correlation: **0.9983**, with 99.91% land/ocean ownership agreement.
 
-I would do item 1 next; it is the highest-confidence remaining correctness gain.
+**Important remaining facts**
+- This is a correctness win, not a speed win: settled final ray rises **25.74ms → 64.05ms**, because the real L5 source now activates the detail work the old false L12/fallback path skipped.
+- The 14–71km views still expose the separate globally dense L4 source-coverage defect and associated fallback bands. That now needs an L5/rebake/coverage decision, not more shading or foveation tuning.
+
+Validation: `cargo fmt --check`, **203 workspace tests passed** (5 ignored), release build passed, and all nine paired `render_path_parity` runs passed. The final run IDs and comparison are recorded in `docs/HANDOFF.md`.

@@ -55,6 +55,8 @@ struct RayUniform {
     near_field_enabled: u32,
     near_field_samples: u32,
     _near_field_padding: u32,
+    /// Four source levels per vector, row-major over the 8x8 window blocks.
+    near_field_source_levels: [[u32; 4]; 16],
 }
 
 /// Where the resident near-field window sits, once uploaded.
@@ -75,7 +77,9 @@ struct WarpUniform {
 }
 
 pub struct FoveatedRenderer {
-    near_field_texture: wgpu::Texture,
+    near_field_height_texture: wgpu::Texture,
+    near_field_biome_texture: wgpu::Texture,
+    near_field_moisture_texture: wgpu::Texture,
     near_field: Option<NearFieldPlacement>,
     direct_pipeline: wgpu::RenderPipeline,
     warp_pipeline: wgpu::RenderPipeline,
@@ -211,22 +215,27 @@ impl FoveatedRenderer {
 
         // The near-field window starts empty and stays unused until a camera
         // low enough to need it uploads one; `near_field_enabled` gates it.
-        let near_field_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("ray near-field height window"),
-            size: wgpu::Extent3d {
-                width: NEAR_FIELD_WINDOW_SAMPLES,
-                height: NEAR_FIELD_WINDOW_SAMPLES,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R32Float,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        let near_field_view =
-            near_field_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let near_field_height_texture = create_near_field_texture(
+            device,
+            "ray near-field height window",
+            wgpu::TextureFormat::R32Float,
+        );
+        let near_field_biome_texture = create_near_field_texture(
+            device,
+            "ray near-field biome window",
+            wgpu::TextureFormat::R8Uint,
+        );
+        let near_field_moisture_texture = create_near_field_texture(
+            device,
+            "ray near-field moisture window",
+            wgpu::TextureFormat::R8Unorm,
+        );
+        let near_field_height_view =
+            near_field_height_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let near_field_biome_view =
+            near_field_biome_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let near_field_moisture_view =
+            near_field_moisture_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let fields_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -256,6 +265,8 @@ impl FoveatedRenderer {
                         },
                         count: None,
                     },
+                    texture_2d_layout_entry(6, wgpu::TextureSampleType::Uint),
+                    texture_2d_layout_entry(7, wgpu::TextureSampleType::Float { filterable: true }),
                 ],
             });
         let height_min_meters = source.height_min_meters();
@@ -304,7 +315,15 @@ impl FoveatedRenderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 5,
-                    resource: wgpu::BindingResource::TextureView(&near_field_view),
+                    resource: wgpu::BindingResource::TextureView(&near_field_height_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(&near_field_biome_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::TextureView(&near_field_moisture_view),
                 },
             ],
         });
@@ -540,7 +559,9 @@ impl FoveatedRenderer {
         );
 
         Ok(Self {
-            near_field_texture,
+            near_field_height_texture,
+            near_field_biome_texture,
+            near_field_moisture_texture,
             near_field: None,
             direct_pipeline,
             warp_pipeline,
@@ -636,6 +657,9 @@ impl FoveatedRenderer {
             uniform.near_field_max_height_meters = near_field.max_height_meters;
             uniform.near_field_face = near_field.sources.key.face.index() as u32;
             uniform.near_field_enabled = 1;
+            for (index, source) in near_field.sources.source_keys.iter().enumerate() {
+                uniform.near_field_source_levels[index / 4][index % 4] = u32::from(source.level);
+            }
         }
         queue.write_buffer(&self.ray_uniform_buffer, 0, bytemuck::bytes_of(&uniform));
         self.write_warp_uniform(queue);
@@ -661,7 +685,24 @@ impl FoveatedRenderer {
         // Face UV runs -1..1, which is the convention `direction_to_face_uv`
         // returns and the marcher already works in.
         let to_face_uv = |tile: u32| (f64::from(tile) / tiles_per_side * 2.0 - 1.0) as f32;
-        upload_near_field(queue, &self.near_field_texture, &window.heights_meters);
+        upload_near_field(
+            queue,
+            &self.near_field_height_texture,
+            bytemuck::cast_slice(&window.heights_meters),
+            size_of::<f32>() as u32,
+        );
+        upload_near_field(
+            queue,
+            &self.near_field_biome_texture,
+            &window.biome_ids,
+            size_of::<u8>() as u32,
+        );
+        upload_near_field(
+            queue,
+            &self.near_field_moisture_texture,
+            &window.moisture,
+            size_of::<u8>() as u32,
+        );
         self.near_field = Some(NearFieldPlacement {
             sources: window.sources.clone(),
             uv_origin: [to_face_uv(key.tile_x), to_face_uv(key.tile_y)],
@@ -886,6 +927,7 @@ impl RayUniform {
             near_field_enabled: 0,
             near_field_samples: NEAR_FIELD_WINDOW_SAMPLES,
             _near_field_padding: 0,
+            near_field_source_levels: [[0; 4]; 16],
         }
     }
 }
@@ -1077,8 +1119,35 @@ fn face_array_view(texture: &wgpu::Texture) -> wgpu::TextureView {
     })
 }
 
-fn upload_near_field(queue: &wgpu::Queue, texture: &wgpu::Texture, heights_meters: &[f32]) {
+fn create_near_field_texture(
+    device: &wgpu::Device,
+    label: &str,
+    format: wgpu::TextureFormat,
+) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: NEAR_FIELD_WINDOW_SAMPLES,
+            height: NEAR_FIELD_WINDOW_SAMPLES,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    })
+}
+
+fn upload_near_field(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    bytes: &[u8],
+    bytes_per_texel: u32,
+) {
     let extent = NEAR_FIELD_WINDOW_SAMPLES;
+    let padded = padded_texture_rows(bytes, extent, extent, bytes_per_texel);
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
             texture,
@@ -1086,10 +1155,10 @@ fn upload_near_field(queue: &wgpu::Queue, texture: &wgpu::Texture, heights_meter
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        bytemuck::cast_slice(heights_meters),
+        &padded,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(extent * size_of::<f32>() as u32),
+            bytes_per_row: Some(aligned_texture_row_bytes(extent * bytes_per_texel)),
             rows_per_image: Some(extent),
         },
         wgpu::Extent3d {
@@ -1451,6 +1520,70 @@ mod tests {
     }
 
     #[test]
+    fn detail_refinement_searches_front_to_back_for_the_first_crossing() {
+        let shader = raymarch_shader_source();
+        let refinement = shader
+            .split("fn refine_detail_hit(")
+            .nth(1)
+            .expect("detail refinement exists")
+            .split("\nfn ")
+            .next()
+            .expect("detail refinement is bounded");
+        assert!(refinement.contains("let search_start ="));
+        assert!(refinement.contains("let search_end ="));
+        assert!(refinement.contains("var bracket_near = search_start;"));
+        assert!(refinement.contains("candidate_value <= 0.0 && value_near > 0.0"));
+        assert!(refinement.contains("let conservative_start ="));
+        assert!(refinement.contains("front_distance - front_step"));
+        assert!(refinement.contains("front_step = front_step * 2.0"));
+        assert!(refinement.contains("let conservative_end ="));
+        assert!(refinement.contains("back_distance + back_step"));
+        assert!(refinement.contains("back_step = back_step * 2.0"));
+        assert!(!refinement.contains("if value_near <= 0.0 {\n        return DetailHit"));
+        assert!(!refinement.contains("select(-1.0, 1.0, value > 0.0)"));
+    }
+
+    #[test]
+    fn ray_normals_share_the_raster_distance_and_source_spacing_filter() {
+        let shader = raymarch_shader_source();
+        let normal = shader
+            .split("fn terrain_normal(")
+            .nth(1)
+            .expect("terrain normal exists")
+            .split("\nfn ")
+            .next()
+            .expect("terrain normal is bounded");
+        assert!(normal.contains("length(hit_view_position) * 0.01"));
+        assert!(normal.contains("ray_baked_spacing_meters(surface_direction)"));
+        assert!(normal.contains("TERRAIN_NORMAL_MIN_SAMPLE_METERS"));
+        assert!(normal.contains("TERRAIN_NORMAL_MAX_SAMPLE_METERS"));
+    }
+
+    #[test]
+    fn ray_ocean_uses_the_raster_ownership_predicate_without_coast_blending() {
+        let shader = raymarch_shader_source();
+        let ocean_hit = shader
+            .split("fn ocean_hit(")
+            .nth(1)
+            .expect("ocean hit exists")
+            .split("\nfn ")
+            .next()
+            .expect("ocean hit is bounded");
+        assert!(ocean_hit.contains("is_open_ocean_surface(true, macro_height, biome_id)"));
+        assert!(!ocean_hit.contains("outmap_ocean_coverage"));
+
+        let raymarch = shader
+            .split("fn trace_ray(")
+            .nth(1)
+            .expect("ray trace exists")
+            .split("\n@fragment")
+            .next()
+            .expect("ray trace is bounded");
+        assert!(!raymarch.contains("outmap_ocean_coverage"));
+        assert!(!raymarch.contains("water_hit.coverage"));
+    }
+
+    #[test]
     fn separable_warp_round_trips_around_an_off_center_fovea() {
         for fovea in [-0.7_f32, -0.25, 0.0, 0.4, 0.7] {
             for value in [-1.0_f32, -0.75, -0.25, -0.01, 0.0, 0.01, 0.25, 0.75, 1.0] {
@@ -1488,7 +1621,7 @@ mod tests {
             winit::dpi::PhysicalSize::new(1, 1),
         );
         assert_eq!(size_of::<WarpUniform>(), 16);
-        assert_eq!(size_of::<RayUniform>(), 160);
+        assert_eq!(size_of::<RayUniform>(), 416);
     }
 
     #[test]

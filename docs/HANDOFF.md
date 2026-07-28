@@ -987,22 +987,22 @@ both of the next two solver changes below, not a speculative shader rewrite.
 
 1. **DONE: deterministic paired parity scenario and staged diagnostics.** The committed run set and
    conclusions are above. Keep this harness unchanged as the solver regression loop.
-2. **Build one unified ray surface window:** height, biome, moisture and actual resolved source
+2. **DONE: build one unified ray surface window:** height, biome, moisture and actual resolved source
    level/coverage, assembled through the same ancestor resolver as raster. Permit mixed fine/coarse
    blocks rather than disabling the whole window. The source-level channel is required so an L4
    block resampled into the window cannot pretend to be L12 and suppress the runtime ladder.
-3. **Replace the one-sided comb with a first-visible-crossing search.** Search front-to-back over a
+3. **DONE: replace the one-sided comb with a first-visible-crossing search.** Search front-to-back over a
    conservative detailed-surface interval, then refine the first sign change. Raising
    `RAY_DETAIL_HIT_STEPS` alone may reduce error, but preserves the topology bug and directly spends
    the already-tight ray budget.
-4. **Share the raster normal-footprint rule with ray**, using camera distance and resolved sample
+4. **DONE for macro normals: share the raster normal-footprint rule with ray**, using camera distance and resolved sample
    spacing. After hit correctness, derive the ray detail filter from the raster transfer function
    rather than independently tuning `RAY_DETAIL_FILTER_OVERSAMPLE`. Do not restore the rejected
    `1/sin(incidence)` filter widening from §8.
-5. **Make ray ocean ownership identical to raster:** exact open-sea predicate, analytic shell
+5. **DONE: make ray ocean ownership identical to raster:** exact open-sea predicate, analytic shell
    compared against terrain depth, lake/ice exclusions, and shallow beach blending only on positive
    terrain.
-6. **Only then compare direct full-resolution ray with warped ray.** A difference remaining only in
+6. **DONE: compare direct full-resolution ray with warped ray.** A difference remaining only in
    the warped output is a measured foveation quality/performance trade-off, not terrain disagreement.
 
 Acceptance is geometric before aesthetic: ray p90 no more than a few metres above raster at the low
@@ -1010,6 +1010,48 @@ poses, detail correlation at least 0.95, no bracket/fallback bands during motion
 albedo ownership, and then Quadro timing against the 33 ms target. Keep the shared high-altitude L4
 block shape separate: perfect path parity makes both paths agree on it, but improving it still needs
 the L5/rebake decision in §6c.
+
+### The four parity repairs — implemented and measured
+
+The mixed window now remains enabled whenever all 64 requested blocks have resident ancestors. It
+uploads R32F height, categorical R8Uint biome, bilinear R8Unorm moisture, and the actual source level
+of each 8×8 block. Height/material sampling and runtime-ladder filtering therefore follow the same
+ancestor that raster resolved instead of treating a resampled L4/L5 block as requested-level data.
+The ray hit refinement searches front-to-back, expands toward the ladder's conservative amplitude
+bound when the local interval starts inside or ends outside the detailed surface, then bisects the
+first outside-to-inside bracket four times. Ray macro normals use the raster 1%-of-camera-distance
+footprint with the resolved sample-spacing floor and the shared 0.5–256m clamp. Finally,
+`is_open_ocean_surface` is shared by both shaders: ray open sea is an exact ice/lake-excluding shell
+hit compared against terrain depth, while only positive terrain retains the shallow-beach blend.
+
+The final Quadro M1000M `PRESENT_MODE=immediate` matrix is:
+
+| path/mode | run |
+|---|---|
+| raster final / albedo / lighting / aerial | `1785281717-169735` / `1785281737-169876` / `1785281754-170001` / `1785281773-170151` |
+| ray final / albedo / lighting / aerial | `1785281793-170295` / `1785281841-170612` / `1785281917-171129` / `1785281996-171643` |
+| ray hit status | `1785282078-172268` |
+
+All nine runs pass. At the 738m pose, final warped ray p90 falls **50.094 → 3.574m** while raster
+remains 2.585m; direct full-resolution ray is 3.273m. Detail correlation rises **0.394 → 0.997**
+(0.998 direct), and the direct raw-albedo captures correlate 0.9983 with only 0.0008 mean absolute
+RGB error. A simple blue-vs-green ownership mask agrees on 99.91% of pixels there. The remaining
+warp penalty is only 0.301m, so foveation is no longer the close-range geometry fault.
+
+This correctness work is **not a speed win**. The settled low-pose final-ray mean rises from
+25.74ms to 64.05ms on the same adapter, because the real L5-backed window correctly re-enables the
+long runtime-detail octaves and the first-crossing search now performs work that the old fallback
+skipped. Direct diagnostic modes are intentionally unwarped and measure about 99.9–102.8ms at that
+pose. The 33ms target is therefore missed and needs a separately measured solver optimization; do
+not undo source-level truth to recover it.
+
+Nor is high-view parity closed. At 70.8/29.9/14.0km, final ray p90 remains
+4368.859/4357.376/4337.762m versus raster 51.422/45.530/24.472m. The 14km raw-albedo correlation is
+0.904 and the hit-status capture still contains fallback bands. The mixed window fixed the
+all-or-nothing residency decision, but blocks still backed by the globally dense L4 source retain
+the old kilometre-scale source mismatch; exact ocean ownership cannot make displaced coastlines
+coincide. Treat the 738m result as the completed four-repair proof and the high-view L5/rebake/source
+coverage decision as the next geometry task, not as a shading or foveation problem.
 
 ## 7. What the terrain actually is now
 

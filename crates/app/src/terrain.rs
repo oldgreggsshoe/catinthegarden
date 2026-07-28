@@ -156,13 +156,17 @@ pub struct NearFieldKey {
 pub struct NearFieldSources {
     pub key: NearFieldKey,
     /// Row-major, `NEAR_FIELD_WINDOW_TILES` squared.
-    source_keys: Vec<TileKey>,
+    pub(crate) source_keys: Vec<TileKey>,
 }
 
 pub struct NearFieldWindow {
     pub sources: NearFieldSources,
     /// `NEAR_FIELD_WINDOW_SAMPLES` square, row-major.
     pub heights_meters: Vec<f32>,
+    /// Categorical owner resampled at the same coordinates as height.
+    pub biome_ids: Vec<u8>,
+    /// Bilinearly resampled material moisture, in the baked unorm encoding.
+    pub moisture: Vec<u8>,
     /// Conservative bound for the ray marcher's empty-space skipping. Without
     /// it the marcher keeps the coarse pyramid's maximum and steps straight
     /// through ground the window has raised.
@@ -330,6 +334,8 @@ struct GpuTile {
     _moisture_texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
     heights_meters: Vec<f32>,
+    biome_ids: Vec<u8>,
+    moisture: Vec<u8>,
     complete_logical_footprint_is_land: bool,
 }
 
@@ -827,7 +833,6 @@ impl TerrainRenderer {
         let TerrainDataSource::Outmap(outmap) = &self.source else {
             return None;
         };
-        let manifest_dense_level = outmap.manifest().dense_level;
         let mut source_keys =
             Vec::with_capacity((NEAR_FIELD_WINDOW_TILES * NEAR_FIELD_WINDOW_TILES) as usize);
         for block_y in 0..NEAR_FIELD_WINDOW_TILES {
@@ -840,14 +845,11 @@ impl TerrainRenderer {
                 };
                 let preferred = outmap.resolve_tile(requested).ok()?;
                 let source_key = cached_tile_ancestor(requested, preferred, &self.tile_cache)?;
-                // A block backed by the dense pyramid or coarser has nothing to
-                // add: the raymarch path already samples that data directly,
-                // and a resampled copy of it only buys a fade seam. Refusing
-                // the whole window keeps it off outside the sparse corridor,
-                // and keeps it off inside until the corridor has streamed.
-                if source_key.level <= manifest_dense_level {
-                    return None;
-                }
+                // Keep the block even when it currently resolves to the dense
+                // pyramid. Other blocks in the same view may already have
+                // sparse detail, and the source-level channel prevents this
+                // resampled ancestor from pretending to be requested-level
+                // data in the runtime relief filter.
                 source_keys.push(source_key);
             }
         }
@@ -899,7 +901,7 @@ impl TerrainRenderer {
             finer_than_dense_blocks,
             minimum_source_level,
             maximum_source_level,
-            window_eligible: finer_than_dense_blocks == total_blocks,
+            window_eligible: resident_blocks == total_blocks,
             active_window_level: None,
         })
     }
@@ -911,6 +913,8 @@ impl TerrainRenderer {
         let quads = logical - 1;
         let tiles_per_side = f64::from(1_u32 << key.level);
         let mut heights_meters = vec![0.0_f32; samples * samples];
+        let mut biome_ids = vec![0_u8; samples * samples];
+        let mut moisture = vec![0_u8; samples * samples];
         let mut max_height_meters = f32::NEG_INFINITY;
         for block_y in 0..NEAR_FIELD_WINDOW_TILES {
             for block_x in 0..NEAR_FIELD_WINDOW_TILES {
@@ -936,7 +940,10 @@ impl TerrainRenderer {
                         // the source resolves at the requested level.
                         let uv = source_tile_local_uv(source_key, [face_u, face_v]);
                         let height = sample_height_cpu(&tile.heights_meters, uv);
-                        heights_meters[row + block_x as usize * quads + sample_x] = height;
+                        let index = row + block_x as usize * quads + sample_x;
+                        heights_meters[index] = height;
+                        biome_ids[index] = sample_biome_cpu(&tile.biome_ids, uv);
+                        moisture[index] = sample_moisture_cpu(&tile.moisture, uv);
                         max_height_meters = max_height_meters.max(height);
                     }
                 }
@@ -945,6 +952,8 @@ impl TerrainRenderer {
         Some(NearFieldWindow {
             sources: sources.clone(),
             heights_meters,
+            biome_ids,
+            moisture,
             max_height_meters: max_height_meters.max(0.0),
         })
     }
@@ -1747,6 +1756,8 @@ fn create_gpu_tile(
         _moisture_texture: moisture_texture,
         bind_group,
         heights_meters: heights_meters.to_vec(),
+        biome_ids: biome_ids.to_vec(),
+        moisture: moisture.to_vec(),
         complete_logical_footprint_is_land,
     }
 }
@@ -2404,10 +2415,7 @@ fn max_outmap_seam_delta(
 }
 
 fn sample_height_cpu(heights: &[f32], uv: [f32; 2]) -> f32 {
-    let coordinate = [
-        TILE_GUTTER as f32 + uv[0].clamp(0.0, 1.0) * (TILE_LOGICAL_SIZE - 1) as f32,
-        TILE_GUTTER as f32 + uv[1].clamp(0.0, 1.0) * (TILE_LOGICAL_SIZE - 1) as f32,
-    ];
+    let coordinate = tile_sample_coordinate(uv);
     let lower = [
         coordinate[0].floor() as usize,
         coordinate[1].floor() as usize,
@@ -2426,6 +2434,48 @@ fn sample_height_cpu(heights: &[f32], uv: [f32; 2]) -> f32 {
     let upper_height = heights[index(lower[0], upper[1])]
         + (heights[index(upper[0], upper[1])] - heights[index(lower[0], upper[1])]) * amount[0];
     lower_height + (upper_height - lower_height) * amount[1]
+}
+
+fn tile_sample_coordinate(uv: [f32; 2]) -> [f32; 2] {
+    [
+        TILE_GUTTER as f32 + uv[0].clamp(0.0, 1.0) * (TILE_LOGICAL_SIZE - 1) as f32,
+        TILE_GUTTER as f32 + uv[1].clamp(0.0, 1.0) * (TILE_LOGICAL_SIZE - 1) as f32,
+    ]
+}
+
+fn sample_biome_cpu(biome_ids: &[u8], uv: [f32; 2]) -> u8 {
+    let coordinate = tile_sample_coordinate(uv);
+    let x = coordinate[0].round() as usize;
+    let y = coordinate[1].round() as usize;
+    biome_ids[y * TILE_STORED_SIZE as usize + x]
+}
+
+fn sample_moisture_cpu(moisture: &[u8], uv: [f32; 2]) -> u8 {
+    let coordinate = tile_sample_coordinate(uv);
+    let lower = [
+        coordinate[0].floor() as usize,
+        coordinate[1].floor() as usize,
+    ];
+    let upper = [
+        (lower[0] + 1).min(TILE_STORED_SIZE as usize - 1),
+        (lower[1] + 1).min(TILE_STORED_SIZE as usize - 1),
+    ];
+    let amount = [
+        coordinate[0] - lower[0] as f32,
+        coordinate[1] - lower[1] as f32,
+    ];
+    let index = |x: usize, y: usize| y * TILE_STORED_SIZE as usize + x;
+    let lower_value = f32::from(moisture[index(lower[0], lower[1])])
+        + (f32::from(moisture[index(upper[0], lower[1])])
+            - f32::from(moisture[index(lower[0], lower[1])]))
+            * amount[0];
+    let upper_value = f32::from(moisture[index(lower[0], upper[1])])
+        + (f32::from(moisture[index(upper[0], upper[1])])
+            - f32::from(moisture[index(lower[0], upper[1])]))
+            * amount[0];
+    (lower_value + (upper_value - lower_value) * amount[1])
+        .round()
+        .clamp(0.0, 255.0) as u8
 }
 
 /// Proves that every height texel which can contribute to bilinear sampling
@@ -2485,9 +2535,9 @@ mod tests {
         edge_stitch_level_delta, fallback_uv_transform, height_footprint_is_strictly_land,
         lod_transition_nodes, lod_transition_progress, node_intersects_source_edge_fade,
         nodes_share_lod_transition, pack_terrain_info, padded_texture_rows, planet_shader_source,
-        purge_expired_lod_transitions, sample_height_cpu, should_animate_lod_transition,
-        source_tile_uv_at_direction, terrain_material_layer_texels, terrain_material_texel,
-        tileable_value_noise,
+        purge_expired_lod_transitions, sample_biome_cpu, sample_height_cpu, sample_moisture_cpu,
+        should_animate_lod_transition, source_tile_uv_at_direction, terrain_material_layer_texels,
+        terrain_material_texel, tileable_value_noise,
     };
     use crate::planet::{
         GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, MAX_LOD_LEVEL, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE,
@@ -3179,6 +3229,32 @@ mod tests {
         let center_coordinate = TILE_GUTTER + (TILE_LOGICAL_SIZE - 1) / 2;
         let expected_index = center_coordinate + center_coordinate * TILE_STORED_SIZE;
         assert_eq!(sampled_center, expected_index as f32);
+    }
+
+    #[test]
+    fn near_field_material_channels_use_the_raster_sampling_contract() {
+        let index = |x: u32, y: u32| (y * TILE_STORED_SIZE + x) as usize;
+        let mut biomes = vec![0_u8; (TILE_STORED_SIZE * TILE_STORED_SIZE) as usize];
+        let mut moisture = vec![0_u8; biomes.len()];
+        let coordinate = TILE_GUTTER + (TILE_LOGICAL_SIZE - 1) / 2;
+        biomes[index(coordinate, coordinate)] = 7;
+        moisture[index(coordinate, coordinate)] = 64;
+        moisture[index(coordinate + 1, coordinate)] = 128;
+        moisture[index(coordinate, coordinate + 1)] = 192;
+        moisture[index(coordinate + 1, coordinate + 1)] = 255;
+
+        assert_eq!(sample_biome_cpu(&biomes, [0.5, 0.5]), 7);
+        assert_eq!(sample_moisture_cpu(&moisture, [0.5, 0.5]), 64);
+        assert_eq!(
+            sample_moisture_cpu(
+                &moisture,
+                [
+                    0.5 + 0.5 / (TILE_LOGICAL_SIZE - 1) as f32,
+                    0.5 + 0.5 / (TILE_LOGICAL_SIZE - 1) as f32,
+                ],
+            ),
+            160,
+        );
     }
 
     #[test]

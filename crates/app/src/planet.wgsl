@@ -82,12 +82,6 @@ fn source_edge_fade_enabled(terrain_info: u32) -> bool {
     return (terrain_info & (1u << 14u)) != 0u;
 }
 
-fn is_open_ocean_surface(outmap: bool, macro_height_meters: f32, biome_id: u32) -> bool {
-    let ice = outmap && biome_id == 2u;
-    let lake = outmap && biome_id == 1u;
-    return macro_height_meters <= 0.0 && !ice && !lake;
-}
-
 fn sample_height(source_uv: vec2<f32>) -> f32 {
     let gutter_uv = 1.0 / MATERIAL_TILE_LOGICAL_QUADS;
     let coordinate = vec2<f32>(TILE_GUTTER)

@@ -1369,6 +1369,12 @@ fn debug_ocean_albedo() -> vec3<f32> {
     return vec3<f32>(0.008, 0.055, 0.28);
 }
 
+fn is_open_ocean_surface(outmap: bool, macro_height_meters: f32, biome_id: u32) -> bool {
+    let ice = outmap && biome_id == 2u;
+    let lake = outmap && biome_id == 1u;
+    return macro_height_meters <= 0.0 && !ice && !lake;
+}
+
 fn outmap_ocean_coverage(outmap: bool, height_meters: f32) -> f32 {
     if !outmap {
         return select(0.0, 1.0, height_meters <= 0.0);
