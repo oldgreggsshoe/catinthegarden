@@ -1,15 +1,22 @@
-No—not fully.
+Yes. This session's work was done on the separate branch `diagnose/ocean-terrain-blockiness`, forked from `experiment/ground-readability` at `69cd04d`. It is pushed to `origin/diagnose/ocean-terrain-blockiness`; `main` and the parent experiment branch were not changed.
 
-`docs/HANDOFF.md` is current through renderer commit `2ca5faf` (the depth-tested raster ocean pass), so its architecture and ocean diagnosis match the code. However, it does not contain the latest manual run `1785238000-2567254`, the measured raster/ray discrepancies, or the resulting parity work sequence.
+I updated the authoritative handoff and pushed it. `docs/HANDOFF.md` now includes:
 
-It is also internally stale at the summary level: the opening scenario table reports `path_parity_ridge` ray p90 as 10.68 m, while a later section records the subsequent 3.47 m result.
+- the branch base and current renderer/evidence commits;
+- the latest eight paired raster/ray comparisons from manual run `1785238000-2567254`;
+- the measured low-flight surface errors and near-field evidence;
+- the all-or-nothing, height-only ray window limitation;
+- the detailed-hit, normal-footprint, ocean-ownership, and foveated-presentation gaps;
+- the exact recommended implementation and validation order for the next session;
+- clarification that the shared high-altitude L4 blockiness remains a separate L5/rebake decision.
 
-Before implementing the parity pass, the handoff should be updated with:
+`AGENTS.md` also has a concise Phase 7 parity-diagnosis status line. The recorded manifest values and branch ancestry were verified; this was documentation-only, so renderer tests were not rerun. Unrelated local files remain untouched.
 
-- the eight latest raster/ray pairs and their probe results;
-- the all-or-nothing, height-only ray near-field limitation;
-- the detailed-hit/macro-fallback evidence;
-- the ray normal and ocean-ownership mismatches;
-- the recommended implementation and validation order.
-
-The current handoff remains useful, but it is not a complete current-state handoff.
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:1-4|note=[used checkout-specific branch and dirty-tree verification guidance]
+</citation_entries>
+<rollout_ids>
+019f5337-5e4a-7af3-a2ad-6249f767c0f9
+</rollout_ids>
+</oai-mem-citation>

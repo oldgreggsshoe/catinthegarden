@@ -1,7 +1,11 @@
 # Handoff — ground readability / render modernisation
 
 **Branch:** `diagnose/ocean-terrain-blockiness`
-**Head:** "Depth-test raster ocean against land"
+**Branch base:** `69cd04d` on `experiment/ground-readability`; this session's work is isolated on
+the diagnosis branch and pushed to `origin/diagnose/ocean-terrain-blockiness`
+**Renderer state:** `2ca5faf` — "Depth-test raster ocean against land"
+**Latest evidence:** paired manual run `test-runs/manual/1785238000-2567254` at renderer-equivalent
+head `ed6371a`
 **Written:** 28 July 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
@@ -45,6 +49,10 @@ Scenario probe results, worst frame, from `test-runs/*/*/manifest.json`:
 | `path_parity_ridge` | raster | **4.24 m** | 1.25 m | 6 m | 133 m |
 | `path_parity_ridge` | ray | **10.68 m** | 2.17 m | 6 m — **FAILS, see §6b** | 133 m |
 | `tour_mountains` | ray | 22.6 m | 11.7 m | none | ~1 km |
+
+These are the current post-mountain results. The 3.47 m ray result recorded later in §7 is the
+historical pre-mountain measurement from the local-span hit-walk change; the increased mountain
+relief subsequently moved the current result to 10.68 m.
 
 These moved with the mountain work in §6b: the terrain now has three times the relief, so the same
 mesh disagrees with truth by more in absolute metres. Raster still holds well inside tolerance
@@ -182,6 +190,10 @@ you need one.
 ---
 
 ## 6. Next, in order
+
+**Current next session: start with the paired raster/ray parity work in §6d.** The numbered material,
+LOD and frame-budget entries below retain the measurements and decisions that produced the current
+renderer; they are not a newer priority list than §6d.
 
 ### 1. The chunk budget — DONE, and it bought less at the cap than the demand figure suggests
 
@@ -744,6 +756,100 @@ bailout measurements rather than regressing: `ocean_flyover` is **24.990ms** and
 **20.543ms**. The current full workspace result is **193 passed, 5 ignored**. Raster
 `ocean_coastline` and `orbit_once` pass; raster `ocean_flyover` remains finite and still fails only
 the same pre-existing fallback-count assertion.
+
+## 6d. The 28 July paired raster/ray parity diagnosis — current next work
+
+Manual run `test-runs/manual/1785238000-2567254` contains 16 captures arranged as eight frozen
+raster/ray pairs. Within each pair the camera, 60-degree FOV, scene clock, exposure, blur/bloom,
+HDR composition mode and all optional M8 experiments match. This is a good comparison, not two
+nearby but different flights.
+
+The pairs, in order:
+
+| captures | height | result |
+|---|---:|---|
+| `001` ray / `002` raster | 316 m clearance | ray p90 **72.743 m**, correlation **-0.190**; raster p90 **1.156 m** |
+| `003` ray / `004` raster | 2.57 km clearance | ray p90 **142.474 m**, correlation **0.045**; raster p90 **5.307 m**, correlation **0.835** |
+| `005` raster / `006` ray | 162.6 km altitude | visually close; non-HUD luminance correlation **0.961** |
+| `007` raster / `008` ray | 70.8 km altitude | ray-only contour/hatching structure begins around the blocky coast |
+| `009` raster / `010` ray | 29.9 km altitude | the ray contour structure strengthens |
+| `011` raster / `012` ray | 14.0 km altitude | the strongest ray-only banding in the set |
+| `013` raster / `014` ray | 5.0 km altitude | closer in silhouette, but ray material/relief remains smoother |
+| `015` raster / `016` ray | 392 m clearance | ray p90 **56.790 m**, correlation **0.478**; raster p90 **2.289 m**, correlation **0.998** |
+
+The probe currently reports zero comparable points for the 5–163 km captures because its diagnostic
+distance cap excludes those hits. That is a harness limitation, not evidence that the surfaces
+agree there.
+
+### What the low pairs prove
+
+No `near-field window built` event occurs before the first two ray captures. The CPU/raster surface
+resolves local L10–L17 sources across those compared points while ray remains on the six globally
+dense L4 faces. Their 72–142 m error and near-zero/negative detail correlation therefore begin with
+different source surfaces, before lighting or presentation is considered.
+
+An L12 near-field window is built immediately before `016`. In that capture ray rendered height
+minus CPU macro height averages **0.156 m**, so the window has closed the broad macro offset. But the
+CPU surface contains **-24.154 m mean** detail relative to that macro surface and ray still reads
+56.790 m p90 from truth. Raster reads 2.289 m p90 at correlation 0.998. The final image is
+correspondingly much flatter in ray. This isolates a second problem after residency:
+`refine_detail_hit` is finding the wrong detailed crossing or returning its macro fallback.
+
+### The concrete parity gaps
+
+1. **Near-field residency is all-or-nothing.** `Terrain::near_field_sources` refuses the whole 8×8
+   window if any block resolves only to `dense_level` or coarser. Raster can still use fine sources
+   over the visible part of the same view.
+2. **The window carries height only.** `NearFieldWindow` and the ray binding upload one R32Float
+   height texture. Ray biome and moisture sampling always uses the global L4 arrays, so close
+   material ownership cannot match raster even after height residency improves.
+3. **The detailed hit search assumes too much topology.** `refine_detail_hit` chooses one direction
+   from the detailed function's sign at the macro hit, walks 12 samples, then bisects three times.
+   The synthesised field is non-monotonic along a grazing ray. A local sign does not prove that the
+   chosen side contains the first visible crossing; failure returns the macro hit.
+4. **Ray macro normals retain the dense-face footprint.** `terrain_normal` always uses
+   `2 / face_quads` even when `sample_height` is reading the L12 window. Raster instead clamps its
+   normal footprint by camera distance and actual source-texel spacing. The ray consequently loses
+   baked slope and feeds different normals into both lighting and slope-based material weights.
+5. **Ocean ownership differs again.** Raster now uses the exact complementary
+   `is_open_ocean_surface` predicate and a separately depth-tested shell. Ray still evaluates soft
+   `outmap_ocean_coverage` at the shell, then can mix ocean again at the terrain hit. This is a
+   definite coast mismatch; whether it accounts for all of the 14–71 km hatching still needs the
+   staged capture below.
+6. **The final ray presentation is deliberately lower resolution.** Ray final output passes through
+   the 75%-per-axis warp/unwarp path while raster is direct. It cannot explain 57–142 m depth error,
+   and the close 162.6 km pair shows it is secondary, but it sets the final pixel-parity ceiling.
+
+### Implement and validate in this order
+
+1. **Add one deterministic paired parity scenario** from these logged camera poses. Capture depth
+   plus F9 raw albedo, surface lighting, aerial contribution and final output for both paths. Extend
+   the diagnostic probe far enough to cover the 14–71 km views, and expose near-field
+   level/coverage plus detailed-hit bracket/fallback state. This should prove the source of the
+   ray-only hatching before changing its solver.
+2. **Build one unified ray surface window:** height, biome, moisture and actual resolved source
+   level/coverage, assembled through the same ancestor resolver as raster. Permit mixed fine/coarse
+   blocks rather than disabling the whole window. The source-level channel is required so an L4
+   block resampled into the window cannot pretend to be L12 and suppress the runtime ladder.
+3. **Replace the one-sided comb with a first-visible-crossing search.** Search front-to-back over a
+   conservative detailed-surface interval, then refine the first sign change. Raising
+   `RAY_DETAIL_HIT_STEPS` alone may reduce error, but preserves the topology bug and directly spends
+   the already-tight ray budget.
+4. **Share the raster normal-footprint rule with ray**, using camera distance and resolved sample
+   spacing. After hit correctness, derive the ray detail filter from the raster transfer function
+   rather than independently tuning `RAY_DETAIL_FILTER_OVERSAMPLE`. Do not restore the rejected
+   `1/sin(incidence)` filter widening from §8.
+5. **Make ray ocean ownership identical to raster:** exact open-sea predicate, analytic shell
+   compared against terrain depth, lake/ice exclusions, and shallow beach blending only on positive
+   terrain.
+6. **Only then compare direct full-resolution ray with warped ray.** A difference remaining only in
+   the warped output is a measured foveation quality/performance trade-off, not terrain disagreement.
+
+Acceptance is geometric before aesthetic: ray p90 no more than a few metres above raster at the low
+poses, detail correlation at least 0.95, no bracket/fallback bands during motion, matching F9 raw
+albedo ownership, and then Quadro timing against the 33 ms target. Keep the shared high-altitude L4
+block shape separate: perfect path parity makes both paths agree on it, but improving it still needs
+the L5/rebake decision in §6c.
 
 ## 7. What the terrain actually is now
 
