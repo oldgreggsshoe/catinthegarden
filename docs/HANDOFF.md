@@ -164,6 +164,9 @@ Results land in `test-runs/<scenario>/<unix>-<id>/{manifest.json,log.jsonl,scree
   frame times near 1000 ms with `nvidia-smi` showing 0% util and P8, it is the throttle, not the
   renderer. Confirm by re-running with `immediate` before reporting anything.
 - Benchmarks build to `/home/dad/catingard-target`, not the in-repo `target/`.
+- **`CATINGARDEN_DEBUG_MODE=albedo|lighting|aerial|sky`** selects a render debug mode for a scenario,
+  which F9 could previously only reach interactively. `albedo` is how you tell a material problem
+  from a lighting one, and at the mountains it says the warm tan is lighting.
 - Other flags: `--terrain placeholder|outmap`, `--outmap <path>`, `--vertical-fov-degrees`,
   `CATINGARDEN_RAY_EXPERIMENTS`, `WGPU_ADAPTER_NAME`.
 - **`CATINGARDEN_MAX_ACTIVE_CHUNKS` lifts the chunk budget** (selector and instance buffer together)
@@ -343,6 +346,38 @@ driver other than slope.
 The landing site is **biome 6, tropical forest, moisture 0.84**, where `biome_vegetation_amount`
 gives ~0.97 vegetation — so uniform dense green is largely *correct* there. Do not tune materials
 against that site expecting variety; check grassland, desert and rock too.
+
+### 2b. Materials — the slope premise inverted, but not where it was checked
+
+The mountain work moved the material slope metric by a factor of 45. Measured over 40,000 samples,
+and the probe spacing matters because the shader central-differences its normal over
+`camera_distance × 0.01` clamped to [0.5, 256] m:
+
+| slope `1 − N·radial`, mountain | p50 | max | past the 0.10 rock threshold |
+|---|---:|---:|---:|
+| §6.2's figure, before | 0.0041 | 0.159 | **0.004%** |
+| at a 4 m probe (50 m away) | 0.1935 | 0.4117 | **89.6%** |
+| at a 30 m probe (3 km away) | 0.1298 | 0.4380 | 59.9% |
+| at a 256 m probe (the cap) | 0.0662 | 0.4360 | **34.5%** |
+| the 300 m plain, 4 m probe | 0.0251 | 0.2517 | 4.0% |
+
+So §6.2's "the rock path is wired in and has essentially never fired" is **no longer true**, and it
+survives every probe spacing the shader uses — the normal footprint is not swallowing it.
+
+**But this changes nothing at `tour_mountains`, and that was an error in the first recommendation
+built on it.** That site is **biome 8**, 517 of 600 samples, with the remaining 83 biome 9. Biome 8
+already forces `rock_amount = max(rock_amount, 0.78)` and biome 9 forces `snow_amount ≥ 0.88`
+regardless of slope. The site was fully rock-and-snow before the mountain work and still is. The
+inverted slope distribution matters on *ordinary* land, which is where it should now be checked.
+
+**What the site actually renders is not what the final image suggests.** `CATINGARDEN_DEBUG_MODE=albedo`
+shows the ground as pale desaturated blue-white — saturation p50 0.100, p99 0.183, nothing above
+0.25, against earth's palette saturation of ~0.61. The warm yellow-tan of the final image is
+therefore **lighting and atmosphere, not ground albedo**. Any attempt to fix the monotony by moving
+albedo at this site will be working on the wrong end of the pipe.
+
+*(Also: the pale angular patches here are biome 9, not water as §6.2 guessed. Whether §6.2's
+coastline patches elsewhere are water or ice was not re-checked and should not be assumed either way.)*
 
 ### 3. Near-field window streaming rate
 

@@ -122,11 +122,21 @@ mod tests {
         let north = centre.cross(east).normalize();
         let baked_spacing = crate::planet::baked_sample_spacing_meters(4);
 
-        for (label, macro_height) in [("mountain", 4_721.0_f64), ("plain", 300.0)] {
-            let step = 4.0_f64;
+        // The shader central-differences its normal over camera_distance *
+        // TERRAIN_DETAIL_FILTER_RATIO, clamped to [0.5, 256]m, and filters the
+        // octaves to the same spacing. So the slope the *materials* see is a
+        // function of how far away the ground is, not of the height field.
+        for (label, macro_height, step) in [
+            ("mountain @ 4m probe (50m away)", 4_721.0_f64, 4.0_f64),
+            ("mountain @ 10m probe (1km away)", 4_721.0, 10.0),
+            ("mountain @ 30m probe (3km away)", 4_721.0, 30.0),
+            ("mountain @ 100m probe (10km away)", 4_721.0, 100.0),
+            ("mountain @ 256m probe (26km+, the cap)", 4_721.0, 256.0),
+            ("plain @ 4m probe", 300.0, 4.0),
+        ] {
             let mut slopes = Vec::new();
-            for iy in 0..300 {
-                for ix in 0..300 {
+            for iy in 0..200 {
+                for ix in 0..200 {
                     let at = |dx: f64, dy: f64| {
                         let offset = east * ((ix as f64 * step + dx) / PLANET_RADIUS_METERS)
                             + north * ((iy as f64 * step + dy) / PLANET_RADIUS_METERS);
@@ -252,6 +262,7 @@ mod tests {
             let samples = 600_usize;
             let spacing = transect_km * 1000.0 / samples as f64;
             let mut heights = Vec::new();
+            let mut biomes: Vec<u8> = Vec::new();
             let mut source_level = 0_u8;
             for index in 0..samples {
                 let offset = (index as f64 - samples as f64 * 0.5) * spacing;
@@ -276,6 +287,18 @@ mod tests {
                         if resolved.level == level {
                             if let Ok(data) = outmap.load_tile(key) {
                                 source_level = level;
+                                let tiles_per_side = f64::from(1_u32 << key.level);
+                                let u =
+                                    (face_uv[0] * 0.5 + 0.5) * tiles_per_side - f64::from(key.x);
+                                let v =
+                                    (face_uv[1] * 0.5 + 0.5) * tiles_per_side - f64::from(key.y);
+                                let logical =
+                                    catinthegarden_coretypes::TILE_LOGICAL_SIZE as f64 - 1.0;
+                                let sx = (u.clamp(0.0, 1.0) * logical).round() as usize;
+                                let sy = (v.clamp(0.0, 1.0) * logical).round() as usize;
+                                let stored = catinthegarden_coretypes::TILE_STORED_SIZE as usize;
+                                let gutter = catinthegarden_coretypes::TILE_GUTTER as usize;
+                                biomes.push(data.biome_ids[(sy + gutter) * stored + sx + gutter]);
                                 break sample_tile_height(&data, key, face_uv);
                             }
                         }
@@ -303,6 +326,11 @@ mod tests {
                 heights.iter().cloned().fold(f64::MAX, f64::min),
                 heights.iter().cloned().fold(f64::MIN, f64::max),
             );
+            let mut histogram = std::collections::BTreeMap::new();
+            for biome in &biomes {
+                *histogram.entry(*biome).or_insert(0_usize) += 1;
+            }
+            println!("   biome histogram (id: count) {histogram:?}");
             println!(
                 "   slope deg  p50 {:5.2}  p90 {:5.2}  max {:5.2}",
                 percentile(&grades, 0.50),

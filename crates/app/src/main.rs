@@ -878,7 +878,16 @@ impl State {
             fps: 0.0,
             debug_overlay_visible: true,
             render_path: RenderPath::default(),
-            render_debug_mode: planet::RenderDebugMode::Final,
+            render_debug_mode: match std::env::var("CATINGARDEN_DEBUG_MODE")
+                .unwrap_or_default()
+                .trim()
+            {
+                "albedo" => planet::RenderDebugMode::RawAlbedo,
+                "lighting" => planet::RenderDebugMode::SurfaceLighting,
+                "aerial" => planet::RenderDebugMode::AerialContribution,
+                "sky" => planet::RenderDebugMode::SkyOnly,
+                _ => planet::RenderDebugMode::Final,
+            },
             animation_frozen: false,
             frozen_sim_time: 0.0,
             interactive_scene_time_offset_seconds: 0.0,
