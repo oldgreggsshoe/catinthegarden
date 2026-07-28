@@ -1,11 +1,13 @@
-Done on `diagnose/ocean-terrain-blockiness`.
+Implemented and pushed on `diagnose/ocean-terrain-blockiness`.
 
-- **Mountainous ocean:** The raster path interpolates mixed coastline triangles between sea-level ocean vertices and raised land vertices, then shades part of that slope as ocean. The measured waves span only about 1.01 m, so they are not the cause. The correct fix is a separate depth-tested raster ocean shell/pass, matching the ray path's analytic ocean hit.
-- **Blocky terrain from height:** Global source detail ends at L4, about 3.906 km per sample, while the baker's working grid is about 6.1 km per cell. Extra mesh LOD cannot add macro-height, coastline, or biome detail. The best next step is a true L5 bake from an 8192x4096 working grid, but the dense ray-field allocation rises from roughly 0.286 GB to 1.142 GB; test 16-bit ray height packing first. Monotone bicubic sampling could only soften, not restore, missing detail.
-- **Low-impact performance change shipped:** Zero-amplitude terrain-detail noise is skipped below sea level, Gerstner work is skipped on land vertices, and zero-weight fine-material coordinate work is skipped. Quadro raster means improved from 35.134 to 26.695 ms for `ocean_flyover` (-24.0%) and 23.584 to 22.431 ms for `orbit_once` (-4.9%), with no intended visual change.
-- **Validation:** 192 workspace tests passed; 5 diagnostic tests were ignored. Raster and ray `orbit_once` pass. Ray `ocean_flyover` has only its documented pre-existing fallback-count assertion failure.
+- Raster terrain now always draws land/bathymetry geometry.
+- A separate Gerstner ocean shell redraws the same instanced patches afterward, using reversed-Z depth testing and the exact complementary per-fragment coast/ice/lake ownership test.
+- LOD morphing, transition dither, lighting, aerial perspective, polar ice, elevated lakes, and the established shallow-beach colour blend are preserved.
+- Added `ocean_coastline`, a deterministic replay of the original 232 m-clearance location and view direction. It passes; two stable probes measure p90 1.765 m and maximum 3.264 m rather than the former kilometre-scale mixed-triangle water ramp.
+- Quadro performance did not regress: three-run raster means are 24.990 ms for `ocean_flyover` and 20.543 ms for `orbit_once`, both slightly below the prior 26.695/22.431 ms measurements.
+- Validation: 193 workspace tests passed, 5 diagnostic tests ignored. `ocean_coastline` and `orbit_once` pass. `ocean_flyover` remains finite and has only its pre-existing fallback-count assertion failure.
 
-Code and documentation commit `4951472` is pushed. The ocean-shell and denser-bake visual fixes remain open; the evidence and recommended order are recorded in `docs/HANDOFF.md`. Unrelated local files were left untouched.
+Code/docs commit `2ca5faf` is pushed. The high-altitude L4 source blockiness remains the next separate visual issue. Unrelated local files were untouched.
 
 <oai-mem-citation>
 <citation_entries>
