@@ -1,21 +1,7 @@
-Fixed and pushed on `diagnose/ocean-terrain-blockiness`.
+Yes — it finished successfully.
 
-Faults in manual run `1785253016-2703201`:
-
-- Capture 001: world position `[-1423884, 313839, 3728369]`, 468m clearance, view `[0.701, -0.671, 0.241]`. This showed the long black land channels.
-- Capture 002: world position `[-1422920, 314984, 3728210]`, 106m clearance, view `[0.286, 0.897, -0.337]`. This exposed the vertical/overhead sheets and a 173.8m surface outlier.
-- The deterministic frozen-local replay uses positions `[-3960082.052, 313838.931, -495914.630]` and `[-3959697.937, 314983.998, -495015.947]`, with directions `[-0.067302, -0.671093, 0.738312]` and `[0.395375, 0.897012, 0.197608]`.
-
-Root cause: sparse child tiles have baker-constrained parent borders, but the amplified runtime terrain ladder changed its displacement band abruptly with resolved source level. The baked surfaces met; runtime displacement did not. The existing 10m skirts then exposed the discontinuity as walls.
-
-Fix: each sparse source level now fades into its parent over two source texels in both GPU displacement and CPU terrain truth. Only chunks touching those borders pay the shader hierarchy walk. Culling, edge stitching, water ownership, transitions, and the 10m skirt cap remain unchanged.
-
-Validation:
-
-- Final replay: `test-runs/manual_render_faults/1785256951-2743312`
-- Both openings/sheets are gone in the new captures.
-- Surface probe: p90 2.956m, max 8.265m (new 12m regression limit), seam delta 0.000244m.
-- 197 workspace tests passed; 5 diagnostics ignored.
-- `cargo fmt --all -- --check` passed.
-
-The repaired captures still need your visual sign-off. The 106m pose remains close to the Quadro frame budget, so performance should be rechecked in the next exclusive benchmark set.
+- Fix committed and pushed as `f42c60a`.
+- Final screenshot replay passed.
+- 197 workspace tests passed.
+- No renderer or test process is still running.
+- Only the pre-existing untracked files remain.
