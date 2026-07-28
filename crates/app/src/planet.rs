@@ -1004,8 +1004,19 @@ fn direction_across_node_edge(node: QuadtreeNode, edge: usize) -> DVec3 {
 /// Returns coarse visible leaves that must split to keep every shared edge
 /// within the mesh stitcher's supported level delta.
 fn unbalanced_coarse_neighbors(leaves: &HashSet<QuadtreeNode>) -> Vec<QuadtreeNode> {
+    let all_nodes: Vec<_> = leaves.iter().copied().collect();
+    unbalanced_coarse_neighbors_touching(&all_nodes, leaves)
+}
+
+/// Returns coarse leaves made unbalanced by the nodes most recently added to
+/// an otherwise balanced frontier. Checking only that boundary avoids an
+/// all-pairs scan for every candidate split.
+fn unbalanced_coarse_neighbors_touching(
+    added_nodes: &[QuadtreeNode],
+    leaves: &HashSet<QuadtreeNode>,
+) -> Vec<QuadtreeNode> {
     let mut coarse = HashSet::new();
-    for node in leaves {
+    for node in added_nodes {
         for edge in 0..4 {
             let direction = direction_across_node_edge(*node, edge);
             let Some(neighbor) = leaves.iter().copied().find(|candidate| {
@@ -1477,15 +1488,81 @@ impl PlanetLod {
             if !leaves.contains(&candidate.node) {
                 continue;
             }
-            let next_len = leaves.len() - 1 + candidate.visible_children.len();
-            if next_len > self.max_active_chunks {
+            let mut trial_leaves = leaves.clone();
+            trial_leaves.remove(&candidate.node);
+            trial_leaves.extend(candidate.visible_children.iter().copied());
+            if trial_leaves.len() > self.max_active_chunks {
                 budget_limited = true;
-                break;
+                continue;
             }
-            leaves.remove(&candidate.node);
-            next_split.insert(candidate.node);
-            for child in candidate.visible_children {
-                leaves.insert(child);
+
+            // Keep the frontier balanced as each requested split is admitted,
+            // rather than filling the leaf budget first and discovering too
+            // late that no room remains for its coarse neighbours. A rejected
+            // trial leaves its parent in place, so coverage is preserved and
+            // the 256-leaf limit cannot manufacture a topology cliff.
+            let mut trial_splits = vec![candidate.node];
+            let mut trial_fits_budget = true;
+            let mut balance_frontier = candidate.visible_children;
+            loop {
+                let nodes_to_split =
+                    unbalanced_coarse_neighbors_touching(&balance_frontier, &trial_leaves);
+                if nodes_to_split.is_empty() {
+                    break;
+                }
+                let mut changed = false;
+                balance_frontier.clear();
+                for node in nodes_to_split {
+                    if !trial_leaves.contains(&node) || node.level >= self.policy.max_level {
+                        continue;
+                    }
+                    let visible_children: Vec<_> = node
+                        .children()
+                        .into_iter()
+                        .filter(|child| {
+                            Self::evaluate(
+                                *child,
+                                camera_world,
+                                camera_basis,
+                                aspect_ratio,
+                                viewport_height,
+                                vertical_fov_radians,
+                                terrain_height_range,
+                                distance_height_range,
+                                geometric_error_ratio,
+                                baked_error_limit,
+                                &mut evaluations,
+                                &mut culled_nodes,
+                            )
+                            .visible
+                        })
+                        .collect();
+                    if visible_children.is_empty() {
+                        continue;
+                    }
+                    trial_leaves.remove(&node);
+                    trial_leaves.extend(visible_children.iter().copied());
+                    balance_frontier.extend(visible_children);
+                    trial_splits.push(node);
+                    changed = true;
+                    if trial_leaves.len() > self.max_active_chunks {
+                        trial_fits_budget = false;
+                        break;
+                    }
+                }
+                if !trial_fits_budget || !changed {
+                    break;
+                }
+            }
+            if !trial_fits_budget {
+                budget_limited = true;
+                continue;
+            }
+
+            let added_leaves: Vec<_> = trial_leaves.difference(&leaves).copied().collect();
+            leaves = trial_leaves;
+            next_split.extend(trial_splits);
+            for child in added_leaves {
                 if let Some(child_candidate) = Self::split_candidate(
                     &self.policy,
                     child,
@@ -2522,10 +2599,11 @@ mod tests {
 
     use super::{
         CHUNK_GRID_QUADS, CHUNK_GRID_VERTICES, CameraUniform, CameraViewBasis, CubeSphereMesh,
-        DEFAULT_VERTICAL_FOV_RADIANS, EARTH_AXIAL_TILT_RADIANS,
-        GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, LodPolicy,
-        MAX_LOD_LEVEL, MAX_SKIRT_DEPTH_METERS, MAX_VERTICAL_FOV_RADIANS, MIN_VERTICAL_FOV_RADIANS,
-        MINIMUM_LOD_LEVEL, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE, OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS,
+        DEFAULT_MAX_ACTIVE_CHUNKS, DEFAULT_VERTICAL_FOV_RADIANS, EARTH_AXIAL_TILT_RADIANS,
+        GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE,
+        GeometricErrorRatio, LodPolicy, MAX_LOD_LEVEL, MAX_SKIRT_DEPTH_METERS,
+        MAX_VERTICAL_FOV_RADIANS, MIN_VERTICAL_FOV_RADIANS, MINIMUM_LOD_LEVEL,
+        OUTMAP_TERRAIN_FAR_HEIGHT_SCALE, OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS,
         OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS, OUTMAP_TERRAIN_HEIGHT_SCALE,
         OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, OrbitCamera, PLANET_RADIUS_METERS,
         PLANET_ROTATION_PERIOD_SECONDS, PlanetLod, QuadtreeNode, RenderDebugMode,
@@ -2538,7 +2616,7 @@ mod tests {
         minimum_vertical_fov_radians_for_viewport, near_plane_meters, outmap_surface_height_meters,
         outmap_terrain_height_scale, placeholder_height_meters, planet_local_vector,
         planet_rotation_radians, projected_error_pixels_with_height_range, terrain_detail_meters,
-        terrain_detail_value_noise,
+        terrain_detail_value_noise, unbalanced_coarse_neighbors,
     };
 
     fn projected_error_pixels(
@@ -3643,6 +3721,50 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn budget_limited_mountain_view_keeps_a_balanced_frontier() {
+        // capture-001 from manual run 1785265652-40830, transformed into the
+        // frozen planet frame used by the deterministic replay. The old
+        // selector spent all 256 leaves on primary SSE demand before it tried
+        // to balance the frontier, leaving runtime-relief gaps large enough to
+        // expose the cleared solid-planet background.
+        let camera_position = DVec3::new(
+            1_957_011.518_563_716_7,
+            2_098_111.804_991_835,
+            2_793_801.144_456_436,
+        );
+        let camera_forward =
+            DVec3::new(0.742_653_566_762_582_4, -0.519, -0.423_796_743_468_864_4).normalize();
+        let mut lod = PlanetLod::default();
+        lod.set_terrain_height_range(TerrainHeightRange::new(
+            -5_000.0 - GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
+            9_000.0 * OUTMAP_TERRAIN_FAR_HEIGHT_SCALE + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
+        ));
+        lod.set_distance_reference_height(4_434.235_545_999_187);
+        let update = lod.update_for_view_with_constraints(
+            camera_position,
+            camera_forward,
+            camera_position.normalize(),
+            16.0 / 9.0,
+            720,
+            34.290_380_625_028_99_f64.to_radians(),
+            GeometricErrorRatio {
+                baked: 0.053_6,
+                ladder: TERRAIN_DETAIL_ROUGHNESS * 2.939_5,
+            },
+            &|_| MAX_LOD_LEVEL,
+            Some(&|_| 6),
+        );
+
+        assert!(update.metrics.budget_limited);
+        assert!(update.active_nodes.len() <= DEFAULT_MAX_ACTIVE_CHUNKS);
+        let leaves = update.active_nodes.iter().copied().collect();
+        assert!(
+            unbalanced_coarse_neighbors(&leaves).is_empty(),
+            "the shipping leaf budget left a multi-level topology cliff"
+        );
     }
 
     #[test]

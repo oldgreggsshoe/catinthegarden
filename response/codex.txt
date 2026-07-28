@@ -1,7 +1,7 @@
-Yes — it finished successfully.
+The new mountain faults are reproduced and the cause is isolated.
 
-- Fix committed and pushed as `f42c60a`.
-- Final screenshot replay passed.
-- 197 workspace tests passed.
-- No renderer or test process is still running.
-- Only the pre-existing untracked files remain.
+- Raising the leaf budget from 256 to 1024 did not remove the holes, so this was not simply missing geometry.
+- Making runtime displacement use one continuous filter removed the holes, proving that neighboring LODs were evaluating the mountain-scale detail at incompatible filters.
+- The final fix keeps the 256-leaf frontier balanced before admitting refinement and blends a fine edge to its actual coarse-neighbor displacement filter.
+
+The repaired replay at the original three positions/FOVs is clean: the black voids, giant sheets, false overhead terrain, and giant fan polygons are gone. The exact-pose scenario and focused Rust/WGSL regressions pass. I’m completing the full workspace validation and documentation before committing and pushing.

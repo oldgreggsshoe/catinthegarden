@@ -296,7 +296,7 @@ fn ocean_with_aerial_perspective(
 }
 
 fn edge_stitch_level_delta(edge_stitch: u32, edge: u32) -> u32 {
-    return (edge_stitch >> (edge * 3u)) & 0x7u;
+    return (edge_stitch >> (edge * 5u)) & 0x1fu;
 }
 
 fn snap_edge_coordinate(coordinate: f32, level_delta: u32) -> f32 {
@@ -338,6 +338,49 @@ fn stitched_tile_uv(tile_uv: vec2<f32>, edge_stitch: u32) -> vec2<f32> {
         );
     }
     return stitched;
+}
+
+fn edge_detail_filter_meters(
+    tile_uv: vec2<f32>,
+    edge_stitch: u32,
+    requested_level: u32,
+) -> f32 {
+    let node_spacing = terrain_vertex_spacing_meters(requested_level);
+    var filter_meters = node_spacing;
+    let edge_distances = vec4<f32>(
+        tile_uv.y,
+        1.0 - tile_uv.x,
+        1.0 - tile_uv.y,
+        tile_uv.x,
+    );
+    for (var edge = 0u; edge < 4u; edge += 1u) {
+        let level_delta = edge_stitch_level_delta(edge_stitch, edge);
+        if level_delta == 0u {
+            continue;
+        }
+        let neighbor_spacing = terrain_vertex_spacing_meters(
+            requested_level - min(requested_level, level_delta),
+        );
+        // Carry the coarser filter far enough into the fine patch to retire
+        // frequencies that the neighbouring grid cannot represent, then hand
+        // them back continuously. At a shared edge both chunks now evaluate
+        // the same displacement; large budget-induced gaps blend across the
+        // whole fine node instead of forming a narrow near-vertical wall.
+        let fade_width = min(
+            exp2(f32(level_delta)) / TERRAIN_CHUNK_QUADS,
+            1.0,
+        );
+        let edge_weight = 1.0 - smoothstep(
+            0.0,
+            fade_width,
+            edge_distances[edge],
+        );
+        filter_meters = max(
+            filter_meters,
+            mix(node_spacing, neighbor_spacing, edge_weight),
+        );
+    }
+    return filter_meters;
 }
 
 fn lod_morphed_tile_uv(tile_uv: vec2<f32>, lod_transition: vec2<f32>) -> vec2<f32> {
@@ -453,7 +496,11 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     );
     let vertex_filter_meters = max(
         terrain_detail_filter_meters(camera_distance_meters),
-        vertex_spacing_meters,
+        edge_detail_filter_meters(
+            tile_uv,
+            input.edge_stitch,
+            requested_level(input.terrain_info),
+        ),
     );
     let detail = terrain_detail(
         anchor_direction,

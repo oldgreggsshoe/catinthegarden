@@ -211,6 +211,7 @@ impl ScenarioRunner {
             "path_parity_ridge" => include_str!("../scenarios/path_parity_ridge.json"),
             "render_path_parity" => include_str!("../scenarios/render_path_parity.json"),
             "manual_render_faults" => include_str!("../scenarios/manual_render_faults.json"),
+            "mountain_render_faults" => include_str!("../scenarios/mountain_render_faults.json"),
             "low_pass_bands" => include_str!("../scenarios/low_pass_bands.json"),
             "tour_mountains" => include_str!("../scenarios/tour_mountains.json"),
             "tour_desert" => include_str!("../scenarios/tour_desert.json"),

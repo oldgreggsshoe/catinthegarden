@@ -3,10 +3,10 @@
 **Branch:** `diagnose/ocean-terrain-blockiness`
 **Branch base:** `69cd04d` on `experiment/ground-readability`; this session's work is isolated on
 the diagnosis branch and pushed to `origin/diagnose/ocean-terrain-blockiness`
-**Renderer state:** current branch — sparse outmap source borders now keep the runtime detail ladder
-continuous with their baker-constrained parents
-**Latest evidence:** deterministic raster repair run
-`test-runs/manual_render_faults/1785256951-2743312`
+**Renderer state:** current branch — the raster selector admits only two-level-graded frontiers
+inside the 256-leaf budget, and mixed-LOD edges evaluate one continuous runtime-detail displacement
+**Latest evidence:** deterministic raster mountain repair run
+`test-runs/mountain_render_faults/1785271500-88705`
 **Written:** 28 July 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
@@ -35,8 +35,8 @@ A renderer that "looks like a modernish (2015 on) game", consistent from orbit t
 ## 2. State: what is green
 
 ```
-cargo test --workspace   →  194 passed, 0 failed, 5 ignored
-                            (app 162, baker lib 20, baker bin 1, baker integration 5, coretypes 6)
+cargo test --workspace   →  198 passed, 0 failed, 5 ignored
+                            (app 166, baker lib 20, baker bin 1, baker integration 5, coretypes 6)
                             the 5 ignored are the relief_survey/terrain instruments -- run them with
                             `cargo test -- --ignored --nocapture <name>`
 ```
@@ -227,6 +227,47 @@ is unchanged, and 197 workspace tests pass with five diagnostic tests ignored. T
 correctness regression, not a new performance baseline; its
 106 m-clearance pose remains near the 33 ms Quadro budget and should be rechecked in the next
 exclusive benchmark set. Ian has not yet signed off the repaired captures.
+
+### Manual mountain mixed-LOD repair — deterministic replay clean, human sign-off requested
+
+Manual set `test-runs/manual/1785265652-40830` exposed a second, distinct raster fault in three
+mountain views. These are preserved by `mountain_render_faults`; the manual world pose is transformed
+into the scenario's frozen planet frame, and the reference FOV is adjusted to reproduce the exact
+physical-window FOV:
+
+| capture | latitude / longitude | manual world pose / direction | clearance | vertical FOV |
+|---|---|---|---:|---:|
+| 001 | `31.595415 N, 18.344120 W` | `[3237706.065, 2098111.805, -1073535.448]` / `[-0.193, -0.519, -0.833]` | 224.56 m | 34.290° |
+| 002 | `31.551518 N, 18.540050 W` | `[3235111.597, 2095220.959, -1084968.342]` / `[0.483, 0.055, -0.874]` | 9.97 m | 17.201° |
+| 003 | `31.688138 N, 18.702487 W` | `[3227657.898, 2103596.673, -1092658.086]` / `[-0.505, -0.312, -0.805]` | 772.68 m | 52.675° |
+
+The symptoms were black voids, long horizontal terrain sheets, false terrain overhead in capture
+002, and giant fan polygons in capture 003. All three frames were at the 256-leaf cap and reported a
+zero baked seam delta, which hid the actual failure. Raising the cap alone to 1024 still left the
+holes and cost roughly 95–98 ms per frame. Removing only the mesh-level component of the runtime
+detail filter removed the holes, proving that adjacent grids were evaluating the amplified
+mountain-scale displacement with incompatible cutoffs rather than omitting a draw.
+
+There were two coupled faults. The selector filled all 256 leaves with primary screen-error demand
+before attempting its two-level balancing pass, so balancing had no budget left. The shader then
+filtered runtime displacement from each node's own vertex spacing; a fine edge beside that much
+coarser node therefore did not occupy the same height even though their baked samples agreed.
+
+The selector now trials each requested split together with its recursively required coarse-neighbour
+splits, admitting the group only when the complete balanced frontier fits the existing 256-leaf
+limit. It checks only the newly touched boundary, avoiding the all-pairs cost of a full balance scan
+per candidate. The packed edge metadata retains the actual neighbour-level delta, while coordinate
+collapse remains capped at two levels; the fine displacement filter fades to the neighbour's filter
+over the representable coarse footprint. This preserves the anti-alias filter in chunk interiors
+without reopening a height wall at the edge.
+
+Final deterministic raster run `1785271500-88705` passes all assertions and visually removes the
+voids, sheets, false overhead terrain, and giant fans. Capture 002 is correctly sky-only in its
+strongly outward-looking orientation. Captures 001/003 measure p90 **9.509/9.349 m** and maxima
+**12.918/17.793 m**; their capture frames were **32.84/34.07 ms**, with capture 002 at **29.20 ms**.
+The exact-pose balanced-frontier regression, packed-edge/WGSL validation, and all **198** workspace
+tests pass. The third view remains about 1 ms over the nominal 33 ms budget, so this is a correctness
+repair rather than a claim that the mountain performance work is finished.
 
 ---
 

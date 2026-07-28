@@ -1454,15 +1454,16 @@ fn edge_stitch_info(node: QuadtreeNode, active_nodes: &[QuadtreeNode]) -> u32 {
             if let Some(neighbor) = active_node_at_direction(active_nodes, direction)
                 && neighbor.level < node.level
             {
-                // Collapsing a full 32-quad edge across a 5-level gap creates
-                // one enormous visible fan triangle. Two levels still match
-                // the established stitched-grid contract; larger topology
-                // gaps fall back to the shallow skirts instead of destroying
-                // the fine chunk's silhouette.
-                maximum_delta = maximum_delta.max((node.level - neighbor.level).min(2));
+                // Keep the full delta for the displacement filter even though
+                // the position stitcher below caps its grid collapse at two
+                // levels. Mountain-scale runtime relief otherwise evaluates
+                // at two different filters on the same shared edge and opens
+                // holes hundreds of metres high under a budget-limited LOD
+                // frontier. Five bits cover the complete L0-L18 range.
+                maximum_delta = maximum_delta.max(node.level - neighbor.level);
             }
         }
-        packed |= u32::from(maximum_delta) << (edge * 3);
+        packed |= u32::from(maximum_delta) << (edge * 5);
     }
     packed
 }
@@ -1488,7 +1489,7 @@ fn active_node_at_direction(
 
 #[cfg(test)]
 fn edge_stitch_level_delta(packed: u32, edge: u32) -> u8 {
-    ((packed >> (edge * 3)) & 0x7) as u8
+    ((packed >> (edge * 5)) & 0x1f) as u8
 }
 
 fn lod_transition_progress(sim_time: f64, started_at_sim_time: f64) -> f32 {
@@ -3160,15 +3161,17 @@ mod tests {
             y: 0,
         };
         let extreme_stitch = edge_stitch_info(extreme_fine, &[coarse, extreme_fine]);
-        assert_eq!(edge_stitch_level_delta(extreme_stitch, 3), 2);
+        assert_eq!(edge_stitch_level_delta(extreme_stitch, 3), 7);
 
         let shader = planet_shader_source();
         assert!(shader.contains("fn stitched_tile_uv("));
+        assert!(shader.contains("fn edge_detail_filter_meters("));
         assert!(shader.contains("fn stitched_surface_direction("));
         assert!(shader.contains("fn lod_morphed_tile_uv("));
         assert!(shader.contains("@location(10) node_uv_origin_span: vec4<f32>"));
         assert!(shader.contains("@location(11) node_anchor_direction_cube_length: vec4<f32>"));
         assert!(shader.contains("let stride = 1u << min(level_delta, 2u);"));
+        assert!(shader.contains("requested_level - min(requested_level, level_delta)"));
     }
 
     #[test]
