@@ -404,6 +404,11 @@ pub const TERRAIN_DETAIL_RIDGE_STRENGTH: f64 = 1.0;
 /// there is no blend left to undo.
 pub const TERRAIN_DETAIL_RIDGE_NORMALISATION: f64 = 1.0;
 pub const TERRAIN_DETAIL_ATTENUATION_SLOPE: f64 = 4.0;
+/// Fade each newly available outmap level in over two of that level's source
+/// texels. Sparse child borders are constrained to their parents by the baker;
+/// matching that hierarchy in the runtime detail filter prevents the
+/// source-level change from opening a height discontinuity at those borders.
+pub const TERRAIN_DETAIL_SOURCE_EDGE_FADE_TEXELS: f64 = 2.0;
 
 /// What the GPU actually puts under the camera, evaluated on the CPU so flight
 /// clearance and camera placement agree with the render.
@@ -420,9 +425,34 @@ pub const TERRAIN_DETAIL_ATTENUATION_SLOPE: f64 = 4.0;
 /// amplitude and character without agreeing bit for bit.
 /// Spacing of the baked samples at a pyramid level: the scale below which the
 /// baked data carries nothing, and therefore where the ladder starts.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn baked_sample_spacing_meters(source_level: u8) -> f64 {
-    2.0 * PLANET_RADIUS_METERS
-        / (f64::from(1_u32 << source_level) * f64::from(TILE_LOGICAL_SIZE - 1))
+    baked_sample_spacing_meters_at_level(f64::from(source_level))
+}
+
+fn baked_sample_spacing_meters_at_level(source_level: f64) -> f64 {
+    2.0 * PLANET_RADIUS_METERS / (2.0_f64.powf(source_level) * f64::from(TILE_LOGICAL_SIZE - 1))
+}
+
+pub fn continuous_baked_sample_spacing_meters(
+    face_uv: [f64; 2],
+    source_level: u8,
+    dense_level: u8,
+) -> f64 {
+    let dense_level = dense_level.min(source_level);
+    let mut effective_level = f64::from(dense_level);
+    for level in dense_level.saturating_add(1)..=source_level {
+        let side = f64::from(1_u32 << level);
+        let tile_x = ((face_uv[0] + 1.0) * 0.5 * side).rem_euclid(1.0);
+        let tile_y = ((face_uv[1] + 1.0) * 0.5 * side).rem_euclid(1.0);
+        let edge_distance = tile_x.min(1.0 - tile_x).min(tile_y.min(1.0 - tile_y));
+        effective_level += smoothstep(
+            0.0,
+            TERRAIN_DETAIL_SOURCE_EDGE_FADE_TEXELS / f64::from(TILE_LOGICAL_SIZE - 1),
+            edge_distance,
+        );
+    }
+    baked_sample_spacing_meters_at_level(effective_level)
 }
 
 pub fn terrain_detail_meters(
@@ -2503,8 +2533,8 @@ mod tests {
         TERRAIN_DETAIL_RIDGE_NORMALISATION, TERRAIN_DETAIL_RIDGE_SCALE,
         TERRAIN_DETAIL_RIDGE_SOFTNESS, TERRAIN_DETAIL_RIDGE_STRENGTH, TERRAIN_DETAIL_ROUGHNESS,
         TERRAIN_DETAIL_START_WAVELENGTH_METERS, TerrainHeightRange, build_chunk_mesh,
-        cube_face_basis, cube_face_direction, default_sun_direction,
-        detailed_outmap_land_height_meters, global_terrain_detail_meters,
+        continuous_baked_sample_spacing_meters, cube_face_basis, cube_face_direction,
+        default_sun_direction, detailed_outmap_land_height_meters, global_terrain_detail_meters,
         minimum_vertical_fov_radians_for_viewport, near_plane_meters, outmap_surface_height_meters,
         outmap_terrain_height_scale, placeholder_height_meters, planet_local_vector,
         planet_rotation_radians, projected_error_pixels_with_height_range, terrain_detail_meters,
@@ -3118,6 +3148,34 @@ mod tests {
         // It is a ceiling the ray path searches to, so it must not be loose:
         // an overstated reach is spread over the same fixed sample count.
         assert!(TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS >= sum * 0.99);
+    }
+
+    #[test]
+    fn sparse_source_detail_matches_its_parent_at_the_shared_border() {
+        let level_seven_x = 21.0;
+        let level_seven_y = 20.5;
+        let border_face_uv = [
+            level_seven_x * 2.0 / 128.0 - 1.0,
+            level_seven_y * 2.0 / 128.0 - 1.0,
+        ];
+        let child_spacing = continuous_baked_sample_spacing_meters(border_face_uv, 7, 4);
+        let parent_spacing = continuous_baked_sample_spacing_meters(border_face_uv, 6, 4);
+        assert!(
+            (child_spacing - parent_spacing).abs() < f64::EPSILON,
+            "child detail spacing {child_spacing} did not collapse to parent {parent_spacing}"
+        );
+
+        let interior_face_uv = [
+            (level_seven_x + 0.25) * 2.0 / 128.0 - 1.0,
+            level_seven_y * 2.0 / 128.0 - 1.0,
+        ];
+        assert!(
+            (continuous_baked_sample_spacing_meters(interior_face_uv, 7, 4)
+                - super::baked_sample_spacing_meters(7))
+            .abs()
+                < f64::EPSILON,
+            "detail did not reach the child source level outside the edge fade"
+        );
     }
 
     /// The tilt must leave the fine octaves alone. Everything below the taper

@@ -21,8 +21,8 @@ use crate::{
         GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, GeometricErrorRatio, MAX_LOD_LEVEL,
         OUTMAP_TERRAIN_FAR_HEIGHT_SCALE, OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS,
         OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS, OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE,
-        PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode, TerrainHeightRange,
-        baked_sample_spacing_meters, build_chunk_mesh, cube_face_basis, cube_face_direction,
+        PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode, TerrainHeightRange, build_chunk_mesh,
+        continuous_baked_sample_spacing_meters, cube_face_basis, cube_face_direction,
         max_active_chunks_from_env, outmap_surface_height_meters, outmap_terrain_height_scale,
         placeholder_height_meters,
     },
@@ -112,6 +112,7 @@ const OUTMAP_GEOMETRIC_ERROR: GeometricErrorRatio = GeometricErrorRatio {
 /// the worker streams better sources; otherwise low flight stalls at L6 and
 /// exposes huge terrain facets.
 const LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS: f64 = 250_000.0;
+const TERRAIN_INFO_SOURCE_EDGE_FADE_BIT: u32 = 1 << 14;
 
 /// Near-field window: a square of baked macro height around the camera, at a
 /// level far finer than the six whole-face arrays the raymarch path holds.
@@ -273,10 +274,11 @@ struct TerrainInstance {
 struct TerrainSettings {
     outmap_height_scale: [f32; 4],
     outmap_height_blend: [f32; 4],
+    outmap_detail: [f32; 4],
 }
 
 impl TerrainSettings {
-    fn from_planet_constants() -> Self {
+    fn from_planet_constants(dense_level: u8) -> Self {
         Self {
             outmap_height_scale: [
                 OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE as f32,
@@ -290,6 +292,7 @@ impl TerrainSettings {
                 0.0,
                 0.0,
             ],
+            outmap_detail: [f32::from(dense_level), 0.0, 0.0, 0.0],
         }
     }
 }
@@ -408,6 +411,10 @@ impl TerrainRenderer {
             ),
             None => TerrainHeightRange::default(),
         };
+        let outmap_dense_level = match &source {
+            TerrainDataSource::Placeholder => 0,
+            TerrainDataSource::Outmap(outmap) => outmap.manifest().dense_level,
+        };
         let (tile_load_requests, tile_load_results) = match &source {
             TerrainDataSource::Placeholder => (None, None),
             TerrainDataSource::Outmap(outmap) => {
@@ -428,7 +435,9 @@ impl TerrainRenderer {
         let terrain_settings_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("terrain settings"),
-                contents: bytemuck::bytes_of(&TerrainSettings::from_planet_constants()),
+                contents: bytemuck::bytes_of(&TerrainSettings::from_planet_constants(
+                    outmap_dense_level,
+                )),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
         let terrain_tile_bind_group_layout =
@@ -664,8 +673,9 @@ impl TerrainRenderer {
                 macro_height_meters: placeholder_height_meters(local_surface_direction),
                 source_level: 0,
             }),
-            TerrainDataSource::Outmap(_) => {
+            TerrainDataSource::Outmap(outmap) => {
                 let (face, face_uv) = cube_face_uv(local_surface_direction)?;
+                let dense_level = outmap.manifest().dense_level;
                 self.tile_cache
                     .iter()
                     .filter_map(|(key, tile)| {
@@ -680,10 +690,7 @@ impl TerrainRenderer {
                                 baked_meters,
                                 local_surface_direction,
                                 camera_altitude_meters,
-                                // The ladder starts where this tile's samples
-                                // stop, so the CPU's surface covers the same
-                                // band the renderer displaces with.
-                                baked_sample_spacing_meters(level),
+                                continuous_baked_sample_spacing_meters(face_uv, level, dense_level),
                             ),
                             macro_height_meters: if baked_meters <= 0.0 {
                                 0.0
@@ -1129,6 +1136,10 @@ impl TerrainRenderer {
         let mut fallback_chunks = 0_u32;
         let mut source_level_delta_histogram = [0_u32; MAX_LOD_LEVEL as usize + 1];
         let camera_view_basis = CameraViewBasis::from_forward_and_up(camera_forward, camera_up);
+        let outmap_dense_level = match &self.source {
+            TerrainDataSource::Placeholder => 0,
+            TerrainDataSource::Outmap(outmap) => outmap.manifest().dense_level,
+        };
         for (render_node, resolved) in render_nodes.iter().zip(resolved_tiles.iter()) {
             let (source_uv_scale, source_uv_offset, source_level, tile_key, outmap_mode) =
                 if let Some((requested_key, source_key)) = *resolved {
@@ -1165,6 +1176,12 @@ impl TerrainRenderer {
                         render_node.node.face,
                         render_node.node.level,
                         source_level,
+                        outmap_mode
+                            && node_intersects_source_edge_fade(
+                                render_node.node,
+                                source_level,
+                                outmap_dense_level,
+                            ),
                     ),
                     lod_transition: [
                         render_node.transition_progress,
@@ -2235,11 +2252,39 @@ fn fallback_uv_transform(requested: TileKey, source: TileKey) -> ([f32; 2], [f32
     )
 }
 
-fn pack_terrain_info(outmap: bool, face: u8, requested_level: u8, source_level: u8) -> u32 {
+fn node_intersects_source_edge_fade(node: QuadtreeNode, source_level: u8, dense_level: u8) -> bool {
+    if source_level <= dense_level {
+        return false;
+    }
+    let [u_min, v_min, u_max, v_max] = node.uv_bounds();
+    let fade =
+        crate::planet::TERRAIN_DETAIL_SOURCE_EDGE_FADE_TEXELS / f64::from(TILE_LOGICAL_SIZE - 1);
+    for level in dense_level.saturating_add(1)..=source_level {
+        let scale = f64::from(1_u32 << level) * 0.5;
+        let overlaps_edge = |minimum: f64, maximum: f64| {
+            let tile_minimum = (minimum + 1.0) * scale;
+            let tile_maximum = (maximum + 1.0) * scale;
+            (tile_minimum - fade).ceil() <= tile_maximum + fade
+        };
+        if overlaps_edge(u_min, u_max) || overlaps_edge(v_min, v_max) {
+            return true;
+        }
+    }
+    false
+}
+
+fn pack_terrain_info(
+    outmap: bool,
+    face: u8,
+    requested_level: u8,
+    source_level: u8,
+    source_edge_fade: bool,
+) -> u32 {
     u32::from(outmap)
         | (u32::from(face) << 1)
         | (u32::from(requested_level) << 4)
         | (u32::from(source_level) << 9)
+        | u32::from(source_edge_fade) * TERRAIN_INFO_SOURCE_EDGE_FADE_BIT
 }
 
 fn max_outmap_seam_delta(
@@ -2335,10 +2380,11 @@ mod tests {
 
     use super::{
         FadingChunk, LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS,
-        OUTMAP_TILE_GRID_SUBDIVISION_LEVELS, TERRAIN_MATERIAL_LAYER_COUNT,
-        TERRAIN_MATERIAL_TEXTURE_SIZE, TerrainSettings, aligned_texture_row_bytes, cube_face_uv,
-        downsample_srgb_rgba8, edge_stitch_info, edge_stitch_level_delta, fallback_uv_transform,
-        lod_transition_nodes, lod_transition_progress, nodes_share_lod_transition,
+        OUTMAP_TILE_GRID_SUBDIVISION_LEVELS, TERRAIN_INFO_SOURCE_EDGE_FADE_BIT,
+        TERRAIN_MATERIAL_LAYER_COUNT, TERRAIN_MATERIAL_TEXTURE_SIZE, TerrainSettings,
+        aligned_texture_row_bytes, cube_face_uv, downsample_srgb_rgba8, edge_stitch_info,
+        edge_stitch_level_delta, fallback_uv_transform, lod_transition_nodes,
+        lod_transition_progress, node_intersects_source_edge_fade, nodes_share_lod_transition,
         pack_terrain_info, padded_texture_rows, planet_shader_source,
         purge_expired_lod_transitions, sample_height_cpu, should_animate_lod_transition,
         source_tile_uv_at_direction, terrain_material_layer_texels, terrain_material_texel,
@@ -2407,16 +2453,31 @@ mod tests {
 
     #[test]
     fn terrain_info_packs_mode_face_and_levels() {
-        let packed = pack_terrain_info(true, 5, 18, 7);
+        let packed = pack_terrain_info(true, 5, 18, 7, true);
         assert_eq!(packed & 1, 1);
         assert_eq!((packed >> 1) & 0x7, 5);
         assert_eq!((packed >> 4) & 0x1f, 18);
         assert_eq!((packed >> 9) & 0x1f, 7);
+        assert_ne!(packed & TERRAIN_INFO_SOURCE_EDGE_FADE_BIT, 0);
+    }
+
+    #[test]
+    fn only_chunks_near_sparse_source_borders_enable_the_vertex_fade() {
+        let border = QuadtreeNode {
+            face: 0,
+            level: 14,
+            x: 8_064,
+            y: 7_000,
+        };
+        let interior = QuadtreeNode { x: 8_070, ..border };
+        assert!(node_intersects_source_edge_fade(border, 7, 4));
+        assert!(!node_intersects_source_edge_fade(interior, 7, 4));
+        assert!(!node_intersects_source_edge_fade(border, 4, 4));
     }
 
     #[test]
     fn shader_reads_outmap_height_scale_from_terrain_settings() {
-        let settings = TerrainSettings::from_planet_constants();
+        let settings = TerrainSettings::from_planet_constants(4);
         let shader = planet_shader_source();
         assert_eq!(
             settings.outmap_height_scale[0],
@@ -2432,6 +2493,7 @@ mod tests {
         );
         assert_eq!(settings.outmap_height_blend[0], 100_000.0);
         assert_eq!(settings.outmap_height_blend[1], 1_000_000.0);
+        assert_eq!(settings.outmap_detail[0], 4.0);
         assert!(shader.matches("terrain_macro_height_scale()").count() >= 2);
     }
 
@@ -2470,6 +2532,7 @@ mod tests {
         .expect("planet shader must validate before WGPU creates the pipeline");
         assert!(shader.contains("fn fs_main_stable("));
         assert!(shader.contains("fn terrain_detail_value_noise("));
+        assert!(shader.contains("fn continuous_baked_sample_spacing_meters("));
         // Every octave has to be faded against the sampling spacing. Without
         // this the detail aliases into crawling noise as the camera moves.
         let detail = shader

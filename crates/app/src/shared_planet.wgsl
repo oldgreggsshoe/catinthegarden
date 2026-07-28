@@ -250,6 +250,7 @@ var environment_sampler: sampler;
 struct TerrainSettings {
     outmap_height_scale: vec4<f32>,
     outmap_height_blend: vec4<f32>,
+    outmap_detail: vec4<f32>,
 }
 
 @group(2) @binding(5)
@@ -549,6 +550,40 @@ fn terrain_detail_band(
 /// hills twice.
 fn baked_sample_spacing_meters(source_level: u32) -> f32 {
     return 2.0 * PLANET_RADIUS_METERS / (exp2(f32(source_level)) * MATERIAL_TILE_LOGICAL_QUADS);
+}
+
+fn continuous_baked_sample_spacing_meters(
+    face_uv: vec2<f32>,
+    source_level: u32,
+    blend_source_edges: bool,
+) -> f32 {
+    let dense_level = min(u32(terrain_settings.outmap_detail.x + 0.5), source_level);
+    if !blend_source_edges {
+        return baked_sample_spacing_meters(source_level);
+    }
+    var effective_level = f32(dense_level);
+    var tile_coordinate =
+        (face_uv + vec2<f32>(1.0)) * 0.5 * exp2(f32(source_level));
+    var level = source_level;
+    loop {
+        if level <= dense_level {
+            break;
+        }
+        let tile_uv = fract(tile_coordinate);
+        let edge_distance = min(
+            min(tile_uv.x, 1.0 - tile_uv.x),
+            min(tile_uv.y, 1.0 - tile_uv.y),
+        );
+        effective_level += smoothstep(
+            0.0,
+            2.0 / MATERIAL_TILE_LOGICAL_QUADS,
+            edge_distance,
+        );
+        tile_coordinate *= 0.5;
+        level -= 1u;
+    }
+    return 2.0 * PLANET_RADIUS_METERS
+        / (exp2(effective_level) * MATERIAL_TILE_LOGICAL_QUADS);
 }
 
 fn terrain_detail(

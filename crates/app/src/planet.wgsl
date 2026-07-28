@@ -78,6 +78,10 @@ fn source_level(terrain_info: u32) -> u32 {
     return (terrain_info >> 9u) & 0x1fu;
 }
 
+fn source_edge_fade_enabled(terrain_info: u32) -> bool {
+    return (terrain_info & (1u << 14u)) != 0u;
+}
+
 fn is_open_ocean_surface(outmap: bool, macro_height_meters: f32, biome_id: u32) -> bool {
     let ice = outmap && biome_id == 2u;
     let lake = outmap && biome_id == 1u;
@@ -455,7 +459,11 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         anchor_direction,
         anchor_relative_position,
         vertex_filter_meters,
-        baked_sample_spacing_meters(source_level(input.terrain_info)),
+        continuous_baked_sample_spacing_meters(
+            input.node_uv_origin_span.xy + tile_uv * input.node_uv_origin_span.zw,
+            source_level(input.terrain_info),
+            source_edge_fade_enabled(input.terrain_info),
+        ),
         // Each octave asks this separately for its own headroom, so the
         // ladder no longer needs a single scalar weight on the outside.
         select(0.0, base_height, outmap),

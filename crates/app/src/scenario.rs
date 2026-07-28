@@ -210,6 +210,7 @@ impl ScenarioRunner {
             "stand_on_ground" => include_str!("../scenarios/stand_on_ground.json"),
             "path_parity_ridge" => include_str!("../scenarios/path_parity_ridge.json"),
             "render_path_parity" => include_str!("../scenarios/render_path_parity.json"),
+            "manual_render_faults" => include_str!("../scenarios/manual_render_faults.json"),
             "low_pass_bands" => include_str!("../scenarios/low_pass_bands.json"),
             "tour_mountains" => include_str!("../scenarios/tour_mountains.json"),
             "tour_desert" => include_str!("../scenarios/tour_desert.json"),
@@ -895,6 +896,55 @@ mod tests {
                 (observed - expected).abs() < 0.1,
                 "expected {expected}m, observed {observed}m"
             );
+        }
+    }
+
+    #[test]
+    fn manual_render_faults_replays_the_two_logged_camera_poses() {
+        let mut scenario = ScenarioRunner::load("manual_render_faults").expect("scenario parses");
+        let mut captures = Vec::new();
+        loop {
+            let frame = scenario.advance();
+            if frame.capture_screenshot {
+                let position = DVec3::from_array(frame.camera_world_position);
+                captures.push((
+                    position,
+                    (DVec3::from_array(frame.camera_look_at) - position).normalize(),
+                ));
+            }
+            if frame.complete {
+                break;
+            }
+        }
+
+        assert_eq!(captures.len(), 2);
+        assert!(scenario.uses_planet_relative_up());
+        for ((position, direction), (expected_position, expected_direction)) in
+            captures.iter().zip([
+                (
+                    DVec3::new(
+                        -3_960_082.052234005,
+                        313_838.9311170833,
+                        -495_914.6300803465,
+                    ),
+                    DVec3::new(
+                        -0.06730167798646366,
+                        -0.6710929528113925,
+                        0.7383120836252732,
+                    ),
+                ),
+                (
+                    DVec3::new(
+                        -3_959_697.9372234177,
+                        314_983.9975962875,
+                        -495_015.9466270908,
+                    ),
+                    DVec3::new(0.3953746540707302, 0.8970116612273945, 0.19760810342827706),
+                ),
+            ])
+        {
+            assert!(position.distance(expected_position) < 1.0e-6);
+            assert!(direction.distance(expected_direction) < 1.0e-12);
         }
     }
 

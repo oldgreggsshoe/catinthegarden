@@ -3,9 +3,10 @@
 **Branch:** `diagnose/ocean-terrain-blockiness`
 **Branch base:** `69cd04d` on `experiment/ground-readability`; this session's work is isolated on
 the diagnosis branch and pushed to `origin/diagnose/ocean-terrain-blockiness`
-**Renderer state:** `2ca5faf` — "Depth-test raster ocean against land"
-**Latest evidence:** paired manual run `test-runs/manual/1785238000-2567254` at renderer-equivalent
-head `ed6371a`
+**Renderer state:** current branch — sparse outmap source borders now keep the runtime detail ladder
+continuous with their baker-constrained parents
+**Latest evidence:** deterministic raster repair run
+`test-runs/manual_render_faults/1785256951-2743312`
 **Written:** 28 July 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
@@ -186,6 +187,46 @@ Results land in `test-runs/<scenario>/<unix>-<id>/{manifest.json,log.jsonl,scree
   going to 0 is how you know demand is satisfied and the number is real. Do not read a demand
   reduction as a frame-time saving without checking this: at the default 256 the cap binds on every
   frame of every scenario, and a change that cuts demand by a third can leave the frame untouched.
+
+### Manual raster fault repair — complete, final human sign-off still requested
+
+The newest manual set `test-runs/manual/1785253016-2703201` contained two views of one serious
+raster fault:
+
+| capture | rotating-world pose / direction | frozen local pose / direction | clearance | fault |
+|---|---|---|---:|---|
+| 001 | `[-1423884, 313839, 3728369]` / `[0.701, -0.671, 0.241]` | `[-3960082.052, 313838.931, -495914.630]` / `[-0.067302, -0.671093, 0.738312]` | 468 m | long black channels through land |
+| 002 | `[-1422920, 314984, 3728210]` / `[0.286, 0.897, -0.337]` | `[-3959697.937, 314983.998, -495015.947]` / `[0.395375, 0.897012, 0.197608]` | 106 m | vertical and overhead terrain sheets; 173.8 m probe outlier |
+
+`manual_render_faults` freezes planet rotation, replays those two local poses, waits for streaming
+and transitions to settle, and captures at 3.0 and 7.5 seconds:
+
+```bash
+CARGO_TARGET_DIR=/home/dad/catingard-target cargo build --release -p catinthegarden-app
+CATINGARDEN_PRESENT_MODE=immediate \
+  /home/dad/catingard-target/release/catinthegarden-app --scenario manual_render_faults
+```
+
+The fault was **not** horizon/frustum culling, edge stitching, a lake predicate, or an LOD
+transition. Disabling skirts removed the walls but left the channels; disabling the runtime detail
+ladder removed both. The baker constrains every sparse child border to its parent, but the amplified
+runtime ladder chose its high-frequency cutoff from the resolved source level as a hard integer.
+At a child/fallback boundary the baked heights therefore met while the added displacement did not;
+the normal 10 m skirt then made that discontinuity look like a wall.
+
+Raster and CPU terrain truth now derive a continuous effective source level. Each parent-complete
+sparse level fades from its parent over two of that level's 128 source texels, so the exact border
+evaluates the same displacement from either side and the original interior field is unchanged.
+The manifest's dense level is uploaded rather than hard-coded. A packed per-instance bit keeps the
+extra WGSL hierarchy walk off chunks that do not intersect a source-edge fade.
+
+Final deterministic run `1785256951-2743312` removes the black openings and floating sheets. It
+measures p90 **2.956 m**, max **8.265 m**, and seam delta **0.000244 m**, against the broken replay's
+94.425 m deterministic maximum (173.8 m in the rounded manual pose). The established 10 m skirt cap
+is unchanged, and 197 workspace tests pass with five diagnostic tests ignored. This replay is a
+correctness regression, not a new performance baseline; its
+106 m-clearance pose remains near the 33 ms Quadro budget and should be rechecked in the next
+exclusive benchmark set. Ian has not yet signed off the repaired captures.
 
 ---
 
