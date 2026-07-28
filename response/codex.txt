@@ -1,5 +1,18 @@
-Removed the halftone feature completely: its shader path, GPU offset texture, layout generation, key 6, HUD state, startup selection range, and tests.
+Done on `diagnose/ocean-terrain-blockiness`.
 
-Validation passed: cargo fmt --all, cargo check --workspace, cargo test --workspace (151 tests).
+- **Mountainous ocean:** The raster path interpolates mixed coastline triangles between sea-level ocean vertices and raised land vertices, then shades part of that slope as ocean. The measured waves span only about 1.01 m, so they are not the cause. The correct fix is a separate depth-tested raster ocean shell/pass, matching the ray path's analytic ocean hit.
+- **Blocky terrain from height:** Global source detail ends at L4, about 3.906 km per sample, while the baker's working grid is about 6.1 km per cell. Extra mesh LOD cannot add macro-height, coastline, or biome detail. The best next step is a true L5 bake from an 8192x4096 working grid, but the dense ray-field allocation rises from roughly 0.286 GB to 1.142 GB; test 16-bit ray height packing first. Monotone bicubic sampling could only soften, not restore, missing detail.
+- **Low-impact performance change shipped:** Zero-amplitude terrain-detail noise is skipped below sea level, Gerstner work is skipped on land vertices, and zero-weight fine-material coordinate work is skipped. Quadro raster means improved from 35.134 to 26.695 ms for `ocean_flyover` (-24.0%) and 23.584 to 22.431 ms for `orbit_once` (-4.9%), with no intended visual change.
+- **Validation:** 192 workspace tests passed; 5 diagnostic tests were ignored. Raster and ray `orbit_once` pass. Ray `ocean_flyover` has only its documented pre-existing fallback-count assertion failure.
 
-Committed and pushed 9a193fa (Remove halftone ray experiment). Your unrelated local changes remain unstaged.
+Code and documentation commit `4951472` is pushed. The ocean-shell and denser-bake visual fixes remain open; the evidence and recommended order are recorded in `docs/HANDOFF.md`. Unrelated local files were left untouched.
+
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:42-46|note=[used prior renderer architecture and L4 coverage pointer]
+rollout_summaries/2026-07-17T20-49-16-HDn7-terrain_realism_multimaterial_lod_fade_investigation.md:22-32|note=[used read-first workflow and L4 geometry limit context]
+</citation_entries>
+<rollout_ids>
+019f71d7-3184-7f30-af0e-566be3d9aefd
+</rollout_ids>
+</oai-mem-citation>
