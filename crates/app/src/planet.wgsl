@@ -740,8 +740,30 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             biome_color(2u) * 0.65 * ice_light_floor,
         );
     }
-    let textured_aerial_color = textured_surface_lighting
-        + max(input.aerial_color - input.surface_lighting, vec3<f32>(0.0));
+    // The vertex stage turned `surface_lighting` into `aerial_color` by
+    // attenuating it and adding in-scatter; re-texturing has since changed the
+    // albedo underneath, so that transform has to be carried across.
+    //
+    // Carrying it as an additive residue, `max(aerial - lighting, 0)`, drops
+    // the extinction on the floor -- it is the negative half of the difference
+    // -- and then clamps the whole term to exactly zero wherever extinction
+    // exceeds in-scatter. Over the mountains that is everywhere: measured, the
+    // aerial contribution read 0.000 in the mid-distance band and 0.015 at the
+    // horizon, and the final image was bit-identical to the unattenuated
+    // lighting at every distance. A range with no distance cue reads as flat
+    // however much relief it has.
+    //
+    // As a ratio both halves survive. Where the vertex surface is too dark to
+    // define one, fall back to the additive form so night-side haze is not
+    // lost with it.
+    let aerial_ratio = input.aerial_color
+        / max(input.surface_lighting, vec3<f32>(1.0e-4));
+    let textured_aerial_color = select(
+        textured_surface_lighting
+            + max(input.aerial_color - input.surface_lighting, vec3<f32>(0.0)),
+        textured_surface_lighting * min(aerial_ratio, vec3<f32>(16.0)),
+        input.surface_lighting > vec3<f32>(1.0e-3),
+    );
     if ocean_coverage <= 0.0 {
         if render_debug_mode == RENDER_DEBUG_SURFACE_LIGHTING {
             return vec4<f32>(textured_surface_lighting, 1.0);

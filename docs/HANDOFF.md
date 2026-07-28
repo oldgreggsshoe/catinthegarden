@@ -401,12 +401,44 @@ mid-tour frame, sampled in three distance bands so near ground cannot mask the h
    luminance is flat with range — far 0.502, mid 0.565, near 0.533 — where a real range at tens of
    km lifts toward the sky and desaturates with distance.
 
-**That absent depth cue is why the range still reads flat now that it genuinely has relief**, and it
-is the most likely single thing standing between this and "looks like a modernish game" from the
-air. Phase 5 built terrain aerial perspective and §8 records a lot of tuning of it; something in
-that path is evidently not firing at ~1 km clearance over a 4 km plateau. Start by finding whether
-the in-scatter is being computed and then discarded, or never computed, at these view distances —
-`AERIAL_IN_SCATTER_GAIN` is 3.0, so a zero result is not a gain problem.
+**Found, fixed, and it revealed the real problem rather than solving it.**
+
+The vertex stage computes `aerial_color = lit x transmittance + in_scatter`. The fragment stage was
+reconstructing that onto the re-textured albedo as an *additive residue*:
+
+```wgsl
+textured_aerial_color = textured_surface_lighting
+    + max(input.aerial_color - input.surface_lighting, vec3<f32>(0.0));
+```
+
+That difference is `in_scatter - lit x (1 - T)`. **The extinction is the negative half, so it was
+discarded on the floor, and the clamp then zeroed the entire term wherever extinction exceeded
+in-scatter** — which over bright ground is everywhere. It is now carried as a ratio, with the old
+additive form kept as a fallback where the vertex surface is too dark to define one (this is what
+keeps night-side haze; `night_side_atmosphere` passes).
+
+**This defect was raster-only.** The ray path calls `aerial_perspective` per pixel and never had the
+reconstruction step, so the fix is also a parity fix.
+
+Measured after, `tour_mountains` mid-tour frame:
+
+| far-band | before | after | ray |
+|---|---:|---:|---:|
+| luminance | 0.502 (= lighting exactly) | **0.434** | 0.400 |
+| saturation | 0.212 | **0.323** | 0.342 |
+
+**But the horizon now goes darker and more saturated, where real haze goes lighter and less.** That
+is extinction arriving correctly with nothing to balance it, and the arithmetic says both terms are
+being computed right: measured blue ratio 0.710 against `exp(-33.1e-6 x 0.88 x 30km)` = 0.417 of
+extinction plus ~0.28 of in-scatter. Over 30 km at 4.7 km altitude this model removes more from a
+bright surface than it adds back.
+
+**So the remaining target is the in-scatter's magnitude relative to extinction, not a missing code
+path.** In-scatter lands around 0.10 against a surface at 0.5; a distant range reads pale because
+in-scatter dominates. `AERIAL_IN_SCATTER_GAIN` is 3.0 and §8 records that it affects neither
+extinction nor the sky, which makes it the isolated lever — but it is a tuning knob on a physical
+model, so raising it is a deliberate choice about realism versus appearance and wants Ian's eye, not
+a unilateral number. `AERIAL_IN_SCATTER_SAMPLE_COUNT` is also only 2.
 
 *Caveat on method: the first pass at this sampled only the bottom 65% of the frame, which is all
 near ground where little haze is correct, and would have supported the same conclusion for the wrong
