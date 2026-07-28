@@ -7,8 +7,8 @@ the diagnosis branch and pushed to `origin/diagnose/ocean-terrain-blockiness`
 inside the 256-leaf budget, mixed-LOD edges evaluate one continuous runtime-detail displacement,
 and the raster ocean shell is submitted only for chunks whose resolved height footprint may contain
 sea
-**Latest evidence:** deterministic raster mountain performance runs
-`test-runs/mountain_render_faults/1785273124-104321` and `1785273186-104898`
+**Latest evidence:** committed-HEAD deterministic raster mountain performance run
+`test-runs/mountain_render_faults/1785273384-106648`
 **Written:** 28 July 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
@@ -305,9 +305,14 @@ drift; visual inspection finds no structural change. Raster `ocean_flyover`
 range passes. The scenario as a whole still fails only its pre-existing fallback limit
 (256 observed vs 192 allowed), as its preceding runs did.
 
+Across all three post-change runs, the per-view means are **32.703/28.661/32.844 ms** and their
+equal-view mean is **31.403 ms**, an aggregate **1.418 ms / 4.3%** below the two-run baseline.
+Final committed-HEAD run `1785273384-106648` passes at **32.844/28.902/33.328 ms** with the same
+1/0/1 ocean chunks. Its captures remain within one 8-bit value of the pre-change frames with no
+structural difference.
+
 The focused bilinear-footprint regression and all **199** workspace tests pass with five diagnostic
-tests ignored. A final committed-HEAD timing run remains to be recorded after this implementation
-commit.
+tests ignored.
 
 ---
 
