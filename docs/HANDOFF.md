@@ -4,9 +4,11 @@
 **Branch base:** `69cd04d` on `experiment/ground-readability`; this session's work is isolated on
 the diagnosis branch and pushed to `origin/diagnose/ocean-terrain-blockiness`
 **Renderer state:** current branch — the raster selector admits only two-level-graded frontiers
-inside the 256-leaf budget, and mixed-LOD edges evaluate one continuous runtime-detail displacement
-**Latest evidence:** deterministic raster mountain repair run
-`test-runs/mountain_render_faults/1785271707-90557`
+inside the 256-leaf budget, mixed-LOD edges evaluate one continuous runtime-detail displacement,
+and the raster ocean shell is submitted only for chunks whose resolved height footprint may contain
+sea
+**Latest evidence:** deterministic raster mountain performance runs
+`test-runs/mountain_render_faults/1785273124-104321` and `1785273186-104898`
 **Written:** 28 July 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
@@ -269,6 +271,43 @@ The exact-pose balanced-frontier regression, packed-edge/WGSL validation, and al
 tests pass. A preceding identical-source run measured capture 001 at 32.84 ms, so the first view is
 near the budget but variable; capture 003 remains about 1 ms over it. This is a correctness repair,
 not a claim that the mountain performance work is finished.
+
+### Raster all-land ocean submission culling
+
+The independent raster ocean shell used the terrain's complete instance list. Its fragment shader
+correctly discarded raised land, but all 256 chunks still ran the six-wave ocean vertex path and
+submitted another 589,824 triangles in each mountain view.
+
+`GpuTile` now precomputes whether its complete logical R32F footprint is strictly positive. Fallback
+sub-rectangles test only the texels which can contribute to their bilinear samples. An ocean
+instance is omitted only when every contributing height is finite and above zero; a zero, negative,
+invalid, placeholder, coastline, or otherwise uncertain footprint keeps the former shader-owned
+path. Possible-ocean instances are sorted to the front of each resolved-tile group, so the ocean
+draw batches reference contiguous subsets of the existing terrain instance buffer rather than
+duplicating uploads. Spatial logs and the HUD expose `ocean_chunks` and `ocean_triangles`.
+
+Two immediate-mode runs on each side, using the exact three `mountain_render_faults` poses and
+discarding the first two spatial samples after each cut:
+
+| view | before settled mean | after settled mean | change | ocean chunks / triangles after |
+|---|---:|---:|---:|---:|
+| 001 | 33.567 ms | **32.633 ms** | −0.934 ms / −2.8% | 1 / 2,304 |
+| 002 | 31.173 ms | **28.541 ms** | −2.632 ms / −8.4% | 0 / 0 |
+| 003 | 33.724 ms | **32.603 ms** | −1.121 ms / −3.3% | 1 / 2,304 |
+| equal-view mean | 32.821 ms | **31.259 ms** | **−1.562 ms / −4.8%** | |
+
+Before runs were `1785271707-90557` and `1785272791-99965`; after runs were
+`1785273124-104321` and `1785273186-104898`. Terrain stays at 256 chunks/589,824 triangles, while
+ocean submission falls from the former 256 chunks/589,824 triangles to the table above. Baseline
+and culled captures differ by at most one 8-bit value, confined to normal exposure/frame-timing
+drift; visual inspection finds no structural change. Raster `ocean_flyover`
+`1785273243-105393` conservatively retains all 256 ocean chunks and visible waves, and its wave
+range passes. The scenario as a whole still fails only its pre-existing fallback limit
+(256 observed vs 192 allowed), as its preceding runs did.
+
+The focused bilinear-footprint regression and all **199** workspace tests pass with five diagnostic
+tests ignored. A final committed-HEAD timing run remains to be recorded after this implementation
+commit.
 
 ---
 

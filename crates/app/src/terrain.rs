@@ -239,6 +239,8 @@ pub struct TerrainStats {
     pub resident_chunks: u32,
     pub drawn_chunks: u32,
     pub terrain_triangles: u64,
+    pub ocean_chunks: u32,
+    pub ocean_triangles: u64,
     pub chunks_loaded: u32,
     pub chunks_unloaded: u32,
     pub splits: u32,
@@ -328,6 +330,7 @@ struct GpuTile {
     _moisture_texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
     heights_meters: Vec<f32>,
+    complete_logical_footprint_is_land: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -335,6 +338,25 @@ struct DrawBatch {
     first_instance: u32,
     instance_count: u32,
     tile_key: Option<TileKey>,
+}
+
+fn push_draw_batch_instance(
+    batches: &mut Vec<DrawBatch>,
+    tile_key: Option<TileKey>,
+    instance_index: u32,
+) {
+    if let Some(batch) = batches.last_mut()
+        && batch.tile_key == tile_key
+        && batch.first_instance + batch.instance_count == instance_index
+    {
+        batch.instance_count += 1;
+    } else {
+        batches.push(DrawBatch {
+            first_instance: instance_index,
+            instance_count: 1,
+            tile_key,
+        });
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -380,6 +402,7 @@ pub struct TerrainRenderer {
     fade_in_started_at: HashMap<QuadtreeNode, f64>,
     active_render_nodes: BTreeSet<QuadtreeNode>,
     draw_batches: Vec<DrawBatch>,
+    ocean_draw_batches: Vec<DrawBatch>,
     max_outmap_seam_delta_meters: f64,
 }
 
@@ -624,6 +647,7 @@ impl TerrainRenderer {
             fade_in_started_at: HashMap::new(),
             active_render_nodes: BTreeSet::new(),
             draw_batches: Vec::new(),
+            ocean_draw_batches: Vec::new(),
             max_outmap_seam_delta_meters: 0.0,
         };
         Ok(renderer)
@@ -1133,6 +1157,7 @@ impl TerrainRenderer {
             .collect();
         let mut prepared_instances = Vec::with_capacity(render_nodes.len());
         self.draw_batches.clear();
+        self.ocean_draw_batches.clear();
         let mut fallback_chunks = 0_u32;
         let mut source_level_delta_histogram = [0_u32; MAX_LOD_LEVEL as usize + 1];
         let camera_view_basis = CameraViewBasis::from_forward_and_up(camera_forward, camera_up);
@@ -1162,6 +1187,29 @@ impl TerrainRenderer {
             ) * PLANET_RADIUS_METERS;
             let anchor_u = (u_min + u_max) * 0.5;
             let anchor_v = (v_min + v_max) * 0.5;
+            let may_contain_ocean = match tile_key {
+                Some(key) => {
+                    let tile = self
+                        .tile_cache
+                        .get(&key)
+                        .expect("resolved terrain tile is resident");
+                    let footprint_is_land =
+                        if source_uv_scale == [1.0, 1.0] && source_uv_offset == [0.0, 0.0] {
+                            tile.complete_logical_footprint_is_land
+                        } else {
+                            height_footprint_is_strictly_land(
+                                &tile.heights_meters,
+                                source_uv_scale,
+                                source_uv_offset,
+                            )
+                        };
+                    !footprint_is_land
+                }
+                // Placeholder height is procedural rather than represented by
+                // the zero-filled texture, so it cannot be culled from tile
+                // data.
+                None => true,
+            };
             prepared_instances.push((
                 tile_key,
                 TerrainInstance {
@@ -1209,25 +1257,24 @@ impl TerrainRenderer {
                         (1.0 + anchor_u * anchor_u + anchor_v * anchor_v).sqrt() as f32,
                     ],
                 },
+                may_contain_ocean,
             ));
         }
         // A single canonical vertex buffer makes leaves with the same source
         // tile genuinely instanced. Global L4 fallback therefore costs a few
         // draw calls rather than one call and one vertex buffer per leaf.
-        prepared_instances.sort_unstable_by_key(|(tile_key, _)| *tile_key);
+        // Within a resolved tile, put possible-ocean chunks first. Their
+        // ranges are then contiguous subsets of the terrain instance stream,
+        // so culling does not duplicate instance uploads.
+        prepared_instances.sort_unstable_by_key(|(tile_key, _, may_contain_ocean)| {
+            (*tile_key, !*may_contain_ocean)
+        });
         let mut instances = Vec::with_capacity(prepared_instances.len());
-        for (tile_key, instance) in prepared_instances {
+        for (tile_key, instance, may_contain_ocean) in prepared_instances {
             let instance_index = instances.len() as u32;
-            if let Some(batch) = self.draw_batches.last_mut()
-                && batch.tile_key == tile_key
-            {
-                batch.instance_count += 1;
-            } else {
-                self.draw_batches.push(DrawBatch {
-                    first_instance: instance_index,
-                    instance_count: 1,
-                    tile_key,
-                });
+            push_draw_batch_instance(&mut self.draw_batches, tile_key, instance_index);
+            if may_contain_ocean {
+                push_draw_batch_instance(&mut self.ocean_draw_batches, tile_key, instance_index);
             }
             instances.push(instance);
         }
@@ -1250,11 +1297,18 @@ impl TerrainRenderer {
         } else {
             metrics.max_seam_delta_meters
         };
+        let ocean_chunks = self
+            .ocean_draw_batches
+            .iter()
+            .map(|batch| batch.instance_count)
+            .sum();
         Ok(TerrainStats {
             level_histogram: metrics.level_histogram,
             resident_chunks: metrics.active_chunks,
             drawn_chunks: render_nodes.len() as u32,
             terrain_triangles: render_nodes.len() as u64 * u64::from(self.index_count / 3),
+            ocean_chunks,
+            ocean_triangles: u64::from(ocean_chunks) * u64::from(self.index_count / 3),
             chunks_loaded: 0,
             chunks_unloaded: 0,
             splits: metrics.splits,
@@ -1269,9 +1323,7 @@ impl TerrainRenderer {
             fallback_chunks,
             source_level_delta_histogram,
             lod_thrash_events: metrics.lod_thrash_events,
-            // Each resolved-tile batch is drawn once as land/bathymetry and
-            // once as the independent depth-tested ocean shell.
-            draw_calls: (self.draw_batches.len() * 2) as u32,
+            draw_calls: (self.draw_batches.len() + self.ocean_draw_batches.len()) as u32,
         })
     }
 
@@ -1314,7 +1366,7 @@ impl TerrainRenderer {
         // land/bathymetry batches lets reversed-Z keep raised terrain in front,
         // while the ocean fragment stage clips the shell to the sampled coast.
         render_pass.set_pipeline(ocean_pipeline);
-        for batch in &self.draw_batches {
+        for batch in &self.ocean_draw_batches {
             let tile = batch.tile_key.map_or(&self.placeholder_tile, |key| {
                 self.tile_cache
                     .get(&key)
@@ -1669,6 +1721,8 @@ fn create_gpu_tile(
     let height_view = height_texture.create_view(&wgpu::TextureViewDescriptor::default());
     let biome_view = biome_texture.create_view(&wgpu::TextureViewDescriptor::default());
     let moisture_view = moisture_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let complete_logical_footprint_is_land =
+        height_footprint_is_strictly_land(heights_meters, [1.0, 1.0], [0.0, 0.0]);
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some(label),
         layout: bind_group_layout,
@@ -1693,6 +1747,7 @@ fn create_gpu_tile(
         _moisture_texture: moisture_texture,
         bind_group,
         heights_meters: heights_meters.to_vec(),
+        complete_logical_footprint_is_land,
     }
 }
 
@@ -2373,6 +2428,49 @@ fn sample_height_cpu(heights: &[f32], uv: [f32; 2]) -> f32 {
     lower_height + (upper_height - lower_height) * amount[1]
 }
 
+/// Proves that every height texel which can contribute to bilinear sampling
+/// over a resolved source rectangle lies strictly above sea level.
+///
+/// Returning false is deliberately conservative: zero, negative, malformed,
+/// or invalid bounds retain the ocean shell and let the fragment ownership
+/// test make the final decision.
+fn height_footprint_is_strictly_land(
+    heights: &[f32],
+    source_uv_scale: [f32; 2],
+    source_uv_offset: [f32; 2],
+) -> bool {
+    if heights.len() != tile_sample_count() {
+        return false;
+    }
+    let mut bounds = [[0_usize; 2]; 2];
+    for axis in 0..2 {
+        let minimum_uv = source_uv_offset[axis];
+        let maximum_uv = minimum_uv + source_uv_scale[axis];
+        if !minimum_uv.is_finite()
+            || !maximum_uv.is_finite()
+            || minimum_uv < 0.0
+            || maximum_uv > 1.0
+            || minimum_uv > maximum_uv
+        {
+            return false;
+        }
+        let minimum_coordinate = TILE_GUTTER as f32 + minimum_uv * (TILE_LOGICAL_SIZE - 1) as f32;
+        let maximum_coordinate = TILE_GUTTER as f32 + maximum_uv * (TILE_LOGICAL_SIZE - 1) as f32;
+        bounds[axis] = [
+            minimum_coordinate.floor() as usize,
+            maximum_coordinate.ceil() as usize,
+        ];
+    }
+    let width = TILE_STORED_SIZE as usize;
+    (bounds[1][0]..=bounds[1][1]).all(|y| {
+        (bounds[0][0]..=bounds[0][1]).all(|x| {
+            heights
+                .get(y * width + x)
+                .is_some_and(|height| height.is_finite() && *height > 0.0)
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
@@ -2384,9 +2482,9 @@ mod tests {
         OUTMAP_TILE_GRID_SUBDIVISION_LEVELS, TERRAIN_INFO_SOURCE_EDGE_FADE_BIT,
         TERRAIN_MATERIAL_LAYER_COUNT, TERRAIN_MATERIAL_TEXTURE_SIZE, TerrainSettings,
         aligned_texture_row_bytes, cube_face_uv, downsample_srgb_rgba8, edge_stitch_info,
-        edge_stitch_level_delta, fallback_uv_transform, lod_transition_nodes,
-        lod_transition_progress, node_intersects_source_edge_fade, nodes_share_lod_transition,
-        pack_terrain_info, padded_texture_rows, planet_shader_source,
+        edge_stitch_level_delta, fallback_uv_transform, height_footprint_is_strictly_land,
+        lod_transition_nodes, lod_transition_progress, node_intersects_source_edge_fade,
+        nodes_share_lod_transition, pack_terrain_info, padded_texture_rows, planet_shader_source,
         purge_expired_lod_transitions, sample_height_cpu, should_animate_lod_transition,
         source_tile_uv_at_direction, terrain_material_layer_texels, terrain_material_texel,
         tileable_value_noise,
@@ -3081,6 +3179,33 @@ mod tests {
         let center_coordinate = TILE_GUTTER + (TILE_LOGICAL_SIZE - 1) / 2;
         let expected_index = center_coordinate + center_coordinate * TILE_STORED_SIZE;
         assert_eq!(sampled_center, expected_index as f32);
+    }
+
+    #[test]
+    fn ocean_culling_requires_the_complete_sampled_height_footprint_to_be_land() {
+        let index = |x: u32, y: u32| (y * TILE_STORED_SIZE + x) as usize;
+        let mut heights = vec![100.0; (TILE_STORED_SIZE * TILE_STORED_SIZE) as usize];
+
+        // Ocean in an unrelated part of the resolved source tile cannot
+        // affect this fallback sub-rectangle.
+        heights[index(110, 110)] = -1.0;
+        assert!(height_footprint_is_strictly_land(
+            &heights,
+            [0.25, 0.25],
+            [0.25, 0.25],
+        ));
+
+        // Zero, negative, or invalid data in a texel touched by bilinear
+        // sampling must keep the ocean draw.
+        let sampled = index(40, 40);
+        for height in [0.0, -1.0, f32::NAN] {
+            heights[sampled] = height;
+            assert!(!height_footprint_is_strictly_land(
+                &heights,
+                [0.25, 0.25],
+                [0.25, 0.25],
+            ));
+        }
     }
 
     #[test]

@@ -1,13 +1,8 @@
-Yes. The best first target is not lower terrain quality: it is avoiding unnecessary ocean work.
+Underway.
 
-- These mountain views stay pinned at 256 chunks and 589,824 reported terrain triangles.
-- The raster path then submits every chunk a second time for the ocean shell. That is roughly 1.18 million submitted triangles, even though these frames show land and the ocean fragments are rejected.
-- I would conservatively classify each chunk from its resolved CPU height data and omit its ocean instance only when the entire sampled footprint is provably above sea level. Coastline chunks would remain unchanged. This should be visually lossless and has the best chance of recovering the remaining 2-4 ms.
-
-Next, if needed:
-
-1. Measure caps 240, 224, and 208 against the exact three-view regression. A 224 cap removes 12.5% of terrain geometry, but it may soften distant relief, so I would treat this as a measured quality trade rather than the first fix.
-2. Add an early return in the new edge-filter shader path when `edge_stitch == 0`; safe, but probably a sub-millisecond gain.
-3. Only after those, consider a lower-density mesh for distant/coarse chunks while retaining 32x32 near-camera patches. That is a larger topology change.
-
-I would start with conservative land-only ocean culling, run repeated immediate-mode timings on these same poses, and keep it only if the screenshots remain pixel-equivalent outside timing noise.
+Plan:
+- Inspect terrain/ocean batching, resolved source footprints, and existing timing evidence.
+- Add a separate ocean instance list that conservatively retains any chunk which might contain sea; only provably all-land chunks will be omitted.
+- Add focused regressions, then run formatting, workspace tests, and a release build.
+- Replay the exact three mountain views repeatedly in immediate mode and compare both settled frame times and screenshots against the current 34.9 / 31.6 / 35.1 ms means.
+- Update the handoff, commit, and push the measured result.

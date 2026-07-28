@@ -1478,6 +1478,8 @@ impl State {
         if !draws_terrain_meshes {
             self.terrain_stats.drawn_chunks = 0;
             self.terrain_stats.terrain_triangles = 0;
+            self.terrain_stats.ocean_chunks = 0;
+            self.terrain_stats.ocean_triangles = 0;
             self.terrain_stats.draw_calls = 0;
         }
         let draw_calls = self.terrain_stats.draw_calls;
@@ -1519,6 +1521,8 @@ impl State {
                     resident_chunks: self.terrain_stats.resident_chunks,
                     drawn_chunks: self.terrain_stats.drawn_chunks,
                     terrain_triangles: self.terrain_stats.terrain_triangles,
+                    ocean_chunks: self.terrain_stats.ocean_chunks,
+                    ocean_triangles: self.terrain_stats.ocean_triangles,
                     fallback_chunks: self.terrain_stats.fallback_chunks,
                     source_level_delta_histogram: self.terrain_stats.source_level_delta_histogram,
                     resident_tiles: self.terrain_stats.resident_tiles,
@@ -1597,6 +1601,10 @@ impl State {
                                 terrain_stats.drawn_chunks,
                                 terrain_stats.terrain_triangles,
                                 terrain_stats.draw_calls,
+                            ));
+                            ui.label(format!(
+                                "Ocean: {} chunks  |  {} triangles",
+                                terrain_stats.ocean_chunks, terrain_stats.ocean_triangles,
                             ));
                             ui.label(format!("Camera mode: {}", camera_mode.label()));
                             if camera_mode == CameraMode::LowFlight {
