@@ -433,12 +433,34 @@ being computed right: measured blue ratio 0.710 against `exp(-33.1e-6 x 0.88 x 3
 extinction plus ~0.28 of in-scatter. Over 30 km at 4.7 km altitude this model removes more from a
 bright surface than it adds back.
 
-**So the remaining target is the in-scatter's magnitude relative to extinction, not a missing code
-path.** In-scatter lands around 0.10 against a surface at 0.5; a distant range reads pale because
+**Then the instrument was built, and it overturned the paragraph above.** `haze.rs` bins the drawn
+surface by distance and scores how far it has travelled toward the sky *measured just above the
+silhouette at the same azimuth*. Reported per screenshot frame into `manifest.json` under
+`haze_probes`. Measured at `tour_mountains`:
+
+| band | raster t=4 rgb | distance to sky |
+|---|---|---:|
+| 2–5 km | [0.613 0.559 0.340] | 0.635 |
+| 12–30 km | [0.542 0.463 0.264] | 0.493 |
+| 30–80 km | [0.210 0.167 0.062] | **0.081** |
+
+**Convergence 0.79–0.81 raster, 0.83–0.87 ray.** Terrain does approach the sky, in both paths, and
+the earlier "aerial contributes nothing" reading was against the wrong reference — it used the
+`SkyOnly` debug pass averaged over the ground region, which is not the sky the terrain is seen
+against. The instrument exists precisely so that reference cannot be picked by hand again.
+
+**What that leaves is the sky itself.** The horizon sky it converges *to* measures
+`[0.310 0.185 0.000]` — a dark, fully desaturated-of-blue orange-brown, at a sun elevation around
+45°. A daytime horizon should be pale and blue-white. So the terrain is behaving; the thing it is
+converging onto is wrong, which is why distance reads as dimming rather than as haze. **Look at the
+sky model at low elevation angles before touching `AERIAL_IN_SCATTER_GAIN`** — the gain would only
+push terrain harder toward a colour that is itself the defect.
+
+*(Superseded reasoning, kept because the measurement below is still valid on its own terms:* In-scatter lands around 0.10 against a surface at 0.5; a distant range reads pale because
 in-scatter dominates. `AERIAL_IN_SCATTER_GAIN` is 3.0 and §8 records that it affects neither
 extinction nor the sky, which makes it the isolated lever — but it is a tuning knob on a physical
 model, so raising it is a deliberate choice about realism versus appearance and wants Ian's eye, not
-a unilateral number. `AERIAL_IN_SCATTER_SAMPLE_COUNT` is also only 2.
+a unilateral number. `AERIAL_IN_SCATTER_SAMPLE_COUNT` is also only 2.*)
 
 *Caveat on method: the first pass at this sampled only the bottom 65% of the frame, which is all
 near ground where little haze is correct, and would have supported the same conclusion for the wrong

@@ -81,6 +81,8 @@ struct RunManifest {
     assertion_results: Vec<ScenarioAssertionResult>,
     failure_reasons: Vec<String>,
     surface_probes: Vec<SurfaceProbeReport>,
+    /// Aerial-perspective convergence: does distant terrain reach the sky?
+    haze_probes: Vec<crate::haze::HazeReport>,
 }
 
 #[derive(Serialize)]
@@ -795,6 +797,7 @@ impl RunArtifacts {
             assertion_results: Vec::new(),
             failure_reasons: Vec::new(),
             surface_probes: Vec::new(),
+            haze_probes: Vec::new(),
         };
         let artifacts = Self {
             root,
@@ -862,6 +865,13 @@ impl RunArtifacts {
             ocean_wave_min_meters: 0.0,
             ocean_wave_max_meters: 0.0,
         });
+    }
+
+    pub fn record_haze(&mut self, report: crate::haze::HazeReport) {
+        self.manifest.haze_probes.push(report);
+        if let Err(error) = self.write_manifests() {
+            tracing::error!(%error, "could not record haze probe");
+        }
     }
 
     pub fn record_surface_probe(&mut self, report: SurfaceProbeReport) {
@@ -1175,6 +1185,15 @@ pub fn schedule_capture(
     }
 }
 
+/// The captured frame, returned so callers can measure it against something
+/// the capture path does not have. The haze instrument needs colour *and*
+/// depth, and depth arrives on a separate readback.
+pub struct CapturedFrame {
+    pub pixels: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
 pub fn finish_capture(
     device: &wgpu::Device,
     pending: PendingCapture,
@@ -1182,7 +1201,7 @@ pub fn finish_capture(
     sim_time: f64,
     verify_solid_color: bool,
     verify_no_background_gaps: bool,
-) -> Result<bool, String> {
+) -> Result<CapturedFrame, String> {
     let (sender, receiver) = mpsc::channel();
     pending
         .buffer
@@ -1248,7 +1267,11 @@ pub fn finish_capture(
         day_night_surface_luminance_ratio,
         ice_sample_rgb,
     )?;
-    Ok(solid_color_verified)
+    Ok(CapturedFrame {
+        pixels,
+        width: pending.width,
+        height: pending.height,
+    })
 }
 
 fn no_background_gaps(pixels: &[u8], width: u32, height: u32) -> bool {

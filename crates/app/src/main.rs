@@ -1,6 +1,7 @@
 mod atmosphere;
 mod debug;
 mod foveated;
+mod haze;
 mod hdr;
 mod ocean;
 mod outmap;
@@ -2163,8 +2164,9 @@ impl State {
         output.present();
         let present_ms = present_started.elapsed().as_secs_f32() * 1_000.0;
         let capture_started = Instant::now();
+        let mut captured_frame = None;
         if let Some(pending_capture) = pending_capture {
-            if let Err(error) = debug::finish_capture(
+            match debug::finish_capture(
                 &self.device,
                 pending_capture,
                 &mut self.artifacts,
@@ -2172,8 +2174,11 @@ impl State {
                 solid_color_screen,
                 seam_gap_check,
             ) {
-                self.scenario_capture_failed = true;
-                tracing::error!(%error, "screenshot capture failed");
+                Ok(frame) => captured_frame = Some(frame),
+                Err(error) => {
+                    self.scenario_capture_failed = true;
+                    tracing::error!(%error, "screenshot capture failed");
+                }
             }
         }
         let capture_readback_ms = capture_started.elapsed().as_secs_f32() * 1_000.0;
@@ -2195,6 +2200,27 @@ impl State {
                             )
                         },
                     );
+                    // Same depth image, different question: the probe asks
+                    // whether the surface is where it should be, this asks
+                    // whether distance reads on it.
+                    if let Some(frame) = &captured_frame {
+                        let haze = haze::measure(
+                            sim_time,
+                            self.render_path.label(),
+                            &geometry,
+                            &depth,
+                            &frame.pixels,
+                            frame.width,
+                            frame.height,
+                        );
+                        tracing::info!(
+                            render_path = haze.render_path,
+                            convergence = haze.convergence,
+                            bands = haze.bins.len(),
+                            "haze probe"
+                        );
+                        self.artifacts.record_haze(haze);
+                    }
                     tracing::info!(
                         render_path = report.render_path.as_str(),
                         clearance_m = report.camera_clearance_meters,
