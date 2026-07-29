@@ -7,9 +7,8 @@ the diagnosis branch and pushed to `origin/diagnose/ocean-terrain-blockiness`
 inside the 256-leaf budget, mixed-LOD edges evaluate one continuous runtime-detail displacement,
 and the raster ocean shell is submitted only for chunks whose resolved height footprint may contain
 sea
-**Latest evidence:** committed-HEAD deterministic raster mountain performance run
-`test-runs/mountain_render_faults/1785273384-106648`; the replacement Earth-like outmap is
-separately documented below
+**Latest evidence:** Earth-like outmap Quadro raster runs `orbit_once/1785323155-442224` and
+`stand_on_ground/1785323395-444535`; both pass and are tied to the generator/scenario commits below
 **Written:** 29 July 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
@@ -97,24 +96,39 @@ RAYON_NUM_THREADS=4 nice -n 5 /home/dad/catingard-target/release/catinthegarden-
 
 The bake took 18m02s after it was pinned down to one CPU for thermal safety. The outmap directories
 are intentionally gitignored; the generator, seed, tests and reproduction command are the durable
-repository state. Fixed world-space manual captures and terrain-performance baselines below describe
-the previous macro planet and are no longer visual golden locations. Manifest-relative scenarios
-remain the appropriate first smoke tests; re-author any hard-coded terrain location before using it
-as evidence about this new planet.
+repository state. Quadro M1000M raster smoke results:
 
-Scenario probe results, worst frame, from `test-runs/*/*/manifest.json`:
+- `orbit_once/1785323155-442224` at generator commit `8c5b3ba`: pass, four captures, 0m maximum
+  reported seam delta, and no fallback chunks after streaming warm-up;
+- `stand_on_ground/1785323395-444535` at scenario commit `bebc2b6`: pass, exact 2.000000001m
+  clearance, 375 compared ground points, 0.161m worst-frame p90 and 0.336m maximum surface delta.
+
+The first ground smoke correctly failed because its camera still used the previous sparse-centre
+elevation. All four manifest-relative landing scenarios were shifted by the measured +91.465390625m
+without changing their relative camera framing, and the second run passed. All 206 workspace tests
+also pass.
+
+Fixed world-space manual captures and terrain-performance baselines below describe the previous
+macro planet and are no longer visual golden locations. Manifest-relative scenarios remain the
+appropriate first smoke tests; re-author any hard-coded terrain location before using it as evidence
+about this new planet.
+
+Scenario probe results, worst frame, from `test-runs/*/*/manifest.json`. Only the first row has been
+refreshed on the Earth-like outmap; the other rows are retained as pre-rebake renderer history and
+must be rerun before they are quoted as current terrain evidence:
 
 | scenario | path | p90 delta | median delta | tolerance | clearance |
 |---|---|---:|---:|---:|---:|
-| `stand_on_ground` | raster | **0.25 m** | 0.10 m | 2 m | 2.0000 m |
+| `stand_on_ground` | raster | **0.16 m** | 0.09 m | 2 m | 2.0000 m |
 | `stand_on_ground` | ray | **0.89 m** | 0.62 m | 2 m | 2.0000 m |
 | `path_parity_ridge` | raster | **4.24 m** | 1.25 m | 6 m | 133 m |
 | `path_parity_ridge` | ray | **10.68 m** | 2.17 m | 6 m — **FAILS, see §6b** | 133 m |
 | `tour_mountains` | ray | 22.6 m | 11.7 m | none | ~1 km |
 
-These are the current post-mountain results. The 3.47 m ray result recorded later in §7 is the
-historical pre-mountain measurement from the local-span hit-walk change; the increased mountain
-relief subsequently moved the current result to 10.68 m.
+Except for the refreshed raster `stand_on_ground` row, these are the pre-rebake post-mountain
+results. The 3.47 m ray result recorded later in §7 is the historical pre-mountain measurement from
+the local-span hit-walk change; the increased mountain relief subsequently moved that previous
+outmap's result to 10.68 m.
 
 These moved with the mountain work in §6b: the terrain now has three times the relief, so the same
 mesh disagrees with truth by more in absolute metres. Raster still holds well inside tolerance
@@ -128,11 +142,13 @@ of the whole exercise.
 ground into hundreds of metres of reconstructed height. `stand_on_ground` ray shows max 194 m from
 exactly two grazing points out of 77. p90 is the assertion that means something.
 
-## 3. State: what is red
+## 3. State: what was red before the Earth-like rebake
 
-Six scenarios fail. **All six were failing before this branch and are unchanged by it** — each was
-verified by building the older commit and diffing the number. Do not re-investigate them as
-regressions from this work.
+The six results below are pre-rebake evidence and now require a fresh matrix. Before the Earth-like
+outmap replacement, **all six were failing before this branch and were unchanged by it** — each was
+verified by building the older commit and diffing the number. Do not present the table as current,
+and do not re-investigate an identical failure as a regression from the generator without first
+comparing it with that historical evidence.
 
 | scenario | failing assertion | observed |
 |---|---|---|

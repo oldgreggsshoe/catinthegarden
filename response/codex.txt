@@ -1,17 +1,18 @@
-Done — all four repairs are implemented, documented, committed, and pushed.
+Done — the Earth-like planet is active.
 
-- Mixed ray windows now carry height, biome, moisture, and each block’s real resolved source level.
-- Detail hits use a front-to-back first-crossing search instead of the one-sided comb.
-- Ray macro normals use raster’s distance/source-spacing footprint.
-- Raster and ray share the exact open-ocean predicate; ray no longer soft-blends ocean at terrain hits.
+- Previous bake backed up at `assets/outmaps/test-planet.pre-earth-backup-20260729-113541` and independently validated. The old active directory is also retained at `assets/outmaps/test-planet.pre-earth-retired-20260729-120342`.
+- New bake: recognisable Earth-style continents, major deserts, polar regions, and Andes/Rockies/Himalaya-style high belts. It is stylised rather than a real elevation copy.
+- Active data: `assets/outmaps/test-planet`, 370 MB, 3,252 validated L0-L18 tiles, 36.2% positive land, height range -5,000m to 8,846m.
+- Full previews were inspected north-up and south-up; continent silhouettes, mountain belts, deserts, lakes, and oceans are present.
+- Validation: all 206 workspace tests pass; `orbit_once/1785323155-442224` passes on the Quadro with four clean captures and 0m reported seam delta; `stand_on_ground/1785323395-444535` passes at exactly 2m clearance with 0.161m p90 surface error.
+- The four sparse-landing scenarios were re-authored to the new ground elevation after the first ground smoke correctly detected the stale camera height.
+- Generator, tests, scenario updates, AGENTS, and handoff are committed and the branch is pushed. Baked outmaps remain intentionally gitignored; the active bake and both backups are local assets.
 
-**Measured Quadro result at 738m**
-- Final ray p90: **50.094m → 3.574m**; raster remains 2.585m.
-- Detail correlation: **0.394 → 0.997**.
-- Direct raw-albedo correlation: **0.9983**, with 99.91% land/ocean ownership agreement.
-
-**Important remaining facts**
-- This is a correctness win, not a speed win: settled final ray rises **25.74ms → 64.05ms**, because the real L5 source now activates the detail work the old false L12/fallback path skipped.
-- The 14–71km views still expose the separate globally dense L4 source-coverage defect and associated fallback bands. That now needs an L5/rebake/coverage decision, not more shading or foveation tuning.
-
-Validation: `cargo fmt --check`, **203 workspace tests passed** (5 ignored), release build passed, and all nine paired `render_path_parity` runs passed. The final run IDs and comparison are recorded in `docs/HANDOFF.md`.
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:1-4|note=[confirmed checkout branch context and mandatory handoff workflow]
+</citation_entries>
+<rollout_ids>
+019fa81f-71cc-7c12-9279-8318fbe22bc5
+</rollout_ids>
+</oai-mem-citation>
