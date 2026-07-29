@@ -1275,9 +1275,10 @@ These are the mistakes that actually cost time on this branch.
 - **Tests that pin render-derived literals go stale every time the field changes.** Two did. Both are
   now property checks. Do not add another literal read off a screenshot — the probe measures
   continuously, in both paths, what those literals were reaching for.
-- **Re-author scenario camera heights after any ladder change.** Changing the field moves the ground.
-  `landing_site_eye_level` ended 2 m underground after one such change; the clearance assertion
-  caught it. Landing-site ground is currently **915.87 m**.
+- **Re-author scenario camera heights after any ladder or outmap change.** Changing the field moves
+  the ground. `landing_site_eye_level` ended 2 m underground after one earlier ladder change, and
+  the Earth-like rebake moved the sparse centre again; the clearance assertion caught both.
+  Landing-site ground is currently **1,011.275390625 m**.
 - Shader gotchas: `active` is a reserved WGSL keyword; the inter-stage location limit is 16;
   `shared_planet.wgsl` is concatenated **ahead** of `planet.wgsl`, so tests that slice the shader by
   splitting on a function name silently run to end of file — bound on `"\nfn "`.
