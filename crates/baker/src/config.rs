@@ -20,7 +20,11 @@ impl Default for BakeConfig {
     fn default() -> Self {
         Self {
             output: PathBuf::from("assets/outmaps/test-planet"),
-            seed: 0x000C_471A,
+            // Coastline and regional-detail seed for the Earth-like macro
+            // layout in terrain.rs. The large continent and mountain-belt
+            // placement is authored; this keeps its smaller shapes
+            // deterministic without making a literal elevation copy.
+            seed: 0xEA27_2026,
             // Preserve continental/hydrology data at a useful resolution, then
             // make actual L4 tiles available globally. L4 is the current
             // coarsest rendered level, so a lower dense level only makes the

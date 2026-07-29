@@ -8,8 +8,9 @@ inside the 256-leaf budget, mixed-LOD edges evaluate one continuous runtime-deta
 and the raster ocean shell is submitted only for chunks whose resolved height footprint may contain
 sea
 **Latest evidence:** committed-HEAD deterministic raster mountain performance run
-`test-runs/mountain_render_faults/1785273384-106648`
-**Written:** 28 July 2026
+`test-runs/mountain_render_faults/1785273384-106648`; the replacement Earth-like outmap is
+separately documented below
+**Written:** 29 July 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
 
@@ -37,11 +38,69 @@ A renderer that "looks like a modernish (2015 on) game", consistent from orbit t
 ## 2. State: what is green
 
 ```
-cargo test --workspace   →  198 passed, 0 failed, 5 ignored
-                            (app 166, baker lib 20, baker bin 1, baker integration 5, coretypes 6)
+cargo test --workspace   →  206 passed, 0 failed, 5 ignored
+                            (app 171, baker lib 23, baker bin 1, baker integration 5, coretypes 6)
                             the 5 ignored are the relief_survey/terrain instruments -- run them with
                             `cargo test -- --ignored --nocapture <name>`
 ```
+
+### Active Earth-like baked planet — 29 July 2026
+
+`assets/outmaps/test-planet` is now a deliberately stylised Earth-like planet, not a real DEM or a
+geographically exact copy. The baker places recognisable North/South America, Africa, Europe/Asia,
+India, Australia, Greenland and Antarctica with authored macro ellipses, then uses the existing
+seam-safe 3D noise, erosion, hydrology, lake, moisture and biome stages. Authored range masks provide
+Andes-, Rockies-, Himalaya-, Central-Asian-, Alpine-, East-African- and Australian-style high ground;
+authored aridity masks preserve the Sahara, Arabia, Gobi/Central Asia, Australian interior,
+Atacama, Kalahari and North American southwest.
+
+The user-requested backup of the previous active bake is:
+
+```
+assets/outmaps/test-planet.pre-earth-backup-20260729-113541
+```
+
+It is 372 MB / 9,760 files, validates as schema 2 with 3,252 tiles, and its manifest SHA-256
+`56b0f9aa93284f3ce7f60377b3a1ae56869af824b1971450bc0697e8d12a6f91` matched the old active
+outmap before promotion. The old active directory itself was also retained during the atomic
+directory swap at `assets/outmaps/test-planet.pre-earth-retired-20260729-120342`; do not delete
+either copy without Ian's explicit instruction.
+
+The new active bake uses seed `0xEA272026` (`3928432678`), a 4096x2048 working grid, 2,048 erosion
+iterations, global dense L4 coverage and sparse parent-complete refinement through L18. It validates
+all 3,252 schema-2 tiles, occupies 370 MB / 9,760 files, and selected sparse centre
+`[-0.779930, -0.328934, 0.532457]`. Preview measurements are:
+
+- positive land: 36.197%; full height range: -5,000m to 8,846m;
+- 118,478 positive-land pixels above 2,400m (3.902% of land), including 31,393 above 5,000m and
+  3,651 above 7,000m;
+- biome coverage: ocean 49.324%, ice 27.779%, grassland 6.999%, temperate forest 5.171%, desert
+  4.916%, lake 2.872%, tropical forest 2.419%, tundra 0.210%, mountain rock 0.197%, and mountain
+  snow 0.112%.
+
+The baker's preview row zero is the south pole, so the checked-in/native PNG is south-up; flip it
+vertically for a conventional north-up review. The full-resolution height and biome previews were
+visually checked in both orientations and show the intended continent silhouettes, mountain belts,
+deserts and polar regions. The existing `latitude > 66° => Ice` rule classifies polar ocean as ice
+as well as polar land, which explains the large ice percentage and is not new to this bake.
+
+Reproduce into a staging path and validate before promotion:
+
+```bash
+CARGO_TARGET_DIR=/home/dad/catingard-target cargo build --release -p catinthegarden-baker
+RAYON_NUM_THREADS=4 nice -n 5 /home/dad/catingard-target/release/catinthegarden-baker \
+  --output assets/outmaps/test-planet.earth-staging-YYYYMMDD-HHMMSS \
+  --width 4096 --height 2048 --dense-level 4 --max-level 18 --erosion-iterations 2048
+/home/dad/catingard-target/release/catinthegarden-baker \
+  --validate assets/outmaps/test-planet.earth-staging-YYYYMMDD-HHMMSS
+```
+
+The bake took 18m02s after it was pinned down to one CPU for thermal safety. The outmap directories
+are intentionally gitignored; the generator, seed, tests and reproduction command are the durable
+repository state. Fixed world-space manual captures and terrain-performance baselines below describe
+the previous macro planet and are no longer visual golden locations. Manifest-relative scenarios
+remain the appropriate first smoke tests; re-author any hard-coded terrain location before using it
+as evidence about this new planet.
 
 Scenario probe results, worst frame, from `test-runs/*/*/manifest.json`:
 

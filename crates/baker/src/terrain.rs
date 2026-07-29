@@ -436,8 +436,13 @@ impl Terrain {
                     let temperature =
                         latitude_temperature - height.max(0.0) / MAX_HEIGHT_METERS * 0.55;
                     let wetness = f64::from(self.moisture[index]) / 255.0;
+                    let direction = self.grid.direction(index);
+                    let longitude_degrees = direction.z.atan2(direction.x).to_degrees();
+                    let aridity = earthlike_aridity_field(latitude.to_degrees(), longitude_degrees);
                     if temperature < 0.24 {
                         BiomeId::Tundra
+                    } else if temperature > 0.34 && aridity > 0.42 {
+                        BiomeId::Desert
                     } else if temperature > 0.72 && wetness > 0.62 {
                         BiomeId::TropicalForest
                     } else if wetness < 0.28 {
@@ -456,40 +461,169 @@ fn generate_base_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
     let base = Perlin::new(seed);
     let warp = Perlin::new(seed ^ 0x00D0_A11A);
     let mountains = Perlin::new(seed ^ 0xBEEF_9000);
-    let tectonics = Perlin::new(seed ^ 0x7EC7_011C);
     (0..grid.len())
         .into_par_iter()
         .map(|index| {
-            let direction = grid.direction(index).to_array();
-            let warped = [
-                direction[0]
-                    + warp.get([
-                        direction[0] * 0.65,
-                        direction[1] * 0.65,
-                        direction[2] * 0.65,
-                    ]) * 0.18,
-                direction[1]
-                    + warp.get([
-                        direction[2] * 0.65,
-                        direction[0] * 0.65,
-                        direction[1] * 0.65,
-                    ]) * 0.18,
-                direction[2]
-                    + warp.get([
-                        direction[1] * 0.65,
-                        direction[2] * 0.65,
-                        direction[0] * 0.65,
-                    ]) * 0.18,
-            ];
-            let continent = fbm(&base, warped, 0.9, 6);
-            let ridge = ridged_fbm(&mountains, warped, 3.4, 5).powi(3);
-            let tectonic_belt = (1.0 - fbm(&tectonics, direction, 0.55, 2).abs())
-                .clamp(0.0, 1.0)
-                .powi(4);
-            (continent * 3_800.0 - 450.0 + ridge * tectonic_belt * 8_000.0)
-                .clamp(MIN_HEIGHT_METERS, MAX_HEIGHT_METERS)
+            earthlike_base_height(grid.direction(index).to_array(), &base, &warp, &mountains)
         })
         .collect()
+}
+
+#[derive(Clone, Copy)]
+struct GeoEllipse {
+    longitude_degrees: f64,
+    latitude_degrees: f64,
+    radius_x_degrees: f64,
+    radius_y_degrees: f64,
+    rotation_degrees: f64,
+}
+
+const EARTHLIKE_CONTINENTS: &[GeoEllipse] = &[
+    // North America, including Alaska, Mexico and the eastern seaboard.
+    GeoEllipse::new(-108.0, 49.0, 30.0, 23.0, -12.0),
+    GeoEllipse::new(-88.0, 39.0, 24.0, 18.0, -18.0),
+    GeoEllipse::new(-150.0, 62.0, 20.0, 12.0, -8.0),
+    GeoEllipse::new(-101.0, 25.0, 12.0, 17.0, 20.0),
+    GeoEllipse::new(-83.0, 18.0, 8.0, 13.0, 38.0),
+    // South America: broad tropical north tapering into Patagonia.
+    GeoEllipse::new(-61.0, -8.0, 20.0, 25.0, -10.0),
+    GeoEllipse::new(-65.0, -25.0, 15.0, 24.0, -6.0),
+    GeoEllipse::new(-70.0, -45.0, 8.0, 17.0, -3.0),
+    // Europe, Africa and their connecting peninsulas.
+    GeoEllipse::new(13.0, 50.0, 21.0, 12.0, 4.0),
+    GeoEllipse::new(19.0, 61.0, 8.0, 15.0, -8.0),
+    GeoEllipse::new(17.0, 8.0, 22.0, 29.0, 2.0),
+    GeoEllipse::new(22.0, -22.0, 17.0, 24.0, -4.0),
+    GeoEllipse::new(42.0, 8.0, 10.0, 9.0, -20.0),
+    GeoEllipse::new(45.0, 23.0, 15.0, 10.0, -8.0),
+    // Eurasia, India and southeast Asia.
+    GeoEllipse::new(58.0, 50.0, 38.0, 18.0, 2.0),
+    GeoEllipse::new(97.0, 49.0, 42.0, 20.0, -2.0),
+    GeoEllipse::new(126.0, 38.0, 25.0, 18.0, -14.0),
+    GeoEllipse::new(78.0, 21.0, 12.0, 15.0, 5.0),
+    GeoEllipse::new(104.0, 16.0, 15.0, 14.0, -18.0),
+    GeoEllipse::new(120.0, 2.0, 20.0, 7.0, -8.0),
+    // Australia, New Guinea, Greenland and the major North Atlantic islands.
+    GeoEllipse::new(135.0, -25.0, 20.0, 14.0, -6.0),
+    GeoEllipse::new(145.0, -6.0, 12.0, 5.0, -8.0),
+    GeoEllipse::new(-42.0, 72.0, 9.0, 14.0, -8.0),
+    GeoEllipse::new(-18.0, 65.0, 5.0, 4.0, -15.0),
+];
+
+const EARTHLIKE_MOUNTAIN_BELTS: &[GeoEllipse] = &[
+    GeoEllipse::new(-72.0, -18.0, 3.2, 33.0, -3.0), // Andes
+    GeoEllipse::new(-116.0, 44.0, 5.5, 27.0, -10.0), // Rockies
+    GeoEllipse::new(-151.0, 62.0, 6.0, 14.0, -18.0), // Alaska
+    GeoEllipse::new(84.0, 31.0, 25.0, 4.2, 3.0),    // Himalaya
+    GeoEllipse::new(66.0, 40.0, 19.0, 7.0, 8.0),    // Hindu Kush / Central Asia
+    GeoEllipse::new(12.0, 46.0, 10.0, 3.0, -4.0),   // Alps
+    GeoEllipse::new(-5.0, 32.0, 9.0, 3.0, 8.0),     // Atlas
+    GeoEllipse::new(36.0, 1.0, 4.5, 18.0, -4.0),    // East African rift
+    GeoEllipse::new(147.0, -27.0, 3.0, 17.0, -3.0), // Great Dividing Range
+    GeoEllipse::new(145.0, -6.0, 10.0, 3.0, -8.0),  // New Guinea
+];
+
+const EARTHLIKE_ARID_REGIONS: &[GeoEllipse] = &[
+    GeoEllipse::new(15.0, 24.0, 27.0, 10.0, 0.0),   // Sahara
+    GeoEllipse::new(45.0, 24.0, 13.0, 7.0, -5.0),   // Arabia
+    GeoEllipse::new(96.0, 42.0, 21.0, 8.0, 2.0),    // Central Asia / Gobi
+    GeoEllipse::new(134.0, -25.0, 16.0, 10.0, 0.0), // Australian interior
+    GeoEllipse::new(-112.0, 32.0, 9.0, 7.0, -8.0),  // North American southwest
+    GeoEllipse::new(-70.0, -23.0, 3.5, 12.0, -2.0), // Atacama
+    GeoEllipse::new(22.0, -24.0, 10.0, 8.0, 0.0),   // Kalahari
+];
+
+impl GeoEllipse {
+    const fn new(
+        longitude_degrees: f64,
+        latitude_degrees: f64,
+        radius_x_degrees: f64,
+        radius_y_degrees: f64,
+        rotation_degrees: f64,
+    ) -> Self {
+        Self {
+            longitude_degrees,
+            latitude_degrees,
+            radius_x_degrees,
+            radius_y_degrees,
+            rotation_degrees,
+        }
+    }
+}
+
+fn earthlike_base_height(
+    direction: [f64; 3],
+    base: &Perlin,
+    warp: &Perlin,
+    mountains: &Perlin,
+) -> f64 {
+    let latitude_degrees = direction[1].asin().to_degrees();
+    let longitude_degrees = direction[2].atan2(direction[0]).to_degrees();
+    let warped = [
+        direction[0]
+            + warp.get([direction[0] * 0.9, direction[1] * 0.9, direction[2] * 0.9]) * 0.12,
+        direction[1]
+            + warp.get([direction[2] * 0.9, direction[0] * 0.9, direction[1] * 0.9]) * 0.12,
+        direction[2]
+            + warp.get([direction[1] * 0.9, direction[2] * 0.9, direction[0] * 0.9]) * 0.12,
+    ];
+    let continent = earthlike_continent_field(latitude_degrees, longitude_degrees);
+    let coast_detail = fbm(base, warped, 1.7, 6) * 0.23 + fbm(base, warped, 6.5, 3) * 0.045;
+    let signed_land = continent + coast_detail;
+    let broad_relief = fbm(base, warped, 2.8, 5);
+    if signed_land <= 0.0 {
+        let ocean_depth = smoother_step((-signed_land / 0.72).clamp(0.0, 1.0));
+        return (-120.0 - ocean_depth * 4_650.0 + broad_relief * 180.0)
+            .clamp(MIN_HEIGHT_METERS, -1.0);
+    }
+
+    let interior = smoother_step((signed_land / 0.38).clamp(0.0, 1.0));
+    let mountain_field = earthlike_mountain_field(latitude_degrees, longitude_degrees);
+    let mountain_profile = smoother_step((mountain_field / 0.82).clamp(0.0, 1.0));
+    let ridge = ridged_fbm(mountains, warped, 4.2, 5).powi(2);
+    let lowland = 35.0 + interior * 720.0 + broad_relief * 360.0;
+    let mountain_height = mountain_profile * (3_400.0 + ridge * 6_200.0);
+    (lowland + mountain_height).clamp(1.0, MAX_HEIGHT_METERS)
+}
+
+fn earthlike_continent_field(latitude_degrees: f64, longitude_degrees: f64) -> f64 {
+    let continents = EARTHLIKE_CONTINENTS
+        .iter()
+        .map(|ellipse| ellipse_field(latitude_degrees, longitude_degrees, *ellipse))
+        .fold(f64::NEG_INFINITY, f64::max);
+    let antarctica = (-latitude_degrees - 67.0) / 13.0;
+    continents.max(antarctica)
+}
+
+fn earthlike_mountain_field(latitude_degrees: f64, longitude_degrees: f64) -> f64 {
+    EARTHLIKE_MOUNTAIN_BELTS
+        .iter()
+        .map(|ellipse| ellipse_field(latitude_degrees, longitude_degrees, *ellipse))
+        .fold(0.0, f64::max)
+}
+
+fn earthlike_aridity_field(latitude_degrees: f64, longitude_degrees: f64) -> f64 {
+    EARTHLIKE_ARID_REGIONS
+        .iter()
+        .map(|ellipse| ellipse_field(latitude_degrees, longitude_degrees, *ellipse))
+        .fold(0.0, f64::max)
+}
+
+fn ellipse_field(latitude_degrees: f64, longitude_degrees: f64, ellipse: GeoEllipse) -> f64 {
+    let longitude_delta =
+        (longitude_degrees - ellipse.longitude_degrees + 180.0).rem_euclid(360.0) - 180.0;
+    let x = longitude_delta * ellipse.latitude_degrees.to_radians().cos();
+    let y = latitude_degrees - ellipse.latitude_degrees;
+    let rotation = ellipse.rotation_degrees.to_radians();
+    let rotated_x = x * rotation.cos() + y * rotation.sin();
+    let rotated_y = -x * rotation.sin() + y * rotation.cos();
+    1.0 - ((rotated_x / ellipse.radius_x_degrees).powi(2)
+        + (rotated_y / ellipse.radius_y_degrees).powi(2))
+    .sqrt()
+}
+
+fn smoother_step(value: f64) -> f64 {
+    value * value * (3.0 - 2.0 * value)
 }
 
 fn fbm(noise: &Perlin, point: [f64; 3], frequency: f64, octaves: u32) -> f64 {
@@ -607,6 +741,91 @@ mod tests {
         assert!(first.iter().any(|&height| height < 0.0));
         assert!(first.iter().any(|&height| height > 2_000.0));
         assert!(first.iter().all(|&height| height <= MAX_HEIGHT_METERS));
+    }
+
+    #[test]
+    fn earthlike_profile_places_the_major_continents_and_oceans() {
+        let seed = BakeConfig::default().seed;
+        for (name, latitude, longitude) in [
+            ("North America", 40.0, -100.0),
+            ("South America", -15.0, -60.0),
+            ("Europe", 50.0, 12.0),
+            ("Africa", 5.0, 20.0),
+            ("Asia", 45.0, 95.0),
+            ("India", 20.0, 78.0),
+            ("Australia", -25.0, 135.0),
+            ("Greenland", 72.0, -42.0),
+            ("Antarctica", -80.0, 0.0),
+        ] {
+            let height = earthlike_height_at(latitude, longitude, seed);
+            assert!(height > 0.0, "{name} anchor was ocean at {height:.1}m");
+        }
+        for (name, latitude, longitude) in [
+            ("central Pacific", 0.0, -150.0),
+            ("central Atlantic", 0.0, -35.0),
+            ("southern Pacific", -35.0, -120.0),
+            ("southern Indian", -42.0, 75.0),
+        ] {
+            let height = earthlike_height_at(latitude, longitude, seed);
+            assert!(height < 0.0, "{name} anchor was land at {height:.1}m");
+        }
+    }
+
+    #[test]
+    fn earthlike_profile_has_high_andean_rocky_and_himalayan_belts() {
+        let seed = BakeConfig::default().seed;
+        for (name, latitude, longitude) in [
+            ("Andes", -18.0, -72.0),
+            ("Rockies", 44.0, -116.0),
+            ("Himalaya", 31.0, 84.0),
+        ] {
+            let height = earthlike_height_at(latitude, longitude, seed);
+            assert!(
+                height >= 3_000.0,
+                "{name} anchor was only {height:.1}m high"
+            );
+        }
+    }
+
+    #[test]
+    fn earthlike_profile_pins_major_arid_regions_without_drying_rainforests() {
+        for (name, latitude, longitude) in [
+            ("Sahara", 24.0, 15.0),
+            ("Arabia", 24.0, 45.0),
+            ("Gobi", 42.0, 96.0),
+            ("Australian interior", -25.0, 134.0),
+        ] {
+            assert!(
+                earthlike_aridity_field(latitude, longitude) > 0.8,
+                "{name} lost its arid-region mask"
+            );
+        }
+        for (name, latitude, longitude) in [
+            ("Amazon", -5.0, -62.0),
+            ("Congo", 0.0, 22.0),
+            ("western Europe", 50.0, 0.0),
+        ] {
+            assert!(
+                earthlike_aridity_field(latitude, longitude) <= 0.0,
+                "{name} was incorrectly masked as desert"
+            );
+        }
+    }
+
+    fn earthlike_height_at(latitude_degrees: f64, longitude_degrees: f64, seed: u32) -> f64 {
+        let latitude = latitude_degrees.to_radians();
+        let longitude = longitude_degrees.to_radians();
+        let direction = [
+            latitude.cos() * longitude.cos(),
+            latitude.sin(),
+            latitude.cos() * longitude.sin(),
+        ];
+        earthlike_base_height(
+            direction,
+            &Perlin::new(seed),
+            &Perlin::new(seed ^ 0x00D0_A11A),
+            &Perlin::new(seed ^ 0xBEEF_9000),
+        )
     }
 
     #[test]
