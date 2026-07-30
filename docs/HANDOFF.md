@@ -7,9 +7,10 @@ the diagnosis branch and pushed to `origin/diagnose/ocean-terrain-blockiness`
 at every camera altitude; sea level and negative bathymetry remain physical. CPU truth, raster, ray,
 LOD/culling bounds, and scenario cameras share that transform. F4 starts over the measured
 highest-prominence summit. Moving raster flight sweeps the camera through every concurrently drawn
-active/transition patch and retains a 30m collision envelope; idle inspection remains at 2m. The
-raster culling shell includes the complete live detail ladder, so elevated near-camera vertices
-cannot disappear outside a macro-only bound. Key 6 switches between auto exposure and fixed 1.0.
+active/transition patch, rechecks the newly selected destination frontier before presentation, and
+retains a 30m collision envelope; idle inspection remains at 2m. The raster culling shell includes
+the complete live detail ladder, so elevated near-camera vertices cannot disappear outside a
+macro-only bound. Key 6 switches between auto exposure and fixed 1.0.
 **Latest evidence:** committed Earth-like outmap Quadro runs `orbit_once/1785409591-283581`,
 raster `stand_on_ground/1785435672-497949`, ray `stand_on_ground/1785435686-498076`,
 `low_flight_performance/1785409648-284127`, `landing_site_ground_detail/1785412295-314602`,
@@ -18,7 +19,8 @@ raster `stand_on_ground/1785435672-497949`, ray `stand_on_ground/1785435686-4980
 `highest_prominence_peak/1785435713-498256` and ray
 `highest_prominence_peak/1785435731-498377`; exact manual W-flight replay is
 `manual_forward_clearance/1785437799-519300`; near-terrain yaw sweep is
-`manual_near_terrain_culling/1785437649-517600`
+`manual_near_terrain_culling/1785437649-517600`; long accelerated W replay is
+`manual_high_speed_clearance/1785439098-533024`
 **Written:** 30 July 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
@@ -47,8 +49,8 @@ A renderer that "looks like a modernish (2015 on) game", consistent from orbit t
 ## 2. State: what is green
 
 ```
-cargo test --workspace   →  215 passed, 0 failed, 5 ignored
-                            (app 180, baker lib 23, baker bin 1, baker integration 5, coretypes 6)
+cargo test --workspace   →  216 passed, 0 failed, 5 ignored
+                            (app 181, baker lib 23, baker bin 1, baker integration 5, coretypes 6)
                             the 5 ignored are the relief_survey/terrain instruments -- run them with
                             `cargo test -- --ignored --nocapture <name>`
 ```
@@ -268,6 +270,36 @@ Current regressions: raster `stand_on_ground/1785435672-497949` passes at exactl
 `stand_on_ground/1785435686-498076`; both raster and ray highest-prominence scenarios pass in
 `1785435713-498256` and `1785435731-498377`. Release build, formatting, diff checks, and all 215
 workspace tests pass.
+
+#### High-speed destination-frontier follow-up
+
+The user's later manual run `manual/1785438019-521226` held W for long enough to accelerate from
+about 6km/s to 5,776km/s while taking 24 half-second captures. Captures 18–19 expose the underside
+of the terrain. This was not culling or near clipping: their rendered-surface probes measured
+**-36.771m** and then **-159.433m camera clearance**, despite 255–256 chunks remaining drawn and
+CPU/render detail correlation staying above 0.998.
+
+The first collision repair still queried the previous frame's `surface_detail_nodes`. Slow movement
+remained inside that frontier and passed, but a high-speed destination could lie completely outside
+it. The renderer then selected the destination LOD frontier later in the same frame, after the
+camera correction, so the visual ground could rise around an already placed camera.
+
+Raster low flight now performs a second point-clearance check immediately after destination terrain
+selection. If the new frontier lifts the camera, the terrain update runs once more to rebuild the
+camera-relative chunk anchors against the corrected pose; frames needing no correction retain the
+single update. The existing 30m moving envelope and 2m idle height are unchanged. This ordering is
+important: correcting the camera without rebuilding camera-relative anchors would move the camera
+and geometry in different coordinate bases.
+
+`manual_high_speed_clearance` preserves the recorded summit pose and real acceleration path, then
+probes 21 captures every 0.5s from 5s through 15s of held W, reaching the finite 8,000km/s speed cap.
+The committed Quadro run `1785439098-533024` passes all 21 frames with minimum rendered clearance
+**29.9999999995m**, 724 compared surface points, and no visible terrain undersides. It records a
+38.256ms spatial mean and 44.379ms p90 during the deliberately extreme planet-spanning flight.
+Ordinary views show no measurable cost: the short W replay is 36.760ms versus 37.131ms before this
+follow-up, the nine-heading culling sweep is 34.703ms versus 34.506ms, and the static summit is
+32.702ms versus 32.696ms. Those sub-millisecond movements are run noise, not a performance claim.
+Formatting, release build, and all 216 workspace tests pass.
 
 ### Near-terrain culling and fixed-exposure inspection — 30 July 2026
 

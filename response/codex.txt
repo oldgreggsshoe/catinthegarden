@@ -1,21 +1,18 @@
-Checked and fixed both.
+Done — the screenshots exposed a real high-speed collision-ordering bug.
 
-### Closest terrain
-The missing foreground was **not near clipping**. The raster culling shell stopped at the 26,538m baked-macro maximum but omitted the live terrain ladder’s additional 2,646.4m displacement. Real vertices above that false bound were culled.
+- **Fault:** captures 18–19, around 24.84°N/49.07°E then 18.02°N/51.27°E, showed the terrain underside. Measured rendered clearance was **-36.77m**, then **-159.43m**; 255–256 chunks were still drawn, so this was not culling.
+- **Cause:** collision used the previous frame’s terrain frontier, then the destination LOD frontier was selected afterward and rose around the already-positioned camera.
+- **Fix:** raster flight now rechecks the newly selected destination frontier before presentation. If it lifts the camera, chunk anchors are rebuilt against that corrected pose.
 
-- Baseline replay: `manual_near_terrain_culling/1785437126-510328` — jagged black foreground in 8/9 headings, up to 38.63% of the lower frame.
-- Fixed committed replay: `manual_near_terrain_culling/1785437649-517600` — all nine headings clean, 0% near-black foreground, zero LOD thrash.
-- Performance remained neutral: 36.952ms before versus 34.946ms after in this replay.
+**Committed validation:** `manual_high_speed_clearance/1785439098-533024`
+- Same summit route and held-W acceleration, up to the 8,000km/s cap.
+- 21 screenshots/probes at 0.5s intervals.
+- Minimum rendered clearance: **30.000m**.
+- 724 surface comparisons; no exposed terrain undersides.
+- Mean **38.256ms**, p90 **44.379ms** during this deliberately extreme planet-spanning flight.
 
-### F8 and exposure
-Yes: under the existing design, F8 disabled the ACES/HDR display curve but **left auto-exposure active**. That is why snow still darkened the screen. The latest manual log confirms exposure adapting from 0.294 to 3.858.
+Normal views remain effectively unchanged: short W replay 37.131→36.760ms, nine-heading terrain sweep 34.506→34.703ms, static summit 32.696→32.702ms. Those tiny differences are run noise.
 
-There is now an independent **6 key** toggle:
-- **Auto:** normal adapting exposure.
-- **Fixed:** applied exposure is exactly **1.0**; the meter may continue adapting internally but cannot affect the image.
+The early snow captures are not broadly white-clipped, so I left their lighting alone. The final black frames are the genuinely unlit night side while fixed exposure is active, not another missing-terrain fault.
 
-For a view with neither adaptive exposure nor ACES, use **F8 off + 6 fixed**. F6/F7 still control blur and bloom separately. The HUD now shows applied exposure, hidden meter value, exposure mode, and HDR-curve state.
-
-Committed validation `highest_prominence_peak/1785437750-518841` logged applied exposure changing from 0.335 to exactly 1.0. The forward-flight regression also still passes, and all **215 workspace tests** pass.
-
-Committed and pushed: `61df740`, `acf2dbf`.
+All **216 workspace tests pass**. Code commit `f18f562` and the updated handoff are pushed.
