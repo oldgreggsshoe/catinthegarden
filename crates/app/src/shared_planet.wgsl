@@ -687,6 +687,14 @@ fn terrain_macro_height_scale() -> f32 {
     );
 }
 
+fn scaled_terrain_macro_height(macro_height_meters: f32) -> f32 {
+    return select(
+        macro_height_meters,
+        macro_height_meters * terrain_macro_height_scale(),
+        macro_height_meters > 0.0,
+    );
+}
+
 fn gerstner_wave(
     direction: vec3<f32>,
     wave_axis: vec3<f32>,

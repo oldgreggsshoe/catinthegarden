@@ -23,8 +23,8 @@ use crate::{
         OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS, OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE,
         PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode, TerrainHeightRange, build_chunk_mesh,
         continuous_baked_sample_spacing_meters, cube_face_basis, cube_face_direction,
-        max_active_chunks_from_env, outmap_surface_height_meters, outmap_terrain_height_scale,
-        placeholder_height_meters,
+        max_active_chunks_from_env, outmap_surface_height_meters, placeholder_height_meters,
+        scaled_outmap_macro_height_meters,
     },
 };
 
@@ -725,7 +725,10 @@ impl TerrainRenderer {
                             macro_height_meters: if baked_meters <= 0.0 {
                                 0.0
                             } else {
-                                baked_meters * outmap_terrain_height_scale(camera_altitude_meters)
+                                scaled_outmap_macro_height_meters(
+                                    baked_meters,
+                                    camera_altitude_meters,
+                                )
                             },
                             source_level: level,
                         }
@@ -2643,7 +2646,8 @@ mod tests {
         assert_eq!(settings.outmap_height_blend[0], 100_000.0);
         assert_eq!(settings.outmap_height_blend[1], 1_000_000.0);
         assert_eq!(settings.outmap_detail[0], 4.0);
-        assert!(shader.matches("terrain_macro_height_scale()").count() >= 2);
+        assert!(shader.contains("fn scaled_terrain_macro_height("));
+        assert!(shader.matches("scaled_terrain_macro_height(").count() >= 3);
     }
 
     #[test]
@@ -2658,7 +2662,7 @@ mod tests {
             .nth(1)
             .and_then(|source| source.split("\nfn ").next())
             .expect("terrain height function is present");
-        assert!(terrain_height.contains("macro_height * terrain_macro_height_scale()"));
+        assert!(terrain_height.contains("scaled_terrain_macro_height(macro_height)"));
         // terrain_height stays macro-only on purpose: detail is added once in
         // vs_main with an analytic slope, so the four normal probes remain pure
         // texture reads rather than each re-running the octave ladder.

@@ -6,7 +6,7 @@ use catinthegarden_coretypes::{
 
 use crate::{
     outmap::{Outmap, OutmapError, TileData},
-    planet::{PLANET_RADIUS_METERS, outmap_terrain_height_scale},
+    planet::PLANET_RADIUS_METERS,
     terrain::{NEAR_FIELD_WINDOW_SAMPLES, NearFieldSources, NearFieldWindow, TerrainSource},
 };
 
@@ -893,7 +893,6 @@ impl RayUniform {
         max_height_mip_count: u32,
         camera_altitude_meters: f64,
     ) -> Self {
-        let height_scale = outmap_terrain_height_scale(camera_altitude_meters);
         let camera_radius_meters = PLANET_RADIUS_METERS + camera_altitude_meters;
         Self {
             height_min_meters,
@@ -902,12 +901,13 @@ impl RayUniform {
             march_steps: Self::MARCH_STEPS,
             camera_radius_meters: camera_radius_meters as f32,
             camera_radius_squared: camera_radius_meters.powi(2) as f32,
-            minimum_shell_radius_meters: (PLANET_RADIUS_METERS
-                + f64::from(height_min_meters) * height_scale)
+            minimum_shell_radius_meters: (PLANET_RADIUS_METERS + f64::from(height_min_meters))
                 as f32,
             maximum_shell_radius_meters: (PLANET_RADIUS_METERS
-                + f64::from(height_max_meters) * height_scale)
-                as f32,
+                + crate::planet::scaled_outmap_macro_height_meters(
+                    f64::from(height_max_meters),
+                    camera_altitude_meters,
+                )) as f32,
             max_height_mip_count,
             minimum_step_meters: (PLANET_RADIUS_METERS * 2.0 / f64::from(face_quads)) as f32 * 0.5,
             fovea_ndc: [0.0; 2],
@@ -1696,9 +1696,9 @@ mod tests {
         assert_eq!(near.max_height_mip_count, 12);
         assert_eq!(near.minimum_step_meters, 1_953.125);
         assert_eq!(near.minimum_shell_radius_meters, 3_995_000.0);
-        assert_eq!(near.maximum_shell_radius_meters, 4_009_000.0);
-        assert_eq!(far.minimum_shell_radius_meters, 3_980_000.0);
-        assert_eq!(far.maximum_shell_radius_meters, 4_036_000.0);
+        assert_eq!(near.maximum_shell_radius_meters, 4_027_000.0);
+        assert_eq!(far.minimum_shell_radius_meters, 3_995_000.0);
+        assert_eq!(far.maximum_shell_radius_meters, 4_027_000.0);
         assert_eq!(near.camera_radius_meters, 4_010_000.0);
         assert_eq!(near.camera_radius_squared, 4_010_000.0_f32.powi(2));
     }

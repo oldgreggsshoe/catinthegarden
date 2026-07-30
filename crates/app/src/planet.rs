@@ -73,11 +73,11 @@ pub const GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS: f64 = 111.5;
 /// physical amplitude its repeated hills overwhelmed the already detailed
 /// baked landing tiles and read as an endless field of cones.
 pub const GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE: f64 = 0.0;
-/// Keep close flight physically scaled. A restrained far-orbit boost preserves
-/// readable relief when the whole planet occupies only a few hundred pixels.
-/// Sea level and ocean waves remain unscaled.
-pub const OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE: f64 = 1.0;
-pub const OUTMAP_TERRAIN_FAR_HEIGHT_SCALE: f64 = 4.0;
+/// Exaggerate positive baked altitude uniformly while leaving sea level and
+/// bathymetry unchanged. Keeping near and far equal avoids stacking this
+/// experiment on the former orbit-only boost.
+pub const OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE: f64 = 3.0;
+pub const OUTMAP_TERRAIN_FAR_HEIGHT_SCALE: f64 = 3.0;
 pub const OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS: f64 = 100_000.0;
 pub const OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS: f64 = 1_000_000.0;
 /// Compatibility alias for conservative far-orbit bounds.
@@ -730,6 +730,17 @@ pub fn outmap_terrain_height_scale(camera_altitude_meters: f64) -> f64 {
         + (OUTMAP_TERRAIN_FAR_HEIGHT_SCALE - OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE) * blend
 }
 
+pub fn scaled_outmap_macro_height_meters(
+    macro_height_meters: f64,
+    camera_altitude_meters: f64,
+) -> f64 {
+    if macro_height_meters > 0.0 {
+        macro_height_meters * outmap_terrain_height_scale(camera_altitude_meters)
+    } else {
+        macro_height_meters
+    }
+}
+
 /// Adds global microrelief without moving the coastline. The transition is
 /// deliberately complete well above the 200m beach blend used by the shader.
 pub fn detailed_outmap_land_height_meters(
@@ -740,7 +751,7 @@ pub fn detailed_outmap_land_height_meters(
 ) -> f64 {
     let weight = smoothstep(100.0, 400.0, macro_height_meters);
     let scaled_macro_height =
-        macro_height_meters * outmap_terrain_height_scale(camera_altitude_meters);
+        scaled_outmap_macro_height_meters(macro_height_meters, camera_altitude_meters);
     // Two separate fields. The first is the retired direction-noise, kept gated
     // at zero. The second is the ladder the shader actually displaces with, and
     // without it the CPU believes in a surface up to 17m below the rendered one
@@ -2615,8 +2626,9 @@ mod tests {
         default_sun_direction, detailed_outmap_land_height_meters, global_terrain_detail_meters,
         minimum_vertical_fov_radians_for_viewport, near_plane_meters, outmap_surface_height_meters,
         outmap_terrain_height_scale, placeholder_height_meters, planet_local_vector,
-        planet_rotation_radians, projected_error_pixels_with_height_range, terrain_detail_meters,
-        terrain_detail_value_noise, unbalanced_coarse_neighbors,
+        planet_rotation_radians, projected_error_pixels_with_height_range,
+        scaled_outmap_macro_height_meters, terrain_detail_meters, terrain_detail_value_noise,
+        unbalanced_coarse_neighbors,
     };
 
     fn projected_error_pixels(
@@ -3905,15 +3917,12 @@ mod tests {
         let big_hill = TERRAIN_DETAIL_START_WAVELENGTH_METERS * TERRAIN_DETAIL_ROUGHNESS;
         assert!(super::terrain_detail_octave_headroom(40.0, big_hill) < 0.02);
         // Above the weighting it is applied whole.
+        let scaled_macro_height = scaled_outmap_macro_height_meters(400.0, 1_524.0);
         assert_eq!(
             detailed_outmap_land_height_meters(400.0, direction, 1_524.0, L4_SPACING),
-            OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE * 400.0
+            scaled_macro_height
                 + GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE * global_terrain_detail_meters(direction)
-                + terrain_detail_meters(
-                    direction,
-                    L4_SPACING,
-                    400.0 * OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE
-                )
+                + terrain_detail_meters(direction, L4_SPACING, scaled_macro_height)
         );
     }
 
@@ -3938,10 +3947,11 @@ mod tests {
             40.0,
             super::baked_sample_spacing_meters(18),
         );
+        let scaled_baked_meters = scaled_outmap_macro_height_meters(baked_meters, 40.0);
         assert!(
-            (corridor - baked_meters).abs() < 0.5,
+            (corridor - scaled_baked_meters).abs() < 0.5,
             "the ladder added {}m on top of L18 baked erosion",
-            corridor - baked_meters
+            corridor - scaled_baked_meters
         );
         // Away from the corridor the finest baked data is L4, 3.9km samples,
         // which carries nothing below about 7.8km. There the ladder is the only
@@ -3952,7 +3962,7 @@ mod tests {
             40.0,
             super::baked_sample_spacing_meters(4),
         );
-        let detail = dense - baked_meters;
+        let detail = dense - scaled_baked_meters;
         assert!(
             detail.abs() > 0.5,
             "clearance saw only {detail}m of synthesised relief over L4 data"
@@ -3967,9 +3977,9 @@ mod tests {
         // without a GPU: that the ladder contributes, and that it stays inside
         // the amplitude its own constants allow.
         assert!(
-            (baked_meters - 400.0..=baked_meters + 400.0).contains(&dense),
+            (scaled_baked_meters - 400.0..=scaled_baked_meters + 400.0).contains(&dense),
             "clearance puts the landing site at {dense}m, implausibly far from \
-             the {baked_meters}m of baked terrain under it"
+             the {scaled_baked_meters}m scaled terrain under it"
         );
         // Self-similar amplitude sums to twice the first octave, so nothing the
         // ladder produces may exceed that however the octaves line up.
@@ -4011,25 +4021,29 @@ mod tests {
     }
 
     #[test]
-    fn terrain_height_scale_blends_only_after_leaving_low_flight() {
+    fn terrain_height_scale_is_fixed_and_preserves_bathymetry() {
+        for altitude in [
+            0.0,
+            OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS,
+            (OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS + OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS)
+                * 0.5,
+            OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS,
+            2_000_000.0,
+        ] {
+            assert_eq!(
+                outmap_terrain_height_scale(altitude),
+                OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE
+            );
+        }
         assert_eq!(
-            outmap_terrain_height_scale(0.0),
-            OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE
-        );
-        assert_eq!(
-            outmap_terrain_height_scale(OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS),
-            OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE
-        );
-        assert_eq!(
-            outmap_terrain_height_scale(
-                (OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS + OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS)
-                    * 0.5,
-            ),
-            (OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE + OUTMAP_TERRAIN_FAR_HEIGHT_SCALE) * 0.5,
-        );
-        assert_eq!(
-            outmap_terrain_height_scale(OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS),
+            OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE,
             OUTMAP_TERRAIN_FAR_HEIGHT_SCALE
+        );
+        assert_eq!(scaled_outmap_macro_height_meters(-800.0, 0.0), -800.0);
+        assert_eq!(scaled_outmap_macro_height_meters(0.0, 0.0), 0.0);
+        assert_eq!(
+            scaled_outmap_macro_height_meters(400.0, 0.0),
+            400.0 * OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE
         );
     }
 

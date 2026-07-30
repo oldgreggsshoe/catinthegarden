@@ -124,7 +124,7 @@ fn terrain_height(
     // Macro only. Synthesised detail is added once in vs_main with an analytic
     // slope, rather than here, so the four normal probes stay pure texture reads
     // instead of each re-running the whole octave ladder.
-    return macro_height * terrain_macro_height_scale();
+    return scaled_terrain_macro_height(macro_height);
 }
 
 fn sample_biome(source_uv: vec2<f32>) -> u32 {
@@ -478,7 +478,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let camera_distance_meters = length(base_camera_relative_view_position);
     let base_height = select(
         macro_height,
-        macro_height * terrain_macro_height_scale(),
+        scaled_terrain_macro_height(macro_height),
         outmap,
     );
     // Anchor-local metres, not an absolute direction: this is what carries the

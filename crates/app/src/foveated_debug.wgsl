@@ -656,11 +656,11 @@ fn adaptive_step_distance(
         * exp2(f32(min(iteration, 6u)));
     let point_view = camera_position_view + ray * distance_meters;
     let end_point_view = point_view + ray * desired_step_meters;
-    let maximum_height_meters = sample_max_height(
+    let maximum_height_meters = scaled_terrain_macro_height(sample_max_height(
         normalize(view_to_planet(point_view)),
         normalize(view_to_planet(end_point_view)),
         desired_step_meters,
-    ) * terrain_macro_height_scale();
+    ));
     let maximum_radius_meters = PLANET_RADIUS_METERS + maximum_height_meters;
     let discriminant = radial_dot_ray * radial_dot_ray
         + maximum_radius_meters * maximum_radius_meters
@@ -709,7 +709,7 @@ fn surface_function(
     let point_view = camera_position_view + ray * distance_meters;
     let surface_direction = normalize(view_to_planet(point_view));
     let surface_radius = PLANET_RADIUS_METERS
-        + sample_height(surface_direction) * terrain_macro_height_scale();
+        + scaled_terrain_macro_height(sample_height(surface_direction));
     return radius_at(distance_meters, radial_dot_ray) - surface_radius;
 }
 
@@ -724,7 +724,7 @@ fn detail_surface_function(
     let view_offset = ray * distance_meters;
     let point_view = camera_position_view + view_offset;
     let surface_direction = normalize(view_to_planet(point_view));
-    let macro_height = sample_height(surface_direction) * terrain_macro_height_scale();
+    let macro_height = scaled_terrain_macro_height(sample_height(surface_direction));
     let detail = ray_terrain_detail(
         view_offset,
         surface_direction,
@@ -1011,10 +1011,9 @@ fn terrain_normal(
     let epsilon = normal_sample_meters / PLANET_RADIUS_METERS;
     let east_direction = normalize(surface_direction + east * epsilon);
     let north_direction = normalize(surface_direction + north * epsilon);
-    let height_scale = terrain_macro_height_scale();
-    let height = sample_height(surface_direction) * height_scale;
-    let east_height = sample_height(east_direction) * height_scale;
-    let north_height = sample_height(north_direction) * height_scale;
+    let height = scaled_terrain_macro_height(sample_height(surface_direction));
+    let east_height = scaled_terrain_macro_height(sample_height(east_direction));
+    let north_height = scaled_terrain_macro_height(sample_height(north_direction));
     let center = surface_direction * (PLANET_RADIUS_METERS + height);
     let east_point = east_direction * (PLANET_RADIUS_METERS + east_height);
     let north_point = north_direction * (PLANET_RADIUS_METERS + north_height);
@@ -1246,7 +1245,7 @@ fn shade_terrain(
     let detail = ray_terrain_detail(
         hit_view_position,
         surface_direction,
-        macro_height_meters * terrain_macro_height_scale(),
+        scaled_terrain_macro_height(macro_height_meters),
         footprint_radians,
     );
     let detail_normal = terrain_detail_perturbed_normal(
@@ -1290,7 +1289,7 @@ fn shade_terrain(
         return textured_albedo;
     }
 
-    let surface_height = macro_height_meters * terrain_macro_height_scale();
+    let surface_height = scaled_terrain_macro_height(macro_height_meters);
     let sun_direction = normalize(camera.sun_direction.xyz);
     let sun_transmittance = surface_direct_sun_transmittance(
         surface_direction,
@@ -1569,7 +1568,7 @@ fn trace_ray(ray: vec3<f32>, detail: f32, footprint_radians: f32) -> RayResult {
         color = shade_ocean(
             surface_direction,
             ray * hit_distance,
-            macro_height * terrain_macro_height_scale(),
+            scaled_terrain_macro_height(macro_height),
             detail,
         );
     }
