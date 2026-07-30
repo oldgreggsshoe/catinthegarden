@@ -9,13 +9,13 @@ LOD/culling bounds, and scenario cameras share that transform. F4 starts over th
 highest-prominence summit. Moving raster flight sweeps the camera through every concurrently drawn
 active/transition patch and retains a 30m collision envelope; idle inspection remains at 2m.
 **Latest evidence:** committed Earth-like outmap Quadro runs `orbit_once/1785409591-283581`,
-raster `stand_on_ground/1785435392-495392`, ray `stand_on_ground/1785435419-495618`,
+raster `stand_on_ground/1785435672-497949`, ray `stand_on_ground/1785435686-498076`,
 `low_flight_performance/1785409648-284127`, `landing_site_ground_detail/1785412295-314602`,
 `landing_site_eye_level/1785412370-315195`, and nine `render_path_parity` runs
 `1785409733-285091` through `1785409881-286994`; highest-summit F4 runs are raster
-`highest_prominence_peak/1785435456-495930` and ray
-`highest_prominence_peak/1785435474-495929`; exact manual W-flight replay is
-`manual_forward_clearance/1785435211-493641`
+`highest_prominence_peak/1785435713-498256` and ray
+`highest_prominence_peak/1785435731-498377`; exact manual W-flight replay is
+`manual_forward_clearance/1785435630-497513`
 **Written:** 30 July 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
@@ -251,7 +251,7 @@ frame is swept at 0.5m spacing, bounded to 64 samples. Movement uses a conservat
 camera-sized envelope derived from the captured 25.9m worst case plus margin, while an idle camera
 retains the established 2m eye height. Ray flight keeps its existing ray-surface truth.
 
-The source-identical final Quadro replay `1785435211-493641` passes finite metrics, zero LOD thrash,
+The committed-HEAD final Quadro replay `1785435630-497513` passes finite metrics, zero LOD thrash,
 245 compared points, 13.734–43.664m CPU clearance, and all seven captures. The dangerous early
 W-held frames have nearest visible hits at least 23.788m away, and visual inspection shows the
 camera above the snow basin rather than beneath stacked patch faces. The depth probe still reports
@@ -260,10 +260,10 @@ whereas the point evaluator samples the analytic radial surface, so it is retain
 rather than misrepresented as a 2m collision assertion. The collision envelope prevents that
 residual representation difference from admitting the camera into visible geometry.
 
-Current regressions: raster `stand_on_ground/1785435392-495392` passes at exactly 2m clearance and
+Current regressions: raster `stand_on_ground/1785435672-497949` passes at exactly 2m clearance and
 0.198m worst p90; the pre-existing ray p90 failure is unchanged at 3.199m in
-`stand_on_ground/1785435419-495618`; both raster and ray highest-prominence scenarios pass in
-`1785435456-495930` and `1785435474-495929`. Release build, formatting, diff checks, and all 212
+`stand_on_ground/1785435686-498076`; both raster and ray highest-prominence scenarios pass in
+`1785435713-498256` and `1785435731-498377`. Release build, formatting, diff checks, and all 212
 workspace tests pass.
 
 ## 3. State: what was red before the Earth-like rebake
