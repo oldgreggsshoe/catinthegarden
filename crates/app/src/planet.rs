@@ -414,10 +414,9 @@ pub const TERRAIN_DETAIL_SOURCE_EDGE_FADE_TEXELS: f64 = 2.0;
 /// clearance and camera placement agree with the render.
 ///
 /// The shader fades each octave against the spacing it is about to be sampled
-/// at, so the rendered surface is smoother far away than it is underfoot.
-/// Clearance takes the finest filter regardless: that is the tallest surface
-/// the renderer can ever produce here, which is the conservative choice for
-/// deciding whether a camera is inside the ground.
+/// at, so callers must provide that same filter when matching a rendered
+/// surface. `terrain_detail_meters` retains the finest-filter convenience used
+/// by offline terrain surveys.
 ///
 /// Evaluated straight from the absolute direction in f64. The shader has to
 /// split cell index from in-cell fraction to survive f32 at metre wavelengths;
@@ -455,11 +454,27 @@ pub fn continuous_baked_sample_spacing_meters(
     baked_sample_spacing_meters_at_level(effective_level)
 }
 
+#[cfg(test)]
 pub fn terrain_detail_meters(
     direction: DVec3,
     baked_spacing_meters: f64,
     scaled_macro_height_meters: f64,
 ) -> f64 {
+    terrain_detail_meters_with_filter(
+        direction,
+        baked_spacing_meters,
+        scaled_macro_height_meters,
+        TERRAIN_DETAIL_MIN_FILTER_METERS,
+    )
+}
+
+pub fn terrain_detail_meters_with_filter(
+    direction: DVec3,
+    baked_spacing_meters: f64,
+    scaled_macro_height_meters: f64,
+    filter_meters: f64,
+) -> f64 {
+    assert!(filter_meters.is_finite() && filter_meters >= TERRAIN_DETAIL_MIN_FILTER_METERS);
     let domain = terrain_detail_domain(direction.normalize());
     let mut total = 0.0;
     let mut gradient = DVec3::ZERO;
@@ -467,16 +482,13 @@ pub fn terrain_detail_meters(
     for _ in 0..TERRAIN_DETAIL_OCTAVES {
         // Low cut as the shader's, and the same high cut: octaves the baked
         // data already carries must not be synthesised on top of it.
-        let fade = smoothstep(
-            TERRAIN_DETAIL_MIN_FILTER_METERS * 2.0,
-            TERRAIN_DETAIL_MIN_FILTER_METERS * 4.0,
-            wavelength,
-        ) * (1.0
-            - smoothstep(
-                baked_spacing_meters * 2.0,
-                baked_spacing_meters * 4.0,
-                wavelength,
-            ));
+        let fade = smoothstep(filter_meters * 2.0, filter_meters * 4.0, wavelength)
+            * (1.0
+                - smoothstep(
+                    baked_spacing_meters * 2.0,
+                    baked_spacing_meters * 4.0,
+                    wavelength,
+                ));
         if fade > 0.0 {
             let inverse_wavelength = 1.0 / wavelength;
             let cells = domain * (PLANET_RADIUS_METERS * inverse_wavelength);
@@ -743,11 +755,28 @@ pub fn scaled_outmap_macro_height_meters(
 
 /// Adds global microrelief without moving the coastline. The transition is
 /// deliberately complete well above the 200m beach blend used by the shader.
+#[cfg(test)]
 pub fn detailed_outmap_land_height_meters(
     macro_height_meters: f64,
     direction: DVec3,
     camera_altitude_meters: f64,
     baked_spacing_meters: f64,
+) -> f64 {
+    detailed_outmap_land_height_meters_with_filter(
+        macro_height_meters,
+        direction,
+        camera_altitude_meters,
+        baked_spacing_meters,
+        TERRAIN_DETAIL_MIN_FILTER_METERS,
+    )
+}
+
+pub fn detailed_outmap_land_height_meters_with_filter(
+    macro_height_meters: f64,
+    direction: DVec3,
+    camera_altitude_meters: f64,
+    baked_spacing_meters: f64,
+    filter_meters: f64,
 ) -> f64 {
     let weight = smoothstep(100.0, 400.0, macro_height_meters);
     let scaled_macro_height =
@@ -758,7 +787,12 @@ pub fn detailed_outmap_land_height_meters(
     // -- which is what put ground-level cameras inside the terrain.
     scaled_macro_height
         + global_terrain_detail_meters(direction) * weight * GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE
-        + terrain_detail_meters(direction, baked_spacing_meters, scaled_macro_height)
+        + terrain_detail_meters_with_filter(
+            direction,
+            baked_spacing_meters,
+            scaled_macro_height,
+            filter_meters,
+        )
 }
 
 /// Height followed by the low-flight camera. Ocean floor is not the visible
@@ -769,14 +803,31 @@ pub fn outmap_surface_height_meters(
     camera_altitude_meters: f64,
     baked_spacing_meters: f64,
 ) -> f64 {
+    outmap_surface_height_meters_with_filter(
+        macro_height_meters,
+        direction,
+        camera_altitude_meters,
+        baked_spacing_meters,
+        TERRAIN_DETAIL_MIN_FILTER_METERS,
+    )
+}
+
+pub fn outmap_surface_height_meters_with_filter(
+    macro_height_meters: f64,
+    direction: DVec3,
+    camera_altitude_meters: f64,
+    baked_spacing_meters: f64,
+    filter_meters: f64,
+) -> f64 {
     if macro_height_meters <= 0.0 {
         0.0
     } else {
-        detailed_outmap_land_height_meters(
+        detailed_outmap_land_height_meters_with_filter(
             macro_height_meters,
             direction,
             camera_altitude_meters,
             baked_spacing_meters,
+            filter_meters,
         )
     }
 }

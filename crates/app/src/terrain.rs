@@ -21,10 +21,11 @@ use crate::{
         GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, GeometricErrorRatio, MAX_LOD_LEVEL,
         OUTMAP_TERRAIN_FAR_HEIGHT_SCALE, OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS,
         OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS, OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE,
-        PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode, TerrainHeightRange, build_chunk_mesh,
-        continuous_baked_sample_spacing_meters, cube_face_basis, cube_face_direction,
-        max_active_chunks_from_env, outmap_surface_height_meters, placeholder_height_meters,
-        scaled_outmap_macro_height_meters,
+        PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode, TERRAIN_DETAIL_MIN_FILTER_METERS,
+        TerrainHeightRange, build_chunk_mesh, continuous_baked_sample_spacing_meters,
+        cube_face_basis, cube_face_direction, max_active_chunks_from_env,
+        outmap_surface_height_meters, outmap_surface_height_meters_with_filter,
+        placeholder_height_meters, scaled_outmap_macro_height_meters,
     },
 };
 
@@ -113,6 +114,7 @@ const OUTMAP_GEOMETRIC_ERROR: GeometricErrorRatio = GeometricErrorRatio {
 /// exposes huge terrain facets.
 const LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS: f64 = 250_000.0;
 const TERRAIN_INFO_SOURCE_EDGE_FADE_BIT: u32 = 1 << 14;
+const TERRAIN_DETAIL_FILTER_RATIO: f64 = 0.01;
 
 /// Near-field window: a square of baked macro height around the camera, at a
 /// level far finer than the six whole-face arrays the raymarch path holds.
@@ -373,6 +375,13 @@ struct RenderNode {
     transition_incoming: bool,
 }
 
+#[derive(Clone, Copy)]
+struct SurfaceDetailNode {
+    node: QuadtreeNode,
+    edge_stitch: u32,
+    source_key: Option<TileKey>,
+}
+
 enum TerrainDataSource {
     Placeholder,
     Outmap(Outmap),
@@ -407,6 +416,7 @@ pub struct TerrainRenderer {
     fading_out_chunks: BTreeMap<QuadtreeNode, FadingChunk>,
     fade_in_started_at: HashMap<QuadtreeNode, f64>,
     active_render_nodes: BTreeSet<QuadtreeNode>,
+    surface_detail_nodes: Vec<SurfaceDetailNode>,
     draw_batches: Vec<DrawBatch>,
     ocean_draw_batches: Vec<DrawBatch>,
     max_outmap_seam_delta_meters: f64,
@@ -652,6 +662,7 @@ impl TerrainRenderer {
             fading_out_chunks: BTreeMap::new(),
             fade_in_started_at: HashMap::new(),
             active_render_nodes: BTreeSet::new(),
+            surface_detail_nodes: Vec::new(),
             draw_batches: Vec::new(),
             ocean_draw_batches: Vec::new(),
             max_outmap_seam_delta_meters: 0.0,
@@ -780,6 +791,113 @@ impl TerrainRenderer {
                     })
             }
         }
+    }
+
+    /// Samples the highest filtered raster surface drawn at this direction.
+    /// Incoming and outgoing transition patches coexist and both write depth;
+    /// runtime detail is signed, so neither the first patch nor the finest
+    /// filter is a conservative collision surface.
+    pub fn raster_surface_height_breakdown_at_distance(
+        &self,
+        local_surface_direction: DVec3,
+        camera_altitude_meters: f64,
+        camera_distance_meters: f64,
+    ) -> Option<SurfaceHeightBreakdown> {
+        assert!(camera_distance_meters.is_finite() && camera_distance_meters >= 0.0);
+        match &self.source {
+            TerrainDataSource::Placeholder => Some(SurfaceHeightBreakdown {
+                height_meters: placeholder_height_meters(local_surface_direction),
+                macro_height_meters: placeholder_height_meters(local_surface_direction),
+                source_level: 0,
+            }),
+            TerrainDataSource::Outmap(outmap) => {
+                let (face, face_uv) = cube_face_uv(local_surface_direction)?;
+                let dense_level = outmap.manifest().dense_level;
+                let rendered_surface = self
+                    .surface_detail_nodes
+                    .iter()
+                    .filter(|surface| node_contains_face_uv(surface.node, face, face_uv))
+                    .filter_map(|surface| {
+                        let key = surface.source_key?;
+                        let tile = self.tile_cache.get(&key)?;
+                        let uv = source_tile_uv(key, face, face_uv)?;
+                        let baked_meters = f64::from(sample_height_cpu(&tile.heights_meters, uv));
+                        Some(SurfaceHeightBreakdown {
+                            height_meters: outmap_surface_height_meters_with_filter(
+                                baked_meters,
+                                local_surface_direction,
+                                camera_altitude_meters,
+                                continuous_baked_sample_spacing_meters(
+                                    face_uv,
+                                    key.level,
+                                    dense_level,
+                                ),
+                                surface_detail_filter_meters(
+                                    *surface,
+                                    face_uv,
+                                    camera_distance_meters,
+                                ),
+                            ),
+                            macro_height_meters: if baked_meters <= 0.0 {
+                                0.0
+                            } else {
+                                scaled_outmap_macro_height_meters(
+                                    baked_meters,
+                                    camera_altitude_meters,
+                                )
+                            },
+                            source_level: key.level,
+                        })
+                    })
+                    .max_by(|left, right| left.height_meters.total_cmp(&right.height_meters));
+                rendered_surface.or_else(|| {
+                    self.tile_cache
+                        .iter()
+                        .filter_map(|(key, tile)| {
+                            source_tile_uv(*key, face, face_uv)
+                                .map(|uv| (key.level, sample_height_cpu(&tile.heights_meters, uv)))
+                        })
+                        .max_by_key(|(level, _)| *level)
+                        .map(|(level, height)| {
+                            let baked_meters = f64::from(height);
+                            SurfaceHeightBreakdown {
+                                height_meters: outmap_surface_height_meters(
+                                    baked_meters,
+                                    local_surface_direction,
+                                    camera_altitude_meters,
+                                    continuous_baked_sample_spacing_meters(
+                                        face_uv,
+                                        level,
+                                        dense_level,
+                                    ),
+                                ),
+                                macro_height_meters: if baked_meters <= 0.0 {
+                                    0.0
+                                } else {
+                                    scaled_outmap_macro_height_meters(
+                                        baked_meters,
+                                        camera_altitude_meters,
+                                    )
+                                },
+                                source_level: level,
+                            }
+                        })
+                })
+            }
+        }
+    }
+
+    pub fn raster_surface_height_meters_at(
+        &self,
+        local_surface_direction: DVec3,
+        camera_altitude_meters: f64,
+    ) -> Option<f64> {
+        self.raster_surface_height_breakdown_at_distance(
+            local_surface_direction,
+            camera_altitude_meters,
+            0.0,
+        )
+        .map(|surface| surface.height_meters)
     }
 
     /// Where the near-field window should sit for this camera, or `None` when
@@ -1215,6 +1333,7 @@ impl TerrainRenderer {
         let mut prepared_instances = Vec::with_capacity(render_nodes.len());
         self.draw_batches.clear();
         self.ocean_draw_batches.clear();
+        self.surface_detail_nodes.clear();
         let mut fallback_chunks = 0_u32;
         let mut source_level_delta_histogram = [0_u32; MAX_LOD_LEVEL as usize + 1];
         let camera_view_basis = CameraViewBasis::from_forward_and_up(camera_forward, camera_up);
@@ -1244,6 +1363,16 @@ impl TerrainRenderer {
             ) * PLANET_RADIUS_METERS;
             let anchor_u = (u_min + u_max) * 0.5;
             let anchor_v = (v_min + v_max) * 0.5;
+            let edge_stitch = if render_node.active {
+                edge_stitch_info(render_node.node, &active_render_nodes)
+            } else {
+                0
+            };
+            self.surface_detail_nodes.push(SurfaceDetailNode {
+                node: render_node.node,
+                edge_stitch,
+                source_key: tile_key,
+            });
             let may_contain_ocean = match tile_key {
                 Some(key) => {
                     let tile = self
@@ -1296,11 +1425,7 @@ impl TerrainRenderer {
                             0.0
                         },
                     ],
-                    edge_stitch: if render_node.active {
-                        edge_stitch_info(render_node.node, &active_render_nodes)
-                    } else {
-                        0
-                    },
+                    edge_stitch,
                     node_uv_origin_span: [
                         u_min as f32,
                         v_min as f32,
@@ -1582,23 +1707,70 @@ fn active_node_at_direction(
     direction: DVec3,
 ) -> Option<QuadtreeNode> {
     let (face, face_uv) = cube_face_uv(direction)?;
-    active_nodes.iter().copied().find(|node| {
-        let Some(node_face) = CubeFace::from_index(node.face) else {
-            return false;
-        };
-        let key = TileKey {
+    active_nodes
+        .iter()
+        .copied()
+        .find(|node| node_contains_face_uv(*node, face, face_uv))
+}
+
+fn edge_stitch_level_delta(packed: u32, edge: u32) -> u8 {
+    ((packed >> (edge * 5)) & 0x1f) as u8
+}
+
+fn node_contains_face_uv(node: QuadtreeNode, face: CubeFace, face_uv: [f64; 2]) -> bool {
+    let Some(node_face) = CubeFace::from_index(node.face) else {
+        return false;
+    };
+    source_tile_uv(
+        TileKey {
             face: node_face,
             level: node.level,
             x: node.x,
             y: node.y,
-        };
-        source_tile_uv(key, face, face_uv).is_some()
-    })
+        },
+        face,
+        face_uv,
+    )
+    .is_some()
 }
 
-#[cfg(test)]
-fn edge_stitch_level_delta(packed: u32, edge: u32) -> u8 {
-    ((packed >> (edge * 5)) & 0x1f) as u8
+fn surface_detail_filter_meters(
+    surface: SurfaceDetailNode,
+    face_uv: [f64; 2],
+    camera_distance_meters: f64,
+) -> f64 {
+    let node_spacing = 2.0 * PLANET_RADIUS_METERS
+        / (f64::from(1_u32 << surface.node.level) * f64::from(CHUNK_GRID_QUADS as u32));
+    let [u_min, v_min, u_max, v_max] = surface.node.uv_bounds();
+    let tile_uv = [
+        ((face_uv[0] - u_min) / (u_max - u_min)).clamp(0.0, 1.0),
+        ((face_uv[1] - v_min) / (v_max - v_min)).clamp(0.0, 1.0),
+    ];
+    let edge_distances = [tile_uv[1], 1.0 - tile_uv[0], 1.0 - tile_uv[1], tile_uv[0]];
+    let mut filter_meters = node_spacing;
+    for (edge, edge_distance) in edge_distances.into_iter().enumerate() {
+        let level_delta = edge_stitch_level_delta(surface.edge_stitch, edge as u32);
+        if level_delta == 0 {
+            continue;
+        }
+        let neighbor_level = surface.node.level.saturating_sub(level_delta);
+        let neighbor_spacing = 2.0 * PLANET_RADIUS_METERS
+            / (f64::from(1_u32 << neighbor_level) * f64::from(CHUNK_GRID_QUADS as u32));
+        let fade_width =
+            (f64::from(1_u32 << level_delta) / f64::from(CHUNK_GRID_QUADS as u32)).min(1.0);
+        let edge_weight = 1.0 - smoothstep_f64(0.0, fade_width, edge_distance);
+        filter_meters =
+            filter_meters.max(node_spacing + (neighbor_spacing - node_spacing) * edge_weight);
+    }
+    filter_meters.max(
+        (camera_distance_meters * TERRAIN_DETAIL_FILTER_RATIO)
+            .max(TERRAIN_DETAIL_MIN_FILTER_METERS),
+    )
+}
+
+fn smoothstep_f64(edge0: f64, edge1: f64, value: f64) -> f64 {
+    let amount = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    amount * amount * (3.0 - 2.0 * amount)
 }
 
 fn lod_transition_progress(sim_time: f64, started_at_sim_time: f64) -> f32 {
@@ -2577,15 +2749,15 @@ mod tests {
 
     use super::{
         FadingChunk, LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS,
-        OUTMAP_TILE_GRID_SUBDIVISION_LEVELS, TERRAIN_INFO_SOURCE_EDGE_FADE_BIT,
+        OUTMAP_TILE_GRID_SUBDIVISION_LEVELS, SurfaceDetailNode, TERRAIN_INFO_SOURCE_EDGE_FADE_BIT,
         TERRAIN_MATERIAL_LAYER_COUNT, TERRAIN_MATERIAL_TEXTURE_SIZE, TerrainSettings,
         aligned_texture_row_bytes, cube_face_uv, downsample_srgb_rgba8, edge_stitch_info,
         edge_stitch_level_delta, fallback_uv_transform, height_footprint_is_strictly_land,
         lod_transition_nodes, lod_transition_progress, node_intersects_source_edge_fade,
         nodes_share_lod_transition, pack_terrain_info, padded_texture_rows, planet_shader_source,
         purge_expired_lod_transitions, sample_biome_cpu, sample_height_cpu, sample_moisture_cpu,
-        should_animate_lod_transition, source_tile_uv_at_direction, terrain_material_layer_texels,
-        terrain_material_texel, tileable_value_noise,
+        should_animate_lod_transition, source_tile_uv_at_direction, surface_detail_filter_meters,
+        terrain_material_layer_texels, terrain_material_texel, tileable_value_noise,
     };
     use crate::planet::{
         GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, MAX_LOD_LEVEL, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE,
@@ -3422,6 +3594,55 @@ mod tests {
         assert!(shader.contains("@location(11) node_anchor_direction_cube_length: vec4<f32>"));
         assert!(shader.contains("let stride = 1u << min(level_delta, 2u);"));
         assert!(shader.contains("requested_level - min(requested_level, level_delta)"));
+    }
+
+    #[test]
+    fn cpu_raster_detail_filter_matches_node_edge_and_distance_spacing() {
+        let node = QuadtreeNode {
+            face: CubeFace::PositiveX.index(),
+            level: 18,
+            x: 100_000,
+            y: 120_000,
+        };
+        let [u_min, v_min, u_max, v_max] = node.uv_bounds();
+        let node_spacing = 2.0 * PLANET_RADIUS_METERS
+            / (f64::from(1_u32 << node.level) * crate::planet::CHUNK_GRID_QUADS as f64);
+        let surface = SurfaceDetailNode {
+            node,
+            edge_stitch: 0,
+            source_key: None,
+        };
+
+        assert!(
+            (surface_detail_filter_meters(
+                surface,
+                [(u_min + u_max) * 0.5, (v_min + v_max) * 0.5],
+                0.0,
+            ) - node_spacing)
+                .abs()
+                < f64::EPSILON
+        );
+        assert!(
+            (surface_detail_filter_meters(
+                surface,
+                [(u_min + u_max) * 0.5, (v_min + v_max) * 0.5],
+                2_000.0,
+            ) - 20.0)
+                .abs()
+                < f64::EPSILON
+        );
+
+        let left_edge_delta = 2_u32 << (3 * 5);
+        let stitched = SurfaceDetailNode {
+            edge_stitch: left_edge_delta,
+            ..surface
+        };
+        assert!(
+            (surface_detail_filter_meters(stitched, [u_min, (v_min + v_max) * 0.5], 0.0,)
+                - node_spacing * 4.0)
+                .abs()
+                < 1.0e-12
+        );
     }
 
     #[test]

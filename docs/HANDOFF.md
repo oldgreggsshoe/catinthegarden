@@ -6,14 +6,16 @@ the diagnosis branch and pushed to `origin/diagnose/ocean-terrain-blockiness`
 **Renderer state:** current branch — positive baked macro land uses one fixed 3x presentation scale
 at every camera altitude; sea level and negative bathymetry remain physical. CPU truth, raster, ray,
 LOD/culling bounds, and scenario cameras share that transform. F4 starts over the measured
-highest-prominence summit.
+highest-prominence summit. Moving raster flight sweeps the camera through every concurrently drawn
+active/transition patch and retains a 30m collision envelope; idle inspection remains at 2m.
 **Latest evidence:** committed Earth-like outmap Quadro runs `orbit_once/1785409591-283581`,
-raster `stand_on_ground/1785409626-283919`, ray `stand_on_ground/1785409672-284379`,
+raster `stand_on_ground/1785435392-495392`, ray `stand_on_ground/1785435419-495618`,
 `low_flight_performance/1785409648-284127`, `landing_site_ground_detail/1785412295-314602`,
 `landing_site_eye_level/1785412370-315195`, and nine `render_path_parity` runs
 `1785409733-285091` through `1785409881-286994`; highest-summit F4 runs are raster
-`highest_prominence_peak/1785427184-433297` and ray
-`highest_prominence_peak/1785427353-434971`
+`highest_prominence_peak/1785435456-495930` and ray
+`highest_prominence_peak/1785435474-495929`; exact manual W-flight replay is
+`manual_forward_clearance/1785435211-493641`
 **Written:** 30 July 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
@@ -42,8 +44,8 @@ A renderer that "looks like a modernish (2015 on) game", consistent from orbit t
 ## 2. State: what is green
 
 ```
-cargo test --workspace   →  208 passed, 0 failed, 5 ignored
-                            (app 173, baker lib 23, baker bin 1, baker integration 5, coretypes 6)
+cargo test --workspace   →  212 passed, 0 failed, 5 ignored
+                            (app 177, baker lib 23, baker bin 1, baker integration 5, coretypes 6)
                             the 5 ignored are the relief_survey/terrain instruments -- run them with
                             `cargo test -- --ignored --nocapture <name>`
 ```
@@ -226,6 +228,43 @@ of the whole exercise.
 4 km and the probe compares out to 4 km; a ray arriving at a fraction of a degree turns a metre of
 ground into hundreds of metres of reconstructed height. `stand_on_ground` ray shows max 194 m from
 exactly two grazing points out of 77. p90 is the assertion that means something.
+
+### Exact manual W-flight replay and raster collision repair — 30 July 2026
+
+The reported failure is preserved as `manual_forward_clearance`: it starts at the exact position
+`[963666.5873397837, 2669549.1557218134, 2856170.063578058]`, looks along
+`[-0.25419213683927866, -0.7168602258826009, 0.6492285992750381]`, freezes the planet, waits three
+seconds for residency, then holds the real W-flight input and captures seven frames through 4.5s.
+Scenario runs ignore live `DeviceEvent::MouseMotion`, so unrelated desktop mouse movement cannot
+change this camera again.
+
+The exact pre-fix replay `1785428386-445023` reproduced the camera passing beneath the visible
+terrain/transition layers. Its endpoint-only collision followed one finest cached point sample:
+that is not conservative when signed runtime relief is filtered differently across simultaneously
+drawn parent/child patches, and it can also tunnel past a higher surface between frame endpoints.
+CPU clearance reported only 3.802–15.619m while the worst depth-probe p90 disagreement reached
+25.828m.
+
+Raster collision now records every drawn active, incoming, and outgoing node with its actual source
+tile, edge stitch, source fade, and distance filter; queries take the highest candidate. Each moving
+frame is swept at 0.5m spacing, bounded to 64 samples. Movement uses a conservative 30m
+camera-sized envelope derived from the captured 25.9m worst case plus margin, while an idle camera
+retains the established 2m eye height. Ray flight keeps its existing ray-surface truth.
+
+The source-identical final Quadro replay `1785435211-493641` passes finite metrics, zero LOD thrash,
+245 compared points, 13.734–43.664m CPU clearance, and all seven captures. The dangerous early
+W-held frames have nearest visible hits at least 23.788m away, and visual inspection shows the
+camera above the snow basin rather than beneath stacked patch faces. The depth probe still reports
+up to 21.395m p90 at the moving mixed-LOD transition: it intersects raster triangle/skirt geometry
+whereas the point evaluator samples the analytic radial surface, so it is retained as a diagnostic
+rather than misrepresented as a 2m collision assertion. The collision envelope prevents that
+residual representation difference from admitting the camera into visible geometry.
+
+Current regressions: raster `stand_on_ground/1785435392-495392` passes at exactly 2m clearance and
+0.198m worst p90; the pre-existing ray p90 failure is unchanged at 3.199m in
+`stand_on_ground/1785435419-495618`; both raster and ray highest-prominence scenarios pass in
+`1785435456-495930` and `1785435474-495929`. Release build, formatting, diff checks, and all 212
+workspace tests pass.
 
 ## 3. State: what was red before the Earth-like rebake
 

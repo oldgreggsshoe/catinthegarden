@@ -252,7 +252,7 @@ pub fn compare_surface(
     depth: &DepthImage,
     camera_altitude_meters: f64,
     camera_surface_height_meters: f64,
-    cpu_height: impl Fn(DVec3) -> Option<SurfaceHeightBreakdown>,
+    cpu_height: impl Fn(DVec3, f64) -> Option<SurfaceHeightBreakdown>,
 ) -> SurfaceProbeReport {
     compare_surface_with_limit(
         sim_time,
@@ -274,7 +274,7 @@ pub fn compare_surface_with_limit(
     camera_altitude_meters: f64,
     camera_surface_height_meters: f64,
     maximum_comparison_distance_meters: f64,
-    cpu_height: impl Fn(DVec3) -> Option<SurfaceHeightBreakdown>,
+    cpu_height: impl Fn(DVec3, f64) -> Option<SurfaceHeightBreakdown>,
 ) -> SurfaceProbeReport {
     assert!(
         maximum_comparison_distance_meters.is_finite() && maximum_comparison_distance_meters > 0.0
@@ -295,7 +295,7 @@ pub fn compare_surface_with_limit(
         if hit.distance_meters > maximum_comparison_distance_meters {
             continue;
         }
-        let Some(cpu) = cpu_height(hit.direction) else {
+        let Some(cpu) = cpu_height(hit.direction, hit.distance_meters) else {
             continue;
         };
         comparisons.push(comparison(&hit, cpu));
@@ -304,7 +304,9 @@ pub fn compare_surface_with_limit(
     let center = depth
         .sample(DVec2::ZERO)
         .and_then(|sample| geometry.hit(DVec2::ZERO, sample))
-        .and_then(|hit| cpu_height(hit.direction).map(|cpu| comparison(&hit, cpu)));
+        .and_then(|hit| {
+            cpu_height(hit.direction, hit.distance_meters).map(|cpu| comparison(&hit, cpu))
+        });
 
     let mut absolute: Vec<f64> = comparisons
         .iter()
@@ -506,8 +508,8 @@ mod tests {
 
     /// A terrain that is entirely baked macro shape, with no synthesised
     /// detail: the simplest thing the probe can be held against.
-    fn flat_truth(height_meters: f64) -> impl Fn(DVec3) -> Option<SurfaceHeightBreakdown> {
-        move |_| {
+    fn flat_truth(height_meters: f64) -> impl Fn(DVec3, f64) -> Option<SurfaceHeightBreakdown> {
+        move |_, _| {
             Some(SurfaceHeightBreakdown {
                 height_meters,
                 macro_height_meters: height_meters,
@@ -663,7 +665,7 @@ mod tests {
         let altitude = 1_000.0;
         let geometry = nadir_geometry(altitude, 1.0);
         let depth = uniform_depth(64, 64, (1.0 / 400.0) as f32);
-        let report = compare_surface(0.0, "raster", &geometry, &depth, altitude, 603.3, |_| {
+        let report = compare_surface(0.0, "raster", &geometry, &depth, altitude, 603.3, |_, _| {
             Some(SurfaceHeightBreakdown {
                 height_meters: 603.3,
                 macro_height_meters: 600.0,
@@ -702,7 +704,7 @@ mod tests {
             &depth,
             altitude,
             600.0,
-            |direction| {
+            |direction, _| {
                 // Reproduce the rendered relief exactly from the point itself.
                 let relief = (direction.x * 1.0e7).sin() * 0.0;
                 Some(SurfaceHeightBreakdown {
@@ -723,7 +725,7 @@ mod tests {
             &depth,
             altitude,
             600.0,
-            |direction| {
+            |direction, _| {
                 let relief = ((direction.x * 9.1e6).sin() * 43_758.5).fract() * 6.0;
                 Some(SurfaceHeightBreakdown {
                     height_meters: 600.0 + relief,

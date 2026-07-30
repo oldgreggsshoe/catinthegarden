@@ -123,6 +123,12 @@ pub struct ScenarioDefinition {
     /// remain focused; atmosphere scenarios opt in explicitly.
     #[serde(default)]
     pub planet_rotation_time_scale: f64,
+    /// Enables the real low-flight camera at the first waypoint and holds W
+    /// from this simulation time onward. This is deliberately not waypoint
+    /// interpolation: terrain-follow regressions must exercise the same
+    /// acceleration, geodesic movement, and clearance path as keyboard input.
+    #[serde(default)]
+    pub forward_flight_start_time_seconds: Option<f64>,
     pub orbit_radius_meters: Option<f64>,
     pub orbit_elevation_degrees: Option<f64>,
     pub orbit_turns: Option<f64>,
@@ -167,6 +173,7 @@ pub struct FramePlan {
     pub vertical_fov_degrees: Option<f64>,
     pub sun_direction: [f64; 3],
     pub planet_rotation_time_scale: f64,
+    pub forward_flight_held: Option<bool>,
 }
 
 pub struct ScenarioRunner {
@@ -209,6 +216,9 @@ impl ScenarioRunner {
             }
             "highest_prominence_peak" => {
                 include_str!("../scenarios/highest_prominence_peak.json")
+            }
+            "manual_forward_clearance" => {
+                include_str!("../scenarios/manual_forward_clearance.json")
             }
             "stand_on_ground" => include_str!("../scenarios/stand_on_ground.json"),
             "path_parity_ridge" => include_str!("../scenarios/path_parity_ridge.json"),
@@ -280,6 +290,17 @@ impl ScenarioRunner {
             || definition.planet_rotation_time_scale < 0.0
         {
             return Err("planet rotation time scale must be finite and non-negative".to_owned());
+        }
+        if definition
+            .forward_flight_start_time_seconds
+            .is_some_and(|time| {
+                !time.is_finite() || time < 0.0 || time > definition.duration_seconds
+            })
+        {
+            return Err(
+                "forward flight start time must be finite and within the scenario duration"
+                    .to_owned(),
+            );
         }
         if !definition.sun_waypoints.is_empty()
             && (definition.sun_waypoints.iter().any(|waypoint| {
@@ -441,6 +462,10 @@ impl ScenarioRunner {
             .unwrap_or(crate::probe::MAX_COMPARISON_DISTANCE_METERS)
     }
 
+    pub fn replays_forward_flight(&self) -> bool {
+        self.definition.forward_flight_start_time_seconds.is_some()
+    }
+
     pub fn orbit_settings(&self) -> Option<(f64, f64)> {
         Some((
             self.definition.orbit_radius_meters?,
@@ -506,6 +531,10 @@ impl ScenarioRunner {
             vertical_fov_degrees,
             sun_direction,
             planet_rotation_time_scale: self.definition.planet_rotation_time_scale,
+            forward_flight_held: self
+                .definition
+                .forward_flight_start_time_seconds
+                .map(|start| self.sim_time + f64::EPSILON >= start),
         }
     }
 }
@@ -837,6 +866,37 @@ mod tests {
         assert_eq!(scenario.expected_screenshots(), 2);
         assert_eq!(scenario.assertions().min_camera_clearance_m, Some(150.0));
         assert_eq!(scenario.assertions().max_camera_clearance_m, Some(155.0));
+    }
+
+    #[test]
+    fn manual_forward_scenario_replays_the_captured_pose_and_holds_w() {
+        let mut scenario =
+            ScenarioRunner::load("manual_forward_clearance").expect("manual replay parses");
+        assert!(scenario.replays_forward_flight());
+        assert_eq!(scenario.expected_screenshots(), 7);
+        assert_eq!(scenario.assertions().min_camera_clearance_m, Some(10.0));
+        assert_eq!(scenario.assertions().max_camera_clearance_m, Some(50.0));
+        assert_eq!(scenario.assertions().max_surface_probe_p90_delta_m, None);
+
+        let waypoint = &scenario.definition.waypoints[0];
+        assert!(
+            (DVec3::from_array(waypoint.position)
+                - DVec3::new(
+                    963_666.587_339_783_7,
+                    2_669_549.155_721_813_4,
+                    2_856_170.063_578_058,
+                ))
+            .length()
+                < 1.0e-9
+        );
+
+        let mut frame = scenario.advance();
+        while frame.sim_time + f64::EPSILON < 3.0 {
+            assert_eq!(frame.forward_flight_held, Some(false));
+            frame = scenario.advance();
+        }
+        assert!((3.0..=3.0 + 1.0 / 60.0).contains(&frame.sim_time));
+        assert_eq!(frame.forward_flight_held, Some(true));
     }
 
     #[test]

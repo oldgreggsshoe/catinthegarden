@@ -46,6 +46,10 @@ fn should_enter_fullscreen(currently_fullscreen: bool) -> bool {
     !currently_fullscreen
 }
 
+fn device_mouse_look_enabled(mouse_captured: bool, scenario_active: bool) -> bool {
+    mouse_captured && !scenario_active
+}
+
 fn render_size_for_surface_resize(
     surface_size: winit::dpi::PhysicalSize<u32>,
     fullscreen_render_size: Option<winit::dpi::PhysicalSize<u32>>,
@@ -80,6 +84,18 @@ const EARTHLIKE_HIGHEST_RAW_MACRO_ELEVATION_METERS: f64 = 8_738.565_429_687_5;
 /// synthesised relief the shader displaces with; against baked heights alone a
 /// floor this low would have put the camera inside the ground.
 const LOW_FLIGHT_MINIMUM_CLEARANCE_METERS: f64 = 2.0;
+/// Sweep the camera point through the rendered terrain instead of checking
+/// only the end of a frame. L18 patch boundaries are roughly a metre apart;
+/// sub-metre samples prevent a downward W flight from tunnelling through a
+/// higher incoming/outgoing patch between two otherwise safe endpoints.
+const LOW_FLIGHT_COLLISION_SWEEP_STEP_METERS: f64 = 0.5;
+const LOW_FLIGHT_COLLISION_MAX_SWEEP_SAMPLES: usize = 64;
+/// Translating through the one-metre raster frontier needs a camera-sized
+/// clearance envelope, not the two-metre idle eye-height point. The captured
+/// mountain replay measured up to 25.9m between the point truth and a visible
+/// transition/skirt hit; 30m keeps the near camera outside that rendered
+/// envelope while preserving the 2m stationary inspection height.
+const LOW_FLIGHT_MOVING_CLEARANCE_METERS: f64 = 30.0;
 /// Flight begins gently enough for surface inspection, then acceleration
 /// doubles while a movement key remains held so the same controls can leave
 /// the planet. Shift accelerates the ramp without changing its shape.
@@ -423,6 +439,35 @@ fn advance_flight_position_on_sphere(
     glam::DQuat::from_axis_angle(rotation_axis, angular_distance).mul_vec3(radial) * next_radius
 }
 
+fn swept_flight_clearance_lift(
+    start: glam::DVec3,
+    end: glam::DVec3,
+    clearance_meters: f64,
+    mut surface_height_meters: impl FnMut(glam::DVec3, f64) -> Option<f64>,
+) -> f64 {
+    let start_radius = start.length();
+    let end_radius = end.length();
+    let start_direction = start / start_radius;
+    let end_direction = end / end_radius;
+    let angular_distance = start_direction.dot(end_direction).clamp(-1.0, 1.0).acos();
+    let surface_distance = angular_distance * 0.5 * (start_radius + end_radius);
+    let travel_distance = surface_distance.hypot(end_radius - start_radius);
+    let steps = ((travel_distance / LOW_FLIGHT_COLLISION_SWEEP_STEP_METERS).ceil() as usize)
+        .clamp(1, LOW_FLIGHT_COLLISION_MAX_SWEEP_SAMPLES);
+    let mut lift_meters = 0.0_f64;
+    for step in 0..=steps {
+        let amount = step as f64 / steps as f64;
+        let direction = start_direction.lerp(end_direction, amount).normalize();
+        let radius = start_radius + (end_radius - start_radius) * amount;
+        let altitude_meters = (radius - planet::PLANET_RADIUS_METERS).max(0.0);
+        if let Some(height_meters) = surface_height_meters(direction, altitude_meters) {
+            lift_meters = lift_meters
+                .max(planet::PLANET_RADIUS_METERS + height_meters + clearance_meters - radius);
+        }
+    }
+    lift_meters.max(0.0)
+}
+
 fn format_vertical_fov(vertical_fov_degrees: f64) -> String {
     if vertical_fov_degrees >= 10.0 {
         format!("{vertical_fov_degrees:.1}")
@@ -633,6 +678,7 @@ struct State {
     next_spatial_log_presentation_time: f64,
     capture_number: usize,
     scenario: Option<scenario::ScenarioRunner>,
+    scenario_flight_initialized: bool,
     artifacts: debug::RunArtifacts,
     scenario_capture_failed: bool,
     mouse_captured: bool,
@@ -911,6 +957,7 @@ impl State {
             next_spatial_log_presentation_time: 0.0,
             capture_number: 0,
             scenario,
+            scenario_flight_initialized: false,
             artifacts,
             scenario_capture_failed: false,
             mouse_captured: false,
@@ -1121,6 +1168,7 @@ impl State {
     }
 
     fn advance_low_flight_camera(&mut self, delta_seconds: f64, planet_rotation_radians: f64) {
+        let movement_start_position = self.flight_local_position;
         let local_radial = self.flight_local_position.normalize();
         let local_forward = self.low_flight_view_direction(local_radial);
         let local_right = local_forward.cross(local_radial).normalize();
@@ -1152,17 +1200,44 @@ impl State {
                 moved_radial,
             );
         }
-        self.update_low_flight_camera(planet_rotation_radians);
+        self.update_low_flight_camera(Some(movement_start_position), planet_rotation_radians);
     }
 
-    fn update_low_flight_camera(&mut self, planet_rotation_radians: f64) {
+    fn update_low_flight_camera(
+        &mut self,
+        movement_start_position: Option<glam::DVec3>,
+        planet_rotation_radians: f64,
+    ) {
+        if self.render_path == RenderPath::Raster
+            && let Some(start) = movement_start_position
+            && start.distance_squared(self.flight_local_position) > f64::EPSILON
+        {
+            let lift_meters = swept_flight_clearance_lift(
+                start,
+                self.flight_local_position,
+                LOW_FLIGHT_MOVING_CLEARANCE_METERS,
+                |direction, altitude_meters| {
+                    self.terrain
+                        .raster_surface_height_meters_at(direction, altitude_meters)
+                },
+            );
+            if lift_meters > 0.0 {
+                self.flight_local_position = self.flight_local_position.normalize()
+                    * (self.flight_local_position.length() + lift_meters);
+            }
+        }
         let local_radial = self.flight_local_position.normalize();
         let camera_altitude_meters =
             (self.flight_local_position.length() - planet::PLANET_RADIUS_METERS).max(0.0);
-        if let Some(surface_height_meters) = self
-            .terrain
-            .surface_height_meters_at(local_radial, camera_altitude_meters)
-        {
+        let surface_height_meters = match self.render_path {
+            RenderPath::Raster => self
+                .terrain
+                .raster_surface_height_meters_at(local_radial, camera_altitude_meters),
+            RenderPath::FoveatedRay => self
+                .terrain
+                .surface_height_meters_at(local_radial, camera_altitude_meters),
+        };
+        if let Some(surface_height_meters) = surface_height_meters {
             self.flight_surface_height_meters = surface_height_meters;
         }
         // Terrain tiles can become resident while the camera is idle. Enforce
@@ -1251,7 +1326,7 @@ impl State {
                     LOW_FLIGHT_VERTICAL_FOV_DEGREES,
                     self.size.height,
                 );
-                self.update_low_flight_camera(planet_rotation_radians);
+                self.update_low_flight_camera(None, planet_rotation_radians);
             }
             CameraMode::LowFlight => {
                 if let Some((position, direction, vertical_fov_degrees)) =
@@ -1345,6 +1420,7 @@ impl State {
             scenario_vertical_fov_degrees,
             scenario_sun_direction,
             scenario_planet_rotation_time_scale,
+            scenario_forward_flight_held,
         ) = if let Some(scenario) = self.scenario.as_mut() {
             let frame = scenario.advance();
             let solid_color_screen = scenario.renders_solid_color();
@@ -1369,6 +1445,7 @@ impl State {
                 frame.vertical_fov_degrees,
                 Some(glam::DVec3::from_array(frame.sun_direction)),
                 frame.planet_rotation_time_scale,
+                frame.forward_flight_held,
             )
         } else {
             let sim_time = self.interactive_sim_time();
@@ -1392,6 +1469,7 @@ impl State {
                 None,
                 None,
                 INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
+                None,
             )
         };
         if let Some((position, look_at)) = scenario_pose {
@@ -1417,7 +1495,48 @@ impl State {
         let planet_rotation_radians =
             planet::planet_rotation_radians(sim_time * scenario_planet_rotation_time_scale);
         let scene_delta_seconds = (sim_time - self.last_auto_orbit_sim_time).max(0.0);
-        if self.scenario.is_none() {
+        if let Some(forward_held) = scenario_forward_flight_held {
+            if !self.scenario_flight_initialized {
+                let local_position = planet::planet_local_vector(
+                    self.camera.world_position(),
+                    planet_rotation_radians,
+                );
+                let local_radial = local_position.normalize();
+                let local_view_direction = planet::planet_local_vector(
+                    self.camera.direction_dvec3(),
+                    planet_rotation_radians,
+                )
+                .normalize();
+                let local_tangent =
+                    local_view_direction - local_radial * local_view_direction.dot(local_radial);
+                assert!(
+                    local_tangent.length_squared() > f64::EPSILON,
+                    "forward-flight scenario cannot look exactly radial"
+                );
+                self.flight_local_position = local_position;
+                self.flight_local_tangent = local_tangent.normalize();
+                self.flight_look_yaw_radians = 0.0;
+                self.flight_look_pitch_radians = local_view_direction
+                    .dot(local_radial)
+                    .clamp(-1.0, 1.0)
+                    .asin();
+                let sea_level_altitude = local_position.length() - planet::PLANET_RADIUS_METERS;
+                self.flight_surface_height_meters = self
+                    .terrain
+                    .prepare_flight_start_surface_height_meters(local_radial, sea_level_altitude)
+                    .unwrap_or(0.0);
+                self.flight_speed = FlightSpeedState::default();
+                self.flight_travel_direction = glam::DVec3::ZERO;
+                self.camera_mode = CameraMode::LowFlight;
+                self.previous_camera_world_position = self.camera.world_position();
+                self.scenario_flight_initialized = true;
+            }
+            self.flight_movement = FlightMovementInput {
+                forward: forward_held,
+                ..FlightMovementInput::default()
+            };
+            self.advance_low_flight_camera(scene_delta_seconds, planet_rotation_radians);
+        } else if self.scenario.is_none() {
             let camera_delta_seconds = interactive_camera_delta_seconds(
                 self.camera_mode,
                 scene_delta_seconds,
@@ -1786,13 +1905,17 @@ impl State {
         // scale by -- not the above-ground figure the HUD uses.
         let camera_sea_level_altitude_meters =
             camera_planet_frame_position.length() - planet::PLANET_RADIUS_METERS;
-        let camera_surface_height_meters = self
-            .terrain
-            .surface_height_meters_at(
+        let camera_surface_height_meters = match self.render_path {
+            RenderPath::Raster => self.terrain.raster_surface_height_meters_at(
                 camera_planet_frame_position.normalize(),
                 camera_sea_level_altitude_meters,
-            )
-            .unwrap_or(0.0);
+            ),
+            RenderPath::FoveatedRay => self.terrain.surface_height_meters_at(
+                camera_planet_frame_position.normalize(),
+                camera_sea_level_altitude_meters,
+            ),
+        }
+        .unwrap_or(0.0);
         let aspect_ratio = self.size.width as f32 / self.size.height as f32;
         let camera_uniform = planet::CameraUniform::from_camera(
             &self.camera,
@@ -2250,6 +2373,7 @@ impl State {
             match probe::finish_depth_readback(&self.device, pending) {
                 Ok(depth) => {
                     let terrain = &self.terrain;
+                    let render_path = self.render_path;
                     let mut report = probe::compare_surface_with_limit(
                         sim_time,
                         self.render_path.label(),
@@ -2258,11 +2382,17 @@ impl State {
                         camera_sea_level_altitude_meters,
                         camera_surface_height_meters,
                         surface_probe_max_distance_meters,
-                        |direction| {
-                            terrain.surface_height_breakdown_at(
+                        |direction, camera_distance_meters| match render_path {
+                            RenderPath::Raster => terrain
+                                .raster_surface_height_breakdown_at_distance(
+                                    direction,
+                                    camera_sea_level_altitude_meters,
+                                    camera_distance_meters,
+                                ),
+                            RenderPath::FoveatedRay => terrain.surface_height_breakdown_at(
                                 direction,
                                 camera_sea_level_altitude_meters,
-                            )
+                            ),
                         },
                     );
                     report.render_debug_mode = self.render_debug_mode.label().to_owned();
@@ -2646,7 +2776,7 @@ impl ApplicationHandler for App {
             return;
         };
         if let DeviceEvent::MouseMotion { delta } = event
-            && state.mouse_captured
+            && device_mouse_look_enabled(state.mouse_captured, state.scenario.is_some())
         {
             state.look_camera(
                 delta.0 * MOUSE_LOOK_RADIANS_PER_PIXEL,
@@ -2794,10 +2924,11 @@ mod tests {
         LOW_FLIGHT_ALTITUDE_METERS, LOW_FLIGHT_INITIAL_PITCH_RADIANS,
         LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND, LOW_FLIGHT_MINIMUM_CLEARANCE_METERS,
         MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS, RenderPath, advance_flight_position_on_sphere,
-        advance_flight_speed, find_default_outmap, flight_movement_direction,
-        flight_view_direction, focus_of_expansion_ndc, initial_flight_tangent,
-        interactive_camera_delta_seconds, projected_planet_coverage,
-        render_size_for_surface_resize, should_enter_fullscreen, transport_flight_tangent,
+        advance_flight_speed, device_mouse_look_enabled, find_default_outmap,
+        flight_movement_direction, flight_view_direction, focus_of_expansion_ndc,
+        initial_flight_tangent, interactive_camera_delta_seconds, projected_planet_coverage,
+        render_size_for_surface_resize, should_enter_fullscreen, swept_flight_clearance_lift,
+        transport_flight_tangent,
     };
     use crate::planet::{
         CameraUniform, OrbitCamera, PLANET_ROTATION_PERIOD_SECONDS, RenderDebugMode,
@@ -2816,6 +2947,13 @@ mod tests {
     fn fullscreen_key_toggles_windowed_state() {
         assert!(should_enter_fullscreen(false));
         assert!(!should_enter_fullscreen(true));
+    }
+
+    #[test]
+    fn deterministic_scenarios_ignore_live_mouse_motion() {
+        assert!(device_mouse_look_enabled(true, false));
+        assert!(!device_mouse_look_enabled(true, true));
+        assert!(!device_mouse_look_enabled(false, false));
     }
 
     #[test]
@@ -3002,6 +3140,28 @@ mod tests {
 
         assert!((moved.length() - position.length()).abs() < 1.0e-9);
         assert!(moved.z > 0.0);
+    }
+
+    #[test]
+    fn flight_collision_sweep_catches_ground_between_safe_endpoints() {
+        let radius = crate::planet::PLANET_RADIUS_METERS + 10.0;
+        let start = DVec3::X * radius;
+        let end = (DVec3::X + DVec3::Z * (4.0 / radius)).normalize() * radius;
+        let end_z = end.normalize().z;
+        let lift = swept_flight_clearance_lift(
+            start,
+            end,
+            LOW_FLIGHT_MINIMUM_CLEARANCE_METERS,
+            |direction, _| {
+                Some(if (0.4 * end_z..0.6 * end_z).contains(&direction.z) {
+                    20.0
+                } else {
+                    0.0
+                })
+            },
+        );
+
+        assert!((lift - 12.0).abs() < 1.0e-9);
     }
 
     #[test]
