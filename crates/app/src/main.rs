@@ -1233,7 +1233,14 @@ impl State {
                     * (planet::PLANET_RADIUS_METERS
                         + self.flight_surface_height_meters
                         + LOW_FLIGHT_ALTITUDE_METERS);
-                self.flight_local_tangent = initial_flight_tangent(local_radial);
+                // Face back across the summit bowl. The opposite azimuth has
+                // the same pitch and controls but avoids putting the nearby
+                // L4 frontier edge across the foreground.
+                self.flight_local_tangent = if outmap_is_active {
+                    -initial_flight_tangent(local_radial)
+                } else {
+                    initial_flight_tangent(local_radial)
+                };
                 self.flight_look_yaw_radians = 0.0;
                 self.flight_look_pitch_radians = LOW_FLIGHT_INITIAL_PITCH_RADIANS;
                 self.flight_movement = FlightMovementInput::default();
@@ -3000,7 +3007,7 @@ mod tests {
     #[test]
     fn low_flight_starts_looking_down_from_the_prominent_peak() {
         let radial = EARTHLIKE_HIGHEST_PROMINENCE_DIRECTION.normalize();
-        let tangent = initial_flight_tangent(radial);
+        let tangent = -initial_flight_tangent(radial);
         let direction =
             flight_view_direction(radial, tangent, 0.0, LOW_FLIGHT_INITIAL_PITCH_RADIANS);
 
