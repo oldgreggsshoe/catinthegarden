@@ -1,33 +1,22 @@
-Done — the fixed **3× positive-ASL terrain trial** is implemented, committed, tested, documented, and pushed.
+Done.
 
-- Positive baked macro land is 3× at every altitude.
-- Sea level, ocean waves, lakes, and negative bathymetry are unchanged.
-- CPU clearance, raster, raymarch, LOD/culling, and scenario cameras use the same transform.
-- The raw 8,846m peak now presents at about **26.54km**. Fine runtime detail remains bounded rather than also being tripled.
+Using standard topographic prominence (summit elevation minus key-col elevation), the global
+highest summit has sea level as its key col:
 
-### Quadro comparison
+- Current rendered prominence: 27,207.867m
+- Highest raw baked L4 macro sample: 8,738.565m
+- Location: 41.530039°N, 71.196130°E
 
-| Test | Before | After |
-|---|---:|---:|
-| Raster orbit | 18.291ms | 18.457ms |
-| Raster low flight | 32.219ms | 31.714ms |
-| Raster ground | 31.808ms | 34.157ms |
-| Ray ground | 64.432ms | 67.857ms |
+F4 now starts 152.4m above that summit and faces across the snow-covered bowl. Its global L4 tile is
+loaded synchronously at entry, preventing the camera altitude jump that a coarse ancestor would
+otherwise cause.
 
-Raster ground passes at exactly 2m clearance with 0.198m p90 error. Orbit, both additional landing scenarios, all nine raster/ray parity stages, release build, and all **206 workspace tests** pass.
+Validation:
 
-Two existing weaknesses became more pronounced:
+- Raster: `highest_prominence_peak/1785427184-433297` passed; 152.397m clearance.
+- Ray: `highest_prominence_peak/1785427353-434971` passed; 152.397m clearance.
+- 208 workspace tests passed; release build passed.
 
-- Ray ground p90 increased from 2.567m to 3.199m, still failing its 2m limit.
-- The already-failing low-flight warm-up seam increased from 549.982m to 612.707m.
-
-Visually, the hills and distant ranges read much better, but tripling also makes the global L4 source’s existing coarse facets and some exposed edge geometry more obvious. I have recorded both faults rather than hiding them by relaxing tests.
-
-<oai-mem-citation>
-<citation_entries>
-MEMORY.md:45-45|note=[confirmed the known global L4 source spacing limitation]
-</citation_entries>
-<rollout_ids>
-019fa81f-71cc-7c12-9279-8318fbe22bc5
-</rollout_ids>
-</oai-mem-citation>
+The summit is outside the sparse high-resolution corridor, so its broad macro form still comes from
+the global L4 source. This moves F4 to the most prominent mountain but does not itself add more
+mountain ranges.

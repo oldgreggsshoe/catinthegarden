@@ -5,12 +5,15 @@
 the diagnosis branch and pushed to `origin/diagnose/ocean-terrain-blockiness`
 **Renderer state:** current branch — positive baked macro land uses one fixed 3x presentation scale
 at every camera altitude; sea level and negative bathymetry remain physical. CPU truth, raster, ray,
-LOD/culling bounds, and landing scenarios share that transform.
+LOD/culling bounds, and scenario cameras share that transform. F4 starts over the measured
+highest-prominence summit.
 **Latest evidence:** committed Earth-like outmap Quadro runs `orbit_once/1785409591-283581`,
 raster `stand_on_ground/1785409626-283919`, ray `stand_on_ground/1785409672-284379`,
 `low_flight_performance/1785409648-284127`, `landing_site_ground_detail/1785412295-314602`,
 `landing_site_eye_level/1785412370-315195`, and nine `render_path_parity` runs
-`1785409733-285091` through `1785409881-286994`
+`1785409733-285091` through `1785409881-286994`; highest-summit F4 runs are raster
+`highest_prominence_peak/1785427184-433297` and ray
+`highest_prominence_peak/1785427353-434971`
 **Written:** 30 July 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
@@ -39,8 +42,8 @@ A renderer that "looks like a modernish (2015 on) game", consistent from orbit t
 ## 2. State: what is green
 
 ```
-cargo test --workspace   →  206 passed, 0 failed, 5 ignored
-                            (app 171, baker lib 23, baker bin 1, baker integration 5, coretypes 6)
+cargo test --workspace   →  208 passed, 0 failed, 5 ignored
+                            (app 173, baker lib 23, baker bin 1, baker integration 5, coretypes 6)
                             the 5 ignored are the relief_survey/terrain instruments -- run them with
                             `cargo test -- --ignored --nocapture <name>`
 ```
@@ -149,6 +152,46 @@ pass, and the other two shifted landing scenarios pass with 70.19m ground-detail
 pass. Visually, the low-flight landscape gains clearly legible hills and distant ranges; globally
 dense L4 source remains only 3.906km per sample, so the scale also makes its existing facets and
 cliffs more conspicuous rather than adding detail.
+
+### Highest-prominence survey and F4 start — 30 July 2026
+
+The current surface was surveyed using the standard Earth topographic-prominence definition:
+**summit elevation minus the elevation of its key col**. The planet's global highest summit has no
+higher parent summit, so, as for Everest, its reference key col is sea level and its prominence is
+equal to its elevation ASL.
+
+The survey scanned all 1,536 globally dense L4 height tiles, selected the high macro candidates
+that could exceed the current maximum after the bounded runtime-detail allowance, and refined those
+candidates to one-metre spacing with the same CPU macro and runtime-detail functions used for camera
+clearance. It found:
+
+- highest raw L4 macro sample: **8,738.565m ASL**, at 41.546990°N, 71.129732°E;
+- highest current presented surface: **27,207.867m ASL/prominence**, at
+  **41.530039°N, 71.196130°E**;
+- at the presented summit, the bilinear raw macro is 8,711.156m, its fixed-3x contribution is
+  26,133.469m, and bounded runtime detail contributes 1,074.398m.
+
+F4 now enters free flight at that direction, preserving the established 500ft / 152.4m entry
+clearance and 35-degree downward pitch, but facing back across the clean snow-covered summit bowl.
+Because the summit lies outside the sparse L5-L18 corridor, F4 synchronously loads its guaranteed
+global L4 tile before computing the camera radius. Ordinary flight following remains
+resident-cache-only. This one-time resolution prevents the camera from jumping by hundreds of
+metres when streaming replaces a coarser ancestor after entry.
+
+The committed deterministic `highest_prominence_peak` scenario reproduces the pose and checks
+clearance in both render paths on the Quadro M1000M:
+
+| path/run | result | observed surface / clearance | surface probe |
+|---|---|---:|---:|
+| raster `1785427184-433297` | pass | 27,207.869m / 152.397m | p90 19.141m, r=0.999342 |
+| ray `1785427353-434971` | pass | 27,207.869m / 152.397m | p90 7.529m, r=0.999844 |
+
+Both runs have finite metrics, zero LOD thrash, and two captures. The approximately 2.6mm difference
+between the survey constant and the scenario's resident CPU sample is rounding/sampling resolution,
+not a camera mismatch. The raster capture is clean and the ray capture preserves the same bowl.
+This relocation does **not** create additional ranges: away from the sparse corridor the mountain's
+macro shape is still constrained by global L4's approximately 3.906km source spacing. The release
+build succeeds and all 208 workspace tests pass.
 
 Fixed world-space manual captures and terrain-performance baselines below describe the previous
 macro planet and are no longer visual golden locations. Manifest-relative scenarios remain the
