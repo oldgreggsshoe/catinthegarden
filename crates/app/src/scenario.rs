@@ -207,6 +207,9 @@ impl ScenarioRunner {
             "landing_site_eye_level" => {
                 include_str!("../scenarios/landing_site_eye_level.json")
             }
+            "highest_prominence_peak" => {
+                include_str!("../scenarios/highest_prominence_peak.json")
+            }
             "stand_on_ground" => include_str!("../scenarios/stand_on_ground.json"),
             "path_parity_ridge" => include_str!("../scenarios/path_parity_ridge.json"),
             "render_path_parity" => include_str!("../scenarios/render_path_parity.json"),
@@ -818,6 +821,22 @@ mod tests {
             scenario.assertions().required_peak_lod_level,
             Some(MAX_TERRAIN_LOD_LEVEL)
         );
+    }
+
+    #[test]
+    fn highest_prominence_scenario_replays_the_f4_start_pose() {
+        let scenario =
+            ScenarioRunner::load("highest_prominence_peak").expect("peak scenario parses");
+        let waypoint = &scenario.definition.waypoints[0];
+        let position = glam::DVec3::from_array(waypoint.position);
+        let direction = position.normalize();
+
+        assert!((direction.y.asin().to_degrees() - 41.530_039_222).abs() < 1.0e-6);
+        assert!((direction.z.atan2(direction.x).to_degrees() - 71.196_129_733).abs() < 1.0e-6);
+        assert!((position.length() - 4_027_360.266_782_074).abs() < 1.0e-6);
+        assert_eq!(scenario.expected_screenshots(), 2);
+        assert_eq!(scenario.assertions().min_camera_clearance_m, Some(150.0));
+        assert_eq!(scenario.assertions().max_camera_clearance_m, Some(155.0));
     }
 
     #[test]

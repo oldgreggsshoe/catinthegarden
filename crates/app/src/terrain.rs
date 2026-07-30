@@ -9,7 +9,7 @@ use std::{
 };
 
 use catinthegarden_coretypes::{
-    CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
+    CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey, tile_key_for_direction,
 };
 use glam::DVec3;
 use wgpu::util::DeviceExt;
@@ -668,6 +668,51 @@ impl TerrainRenderer {
                 outmap.manifest().sparse_landing_direction,
             )),
         }
+    }
+
+    /// Makes the globally dense tile under an interactive flight start
+    /// resident before placing the camera.
+    ///
+    /// Ordinary flight following remains resident-cache-only so it never adds
+    /// disk I/O or GPU uploads to a movement frame. F4 is a one-time input,
+    /// though, and starting above the highest summit from a coarse ancestor
+    /// would initially put the camera hundreds of metres below the final L4
+    /// surface before streaming caught up.
+    pub fn prepare_flight_start_surface_height_meters(
+        &mut self,
+        local_surface_direction: DVec3,
+        camera_altitude_meters: f64,
+    ) -> Option<f64> {
+        let source_key = match &self.source {
+            TerrainDataSource::Placeholder => {
+                return self
+                    .surface_height_meters_at(local_surface_direction, camera_altitude_meters);
+            }
+            TerrainDataSource::Outmap(outmap) => {
+                tile_key_for_direction(local_surface_direction, outmap.manifest().dense_level)
+            }
+        };
+        if !self.tile_cache.contains_key(&source_key) {
+            let TerrainDataSource::Outmap(outmap) = &self.source else {
+                unreachable!("placeholder returned before loading a flight-start tile");
+            };
+            let tile = outmap.load_tile(source_key).ok()?;
+            let label = format!("F4 flight-start terrain tile {source_key:?}");
+            self.tile_cache.insert(
+                source_key,
+                create_gpu_tile(
+                    &self.device,
+                    &self.queue,
+                    &self.terrain_tile_bind_group_layout,
+                    &label,
+                    &tile.heights_meters,
+                    &tile.biome_ids,
+                    &tile.moisture,
+                ),
+            );
+        }
+        self.tile_last_used.insert(source_key, self.tile_cache_tick);
+        self.surface_height_meters_at(local_surface_direction, camera_altitude_meters)
     }
 
     pub fn shared_bind_group(&self) -> &wgpu::BindGroup {

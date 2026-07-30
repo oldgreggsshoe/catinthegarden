@@ -1,0 +1,31 @@
+{
+  "name": "highest_prominence_peak",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 8.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0.0,
+  "screenshot_times_seconds": [4.0, 8.0],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [971796.4620361225, 2670190.6907132845, 2854001.4068071456],
+      "look_at": [962047.8458811343, 2668141.8690360733, 2854877.085285637]
+    }
+  ],
+  "sun_waypoints": [
+    { "time_s": 0.0, "direction": [0.5, 0.8, 0.33] }
+  ],
+  "vertical_fov_waypoints": [
+    { "time_s": 0.0, "vertical_fov_degrees": 60.0 }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "max_lod_thrash_events": 0,
+    "min_camera_clearance_m": 150.0,
+    "max_camera_clearance_m": 155.0,
+    "expected_screenshots": 2
+  }
+}

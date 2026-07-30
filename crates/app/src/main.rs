@@ -59,6 +59,20 @@ const DEFAULT_CAMERA_ORBIT_INCLINATION_RADIANS: f64 = 28.5_f64.to_radians();
 const INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 = 0.3;
 const MOUSE_LOOK_RADIANS_PER_PIXEL: f64 = 0.0006;
 const LOW_FLIGHT_ALTITUDE_METERS: f64 = 500.0 * 0.3048;
+/// Highest summit on the active Earth-like planet after the fixed 3x macro
+/// presentation and bounded runtime detail are applied. The L4 source was
+/// scanned globally, every cell capable of beating the current maximum was
+/// refined to one metre, and the resulting summit lies at 41.530039 N,
+/// 71.196130 E. As the planet's highest summit it has no higher parent, so the
+/// standard Earth prominence convention uses sea level as its key col.
+const EARTHLIKE_HIGHEST_PROMINENCE_DIRECTION: glam::DVec3 = glam::DVec3::new(
+    0.241_298_616_876_062,
+    0.663_012_622_123_029,
+    0.708_653_117_116_721,
+);
+const EARTHLIKE_HIGHEST_PROMINENCE_METERS: f64 = 27_207.866_782_074;
+#[cfg(test)]
+const EARTHLIKE_HIGHEST_RAW_MACRO_ELEVATION_METERS: f64 = 8_738.565_429_687_5;
 /// How close to the ground flight may descend. This used to be the entry
 /// altitude above, doing double duty, so the camera could never get nearer the
 /// surface than 500 ft and eye-level views of the terrain were unreachable.
@@ -1192,16 +1206,29 @@ impl State {
                     self.camera.direction_dvec3(),
                     self.camera.vertical_fov_radians().to_degrees(),
                 ));
-                // Enter inspection mode at the baker-selected dry landing
-                // site backed by the sparse high-resolution tile chain.
-                let local_radial = self
-                    .terrain
-                    .preferred_landing_direction()
-                    .unwrap_or_else(|| local_position.normalize());
-                self.flight_surface_height_meters = self
-                    .terrain
-                    .surface_height_meters_at(local_radial, LOW_FLIGHT_ALTITUDE_METERS)
-                    .unwrap_or(0.0);
+                // Enter inspection mode over the active planet's highest-
+                // prominence summit. Make its global L4 tile resident
+                // synchronously: resolving through a coarse ancestor here can
+                // differ by hundreds of metres and would move the camera after
+                // F4 while ordinary streaming catches up.
+                let outmap_is_active = self.terrain.preferred_landing_direction().is_some();
+                let local_radial = if outmap_is_active {
+                    EARTHLIKE_HIGHEST_PROMINENCE_DIRECTION.normalize()
+                } else {
+                    local_position.normalize()
+                };
+                self.flight_surface_height_meters = if outmap_is_active {
+                    self.terrain
+                        .prepare_flight_start_surface_height_meters(
+                            local_radial,
+                            LOW_FLIGHT_ALTITUDE_METERS,
+                        )
+                        .unwrap_or(EARTHLIKE_HIGHEST_PROMINENCE_METERS)
+                } else {
+                    self.terrain
+                        .surface_height_meters_at(local_radial, LOW_FLIGHT_ALTITUDE_METERS)
+                        .unwrap_or(0.0)
+                };
                 self.flight_local_position = local_radial
                     * (planet::PLANET_RADIUS_METERS
                         + self.flight_surface_height_meters
@@ -2754,13 +2781,15 @@ mod tests {
     use glam::DVec3;
 
     use super::{
-        CameraMode, DEFAULT_OUTMAP_PATH, FlightMovementInput, FlightSpeedState,
-        INTERACTIVE_PLANET_ROTATION_TIME_SCALE, LOW_FLIGHT_ALTITUDE_METERS,
-        LOW_FLIGHT_INITIAL_PITCH_RADIANS, LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND,
-        LOW_FLIGHT_MINIMUM_CLEARANCE_METERS, MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS, RenderPath,
-        advance_flight_position_on_sphere, advance_flight_speed, find_default_outmap,
-        flight_movement_direction, flight_view_direction, focus_of_expansion_ndc,
-        initial_flight_tangent, interactive_camera_delta_seconds, projected_planet_coverage,
+        CameraMode, DEFAULT_OUTMAP_PATH, EARTHLIKE_HIGHEST_PROMINENCE_DIRECTION,
+        EARTHLIKE_HIGHEST_PROMINENCE_METERS, EARTHLIKE_HIGHEST_RAW_MACRO_ELEVATION_METERS,
+        FlightMovementInput, FlightSpeedState, INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
+        LOW_FLIGHT_ALTITUDE_METERS, LOW_FLIGHT_INITIAL_PITCH_RADIANS,
+        LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND, LOW_FLIGHT_MINIMUM_CLEARANCE_METERS,
+        MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS, RenderPath, advance_flight_position_on_sphere,
+        advance_flight_speed, find_default_outmap, flight_movement_direction,
+        flight_view_direction, focus_of_expansion_ndc, initial_flight_tangent,
+        interactive_camera_delta_seconds, projected_planet_coverage,
         render_size_for_surface_resize, should_enter_fullscreen, transport_flight_tangent,
     };
     use crate::planet::{
@@ -2969,13 +2998,33 @@ mod tests {
     }
 
     #[test]
-    fn low_flight_starts_looking_down_at_the_landing_site() {
-        let radial = DVec3::X;
+    fn low_flight_starts_looking_down_from_the_prominent_peak() {
+        let radial = EARTHLIKE_HIGHEST_PROMINENCE_DIRECTION.normalize();
+        let tangent = initial_flight_tangent(radial);
         let direction =
-            flight_view_direction(radial, DVec3::Z, 0.0, LOW_FLIGHT_INITIAL_PITCH_RADIANS);
+            flight_view_direction(radial, tangent, 0.0, LOW_FLIGHT_INITIAL_PITCH_RADIANS);
 
         assert!(direction.dot(radial) < -0.25);
-        assert!(direction.dot(DVec3::Z) > 0.9);
+        assert!(direction.dot(tangent) > 0.9);
+    }
+
+    #[test]
+    fn earthlike_peak_measurement_uses_standard_global_summit_prominence() {
+        let direction = EARTHLIKE_HIGHEST_PROMINENCE_DIRECTION;
+        assert!((direction.length() - 1.0).abs() < 1.0e-12);
+        assert!((direction.y.asin().to_degrees() - 41.530_039_222).abs() < 1.0e-6);
+        assert!((direction.z.atan2(direction.x).to_degrees() - 71.196_129_733).abs() < 1.0e-6);
+
+        // A planet's highest summit has no higher parent. As for Everest, its
+        // key col is sea level, so prominence equals summit elevation ASL.
+        assert_eq!(
+            EARTHLIKE_HIGHEST_PROMINENCE_METERS,
+            EARTHLIKE_HIGHEST_PROMINENCE_METERS - 0.0
+        );
+        assert!(
+            EARTHLIKE_HIGHEST_PROMINENCE_METERS
+                > EARTHLIKE_HIGHEST_RAW_MACRO_ELEVATION_METERS * 3.0
+        );
     }
 
     /// Entry altitude and minimum clearance are separate concerns. While they
