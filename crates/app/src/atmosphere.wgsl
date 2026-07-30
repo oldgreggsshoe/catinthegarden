@@ -13,6 +13,12 @@ const SKY_DENSITY_SAMPLE_EXPONENT: f32 = 3.0;
 const TWILIGHT_SHADOW_TRANSITION_METERS: f32 = 36000.0;
 const ANTISOLAR_TWILIGHT_MIN_SCATTER: f32 = 0.48;
 const SKY_ATMOSPHERE_SATURATION: f32 = 1.3;
+const BLUE_HOUR_START_SINE: f32 = 0.10;
+const BLUE_HOUR_FULL_SINE: f32 = 0.18;
+const BLUE_HOUR_FADE_SINE: f32 = 0.28;
+const BLUE_HOUR_END_SINE: f32 = 0.36;
+const BLUE_HOUR_SCATTER_GAIN: f32 = 0.26;
+const BLUE_HOUR_TINT: vec3<f32> = vec3<f32>(0.55, 0.75, 1.0);
 
 struct Camera {
     projection_matrix: mat4x4<f32>,
@@ -62,6 +68,47 @@ fn saturate_sky_color(color: vec3<f32>) -> vec3<f32> {
         vec3<f32>(luminance) + (color - vec3<f32>(luminance)) * SKY_ATMOSPHERE_SATURATION,
         vec3<f32>(0.0),
     );
+}
+
+fn suppress_green_dominance(color: vec3<f32>) -> vec3<f32> {
+    // Direct single scattering can cross from red/yellow extinction to blue
+    // Rayleigh scattering through an unphysical green-dominant interval. A
+    // real atmosphere's broader indirect paths and absorption desaturate that
+    // crossover. Preserve yellow, cyan, blue, and red, but do not let green
+    // become the largest sky channel.
+    return vec3<f32>(color.r, min(color.g, max(color.r, color.b)), color.b);
+}
+
+fn blue_hour_weight(camera_solar_zenith_cosine: f32) -> f32 {
+    let solar_depression_sine = max(-camera_solar_zenith_cosine, 0.0);
+    let rise = smoothstep(
+        BLUE_HOUR_START_SINE,
+        BLUE_HOUR_FULL_SINE,
+        solar_depression_sine,
+    );
+    let fade = 1.0 - smoothstep(
+        BLUE_HOUR_FADE_SINE,
+        BLUE_HOUR_END_SINE,
+        solar_depression_sine,
+    );
+    return rise * fade;
+}
+
+fn blue_hour_rayleigh_scattering(
+    camera_altitude: f32,
+    view_zenith_cosine: f32,
+    rayleigh_phase: f32,
+) -> vec3<f32> {
+    // Analytic optical column for the indirect approximation. Accumulating a
+    // second source through all 16 direct-scattering samples measured slower.
+    // `tau / (1 + tau)` is a bounded approximation to `1 - exp(-tau)` that
+    // avoids adding another fullscreen exponential.
+    let view_air_mass = min(1.0 / max(view_zenith_cosine, 0.08), 12.5);
+    let optical_depth = RAYLEIGH_COEFFICIENT
+        * density(camera_altitude, RAYLEIGH_SCALE_HEIGHT_METERS)
+        * RAYLEIGH_SCALE_HEIGHT_METERS
+        * view_air_mass;
+    return optical_depth / (vec3<f32>(1.0) + optical_depth) * rayleigh_phase;
 }
 
 fn twilight_directional_weight(
@@ -332,9 +379,29 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             * (rayleigh_scattering + mie_scattering)
             * sample_length;
     }
+    // The direct single-scattering term above correctly produces the warm
+    // sunset, but becomes zero once every visible sample enters the planet's
+    // shadow. Real twilight then retains a blue indirect/multiple-scattered
+    // sky before astronomical darkness. A bounded analytic Rayleigh view
+    // column adds no samples and cannot affect terrain, ocean, aerial
+    // perspective, or night.
+    let blue_hour_radiance = blue_hour_rayleigh_scattering(
+        camera_altitude,
+        max(
+            dot(camera.camera_planet_direction_view_altitude.xyz, ray),
+            0.0,
+        ),
+        rayleigh_phase,
+    )
+        * BLUE_HOUR_TINT
+        * (SOLAR_RADIANCE * BLUE_HOUR_SCATTER_GAIN)
+        * blue_hour_weight(camera_solar_zenith_cosine);
     let sky_radiance = max(
-        radiance * SOLAR_RADIANCE * directional_weight,
+        radiance * SOLAR_RADIANCE * directional_weight + blue_hour_radiance,
         vec3<f32>(0.0),
     );
-    return vec4<f32>(saturate_sky_color(sky_radiance), 1.0);
+    return vec4<f32>(
+        suppress_green_dominance(saturate_sky_color(sky_radiance)),
+        1.0,
+    );
 }

@@ -968,6 +968,13 @@ impl State {
             next_hud_update: Instant::now(),
             hud_dirty: true,
         };
+        let scenario_uses_fixed_exposure = state
+            .scenario
+            .as_ref()
+            .is_some_and(scenario::ScenarioRunner::uses_fixed_exposure);
+        if scenario_uses_fixed_exposure {
+            state.hdr.set_auto_exposure_enabled(&state.queue, false);
+        }
         state.apply_startup_experiment_overrides();
         state
     }

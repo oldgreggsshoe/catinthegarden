@@ -21,6 +21,10 @@ pub struct ScenarioAssertions {
     pub sky_sample_uv: Option<[f32; 2]>,
     pub min_sunset_red_blue_growth: Option<f32>,
     pub min_final_sunset_red_blue_ratio: Option<f32>,
+    pub max_sky_green_dominance: Option<f32>,
+    pub min_blue_hour_blue_red_ratio: Option<f32>,
+    pub min_blue_hour_luminance: Option<f32>,
+    pub max_final_blue_hour_luminance_ratio: Option<f32>,
     pub min_solar_antisolar_sky_luminance_ratio: Option<f32>,
     pub max_adjacent_sky_luminance_delta: Option<f32>,
     pub max_sky_luminance: Option<f32>,
@@ -69,6 +73,10 @@ impl Default for ScenarioAssertions {
             sky_sample_uv: None,
             min_sunset_red_blue_growth: None,
             min_final_sunset_red_blue_ratio: None,
+            max_sky_green_dominance: None,
+            min_blue_hour_blue_red_ratio: None,
+            min_blue_hour_luminance: None,
+            max_final_blue_hour_luminance_ratio: None,
             min_solar_antisolar_sky_luminance_ratio: None,
             max_adjacent_sky_luminance_delta: None,
             max_sky_luminance: None,
@@ -123,6 +131,11 @@ pub struct ScenarioDefinition {
     /// remain focused; atmosphere scenarios opt in explicitly.
     #[serde(default)]
     pub planet_rotation_time_scale: f64,
+    /// Hold presented exposure at 1.0 while the meter continues adapting.
+    /// Colour-order scenarios use this to test scene radiance rather than the
+    /// exposure response to a frame becoming dark.
+    #[serde(default)]
+    pub fixed_exposure: bool,
     /// Enables the real low-flight camera at the first waypoint and holds W
     /// from this simulation time onward. This is deliberately not waypoint
     /// interpolation: terrain-follow regressions must exercise the same
@@ -191,6 +204,7 @@ impl ScenarioRunner {
             "orbit_once" => include_str!("../scenarios/orbit_once.json"),
             "descent_to_10m" => include_str!("../scenarios/descent_to_10m.json"),
             "sunset_sweep" => include_str!("../scenarios/sunset_sweep.json"),
+            "sunset_blue_hour" => include_str!("../scenarios/sunset_blue_hour.json"),
             "twilight_directionality" => {
                 include_str!("../scenarios/twilight_directionality.json")
             }
@@ -472,6 +486,10 @@ impl ScenarioRunner {
         self.definition.forward_flight_start_time_seconds.is_some()
     }
 
+    pub fn uses_fixed_exposure(&self) -> bool {
+        self.definition.fixed_exposure
+    }
+
     pub fn orbit_settings(&self) -> Option<(f64, f64)> {
         Some((
             self.definition.orbit_radius_meters?,
@@ -632,6 +650,10 @@ fn validate_assertions(
     }
     let needs_sky_sample = assertions.min_sunset_red_blue_growth.is_some()
         || assertions.min_final_sunset_red_blue_ratio.is_some()
+        || assertions.max_sky_green_dominance.is_some()
+        || assertions.min_blue_hour_blue_red_ratio.is_some()
+        || assertions.min_blue_hour_luminance.is_some()
+        || assertions.max_final_blue_hour_luminance_ratio.is_some()
         || assertions.min_solar_antisolar_sky_luminance_ratio.is_some()
         || assertions.max_adjacent_sky_luminance_delta.is_some()
         || assertions.max_sky_luminance.is_some();
@@ -678,6 +700,22 @@ fn validate_assertions(
             assertions.min_final_sunset_red_blue_ratio,
         ),
         (
+            "maximum sky green dominance",
+            assertions.max_sky_green_dominance,
+        ),
+        (
+            "minimum blue-hour blue/red ratio",
+            assertions.min_blue_hour_blue_red_ratio,
+        ),
+        (
+            "minimum blue-hour luminance",
+            assertions.min_blue_hour_luminance,
+        ),
+        (
+            "maximum final/peak blue-hour luminance ratio",
+            assertions.max_final_blue_hour_luminance_ratio,
+        ),
+        (
             "minimum solar/anti-solar sky luminance ratio",
             assertions.min_solar_antisolar_sky_luminance_ratio,
         ),
@@ -694,6 +732,14 @@ fn validate_assertions(
         if value.is_some_and(|value| !value.is_finite() || value < 0.0) {
             return Err(format!("{name} must be finite and non-negative"));
         }
+    }
+    if (assertions.min_blue_hour_luminance.is_some()
+        || assertions.max_final_blue_hour_luminance_ratio.is_some())
+        && assertions.min_blue_hour_blue_red_ratio.is_none()
+    {
+        return Err(
+            "blue-hour luminance assertions require min_blue_hour_blue_red_ratio".to_owned(),
+        );
     }
     for (name, value) in [
         ("minimum exposure", assertions.min_exposure),
@@ -1211,6 +1257,34 @@ mod tests {
                 .min_ocean_wave_height_range_meters,
             Some(0.5)
         );
+    }
+
+    #[test]
+    fn blue_hour_scenario_sweeps_from_daylight_into_night() {
+        let scenario = ScenarioRunner::load("sunset_blue_hour").expect("blue-hour scenario parses");
+        assert_eq!(scenario.expected_screenshots(), 6);
+        assert!(scenario.uses_fixed_exposure());
+        assert_eq!(scenario.assertions().max_sky_green_dominance, Some(0.0));
+        assert_eq!(
+            scenario.assertions().min_blue_hour_blue_red_ratio,
+            Some(1.5)
+        );
+        assert_eq!(scenario.assertions().min_blue_hour_luminance, Some(0.12));
+        assert_eq!(
+            scenario.assertions().max_final_blue_hour_luminance_ratio,
+            Some(0.25)
+        );
+        assert_eq!(scenario.definition.sun_waypoints.len(), 7);
+        assert_eq!(scenario.definition.sun_waypoints[1].time_s, 1.0);
+        assert_eq!(scenario.definition.sun_waypoints[6].time_s, 11.0);
+        let first_elevation = scenario.definition.sun_waypoints[1].direction[0]
+            .asin()
+            .to_degrees();
+        let last_elevation = scenario.definition.sun_waypoints[6].direction[0]
+            .asin()
+            .to_degrees();
+        assert!((first_elevation - 15.0).abs() < 1.0e-9);
+        assert!((last_elevation + 20.0).abs() < 1.0e-9);
     }
 
     #[test]

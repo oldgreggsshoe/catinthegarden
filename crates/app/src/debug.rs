@@ -574,6 +574,77 @@ impl AssertionTracker {
                 ),
             ));
         }
+        if let Some(maximum_green_dominance) = self.config.max_sky_green_dominance {
+            let maximum_observed = self
+                .sky_samples
+                .iter()
+                .copied()
+                .map(sky_green_dominance)
+                .fold(0.0_f32, f32::max);
+            results.push(assertion_result(
+                "sky_avoids_green_dominant_hues",
+                !self.sky_samples.is_empty() && maximum_observed <= maximum_green_dominance,
+                format!(
+                    "allowed green dominance {maximum_green_dominance:.3}, observed \
+                     {maximum_observed:.3} from {} samples",
+                    self.sky_samples.len(),
+                ),
+            ));
+        }
+        let blue_hour = self
+            .config
+            .min_blue_hour_blue_red_ratio
+            .and_then(|minimum_ratio| blue_hour_metrics(&self.sky_samples, minimum_ratio));
+        if let Some(minimum_ratio) = self.config.min_blue_hour_blue_red_ratio {
+            let minimum_luminance = self.config.min_blue_hour_luminance.unwrap_or(0.0);
+            results.push(assertion_result(
+                "post_sunset_sky_turns_blue",
+                blue_hour.is_some_and(|metrics| {
+                    metrics.peak_blue_red_ratio >= minimum_ratio
+                        && metrics.peak_luminance >= minimum_luminance
+                }),
+                format!(
+                    "required blue/red {minimum_ratio:.3} and luminance {minimum_luminance:.3}, \
+                     observed {} from {} samples",
+                    blue_hour.map_or_else(
+                        || "none".to_owned(),
+                        |metrics| format!(
+                            "sample {} ratio {:.3} luminance {:.3}",
+                            metrics.peak_index, metrics.peak_blue_red_ratio, metrics.peak_luminance,
+                        )
+                    ),
+                    self.sky_samples.len(),
+                ),
+            ));
+        }
+        if let Some(maximum_ratio) = self.config.max_final_blue_hour_luminance_ratio {
+            let minimum_blue_red_ratio = self.config.min_blue_hour_blue_red_ratio.unwrap_or(0.0);
+            let observed = blue_hour.map(|metrics| {
+                (
+                    metrics.final_luminance / metrics.peak_luminance.max(0.001),
+                    metrics.final_blue_red_ratio,
+                )
+            });
+            results.push(assertion_result(
+                "blue_hour_fades_toward_night",
+                observed.is_some_and(|(fade_ratio, final_blue_red_ratio)| {
+                    fade_ratio <= maximum_ratio && final_blue_red_ratio >= minimum_blue_red_ratio
+                }),
+                format!(
+                    "required final/peak luminance <= {maximum_ratio:.3} and final blue/red >= \
+                     {minimum_blue_red_ratio:.3}, observed {}",
+                    observed.map_or_else(
+                        || "none".to_owned(),
+                        |(fade_ratio, final_blue_red_ratio)| {
+                            format!(
+                                "luminance ratio {fade_ratio:.3}, blue/red \
+                                 {final_blue_red_ratio:.3}"
+                            )
+                        }
+                    ),
+                ),
+            ));
+        }
         if let Some(minimum_ratio) = self.config.min_solar_antisolar_sky_luminance_ratio {
             let ratio = self
                 .sky_samples
@@ -721,6 +792,46 @@ impl AssertionTracker {
 
 fn red_blue_ratio(sample: [u8; 3]) -> f32 {
     f32::from(sample[0]) / f32::from(sample[2]).max(1.0)
+}
+
+fn blue_red_ratio(sample: [u8; 3]) -> f32 {
+    f32::from(sample[2]) / f32::from(sample[0]).max(1.0)
+}
+
+fn sky_green_dominance(sample: [u8; 3]) -> f32 {
+    (f32::from(sample[1]) - f32::from(sample[0].max(sample[2]))).max(0.0) / 255.0
+}
+
+#[derive(Clone, Copy)]
+struct BlueHourMetrics {
+    peak_index: usize,
+    peak_blue_red_ratio: f32,
+    peak_luminance: f32,
+    final_blue_red_ratio: f32,
+    final_luminance: f32,
+}
+
+fn blue_hour_metrics(samples: &[[u8; 3]], minimum_blue_red_ratio: f32) -> Option<BlueHourMetrics> {
+    let warmest_index = samples
+        .iter()
+        .enumerate()
+        .max_by(|(_, left), (_, right)| red_blue_ratio(**left).total_cmp(&red_blue_ratio(**right)))
+        .map(|(index, _)| index)?;
+    let (peak_index, peak_sample) = samples
+        .iter()
+        .copied()
+        .enumerate()
+        .skip(warmest_index + 1)
+        .filter(|(_, sample)| blue_red_ratio(*sample) >= minimum_blue_red_ratio)
+        .max_by(|(_, left), (_, right)| sky_luminance(*left).total_cmp(&sky_luminance(*right)))?;
+    let final_sample = samples.last().copied()?;
+    Some(BlueHourMetrics {
+        peak_index,
+        peak_blue_red_ratio: blue_red_ratio(peak_sample),
+        peak_luminance: sky_luminance(peak_sample),
+        final_blue_red_ratio: blue_red_ratio(final_sample),
+        final_luminance: sky_luminance(final_sample),
+    })
 }
 
 fn sky_luminance(sample: [u8; 3]) -> f32 {
@@ -1347,6 +1458,10 @@ mod tests {
             sky_sample_uv: None,
             min_sunset_red_blue_growth: None,
             min_final_sunset_red_blue_ratio: None,
+            max_sky_green_dominance: None,
+            min_blue_hour_blue_red_ratio: None,
+            min_blue_hour_luminance: None,
+            max_final_blue_hour_luminance_ratio: None,
             min_solar_antisolar_sky_luminance_ratio: None,
             max_adjacent_sky_luminance_delta: None,
             max_sky_luminance: None,
@@ -1609,6 +1724,44 @@ mod tests {
         ] {
             assert!(result(&results, name).passed, "{name} should pass");
         }
+    }
+
+    #[test]
+    fn image_assertions_require_a_non_green_blue_hour_that_fades() {
+        let mut config = assertions();
+        config.sky_sample_uv = Some([0.5, 0.25]);
+        config.max_sky_green_dominance = Some(0.0);
+        config.min_blue_hour_blue_red_ratio = Some(1.5);
+        config.min_blue_hour_luminance = Some(0.2);
+        config.max_final_blue_hour_luminance_ratio = Some(0.25);
+        let mut tracker = AssertionTracker::new(config.clone());
+        for sample in [
+            [182, 142, 0],
+            [162, 62, 0],
+            [142, 41, 0],
+            [110, 72, 87],
+            [52, 73, 104],
+            [8, 9, 17],
+        ] {
+            tracker.observe_sky_sample(sample);
+        }
+        let results = tracker.results(6);
+        for name in [
+            "sky_avoids_green_dominant_hues",
+            "post_sunset_sky_turns_blue",
+            "blue_hour_fades_toward_night",
+        ] {
+            assert!(result(&results, name).passed, "{name} should pass");
+        }
+
+        let mut tracker = AssertionTracker::new(config);
+        for sample in [[182, 142, 0], [90, 110, 40], [80, 20, 0], [4, 0, 0]] {
+            tracker.observe_sky_sample(sample);
+        }
+        let results = tracker.results(4);
+        assert!(!result(&results, "sky_avoids_green_dominant_hues").passed);
+        assert!(!result(&results, "post_sunset_sky_turns_blue").passed);
+        assert!(!result(&results, "blue_hour_fades_toward_night").passed);
     }
 
     #[test]
