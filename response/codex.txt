@@ -1,16 +1,24 @@
-Done — the Earth-like planet is active.
+Yes, it could cause trouble, but there is no fundamental precision or planet-size limit stopping us.
 
-- Previous bake backed up at `assets/outmaps/test-planet.pre-earth-backup-20260729-113541` and independently validated. The old active directory is also retained at `assets/outmaps/test-planet.pre-earth-retired-20260729-120342`.
-- New bake: recognisable Earth-style continents, major deserts, polar regions, and Andes/Rockies/Himalaya-style high belts. It is stylised rather than a real elevation copy.
-- Active data: `assets/outmaps/test-planet`, 370 MB, 3,252 validated L0-L18 tiles, 36.2% positive land, height range -5,000m to 8,846m.
-- Full previews were inspected north-up and south-up; continent silhouettes, mountain belts, deserts, lakes, and oceans are present.
-- Validation: all 206 workspace tests pass; `orbit_once/1785323155-442224` passes on the Quadro with four clean captures and 0m reported seam delta; `stand_on_ground/1785323395-444535` passes at exactly 2m clearance with 0.161m p90 surface error.
-- The four sparse-landing scenarios were re-authored to the new ground elevation after the first ground smoke correctly detected the stale camera height.
-- Generator, tests, scenario updates, AGENTS, and handoff are committed and the branch is pushed. Baked outmaps remain intentionally gitignored; the active bake and both backups are local assets.
+The important detail is that terrain is currently **1× below 100km**, then blends to **4× by 1,000km**. Therefore:
+
+- A fixed global **3×** would triple low-flight terrain, but orbital relief would actually fall from the current 4× to 3×.
+- Multiplying the existing profile by three would become **3× near / 12× far**. I would not do that: the new planet's 8,846m peak would reach about **106km** at orbit.
+
+A fixed 3× experiment would make the highest terrain about **26.5km ASL**. The engine can represent that safely, and the 720km atmosphere still contains it, provided every path uses the same transform. Expected consequences:
+
+1. **Camera/scenario heights:** the new sparse landing ground would move from roughly 1,011m to 3,034m. Ground scenarios and any fixed world-space camera paths would need re-authoring.
+2. **Raster/ray/CPU agreement:** the raster shader, ray shell/hit logic, CPU clearance, probes, culling and LOD bounds must all change together. A shader-only multiplier would put the camera and ray renderer on a different surface.
+3. **ASL versus bathymetry:** the current shared scale multiplies signed baked heights, so simply changing its constant would also deepen the ocean floor. For true “altitude ASL only,” we should scale positive heights and leave sea level/bathymetry unchanged.
+4. **Visual quality:** the globally dense source is still L4, about 3.9km between samples. Tripling vertical relief will make coarse facets, steep coastline walls and angular distant mountains roughly three times more obvious. Snow/rock material weighting and atmospheric lighting will also shift strongly.
+5. **Performance:** larger height bounds and steeper terrain can increase conservative visibility and LOD demand, putting more pressure on the 256-chunk budget.
+6. **Climate remains baked:** deserts, forests, rivers and snow-biome ownership would still reflect the original elevations unless we rebake climate too.
+
+**Recommendation:** try a runtime, positive-height-only **fixed 3×** first—do not rebake and do not stack it on the existing 4× orbit boost. Then rerun `orbit_once`, `stand_on_ground`, low flight, mountains and raster/ray parity. It is a manageable experiment, but I would expect dramatic mountains plus noticeably worse global-L4 faceting.
 
 <oai-mem-citation>
 <citation_entries>
-MEMORY.md:1-4|note=[confirmed checkout branch context and mandatory handoff workflow]
+MEMORY.md:45-45|note=[confirmed the known global L4 source spacing limitation]
 </citation_entries>
 <rollout_ids>
 019fa81f-71cc-7c12-9279-8318fbe22bc5
