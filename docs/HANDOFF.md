@@ -11,6 +11,8 @@ active/transition patch, rechecks the newly selected destination frontier before
 retains a 30m collision envelope; idle inspection remains at 2m. The raster culling shell includes
 the complete live detail ladder, so elevated near-camera vertices cannot disappear outside a
 macro-only bound. Key 6 switches between auto exposure and fixed 1.0.
+The fullscreen sky removes the direct-scattering model's green-dominant colour crossover and adds
+a bounded indirect Rayleigh approximation for a blue hour that fades into night.
 **Latest evidence:** committed Earth-like outmap Quadro runs `orbit_once/1785409591-283581`,
 raster `stand_on_ground/1785435672-497949`, ray `stand_on_ground/1785435686-498076`,
 `low_flight_performance/1785409648-284127`, `landing_site_ground_detail/1785412295-314602`,
@@ -20,7 +22,10 @@ raster `stand_on_ground/1785435672-497949`, ray `stand_on_ground/1785435686-4980
 `highest_prominence_peak/1785435731-498377`; exact manual W-flight replay is
 `manual_forward_clearance/1785437799-519300`; near-terrain yaw sweep is
 `manual_near_terrain_culling/1785437649-517600`; long accelerated W replay is
-`manual_high_speed_clearance/1785439098-533024`
+`manual_high_speed_clearance/1785439098-533024`; fixed-exposure sunset/blue-hour sweep is
+`sunset_blue_hour/1785444485-580099`, with follow-up
+`twilight_directionality/1785444539-581134` and
+`night_side_atmosphere/1785444546-581133`
 **Written:** 30 July 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
@@ -49,8 +54,8 @@ A renderer that "looks like a modernish (2015 on) game", consistent from orbit t
 ## 2. State: what is green
 
 ```
-cargo test --workspace   →  216 passed, 0 failed, 5 ignored
-                            (app 181, baker lib 23, baker bin 1, baker integration 5, coretypes 6)
+cargo test --workspace   →  218 passed, 0 failed, 5 ignored
+                            (app 183, baker lib 23, baker bin 1, baker integration 5, coretypes 6)
                             the 5 ignored are the relief_survey/terrain instruments -- run them with
                             `cargo test -- --ignored --nocapture <name>`
 ```
@@ -331,6 +336,50 @@ mode, and HDR-curve state separately. In `highest_prominence_peak/1785437750-518
 key-6 press changes logged applied exposure from 0.335 to exactly 1.0 while the hidden meter remains
 0.335. For a raw inspection with neither exposure adaptation nor ACES, use **F8 off + 6 fixed**;
 F6/F7 still control blur and bloom independently.
+
+### Sunset colour crossover and blue hour — 30 July 2026
+
+Yes: after the direct red sunset, a clear real sky normally passes through a dim purple/deep-blue
+blue hour before astronomical darkness. The renderer instead went red to dark red and then black,
+and during the earlier yellow-to-blue transition it produced a broad green interval.
+
+This was visible with exposure fixed at exactly 1.0 in the user's
+`manual/1785438019-521226`, so exposure adaptation was not the cause. Measurements across its upper
+sky found green-dominant pixels in 68-100% of the sampled region in several consecutive frames,
+with green exceeding both red and blue by up to 22 display values. The direct fullscreen
+single-scattering source in `atmosphere.wgsl` was multiplied by solar visibility at every sample:
+after the planet shadow covered those samples it had no indirect source left, so it could only
+produce red -> black. The existing 1.3x sky-only saturation then made the direct model's narrow
+green crossover more conspicuous.
+
+`sunset_blue_hour` preserves one fixed ground camera and sweeps the sun through +15, +2, -4, -9,
+-14, and -20 degrees with presented exposure fixed at 1.0. Before the repair, run
+`1785443166-565178` sampled RGB `(182,142,0)`, `(162,62,0)`, `(142,41,0)`, `(98,14,0)`,
+`(26,1,0)`, `(4,0,0)`: red simply decayed toward black.
+
+The fullscreen sky now:
+
+- caps only a green-dominant result at the larger red/blue channel after sky saturation, preventing
+  the simplified model's unphysical green interval while preserving its yellow, red, cyan, and
+  blue results;
+- adds a bounded analytic Rayleigh view column for the omitted indirect/multiple-scattered blue
+  twilight, rising from about 6 degrees solar depression, peaking near 10 degrees, and fading from
+  about 16 to 21 degrees;
+- adds no raymarch samples and changes neither terrain/ocean lighting, terrain aerial perspective,
+  the sun overlay, nor deep night.
+
+Committed Quadro run `sunset_blue_hour/1785444485-580099` passes all new image assertions. Its same
+fixed-exposure samples are `(111,74,0)`, `(69,17,0)`, `(55,9,0)`, `(43,36,52)`, `(22,39,63)`,
+and `(2,4,7)`: red -> dim purple -> blue -> fading deep blue. Maximum sampled green dominance is
+zero, peak blue/red is 2.864 at luminance 0.146, and final/peak luminance is 0.102 while remaining
+blue-dominant. The controlled pre/post release runs measured 27.121ms and 27.105ms spatial means;
+that 0.016ms change is noise, so the no-extra-sample approximation is timing-neutral.
+
+Committed regressions `twilight_directionality/1785444539-581134` and
+`night_side_atmosphere/1785444546-581133` pass at 1.851x solar/anti-solar luminance and zero sampled
+night-sky luminance respectively. The earlier `sunset_sweep` sky-colour assertions also pass; its
+overall run retains only the known, unrelated §3 fallback-count failure. Release build, formatting,
+diff checks, and all 218 workspace tests pass.
 
 ## 3. State: what was red before the Earth-like rebake
 

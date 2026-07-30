@@ -1,18 +1,15 @@
-Done — the screenshots exposed a real high-speed collision-ordering bug.
+You were right on both counts. Fixed and pushed.
 
-- **Fault:** captures 18–19, around 24.84°N/49.07°E then 18.02°N/51.27°E, showed the terrain underside. Measured rendered clearance was **-36.77m**, then **-159.43m**; 255–256 chunks were still drawn, so this was not culling.
-- **Cause:** collision used the previous frame’s terrain frontier, then the destination LOD frontier was selected afterward and rose around the already-positioned camera.
-- **Fix:** raster flight now rechecks the newly selected destination frontier before presentation. If it lifts the camera, chunk anchors are rebuilt against that corrected pose.
+- Removed the broad green-dominant crossover between yellow and blue.
+- Added the missing blue hour: red sunset now transitions through dim purple into deep blue, then fades naturally to darkness.
+- Kept the change sky-only; terrain, ocean, aerial perspective, sun lighting, and deep night are unchanged.
 
-**Committed validation:** `manual_high_speed_clearance/1785439098-533024`
-- Same summit route and held-W acceleration, up to the 8,000km/s cap.
-- 21 screenshots/probes at 0.5s intervals.
-- Minimum rendered clearance: **30.000m**.
-- 724 surface comparisons; no exposed terrain undersides.
-- Mean **38.256ms**, p90 **44.379ms** during this deliberately extreme planet-spanning flight.
+**Measured fixed-exposure sequence:** red `(55,9,0)` → purple `(43,36,52)` → blue `(22,39,63)` → fading blue `(2,4,7)`. Green dominance measured **0**.
 
-Normal views remain effectively unchanged: short W replay 37.131→36.760ms, nine-heading terrain sweep 34.506→34.703ms, static summit 32.696→32.702ms. Those tiny differences are run noise.
+**Validation:**
+- `sunset_blue_hour/1785444485-580099` passed all colour/fade assertions.
+- Twilight directionality and night-side darkness passed.
+- 218 workspace tests passed; release build and formatting passed.
+- Performance is effectively unchanged: **27.121ms before → 27.105ms after** in the controlled comparison.
 
-The early snow captures are not broadly white-clipped, so I left their lighting alone. The final black frames are the genuinely unlit night side while fixed exposure is active, not another missing-terrain fault.
-
-All **216 workspace tests pass**. Code commit `f18f562` and the updated handoff are pushed.
+Renderer commit: `566e13f`.
