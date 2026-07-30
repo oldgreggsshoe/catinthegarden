@@ -220,6 +220,9 @@ impl ScenarioRunner {
             "manual_forward_clearance" => {
                 include_str!("../scenarios/manual_forward_clearance.json")
             }
+            "manual_high_speed_clearance" => {
+                include_str!("../scenarios/manual_high_speed_clearance.json")
+            }
             "manual_near_terrain_culling" => {
                 include_str!("../scenarios/manual_near_terrain_culling.json")
             }
@@ -1122,6 +1125,21 @@ mod tests {
             observed_levels,
             (2_u8..=18).chain((2_u8..18).rev()).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn manual_high_speed_scenario_extends_the_captured_w_flight() {
+        let scenario = ScenarioRunner::load("manual_high_speed_clearance")
+            .expect("high-speed manual replay parses");
+        assert!(scenario.replays_forward_flight());
+        assert_eq!(scenario.expected_screenshots(), 21);
+        assert_eq!(scenario.assertions().min_camera_clearance_m, Some(29.5));
+        assert_eq!(scenario.assertions().max_camera_clearance_m, None);
+        assert_eq!(
+            scenario.definition.forward_flight_start_time_seconds,
+            Some(3.0)
+        );
+        assert_eq!(scenario.definition.duration_seconds, 18.0);
     }
 
     #[test]

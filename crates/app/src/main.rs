@@ -1232,6 +1232,18 @@ impl State {
                     * (self.flight_local_position.length() + lift_meters);
             }
         }
+        self.enforce_low_flight_clearance(
+            LOW_FLIGHT_MINIMUM_CLEARANCE_METERS,
+            planet_rotation_radians,
+        );
+    }
+
+    fn enforce_low_flight_clearance(
+        &mut self,
+        minimum_clearance_meters: f64,
+        planet_rotation_radians: f64,
+    ) -> bool {
+        let previous_local_position = self.flight_local_position;
         let local_radial = self.flight_local_position.normalize();
         let camera_altitude_meters =
             (self.flight_local_position.length() - planet::PLANET_RADIUS_METERS).max(0.0);
@@ -1251,7 +1263,7 @@ impl State {
         // leave the camera underground until the next movement key is pressed.
         let minimum_radius = planet::PLANET_RADIUS_METERS
             + self.flight_surface_height_meters
-            + LOW_FLIGHT_MINIMUM_CLEARANCE_METERS;
+            + minimum_clearance_meters;
         if self.flight_local_position.length() < minimum_radius {
             self.flight_local_position = local_radial * minimum_radius;
         }
@@ -1265,6 +1277,7 @@ impl State {
             world_position + world_direction,
             world_up,
         );
+        previous_local_position.distance_squared(self.flight_local_position) > f64::EPSILON
     }
 
     fn toggle_camera_mode(&mut self) {
@@ -1559,43 +1572,14 @@ impl State {
             }
         }
         self.last_auto_orbit_sim_time = sim_time;
-        let camera_world_position = self.camera.world_position();
-        let camera_planet_frame_position = self
+        let mut camera_world_position = self.camera.world_position();
+        let mut camera_planet_frame_position = self
             .camera
             .planet_frame_world_position(planet_rotation_radians);
-        let camera_planet_frame_direction = self
+        let mut camera_planet_frame_direction = self
             .camera
             .planet_frame_direction_dvec3(planet_rotation_radians);
-        let camera_planet_frame_up = self.camera.planet_frame_view_up(planet_rotation_radians);
-        let camera_radius = camera_world_position.length();
-        let camera_altitude =
-            if self.scenario.is_none() && self.camera_mode == CameraMode::LowFlight {
-                camera_radius - planet::PLANET_RADIUS_METERS - self.flight_surface_height_meters
-            } else {
-                camera_radius - planet::PLANET_RADIUS_METERS
-            };
-        let delta_sim_time = (sim_time - self.previous_sim_time).max(f64::EPSILON);
-        let delta_camera_motion_seconds = if self.scenario.is_none() {
-            f64::from(frame_time).max(f64::EPSILON)
-        } else {
-            delta_sim_time
-        };
-        let camera_velocity_world = (camera_world_position - self.previous_camera_world_position)
-            / delta_camera_motion_seconds;
-        let velocity_meters_per_second = camera_velocity_world.length();
-        self.previous_camera_world_position = camera_world_position;
-        self.previous_sim_time = sim_time;
-        self.hdr.collect_completed_luminance(&self.device);
-        // Eye adaptation is a presentation effect, not simulation state. It
-        // must continue to converge while F10 freezes planet animation.
-        self.hdr.update_exposure(&self.queue, f64::from(frame_time));
-        let exposure_state = self.hdr.exposure_state();
-        self.artifacts.record_exposure_sample(
-            sim_time,
-            exposure_state.exposure,
-            exposure_state.target_exposure,
-            exposure_state.average_luminance,
-        );
+        let mut camera_planet_frame_up = self.camera.planet_frame_view_up(planet_rotation_radians);
         // Terrain streaming runs in every render path, not just the one that
         // draws the meshes.
         //
@@ -1625,6 +1609,73 @@ impl State {
                 )
                 .unwrap_or_else(|error| panic!("terrain update failed: {error}"))
         };
+        // Movement initially collides against the previous frame's rendered
+        // frontier. At high speed the new camera direction can lie completely
+        // outside that frontier; `terrain.update` above is what resolves the
+        // patches actually drawn at the destination. Clamp once more against
+        // those patches before presenting the frame, then rebuild their
+        // camera-relative anchors if the correction moved the camera.
+        if !solid_color_screen
+            && self.render_path == RenderPath::Raster
+            && self.camera_mode == CameraMode::LowFlight
+        {
+            let minimum_clearance_meters = if self.flight_speed.speed_meters_per_second > 0.0 {
+                LOW_FLIGHT_MOVING_CLEARANCE_METERS
+            } else {
+                LOW_FLIGHT_MINIMUM_CLEARANCE_METERS
+            };
+            if self.enforce_low_flight_clearance(minimum_clearance_meters, planet_rotation_radians)
+            {
+                camera_world_position = self.camera.world_position();
+                camera_planet_frame_position = self
+                    .camera
+                    .planet_frame_world_position(planet_rotation_radians);
+                camera_planet_frame_direction = self
+                    .camera
+                    .planet_frame_direction_dvec3(planet_rotation_radians);
+                camera_planet_frame_up = self.camera.planet_frame_view_up(planet_rotation_radians);
+                self.terrain_stats = self
+                    .terrain
+                    .update(
+                        camera_planet_frame_position,
+                        camera_planet_frame_direction,
+                        camera_planet_frame_up,
+                        presentation_time,
+                        [self.size.width, self.size.height],
+                        self.camera.vertical_fov_radians(),
+                    )
+                    .unwrap_or_else(|error| panic!("terrain update failed: {error}"));
+            }
+        }
+        let camera_radius = camera_world_position.length();
+        let camera_altitude =
+            if self.scenario.is_none() && self.camera_mode == CameraMode::LowFlight {
+                camera_radius - planet::PLANET_RADIUS_METERS - self.flight_surface_height_meters
+            } else {
+                camera_radius - planet::PLANET_RADIUS_METERS
+            };
+        let delta_sim_time = (sim_time - self.previous_sim_time).max(f64::EPSILON);
+        let delta_camera_motion_seconds = if self.scenario.is_none() {
+            f64::from(frame_time).max(f64::EPSILON)
+        } else {
+            delta_sim_time
+        };
+        let camera_velocity_world = (camera_world_position - self.previous_camera_world_position)
+            / delta_camera_motion_seconds;
+        let velocity_meters_per_second = camera_velocity_world.length();
+        self.previous_camera_world_position = camera_world_position;
+        self.previous_sim_time = sim_time;
+        self.hdr.collect_completed_luminance(&self.device);
+        // Eye adaptation is a presentation effect, not simulation state. It
+        // must continue to converge while F10 freezes planet animation.
+        self.hdr.update_exposure(&self.queue, f64::from(frame_time));
+        let exposure_state = self.hdr.exposure_state();
+        self.artifacts.record_exposure_sample(
+            sim_time,
+            exposure_state.exposure,
+            exposure_state.target_exposure,
+            exposure_state.average_luminance,
+        );
         self.artifacts.observe_lod_frame(
             &self.terrain_stats.level_histogram,
             self.terrain_stats.resident_chunks,
