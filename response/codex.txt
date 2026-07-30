@@ -1,14 +1,11 @@
-Done — I repeated the exact uncontaminated W-flight replay and finished the fix.
+I reproduced both observations from `manual/1785436299-502648`.
 
-- **Cause:** collision checked only the frame endpoint against one CPU point surface, while raster could simultaneously draw differently filtered active/incoming/outgoing patches. The camera could tunnel beneath the visible transition geometry.
-- **Fix:** raster flight now samples the highest concurrently drawn surface, sweeps movement at 0.5m intervals, and uses a conservative 30m moving envelope. Idle inspection remains at 2m. Scenarios now ignore live mouse movement.
-- **Before:** `manual_forward_clearance/1785428386-445023` visibly went under the terrain; worst p90 mismatch was 25.828m.
-- **After:** `manual_forward_clearance/1785435630-497513` passed with seven screenshots, zero LOD thrash, and 13.734–43.664m clearance. The previously dangerous W-held frames stayed at least 23.788m from visible terrain.
+- The nine captures have a jagged black foreground where the nearest terrain should be. At the same frozen pose, drawn terrain collapses from roughly 254–312 chunks to 10–47, then returns, so this is real chunk-selection/culling loss rather than near clipping.
+- F8 currently disables the ACES/HDR presentation but deliberately leaves auto-exposure running. The log confirms exposure adapting from 0.294 to 3.858 as the snow fills the view. So what you saw matches the current implementation, but a separate unaffected view is useful.
 
-Validation:
-- 212 workspace tests passed; 5 ignored.
-- Raster `stand_on_ground` passed at exactly 2m.
-- Raster and ray `highest_prominence_peak` passed.
-- The known ray `stand_on_ground` 3.199m p90 failure is unchanged and separate from this raster flight bug.
+Ranked terrain hypotheses I’m testing now:
+1. The new rendered-surface collision query feeds previous-frame draw state back into camera/LOD calculations, destabilising selection at this pose.
+2. Near-camera frustum/horizon bounds reject nodes containing or crossing the camera plane.
+3. Frozen presentation time stalls a transition frontier while residency changes.
 
-Committed and pushed: `5fa5fe1`, `d3182f6`.
+I’ll fix the actual cause and add a separate fixed 1.0 exposure toggle (using an available control after checking the key map), then replay this exact pose with screenshots.

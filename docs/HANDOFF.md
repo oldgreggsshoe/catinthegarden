@@ -7,7 +7,9 @@ the diagnosis branch and pushed to `origin/diagnose/ocean-terrain-blockiness`
 at every camera altitude; sea level and negative bathymetry remain physical. CPU truth, raster, ray,
 LOD/culling bounds, and scenario cameras share that transform. F4 starts over the measured
 highest-prominence summit. Moving raster flight sweeps the camera through every concurrently drawn
-active/transition patch and retains a 30m collision envelope; idle inspection remains at 2m.
+active/transition patch and retains a 30m collision envelope; idle inspection remains at 2m. The
+raster culling shell includes the complete live detail ladder, so elevated near-camera vertices
+cannot disappear outside a macro-only bound. Key 6 switches between auto exposure and fixed 1.0.
 **Latest evidence:** committed Earth-like outmap Quadro runs `orbit_once/1785409591-283581`,
 raster `stand_on_ground/1785435672-497949`, ray `stand_on_ground/1785435686-498076`,
 `low_flight_performance/1785409648-284127`, `landing_site_ground_detail/1785412295-314602`,
@@ -15,7 +17,8 @@ raster `stand_on_ground/1785435672-497949`, ray `stand_on_ground/1785435686-4980
 `1785409733-285091` through `1785409881-286994`; highest-summit F4 runs are raster
 `highest_prominence_peak/1785435713-498256` and ray
 `highest_prominence_peak/1785435731-498377`; exact manual W-flight replay is
-`manual_forward_clearance/1785435630-497513`
+`manual_forward_clearance/1785435630-497513`; near-terrain yaw sweep is
+`manual_near_terrain_culling/1785437198-512296`
 **Written:** 30 July 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
@@ -44,8 +47,8 @@ A renderer that "looks like a modernish (2015 on) game", consistent from orbit t
 ## 2. State: what is green
 
 ```
-cargo test --workspace   →  212 passed, 0 failed, 5 ignored
-                            (app 177, baker lib 23, baker bin 1, baker integration 5, coretypes 6)
+cargo test --workspace   →  215 passed, 0 failed, 5 ignored
+                            (app 180, baker lib 23, baker bin 1, baker integration 5, coretypes 6)
                             the 5 ignored are the relief_survey/terrain instruments -- run them with
                             `cargo test -- --ignored --nocapture <name>`
 ```
@@ -263,8 +266,39 @@ residual representation difference from admitting the camera into visible geomet
 Current regressions: raster `stand_on_ground/1785435672-497949` passes at exactly 2m clearance and
 0.198m worst p90; the pre-existing ray p90 failure is unchanged at 3.199m in
 `stand_on_ground/1785435686-498076`; both raster and ray highest-prominence scenarios pass in
-`1785435713-498256` and `1785435731-498377`. Release build, formatting, diff checks, and all 212
+`1785435713-498256` and `1785435731-498377`. Release build, formatting, diff checks, and all 215
 workspace tests pass.
+
+### Near-terrain culling and fixed-exposure inspection — 30 July 2026
+
+Manual run `manual/1785436299-502648` captured nine headings from the F4 summit camera. Eight showed
+jagged cleared-background polygons across the foreground: the closest terrain chunks were selected
+but their real displaced vertices lay outside the radial shell used by frustum and horizon culling.
+This was not near clipping. The shell stopped at **26,538m** — 8,846m maximum baked macro height
+times the fixed 3x presentation scale — and omitted the live detail ladder's independently declared
+**2,646.4m** positive bound. The actual shader can therefore reach 29,184.4m while the culler was
+proving visibility against the lower macro-only surface.
+
+`manual_near_terrain_culling` preserves the peak position, 60-degree FOV, and nine headings spanning
+180 degrees. With the old bound, run `1785437126-510328` reproduces the missing foreground in eight
+captures; near-black pixels occupy up to 38.63% of the bottom 35% of a frame. The culling height
+range now adds `TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS` to its maximum. Fixed run
+`1785437198-512296` has zero near-black foreground pixels in all nine captures, zero LOD thrash,
+152.514m clearance, and the same 254–256 active-chunk range. Its settled mean is 35.255ms versus
+36.952ms in the source-identical baseline, so the conservative radial correction did not add a
+measured cost in this replay. A unit regression requires the culling shell to contain both macro
+and live ladder displacement.
+
+F8 has always meant **ACES/HDR display curve off**, not auto exposure off; `hdr.wgsl` deliberately
+multiplies the linear colour by the adapted exposure in both F8 states. That is why the snow still
+darkened the screen in the user's F8-off inspection, and the manual log confirms exposure ranging
+from 0.294 to 3.858. Key **6** now independently toggles the presented exposure between auto and a
+literal fixed **1.0**. The meter keeps adapting behind the fixed view so returning to auto does not
+snap, but it has no effect on presented pixels while fixed; the HUD shows applied exposure, meter,
+mode, and HDR-curve state separately. In `highest_prominence_peak/1785437451-515484`, a synthetic
+key-6 press changes logged applied exposure from 0.335 to exactly 1.0 while the hidden meter remains
+0.335. For a raw inspection with neither exposure adaptation nor ACES, use **F8 off + 6 fixed**;
+F6/F7 still control blur and bloom independently.
 
 ## 3. State: what was red before the Earth-like rebake
 

@@ -220,6 +220,9 @@ impl ScenarioRunner {
             "manual_forward_clearance" => {
                 include_str!("../scenarios/manual_forward_clearance.json")
             }
+            "manual_near_terrain_culling" => {
+                include_str!("../scenarios/manual_near_terrain_culling.json")
+            }
             "stand_on_ground" => include_str!("../scenarios/stand_on_ground.json"),
             "path_parity_ridge" => include_str!("../scenarios/path_parity_ridge.json"),
             "render_path_parity" => include_str!("../scenarios/render_path_parity.json"),
@@ -897,6 +900,16 @@ mod tests {
         }
         assert!((3.0..=3.0 + 1.0 / 60.0).contains(&frame.sim_time));
         assert_eq!(frame.forward_flight_held, Some(true));
+    }
+
+    #[test]
+    fn manual_near_terrain_culling_sweeps_the_peak_foreground() {
+        let scenario = ScenarioRunner::load("manual_near_terrain_culling")
+            .expect("near-terrain replay parses");
+
+        assert_eq!(scenario.expected_screenshots(), 9);
+        assert_eq!(scenario.assertions().min_camera_clearance_m, Some(150.0));
+        assert_eq!(scenario.assertions().max_camera_clearance_m, Some(155.0));
     }
 
     #[test]

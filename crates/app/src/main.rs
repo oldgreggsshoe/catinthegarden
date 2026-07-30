@@ -1116,6 +1116,12 @@ impl State {
         self.mark_hud_dirty();
     }
 
+    fn toggle_auto_exposure(&mut self) {
+        self.hdr
+            .set_auto_exposure_enabled(&self.queue, !self.hdr.auto_exposure_enabled());
+        self.mark_hud_dirty();
+    }
+
     fn toggle_render_path(&mut self) {
         self.render_path = self.render_path.toggled();
         self.mark_hud_dirty();
@@ -1701,10 +1707,13 @@ impl State {
             let camera_direction = self.camera.direction();
             let vertical_fov_degrees = self.camera.vertical_fov_radians().to_degrees();
             let exposure = exposure_state.exposure;
+            let metered_exposure = exposure_state.metered_exposure;
+            let auto_exposure_enabled = exposure_state.auto_exposure_enabled;
             let average_luminance = exposure_state.average_luminance;
             let ocean_wave_range = ocean_wave_range;
             let blur_enabled = self.hdr.blur_enabled();
             let bloom_enabled = self.hdr.bloom_enabled();
+            let hdr_effect_enabled = self.hdr.hdr_effect_enabled();
             let render_path = self.render_path;
             let render_debug_mode = self.render_debug_mode;
             let warp_size = self.foveated.warp_size();
@@ -1779,12 +1788,18 @@ impl State {
                                 terrain_stats.splits, terrain_stats.merges, terrain_stats.culled_nodes
                             ));
                             ui.label(format!(
-                                "Exposure: {exposure:.3}  |  Average luminance: {average_luminance:.3}"
+                                "Exposure: {exposure:.3} {}  |  Meter: {metered_exposure:.3}  |  Average luminance: {average_luminance:.3}",
+                                if auto_exposure_enabled {
+                                    "auto"
+                                } else {
+                                    "fixed"
+                                },
                             ));
                             ui.label(format!(
-                                "Post: blur {}  |  bloom {}",
+                                "Post: blur {}  |  bloom {}  |  HDR curve {}",
                                 if blur_enabled { "on" } else { "off" },
                                 if bloom_enabled { "on" } else { "off" },
+                                if hdr_effect_enabled { "on" } else { "off" },
                             ));
                             ui.label(format!(
                                 "Composition debug: {}",
@@ -1813,7 +1828,7 @@ impl State {
                             ));
                             ui.label(format!("Ocean Gerstner range: {ocean_wave_range:.2} m"));
                             ui.label(
-                                "F: fullscreen  |  F3: overlay  |  F4: camera mode  |  F5: render path  |  WASD: fly  |  F6: blur  |  F7: bloom  |  F8: HDR  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
+                                "F: fullscreen  |  F3: overlay  |  F4: camera mode  |  F5: render path  |  WASD: fly  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
                             );
                             ui.label("Default: auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc/Q: quit");
                         });
@@ -2685,6 +2700,13 @@ impl ApplicationHandler for App {
                         && event.physical_key == PhysicalKey::Code(KeyCode::F9) =>
                 {
                     state.cycle_render_debug_mode();
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::Digit6) =>
+                {
+                    state.toggle_auto_exposure();
                     window.request_redraw();
                 }
                 WindowEvent::KeyboardInput { event, .. }

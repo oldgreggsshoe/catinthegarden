@@ -11,6 +11,14 @@ const MINIMUM_EXPOSURE: f32 = 0.05;
 const MAXIMUM_EXPOSURE: f32 = 4.0;
 const READBACK_RING_SIZE: usize = 3;
 
+fn presentation_exposure(metered_exposure: f32, auto_exposure_enabled: bool) -> f32 {
+    if auto_exposure_enabled {
+        metered_exposure
+    } else {
+        1.0
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct ExposureUniform {
@@ -30,9 +38,13 @@ struct LuminanceReadbackSlot {
 
 #[derive(Clone, Copy, Debug)]
 pub struct ExposureState {
+    /// Exposure actually applied to the presented image.
     pub exposure: f32,
+    /// Continuously adapted meter value retained behind the fixed view.
+    pub metered_exposure: f32,
     pub target_exposure: f32,
     pub average_luminance: f32,
+    pub auto_exposure_enabled: bool,
 }
 
 pub struct HdrRenderer {
@@ -71,6 +83,7 @@ pub struct HdrRenderer {
     blur_enabled: bool,
     bloom_enabled: bool,
     hdr_effect_enabled: bool,
+    auto_exposure_enabled: bool,
 }
 
 impl HdrRenderer {
@@ -324,6 +337,7 @@ impl HdrRenderer {
             blur_enabled: BLUR_ENABLED,
             bloom_enabled: BLOOM_ENABLED,
             hdr_effect_enabled: HDR_EFFECT_ENABLED,
+            auto_exposure_enabled: true,
         };
         renderer.resize(device, size);
         renderer
@@ -465,6 +479,10 @@ impl HdrRenderer {
         self.hdr_effect_enabled
     }
 
+    pub fn auto_exposure_enabled(&self) -> bool {
+        self.auto_exposure_enabled
+    }
+
     pub fn set_effects(&mut self, device: &wgpu::Device, blur_enabled: bool, bloom_enabled: bool) {
         self.blur_enabled = blur_enabled;
         self.bloom_enabled = bloom_enabled;
@@ -495,6 +513,11 @@ impl HdrRenderer {
 
     pub fn set_hdr_effect_enabled(&mut self, queue: &wgpu::Queue, hdr_effect_enabled: bool) {
         self.hdr_effect_enabled = hdr_effect_enabled;
+        self.write_exposure_uniform(queue);
+    }
+
+    pub fn set_auto_exposure_enabled(&mut self, queue: &wgpu::Queue, auto_exposure_enabled: bool) {
+        self.auto_exposure_enabled = auto_exposure_enabled;
         self.write_exposure_uniform(queue);
     }
 
@@ -535,7 +558,7 @@ impl HdrRenderer {
             &self.exposure_buffer,
             0,
             bytemuck::bytes_of(&ExposureUniform {
-                exposure: self.exposure,
+                exposure: presentation_exposure(self.exposure, self.auto_exposure_enabled),
                 hdr_effect_enabled: u32::from(self.hdr_effect_enabled),
                 presentation_size: [
                     self.presentation_size.width as f32,
@@ -547,9 +570,11 @@ impl HdrRenderer {
 
     pub fn exposure_state(&self) -> ExposureState {
         ExposureState {
-            exposure: self.exposure,
+            exposure: presentation_exposure(self.exposure, self.auto_exposure_enabled),
+            metered_exposure: self.exposure,
             target_exposure: self.target_exposure,
             average_luminance: self.average_luminance,
+            auto_exposure_enabled: self.auto_exposure_enabled,
         }
     }
 
@@ -938,7 +963,7 @@ fn f16_to_f32(bits: u16) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{f16_to_f32, target_exposure};
+    use super::{f16_to_f32, presentation_exposure, target_exposure};
 
     #[test]
     fn decodes_half_float_luminance_values() {
@@ -952,6 +977,12 @@ mod tests {
     fn black_space_cannot_overexpose_a_visible_planet() {
         assert_eq!(target_exposure(0.0), 4.0);
         assert!((target_exposure(0.18) - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn fixed_exposure_bypasses_the_adapting_meter() {
+        assert_eq!(presentation_exposure(0.42, true), 0.42);
+        assert_eq!(presentation_exposure(0.42, false), 1.0);
     }
 
     #[test]

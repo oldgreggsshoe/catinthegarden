@@ -22,10 +22,11 @@ use crate::{
         OUTMAP_TERRAIN_FAR_HEIGHT_SCALE, OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS,
         OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS, OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE,
         PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode, TERRAIN_DETAIL_MIN_FILTER_METERS,
-        TerrainHeightRange, build_chunk_mesh, continuous_baked_sample_spacing_meters,
-        cube_face_basis, cube_face_direction, max_active_chunks_from_env,
-        outmap_surface_height_meters, outmap_surface_height_meters_with_filter,
-        placeholder_height_meters, scaled_outmap_macro_height_meters,
+        TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS, TerrainHeightRange, build_chunk_mesh,
+        continuous_baked_sample_spacing_meters, cube_face_basis, cube_face_direction,
+        max_active_chunks_from_env, outmap_surface_height_meters,
+        outmap_surface_height_meters_with_filter, placeholder_height_meters,
+        scaled_outmap_macro_height_meters,
     },
 };
 
@@ -115,6 +116,20 @@ const OUTMAP_GEOMETRIC_ERROR: GeometricErrorRatio = GeometricErrorRatio {
 const LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS: f64 = 250_000.0;
 const TERRAIN_INFO_SOURCE_EDGE_FADE_BIT: u32 = 1 << 14;
 const TERRAIN_DETAIL_FILTER_RATIO: f64 = 0.01;
+
+fn conservative_outmap_height_bounds(height_min_meters: f64, height_max_meters: f64) -> [f64; 2] {
+    // Culling must enclose both displacement fields. The retired global field
+    // remains in the uniform at a zero scale, while the live authored ladder
+    // can add its full positive amplitude above the highest baked macro
+    // sample. Omitting the latter made near-camera mountain patches disappear
+    // when their real vertices rose outside the frustum's radial shell.
+    [
+        height_min_meters - GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
+        height_max_meters * OUTMAP_TERRAIN_FAR_HEIGHT_SCALE
+            + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS * GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE
+            + TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS,
+    ]
+}
 
 /// Near-field window: a square of baked macro height around the camera, at a
 /// level far finer than the six whole-face arrays the raymarch path holds.
@@ -443,11 +458,11 @@ impl TerrainRenderer {
             )),
         };
         let terrain_height_range = match outmap_height_bounds {
-            Some((height_min_meters, height_max_meters)) => TerrainHeightRange::new(
-                height_min_meters - GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
-                height_max_meters * OUTMAP_TERRAIN_FAR_HEIGHT_SCALE
-                    + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS * GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE,
-            ),
+            Some((height_min_meters, height_max_meters)) => {
+                let [minimum, maximum] =
+                    conservative_outmap_height_bounds(height_min_meters, height_max_meters);
+                TerrainHeightRange::new(minimum, maximum)
+            }
             None => TerrainHeightRange::default(),
         };
         let outmap_dense_level = match &source {
@@ -2751,18 +2766,19 @@ mod tests {
         FadingChunk, LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS,
         OUTMAP_TILE_GRID_SUBDIVISION_LEVELS, SurfaceDetailNode, TERRAIN_INFO_SOURCE_EDGE_FADE_BIT,
         TERRAIN_MATERIAL_LAYER_COUNT, TERRAIN_MATERIAL_TEXTURE_SIZE, TerrainSettings,
-        aligned_texture_row_bytes, cube_face_uv, downsample_srgb_rgba8, edge_stitch_info,
-        edge_stitch_level_delta, fallback_uv_transform, height_footprint_is_strictly_land,
-        lod_transition_nodes, lod_transition_progress, node_intersects_source_edge_fade,
-        nodes_share_lod_transition, pack_terrain_info, padded_texture_rows, planet_shader_source,
-        purge_expired_lod_transitions, sample_biome_cpu, sample_height_cpu, sample_moisture_cpu,
-        should_animate_lod_transition, source_tile_uv_at_direction, surface_detail_filter_meters,
-        terrain_material_layer_texels, terrain_material_texel, tileable_value_noise,
+        aligned_texture_row_bytes, conservative_outmap_height_bounds, cube_face_uv,
+        downsample_srgb_rgba8, edge_stitch_info, edge_stitch_level_delta, fallback_uv_transform,
+        height_footprint_is_strictly_land, lod_transition_nodes, lod_transition_progress,
+        node_intersects_source_edge_fade, nodes_share_lod_transition, pack_terrain_info,
+        padded_texture_rows, planet_shader_source, purge_expired_lod_transitions, sample_biome_cpu,
+        sample_height_cpu, sample_moisture_cpu, should_animate_lod_transition,
+        source_tile_uv_at_direction, surface_detail_filter_meters, terrain_material_layer_texels,
+        terrain_material_texel, tileable_value_noise,
     };
     use crate::planet::{
         GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, MAX_LOD_LEVEL, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE,
         OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode,
-        build_chunk_mesh, cube_face_direction,
+        TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS, build_chunk_mesh, cube_face_direction,
     };
     use catinthegarden_coretypes::{
         CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
@@ -3642,6 +3658,19 @@ mod tests {
                 - node_spacing * 4.0)
                 .abs()
                 < 1.0e-12
+        );
+    }
+
+    #[test]
+    fn outmap_culling_shell_contains_the_runtime_detail_ladder() {
+        let height_max_meters = 8_846.0;
+        let [_, maximum] = conservative_outmap_height_bounds(-5_000.0, height_max_meters);
+
+        assert!(
+            maximum
+                >= height_max_meters * OUTMAP_TERRAIN_FAR_HEIGHT_SCALE
+                    + TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS,
+            "culling shell {maximum}m omits the live runtime ladder"
         );
     }
 
