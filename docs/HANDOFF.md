@@ -3,13 +3,15 @@
 **Branch:** `diagnose/ocean-terrain-blockiness`
 **Branch base:** `69cd04d` on `experiment/ground-readability`; this session's work is isolated on
 the diagnosis branch and pushed to `origin/diagnose/ocean-terrain-blockiness`
-**Renderer state:** current branch — the raster selector admits only two-level-graded frontiers
-inside the 256-leaf budget, mixed-LOD edges evaluate one continuous runtime-detail displacement,
-and the raster ocean shell is submitted only for chunks whose resolved height footprint may contain
-sea
-**Latest evidence:** Earth-like outmap Quadro raster runs `orbit_once/1785323155-442224` and
-`stand_on_ground/1785323395-444535`; both pass and are tied to the generator/scenario commits below
-**Written:** 29 July 2026
+**Renderer state:** current branch — positive baked macro land uses one fixed 3x presentation scale
+at every camera altitude; sea level and negative bathymetry remain physical. CPU truth, raster, ray,
+LOD/culling bounds, and landing scenarios share that transform.
+**Latest evidence:** committed Earth-like outmap Quadro runs `orbit_once/1785409591-283581`,
+raster `stand_on_ground/1785409626-283919`, ray `stand_on_ground/1785409672-284379`,
+`low_flight_performance/1785409648-284127`, `landing_site_ground_detail/1785412295-314602`,
+`landing_site_eye_level/1785412370-315195`, and nine `render_path_parity` runs
+`1785409733-285091` through `1785409881-286994`
+**Written:** 30 July 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
 
@@ -108,27 +110,67 @@ elevation. All four manifest-relative landing scenarios were shifted by the meas
 without changing their relative camera framing, and the second run passed. All 206 workspace tests
 also pass.
 
+### Fixed 3x positive-ASL presentation — 30 July 2026
+
+Commit `60ab772` replaces the former 1x-near/4x-orbit altitude blend with one fixed **3x** transform
+for positive baked macro height. It is deliberately a runtime presentation change, not a rebake:
+the outmap, biomes, moisture, coastline, sea level, lakes, ocean waves, and negative bathymetry are
+unchanged. The active bake's approximately 8,846m raw maximum can therefore present at about
+26.54km ASL. This is lower than the old 4x orbital presentation (about 35.38km), while surface and
+low-flight land are three times higher and steeper than before.
+
+The positive-only transform is shared by CPU clearance/probes, raster displacement and normals, ray
+shell bounds and hit evaluation, and the conservative LOD/culling land bound. The four
+manifest-relative landing scenarios moved outward by +2,022.55078125m, preserving their previous
+relative framing: raw landing ground remains 1,011.275390625m and presented ground is now
+3,033.826171875m. Negative height is never multiplied, which avoids deepening the ocean floor or
+moving the zero-metre coastline.
+
+Current Quadro M1000M evidence, `PRESENT_MODE=immediate`, same release binary and settled spatial
+samples:
+
+| scenario/path | previous profile | fixed 3x | result |
+|---|---:|---:|---|
+| `orbit_once` raster mean | 18.291ms | 18.457ms | pass; +0.9%, normal run noise |
+| `stand_on_ground` raster mean | 31.808ms | 34.157ms | pass; exact 2.000000001m clearance |
+| `low_flight_performance` raster mean | 32.219ms | 31.714ms | historical budget/fallback/seam failure remains |
+| `stand_on_ground` ray mean, ray-only after 1.5s | 64.432ms | 67.857ms | p90 failure remains; +5.3% |
+
+Raster ground truth remains tight: 360 comparisons, 0.198m worst-frame p90 and 0.598m maximum. Ray
+ground p90 moves from the immediately preceding Earth-like baseline's 2.567m to 3.199m against the
+unchanged 2m tolerance; do not widen the tolerance. The low-flight run still binds all 256 chunks
+for 241 frames, and the warm-up maximum seam moves from 549.982m to 612.707m. Its capture shows the
+same pre-existing exposed mixed-LOD/ocean edge at the right, made taller by the stronger land
+relief. Those are concrete costs of the experiment and still need repair/sign-off.
+
+Raster orbit and ground pass, all nine raster/ray final/albedo/lighting/aerial/ray-hit parity stages
+pass, and the other two shifted landing scenarios pass with 70.19m ground-detail clearance and
+2.00–64.42m eye-level descent clearance. The release build succeeds, and all 206 workspace tests
+pass. Visually, the low-flight landscape gains clearly legible hills and distant ranges; globally
+dense L4 source remains only 3.906km per sample, so the scale also makes its existing facets and
+cliffs more conspicuous rather than adding detail.
+
 Fixed world-space manual captures and terrain-performance baselines below describe the previous
 macro planet and are no longer visual golden locations. Manifest-relative scenarios remain the
 appropriate first smoke tests; re-author any hard-coded terrain location before using it as evidence
 about this new planet.
 
-Scenario probe results, worst frame, from `test-runs/*/*/manifest.json`. Only the first row has been
-refreshed on the Earth-like outmap; the other rows are retained as pre-rebake renderer history and
+Scenario probe results, worst frame, from `test-runs/*/*/manifest.json`. The first two rows are
+current fixed-3x Earth-like evidence; the other rows are retained as pre-rebake renderer history and
 must be rerun before they are quoted as current terrain evidence:
 
 | scenario | path | p90 delta | median delta | tolerance | clearance |
 |---|---|---:|---:|---:|---:|
-| `stand_on_ground` | raster | **0.16 m** | 0.09 m | 2 m | 2.0000 m |
-| `stand_on_ground` | ray | **0.89 m** | 0.62 m | 2 m | 2.0000 m |
+| `stand_on_ground` | raster | **0.20 m** | 0.09 m | 2 m | 2.0000 m |
+| `stand_on_ground` | ray | **3.20 m** | 2.22 m | 2 m — **FAILS** | 2.0000 m |
 | `path_parity_ridge` | raster | **4.24 m** | 1.25 m | 6 m | 133 m |
 | `path_parity_ridge` | ray | **10.68 m** | 2.17 m | 6 m — **FAILS, see §6b** | 133 m |
 | `tour_mountains` | ray | 22.6 m | 11.7 m | none | ~1 km |
 
-Except for the refreshed raster `stand_on_ground` row, these are the pre-rebake post-mountain
-results. The 3.47 m ray result recorded later in §7 is the historical pre-mountain measurement from
-the local-span hit-walk change; the increased mountain relief subsequently moved that previous
-outmap's result to 10.68 m.
+Except for the refreshed `stand_on_ground` rows, these are the pre-rebake post-mountain results. The
+3.47 m ray result recorded later in §7 is the historical pre-mountain measurement from the
+local-span hit-walk change; the increased mountain relief subsequently moved that previous outmap's
+result to 10.68 m.
 
 These moved with the mountain work in §6b: the terrain now has three times the relief, so the same
 mesh disagrees with truth by more in absolute metres. Raster still holds well inside tolerance
@@ -906,8 +948,10 @@ fine nodes falling back to the globally dense **L4** data. L4 is 128 × 2⁴ = 2
 face edge, or **3,906.25 m per height/biome sample**. The baker's 4,096 × 2,048 working grid is
 coarser still at about 6.1 km per cell. Splitting the mesh past that point only resamples the same
 bilinear height cell and categorical biome neighbourhood, so it cannot round the coastline or
-invent a less angular macro shape. The far-height scale is not the cause: at 105,492 m its
-100–1,000 km smooth blend is only **1.00033×**.
+invent a less angular macro shape. At the time of the 105,492m capture the old 100–1,000km
+altitude blend was only **1.00033×**, so it did not cause that capture. The current fixed 3x
+experiment still adds no source information and instead makes this existing cell relief more
+conspicuous.
 
 The defensible quality options, in order:
 
@@ -1294,7 +1338,7 @@ These are the mistakes that actually cost time on this branch.
 - **Re-author scenario camera heights after any ladder or outmap change.** Changing the field moves
   the ground. `landing_site_eye_level` ended 2 m underground after one earlier ladder change, and
   the Earth-like rebake moved the sparse centre again; the clearance assertion caught both.
-  Landing-site ground is currently **1,011.275390625 m**.
+  Landing-site ground is currently **1,011.275390625m raw / 3,033.826171875m presented**.
 - Shader gotchas: `active` is a reserved WGSL keyword; the inter-stage location limit is 16;
   `shared_planet.wgsl` is concatenated **ahead** of `planet.wgsl`, so tests that slice the shader by
   splitting on a function name silently run to end of file — bound on `"\nfn "`.
