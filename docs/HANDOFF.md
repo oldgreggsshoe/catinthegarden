@@ -17,8 +17,8 @@ raster `stand_on_ground/1785435672-497949`, ray `stand_on_ground/1785435686-4980
 `1785409733-285091` through `1785409881-286994`; highest-summit F4 runs are raster
 `highest_prominence_peak/1785435713-498256` and ray
 `highest_prominence_peak/1785435731-498377`; exact manual W-flight replay is
-`manual_forward_clearance/1785435630-497513`; near-terrain yaw sweep is
-`manual_near_terrain_culling/1785437198-512296`
+`manual_forward_clearance/1785437799-519300`; near-terrain yaw sweep is
+`manual_near_terrain_culling/1785437649-517600`
 **Written:** 30 July 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
@@ -254,7 +254,7 @@ frame is swept at 0.5m spacing, bounded to 64 samples. Movement uses a conservat
 camera-sized envelope derived from the captured 25.9m worst case plus margin, while an idle camera
 retains the established 2m eye height. Ray flight keeps its existing ray-surface truth.
 
-The committed-HEAD final Quadro replay `1785435630-497513` passes finite metrics, zero LOD thrash,
+The committed-HEAD final Quadro replay `1785437799-519300` passes finite metrics, zero LOD thrash,
 245 compared points, 13.734–43.664m CPU clearance, and all seven captures. The dangerous early
 W-held frames have nearest visible hits at least 23.788m away, and visual inspection shows the
 camera above the snow basin rather than beneath stacked patch faces. The depth probe still reports
@@ -283,11 +283,11 @@ proving visibility against the lower macro-only surface.
 180 degrees. With the old bound, run `1785437126-510328` reproduces the missing foreground in eight
 captures; near-black pixels occupy up to 38.63% of the bottom 35% of a frame. The culling height
 range now adds `TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS` to its maximum. Fixed run
-`1785437198-512296` has zero near-black foreground pixels in all nine captures, zero LOD thrash,
-152.514m clearance, and the same 254–256 active-chunk range. Its settled mean is 35.255ms versus
-36.952ms in the source-identical baseline, so the conservative radial correction did not add a
-measured cost in this replay. A unit regression requires the culling shell to contain both macro
-and live ladder displacement.
+`1785437649-517600` has zero near-black foreground pixels in all nine captures, zero LOD thrash,
+152.514m clearance, and the same 254–256 active-chunk range. Its settled mean is 34.946ms versus
+36.952ms in the single-variable old-bound baseline, so the conservative radial correction did not
+add a measured cost in this replay. A unit regression requires the culling shell to contain both
+macro and live ladder displacement.
 
 F8 has always meant **ACES/HDR display curve off**, not auto exposure off; `hdr.wgsl` deliberately
 multiplies the linear colour by the adapted exposure in both F8 states. That is why the snow still
@@ -295,7 +295,7 @@ darkened the screen in the user's F8-off inspection, and the manual log confirms
 from 0.294 to 3.858. Key **6** now independently toggles the presented exposure between auto and a
 literal fixed **1.0**. The meter keeps adapting behind the fixed view so returning to auto does not
 snap, but it has no effect on presented pixels while fixed; the HUD shows applied exposure, meter,
-mode, and HDR-curve state separately. In `highest_prominence_peak/1785437451-515484`, a synthetic
+mode, and HDR-curve state separately. In `highest_prominence_peak/1785437750-518841`, a synthetic
 key-6 press changes logged applied exposure from 0.335 to exactly 1.0 while the hidden meter remains
 0.335. For a raw inspection with neither exposure adaptation nor ACES, use **F8 off + 6 fixed**;
 F6/F7 still control blur and bloom independently.
