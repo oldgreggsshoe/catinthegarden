@@ -1,1 +1,14 @@
-Okay. I’ll rerun the same deterministic capture now and continue without needing any input from you.
+Done — I repeated the exact uncontaminated W-flight replay and finished the fix.
+
+- **Cause:** collision checked only the frame endpoint against one CPU point surface, while raster could simultaneously draw differently filtered active/incoming/outgoing patches. The camera could tunnel beneath the visible transition geometry.
+- **Fix:** raster flight now samples the highest concurrently drawn surface, sweeps movement at 0.5m intervals, and uses a conservative 30m moving envelope. Idle inspection remains at 2m. Scenarios now ignore live mouse movement.
+- **Before:** `manual_forward_clearance/1785428386-445023` visibly went under the terrain; worst p90 mismatch was 25.828m.
+- **After:** `manual_forward_clearance/1785435630-497513` passed with seven screenshots, zero LOD thrash, and 13.734–43.664m clearance. The previously dangerous W-held frames stayed at least 23.788m from visible terrain.
+
+Validation:
+- 212 workspace tests passed; 5 ignored.
+- Raster `stand_on_ground` passed at exactly 2m.
+- Raster and ray `highest_prominence_peak` passed.
+- The known ray `stand_on_ground` 3.199m p90 failure is unchanged and separate from this raster flight bug.
+
+Committed and pushed: `5fa5fe1`, `d3182f6`.
