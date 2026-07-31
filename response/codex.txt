@@ -1,15 +1,14 @@
-You were right on both counts. Fixed and pushed.
+Yes — it is very clear in `manual/1785538446-10290/capture-001.png`.
 
-- Removed the broad green-dominant crossover between yellow and blue.
-- Added the missing blue hour: red sunset now transitions through dim purple into deep blue, then fades naturally to darkness.
-- Kept the change sky-only; terrain, ocean, aerial perspective, sun lighting, and deep night are unchanged.
+Across the central and left mid-ground, the genuinely dark faces have turned into flat, lighter olive-green patches, while their boundaries remain thin dark burgundy/black outlines. That creates the inverted, outlined-shadow effect you described. It is not normal sunset shading, and it is distinct from the sky-colour issue.
 
-**Measured fixed-exposure sequence:** red `(55,9,0)` → purple `(43,36,52)` → blue `(22,39,63)` → fading blue `(2,4,7)`. Green dominance measured **0**.
+The capture is at 44.280456°N, 30.518635°W, 9.676km altitude, 37.22° FOV, with exposure already stable around 2.121. So yes: I can see it clearly, and this exact pose is sufficient for a deterministic reproduction.
 
-**Validation:**
-- `sunset_blue_hour/1785444485-580099` passed all colour/fade assertions.
-- Twilight directionality and night-side darkness passed.
-- 218 workspace tests passed; release build and formatting passed.
-- Performance is effectively unchanged: **27.121ms before → 27.105ms after** in the controlled comparison.
-
-Renderer commit: `566e13f`.
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:1-4|note=[confirmed checkout-specific renderer workflow before inspecting evidence]
+</citation_entries>
+<rollout_ids>
+019fa81f-71cc-7c12-9279-8318fbe22bc5
+</rollout_ids>
+</oai-mem-citation>
