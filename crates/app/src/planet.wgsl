@@ -26,7 +26,7 @@ struct VertexOutput {
     @invariant @builtin(position) position: vec4<f32>,
     @location(0) camera_relative_view_position: vec3<f32>,
     @location(1) world_normal: vec3<f32>,
-    @location(2) aerial_color: vec3<f32>,
+    @location(2) aerial_in_scatter: vec3<f32>,
     @location(3) lod_transition: vec2<f32>,
     @location(4) surface_direction: vec3<f32>,
     @location(6) source_uv: vec2<f32>,
@@ -34,7 +34,7 @@ struct VertexOutput {
     // needs the height for each octave's headroom and the inter-stage location
     // budget is full.
     @location(7) outmap_and_macro_height: vec2<f32>,
-    @location(8) surface_lighting: vec3<f32>,
+    @location(8) aerial_transmittance: vec3<f32>,
     @location(9) terrain_detail_meters: f32,
     @location(10) surface_irradiance: vec3<f32>,
     // Detail is evaluated anchor-locally for precision, so the pixel needs the
@@ -514,9 +514,6 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     // Polar ice overrides ocean in the baked biome contract. Lift it just
     // above sea level so the cap remains visible rather than becoming water.
     let biome_id = sample_biome(source_uv);
-    let biome_blend = sample_biome_blend(source_uv);
-    let moisture = sample_moisture(source_uv);
-    let base_biome_color = blended_biome_color(biome_blend);
     let ice = outmap && biome_id == 2u;
     let lake = outmap && biome_id == 1u;
     let land_height = select(height, max(height, 5.0), ice);
@@ -562,38 +559,14 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let direct_light = max(dot(normal, sun_direction), 0.0);
     let surface_irradiance = sky_diffuse
         + sun_transmittance * direct_light * SURFACE_SUNLIGHT_SCALE;
-    var lit_surface_color = terrain_material_color(
-        outmap,
-        biome_id,
-        moisture,
-        base_biome_color,
-        macro_height,
-        terrain_detail_meters,
-        normal,
-        direction,
-    ) * surface_irradiance;
-    if ice {
-        // Keep daylight snow neutral without creating an emissive floor after
-        // direct and atmospheric illumination are fully occulted.
-        let ice_light_floor = clamp(
-            max(max(surface_irradiance.x, surface_irradiance.y), surface_irradiance.z),
-            0.0,
-            1.0,
-        );
-        lit_surface_color = max(
-            lit_surface_color,
-            biome_color(2u) * 0.65 * ice_light_floor,
-        );
-    }
-    var aerial_color = aerial_perspective(
-        lit_surface_color,
+    var aerial = aerial_perspective_components(
         camera_relative_view_position,
         direction,
         surface_height,
     );
     if !lake {
-        aerial_color = terrain_distance_fog(
-            aerial_color,
+        aerial = terrain_distance_fog_components(
+            aerial,
             camera_relative_view_position,
             direction,
             surface_height,
@@ -603,12 +576,12 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         camera.projection_matrix * vec4<f32>(camera_relative_view_position, 1.0),
         camera_relative_view_position,
         normal,
-        aerial_color,
+        aerial.in_scatter,
         input.lod_transition,
         direction,
         source_uv,
         vec2<f32>(select(0.0, 1.0, outmap), select(0.0, base_height, outmap)),
-        lit_surface_color,
+        aerial.transmittance,
         terrain_detail_meters,
         surface_irradiance,
         anchor_direction,
@@ -899,30 +872,14 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             biome_color(2u) * 0.65 * ice_light_floor,
         );
     }
-    // The vertex stage turned `surface_lighting` into `aerial_color` by
-    // attenuating it and adding in-scatter; re-texturing has since changed the
-    // albedo underneath, so that transform has to be carried across.
-    //
-    // Carrying it as an additive residue, `max(aerial - lighting, 0)`, drops
-    // the extinction on the floor -- it is the negative half of the difference
-    // -- and then clamps the whole term to exactly zero wherever extinction
-    // exceeds in-scatter. Over the mountains that is everywhere: measured, the
-    // aerial contribution read 0.000 in the mid-distance band and 0.015 at the
-    // horizon, and the final image was bit-identical to the unattenuated
-    // lighting at every distance. A range with no distance cue reads as flat
-    // however much relief it has.
-    //
-    // As a ratio both halves survive. Where the vertex surface is too dark to
-    // define one, fall back to the additive form so night-side haze is not
-    // lost with it.
-    let aerial_ratio = input.aerial_color
-        / max(input.surface_lighting, vec3<f32>(1.0e-4));
-    let textured_aerial_color = select(
-        textured_surface_lighting
-            + max(input.aerial_color - input.surface_lighting, vec3<f32>(0.0)),
-        textured_surface_lighting * min(aerial_ratio, vec3<f32>(16.0)),
-        input.surface_lighting > vec3<f32>(1.0e-3),
-    );
+    // Aerial perspective is affine: attenuate the fragment-frequency surface
+    // by the interpolated view transmittance, then add in-scatter. Rebuilding
+    // this from a ratio of two vertex colours used to require a hard threshold
+    // near black. Low-sun shadows crossed that threshold per channel, lifting
+    // their interiors by up to 16x while leaving a dark outline at the switch.
+    let textured_aerial_color = textured_surface_lighting
+        * input.aerial_transmittance
+        + input.aerial_in_scatter;
     if ocean_coverage <= 0.0 {
         if render_debug_mode == RENDER_DEBUG_SURFACE_LIGHTING {
             return vec4<f32>(textured_surface_lighting, 1.0);

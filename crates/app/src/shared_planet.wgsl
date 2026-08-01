@@ -1053,12 +1053,16 @@ fn aerial_density_sample_fraction(fraction: f32, closest_fraction: f32) -> f32 {
         + (1.0 - closest_fraction) * pow(local_fraction, AERIAL_DENSITY_SAMPLE_EXPONENT);
 }
 
-fn aerial_perspective(
-    lit_surface_color: vec3<f32>,
+struct AerialPerspectiveComponents {
+    transmittance: vec3<f32>,
+    in_scatter: vec3<f32>,
+}
+
+fn aerial_perspective_components(
     camera_relative_view_position: vec3<f32>,
     surface_direction: vec3<f32>,
     surface_altitude_meters: f32,
-) -> vec3<f32> {
+) -> AerialPerspectiveComponents {
     let distance_meters = length(camera_relative_view_position);
     let camera_altitude_meters = camera.camera_planet_direction_view_altitude.w;
     let view_direction = normalize(camera_relative_view_position);
@@ -1071,7 +1075,7 @@ fn aerial_perspective(
     let view_start = max(view_interval.x, 0.0);
     let view_end = min(view_interval.y, distance_meters);
     if view_end <= view_start {
-        return lit_surface_color;
+        return AerialPerspectiveComponents(vec3<f32>(1.0), vec3<f32>(0.0));
     }
     let atmospheric_view_length = view_end - view_start;
     let atmospheric_view_start_altitude = altitude_along_ray(
@@ -1173,7 +1177,21 @@ fn aerial_perspective(
             * scattered_fraction;
     }
     in_scatter *= SOLAR_RADIANCE * AERIAL_IN_SCATTER_GAIN;
-    return lit_surface_color * view_transmittance + in_scatter;
+    return AerialPerspectiveComponents(view_transmittance, in_scatter);
+}
+
+fn aerial_perspective(
+    lit_surface_color: vec3<f32>,
+    camera_relative_view_position: vec3<f32>,
+    surface_direction: vec3<f32>,
+    surface_altitude_meters: f32,
+) -> vec3<f32> {
+    let components = aerial_perspective_components(
+        camera_relative_view_position,
+        surface_direction,
+        surface_altitude_meters,
+    );
+    return lit_surface_color * components.transmittance + components.in_scatter;
 }
 
 fn ocean_aerial_perspective(
@@ -1195,12 +1213,16 @@ fn ocean_aerial_perspective(
     );
 }
 
-fn terrain_distance_fog(
-    aerial_color: vec3<f32>,
+struct TerrainFog {
+    amount: f32,
+    color: vec3<f32>,
+}
+
+fn terrain_fog(
     camera_relative_view_position: vec3<f32>,
     surface_direction: vec3<f32>,
     surface_altitude_meters: f32,
-) -> vec3<f32> {
+) -> TerrainFog {
     let distance_amount = smoothstep(
         TERRAIN_FOG_START_METERS,
         TERRAIN_FOG_END_METERS,
@@ -1225,7 +1247,7 @@ fn terrain_distance_fog(
     );
     let fog_amount = distance_amount * low_altitude_amount * horizon_amount;
     if fog_amount <= 0.0 {
-        return aerial_color;
+        return TerrainFog(0.0, vec3<f32>(0.0));
     }
     let fog_color = sky_radiance(
         surface_to_camera_direction,
@@ -1233,7 +1255,38 @@ fn terrain_distance_fog(
         surface_altitude_meters,
         normalize(camera.sun_direction.xyz),
     );
-    return mix(aerial_color, fog_color, fog_amount);
+    return TerrainFog(fog_amount, fog_color);
+}
+
+fn terrain_distance_fog(
+    aerial_color: vec3<f32>,
+    camera_relative_view_position: vec3<f32>,
+    surface_direction: vec3<f32>,
+    surface_altitude_meters: f32,
+) -> vec3<f32> {
+    let fog = terrain_fog(
+        camera_relative_view_position,
+        surface_direction,
+        surface_altitude_meters,
+    );
+    return mix(aerial_color, fog.color, fog.amount);
+}
+
+fn terrain_distance_fog_components(
+    components: AerialPerspectiveComponents,
+    camera_relative_view_position: vec3<f32>,
+    surface_direction: vec3<f32>,
+    surface_altitude_meters: f32,
+) -> AerialPerspectiveComponents {
+    let fog = terrain_fog(
+        camera_relative_view_position,
+        surface_direction,
+        surface_altitude_meters,
+    );
+    return AerialPerspectiveComponents(
+        components.transmittance * (1.0 - fog.amount),
+        mix(components.in_scatter, fog.color, fog.amount),
+    );
 }
 
 fn face_tangent_u(face: u32) -> vec3<f32> {

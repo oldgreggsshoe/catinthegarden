@@ -3445,8 +3445,21 @@ mod tests {
         assert!(shader.contains("camera_distance_meters * 0.01"));
         assert!(shader.contains("TERRAIN_NORMAL_MIN_SAMPLE_METERS"));
         assert!(shader.contains("let normal_step_scale = cube_step / requested_cube_step;"));
-        assert!(shader.contains("normal,\n        direction,\n    ) * surface_irradiance;"));
+        assert_eq!(shader.matches("terrain_material_color(").count(), 2);
         assert!(shader.contains("input.world_normal,\n        direction,\n    );"));
+    }
+
+    #[test]
+    fn raster_aerial_retexturing_uses_continuous_affine_components() {
+        let shader = planet_shader_source();
+        let normalized_shader = shader.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(shader.contains("@location(2) aerial_in_scatter: vec3<f32>"));
+        assert!(shader.contains("@location(8) aerial_transmittance: vec3<f32>"));
+        assert!(normalized_shader.contains(
+            "let textured_aerial_color = textured_surface_lighting * input.aerial_transmittance + input.aerial_in_scatter;"
+        ));
+        assert!(!shader.contains("let aerial_ratio ="));
+        assert!(!shader.contains("input.surface_lighting > vec3<f32>(1.0e-3)"));
     }
 
     #[test]

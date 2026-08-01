@@ -240,6 +240,7 @@ impl ScenarioRunner {
             "manual_near_terrain_culling" => {
                 include_str!("../scenarios/manual_near_terrain_culling.json")
             }
+            "outlined_shadows" => include_str!("../scenarios/outlined_shadows.json"),
             "stand_on_ground" => include_str!("../scenarios/stand_on_ground.json"),
             "path_parity_ridge" => include_str!("../scenarios/path_parity_ridge.json"),
             "render_path_parity" => include_str!("../scenarios/render_path_parity.json"),
@@ -1285,6 +1286,32 @@ mod tests {
             .to_degrees();
         assert!((first_elevation - 15.0).abs() < 1.0e-9);
         assert!((last_elevation + 20.0).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn outlined_shadow_scenario_replays_the_reported_low_sun_location() {
+        let scenario = ScenarioRunner::load("outlined_shadows").expect("scenario parses");
+        assert_eq!(scenario.expected_screenshots(), 1);
+        assert_eq!(scenario.definition.waypoints.len(), 1);
+        assert_eq!(scenario.definition.sun_waypoints.len(), 1);
+        let mut camera = OrbitCamera::default();
+        camera.set_reference_vertical_fov_degrees_for_viewport(
+            scenario.definition.vertical_fov_waypoints[0].vertical_fov_degrees,
+            720,
+        );
+        assert!(
+            (camera.vertical_fov_radians().to_degrees() - 37.221_771_740_090_07).abs() < 1.0e-12
+        );
+        let position = DVec3::from_array(scenario.definition.waypoints[0].position);
+        assert!((position.length() - 4_015_998.546_948_375_6).abs() < 1.0e-6);
+        let solar_elevation = position
+            .normalize()
+            .dot(DVec3::from_array(
+                scenario.definition.sun_waypoints[0].direction,
+            ))
+            .asin()
+            .to_degrees();
+        assert!((solar_elevation - 18.303_833_434_177_43).abs() < 1.0e-9);
     }
 
     #[test]
