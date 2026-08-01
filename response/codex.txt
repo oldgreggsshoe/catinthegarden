@@ -1,9 +1,5 @@
-Implemented and pushed as commit `ed59d25`.
+Done and pushed as `bef978e`.
 
-- F4 WASD is now fixed-speed: movement starts immediately while a key is held and stops immediately on release; no acceleration, coasting, or braking.
-- Speed is `10 mph * (1 + altitude / 100m)`, giving comparable local apparent/angular motion while enabling much faster high-altitude travel. Shift remains a bounded 4x multiplier; cap remains 8,000 km/s.
-- Positive baked land was doubled again from 2x to 4x. Sea level and negative bathymetry remain unchanged.
-- Re-surveyed summit: 30,853.047m ASL/prominence at 27.990111N, 86.981339E. F4 and landing scenarios were re-authored and pass.
-- Validation: `cargo fmt --check`, `cargo check --workspace`, and `cargo test --workspace` pass (226 passed, 6 ignored).
+F4 flight speed is now 5x faster at every altitude: the ground baseline is 50 mph, with the same `1 + altitude/100m` scaling, fixed-speed key behavior, Shift 4x multiplier, and 8,000 km/s cap.
 
-I also tried the raster ownership/depth correction for the square water holes (mixed-fragment guard, shell ownership hint, shell-first depth order). The raw-albedo orbit capture still shows the pattern, so that rendering defect is not signed off as fixed yet; it is likely source/LOD ownership or transition coverage rather than lighting.
+Validation: formatting, workspace check, and focused flight tests pass.
