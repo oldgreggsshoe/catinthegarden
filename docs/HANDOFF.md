@@ -16,20 +16,15 @@ a bounded indirect Rayleigh approximation for a blue hour that fades into night.
 Raster terrain now carries aerial transmittance and in-scatter independently from vertex to
 fragment, so low-sun shadows cannot cross a per-channel reconstruction threshold and become bright
 islands with dark outlines. Terrain ambient remains the local overhead sky radiance scaled by 0.18.
-**Latest evidence:** committed Earth-like outmap Quadro runs `orbit_once/1785409591-283581`,
-raster `stand_on_ground/1785435672-497949`, ray `stand_on_ground/1785435686-498076`,
-`low_flight_performance/1785409648-284127`, `landing_site_ground_detail/1785412295-314602`,
-`landing_site_eye_level/1785412370-315195`, and nine `render_path_parity` runs
-`1785409733-285091` through `1785409881-286994`; highest-summit F4 runs are raster
-`highest_prominence_peak/1785435713-498256` and ray
-`highest_prominence_peak/1785435731-498377`; exact manual W-flight replay is
-`manual_forward_clearance/1785437799-519300`; near-terrain yaw sweep is
-`manual_near_terrain_culling/1785437649-517600`; long accelerated W replay is
-`manual_high_speed_clearance/1785439098-533024`; fixed-exposure sunset/blue-hour sweep is
-`sunset_blue_hour/1785444485-580099`, with follow-up
-`twilight_directionality/1785444539-581134` and
-`night_side_atmosphere/1785444546-581133`; exact reported-pose outlined-shadow replay is
-`outlined_shadows/1785585729-12608`
+**Latest evidence:** committed ETOPO terrain at `1f63dc0`: raster
+`orbit_once/1785591312-65895`, ray `orbit_once/1785591394-66553`, raster
+`stand_on_ground/1785591318-65966`, raster `landing_site_ground_detail/1785591345-66177`, raster
+`landing_site_eye_level/1785591363-66317`, raster
+`highest_prominence_peak/1785591331-66070`, and ray
+`highest_prominence_peak/1785591400-65882` all pass. The lifted-budget raster
+`low_flight_performance/1785591383-66459` remains a known failure: 449 resident chunks, 363
+fallbacks and a 1,487.113m warm-up seam. Older renderer-only evidence is retained in the relevant
+sections below but uses the previous macro planet.
 **Written:** 1 August 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
@@ -132,7 +127,16 @@ The final bake took 65.207s with one Rayon worker for thermal safety. The outmap
 intentionally gitignored; the importer, provenance, tests and reproduction command are the durable
 repository state. The new sparse-site L18 ground is 855.17919921875m raw / 2,565.53759765625m
 presented. The four manifest-relative landing scenarios preserve their relative framing after this
-surface move.
+surface move. Committed raster `stand_on_ground/1785591318-65966` measures 1.98565m clearance,
+0.184m worst-frame p90 and 0.936m maximum surface delta. The ground-detail and eye-level scenarios
+also pass; the latter spans 1.986-64.407m clearance.
+
+The old `low_flight_performance` budget/fallback/seam defect is not fixed by the rebake. At the new
+sparse coast, lifted-budget run `1785591383-66459` is finite and has zero budget-limited frames and
+zero LOD thrash, but fails its established limits at 449 resident chunks, 363 fallbacks and a
+1,487.113m warm-up seam. Its settled capture no longer has the rejected broad all-land terraces,
+but still shows the known source/LOD transition boundary; do not present this scenario as signed
+off.
 
 ### Fixed 3x positive-ASL presentation — 30 July 2026
 
@@ -144,11 +148,11 @@ at about 24.47km ASL before L4 resampling and bounded detail. Surface and low-fl
 remain three times their raw elevation.
 
 The positive-only transform is shared by CPU clearance/probes, raster displacement and normals, ray
-shell bounds and hit evaluation, and the conservative LOD/culling land bound. The four
-manifest-relative landing scenarios moved outward by +2,022.55078125m, preserving their previous
-relative framing after the ETOPO promotion: raw landing ground is 934.018310546875m and presented
-ground is 2,802.054931640625m. Negative height is never multiplied, which avoids deepening the
-ocean floor or moving the zero-metre coastline.
+shell bounds and hit evaluation, and the conservative LOD/culling land bound. The original 3x
+change moved the then-active landing scenarios outward by +2,022.55078125m. The later ETOPO rebake
+re-authors them to its own raw landing ground of 855.17919921875m / 2,565.53759765625m presented.
+Negative height is never multiplied, which avoids deepening the ocean floor or moving the
+zero-metre coastline.
 
 Current Quadro M1000M evidence, `PRESENT_MODE=immediate`, same release binary and settled spatial
 samples:
@@ -200,11 +204,10 @@ resident-cache-only. This one-time resolution prevents the camera from jumping b
 metres when streaming replaces a coarser ancestor after entry.
 
 The deterministic `highest_prominence_peak` scenario is re-authored to the measured pose and checks
-150–155m clearance in both paths. Preliminary current-tree raster and ray runs pass with finite
-metrics, zero LOD thrash, two captures and 152.412m / 152.400m clearance respectively; the committed
-run identifiers are recorded at the top of this handoff after final validation. The raster capture
-shows a clean snow-covered range. Ray mode retains its known fixed-L4 spatial limitation, but its
-terrain ownership and clearance remain correct.
+150–155m clearance in both paths. Committed raster `1785591331-66070` and ray
+`1785591400-65882` pass with finite metrics, zero LOD thrash, two captures and 152.412m / 152.400m
+clearance respectively. The raster capture shows a clean snow-covered range. Ray mode retains its
+known fixed-L4 spatial limitation, but its terrain ownership and clearance remain correct.
 
 Fixed world-space manual captures and terrain-performance baselines below describe the previous
 macro planet and are no longer visual golden locations. Manifest-relative scenarios remain the
