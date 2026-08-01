@@ -18,6 +18,9 @@ a bounded indirect Rayleigh approximation for a blue hour that fades into night.
 Raster terrain now carries aerial transmittance and in-scatter independently from vertex to
 fragment, so low-sun shadows cannot cross a per-channel reconstruction threshold and become bright
 islands with dark outlines. Terrain ambient remains the local overhead sky radiance scaled by 0.18.
+Raster land currently uses one outward geometric normal per rendered triangle for lighting and
+material slope, deliberately exposing mesh gradient changes instead of smoothing them between
+vertices. Height, LOD, source sampling and the ray path are unchanged.
 **Latest evidence:** the orientation-corrected, fixed-2x ETOPO terrain passes raster
 `orbit_once/1785599097-127619`, ray `orbit_once/1785599236-129103`, raster
 `stand_on_ground/1785599119-127881`, raster `landing_site_ground_detail/1785599181-128543`, raster
@@ -27,7 +30,9 @@ islands with dark outlines. Terrain ambient remains the local overhead sky radia
 warm-up seam at 0.5-1.0s, then the immediate repeat passed with zero seam. The lifted-budget raster
 `low_flight_performance/1785599348-130207` remains a known failure: 420 resident chunks, 334
 fallbacks and a 2,071.204m warm-up seam. Older renderer-only evidence is retained in the relevant
-sections below but uses a previous macro/detail presentation.
+sections below but uses a previous macro/detail presentation. The later raster low-poly trial passes
+`orbit_once/1785600758-149017`, `landing_site_ground_detail/1785600646-146796`, and
+`highest_prominence_peak/1785600765-149139`; see its section below for the visual findings.
 **Written:** 1 August 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
@@ -56,8 +61,8 @@ A renderer that "looks like a modernish (2015 on) game", consistent from orbit t
 ## 2. State: what is green
 
 ```
-cargo test --workspace   →  225 passed, 0 failed, 6 ignored
-                            (app 185, baker lib 26, baker bin 2, baker integration 6, coretypes 6)
+cargo test --workspace   →  226 passed, 0 failed, 6 ignored
+                            (app 186, baker lib 26, baker bin 2, baker integration 6, coretypes 6)
                             the 6 ignored are the relief_survey/terrain instruments -- run them with
                             `cargo test -- --ignored --nocapture <name>`
 ```
@@ -174,6 +179,40 @@ agreement. The longest 4,096m octave falls from 1,966.08m to 245.76m maximum amp
 the complete 13-octave absolute bound falls from 2,646.4m to **491.5m** (−81.4%). This is deliberately
 an evaluation baseline, not the final mountain-detail design; add large relief back later with
 terrain-aware direction rather than another global random gain.
+
+### Raster low-poly gradient trial — 1 August 2026
+
+Raster land now derives the rendered triangle's geometric normal from `dpdx`/`dpdy` of the
+camera-relative view position, transforms it back into planet space, and orients it outward. That
+one face normal drives direct light, local-sky fill, rock/snow slope ownership, triplanar projection
+and the base for finer-than-mesh detail relighting. It therefore stops interpolating the displaced
+central-difference normal across triangle edges and makes the current mesh gradients explicit.
+
+This is deliberately a shading-only trial. It does **not** change baked or runtime height, bilinear
+height reconstruction, the 2x positive macro scale, LOD selection/topology, skirts, CPU clearance,
+coastline ownership, aerial perspective, or the outmap. The foveated ray renderer has no raster
+triangles and remains on its existing height-field normal path. Raster skirts and almost perfectly
+vertical gap-closing faces retain the displaced fallback normal rather than presenting filler
+geometry as authored cliffs.
+
+Current Quadro raster runs, release binary and `CATINGARDEN_PRESENT_MODE=immediate`:
+
+| scenario | run | result | visual finding |
+|---|---|---|---|
+| `orbit_once` | `1785600758-149017` | pass, four captures | global presentation remains stable |
+| `landing_site_ground_detail` | `1785600646-146796` | pass, two captures | fine facets plus a conspicuous tall source/LOD transition face |
+| `highest_prominence_peak` | `1785600765-149139` | pass, two captures, 152.4m clearance | broad mountain facets are visible; dense foreground facets and 252 fallback chunks remain conspicuous |
+
+The first controlled ground-detail pair was timing-neutral (smooth **31.913ms**, faceted
+**31.898ms** mean from 4-8s); the single latest samples vary normally and are not a performance
+claim. The important result is visual: hypothesis 1 was correct, because removing normal
+interpolation exposes sharp triangle boundaries without moving the silhouette. It also exposes
+implementation structure that the smooth normal hid. The ground scenario still reports zero LOD
+thrash and zero logged seam delta, so its tall central face is not evidence that the ETOPO source
+contains a corresponding ridge. Do not tune or rebake the source to fit that face. Human review now
+decides whether this deliberately hard treatment is the desired style; if it is, source/LOD
+transition presentation is the next isolated repair. All 226 workspace tests pass with six ignored
+diagnostic instruments.
 
 ### Historical fixed 3x positive-ASL presentation — 30 July 2026
 

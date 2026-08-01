@@ -2918,6 +2918,30 @@ mod tests {
     }
 
     #[test]
+    fn raster_land_uses_geometric_triangle_normals_for_low_poly_shading() {
+        let shader = planet_shader_source();
+        let flat_normal = shader
+            .split("fn flat_terrain_normal(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("raster terrain has a geometric face-normal helper");
+        assert!(flat_normal.contains("dpdx(camera_relative_view_position)"));
+        assert!(flat_normal.contains("dpdy(camera_relative_view_position)"));
+        assert!(flat_normal.contains("view_to_planet(geometric_normal_view)"));
+        assert!(flat_normal.contains("skirt_depth_meters > 1.0e-5"));
+        assert!(flat_normal.contains("dot(outward_normal, surface_direction) >= 0.01"));
+
+        let fragment = shader
+            .split("fn terrain_fragment_color(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("raster terrain fragment path is present");
+        assert!(fragment.contains("let terrain_normal = flat_terrain_normal("));
+        assert!(fragment.contains("terrain_normal,\n        direction,"));
+        assert!(fragment.contains("let terrain_surface_irradiance = terrain_sky_diffuse"));
+    }
+
+    #[test]
     fn planet_shader_validates_with_filtered_runtime_detail_noise() {
         let shader = planet_shader_source();
         let module = wgpu::naga::front::wgsl::parse_str(&shader)
@@ -3427,7 +3451,7 @@ mod tests {
             shader.contains("smoothstep(\n        -0.01,\n        0.08,\n        solar_elevation,")
         );
         assert!(normalized_shader.contains("sun_transmittance * specular"));
-        assert!(normalized_shader.contains("sun_transmittance * direct_light"));
+        assert!(normalized_shader.contains("terrain_sun_transmittance * terrain_direct_light"));
     }
 
     #[test]
@@ -3438,7 +3462,7 @@ mod tests {
         assert!(shader.contains("let red_tint = vec3<f32>(1.35, 0.12, 0.03);"));
         assert!(shader.contains("return transmitted_sunlight * low_sun_tint * solar_visibility;"));
         assert!(normalized_shader.contains("sun_transmittance * specular"));
-        assert!(normalized_shader.contains("sun_transmittance * direct_light"));
+        assert!(normalized_shader.contains("terrain_sun_transmittance * terrain_direct_light"));
     }
 
     #[test]
@@ -3450,7 +3474,7 @@ mod tests {
     }
 
     #[test]
-    fn terrain_material_pass_uses_displaced_slope_and_latitude_snowline() {
+    fn terrain_material_pass_uses_faceted_slope_and_latitude_snowline() {
         let shader = planet_shader_source();
         assert!(shader.contains("let rock_amount = smoothstep(0.10, 0.42, slope);"));
         assert!(shader.contains("let snowline_meters = mix(6200.0, 2200.0, latitude_amount);"));
@@ -3458,7 +3482,7 @@ mod tests {
         assert!(shader.contains("TERRAIN_NORMAL_MIN_SAMPLE_METERS"));
         assert!(shader.contains("let normal_step_scale = cube_step / requested_cube_step;"));
         assert_eq!(shader.matches("terrain_material_color(").count(), 2);
-        assert!(shader.contains("input.world_normal,\n        direction,\n    );"));
+        assert!(shader.contains("terrain_normal,\n        direction,\n    );"));
     }
 
     #[test]

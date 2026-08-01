@@ -29,6 +29,10 @@ struct VertexOutput {
     @location(2) aerial_in_scatter: vec3<f32>,
     @location(3) lod_transition: vec2<f32>,
     @location(4) surface_direction: vec3<f32>,
+    // Skirts close residual LOD gaps but are not terrain-data facets. Keep
+    // their deliberately near-vertical filler geometry out of the low-poly
+    // normal treatment.
+    @location(5) skirt_depth_meters: f32,
     @location(6) source_uv: vec2<f32>,
     // Outmap flag and the scaled baked height, packed: the fragment stage
     // needs the height for each octave's headroom and the inter-stage location
@@ -36,7 +40,7 @@ struct VertexOutput {
     @location(7) outmap_and_macro_height: vec2<f32>,
     @location(8) aerial_transmittance: vec3<f32>,
     @location(9) terrain_detail_meters: f32,
-    @location(10) surface_irradiance: vec3<f32>,
+    @location(10) surface_height: f32,
     // Detail is evaluated anchor-locally for precision, so the pixel needs the
     // same anchor the vertex used. Flat: it is constant across the node, and
     // interpolating it would defeat the exact-integer cell it provides.
@@ -544,21 +548,6 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         // scalar weight left to apply here.
         normal = terrain_detail_perturbed_normal(normal, direction, detail.slope);
     }
-    let sun_direction = normalize(camera.sun_direction.xyz);
-    let sun_transmittance = surface_direct_sun_transmittance(
-        direction,
-        surface_height,
-        sun_direction,
-    );
-    let sky_diffuse = sky_diffuse_irradiance(
-        normal,
-        direction,
-        surface_height,
-        sun_direction,
-    );
-    let direct_light = max(dot(normal, sun_direction), 0.0);
-    let surface_irradiance = sky_diffuse
-        + sun_transmittance * direct_light * SURFACE_SUNLIGHT_SCALE;
     var aerial = aerial_perspective_components(
         camera_relative_view_position,
         direction,
@@ -579,11 +568,12 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         aerial.in_scatter,
         input.lod_transition,
         direction,
+        input.skirt_depth_meters,
         source_uv,
         vec2<f32>(select(0.0, 1.0, outmap), select(0.0, base_height, outmap)),
         aerial.transmittance,
         terrain_detail_meters,
-        surface_irradiance,
+        surface_height,
         anchor_direction,
         anchor_relative_position,
         select(0.0, vertex_spacing_meters, outmap),
@@ -616,6 +606,38 @@ fn lod_dither_threshold(fragment_position: vec4<f32>) -> f32 {
     // at a screen pixel, so their coverage remains complementary.
     let pixel = floor(fragment_position.xy);
     return fract(52.9829189 * fract(dot(pixel, vec2<f32>(0.06711056, 0.00583715))));
+}
+
+/// The geometric normal of the rendered triangle. Unlike the displaced
+/// central-difference normal carried by the vertices, this is constant over a
+/// triangle and deliberately does not smooth a gradient across its edges.
+fn flat_terrain_normal(
+    camera_relative_view_position: vec3<f32>,
+    surface_direction: vec3<f32>,
+    fallback_normal: vec3<f32>,
+    skirt_depth_meters: f32,
+) -> vec3<f32> {
+    let geometric_normal_view = cross(
+        dpdx(camera_relative_view_position),
+        dpdy(camera_relative_view_position),
+    );
+    if length(geometric_normal_view) < 1.0e-5 || skirt_depth_meters > 1.0e-5 {
+        return normalize(fallback_normal);
+    }
+    let geometric_normal = normalize(view_to_planet(geometric_normal_view));
+    let outward_normal = select(
+        -geometric_normal,
+        geometric_normal,
+        dot(geometric_normal, surface_direction) >= 0.0,
+    );
+    // An almost perfectly vertical face is a gap-closing wall, not a sampled
+    // topographic facet. Do not promote that implementation geometry into a
+    // bright low-poly cliff.
+    return select(
+        normalize(fallback_normal),
+        outward_normal,
+        dot(outward_normal, surface_direction) >= 0.01,
+    );
 }
 
 @fragment
@@ -770,6 +792,28 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let biome_blend = sample_biome_blend(input.source_uv);
     let moisture = sample_moisture(input.source_uv);
     let base_biome_color = blended_biome_color(biome_blend);
+    let terrain_normal = flat_terrain_normal(
+        input.camera_relative_view_position,
+        direction,
+        input.world_normal,
+        input.skirt_depth_meters,
+    );
+    let terrain_sun_transmittance = surface_direct_sun_transmittance(
+        direction,
+        input.surface_height,
+        sun_direction,
+    );
+    let terrain_sky_diffuse = sky_diffuse_irradiance(
+        terrain_normal,
+        direction,
+        input.surface_height,
+        sun_direction,
+    );
+    let terrain_direct_light = max(dot(terrain_normal, sun_direction), 0.0);
+    let terrain_surface_irradiance = terrain_sky_diffuse
+        + terrain_sun_transmittance
+            * terrain_direct_light
+            * SURFACE_SUNLIGHT_SCALE;
     let terrain_albedo = terrain_material_color(
         outmap,
         biome_id,
@@ -777,7 +821,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         base_biome_color,
         macro_height_meters,
         input.terrain_detail_meters,
-        input.world_normal,
+        terrain_normal,
         direction,
     );
     let detail_tint = terrain_material_tint(
@@ -787,7 +831,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         macro_height_meters,
         terrain_albedo,
         direction,
-        input.world_normal,
+        terrain_normal,
         input.camera_relative_view_position,
         input.terrain_detail_meters,
         input.detail_anchor_direction,
@@ -803,17 +847,16 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             1.0,
         );
     }
-    // Biome, moisture and triplanar material are fragment-frequency values.
-    // Apply the interpolated illumination to the fragment albedo instead of
-    // tinting a vertex-frequency biome colour; the latter made coarse leaves
-    // read as large Gouraud-shaded software-rendered triangles.
-    var textured_surface_lighting = textured_terrain_albedo * input.surface_irradiance;
+    // The data still owns every vertex position. Only lighting changes here:
+    // use one geometric normal for the whole rendered triangle instead of
+    // rounding its gradient through interpolated vertex normals.
+    var textured_surface_lighting = textured_terrain_albedo
+        * terrain_surface_irradiance;
     // Relief finer than the mesh can hold, shaded per pixel. The vertex ladder
     // stopped at its own spacing, so this picks up exactly the octaves it left.
-    // Irradiance arrives as one interpolated term with the vertex normal's
-    // Lambert already folded in, so re-light by the ratio the detail normal
-    // would have produced. The offset keeps the divisor away from zero at the
-    // terminator and stops grazing light exploding into white speckle.
+    // Re-light the triangle normal by the finer-than-mesh detail ratio. The
+    // offset keeps the divisor away from zero at the terminator and stops
+    // grazing light exploding into white speckle.
     if input.detail_vertex_spacing_meters > 0.0 {
         // Rebuild the vertex's cutoff from this pixel's own camera distance,
         // using the same expression vs_main used. Both are continuous in
@@ -833,7 +876,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
                 vertex_filter_meters,
                 input.outmap_and_macro_height.y,
             );
-            let vertex_normal = normalize(input.world_normal);
+            let vertex_normal = terrain_normal;
             let detail_normal = terrain_detail_perturbed_normal(
                 vertex_normal,
                 direction,
@@ -861,8 +904,8 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     if outmap && biome_id == 2u {
         let ice_light_floor = clamp(
             max(
-                max(input.surface_irradiance.x, input.surface_irradiance.y),
-                input.surface_irradiance.z,
+                max(terrain_surface_irradiance.x, terrain_surface_irradiance.y),
+                terrain_surface_irradiance.z,
             ),
             0.0,
             1.0,
