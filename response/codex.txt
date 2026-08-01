@@ -1,14 +1,16 @@
-Yes — it is very clear in `manual/1785538446-10290/capture-001.png`.
+Finished and pushed.
 
-Across the central and left mid-ground, the genuinely dark faces have turned into flat, lighter olive-green patches, while their boundaries remain thin dark burgundy/black outlines. That creates the inverted, outlined-shadow effect you described. It is not normal sunset shading, and it is distinct from the sky-colour issue.
+- **Root cause fixed:** raster aerial perspective reconstructed lighting with a per-channel near-black switch and a ratio capped at 16x. At low sun this brightened shadow interiors while leaving dark outlines.
+- **Fix:** terrain now carries atmospheric transmittance and in-scatter separately and applies the continuous physical form `surface * transmittance + in-scatter`. No threshold or amplification remains.
+- **Ambient:** unchanged intentionally. Terrain diffuse fill already samples the local sky above the surface at a darker 0.18 scale; material absorption can naturally alter the reflected hue.
+- **Normals:** confirmed correct. They derive from the same 3x-displaced height, so slopes are genuinely steeper rather than incorrectly stretched.
 
-The capture is at 44.280456°N, 30.518635°W, 9.676km altitude, 37.22° FOV, with exposure already stable around 2.121. So yes: I can see it clearly, and this exact pose is sufficient for a deterministic reproduction.
+Validation:
+- Exact reported pose/orientation/FOV: `outlined_shadows/1785585729-12608` — passed and visually inspected.
+- Raw albedo and surface-lighting controls stayed byte-identical; the correction begins only in the aerial stage.
+- Dark-outline heuristic: **15,960 -> 5,288 pixels (66.9% reduction)**.
+- Same-pose raster timing: **29.542 ms -> 24.829 ms mean** (15.9% faster; one short ten-sample controlled replay, so directional rather than a general benchmark).
+- Ray replay, sunset-blue-hour, twilight-directionality, and night-side regressions pass.
+- `cargo test --workspace`: **220 passed, 0 failed, 5 ignored**.
 
-<oai-mem-citation>
-<citation_entries>
-MEMORY.md:1-4|note=[confirmed checkout-specific renderer workflow before inspecting evidence]
-</citation_entries>
-<rollout_ids>
-019fa81f-71cc-7c12-9279-8318fbe22bc5
-</rollout_ids>
-</oai-mem-citation>
+Pushed commits: `0d3f7bd` (fix) and `6ce10ac` (handoff). Unrelated local files remain untouched.
