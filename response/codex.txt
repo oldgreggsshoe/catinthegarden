@@ -1,12 +1,4 @@
-Implemented and pushed the raster low-poly trial.
-
-- Raster land now uses each triangle’s geometric face normal for sunlight, sky fill, slope materials, and detail relighting. Heights, ETOPO data, 2× scale, LOD geometry, and collision were not changed.
-- Ray mode is unchanged because it has no raster triangles.
-- Current captures:
-  - F4 summit: `test-runs/highest_prominence_peak/1785600765-149139/screenshots/capture-002.png`
-  - close ground: `test-runs/landing_site_ground_detail/1785600646-146796/screenshots/capture-002.png`
-  - orbit: `test-runs/orbit_once/1785600758-149017/screenshots/capture-004.png`
-
-It definitely exposes the sharper gradients. It also reveals something important rather than hiding it: the close-ground view has a tall source/LOD transition face and dense grid facets, while the summit is drawing 252 fallback chunks. Those are renderer/source-residency structures, not ETOPO mountain features, so I have documented them honestly and have not modified the bake to fit them.
-
-Validation: all three raster scenarios pass; `cargo check --workspace` passes; all 226 workspace tests pass with six diagnostic tests ignored. The first controlled ground pair was timing-neutral: 31.913ms smooth versus 31.898ms faceted. This is ready for your visual verdict, but I would not call the exposed transition geometry signed off yet.
+Updated plan for this turn:
+1. Replace the current WASD acceleration/coast state with a fixed per-frame speed: held keys move immediately; releasing them stops immediately.
+2. Scale that fixed speed from a 10 mph ground baseline by camera altitude, using a smooth altitude-proportional law so angular/apparent motion stays comparable while higher flight permits much faster planetary travel; retain Shift as a bounded multiplier.
+3. Update focused movement tests and HUD wording, run fmt/check/workspace tests, then commit and push all pending terrain/elevation/ownership changes together as required.

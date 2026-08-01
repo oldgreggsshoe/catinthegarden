@@ -61,6 +61,11 @@ struct OceanVertexOutput {
     @location(2) surface_direction: vec3<f32>,
     @location(3) source_uv: vec2<f32>,
     @location(4) @interpolate(flat) outmap: f32,
+    // The shell must not win depth on a raised land triangle when its
+    // independently sampled coastline falls on the opposite side of a
+    // bilinear cell. This interpolated vertex height mirrors the geometry
+    // actually displaced by the terrain pass.
+    @location(5) terrain_height_hint: f32,
 }
 
 fn uses_outmap(terrain_info: u32) -> bool {
@@ -584,6 +589,13 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 fn vs_ocean(input: VertexInput) -> OceanVertexOutput {
     let projected = project_patch_vertex(input);
     let source_uv = input.source_uv_offset + projected.tile_uv * input.source_uv_scale;
+    let outmap = uses_outmap(input.terrain_info);
+    let macro_height_meters = macro_terrain_height(outmap, source_uv, projected.direction);
+    let terrain_height_hint = select(
+        0.0,
+        scaled_terrain_macro_height(macro_height_meters),
+        outmap,
+    );
     let surface = ocean_surface(projected.direction, camera.projection.z);
     let local_planet_position = projected.anchor_relative_position
         + projected.direction * surface.vertical_displacement
@@ -596,7 +608,8 @@ fn vs_ocean(input: VertexInput) -> OceanVertexOutput {
         input.lod_transition,
         projected.direction,
         source_uv,
-        select(0.0, 1.0, uses_outmap(input.terrain_info)),
+        select(0.0, 1.0, outmap),
+        terrain_height_hint,
     );
 }
 
@@ -685,6 +698,9 @@ fn ocean_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
     if !is_open_ocean_surface(outmap, macro_height_meters, biome_id) {
         discard;
     }
+    if input.terrain_height_hint > 0.0 {
+        discard;
+    }
 
     let render_debug_mode = u32(camera.projection.w + 0.5);
     if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
@@ -737,9 +753,14 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let ice = outmap && biome_id == 2u;
     let lake = outmap && biome_id == 1u;
     // Open sea belongs exclusively to the analytic shell drawn after this
-    // pass. Keeping bathymetry out of the depth buffer prevents a mixed
-    // coastline triangle from occluding the level water surface.
-    if is_open_ocean_surface(outmap, macro_height_meters, biome_id) {
+    // pass. Keep bathymetry out of the depth buffer unless this interpolated
+    // triangle is visibly above sea level. A fallback source tile can sample
+    // a negative texel at a fragment even though the displaced triangle was
+    // built from a positive neighbouring sample; discarding that fragment
+    // exposes the later shell as square holes in otherwise solid land.
+    if is_open_ocean_surface(outmap, macro_height_meters, biome_id)
+        && input.surface_height <= 0.0
+    {
         discard;
     }
     if lake {

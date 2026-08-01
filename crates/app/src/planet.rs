@@ -73,12 +73,12 @@ pub const GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS: f64 = 111.5;
 /// physical amplitude its repeated hills overwhelmed the already detailed
 /// baked landing tiles and read as an endless field of cones.
 pub const GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE: f64 = 0.0;
-/// Present positive ETOPO altitude at a uniform 2x while leaving sea level and
+/// Present positive ETOPO altitude at a uniform 4x while leaving sea level and
 /// bathymetry unchanged. Keeping near and far equal makes the CPU clearance,
 /// raster displacement/normals, ray hits/normals, and culling shell share one
 /// height gradient at every camera altitude.
-pub const OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE: f64 = 2.0;
-pub const OUTMAP_TERRAIN_FAR_HEIGHT_SCALE: f64 = 2.0;
+pub const OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE: f64 = 4.0;
+pub const OUTMAP_TERRAIN_FAR_HEIGHT_SCALE: f64 = 4.0;
 pub const OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS: f64 = 100_000.0;
 pub const OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS: f64 = 1_000_000.0;
 /// Compatibility alias for conservative far-orbit bounds.

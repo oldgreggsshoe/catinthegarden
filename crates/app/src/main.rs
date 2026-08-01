@@ -63,7 +63,7 @@ const DEFAULT_CAMERA_ORBIT_INCLINATION_RADIANS: f64 = 28.5_f64.to_radians();
 const INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 = 0.3;
 const MOUSE_LOOK_RADIANS_PER_PIXEL: f64 = 0.0006;
 const LOW_FLIGHT_ALTITUDE_METERS: f64 = 500.0 * 0.3048;
-/// Highest summit on the active ETOPO-backed planet after the fixed 2x macro
+/// Highest summit on the active ETOPO-backed planet after the fixed 4x macro
 /// presentation and bounded runtime detail are applied. The L4 source was
 /// scanned globally, every cell capable of beating the current maximum was
 /// refined to one metre, and the resulting summit lies near Everest at
@@ -71,11 +71,11 @@ const LOW_FLIGHT_ALTITUDE_METERS: f64 = 500.0 * 0.3048;
 /// parent, so the standard Earth prominence convention uses sea level as its
 /// key col.
 const EARTHLIKE_HIGHEST_PROMINENCE_DIRECTION: glam::DVec3 = glam::DVec3::new(
-    0.047_079_069_315_182,
-    0.469_306_450_953_685,
-    -0.881_779_460_140_501,
+    0.046_501_348_468_956,
+    0.469_319_165_103_349,
+    -0.881_803_348_744_642,
 );
-const EARTHLIKE_HIGHEST_PROMINENCE_METERS: f64 = 15_448.904_102_741;
+const EARTHLIKE_HIGHEST_PROMINENCE_METERS: f64 = 30_853.046_996_207;
 #[cfg(test)]
 const EARTHLIKE_HIGHEST_RAW_MACRO_ELEVATION_METERS: f64 = 7_720.433_593_75;
 /// How close to the ground flight may descend. This used to be the entry
@@ -97,17 +97,13 @@ const LOW_FLIGHT_COLLISION_MAX_SWEEP_SAMPLES: usize = 64;
 /// transition/skirt hit; 30m keeps the near camera outside that rendered
 /// envelope while preserving the 2m stationary inspection height.
 const LOW_FLIGHT_MOVING_CLEARANCE_METERS: f64 = 30.0;
-/// Flight begins gently enough for surface inspection, then acceleration
-/// doubles while a movement key remains held so the same controls can leave
-/// the planet. Shift accelerates the ramp without changing its shape.
-const LOW_FLIGHT_BASE_ACCELERATION_METERS_PER_SECOND_SQUARED: f64 = 50.0;
-const LOW_FLIGHT_ACCELERATION_DOUBLING_SECONDS: f64 = 0.75;
-const LOW_FLIGHT_BOOST_ACCELERATION_MULTIPLIER: f64 = 4.0;
-const LOW_FLIGHT_MAX_ACCELERATION_METERS_PER_SECOND_SQUARED: f64 = 4_000_000.0;
+/// Held WASD is an immediate, fixed-speed command. The 100m reference keeps
+/// apparent local angular motion approximately constant: 10 mph at ground
+/// level, then proportionally faster as altitude opens the view footprint.
+const LOW_FLIGHT_BASE_SPEED_METERS_PER_SECOND: f64 = 10.0 * 0.44704;
+const LOW_FLIGHT_APPARENT_MOTION_REFERENCE_ALTITUDE_METERS: f64 = 100.0;
+const LOW_FLIGHT_BOOST_SPEED_MULTIPLIER: f64 = 4.0;
 const LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND: f64 = 8_000_000.0;
-/// Releasing all movement keys halves speed every 80ms. This gives short taps
-/// precise stopping while still allowing a brief, readable coast at speed.
-const LOW_FLIGHT_RELEASE_BRAKE_HALF_LIFE_SECONDS: f64 = 0.08;
 const LOW_FLIGHT_VERTICAL_FOV_DEGREES: f64 = 60.0;
 /// Start with the landing site visibly below the horizon. A tangent view at
 /// 5,000 ft spent most of the frame on atmosphere and made the finest sparse
@@ -185,45 +181,29 @@ struct FlightMovementInput {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct FlightSpeedState {
     speed_meters_per_second: f64,
-    acceleration_time_seconds: f64,
 }
 
 fn advance_flight_speed(
-    state: FlightSpeedState,
+    _state: FlightSpeedState,
     movement_held: bool,
     boost: bool,
-    delta_seconds: f64,
+    altitude_meters: f64,
 ) -> FlightSpeedState {
-    if delta_seconds <= 0.0 {
-        return state;
+    if !movement_held {
+        return FlightSpeedState::default();
     }
-    if movement_held {
-        let acceleration_time_seconds = state.acceleration_time_seconds + delta_seconds;
-        let boost_multiplier = if boost {
-            LOW_FLIGHT_BOOST_ACCELERATION_MULTIPLIER
-        } else {
-            1.0
-        };
-        let acceleration = (LOW_FLIGHT_BASE_ACCELERATION_METERS_PER_SECOND_SQUARED
-            * 2.0_f64.powf(acceleration_time_seconds / LOW_FLIGHT_ACCELERATION_DOUBLING_SECONDS)
-            * boost_multiplier)
-            .min(LOW_FLIGHT_MAX_ACCELERATION_METERS_PER_SECOND_SQUARED);
-        FlightSpeedState {
-            speed_meters_per_second: (state.speed_meters_per_second + acceleration * delta_seconds)
-                .min(LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND),
-            acceleration_time_seconds,
-        }
+    let altitude_meters = altitude_meters.max(0.0);
+    let boost_multiplier = if boost {
+        LOW_FLIGHT_BOOST_SPEED_MULTIPLIER
     } else {
-        let speed_meters_per_second = state.speed_meters_per_second
-            * 0.5_f64.powf(delta_seconds / LOW_FLIGHT_RELEASE_BRAKE_HALF_LIFE_SECONDS);
-        FlightSpeedState {
-            speed_meters_per_second: if speed_meters_per_second < 0.01 {
-                0.0
-            } else {
-                speed_meters_per_second
-            },
-            acceleration_time_seconds: 0.0,
-        }
+        1.0
+    };
+    let speed_meters_per_second = (LOW_FLIGHT_BASE_SPEED_METERS_PER_SECOND
+        * (1.0 + altitude_meters / LOW_FLIGHT_APPARENT_MOTION_REFERENCE_ALTITUDE_METERS)
+        * boost_multiplier)
+        .min(LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND);
+    FlightSpeedState {
+        speed_meters_per_second,
     }
 }
 
@@ -319,7 +299,7 @@ impl CameraMode {
     fn label(self) -> &'static str {
         match self {
             Self::Orbit => "orbit",
-            Self::LowFlight => "accelerating WASD flight (Shift: 4x acceleration)",
+            Self::LowFlight => "fixed-speed WASD flight; speed scales with altitude (Shift: 4x)",
         }
     }
 }
@@ -1192,7 +1172,7 @@ impl State {
             self.flight_speed,
             movement_direction.is_some(),
             self.flight_movement.boost,
-            delta_seconds,
+            self.flight_local_position.length() - planet::PLANET_RADIUS_METERS,
         );
         if let Some(movement_direction) = movement_direction {
             self.flight_travel_direction = movement_direction;
@@ -3143,35 +3123,30 @@ mod tests {
     }
 
     #[test]
-    fn held_flight_input_increases_acceleration_over_time() {
-        let first = advance_flight_speed(FlightSpeedState::default(), true, false, 0.5);
-        let second = advance_flight_speed(first, true, false, 0.5);
-        let third = advance_flight_speed(second, true, false, 0.5);
+    fn held_flight_input_uses_fixed_altitude_scaled_speed() {
+        let ground = advance_flight_speed(FlightSpeedState::default(), true, false, 0.0);
+        let high = advance_flight_speed(FlightSpeedState::default(), true, false, 100_000.0);
+        let repeated = advance_flight_speed(ground, true, false, 0.0);
 
-        let first_gain = first.speed_meters_per_second;
-        let second_gain = second.speed_meters_per_second - first.speed_meters_per_second;
-        let third_gain = third.speed_meters_per_second - second.speed_meters_per_second;
-        assert!(second_gain > first_gain);
-        assert!(third_gain > second_gain);
+        assert!((ground.speed_meters_per_second - 4.4704).abs() < 1.0e-12);
+        assert!(high.speed_meters_per_second > ground.speed_meters_per_second * 900.0);
+        assert_eq!(repeated, ground);
     }
 
     #[test]
-    fn releasing_flight_input_brakes_quickly_and_resets_the_ramp() {
-        let mut held = FlightSpeedState::default();
-        for _ in 0..180 {
-            held = advance_flight_speed(held, true, false, 1.0 / 60.0);
-        }
-        let released = advance_flight_speed(held, false, false, 0.4);
+    fn releasing_flight_input_stops_immediately() {
+        let held = advance_flight_speed(FlightSpeedState::default(), true, false, 500.0);
+        let released = advance_flight_speed(held, false, false, 500.0);
 
-        assert!(released.speed_meters_per_second < held.speed_meters_per_second / 30.0);
-        assert_eq!(released.acceleration_time_seconds, 0.0);
+        assert!(held.speed_meters_per_second > 0.0);
+        assert_eq!(released, FlightSpeedState::default());
     }
 
     #[test]
-    fn accelerated_flight_has_a_finite_interplanetary_speed_cap() {
+    fn altitude_scaled_flight_has_a_finite_interplanetary_speed_cap() {
         let mut state = FlightSpeedState::default();
         for _ in 0..1_800 {
-            state = advance_flight_speed(state, true, true, 1.0 / 60.0);
+            state = advance_flight_speed(state, true, true, 1_000_000_000.0);
         }
 
         assert_eq!(
@@ -3258,9 +3233,9 @@ mod tests {
     fn earthlike_peak_measurement_uses_standard_global_summit_prominence() {
         let direction = EARTHLIKE_HIGHEST_PROMINENCE_DIRECTION;
         assert!((direction.length() - 1.0).abs() < 1.0e-12);
-        assert!((direction.y.asin().to_degrees() - 27.989_286_181).abs() < 1.0e-6);
+        assert!((direction.y.asin().to_degrees() - 27.990_111_142).abs() < 1.0e-6);
         assert!(
-            (crate::planet::geographic_longitude_degrees(direction) - 86.943_823_966).abs()
+            (crate::planet::geographic_longitude_degrees(direction) - 86.981_339_018).abs()
                 < 1.0e-6
         );
 
@@ -3272,7 +3247,8 @@ mod tests {
         );
         assert!(
             EARTHLIKE_HIGHEST_PROMINENCE_METERS
-                > EARTHLIKE_HIGHEST_RAW_MACRO_ELEVATION_METERS * 2.0
+                > EARTHLIKE_HIGHEST_RAW_MACRO_ELEVATION_METERS * 4.0
+                    - crate::planet::GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS
         );
     }
 

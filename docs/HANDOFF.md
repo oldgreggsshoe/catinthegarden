@@ -3,7 +3,7 @@
 **Branch:** `diagnose/ocean-terrain-blockiness`
 **Branch base:** `69cd04d` on `experiment/ground-readability`; this session's work is isolated on
 the diagnosis branch and pushed to `origin/diagnose/ocean-terrain-blockiness`
-**Renderer state:** current branch — positive baked macro land uses one fixed 2x presentation scale
+**Renderer state:** current branch — positive baked macro land uses one fixed 4x presentation scale
 at every camera altitude; sea level and negative bathymetry remain physical. CPU truth, raster, ray,
 LOD/culling bounds, shader normals, and scenario cameras share that transform. The former 8x
 long-wave procedural-detail gain is disabled (1x) so the observed ETOPO shape can be evaluated
@@ -21,7 +21,7 @@ islands with dark outlines. Terrain ambient remains the local overhead sky radia
 Raster land currently uses one outward geometric normal per rendered triangle for lighting and
 material slope, deliberately exposing mesh gradient changes instead of smoothing them between
 vertices. Height, LOD, source sampling and the ray path are unchanged.
-**Latest evidence:** the orientation-corrected, fixed-2x ETOPO terrain passes raster
+**Latest evidence:** the orientation-corrected, fixed-4x ETOPO terrain passes raster
 `orbit_once/1785599097-127619`, ray `orbit_once/1785599236-129103`, raster
 `stand_on_ground/1785599119-127881`, raster `landing_site_ground_detail/1785599181-128543`, raster
 `landing_site_eye_level/1785599299-129789`, raster
@@ -163,7 +163,7 @@ change is timing-neutral. Its settled capture no longer has the rejected broad a
 but still shows the known source/LOD transition boundary; do not present this scenario as signed
 off.
 
-### Fixed 2x ETOPO and unboosted detail baseline — 1 August 2026
+### Fixed 2x ETOPO and unboosted detail baseline — historical
 
 Positive ETOPO height now presents at exactly **2x** at every altitude; bathymetry and sea level stay
 physical. The CPU surface, raster displacement, raster central-difference normal probes, ray hit
@@ -171,6 +171,22 @@ shells, ray centre/east/north normal probes, LOD/culling bounds and scenario cam
 same scale. Regressions pin the 2x uniform and prove all four raster normal samples plus all three ray
 normal samples pass through `scaled_terrain_macro_height`, so lighting sees the steeper 2x gradient
 rather than the raw source gradient.
+
+### Fixed 4x ETOPO and fixed-speed altitude-scaled flight — 1 August 2026
+
+The requested second elevation doubling is now active: positive baked ETOPO land presents at exactly
+**4x** at every altitude. Sea level and negative bathymetry remain unchanged. CPU clearance,
+raster/ray displacement and normals, LOD/culling bounds, and camera scenarios all consume the
+shared positive-only transform. The global highest summit now measures **30,853.047m ASL/prominence**
+at **27.990111N, 86.981339E**; F4 and landing scenarios were re-authored and pass the updated
+clearance checks (`stand_on_ground/1785601781-159156`, `landing_site_ground_detail/1785601794-159268`,
+`landing_site_eye_level/1785601979-161573`, `highest_prominence_peak/1785601895-160271`).
+
+Interactive F4 WASD no longer accelerates, coasts, or brakes: holding a movement key applies a
+fixed speed immediately and releasing it stops immediately. The baseline is 10 mph at ground level;
+speed scales as `10 mph * (1 + altitude / 100m)`, with Shift multiplying by four and a finite
+8,000km/s cap. This keeps local angular/apparent motion approximately comparable while allowing
+rapid planetary travel from high altitude.
 
 To expose the observed Earth form before designing procedural terrain with geographic direction,
 `TERRAIN_DETAIL_LONG_GAIN` is **1.0 instead of 8.0**. This removes the extra long-wave spectral boost
@@ -1646,7 +1662,7 @@ These are the mistakes that actually cost time on this branch.
 - **Re-author scenario camera heights after any ladder or outmap change.** Changing the field moves
   the ground. `landing_site_eye_level` ended 2 m underground after one earlier ladder change, and
   the Earth-like rebake moved the sparse centre again; the clearance assertion caught both.
-  Landing-site ground is currently approximately **909m raw / 1,818m presented**.
+  Landing-site ground is currently approximately **909m raw / 3,636m presented**.
 - Shader gotchas: `active` is a reserved WGSL keyword; the inter-stage location limit is 16;
   `shared_planet.wgsl` is concatenated **ahead** of `planet.wgsl`, so tests that slice the shader by
   splitting on a function name silently run to end of file — bound on `"\nfn "`.

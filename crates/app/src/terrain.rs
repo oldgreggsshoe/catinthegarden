@@ -1540,13 +1540,16 @@ impl TerrainRenderer {
             } else {
                 &self.ocean_transition_pipeline
             };
-        render_pass.set_pipeline(pipeline);
+        // Draw the analytic shell first. With reversed-Z, raised terrain then
+        // writes a strictly greater depth and wins even when a mixed
+        // coastline triangle has nearly identical far-plane depth.
+        render_pass.set_pipeline(ocean_pipeline);
         render_pass.set_bind_group(0, camera_bind_group, &[]);
         render_pass.set_bind_group(2, &self.shared_bind_group, &[]);
         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         render_pass.set_vertex_buffer(0, self.chunk_vertex_buffer.slice(..));
         render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-        for batch in &self.draw_batches {
+        for batch in &self.ocean_draw_batches {
             let tile = batch.tile_key.map_or(&self.placeholder_tile, |key| {
                 self.tile_cache
                     .get(&key)
@@ -1559,11 +1562,8 @@ impl TerrainRenderer {
                 batch.first_instance..batch.first_instance + batch.instance_count,
             );
         }
-        // Open water is independent sea-shell geometry. Drawing it after the
-        // land/bathymetry batches lets reversed-Z keep raised terrain in front,
-        // while the ocean fragment stage clips the shell to the sampled coast.
-        render_pass.set_pipeline(ocean_pipeline);
-        for batch in &self.ocean_draw_batches {
+        render_pass.set_pipeline(pipeline);
+        for batch in &self.draw_batches {
             let tile = batch.tile_key.map_or(&self.placeholder_tile, |key| {
                 self.tile_cache
                     .get(&key)
@@ -2864,8 +2864,8 @@ mod tests {
     fn shader_reads_outmap_height_scale_from_terrain_settings() {
         let settings = TerrainSettings::from_planet_constants(4);
         let shader = planet_shader_source();
-        assert_eq!(OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, 2.0);
-        assert_eq!(OUTMAP_TERRAIN_FAR_HEIGHT_SCALE, 2.0);
+        assert_eq!(OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, 4.0);
+        assert_eq!(OUTMAP_TERRAIN_FAR_HEIGHT_SCALE, 4.0);
         assert_eq!(
             settings.outmap_height_scale[0],
             OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE as f32
@@ -2939,6 +2939,25 @@ mod tests {
         assert!(fragment.contains("let terrain_normal = flat_terrain_normal("));
         assert!(fragment.contains("terrain_normal,\n        direction,"));
         assert!(fragment.contains("let terrain_surface_irradiance = terrain_sky_diffuse"));
+    }
+
+    #[test]
+    fn terrain_fragment_keeps_positive_interpolated_land_over_mixed_ocean_samples() {
+        let shader = planet_shader_source();
+        let fragment = shader
+            .split("fn terrain_fragment_color(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("raster terrain fragment path is present");
+        assert!(fragment.contains(
+            "if is_open_ocean_surface(outmap, macro_height_meters, biome_id)\n        && input.surface_height <= 0.0"
+        ));
+        let ocean = shader
+            .split("fn ocean_fragment_color(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("analytic ocean fragment path is present");
+        assert!(ocean.contains("if input.terrain_height_hint > 0.0"));
     }
 
     #[test]
@@ -3027,7 +3046,7 @@ mod tests {
             .and_then(|source| source.split("\nfn ").next())
             .expect("ocean fragment function is present");
         assert!(terrain_fragment.contains(
-            "if is_open_ocean_surface(outmap, macro_height_meters, biome_id) {\n        discard;"
+            "if is_open_ocean_surface(outmap, macro_height_meters, biome_id)\n        && input.surface_height <= 0.0"
         ));
         assert!(ocean_fragment.contains(
             "if !is_open_ocean_surface(outmap, macro_height_meters, biome_id) {\n        discard;"
