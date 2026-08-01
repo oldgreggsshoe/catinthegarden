@@ -1,13 +1,1 @@
-Done — the new NOAA ETOPO terrain is active.
-
-- Imported [NOAA ETOPO 2022 Ice Surface, 60 arc-second](https://www.ncei.noaa.gov/products/etopo-global-relief-model), with provenance and SHA-256 recorded in `docs/ETOPO_2022_SOURCE.md`.
-- Preserved the previous bake at `assets/outmaps/test-planet.pre-etopo-backup-20260801-140800`.
-- The active bake is 3,252 L0-L18 tiles / 371 MB and validates successfully. Continents, major ranges, deserts and bathymetry now follow real Earth relief.
-- Downsampling remains bilinear for coasts, valleys and normal hills. Peak retention fades in only from 4,000–6,000m; an initial all-land max filter visibly created broad terraces, so I rejected it rather than shipping that artefact.
-- The measured highest presented summit is now 23,845.141m at 27.990111°N, 86.981339°E, near Everest. F4 and all landing-site camera heights were re-authored to the new surface.
-- `cargo check --workspace` passes; all 224 workspace tests pass with six ignored diagnostic instruments.
-- Committed raster/ray orbit and summit scenarios pass. Raster ground, ground-detail and eye-level scenarios also pass; ground clearance is 1.986m with a 0.184m worst-frame p90 surface error.
-
-One existing issue remains: the lifted-budget `low_flight_performance` diagnostic still fails its chunk/fallback/warm-up seam limits. Its settled image is much cleaner than the rejected terrace bake, but that LOD/source transition is not signed off.
-
-Commits `e647c56` and `1f63dc0` are pushed to `origin/diagnose/ocean-terrain-blockiness`. I deliberately left procedural ridge constants unchanged so this gives us a clean real-topography baseline before any further selective sharpness tuning.
+Yes—we can try a deliberately faceted low-poly terrain pass. Your message cut off at “without all the smoothing/p…”. Did you mean smoothing/post-processing, or smoothing/procedural detail? I’ll preserve the current corrected bake and commit/push the completed orientation + 2× terrain baseline now, then make the low-poly trial once you finish that sentence.

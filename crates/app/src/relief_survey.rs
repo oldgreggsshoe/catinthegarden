@@ -541,7 +541,7 @@ mod tests {
         println!("   latitude: {:.12} deg", best.2.y.asin().to_degrees());
         println!(
             "   longitude: {:.12} deg",
-            best.2.z.atan2(best.2.x).to_degrees()
+            crate::planet::geographic_longitude_degrees(best.2)
         );
         println!(
             "   direction: [{:.15}, {:.15}, {:.15}]",

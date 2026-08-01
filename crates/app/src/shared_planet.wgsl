@@ -23,9 +23,9 @@ const GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS: f32 = 111.5;
 // in terrain.rs) the stepping goes: over the mountain view, p999 of the
 // ground's luminance gradient falls 7.07 to 4.47 while p50 and p90 hold.
 //
-// At 0.06 the ladder sums to 30.7m and ~17.7m RMS, against 900-2900m of baked
-// relief -- 0.6 to 2% of it, comfortably still detail. Anything raised further
-// must re-check that ratio *and* the error budget together.
+// At the current 4096m start the unboosted finite ladder has a 491.46m absolute
+// amplitude ceiling before the per-octave land headroom gate. The former 8x
+// long-wave boost is disabled below so observed ETOPO shapes dominate.
 const TERRAIN_DETAIL_ROUGHNESS: f32 = 0.06;
 // Floor is 1m. The octave ladder is evaluated from an anchor-local offset, so
 // the in-cell fraction never has to survive an absolute 4e6 domain coordinate
@@ -43,22 +43,12 @@ const TERRAIN_DETAIL_ROUGHNESS: f32 = 0.06;
 // ROUGHNESS the ladder already uses.
 const TERRAIN_DETAIL_START_WAVELENGTH_METERS: f32 = 4096.0;
 
-// Spectral tilt: extra amplitude at the long end only, fading to none by
-// TILT_TAPER. A single ROUGHNESS makes amplitude proportional to wavelength at
-// every scale, which is a self-similar field -- the same character on a plain
-// and on a summit, and measurably so: the mountains carried 313m of relief
-// within 2km, against Cairn Gorm's ~300m and Ben Nevis's ~1200m. Real ranges
-// are not self-similar; they are far steeper at massif scale than at boulder
-// scale.
-//
-// The tilt is applied at the long end specifically because that is the half
-// that costs nothing. The LOD error budget is charged ROUGHNESS * 2.9395,
-// which is the RMS of the octaves the *mesh filters out* -- a fine-scale
-// quantity. Relief within 2km is a coarse-scale one. Measured, gain 8 with the
-// taper at 256m moves relief 313m -> 1434m while the 1m band moves 0.0308 ->
-// 0.0486 RMS, and most of that fine-band rise is the ridge and attenuation
-// changes below rather than the tilt, which on its own leaves it *lower*.
-const TERRAIN_DETAIL_LONG_GAIN: f32 = 8.0;
+// The former 8x spectral tilt made the longest procedural octaves dominate the
+// observed ETOPO terrain as a repeating pattern of large random basins and
+// ridges. Leave the function and finer ladder intact, but disable that boost
+// while the macro terrain is evaluated. Directional shaping can be added back
+// later as a separate, attributable change.
+const TERRAIN_DETAIL_LONG_GAIN: f32 = 1.0;
 const TERRAIN_DETAIL_TILT_TAPER_METERS: f32 = 256.0;
 
 fn terrain_detail_octave_tilt(wavelength_meters: f32) -> f32 {
@@ -76,14 +66,10 @@ const TERRAIN_DETAIL_OCTAVES: i32 = 13;
 // geometric series sums to twice its first term. Anything normalising against
 // the detail field has to use this and not the retired CPU field's 111.5m,
 // which is an order of magnitude larger and silently scales the result away.
-// Twice the first term is the sum of a halving series, but the spectral tilt
-// makes this series *not* halving at the long end -- it falls 1966, 510, 106,
-// 33 -- so doubling the first term overstates the reach by 1.49x. The ray
-// path's hit comb takes this as the ceiling on how far to search, and an
-// overstated ceiling is spread over the same six samples, which is the exact
-// failure the comb was rewritten to remove. `the_ladder_amplitude_bound_is_the
-// _series_it_bounds` re-derives this from the octaves.
-const TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS: f32 = 2646.4;
+// With the long-wave boost disabled this is the ordinary finite halving sum,
+// 4096 * 0.06 * (1 + 1/2 + ... + 1/4096) = 491.46m, rounded upward. The ray
+// path and culling shell use it as a conservative bound.
+const TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS: f32 = 491.5;
 // Erosion-like structure. Two knobs, both mirrored in planet.rs.
 //
 // The fold: `|n|` creases the field at every zero crossing of the noise, and

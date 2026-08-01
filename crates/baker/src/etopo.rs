@@ -45,8 +45,10 @@ impl ElevationSamples {
 
 /// Loads a north-up, whole-world NOAA ETOPO 2022 Ice Surface GeoTIFF and
 /// bilinearly resamples its pixel-centred geographic grid onto the baker's
-/// south-up pixel-centred working grid. Longitude wraps at the dateline;
-/// latitude clamps at the poles.
+/// south-up pixel-centred working grid. NOAA's west-to-east columns are also
+/// reversed because geographic east is -Z in the renderer's north-up inward
+/// view, while the working grid's x axis increases toward +Z. Longitude wraps
+/// at the dateline; latitude clamps at the poles.
 pub fn load_etopo(path: &Path, target_width: usize, target_height: usize) -> BakeResult<Vec<f64>> {
     let file = File::open(path)?;
     let mut decoder = Decoder::new(BufReader::new(file))?;
@@ -123,7 +125,8 @@ pub fn load_etopo(path: &Path, target_width: usize, target_height: usize) -> Bak
         .map(|index| {
             let x = index % target_width;
             let y = index / target_width;
-            let source_x = (x as f64 + 0.5) / target_width as f64 * source_width as f64 - 0.5;
+            let eastward = 1.0 - (x as f64 + 0.5) / target_width as f64;
+            let source_x = eastward * source_width as f64 - 0.5;
             let northward = 1.0 - (y as f64 + 0.5) / target_height as f64;
             let source_y = northward * source_height as f64 - 0.5;
             let centre = bilinear(&samples, source_width, source_height, source_x, source_y);
@@ -165,8 +168,11 @@ fn land_peak_in_target_cell(
     target_x: usize,
     target_y: usize,
 ) -> f64 {
-    let x0 = source_cell_start(target_x, target_width, source_width);
-    let x1 = source_cell_end(target_x, target_width, source_width);
+    // Source columns run west to east, while geographic east is -Z in the
+    // engine and therefore decreases along the target grid's +Z x axis.
+    let source_west_cell = target_width - 1 - target_x;
+    let x0 = source_cell_start(source_west_cell, target_width, source_width);
+    let x1 = source_cell_end(source_west_cell, target_width, source_width);
     // Source rows run north to south, while target rows run south to north.
     let source_north_cell = target_height - 1 - target_y;
     let y0 = source_cell_start(source_north_cell, target_height, source_height);
@@ -222,7 +228,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn imports_north_up_signed_relief_into_south_up_grid() {
+    fn imports_north_up_west_to_east_relief_into_engine_geographic_grid() {
         let path = std::env::temp_dir().join(format!(
             "catinthegarden-etopo-{}-orientation.tif",
             std::process::id()
@@ -245,11 +251,17 @@ mod tests {
 
         let imported = load_etopo(&path, width as usize, height as usize).unwrap();
         std::fs::remove_file(path).unwrap();
-        assert_eq!(imported[0], f64::from(values[3 * width as usize]));
-        assert_eq!(imported[3 * width as usize], f64::from(values[0]));
+        // Looking inward from +X with north up, screen-right/geographic east
+        // is -Z. The baker's equirectangular x axis increases toward +Z, so
+        // NOAA's west-to-east source columns must land in reverse x order.
+        assert_eq!(imported[0], f64::from(values[4 * width as usize - 1]));
+        assert_eq!(
+            imported[3 * width as usize],
+            f64::from(values[width as usize - 1])
+        );
         assert_eq!(
             imported[width as usize - 1],
-            f64::from(values[4 * width as usize - 1])
+            f64::from(values[3 * width as usize])
         );
     }
 
@@ -286,6 +298,8 @@ mod tests {
             imported.iter().copied().fold(f64::NEG_INFINITY, f64::max),
             8_000.0
         );
-        assert_eq!(imported[2 * 8 + 4], 1_500.0);
+        // The lower 3km peak was in source cell x=8..9, which maps to x=3
+        // after the required east/west reversal.
+        assert_eq!(imported[2 * 8 + 3], 1_500.0);
     }
 }

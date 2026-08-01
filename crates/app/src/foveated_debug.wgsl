@@ -775,12 +775,10 @@ fn refine_detail_hit(
     // global amplitude stays on as a ceiling, because the ladder can be taller
     // further along the ray than it is at this one point.
     //
-    // This is worst exactly where it shows: the hill band took
-    // TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS from 16.8m to 491m without
-    // rescaling the walk, so a grazing ray combed 1365m at a time hunting a
-    // crossing of a field with tens of metres of relief, and placed its hit
-    // within +/-512m of the truth. The quality steps that produced are locked
-    // to viewing angle, hence to distance, so terrain slides through them.
+    // A previous hill-band experiment expanded this ceiling without rescaling
+    // the walk, so grazing rays jumped past crossings and produced quality
+    // steps locked to viewing angle. The local-relief span prevents that fault
+    // if directional coarse relief is added again later.
     let span_meters = min(
         abs(value) * RAY_DETAIL_HIT_REACH_FACTOR,
         TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS,

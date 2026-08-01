@@ -3,9 +3,11 @@
 **Branch:** `diagnose/ocean-terrain-blockiness`
 **Branch base:** `69cd04d` on `experiment/ground-readability`; this session's work is isolated on
 the diagnosis branch and pushed to `origin/diagnose/ocean-terrain-blockiness`
-**Renderer state:** current branch — positive baked macro land uses one fixed 3x presentation scale
+**Renderer state:** current branch — positive baked macro land uses one fixed 2x presentation scale
 at every camera altitude; sea level and negative bathymetry remain physical. CPU truth, raster, ray,
-LOD/culling bounds, and scenario cameras share that transform. F4 starts over the measured
+LOD/culling bounds, shader normals, and scenario cameras share that transform. The former 8x
+long-wave procedural-detail gain is disabled (1x) so the observed ETOPO shape can be evaluated
+without a dominant pattern of random basins; the finer detail system remains intact. F4 starts over the measured
 highest-prominence summit. Moving raster flight sweeps the camera through every concurrently drawn
 active/transition patch, rechecks the newly selected destination frontier before presentation, and
 retains a 30m collision envelope; idle inspection remains at 2m. The raster culling shell includes
@@ -16,15 +18,16 @@ a bounded indirect Rayleigh approximation for a blue hour that fades into night.
 Raster terrain now carries aerial transmittance and in-scatter independently from vertex to
 fragment, so low-sun shadows cannot cross a per-channel reconstruction threshold and become bright
 islands with dark outlines. Terrain ambient remains the local overhead sky radiance scaled by 0.18.
-**Latest evidence:** committed ETOPO terrain at `1f63dc0`: raster
-`orbit_once/1785591312-65895`, ray `orbit_once/1785591394-66553`, raster
-`stand_on_ground/1785591318-65966`, raster `landing_site_ground_detail/1785591345-66177`, raster
-`landing_site_eye_level/1785591363-66317`, raster
-`highest_prominence_peak/1785591331-66070`, and ray
-`highest_prominence_peak/1785591400-65882` all pass. The lifted-budget raster
-`low_flight_performance/1785591383-66459` remains a known failure: 449 resident chunks, 363
-fallbacks and a 1,487.113m warm-up seam. Older renderer-only evidence is retained in the relevant
-sections below but uses the previous macro planet.
+**Latest evidence:** the orientation-corrected, fixed-2x ETOPO terrain passes raster
+`orbit_once/1785599097-127619`, ray `orbit_once/1785599236-129103`, raster
+`stand_on_ground/1785599119-127881`, raster `landing_site_ground_detail/1785599181-128543`, raster
+`landing_site_eye_level/1785599299-129789`, raster
+`highest_prominence_peak/1785599150-128156`, and ray
+`highest_prominence_peak/1785599507-134390`. A cold raster orbit first exposed the known fallback
+warm-up seam at 0.5-1.0s, then the immediate repeat passed with zero seam. The lifted-budget raster
+`low_flight_performance/1785599348-130207` remains a known failure: 420 resident chunks, 334
+fallbacks and a 2,071.204m warm-up seam. Older renderer-only evidence is retained in the relevant
+sections below but uses a previous macro/detail presentation.
 **Written:** 1 August 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
@@ -53,8 +56,8 @@ A renderer that "looks like a modernish (2015 on) game", consistent from orbit t
 ## 2. State: what is green
 
 ```
-cargo test --workspace   →  224 passed, 0 failed, 6 ignored
-                            (app 185, baker lib 25, baker bin 2, baker integration 6, coretypes 6)
+cargo test --workspace   →  225 passed, 0 failed, 6 ignored
+                            (app 185, baker lib 26, baker bin 2, baker integration 6, coretypes 6)
                             the 6 ignored are the relief_survey/terrain instruments -- run them with
                             `cargo test -- --ignored --nocapture <name>`
 ```
@@ -82,9 +85,22 @@ The rejected all-positive-land peak-envelope bake is also retained, rather than 
 `assets/outmaps/test-planet.etopo-all-land-peak-retired-20260801-142959`. Its low-flight replay made
 the reason for the high-range gate objective: max-filtering ordinary land produced broad terraces.
 
+The first ETOPO bake, before correcting its east/west display orientation, is preserved at:
+
+```
+assets/outmaps/test-planet.pre-etopo-orientation-fix-backup-20260801-163936
+```
+
+It is 371 MB / 9,760 files and validates with manifest SHA-256
+`f1915868a3be65be1ab07ed2d8713241a658fbf91efab58f8d601e18d681f88f`.
+
 `--etopo PATH` is optional: without it the authored generator remains byte-compatible. With it, the
 baker validates a signed, finite, whole-world 2:1 grayscale grid, reverses NOAA's north-up rows onto
-the baker's south-up grid, and bilinearly resamples the coastline, bathymetry and ordinary land.
+the baker's south-up grid, and reverses its west-to-east columns onto the renderer's geographic-east
+= -Z convention. This is necessary because a north-up camera looking inward from +X has screen-right
+along -Z; copying source columns forward put India west of Africa in orbit. Biome aridity masks use
+the same real-world longitude transform. The importer bilinearly resamples the coastline,
+bathymetry and ordinary land.
 Peak retention fades in only from 4,000-6,000m, reaching the highest observed source elevation in a
 target footprint for the major ranges; this prevents a narrow summit from disappearing between the
 4096x2048 working-grid sample points without max-filtering lower terrain into broad terraces. ETOPO
@@ -96,8 +112,9 @@ detail export remain in force.
 The active bake uses seed `0xEA272026` (`3928432678`), a 4096x2048 working grid, global dense L4
 coverage and sparse parent-complete refinement through L18. It validates all 3,252 schema-2 tiles,
 occupies 371 MB / 9,760 files, has manifest SHA-256
-`f1915868a3be65be1ab07ed2d8713241a658fbf91efab58f8d601e18d681f88f`, and selected sparse centre
-`[-0.504183, 0.008437, 0.863556]`. Preview measurements are:
+`2659f33bbcbcda5171ca851669007d93115347c44fe04bfdad99a26bc080dcce`, and selected sparse centre
+`[-0.504183, 0.008437, -0.863556]`. Preview measurements are unchanged because the correction is an
+exact horizontal mirror:
 
 - positive land: 34.053%; full working-grid range: -5,000m to 8,157m;
 - 553,673 pixels above 2,400m, including 13,925 above 5,000m and 37 above 7,000m;
@@ -105,8 +122,10 @@ occupies 371 MB / 9,760 files, has manifest SHA-256
   2.873%, desert 1.276%, grassland 0.708%, tundra 0.221%, mountain rock 0.145%, and mountain snow
   0.054%.
 
-The baker's preview row zero is the south pole, so the checked-in/native PNG is south-up; flip it
-vertically for a conventional north-up review. The full-resolution height and biome previews and
+The baker's preview row zero is the south pole and target x follows the engine's +Z axis, so flip it
+vertically and horizontally for a conventional north-up/east-right review. Pixel comparison proves
+the corrected height, biome and moisture previews are exact horizontal mirrors of the first bake
+after accounting for those display transforms. The full-resolution height and biome previews and
 raster orbit captures show the real continent silhouettes and coherent Andes, Rockies, Himalaya and
 other ranges. The existing `latitude > 66° => Ice` rule classifies polar ocean as ice as well as
 polar land, which explains the large ice percentage and is not new to this bake.
@@ -123,22 +142,43 @@ RAYON_NUM_THREADS=1 nice -n 10 /home/dad/catingard-target/release/catinthegarden
   --validate assets/outmaps/test-planet.etopo-staging-YYYYMMDD-HHMMSS
 ```
 
-The final bake took 65.207s with one Rayon worker for thermal safety. The outmap and source data are
+The orientation-corrected bake took 82s with one Rayon worker for thermal safety. The outmap and source data are
 intentionally gitignored; the importer, provenance, tests and reproduction command are the durable
-repository state. The new sparse-site L18 ground is 855.17919921875m raw / 2,565.53759765625m
-presented. The four manifest-relative landing scenarios preserve their relative framing after this
-surface move. Committed raster `stand_on_ground/1785591318-65966` measures 1.98565m clearance,
-0.184m worst-frame p90 and 0.936m maximum surface delta. The ground-detail and eye-level scenarios
-also pass; the latter spans 1.986-64.407m clearance.
+repository state. The new sparse-site L18 ground is approximately 909m raw / 1,818m at the fixed-2x
+presentation. The four manifest-relative landing scenarios preserve their relative framing after
+this surface move. Raster `stand_on_ground/1785599119-127881` measures 1.973m clearance, 0.169m
+worst-frame p90 and 1.272m maximum surface delta. The ground-detail and eye-level scenarios also
+pass; the latter spans 1.973-64.395m clearance.
 
 The old `low_flight_performance` budget/fallback/seam defect is not fixed by the rebake. At the new
-sparse coast, lifted-budget run `1785591383-66459` is finite and has zero budget-limited frames and
-zero LOD thrash, but fails its established limits at 449 resident chunks, 363 fallbacks and a
-1,487.113m warm-up seam. Its settled capture no longer has the rejected broad all-land terraces,
+sparse coast, lifted-budget run `1785599348-130207` is finite and has zero budget-limited frames and
+zero LOD thrash, but fails its established limits at 420 resident chunks, 334 fallbacks and a
+2,071.204m warm-up seam. Its settled mean is 40.155ms versus the first ETOPO bake's 40.463ms, so the
+change is timing-neutral. Its settled capture no longer has the rejected broad all-land terraces,
 but still shows the known source/LOD transition boundary; do not present this scenario as signed
 off.
 
-### Fixed 3x positive-ASL presentation — 30 July 2026
+### Fixed 2x ETOPO and unboosted detail baseline — 1 August 2026
+
+Positive ETOPO height now presents at exactly **2x** at every altitude; bathymetry and sea level stay
+physical. The CPU surface, raster displacement, raster central-difference normal probes, ray hit
+shells, ray centre/east/north normal probes, LOD/culling bounds and scenario cameras all consume the
+same scale. Regressions pin the 2x uniform and prove all four raster normal samples plus all three ray
+normal samples pass through `scaled_terrain_macro_height`, so lighting sees the steeper 2x gradient
+rather than the raw source gradient.
+
+To expose the observed Earth form before designing procedural terrain with geographic direction,
+`TERRAIN_DETAIL_LONG_GAIN` is **1.0 instead of 8.0**. This removes the extra long-wave spectral boost
+without deleting the detail ladder, hash, ridge shaping, source handoff, normal perturbation or CPU/GPU
+agreement. The longest 4,096m octave falls from 1,966.08m to 245.76m maximum amplitude (−87.5%), and
+the complete 13-octave absolute bound falls from 2,646.4m to **491.5m** (−81.4%). This is deliberately
+an evaluation baseline, not the final mountain-detail design; add large relief back later with
+terrain-aware direction rather than another global random gain.
+
+### Historical fixed 3x positive-ASL presentation — 30 July 2026
+
+This section records the earlier experiment. It was superseded on 1 August 2026 by the current
+fixed-2x presentation described above; its measurements are historical, not current.
 
 Commit `60ab772` replaces the former 1x-near/4x-orbit altitude blend with one fixed **3x** transform
 for positive baked macro height. It is deliberately a runtime presentation change, not a rebake:
@@ -186,15 +226,15 @@ higher parent summit, so, as for Everest, its reference key col is sea level and
 equal to its elevation ASL.
 
 The reusable ignored `global_highest_summit` instrument scanned all 1,536 globally dense L4 height
-tiles, selected all 95 cells capable of exceeding the current maximum after the conservative
-2,646.4m runtime-detail allowance, and refined them to sub-metre spacing with the same CPU macro and
+tiles, selected all 18 cells capable of exceeding the current maximum after the conservative
+491.5m runtime-detail allowance, and refined 16 to sub-metre spacing with the same CPU macro and
 runtime-detail functions used for camera clearance. It found:
 
-- highest raw L4 macro sample: **7,686.343m ASL**;
-- highest current presented surface: **23,845.141m ASL/prominence**, near Everest at
-  **27.990111°N, 86.981339°E**;
-- at the summit the fixed-3x macro contributes 23,059.028m and bounded runtime detail contributes
-  786.112m.
+- highest raw L4 macro sample: **7,720.434m ASL**;
+- highest current presented surface: **15,448.904m ASL/prominence**, near Everest at
+  **27.989286°N, 86.943824°E**;
+- at the refined summit the fixed-2x macro contributes 15,286.436m and runtime detail contributes
+  162.468m.
 
 F4 now enters free flight at that direction, preserving the established 500ft / 152.4m entry
 clearance and existing downward pitch, but facing back across the clean snow-covered summit bowl.
@@ -204,9 +244,9 @@ resident-cache-only. This one-time resolution prevents the camera from jumping b
 metres when streaming replaces a coarser ancestor after entry.
 
 The deterministic `highest_prominence_peak` scenario is re-authored to the measured pose and checks
-150–155m clearance in both paths. Committed raster `1785591331-66070` and ray
-`1785591400-65882` pass with finite metrics, zero LOD thrash, two captures and 152.412m / 152.400m
-clearance respectively. The raster capture shows a clean snow-covered range. Ray mode retains its
+150–155m clearance in both paths. Raster `1785599150-128156` and ray
+`1785599507-134390` pass with finite metrics, zero LOD thrash, two captures and 152.374m / 152.400m
+clearance respectively. The raster capture shows the lower-amplitude snow-covered range. Ray mode retains its
 known fixed-L4 spatial limitation, but its terrain ownership and clearance remain correct.
 
 Fixed world-space manual captures and terrain-performance baselines below describe the previous
@@ -215,7 +255,7 @@ appropriate first smoke tests; re-author any hard-coded terrain location before 
 about this new planet.
 
 Scenario probe results, worst frame, from `test-runs/*/*/manifest.json`. The first two rows are
-current fixed-3x pre-ETOPO evidence; the other rows are retained as pre-rebake renderer history and
+historical fixed-3x pre-ETOPO evidence; the other rows are retained as pre-rebake renderer history and
 must be rerun before they are quoted as current terrain evidence:
 
 | scenario | path | p90 delta | median delta | tolerance | clearance |
@@ -1178,7 +1218,7 @@ face edge, or **3,906.25 m per height/biome sample**. The baker's 4,096 × 2,048
 coarser still at about 6.1 km per cell. Splitting the mesh past that point only resamples the same
 bilinear height cell and categorical biome neighbourhood, so it cannot round the coastline or
 invent a less angular macro shape. At the time of the 105,492m capture the old 100–1,000km
-altitude blend was only **1.00033×**, so it did not cause that capture. The current fixed 3x
+altitude blend was only **1.00033×**, so it did not cause that capture. The current fixed 2x
 experiment still adds no source information and instead makes this existing cell relief more
 conspicuous.
 
@@ -1411,8 +1451,8 @@ shader source so the two cannot drift).
 TERRAIN_DETAIL_ROUGHNESS            0.06      amplitude = roughness × wavelength × tilt
 TERRAIN_DETAIL_START_WAVELENGTH     4096 m    starts where the baked data stops
 TERRAIN_DETAIL_OCTAVES              13        down to 1 m
-TERRAIN_DETAIL_LONG_GAIN            8.0       ┐ spectral tilt: the field is not
-TERRAIN_DETAIL_TILT_TAPER_METERS    256 m     ┘ self-similar, massifs beat plains
+TERRAIN_DETAIL_LONG_GAIN            1.0       long-wave random boost disabled for evaluation
+TERRAIN_DETAIL_TILT_TAPER_METERS    256 m     dormant until LONG_GAIN exceeds 1
 TERRAIN_DETAIL_RIDGE_SOFTNESS       0.15      sqrt(n² + s²), not abs(n)
 TERRAIN_DETAIL_RIDGE_CENTRE         0.348609  ┐ properties of the *softened* fold —
 TERRAIN_DETAIL_RIDGE_SCALE          2.063534  ┘ re-derive these if the fold changes
@@ -1420,7 +1460,7 @@ TERRAIN_DETAIL_RIDGE_STRENGTH       1.0       fully folded: creases stay creases
 TERRAIN_DETAIL_RIDGE_NORMALISATION  1.0       DERIVED: 1/sqrt((1-s)² + s²)
 TERRAIN_DETAIL_ATTENUATION_SLOPE    4.0       multifractal damping by slope so far
 TERRAIN_DETAIL_HEADROOM_FACTOR      5.5       per-octave land weighting
-TERRAIN_DETAIL_TOTAL_AMPLITUDE      2646.4 m  DERIVED: the tilted series, not 2× its head
+TERRAIN_DETAIL_TOTAL_AMPLITUDE      491.5 m   DERIVED: finite unboosted octave sum
 ```
 
 Four things about it that are load-bearing and non-obvious:
@@ -1443,8 +1483,8 @@ Four things about it that are load-bearing and non-obvious:
   overstated its own result by 31% and nearly became the design premise.
 - **Headroom is per-octave, not a scalar land weight.** A 492 m ladder gated on its total reach
   strips a 40 m plain of the 4 m hummocks it does have room for. Each octave asks separately, which
-  gives relief-correlated amplitude for free. Factor 8 because each octave alone is safe at 2 but
-  thirteen together are not; a test walks elevations asserting the ladder can never reach sea level.
+  gives relief-correlated amplitude for free. The retained 5.5 factor comes from the sea-level safety
+  proof; a test walks elevations asserting the ladder can never reach sea level.
 
 The LOD error budget knows about all this: `OUTMAP_GEOMETRIC_ERROR_RATIO` is
 `0.0536 + ROUGHNESS * 2.9395` (`terrain.rs:84-90`), derived rather than tuned. Before that it was a
@@ -1567,7 +1607,7 @@ These are the mistakes that actually cost time on this branch.
 - **Re-author scenario camera heights after any ladder or outmap change.** Changing the field moves
   the ground. `landing_site_eye_level` ended 2 m underground after one earlier ladder change, and
   the Earth-like rebake moved the sparse centre again; the clearance assertion caught both.
-  Landing-site ground is currently **855.17919921875m raw / 2,565.53759765625m presented**.
+  Landing-site ground is currently approximately **909m raw / 1,818m presented**.
 - Shader gotchas: `active` is a reserved WGSL keyword; the inter-stage location limit is 16;
   `shared_planet.wgsl` is concatenated **ahead** of `planet.wgsl`, so tests that slice the shader by
   splitting on a function name silently run to end of file — bound on `"\nfn "`.

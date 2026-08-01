@@ -78,7 +78,7 @@ impl Terrain {
             terrain.carve_glacial_valleys();
         }
         terrain.compute_moisture();
-        terrain.classify_biomes();
+        terrain.classify_biomes(imported);
         Ok(terrain)
     }
 
@@ -441,7 +441,7 @@ impl Terrain {
             .unwrap_or(glam::DVec3::X)
     }
 
-    fn classify_biomes(&mut self) {
+    fn classify_biomes(&mut self, imported_etopo: bool) {
         self.biome
             .par_iter_mut()
             .enumerate()
@@ -467,7 +467,10 @@ impl Terrain {
                         latitude_temperature - height.max(0.0) / MAX_HEIGHT_METERS * 0.55;
                     let wetness = f64::from(self.moisture[index]) / 255.0;
                     let direction = self.grid.direction(index);
-                    let longitude_degrees = direction.z.atan2(direction.x).to_degrees();
+                    // ETOPO source columns are reversed into the renderer's
+                    // geographic-east = -Z convention. Keep the authored arid
+                    // regions aligned with their real-world source longitudes.
+                    let longitude_degrees = biome_longitude_degrees(direction, imported_etopo);
                     let aridity = earthlike_aridity_field(latitude.to_degrees(), longitude_degrees);
                     if temperature < 0.24 {
                         BiomeId::Tundra
@@ -485,6 +488,11 @@ impl Terrain {
                 };
             });
     }
+}
+
+fn biome_longitude_degrees(direction: glam::DVec3, imported_etopo: bool) -> f64 {
+    let longitude_sign = if imported_etopo { -1.0 } else { 1.0 };
+    longitude_sign * direction.z.atan2(direction.x).to_degrees()
 }
 
 fn generate_base_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
@@ -1012,10 +1020,17 @@ mod tests {
         terrain.height_meters[ocean] = -100.0;
         terrain.lake[lake] = true;
         terrain.height_meters[high] = 6_000.0;
-        terrain.classify_biomes();
+        terrain.classify_biomes(false);
         assert_eq!(terrain.biome[polar], BiomeId::Ice);
         assert_eq!(terrain.biome[ocean], BiomeId::Ocean);
         assert_eq!(terrain.biome[lake], BiomeId::Lake);
         assert_eq!(terrain.biome[high], BiomeId::Ice);
+    }
+
+    #[test]
+    fn etopo_biome_longitude_follows_the_imported_visual_orientation() {
+        assert_eq!(biome_longitude_degrees(glam::DVec3::Z, false), 90.0);
+        assert_eq!(biome_longitude_degrees(glam::DVec3::Z, true), -90.0);
+        assert_eq!(biome_longitude_degrees(-glam::DVec3::Z, true), 90.0);
     }
 }

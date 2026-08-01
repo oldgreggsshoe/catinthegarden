@@ -2864,6 +2864,8 @@ mod tests {
     fn shader_reads_outmap_height_scale_from_terrain_settings() {
         let settings = TerrainSettings::from_planet_constants(4);
         let shader = planet_shader_source();
+        assert_eq!(OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, 2.0);
+        assert_eq!(OUTMAP_TERRAIN_FAR_HEIGHT_SCALE, 2.0);
         assert_eq!(
             settings.outmap_height_scale[0],
             OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE as f32
@@ -2881,6 +2883,16 @@ mod tests {
         assert_eq!(settings.outmap_detail[0], 4.0);
         assert!(shader.contains("fn scaled_terrain_macro_height("));
         assert!(shader.matches("scaled_terrain_macro_height(").count() >= 3);
+        let normal = shader
+            .split("fn displaced_surface_normal(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("raster terrain normal is present");
+        assert_eq!(
+            normal.matches("terrain_height(").count(),
+            4,
+            "every raster normal probe must pass through scaled macro height"
+        );
     }
 
     #[test]

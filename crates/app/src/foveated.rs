@@ -1557,6 +1557,13 @@ mod tests {
         assert!(normal.contains("ray_baked_spacing_meters(surface_direction)"));
         assert!(normal.contains("TERRAIN_NORMAL_MIN_SAMPLE_METERS"));
         assert!(normal.contains("TERRAIN_NORMAL_MAX_SAMPLE_METERS"));
+        assert_eq!(
+            normal
+                .matches("scaled_terrain_macro_height(sample_height(")
+                .count(),
+            3,
+            "the ray centre/east/north probes must all use exaggerated macro height"
+        );
     }
 
     #[test]
@@ -1696,9 +1703,17 @@ mod tests {
         assert_eq!(near.max_height_mip_count, 12);
         assert_eq!(near.minimum_step_meters, 1_953.125);
         assert_eq!(near.minimum_shell_radius_meters, 3_995_000.0);
-        assert_eq!(near.maximum_shell_radius_meters, 4_027_000.0);
+        assert_eq!(
+            near.maximum_shell_radius_meters,
+            (PLANET_RADIUS_METERS + 9_000.0 * crate::planet::OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE)
+                as f32
+        );
         assert_eq!(far.minimum_shell_radius_meters, 3_995_000.0);
-        assert_eq!(far.maximum_shell_radius_meters, 4_027_000.0);
+        assert_eq!(
+            far.maximum_shell_radius_meters,
+            (PLANET_RADIUS_METERS + 9_000.0 * crate::planet::OUTMAP_TERRAIN_FAR_HEIGHT_SCALE)
+                as f32
+        );
         assert_eq!(near.camera_radius_meters, 4_010_000.0);
         assert_eq!(near.camera_radius_squared, 4_010_000.0_f32.powi(2));
     }

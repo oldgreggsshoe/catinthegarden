@@ -73,11 +73,12 @@ pub const GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS: f64 = 111.5;
 /// physical amplitude its repeated hills overwhelmed the already detailed
 /// baked landing tiles and read as an endless field of cones.
 pub const GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE: f64 = 0.0;
-/// Exaggerate positive baked altitude uniformly while leaving sea level and
-/// bathymetry unchanged. Keeping near and far equal avoids stacking this
-/// experiment on the former orbit-only boost.
-pub const OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE: f64 = 3.0;
-pub const OUTMAP_TERRAIN_FAR_HEIGHT_SCALE: f64 = 3.0;
+/// Present positive ETOPO altitude at a uniform 2x while leaving sea level and
+/// bathymetry unchanged. Keeping near and far equal makes the CPU clearance,
+/// raster displacement/normals, ray hits/normals, and culling shell share one
+/// height gradient at every camera altitude.
+pub const OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE: f64 = 2.0;
+pub const OUTMAP_TERRAIN_FAR_HEIGHT_SCALE: f64 = 2.0;
 pub const OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS: f64 = 100_000.0;
 pub const OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS: f64 = 1_000_000.0;
 /// Compatibility alias for conservative far-orbit bounds.
@@ -360,6 +361,13 @@ pub fn planet_local_vector(world_vector: DVec3, planet_rotation_radians: f64) ->
     DQuat::from_rotation_y(-planet_rotation_radians).mul_vec3(world_vector)
 }
 
+/// Geographic longitude in the renderer's north-up outward surface frame.
+/// A viewer looking inward from +X has screen-right/geographic east along -Z,
+/// so this intentionally negates the grid's mathematical `atan2(z, x)` angle.
+pub fn geographic_longitude_degrees(direction: DVec3) -> f64 {
+    -direction.z.atan2(direction.x).to_degrees()
+}
+
 pub fn placeholder_height_meters(direction: DVec3) -> f64 {
     PLACEHOLDER_HEIGHT_OCTAVES
         .iter()
@@ -382,13 +390,11 @@ pub const TERRAIN_DETAIL_ROUGHNESS: f64 = 0.06;
 /// 3.9km texels, so it carries nothing below about 7.8km, and the ladder used
 /// to start at 256m -- leaving three octaves of hill-scale relief empty.
 pub const TERRAIN_DETAIL_START_WAVELENGTH_METERS: f64 = 4096.0;
-/// Spectral tilt. A single roughness makes amplitude proportional to wavelength
-/// at every scale, which is a self-similar field: the same character on a plain
-/// as on a summit. Measured, that put 313m of relief within 2km at the
-/// mountains -- Cairn Gorm is ~300m and Ben Nevis ~1200m. Extra amplitude goes
-/// into the long octaves only, because relief within 2km is a coarse-scale
-/// quantity while the LOD error budget is charged a fine-scale one.
-pub const TERRAIN_DETAIL_LONG_GAIN: f64 = 8.0;
+/// Keep the procedural ladder unboosted while the new ETOPO macro terrain is
+/// evaluated. The former 8x long-wave gain added a repeating pattern of large
+/// random basins and ridges; directional landform shaping can replace it in a
+/// later, separately judged pass without removing the finer detail system.
+pub const TERRAIN_DETAIL_LONG_GAIN: f64 = 1.0;
 pub const TERRAIN_DETAIL_TILT_TAPER_METERS: f64 = 256.0;
 pub const TERRAIN_DETAIL_OCTAVES: u32 = 13;
 pub const TERRAIN_DETAIL_MIN_FILTER_METERS: f64 = 0.5;
@@ -552,11 +558,11 @@ fn lerp(from: f64, to: f64, amount: f64) -> f64 {
     from + (to - from) * amount
 }
 
-/// The most the ladder can reach, summed over the octaves it actually has.
-/// Not twice the first term: the spectral tilt means the series does not halve
-/// at the long end. Mirrors the shader constant of the same name.
+/// The most the unboosted ladder can reach, summed over the finite octave set.
+/// Mirrors the shader constant of the same name and is rounded upward from
+/// 491.46m.
 #[cfg_attr(not(test), allow(dead_code))]
-pub const TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS: f64 = 2646.4;
+pub const TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS: f64 = 491.5;
 /// How much elevation an octave needs before it appears at full amplitude,
 /// as a multiple of its own amplitude. Asked per octave rather than per ladder;
 /// see `terrain_detail_octave_headroom` in shared_planet.wgsl for why, and for
@@ -3319,11 +3325,11 @@ mod tests {
         );
     }
 
-    /// The tilt must leave the fine octaves alone. Everything below the taper
-    /// is what the mesh filters out and the LOD budget is charged for; if the
-    /// gain reaches down there the budget silently under-tessellates.
+    /// The long-wave boost is deliberately neutral while ETOPO is evaluated.
+    /// Keep the dormant tilt function uniform so merely changing wavelength
+    /// cannot reintroduce large random basins.
     #[test]
-    fn the_spectral_tilt_lifts_only_the_long_octaves() {
+    fn the_disabled_spectral_tilt_leaves_every_octave_unboosted() {
         use super::{
             TERRAIN_DETAIL_LONG_GAIN, TERRAIN_DETAIL_TILT_TAPER_METERS, terrain_detail_octave_tilt,
         };
@@ -3332,11 +3338,10 @@ mod tests {
         );
         assert!(terrain_detail_octave_tilt(TERRAIN_DETAIL_TILT_TAPER_METERS * 0.5) == 1.0);
         assert!(terrain_detail_octave_tilt(1.0) == 1.0);
-        assert!(
-            (terrain_detail_octave_tilt(TERRAIN_DETAIL_START_WAVELENGTH_METERS)
-                - TERRAIN_DETAIL_LONG_GAIN)
-                .abs()
-                < 1.0e-6
+        assert_eq!(TERRAIN_DETAIL_LONG_GAIN, 1.0);
+        assert_eq!(
+            terrain_detail_octave_tilt(TERRAIN_DETAIL_START_WAVELENGTH_METERS),
+            1.0
         );
         // Monotone, so no octave is louder than a longer one.
         let mut previous = f64::MAX;
