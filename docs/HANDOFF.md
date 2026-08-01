@@ -13,6 +13,9 @@ the complete live detail ladder, so elevated near-camera vertices cannot disappe
 macro-only bound. Key 6 switches between auto exposure and fixed 1.0.
 The fullscreen sky removes the direct-scattering model's green-dominant colour crossover and adds
 a bounded indirect Rayleigh approximation for a blue hour that fades into night.
+Raster terrain now carries aerial transmittance and in-scatter independently from vertex to
+fragment, so low-sun shadows cannot cross a per-channel reconstruction threshold and become bright
+islands with dark outlines. Terrain ambient remains the local overhead sky radiance scaled by 0.18.
 **Latest evidence:** committed Earth-like outmap Quadro runs `orbit_once/1785409591-283581`,
 raster `stand_on_ground/1785435672-497949`, ray `stand_on_ground/1785435686-498076`,
 `low_flight_performance/1785409648-284127`, `landing_site_ground_detail/1785412295-314602`,
@@ -25,8 +28,9 @@ raster `stand_on_ground/1785435672-497949`, ray `stand_on_ground/1785435686-4980
 `manual_high_speed_clearance/1785439098-533024`; fixed-exposure sunset/blue-hour sweep is
 `sunset_blue_hour/1785444485-580099`, with follow-up
 `twilight_directionality/1785444539-581134` and
-`night_side_atmosphere/1785444546-581133`
-**Written:** 30 July 2026
+`night_side_atmosphere/1785444546-581133`; exact reported-pose outlined-shadow replay is
+`outlined_shadows/1785585729-12608`
+**Written:** 1 August 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
 
@@ -54,8 +58,8 @@ A renderer that "looks like a modernish (2015 on) game", consistent from orbit t
 ## 2. State: what is green
 
 ```
-cargo test --workspace   →  218 passed, 0 failed, 5 ignored
-                            (app 183, baker lib 23, baker bin 1, baker integration 5, coretypes 6)
+cargo test --workspace   →  220 passed, 0 failed, 5 ignored
+                            (app 185, baker lib 23, baker bin 1, baker integration 5, coretypes 6)
                             the 5 ignored are the relief_survey/terrain instruments -- run them with
                             `cargo test -- --ignored --nocapture <name>`
 ```
@@ -866,12 +870,40 @@ textured_aerial_color = textured_surface_lighting
 
 That difference is `in_scatter - lit x (1 - T)`. **The extinction is the negative half, so it was
 discarded on the floor, and the clamp then zeroed the entire term wherever extinction exceeded
-in-scatter** — which over bright ground is everywhere. It is now carried as a ratio, with the old
-additive form kept as a fallback where the vertex surface is too dark to define one (this is what
-keeps night-side haze; `night_side_atmosphere` passes).
+in-scatter** — which over bright ground is everywhere. The first repair carried that transform as a
+ratio, with the old additive form selected where the vertex surface was too dark to define one. It
+restored extinction but left a second defect at that near-black switch.
 
 **This defect was raster-only.** The ray path calls `aerial_perspective` per pixel and never had the
 reconstruction step, so the fix is also a parity fix.
+
+**Follow-up, 1 August: the ratio repair caused the outlined low-sun shadows.** The reported manual
+capture put adjacent RGB channels across a hard per-channel `surface_lighting > 0.001` selection.
+The ratio side could amplify a dark shadow by up to 16x while the fallback side stayed dark, making
+the shadow interior lighter than its outline. `outlined_shadows` preserves the reported camera,
+orientation, 37.22177174009007° rendered FOV, and 18.303833° local solar elevation. Its F9 captures
+showed byte-identical raw albedo and surface-lighting before/after; the fault first appeared in the
+aerial stage, ruling out geometry, the correctly 3x-steepened height normals, and material lighting.
+
+Raster vertices now pass the actual affine components separately and fragments apply the exact
+continuous transform:
+
+```wgsl
+textured_aerial_color = textured_surface_lighting * aerial_transmittance + aerial_in_scatter;
+```
+
+Distance fog is composed into those same components without changing its result. There is no ratio,
+near-black threshold, or amplification clamp. The local-sky ambient path is deliberately unchanged:
+`sky_diffuse_irradiance` samples above the terrain normal and applies
+`SKY_DIFFUSE_LIGHT_SCALE = 0.18`; material absorption can still shift the reflected hue.
+
+Controlled same-pose captures are baseline `1785539126-17480` through `1785539154-17722` and fixed
+`1785539594-22226` through `1785539627-22541`; a simple dark-red-outline count in the final terrain
+falls 15,960 to 5,288 (66.9%). The same short raster replay improved 29.542ms to 24.829ms mean because
+the now-unused duplicate vertex material evaluation was removed; treat the single ten-sample timing
+as directional, not a general renderer benchmark. Committed exact-FOV raster run
+`outlined_shadows/1785585729-12608` passes, as do the ray replay, `sunset_blue_hour`,
+`twilight_directionality`, `night_side_atmosphere`, and all 220 workspace tests.
 
 Measured after, `tour_mountains` mid-tour frame:
 
