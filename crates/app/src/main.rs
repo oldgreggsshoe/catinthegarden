@@ -98,9 +98,9 @@ const LOW_FLIGHT_COLLISION_MAX_SWEEP_SAMPLES: usize = 64;
 /// envelope while preserving the 2m stationary inspection height.
 const LOW_FLIGHT_MOVING_CLEARANCE_METERS: f64 = 30.0;
 /// Held WASD is an immediate, fixed-speed command. The 100m reference keeps
-/// apparent local angular motion approximately constant: 10 mph at ground
+/// apparent local angular motion approximately constant: 50 mph at ground
 /// level, then proportionally faster as altitude opens the view footprint.
-const LOW_FLIGHT_BASE_SPEED_METERS_PER_SECOND: f64 = 10.0 * 0.44704;
+const LOW_FLIGHT_BASE_SPEED_METERS_PER_SECOND: f64 = 50.0 * 0.44704;
 const LOW_FLIGHT_APPARENT_MOTION_REFERENCE_ALTITUDE_METERS: f64 = 100.0;
 const LOW_FLIGHT_BOOST_SPEED_MULTIPLIER: f64 = 4.0;
 const LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND: f64 = 8_000_000.0;
@@ -3128,7 +3128,7 @@ mod tests {
         let high = advance_flight_speed(FlightSpeedState::default(), true, false, 100_000.0);
         let repeated = advance_flight_speed(ground, true, false, 0.0);
 
-        assert!((ground.speed_meters_per_second - 4.4704).abs() < 1.0e-12);
+        assert!((ground.speed_meters_per_second - 22.352).abs() < 1.0e-12);
         assert!(high.speed_meters_per_second > ground.speed_meters_per_second * 900.0);
         assert_eq!(repeated, ground);
     }

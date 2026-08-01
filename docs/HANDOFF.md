@@ -183,8 +183,8 @@ clearance checks (`stand_on_ground/1785601781-159156`, `landing_site_ground_deta
 `landing_site_eye_level/1785601979-161573`, `highest_prominence_peak/1785601895-160271`).
 
 Interactive F4 WASD no longer accelerates, coasts, or brakes: holding a movement key applies a
-fixed speed immediately and releasing it stops immediately. The baseline is 10 mph at ground level;
-speed scales as `10 mph * (1 + altitude / 100m)`, with Shift multiplying by four and a finite
+fixed speed immediately and releasing it stops immediately. The baseline is 50 mph at ground level;
+speed scales as `50 mph * (1 + altitude / 100m)`, with Shift multiplying by four and a finite
 8,000km/s cap. This keeps local angular/apparent motion approximately comparable while allowing
 rapid planetary travel from high altitude.
 
