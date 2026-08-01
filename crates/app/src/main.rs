@@ -63,20 +63,21 @@ const DEFAULT_CAMERA_ORBIT_INCLINATION_RADIANS: f64 = 28.5_f64.to_radians();
 const INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 = 0.3;
 const MOUSE_LOOK_RADIANS_PER_PIXEL: f64 = 0.0006;
 const LOW_FLIGHT_ALTITUDE_METERS: f64 = 500.0 * 0.3048;
-/// Highest summit on the active Earth-like planet after the fixed 3x macro
+/// Highest summit on the active ETOPO-backed planet after the fixed 3x macro
 /// presentation and bounded runtime detail are applied. The L4 source was
 /// scanned globally, every cell capable of beating the current maximum was
-/// refined to one metre, and the resulting summit lies at 41.530039 N,
-/// 71.196130 E. As the planet's highest summit it has no higher parent, so the
-/// standard Earth prominence convention uses sea level as its key col.
+/// refined to one metre, and the resulting summit lies near Everest at
+/// 27.990111 N, 86.981339 E. As the planet's highest summit it has no higher
+/// parent, so the standard Earth prominence convention uses sea level as its
+/// key col.
 const EARTHLIKE_HIGHEST_PROMINENCE_DIRECTION: glam::DVec3 = glam::DVec3::new(
-    0.241_298_616_876_062,
-    0.663_012_622_123_029,
-    0.708_653_117_116_721,
+    0.046_501_348_468_956,
+    0.469_319_165_103_349,
+    0.881_803_348_744_642,
 );
-const EARTHLIKE_HIGHEST_PROMINENCE_METERS: f64 = 27_207.866_782_074;
+const EARTHLIKE_HIGHEST_PROMINENCE_METERS: f64 = 23_846.513_246_721;
 #[cfg(test)]
-const EARTHLIKE_HIGHEST_RAW_MACRO_ELEVATION_METERS: f64 = 8_738.565_429_687_5;
+const EARTHLIKE_HIGHEST_RAW_MACRO_ELEVATION_METERS: f64 = 7_686.800_292_968_75;
 /// How close to the ground flight may descend. This used to be the entry
 /// altitude above, doing double duty, so the camera could never get nearer the
 /// surface than 500 ft and eye-level views of the terrain were unreachable.
@@ -3259,8 +3260,8 @@ mod tests {
     fn earthlike_peak_measurement_uses_standard_global_summit_prominence() {
         let direction = EARTHLIKE_HIGHEST_PROMINENCE_DIRECTION;
         assert!((direction.length() - 1.0).abs() < 1.0e-12);
-        assert!((direction.y.asin().to_degrees() - 41.530_039_222).abs() < 1.0e-6);
-        assert!((direction.z.atan2(direction.x).to_degrees() - 71.196_129_733).abs() < 1.0e-6);
+        assert!((direction.y.asin().to_degrees() - 27.990_111_142).abs() < 1.0e-6);
+        assert!((direction.z.atan2(direction.x).to_degrees() - 86.981_339_018).abs() < 1.0e-6);
 
         // A planet's highest summit has no higher parent. As for Everest, its
         // key col is sea level, so prominence equals summit elevation ASL.

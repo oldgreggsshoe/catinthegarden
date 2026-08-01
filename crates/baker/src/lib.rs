@@ -1,4 +1,5 @@
 pub mod config;
+mod etopo;
 mod export;
 mod grid;
 pub mod terrain;
@@ -17,7 +18,7 @@ pub fn bake(config: &BakeConfig) -> BakeResult<OutmapManifest> {
     config
         .validate()
         .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
-    let terrain = Terrain::generate(config);
+    let terrain = Terrain::try_generate(config)?;
     let manifest = export::export_outmap(config, &terrain)?;
     validate_output(&config.output)?;
     Ok(manifest)

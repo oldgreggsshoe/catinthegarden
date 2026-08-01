@@ -7,7 +7,7 @@ use catinthegarden_coretypes::{BiomeId, direction_to_face_uv};
 use noise::{NoiseFn, Perlin};
 use rayon::prelude::*;
 
-use crate::{config::BakeConfig, grid::SphericalGrid};
+use crate::{BakeResult, config::BakeConfig, etopo::load_etopo, grid::SphericalGrid};
 
 pub const MIN_HEIGHT_METERS: f64 = -5_000.0;
 pub const MAX_HEIGHT_METERS: f64 = 9_000.0;
@@ -32,9 +32,24 @@ pub struct Terrain {
 }
 
 impl Terrain {
+    /// Preserves the original infallible API for authored/test configurations.
+    /// File-backed sources should normally use `try_generate` so I/O errors can
+    /// be reported rather than converted into a panic.
     pub fn generate(config: &BakeConfig) -> Self {
+        Self::try_generate(config).expect("terrain generation failed")
+    }
+
+    pub fn try_generate(config: &BakeConfig) -> BakeResult<Self> {
         let grid = SphericalGrid::new(config.width, config.height);
-        let height_meters = generate_base_shape(&grid, config.seed);
+        let imported = config.etopo.is_some();
+        let height_meters = if let Some(path) = &config.etopo {
+            load_etopo(path, config.width, config.height)?
+                .into_par_iter()
+                .map(|height| height.clamp(MIN_HEIGHT_METERS, MAX_HEIGHT_METERS))
+                .collect()
+        } else {
+            generate_base_shape(&grid, config.seed)
+        };
         let len = grid.len();
         let mut terrain = Self {
             grid,
@@ -47,14 +62,24 @@ impl Terrain {
             moisture: vec![0; len],
             biome: vec![BiomeId::Ocean; len],
         };
-        terrain.erode(config.erosion_iterations);
-        terrain.recompute_flow();
-        terrain.carve_rivers();
-        terrain.fill_lakes();
-        terrain.carve_glacial_valleys();
+        if imported {
+            // ETOPO is observed, naturally eroded terrain. Reapplying the
+            // stylised hydraulic/thermal and valley carving stages rounds off
+            // real ranges and moves their heights by kilometres. Retain its
+            // surface while still deriving the downstream hydrology fields.
+            terrain.recompute_flow();
+            terrain.mark_rivers();
+            terrain.fill_lakes();
+        } else {
+            terrain.erode(config.erosion_iterations);
+            terrain.recompute_flow();
+            terrain.carve_rivers();
+            terrain.fill_lakes();
+            terrain.carve_glacial_valleys();
+        }
         terrain.compute_moisture();
         terrain.classify_biomes();
-        terrain
+        Ok(terrain)
     }
 
     #[cfg(test)]
@@ -167,13 +192,8 @@ impl Terrain {
     }
 
     fn carve_rivers(&mut self) {
+        self.mark_rivers();
         let threshold = (self.grid.len() as f64 / 1_024.0).max(8.0);
-        self.river = self
-            .flow_accumulation
-            .iter()
-            .zip(&self.height_meters)
-            .map(|(&flow, &height)| flow >= threshold && height > 0.0)
-            .collect();
         let original = self.height_meters.clone();
         for center in 0..self.grid.len() {
             if !self.river[center] {
@@ -198,6 +218,16 @@ impl Terrain {
                 }
             }
         }
+    }
+
+    fn mark_rivers(&mut self) {
+        let threshold = (self.grid.len() as f64 / 1_024.0).max(8.0);
+        self.river = self
+            .flow_accumulation
+            .iter()
+            .zip(&self.height_meters)
+            .map(|(&flow, &height)| flow >= threshold && height > 0.0)
+            .collect();
     }
 
     fn fill_lakes(&mut self) {

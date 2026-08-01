@@ -83,6 +83,7 @@ pub fn refine_existing_outmap(output: &Path) -> BakeResult<OutmapManifest> {
         .map_err(|message| io::Error::new(ErrorKind::InvalidData, message))?;
     let config = BakeConfig {
         output: output.to_path_buf(),
+        etopo: None,
         seed: existing.seed,
         width: existing.working_width as usize,
         height: existing.working_height as usize,
@@ -128,7 +129,10 @@ pub fn refine_existing_outmap(output: &Path) -> BakeResult<OutmapManifest> {
         generated_tiles.insert(key, tile);
     }
 
-    let manifest = build_manifest(&config, landing_direction, available_tiles);
+    let mut manifest = build_manifest(&config, landing_direction, available_tiles);
+    // Refinement does not reload the original macro source, but it must not
+    // erase that source attribution from the existing outmap.
+    manifest.generator = existing.generator;
     manifest
         .validate()
         .map_err(|message| io::Error::new(ErrorKind::InvalidData, message))?;
@@ -327,7 +331,14 @@ fn build_manifest(
 ) -> OutmapManifest {
     OutmapManifest {
         schema_version: OUTMAP_SCHEMA_VERSION,
-        generator: format!("catinthegarden-baker {}", env!("CARGO_PKG_VERSION")),
+        generator: if config.etopo.is_some() {
+            format!(
+                "catinthegarden-baker {}; macro source NOAA ETOPO 2022 Ice Surface",
+                env!("CARGO_PKG_VERSION")
+            )
+        } else {
+            format!("catinthegarden-baker {}", env!("CARGO_PKG_VERSION"))
+        },
         seed: config.seed,
         planet_radius_meters: PLANET_RADIUS_METERS,
         working_width: config.width as u32,

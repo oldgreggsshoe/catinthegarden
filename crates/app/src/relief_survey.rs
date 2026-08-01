@@ -6,7 +6,9 @@
 #[cfg(test)]
 mod tests {
     use crate::planet::{
-        PLANET_RADIUS_METERS, TERRAIN_DETAIL_START_WAVELENGTH_METERS, terrain_detail_meters,
+        PLANET_RADIUS_METERS, TERRAIN_DETAIL_START_WAVELENGTH_METERS,
+        TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS, baked_sample_spacing_meters,
+        scaled_outmap_macro_height_meters, terrain_detail_meters,
     };
     use glam::DVec3;
 
@@ -354,6 +356,198 @@ mod tests {
         let stored = catinthegarden_coretypes::TILE_STORED_SIZE as usize;
         let gutter = catinthegarden_coretypes::TILE_GUTTER as usize;
         f64::from(data.heights_meters[(sy + gutter) * stored + sx + gutter])
+    }
+
+    /// Re-runs the global-summit measurement whenever the active macro source
+    /// changes. The standard prominence of the planet's highest summit is its
+    /// elevation above the sea-level key col.
+    #[test]
+    #[ignore = "instrument: cargo test -- --ignored --nocapture global_highest_summit"]
+    fn global_highest_summit() {
+        use catinthegarden_coretypes::{
+            TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey, face_uv_to_direction,
+        };
+
+        #[derive(Clone, Copy)]
+        struct Cell {
+            key: TileKey,
+            sample_x: usize,
+            sample_y: usize,
+            heights: [f64; 4],
+            upper_bound: f64,
+        }
+
+        fn sample_direction(cell: Cell, u: f64, v: f64) -> DVec3 {
+            let side = f64::from(1_u32 << cell.key.level);
+            let logical_quads = f64::from(TILE_LOGICAL_SIZE - 1);
+            let face_u =
+                ((f64::from(cell.key.x) + (cell.sample_x as f64 + u) / logical_quads) / side) * 2.0
+                    - 1.0;
+            let face_v =
+                ((f64::from(cell.key.y) + (cell.sample_y as f64 + v) / logical_quads) / side) * 2.0
+                    - 1.0;
+            face_uv_to_direction(cell.key.face, face_u, face_v)
+        }
+
+        fn sample_surface(cell: Cell, u: f64, v: f64, spacing: f64) -> (f64, f64, DVec3) {
+            let lower = cell.heights[0] + (cell.heights[1] - cell.heights[0]) * u;
+            let upper = cell.heights[2] + (cell.heights[3] - cell.heights[2]) * u;
+            let raw = lower + (upper - lower) * v;
+            let direction = sample_direction(cell, u, v);
+            let macro_height = scaled_outmap_macro_height_meters(raw, 152.4);
+            let height = macro_height + terrain_detail_meters(direction, spacing, macro_height);
+            (height, raw, direction)
+        }
+
+        fn refine(cell: Cell, spacing: f64) -> (f64, f64, DVec3) {
+            let divisions = 16_usize;
+            let mut seeds = Vec::with_capacity((divisions + 1) * (divisions + 1));
+            for y in 0..=divisions {
+                for x in 0..=divisions {
+                    let u = x as f64 / divisions as f64;
+                    let v = y as f64 / divisions as f64;
+                    let sample = sample_surface(cell, u, v, spacing);
+                    seeds.push((sample.0, u, v, sample.1, sample.2));
+                }
+            }
+            seeds.sort_by(|a, b| b.0.total_cmp(&a.0));
+            seeds.truncate(8);
+
+            let mut best = (f64::NEG_INFINITY, 0.0, DVec3::X);
+            for (_, mut u, mut v, _, _) in seeds {
+                let mut step = 1.0 / divisions as f64;
+                while step * spacing > 0.5 {
+                    let mut local = sample_surface(cell, u, v, spacing);
+                    let mut local_uv = (u, v);
+                    for dy in -1..=1 {
+                        for dx in -1..=1 {
+                            let candidate_u = (u + f64::from(dx) * step).clamp(0.0, 1.0);
+                            let candidate_v = (v + f64::from(dy) * step).clamp(0.0, 1.0);
+                            let candidate = sample_surface(cell, candidate_u, candidate_v, spacing);
+                            if candidate.0 > local.0 {
+                                local = candidate;
+                                local_uv = (candidate_u, candidate_v);
+                            }
+                        }
+                    }
+                    (u, v) = local_uv;
+                    step *= 0.5;
+                }
+                let candidate = sample_surface(cell, u, v, spacing);
+                if candidate.0 > best.0 {
+                    best = candidate;
+                }
+            }
+            best
+        }
+
+        let outmap = crate::outmap::Outmap::open("../../assets/outmaps/test-planet")
+            .or_else(|_| crate::outmap::Outmap::open("assets/outmaps/test-planet"))
+            .expect("active test planet outmap");
+        let dense_level = outmap.manifest().dense_level;
+        let keys: Vec<_> = outmap
+            .manifest()
+            .available_tiles
+            .iter()
+            .copied()
+            .filter(|key| key.level == dense_level)
+            .collect();
+        let stored = TILE_STORED_SIZE as usize;
+        let gutter = TILE_GUTTER as usize;
+        let logical = TILE_LOGICAL_SIZE as usize;
+        let spacing = baked_sample_spacing_meters(dense_level);
+
+        let mut raw_maximum = (f64::NEG_INFINITY, DVec3::X);
+        for &key in &keys {
+            let tile = outmap.load_tile(key).expect("dense tile");
+            for y in 0..logical {
+                for x in 0..logical {
+                    let raw = f64::from(tile.heights_meters[(y + gutter) * stored + x + gutter]);
+                    if raw > raw_maximum.0 {
+                        let cell = Cell {
+                            key,
+                            sample_x: x.min(logical - 2),
+                            sample_y: y.min(logical - 2),
+                            heights: [raw; 4],
+                            upper_bound: 0.0,
+                        };
+                        raw_maximum = (
+                            raw,
+                            sample_direction(
+                                cell,
+                                if x == logical - 1 { 1.0 } else { 0.0 },
+                                if y == logical - 1 { 1.0 } else { 0.0 },
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+
+        let raw_macro = scaled_outmap_macro_height_meters(raw_maximum.0, 152.4);
+        let mut best = (
+            raw_macro + terrain_detail_meters(raw_maximum.1, spacing, raw_macro),
+            raw_maximum.0,
+            raw_maximum.1,
+        );
+        let mut candidates = Vec::new();
+        for &key in &keys {
+            let tile = outmap.load_tile(key).expect("dense tile");
+            let height = |x: usize, y: usize| {
+                f64::from(tile.heights_meters[(y + gutter) * stored + x + gutter])
+            };
+            for y in 0..logical - 1 {
+                for x in 0..logical - 1 {
+                    let heights = [
+                        height(x, y),
+                        height(x + 1, y),
+                        height(x, y + 1),
+                        height(x + 1, y + 1),
+                    ];
+                    let maximum = heights.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                    let upper_bound = scaled_outmap_macro_height_meters(maximum, 152.4)
+                        + TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS;
+                    if upper_bound > best.0 {
+                        candidates.push(Cell {
+                            key,
+                            sample_x: x,
+                            sample_y: y,
+                            heights,
+                            upper_bound,
+                        });
+                    }
+                }
+            }
+        }
+        candidates.sort_by(|a, b| b.upper_bound.total_cmp(&a.upper_bound));
+        let candidate_count = candidates.len();
+        let mut refined_count = 0_usize;
+        for candidate in candidates {
+            if candidate.upper_bound <= best.0 {
+                break;
+            }
+            let refined = refine(candidate, spacing);
+            refined_count += 1;
+            if refined.0 > best.0 {
+                best = refined;
+            }
+        }
+
+        println!("\n== global highest summit");
+        println!("   dense tiles scanned: {} at L{dense_level}", keys.len());
+        println!("   candidate cells: {candidate_count}; refined: {refined_count}");
+        println!("   highest raw L4 macro sample: {:.9}m", raw_maximum.0);
+        println!("   summit / prominence ASL: {:.9}m", best.0);
+        println!("   latitude: {:.12} deg", best.2.y.asin().to_degrees());
+        println!(
+            "   longitude: {:.12} deg",
+            best.2.z.atan2(best.2.x).to_degrees()
+        );
+        println!(
+            "   direction: [{:.15}, {:.15}, {:.15}]",
+            best.2.x, best.2.y, best.2.z
+        );
+        println!("   raw macro at summit: {:.9}m", best.1);
     }
 
     #[test]

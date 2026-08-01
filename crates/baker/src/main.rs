@@ -56,14 +56,26 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let config = parse_config(&arguments)?;
-    println!(
-        "baking {}x{} grid, {} erosion iterations, dense L{} + sparse L{}",
-        config.width,
-        config.height,
-        config.erosion_iterations,
-        config.dense_level,
-        config.max_level
-    );
+    if let Some(path) = &config.etopo {
+        println!(
+            "baking {}x{} ETOPO-preserving grid, dense L{} + sparse L{}",
+            config.width, config.height, config.dense_level, config.max_level
+        );
+        println!(
+            "macro source: NOAA ETOPO 2022 Ice Surface ({})",
+            path.display()
+        );
+    } else {
+        println!(
+            "baking {}x{} grid, {} erosion iterations, dense L{} + sparse L{}",
+            config.width,
+            config.height,
+            config.erosion_iterations,
+            config.dense_level,
+            config.max_level
+        );
+        println!("macro source: authored Earth-like generator");
+    }
     print_sparse_coverage(&config);
     let manifest = bake(&config)?;
     let [landing_x, landing_y, landing_z] = manifest.sparse_landing_direction;
@@ -114,6 +126,10 @@ fn parse_config(arguments: &[String]) -> Result<BakeConfig, String> {
             }
             "--output" => {
                 config.output = PathBuf::from(value(arguments, index, argument)?);
+                index += 2;
+            }
+            "--etopo" => {
+                config.etopo = Some(PathBuf::from(value(arguments, index, argument)?));
                 index += 2;
             }
             "--seed" => {
@@ -178,16 +194,17 @@ fn print_help() {
          \n\
          Options:\n\
            --output PATH              Output root (default assets/outmaps/test-planet)\n\
+           --etopo PATH               NOAA ETOPO 2022 Ice Surface GeoTIFF macro source\n\
            --seed N                   Decimal or 0x-prefixed deterministic seed\n\
            --width N                  Working equirectangular grid width\n\
            --height N                 Working grid height\n\
            --dense-level N            Highest globally dense quadtree level\n\
-          --max-level N              Sparse coastal refinement depth (maximum 18)\n\
-          --sparse-radius N          Constant tile radius (default: adaptive coverage)\n\
-           --erosion-iterations N     Hydraulic iteration count\n\
+           --max-level N              Sparse coastal refinement depth (maximum 18)\n\
+           --sparse-radius N          Constant tile radius (default: adaptive coverage)\n\
+           --erosion-iterations N     Authored-source hydraulic iteration count\n\
            --quick                    Small deterministic development bake\n\
            --validate PATH            Validate an existing outmap and exit\n\
-           --refine-existing PATH     Expand sparse detail from existing dense macro tiles\
+           --refine-existing PATH     Expand sparse detail from existing dense macro tiles\n\
            -h, --help                 Show this help"
     );
 }
@@ -209,5 +226,12 @@ mod tests {
         assert_eq!(config.output, PathBuf::from("/tmp/outmap"));
         assert_eq!(config.width, 64);
         assert_eq!(config.max_level, 6);
+    }
+
+    #[test]
+    fn parses_etopo_source() {
+        let arguments = ["--etopo".to_owned(), "/tmp/etopo.tif".to_owned()];
+        let config = parse_config(&arguments).unwrap();
+        assert_eq!(config.etopo, Some(PathBuf::from("/tmp/etopo.tif")));
     }
 }

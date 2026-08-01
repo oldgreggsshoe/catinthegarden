@@ -9,6 +9,7 @@ use catinthegarden_coretypes::{
     CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey, tile_key_for_direction,
 };
 use image::{ColorType, ImageReader};
+use tiff::encoder::{TiffEncoder, colortype::GrayI16};
 
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
@@ -33,6 +34,26 @@ fn small_config(output: PathBuf) -> BakeConfig {
     }
 }
 
+fn write_test_etopo(path: &Path, width: u32, height: u32) {
+    let values: Vec<i16> = (0..height)
+        .flat_map(|y| {
+            (0..width).map(move |x| {
+                if (width / 4..width / 2).contains(&x) && (height / 3..height * 2 / 3).contains(&y)
+                {
+                    750
+                } else {
+                    -1_000
+                }
+            })
+        })
+        .collect();
+    let file = fs::File::create(path).unwrap();
+    TiffEncoder::new(file)
+        .unwrap()
+        .write_image::<GrayI16>(width, height, &values)
+        .unwrap();
+}
+
 #[test]
 fn complete_bake_validates_and_is_byte_deterministic() {
     let first_output = temporary_output("first");
@@ -43,6 +64,52 @@ fn complete_bake_validates_and_is_byte_deterministic() {
     validate_output(&first_output).unwrap();
     validate_output(&second_output).unwrap();
     assert_trees_equal(&first_output, &second_output, Path::new(""));
+}
+
+#[test]
+fn etopo_bake_preserves_observed_relief_and_attributes_the_source() {
+    let root = temporary_output("etopo");
+    fs::create_dir_all(&root).unwrap();
+    let source = root.join("etopo.tif");
+    let output = root.join("outmap");
+    write_test_etopo(&source, 32, 16);
+    let config = BakeConfig {
+        output: output.clone(),
+        etopo: Some(source),
+        width: 32,
+        height: 16,
+        dense_level: 0,
+        max_level: 3,
+        sparse_radius: Some(0),
+        erosion_iterations: 4,
+        ..BakeConfig::default()
+    };
+
+    let terrain = catinthegarden_baker::Terrain::try_generate(&config).unwrap();
+    assert_eq!(
+        terrain
+            .height_meters
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min),
+        -1_000.0
+    );
+    assert_eq!(
+        terrain
+            .height_meters
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max),
+        750.0
+    );
+    assert!(!terrain.glacial_valley.iter().any(|&carved| carved));
+
+    let manifest = bake(&config).unwrap();
+    assert!(manifest.generator.contains("NOAA ETOPO 2022 Ice Surface"));
+    let refined = refine_existing_outmap(&output).unwrap();
+    assert_eq!(refined.generator, manifest.generator);
+    validate_output(&output).unwrap();
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

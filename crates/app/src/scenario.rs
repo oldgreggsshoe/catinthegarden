@@ -913,9 +913,9 @@ mod tests {
         let position = glam::DVec3::from_array(waypoint.position);
         let direction = position.normalize();
 
-        assert!((direction.y.asin().to_degrees() - 41.530_039_222).abs() < 1.0e-6);
-        assert!((direction.z.atan2(direction.x).to_degrees() - 71.196_129_733).abs() < 1.0e-6);
-        assert!((position.length() - 4_027_360.266_782_074).abs() < 1.0e-6);
+        assert!((direction.y.asin().to_degrees() - 27.990_111_142).abs() < 1.0e-6);
+        assert!((direction.z.atan2(direction.x).to_degrees() - 86.981_339_018).abs() < 1.0e-6);
+        assert!((position.length() - 4_023_998.913_246_721).abs() < 1.0e-6);
         assert_eq!(scenario.expected_screenshots(), 2);
         assert_eq!(scenario.assertions().min_camera_clearance_m, Some(150.0));
         assert_eq!(scenario.assertions().max_camera_clearance_m, Some(155.0));

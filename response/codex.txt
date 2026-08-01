@@ -1,17 +1,6 @@
-Yes — and I think real low-resolution Earth relief is the best next step.
-
-**Best fit: NOAA ETOPO 2022, Ice Surface, 60 arc-second.** It is a seamless global land-topography **and ocean-bathymetry** grid, includes Greenland/Antarctic ice surfaces, and is available as GeoTIFF or NetCDF. Sixty arc-seconds is roughly 1.8 km on Earth, already finer than our 4096×2048 baker grid (~6.1 km per equatorial sample), so higher source resolution would currently be wasted. NOAA states the data are not subject to US copyright protection. [NOAA ETOPO dataset and downloads](https://www.ncei.noaa.gov/products/etopo-global-relief-model), [official metadata/licensing](https://www.ncei.noaa.gov/access/metadata/landing-page/bin/iso?id=gov.noaa.ngdc.mgg.dem%3Aetopo_2022)
-
-Other valid choices:
-- **GEBCO 2026:** newer global land/ocean relief at 15 arc-seconds (~450 m), explicitly public domain with attribution, but its full grid is about 7 GB and far beyond our present bake resolution. [GEBCO 2026](https://www.gebco.net/data-products-gridded-bathymetry-data/gebco2026-grid)
-- **Copernicus GLO-90:** free worldwide 90 m land data, but it is a surface model including vegetation/buildings and does not provide useful ocean bathymetry. It is unnecessary overkill here. [Copernicus DEM](https://dataspace.copernicus.eu/explore-data/data-collections/copernicus-contributing-missions/collections-description/COP-DEM)
-
-Your sharpness observation is right. The current broad terrain is softened twice: the macro working grid is coarse, and the procedural ridge fold deliberately uses softened creases. I would **not** sharpen that globally — it previously produced terrace-like edges. Instead I would:
-
-1. Use ETOPO as the authoritative macro height/coastline, without smoothing its heights through our authored continent generator.
-2. Recompute hydrology, climate and biomes around that real shape.
-3. Derive a broad ruggedness/curvature mask from ETOPO.
-4. Use that mask to sharpen only the long procedural ridge octaves in mountain belts, while plains and rounded hills stay soft.
-5. Keep the current 3× positive-land presentation for the first comparison, with the existing bake backed up.
-
-That should give us recognisable real ranges and sharper selected ridges, while procedural detail supplies everything below the source resolution. I recommend ETOPO 2022 60-arc-second as the import source.
+Plan:
+1. Inspect the baker entry points, terrain pipeline, outmap manifest, tests, and current bake/backup layout.
+2. Add the smallest ETOPO import path, keeping the existing authored generator as the default and recording source/licensing metadata.
+3. Download the 60-arc-second Ice Surface grid, back up the current baked planet, then bake an ETOPO-based planet with the existing hydrology/climate/biome and sparse-detail stages.
+4. Validate previews, seams, height/coastline statistics, workspace tests, and renderer scenarios; compare the new terrain visually before changing ridge sharpness further.
+5. Update the handoff, commit, and push only the intended files.

@@ -5,6 +5,10 @@ use catinthegarden_coretypes::{MAX_DENSE_LEVEL, QUADTREE_MAX_LEVEL};
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BakeConfig {
     pub output: PathBuf,
+    /// Optional NOAA ETOPO 2022 Ice Surface GeoTIFF. When present, its real
+    /// global relief replaces the authored base shape; synthetic erosion and
+    /// river/glacier carving stay disabled so the imported terrain survives.
+    pub etopo: Option<PathBuf>,
     pub seed: u32,
     pub width: usize,
     pub height: usize,
@@ -20,6 +24,7 @@ impl Default for BakeConfig {
     fn default() -> Self {
         Self {
             output: PathBuf::from("assets/outmaps/test-planet"),
+            etopo: None,
             // Coastline and regional-detail seed for the Earth-like macro
             // layout in terrain.rs. The large continent and mountain-belt
             // placement is authored; this keeps its smaller shapes
@@ -75,6 +80,13 @@ impl BakeConfig {
         }
         if self.erosion_iterations == 0 {
             return Err("erosion iterations must be positive".to_owned());
+        }
+        if self
+            .etopo
+            .as_ref()
+            .is_some_and(|path| path.as_os_str().is_empty())
+        {
+            return Err("ETOPO path must not be empty".to_owned());
         }
         Ok(())
     }
