@@ -1,4 +1,9 @@
-Updated plan for this turn:
-1. Replace the current WASD acceleration/coast state with a fixed per-frame speed: held keys move immediately; releasing them stops immediately.
-2. Scale that fixed speed from a 10 mph ground baseline by camera altitude, using a smooth altitude-proportional law so angular/apparent motion stays comparable while higher flight permits much faster planetary travel; retain Shift as a bounded multiplier.
-3. Update focused movement tests and HUD wording, run fmt/check/workspace tests, then commit and push all pending terrain/elevation/ownership changes together as required.
+Implemented and pushed as commit `ed59d25`.
+
+- F4 WASD is now fixed-speed: movement starts immediately while a key is held and stops immediately on release; no acceleration, coasting, or braking.
+- Speed is `10 mph * (1 + altitude / 100m)`, giving comparable local apparent/angular motion while enabling much faster high-altitude travel. Shift remains a bounded 4x multiplier; cap remains 8,000 km/s.
+- Positive baked land was doubled again from 2x to 4x. Sea level and negative bathymetry remain unchanged.
+- Re-surveyed summit: 30,853.047m ASL/prominence at 27.990111N, 86.981339E. F4 and landing scenarios were re-authored and pass.
+- Validation: `cargo fmt --check`, `cargo check --workspace`, and `cargo test --workspace` pass (226 passed, 6 ignored).
+
+I also tried the raster ownership/depth correction for the square water holes (mixed-fragment guard, shell ownership hint, shell-first depth order). The raw-albedo orbit capture still shows the pattern, so that rendering defect is not signed off as fixed yet; it is likely source/LOD ownership or transition coverage rather than lighting.
