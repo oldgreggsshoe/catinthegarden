@@ -621,38 +621,6 @@ fn lod_dither_threshold(fragment_position: vec4<f32>) -> f32 {
     return fract(52.9829189 * fract(dot(pixel, vec2<f32>(0.06711056, 0.00583715))));
 }
 
-/// The geometric normal of the rendered triangle. Unlike the displaced
-/// central-difference normal carried by the vertices, this is constant over a
-/// triangle and deliberately does not smooth a gradient across its edges.
-fn flat_terrain_normal(
-    camera_relative_view_position: vec3<f32>,
-    surface_direction: vec3<f32>,
-    fallback_normal: vec3<f32>,
-    skirt_depth_meters: f32,
-) -> vec3<f32> {
-    let geometric_normal_view = cross(
-        dpdx(camera_relative_view_position),
-        dpdy(camera_relative_view_position),
-    );
-    if length(geometric_normal_view) < 1.0e-5 || skirt_depth_meters > 1.0e-5 {
-        return normalize(fallback_normal);
-    }
-    let geometric_normal = normalize(view_to_planet(geometric_normal_view));
-    let outward_normal = select(
-        -geometric_normal,
-        geometric_normal,
-        dot(geometric_normal, surface_direction) >= 0.0,
-    );
-    // An almost perfectly vertical face is a gap-closing wall, not a sampled
-    // topographic facet. Do not promote that implementation geometry into a
-    // bright low-poly cliff.
-    return select(
-        normalize(fallback_normal),
-        outward_normal,
-        dot(outward_normal, surface_direction) >= 0.01,
-    );
-}
-
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let transition_progress = input.lod_transition.x;
@@ -763,9 +731,14 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     {
         discard;
     }
-    if lake {
+    let lake_coverage = lake_coast_coverage(biome_id, macro_height_meters);
+    if lake && lake_coverage > 0.0 {
         if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
-            return vec4<f32>(debug_ocean_albedo(), 1.0);
+            return vec4<f32>(mix(
+                blended_biome_color(sample_biome_blend(input.source_uv)),
+                debug_ocean_albedo(),
+                lake_coverage,
+            ), 1.0);
         }
         let surface = ocean_surface(direction, camera.projection.z);
         let water_base_height = terrain_height(
@@ -804,7 +777,8 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         if render_debug_mode == RENDER_DEBUG_AERIAL_CONTRIBUTION {
             return vec4<f32>(max(water_aerial_color - water_surface_color, vec3<f32>(0.0)), 1.0);
         }
-        return vec4<f32>(water_aerial_color, 1.0);
+        let lake_land_color = blended_biome_color(sample_biome_blend(input.source_uv));
+        return vec4<f32>(mix(lake_land_color, water_aerial_color, lake_coverage), 1.0);
     }
     // Preserve the established shallow beach colour on positive terrain.
     // Actual open sea (macro height <= 0) was discarded above and is drawn by
@@ -813,12 +787,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let biome_blend = sample_biome_blend(input.source_uv);
     let moisture = sample_moisture(input.source_uv);
     let base_biome_color = blended_biome_color(biome_blend);
-    let terrain_normal = flat_terrain_normal(
-        input.camera_relative_view_position,
-        direction,
-        input.world_normal,
-        input.skirt_depth_meters,
-    );
+    let terrain_normal = input.world_normal;
     let terrain_sun_transmittance = surface_direct_sun_transmittance(
         direction,
         input.surface_height,

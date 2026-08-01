@@ -70,6 +70,7 @@ impl Terrain {
             terrain.recompute_flow();
             terrain.mark_rivers();
             terrain.fill_lakes();
+            terrain.mark_inland_negative_lakes();
         } else {
             terrain.erode(config.erosion_iterations);
             terrain.recompute_flow();
@@ -275,6 +276,62 @@ impl Terrain {
         }
     }
 
+    /// ETOPO contains a few below-sea inland basins. The priority flood above
+    /// intentionally seeds every negative sample as open ocean, so those
+    /// basins otherwise receive ocean ownership and become square water holes
+    /// when the sparse raster is rendered. On the sphere the largest connected
+    /// negative component is the real ocean; every other negative component is
+    /// a landlocked lake.
+    fn mark_inland_negative_lakes(&mut self) {
+        let mut visited = vec![false; self.grid.len()];
+        let mut largest_start = None;
+        let mut largest_size = 0usize;
+        for start in 0..self.grid.len() {
+            if visited[start] || self.height_meters[start] > 0.0 {
+                continue;
+            }
+            let mut queue = VecDeque::from([start]);
+            visited[start] = true;
+            let mut size = 0usize;
+            while let Some(index) = queue.pop_front() {
+                size += 1;
+                for neighbor in (0..8).filter_map(|slot| self.grid.neighbor(index, slot)) {
+                    if !visited[neighbor] && self.height_meters[neighbor] <= 0.0 {
+                        visited[neighbor] = true;
+                        queue.push_back(neighbor);
+                    }
+                }
+            }
+            if size > largest_size {
+                largest_size = size;
+                largest_start = Some(start);
+            }
+        }
+        let Some(ocean_start) = largest_start else {
+            return;
+        };
+        visited.fill(false);
+        for start in 0..self.grid.len() {
+            if visited[start] || self.height_meters[start] > 0.0 {
+                continue;
+            }
+            let is_ocean = start == ocean_start;
+            let mut queue = VecDeque::from([start]);
+            visited[start] = true;
+            while let Some(index) = queue.pop_front() {
+                if !is_ocean {
+                    self.lake[index] = true;
+                }
+                for neighbor in (0..8).filter_map(|slot| self.grid.neighbor(index, slot)) {
+                    if !visited[neighbor] && self.height_meters[neighbor] <= 0.0 {
+                        visited[neighbor] = true;
+                        queue.push_back(neighbor);
+                    }
+                }
+            }
+        }
+    }
+
     fn carve_glacial_valleys(&mut self) {
         let before = self.height_meters.clone();
         for (index, &before_height) in before.iter().enumerate() {
@@ -452,10 +509,10 @@ impl Terrain {
                 let snowline = snowline_meters(latitude);
                 *biome = if absolute_latitude > 66.0_f64.to_radians() || height > snowline {
                     BiomeId::Ice
-                } else if height <= 0.0 {
-                    BiomeId::Ocean
                 } else if self.lake[index] {
                     BiomeId::Lake
+                } else if height <= 0.0 {
+                    BiomeId::Ocean
                 } else if height > (snowline - 700.0).max(2_800.0) {
                     BiomeId::MountainSnow
                 } else if height > 2_400.0 {
@@ -893,6 +950,24 @@ mod tests {
         let mut terrain = Terrain::from_heights(width, height, heights);
         terrain.fill_lakes();
         assert!(terrain.lake[basin]);
+    }
+
+    #[test]
+    fn disconnected_negative_inland_component_is_a_lake() {
+        let width = 32;
+        let height = 16;
+        let mut heights = vec![100.0; width * height];
+        heights[4 * width..5 * width].fill(-10.0);
+        for y in 6..9 {
+            for x in 14..18 {
+                heights[y * width + x] = -20.0;
+            }
+        }
+        let mut terrain = Terrain::from_heights(width, height, heights);
+        terrain.mark_inland_negative_lakes();
+        terrain.classify_biomes(false);
+        assert_eq!(terrain.biome[7 * width + 16], BiomeId::Lake);
+        assert_eq!(terrain.biome[4 * width], BiomeId::Ocean);
     }
 
     #[test]

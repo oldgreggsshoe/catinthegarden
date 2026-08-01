@@ -62,7 +62,10 @@ const DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND: f64 = 0.4;
 const DEFAULT_CAMERA_ORBIT_INCLINATION_RADIANS: f64 = 28.5_f64.to_radians();
 const INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 = 0.3;
 const MOUSE_LOOK_RADIANS_PER_PIXEL: f64 = 0.0006;
-const LOW_FLIGHT_ALTITUDE_METERS: f64 = 500.0 * 0.3048;
+/// F4 enters close inspection at roughly 10m above the resident surface, not
+/// the former 500ft survey height. Moving flight retains its larger rendered
+/// clearance envelope until the mixed-LOD gap repair is complete.
+const LOW_FLIGHT_ALTITUDE_METERS: f64 = 10.0;
 /// Highest summit on the active ETOPO-backed planet after the fixed 4x macro
 /// presentation and bounded runtime detail are applied. The L4 source was
 /// scanned globally, every cell capable of beating the current maximum was
@@ -3282,6 +3285,7 @@ mod tests {
             "a {LOW_FLIGHT_MINIMUM_CLEARANCE_METERS}m floor is too high to stand on the ground"
         );
         assert!(LOW_FLIGHT_MINIMUM_CLEARANCE_METERS < LOW_FLIGHT_ALTITUDE_METERS);
+        assert!(LOW_FLIGHT_ALTITUDE_METERS <= 10.0);
         // The floor is only safe because clearance sees the synthesised relief.
         // If that ever regresses to baked heights alone, the ladder can put
         // ground up to its full amplitude above where the CPU thinks it is.

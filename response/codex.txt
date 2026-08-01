@@ -1,5 +1,5 @@
-Done and pushed as `bef978e`.
-
-F4 flight speed is now 5x faster at every altitude: the ground baseline is 50 mph, with the same `1 + altitude/100m` scaling, fixed-speed key behavior, Shift 4x multiplier, and 8,000 km/s cap.
-
-Validation: formatting, workspace check, and focused flight tests pass.
+Plan:
+1. Inspect the F4 lowest-altitude constants and the latest manual camera/probe metrics to determine whether the entry pose/clearance is actually placing the eye too high.
+2. Trace the near-flight LOD frontier, fallback source selection, skirts, and mixed-LOD ownership to isolate the black snow gaps; make one bounded geometry/LOD correction and add a regression.
+3. Trace inland ocean/lake classification and raster fragment ownership. Ensure positive land remains terrain, real lakes retain water, and lake coast ownership uses the same smooth height-blended coastline treatment as ocean.
+4. Re-author affected camera/scenario values, run focused visual/scenario checks plus fmt/check/tests, update handoff docs, then commit and push.

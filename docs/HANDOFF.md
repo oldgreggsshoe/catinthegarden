@@ -18,9 +18,9 @@ a bounded indirect Rayleigh approximation for a blue hour that fades into night.
 Raster terrain now carries aerial transmittance and in-scatter independently from vertex to
 fragment, so low-sun shadows cannot cross a per-channel reconstruction threshold and become bright
 islands with dark outlines. Terrain ambient remains the local overhead sky radiance scaled by 0.18.
-Raster land currently uses one outward geometric normal per rendered triangle for lighting and
-material slope, deliberately exposing mesh gradient changes instead of smoothing them between
-vertices. Height, LOD, source sampling and the ray path are unchanged.
+Raster land currently uses the displaced smoothed vertex normal for close-snow lighting. The prior
+flat geometric-normal trial is retired because fallback facets became repeated black strips at
+122m altitude; height, LOD, source sampling and the ray path are unchanged.
 **Latest evidence:** the orientation-corrected, fixed-4x ETOPO terrain passes raster
 `orbit_once/1785599097-127619`, ray `orbit_once/1785599236-129103`, raster
 `stand_on_ground/1785599119-127881`, raster `landing_site_ground_detail/1785599181-128543`, raster
@@ -187,6 +187,14 @@ fixed speed immediately and releasing it stops immediately. The baseline is 50 m
 speed scales as `50 mph * (1 + altitude / 100m)`, with Shift multiplying by four and a finite
 8,000km/s cap. This keeps local angular/apparent motion approximately comparable while allowing
 rapid planetary travel from high altitude.
+
+F4 now enters at **10m** above the resident summit surface instead of the former 152.4m/500ft
+entry height. The 30m moving collision envelope remains conservative until the mixed-LOD source
+frontier is fully resident.
+
+The active outmap was rebaked from the preserved NOAA ETOPO source after classifying disconnected
+negative-height components as inland lakes; the previous active bake is preserved at
+`assets/outmaps/test-planet.pre-inland-lake-repair-20260801`.
 
 To expose the observed Earth form before designing procedural terrain with geographic direction,
 `TERRAIN_DETAIL_LONG_GAIN` is **1.0 instead of 8.0**. This removes the extra long-wave spectral boost

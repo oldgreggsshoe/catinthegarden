@@ -2918,25 +2918,16 @@ mod tests {
     }
 
     #[test]
-    fn raster_land_uses_geometric_triangle_normals_for_low_poly_shading() {
+    fn raster_land_uses_smoothed_displaced_normals_for_close_snow() {
         let shader = planet_shader_source();
-        let flat_normal = shader
-            .split("fn flat_terrain_normal(")
-            .nth(1)
-            .and_then(|source| source.split("\nfn ").next())
-            .expect("raster terrain has a geometric face-normal helper");
-        assert!(flat_normal.contains("dpdx(camera_relative_view_position)"));
-        assert!(flat_normal.contains("dpdy(camera_relative_view_position)"));
-        assert!(flat_normal.contains("view_to_planet(geometric_normal_view)"));
-        assert!(flat_normal.contains("skirt_depth_meters > 1.0e-5"));
-        assert!(flat_normal.contains("dot(outward_normal, surface_direction) >= 0.01"));
+        assert!(!shader.contains("fn flat_terrain_normal("));
 
         let fragment = shader
             .split("fn terrain_fragment_color(")
             .nth(1)
             .and_then(|source| source.split("\nfn ").next())
             .expect("raster terrain fragment path is present");
-        assert!(fragment.contains("let terrain_normal = flat_terrain_normal("));
+        assert!(fragment.contains("let terrain_normal = input.world_normal;"));
         assert!(fragment.contains("terrain_normal,\n        direction,"));
         assert!(fragment.contains("let terrain_surface_irradiance = terrain_sky_diffuse"));
     }

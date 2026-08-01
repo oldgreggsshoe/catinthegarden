@@ -1429,6 +1429,17 @@ fn outmap_ocean_coverage(outmap: bool, height_meters: f32) -> f32 {
     return 1.0 - smoothstep(-80.0, 120.0, height_meters);
 }
 
+// Lakes use the same shallow 200m coast transition as open ocean. Their
+// positive basin floor is still terrain data, so height-based coverage avoids
+// a hard categorical biome edge at the shoreline.
+fn lake_coast_coverage(biome_id: u32, macro_height_meters: f32) -> f32 {
+    return select(
+        0.0,
+        1.0 - smoothstep(0.0, 200.0, macro_height_meters),
+        biome_id == 1u,
+    );
+}
+
 struct BiomeBlendSample {
     ids: vec4<u32>,
     weights: vec4<f32>,
