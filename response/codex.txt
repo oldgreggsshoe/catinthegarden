@@ -1,5 +1,8 @@
-Plan:
-1. Inspect the F4 lowest-altitude constants and the latest manual camera/probe metrics to determine whether the entry pose/clearance is actually placing the eye too high.
-2. Trace the near-flight LOD frontier, fallback source selection, skirts, and mixed-LOD ownership to isolate the black snow gaps; make one bounded geometry/LOD correction and add a regression.
-3. Trace inland ocean/lake classification and raster fragment ownership. Ensure positive land remains terrain, real lakes retain water, and lake coast ownership uses the same smooth height-blended coastline treatment as ocean.
-4. Re-author affected camera/scenario values, run focused visual/scenario checks plus fmt/check/tests, update handoff docs, then commit and push.
+Fixed and pushed as `0eb404c`.
+
+- F4 lowest entry is now 10m above the measured surface, not 152.4m/500ft. The 30m moving clearance envelope remains conservative for safety.
+- The close-snow black strip pattern was flat geometric-normal shading over mixed fallback facets, not snow texture. Raster land is back on smoothed displaced normals.
+- Inland below-sea components are now classified by spherical connectivity: the largest negative component is open ocean; disconnected negative components are lakes. Lake rendering uses a 200m height-based coast blend.
+- Rebuilt the active 3,252-tile ETOPO outmap. Previous bake preserved at `assets/outmaps/test-planet.pre-inland-lake-repair-20260801`.
+- Raw-albedo orbit `test-runs/orbit_once/1785608277-235199` now shows continuous irregular inland lakes rather than square ocean holes.
+- Validation: outmap validation, 27 baker tests, shader validation, close-snow normal test, and low-flight entry test pass.
