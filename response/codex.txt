@@ -1,16 +1,17 @@
-Finished and pushed.
+Yes — and I think real low-resolution Earth relief is the best next step.
 
-- **Root cause fixed:** raster aerial perspective reconstructed lighting with a per-channel near-black switch and a ratio capped at 16x. At low sun this brightened shadow interiors while leaving dark outlines.
-- **Fix:** terrain now carries atmospheric transmittance and in-scatter separately and applies the continuous physical form `surface * transmittance + in-scatter`. No threshold or amplification remains.
-- **Ambient:** unchanged intentionally. Terrain diffuse fill already samples the local sky above the surface at a darker 0.18 scale; material absorption can naturally alter the reflected hue.
-- **Normals:** confirmed correct. They derive from the same 3x-displaced height, so slopes are genuinely steeper rather than incorrectly stretched.
+**Best fit: NOAA ETOPO 2022, Ice Surface, 60 arc-second.** It is a seamless global land-topography **and ocean-bathymetry** grid, includes Greenland/Antarctic ice surfaces, and is available as GeoTIFF or NetCDF. Sixty arc-seconds is roughly 1.8 km on Earth, already finer than our 4096×2048 baker grid (~6.1 km per equatorial sample), so higher source resolution would currently be wasted. NOAA states the data are not subject to US copyright protection. [NOAA ETOPO dataset and downloads](https://www.ncei.noaa.gov/products/etopo-global-relief-model), [official metadata/licensing](https://www.ncei.noaa.gov/access/metadata/landing-page/bin/iso?id=gov.noaa.ngdc.mgg.dem%3Aetopo_2022)
 
-Validation:
-- Exact reported pose/orientation/FOV: `outlined_shadows/1785585729-12608` — passed and visually inspected.
-- Raw albedo and surface-lighting controls stayed byte-identical; the correction begins only in the aerial stage.
-- Dark-outline heuristic: **15,960 -> 5,288 pixels (66.9% reduction)**.
-- Same-pose raster timing: **29.542 ms -> 24.829 ms mean** (15.9% faster; one short ten-sample controlled replay, so directional rather than a general benchmark).
-- Ray replay, sunset-blue-hour, twilight-directionality, and night-side regressions pass.
-- `cargo test --workspace`: **220 passed, 0 failed, 5 ignored**.
+Other valid choices:
+- **GEBCO 2026:** newer global land/ocean relief at 15 arc-seconds (~450 m), explicitly public domain with attribution, but its full grid is about 7 GB and far beyond our present bake resolution. [GEBCO 2026](https://www.gebco.net/data-products-gridded-bathymetry-data/gebco2026-grid)
+- **Copernicus GLO-90:** free worldwide 90 m land data, but it is a surface model including vegetation/buildings and does not provide useful ocean bathymetry. It is unnecessary overkill here. [Copernicus DEM](https://dataspace.copernicus.eu/explore-data/data-collections/copernicus-contributing-missions/collections-description/COP-DEM)
 
-Pushed commits: `0d3f7bd` (fix) and `6ce10ac` (handoff). Unrelated local files remain untouched.
+Your sharpness observation is right. The current broad terrain is softened twice: the macro working grid is coarse, and the procedural ridge fold deliberately uses softened creases. I would **not** sharpen that globally — it previously produced terrace-like edges. Instead I would:
+
+1. Use ETOPO as the authoritative macro height/coastline, without smoothing its heights through our authored continent generator.
+2. Recompute hydrology, climate and biomes around that real shape.
+3. Derive a broad ruggedness/curvature mask from ETOPO.
+4. Use that mask to sharpen only the long procedural ridge octaves in mountain belts, while plains and rounded hills stay soft.
+5. Keep the current 3× positive-land presentation for the first comparison, with the existing bake backed up.
+
+That should give us recognisable real ranges and sharper selected ridges, while procedural detail supplies everything below the source resolution. I recommend ETOPO 2022 60-arc-second as the import source.
