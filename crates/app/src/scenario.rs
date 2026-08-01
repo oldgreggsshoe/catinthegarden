@@ -915,7 +915,7 @@ mod tests {
 
         assert!((direction.y.asin().to_degrees() - 27.990_111_142).abs() < 1.0e-6);
         assert!((direction.z.atan2(direction.x).to_degrees() - 86.981_339_018).abs() < 1.0e-6);
-        assert!((position.length() - 4_023_998.913_246_721).abs() < 1.0e-6);
+        assert!((position.length() - 4_023_997.540_688_128).abs() < 1.0e-6);
         assert_eq!(scenario.expected_screenshots(), 2);
         assert_eq!(scenario.assertions().min_camera_clearance_m, Some(150.0));
         assert_eq!(scenario.assertions().max_camera_clearance_m, Some(155.0));

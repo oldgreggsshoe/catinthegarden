@@ -21,13 +21,15 @@ for navigation. The source GeoTIFF is deliberately ignored under
 
 The importer resamples ETOPO onto the configured south-up working grid, clamps
 it to the planet's existing -5,000m to +9,000m raw height contract, and preserves
-the observed heights. Bilinear samples retain coastline placement; land
-downsampling also retains the highest observed source elevation in each target
-footprint so narrow summits do not disappear between coarse working-grid sample
-points. It derives flow, river masks, lakes, moisture, and biomes, but skips the
-authored generator's synthetic hydraulic/thermal erosion and river/glacier
-height carving. Sparse seam-safe detail export and the runtime procedural ladder
-remain unchanged.
+the observed heights. Bilinear samples retain coastline, ordinary hills, and
+valleys. To stop narrow major summits disappearing between coarse working-grid
+sample points, peak retention fades in from 4,000m and reaches the highest
+observed source elevation in each target footprint at 6,000m. Restricting the
+max envelope to those high ranges avoids terracing lower land. The importer
+derives flow, river masks, lakes, moisture, and biomes, but skips the authored
+generator's synthetic hydraulic/thermal erosion and river/glacier height
+carving. Sparse seam-safe detail export and the runtime procedural ladder remain
+unchanged.
 
 Reproduce the active source download:
 

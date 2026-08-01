@@ -13,6 +13,8 @@ use tiff::{
 use crate::BakeResult;
 
 const MAX_SOURCE_PIXELS: usize = 300_000_000;
+const PEAK_RETENTION_START_METERS: f64 = 4_000.0;
+const PEAK_RETENTION_END_METERS: f64 = 6_000.0;
 
 enum ElevationSamples {
     I16(Vec<i16>),
@@ -128,11 +130,12 @@ pub fn load_etopo(path: &Path, target_width: usize, target_height: usize) -> Bak
             if centre > 0.0 && source_width > target_width {
                 // A point sample can miss an entire summit when the 60 arc-second
                 // source is reduced to the working grid (about five source cells
-                // per axis at 4096x2048). Keep the coastline tied to the bilinear
-                // centre sample, but retain the highest observed land elevation
-                // inside each target footprint so narrow ridges are not rounded
-                // away before cube-tile export.
-                centre.max(land_peak_in_target_cell(
+                // per axis at 4096x2048). Keep ordinary hills and the coastline
+                // tied to the bilinear centre sample: max-filtering all positive
+                // land creates kilometre-wide terraces. Only the highest ranges
+                // fade toward the observed footprint maximum, retaining narrow
+                // summits without turning low terrain into plateaus.
+                let peak = land_peak_in_target_cell(
                     &samples,
                     source_width,
                     source_height,
@@ -140,7 +143,10 @@ pub fn load_etopo(path: &Path, target_width: usize, target_height: usize) -> Bak
                     target_height,
                     x,
                     y,
-                ))
+                );
+                let weight =
+                    smoothstep(PEAK_RETENTION_START_METERS, PEAK_RETENTION_END_METERS, peak);
+                centre + (peak - centre).max(0.0) * weight
             } else {
                 centre
             }
@@ -182,6 +188,11 @@ fn source_cell_start(target: usize, target_size: usize, source_size: usize) -> u
 fn source_cell_end(target: usize, target_size: usize, source_size: usize) -> usize {
     ((((target + 1) as f64 / target_size as f64 * source_size as f64 - 0.5).floor()) as isize)
         .clamp(0, source_size as isize - 1) as usize
+}
+
+fn smoothstep(edge0: f64, edge1: f64, value: f64) -> f64 {
+    let amount = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    amount * amount * (3.0 - 2.0 * amount)
 }
 
 fn bilinear(samples: &ElevationSamples, width: usize, height: usize, x: f64, y: f64) -> f64 {
@@ -257,6 +268,12 @@ mod tests {
             }
         }
         values[2 * width as usize + 4] = 8_000;
+        for y in 2..=3 {
+            for x in 8..=9 {
+                values[y * width as usize + x] = 1_000;
+            }
+        }
+        values[2 * width as usize + 8] = 3_000;
         let file = File::create(&path).unwrap();
         TiffEncoder::new(file)
             .unwrap()
@@ -269,5 +286,6 @@ mod tests {
             imported.iter().copied().fold(f64::NEG_INFINITY, f64::max),
             8_000.0
         );
+        assert_eq!(imported[2 * 8 + 4], 1_500.0);
     }
 }

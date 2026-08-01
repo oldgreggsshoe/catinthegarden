@@ -75,9 +75,9 @@ const EARTHLIKE_HIGHEST_PROMINENCE_DIRECTION: glam::DVec3 = glam::DVec3::new(
     0.469_319_165_103_349,
     0.881_803_348_744_642,
 );
-const EARTHLIKE_HIGHEST_PROMINENCE_METERS: f64 = 23_846.513_246_721;
+const EARTHLIKE_HIGHEST_PROMINENCE_METERS: f64 = 23_845.140_688_128;
 #[cfg(test)]
-const EARTHLIKE_HIGHEST_RAW_MACRO_ELEVATION_METERS: f64 = 7_686.800_292_968_75;
+const EARTHLIKE_HIGHEST_RAW_MACRO_ELEVATION_METERS: f64 = 7_686.342_773_437_5;
 /// How close to the ground flight may descend. This used to be the entry
 /// altitude above, doing double duty, so the camera could never get nearer the
 /// surface than 500 ft and eye-level views of the terrain were unreachable.

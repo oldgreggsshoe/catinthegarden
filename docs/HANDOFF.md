@@ -83,12 +83,17 @@ It is 370 MB / 9,760 files, validates as schema 2 with 3,252 tiles, and its mani
 manifest recorded before promotion. Do not delete it or the earlier retained bake directories
 without Ian's explicit instruction.
 
+The rejected all-positive-land peak-envelope bake is also retained, rather than deleted, at
+`assets/outmaps/test-planet.etopo-all-land-peak-retired-20260801-142959`. Its low-flight replay made
+the reason for the high-range gate objective: max-filtering ordinary land produced broad terraces.
+
 `--etopo PATH` is optional: without it the authored generator remains byte-compatible. With it, the
 baker validates a signed, finite, whole-world 2:1 grayscale grid, reverses NOAA's north-up rows onto
-the baker's south-up grid, and bilinearly resamples the coastline and bathymetry. Land downsampling
-also retains the highest observed source elevation within each target footprint; this prevents a
-narrow summit from disappearing between the 4096x2048 working-grid sample points. ETOPO is already
-naturally eroded, so this path keeps its heights unchanged while deriving flow, river/lake masks,
+the baker's south-up grid, and bilinearly resamples the coastline, bathymetry and ordinary land.
+Peak retention fades in only from 4,000-6,000m, reaching the highest observed source elevation in a
+target footprint for the major ranges; this prevents a narrow summit from disappearing between the
+4096x2048 working-grid sample points without max-filtering lower terrain into broad terraces. ETOPO
+is already naturally eroded, so this path keeps its heights unchanged while deriving flow, river/lake masks,
 moisture and biomes; it does not run the authored hydraulic/thermal erosion or river/glacier height
 carving. The existing -5,000m bathymetry floor, +9,000m ceiling, L3+ seam-safe baked detail and sparse
 detail export remain in force.
@@ -96,14 +101,14 @@ detail export remain in force.
 The active bake uses seed `0xEA272026` (`3928432678`), a 4096x2048 working grid, global dense L4
 coverage and sparse parent-complete refinement through L18. It validates all 3,252 schema-2 tiles,
 occupies 371 MB / 9,760 files, has manifest SHA-256
-`5043e5eab18906e871b9757a2ded066f13a77d98cf4294d299db78d1133d4f58`, and selected sparse centre
-`[0.985044, 0.072800, 0.156170]`. Preview measurements are:
+`f1915868a3be65be1ab07ed2d8713241a658fbf91efab58f8d601e18d681f88f`, and selected sparse centre
+`[-0.504183, 0.008437, 0.863556]`. Preview measurements are:
 
-- positive land: 34.059%; full working-grid range: -5,000m to 8,157m;
-- 580,356 pixels above 2,400m, including 17,219 above 5,000m and 37 above 7,000m;
-- biome coverage: ocean 53.082%, ice 27.644%, temperate forest 9.187%, tropical forest 4.174%, lake
-  3.529%, desert 1.225%, grassland 0.600%, tundra 0.274%, mountain rock 0.221%, and mountain snow
-  0.065%.
+- positive land: 34.053%; full working-grid range: -5,000m to 8,157m;
+- 553,673 pixels above 2,400m, including 13,925 above 5,000m and 37 above 7,000m;
+- biome coverage: ocean 53.082%, ice 27.365%, temperate forest 9.842%, tropical forest 4.436%, lake
+  2.873%, desert 1.276%, grassland 0.708%, tundra 0.221%, mountain rock 0.145%, and mountain snow
+  0.054%.
 
 The baker's preview row zero is the south pole, so the checked-in/native PNG is south-up; flip it
 vertically for a conventional north-up review. The full-resolution height and biome previews and
@@ -123,12 +128,11 @@ RAYON_NUM_THREADS=1 nice -n 10 /home/dad/catingard-target/release/catinthegarden
   --validate assets/outmaps/test-planet.etopo-staging-YYYYMMDD-HHMMSS
 ```
 
-The final bake took 63.218s with one Rayon worker for thermal safety. The outmap and source data are
+The final bake took 65.207s with one Rayon worker for thermal safety. The outmap and source data are
 intentionally gitignored; the importer, provenance, tests and reproduction command are the durable
-repository state. The new sparse-site L18 ground is 934.018310546875m raw / 2,802.054931640625m
-presented. The four manifest-relative landing scenarios moved inward by 231.771240234375m without
-changing their relative framing; raster `stand_on_ground` then measured 2.00055m clearance, 0.409m
-worst-frame p90 and 0.488m maximum surface delta.
+repository state. The new sparse-site L18 ground is 855.17919921875m raw / 2,565.53759765625m
+presented. The four manifest-relative landing scenarios preserve their relative framing after this
+surface move.
 
 ### Fixed 3x positive-ASL presentation — 30 July 2026
 
@@ -178,14 +182,14 @@ higher parent summit, so, as for Everest, its reference key col is sea level and
 equal to its elevation ASL.
 
 The reusable ignored `global_highest_summit` instrument scanned all 1,536 globally dense L4 height
-tiles, selected all 97 cells capable of exceeding the current maximum after the conservative
+tiles, selected all 95 cells capable of exceeding the current maximum after the conservative
 2,646.4m runtime-detail allowance, and refined them to sub-metre spacing with the same CPU macro and
 runtime-detail functions used for camera clearance. It found:
 
-- highest raw L4 macro sample: **7,686.800m ASL**;
-- highest current presented surface: **23,846.513m ASL/prominence**, near Everest at
+- highest raw L4 macro sample: **7,686.343m ASL**;
+- highest current presented surface: **23,845.141m ASL/prominence**, near Everest at
   **27.990111°N, 86.981339°E**;
-- at the summit the fixed-3x macro contributes 23,060.401m and bounded runtime detail contributes
+- at the summit the fixed-3x macro contributes 23,059.028m and bounded runtime detail contributes
   786.112m.
 
 F4 now enters free flight at that direction, preserving the established 500ft / 152.4m entry
@@ -1560,7 +1564,7 @@ These are the mistakes that actually cost time on this branch.
 - **Re-author scenario camera heights after any ladder or outmap change.** Changing the field moves
   the ground. `landing_site_eye_level` ended 2 m underground after one earlier ladder change, and
   the Earth-like rebake moved the sparse centre again; the clearance assertion caught both.
-  Landing-site ground is currently **934.018310546875m raw / 2,802.054931640625m presented**.
+  Landing-site ground is currently **855.17919921875m raw / 2,565.53759765625m presented**.
 - Shader gotchas: `active` is a reserved WGSL keyword; the inter-stage location limit is 16;
   `shared_planet.wgsl` is concatenated **ahead** of `planet.wgsl`, so tests that slice the shader by
   splitting on a function name silently run to end of file — bound on `"\nfn "`.
