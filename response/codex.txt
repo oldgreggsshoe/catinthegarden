@@ -1,4 +1,21 @@
-Yes — step 4 is done, tested, committed, and pushed.
+Implemented and pushed the next update on `experiment/flat-triangle-wireframe`.
 
-Implementation: `e74f2a3` on `diagnose/ocean-terrain-blockiness`.
-Validation: full workspace suite passes; replay `1785681886-771172` has zero LOD thrash and zero seam delta.
+- Flat triangles now derive a geometric face normal from position derivatives.
+- Land and ocean retain analytic diffuse sky/direct-sun lighting plus a direct-sun specular lobe.
+- The flat path samples neither material textures nor the environment cubemap; categorical biome/ocean fills and outlines remain.
+- F4 speed is globally 5x the prior value: 250 mph at ground level, altitude-scaled, with a 40,000 km/s cap. Shift remains 4x.
+
+Validation:
+- `orbit_once/1785692942-124066`: pass, fixed L2 terrain, zero seam delta, four captures.
+- `cargo test --workspace`: 233 passed, 0 failed, 6 ignored.
+- Focused shader, lighting, speed, cargo check, formatting, and diff checks pass.
+
+Pushed commit: `46c3989` (`experiment: light flat triangles and boost flight speed`).
+
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:401-410|note=[wireframe renderer context]
+</citation_entries>
+<rollout_ids>
+</rollout_ids>
+</oai-mem-citation>
