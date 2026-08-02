@@ -37,11 +37,11 @@ sections below but uses a previous macro/detail presentation. The later raster l
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
 
-### Experimental branch — fixed-L2 flat triangle wireframe (2 August 2026)
+### Experimental branch — fixed-L3 flat triangle wireframe (2 August 2026)
 
 Branch `experiment/flat-triangle-wireframe` is an isolated visual experiment from the current
 diagnosis branch. It intentionally fixes the raster terrain and ocean quadtree at the minimum
-`L2` level and disables the 40x40 near-field mesh, leaving the stable 32x32 chunk topology. The
+`L3` level (one refinement above the normal L2 floor) and disables the 40x40 near-field mesh, leaving the stable 32x32 chunk topology. The
 fragment path bypasses the material/albedo texture stack and assigns one categorical biome (or
 ocean) palette colour to each triangle, with a dark antialiased edge, so the planet reads as
 filled wireframe rather than interpolated textured terrain. A derivative-based geometric face
@@ -50,14 +50,16 @@ both land and ocean; the flat path samples neither material nor environment text
 biome outmaps remain CPU/GPU data sources for geometry and ownership; this mode does not pretend
 the baked data disappeared.
 
-The branch defaults to `flat L2 triangles` (`RenderDebugMode::FlatTriangles`). Set
+The branch defaults to `flat L3 triangles` (`RenderDebugMode::FlatTriangles`). Set
 `CATINGARDEN_FLAT_TRIANGLES=0`/`false`/`off` to restore normal LOD selection, or set
 `CATINGARDEN_DEBUG_MODE=final` to inspect the normal material shader while keeping the branch's
-fixed-L2 policy. The ray renderer is not replaced by this raster-only presentation experiment.
+fixed-L3 policy. The ray renderer is not replaced by this raster-only presentation experiment.
 
-Release validation: `orbit_once/1785692942-124066` rendered all terrain at L2, with zero logged seam
-delta and a valid four-capture replay on the Quadro. The focused shader, debug-mode, fixed-policy,
-and speed tests pass; `cargo test --workspace` passes **233 tests** (192 app,
+The L3 replay `orbit_once/1785694022-133926` rendered the denser fixed topology (roughly 133-148
+resident terrain chunks and 350k-382k terrain triangles), but its seam assertion failed while new
+source tiles streamed: maximum **2,273.963m** at the second capture, with later settled frames at
+zero. This is a source-residency/fallback discontinuity, not a reason to relax the seam check. The
+focused shader, debug-mode, fixed-policy, and speed tests pass; `cargo test --workspace` passes **233 tests** (192 app,
 27 baker library, 2 baker binary, 6 baker integration, 6 coretypes; 6 ignored diagnostics).
 F4 flight speed is globally 5x the prior fixed altitude-scaled value: 250mph at ground level and a
 40,000km/s cap, while Shift retains its existing 4x multiplier.

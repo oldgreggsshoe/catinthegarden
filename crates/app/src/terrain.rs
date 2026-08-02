@@ -17,15 +17,15 @@ use wgpu::util::DeviceExt;
 use crate::{
     outmap::{Outmap, OutmapError, TileData},
     planet::{
-        CHUNK_GRID_QUADS, CameraViewBasis, ChunkVertex, GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
-        GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, GeometricErrorRatio, LodPolicy, MAX_LOD_LEVEL,
-        MINIMUM_LOD_LEVEL, NEAR_FIELD_GRID_QUADS, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE,
-        OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS, OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS,
-        OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode,
-        TERRAIN_DETAIL_MIN_FILTER_METERS, TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS,
-        TerrainHeightRange, build_chunk_mesh, build_chunk_mesh_with_quads,
-        continuous_baked_sample_spacing_meters, cube_face_basis, cube_face_direction,
-        max_active_chunks_from_env, outmap_surface_height_meters,
+        CHUNK_GRID_QUADS, CameraViewBasis, ChunkVertex, FLAT_TRIANGLE_LOD_LEVEL,
+        GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE,
+        GeometricErrorRatio, LodPolicy, MAX_LOD_LEVEL, NEAR_FIELD_GRID_QUADS,
+        OUTMAP_TERRAIN_FAR_HEIGHT_SCALE, OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS,
+        OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS, OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE,
+        PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode, TERRAIN_DETAIL_MIN_FILTER_METERS,
+        TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS, TerrainHeightRange, build_chunk_mesh,
+        build_chunk_mesh_with_quads, continuous_baked_sample_spacing_meters, cube_face_basis,
+        cube_face_direction, max_active_chunks_from_env, outmap_surface_height_meters,
         outmap_surface_height_meters_with_filter, placeholder_height_meters,
         scaled_outmap_macro_height_meters,
     },
@@ -750,7 +750,7 @@ impl TerrainRenderer {
 
         let mut lod = if flat_triangle_experiment {
             PlanetLod::new(
-                LodPolicy::fixed(MINIMUM_LOD_LEVEL),
+                LodPolicy::fixed(FLAT_TRIANGLE_LOD_LEVEL),
                 max_active_chunks_from_env(),
             )
         } else {

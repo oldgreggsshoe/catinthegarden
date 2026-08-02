@@ -21,6 +21,9 @@ pub const MAX_LOD_LEVEL: u8 = 18;
 /// The coarsest rendered quadtree leaf. Screen-space error raises the LOD into
 /// finer levels only when their geometric error can affect visible pixels.
 pub const MINIMUM_LOD_LEVEL: u8 = 2;
+/// Fixed level used by the flat-triangle experiment; one refinement above the
+/// normal coarsest level so its global topology can be compared directly.
+pub const FLAT_TRIANGLE_LOD_LEVEL: u8 = MINIMUM_LOD_LEVEL + 1;
 /// Deliberately game-time-scaled so axial rotation is visible during normal play.
 pub const PLANET_ROTATION_PERIOD_SECONDS: f64 = 15.0;
 /// Earth's mean obliquity. With no simulated annual orbit yet, the default sun
@@ -2582,7 +2585,7 @@ impl RenderDebugMode {
             Self::AerialContribution => "aerial contribution",
             Self::SkyOnly => "sky only",
             Self::RayHitStatus => "ray detail-hit status",
-            Self::FlatTriangles => "flat L2 triangles",
+            Self::FlatTriangles => "flat L3 triangles",
         }
     }
 }
@@ -2686,10 +2689,10 @@ mod tests {
     use super::{
         CHUNK_GRID_QUADS, CHUNK_GRID_VERTICES, CameraUniform, CameraViewBasis, CubeSphereMesh,
         DEFAULT_MAX_ACTIVE_CHUNKS, DEFAULT_VERTICAL_FOV_RADIANS, EARTH_AXIAL_TILT_RADIANS,
-        GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE,
-        GeometricErrorRatio, LodPolicy, MAX_LOD_LEVEL, MAX_SKIRT_DEPTH_METERS,
-        MAX_VERTICAL_FOV_RADIANS, MIN_VERTICAL_FOV_RADIANS, MINIMUM_LOD_LEVEL,
-        NEAR_FIELD_GRID_QUADS, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE,
+        FLAT_TRIANGLE_LOD_LEVEL, GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
+        GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, GeometricErrorRatio, LodPolicy, MAX_LOD_LEVEL,
+        MAX_SKIRT_DEPTH_METERS, MAX_VERTICAL_FOV_RADIANS, MIN_VERTICAL_FOV_RADIANS,
+        MINIMUM_LOD_LEVEL, NEAR_FIELD_GRID_QUADS, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE,
         OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS, OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS,
         OUTMAP_TERRAIN_HEIGHT_SCALE, OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, OrbitCamera,
         PLANET_RADIUS_METERS, PLANET_ROTATION_PERIOD_SECONDS, PlanetLod, QuadtreeNode,
@@ -2739,11 +2742,11 @@ mod tests {
 
     #[test]
     fn fixed_lod_policy_stops_at_the_experiment_level() {
-        let policy = LodPolicy::fixed(MINIMUM_LOD_LEVEL);
-        assert_eq!(policy.max_level, MINIMUM_LOD_LEVEL);
-        assert!(policy.should_split(0.0, MINIMUM_LOD_LEVEL - 1));
-        assert!(!policy.should_split(0.0, MINIMUM_LOD_LEVEL));
-        assert!(!policy.should_merge(0.0, MINIMUM_LOD_LEVEL));
+        let policy = LodPolicy::fixed(FLAT_TRIANGLE_LOD_LEVEL);
+        assert_eq!(policy.max_level, FLAT_TRIANGLE_LOD_LEVEL);
+        assert!(policy.should_split(0.0, FLAT_TRIANGLE_LOD_LEVEL - 1));
+        assert!(!policy.should_split(0.0, FLAT_TRIANGLE_LOD_LEVEL));
+        assert!(!policy.should_merge(0.0, FLAT_TRIANGLE_LOD_LEVEL));
     }
 
     #[test]
