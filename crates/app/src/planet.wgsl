@@ -92,7 +92,7 @@ fn source_edge_fade_enabled(terrain_info: u32) -> bool {
 }
 
 fn near_field_texture() -> bool {
-    return textureDimensions(height_map, 0).x > u32(MATERIAL_TILE_LOGICAL_QUADS + 1.0);
+    return textureDimensions(height_map, 0).x == u32(NEAR_FIELD_WINDOW_LOGICAL_QUADS + 1.0);
 }
 
 fn source_coordinate(source_uv: vec2<f32>) -> vec2<f32> {

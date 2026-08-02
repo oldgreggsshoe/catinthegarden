@@ -1558,6 +1558,18 @@ the old kilometre-scale source mismatch; exact ocean ownership cannot make displ
 coincide. Treat the 738m result as the completed four-repair proof and the high-view L5/rebake/source
 coverage decision as the next geometry task, not as a shading or foveation problem.
 
+### 6e. Near-field texture-size regression — fixed
+
+Manual replay `test-runs/manual/1785679238-738888` showed large dark/grey rectangular holes across
+the planet in the high-altitude captures. The raster near-field path had classified ordinary
+131x131 tile textures as the 1025x1025 near-field window because `near_field_texture()` tested
+`width > 129`; the shader then applied 1024-quad coordinates to 129-quad tiles, causing invalid
+out-of-range reads. The test now requires the exact near-field width (`width == 1025`), leaving
+ordinary tiles on their gutter-aware coordinate path. Orbit replay
+`test-runs/orbit_once/1785679670-742426` passes with an intact planet and no rectangular holes.
+The orange stippled oval visible in one high-altitude frame is a separate LOD transition/dither
+artifact and remains a later visual-polish item.
+
 ## 7. What the terrain actually is now
 
 `shared_planet.wgsl`, mirrored in `planet.rs`, guarded by

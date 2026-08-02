@@ -1,12 +1,11 @@
-Step 3 is implemented and visually validated.
+I checked the newest manual run `test-runs/manual/1785679238-738888`.
 
-The raster path now uploads the existing camera-centred 8x8 near-field height/biome/moisture window (1025x1025) and remaps fully covered fine chunks to that one source field. Orbit and uncovered chunks keep the normal per-tile path.
+The large dark/grey rectangular holes were a real shader bug, not fog or missing terrain: the
+near-field test treated normal 131x131 tile textures as the 1025x1025 near-field texture, so it
+used 1024-quad coordinates on them and read invalid texels at high altitude.
 
-Latest replay: `test-runs/terrain_detail_altitude_ladder/1785677861-724323`.
-- Settled 10km rectangular source blocks are gone in the screenshot.
-- Settled 10km draw calls: 115 -> 10.
-- Settled 10km frame time: 28.68ms -> 24.06ms.
-- The fallback counter remains 139 by design; it reports the underlying sparse quadtree, not the raster window.
-- Cold first frames can still show fallback until the 64 window blocks are resident.
+Fixed with an exact 1025-width check. Validation replay `test-runs/orbit_once/1785679670-742426`
+shows an intact planet with the holes gone. The orange stippled oval still visible in one frame is
+a separate LOD transition/dither artifact, not the rectangular-hole fault.
 
-Validation: `cargo fmt --all -- --check`; workspace tests passed (190 app, 27 baker, 6 integration, 6 coretypes; 6 app tests ignored). Changes are ready to commit/push.
+I’m running the full format/tests now, then I’ll commit and push this fix before starting step 4.
