@@ -1,7 +1,12 @@
-Step 1 is implemented and pushed as `1473dd0`.
+Step 2 is complete and pushed as `b95adcf`.
 
-- Low-flight terrain now opportunistically prefetches up to four tiles per frame from the bounded camera-centred near-field window, after visible nodes claim the queue.
-- Outside the sparse high-resolution corridor it is a no-op; inside it warms fine sources without starving visible raster loads.
-- No geometry, height scale, LOD policy, or fallback behavior was changed yet.
+Added deterministic scenario `terrain_detail_altitude_ladder` and captured approximately 10m, 100m, 1km, and 10km clearances in run `1785675632-700618`.
 
-Validation: fmt/check, all 189 app + 35 baker/core tests, and `stand_on_ground` pass. The manual run records 30.46ms, 56 fallback chunks, 0m seam delta, 0.171m p90, and 6.797m max probe delta. `low_flight_performance` remains the known source/LOD failure, so this is only the safe residency substep—not the full clipmap yet.
+| clearance | frame ms | fallback | seam | probe p90 | probe max |
+|---:|---:|---:|---:|---:|---:|
+| 10m | 39.31 | 256 | 0.000m | 7.645m | 11.958m |
+| 100m | 35.47 | 58 | 0.000m | 0.539m | 1.801m |
+| 1km | 38.63 | 84 | 4.530m | 1.351m | 4.222m |
+| 10km | 28.68 | 139 | 0.000m | 8.112m | 29.034m |
+
+All 190 app + 35 baker/core tests pass; the ladder has finite metrics and zero LOD thrash. The 10km screenshots visibly show coarse rectangular source/LOD transitions, confirming that the next fix must be actual near-flight geometry/source coverage rather than more random procedural noise.
