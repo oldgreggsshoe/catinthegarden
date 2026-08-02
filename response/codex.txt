@@ -1,5 +1,7 @@
-Diagnosis/plan for the three captures:
-1. Capture 002’s pale horizon band is the extra terrain-distance fog replacing the aerial colour with a local sky sample that does not match the fullscreen camera sky. I’ll derive the fog target from the camera’s actual sky ray and blend it consistently.
-2. Capture 003’s bright triangular patches are the fine-detail normal relight ratio amplifying coarse/fallback triangles when the base Lambert term is near zero. I’ll bound that ratio and add a shader regression.
-3. Capture 005’s cyan lakes are receiving the lake water body’s sky-diffuse term after direct sunlight is fully occluded. I’ll gate the diffuse sky contribution by daylight, preserving sunlit lakes but removing the moonless glow.
-Then I’ll run shader validation/tests and a focused manual/scenario check, update the handoff, commit, and push.
+Fixed and pushed as `348ae57`.
+
+- Capture 002: terrain fog now targets the camera’s actual analytic sky ray, removing the stark horizon colour mismatch.
+- Capture 003: fine-detail relighting is bounded to 0.55–1.75, preventing bright coarse/fallback triangle patches.
+- Capture 005: lake/ocean body sky diffuse is now daylight-gated, so lakes no longer glow on the dark side while retaining sunlit water.
+
+Validation: fmt/check, shader parsing, full workspace tests, and focused fog/relight/night-water regressions pass. The long GPU night-side scenario did not finish in the allotted run window, so fresh visual sign-off is still useful.
