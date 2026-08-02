@@ -201,6 +201,20 @@ fine-detail normal relight gain to **0.55–1.75**, and gates lake/ocean body sk
 daylight. This removes the horizon fog mismatch, bright coarse fallback patches, and moonless lake
 glow without changing the baked heights or lake coast geometry.
 
+### Terrain detail step 1 — bounded raster near-field source priority
+
+Low-flight raster updates now opportunistically prefetch up to four tiles per frame from the existing
+bounded 8×8 near-field source window, after ordinary visible-node loads claim the queue. The request
+is keyed to camera direction and clearance and is active only below the existing 250km source-limit
+bypass. Inside the sparse high-resolution corridor it gradually warms nearby fine sources; outside
+that corridor the manifest resolves the request to the already resident dense ancestor, so it is
+effectively free. Visible raster geometry is never starved by this prefetch.
+This is intentionally a source-residency step, not a geometry or height-scale change: the quadtree,
+mesh density, runtime detail ladder, fallback policy, and ray window remain unchanged. The next
+validation is a raster low-flight replay comparing fallback count, source-level histogram, seam delta,
+probe p90/max, and frame time at 10m/100m/1km/10km before expanding the clipmap or adding directional
+relief.
+
 To expose the observed Earth form before designing procedural terrain with geographic direction,
 `TERRAIN_DETAIL_LONG_GAIN` is **1.0 instead of 8.0**. This removes the extra long-wave spectral boost
 without deleting the detail ladder, hash, ridge shaping, source handoff, normal perturbation or CPU/GPU

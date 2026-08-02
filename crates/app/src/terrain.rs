@@ -46,6 +46,10 @@ fn planet_shader_source() -> String {
     .join("\n")
 }
 const MAX_PENDING_TILE_LOADS: usize = 32;
+/// Near-field prefetch is opportunistic for raster: visible geometry must keep
+/// the first claim on the pending-load queue, otherwise a ray-oriented window
+/// can starve the L18 tiles the raster frontier actually draws.
+const MAX_RASTER_NEAR_FIELD_PREFETCH_PER_FRAME: usize = 4;
 /// Half a second gives a newly resident grid time to replace its parent
 /// without leaving the opaque dither visible long enough to sparkle during
 /// normal flight. The higher-detail request itself begins early in `LodPolicy`.
@@ -967,6 +971,10 @@ impl TerrainRenderer {
     /// from the L0 tile and read 986m where the ground is 920m, which is worse
     /// than the pyramid it was meant to replace.
     pub fn request_near_field_tiles(&mut self, key: NearFieldKey) {
+        self.request_near_field_tiles_budget(key, usize::MAX);
+    }
+
+    fn request_near_field_tiles_budget(&mut self, key: NearFieldKey, request_budget: usize) {
         let TerrainDataSource::Outmap(outmap) = &self.source else {
             return;
         };
@@ -985,7 +993,11 @@ impl TerrainRenderer {
                 }
             }
         }
+        let mut requested_count = 0;
         for source_key in wanted {
+            if requested_count >= request_budget {
+                break;
+            }
             // Touch it either way: the eviction sweep only sees tiles the
             // render nodes used, and would drop the window's out from under it.
             if self.tile_cache.contains_key(&source_key) {
@@ -1002,6 +1014,7 @@ impl TerrainRenderer {
                     .is_some_and(|requests| requests.send(source_key).is_ok())
             {
                 self.pending_tile_loads.insert(source_key);
+                requested_count += 1;
             }
         }
     }
@@ -1155,6 +1168,18 @@ impl TerrainRenderer {
         let distance_reference_height_meters = self
             .surface_height_meters_at(camera_world.normalize(), camera_altitude_meters)
             .unwrap_or(0.0);
+        // Retain the camera-centred key so raster can opportunistically prefetch
+        // its sources after visible geometry has claimed the load queue. Outside
+        // the sparse high-resolution corridor this resolves to the existing
+        // dense ancestor and costs nothing.
+        let raster_near_field_key =
+            if camera_altitude_meters < LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS {
+                let clearance_meters =
+                    (camera_altitude_meters - distance_reference_height_meters).max(0.0);
+                self.near_field_key(camera_world.normalize(), clearance_meters)
+            } else {
+                None
+            };
         self.lod
             .set_distance_reference_height(distance_reference_height_meters);
         let aspect_ratio = f64::from(viewport[0].max(1)) / f64::from(viewport[1].max(1));
@@ -1310,6 +1335,9 @@ impl TerrainRenderer {
                 {
                     self.pending_tile_loads.insert(source_key);
                 }
+            }
+            if let Some(key) = raster_near_field_key {
+                self.request_near_field_tiles_budget(key, MAX_RASTER_NEAR_FIELD_PREFETCH_PER_FRAME);
             }
         } else {
             resolved_tiles.resize(render_nodes.len(), None);
