@@ -91,15 +91,31 @@ fn source_edge_fade_enabled(terrain_info: u32) -> bool {
     return (terrain_info & (1u << 14u)) != 0u;
 }
 
-fn sample_height(source_uv: vec2<f32>) -> f32 {
-    let gutter_uv = 1.0 / MATERIAL_TILE_LOGICAL_QUADS;
-    let coordinate = vec2<f32>(TILE_GUTTER)
-        + clamp(source_uv, vec2<f32>(-gutter_uv), vec2<f32>(1.0 + gutter_uv))
+fn near_field_texture() -> bool {
+    return textureDimensions(height_map, 0).x > u32(MATERIAL_TILE_LOGICAL_QUADS + 1.0);
+}
+
+fn source_coordinate(source_uv: vec2<f32>) -> vec2<f32> {
+    if near_field_texture() {
+        return clamp(source_uv, vec2<f32>(0.0), vec2<f32>(1.0))
+            * NEAR_FIELD_WINDOW_LOGICAL_QUADS;
+    }
+    return vec2<f32>(TILE_GUTTER)
+        + clamp(source_uv, vec2<f32>(-1.0 / MATERIAL_TILE_LOGICAL_QUADS), vec2<f32>(1.0 + 1.0 / MATERIAL_TILE_LOGICAL_QUADS))
             * MATERIAL_TILE_LOGICAL_QUADS;
+}
+
+fn sample_height(source_uv: vec2<f32>) -> f32 {
+    let coordinate = source_coordinate(source_uv);
     let lower = vec2<i32>(floor(coordinate));
+    let last_coordinate = select(
+        MATERIAL_TILE_LAST_STORED_COORD,
+        i32(NEAR_FIELD_WINDOW_LOGICAL_QUADS),
+        near_field_texture(),
+    );
     let upper = min(
         lower + vec2<i32>(1),
-        vec2<i32>(MATERIAL_TILE_LAST_STORED_COORD),
+        vec2<i32>(last_coordinate),
     );
     let amount = fract(coordinate);
     let lower_left = textureLoad(height_map, lower, 0).x;
@@ -137,12 +153,14 @@ fn terrain_height(
 }
 
 fn sample_biome(source_uv: vec2<f32>) -> u32 {
-    let coordinate = vec2<i32>(round(
-        vec2<f32>(TILE_GUTTER)
-            + clamp(source_uv, vec2<f32>(0.0), vec2<f32>(1.0))
-                * MATERIAL_TILE_LOGICAL_QUADS,
-    ));
-    return textureLoad(biome_map, coordinate, 0).x;
+    let coordinate = vec2<i32>(round(source_coordinate(source_uv)));
+    let last_coordinate = select(
+        MATERIAL_TILE_LAST_STORED_COORD,
+        i32(NEAR_FIELD_WINDOW_LOGICAL_QUADS),
+        near_field_texture(),
+    );
+    let clamped = min(coordinate, vec2<i32>(last_coordinate));
+    return textureLoad(biome_map, clamped, 0).x;
 }
 
 fn sample_biome_blend(source_uv: vec2<f32>) -> BiomeBlendSample {
@@ -150,13 +168,16 @@ fn sample_biome_blend(source_uv: vec2<f32>) -> BiomeBlendSample {
     // materials should not expose their texel grid. Blend the four nearest
     // baked owners exactly as the height channel is blended; the gutter keeps
     // this continuous when the resident source changes at a tile edge.
-    let coordinate = vec2<f32>(TILE_GUTTER)
-        + clamp(source_uv, vec2<f32>(0.0), vec2<f32>(1.0))
-            * MATERIAL_TILE_LOGICAL_QUADS;
+    let coordinate = source_coordinate(source_uv);
+    let last_coordinate = select(
+        MATERIAL_TILE_LAST_STORED_COORD,
+        i32(NEAR_FIELD_WINDOW_LOGICAL_QUADS),
+        near_field_texture(),
+    );
     let lower = vec2<i32>(floor(coordinate));
     let upper = min(
         lower + vec2<i32>(1),
-        vec2<i32>(MATERIAL_TILE_LAST_STORED_COORD),
+        vec2<i32>(last_coordinate),
     );
     let amount = fract(coordinate);
     return BiomeBlendSample(
@@ -176,13 +197,16 @@ fn sample_biome_blend(source_uv: vec2<f32>) -> BiomeBlendSample {
 }
 
 fn sample_moisture(source_uv: vec2<f32>) -> f32 {
-    let coordinate = vec2<f32>(TILE_GUTTER)
-        + clamp(source_uv, vec2<f32>(0.0), vec2<f32>(1.0))
-            * MATERIAL_TILE_LOGICAL_QUADS;
+    let coordinate = source_coordinate(source_uv);
+    let last_coordinate = select(
+        MATERIAL_TILE_LAST_STORED_COORD,
+        i32(NEAR_FIELD_WINDOW_LOGICAL_QUADS),
+        near_field_texture(),
+    );
     let lower = vec2<i32>(floor(coordinate));
     let upper = min(
         lower + vec2<i32>(1),
-        vec2<i32>(MATERIAL_TILE_LAST_STORED_COORD),
+        vec2<i32>(last_coordinate),
     );
     let amount = fract(coordinate);
     let lower_left = textureLoad(moisture_map, lower, 0).x;

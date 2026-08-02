@@ -1,8 +1,12 @@
-I ran the approved step-3 investigation and did not ship a speculative shader recolour.
+Step 3 is implemented and visually validated.
 
-- Latest ladder replay: `1785677254-717799`.
-- Doubling the terrain tile cache 384 -> 768 left the settled 10km fallback at 139 and source histogram at `[61, 61, 78]`; the rectangles are not cache starvation.
-- The candidate normal/material smoothing changes either left the boundaries visible or damaged the palette, so I reverted them.
-- Workspace validation is clean: 190 app tests passed (6 ignored), plus baker/coretypes/integration tests.
+The raster path now uploads the existing camera-centred 8x8 near-field height/biome/moisture window (1025x1025) and remaps fully covered fine chunks to that one source field. Orbit and uncovered chunks keep the normal per-tile path.
 
-The evidence points to a real sparse-source coverage frontier. The correct next change is a bounded raster near-flight source/geometry window with one consistent source field, not more noise or a colour hack. I recorded this in `AGENTS.md` and `docs/HANDOFF.md`.
+Latest replay: `test-runs/terrain_detail_altitude_ladder/1785677861-724323`.
+- Settled 10km rectangular source blocks are gone in the screenshot.
+- Settled 10km draw calls: 115 -> 10.
+- Settled 10km frame time: 28.68ms -> 24.06ms.
+- The fallback counter remains 139 by design; it reports the underlying sparse quadtree, not the raster window.
+- Cold first frames can still show fallback until the 64 window blocks are resident.
+
+Validation: `cargo fmt --all -- --check`; workspace tests passed (190 app, 27 baker, 6 integration, 6 coretypes; 6 app tests ignored). Changes are ready to commit/push.

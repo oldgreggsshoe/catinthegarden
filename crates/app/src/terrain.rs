@@ -119,6 +119,7 @@ const OUTMAP_GEOMETRIC_ERROR: GeometricErrorRatio = GeometricErrorRatio {
 /// exposes huge terrain facets.
 const LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS: f64 = 250_000.0;
 const TERRAIN_INFO_SOURCE_EDGE_FADE_BIT: u32 = 1 << 14;
+const TERRAIN_INFO_NEAR_FIELD_BIT: u32 = 1 << 15;
 const TERRAIN_DETAIL_FILTER_RATIO: f64 = 0.01;
 
 fn conservative_outmap_height_bounds(height_min_meters: f64, height_max_meters: f64) -> [f64; 2] {
@@ -365,15 +366,18 @@ struct DrawBatch {
     first_instance: u32,
     instance_count: u32,
     tile_key: Option<TileKey>,
+    near_field: bool,
 }
 
 fn push_draw_batch_instance(
     batches: &mut Vec<DrawBatch>,
     tile_key: Option<TileKey>,
+    near_field: bool,
     instance_index: u32,
 ) {
     if let Some(batch) = batches.last_mut()
         && batch.tile_key == tile_key
+        && batch.near_field == near_field
         && batch.first_instance + batch.instance_count == instance_index
     {
         batch.instance_count += 1;
@@ -382,6 +386,7 @@ fn push_draw_batch_instance(
             first_instance: instance_index,
             instance_count: 1,
             tile_key,
+            near_field,
         });
     }
 }
@@ -414,10 +419,14 @@ pub struct TerrainRenderer {
     ocean_transition_pipeline: wgpu::RenderPipeline,
     ocean_stable_pipeline: wgpu::RenderPipeline,
     terrain_tile_bind_group_layout: wgpu::BindGroupLayout,
+    raster_near_field_bind_group: wgpu::BindGroup,
     shared_bind_group: wgpu::BindGroup,
     _terrain_settings_buffer: wgpu::Buffer,
     _environment_cubemap: wgpu::Texture,
     _terrain_material_texture: wgpu::Texture,
+    _raster_near_field_height_texture: wgpu::Texture,
+    _raster_near_field_biome_texture: wgpu::Texture,
+    _raster_near_field_moisture_texture: wgpu::Texture,
     chunk_vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
@@ -439,6 +448,14 @@ pub struct TerrainRenderer {
     draw_batches: Vec<DrawBatch>,
     ocean_draw_batches: Vec<DrawBatch>,
     max_outmap_seam_delta_meters: f64,
+    raster_near_field: Option<NearFieldSources>,
+}
+
+#[derive(Clone, Copy)]
+struct RasterNearFieldBounds {
+    face: u8,
+    uv_min: [f64; 2],
+    uv_span: f64,
 }
 
 impl TerrainRenderer {
@@ -507,6 +524,48 @@ impl TerrainRenderer {
                     texture_layout_entry(2, wgpu::TextureSampleType::Float { filterable: false }),
                 ],
             });
+        let raster_near_field_height_texture = create_near_field_texture(
+            device,
+            "raster near-field height window",
+            wgpu::TextureFormat::R32Float,
+        );
+        let raster_near_field_biome_texture = create_near_field_texture(
+            device,
+            "raster near-field biome window",
+            wgpu::TextureFormat::R8Uint,
+        );
+        let raster_near_field_moisture_texture = create_near_field_texture(
+            device,
+            "raster near-field moisture window",
+            wgpu::TextureFormat::R8Unorm,
+        );
+        let raster_near_field_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("raster near-field terrain bind group"),
+            layout: &terrain_tile_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(
+                        &raster_near_field_height_texture
+                            .create_view(&wgpu::TextureViewDescriptor::default()),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(
+                        &raster_near_field_biome_texture
+                            .create_view(&wgpu::TextureViewDescriptor::default()),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(
+                        &raster_near_field_moisture_texture
+                            .create_view(&wgpu::TextureViewDescriptor::default()),
+                    ),
+                },
+            ],
+        });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("terrain pipeline layout"),
             bind_group_layouts: &[
@@ -660,10 +719,14 @@ impl TerrainRenderer {
             ocean_transition_pipeline,
             ocean_stable_pipeline,
             terrain_tile_bind_group_layout,
+            raster_near_field_bind_group,
             shared_bind_group,
             _terrain_settings_buffer: terrain_settings_buffer,
             _environment_cubemap: environment_cubemap,
             _terrain_material_texture: terrain_material_texture,
+            _raster_near_field_height_texture: raster_near_field_height_texture,
+            _raster_near_field_biome_texture: raster_near_field_biome_texture,
+            _raster_near_field_moisture_texture: raster_near_field_moisture_texture,
             chunk_vertex_buffer,
             index_buffer,
             index_count: topology.indices.len() as u32,
@@ -685,6 +748,7 @@ impl TerrainRenderer {
             draw_batches: Vec::new(),
             ocean_draw_batches: Vec::new(),
             max_outmap_seam_delta_meters: 0.0,
+            raster_near_field: None,
         };
         Ok(renderer)
     }
@@ -1152,6 +1216,55 @@ impl TerrainRenderer {
         })
     }
 
+    fn update_raster_near_field(&mut self, key: Option<NearFieldKey>) {
+        let Some(key) = key else {
+            self.raster_near_field = None;
+            return;
+        };
+        let Some(sources) = self.near_field_sources(key) else {
+            return;
+        };
+        if self.raster_near_field.as_ref() == Some(&sources) {
+            return;
+        }
+        let Some(window) = self.near_field_window(&sources) else {
+            return;
+        };
+        upload_near_field_texture(
+            &self.queue,
+            &self._raster_near_field_height_texture,
+            bytemuck::cast_slice(&window.heights_meters),
+            size_of::<f32>() as u32,
+        );
+        upload_near_field_texture(
+            &self.queue,
+            &self._raster_near_field_biome_texture,
+            &window.biome_ids,
+            size_of::<u8>() as u32,
+        );
+        upload_near_field_texture(
+            &self.queue,
+            &self._raster_near_field_moisture_texture,
+            &window.moisture,
+            size_of::<u8>() as u32,
+        );
+        self.raster_near_field = Some(sources);
+    }
+
+    fn raster_near_field_bounds(&self) -> Option<RasterNearFieldBounds> {
+        let sources = self.raster_near_field.as_ref()?;
+        let key = sources.key;
+        let tiles_per_side = f64::from(1_u32 << key.level);
+        Some(RasterNearFieldBounds {
+            face: key.face.index() as u8,
+            uv_min: [
+                f64::from(key.tile_x) / tiles_per_side * 2.0 - 1.0,
+                f64::from(key.tile_y) / tiles_per_side * 2.0 - 1.0,
+            ],
+            uv_span: f64::from(NEAR_FIELD_WINDOW_TILES) / tiles_per_side * 2.0,
+        })
+    }
+
     pub fn update(
         &mut self,
         camera_world: DVec3,
@@ -1367,6 +1480,7 @@ impl TerrainRenderer {
             }
         }
         let tiles_unloaded = (before_eviction - self.tile_cache.len()) as u32;
+        self.update_raster_near_field(raster_near_field_key);
 
         let active_resolved_tiles: Vec<_> = render_nodes
             .iter()
@@ -1384,7 +1498,16 @@ impl TerrainRenderer {
             TerrainDataSource::Placeholder => 0,
             TerrainDataSource::Outmap(outmap) => outmap.manifest().dense_level,
         };
+        let raster_near_field_bounds = self.raster_near_field_bounds();
         for (render_node, resolved) in render_nodes.iter().zip(resolved_tiles.iter()) {
+            let [u_min, v_min, u_max, v_max] = render_node.node.uv_bounds();
+            let near_field = raster_near_field_bounds.is_some_and(|bounds| {
+                render_node.node.face == bounds.face
+                    && u_min >= bounds.uv_min[0]
+                    && v_min >= bounds.uv_min[1]
+                    && u_max <= bounds.uv_min[0] + bounds.uv_span
+                    && v_max <= bounds.uv_min[1] + bounds.uv_span
+            });
             let (source_uv_scale, source_uv_offset, source_level, tile_key, outmap_mode) =
                 if let Some((requested_key, source_key)) = *resolved {
                     let (scale, offset) = fallback_uv_transform(requested_key, source_key);
@@ -1393,11 +1516,28 @@ impl TerrainRenderer {
                         source_level_delta_histogram
                             [(requested_key.level - source_key.level) as usize] += 1;
                     }
-                    (scale, offset, source_key.level, Some(source_key), true)
+                    if near_field {
+                        let bounds = raster_near_field_bounds.expect("near-field bounds");
+                        let window = self.raster_near_field.as_ref().expect("near-field sources");
+                        (
+                            [
+                                ((u_max - u_min) / bounds.uv_span) as f32,
+                                ((v_max - v_min) / bounds.uv_span) as f32,
+                            ],
+                            [
+                                ((u_min - bounds.uv_min[0]) / bounds.uv_span) as f32,
+                                ((v_min - bounds.uv_min[1]) / bounds.uv_span) as f32,
+                            ],
+                            window.key.level,
+                            None,
+                            true,
+                        )
+                    } else {
+                        (scale, offset, source_key.level, Some(source_key), true)
+                    }
                 } else {
                     ([1.0, 1.0], [0.0, 0.0], render_node.node.level, None, false)
                 };
-            let [u_min, v_min, u_max, v_max] = render_node.node.uv_bounds();
             let anchor_direction = render_node.node.center_direction().as_vec3().normalize();
             let anchor_world = DVec3::new(
                 f64::from(anchor_direction.x),
@@ -1440,7 +1580,8 @@ impl TerrainRenderer {
                 None => true,
             };
             prepared_instances.push((
-                tile_key,
+                if near_field { None } else { tile_key },
+                near_field,
                 TerrainInstance {
                     anchor_view_position: camera_view_basis
                         .world_to_view(anchor_world - camera_world)
@@ -1459,6 +1600,7 @@ impl TerrainRenderer {
                                 source_level,
                                 outmap_dense_level,
                             ),
+                        near_field,
                     ),
                     lod_transition: [
                         render_node.transition_progress,
@@ -1491,15 +1633,20 @@ impl TerrainRenderer {
         // Within a resolved tile, put possible-ocean chunks first. Their
         // ranges are then contiguous subsets of the terrain instance stream,
         // so culling does not duplicate instance uploads.
-        prepared_instances.sort_unstable_by_key(|(tile_key, _, may_contain_ocean)| {
-            (*tile_key, !*may_contain_ocean)
+        prepared_instances.sort_unstable_by_key(|(tile_key, near_field, _, may_contain_ocean)| {
+            (*near_field, *tile_key, !*may_contain_ocean)
         });
         let mut instances = Vec::with_capacity(prepared_instances.len());
-        for (tile_key, instance, may_contain_ocean) in prepared_instances {
+        for (tile_key, near_field, instance, may_contain_ocean) in prepared_instances {
             let instance_index = instances.len() as u32;
-            push_draw_batch_instance(&mut self.draw_batches, tile_key, instance_index);
+            push_draw_batch_instance(&mut self.draw_batches, tile_key, near_field, instance_index);
             if may_contain_ocean {
-                push_draw_batch_instance(&mut self.ocean_draw_batches, tile_key, instance_index);
+                push_draw_batch_instance(
+                    &mut self.ocean_draw_batches,
+                    tile_key,
+                    near_field,
+                    instance_index,
+                );
             }
             instances.push(instance);
         }
@@ -1578,12 +1725,17 @@ impl TerrainRenderer {
         render_pass.set_vertex_buffer(0, self.chunk_vertex_buffer.slice(..));
         render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
         for batch in &self.ocean_draw_batches {
-            let tile = batch.tile_key.map_or(&self.placeholder_tile, |key| {
-                self.tile_cache
-                    .get(&key)
-                    .expect("draw batch has a resident terrain tile")
-            });
-            render_pass.set_bind_group(1, &tile.bind_group, &[]);
+            let bind_group = if batch.near_field {
+                &self.raster_near_field_bind_group
+            } else {
+                let tile = batch.tile_key.map_or(&self.placeholder_tile, |key| {
+                    self.tile_cache
+                        .get(&key)
+                        .expect("draw batch has a resident terrain tile")
+                });
+                &tile.bind_group
+            };
+            render_pass.set_bind_group(1, bind_group, &[]);
             render_pass.draw_indexed(
                 0..self.index_count,
                 0,
@@ -1592,12 +1744,17 @@ impl TerrainRenderer {
         }
         render_pass.set_pipeline(pipeline);
         for batch in &self.draw_batches {
-            let tile = batch.tile_key.map_or(&self.placeholder_tile, |key| {
-                self.tile_cache
-                    .get(&key)
-                    .expect("draw batch has a resident terrain tile")
-            });
-            render_pass.set_bind_group(1, &tile.bind_group, &[]);
+            let bind_group = if batch.near_field {
+                &self.raster_near_field_bind_group
+            } else {
+                let tile = batch.tile_key.map_or(&self.placeholder_tile, |key| {
+                    self.tile_cache
+                        .get(&key)
+                        .expect("draw batch has a resident terrain tile")
+                });
+                &tile.bind_group
+            };
+            render_pass.set_bind_group(1, bind_group, &[]);
             render_pass.draw_indexed(
                 0..self.index_count,
                 0,
@@ -2366,6 +2523,56 @@ fn create_and_upload_texture(
     texture
 }
 
+fn create_near_field_texture(
+    device: &wgpu::Device,
+    label: &str,
+    format: wgpu::TextureFormat,
+) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: NEAR_FIELD_WINDOW_SAMPLES,
+            height: NEAR_FIELD_WINDOW_SAMPLES,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    })
+}
+
+fn upload_near_field_texture(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    bytes: &[u8],
+    bytes_per_texel: u32,
+) {
+    let extent = NEAR_FIELD_WINDOW_SAMPLES;
+    let padded = padded_texture_rows(bytes, extent, extent, bytes_per_texel);
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &padded,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(aligned_texture_row_bytes(extent * bytes_per_texel)),
+            rows_per_image: Some(extent),
+        },
+        wgpu::Extent3d {
+            width: extent,
+            height: extent,
+            depth_or_array_layers: 1,
+        },
+    );
+}
+
 fn aligned_texture_row_bytes(row_bytes: u32) -> u32 {
     row_bytes.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT
 }
@@ -2609,12 +2816,14 @@ fn pack_terrain_info(
     requested_level: u8,
     source_level: u8,
     source_edge_fade: bool,
+    near_field: bool,
 ) -> u32 {
     u32::from(outmap)
         | (u32::from(face) << 1)
         | (u32::from(requested_level) << 4)
         | (u32::from(source_level) << 9)
         | u32::from(source_edge_fade) * TERRAIN_INFO_SOURCE_EDGE_FADE_BIT
+        | u32::from(near_field) * TERRAIN_INFO_NEAR_FIELD_BIT
 }
 
 fn max_outmap_seam_delta(
@@ -2792,16 +3001,16 @@ mod tests {
 
     use super::{
         FadingChunk, LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS,
-        OUTMAP_TILE_GRID_SUBDIVISION_LEVELS, SurfaceDetailNode, TERRAIN_INFO_SOURCE_EDGE_FADE_BIT,
-        TERRAIN_MATERIAL_LAYER_COUNT, TERRAIN_MATERIAL_TEXTURE_SIZE, TerrainSettings,
-        aligned_texture_row_bytes, conservative_outmap_height_bounds, cube_face_uv,
-        downsample_srgb_rgba8, edge_stitch_info, edge_stitch_level_delta, fallback_uv_transform,
-        height_footprint_is_strictly_land, lod_transition_nodes, lod_transition_progress,
-        node_intersects_source_edge_fade, nodes_share_lod_transition, pack_terrain_info,
-        padded_texture_rows, planet_shader_source, purge_expired_lod_transitions, sample_biome_cpu,
-        sample_height_cpu, sample_moisture_cpu, should_animate_lod_transition,
-        source_tile_uv_at_direction, surface_detail_filter_meters, terrain_material_layer_texels,
-        terrain_material_texel, tileable_value_noise,
+        OUTMAP_TILE_GRID_SUBDIVISION_LEVELS, SurfaceDetailNode, TERRAIN_INFO_NEAR_FIELD_BIT,
+        TERRAIN_INFO_SOURCE_EDGE_FADE_BIT, TERRAIN_MATERIAL_LAYER_COUNT,
+        TERRAIN_MATERIAL_TEXTURE_SIZE, TerrainSettings, aligned_texture_row_bytes,
+        conservative_outmap_height_bounds, cube_face_uv, downsample_srgb_rgba8, edge_stitch_info,
+        edge_stitch_level_delta, fallback_uv_transform, height_footprint_is_strictly_land,
+        lod_transition_nodes, lod_transition_progress, node_intersects_source_edge_fade,
+        nodes_share_lod_transition, pack_terrain_info, padded_texture_rows, planet_shader_source,
+        purge_expired_lod_transitions, sample_biome_cpu, sample_height_cpu, sample_moisture_cpu,
+        should_animate_lod_transition, source_tile_uv_at_direction, surface_detail_filter_meters,
+        terrain_material_layer_texels, terrain_material_texel, tileable_value_noise,
     };
     use crate::planet::{
         GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, MAX_LOD_LEVEL, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE,
@@ -2866,12 +3075,15 @@ mod tests {
 
     #[test]
     fn terrain_info_packs_mode_face_and_levels() {
-        let packed = pack_terrain_info(true, 5, 18, 7, true);
+        let packed = pack_terrain_info(true, 5, 18, 7, true, false);
         assert_eq!(packed & 1, 1);
         assert_eq!((packed >> 1) & 0x7, 5);
         assert_eq!((packed >> 4) & 0x1f, 18);
         assert_eq!((packed >> 9) & 0x1f, 7);
         assert_ne!(packed & TERRAIN_INFO_SOURCE_EDGE_FADE_BIT, 0);
+        assert_eq!(packed & TERRAIN_INFO_NEAR_FIELD_BIT, 0);
+        let near_field = pack_terrain_info(true, 5, 18, 18, false, true);
+        assert_ne!(near_field & TERRAIN_INFO_NEAR_FIELD_BIT, 0);
     }
 
     #[test]

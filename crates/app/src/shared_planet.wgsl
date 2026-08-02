@@ -2,6 +2,7 @@ const PLANET_RADIUS_METERS: f32 = 4000000.0;
 // Material/height tiles are intentionally denser than the fixed 32x32 chunk
 // grid, so material detail and coastline transitions do not inherit mesh size.
 const MATERIAL_TILE_LOGICAL_QUADS: f32 = 128.0;
+const NEAR_FIELD_WINDOW_LOGICAL_QUADS: f32 = 1024.0;
 const TILE_GUTTER: f32 = 1.0;
 const MATERIAL_TILE_LAST_STORED_COORD: i32 = 130;
 const GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS: f32 = 111.5;

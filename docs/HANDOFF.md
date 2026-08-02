@@ -234,16 +234,21 @@ The ladder therefore confirms the measured source-coverage limit rather than sig
 procedural noise. Step 3 should address those transitions with bounded near-flight geometry/source
 coverage before adding directional relief.
 
-### Terrain detail step 3 diagnosis — source coverage, not cache starvation
+### Terrain detail step 3 — bounded raster near-field source window
 
-As a bounded falsification test, replay `1785677254-717799` doubled the resident raster tile cache
-from 384 to 768. At the settled 10km view the fallback count remained 139 and the source-level
-histogram remained `[61, 61, 78]`, while the screenshots retained the same rectangular source
-frontier. The extra cache therefore only increased residency (730 tiles) and did not provide finer
-source data. Temporary shader/normal smoothing candidates were compared and discarded because they
-changed the palette or left the block boundaries visible. Do not add directional relief or recolour
-fallbacks here; the next code pass needs a bounded raster near-flight geometry/source window that
-supplies a consistent source field across the camera-centred view.
+Raster low flight now reuses the existing camera-centred 8x8 near-field assembly rather than binding
+each fine chunk to whichever sparse ancestor happens to resolve for it. A 1025x1025 R32F/R8/R8
+window is uploaded when its resident source set changes; every fully covered fine chunk remaps its
+face UV into that common window and batches against one bind group. Orbit, ocean ownership, and
+chunks outside the window remain on the ordinary per-tile path, and the source/fallback counters
+still describe the quadtree rather than pretending the sparse bake became denser.
+
+Replay `1785677861-724323` removes the settled 1km/10km rectangular source blocks in the screenshots.
+At the settled 10km row, draw calls fall from 115 to 10 and frame time from 28.68ms to 24.06ms;
+the diagnostic fallback count remains 139 because it intentionally measures the underlying sparse
+source frontier. Cold first frames can still show the old fallback until all 64 window blocks are
+resident. The next review should check low-altitude residency latency and the window's material
+continuity before adding directional relief.
 
 To expose the observed Earth form before designing procedural terrain with geographic direction,
 `TERRAIN_DETAIL_LONG_GAIN` is **1.0 instead of 8.0**. This removes the extra long-wave spectral boost
