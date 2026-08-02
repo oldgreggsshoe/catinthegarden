@@ -1,8 +1,8 @@
 # Handoff — ground readability / render modernisation
 
-**Branch:** `diagnose/ocean-terrain-blockiness`
-**Branch base:** `69cd04d` on `experiment/ground-readability`; this session's work is isolated on
-the diagnosis branch and pushed to `origin/diagnose/ocean-terrain-blockiness`
+**Branch:** `experiment/flat-triangle-wireframe`
+**Branch base:** current `diagnose/ocean-terrain-blockiness`; this session's work is isolated on
+the experimental branch and is to be pushed to `origin/experiment/flat-triangle-wireframe`
 **Renderer state:** current branch — positive baked macro land uses one fixed 4x presentation scale
 at every camera altitude; sea level and negative bathymetry remain physical. CPU truth, raster, ray,
 LOD/culling bounds, shader normals, and scenario cameras share that transform. The former 8x
@@ -36,6 +36,28 @@ sections below but uses a previous macro/detail presentation. The later raster l
 **Written:** 1 August 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
+
+### Experimental branch — fixed-L2 flat triangle wireframe (2 August 2026)
+
+Branch `experiment/flat-triangle-wireframe` is an isolated visual experiment from the current
+diagnosis branch. It intentionally fixes the raster terrain and ocean quadtree at the minimum
+`L2` level and disables the 40x40 near-field mesh, leaving the stable 32x32 chunk topology. The
+fragment path bypasses the material/albedo texture stack and assigns one categorical biome (or
+ocean) palette colour to each triangle, with a dark antialiased edge, so the planet reads as
+filled wireframe rather than interpolated textured terrain. Height and biome outmaps remain CPU/GPU
+data sources for geometry and ownership; this mode does not pretend the baked data disappeared.
+
+The branch defaults to `flat L2 triangles` (`RenderDebugMode::FlatTriangles`). Set
+`CATINGARDEN_FLAT_TRIANGLES=0`/`false`/`off` to restore normal LOD selection, or set
+`CATINGARDEN_DEBUG_MODE=final` to inspect the normal material shader while keeping the branch's
+fixed-L2 policy. The ray renderer is not replaced by this raster-only presentation experiment.
+
+Release validation: `orbit_once/1785691096-96722` rendered all 44 terrain chunks at L2, with zero
+logged seam delta and a roughly 5.14ms frame sample on the Quadro replay. The focused shader,
+debug-mode, and fixed-policy tests pass; `cargo test --workspace` passes **233 tests** (192 app,
+27 baker library, 2 baker binary, 6 baker integration, 6 coretypes; 6 ignored diagnostics).
+This branch is for visual evaluation only and must not be merged as the normal textured renderer
+without an explicit decision.
 
 ---
 

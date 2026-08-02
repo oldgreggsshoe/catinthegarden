@@ -869,6 +869,18 @@ impl Default for LodPolicy {
 }
 
 impl LodPolicy {
+    /// A deliberately fixed level for visual experiments that need every
+    /// primitive to remain stable while its shading is inspected.
+    pub const fn fixed(level: u8) -> Self {
+        Self {
+            split_pixels: -1.0,
+            merge_pixels: -2.0,
+            max_level: level,
+        }
+    }
+}
+
+impl LodPolicy {
     fn minimum_level(&self) -> u8 {
         MINIMUM_LOD_LEVEL.min(self.max_level)
     }
@@ -2547,6 +2559,7 @@ pub enum RenderDebugMode {
     AerialContribution = 3,
     SkyOnly = 4,
     RayHitStatus = 5,
+    FlatTriangles = 6,
 }
 
 impl RenderDebugMode {
@@ -2556,7 +2569,8 @@ impl RenderDebugMode {
             Self::RawAlbedo => Self::SurfaceLighting,
             Self::SurfaceLighting => Self::AerialContribution,
             Self::AerialContribution => Self::SkyOnly,
-            Self::SkyOnly | Self::RayHitStatus => Self::Final,
+            Self::SkyOnly => Self::FlatTriangles,
+            Self::FlatTriangles | Self::RayHitStatus => Self::Final,
         }
     }
 
@@ -2568,6 +2582,7 @@ impl RenderDebugMode {
             Self::AerialContribution => "aerial contribution",
             Self::SkyOnly => "sky only",
             Self::RayHitStatus => "ray detail-hit status",
+            Self::FlatTriangles => "flat L2 triangles",
         }
     }
 }
@@ -2714,11 +2729,21 @@ mod tests {
             RenderDebugMode::SurfaceLighting,
             RenderDebugMode::AerialContribution,
             RenderDebugMode::SkyOnly,
+            RenderDebugMode::FlatTriangles,
             RenderDebugMode::Final,
         ] {
             mode = mode.next();
             assert_eq!(mode, expected);
         }
+    }
+
+    #[test]
+    fn fixed_lod_policy_stops_at_the_experiment_level() {
+        let policy = LodPolicy::fixed(MINIMUM_LOD_LEVEL);
+        assert_eq!(policy.max_level, MINIMUM_LOD_LEVEL);
+        assert!(policy.should_split(0.0, MINIMUM_LOD_LEVEL - 1));
+        assert!(!policy.should_split(0.0, MINIMUM_LOD_LEVEL));
+        assert!(!policy.should_merge(0.0, MINIMUM_LOD_LEVEL));
     }
 
     #[test]

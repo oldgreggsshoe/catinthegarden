@@ -52,6 +52,8 @@ struct VertexOutput {
     // flat instead made every triangle take its provoking vertex's distance, so
     // the band boundary stepped per triangle and shaded as hard facets.
     @location(13) @interpolate(flat) detail_vertex_spacing_meters: f32,
+    @location(14) tile_uv: vec2<f32>,
+    @location(15) @interpolate(flat) source_uv_scale: vec2<f32>,
 }
 
 struct OceanVertexOutput {
@@ -66,6 +68,7 @@ struct OceanVertexOutput {
     // bilinear cell. This interpolated vertex height mirrors the geometry
     // actually displaced by the terrain pass.
     @location(5) terrain_height_hint: f32,
+    @location(6) tile_uv: vec2<f32>,
 }
 
 fn uses_outmap(terrain_info: u32) -> bool {
@@ -606,6 +609,8 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         anchor_direction,
         anchor_relative_position,
         select(0.0, vertex_spacing_meters, outmap),
+        tile_uv,
+        input.source_uv_scale,
     );
 }
 
@@ -634,6 +639,7 @@ fn vs_ocean(input: VertexInput) -> OceanVertexOutput {
         source_uv,
         select(0.0, 1.0, outmap),
         terrain_height_hint,
+        projected.tile_uv,
     );
 }
 
@@ -643,6 +649,54 @@ fn lod_dither_threshold(fragment_position: vec4<f32>) -> f32 {
     // at a screen pixel, so their coverage remains complementary.
     let pixel = floor(fragment_position.xy);
     return fract(52.9829189 * fract(dot(pixel, vec2<f32>(0.06711056, 0.00583715))));
+}
+
+const FLAT_TRIANGLE_GRID_QUADS: f32 = 32.0;
+
+fn flat_triangle_cell(input_tile_uv: vec2<f32>) -> vec2<f32> {
+    let local = fract(input_tile_uv * FLAT_TRIANGLE_GRID_QUADS);
+    let cell = floor(input_tile_uv * FLAT_TRIANGLE_GRID_QUADS);
+    let upper = local.x + local.y > 1.0;
+    let centre = select(vec2<f32>(1.0 / 3.0), vec2<f32>(2.0 / 3.0), upper);
+    return (cell + centre) / FLAT_TRIANGLE_GRID_QUADS;
+}
+
+fn flat_triangle_edge(input_tile_uv: vec2<f32>, skirt: f32) -> f32 {
+    if skirt > 0.0 {
+        return 0.0;
+    }
+    let local = fract(input_tile_uv * FLAT_TRIANGLE_GRID_QUADS);
+    let upper = local.x + local.y > 1.0;
+    let barycentric = select(
+        vec3<f32>(1.0 - local.x - local.y, local.x, local.y),
+        vec3<f32>(1.0 - local.y, local.x + local.y - 1.0, 1.0 - local.x),
+        upper,
+    );
+    let width = max(fwidth(barycentric), vec3<f32>(1.0e-4));
+    return 1.0 - min(
+        min(
+            smoothstep(0.0, width.x * 1.5, barycentric.x),
+            smoothstep(0.0, width.y * 1.5, barycentric.y),
+        ),
+        smoothstep(0.0, width.z * 1.5, barycentric.z),
+    );
+}
+
+fn flat_triangle_colour(
+    input: VertexOutput,
+) -> vec4<f32> {
+    let centre_tile_uv = flat_triangle_cell(input.tile_uv);
+    let centre_source_uv = input.source_uv
+        + (centre_tile_uv - input.tile_uv) * input.source_uv_scale;
+    let biome_id = sample_biome(centre_source_uv);
+    let fill = select(debug_ocean_albedo(), biome_color(biome_id), biome_id != 1u);
+    let edge = flat_triangle_edge(input.tile_uv, input.skirt_depth_meters);
+    return vec4<f32>(mix(fill, vec3<f32>(0.015, 0.02, 0.025), edge), 1.0);
+}
+
+fn flat_ocean_colour(input: OceanVertexOutput) -> vec4<f32> {
+    let edge = flat_triangle_edge(input.tile_uv, 0.0);
+    return vec4<f32>(mix(debug_ocean_albedo(), vec3<f32>(0.015, 0.02, 0.025), edge), 1.0);
 }
 
 @fragment
@@ -695,6 +749,10 @@ fn ocean_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
     }
 
     let render_debug_mode = u32(camera.projection.w + 0.5);
+    if render_debug_mode == RENDER_DEBUG_FLAT_TRIANGLES {
+        return flat_ocean_colour(input);
+    }
+
     if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
         return vec4<f32>(debug_ocean_albedo(), 1.0);
     }
@@ -754,6 +812,9 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         && input.surface_height <= 0.0
     {
         discard;
+    }
+    if render_debug_mode == RENDER_DEBUG_FLAT_TRIANGLES {
+        return flat_triangle_colour(input);
     }
     let lake_coverage = lake_coast_coverage(biome_id, macro_height_meters);
     if lake && lake_coverage > 0.0 {

@@ -18,8 +18,8 @@ use crate::{
     outmap::{Outmap, OutmapError, TileData},
     planet::{
         CHUNK_GRID_QUADS, CameraViewBasis, ChunkVertex, GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
-        GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, GeometricErrorRatio, MAX_LOD_LEVEL,
-        NEAR_FIELD_GRID_QUADS, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE,
+        GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, GeometricErrorRatio, LodPolicy, MAX_LOD_LEVEL,
+        MINIMUM_LOD_LEVEL, NEAR_FIELD_GRID_QUADS, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE,
         OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS, OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS,
         OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode,
         TERRAIN_DETAIL_MIN_FILTER_METERS, TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS,
@@ -38,6 +38,17 @@ const MAX_RESIDENT_TERRAIN_TILES: usize = 384;
 /// Bound main-thread texture creation even if the I/O worker completed a burst
 /// while rendering was paused or slow.
 const MAX_TILE_UPLOADS_PER_FRAME: usize = 4;
+const FLAT_TRIANGLE_EXPERIMENT_DEFAULT: bool = true;
+
+fn flat_triangle_experiment_from_env() -> bool {
+    match std::env::var("CATINGARDEN_FLAT_TRIANGLES") {
+        Ok(value) => !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off"
+        ),
+        Err(_) => FLAT_TRIANGLE_EXPERIMENT_DEFAULT,
+    }
+}
 
 fn planet_shader_source() -> String {
     [
@@ -461,6 +472,7 @@ pub struct TerrainRenderer {
     ocean_draw_batches: Vec<DrawBatch>,
     max_outmap_seam_delta_meters: f64,
     raster_near_field: Option<NearFieldSources>,
+    flat_triangle_experiment: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -483,6 +495,7 @@ impl TerrainRenderer {
             TerrainSource::Placeholder => TerrainDataSource::Placeholder,
             TerrainSource::Outmap(root) => TerrainDataSource::Outmap(Outmap::open(root)?),
         };
+        let flat_triangle_experiment = flat_triangle_experiment_from_env();
         let outmap_height_bounds = match &source {
             TerrainDataSource::Placeholder => None,
             TerrainDataSource::Outmap(outmap) => Some((
@@ -735,7 +748,14 @@ impl TerrainRenderer {
         }
         let initial_tile_last_used = initial_tile_cache.keys().map(|key| (*key, 0)).collect();
 
-        let mut lod = PlanetLod::default();
+        let mut lod = if flat_triangle_experiment {
+            PlanetLod::new(
+                LodPolicy::fixed(MINIMUM_LOD_LEVEL),
+                max_active_chunks_from_env(),
+            )
+        } else {
+            PlanetLod::default()
+        };
         lod.set_terrain_height_range(terrain_height_range);
         let renderer = Self {
             device: device.clone(),
@@ -778,6 +798,7 @@ impl TerrainRenderer {
             ocean_draw_batches: Vec::new(),
             max_outmap_seam_delta_meters: 0.0,
             raster_near_field: None,
+            flat_triangle_experiment,
         };
         Ok(renderer)
     }
@@ -1611,7 +1632,9 @@ impl TerrainRenderer {
             prepared_instances.push((
                 if near_field { None } else { tile_key },
                 near_field,
-                near_field && render_node.node.level <= NEAR_FIELD_DENSE_MAX_LEVEL,
+                !self.flat_triangle_experiment
+                    && near_field
+                    && render_node.node.level <= NEAR_FIELD_DENSE_MAX_LEVEL,
                 TerrainInstance {
                     anchor_view_position: camera_view_basis
                         .world_to_view(anchor_world - camera_world)
@@ -3287,6 +3310,25 @@ mod tests {
             .and_then(|source| source.split("\nfn ").next())
             .expect("analytic ocean fragment path is present");
         assert!(ocean.contains("if input.terrain_height_hint > 0.0"));
+    }
+
+    #[test]
+    fn flat_triangle_experiment_uses_categorical_fill_and_edges() {
+        let shader = planet_shader_source();
+        assert!(shader.contains("const RENDER_DEBUG_FLAT_TRIANGLES: u32 = 6u;"));
+        assert!(shader.contains("fn flat_triangle_edge("));
+        assert!(shader.contains("fn flat_triangle_colour("));
+        assert!(shader.contains("return flat_triangle_colour(input);"));
+        assert!(shader.contains("return flat_ocean_colour(input);"));
+        // The experiment intentionally bypasses the material texture stack;
+        // biome palette ownership remains the only fill colour source.
+        let flat = shader
+            .split("fn flat_triangle_colour(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("flat triangle colour path is present");
+        assert!(flat.contains("biome_color(biome_id)"));
+        assert!(!flat.contains("terrain_material_color("));
     }
 
     #[test]

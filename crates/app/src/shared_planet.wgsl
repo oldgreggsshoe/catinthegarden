@@ -213,6 +213,7 @@ const RENDER_DEBUG_FINAL: u32 = 0u;
 const RENDER_DEBUG_RAW_ALBEDO: u32 = 1u;
 const RENDER_DEBUG_SURFACE_LIGHTING: u32 = 2u;
 const RENDER_DEBUG_AERIAL_CONTRIBUTION: u32 = 3u;
+const RENDER_DEBUG_FLAT_TRIANGLES: u32 = 6u;
 
 struct Camera {
     projection_matrix: mat4x4<f32>,
