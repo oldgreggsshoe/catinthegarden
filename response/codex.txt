@@ -1,10 +1,7 @@
-Recommendation: do not increase the random terrain-noise gain yet. The main bottleneck is source coverage: outside the sparse high-resolution corridor, low flight often renders about 251/256 fallback chunks from global L4 data (~3.9 km sample spacing). More noise would decorate coarse geometry and risk recreating the blanket/spike artefacts.
+Step 1 is implemented and pushed as `1473dd0`.
 
-Do this in order:
+- Low-flight terrain now opportunistically prefetches up to four tiles per frame from the bounded camera-centred near-field window, after visible nodes claim the queue.
+- Outside the sparse high-resolution corridor it is a no-op; inside it warms fine sources without starving visible raster loads.
+- No geometry, height scale, LOD policy, or fallback behavior was changed yet.
 
-1. Add a bounded camera-centred raster clipmap/near-flight ring set (2–3 rings) that keeps L5–L10+ source tiles resident around the camera, with source-aware split/merge and strict upload/chunk budgets.
-2. Re-capture at 10 m, 100 m, 1 km, and 10 km. Require fallback count, seam delta, surface p90/max error, detail correlation, and frame time to improve.
-3. Only then add directional mid-frequency relief: coherent mountain-belt/desert/coast masks driving 4–256 m octaves, with the existing exact CPU/GPU hash and continuous source-spacing fade. Avoid global random long-wave gain.
-4. Add 1–16 m material/normal detail last; it should complement geometry, not hide missing macro detail.
-
-The first implementation should therefore be the bounded near-flight clipmap. It addresses the measured limitation and makes every later detail decision visually trustworthy; the same source-window policy can then be ported to the ray path.
+Validation: fmt/check, all 189 app + 35 baker/core tests, and `stand_on_ground` pass. The manual run records 30.46ms, 56 fallback chunks, 0m seam delta, 0.171m p90, and 6.797m max probe delta. `low_flight_performance` remains the known source/LOD failure, so this is only the safe residency substep—not the full clipmap yet.
