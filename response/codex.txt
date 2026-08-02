@@ -1,1 +1,8 @@
-Yes—but the measurements changed the order slightly: step 3 should be the bounded near-flight geometry/source-coverage fix first. I would not add directional relief while the 10km captures still show rectangular source transitions.
+I ran the approved step-3 investigation and did not ship a speculative shader recolour.
+
+- Latest ladder replay: `1785677254-717799`.
+- Doubling the terrain tile cache 384 -> 768 left the settled 10km fallback at 139 and source histogram at `[61, 61, 78]`; the rectangles are not cache starvation.
+- The candidate normal/material smoothing changes either left the boundaries visible or damaged the palette, so I reverted them.
+- Workspace validation is clean: 190 app tests passed (6 ignored), plus baker/coretypes/integration tests.
+
+The evidence points to a real sparse-source coverage frontier. The correct next change is a bounded raster near-flight source/geometry window with one consistent source field, not more noise or a colour hack. I recorded this in `AGENTS.md` and `docs/HANDOFF.md`.

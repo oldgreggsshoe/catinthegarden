@@ -234,6 +234,17 @@ The ladder therefore confirms the measured source-coverage limit rather than sig
 procedural noise. Step 3 should address those transitions with bounded near-flight geometry/source
 coverage before adding directional relief.
 
+### Terrain detail step 3 diagnosis — source coverage, not cache starvation
+
+As a bounded falsification test, replay `1785677254-717799` doubled the resident raster tile cache
+from 384 to 768. At the settled 10km view the fallback count remained 139 and the source-level
+histogram remained `[61, 61, 78]`, while the screenshots retained the same rectangular source
+frontier. The extra cache therefore only increased residency (730 tiles) and did not provide finer
+source data. Temporary shader/normal smoothing candidates were compared and discarded because they
+changed the palette or left the block boundaries visible. Do not add directional relief or recolour
+fallbacks here; the next code pass needs a bounded raster near-flight geometry/source window that
+supplies a consistent source field across the camera-centred view.
+
 To expose the observed Earth form before designing procedural terrain with geographic direction,
 `TERRAIN_DETAIL_LONG_GAIN` is **1.0 instead of 8.0**. This removes the extra long-wave spectral boost
 without deleting the detail ladder, hash, ridge shaping, source handoff, normal perturbation or CPU/GPU
