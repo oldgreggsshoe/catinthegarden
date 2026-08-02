@@ -3481,6 +3481,21 @@ mod tests {
         assert!(shader.contains("const OCEAN_AERIAL_PERSPECTIVE_WEIGHT: f32 = 0.35;"));
         assert_eq!(shader.matches("ocean_aerial_perspective(").count(), 5);
         assert!(shader.contains("water_surface_color,\n        aerial_color,"));
+        assert!(shader.contains("sky_diffuse * daylight"));
+    }
+
+    #[test]
+    fn close_terrain_detail_relight_is_bounded() {
+        let shader = planet_shader_source();
+        assert!(shader.contains("let detail_relight = clamp("));
+        assert!(shader.contains("0.55,\n                1.75,"));
+    }
+
+    #[test]
+    fn terrain_fog_targets_the_camera_sky_ray() {
+        let shader = planet_shader_source();
+        assert!(shader.contains("let camera_fog_color = sky_radiance("));
+        assert!(shader.contains("mix(local_fog_color, camera_fog_color, 0.75)"));
     }
 
     #[test]

@@ -1235,13 +1235,29 @@ fn terrain_fog(
     if fog_amount <= 0.0 {
         return TerrainFog(0.0, vec3<f32>(0.0));
     }
-    let fog_color = sky_radiance(
+    let local_fog_color = sky_radiance(
         surface_to_camera_direction,
         surface_direction,
         surface_altitude_meters,
         normalize(camera.sun_direction.xyz),
     );
-    return TerrainFog(fog_amount, fog_color);
+    // Match the fog endpoint to the same camera sky ray used by the
+    // fullscreen atmosphere. Sampling from the terrain point instead makes
+    // high-relief surfaces use a different optical column, producing a pale
+    // horizontal band against the actual sky background.
+    let camera_surface_direction = normalize(
+        view_to_planet(camera.camera_planet_direction_view_altitude.xyz),
+    );
+    let camera_fog_color = sky_radiance(
+        surface_to_camera_direction,
+        camera_surface_direction,
+        camera.camera_planet_direction_view_altitude.w,
+        normalize(camera.sun_direction.xyz),
+    );
+    return TerrainFog(
+        fog_amount,
+        mix(local_fog_color, camera_fog_color, 0.75),
+    );
 }
 
 fn terrain_distance_fog(
@@ -1791,7 +1807,8 @@ fn ocean_lighting(
     // Keep the water body a dark blue; direct sunlight and reflection still
     // provide the daylight highlights and glints.
     let diffuse = vec3<f32>(0.008, 0.055, 0.28)
-        * (sky_diffuse + sun_transmittance * (0.4 * SURFACE_SUNLIGHT_SCALE));
+        * (sky_diffuse * daylight
+            + sun_transmittance * (0.4 * SURFACE_SUNLIGHT_SCALE));
     // The Phase 6 cubemap is static. It represents daytime sky reflection, so
     // gate it by direct daylight instead of reflecting a bright blue sky from
     // the fully occluded hemisphere.

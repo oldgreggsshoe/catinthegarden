@@ -196,6 +196,11 @@ The active outmap was rebaked from the preserved NOAA ETOPO source after classif
 negative-height components as inland lakes; the previous active bake is preserved at
 `assets/outmaps/test-planet.pre-inland-lake-repair-20260801`.
 
+The follow-up shading pass makes terrain distance fog use the camera's actual sky ray, clamps the
+fine-detail normal relight gain to **0.55–1.75**, and gates lake/ocean body sky diffuse by direct
+daylight. This removes the horizon fog mismatch, bright coarse fallback patches, and moonless lake
+glow without changing the baked heights or lake coast geometry.
+
 To expose the observed Earth form before designing procedural terrain with geographic direction,
 `TERRAIN_DETAIL_LONG_GAIN` is **1.0 instead of 8.0**. This removes the extra long-wave spectral boost
 without deleting the detail ladder, hash, ridge shaping, source handoff, normal perturbation or CPU/GPU

@@ -875,8 +875,16 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             let ambient = 0.18;
             let vertex_lambert = max(dot(vertex_normal, sun_direction), 0.0);
             let detail_lambert = max(dot(detail_normal, sun_direction), 0.0);
-            textured_surface_lighting *= (detail_lambert + ambient)
-                / (vertex_lambert + ambient);
+            // Fallback triangles can have a nearly unlit interpolated base
+            // normal while their fine detail points toward the sun. Bound the
+            // relight gain so that case cannot turn a whole coarse triangle
+            // into a bright geometric patch.
+            let detail_relight = clamp(
+                (detail_lambert + ambient) / (vertex_lambert + ambient),
+                0.55,
+                1.75,
+            );
+            textured_surface_lighting *= detail_relight;
             // Close-range surface texture from the same field, rather than a
             // finer material tile: a 12m tile needs a 3e5 domain coordinate,
             // where f32 quantises the lookup to whole texels. This field is

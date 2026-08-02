@@ -1,8 +1,5 @@
-Fixed and pushed as `0eb404c`.
-
-- F4 lowest entry is now 10m above the measured surface, not 152.4m/500ft. The 30m moving clearance envelope remains conservative for safety.
-- The close-snow black strip pattern was flat geometric-normal shading over mixed fallback facets, not snow texture. Raster land is back on smoothed displaced normals.
-- Inland below-sea components are now classified by spherical connectivity: the largest negative component is open ocean; disconnected negative components are lakes. Lake rendering uses a 200m height-based coast blend.
-- Rebuilt the active 3,252-tile ETOPO outmap. Previous bake preserved at `assets/outmaps/test-planet.pre-inland-lake-repair-20260801`.
-- Raw-albedo orbit `test-runs/orbit_once/1785608277-235199` now shows continuous irregular inland lakes rather than square ocean holes.
-- Validation: outmap validation, 27 baker tests, shader validation, close-snow normal test, and low-flight entry test pass.
+Diagnosis/plan for the three captures:
+1. Capture 002’s pale horizon band is the extra terrain-distance fog replacing the aerial colour with a local sky sample that does not match the fullscreen camera sky. I’ll derive the fog target from the camera’s actual sky ray and blend it consistently.
+2. Capture 003’s bright triangular patches are the fine-detail normal relight ratio amplifying coarse/fallback triangles when the base Lambert term is near zero. I’ll bound that ratio and add a shader regression.
+3. Capture 005’s cyan lakes are receiving the lake water body’s sky-diffuse term after direct sunlight is fully occluded. I’ll gate the diffuse sky contribution by daylight, preserving sunlit lakes but removing the moonless glow.
+Then I’ll run shader validation/tests and a focused manual/scenario check, update the handoff, commit, and push.
