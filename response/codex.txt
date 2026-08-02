@@ -12,4 +12,4 @@ Replay: `test-runs/terrain_detail_altitude_ladder/1785681886-771172`
 
 The dense grid is capped at L10 to avoid near-ground triangle inflation. Full workspace validation
 passes: 190 app tests (6 ignored), 27 baker library tests, 2 baker binary tests, 6 integration
-tests, and 6 coretypes tests. Committed and pushed as `e74f2a3` on `diagnose/ocean-terrain-blockiness`.
+tests, and 6 coretypes tests. Committed and pushed as `3303b20` on `diagnose/ocean-terrain-blockiness`.
