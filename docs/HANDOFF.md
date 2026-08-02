@@ -33,7 +33,7 @@ fallbacks and a 2,071.204m warm-up seam. Older renderer-only evidence is retaine
 sections below but uses a previous macro/detail presentation. The later raster low-poly trial passes
 `orbit_once/1785600758-149017`, `landing_site_ground_detail/1785600646-146796`, and
 `highest_prominence_peak/1785600765-149139`; see its section below for the visual findings.
-**Written:** 1 August 2026
+**Written:** 2 August 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
 
@@ -44,18 +44,23 @@ diagnosis branch. It intentionally fixes the raster terrain and ocean quadtree a
 `L2` level and disables the 40x40 near-field mesh, leaving the stable 32x32 chunk topology. The
 fragment path bypasses the material/albedo texture stack and assigns one categorical biome (or
 ocean) palette colour to each triangle, with a dark antialiased edge, so the planet reads as
-filled wireframe rather than interpolated textured terrain. Height and biome outmaps remain CPU/GPU
-data sources for geometry and ownership; this mode does not pretend the baked data disappeared.
+filled wireframe rather than interpolated textured terrain. A derivative-based geometric face
+normal now supplies analytic diffuse sky/direct-sun lighting and a direct-sun specular lobe for
+both land and ocean; the flat path samples neither material nor environment textures. Height and
+biome outmaps remain CPU/GPU data sources for geometry and ownership; this mode does not pretend
+the baked data disappeared.
 
 The branch defaults to `flat L2 triangles` (`RenderDebugMode::FlatTriangles`). Set
 `CATINGARDEN_FLAT_TRIANGLES=0`/`false`/`off` to restore normal LOD selection, or set
 `CATINGARDEN_DEBUG_MODE=final` to inspect the normal material shader while keeping the branch's
 fixed-L2 policy. The ray renderer is not replaced by this raster-only presentation experiment.
 
-Release validation: `orbit_once/1785691096-96722` rendered all 44 terrain chunks at L2, with zero
-logged seam delta and a roughly 5.14ms frame sample on the Quadro replay. The focused shader,
-debug-mode, and fixed-policy tests pass; `cargo test --workspace` passes **233 tests** (192 app,
+Release validation: `orbit_once/1785692942-124066` rendered all terrain at L2, with zero logged seam
+delta and a valid four-capture replay on the Quadro. The focused shader, debug-mode, fixed-policy,
+and speed tests pass; `cargo test --workspace` passes **233 tests** (192 app,
 27 baker library, 2 baker binary, 6 baker integration, 6 coretypes; 6 ignored diagnostics).
+F4 flight speed is globally 5x the prior fixed altitude-scaled value: 250mph at ground level and a
+40,000km/s cap, while Shift retains its existing 4x multiplier.
 This branch is for visual evaluation only and must not be merged as the normal textured renderer
 without an explicit decision.
 

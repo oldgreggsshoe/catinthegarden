@@ -3317,6 +3317,10 @@ mod tests {
         let shader = planet_shader_source();
         assert!(shader.contains("const RENDER_DEBUG_FLAT_TRIANGLES: u32 = 6u;"));
         assert!(shader.contains("fn flat_triangle_edge("));
+        assert!(shader.contains("fn flat_triangle_normal("));
+        assert!(shader.contains("fn flat_triangle_lighting("));
+        assert!(shader.contains("surface_direct_sun_transmittance("));
+        assert!(shader.contains("pow(max(dot(normal, half_vector), 0.0), 64.0)"));
         assert!(shader.contains("fn flat_triangle_colour("));
         assert!(shader.contains("return flat_triangle_colour(input);"));
         assert!(shader.contains("return flat_ocean_colour(input);"));

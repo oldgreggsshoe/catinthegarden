@@ -682,6 +682,56 @@ fn flat_triangle_edge(input_tile_uv: vec2<f32>, skirt: f32) -> f32 {
     );
 }
 
+fn flat_triangle_normal(
+    camera_relative_view_position: vec3<f32>,
+    fallback_normal: vec3<f32>,
+) -> vec3<f32> {
+    let derivatives = cross(
+        dpdx(camera_relative_view_position),
+        dpdy(camera_relative_view_position),
+    );
+    if dot(derivatives, derivatives) < 1.0e-8 {
+        return normalize(fallback_normal);
+    }
+    var view_normal = normalize(derivatives);
+    let to_camera = normalize(-camera_relative_view_position);
+    if dot(view_normal, to_camera) < 0.0 {
+        view_normal = -view_normal;
+    }
+    return normalize(view_to_planet(view_normal));
+}
+
+fn flat_triangle_lighting(
+    albedo: vec3<f32>,
+    normal: vec3<f32>,
+    surface_direction: vec3<f32>,
+    surface_height: f32,
+    camera_relative_view_position: vec3<f32>,
+) -> vec3<f32> {
+    let sun_direction = normalize(camera.sun_direction.xyz);
+    let sun_transmittance = surface_direct_sun_transmittance(
+        surface_direction,
+        surface_height,
+        sun_direction,
+    );
+    let sky_diffuse = sky_diffuse_irradiance(
+        normal,
+        surface_direction,
+        surface_height,
+        sun_direction,
+    );
+    let diffuse = sky_diffuse
+        + sun_transmittance
+            * max(dot(normal, sun_direction), 0.0)
+            * SURFACE_SUNLIGHT_SCALE;
+    let view_direction = normalize(view_to_planet(-camera_relative_view_position));
+    let half_vector = normalize(sun_direction + view_direction);
+    let specular = pow(max(dot(normal, half_vector), 0.0), 64.0)
+        * sun_transmittance
+        * vec3<f32>(0.08 * SURFACE_SUNLIGHT_SCALE);
+    return albedo * diffuse + specular;
+}
+
 fn flat_triangle_colour(
     input: VertexOutput,
 ) -> vec4<f32> {
@@ -690,13 +740,34 @@ fn flat_triangle_colour(
         + (centre_tile_uv - input.tile_uv) * input.source_uv_scale;
     let biome_id = sample_biome(centre_source_uv);
     let fill = select(debug_ocean_albedo(), biome_color(biome_id), biome_id != 1u);
+    let normal = flat_triangle_normal(input.camera_relative_view_position, input.world_normal);
+    let lit = flat_triangle_lighting(
+        fill,
+        normal,
+        normalize(input.surface_direction),
+        input.surface_height,
+        input.camera_relative_view_position,
+    );
     let edge = flat_triangle_edge(input.tile_uv, input.skirt_depth_meters);
-    return vec4<f32>(mix(fill, vec3<f32>(0.015, 0.02, 0.025), edge), 1.0);
+    return vec4<f32>(mix(lit, vec3<f32>(0.015, 0.02, 0.025), edge), 1.0);
 }
 
 fn flat_ocean_colour(input: OceanVertexOutput) -> vec4<f32> {
+    let direction = normalize(input.surface_direction);
+    let surface = ocean_surface(direction, camera.projection.z);
+    let normal = flat_triangle_normal(
+        input.camera_relative_view_position,
+        surface.normal,
+    );
+    let lit = flat_triangle_lighting(
+        debug_ocean_albedo(),
+        normal,
+        direction,
+        surface.vertical_displacement,
+        input.camera_relative_view_position,
+    );
     let edge = flat_triangle_edge(input.tile_uv, 0.0);
-    return vec4<f32>(mix(debug_ocean_albedo(), vec3<f32>(0.015, 0.02, 0.025), edge), 1.0);
+    return vec4<f32>(mix(lit, vec3<f32>(0.015, 0.02, 0.025), edge), 1.0);
 }
 
 @fragment
