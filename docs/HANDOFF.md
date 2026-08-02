@@ -215,6 +215,25 @@ validation is a raster low-flight replay comparing fallback count, source-level 
 probe p90/max, and frame time at 10m/100m/1km/10km before expanding the clipmap or adding directional
 relief.
 
+### Terrain detail step 2 — altitude ladder capture
+
+The deterministic raster scenario `terrain_detail_altitude_ladder` now holds the sparse landing
+direction at approximately 10m, 100m, 1km, and 10km clearance and captures each level. Committed
+run `1785675632-700618` passes finite-metric and zero-thrash checks. Measured screenshot/probe rows:
+
+| clearance | frame ms | fallback chunks | seam delta | probe p90 | probe max |
+|---:|---:|---:|---:|---:|---:|
+| 10m | 39.31 | 256 | 0.000m | 7.645m | 11.958m |
+| 100m | 35.47 | 58 | 0.000m | 0.539m | 1.801m |
+| 1km | 38.63 | 84 | 4.530m | 1.351m | 4.222m |
+| 10km | 28.68 | 139 | 0.000m | 8.112m | 29.034m |
+
+The 10m frame is a cold-streaming frame; the 1km row briefly crosses a 4.53m seam during source
+replacement; and the 10km screenshots visibly expose coarse rectangular source/LOD transitions.
+The ladder therefore confirms the measured source-coverage limit rather than signing off more
+procedural noise. Step 3 should address those transitions with bounded near-flight geometry/source
+coverage before adding directional relief.
+
 To expose the observed Earth form before designing procedural terrain with geographic direction,
 `TERRAIN_DETAIL_LONG_GAIN` is **1.0 instead of 8.0**. This removes the extra long-wave spectral boost
 without deleting the detail ladder, hash, ridge shaping, source handoff, normal perturbation or CPU/GPU

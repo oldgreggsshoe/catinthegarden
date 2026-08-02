@@ -242,6 +242,9 @@ impl ScenarioRunner {
             }
             "outlined_shadows" => include_str!("../scenarios/outlined_shadows.json"),
             "stand_on_ground" => include_str!("../scenarios/stand_on_ground.json"),
+            "terrain_detail_altitude_ladder" => {
+                include_str!("../scenarios/terrain_detail_altitude_ladder.json")
+            }
             "path_parity_ridge" => include_str!("../scenarios/path_parity_ridge.json"),
             "render_path_parity" => include_str!("../scenarios/render_path_parity.json"),
             "manual_render_faults" => include_str!("../scenarios/manual_render_faults.json"),
@@ -428,6 +431,7 @@ impl ScenarioRunner {
                 | "landing_site_ground_detail"
                 | "landing_site_eye_level"
                 | "stand_on_ground"
+                | "terrain_detail_altitude_ladder"
         ) {
             return;
         }
@@ -473,7 +477,10 @@ impl ScenarioRunner {
         self.definition.planet_relative_up
             || matches!(
                 self.definition.name.as_str(),
-                "low_flight_performance" | "landing_site_ground_detail" | "landing_site_eye_level"
+                "low_flight_performance"
+                    | "landing_site_ground_detail"
+                    | "landing_site_eye_level"
+                    | "terrain_detail_altitude_ladder"
             )
     }
 
@@ -1136,6 +1143,22 @@ mod tests {
             "ended at {end_radius} m, authored {authored_radius} m"
         );
         assert_eq!(scenario.expected_screenshots(), 5);
+    }
+
+    #[test]
+    fn terrain_detail_altitude_ladder_covers_the_four_requested_heights() {
+        let mut scenario =
+            ScenarioRunner::load("terrain_detail_altitude_ladder").expect("scenario parses");
+        scenario.retarget_sparse_landing_direction(DVec3::Z);
+        let start = DVec3::from_array(scenario.advance().camera_world_position).length();
+        let mut frame = scenario.advance();
+        while !frame.complete {
+            frame = scenario.advance();
+        }
+        let end = DVec3::from_array(frame.camera_world_position).length();
+        assert!(end > start);
+        assert_eq!(scenario.expected_screenshots(), 5);
+        assert_eq!(scenario.expected_log_samples(), 17);
     }
 
     #[test]

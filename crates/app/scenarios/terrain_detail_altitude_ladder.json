@@ -1,0 +1,55 @@
+{
+  "name": "terrain_detail_altitude_ladder",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 8.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_rotation_time_scale": 0.0,
+  "surface_probe_max_distance_meters": 20000.0,
+  "screenshot_times_seconds": [0.016666666666666666, 2.0, 4.0, 6.0, 8.0],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [-1.0, 0.0, 0.0]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 60.0
+    }
+  ],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [4003646.0347169653, 0.0, 0.0],
+      "look_at": [4003536.0347169653, 0.0, 150.0]
+    },
+    {
+      "time_s": 2.0,
+      "position": [4003736.0347169653, 0.0, 0.0],
+      "look_at": [4003536.0347169653, 0.0, 150.0]
+    },
+    {
+      "time_s": 4.0,
+      "position": [4004636.0347169653, 0.0, 0.0],
+      "look_at": [4003536.0347169653, 0.0, 150.0]
+    },
+    {
+      "time_s": 6.0,
+      "position": [4013636.0347169653, 0.0, 0.0],
+      "look_at": [4003536.0347169653, 0.0, 150.0]
+    },
+    {
+      "time_s": 8.0,
+      "position": [4013636.0347169653, 0.0, 0.0],
+      "look_at": [4003536.0347169653, 0.0, 150.0]
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "max_lod_thrash_events": 0,
+    "expected_screenshots": 5
+  }
+}
