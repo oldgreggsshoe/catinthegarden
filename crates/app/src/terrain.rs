@@ -19,10 +19,11 @@ use crate::{
     planet::{
         CHUNK_GRID_QUADS, CameraViewBasis, ChunkVertex, GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
         GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, GeometricErrorRatio, MAX_LOD_LEVEL,
-        OUTMAP_TERRAIN_FAR_HEIGHT_SCALE, OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS,
-        OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS, OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE,
-        PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode, TERRAIN_DETAIL_MIN_FILTER_METERS,
-        TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS, TerrainHeightRange, build_chunk_mesh,
+        NEAR_FIELD_GRID_QUADS, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE,
+        OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS, OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS,
+        OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode,
+        TERRAIN_DETAIL_MIN_FILTER_METERS, TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS,
+        TerrainHeightRange, build_chunk_mesh, build_chunk_mesh_with_quads,
         continuous_baked_sample_spacing_meters, cube_face_basis, cube_face_direction,
         max_active_chunks_from_env, outmap_surface_height_meters,
         outmap_surface_height_meters_with_filter, placeholder_height_meters,
@@ -50,6 +51,10 @@ const MAX_PENDING_TILE_LOADS: usize = 32;
 /// the first claim on the pending-load queue, otherwise a ray-oriented window
 /// can starve the L18 tiles the raster frontier actually draws.
 const MAX_RASTER_NEAR_FIELD_PREFETCH_PER_FRAME: usize = 4;
+/// Dense near-field geometry is useful while a chunk still spans several
+/// source texels. At finer LODs the canonical grid already samples the source
+/// window at roughly one vertex per texel, so avoid paying for extra triangles.
+const NEAR_FIELD_DENSE_MAX_LEVEL: u8 = 10;
 /// Half a second gives a newly resident grid time to replace its parent
 /// without leaving the opaque dither visible long enough to sparkle during
 /// normal flight. The higher-detail request itself begins early in `LodPolicy`.
@@ -367,17 +372,20 @@ struct DrawBatch {
     instance_count: u32,
     tile_key: Option<TileKey>,
     near_field: bool,
+    dense_near_field: bool,
 }
 
 fn push_draw_batch_instance(
     batches: &mut Vec<DrawBatch>,
     tile_key: Option<TileKey>,
     near_field: bool,
+    dense_near_field: bool,
     instance_index: u32,
 ) {
     if let Some(batch) = batches.last_mut()
         && batch.tile_key == tile_key
         && batch.near_field == near_field
+        && batch.dense_near_field == dense_near_field
         && batch.first_instance + batch.instance_count == instance_index
     {
         batch.instance_count += 1;
@@ -387,6 +395,7 @@ fn push_draw_batch_instance(
             instance_count: 1,
             tile_key,
             near_field,
+            dense_near_field,
         });
     }
 }
@@ -430,6 +439,9 @@ pub struct TerrainRenderer {
     chunk_vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
+    near_field_vertex_buffer: wgpu::Buffer,
+    near_field_index_buffer: wgpu::Buffer,
+    near_field_index_count: u32,
     instance_buffer: wgpu::Buffer,
     instance_capacity: usize,
     lod: PlanetLod,
@@ -640,6 +652,20 @@ impl TerrainRenderer {
             contents: bytemuck::cast_slice(&topology.indices),
             usage: wgpu::BufferUsages::INDEX,
         });
+        let near_field_topology =
+            build_chunk_mesh_with_quads(QuadtreeNode::root(0), NEAR_FIELD_GRID_QUADS);
+        let near_field_vertex_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("shared near-field terrain grid"),
+                contents: bytemuck::cast_slice(&near_field_topology.vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        let near_field_index_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("shared near-field terrain indices"),
+                contents: bytemuck::cast_slice(&near_field_topology.indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
         // The selector's budget and the instance buffer have to be the same
         // number, or a lifted budget silently draws only the first 256 chunks.
         let instance_capacity = max_active_chunks_from_env();
@@ -730,6 +756,9 @@ impl TerrainRenderer {
             chunk_vertex_buffer,
             index_buffer,
             index_count: topology.indices.len() as u32,
+            near_field_vertex_buffer,
+            near_field_index_buffer,
+            near_field_index_count: near_field_topology.indices.len() as u32,
             instance_buffer,
             instance_capacity,
             lod,
@@ -1582,6 +1611,7 @@ impl TerrainRenderer {
             prepared_instances.push((
                 if near_field { None } else { tile_key },
                 near_field,
+                near_field && render_node.node.level <= NEAR_FIELD_DENSE_MAX_LEVEL,
                 TerrainInstance {
                     anchor_view_position: camera_view_basis
                         .world_to_view(anchor_world - camera_world)
@@ -1633,18 +1663,34 @@ impl TerrainRenderer {
         // Within a resolved tile, put possible-ocean chunks first. Their
         // ranges are then contiguous subsets of the terrain instance stream,
         // so culling does not duplicate instance uploads.
-        prepared_instances.sort_unstable_by_key(|(tile_key, near_field, _, may_contain_ocean)| {
-            (*near_field, *tile_key, !*may_contain_ocean)
-        });
+        prepared_instances.sort_unstable_by_key(
+            |(tile_key, near_field, dense_near_field, _, may_contain_ocean)| {
+                (
+                    *near_field,
+                    *dense_near_field,
+                    *tile_key,
+                    !*may_contain_ocean,
+                )
+            },
+        );
         let mut instances = Vec::with_capacity(prepared_instances.len());
-        for (tile_key, near_field, instance, may_contain_ocean) in prepared_instances {
+        for (tile_key, near_field, dense_near_field, instance, may_contain_ocean) in
+            prepared_instances
+        {
             let instance_index = instances.len() as u32;
-            push_draw_batch_instance(&mut self.draw_batches, tile_key, near_field, instance_index);
+            push_draw_batch_instance(
+                &mut self.draw_batches,
+                tile_key,
+                near_field,
+                dense_near_field,
+                instance_index,
+            );
             if may_contain_ocean {
                 push_draw_batch_instance(
                     &mut self.ocean_draw_batches,
                     tile_key,
                     near_field,
+                    false,
                     instance_index,
                 );
             }
@@ -1674,13 +1720,37 @@ impl TerrainRenderer {
             .iter()
             .map(|batch| batch.instance_count)
             .sum();
+        let terrain_triangles = self
+            .draw_batches
+            .iter()
+            .map(|batch| {
+                let index_count = if batch.dense_near_field {
+                    self.near_field_index_count
+                } else {
+                    self.index_count
+                };
+                u64::from(batch.instance_count) * u64::from(index_count / 3)
+            })
+            .sum();
+        let ocean_triangles = self
+            .ocean_draw_batches
+            .iter()
+            .map(|batch| {
+                let index_count = if batch.dense_near_field {
+                    self.near_field_index_count
+                } else {
+                    self.index_count
+                };
+                u64::from(batch.instance_count) * u64::from(index_count / 3)
+            })
+            .sum();
         Ok(TerrainStats {
             level_histogram: metrics.level_histogram,
             resident_chunks: metrics.active_chunks,
             drawn_chunks: render_nodes.len() as u32,
-            terrain_triangles: render_nodes.len() as u64 * u64::from(self.index_count / 3),
+            terrain_triangles,
             ocean_chunks,
-            ocean_triangles: u64::from(ocean_chunks) * u64::from(self.index_count / 3),
+            ocean_triangles,
             chunks_loaded: 0,
             chunks_unloaded: 0,
             splits: metrics.splits,
@@ -1721,10 +1791,23 @@ impl TerrainRenderer {
         render_pass.set_pipeline(ocean_pipeline);
         render_pass.set_bind_group(0, camera_bind_group, &[]);
         render_pass.set_bind_group(2, &self.shared_bind_group, &[]);
-        render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        render_pass.set_vertex_buffer(0, self.chunk_vertex_buffer.slice(..));
         render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
         for batch in &self.ocean_draw_batches {
+            let (vertex_buffer, index_buffer, index_count) = if batch.dense_near_field {
+                (
+                    &self.near_field_vertex_buffer,
+                    &self.near_field_index_buffer,
+                    self.near_field_index_count,
+                )
+            } else {
+                (
+                    &self.chunk_vertex_buffer,
+                    &self.index_buffer,
+                    self.index_count,
+                )
+            };
+            render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
             let bind_group = if batch.near_field {
                 &self.raster_near_field_bind_group
             } else {
@@ -1737,13 +1820,28 @@ impl TerrainRenderer {
             };
             render_pass.set_bind_group(1, bind_group, &[]);
             render_pass.draw_indexed(
-                0..self.index_count,
+                0..index_count,
                 0,
                 batch.first_instance..batch.first_instance + batch.instance_count,
             );
         }
         render_pass.set_pipeline(pipeline);
         for batch in &self.draw_batches {
+            let (vertex_buffer, index_buffer, index_count) = if batch.dense_near_field {
+                (
+                    &self.near_field_vertex_buffer,
+                    &self.near_field_index_buffer,
+                    self.near_field_index_count,
+                )
+            } else {
+                (
+                    &self.chunk_vertex_buffer,
+                    &self.index_buffer,
+                    self.index_count,
+                )
+            };
+            render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
             let bind_group = if batch.near_field {
                 &self.raster_near_field_bind_group
             } else {
@@ -1756,7 +1854,7 @@ impl TerrainRenderer {
             };
             render_pass.set_bind_group(1, bind_group, &[]);
             render_pass.draw_indexed(
-                0..self.index_count,
+                0..index_count,
                 0,
                 batch.first_instance..batch.first_instance + batch.instance_count,
             );

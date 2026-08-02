@@ -1,13 +1,15 @@
-I checked the newest manual run `test-runs/manual/1785679238-738888`.
+Step 4 is complete and validated.
 
-The large dark/grey rectangular holes were a real shader bug, not fog or missing terrain: the
-near-field test treated normal 131x131 tile textures as the 1025x1025 near-field texture, so it
-used 1024-quad coordinates on them and read invalid texels at high altitude.
+Raster terrain chunks fully covered by the near-field source window and at L10 or coarser now use a
+shared 40x40 canonical grid. Orbit, ordinary per-tile chunks, ocean, L11-L18 ground flight, LOD
+selection, clearance, and the 256-leaf budget remain unchanged.
 
-Fixed with an exact 1025-width check. Validation replay `test-runs/orbit_once/1785679670-742426`
-shows an intact planet with the holes gone. The orange stippled oval still visible in one frame is
-a separate LOD transition/dither artifact, not the rectangular-hole fault.
+Replay: `test-runs/terrain_detail_altitude_ladder/1785681886-771172`
+- zero LOD thrash and zero seam delta;
+- equal 13.6km settled warm mean: 25.20ms vs 24.42ms step-3 baseline (+0.78ms / +3.2%);
+- terrain triangles: 491,200 vs 460,800;
+- draw calls: 11 vs 10.
 
-Format check and the full workspace suite pass: 190 app tests (6 ignored), 27 baker library tests,
-2 baker binary tests, 6 integration tests, and 6 coretypes tests. Fix committed and pushed as
-`e2effd2` on `diagnose/ocean-terrain-blockiness`.
+The dense grid is capped at L10 to avoid near-ground triangle inflation. Full workspace validation
+passes: 190 app tests (6 ignored), 27 baker library tests, 2 baker binary tests, 6 integration
+tests, and 6 coretypes tests. I’ll commit and push this step now.

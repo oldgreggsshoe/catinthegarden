@@ -14,6 +14,9 @@ pub const BLOOM_ENABLED: bool = false;
 pub const HDR_EFFECT_ENABLED: bool = true;
 pub const CHUNK_GRID_QUADS: usize = 32;
 pub const CHUNK_GRID_VERTICES: usize = CHUNK_GRID_QUADS + 1;
+/// Near-flight chunks covered by the raster source window get twice the
+/// canonical sampling density without increasing the global leaf budget.
+pub const NEAR_FIELD_GRID_QUADS: usize = 40;
 pub const MAX_LOD_LEVEL: u8 = 18;
 /// The coarsest rendered quadtree leaf. Screen-space error raises the LOD into
 /// finer levels only when their geometric error can affect visible pixels.
@@ -2101,7 +2104,12 @@ impl ChunkMesh {
 }
 
 pub fn build_chunk_mesh(node: QuadtreeNode) -> ChunkMesh {
+    build_chunk_mesh_with_quads(node, CHUNK_GRID_QUADS)
+}
+
+pub fn build_chunk_mesh_with_quads(node: QuadtreeNode, grid_quads: usize) -> ChunkMesh {
     assert!(node.is_valid(), "invalid quadtree node {node:?}");
+    assert!(grid_quads > 0, "chunk grid must contain at least one quad");
     let [u_min, v_min, u_max, v_max] = node.uv_bounds();
     let anchor_world = node.center_direction() * PLANET_RADIUS_METERS;
     let corners = [
@@ -2116,17 +2124,17 @@ pub fn build_chunk_mesh(node: QuadtreeNode) -> ChunkMesh {
         .max(corners[2].distance(corners[3]))
         .max(corners[3].distance(corners[0]));
     let skirt_depth_meters = (edge_length_meters * SKIRT_DEPTH_RATIO).min(MAX_SKIRT_DEPTH_METERS);
-    let top_vertex_count = CHUNK_GRID_VERTICES * CHUNK_GRID_VERTICES;
-    let skirt_vertex_count = 4 * CHUNK_GRID_VERTICES;
+    let grid_vertices = grid_quads + 1;
+    let top_vertex_count = grid_vertices * grid_vertices;
+    let skirt_vertex_count = 4 * grid_vertices;
     let mut vertices = Vec::with_capacity(top_vertex_count + skirt_vertex_count);
-    let mut indices =
-        Vec::with_capacity(CHUNK_GRID_QUADS * CHUNK_GRID_QUADS * 6 + 4 * CHUNK_GRID_QUADS * 6);
+    let mut indices = Vec::with_capacity(grid_quads * grid_quads * 6 + 4 * grid_quads * 6);
 
-    for y in 0..CHUNK_GRID_VERTICES {
-        let v_fraction = y as f64 / CHUNK_GRID_QUADS as f64;
+    for y in 0..grid_vertices {
+        let v_fraction = y as f64 / grid_quads as f64;
         let v = v_min + (v_max - v_min) * v_fraction;
-        for x in 0..CHUNK_GRID_VERTICES {
-            let u_fraction = x as f64 / CHUNK_GRID_QUADS as f64;
+        for x in 0..grid_vertices {
+            let u_fraction = x as f64 / grid_quads as f64;
             let u = u_min + (u_max - u_min) * u_fraction;
             let direction = cube_face_direction(node.face, u, v);
             let world = direction * PLANET_RADIUS_METERS;
@@ -2138,11 +2146,11 @@ pub fn build_chunk_mesh(node: QuadtreeNode) -> ChunkMesh {
             });
         }
     }
-    for y in 0..CHUNK_GRID_QUADS {
-        for x in 0..CHUNK_GRID_QUADS {
-            let lower_left = (y * CHUNK_GRID_VERTICES + x) as u32;
+    for y in 0..grid_quads {
+        for x in 0..grid_quads {
+            let lower_left = (y * grid_vertices + x) as u32;
             let lower_right = lower_left + 1;
-            let upper_left = lower_left + CHUNK_GRID_VERTICES as u32;
+            let upper_left = lower_left + grid_vertices as u32;
             let upper_right = upper_left + 1;
             indices.extend_from_slice(&[
                 lower_left,
@@ -2155,26 +2163,21 @@ pub fn build_chunk_mesh(node: QuadtreeNode) -> ChunkMesh {
         }
     }
 
-    let bottom: Vec<_> = (0..CHUNK_GRID_VERTICES).map(|x| (x, 0)).collect();
-    let right: Vec<_> = (0..CHUNK_GRID_VERTICES)
-        .map(|y| (CHUNK_GRID_QUADS, y))
-        .collect();
-    let top: Vec<_> = (0..CHUNK_GRID_VERTICES)
-        .rev()
-        .map(|x| (x, CHUNK_GRID_QUADS))
-        .collect();
-    let left: Vec<_> = (0..CHUNK_GRID_VERTICES).rev().map(|y| (0, y)).collect();
+    let bottom: Vec<_> = (0..grid_vertices).map(|x| (x, 0)).collect();
+    let right: Vec<_> = (0..grid_vertices).map(|y| (grid_quads, y)).collect();
+    let top: Vec<_> = (0..grid_vertices).rev().map(|x| (x, grid_quads)).collect();
+    let left: Vec<_> = (0..grid_vertices).rev().map(|y| (0, y)).collect();
     for edge in [bottom, right, top, left] {
         let skirt_start = vertices.len() as u32;
         for &(x, y) in &edge {
-            let top_index = y * CHUNK_GRID_VERTICES + x;
+            let top_index = y * grid_vertices + x;
             let mut skirt_vertex = vertices[top_index];
             skirt_vertex.skirt_depth_meters = skirt_depth_meters as f32;
             vertices.push(skirt_vertex);
         }
-        for segment in 0..CHUNK_GRID_QUADS {
-            let top_start = (edge[segment].1 * CHUNK_GRID_VERTICES + edge[segment].0) as u32;
-            let top_end = (edge[segment + 1].1 * CHUNK_GRID_VERTICES + edge[segment + 1].0) as u32;
+        for segment in 0..grid_quads {
+            let top_start = (edge[segment].1 * grid_vertices + edge[segment].0) as u32;
+            let top_end = (edge[segment + 1].1 * grid_vertices + edge[segment + 1].0) as u32;
             let skirt_start_vertex = skirt_start + segment as u32;
             let skirt_end_vertex = skirt_start_vertex + 1;
             indices.extend_from_slice(&[
@@ -2671,19 +2674,19 @@ mod tests {
         GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE,
         GeometricErrorRatio, LodPolicy, MAX_LOD_LEVEL, MAX_SKIRT_DEPTH_METERS,
         MAX_VERTICAL_FOV_RADIANS, MIN_VERTICAL_FOV_RADIANS, MINIMUM_LOD_LEVEL,
-        OUTMAP_TERRAIN_FAR_HEIGHT_SCALE, OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS,
-        OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS, OUTMAP_TERRAIN_HEIGHT_SCALE,
-        OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, OrbitCamera, PLANET_RADIUS_METERS,
-        PLANET_ROTATION_PERIOD_SECONDS, PlanetLod, QuadtreeNode, RenderDebugMode,
-        SKIRT_DEPTH_RATIO, TERRAIN_DETAIL_OCTAVES, TERRAIN_DETAIL_RIDGE_CENTRE,
+        NEAR_FIELD_GRID_QUADS, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE,
+        OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS, OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS,
+        OUTMAP_TERRAIN_HEIGHT_SCALE, OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, OrbitCamera,
+        PLANET_RADIUS_METERS, PLANET_ROTATION_PERIOD_SECONDS, PlanetLod, QuadtreeNode,
+        RenderDebugMode, SKIRT_DEPTH_RATIO, TERRAIN_DETAIL_OCTAVES, TERRAIN_DETAIL_RIDGE_CENTRE,
         TERRAIN_DETAIL_RIDGE_NORMALISATION, TERRAIN_DETAIL_RIDGE_SCALE,
         TERRAIN_DETAIL_RIDGE_SOFTNESS, TERRAIN_DETAIL_RIDGE_STRENGTH, TERRAIN_DETAIL_ROUGHNESS,
         TERRAIN_DETAIL_START_WAVELENGTH_METERS, TerrainHeightRange, build_chunk_mesh,
-        continuous_baked_sample_spacing_meters, cube_face_basis, cube_face_direction,
-        default_sun_direction, detailed_outmap_land_height_meters, global_terrain_detail_meters,
-        minimum_vertical_fov_radians_for_viewport, near_plane_meters, outmap_surface_height_meters,
-        outmap_terrain_height_scale, placeholder_height_meters, planet_local_vector,
-        planet_rotation_radians, projected_error_pixels_with_height_range,
+        build_chunk_mesh_with_quads, continuous_baked_sample_spacing_meters, cube_face_basis,
+        cube_face_direction, default_sun_direction, detailed_outmap_land_height_meters,
+        global_terrain_detail_meters, minimum_vertical_fov_radians_for_viewport, near_plane_meters,
+        outmap_surface_height_meters, outmap_terrain_height_scale, placeholder_height_meters,
+        planet_local_vector, planet_rotation_radians, projected_error_pixels_with_height_range,
         scaled_outmap_macro_height_meters, terrain_detail_meters, terrain_detail_value_noise,
         unbalanced_coarse_neighbors,
     };
@@ -3066,6 +3069,44 @@ mod tests {
             (top_world.distance(skirt_world) - coarse_chunk.skirt_depth_meters).abs()
                 < coarse_chunk.skirt_depth_meters * 0.001
         );
+
+        let near_field_chunk = build_chunk_mesh_with_quads(
+            QuadtreeNode {
+                face: 0,
+                level: 12,
+                x: 2_047,
+                y: 2_048,
+            },
+            NEAR_FIELD_GRID_QUADS,
+        );
+        let near_field_top_vertex_count = (NEAR_FIELD_GRID_QUADS + 1).pow(2);
+        assert_eq!(
+            near_field_chunk.vertices.len(),
+            near_field_top_vertex_count + 4 * (NEAR_FIELD_GRID_QUADS + 1)
+        );
+        assert_eq!(
+            near_field_chunk.indices.len(),
+            NEAR_FIELD_GRID_QUADS * NEAR_FIELD_GRID_QUADS * 6 + 4 * NEAR_FIELD_GRID_QUADS * 6
+        );
+        let adjacent_near_field_chunk = build_chunk_mesh_with_quads(
+            QuadtreeNode {
+                face: 0,
+                level: 12,
+                x: 2_048,
+                y: 2_048,
+            },
+            NEAR_FIELD_GRID_QUADS,
+        );
+        for y in 0..=NEAR_FIELD_GRID_QUADS {
+            let left_index = y * (NEAR_FIELD_GRID_QUADS + 1) + NEAR_FIELD_GRID_QUADS;
+            let right_index = y * (NEAR_FIELD_GRID_QUADS + 1);
+            assert!(
+                near_field_chunk
+                    .vertex_world_position(left_index, true)
+                    .distance(adjacent_near_field_chunk.vertex_world_position(right_index, true))
+                    < 1.0
+            );
+        }
     }
 
     #[test]

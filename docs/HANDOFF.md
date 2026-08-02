@@ -250,6 +250,23 @@ source frontier. Cold first frames can still show the old fallback until all 64 
 resident. The next review should check low-altitude residency latency and the window's material
 continuity before adding directional relief.
 
+### Terrain detail step 4 — bounded near-field geometry density
+
+The source window removed the largest rectangular source blocks, but the fixed 33x33 chunk grid
+still under-sampled a covered source patch at the coarser near-flight levels. Raster terrain batches
+whose nodes are fully inside the near-field window and are at L10 or coarser now use a shared 40x40
+grid (41x41 top vertices plus skirts). Ordinary per-tile chunks, orbit, and the analytic ocean shell
+remain on the original 32x32 grid. The selector, 256-leaf budget, height data, LOD transitions and
+CPU clearance are unchanged; the dense grid is capped at L10 so ground-level L18 flight does not
+pay a fourfold triangle cost.
+
+Replay `1785681886-771172` passes the altitude ladder with zero LOD thrash and zero seam delta. At
+the equal 13.6km settled view, the warm settled mean is **25.20ms** versus **24.42ms** for the
+step-3 baseline (**+0.78ms / +3.2%**); terrain triangles rise only **460,800 -> 491,200** and draw
+calls **10 -> 11**. The change is therefore a bounded geometry-density improvement, not a global
+mesh rewrite. Fresh visual review should decide whether the modest extra sampling is visible before
+raising the cap or moving to directional relief.
+
 To expose the observed Earth form before designing procedural terrain with geographic direction,
 `TERRAIN_DETAIL_LONG_GAIN` is **1.0 instead of 8.0**. This removes the extra long-wave spectral boost
 without deleting the detail ladder, hash, ridge shaping, source handoff, normal perturbation or CPU/GPU
