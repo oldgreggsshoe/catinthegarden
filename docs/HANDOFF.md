@@ -87,6 +87,26 @@ FPS** across nine logged spatial frames. It still fails the seam assertion at **
 source streaming; finite metrics and the full workspace test suite remain green. This confirms that
 raising the global triangle LOD does not repair the underlying source-residency discontinuity.
 
+### Polar cap and flat-water correction — 4 August 2026
+
+The imported ETOPO classification no longer lets the old `|latitude| > 66°` rule turn polar ocean
+into a circular ice-coloured land cap. Ocean and lake ownership now wins before land-ice
+classification. ETOPO's single elevation band has no explicit lake mask, so positive priority-flood
+basin cells are not promoted to water; disconnected negative components use cardinal connectivity
+and a 512-cell production floor, retaining major lakes while removing sub-resolution square ponds.
+The active corrected bake is `assets/outmaps/test-planet`; its previous active copy is preserved at
+`assets/outmaps/test-planet.pre-polar-water-repair-20260804-164036-active`, and the active manifest
+SHA-256 is `2659f33bbcbcda5171ca851669007d93115347c44fe04bfdad99a26bc080dcce`.
+
+The land-ice fallback is now an authored Greenland/Antarctica footprint over positive observed ETOPO
+land, with the existing elevation snowline retained for high terrain. In flat-triangle mode the ice
+palette fades by the provoking triangle latitude (each triangle still has one final colour). Flat
+mode and the shared raster/ray water path now use a zero-displacement, radial-normal shell: ocean
+and retained lakes are exactly sea level, with no Gerstner vertical/horizontal displacement or
+raised/angled water facets. The CPU wave diagnostic remains for comparison, but GPU water is flat.
+The old active bake remains available for comparison; fresh GPU/manual capture sign-off is still
+required.
+
 ---
 
 ## 1. The goal, in Ian's words

@@ -67,9 +67,11 @@ impl Terrain {
             // stylised hydraulic/thermal and valley carving stages rounds off
             // real ranges and moves their heights by kilometres. Retain its
             // surface while still deriving the downstream hydrology fields.
+            // ETOPO has no lake-bed channel: priority-flooding positive cells
+            // would turn every shallow basin into a raised, square lake in the
+            // renderer. Keep only disconnected below-sea components as lakes.
             terrain.recompute_flow();
             terrain.mark_rivers();
-            terrain.fill_lakes();
             terrain.mark_inland_negative_lakes();
         } else {
             terrain.erode(config.erosion_iterations);
@@ -281,11 +283,18 @@ impl Terrain {
     /// basins otherwise receive ocean ownership and become square water holes
     /// when the sparse raster is rendered. On the sphere the largest connected
     /// negative component is the real ocean; every other negative component is
-    /// a landlocked lake.
+    /// a major landlocked lake. Tiny components are source noise rather than
+    /// useful water at the renderer's global macro resolution.
     fn mark_inland_negative_lakes(&mut self) {
+        const CARDINAL_NEIGHBORS: [usize; 4] = [1, 3, 4, 6];
         let mut visited = vec![false; self.grid.len()];
         let mut largest_start = None;
         let mut largest_size = 0usize;
+        // ETOPO has no lake mask and its sub-grid negative noise produces
+        // implausible square ponds after categorical L5 sampling. Keep only
+        // major inland bodies; the small-grid test floor preserves coverage
+        // of the hydrology rule without making production speckle.
+        let minimum_lake_cells = (self.grid.len() * 512 / (4_096 * 2_048)).max(8);
         for start in 0..self.grid.len() {
             if visited[start] || self.height_meters[start] > 0.0 {
                 continue;
@@ -295,7 +304,10 @@ impl Terrain {
             let mut size = 0usize;
             while let Some(index) = queue.pop_front() {
                 size += 1;
-                for neighbor in (0..8).filter_map(|slot| self.grid.neighbor(index, slot)) {
+                for neighbor in CARDINAL_NEIGHBORS
+                    .into_iter()
+                    .filter_map(|slot| self.grid.neighbor(index, slot))
+                {
                     if !visited[neighbor] && self.height_meters[neighbor] <= 0.0 {
                         visited[neighbor] = true;
                         queue.push_back(neighbor);
@@ -318,15 +330,22 @@ impl Terrain {
             let is_ocean = start == ocean_start;
             let mut queue = VecDeque::from([start]);
             visited[start] = true;
+            let mut component = Vec::new();
             while let Some(index) = queue.pop_front() {
-                if !is_ocean {
-                    self.lake[index] = true;
-                }
-                for neighbor in (0..8).filter_map(|slot| self.grid.neighbor(index, slot)) {
+                component.push(index);
+                for neighbor in CARDINAL_NEIGHBORS
+                    .into_iter()
+                    .filter_map(|slot| self.grid.neighbor(index, slot))
+                {
                     if !visited[neighbor] && self.height_meters[neighbor] <= 0.0 {
                         visited[neighbor] = true;
                         queue.push_back(neighbor);
                     }
+                }
+            }
+            if !is_ocean && component.len() >= minimum_lake_cells {
+                for index in component {
+                    self.lake[index] = true;
                 }
             }
         }
@@ -507,12 +526,21 @@ impl Terrain {
                 let height = self.height_meters[index];
                 let absolute_latitude = latitude.abs();
                 let snowline = snowline_meters(latitude);
-                *biome = if absolute_latitude > 66.0_f64.to_radians() || height > snowline {
-                    BiomeId::Ice
-                } else if self.lake[index] {
+                let direction = self.grid.direction(index);
+                let land_ice = if imported_etopo {
+                    authored_land_ice_mask(direction, height)
+                } else {
+                    absolute_latitude > 66.0_f64.to_radians()
+                };
+                // Water ownership must win before the polar land-ice rule:
+                // otherwise the old latitude test turns the Arctic Ocean into
+                // a solid circular ice-coloured land cap.
+                *biome = if self.lake[index] {
                     BiomeId::Lake
                 } else if height <= 0.0 {
                     BiomeId::Ocean
+                } else if land_ice || height > snowline {
+                    BiomeId::Ice
                 } else if height > (snowline - 700.0).max(2_800.0) {
                     BiomeId::MountainSnow
                 } else if height > 2_400.0 {
@@ -523,7 +551,6 @@ impl Terrain {
                     let temperature =
                         latitude_temperature - height.max(0.0) / MAX_HEIGHT_METERS * 0.55;
                     let wetness = f64::from(self.moisture[index]) / 255.0;
-                    let direction = self.grid.direction(index);
                     // ETOPO source columns are reversed into the renderer's
                     // geographic-east = -Z convention. Keep the authored arid
                     // regions aligned with their real-world source longitudes.
@@ -545,6 +572,25 @@ impl Terrain {
                 };
             });
     }
+}
+
+/// Authored land-ice footprint used when ETOPO supplies observed elevations
+/// but no separate ice-mask band. Positive ETOPO samples provide the observed
+/// land mask; this small geographic prior captures Greenland and Antarctica,
+/// while high terrain still falls through to the latitude/elevation snowline.
+fn authored_land_ice_mask(direction: glam::DVec3, height_meters: f64) -> bool {
+    if height_meters <= 0.0 {
+        return false;
+    }
+    let latitude = direction.y.asin().to_degrees();
+    let longitude = biome_longitude_degrees(direction, true);
+    let greenland = ellipse_field(
+        latitude,
+        longitude,
+        GeoEllipse::new(-42.0, 72.0, 9.0, 14.0, -8.0),
+    ) > 0.0;
+    let antarctica = latitude < -70.0;
+    greenland || antarctica
 }
 
 fn biome_longitude_degrees(direction: glam::DVec3, imported_etopo: bool) -> f64 {
@@ -971,6 +1017,18 @@ mod tests {
     }
 
     #[test]
+    fn tiny_inland_negative_components_are_not_rendered_as_lakes() {
+        let width = 32;
+        let height = 16;
+        let mut heights = vec![100.0; width * height];
+        heights[4 * width..5 * width].fill(-10.0);
+        heights[7 * width + 7] = -20.0;
+        let mut terrain = Terrain::from_heights(width, height, heights);
+        terrain.mark_inland_negative_lakes();
+        assert!(!terrain.lake[7 * width + 7]);
+    }
+
+    #[test]
     fn moisture_falls_with_distance_from_water() {
         let width = 32;
         let height = 16;
@@ -990,6 +1048,20 @@ mod tests {
     fn snowline_reaches_zero_at_pole() {
         assert_eq!(snowline_meters(0.0), 5_000.0);
         assert!(snowline_meters(std::f64::consts::FRAC_PI_2).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn imported_land_ice_mask_keeps_ocean_open_and_targets_real_ice_regions() {
+        assert!(!authored_land_ice_mask(glam::DVec3::Y, -10.0));
+        assert!(authored_land_ice_mask(
+            glam::DVec3::new(0.229, 0.951, 0.207).normalize(),
+            100.0
+        ));
+        assert!(authored_land_ice_mask(
+            glam::DVec3::new(0.1, -0.98, -0.1).normalize(),
+            100.0
+        ));
+        assert!(!authored_land_ice_mask(glam::DVec3::X, 100.0));
     }
 
     #[test]
@@ -1087,16 +1159,19 @@ mod tests {
         let height = 8;
         let mut terrain = Terrain::from_heights(width, height, vec![100.0; width * height]);
         terrain.moisture.fill(128);
-        let polar = terrain.grid.index(4, 0);
+        let polar_land = terrain.grid.index(4, 0);
+        let polar_ocean = terrain.grid.index(4, 1);
         let ocean = terrain.grid.index(4, 4);
         let lake = terrain.grid.index(6, 4);
         let high = terrain.grid.index(8, 4);
-        terrain.height_meters[polar] = -100.0;
+        terrain.height_meters[polar_land] = 100.0;
+        terrain.height_meters[polar_ocean] = -100.0;
         terrain.height_meters[ocean] = -100.0;
         terrain.lake[lake] = true;
         terrain.height_meters[high] = 6_000.0;
         terrain.classify_biomes(false);
-        assert_eq!(terrain.biome[polar], BiomeId::Ice);
+        assert_eq!(terrain.biome[polar_land], BiomeId::Ice);
+        assert_eq!(terrain.biome[polar_ocean], BiomeId::Ocean);
         assert_eq!(terrain.biome[ocean], BiomeId::Ocean);
         assert_eq!(terrain.biome[lake], BiomeId::Lake);
         assert_eq!(terrain.biome[high], BiomeId::Ice);

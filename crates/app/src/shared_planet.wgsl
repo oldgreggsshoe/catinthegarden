@@ -263,6 +263,11 @@ struct OceanSurface {
     normal: vec3<f32>,
 }
 
+// The current experimental presentation intentionally keeps every water
+// surface level. Retain the Gerstner implementation below for diagnostics and
+// a future visual branch, but do not displace raster or ray water here.
+const OCEAN_WAVES_ENABLED: bool = false;
+
 fn planet_to_view(vector: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(
         dot(vector, camera.camera_right.xyz),
@@ -711,6 +716,9 @@ fn gerstner_wave(
 }
 
 fn ocean_surface(direction: vec3<f32>, time_seconds: f32) -> OceanSurface {
+    if !OCEAN_WAVES_ENABLED {
+        return flat_ocean_surface(direction);
+    }
     let first = gerstner_wave(direction, vec3<f32>(0.9, 0.1, 0.4), 900.0, 0.375, 4.0, 0.45, time_seconds);
     let second = gerstner_wave(direction, vec3<f32>(-0.3, 0.4, 0.85), 420.0, 0.2125, 5.0, 0.40, time_seconds);
     let third = gerstner_wave(direction, vec3<f32>(0.55, -0.75, 0.35), 160.0, 0.1125, 6.5, 0.34, time_seconds);
@@ -725,6 +733,10 @@ fn ocean_surface(direction: vec3<f32>, time_seconds: f32) -> OceanSurface {
         + fifth.vertical_displacement + sixth.vertical_displacement;
     let slope = first.slope + second.slope + third.slope + fourth.slope + fifth.slope + sixth.slope;
     return OceanSurface(horizontal, vertical, normalize(direction - slope));
+}
+
+fn flat_ocean_surface(direction: vec3<f32>) -> OceanSurface {
+    return OceanSurface(vec3<f32>(0.0), 0.0, normalize(direction));
 }
 
 fn density(altitude_meters: f32, scale_height_meters: f32) -> f32 {

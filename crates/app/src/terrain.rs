@@ -3320,6 +3320,10 @@ mod tests {
         assert!(shader.contains("fn flat_triangle_normal("));
         assert!(shader.contains("fn flat_triangle_lighting("));
         assert!(shader.contains("camera.flat_triangle_options.x"));
+        assert!(shader.contains("flat_ocean_surface("));
+        assert!(shader.contains("const OCEAN_WAVES_ENABLED: bool = false;"));
+        assert!(shader.contains("flat_triangles && lake"));
+        assert!(shader.contains("source_uv_scale_and_latitude"));
         assert!(shader.contains("surface_direct_sun_transmittance("));
         assert!(shader.contains("pow(max(dot(normal, half_vector), 0.0), 64.0)"));
         assert!(shader.contains("fn flat_triangle_colour("));

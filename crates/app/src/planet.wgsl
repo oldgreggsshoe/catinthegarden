@@ -53,7 +53,9 @@ struct VertexOutput {
     // the band boundary stepped per triangle and shaded as hard facets.
     @location(13) @interpolate(flat) detail_vertex_spacing_meters: f32,
     @location(14) tile_uv: vec2<f32>,
-    @location(15) @interpolate(flat) source_uv_scale: vec2<f32>,
+    // Source scale remains flat for exact tile ownership. The z component
+    // carries the provoking vertex latitude for flat-triangle palette fades.
+    @location(15) @interpolate(flat) source_uv_scale_and_latitude: vec4<f32>,
 }
 
 struct OceanVertexOutput {
@@ -508,6 +510,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let anchor_direction = input.node_anchor_direction_cube_length.xyz;
     let source_uv = input.source_uv_offset + tile_uv * input.source_uv_scale;
     let outmap = uses_outmap(input.terrain_info);
+    let flat_triangles = u32(camera.projection.w + 0.5) == RENDER_DEBUG_FLAT_TRIANGLES;
     let macro_height = macro_terrain_height(outmap, source_uv, direction);
     let base_camera_relative_view_position = input.anchor_view_position
         + planet_to_view(anchor_relative_position);
@@ -553,7 +556,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let ice = outmap && biome_id == 2u;
     let lake = outmap && biome_id == 1u;
     let land_height = select(height, max(height, 5.0), ice);
-    let surface_height = land_height;
+    let surface_height = select(land_height, 0.0, flat_triangles && lake);
     let skirt_depth_meters = select(
         0.0,
         min(
@@ -610,7 +613,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         anchor_relative_position,
         select(0.0, vertex_spacing_meters, outmap),
         tile_uv,
-        input.source_uv_scale,
+        vec4<f32>(input.source_uv_scale, direction.y, 0.0),
     );
 }
 
@@ -625,7 +628,10 @@ fn vs_ocean(input: VertexInput) -> OceanVertexOutput {
         scaled_terrain_macro_height(macro_height_meters),
         outmap,
     );
-    let surface = ocean_surface(projected.direction, camera.projection.z);
+    var surface = ocean_surface(projected.direction, camera.projection.z);
+    if u32(camera.projection.w + 0.5) == RENDER_DEBUG_FLAT_TRIANGLES {
+        surface = flat_ocean_surface(projected.direction);
+    }
     let local_planet_position = projected.anchor_relative_position
         + projected.direction * surface.vertical_displacement
         + surface.horizontal_displacement;
@@ -740,9 +746,21 @@ fn flat_triangle_colour(
 ) -> vec4<f32> {
     let centre_tile_uv = flat_triangle_cell(input.tile_uv);
     let centre_source_uv = input.source_uv
-        + (centre_tile_uv - input.tile_uv) * input.source_uv_scale;
+        + (centre_tile_uv - input.tile_uv) * input.source_uv_scale_and_latitude.xy;
     let biome_id = sample_biome(centre_source_uv);
-    let fill = select(debug_ocean_albedo(), biome_color(biome_id), biome_id != 1u);
+    var fill = select(debug_ocean_albedo(), biome_color(biome_id), biome_id != 1u);
+    if biome_id == 2u {
+        // Keep one final colour per triangle, but avoid making the ice prior
+        // read as a mathematically perfect latitude circle. Low-latitude ice
+        // from mountain height remains fully icy through the second term.
+        let polar_ice = smoothstep(
+            0.58,
+            0.70,
+            abs(input.source_uv_scale_and_latitude.z),
+        );
+        let high_ice = smoothstep(2200.0, 4200.0, input.outmap_and_macro_height.y);
+        fill = mix(biome_color(3u), fill, max(polar_ice, high_ice));
+    }
     let normal = flat_triangle_normal(input.camera_relative_view_position, input.world_normal);
     let lit = flat_triangle_lighting(
         fill,
@@ -757,7 +775,7 @@ fn flat_triangle_colour(
 
 fn flat_ocean_colour(input: OceanVertexOutput) -> vec4<f32> {
     let direction = normalize(input.surface_direction);
-    let surface = ocean_surface(direction, camera.projection.z);
+    let surface = flat_ocean_surface(direction);
     let normal = flat_triangle_normal(
         input.camera_relative_view_position,
         surface.normal,
