@@ -37,11 +37,11 @@ sections below but uses a previous macro/detail presentation. The later raster l
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
 
-### Experimental branch — fixed-L5 flat triangle wireframe (4 August 2026)
+### Experimental branch — fixed-L6 flat triangle wireframe (4 August 2026)
 
 Branch `experiment/flat-triangle-wireframe` is an isolated visual experiment from the current
 diagnosis branch. It intentionally fixes the raster terrain and ocean quadtree at the minimum
-`L5` level (three refinements above the normal L2 floor) and disables the 40x40 near-field mesh, leaving the stable 32x32 chunk topology. The
+`L6` level (four refinements above the normal L2 floor) and disables the 40x40 near-field mesh, leaving the stable 32x32 chunk topology. The
 fragment path bypasses the material/albedo texture stack and assigns one categorical biome (or
 ocean) palette colour to each triangle, with a dark antialiased edge, so the planet reads as
 filled wireframe rather than interpolated textured terrain. A derivative-based geometric face
@@ -50,13 +50,13 @@ both land and ocean; the flat path samples neither material nor environment text
 biome outmaps remain CPU/GPU data sources for geometry and ownership; this mode does not pretend
 the baked data disappeared.
 
-The branch defaults to `flat L5 triangles` (`RenderDebugMode::FlatTriangles`). Press `O` to
+The branch defaults to `flat L6 triangles` (`RenderDebugMode::FlatTriangles`). Press `O` to
 toggle the dark per-triangle outlines at runtime; they start enabled and the HUD reports the
 current state. This only changes the edge mask; flat fills, geometric normals, lighting, ocean
-shading, and fixed-L5 geometry remain unchanged. Set
+shading, and fixed-L6 geometry remain unchanged. Set
 `CATINGARDEN_FLAT_TRIANGLES=0`/`false`/`off` to restore normal LOD selection, or set
 `CATINGARDEN_DEBUG_MODE=final` to inspect the normal material shader while keeping the branch's
-fixed-L5 policy. The ray renderer is not replaced by this raster-only presentation experiment.
+fixed-L6 policy. The ray renderer is not replaced by this raster-only presentation experiment.
 
 The L3 baseline and L4 follow-up used identical release settings and four deterministic camera
 scenarios. FPS is `1000 / median logged spatial frame time`; samples include the scenario's normal
@@ -81,11 +81,15 @@ existing 4x multiplier.
 This branch is for visual evaluation only and must not be merged as the normal textured renderer
 without an explicit decision.
 
-The next fixed-level trial is now **L5** (`FLAT_TRIANGLE_LOD_LEVEL = MINIMUM_LOD_LEVEL + 3`). Orbit
+The previous fixed-level trial was **L5** (`FLAT_TRIANGLE_LOD_LEVEL = MINIMUM_LOD_LEVEL + 3`). Orbit
 replay `1785841288-120629` reaches the 256 active-chunk budget, with a median **23.220ms / 43.07
 FPS** across nine logged spatial frames. It still fails the seam assertion at **2,273.963m** during
 source streaming; finite metrics and the full workspace test suite remain green. This confirms that
 raising the global triangle LOD does not repair the underlying source-residency discontinuity.
+
+The current trial is **L6** (`FLAT_TRIANGLE_LOD_LEVEL = MINIMUM_LOD_LEVEL + 4`). No new FPS or
+manual visual capture has been signed off yet; compare it against the recorded L3/L4/L5 runs before
+changing the fixed level again.
 
 ### Polar cap and flat-water correction — 4 August 2026
 

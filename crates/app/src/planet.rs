@@ -23,7 +23,7 @@ pub const MAX_LOD_LEVEL: u8 = 18;
 pub const MINIMUM_LOD_LEVEL: u8 = 2;
 /// Fixed level used by the flat-triangle experiment; three refinements above the
 /// normal coarsest level so its global topology can be compared directly.
-pub const FLAT_TRIANGLE_LOD_LEVEL: u8 = MINIMUM_LOD_LEVEL + 3;
+pub const FLAT_TRIANGLE_LOD_LEVEL: u8 = MINIMUM_LOD_LEVEL + 4;
 /// Deliberately game-time-scaled so axial rotation is visible during normal play.
 pub const PLANET_ROTATION_PERIOD_SECONDS: f64 = 15.0;
 /// Earth's mean obliquity. With no simulated annual orbit yet, the default sun
@@ -2586,7 +2586,7 @@ impl RenderDebugMode {
             Self::AerialContribution => "aerial contribution",
             Self::SkyOnly => "sky only",
             Self::RayHitStatus => "ray detail-hit status",
-            Self::FlatTriangles => "flat L5 triangles",
+            Self::FlatTriangles => "flat L6 triangles",
         }
     }
 }
