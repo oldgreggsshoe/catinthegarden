@@ -662,6 +662,9 @@ fn flat_triangle_cell(input_tile_uv: vec2<f32>) -> vec2<f32> {
 }
 
 fn flat_triangle_edge(input_tile_uv: vec2<f32>, skirt: f32) -> f32 {
+    if camera.flat_triangle_options.x < 0.5 {
+        return 0.0;
+    }
     if skirt > 0.0 {
         return 0.0;
     }

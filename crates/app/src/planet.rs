@@ -2551,6 +2551,7 @@ pub struct CameraUniform {
     pub sun_direction: [f32; 4],
     pub sun_direction_view: [f32; 4],
     pub projection: [f32; 4],
+    pub flat_triangle_options: [f32; 4],
 }
 
 #[repr(u32)]
@@ -2613,6 +2614,7 @@ impl CameraUniform {
         planet_rotation_radians: f64,
         sim_time: f64,
         render_debug_mode: RenderDebugMode,
+        flat_triangle_outlines_enabled: bool,
         // Terrain height under the camera, so the near plane can be set from
         // how far the ground actually is rather than from sea level. Pass 0.0
         // when it is not known; that is the old behaviour.
@@ -2663,6 +2665,16 @@ impl CameraUniform {
                 (camera.vertical_fov_radians as f32 * 0.5).tan(),
                 sim_time as f32,
                 render_debug_mode as u32 as f32,
+            ],
+            flat_triangle_options: [
+                if flat_triangle_outlines_enabled {
+                    1.0
+                } else {
+                    0.0
+                },
+                0.0,
+                0.0,
+                0.0,
             ],
         }
     }
@@ -3721,6 +3733,7 @@ mod tests {
             0.0,
             0.0,
             RenderDebugMode::Final,
+            true,
             0.0,
         );
 
@@ -3735,6 +3748,26 @@ mod tests {
         assert!(
             Vec3::from_array(uniform.camera_up[..3].try_into().unwrap()).distance(Vec3::X) < 1.0e-6
         );
+    }
+
+    #[test]
+    fn camera_uniform_carries_flat_triangle_outline_toggle() {
+        let camera = OrbitCamera::default();
+        let uniform = |enabled| {
+            CameraUniform::from_camera(
+                &camera,
+                1.0,
+                default_sun_direction(),
+                0.0,
+                0.0,
+                RenderDebugMode::FlatTriangles,
+                enabled,
+                0.0,
+            )
+        };
+
+        assert_eq!(uniform(true).flat_triangle_options[0], 1.0);
+        assert_eq!(uniform(false).flat_triangle_options[0], 0.0);
     }
 
     #[test]

@@ -224,6 +224,7 @@ struct Camera {
     sun_direction: vec4<f32>,
     sun_direction_view: vec4<f32>,
     projection: vec4<f32>,
+    flat_triangle_options: vec4<f32>,
 }
 
 @group(0) @binding(0)

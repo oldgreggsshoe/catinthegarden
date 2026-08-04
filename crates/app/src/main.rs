@@ -655,6 +655,7 @@ struct State {
     debug_overlay_visible: bool,
     render_path: RenderPath,
     render_debug_mode: planet::RenderDebugMode,
+    flat_triangle_outlines_enabled: bool,
     animation_frozen: bool,
     frozen_sim_time: f64,
     interactive_scene_time_offset_seconds: f64,
@@ -935,6 +936,7 @@ impl State {
                 "flat_triangles" => planet::RenderDebugMode::FlatTriangles,
                 _ => planet::RenderDebugMode::FlatTriangles,
             },
+            flat_triangle_outlines_enabled: true,
             animation_frozen: false,
             frozen_sim_time: 0.0,
             interactive_scene_time_offset_seconds: 0.0,
@@ -1121,6 +1123,11 @@ impl State {
 
     fn cycle_render_debug_mode(&mut self) {
         self.render_debug_mode = self.render_debug_mode.next();
+        self.mark_hud_dirty();
+    }
+
+    fn toggle_flat_triangle_outlines(&mut self) {
+        self.flat_triangle_outlines_enabled = !self.flat_triangle_outlines_enabled;
         self.mark_hud_dirty();
     }
 
@@ -1757,6 +1764,7 @@ impl State {
             let hdr_effect_enabled = self.hdr.hdr_effect_enabled();
             let render_path = self.render_path;
             let render_debug_mode = self.render_debug_mode;
+            let flat_triangle_outlines_enabled = self.flat_triangle_outlines_enabled;
             let warp_size = self.foveated.warp_size();
             let warp_debug_visible = self.foveated.warp_debug_visible();
             let fovea_ndc = self.foveated.fovea_ndc();
@@ -1846,6 +1854,10 @@ impl State {
                                 "Composition debug: {}",
                                 render_debug_mode.label(),
                             ));
+                            ui.label(format!(
+                                "Flat triangle outlines: {} (O)",
+                                if flat_triangle_outlines_enabled { "on" } else { "off" },
+                            ));
                             ui.label(format!("Render path: {} (F5)", render_path.label()));
                             ui.label(format!(
                                 "Ray warp: {}x{}  |  fovea {:+.2}, {:+.2} NDC  |  debug {} (F11)",
@@ -1869,7 +1881,7 @@ impl State {
                             ));
                             ui.label(format!("Ocean Gerstner range: {ocean_wave_range:.2} m"));
                             ui.label(
-                                "F: fullscreen  |  F3: overlay  |  F4: camera mode  |  F5: render path  |  WASD: fly  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
+                                "F: fullscreen  |  F3: overlay  |  F4: camera mode  |  F5: render path  |  WASD: fly  |  O: triangle outlines  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
                             );
                             ui.label("Default: auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc/Q: quit");
                         });
@@ -1980,6 +1992,7 @@ impl State {
             planet_rotation_radians,
             sim_time,
             self.render_debug_mode,
+            self.flat_triangle_outlines_enabled,
             camera_surface_height_meters,
         );
         self.queue
@@ -2745,6 +2758,13 @@ impl ApplicationHandler for App {
                 }
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::KeyO) =>
+                {
+                    state.toggle_flat_triangle_outlines();
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
                         && event.physical_key == PhysicalKey::Code(KeyCode::Digit6) =>
                 {
                     state.toggle_auto_exposure();
@@ -3029,6 +3049,7 @@ mod tests {
             0.0,
             0.0,
             RenderDebugMode::Final,
+            true,
             0.0,
         );
         let axis = |values: [f32; 4]| {

@@ -3319,6 +3319,7 @@ mod tests {
         assert!(shader.contains("fn flat_triangle_edge("));
         assert!(shader.contains("fn flat_triangle_normal("));
         assert!(shader.contains("fn flat_triangle_lighting("));
+        assert!(shader.contains("camera.flat_triangle_options.x"));
         assert!(shader.contains("surface_direct_sun_transmittance("));
         assert!(shader.contains("pow(max(dot(normal, half_vector), 0.0), 64.0)"));
         assert!(shader.contains("fn flat_triangle_colour("));

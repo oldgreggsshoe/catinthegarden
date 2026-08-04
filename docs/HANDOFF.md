@@ -50,7 +50,10 @@ both land and ocean; the flat path samples neither material nor environment text
 biome outmaps remain CPU/GPU data sources for geometry and ownership; this mode does not pretend
 the baked data disappeared.
 
-The branch defaults to `flat L5 triangles` (`RenderDebugMode::FlatTriangles`). Set
+The branch defaults to `flat L5 triangles` (`RenderDebugMode::FlatTriangles`). Press `O` to
+toggle the dark per-triangle outlines at runtime; they start enabled and the HUD reports the
+current state. This only changes the edge mask; flat fills, geometric normals, lighting, ocean
+shading, and fixed-L5 geometry remain unchanged. Set
 `CATINGARDEN_FLAT_TRIANGLES=0`/`false`/`off` to restore normal LOD selection, or set
 `CATINGARDEN_DEBUG_MODE=final` to inspect the normal material shader while keeping the branch's
 fixed-L5 policy. The ray renderer is not replaced by this raster-only presentation experiment.
