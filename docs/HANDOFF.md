@@ -37,11 +37,11 @@ sections below but uses a previous macro/detail presentation. The later raster l
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
 
-### Experimental branch — fixed-L3 flat triangle wireframe (2 August 2026)
+### Experimental branch — fixed-L4 flat triangle wireframe (4 August 2026)
 
 Branch `experiment/flat-triangle-wireframe` is an isolated visual experiment from the current
 diagnosis branch. It intentionally fixes the raster terrain and ocean quadtree at the minimum
-`L3` level (one refinement above the normal L2 floor) and disables the 40x40 near-field mesh, leaving the stable 32x32 chunk topology. The
+`L4` level (two refinements above the normal L2 floor) and disables the 40x40 near-field mesh, leaving the stable 32x32 chunk topology. The
 fragment path bypasses the material/albedo texture stack and assigns one categorical biome (or
 ocean) palette colour to each triangle, with a dark antialiased edge, so the planet reads as
 filled wireframe rather than interpolated textured terrain. A derivative-based geometric face
@@ -50,19 +50,31 @@ both land and ocean; the flat path samples neither material nor environment text
 biome outmaps remain CPU/GPU data sources for geometry and ownership; this mode does not pretend
 the baked data disappeared.
 
-The branch defaults to `flat L3 triangles` (`RenderDebugMode::FlatTriangles`). Set
+The branch defaults to `flat L4 triangles` (`RenderDebugMode::FlatTriangles`). Set
 `CATINGARDEN_FLAT_TRIANGLES=0`/`false`/`off` to restore normal LOD selection, or set
 `CATINGARDEN_DEBUG_MODE=final` to inspect the normal material shader while keeping the branch's
-fixed-L3 policy. The ray renderer is not replaced by this raster-only presentation experiment.
+fixed-L4 policy. The ray renderer is not replaced by this raster-only presentation experiment.
 
-The L3 replay `orbit_once/1785694022-133926` rendered the denser fixed topology (roughly 133-148
-resident terrain chunks and 350k-382k terrain triangles), but its seam assertion failed while new
-source tiles streamed: maximum **2,273.963m** at the second capture, with later settled frames at
-zero. This is a source-residency/fallback discontinuity, not a reason to relax the seam check. The
-focused shader, debug-mode, fixed-policy, and speed tests pass; `cargo test --workspace` passes **233 tests** (192 app,
-27 baker library, 2 baker binary, 6 baker integration, 6 coretypes; 6 ignored diagnostics).
-F4 flight speed is globally 5x the prior fixed altitude-scaled value: 250mph at ground level and a
-40,000km/s cap, while Shift retains its existing 4x multiplier.
+The L3 baseline and L4 follow-up used identical release settings and four deterministic camera
+scenarios. FPS is `1000 / median logged spatial frame time`; samples include the scenario's normal
+warm-up and streaming frames.
+
+| camera position | L3 run | L3 median ms / FPS | L4 run | L4 median ms / FPS | FPS change |
+|---|---|---:|---|---:|---:|
+| orbit, 6,000km | `1785834959-63633` | 16.081 / **62.19** | `1785840997-116022` | 24.534 / **40.76** | −34.5% |
+| landing-site ground detail | `1785835058-64558` | 7.890 / **126.74** | `1785841004-116101` | 6.563 / **152.37** | +20.2% |
+| landing-site eye level | `1785835065-64615` | 6.893 / **145.07** | `1785841010-116163` | 6.400 / **156.26** | +7.7% |
+| highest-prominence pose | `1785835071-64683` | 6.867 / **145.62** | `1785841016-116218` | 8.095 / **123.53** | −15.2% |
+
+The orbit L3/L4 runs fail the existing seam assertion during source streaming (2,273.963m and
+2,663.899m maxima respectively); the prominence runs fail their fixed 150m clearance assertion
+because a globally fixed coarse mesh does not reproduce the resident summit height (2,120.676m at
+L3 and 123.713m at L4). The landing-detail and eye-level runs pass. These are diagnostics, not
+reasons to weaken either assertion. The focused shader, debug-mode, fixed-policy, and speed tests
+pass; `cargo test --workspace` passes **233 tests** (192 app, 27 baker library, 2 baker binary,
+6 baker integration, 6 coretypes; 6 ignored diagnostics). F4 flight speed is globally 5x the prior
+fixed altitude-scaled value: 250mph at ground level and a 40,000km/s cap, while Shift retains its
+existing 4x multiplier.
 This branch is for visual evaluation only and must not be merged as the normal textured renderer
 without an explicit decision.
 
