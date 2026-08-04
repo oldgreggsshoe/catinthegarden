@@ -1,4 +1,5 @@
-Plan:
-1. Add a terrain-only flat-triangle specular scalar computed once in the vertex stage and carried with flat interpolation, so every terrain triangle uses one specular value.
-2. Leave diffuse/face-normal lighting and ocean specular behaviour unchanged.
-3. Add shader assertions, run focused shader tests plus the full workspace suite, rebuild, update handoff notes, commit and push.
+Done and pushed as `d664222`.
+
+Terrain specular is now calculated once in the vertex stage and carried as a flat-interpolated scalar. Every land triangle therefore uses one specular value; the diffuse term and geometric face-normal lighting remain unchanged. Ocean specular keeps its existing path.
+
+Validation: `cargo test --workspace` — **236 passed, 0 failed, 6 ignored**; shader validation and release build passed.
