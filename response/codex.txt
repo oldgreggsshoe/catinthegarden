@@ -1,4 +1,5 @@
-Plan:
-1. Raise the flat-triangle experiment's fixed global policy from L5 to L6 and update labels/tests/docs.
-2. Run focused fixed-policy/shader tests, the full workspace suite, and a release build.
-3. Commit and push the L6 change with the validation result.
+Done and pushed as `4167e89`.
+
+The flat-triangle experiment is now fixed globally at **L6** (`MINIMUM_LOD_LEVEL + 4`) instead of L5. HUD/debug labels, tests, and handoff docs are updated.
+
+Validation: `cargo test --workspace` — **236 passed, 0 failed, 6 ignored**; focused L6 policy tests, check, and release build passed. Fresh GPU FPS/manual capture is still pending because `DISPLAY=:0` is unavailable here.
