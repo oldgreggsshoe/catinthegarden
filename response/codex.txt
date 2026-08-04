@@ -1,8 +1,5 @@
-Done and pushed as `07506c1`.
+Yep — that really is the literal Arctic Circle.
 
-- Press **O** to toggle flat-triangle outlines at runtime.
-- Outlines default to **on**; HUD shows the current state.
-- Toggle only affects the edge mask; flat fills, lighting, normals, ocean shading, and fixed L5 geometry are unchanged.
-- State is carried through the camera uniform to the shader.
+The bake classifies every surface above ±66° latitude as `Ice`, and flat-triangle mode displays the categorical biome directly with no material blending. That makes the biome boundary a perfect hard polar cap; it is not a terrain hole or lighting failure.
 
-Validation: `cargo test --workspace` — **193 passed, 0 failed, 6 ignored**; release build succeeded.
+For the normal renderer it is softened by the snow/material blend. If we want the flat experiment to look less cartoonish, the next fix would be a latitude/temperature fade at the cap boundary while keeping the underlying biome data unchanged.
