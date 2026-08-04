@@ -1,28 +1,11 @@
-Completed the L3→L4 FPS comparison on `experiment/flat-triangle-wireframe`.
+L5 is now active on `experiment/flat-triangle-wireframe`.
 
-FPS is `1000 / median logged spatial frame time`, using identical release settings and deterministic scenarios:
+- `FLAT_TRIANGLE_LOD_LEVEL = MINIMUM_LOD_LEVEL + 3`
+- Orbit replay: `1785841288-120629`
+- Median frame time: 23.220 ms
+- Median FPS: 43.07
+- Active chunks reached the 256 budget
+- Seam assertion still fails at 2,273.963m during source streaming
+- Finite metrics pass; `cargo test --workspace`: 233 passed, 0 failed, 6 ignored
 
-| Camera position | L3 | L4 | Change |
-|---|---:|---:|---:|
-| Orbit, 6,000km | 62.19 FPS | 40.76 FPS | −34.5% |
-| Landing-site ground detail | 126.74 FPS | 152.37 FPS | +20.2% |
-| Landing-site eye level | 145.07 FPS | 156.26 FPS | +7.7% |
-| Highest-prominence pose | 145.62 FPS | 123.53 FPS | −15.2% |
-
-Runs:
-- L3: `1785834959-63633`, `1785835058-64558`, `1785835065-64615`, `1785835071-64683`
-- L4: `1785840997-116022`, `1785841004-116101`, `1785841010-116163`, `1785841016-116218`
-
-L4 is now the active fixed level. The orbit runs still expose source-streaming seam assertions; prominence runs expose coarse fixed-mesh clearance differences. Landing-detail and eye-level runs pass. I left those diagnostics intact.
-
-`cargo test --workspace`: 233 passed, 0 failed, 6 ignored.
-
-Pushed commit: `0f1998b` (`experiment: compare fixed lod4 performance`).
-
-<oai-mem-citation>
-<citation_entries>
-MEMORY.md:102-109|note=[global L4 source-detail limit context]
-</citation_entries>
-<rollout_ids>
-</rollout_ids>
-</oai-mem-citation>
+This confirms that increasing global geometry LOD does not fix the underlying source-residency seam. Pushed commit: `648f331` (`experiment: advance flat triangles to lod5`).
