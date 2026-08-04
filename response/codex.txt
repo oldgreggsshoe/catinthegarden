@@ -1,5 +1,7 @@
-Yep — that really is the literal Arctic Circle.
+Three sensible options:
 
-The bake classifies every surface above ±66° latitude as `Ice`, and flat-triangle mode displays the categorical biome directly with no material blending. That makes the biome boundary a perfect hard polar cap; it is not a terrain hole or lighting failure.
+1. **Minimal, flat-mode fix (recommended):** keep the baked biome data, but soften the ±66° edge over a few degrees. Each triangle still gets one final colour, so it remains flat-shaded; only the cap boundary stops being a perfect circle.
+2. **Better Earth-like bake:** change the hard `|latitude| > 66° => Ice` rule to roughly 72–75°, while retaining snow/ice for genuinely high terrain. This needs a rebake but gives a much smaller, more Greenland/Antarctica-like cap.
+3. **Most realistic:** derive ice from an authored/observed land-ice mask, with latitude and elevation only as fallbacks. More work and extra source data.
 
-For the normal renderer it is softened by the snow/material blend. If we want the flat experiment to look less cartoonish, the next fix would be a latitude/temperature fade at the cap boundary while keeping the underlying biome data unchanged.
+I’d do **1 first** for this visual experiment, then decide whether the bake itself should move to option 2. That avoids changing the planet data just to make the wireframe presentation less literal.
