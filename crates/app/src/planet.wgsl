@@ -54,7 +54,8 @@ struct VertexOutput {
     @location(13) @interpolate(flat) detail_vertex_spacing_meters: f32,
     @location(14) tile_uv: vec2<f32>,
     // Source scale remains flat for exact tile ownership. The z component
-    // carries the provoking vertex latitude for flat-triangle palette fades.
+    // carries the provoking vertex latitude for flat-triangle palette fades;
+    // w carries the terrain triangle's single specular value.
     @location(15) @interpolate(flat) source_uv_scale_and_latitude: vec4<f32>,
 }
 
@@ -426,6 +427,26 @@ fn lod_morphed_tile_uv(tile_uv: vec2<f32>, lod_transition: vec2<f32>) -> vec2<f3
     return mix(parent_grid_uv, tile_uv, lod_transition.x);
 }
 
+fn flat_triangle_vertex_specular(
+    normal: vec3<f32>,
+    surface_direction: vec3<f32>,
+    surface_height: f32,
+    camera_relative_view_position: vec3<f32>,
+) -> f32 {
+    let sun_direction = normalize(camera.sun_direction.xyz);
+    let sun_transmittance = surface_direct_sun_transmittance(
+        surface_direction,
+        surface_height,
+        sun_direction,
+    );
+    let sun_visibility = dot(sun_transmittance, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let view_direction = normalize(view_to_planet(-camera_relative_view_position));
+    let half_vector = normalize(sun_direction + view_direction);
+    return pow(max(dot(normal, half_vector), 0.0), 64.0)
+        * sun_visibility
+        * (0.08 * SURFACE_SUNLIGHT_SCALE);
+}
+
 fn stitched_surface_direction(
     original_direction: vec3<f32>,
     tile_uv: vec2<f32>,
@@ -583,6 +604,15 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         // scalar weight left to apply here.
         normal = terrain_detail_perturbed_normal(normal, direction, detail.slope);
     }
+    var flat_specular = 0.0;
+    if flat_triangles {
+        flat_specular = flat_triangle_vertex_specular(
+            normal,
+            direction,
+            surface_height,
+            camera_relative_view_position,
+        );
+    }
     var aerial = aerial_perspective_components(
         camera_relative_view_position,
         direction,
@@ -613,7 +643,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         anchor_relative_position,
         select(0.0, vertex_spacing_meters, outmap),
         tile_uv,
-        vec4<f32>(input.source_uv_scale, direction.y, 0.0),
+        vec4<f32>(input.source_uv_scale, direction.y, flat_specular),
     );
 }
 
@@ -716,6 +746,8 @@ fn flat_triangle_lighting(
     surface_direction: vec3<f32>,
     surface_height: f32,
     camera_relative_view_position: vec3<f32>,
+    triangle_specular: f32,
+    use_triangle_specular: bool,
 ) -> vec3<f32> {
     let sun_direction = normalize(camera.sun_direction.xyz);
     let sun_transmittance = surface_direct_sun_transmittance(
@@ -733,12 +765,15 @@ fn flat_triangle_lighting(
         + sun_transmittance
             * max(dot(normal, sun_direction), 0.0)
             * SURFACE_SUNLIGHT_SCALE;
-    let view_direction = normalize(view_to_planet(-camera_relative_view_position));
-    let half_vector = normalize(sun_direction + view_direction);
-    let specular = pow(max(dot(normal, half_vector), 0.0), 64.0)
-        * sun_transmittance
-        * vec3<f32>(0.08 * SURFACE_SUNLIGHT_SCALE);
-    return albedo * diffuse + specular;
+    var specular = triangle_specular;
+    if !use_triangle_specular {
+        let view_direction = normalize(view_to_planet(-camera_relative_view_position));
+        let half_vector = normalize(sun_direction + view_direction);
+        specular = pow(max(dot(normal, half_vector), 0.0), 64.0)
+            * dot(sun_transmittance, vec3<f32>(0.2126, 0.7152, 0.0722))
+            * (0.08 * SURFACE_SUNLIGHT_SCALE);
+    }
+    return albedo * diffuse + vec3<f32>(specular);
 }
 
 fn flat_triangle_colour(
@@ -768,6 +803,8 @@ fn flat_triangle_colour(
         normalize(input.surface_direction),
         input.surface_height,
         input.camera_relative_view_position,
+        input.source_uv_scale_and_latitude.w,
+        true,
     );
     let edge = flat_triangle_edge(input.tile_uv, input.skirt_depth_meters);
     return vec4<f32>(mix(lit, vec3<f32>(0.015, 0.02, 0.025), edge), 1.0);
@@ -786,6 +823,8 @@ fn flat_ocean_colour(input: OceanVertexOutput) -> vec4<f32> {
         direction,
         surface.vertical_displacement,
         input.camera_relative_view_position,
+        0.0,
+        false,
     );
     let edge = flat_triangle_edge(input.tile_uv, 0.0);
     return vec4<f32>(mix(lit, vec3<f32>(0.015, 0.02, 0.025), edge), 1.0);

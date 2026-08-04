@@ -3324,6 +3324,9 @@ mod tests {
         assert!(shader.contains("const OCEAN_WAVES_ENABLED: bool = false;"));
         assert!(shader.contains("flat_triangles && lake"));
         assert!(shader.contains("source_uv_scale_and_latitude"));
+        assert!(shader.contains("fn flat_triangle_vertex_specular("));
+        assert!(shader.contains("input.source_uv_scale_and_latitude.w"));
+        assert!(shader.contains("use_triangle_specular"));
         assert!(shader.contains("surface_direct_sun_transmittance("));
         assert!(shader.contains("pow(max(dot(normal, half_vector), 0.0), 64.0)"));
         assert!(shader.contains("fn flat_triangle_colour("));

@@ -107,6 +107,11 @@ raised/angled water facets. The CPU wave diagnostic remains for comparison, but 
 The old active bake remains available for comparison; fresh GPU/manual capture sign-off is still
 required.
 
+Flat-triangle terrain specular is evaluated once in the vertex stage and carried in the flat
+interpolant's scalar component, so every land triangle uses one specular value rather than a
+per-pixel highlight. Diffuse lighting and derivative face normals remain per the prior flat
+experiment; ocean specular keeps its existing path.
+
 ---
 
 ## 1. The goal, in Ian's words
