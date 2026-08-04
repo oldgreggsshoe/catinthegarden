@@ -1,5 +1,4 @@
-Done and pushed as `d664222`.
-
-Terrain specular is now calculated once in the vertex stage and carried as a flat-interpolated scalar. Every land triangle therefore uses one specular value; the diffuse term and geometric face-normal lighting remain unchanged. Ocean specular keeps its existing path.
-
-Validation: `cargo test --workspace` — **236 passed, 0 failed, 6 ignored**; shader validation and release build passed.
+Plan:
+1. Raise the flat-triangle experiment's fixed global policy from L5 to L6 and update labels/tests/docs.
+2. Run focused fixed-policy/shader tests, the full workspace suite, and a release build.
+3. Commit and push the L6 change with the validation result.
