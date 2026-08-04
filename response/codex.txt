@@ -1,9 +1,4 @@
-Done and pushed as `017e50b`.
-
-- **Polar cap:** polar ocean is no longer classified as land ice. Imported ETOPO now uses an authored Greenland/Antarctica land-ice mask plus high-elevation fallback; flat-triangle ice colours fade per triangle instead of forming a perfect circle.
-- **Inland water squares:** removed the ETOPO priority-flood promotion that created raised basin ponds; negative components now use cardinal connectivity and a production-size floor, retaining only major inland lakes.
-- **Water geometry:** GPU ocean and lake surfaces are now globally flat at sea level with radial normals—no Gerstner vertical/horizontal displacement or angled facets. CPU wave diagnostics remain available.
-- Active rebake validated: 3,252 tiles, manifest SHA-256 `2659f33bbcbcda5171ca851669007d93115347c44fe04bfdad99a26bc080dcce`.
-- Previous active bake preserved at `assets/outmaps/test-planet.pre-polar-water-repair-20260804-164036-active`.
-
-Validation: workspace tests **236 passed, 0 failed, 6 ignored**; shader tests and release build passed. A GPU scenario could not start in this session because `DISPLAY=:0` was unavailable, so fresh manual screenshot sign-off remains.
+Plan:
+1. Add a terrain-only flat-triangle specular scalar computed once in the vertex stage and carried with flat interpolation, so every terrain triangle uses one specular value.
+2. Leave diffuse/face-normal lighting and ocean specular behaviour unchanged.
+3. Add shader assertions, run focused shader tests plus the full workspace suite, rebuild, update handoff notes, commit and push.
