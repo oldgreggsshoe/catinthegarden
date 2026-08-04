@@ -1,11 +1,8 @@
-L5 is now active on `experiment/flat-triangle-wireframe`.
+Done and pushed as `07506c1`.
 
-- `FLAT_TRIANGLE_LOD_LEVEL = MINIMUM_LOD_LEVEL + 3`
-- Orbit replay: `1785841288-120629`
-- Median frame time: 23.220 ms
-- Median FPS: 43.07
-- Active chunks reached the 256 budget
-- Seam assertion still fails at 2,273.963m during source streaming
-- Finite metrics pass; `cargo test --workspace`: 233 passed, 0 failed, 6 ignored
+- Press **O** to toggle flat-triangle outlines at runtime.
+- Outlines default to **on**; HUD shows the current state.
+- Toggle only affects the edge mask; flat fills, lighting, normals, ocean shading, and fixed L5 geometry are unchanged.
+- State is carried through the camera uniform to the shader.
 
-This confirms that increasing global geometry LOD does not fix the underlying source-residency seam. Pushed commit: `648f331` (`experiment: advance flat triangles to lod5`).
+Validation: `cargo test --workspace` — **193 passed, 0 failed, 6 ignored**; release build succeeded.
