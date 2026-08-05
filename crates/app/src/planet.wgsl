@@ -740,6 +740,11 @@ fn flat_triangle_normal(
     return normalize(view_to_planet(view_normal));
 }
 
+fn flat_triangle_outward_normal(normal: vec3<f32>, surface_direction: vec3<f32>) -> vec3<f32> {
+    let outward = normalize(surface_direction);
+    return select(normal, -normal, dot(normal, outward) < 0.0);
+}
+
 fn flat_triangle_lighting(
     albedo: vec3<f32>,
     normal: vec3<f32>,
@@ -796,7 +801,10 @@ fn flat_triangle_colour(
         let high_ice = smoothstep(2200.0, 4200.0, input.outmap_and_macro_height.y);
         fill = mix(biome_color(3u), fill, max(polar_ice, high_ice));
     }
-    let normal = flat_triangle_normal(input.camera_relative_view_position, input.world_normal);
+    let normal = flat_triangle_outward_normal(
+        flat_triangle_normal(input.camera_relative_view_position, input.world_normal),
+        input.surface_direction,
+    );
     let lit = flat_triangle_lighting(
         fill,
         normal,
@@ -813,9 +821,12 @@ fn flat_triangle_colour(
 fn flat_ocean_colour(input: OceanVertexOutput) -> vec4<f32> {
     let direction = normalize(input.surface_direction);
     let surface = flat_ocean_surface(direction);
-    let normal = flat_triangle_normal(
-        input.camera_relative_view_position,
-        surface.normal,
+    let normal = flat_triangle_outward_normal(
+        flat_triangle_normal(
+            input.camera_relative_view_position,
+            surface.normal,
+        ),
+        direction,
     );
     let lit = flat_triangle_lighting(
         debug_ocean_albedo(),

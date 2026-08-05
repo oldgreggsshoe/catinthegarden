@@ -3318,6 +3318,7 @@ mod tests {
         assert!(shader.contains("const RENDER_DEBUG_FLAT_TRIANGLES: u32 = 6u;"));
         assert!(shader.contains("fn flat_triangle_edge("));
         assert!(shader.contains("fn flat_triangle_normal("));
+        assert!(shader.contains("fn flat_triangle_outward_normal("));
         assert!(shader.contains("fn flat_triangle_lighting("));
         assert!(shader.contains("camera.flat_triangle_options.x"));
         assert!(shader.contains("flat_ocean_surface("));
@@ -3329,6 +3330,12 @@ mod tests {
         assert!(shader.contains("use_triangle_specular"));
         assert!(shader.contains("surface_direct_sun_transmittance("));
         assert!(shader.contains("pow(max(dot(normal, half_vector), 0.0), 64.0)"));
+        assert!(shader.contains("const SKY_DIFFUSE_LIGHT_SCALE: f32 = 0.40;"));
+        assert!(
+            shader.contains(
+                "const TWILIGHT_RED_RADIANCE: vec3<f32> = vec3<f32>(0.30, 0.012, 0.001);"
+            )
+        );
         assert!(shader.contains("fn flat_triangle_colour("));
         assert!(shader.contains("return flat_triangle_colour(input);"));
         assert!(shader.contains("return flat_ocean_colour(input);"));
@@ -3933,6 +3940,8 @@ mod tests {
         assert!(shader.contains("fn blue_hour_rayleigh_scattering("));
         assert!(shader.contains("optical_depth / (vec3<f32>(1.0) + optical_depth)"));
         assert!(shader.contains("suppress_green_dominance(saturate_sky_color(sky_radiance))"));
+        assert!(shader.contains("fn low_sun_red_transition(solar_elevation: f32)"));
+        assert!(shader.contains("let red_twilight_radiance = TWILIGHT_RED_RADIANCE"));
     }
 
     #[test]

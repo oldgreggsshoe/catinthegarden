@@ -140,7 +140,10 @@ const SOLAR_RADIANCE: f32 = 2.0;
 // Artistic surface exposure only: this does not alter sky scattering or the
 // camera-facing sun disc.
 const SURFACE_SUNLIGHT_SCALE: f32 = 2.0;
-const SKY_DIFFUSE_LIGHT_SCALE: f32 = 0.18;
+// Local overhead sky fill is intentionally stronger than the former 0.18
+// artistic scale so terrain remains readable while the sun is low/visible.
+const SKY_DIFFUSE_LIGHT_SCALE: f32 = 0.40;
+const TWILIGHT_RED_RADIANCE: vec3<f32> = vec3<f32>(0.30, 0.012, 0.001);
 const AERIAL_IN_SCATTER_SAMPLE_COUNT: u32 = 2u;
 const AERIAL_DENSITY_SAMPLE_EXPONENT: f32 = 3.0;
 // Artistic aerial-only control, applied after physically bounded integration.
@@ -971,7 +974,17 @@ fn sky_radiance(
     // No view transmittance here: the saturating fraction already accounts for
     // attenuation along the column it integrates. Applying both extinguished
     // the column twice, which is what drove the collapse.
-    return sun_transmittance * phase_weight * scattered_fraction * SOLAR_RADIANCE;
+    let solar_elevation = dot(surface_direction, sun_direction);
+    let red_rising = smoothstep(-0.14, -0.03, solar_elevation);
+    let red_fading = 1.0 - smoothstep(0.0, 0.09, solar_elevation);
+    let red_transition = red_rising * red_fading;
+    let sunward_red = mix(
+        0.35,
+        1.0,
+        smoothstep(0.0, 1.0, max(cos_theta, 0.0)),
+    );
+    return sun_transmittance * phase_weight * scattered_fraction * SOLAR_RADIANCE
+        + TWILIGHT_RED_RADIANCE * red_transition * sunward_red;
 }
 
 fn sky_diffuse_irradiance(

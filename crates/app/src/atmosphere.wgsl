@@ -25,6 +25,10 @@ const BLUE_HOUR_FADE_SINE: f32 = 0.28;
 const BLUE_HOUR_END_SINE: f32 = 0.36;
 const BLUE_HOUR_SCATTER_GAIN: f32 = 0.26;
 const BLUE_HOUR_TINT: vec3<f32> = vec3<f32>(0.55, 0.75, 1.0);
+// A bounded warm bridge keeps the visible sky intensity rising through the
+// last blue-hour frame into the strong red horizon band. It is deliberately
+// separate from direct terrain/ocean sunlight and adds no raymarch samples.
+const TWILIGHT_RED_RADIANCE: vec3<f32> = vec3<f32>(0.30, 0.012, 0.001);
 
 struct Camera {
     projection_matrix: mat4x4<f32>,
@@ -115,6 +119,12 @@ fn blue_hour_rayleigh_scattering(
         * RAYLEIGH_SCALE_HEIGHT_METERS
         * view_air_mass;
     return optical_depth / (vec3<f32>(1.0) + optical_depth) * rayleigh_phase;
+}
+
+fn low_sun_red_transition(solar_elevation: f32) -> f32 {
+    let rising = smoothstep(-0.14, -0.03, solar_elevation);
+    let fading = 1.0 - smoothstep(0.0, 0.09, solar_elevation);
+    return rising * fading;
 }
 
 fn twilight_directional_weight(
@@ -402,8 +412,17 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         * BLUE_HOUR_TINT
         * (SOLAR_RADIANCE * BLUE_HOUR_SCATTER_GAIN)
         * blue_hour_weight(camera_solar_zenith_cosine);
+    let red_twilight_radiance = TWILIGHT_RED_RADIANCE
+        * low_sun_red_transition(camera_solar_zenith_cosine)
+        * mix(
+            0.35,
+            1.0,
+            smoothstep(0.0, 1.0, max(cos_theta, 0.0)),
+        );
     let sky_radiance = max(
-        radiance * SOLAR_RADIANCE * directional_weight + blue_hour_radiance,
+        radiance * SOLAR_RADIANCE * directional_weight
+            + blue_hour_radiance
+            + red_twilight_radiance,
         vec3<f32>(0.0),
     );
     return vec4<f32>(

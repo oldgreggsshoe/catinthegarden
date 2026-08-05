@@ -653,7 +653,7 @@ model, so the last cue is intentionally a bounded presentation effect.
 The new deterministic `sunrise_midday_surface` scenario holds a 100m camera near the equator,
 tracks the sun-facing pose, fixes exposure at 1.0, and captures at 5° sunrise, 45° midday, 5°
 sunset, and -12° blue hour. Full-budget software-GL run
-`sunrise_midday_surface/1785945131-782315` captured all four frames and passed its manifest. The
+`sunrise_midday_surface/1785946181-791182` captured all four frames and passed its manifest. The
 captures show the expected warm sunrise/sunset, neutral bright midday, and a blue post-sunset frame;
 the horizon remains intentionally simple because the scene has no cloud/aerosol layer. The earlier
 16-chunk diagnostic run is retained as `1785936513-728671`.
@@ -670,6 +670,23 @@ The bounded implementation changes are:
 The new sun shader parses and validates in a focused regression; `cargo test --workspace` passes
 with the new scenario. A Quadro/manual capture remains useful for final visual sign-off, but the
 normal-budget software-GL replay confirms the tint/glare change without the earlier chunk cap.
+
+### Sunrise intensity and terrain fill — 5 August 2026
+
+The first comparison still had a real ordering defect: in fixed-exposure `sunset_blue_hour`, the
+reverse sunrise luminance was `0.011, 0.125, 0.154, 0.061, 0.091, 0.263`, so blue hour was brighter
+than the first strong red band and the sequence dipped twice. The cause was the indirect blue-hour
+term outliving the weak direct red transition. A no-extra-sample red bridge now rises from about -8°
+solar elevation through the horizon and fades by roughly +5°. The replay now measures
+`0.011, 0.125, 0.154, 0.170, 0.193, 0.263` in reverse sunrise order: black -> blue -> strong red ->
+daylight with no dip. Direct terrain/ocean solar transmittance remains unchanged.
+
+The same report's dark terrain was partly an ambient/normal problem. `SKY_DIFFUSE_LIGHT_SCALE` is
+now **0.40** (from 0.18), and the flat-L6 path explicitly flips its derivative normal outward when
+it disagrees with the planet radial direction before evaluating sky fill, direct sunlight, or
+specular. This makes visible-sun terrain receive light instead of treating a camera-facing inward
+facet as the night side. The remaining large black regions in the flat-L6 captures are source/LOD
+holes visible even in raw albedo and are not hidden by increasing ambient.
 
 ## 3. State: what was red before the Earth-like rebake
 
