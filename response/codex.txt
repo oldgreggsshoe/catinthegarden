@@ -1,15 +1,14 @@
-I found it in the latest manual captures `manual/1785952608-832998`: a saturated red annulus was covering the entire atmosphere shell around the planet at ~8,000km altitude.
+I found the timing issue in the latest manual capture `manual/1785959425-880187`: the camera was ~52km up, so its geometric horizon was already about 9 degrees below the radial horizon. Blue hour was keyed only to radial solar depression, so it began while the visible sun was still above the local limb.
 
-Cause: the new red-twilight bridge bypassed the shell density taper and was added uniformly to every atmosphere pixel. Fix: weight it by Rayleigh density at each ray's lowest point. Near-surface sunrise remains unchanged; orbital views now retain only a thin, natural coloured limb.
+Fixed the fullscreen atmosphere to compute the tangent-horizon angle from camera radius and start blue hour only after the sun is below that actual horizon. Near-surface sunset timing is unchanged.
 
 Validation:
-- `limb_atmosphere/1785953439-840058`: thin blue/orange limb, no red annulus.
-- `sunset_blue_hour/1785953412-839804`: still passes the colour/luminance assertions.
-- `sunrise_midday_surface/1785953481-840458`: passes all captures.
+- `sunset_blue_hour/1785959648-882409` still passes all colour/luminance assertions.
+- Focused WGSL regression passes.
 - `cargo test --workspace`: 194 app + 29 baker + 6 bake + 6 core tests passed; 6 ignored.
 - Release build succeeds.
 
-Committed and pushed as `2469c82` on `experiment/flat-triangle-wireframe`.
+Committed and pushed as `f1722cc` on `experiment/flat-triangle-wireframe`.
 
 <oai-mem-citation>
 <citation_entries>
