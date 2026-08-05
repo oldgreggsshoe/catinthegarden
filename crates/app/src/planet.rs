@@ -11,7 +11,8 @@ pub const PLANET_RADIUS_METERS: f64 = 4_000_000.0;
 /// other visual constants makes expensive presentation stages easy to bisect.
 pub const BLUR_ENABLED: bool = false;
 pub const BLOOM_ENABLED: bool = false;
-pub const HDR_EFFECT_ENABLED: bool = true;
+pub const HDR_EFFECT_ENABLED: bool = false;
+pub const AUTO_EXPOSURE_ENABLED: bool = false;
 pub const CHUNK_GRID_QUADS: usize = 32;
 pub const CHUNK_GRID_VERTICES: usize = CHUNK_GRID_QUADS + 1;
 /// Near-flight chunks covered by the raster source window get twice the

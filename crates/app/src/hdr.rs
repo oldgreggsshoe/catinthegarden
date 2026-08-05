@@ -2,7 +2,7 @@ use std::sync::mpsc;
 
 use bytemuck::{Pod, Zeroable};
 
-use crate::planet::{BLOOM_ENABLED, BLUR_ENABLED, HDR_EFFECT_ENABLED};
+use crate::planet::{AUTO_EXPOSURE_ENABLED, BLOOM_ENABLED, BLUR_ENABLED, HDR_EFFECT_ENABLED};
 
 const EXPOSURE_KEY: f32 = 0.18;
 const EXPOSURE_EPSILON: f32 = 1.0e-4;
@@ -337,7 +337,7 @@ impl HdrRenderer {
             blur_enabled: BLUR_ENABLED,
             bloom_enabled: BLOOM_ENABLED,
             hdr_effect_enabled: HDR_EFFECT_ENABLED,
-            auto_exposure_enabled: true,
+            auto_exposure_enabled: AUTO_EXPOSURE_ENABLED,
         };
         renderer.resize(device, size);
         renderer
@@ -964,6 +964,7 @@ fn f16_to_f32(bits: u16) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{f16_to_f32, presentation_exposure, target_exposure};
+    use crate::planet::{AUTO_EXPOSURE_ENABLED, HDR_EFFECT_ENABLED};
 
     #[test]
     fn decodes_half_float_luminance_values() {
@@ -983,6 +984,12 @@ mod tests {
     fn fixed_exposure_bypasses_the_adapting_meter() {
         assert_eq!(presentation_exposure(0.42, true), 0.42);
         assert_eq!(presentation_exposure(0.42, false), 1.0);
+    }
+
+    #[test]
+    fn interactive_hdr_and_auto_exposure_defaults_are_off() {
+        assert!(!HDR_EFFECT_ENABLED);
+        assert!(!AUTO_EXPOSURE_ENABLED);
     }
 
     #[test]

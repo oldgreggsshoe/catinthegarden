@@ -46,6 +46,10 @@ fn should_enter_fullscreen(currently_fullscreen: bool) -> bool {
     !currently_fullscreen
 }
 
+fn should_start_interactive_fullscreen(scenario_active: bool) -> bool {
+    !scenario_active
+}
+
 fn device_mouse_look_enabled(mouse_captured: bool, scenario_active: bool) -> bool {
     mouse_captured && !scenario_active
 }
@@ -922,7 +926,7 @@ impl State {
             egui_renderer,
             last_frame: Instant::now(),
             fps: 0.0,
-            debug_overlay_visible: true,
+            debug_overlay_visible: false,
             render_path: RenderPath::default(),
             render_debug_mode: match std::env::var("CATINGARDEN_DEBUG_MODE")
                 .unwrap_or_default()
@@ -959,6 +963,13 @@ impl State {
             .scenario
             .as_ref()
             .is_some_and(scenario::ScenarioRunner::uses_fixed_exposure);
+        // Automated captures were authored with the HDR curve enabled. Keep
+        // that scenario presentation explicit while the interactive default
+        // remains opt-in, so image assertions do not drift with user startup
+        // preferences.
+        if state.scenario.is_some() {
+            state.hdr.set_hdr_effect_enabled(&state.queue, true);
+        }
         if scenario_uses_fixed_exposure {
             state.hdr.set_auto_exposure_enabled(&state.queue, false);
         }
@@ -1883,7 +1894,7 @@ impl State {
                             ui.label(
                                 "F: fullscreen  |  F3: overlay  |  F4: camera mode  |  F5: render path  |  WASD: fly  |  O: triangle outlines  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
                             );
-                            ui.label("Default: auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc/Q: quit");
+                            ui.label("Default: fullscreen, HUD hidden, auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc/Q: quit");
                         });
                 }
             });
@@ -2637,6 +2648,9 @@ impl ApplicationHandler for App {
             self.launch_options.vertical_fov_degrees,
             self.launch_options.terrain_source.clone(),
         ));
+        if should_start_interactive_fullscreen(self.launch_options.scenario_name.is_some()) {
+            state.toggle_fullscreen(&window);
+        }
         state.set_mouse_capture(&window, true);
         self.state = Some(state);
         self.window = Some(window);
@@ -3010,8 +3024,8 @@ mod tests {
         advance_flight_speed, device_mouse_look_enabled, find_default_outmap,
         flight_movement_direction, flight_view_direction, focus_of_expansion_ndc,
         initial_flight_tangent, interactive_camera_delta_seconds, projected_planet_coverage,
-        render_size_for_surface_resize, should_enter_fullscreen, swept_flight_clearance_lift,
-        transport_flight_tangent,
+        render_size_for_surface_resize, should_enter_fullscreen,
+        should_start_interactive_fullscreen, swept_flight_clearance_lift, transport_flight_tangent,
     };
     use crate::planet::{
         CameraUniform, OrbitCamera, PLANET_ROTATION_PERIOD_SECONDS, RenderDebugMode,
@@ -3030,6 +3044,12 @@ mod tests {
     fn fullscreen_key_toggles_windowed_state() {
         assert!(should_enter_fullscreen(false));
         assert!(!should_enter_fullscreen(true));
+    }
+
+    #[test]
+    fn interactive_startup_is_fullscreen_but_scenarios_stay_windowed() {
+        assert!(should_start_interactive_fullscreen(false));
+        assert!(!should_start_interactive_fullscreen(true));
     }
 
     #[test]

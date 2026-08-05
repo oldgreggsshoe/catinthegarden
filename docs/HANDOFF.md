@@ -712,6 +712,16 @@ unchanged, while high-flight sunset no longer advances the blue transition. The 
 `sunset_blue_hour/1785959648-882409` replay still passes all colour/luminance assertions, and the
 full workspace suite remains green.
 
+### Interactive presentation defaults — 5 August 2026
+
+The normal interactive launch now starts in borderless fullscreen while keeping the existing
+internal render size; deterministic `--scenario` runs remain windowed so their capture dimensions
+and timing stay stable. The HUD/egui panel starts hidden and remains available with F3. The HDR
+curve and auto-exposure are both disabled at startup (F8 and 6 still toggle them independently),
+while the HDR scene target and luminance meter remain available for diagnostics. The default-state
+regression covers the interactive/fullscreen split and the presentation constants; the full
+workspace suite passes.
+
 ## 3. State: what was red before the Earth-like rebake
 
 The six results below are pre-rebake evidence and now require a fresh matrix. Before the Earth-like
