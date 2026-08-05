@@ -8,7 +8,7 @@ Implemented the sunrise/sunset comparison pass.
 
 References: [NASA Earth Observatory](https://eol.jsc.nasa.gov/Collections/EarthObservatory/articles/CrepuscularRaysandLightScattering.htm), [NASA blue-sky explanation](https://spaceplace.nasa.gov/blue-sky/en/), [NOAA sky guide](https://www.weather.gov/fgz/SkyBlue), [Earth sunset photograph](https://commons.wikimedia.org/wiki/File%3ARed_sky_during_sunset.jpg).
 
-The screenshots were captured through software GL with `CATINGARDEN_MAX_ACTIVE_CHUNKS=16` so the run would finish; the dark/coarse foreground is therefore diagnostic, not terrain-quality sign-off. A full-resolution Quadro/manual capture is the remaining visual sign-off.
+The screenshots were captured through software GL with `CATINGARDEN_MAX_ACTIVE_CHUNKS=16` so the run would finish; the dark/coarse foreground is therefore diagnostic, not terrain-quality sign-off. A full-resolution Quadro/manual capture is the remaining visual sign-off. Changes are committed locally as `4244711` and `6c0b0d5`; push was attempted but this environment cannot authenticate to GitHub over SSH/HTTPS.
 
 <oai-mem-citation>
 <citation_entries>
