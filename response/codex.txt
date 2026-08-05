@@ -6,7 +6,7 @@ Done.
 - Updated `sun.wgsl`, shader assertions, `AGENTS.md`, and `docs/HANDOFF.md`.
 - `cargo test --workspace`: 194 passed, 6 ignored. Release build succeeds.
 
-The change is ready for a Quadro/manual visual sign-off. It is committed locally after the previous commits; push will be retried now.
+The change is ready for a Quadro/manual visual sign-off. Committed and pushed as `b463d2d` on `experiment/flat-triangle-wireframe`.
 
 <oai-mem-citation>
 <citation_entries>
