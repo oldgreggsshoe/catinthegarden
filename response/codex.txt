@@ -1,16 +1,19 @@
-Fixed all three reported issues.
+I found it in the latest manual captures `manual/1785952608-832998`: a saturated red annulus was covering the entire atmosphere shell around the planet at ~8,000km altitude.
 
-- Added a shared bounded red-twilight bridge from about -8° through the horizon, fading by +5°. `sunset_blue_hour/1785946155-791005` now measures a monotonic sunrise sequence: `0.011, 0.125, 0.154, 0.170, 0.193, 0.263` (black -> blue -> strong red -> daylight), with no dip.
-- Increased local sky ambient from `0.18` to `0.40`.
-- Fixed flat-L6 lighting normals: derivative normals are forced outward before sky fill, direct sunlight, and specular evaluation, so visible-sun terrain cannot be treated as inward/night-facing.
-- Replayed `sunrise_midday_surface/1785946181-791182`; all four captures pass. Remaining large black regions are source/LOD holes visible even in raw albedo, not an ambient-light failure.
-- `cargo test --workspace`: 194 passed, 6 ignored. Release build succeeds.
+Cause: the new red-twilight bridge bypassed the shell density taper and was added uniformly to every atmosphere pixel. Fix: weight it by Rayleigh density at each ray's lowest point. Near-surface sunrise remains unchanged; orbital views now retain only a thin, natural coloured limb.
 
-Committed and pushed as `78618f6` on `experiment/flat-triangle-wireframe`.
+Validation:
+- `limb_atmosphere/1785953439-840058`: thin blue/orange limb, no red annulus.
+- `sunset_blue_hour/1785953412-839804`: still passes the colour/luminance assertions.
+- `sunrise_midday_surface/1785953481-840458`: passes all captures.
+- `cargo test --workspace`: 194 app + 29 baker + 6 bake + 6 core tests passed; 6 ignored.
+- Release build succeeds.
+
+Committed and pushed as `2469c82` on `experiment/flat-triangle-wireframe`.
 
 <oai-mem-citation>
 <citation_entries>
-MEMORY.md:58-61|note=[confirmed the checkout-specific catingard handoff workflow before using repository evidence]
+MEMORY.md:58-61|note=[used checkout-specific handoff and validation workflow]
 </citation_entries>
 <rollout_ids>
 </rollout_ids>
