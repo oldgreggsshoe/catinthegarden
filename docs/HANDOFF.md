@@ -652,25 +652,24 @@ model, so the last cue is intentionally a bounded presentation effect.
 
 The new deterministic `sunrise_midday_surface` scenario holds a 100m camera near the equator,
 tracks the sun-facing pose, fixes exposure at 1.0, and captures at 5° sunrise, 45° midday, 5°
-sunset, and -12° blue hour. Software-GL run `sunrise_midday_surface/1785936513-728671` captured
-all four frames and passed its manifest. With the reduced `CATINGARDEN_MAX_ACTIVE_CHUNKS=16`
-needed for this machine's software-GL throughput, the ground is intentionally diagnostic and the
-sky/sun comparison is the useful evidence. The captures show the expected warm sunrise/sunset,
-neutral bright midday, and a blue post-sunset frame; the horizon remains intentionally simple because
-the scene has no cloud/aerosol layer.
+sunset, and -12° blue hour. Full-budget software-GL run
+`sunrise_midday_surface/1785945131-782315` captured all four frames and passed its manifest. The
+captures show the expected warm sunrise/sunset, neutral bright midday, and a blue post-sunset frame;
+the horizon remains intentionally simple because the scene has no cloud/aerosol layer. The earlier
+16-chunk diagnostic run is retained as `1785936513-728671`.
 
 The bounded implementation changes are:
 
 - `atmosphere.wgsl` reduces the sky-only saturation pass from 1.30 to 1.18 and keeps the blue-hour
   curve in the photographic range: it starts near -4°, reaches full weight near -7°, fades near
   -16°, and remains available through about -21° so astronomical darkness is not abrupt.
-- `sun.wgsl` restores the physical 0.53° apparent solar diameter, adds a compact 5.5-radius HDR
-  corona plus a 2-radius inner glare, and tints only the camera-facing disk from neutral white at
-  midday toward bounded yellow/orange at low elevation. Terrain/ocean solar lighting is unchanged.
+- `sun.wgsl` restores the physical 0.53° apparent solar diameter, adds a compact 6.5-radius HDR
+  corona plus a 2.5-radius inner glare, and keeps the clipped core near white while tinting the
+  corona toward bounded yellow/orange at low elevation. Terrain/ocean solar lighting is unchanged.
 
 The new sun shader parses and validates in a focused regression; `cargo test --workspace` passes
-with the new scenario. A full-resolution Quadro/manual capture remains the next visual sign-off,
-because the available software-GL run deliberately limits terrain chunks.
+with the new scenario. A Quadro/manual capture remains useful for final visual sign-off, but the
+normal-budget software-GL replay confirms the tint/glare change without the earlier chunk cap.
 
 ## 3. State: what was red before the Earth-like rebake
 

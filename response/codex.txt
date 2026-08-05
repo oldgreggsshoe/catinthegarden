@@ -1,14 +1,12 @@
-Implemented the sunrise/sunset comparison pass.
+Done.
 
-- Added `sunrise_midday_surface`; capture set `test-runs/sunrise_midday_surface/1785936513-728671` contains 100m fixed-exposure views at sunrise, midday, sunset, and blue hour. Manifest passes all 4 captures.
-- Compared against NASA/NOAA Earth-sky guidance and a real sunset photograph: low Sun is warm orange/red, the horizon is paler than overhead blue, and blue hour should fade from purple/blue into night.
-- Tuned sky saturation 1.30 -> 1.18 and kept the blue-hour curve in the Earth-like -4° to -21° range.
-- Restored the sun to its physical ~0.53° diameter, added bounded low-sun disk tint, compact HDR corona, and inner camera-style glare. Terrain/ocean solar lighting is unchanged.
-- Added WGSL validation and scenario tests. `cargo test --workspace`: 194 passed, 6 ignored. Release build succeeds.
+- Re-ran the four-view `sunrise_midday_surface` scenario at the normal 256-chunk budget: `test-runs/sunrise_midday_surface/1785945131-782315`. All four captures passed.
+- The low-sun core remains naturally clipped near white, while the surrounding corona now carries a visible warm yellow/orange tint. The 6.5-radius corona and 2.5-radius inner glare are noticeably softer and stronger without washing out midday.
+- No terrain changes were made; the remaining black foreground is the separate fixed-L6 flat-triangle/ocean presentation, not the sky test.
+- Updated `sun.wgsl`, shader assertions, `AGENTS.md`, and `docs/HANDOFF.md`.
+- `cargo test --workspace`: 194 passed, 6 ignored. Release build succeeds.
 
-References: [NASA Earth Observatory](https://eol.jsc.nasa.gov/Collections/EarthObservatory/articles/CrepuscularRaysandLightScattering.htm), [NASA blue-sky explanation](https://spaceplace.nasa.gov/blue-sky/en/), [NOAA sky guide](https://www.weather.gov/fgz/SkyBlue), [Earth sunset photograph](https://commons.wikimedia.org/wiki/File%3ARed_sky_during_sunset.jpg).
-
-The screenshots were captured through software GL with `CATINGARDEN_MAX_ACTIVE_CHUNKS=16` so the run would finish; the dark/coarse foreground is therefore diagnostic, not terrain-quality sign-off. A full-resolution Quadro/manual capture is the remaining visual sign-off. Changes are committed locally as `4244711` and `6c0b0d5`; push was attempted but this environment cannot authenticate to GitHub over SSH/HTTPS.
+The change is ready for a Quadro/manual visual sign-off. It is committed locally after the previous commits; push will be retried now.
 
 <oai-mem-citation>
 <citation_entries>

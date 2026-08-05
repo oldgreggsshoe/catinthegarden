@@ -6,14 +6,14 @@ const VISUAL_SUN_SIZE_SCALE: f32 = 1.0;
 const SUN_ANGULAR_RADIUS_RADIANS: f32 = PHYSICAL_SUN_ANGULAR_RADIUS_RADIANS * VISUAL_SUN_SIZE_SCALE;
 // A compact, soft corona gives the camera-like glow seen around a bright sun
 // without turning the whole sky into a white disk.
-const SUN_HALO_RADIUS_SCALE: f32 = 5.5;
-const SUN_INNER_GLARE_RADIUS_SCALE: f32 = 2.0;
+const SUN_HALO_RADIUS_SCALE: f32 = 6.5;
+const SUN_INNER_GLARE_RADIUS_SCALE: f32 = 2.5;
 // This multiplier belongs only to the camera-facing HDR disc.  Terrain,
 // ocean, and atmosphere lighting use their own physical solar radiance.
 const SUN_VISUAL_RADIANCE_SCALE: f32 = 5.0;
 const SUN_CORE_RADIANCE: vec3<f32> = vec3<f32>(72.0, 65.0, 52.0);
-const SUN_HALO_RADIANCE: vec3<f32> = vec3<f32>(8.0, 7.5, 6.5);
-const SUN_GLARE_RADIANCE: vec3<f32> = vec3<f32>(6.0, 5.5, 5.0);
+const SUN_HALO_RADIANCE: vec3<f32> = vec3<f32>(10.0, 7.0, 3.5);
+const SUN_GLARE_RADIANCE: vec3<f32> = vec3<f32>(8.0, 5.5, 2.5);
 
 struct Camera {
     projection_matrix: mat4x4<f32>,
@@ -76,7 +76,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
     let disc_coverage = 1.0 - smoothstep(0.92, 1.0, normalized_distance);
     let limb_darkening = 1.0 - 0.25 * min(normalized_distance, 1.0);
-    let halo = pow(max(1.0 - normalized_distance / SUN_HALO_RADIUS_SCALE, 0.0), 3.0);
+    let halo = pow(max(1.0 - normalized_distance / SUN_HALO_RADIUS_SCALE, 0.0), 2.5);
     let inner_glare = pow(
         max(1.0 - normalized_distance / SUN_INNER_GLARE_RADIUS_SCALE, 0.0),
         2.0,
@@ -86,9 +86,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         normalize(camera.sun_direction_view.xyz),
     );
     let tint = sun_disc_tint(solar_elevation);
+    // Keep the clipped photographic core close to white while allowing the
+    // corona and inner glare to carry the visible low-sun colour.
+    let core_tint = mix(vec3<f32>(1.0), tint, 0.25);
+    let halo_tint = mix(vec3<f32>(1.0), tint, 0.85);
     let radiance = SUN_VISUAL_RADIANCE_SCALE
-        * (tint * SUN_CORE_RADIANCE * disc_coverage * limb_darkening
-            + tint * SUN_HALO_RADIANCE * halo
-            + tint * SUN_GLARE_RADIANCE * inner_glare);
+        * (core_tint * SUN_CORE_RADIANCE * disc_coverage * limb_darkening
+            + halo_tint * SUN_HALO_RADIANCE * halo
+            + halo_tint * SUN_GLARE_RADIANCE * inner_glare);
     return vec4<f32>(radiance, 1.0);
 }

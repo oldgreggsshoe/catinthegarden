@@ -3947,10 +3947,12 @@ mod tests {
         .validate(&module)
         .expect("sun shader must validate before WGPU creates the pipeline");
         assert!(shader.contains("const VISUAL_SUN_SIZE_SCALE: f32 = 1.0;"));
-        assert!(shader.contains("const SUN_HALO_RADIUS_SCALE: f32 = 5.5;"));
-        assert!(shader.contains("const SUN_INNER_GLARE_RADIUS_SCALE: f32 = 2.0;"));
+        assert!(shader.contains("const SUN_HALO_RADIUS_SCALE: f32 = 6.5;"));
+        assert!(shader.contains("const SUN_INNER_GLARE_RADIUS_SCALE: f32 = 2.5;"));
         assert!(shader.contains("fn sun_disc_tint(solar_elevation: f32)"));
         assert!(shader.contains("let inner_glare = pow("));
+        assert!(shader.contains("let core_tint = mix(vec3<f32>(1.0), tint, 0.25);"));
+        assert!(shader.contains("let halo_tint = mix(vec3<f32>(1.0), tint, 0.85);"));
     }
 
     #[test]
