@@ -1,5 +1,4 @@
-Done and pushed as `4167e89`.
-
-The flat-triangle experiment is now fixed globally at **L6** (`MINIMUM_LOD_LEVEL + 4`) instead of L5. HUD/debug labels, tests, and handoff docs are updated.
-
-Validation: `cargo test --workspace` — **236 passed, 0 failed, 6 ignored**; focused L6 policy tests, check, and release build passed. Fresh GPU FPS/manual capture is still pending because `DISPLAY=:0` is unavailable here.
+Plan:
+1. Review the latest near-surface manual captures and current sunrise/sunset/sun-disc shader paths.
+2. Compare against real Earth outdoor sunrise, sunset, and midday sky photographs from authoritative/public image sources, focusing on hue progression, solar disc size/halo, and timing cues.
+3. Make one bounded atmosphere/sun presentation pass, add deterministic colour/timing tests, run the workspace suite, and document the comparison and any remaining GPU capture limitation.
