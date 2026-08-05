@@ -6,7 +6,7 @@ Fixed all three reported issues.
 - Replayed `sunrise_midday_surface/1785946181-791182`; all four captures pass. Remaining large black regions are source/LOD holes visible even in raw albedo, not an ambient-light failure.
 - `cargo test --workspace`: 194 passed, 6 ignored. Release build succeeds.
 
-Committed as `8b2b4db`; push is next.
+Committed and pushed as `78618f6` on `experiment/flat-triangle-wireframe`.
 
 <oai-mem-citation>
 <citation_entries>
