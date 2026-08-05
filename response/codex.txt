@@ -1,12 +1,12 @@
-Done.
+Fixed all three reported issues.
 
-- Re-ran the four-view `sunrise_midday_surface` scenario at the normal 256-chunk budget: `test-runs/sunrise_midday_surface/1785945131-782315`. All four captures passed.
-- The low-sun core remains naturally clipped near white, while the surrounding corona now carries a visible warm yellow/orange tint. The 6.5-radius corona and 2.5-radius inner glare are noticeably softer and stronger without washing out midday.
-- No terrain changes were made; the remaining black foreground is the separate fixed-L6 flat-triangle/ocean presentation, not the sky test.
-- Updated `sun.wgsl`, shader assertions, `AGENTS.md`, and `docs/HANDOFF.md`.
+- Added a shared bounded red-twilight bridge from about -8° through the horizon, fading by +5°. `sunset_blue_hour/1785946155-791005` now measures a monotonic sunrise sequence: `0.011, 0.125, 0.154, 0.170, 0.193, 0.263` (black -> blue -> strong red -> daylight), with no dip.
+- Increased local sky ambient from `0.18` to `0.40`.
+- Fixed flat-L6 lighting normals: derivative normals are forced outward before sky fill, direct sunlight, and specular evaluation, so visible-sun terrain cannot be treated as inward/night-facing.
+- Replayed `sunrise_midday_surface/1785946181-791182`; all four captures pass. Remaining large black regions are source/LOD holes visible even in raw albedo, not an ambient-light failure.
 - `cargo test --workspace`: 194 passed, 6 ignored. Release build succeeds.
 
-The change is ready for a Quadro/manual visual sign-off. Committed and pushed as `b463d2d` on `experiment/flat-triangle-wireframe`.
+Committed as `8b2b4db`; push is next.
 
 <oai-mem-citation>
 <citation_entries>
