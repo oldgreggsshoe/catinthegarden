@@ -3941,6 +3941,7 @@ mod tests {
         assert!(shader.contains("optical_depth / (vec3<f32>(1.0) + optical_depth)"));
         assert!(shader.contains("suppress_green_dominance(saturate_sky_color(sky_radiance))"));
         assert!(shader.contains("fn low_sun_red_transition(solar_elevation: f32)"));
+        assert!(shader.contains("let red_twilight_atmosphere_weight = density("));
         assert!(shader.contains("let red_twilight_radiance = TWILIGHT_RED_RADIANCE"));
     }
 

@@ -688,6 +688,19 @@ specular. This makes visible-sun terrain receive light instead of treating a cam
 facet as the night side. The remaining large black regions in the flat-L6 captures are source/LOD
 holes visible even in raw albedo and are not hidden by increasing ambient.
 
+### Orbital red-limb repair — 5 August 2026
+
+The latest manual Quadro captures `manual/1785952608-832998` showed a saturated red annulus around
+the planet at roughly 8,000km altitude. The new red-twilight bridge was being added uniformly to
+every atmosphere-shell pixel, bypassing the shell density taper; this made the full 720km shell
+read as a flat red circle instead of a thin sunset limb. `atmosphere.wgsl` now weights that bridge by
+the Rayleigh density at each ray's lowest point. Near-surface sunrise is unchanged, while orbital
+views retain only a narrow, density-shaped limb. The replayed `limb_atmosphere/1785953439-840058`
+shows the thin blue/orange edge without the red annulus, and the fixed-exposure
+`sunset_blue_hour/1785953412-839804` still passes its ordered colour/luminance assertions.
+The shader-focused regression and all 194 app plus 29 baker, 6 bake, and 6 core workspace tests
+pass (6 ignored).
+
 ## 3. State: what was red before the Earth-like rebake
 
 The six results below are pre-rebake evidence and now require a fresh matrix. Before the Earth-like

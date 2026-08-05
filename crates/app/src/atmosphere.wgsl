@@ -322,6 +322,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let atmosphere_path_length = end_distance - start_distance;
     let closest_distance = clamp(-radial_dot_ray, start_distance, end_distance);
     let closest_fraction = (closest_distance - start_distance) / atmosphere_path_length;
+    // The red bridge is a bounded low-sun fill, not a second atmosphere
+    // shell.  Weight it by the density at the ray's lowest point so an
+    // orbital view gets a thin, physical red limb instead of a solid red
+    // annulus across the full 720 km shell.  Near the surface the lowest
+    // point is the camera itself, preserving the validated sunrise band.
+    let red_twilight_atmosphere_weight = density(
+        altitude_along_ray(camera_radius, radial_dot_ray, closest_distance),
+        RAYLEIGH_SCALE_HEIGHT_METERS,
+    );
     let atmosphere_entry_altitude = altitude_along_ray(
         camera_radius,
         radial_dot_ray,
@@ -414,6 +423,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         * blue_hour_weight(camera_solar_zenith_cosine);
     let red_twilight_radiance = TWILIGHT_RED_RADIANCE
         * low_sun_red_transition(camera_solar_zenith_cosine)
+        * red_twilight_atmosphere_weight
         * mix(
             0.35,
             1.0,
