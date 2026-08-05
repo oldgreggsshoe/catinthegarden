@@ -1,14 +1,20 @@
-I found the timing issue in the latest manual capture `manual/1785959425-880187`: the camera was ~52km up, so its geometric horizon was already about 9 degrees below the radial horizon. Blue hour was keyed only to radial solar depression, so it began while the visible sun was still above the local limb.
+Done.
 
-Fixed the fullscreen atmosphere to compute the tangent-horizon angle from camera radius and start blue hour only after the sun is below that actual horizon. Near-surface sunset timing is unchanged.
+Interactive startup now defaults to:
+- Borderless fullscreen, while preserving the existing internal render resolution.
+- HUD/egui panel hidden; F3 still toggles it.
+- HDR presentation curve off; F8 still toggles it.
+- Auto-exposure off/fixed 1.0; key 6 still toggles it.
+
+Deterministic `--scenario` runs remain windowed and explicitly keep their authored HDR presentation so capture assertions do not drift.
 
 Validation:
-- `sunset_blue_hour/1785959648-882409` still passes all colour/luminance assertions.
-- Focused WGSL regression passes.
-- `cargo test --workspace`: 194 app + 29 baker + 6 bake + 6 core tests passed; 6 ignored.
+- Default-state regressions pass.
+- `sunset_blue_hour/1785960638-891843` passes all assertions.
+- `cargo test --workspace`: 196 app + 29 baker + 6 bake + 6 core tests passed; 6 ignored.
 - Release build succeeds.
 
-Committed and pushed as `f1722cc` on `experiment/flat-triangle-wireframe`.
+Committed and pushed as `69a0c3e` on `experiment/flat-triangle-wireframe`.
 
 <oai-mem-citation>
 <citation_entries>
