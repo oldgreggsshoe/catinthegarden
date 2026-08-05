@@ -1,25 +1,19 @@
-Done.
+Done. Created `PERFORMANCE_REVIEW.pdf` in the project root.
 
-Interactive startup now defaults to:
-- Borderless fullscreen, while preserving the existing internal render resolution.
-- HUD/egui panel hidden; F3 still toggles it.
-- HDR presentation curve off; F8 still toggles it.
-- Auto-exposure off/fixed 1.0; key 6 still toggles it.
+It is an 11-page, source-referenced review covering the raster/flat-L6 path, atmosphere, HDR/exposure, terrain CPU/streaming, ray renderer, baker, core types, and build profile. The top recommendations are:
 
-Deterministic `--scenario` runs remain windowed and explicitly keep their authored HDR presentation so capture assertions do not drift.
+1. Skip unused aerial/fog vertex work in flat-triangle mode.
+2. Suspend or throttle luminance metering while auto exposure is disabled.
+3. Index repeated terrain edge and height queries.
+4. Throttle and buffer interactive JSON logging.
 
-Validation:
-- Default-state regressions pass.
-- `sunset_blue_hour/1785960638-891843` passes all assertions.
-- `cargo test --workspace`: 196 app + 29 baker + 6 bake + 6 core tests passed; 6 ignored.
-- Release build succeeds.
-
-Committed and pushed as `69a0c3e` on `experiment/flat-triangle-wireframe`.
+The PDF was rendered and visually checked page-by-page. `cargo check --workspace`, PDF metadata/text validation, and `git diff --check` all pass. No runtime source was changed. The PDF and this response were committed and pushed to `experiment/flat-triangle-wireframe`.
 
 <oai-mem-citation>
 <citation_entries>
 MEMORY.md:58-61|note=[used checkout-specific handoff and validation workflow]
 </citation_entries>
 <rollout_ids>
+019fa81f-71cc-7c12-9279-8318fbe22bc5
 </rollout_ids>
 </oai-mem-citation>
