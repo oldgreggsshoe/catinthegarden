@@ -3926,13 +3926,31 @@ mod tests {
         )
         .validate(&module)
         .expect("atmosphere shader must validate before WGPU creates the pipeline");
-        assert!(shader.contains("const SKY_ATMOSPHERE_SATURATION: f32 = 1.3;"));
+        assert!(shader.contains("const SKY_ATMOSPHERE_SATURATION: f32 = 1.18;"));
         assert!(shader.contains("fn saturate_sky_color(color: vec3<f32>)"));
         assert!(shader.contains("fn suppress_green_dominance(color: vec3<f32>)"));
         assert!(shader.contains("fn blue_hour_weight(camera_solar_zenith_cosine: f32)"));
         assert!(shader.contains("fn blue_hour_rayleigh_scattering("));
         assert!(shader.contains("optical_depth / (vec3<f32>(1.0) + optical_depth)"));
         assert!(shader.contains("suppress_green_dominance(saturate_sky_color(sky_radiance))"));
+    }
+
+    #[test]
+    fn sun_disc_matches_earth_size_and_has_camera_glare() {
+        let shader = include_str!("sun.wgsl");
+        let module = wgpu::naga::front::wgsl::parse_str(shader)
+            .expect("sun shader must parse before WGPU creates the pipeline");
+        wgpu::naga::valid::Validator::new(
+            wgpu::naga::valid::ValidationFlags::all(),
+            wgpu::naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("sun shader must validate before WGPU creates the pipeline");
+        assert!(shader.contains("const VISUAL_SUN_SIZE_SCALE: f32 = 1.0;"));
+        assert!(shader.contains("const SUN_HALO_RADIUS_SCALE: f32 = 5.5;"));
+        assert!(shader.contains("const SUN_INNER_GLARE_RADIUS_SCALE: f32 = 2.0;"));
+        assert!(shader.contains("fn sun_disc_tint(solar_elevation: f32)"));
+        assert!(shader.contains("let inner_glare = pow("));
     }
 
     #[test]

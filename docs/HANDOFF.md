@@ -638,6 +638,40 @@ night-sky luminance respectively. The earlier `sunset_sweep` sky-colour assertio
 overall run retains only the known, unrelated §3 fallback-count failure. Release build, formatting,
 diff checks, and all 218 workspace tests pass.
 
+### Near-surface sunrise, midday, and sunset comparison — 5 August 2026
+
+Earth references used for this pass agree on four useful visual cues: the long low-sun path removes
+blue and leaves orange/red near the solar direction, the horizon is paler than overhead blue, clear
+blue hour is a short purple-to-deep-blue interval after the red sunset, and aerosol/haze can add a
+soft halo around the bright disk. See NASA's [Earth Observatory scattering notes](https://eol.jsc.nasa.gov/Collections/EarthObservatory/articles/CrepuscularRaysandLightScattering.htm),
+[NASA's blue-sky explanation](https://spaceplace.nasa.gov/blue-sky/en/), NOAA's [horizon and sunset
+colour guide](https://www.weather.gov/fgz/SkyBlue), and the real-Earth [Red sky during sunset
+photograph](https://commons.wikimedia.org/wiki/File%3ARed_sky_during_sunset.jpg). These are
+comparison references, not pixel targets: the renderer has no clouds, aerosol maps, or camera lens
+model, so the last cue is intentionally a bounded presentation effect.
+
+The new deterministic `sunrise_midday_surface` scenario holds a 100m camera near the equator,
+tracks the sun-facing pose, fixes exposure at 1.0, and captures at 5° sunrise, 45° midday, 5°
+sunset, and -12° blue hour. Software-GL run `sunrise_midday_surface/1785936513-728671` captured
+all four frames and passed its manifest. With the reduced `CATINGARDEN_MAX_ACTIVE_CHUNKS=16`
+needed for this machine's software-GL throughput, the ground is intentionally diagnostic and the
+sky/sun comparison is the useful evidence. The captures show the expected warm sunrise/sunset,
+neutral bright midday, and a blue post-sunset frame; the horizon remains intentionally simple because
+the scene has no cloud/aerosol layer.
+
+The bounded implementation changes are:
+
+- `atmosphere.wgsl` reduces the sky-only saturation pass from 1.30 to 1.18 and keeps the blue-hour
+  curve in the photographic range: it starts near -4°, reaches full weight near -7°, fades near
+  -16°, and remains available through about -21° so astronomical darkness is not abrupt.
+- `sun.wgsl` restores the physical 0.53° apparent solar diameter, adds a compact 5.5-radius HDR
+  corona plus a 2-radius inner glare, and tints only the camera-facing disk from neutral white at
+  midday toward bounded yellow/orange at low elevation. Terrain/ocean solar lighting is unchanged.
+
+The new sun shader parses and validates in a focused regression; `cargo test --workspace` passes
+with the new scenario. A full-resolution Quadro/manual capture remains the next visual sign-off,
+because the available software-GL run deliberately limits terrain chunks.
+
 ## 3. State: what was red before the Earth-like rebake
 
 The six results below are pre-rebake evidence and now require a fresh matrix. Before the Earth-like

@@ -205,6 +205,9 @@ impl ScenarioRunner {
             "descent_to_10m" => include_str!("../scenarios/descent_to_10m.json"),
             "sunset_sweep" => include_str!("../scenarios/sunset_sweep.json"),
             "sunset_blue_hour" => include_str!("../scenarios/sunset_blue_hour.json"),
+            "sunrise_midday_surface" => {
+                include_str!("../scenarios/sunrise_midday_surface.json")
+            }
             "twilight_directionality" => {
                 include_str!("../scenarios/twilight_directionality.json")
             }
@@ -1275,6 +1278,12 @@ mod tests {
             stare_at_sun.assertions().max_exposure_delta_per_frame,
             Some(0.5)
         );
+
+        let sunrise_midday = ScenarioRunner::load("sunrise_midday_surface")
+            .expect("surface sun comparison scenario parses");
+        assert_eq!(sunrise_midday.expected_screenshots(), 4);
+        assert!(sunrise_midday.uses_fixed_exposure());
+        assert_eq!(sunrise_midday.definition.planet_rotation_time_scale, 0.0);
 
         let ocean_flyover = ScenarioRunner::load("ocean_flyover").expect("ocean scenario parses");
         assert_eq!(ocean_flyover.expected_screenshots(), 5);

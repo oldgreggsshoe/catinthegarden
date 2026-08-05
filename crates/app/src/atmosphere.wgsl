@@ -12,9 +12,15 @@ const SKY_SAMPLE_COUNT: u32 = 16u;
 const SKY_DENSITY_SAMPLE_EXPONENT: f32 = 3.0;
 const TWILIGHT_SHADOW_TRANSITION_METERS: f32 = 36000.0;
 const ANTISOLAR_TWILIGHT_MIN_SCATTER: f32 = 0.48;
-const SKY_ATMOSPHERE_SATURATION: f32 = 1.3;
-const BLUE_HOUR_START_SINE: f32 = 0.10;
-const BLUE_HOUR_FULL_SINE: f32 = 0.18;
+// Clear Earth skies are blue without the neon cyan crossover that a high
+// saturation pass produces in a screenshot.  Keep the transform modest so
+// camera exposure and the physical scattering coefficients remain visible.
+const SKY_ATMOSPHERE_SATURATION: f32 = 1.18;
+// The useful photographic blue hour is the short interval after the red
+// sunset, not the whole astronomical twilight.  These sine values correspond
+// roughly to -4, -7, -12, and -16 degrees solar elevation.
+const BLUE_HOUR_START_SINE: f32 = 0.07;
+const BLUE_HOUR_FULL_SINE: f32 = 0.12;
 const BLUE_HOUR_FADE_SINE: f32 = 0.28;
 const BLUE_HOUR_END_SINE: f32 = 0.36;
 const BLUE_HOUR_SCATTER_GAIN: f32 = 0.26;
