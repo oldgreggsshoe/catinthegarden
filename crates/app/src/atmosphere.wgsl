@@ -89,8 +89,20 @@ fn suppress_green_dominance(color: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(color.r, min(color.g, max(color.r, color.b)), color.b);
 }
 
-fn blue_hour_weight(camera_solar_zenith_cosine: f32) -> f32 {
-    let solar_depression_sine = max(-camera_solar_zenith_cosine, 0.0);
+fn blue_hour_weight(
+    camera_solar_zenith_cosine: f32,
+    camera_radius_meters: f32,
+) -> f32 {
+    // At altitude the geometric horizon is already below the radial
+    // horizontal. Key blue hour to the sun's depression below that horizon,
+    // rather than radial solar elevation, so the sky cannot turn blue while
+    // the visible sun is still above the limb.
+    let radius_ratio = PLANET_RADIUS_METERS / max(camera_radius_meters, PLANET_RADIUS_METERS);
+    let horizon_solar_zenith_cosine = -sqrt(max(1.0 - radius_ratio * radius_ratio, 0.0));
+    let solar_depression_sine = max(
+        horizon_solar_zenith_cosine - camera_solar_zenith_cosine,
+        0.0,
+    );
     let rise = smoothstep(
         BLUE_HOUR_START_SINE,
         BLUE_HOUR_FULL_SINE,
@@ -420,7 +432,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     )
         * BLUE_HOUR_TINT
         * (SOLAR_RADIANCE * BLUE_HOUR_SCATTER_GAIN)
-        * blue_hour_weight(camera_solar_zenith_cosine);
+        * blue_hour_weight(camera_solar_zenith_cosine, camera_radius);
     let red_twilight_radiance = TWILIGHT_RED_RADIANCE
         * low_sun_red_transition(camera_solar_zenith_cosine)
         * red_twilight_atmosphere_weight

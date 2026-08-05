@@ -701,6 +701,17 @@ shows the thin blue/orange edge without the red annulus, and the fixed-exposure
 The shader-focused regression and all 194 app plus 29 baker, 6 bake, and 6 core workspace tests
 pass (6 ignored).
 
+### Altitude-aware blue-hour timing — 5 August 2026
+
+The next manual capture showed a dark-blue upper sky arriving while the solar disk was still
+visible at about 52km altitude. The blue-hour approximation was keyed to radial solar depression;
+at that altitude the geometric horizon is already about 9 degrees below the radial horizontal. The
+fullscreen atmosphere now computes the tangent-horizon solar cosine from the camera radius and
+starts the blue-hour curve only after the sun is below that actual horizon. Near-surface timing is
+unchanged, while high-flight sunset no longer advances the blue transition. The fixed-exposure
+`sunset_blue_hour/1785959648-882409` replay still passes all colour/luminance assertions, and the
+full workspace suite remains green.
+
 ## 3. State: what was red before the Earth-like rebake
 
 The six results below are pre-rebake evidence and now require a fresh matrix. Before the Earth-like

@@ -3936,7 +3936,9 @@ mod tests {
         assert!(shader.contains("const SKY_ATMOSPHERE_SATURATION: f32 = 1.18;"));
         assert!(shader.contains("fn saturate_sky_color(color: vec3<f32>)"));
         assert!(shader.contains("fn suppress_green_dominance(color: vec3<f32>)"));
-        assert!(shader.contains("fn blue_hour_weight(camera_solar_zenith_cosine: f32)"));
+        assert!(shader.contains("fn blue_hour_weight(\n    camera_solar_zenith_cosine: f32,"));
+        assert!(shader.contains("let horizon_solar_zenith_cosine = -sqrt("));
+        assert!(shader.contains("horizon_solar_zenith_cosine - camera_solar_zenith_cosine"));
         assert!(shader.contains("fn blue_hour_rayleigh_scattering("));
         assert!(shader.contains("optical_depth / (vec3<f32>(1.0) + optical_depth)"));
         assert!(shader.contains("suppress_green_dominance(saturate_sky_color(sky_radiance))"));
