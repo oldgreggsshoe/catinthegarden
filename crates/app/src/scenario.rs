@@ -923,12 +923,12 @@ mod tests {
         let position = glam::DVec3::from_array(waypoint.position);
         let direction = position.normalize();
 
-        assert!((direction.y.asin().to_degrees() - 18.035_969_007).abs() < 1.0e-6);
+        assert!((direction.y.asin().to_degrees() - 56.684_679_157).abs() < 1.0e-6);
         assert!(
-            (crate::planet::geographic_longitude_degrees(direction) - 72.011_034_307).abs()
+            (crate::planet::geographic_longitude_degrees(direction) - 20.618_053_688).abs()
                 < 1.0e-6
         );
-        assert!((position.length() - 4_036_152.4).abs() < 1.0e-6);
+        assert!((position.length() - 4_031_430.260_484_389).abs() < 1.0e-6);
         assert_eq!(scenario.expected_screenshots(), 2);
         assert_eq!(scenario.assertions().min_camera_clearance_m, Some(150.0));
         assert_eq!(scenario.assertions().max_camera_clearance_m, Some(155.0));

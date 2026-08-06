@@ -60,8 +60,10 @@ impl Terrain {
 
     pub fn try_generate(config: &BakeConfig) -> BakeResult<Self> {
         let grid = SphericalGrid::new(config.width, config.height);
-        let imported = config.etopo.is_some();
-        let mut height_meters = if let Some(path) = &config.etopo {
+        let imported = config.etopo.is_some() && !config.procedural_terrain;
+        let mut height_meters = if config.procedural_terrain {
+            generate_procedural_game_shape(&grid, config.seed)
+        } else if let Some(path) = &config.etopo {
             load_etopo(path, config.width, config.height)?
                 .into_par_iter()
                 .map(|height| height.clamp(MIN_HEIGHT_METERS, MAX_HEIGHT_METERS))
@@ -69,10 +71,10 @@ impl Terrain {
         } else {
             generate_base_shape(&grid, config.seed)
         };
-        if config.zoomed_terrain {
+        if config.zoomed_terrain && !config.procedural_terrain {
             height_meters = zoom_source_window(&grid, &height_meters);
         }
-        if config.game_terrain || config.zoomed_terrain {
+        if (config.game_terrain || config.zoomed_terrain) && !config.procedural_terrain {
             apply_game_terrain_relief(
                 &grid,
                 &mut height_meters,
@@ -718,6 +720,73 @@ fn biome_longitude_degrees(direction: glam::DVec3, imported_etopo: bool) -> f64 
     longitude_sign * direction.z.atan2(direction.x).to_degrees()
 }
 
+/// Builds a complete game-sized planet from a continuous direction-domain
+/// field. Unlike the authored Earth-like profile, this has no latitude or
+/// longitude anchors and no repeated source window: continents, highlands,
+/// basins, and mountain regions all come from 3D noise sampled on the unit
+/// sphere. The result remains deterministic and exactly seam-safe at cube-face
+/// boundaries, then follows the ordinary erosion/hydrology pipeline.
+fn generate_procedural_game_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
+    let continents = Perlin::new(seed ^ 0xC01A_11A5);
+    let warp = Perlin::new(seed ^ 0xD04A_1A7E);
+    let regions = Perlin::new(seed ^ 0xA07E_7A1B);
+    let ridges = Perlin::new(seed ^ 0xB1D6_E5B1);
+    let detail = Perlin::new(seed ^ 0xD37A_11A4);
+    (0..grid.len())
+        .into_par_iter()
+        .map(|index| {
+            let direction = grid.direction(index).to_array();
+            // Three differently permuted warp samples keep the continental
+            // edges organic without introducing a seam at longitude +/-pi.
+            let warp_point = [
+                direction[0] * 1.15,
+                direction[1] * 1.15,
+                direction[2] * 1.15,
+            ];
+            let warped = [
+                direction[0] + fbm(&warp, warp_point, 1.15, 3) * 0.22,
+                direction[1]
+                    + fbm(
+                        &warp,
+                        [warp_point[2], warp_point[0], warp_point[1]],
+                        1.15,
+                        3,
+                    ) * 0.22,
+                direction[2]
+                    + fbm(
+                        &warp,
+                        [warp_point[1], warp_point[2], warp_point[0]],
+                        1.15,
+                        3,
+                    ) * 0.22,
+            ];
+            let continental = fbm(&continents, warped, 1.35, 5);
+            let coast_detail = fbm(&continents, warped, 5.2, 3) * 0.14;
+            let signed_land = continental + coast_detail - 0.015;
+            let broad_relief = fbm(&continents, warped, 2.25, 4);
+            if signed_land <= 0.0 {
+                let basin = smoother_step((-signed_land / 0.62).clamp(0.0, 1.0));
+                return (-90.0 - basin * 4_300.0 + broad_relief * 220.0)
+                    .clamp(MIN_HEIGHT_METERS, -1.0);
+            }
+
+            let interior = smoother_step((signed_land / 0.42).clamp(0.0, 1.0));
+            let mountain_region = smoother_step(
+                ((fbm(&regions, warped, 1.75, 4) + 0.12 * broad_relief - 0.05) / 0.38)
+                    .clamp(0.0, 1.0),
+            );
+            let ridge = ridged_fbm(&ridges, warped, 3.35, 5);
+            let sharp_ridge = ((ridge - 0.52) / 0.48).clamp(0.0, 1.0).powi(2);
+            let highland = (0.5 + broad_relief * 0.5).max(0.0);
+            let fine_breakup = fbm(&detail, warped, 12.0, 3);
+            let lowland = 80.0 + interior * (650.0 + highland * 1_150.0) + fine_breakup * 90.0;
+            let mountain_height =
+                mountain_region * (1_250.0 + sharp_ridge * 6_300.0 + highland * 1_200.0);
+            (lowland + mountain_height).clamp(1.0, MAX_HEIGHT_METERS)
+        })
+        .collect()
+}
+
 fn generate_base_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
     let base = Perlin::new(seed);
     let warp = Perlin::new(seed ^ 0x00D0_A11A);
@@ -1002,6 +1071,41 @@ mod tests {
         assert!(first.iter().any(|&height| height < 0.0));
         assert!(first.iter().any(|&height| height > 2_000.0));
         assert!(first.iter().all(|&height| height <= MAX_HEIGHT_METERS));
+    }
+
+    #[test]
+    fn procedural_game_shape_is_deterministic_asymmetric_and_varied() {
+        let grid = SphericalGrid::new(128, 64);
+        let first = generate_procedural_game_shape(&grid, 0xEA27_2026);
+        let second = generate_procedural_game_shape(&grid, 0xEA27_2026);
+        assert_eq!(first, second);
+        assert!(first.iter().all(|height| height.is_finite()));
+        assert!(first.iter().any(|&height| height < -1_000.0));
+        assert!(first.iter().any(|&height| height > 4_000.0));
+        let maximum = first.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            maximum < 8_950.0,
+            "procedural ridges clipped at {maximum:.1}m"
+        );
+        assert!(
+            first
+                .iter()
+                .all(|&height| { (MIN_HEIGHT_METERS..=MAX_HEIGHT_METERS).contains(&height) })
+        );
+        let positive = first.iter().filter(|&&height| height > 0.0).count();
+        assert!(positive > first.len() / 8 && positive < first.len() * 7 / 8);
+        // Opposite directions must not collapse to a mirrored or antipodal
+        // copy of the same macro surface.
+        let asymmetry: f64 = first
+            .iter()
+            .zip(first.iter().rev())
+            .map(|(left, right)| (left - right).abs())
+            .sum::<f64>()
+            / first.len() as f64;
+        assert!(
+            asymmetry > 50.0,
+            "procedural field was too symmetric: {asymmetry:.1}m"
+        );
     }
 
     #[test]

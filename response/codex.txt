@@ -1,29 +1,6 @@
-Done. I kept the seamless joins but broke the obvious mirrored repetition.
-
-Changes:
-- Added globally periodic phase/rotation warps and cross-coupled harmonics to the zoomed source mapping.
-- The dateline and repeat boundaries remain continuous.
-- Adjacent repeats now differ in phase/orientation instead of being identical mirror copies.
-- Added a baker regression proving boundary continuity and non-identical repeats.
-- Re-baked and promoted the active outmap.
-- Re-authored F4 and the prominence scenario to the new summit: 18.035969°N, 72.011034°E, 36,199.808m presented prominence.
-
-Validation:
-- Baker mapping regression passed.
-- Raster summit `1786013173-1253680` passed: 151.711m clearance, 0m seam.
-- Raster orbit `1786013213-1254038` passed: 25.193ms settled, 0m seam.
-- The orbit capture now has varied repeated terrain shapes rather than exact mirrored bands.
-
-The full workspace test rerun was blocked by the workspace filesystem reaching 100% capacity (`No space left on device`); the focused baker test and GPU scenarios passed before that limit. Existing generated target/outmap backups were left untouched.
-
-Active manifest SHA-256: `f18e1b7302f934c27d4a67f64a5a1484a2329d2e645f8ae1de4a1e6227524008`.
-Committed and pushed to `experiment/flat-triangle-wireframe`.
-
-<oai-mem-citation>
-<citation_entries>
-MEMORY.md:58-61|note=[used checkout-specific handoff and validation workflow]
-</citation_entries>
-<rollout_ids>
-019fa81f-71cc-7c12-9279-8318fbe22bc5
-</rollout_ids>
-</oai-mem-citation>
+Plan for replacing the repeated Earth-derived bake:
+1. Inspect the existing authored terrain generator, erosion/hydrology pipeline, and baker CLI/config contracts.
+2. Add an explicit procedural game-terrain profile that does not load ETOPO: generate continuous 3D planet-domain continents, warped mountain belts, highlands, and basins from deterministic noise, then run the existing erosion, flow, river, lake, and biome stages.
+3. Add focused tests proving the procedural field is finite, asymmetric, globally seam-safe, and produces useful land/ocean/high-relief variation.
+4. Bake the active outmap from the procedural profile, preserve the current repeated bake, survey the new summit, and update F4/highest-prominence.
+5. Run baker/workspace tests as storage permits, run raster orbit/summit/ground scenarios, inspect captures, update handoff, commit, push, and report any remaining validation limitation.

@@ -70,19 +70,18 @@ const MOUSE_LOOK_RADIANS_PER_PIXEL: f64 = 0.0006;
 /// the former 500ft survey height. Moving flight retains its larger rendered
 /// clearance envelope until the mixed-LOD gap repair is complete.
 const LOW_FLIGHT_ALTITUDE_METERS: f64 = 10.0;
-/// Highest summit on the active zoomed-game-terrain ETOPO bake after the fixed
-/// 4x macro presentation and bounded runtime detail are applied. The compact
-/// Himalaya source window is repeated over the globe, so the winning copy is
-/// near 18.035969 N, 72.011034 E. As the planet's highest summit it has no
-/// higher parent, so standard prominence uses sea level as its key col.
-const EARTHLIKE_HIGHEST_PROMINENCE_DIRECTION: glam::DVec3 = glam::DVec3::new(
-    0.293_658_456_175_220,
-    0.309_613_985_424_796,
-    -0.904_380_390_735_094,
+/// Highest summit on the active procedural, eroded bake after the fixed
+/// runtime macro presentation and bounded detail are applied. The direction
+/// is measured by the standard global-summit/prominence instrument; as the
+/// planet's highest summit it uses sea level as its key col.
+const ACTIVE_HIGHEST_PROMINENCE_DIRECTION: glam::DVec3 = glam::DVec3::new(
+    0.514_066_312_449_577,
+    0.835_660_523_248_427,
+    -0.193_409_710_947_146,
 );
-const EARTHLIKE_HIGHEST_PROMINENCE_METERS: f64 = 36_199.807_785_786;
+const ACTIVE_HIGHEST_PROMINENCE_METERS: f64 = 31_449.742_467_607;
 #[cfg(test)]
-const EARTHLIKE_HIGHEST_RAW_MACRO_ELEVATION_METERS: f64 = 9_000.0;
+const ACTIVE_HIGHEST_RAW_MACRO_ELEVATION_METERS: f64 = 7_821.087_402_344;
 /// How close to the ground flight may descend. This used to be the entry
 /// altitude above, doing double duty, so the camera could never get nearer the
 /// surface than 500 ft and eye-level views of the terrain were unreachable.
@@ -1315,7 +1314,7 @@ impl State {
                 // F4 while ordinary streaming catches up.
                 let outmap_is_active = self.terrain.preferred_landing_direction().is_some();
                 let local_radial = if outmap_is_active {
-                    EARTHLIKE_HIGHEST_PROMINENCE_DIRECTION.normalize()
+                    ACTIVE_HIGHEST_PROMINENCE_DIRECTION.normalize()
                 } else {
                     local_position.normalize()
                 };
@@ -1325,7 +1324,7 @@ impl State {
                             local_radial,
                             LOW_FLIGHT_ALTITUDE_METERS,
                         )
-                        .unwrap_or(EARTHLIKE_HIGHEST_PROMINENCE_METERS)
+                        .unwrap_or(ACTIVE_HIGHEST_PROMINENCE_METERS)
                 } else {
                     self.terrain
                         .surface_height_meters_at(local_radial, LOW_FLIGHT_ALTITUDE_METERS)
@@ -3013,8 +3012,8 @@ mod tests {
     use glam::DVec3;
 
     use super::{
-        CameraMode, DEFAULT_OUTMAP_PATH, EARTHLIKE_HIGHEST_PROMINENCE_DIRECTION,
-        EARTHLIKE_HIGHEST_PROMINENCE_METERS, EARTHLIKE_HIGHEST_RAW_MACRO_ELEVATION_METERS,
+        ACTIVE_HIGHEST_PROMINENCE_DIRECTION, ACTIVE_HIGHEST_PROMINENCE_METERS,
+        ACTIVE_HIGHEST_RAW_MACRO_ELEVATION_METERS, CameraMode, DEFAULT_OUTMAP_PATH,
         FlightMovementInput, FlightSpeedState, INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
         LOW_FLIGHT_ALTITUDE_METERS, LOW_FLIGHT_INITIAL_PITCH_RADIANS,
         LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND, LOW_FLIGHT_MINIMUM_CLEARANCE_METERS,
@@ -3263,7 +3262,7 @@ mod tests {
 
     #[test]
     fn low_flight_starts_looking_down_from_the_prominent_peak() {
-        let radial = EARTHLIKE_HIGHEST_PROMINENCE_DIRECTION.normalize();
+        let radial = ACTIVE_HIGHEST_PROMINENCE_DIRECTION.normalize();
         let tangent = -initial_flight_tangent(radial);
         let direction =
             flight_view_direction(radial, tangent, 0.0, LOW_FLIGHT_INITIAL_PITCH_RADIANS);
@@ -3273,24 +3272,24 @@ mod tests {
     }
 
     #[test]
-    fn earthlike_peak_measurement_uses_standard_global_summit_prominence() {
-        let direction = EARTHLIKE_HIGHEST_PROMINENCE_DIRECTION;
+    fn active_peak_measurement_uses_standard_global_summit_prominence() {
+        let direction = ACTIVE_HIGHEST_PROMINENCE_DIRECTION;
         assert!((direction.length() - 1.0).abs() < 1.0e-12);
-        assert!((direction.y.asin().to_degrees() - 18.035_969_007).abs() < 1.0e-6);
+        assert!((direction.y.asin().to_degrees() - 56.684_679_157).abs() < 1.0e-6);
         assert!(
-            (crate::planet::geographic_longitude_degrees(direction) - 72.011_034_307).abs()
+            (crate::planet::geographic_longitude_degrees(direction) - 20.618_053_688).abs()
                 < 1.0e-6
         );
 
         // A planet's highest summit has no higher parent. As for Everest, its
         // key col is sea level, so prominence equals summit elevation ASL.
         assert_eq!(
-            EARTHLIKE_HIGHEST_PROMINENCE_METERS,
-            EARTHLIKE_HIGHEST_PROMINENCE_METERS - 0.0
+            ACTIVE_HIGHEST_PROMINENCE_METERS,
+            ACTIVE_HIGHEST_PROMINENCE_METERS - 0.0
         );
         assert!(
-            EARTHLIKE_HIGHEST_PROMINENCE_METERS
-                > EARTHLIKE_HIGHEST_RAW_MACRO_ELEVATION_METERS * 4.0
+            ACTIVE_HIGHEST_PROMINENCE_METERS
+                > ACTIVE_HIGHEST_RAW_MACRO_ELEVATION_METERS * 4.0
                     - crate::planet::GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS
         );
     }

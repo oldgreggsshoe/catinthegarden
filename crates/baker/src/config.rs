@@ -17,6 +17,11 @@ pub struct BakeConfig {
     /// game-relief pass. This is intentionally non-Earth-like: a small,
     /// mountain-rich "zoomed map" becomes the whole playable planet.
     pub zoomed_terrain: bool,
+    /// Generate a fully procedural, globally seam-safe game landscape. This
+    /// profile does not read ETOPO or the authored Earth-like ellipses; the
+    /// continuous noise field is followed by the normal erosion, drainage,
+    /// river, lake, and biome stages.
+    pub procedural_terrain: bool,
     pub seed: u32,
     pub width: usize,
     pub height: usize,
@@ -35,6 +40,7 @@ impl Default for BakeConfig {
             etopo: None,
             game_terrain: false,
             zoomed_terrain: false,
+            procedural_terrain: false,
             // Coastline and regional-detail seed for the Earth-like macro
             // layout in terrain.rs. The large continent and mountain-belt
             // placement is authored; this keeps its smaller shapes
@@ -97,6 +103,9 @@ impl BakeConfig {
             .is_some_and(|path| path.as_os_str().is_empty())
         {
             return Err("ETOPO path must not be empty".to_owned());
+        }
+        if self.procedural_terrain && self.etopo.is_some() {
+            return Err("procedural terrain cannot be combined with ETOPO".to_owned());
         }
         Ok(())
     }

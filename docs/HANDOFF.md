@@ -161,6 +161,41 @@ clearance and 0m seam. Raster `orbit_once/1786013213-1254038` passes at 25.193ms
 repeat shapes rather than exact mirrored bands, while retaining the intentionally game-like global
 zoom and sharp mountain relief.
 
+### Procedural eroded game planet — 6 August 2026
+
+The repeated Earth/ETOPO source is no longer the active terrain. The baker now
+has an explicit `--procedural-terrain` profile that samples continuous 3D
+direction-domain noise on the sphere: warped continent masks, broad highlands,
+regional mountain fields, ridged peaks, and fine breakup. It has no geographic
+ellipses, ETOPO input, compact-window remapping, or mirrored/repeated source;
+the existing hydraulic erosion, thermal erosion, drainage, rivers, lakes,
+glacial valleys, moisture, and biome stages still run afterward. The profile
+rejects `--etopo`, is deterministic/seam-safe, and has a regression for finite,
+bounded, asymmetric land/ocean and mountain variation. The procedural shape is
+already game-scaled, so the ETOPO-only relief multiplier is not applied a second
+time.
+
+The active validated 3,252-tile outmap is `assets/outmaps/test-planet`, with
+manifest SHA-256
+`e26a75faec284c3d519f84ed2c9b97b397001be71dfb91a95d62237763efa2fa`.
+The 4096x2048 bake used 256 erosion iterations (enough to retain the full
+erosion/hydrology pipeline without the multi-minute 2,048-iteration thermal
+run). The prior repeated procedural-relief pass is retained at
+`assets/outmaps/test-planet.procedural-relief-pass-backup-20260806-130200`,
+and the prior anti-symmetric ETOPO-derived surface remains at
+`assets/outmaps/test-planet.pre-procedural-backup-20260806-125500`.
+The height and biome previews show non-repeating continents, coherent mountain
+regions, and no global mirror axis.
+
+The standard global summit survey now measures a 31,449.742m presented summit
+at 56.684679°N, 20.618054°E (raw L4 maximum 7,821.087m). F4 and
+`highest_prominence_peak` were re-authored to this summit; the raster scenario
+passes at 152.400m clearance with zero seam delta in
+`highest_prominence_peak/1786018012-1292807`. All 196 non-ignored app tests,
+all 33 baker-library, 5 baker-binary, and 6 baker-integration tests pass. The
+full workspace suite was not rerun because the repository contains several
+large untracked target trees and the session is disk-pressure constrained.
+
 ### Polar cap and flat-water correction — 4 August 2026
 
 The imported ETOPO classification no longer lets the old `|latitude| > 66°` rule turn polar ocean

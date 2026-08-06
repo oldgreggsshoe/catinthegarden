@@ -65,7 +65,7 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             "macro source: NOAA ETOPO 2022 Ice Surface ({})",
             path.display()
         );
-    } else {
+    } else if !config.procedural_terrain {
         println!(
             "baking {}x{} grid, {} erosion iterations, dense L{} + sparse L{}",
             config.width,
@@ -81,6 +81,9 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     if config.zoomed_terrain {
         println!("relief profile: zoomed game terrain (compact Himalaya window repeated globally)");
+    }
+    if config.procedural_terrain {
+        println!("macro source: procedural continents + mountain regions + erosion");
     }
     print_sparse_coverage(&config);
     let manifest = bake(&config)?;
@@ -144,6 +147,11 @@ fn parse_config(arguments: &[String]) -> Result<BakeConfig, String> {
             }
             "--zoomed-terrain" => {
                 config.zoomed_terrain = true;
+                config.game_terrain = true;
+                index += 1;
+            }
+            "--procedural-terrain" => {
+                config.procedural_terrain = true;
                 config.game_terrain = true;
                 index += 1;
             }
@@ -212,6 +220,7 @@ fn print_help() {
            --etopo PATH               NOAA ETOPO 2022 Ice Surface GeoTIFF macro source\n\
            --game-terrain              Amplify land and add dense baked mountain ridges\n\
            --zoomed-terrain             Repeat a compact mountain-rich source window globally\n\
+           --procedural-terrain         Generate continents/mountains then erode them\n\
            --seed N                   Decimal or 0x-prefixed deterministic seed\n\
            --width N                  Working equirectangular grid width\n\
            --height N                 Working grid height\n\
@@ -264,6 +273,14 @@ mod tests {
         let arguments = ["--zoomed-terrain".to_owned()];
         let config = parse_config(&arguments).unwrap();
         assert!(config.zoomed_terrain);
+        assert!(config.game_terrain);
+    }
+
+    #[test]
+    fn parses_procedural_terrain_profile_and_enables_game_relief() {
+        let arguments = ["--procedural-terrain".to_owned()];
+        let config = parse_config(&arguments).unwrap();
+        assert!(config.procedural_terrain);
         assert!(config.game_terrain);
     }
 }

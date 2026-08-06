@@ -86,6 +86,7 @@ pub fn refine_existing_outmap(output: &Path) -> BakeResult<OutmapManifest> {
         etopo: None,
         game_terrain: false,
         zoomed_terrain: false,
+        procedural_terrain: false,
         seed: existing.seed,
         width: existing.working_width as usize,
         height: existing.working_height as usize,
@@ -334,12 +335,16 @@ fn build_manifest(
     OutmapManifest {
         schema_version: OUTMAP_SCHEMA_VERSION,
         generator: {
-            let source = if config.etopo.is_some() {
+            let source = if config.procedural_terrain {
+                "procedural continent/mountain generator"
+            } else if config.etopo.is_some() {
                 "macro source NOAA ETOPO 2022 Ice Surface"
             } else {
                 "authored Earth-like generator"
             };
-            let profile = if config.zoomed_terrain {
+            let profile = if config.procedural_terrain {
+                "; procedural-game-terrain relief v1"
+            } else if config.zoomed_terrain {
                 "; zoomed-game-terrain relief v2"
             } else if config.game_terrain {
                 "; game-terrain relief v1"
