@@ -1084,6 +1084,64 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "instrument: cargo test -p catinthegarden-baker --lib terrain::tests::mountain_visibility_throughput -- --ignored --nocapture"]
+    fn mountain_visibility_throughput() {
+        use std::{hint::black_box, time::Instant};
+
+        use glam::DVec3;
+
+        const CANDIDATE_POSITIONS: usize = 200_000;
+        const DIRECTIONS: usize = 8;
+        const DISTANCES_METERS: [f64; 5] = [2_000.0, 4_000.0, 6_000.0, 8_000.0, 10_000.0];
+        const GOLDEN_ANGLE: f64 = 2.399_963_229_728_653;
+
+        // Use a generated in-memory height field so this measures the
+        // directional/profile work rather than filesystem tile I/O. The
+        // operation is the same bilinear spherical lookup used by the bake
+        // data and keeps the 8-direction, five-range proposal intact.
+        let grid = SphericalGrid::new(512, 256);
+        let heights = generate_procedural_game_shape(&grid, 0xEA27_2026);
+        let start = Instant::now();
+        let mut checksum = 0.0_f64;
+
+        for index in 0..CANDIDATE_POSITIONS {
+            let fraction = (index as f64 + 0.5) / CANDIDATE_POSITIONS as f64;
+            let latitude = (1.0 - 2.0 * fraction).asin();
+            let longitude = index as f64 * GOLDEN_ANGLE;
+            let base = DVec3::new(
+                latitude.cos() * longitude.cos(),
+                latitude.sin(),
+                latitude.cos() * longitude.sin(),
+            );
+            let east = DVec3::new(-base.z, 0.0, base.x).normalize();
+            let north = east.cross(base).normalize();
+            let camera_height = grid.sample_f64(&heights, base);
+
+            for direction_index in 0..DIRECTIONS {
+                let azimuth = direction_index as f64 * std::f64::consts::TAU / DIRECTIONS as f64;
+                let tangent = east * azimuth.cos() + north * azimuth.sin();
+                for distance in DISTANCES_METERS {
+                    let target = (base
+                        + tangent * (distance / catinthegarden_coretypes::PLANET_RADIUS_METERS))
+                        .normalize();
+                    let target_height = grid.sample_f64(&heights, target);
+                    checksum += (target_height - camera_height).atan2(distance).to_degrees();
+                }
+            }
+        }
+
+        let elapsed = start.elapsed().as_secs_f64();
+        let rays = CANDIDATE_POSITIONS * DIRECTIONS;
+        let samples = rays * DISTANCES_METERS.len();
+        println!(
+            "mountain visibility throughput: {rays} rays / {samples} profile samples in {elapsed:.3}s = {:.0} rays/s, {:.0} samples/s (checksum {:.3})",
+            rays as f64 / elapsed,
+            samples as f64 / elapsed,
+            black_box(checksum),
+        );
+    }
+
+    #[test]
     fn generated_base_is_deterministic_signed_and_bounded() {
         let grid = SphericalGrid::new(64, 32);
         let first = generate_base_shape(&grid, 1234);

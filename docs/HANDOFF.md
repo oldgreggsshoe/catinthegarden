@@ -2172,3 +2172,13 @@ The current active bake measures 56 qualifying rays and a 44.30-degree maximum. 
 2m above the synthesized surface, idle clearance is 0.75m, and moving flight uses a 5m safety
 envelope instead of 30m. The high-speed scenario assertion is lowered to 4.5m accordingly; the
 focused scenario and close-flight unit tests pass.
+
+## Mountain visibility check throughput — 6 August 2026
+
+The ignored baker instrument
+`terrain::tests::mountain_visibility_throughput` runs the proposed eight azimuths and five target
+ranges against an in-memory 512x256 generated height field, avoiding filesystem tile I/O while
+retaining spherical bilinear lookups and elevation calculations. Three optimized runs measured
+1.49M, 1.51M, and 1.41M rays/s (7.35M profile samples/s average). At that rate the exhaustive
+100m global scan for the current 4,000km-radius planet would take about 30.4 hours; the number
+excludes terrain generation, erosion, export, and any parallelisation beyond the benchmark thread.
