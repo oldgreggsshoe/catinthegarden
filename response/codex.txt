@@ -8,7 +8,7 @@ Validation passed:
 - `CARGO_TARGET_DIR=/home/dad/catingard/.target-flat4 cargo check --workspace`
 - `git diff --check`
 
-No runtime source was changed. The updated PDF and response are ready to commit and push.
+No runtime source was changed. The updated PDF and response were committed and pushed to `experiment/flat-triangle-wireframe`.
 
 <oai-mem-citation>
 <citation_entries>
