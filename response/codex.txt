@@ -1,4 +1,4 @@
-Performance report P0 pass is complete and pushed as 309a408.
+Performance report P0 pass is complete and pushed as 4bf4a74 (including 309a408).
 - Flat-triangle vertex aerial/fog integrations bypassed; displacement, normals, specular retained.
 - Fixed exposure skips luminance mip/readback/adaptation; profiler records zero luminance.
 - Terrain frontier, transition-surface, and resident-tile lookups use dyadic indexes with boundary fallbacks.
