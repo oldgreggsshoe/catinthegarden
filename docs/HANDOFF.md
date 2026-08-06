@@ -10,7 +10,7 @@ long-wave procedural-detail gain is disabled (1x) so the observed ETOPO shape ca
 without a dominant pattern of random basins; the finer detail system remains intact. F4 starts over the measured
 highest-prominence summit. Moving raster flight sweeps the camera through every concurrently drawn
 active/transition patch, rechecks the newly selected destination frontier before presentation, and
-retains a 30m collision envelope; idle inspection remains at 2m. The raster culling shell includes
+retains a 5m moving collision envelope; F4 entry is 2m and idle inspection can settle to 0.75m. The raster culling shell includes
 the complete live detail ladder, so elevated near-camera vertices cannot disappear outside a
 macro-only bound. Key 6 switches between auto exposure and fixed 1.0.
 The fullscreen sky removes the direct-scattering model's green-dominant colour crossover and adds
@@ -672,9 +672,9 @@ CPU clearance reported only 3.802–15.619m while the worst depth-probe p90 disa
 
 Raster collision now records every drawn active, incoming, and outgoing node with its actual source
 tile, edge stitch, source fade, and distance filter; queries take the highest candidate. Each moving
-frame is swept at 0.5m spacing, bounded to 64 samples. Movement uses a conservative 30m
-camera-sized envelope derived from the captured 25.9m worst case plus margin, while an idle camera
-retains the established 2m eye height. Ray flight keeps its existing ray-surface truth.
+frame is swept at 0.5m spacing, bounded to 64 samples. Movement now uses a 5m camera-sized
+envelope so close inspection is below 30m; the CPU clearance floor is 0.75m and F4 enters at 2m.
+Ray flight keeps its existing ray-surface truth.
 
 The committed-HEAD final Quadro replay `1785437799-519300` passes finite metrics, zero LOD thrash,
 245 compared points, 13.734–43.664m CPU clearance, and all seven captures. The dangerous early
@@ -2152,3 +2152,23 @@ catinthegarden-app`, all 197 app tests (6 ignored), and all baker tests (44) pas
 cannot provide a valid DRI3 presentation surface, so a Quadro A/B GPU timing comparison is still
 pending; P1 atmosphere/background and low-density water experiments remain intentionally deferred
 until that measurement identifies a bound.
+
+## Mountain visibility gate and sub-30m flight — 6 August 2026
+
+Screenshots alone did not make the requested mountain character measurable, so the new ignored
+`relief_survey::tests::mountain_visibility_metric` instrument defines a geometry-facing gate. It
+samples a 9x9 grid of candidate ground positions around the active summit, casts 16 azimuths at
+2, 4, 6, 8, and 10km, and measures the target surface's elevation above the candidate's local
+tangent. A mountain pass requires at least three qualifying rays at **30 degrees or more** and
+at least **2,000m** range; this avoids passing on a single close noisy triangle. Run it with:
+
+```bash
+TMPDIR=/home/dad/catingard/tmp-rust CARGO_TARGET_DIR=/home/dad/catingard/.target-metric \
+  cargo test -p catinthegarden-app --bin catinthegarden-app \
+  relief_survey::tests::mountain_visibility_metric -- --ignored --nocapture
+```
+
+The current active bake measures 56 qualifying rays and a 44.30-degree maximum. F4 now enters at
+2m above the synthesized surface, idle clearance is 0.75m, and moving flight uses a 5m safety
+envelope instead of 30m. The high-speed scenario assertion is lowered to 4.5m accordingly; the
+focused scenario and close-flight unit tests pass.

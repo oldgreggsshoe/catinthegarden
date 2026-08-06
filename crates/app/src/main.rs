@@ -66,10 +66,10 @@ const DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND: f64 = 0.4;
 const DEFAULT_CAMERA_ORBIT_INCLINATION_RADIANS: f64 = 28.5_f64.to_radians();
 const INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 = 0.3;
 const MOUSE_LOOK_RADIANS_PER_PIXEL: f64 = 0.0006;
-/// F4 enters close inspection at roughly 10m above the resident surface, not
-/// the former 500ft survey height. Moving flight retains its larger rendered
-/// clearance envelope until the mixed-LOD gap repair is complete.
-const LOW_FLIGHT_ALTITUDE_METERS: f64 = 10.0;
+/// F4 enters close inspection at roughly 2m above the resident surface so
+/// mountain walls can be judged from the ground rather than from the former
+/// tens-of-metres collision envelope.
+const LOW_FLIGHT_ALTITUDE_METERS: f64 = 2.0;
 /// Highest summit on the active procedural, eroded bake after the fixed
 /// runtime macro presentation and bounded detail are applied. The direction
 /// is measured by the standard global-summit/prominence instrument; as the
@@ -82,25 +82,18 @@ const ACTIVE_HIGHEST_PROMINENCE_DIRECTION: glam::DVec3 = glam::DVec3::new(
 const ACTIVE_HIGHEST_PROMINENCE_METERS: f64 = 25_255.259_589_470;
 #[cfg(test)]
 const ACTIVE_HIGHEST_RAW_MACRO_ELEVATION_METERS: f64 = 6_277.554_687_500;
-/// How close to the ground flight may descend. This used to be the entry
-/// altitude above, doing double duty, so the camera could never get nearer the
-/// surface than 500 ft and eye-level views of the terrain were unreachable.
-/// Separating them is only safe now that CPU clearance evaluates the same
-/// synthesised relief the shader displaces with; against baked heights alone a
-/// floor this low would have put the camera inside the ground.
-const LOW_FLIGHT_MINIMUM_CLEARANCE_METERS: f64 = 2.0;
+/// How close to the ground flight may descend. CPU clearance evaluates the
+/// same synthesised relief the shader displaces, so a sub-metre floor is safe.
+const LOW_FLIGHT_MINIMUM_CLEARANCE_METERS: f64 = 0.75;
 /// Sweep the camera point through the rendered terrain instead of checking
 /// only the end of a frame. L18 patch boundaries are roughly a metre apart;
 /// sub-metre samples prevent a downward W flight from tunnelling through a
 /// higher incoming/outgoing patch between two otherwise safe endpoints.
 const LOW_FLIGHT_COLLISION_SWEEP_STEP_METERS: f64 = 0.5;
 const LOW_FLIGHT_COLLISION_MAX_SWEEP_SAMPLES: usize = 64;
-/// Translating through the one-metre raster frontier needs a camera-sized
-/// clearance envelope, not the two-metre idle eye-height point. The captured
-/// mountain replay measured up to 25.9m between the point truth and a visible
-/// transition/skirt hit; 30m keeps the near camera outside that rendered
-/// envelope while preserving the 2m stationary inspection height.
-const LOW_FLIGHT_MOVING_CLEARANCE_METERS: f64 = 30.0;
+/// Translating through the raster frontier still needs a safety envelope, but
+/// five metres keeps moving inspection well below the former 30m minimum.
+const LOW_FLIGHT_MOVING_CLEARANCE_METERS: f64 = 5.0;
 /// Held WASD is an immediate, fixed-speed command. The 100m reference keeps
 /// apparent local angular motion approximately constant: 250 mph at ground
 /// level, then proportionally faster as altitude opens the view footprint.

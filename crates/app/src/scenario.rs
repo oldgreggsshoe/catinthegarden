@@ -1209,7 +1209,7 @@ mod tests {
             .expect("high-speed manual replay parses");
         assert!(scenario.replays_forward_flight());
         assert_eq!(scenario.expected_screenshots(), 21);
-        assert_eq!(scenario.assertions().min_camera_clearance_m, Some(29.5));
+        assert_eq!(scenario.assertions().min_camera_clearance_m, Some(4.5));
         assert_eq!(scenario.assertions().max_camera_clearance_m, None);
         assert_eq!(
             scenario.definition.forward_flight_start_time_seconds,

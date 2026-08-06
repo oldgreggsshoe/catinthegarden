@@ -25,7 +25,7 @@
   "assertions": {
     "require_finite_metrics": true,
     "min_surface_probe_points": 20,
-    "min_camera_clearance_m": 29.5,
+    "min_camera_clearance_m": 4.5,
     "expected_screenshots": 21
   }
 }

@@ -12,10 +12,16 @@ mod tests {
     };
     use glam::DVec3;
 
-    /// The `tour_mountains` look-at, normalised. Everything the camera sees
-    /// there is the runtime ladder: the baked data is L4, ~1953m per texel.
+    /// The active highest-prominence direction. The old tour-mountains pose
+    /// was over ocean after the procedural rebake, so it could not measure
+    /// mountain character at all.
     fn mountain_direction() -> DVec3 {
-        DVec3::new(2_384_910.906, 19_981.783, 3_217_300.842).normalize()
+        DVec3::new(
+            0.425_110_143_507_339,
+            0.396_515_464_790_478,
+            0.813_668_760_657_038,
+        )
+        .normalize()
     }
 
     fn percentile(sorted: &[f64], q: f64) -> f64 {
@@ -24,6 +30,116 @@ mod tests {
         }
         let index = ((sorted.len() - 1) as f64 * q).round() as usize;
         sorted[index]
+    }
+
+    fn sample_active_macro(outmap: &crate::outmap::Outmap, direction: DVec3) -> Option<f64> {
+        use catinthegarden_coretypes::TileKey;
+
+        let (face, face_uv) = crate::terrain::cube_face_uv_for_survey(direction)?;
+        for level in (0..=18_u8).rev() {
+            let tiles_per_side = 1_u32 << level;
+            let key = TileKey {
+                face,
+                level,
+                x: (((face_uv[0] * 0.5 + 0.5) * f64::from(tiles_per_side)) as u32)
+                    .min(tiles_per_side - 1),
+                y: (((face_uv[1] * 0.5 + 0.5) * f64::from(tiles_per_side)) as u32)
+                    .min(tiles_per_side - 1),
+            };
+            let Ok(resolved) = outmap.resolve_tile(key) else {
+                continue;
+            };
+            let Ok(data) = outmap.load_tile(resolved) else {
+                continue;
+            };
+            let raw = sample_tile_height(&data, resolved, face_uv);
+            return Some(scaled_outmap_macro_height_meters(raw, 2.0));
+        }
+        None
+    }
+
+    /// A camera-independent gate for mountain character. For a grid of
+    /// possible ground positions around the known massif, cast horizontal
+    /// surface rays from 2-10km away in 16 azimuths. A qualifying ray rises at
+    /// least 30 degrees above the local tangent; requiring several samples
+    /// prevents one isolated noisy texel from passing as a mountain wall.
+    #[test]
+    #[ignore = "instrument: cargo test -- --ignored --nocapture mountain_visibility_metric"]
+    fn mountain_visibility_metric() {
+        use crate::outmap::Outmap;
+
+        const MIN_ELEVATION_DEGREES: f64 = 30.0;
+        const MIN_DISTANCE_METERS: f64 = 2_000.0;
+        const MAX_DISTANCE_METERS: f64 = 10_000.0;
+        const REQUIRED_QUALIFYING_RAYS: usize = 3;
+
+        let outmap = Outmap::open(std::path::Path::new("../../assets/outmaps/test-planet"))
+            .or_else(|_| Outmap::open(std::path::Path::new("assets/outmaps/test-planet")))
+            .expect("active test planet outmap");
+        let centre = mountain_direction();
+        let east = centre.cross(DVec3::Y).normalize();
+        let north = east.cross(centre).normalize();
+        let mut max_elevation_degrees = f64::NEG_INFINITY;
+        let mut max_distance_meters = 0.0;
+        let mut qualifying_rays = 0_usize;
+
+        for ix in -4..=4 {
+            for iy in -4..=4 {
+                let camera_direction = (centre
+                    + east * (ix as f64 * 5_000.0 / PLANET_RADIUS_METERS)
+                    + north * (iy as f64 * 5_000.0 / PLANET_RADIUS_METERS))
+                    .normalize();
+                let Some(camera_height) = sample_active_macro(&outmap, camera_direction) else {
+                    continue;
+                };
+                if camera_height <= 0.0 {
+                    continue;
+                }
+                for azimuth_index in 0..16 {
+                    let azimuth = f64::from(azimuth_index) * std::f64::consts::TAU / 16.0;
+                    let tangent = east * azimuth.cos() + north * azimuth.sin();
+                    for distance_meters in [
+                        MIN_DISTANCE_METERS,
+                        4_000.0,
+                        6_000.0,
+                        8_000.0,
+                        MAX_DISTANCE_METERS,
+                    ] {
+                        let target_direction = (camera_direction
+                            + tangent * (distance_meters / PLANET_RADIUS_METERS))
+                            .normalize();
+                        let Some(target_height) = sample_active_macro(&outmap, target_direction)
+                        else {
+                            continue;
+                        };
+                        let elevation = (target_height - camera_height)
+                            .atan2(distance_meters)
+                            .to_degrees();
+                        if elevation > max_elevation_degrees {
+                            max_elevation_degrees = elevation;
+                            max_distance_meters = distance_meters;
+                        }
+                        if elevation >= MIN_ELEVATION_DEGREES {
+                            qualifying_rays += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        println!(
+            "mountain visibility: max {:.2}deg at {:.0}m; qualifying rays {} (need {} at >= {:.0}deg and >= {:.0}m)",
+            max_elevation_degrees,
+            max_distance_meters,
+            qualifying_rays,
+            REQUIRED_QUALIFYING_RAYS,
+            MIN_ELEVATION_DEGREES,
+            MIN_DISTANCE_METERS,
+        );
+        assert!(
+            qualifying_rays >= REQUIRED_QUALIFYING_RAYS,
+            "mountain visibility gate failed: only {qualifying_rays} qualifying rays"
+        );
     }
 
     /// Walks a transect and reports it the way a hill is described: how much
