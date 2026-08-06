@@ -2095,3 +2095,29 @@ These are the mistakes that actually cost time on this branch.
   is a legitimate anti-impersonation safeguard, so tell Ian to instruct it directly rather than
   arguing. **Benchmarking needs an exclusive tree** — Codex once committed a feature removal midway
   through a build-and-measure cycle and silently invalidated the run.
+
+## Latest continuation — flat water ownership and narrower local relief (6 August 2026)
+
+The newest manual capture (`test-runs/manual/1786024172-1341075`) showed a black square and
+repeated vertical fins at the grazing terrain line. This was not a new terrain hole: fixed L7 flat
+triangles were sourced from mixed L4 land/water footprints while the analytic sea shell was also
+submitted, so the two passes had no common per-triangle owner. In `experiment/flat-triangle-wireframe`,
+flat mode now retains the categorical terrain fragment and suppresses ocean-shell batches; normal
+render modes retain the separate shell. This removes the ownership race without changing ordinary
+coastline/ocean rendering.
+
+The procedural game shape now reduces the broad highland/lowland base and adds a thresholded,
+cubed frequency-360 ridge field (plus the existing range-scale ridges). The result is intended to
+replace kilometre-wide plateaus with narrower local summits and enclosed valleys. Because the full
+4096x2048 export exceeded the disk/time budget on this machine, a validated 1024x512 dense-L4 bake
+was promoted for this flat-L7 experiment. Manifest SHA-256 is
+`010fd7cecb15edf1e0d91a0e63cbcf062113b08615bcb27bdf5783578c67d0ea`; the prior active L0-L18 data is
+backed up at `assets/outmaps/test-planet.pre-local-mountain-backup-20260806-1540`. The old sparse files
+remain physically in the active directory but are not listed by the new manifest, so the renderer
+resolves the new dense L4 data consistently.
+
+The global-summit instrument reports raw L4 6,277.5546875m and presented/prominence 25,255.25958947m
+at 23.360523290N, 62.414690487W. `highest_prominence_peak` and the F4 constants were re-authored to
+that direction and a 152.4m clearance pose. Baker procedural-shape tests, flat/ocean shader tests,
+WGSL validation, and `--validate` pass. The first post-bake run correctly caught the stale 13km
+clearance; the pose was then corrected. A fresh GPU rerun is still required after freeing disk space.

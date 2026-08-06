@@ -780,17 +780,23 @@ fn generate_procedural_game_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
             let sharp_ridge = ((ridge - 0.52) / 0.48).clamp(0.0, 1.0).powi(2);
             // Keep the mountain region broad enough to read as a range, but
             // put its strongest elevation on a much narrower spine. The
-            // high-frequency fold is deliberately thresholded and cubed so
-            // it creates isolated, steep summits rather than another smooth
-            // blanket of hills.
+            // high-frequency folds are deliberately thresholded and cubed so
+            // they create isolated, steep summits rather than another smooth
+            // blanket of hills. The second fold is sampled well below the
+            // continental scale: it is the local peak spacing that makes a
+            // valley feel enclosed by nearby high ground instead of sitting
+            // on a kilometre-wide plateau.
             let narrow_ridge = ridged_fbm(&narrow_ridges, warped, 11.0, 4);
             let narrow_peak = ((narrow_ridge - 0.68) / 0.32).clamp(0.0, 1.0).powi(3);
+            let local_ridge = ridged_fbm(&narrow_ridges, warped, 360.0, 3);
+            let local_peak = ((local_ridge - 0.70) / 0.30).clamp(0.0, 1.0).powi(3);
             let highland = (0.5 + broad_relief * 0.5).max(0.0);
             let fine_breakup = fbm(&detail, warped, 12.0, 3);
-            let lowland = 80.0 + interior * (650.0 + highland * 1_150.0) + fine_breakup * 90.0;
+            let lowland = 50.0 + interior * (300.0 + highland * 500.0) + fine_breakup * 70.0;
             let mountain_height = mountain_region
-                * (1_100.0 + sharp_ridge * 5_800.0 + highland * 1_000.0)
-                + mountain_region * narrow_peak * 7_000.0;
+                * (300.0 + sharp_ridge * 4_500.0 + highland * 700.0)
+                + mountain_region * narrow_peak * 5_000.0
+                + mountain_region * local_peak * 2_200.0;
             (lowland + mountain_height).clamp(1.0, MAX_HEIGHT_METERS)
         })
         .collect()
@@ -1090,7 +1096,7 @@ mod tests {
         assert_eq!(first, second);
         assert!(first.iter().all(|height| height.is_finite()));
         assert!(first.iter().any(|&height| height < -1_000.0));
-        assert!(first.iter().any(|&height| height > 4_000.0));
+        assert!(first.iter().any(|&height| height > 3_000.0));
         let maximum = first.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         assert!(
             maximum < 8_950.0,

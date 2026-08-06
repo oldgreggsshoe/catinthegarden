@@ -1727,7 +1727,13 @@ impl TerrainRenderer {
                 dense_near_field,
                 instance_index,
             );
-            if may_contain_ocean {
+            // The flat-triangle experiment owns the whole categorical surface
+            // from this terrain pass. Drawing the analytic sea shell as well
+            // lets a coarse mixed land/water source tile punch through at a
+            // grazing angle (the shell has no matching per-triangle owner),
+            // which shows up as black holes and repeated vertical fins. Keep
+            // the normal shell for every other render mode.
+            if may_contain_ocean && !self.flat_triangle_experiment {
                 push_draw_batch_instance(
                     &mut self.ocean_draw_batches,
                     tile_key,

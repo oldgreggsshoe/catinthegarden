@@ -944,6 +944,14 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let biome_id = sample_biome(input.source_uv);
     let ice = outmap && biome_id == 2u;
     let lake = outmap && biome_id == 1u;
+    if render_debug_mode == RENDER_DEBUG_FLAT_TRIANGLES {
+        // Flat mode is intentionally a single categorical terrain pass. Its
+        // fixed L7 mesh can span a mixed L4 land/water source footprint, so
+        // the analytic shell must not be allowed to compete for ownership;
+        // retaining the triangle here prevents the square holes that the
+        // interpolated sea-level discard used to expose.
+        return flat_triangle_colour(input);
+    }
     // Open sea belongs exclusively to the analytic shell drawn after this
     // pass. Keep bathymetry out of the depth buffer unless this interpolated
     // triangle is visibly above sea level. A fallback source tile can sample
@@ -954,9 +962,6 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         && input.surface_height <= 0.0
     {
         discard;
-    }
-    if render_debug_mode == RENDER_DEBUG_FLAT_TRIANGLES {
-        return flat_triangle_colour(input);
     }
     let lake_coverage = lake_coast_coverage(biome_id, macro_height_meters);
     if lake && lake_coverage > 0.0 {
