@@ -141,6 +141,26 @@ and raster `highest_prominence_peak/1786011581-1230898` passes at 13.604ms. The 
 show the experimental flat-triangle renderer's known mixed-LOD foreground facets; this bake pass
 changes the macro geography/relief, not that separate presentation fault.
 
+### Anti-symmetry domain warp — 6 August 2026
+
+The first zoomed bake was seam-safe but visibly too regular: each periodic window was an identical
+mirror-like copy. The mapping now adds low-frequency global phase terms and cross-coupled harmonics
+to both source coordinates. These terms are themselves globally periodic, so the dateline and all
+sample joins remain continuous, but each longitude/latitude repeat receives a different phase and
+orientation instead of repeating the same mirrored silhouette. The baker regression explicitly checks
+both boundary continuity and non-identical repeat samples.
+
+The active validated outmap is `assets/outmaps/test-planet`, with 3,252 L0-L18 tiles and manifest
+SHA-256 `f18e1b7302f934c27d4a67f64a5a1484a2329d2e645f8ae1de4a1e6227524008`. The prior active
+anti-symmetry bake is preserved at
+`assets/outmaps/test-planet.pre-domain-warp-backup-20260806-114240`; earlier zoomed backups remain
+available above. The global summit survey now measures 36,199.808m at 18.035969°N, 72.011034°E.
+F4 and `highest_prominence_peak` were re-authored to that copy; the summit run passes at 151.711m
+clearance and 0m seam. Raster `orbit_once/1786013213-1254038` passes at 25.193ms settled, and
+`highest_prominence_peak/1786013173-1253680` passes at 17.823ms. The orbit capture now has varied
+repeat shapes rather than exact mirrored bands, while retaining the intentionally game-like global
+zoom and sharp mountain relief.
+
 ### Polar cap and flat-water correction — 4 August 2026
 
 The imported ETOPO classification no longer lets the old `|latitude| > 66°` rule turn polar ocean

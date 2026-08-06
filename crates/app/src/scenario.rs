@@ -923,9 +923,9 @@ mod tests {
         let position = glam::DVec3::from_array(waypoint.position);
         let direction = position.normalize();
 
-        assert!((direction.y.asin().to_degrees() - 19.296_266_440).abs() < 1.0e-6);
+        assert!((direction.y.asin().to_degrees() - 18.035_969_007).abs() < 1.0e-6);
         assert!(
-            (crate::planet::geographic_longitude_degrees(direction) - (-93.023_061_030)).abs()
+            (crate::planet::geographic_longitude_degrees(direction) - 72.011_034_307).abs()
                 < 1.0e-6
         );
         assert!((position.length() - 4_036_152.4).abs() < 1.0e-6);

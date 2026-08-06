@@ -21,9 +21,10 @@ const GAME_TERRAIN_LAND_SCALE: f64 = 1.6;
 const GAME_TERRAIN_RIDGE_AMPLITUDE_METERS: f64 = 2_400.0;
 const GAME_TERRAIN_RIDGE_BASE_FREQUENCY: f64 = 150.0;
 const GAME_TERRAIN_RIDGE_DETAIL_FREQUENCY: f64 = 520.0;
-// The zoomed profile samples this compact observed window repeatedly. Smooth
-// sinusoidal coordinates return to the window centre at every repeat boundary,
-// so the intentionally repeated game map has no hard longitude/latitude seams.
+// The zoomed profile samples this compact observed window repeatedly. Periodic
+// domain-warped coordinates return to the same source coordinate at every
+// repeat boundary, while cross-coupled harmonics prevent every repeat from
+// becoming an obvious mirrored copy.
 const ZOOMED_TERRAIN_CENTER_LATITUDE_DEGREES: f64 = 35.0;
 const ZOOMED_TERRAIN_CENTER_LONGITUDE_DEGREES: f64 = 77.0;
 const ZOOMED_TERRAIN_SOURCE_HALF_LATITUDE_DEGREES: f64 = 18.0;
@@ -649,30 +650,48 @@ fn apply_game_terrain_relief(grid: &SphericalGrid, heights: &mut [f64], seed: u3
 /// across the planet. The sinusoidal coordinate map is periodic in both
 /// dimensions and keeps the source window continuous at each repeat boundary.
 fn zoom_source_window(grid: &SphericalGrid, source_heights: &[f64]) -> Vec<f64> {
+    (0..grid.len())
+        .into_par_iter()
+        .map(|index| {
+            let source_direction = zoomed_source_direction(grid.direction(index));
+            grid.sample_f64(source_heights, source_direction)
+        })
+        .collect()
+}
+
+fn zoomed_source_direction(direction: glam::DVec3) -> glam::DVec3 {
     let centre_latitude = ZOOMED_TERRAIN_CENTER_LATITUDE_DEGREES.to_radians();
     let centre_longitude = ZOOMED_TERRAIN_CENTER_LONGITUDE_DEGREES.to_radians();
     let half_latitude = ZOOMED_TERRAIN_SOURCE_HALF_LATITUDE_DEGREES.to_radians();
     let half_longitude = ZOOMED_TERRAIN_SOURCE_HALF_LONGITUDE_DEGREES.to_radians();
-    (0..grid.len())
-        .into_par_iter()
-        .map(|index| {
-            let direction = grid.direction(index);
-            let latitude = direction.y.asin();
-            let longitude = direction.z.atan2(direction.x);
-            let source_latitude = centre_latitude
-                + half_latitude
-                    * ((latitude - centre_latitude) * ZOOMED_TERRAIN_LATITUDE_REPEATS).sin();
-            let source_longitude = centre_longitude
-                + half_longitude
-                    * ((longitude - centre_longitude) * ZOOMED_TERRAIN_LONGITUDE_REPEATS).sin();
-            let source_direction = glam::DVec3::new(
-                source_latitude.cos() * source_longitude.cos(),
-                source_latitude.sin(),
-                source_latitude.cos() * source_longitude.sin(),
-            );
-            grid.sample_f64(source_heights, source_direction)
-        })
-        .collect()
+    let latitude = direction.y.asin();
+    let longitude = direction.z.atan2(direction.x);
+    let global_latitude = latitude - centre_latitude;
+    let global_longitude = longitude - centre_longitude;
+    // These low-frequency global terms deliberately vary the compact source
+    // orientation from repeat to repeat. They are themselves 2pi-periodic,
+    // so the dateline still joins exactly while neighbouring copies differ.
+    let longitude_phase = global_longitude * ZOOMED_TERRAIN_LONGITUDE_REPEATS
+        + 0.48 * global_longitude.sin()
+        + 0.18 * (2.0 * global_latitude).sin();
+    let latitude_phase = global_latitude * ZOOMED_TERRAIN_LATITUDE_REPEATS
+        + 0.37 * global_longitude.cos()
+        + 0.16 * global_latitude.sin();
+    let longitude_wave = (longitude_phase.sin()
+        + 0.24 * (longitude_phase + 0.70 * latitude_phase.sin()).sin()
+        + 0.10 * (2.0 * longitude_phase - 0.45 * latitude_phase.cos()).sin())
+        / 1.34;
+    let latitude_wave = (latitude_phase.sin()
+        + 0.22 * (latitude_phase - 0.60 * longitude_phase.sin()).sin()
+        + 0.12 * (2.0 * latitude_phase + 0.35 * longitude_phase.cos()).sin())
+        / 1.34;
+    let source_latitude = centre_latitude + half_latitude * latitude_wave;
+    let source_longitude = centre_longitude + half_longitude * longitude_wave;
+    glam::DVec3::new(
+        source_latitude.cos() * source_longitude.cos(),
+        source_latitude.sin(),
+        source_latitude.cos() * source_longitude.sin(),
+    )
 }
 
 /// Authored land-ice footprint used when ETOPO supplies observed elevations
@@ -1024,6 +1043,48 @@ mod tests {
         assert!(zoomed.iter().all(|height| height.is_finite()));
         assert!(zoomed.iter().any(|&height| height > 500.0));
         assert!(zoomed.iter().any(|&height| height < -500.0));
+    }
+
+    #[test]
+    fn zoomed_source_mapping_is_periodic_but_not_mirrored() {
+        let latitude = 12.0_f64.to_radians();
+        let longitude = 33.0_f64.to_radians();
+        let direction = glam::DVec3::new(
+            latitude.cos() * longitude.cos(),
+            latitude.sin(),
+            latitude.cos() * longitude.sin(),
+        );
+        let repeat_period = std::f64::consts::TAU / ZOOMED_TERRAIN_LONGITUDE_REPEATS;
+        let half_period = repeat_period * 0.5;
+        let epsilon = 1.0e-7;
+        let before = glam::DVec3::new(
+            latitude.cos() * (longitude + repeat_period - epsilon).cos(),
+            latitude.sin(),
+            latitude.cos() * (longitude + repeat_period - epsilon).sin(),
+        );
+        let after = glam::DVec3::new(
+            latitude.cos() * (longitude + repeat_period + epsilon).cos(),
+            latitude.sin(),
+            latitude.cos() * (longitude + repeat_period + epsilon).sin(),
+        );
+        let before_source = zoomed_source_direction(before);
+        let after_source = zoomed_source_direction(after);
+        assert!(before_source.distance(after_source) < 1.0e-6);
+        let first_source = zoomed_source_direction(direction);
+        let full_repeat = glam::DVec3::new(
+            latitude.cos() * (longitude + repeat_period).cos(),
+            latitude.sin(),
+            latitude.cos() * (longitude + repeat_period).sin(),
+        );
+        let full_repeat_source = zoomed_source_direction(full_repeat);
+        assert!(first_source.distance(full_repeat_source) > 1.0e-3);
+        let half_repeat = glam::DVec3::new(
+            latitude.cos() * (longitude + half_period).cos(),
+            latitude.sin(),
+            latitude.cos() * (longitude + half_period).sin(),
+        );
+        let second_source = zoomed_source_direction(half_repeat);
+        assert!(first_source.distance(second_source) > 1.0e-3);
     }
 
     #[test]

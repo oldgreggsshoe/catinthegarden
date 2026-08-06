@@ -73,14 +73,14 @@ const LOW_FLIGHT_ALTITUDE_METERS: f64 = 10.0;
 /// Highest summit on the active zoomed-game-terrain ETOPO bake after the fixed
 /// 4x macro presentation and bounded runtime detail are applied. The compact
 /// Himalaya source window is repeated over the globe, so the winning copy is
-/// near 19.296266 N, 93.023061 W. As the planet's highest summit it has no
+/// near 18.035969 N, 72.011034 E. As the planet's highest summit it has no
 /// higher parent, so standard prominence uses sea level as its key col.
 const EARTHLIKE_HIGHEST_PROMINENCE_DIRECTION: glam::DVec3 = glam::DVec3::new(
-    -0.049_775_207_722_499,
-    0.330_452_891_191_829,
-    0.942_509_053_218_665,
+    0.293_658_456_175_220,
+    0.309_613_985_424_796,
+    -0.904_380_390_735_094,
 );
-const EARTHLIKE_HIGHEST_PROMINENCE_METERS: f64 = 36_200.491_212_593;
+const EARTHLIKE_HIGHEST_PROMINENCE_METERS: f64 = 36_199.807_785_786;
 #[cfg(test)]
 const EARTHLIKE_HIGHEST_RAW_MACRO_ELEVATION_METERS: f64 = 9_000.0;
 /// How close to the ground flight may descend. This used to be the entry
@@ -3276,9 +3276,9 @@ mod tests {
     fn earthlike_peak_measurement_uses_standard_global_summit_prominence() {
         let direction = EARTHLIKE_HIGHEST_PROMINENCE_DIRECTION;
         assert!((direction.length() - 1.0).abs() < 1.0e-12);
-        assert!((direction.y.asin().to_degrees() - 19.296_266_440).abs() < 1.0e-6);
+        assert!((direction.y.asin().to_degrees() - 18.035_969_007).abs() < 1.0e-6);
         assert!(
-            (crate::planet::geographic_longitude_degrees(direction) - (-93.023_061_030)).abs()
+            (crate::planet::geographic_longitude_degrees(direction) - 72.011_034_307).abs()
                 < 1.0e-6
         );
 
