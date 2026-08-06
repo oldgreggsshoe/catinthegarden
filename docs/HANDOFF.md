@@ -2227,3 +2227,11 @@ and incoming LOD grids being rendered together during camera-driven frontier cha
 now disables those cross-fades and clears stale transition nodes; the normal renderer retains its
 existing dithered transitions. Focused terrain tests and app checking pass; a new PNG capture is
 still needed for visual confirmation.
+
+Capture `test-runs/manual/1786055251-139165` still showed salt-and-pepper seams around large flat
+facets. The image was taken near 150m clearance over the rendered surface; the run's settled
+frames had no extra drawn chunks, so the remaining coverage was not a live parent/child overlap.
+Flat fragment entry points now bypass the LOD discard entirely (terrain and ocean), in addition to
+the CPU-side transition disable. This prevents stale binaries or a transient transition pipeline
+from exposing competing depth-writing facets in the diagnostic view. Focused tests and checking
+pass; another rebuilt capture is required.

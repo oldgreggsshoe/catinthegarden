@@ -915,6 +915,12 @@ fn flat_ocean_colour(input: OceanVertexOutput) -> vec4<f32> {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    // Flat mode is a diagnostic presentation with one fixed topology. It has
+    // no parent/child coverage to cross-fade; applying the transition dither
+    // here exposes the other depth-writing facets as salt-and-pepper seams.
+    if u32(camera.projection.w + 0.5) == RENDER_DEBUG_FLAT_TRIANGLES {
+        return terrain_fragment_color(input);
+    }
     let transition_progress = input.lod_transition.x;
     let incoming = input.lod_transition.y > 0.5;
     let threshold = lod_dither_threshold(input.position);
@@ -932,6 +938,9 @@ fn fs_main_stable(input: VertexOutput) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_ocean(input: OceanVertexOutput) -> @location(0) vec4<f32> {
+    if u32(camera.projection.w + 0.5) == RENDER_DEBUG_FLAT_TRIANGLES {
+        return ocean_fragment_color(input);
+    }
     let transition_progress = input.lod_transition.x;
     let incoming = input.lod_transition.y > 0.5;
     let threshold = lod_dither_threshold(input.position);
