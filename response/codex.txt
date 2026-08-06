@@ -1,8 +1,3 @@
-Implemented and pushed the narrow-scale prominence pass.
+I inspected the latest manual capture `test-runs/manual/1786024129-1340616/screenshots/capture-001.png`.
 
-- Procedural terrain now keeps broad ranges but adds a thresholded/cubed frequency-11 ridged spine with a 7,000m cap before erosion. This creates sharper, locally prominent peaks instead of broad smooth uplifts.
-- Active bake: `assets/outmaps/test-planet`, 3,252 validated tiles, manifest SHA-256 `c0bb366d115d14abbff71917a4b8f3cf93e82b1437166e6aba7ad190127bcf59`.
-- Global summit rose from 31,449.742m to 35,302.559m presented prominence; raw L4 maximum is 8,820.148m. New summit: 23.485719N, 62.546713W.
-- F4/highest-prominence pose updated. Raster `highest_prominence_peak/1786021735-1323655` passes at 152.400m clearance and zero seam.
-- Baker: 33 library + 5 binary + 6 integration tests pass. App: 196 non-ignored tests pass.
-- Prior procedural surfaces remain backed up. Final height/biome previews show narrower bright mountain spines.
+The dark horizontal band is not a new mountain feature. It is the ocean/lake shell leaking through the fixed-L7 flat-triangle terrain at a mixed-LOD boundary. The repeated vertical fins are coarse fallback/skirt triangles (HUD: 223 fallback chunks out of 229) being exposed while the ocean draw is allowed for source tiles whose L4 footprint contains both land and water. In flat mode the per-fragment ownership/height rejection is too coarse at this grazing view, so water appears over/through land. It is a rendering/LOD ownership bug, not the procedural bake itself.
