@@ -84,6 +84,7 @@ pub fn refine_existing_outmap(output: &Path) -> BakeResult<OutmapManifest> {
     let config = BakeConfig {
         output: output.to_path_buf(),
         etopo: None,
+        game_terrain: false,
         seed: existing.seed,
         width: existing.working_width as usize,
         height: existing.working_height as usize,
@@ -331,13 +332,21 @@ fn build_manifest(
 ) -> OutmapManifest {
     OutmapManifest {
         schema_version: OUTMAP_SCHEMA_VERSION,
-        generator: if config.etopo.is_some() {
+        generator: {
+            let source = if config.etopo.is_some() {
+                "macro source NOAA ETOPO 2022 Ice Surface"
+            } else {
+                "authored Earth-like generator"
+            };
+            let profile = if config.game_terrain {
+                "; game-terrain relief v1"
+            } else {
+                ""
+            };
             format!(
-                "catinthegarden-baker {}; macro source NOAA ETOPO 2022 Ice Surface",
+                "catinthegarden-baker {}; {source}{profile}",
                 env!("CARGO_PKG_VERSION")
             )
-        } else {
-            format!("catinthegarden-baker {}", env!("CARGO_PKG_VERSION"))
         },
         seed: config.seed,
         planet_radius_meters: PLANET_RADIUS_METERS,

@@ -22,9 +22,10 @@ pub const MAX_LOD_LEVEL: u8 = 18;
 /// The coarsest rendered quadtree leaf. Screen-space error raises the LOD into
 /// finer levels only when their geometric error can affect visible pixels.
 pub const MINIMUM_LOD_LEVEL: u8 = 2;
-/// Fixed level used by the flat-triangle experiment; three refinements above the
-/// normal coarsest level so its global topology can be compared directly.
-pub const FLAT_TRIANGLE_LOD_LEVEL: u8 = MINIMUM_LOD_LEVEL + 4;
+/// Fixed level used by the flat-triangle experiment; five refinements above the
+/// normal coarsest level so broad game-terrain mountains span materially more
+/// than a handful of filled triangles.
+pub const FLAT_TRIANGLE_LOD_LEVEL: u8 = MINIMUM_LOD_LEVEL + 5;
 /// Deliberately game-time-scaled so axial rotation is visible during normal play.
 pub const PLANET_ROTATION_PERIOD_SECONDS: f64 = 15.0;
 /// Earth's mean obliquity. With no simulated annual orbit yet, the default sun
@@ -2587,7 +2588,7 @@ impl RenderDebugMode {
             Self::AerialContribution => "aerial contribution",
             Self::SkyOnly => "sky only",
             Self::RayHitStatus => "ray detail-hit status",
-            Self::FlatTriangles => "flat L6 triangles",
+            Self::FlatTriangles => "flat L7 triangles",
         }
     }
 }

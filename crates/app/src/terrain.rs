@@ -1356,14 +1356,12 @@ impl TerrainRenderer {
                 vertical_fov_radians,
             ),
             TerrainDataSource::Outmap(outmap) => {
-                // The baked error limit is asked in both branches, and it is
-                // not the same question as the split cap. Low flight
-                // deliberately lets a node refine past its source so the
-                // camera does not sit on huge facets while better tiles
-                // stream; that bypass says the mesh may keep splitting, not
-                // that the baked surface acquired detail it does not have.
-                let baked_error_limit = BakedErrorLimit::new(outmap);
-                if camera_altitude_meters < LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS {
+                if self.flat_triangle_experiment {
+                    // The flat-triangle experiment intentionally evaluates
+                    // the next fixed topology even though the L4 source tile
+                    // is fully consumed at L6. The extra split does not
+                    // invent height data; it makes the baked mountain facets
+                    // visibly denser for this presentation trial.
                     self.lod.update_for_view_with_constraints(
                         camera_world,
                         camera_forward,
@@ -1373,20 +1371,41 @@ impl TerrainRenderer {
                         vertical_fov_radians,
                         OUTMAP_GEOMETRIC_ERROR,
                         &|_| MAX_LOD_LEVEL,
-                        Some(&|node| baked_error_limit.level_limit(node)),
+                        None,
                     )
                 } else {
-                    self.lod.update_for_view_with_constraints(
-                        camera_world,
-                        camera_forward,
-                        camera_up,
-                        aspect_ratio,
-                        viewport[1].max(1),
-                        vertical_fov_radians,
-                        OUTMAP_GEOMETRIC_ERROR,
-                        &|node| outmap_node_level_limit(outmap, node),
-                        Some(&|node| baked_error_limit.level_limit(node)),
-                    )
+                    // The baked error limit is asked in both branches, and it is
+                    // not the same question as the split cap. Low flight
+                    // deliberately lets a node refine past its source so the
+                    // camera does not sit on huge facets while better tiles
+                    // stream; that bypass says the mesh may keep splitting, not
+                    // that the baked surface acquired detail it does not have.
+                    let baked_error_limit = BakedErrorLimit::new(outmap);
+                    if camera_altitude_meters < LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS {
+                        self.lod.update_for_view_with_constraints(
+                            camera_world,
+                            camera_forward,
+                            camera_up,
+                            aspect_ratio,
+                            viewport[1].max(1),
+                            vertical_fov_radians,
+                            OUTMAP_GEOMETRIC_ERROR,
+                            &|_| MAX_LOD_LEVEL,
+                            Some(&|node| baked_error_limit.level_limit(node)),
+                        )
+                    } else {
+                        self.lod.update_for_view_with_constraints(
+                            camera_world,
+                            camera_forward,
+                            camera_up,
+                            aspect_ratio,
+                            viewport[1].max(1),
+                            vertical_fov_radians,
+                            OUTMAP_GEOMETRIC_ERROR,
+                            &|node| outmap_node_level_limit(outmap, node),
+                            Some(&|node| baked_error_limit.level_limit(node)),
+                        )
+                    }
                 }
             }
         };

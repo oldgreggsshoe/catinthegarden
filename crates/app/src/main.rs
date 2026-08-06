@@ -70,21 +70,21 @@ const MOUSE_LOOK_RADIANS_PER_PIXEL: f64 = 0.0006;
 /// the former 500ft survey height. Moving flight retains its larger rendered
 /// clearance envelope until the mixed-LOD gap repair is complete.
 const LOW_FLIGHT_ALTITUDE_METERS: f64 = 10.0;
-/// Highest summit on the active ETOPO-backed planet after the fixed 4x macro
-/// presentation and bounded runtime detail are applied. The L4 source was
-/// scanned globally, every cell capable of beating the current maximum was
-/// refined to one metre, and the resulting summit lies near Everest at
-/// 27.989286 N, 86.943824 E. As the planet's highest summit it has no higher
+/// Highest summit on the active game-terrain ETOPO bake after the fixed 4x
+/// macro presentation and bounded runtime detail are applied. The L4 source
+/// was scanned globally, every cell capable of beating the current maximum
+/// was refined to one metre, and the resulting summit lies in the Himalaya at
+/// 35.251182 N, 77.095728 E. As the planet's highest summit it has no higher
 /// parent, so the standard Earth prominence convention uses sea level as its
 /// key col.
 const EARTHLIKE_HIGHEST_PROMINENCE_DIRECTION: glam::DVec3 = glam::DVec3::new(
-    0.046_501_348_468_956,
-    0.469_319_165_103_349,
-    -0.881_803_348_744_642,
+    0.182_372_017_256_419,
+    0.577_162_030_113_672,
+    -0.796_005_300_432_660,
 );
-const EARTHLIKE_HIGHEST_PROMINENCE_METERS: f64 = 30_853.046_996_207;
+const EARTHLIKE_HIGHEST_PROMINENCE_METERS: f64 = 36_200.028_163_853;
 #[cfg(test)]
-const EARTHLIKE_HIGHEST_RAW_MACRO_ELEVATION_METERS: f64 = 7_720.433_593_75;
+const EARTHLIKE_HIGHEST_RAW_MACRO_ELEVATION_METERS: f64 = 9_000.0;
 /// How close to the ground flight may descend. This used to be the entry
 /// altitude above, doing double duty, so the camera could never get nearer the
 /// surface than 500 ft and eye-level views of the terrain were unreachable.
@@ -3278,9 +3278,9 @@ mod tests {
     fn earthlike_peak_measurement_uses_standard_global_summit_prominence() {
         let direction = EARTHLIKE_HIGHEST_PROMINENCE_DIRECTION;
         assert!((direction.length() - 1.0).abs() < 1.0e-12);
-        assert!((direction.y.asin().to_degrees() - 27.990_111_142).abs() < 1.0e-6);
+        assert!((direction.y.asin().to_degrees() - 35.251_181_513).abs() < 1.0e-6);
         assert!(
-            (crate::planet::geographic_longitude_degrees(direction) - 86.981_339_018).abs()
+            (crate::planet::geographic_longitude_degrees(direction) - 77.095_727_904).abs()
                 < 1.0e-6
         );
 

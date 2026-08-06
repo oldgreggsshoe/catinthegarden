@@ -1,14 +1,25 @@
-Updated `PERFORMANCE_REVIEW.pdf` for the complete raymarch-renderer removal case.
+Done. The active planet now uses a new `--game-terrain` ETOPO bake:
 
-The report now covers the ray-only removal inventory, what raster functionality must remain, realistic performance expectations, stale-reference cleanup, and a raster-only validation plan. It explicitly avoids claiming a direct raster FPS gain from removing a path that was not running concurrently.
+- Positive land amplified 1.6x.
+- Deterministic 150x/520x ridged mountain detail baked into the shared height source, capped at 2,400m.
+- Coastlines, sea level, bathymetry, and water ownership unchanged.
+- Previous bake backed up at `assets/outmaps/test-planet.pre-game-terrain-backup-20260806-101349`.
+- New manifest SHA-256: `70855c129545aead5e69731cfc77988d697b76e317e8623845ba0f44c1b9937f`.
 
-Validation passed:
-- 11-page A4 PDF regenerated, rendered, and visually inspected
-- PDF metadata/text checks and stale-heading checks
-- `CARGO_TARGET_DIR=/home/dad/catingard/.target-flat4 cargo check --workspace`
-- `git diff --check`
+To ensure mountains occupy more than a handful of flat facets, the flat-triangle experiment is now fixed at L7. The source remains authoritative; only the presentation topology is denser.
 
-No runtime source was changed. The updated PDF and response were committed and pushed to `experiment/flat-triangle-wireframe`.
+Measured result:
+- Raw summit: 9,000m export ceiling.
+- Presented summit survey: 36,200.028m at 35.251182N, 77.095728E.
+- Raster orbit: pass, 23.884ms settled.
+- Highest-prominence raster: pass, 151.711m clearance, 20.087ms.
+- Ground-detail raster: pass.
+- Workspace tests: 196 app + 30 baker + 6 integration + 6 coretypes passed; 6 ignored.
+- `cargo check --workspace`: passed.
+
+I also re-authored F4/highest-prominence to the new summit. Fresh captures still show the known mixed-LOD dark foreground facets in the flat experiment, so visual sign-off is still pending even though terrain, clearance, seams, and deterministic assertions pass.
+
+Committed and pushed to `experiment/flat-triangle-wireframe`.
 
 <oai-mem-citation>
 <citation_entries>

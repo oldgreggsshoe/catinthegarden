@@ -14,6 +14,13 @@ pub const MAX_HEIGHT_METERS: f64 = 9_000.0;
 const FLOW_REFRESH_INTERVAL: usize = 32;
 const THERMAL_INTERVAL: usize = 8;
 const EROSION_PARALLEL_TILE_CELLS: usize = 4_096;
+/// The optional presentation bake intentionally exaggerates positive relief
+/// while leaving the planet radius, coastline, sea level, and bathymetry
+/// unchanged. The runtime's existing terrain scale then applies on top.
+const GAME_TERRAIN_LAND_SCALE: f64 = 1.6;
+const GAME_TERRAIN_RIDGE_AMPLITUDE_METERS: f64 = 2_400.0;
+const GAME_TERRAIN_RIDGE_BASE_FREQUENCY: f64 = 150.0;
+const GAME_TERRAIN_RIDGE_DETAIL_FREQUENCY: f64 = 520.0;
 // The atlas stores regional averages. Erosion models unresolved local relief
 // instead of treating an entire coarse atlas cell as one planar slope.
 const MAX_EROSION_CELL_METERS: f64 = 8_000.0;
@@ -42,7 +49,7 @@ impl Terrain {
     pub fn try_generate(config: &BakeConfig) -> BakeResult<Self> {
         let grid = SphericalGrid::new(config.width, config.height);
         let imported = config.etopo.is_some();
-        let height_meters = if let Some(path) = &config.etopo {
+        let mut height_meters = if let Some(path) = &config.etopo {
             load_etopo(path, config.width, config.height)?
                 .into_par_iter()
                 .map(|height| height.clamp(MIN_HEIGHT_METERS, MAX_HEIGHT_METERS))
@@ -50,6 +57,9 @@ impl Terrain {
         } else {
             generate_base_shape(&grid, config.seed)
         };
+        if config.game_terrain {
+            apply_game_terrain_relief(&grid, &mut height_meters, config.seed);
+        }
         let len = grid.len();
         let mut terrain = Self {
             grid,
@@ -574,6 +584,36 @@ impl Terrain {
     }
 }
 
+/// Turns the observed Earth-like macro surface into a denser game landscape.
+///
+/// This is deliberately a bake-time operation rather than runtime noise: all
+/// consumers (CPU clearance, raster displacement, ray height fields, and LOD
+/// bounds) see the same surface. Positive land is amplified, then two
+/// direction-domain ridged bands add narrow mountain shoulders and peaks. The
+/// relief gate is based on the incoming elevation, so oceans, lakes, and
+/// coastlines are not raised or reclassified by this pass.
+fn apply_game_terrain_relief(grid: &SphericalGrid, heights: &mut [f64], seed: u32) {
+    let ridges = Perlin::new(seed ^ 0x4752_4944);
+    let detail = Perlin::new(seed ^ 0x4D54_4E31);
+    heights
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(index, height)| {
+            if *height <= 0.0 {
+                return;
+            }
+            let source_height = *height;
+            let mountain_gate = smoother_step(((source_height - 800.0) / 2_400.0).clamp(0.0, 1.0));
+            let direction = grid.direction(index).to_array();
+            let broad_ridge = ridged_fbm(&ridges, direction, GAME_TERRAIN_RIDGE_BASE_FREQUENCY, 3);
+            let fine_ridge = ridged_fbm(&detail, direction, GAME_TERRAIN_RIDGE_DETAIL_FREQUENCY, 2);
+            let ridge = (broad_ridge * 0.72 + fine_ridge * 0.28 - 0.52).max(0.0) / 0.48;
+            let added_ridge = mountain_gate * ridge.min(1.0) * GAME_TERRAIN_RIDGE_AMPLITUDE_METERS;
+            *height = (source_height * GAME_TERRAIN_LAND_SCALE + added_ridge)
+                .clamp(1.0, MAX_HEIGHT_METERS);
+        });
+}
+
 /// Authored land-ice footprint used when ETOPO supplies observed elevations
 /// but no separate ice-mask band. Positive ETOPO samples provide the observed
 /// land mask; this small geographic prior captures Greenland and Antarctica,
@@ -882,6 +922,34 @@ mod tests {
         assert!(first.iter().any(|&height| height < 0.0));
         assert!(first.iter().any(|&height| height > 2_000.0));
         assert!(first.iter().all(|&height| height <= MAX_HEIGHT_METERS));
+    }
+
+    #[test]
+    fn game_terrain_relief_keeps_sea_level_and_adds_dense_positive_detail() {
+        let grid = SphericalGrid::new(128, 64);
+        let mut heights: Vec<_> = (0..grid.len())
+            .map(|index| if index % 5 == 0 { -250.0 } else { 3_000.0 })
+            .collect();
+        let original = heights.clone();
+        apply_game_terrain_relief(&grid, &mut heights, 0xEA27_2026);
+
+        assert!(
+            heights
+                .iter()
+                .zip(original)
+                .all(|(&actual, expected)| expected <= 0.0 && actual == expected
+                    || expected > 0.0 && actual >= expected * GAME_TERRAIN_LAND_SCALE)
+        );
+        assert!(heights.iter().any(|&height| height > 5_000.0));
+        assert!(
+            heights
+                .iter()
+                .filter(|&&height| height > 0.0)
+                .map(|height| height.to_bits())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                > 8
+        );
     }
 
     #[test]

@@ -33,11 +33,11 @@ fallbacks and a 2,071.204m warm-up seam. Older renderer-only evidence is retaine
 sections below but uses a previous macro/detail presentation. The later raster low-poly trial passes
 `orbit_once/1785600758-149017`, `landing_site_ground_detail/1785600646-146796`, and
 `highest_prominence_peak/1785600765-149139`; see its section below for the visual findings.
-**Written:** 2 August 2026
+**Written:** 6 August 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
 
-### Experimental branch — fixed-L6 flat triangle wireframe (4 August 2026)
+### Experimental branch — fixed-L6 flat triangle wireframe baseline (4 August 2026)
 
 Branch `experiment/flat-triangle-wireframe` is an isolated visual experiment from the current
 diagnosis branch. It intentionally fixes the raster terrain and ocean quadtree at the minimum
@@ -50,13 +50,13 @@ both land and ocean; the flat path samples neither material nor environment text
 biome outmaps remain CPU/GPU data sources for geometry and ownership; this mode does not pretend
 the baked data disappeared.
 
-The branch defaults to `flat L6 triangles` (`RenderDebugMode::FlatTriangles`). Press `O` to
+The branch defaults to `flat L7 triangles` (`RenderDebugMode::FlatTriangles`). Press `O` to
 toggle the dark per-triangle outlines at runtime; they start enabled and the HUD reports the
 current state. This only changes the edge mask; flat fills, geometric normals, lighting, ocean
-shading, and fixed-L6 geometry remain unchanged. Set
+shading, and fixed-L7 geometry remain unchanged. Set
 `CATINGARDEN_FLAT_TRIANGLES=0`/`false`/`off` to restore normal LOD selection, or set
 `CATINGARDEN_DEBUG_MODE=final` to inspect the normal material shader while keeping the branch's
-fixed-L6 policy. The ray renderer is not replaced by this raster-only presentation experiment.
+fixed-L7 policy. The ray renderer is not replaced by this raster-only presentation experiment.
 
 The L3 baseline and L4 follow-up used identical release settings and four deterministic camera
 scenarios. FPS is `1000 / median logged spatial frame time`; samples include the scenario's normal
@@ -87,9 +87,31 @@ FPS** across nine logged spatial frames. It still fails the seam assertion at **
 source streaming; finite metrics and the full workspace test suite remain green. This confirms that
 raising the global triangle LOD does not repair the underlying source-residency discontinuity.
 
-The current trial is **L6** (`FLAT_TRIANGLE_LOD_LEVEL = MINIMUM_LOD_LEVEL + 4`). No new FPS or
-manual visual capture has been signed off yet; compare it against the recorded L3/L4/L5 runs before
-changing the fixed level again.
+The L6 run is historical; the current trial is recorded below.
+
+### Game-terrain / fixed-L7 density trial — 6 August 2026
+
+The active ETOPO outmap now uses the baker's opt-in `--game-terrain` profile. It leaves the planet
+radius, coastlines, sea level, bathymetry, and water ownership unchanged, amplifies positive land by
+**1.6x**, and adds deterministic ridged bands at 150x and 520x direction frequency with a 2,400m
+cap. The relief is baked into the shared height source so CPU clearance, raster displacement,
+normals, ray height fields, and LOD bounds consume the same denser mountain surface. The active
+manifest is `70855c129545aead5e69731cfc77988d697b76e317e8623845ba0f44c1b9937f`; the prior active
+outmap is preserved at `assets/outmaps/test-planet.pre-game-terrain-backup-20260806-101349`.
+
+The global summit survey now measures a raw 9,000m macro summit and a 36,200.028m presented
+summit/prominence at 35.251182N, 77.095728E. F4 and `highest_prominence_peak` were re-authored to
+that mountain; the deterministic summit run passes at 151.711m clearance after the fixed-L7
+camera pose uses the rendered L4 source height.
+
+The flat-triangle experiment now fixes geometry at **L7** (`FLAT_TRIANGLE_LOD_LEVEL =
+MINIMUM_LOD_LEVEL + 5`) and bypasses the source-repeat cap only for this presentation. The L4
+source remains authoritative; L7 simply supplies a denser 32x32 facet grid so game-terrain peaks
+span materially more than a handful of triangles. Raster `orbit_once/1786008682-1190692` passes
+at 23.884ms settled with 0.000488m seam, `highest_prominence_peak/1786008708-1190914` passes at
+20.087ms with 151.711m clearance, and `landing_site_ground_detail/1786008753-1191247` passes its
+finite/LOD assertions. Fresh low-flight visual sign-off is still pending because the known
+mixed-LOD foreground dark facets remain visible in the flat experiment.
 
 ### Polar cap and flat-water correction — 4 August 2026
 
@@ -115,6 +137,32 @@ Flat-triangle terrain specular is evaluated once in the vertex stage and carried
 interpolant's scalar component, so every land triangle uses one specular value rather than a
 per-pixel highlight. Diffuse lighting and derivative face normals remain per the prior flat
 experiment; ocean specular keeps its existing path.
+
+### Game-terrain macro rebake — 6 August 2026
+
+The active ETOPO outmap now uses the baker's opt-in `--game-terrain` relief profile. It leaves the
+planet radius, coastlines, sea level, bathymetry, and water ownership unchanged, amplifies positive
+land by **1.6x**, and adds deterministic ridged bands at 150x and 520x direction frequency with a
+2,400m cap. The extra relief is baked into the shared height source rather than added only in the
+renderer, so CPU clearance, raster displacement/normals, ray height fields, and LOD bounds all see
+the same denser mountain surface. The profile is recorded in the manifest as `game-terrain relief
+v1`; reproduce it with `--etopo ... --game-terrain`.
+
+The validated active bake is `assets/outmaps/test-planet` with 3,252 L0-L18 tiles and manifest
+SHA-256 `70855c129545aead5e69731cfc77988d697b76e317e8623845ba0f44c1b9937f`. Its raw working-grid
+range is -5,000m to the 9,000m export ceiling; positive land is 34.059%, and 4.002% of samples are
+above 5,000m (the preceding ETOPO bake had 0.166%). As a density proxy at the 4096x2048 source
+resolution, the new >5,000m mask contains 501 connected components of at least 10 samples and 167
+of at least 30 samples, versus 43 and 11 respectively before the profile. This is intended to make
+mountain masses occupy many more fixed-L7 surface facets instead of appearing as isolated handfuls.
+
+The prior active outmap is preserved at
+`assets/outmaps/test-planet.pre-game-terrain-backup-20260806-101349`; do not delete retained bake
+directories without explicit instruction. The global-summit instrument now measures a raw 9,000m
+macro summit and a 36,200.028m presented summit/prominence at 35.251182N, 77.095728E. F4's
+highest-prominence start constants and `highest_prominence_peak` scenario were re-authored to this
+location and its 152.4m entry pose. Fresh GPU/manual capture sign-off remains required; the source
+and baker validation are green.
 
 ---
 

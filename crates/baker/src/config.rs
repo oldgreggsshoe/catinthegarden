@@ -9,6 +9,10 @@ pub struct BakeConfig {
     /// global relief replaces the authored base shape; synthetic erosion and
     /// river/glacier carving stay disabled so the imported terrain survives.
     pub etopo: Option<PathBuf>,
+    /// Apply the deliberately game-like relief pass to the macro source:
+    /// positive land is vertically amplified and receives dense, bounded
+    /// ridge detail while coastlines, sea level, and bathymetry remain fixed.
+    pub game_terrain: bool,
     pub seed: u32,
     pub width: usize,
     pub height: usize,
@@ -25,6 +29,7 @@ impl Default for BakeConfig {
         Self {
             output: PathBuf::from("assets/outmaps/test-planet"),
             etopo: None,
+            game_terrain: false,
             // Coastline and regional-detail seed for the Earth-like macro
             // layout in terrain.rs. The large continent and mountain-belt
             // placement is authored; this keeps its smaller shapes
