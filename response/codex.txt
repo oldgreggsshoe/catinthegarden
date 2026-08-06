@@ -1,7 +1,1 @@
-Performance report P0 pass is complete and pushed as 4bf4a74 (including 309a408).
-- Flat-triangle vertex aerial/fog integrations bypassed; displacement, normals, specular retained.
-- Fixed exposure skips luminance mip/readback/adaptation; profiler records zero luminance.
-- Terrain frontier, transition-surface, and resident-tile lookups use dyadic indexes with boundary fallbacks.
-- Exposure assertions stay full-rate; interactive JSONL is buffered/throttled and flushed at capture, manifest, and shutdown.
-
-Validation: cargo fmt; cargo check; workspace tests 197 app + 33 baker + 5 baker-bin + 6 bake integration + 6 coretypes, all pass (6 app tests ignored). Headless Xvfb has no DRI3, so no trustworthy GPU A/B ms comparison. P1 atmosphere/water/atlas work remains deferred pending Quadro profiling. Existing untracked target/screenshot/tmp files were untouched.
+Yes. The active bake is updated at assets/outmaps/test-planet: procedural-game-terrain narrow-ridge relief v2, 1024x512 working grid, dense/max L4, 2,046 manifest-listed tiles, height range -5,000..9,000m, manifest SHA-256 010fd7cecb15edf1e0d91a0e63cbcf062113b08615bcb27bdf5783578c67d0ea. The prior bake is backed up at assets/outmaps/test-planet.pre-local-mountain-backup-20260806-1540. The old files still physically remain but are not in the manifest and should not load. Restart the app after baking; an already-running process keeps old GPU tiles cached. Current flat experiment is fixed at L7 while source data tops out at L4, so its added density is geometry over L4 source detail, not new L7 height data.
