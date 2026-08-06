@@ -2211,3 +2211,11 @@ biome whenever a mixed land/water triangle contains positive macro height, preve
 from inheriting the blue ocean palette. This remains limited to the flat-triangle experiment;
 normal terrain/ocean ownership is unchanged. All 48 terrain shader/unit tests pass; a fresh GPU
 capture is still the visual confirmation step.
+
+The follow-up manual set `test-runs/manual/1786051220-100974` confirmed the blue palette fault
+was gone, but exposed the remaining cause of the broad vertical walls: positive source samples
+whose coarse categorical owner was water were still being flattened to sea level. The flat vertex
+path now applies that flattening only when the sampled macro height is non-positive, keeping
+positive mixed shoreline/ancestor-fallback samples continuous with adjacent land. The focused
+terrain suite remains green (48 tests) and `cargo check -p catinthegarden-app` passes; a fresh GPU
+capture is still required to verify the wall reduction visually.

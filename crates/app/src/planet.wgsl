@@ -577,7 +577,12 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let ice = outmap && biome_id == 2u;
     let lake = outmap && biome_id == 1u;
     let land_height = select(height, max(height, 5.0), ice);
-    let water_owned = biome_id == 0u || biome_id == 1u;
+    // Baked biome ownership can straddle a coarse source cell at a shoreline
+    // (and ancestor fallback makes that cell cover a wider world-space area).
+    // Only a non-positive sample is actually water geometry.  Flattening a
+    // positive sample solely because its categorical owner says water creates
+    // kilometre-scale vertical walls through otherwise continuous land.
+    let water_owned = (biome_id == 0u || biome_id == 1u) && macro_height <= 0.0;
     let surface_height = select(land_height, 0.0, flat_triangles && water_owned);
     let skirt_depth_meters = select(
         0.0,

@@ -3516,6 +3516,9 @@ mod tests {
         assert!(shader.contains("flat_ocean_surface("));
         assert!(shader.contains("const OCEAN_WAVES_ENABLED: bool = false;"));
         assert!(shader.contains("flat_triangles && water_owned"));
+        assert!(shader.contains(
+            "let water_owned = (biome_id == 0u || biome_id == 1u) && macro_height <= 0.0;"
+        ));
         assert!(shader.contains("fn flat_triangle_land_biome("));
         assert!(shader.contains("source_uv_scale_and_latitude"));
         assert!(shader.contains("fn flat_triangle_vertex_specular("));
