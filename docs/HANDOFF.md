@@ -2200,3 +2200,14 @@ is preserved at `assets/outmaps/test-planet.pre-mountain-coverage-backup-2026080
 matching deterministic snapshot reports **1.37%** of area-weighted land positions passing (18,909
 of 275,654 source positions; 161,034 qualifying rays), below the requested 25%. This candidate is
 intentionally not being auto-tuned or rebaked; the next action is manual in-game visual review.
+
+## Flat-triangle raised-water-cliff repair — 6 August 2026
+
+Manual capture set `test-runs/manual/1786050593-90025` showed two related flat-mode artefacts:
+raised vertical faces coloured as water and broad cliffs apparently rising out of the sea. The
+flat terrain vertex path now forces ocean and lake-owned vertices to sea level, not only lakes.
+The categorical triangle colour path samples the three triangle corners and chooses a non-water
+biome whenever a mixed land/water triangle contains positive macro height, preventing land cliffs
+from inheriting the blue ocean palette. This remains limited to the flat-triangle experiment;
+normal terrain/ocean ownership is unchanged. All 48 terrain shader/unit tests pass; a fresh GPU
+capture is still the visual confirmation step.

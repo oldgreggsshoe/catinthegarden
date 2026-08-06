@@ -3515,7 +3515,8 @@ mod tests {
         assert!(shader.contains("camera.flat_triangle_options.x"));
         assert!(shader.contains("flat_ocean_surface("));
         assert!(shader.contains("const OCEAN_WAVES_ENABLED: bool = false;"));
-        assert!(shader.contains("flat_triangles && lake"));
+        assert!(shader.contains("flat_triangles && water_owned"));
+        assert!(shader.contains("fn flat_triangle_land_biome("));
         assert!(shader.contains("source_uv_scale_and_latitude"));
         assert!(shader.contains("fn flat_triangle_vertex_specular("));
         assert!(shader.contains("input.source_uv_scale_and_latitude.w"));
@@ -3543,7 +3544,7 @@ mod tests {
             .nth(1)
             .and_then(|source| source.split("\nfn ").next())
             .expect("flat triangle colour path is present");
-        assert!(flat.contains("biome_color(biome_id)"));
+        assert!(flat.contains("biome_color(fill_biome)"));
         assert!(!flat.contains("terrain_material_color("));
     }
 

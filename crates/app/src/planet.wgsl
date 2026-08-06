@@ -577,7 +577,8 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let ice = outmap && biome_id == 2u;
     let lake = outmap && biome_id == 1u;
     let land_height = select(height, max(height, 5.0), ice);
-    let surface_height = select(land_height, 0.0, flat_triangles && lake);
+    let water_owned = biome_id == 0u || biome_id == 1u;
+    let surface_height = select(land_height, 0.0, flat_triangles && water_owned);
     let skirt_depth_meters = select(
         0.0,
         min(
@@ -791,15 +792,71 @@ fn flat_triangle_lighting(
     return albedo * diffuse + vec3<f32>(specular);
 }
 
+fn flat_triangle_land_biome(primary: u32, first: u32, second: u32, third: u32) -> u32 {
+    var selected = primary;
+    if selected == 0u || selected == 1u {
+        if first != 0u && first != 1u {
+            selected = first;
+        } else if second != 0u && second != 1u {
+            selected = second;
+        } else if third != 0u && third != 1u {
+            selected = third;
+        }
+    }
+    return selected;
+}
+
 fn flat_triangle_colour(
     input: VertexOutput,
 ) -> vec4<f32> {
     let centre_tile_uv = flat_triangle_cell(input.tile_uv);
     let centre_source_uv = input.source_uv
         + (centre_tile_uv - input.tile_uv) * input.source_uv_scale_and_latitude.xy;
-    let biome_id = sample_biome(centre_source_uv);
-    var fill = select(debug_ocean_albedo(), biome_color(biome_id), biome_id != 1u);
-    if biome_id == 2u {
+    let cell = floor(input.tile_uv * FLAT_TRIANGLE_GRID_QUADS);
+    let local = fract(input.tile_uv * FLAT_TRIANGLE_GRID_QUADS);
+    let upper = local.x + local.y > 1.0;
+    var first_tile_uv = cell / FLAT_TRIANGLE_GRID_QUADS;
+    var second_tile_uv = (cell + vec2<f32>(1.0, 0.0)) / FLAT_TRIANGLE_GRID_QUADS;
+    var third_tile_uv = (cell + vec2<f32>(0.0, 1.0)) / FLAT_TRIANGLE_GRID_QUADS;
+    if upper {
+        first_tile_uv = (cell + vec2<f32>(1.0, 0.0)) / FLAT_TRIANGLE_GRID_QUADS;
+        second_tile_uv = (cell + vec2<f32>(1.0, 1.0)) / FLAT_TRIANGLE_GRID_QUADS;
+        third_tile_uv = (cell + vec2<f32>(0.0, 1.0)) / FLAT_TRIANGLE_GRID_QUADS;
+    }
+    let first_source_uv = input.source_uv
+        + (first_tile_uv - input.tile_uv) * input.source_uv_scale_and_latitude.xy;
+    let second_source_uv = input.source_uv
+        + (second_tile_uv - input.tile_uv) * input.source_uv_scale_and_latitude.xy;
+    let third_source_uv = input.source_uv
+        + (third_tile_uv - input.tile_uv) * input.source_uv_scale_and_latitude.xy;
+    let first_biome = sample_biome(first_source_uv);
+    let second_biome = sample_biome(second_source_uv);
+    let third_biome = sample_biome(third_source_uv);
+    let biome_id = flat_triangle_land_biome(
+        sample_biome(centre_source_uv),
+        first_biome,
+        second_biome,
+        third_biome,
+    );
+    let first_height = macro_terrain_height(
+        input.outmap_and_macro_height.x > 0.5,
+        first_source_uv,
+        normalize(input.surface_direction),
+    );
+    let second_height = macro_terrain_height(
+        input.outmap_and_macro_height.x > 0.5,
+        second_source_uv,
+        normalize(input.surface_direction),
+    );
+    let third_height = macro_terrain_height(
+        input.outmap_and_macro_height.x > 0.5,
+        third_source_uv,
+        normalize(input.surface_direction),
+    );
+    let mixed_land_triangle = max(first_height, max(second_height, third_height)) > 0.0;
+    let fill_biome = select(biome_id, 5u, mixed_land_triangle && (biome_id == 0u || biome_id == 1u));
+    var fill = select(debug_ocean_albedo(), biome_color(fill_biome), fill_biome != 1u);
+    if fill_biome == 2u {
         // Keep one final colour per triangle, but avoid making the ice prior
         // read as a mathematically perfect latitude circle. Low-latitude ice
         // from mountain height remains fully icy through the second term.
