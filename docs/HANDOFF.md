@@ -2182,3 +2182,21 @@ retaining spherical bilinear lookups and elevation calculations. Three optimized
 1.49M, 1.51M, and 1.41M rays/s (7.35M profile samples/s average). At that rate the exhaustive
 100m global scan for the current 4,000km-radius planet would take about 30.4 hours; the number
 excludes terrain generation, erosion, export, and any parallelisation beyond the benchmark thread.
+
+## Mountain-coverage candidate bake — 6 August 2026
+
+The procedural generator now includes a separate seam-safe 1,500x ridge family with a bounded
+8,500m contribution. This is intended to distribute steep game-scale peaks instead of relying on
+one rare massif. The baker's `--mountain-coverage` option reports an area-weighted survey over all
+positive source-grid positions, using eight evenly spaced azimuths and 2/4/6/8/10km target ranges;
+a position passes if any direction reaches 30 degrees elevation. It is deliberately a fast
+generation-time gate: the 400m exhaustive scan would repeatedly interpolate a source grid that is
+much coarser than 400m.
+
+One 1024x512 procedural bake with 256 erosion iterations was produced and promoted to the active
+`assets/outmaps/test-planet`. Its manifest SHA-256 is
+`8311569a2b2d5d8c0f565e38ad44a935d4c3c1c13954ebe583d467df7c73bb67`; the previous active surface
+is preserved at `assets/outmaps/test-planet.pre-mountain-coverage-backup-20260806-220003`. The
+matching deterministic snapshot reports **1.37%** of area-weighted land positions passing (18,909
+of 275,654 source positions; 161,034 qualifying rays), below the requested 25%. This candidate is
+intentionally not being auto-tuned or rebaked; the next action is manual in-game visual review.

@@ -50,6 +50,28 @@ pub struct Terrain {
     pub biome: Vec<BiomeId>,
 }
 
+/// Area-weighted result of the deterministic mountain visibility survey.
+/// A land position passes when any of the eight azimuths reaches at least
+/// thirty degrees above its local tangent at one of the 2-10km profile ranges.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MountainVisibilityReport {
+    pub land_positions: usize,
+    pub passing_positions: usize,
+    pub qualifying_rays: usize,
+    pub land_area_weight: f64,
+    pub passing_area_weight: f64,
+}
+
+impl MountainVisibilityReport {
+    pub fn coverage_percent(self) -> f64 {
+        if self.land_area_weight > 0.0 {
+            self.passing_area_weight / self.land_area_weight * 100.0
+        } else {
+            0.0
+        }
+    }
+}
+
 impl Terrain {
     /// Preserves the original infallible API for authored/test configurations.
     /// File-backed sources should normally use `try_generate` so I/O errors can
@@ -549,6 +571,68 @@ impl Terrain {
             .unwrap_or(glam::DVec3::X)
     }
 
+    /// Measures the generated macro surface at every source-grid position.
+    /// This is deliberately area-weighted because the equirectangular source
+    /// has smaller cells near the poles. It is the fast generation-time gate;
+    /// a 400m exhaustive scan would repeatedly interpolate the same source
+    /// cells because the current source grid is much coarser than 400m.
+    pub fn mountain_visibility_coverage(&self) -> MountainVisibilityReport {
+        const DIRECTIONS: usize = 8;
+        const MIN_ELEVATION_DEGREES: f64 = 30.0;
+        const DISTANCES_METERS: [f64; 5] = [2_000.0, 4_000.0, 6_000.0, 8_000.0, 10_000.0];
+
+        (0..self.grid.len())
+            .into_par_iter()
+            .filter_map(|index| {
+                let base = self.grid.direction(index);
+                let camera_height = self.height_meters[index];
+                if camera_height <= 0.0 {
+                    return None;
+                }
+                let east = glam::DVec3::new(-base.z, 0.0, base.x).normalize();
+                let north = east.cross(base).normalize();
+                let mut passing = false;
+                let mut qualifying_rays = 0_usize;
+                for direction_index in 0..DIRECTIONS {
+                    let azimuth =
+                        direction_index as f64 * std::f64::consts::TAU / DIRECTIONS as f64;
+                    let tangent = east * azimuth.cos() + north * azimuth.sin();
+                    let mut direction_passes = false;
+                    for distance in DISTANCES_METERS {
+                        let target = (base
+                            + tangent
+                                * (distance / catinthegarden_coretypes::PLANET_RADIUS_METERS))
+                            .normalize();
+                        let target_height = self.grid.sample_f64(&self.height_meters, target);
+                        let elevation =
+                            (target_height - camera_height).atan2(distance).to_degrees();
+                        if elevation >= MIN_ELEVATION_DEGREES {
+                            qualifying_rays += 1;
+                            direction_passes = true;
+                        }
+                    }
+                    passing |= direction_passes;
+                }
+                let area_weight = base.x.hypot(base.z);
+                Some(MountainVisibilityReport {
+                    land_positions: 1,
+                    passing_positions: passing as usize,
+                    qualifying_rays,
+                    land_area_weight: area_weight,
+                    passing_area_weight: if passing { area_weight } else { 0.0 },
+                })
+            })
+            .reduce(MountainVisibilityReport::default, |left, right| {
+                MountainVisibilityReport {
+                    land_positions: left.land_positions + right.land_positions,
+                    passing_positions: left.passing_positions + right.passing_positions,
+                    qualifying_rays: left.qualifying_rays + right.qualifying_rays,
+                    land_area_weight: left.land_area_weight + right.land_area_weight,
+                    passing_area_weight: left.passing_area_weight + right.passing_area_weight,
+                }
+            })
+    }
+
     fn classify_biomes(&mut self, imported_etopo: bool) {
         self.biome
             .par_iter_mut()
@@ -732,6 +816,7 @@ fn generate_procedural_game_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
     let regions = Perlin::new(seed ^ 0xA07E_7A1B);
     let ridges = Perlin::new(seed ^ 0xB1D6_E5B1);
     let narrow_ridges = Perlin::new(seed ^ 0xC11F_7EAD);
+    let coverage_ridges = Perlin::new(seed ^ 0xC0DE_A7E5);
     let detail = Perlin::new(seed ^ 0xD37A_11A4);
     (0..grid.len())
         .into_par_iter()
@@ -790,6 +875,13 @@ fn generate_procedural_game_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
             let narrow_peak = ((narrow_ridge - 0.68) / 0.32).clamp(0.0, 1.0).powi(3);
             let local_ridge = ridged_fbm(&narrow_ridges, warped, 360.0, 3);
             let local_peak = ((local_ridge - 0.70) / 0.30).clamp(0.0, 1.0).powi(3);
+            // A separate, continuous ridge family gives the generator a
+            // measurable mountain-coverage target rather than concentrating
+            // all relief in one rare global massif. Its 1500x wavelength is
+            // narrow enough for a 2km look-ahead to see a steep wall while
+            // remaining seam-safe in the direction domain.
+            let coverage_ridge = ridged_fbm(&coverage_ridges, warped, 1_500.0, 3);
+            let coverage_peak = ((coverage_ridge - 0.55) / 0.20).clamp(0.0, 1.0);
             // The previous field left most positive land in a nearly planar
             // 50-850m band. Add a resolvable foothill field across land, then
             // let the thresholded mountain belts rise out of it. This keeps
@@ -803,8 +895,12 @@ fn generate_procedural_game_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
             let mountain_height = mountain_region
                 * (220.0 + sharp_ridge * 4_500.0 + highland * 700.0)
                 + mountain_region * narrow_peak * 5_000.0
-                + mountain_region * local_peak * 2_200.0;
-            (lowland + mountain_height).clamp(1.0, MAX_HEIGHT_METERS)
+                + mountain_region * local_peak * 2_200.0
+                + interior * coverage_peak * 8_500.0;
+            // Keep the coverage ridge below the export ceiling instead of
+            // producing a population of clipped, identical 9km summits.
+            let mountain_headroom = (MAX_HEIGHT_METERS - lowland - 100.0).max(0.0);
+            (lowland + mountain_height.min(mountain_headroom)).clamp(1.0, MAX_HEIGHT_METERS)
         })
         .collect()
 }
@@ -1138,6 +1234,28 @@ mod tests {
             rays as f64 / elapsed,
             samples as f64 / elapsed,
             black_box(checksum),
+        );
+    }
+
+    #[test]
+    #[ignore = "instrument: cargo test -p catinthegarden-baker --lib terrain::tests::procedural_mountain_coverage_snapshot -- --ignored --nocapture"]
+    fn procedural_mountain_coverage_snapshot() {
+        let config = BakeConfig {
+            width: 1024,
+            height: 512,
+            erosion_iterations: 256,
+            procedural_terrain: true,
+            game_terrain: true,
+            ..BakeConfig::quick(std::path::PathBuf::new())
+        };
+        let terrain = Terrain::generate(&config);
+        let report = terrain.mountain_visibility_coverage();
+        println!(
+            "procedural mountain coverage: {:.2}% of area-weighted land; {}/{} positions, {} qualifying rays",
+            report.coverage_percent(),
+            report.passing_positions,
+            report.land_positions,
+            report.qualifying_rays,
         );
     }
 

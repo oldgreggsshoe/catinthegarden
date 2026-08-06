@@ -1,7 +1,8 @@
 use std::{env, path::PathBuf, process::ExitCode};
 
 use catinthegarden_baker::{
-    BakeConfig, bake, refine_existing_outmap, sparse_radius_for_level, validate_output,
+    BakeConfig, bake, bake_with_mountain_coverage, refine_existing_outmap, sparse_radius_for_level,
+    validate_output,
 };
 use catinthegarden_coretypes::{PLANET_RADIUS_METERS, TILE_LOGICAL_SIZE};
 
@@ -56,6 +57,9 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let config = parse_config(&arguments)?;
+    let report_mountain_coverage = arguments
+        .iter()
+        .any(|argument| argument == "--mountain-coverage");
     if let Some(path) = &config.etopo {
         println!(
             "baking {}x{} ETOPO grid, dense L{} + sparse L{}",
@@ -86,7 +90,11 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         println!("macro source: procedural continents + mountain regions + erosion");
     }
     print_sparse_coverage(&config);
-    let manifest = bake(&config)?;
+    let (manifest, mountain_coverage) = if report_mountain_coverage {
+        bake_with_mountain_coverage(&config)?
+    } else {
+        (bake(&config)?, Default::default())
+    };
     let [landing_x, landing_y, landing_z] = manifest.sparse_landing_direction;
     println!("selected dry coastal sparse centre [{landing_x:.6}, {landing_y:.6}, {landing_z:.6}]");
     println!(
@@ -94,6 +102,15 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         manifest.available_tiles.len(),
         config.output.display()
     );
+    if report_mountain_coverage {
+        println!(
+            "mountain coverage: {:.2}% of area-weighted land positions pass; {}/{} positions, {} qualifying rays",
+            mountain_coverage.coverage_percent(),
+            mountain_coverage.passing_positions,
+            mountain_coverage.land_positions,
+            mountain_coverage.qualifying_rays,
+        );
+    }
     Ok(())
 }
 
@@ -153,6 +170,9 @@ fn parse_config(arguments: &[String]) -> Result<BakeConfig, String> {
             "--procedural-terrain" => {
                 config.procedural_terrain = true;
                 config.game_terrain = true;
+                index += 1;
+            }
+            "--mountain-coverage" => {
                 index += 1;
             }
             "--seed" => {
@@ -221,6 +241,7 @@ fn print_help() {
            --game-terrain              Amplify land and add dense baked mountain ridges\n\
            --zoomed-terrain             Repeat a compact mountain-rich source window globally\n\
            --procedural-terrain         Generate continents/mountains then erode them\n\
+           --mountain-coverage          Report area-weighted 8-direction mountain coverage\n\
            --seed N                   Decimal or 0x-prefixed deterministic seed\n\
            --width N                  Working equirectangular grid width\n\
            --height N                 Working grid height\n\
