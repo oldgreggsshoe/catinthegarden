@@ -471,6 +471,12 @@ impl SurfaceNodeIndex {
         self.by_level[usize::from(node.level)].insert(node, index);
     }
 
+    fn clear(&mut self) {
+        for nodes in &mut self.by_level {
+            nodes.clear();
+        }
+    }
+
     fn for_each_at_direction(&self, direction: DVec3, mut visit: impl FnMut(usize)) -> bool {
         let mut found = false;
         for (level, nodes) in self.by_level.iter().enumerate().rev() {
@@ -1679,7 +1685,7 @@ impl TerrainRenderer {
         self.draw_batches.clear();
         self.ocean_draw_batches.clear();
         self.surface_detail_nodes.clear();
-        self.surface_node_index = SurfaceNodeIndex::new();
+        self.surface_node_index.clear();
         let mut fallback_chunks = 0_u32;
         let mut source_level_delta_histogram = [0_u32; MAX_LOD_LEVEL as usize + 1];
         let camera_view_basis = CameraViewBasis::from_forward_and_up(camera_forward, camera_up);
