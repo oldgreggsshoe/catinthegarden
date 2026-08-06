@@ -1,6 +1,9 @@
-Plan for replacing the repeated Earth-derived bake:
-1. Inspect the existing authored terrain generator, erosion/hydrology pipeline, and baker CLI/config contracts.
-2. Add an explicit procedural game-terrain profile that does not load ETOPO: generate continuous 3D planet-domain continents, warped mountain belts, highlands, and basins from deterministic noise, then run the existing erosion, flow, river, lake, and biome stages.
-3. Add focused tests proving the procedural field is finite, asymmetric, globally seam-safe, and produces useful land/ocean/high-relief variation.
-4. Bake the active outmap from the procedural profile, preserve the current repeated bake, survey the new summit, and update F4/highest-prominence.
-5. Run baker/workspace tests as storage permits, run raster orbit/summit/ground scenarios, inspect captures, update handoff, commit, push, and report any remaining validation limitation.
+Implemented and pushed commit 2ef65da (`Generate asymmetric procedural eroded terrain`).
+
+- Added `--procedural-terrain`: continuous 3D warped continents/highlands/mountain ridges/detail on the sphere; no ETOPO, authored Earth ellipses, source-window repeat, or mirroring.
+- Retained hydraulic/thermal erosion, flow, rivers, lakes, glacial valleys, moisture, and biome stages. Procedural mode rejects `--etopo` and avoids double relief scaling.
+- Baked/promoted active `assets/outmaps/test-planet` (4096x2048, 3,252 tiles, 256 erosion iterations). Manifest SHA-256: `e26a75faec284c3d519f84ed2c9b97b397001be71dfb91a95d62237763efa2fa`.
+- Preserved prior surfaces at `assets/outmaps/test-planet.pre-procedural-backup-20260806-125500` and `assets/outmaps/test-planet.procedural-relief-pass-backup-20260806-130200`.
+- Re-surveyed highest prominence: 31,449.742m at 56.684679N, 20.618054E; F4 and summit scenario now target it.
+- Raster `highest_prominence_peak/1786018012-1292807`: passed, 152.400m clearance, zero seam.
+- Tests: baker 33 library + 5 binary + 6 integration pass; app 196 non-ignored pass. Full workspace rerun deferred because of disk pressure from existing untracked target trees.
