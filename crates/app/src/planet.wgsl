@@ -613,18 +613,28 @@ fn vs_main(input: VertexInput) -> VertexOutput {
             camera_relative_view_position,
         );
     }
-    var aerial = aerial_perspective_components(
-        camera_relative_view_position,
-        direction,
-        surface_height,
+    // Flat-triangle mode returns a categorical colour before the aerial
+    // varyings are consumed by the fragment stage. Keep geometry, normals,
+    // and specular lighting intact, but avoid the expensive atmosphere/fog
+    // integrations for this intentionally diagnostic presentation.
+    var aerial = AerialPerspectiveComponents(
+        vec3<f32>(1.0),
+        vec3<f32>(0.0),
     );
-    if !lake {
-        aerial = terrain_distance_fog_components(
-            aerial,
+    if !flat_triangles {
+        aerial = aerial_perspective_components(
             camera_relative_view_position,
             direction,
             surface_height,
         );
+        if !lake {
+            aerial = terrain_distance_fog_components(
+                aerial,
+                camera_relative_view_position,
+                direction,
+                surface_height,
+            );
+        }
     }
     return VertexOutput(
         camera.projection_matrix * vec4<f32>(camera_relative_view_position, 1.0),

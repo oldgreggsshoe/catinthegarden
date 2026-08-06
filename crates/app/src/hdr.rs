@@ -522,6 +522,9 @@ impl HdrRenderer {
     }
 
     pub fn collect_completed_luminance(&mut self, device: &wgpu::Device) {
+        if !self.auto_exposure_enabled {
+            return;
+        }
         let _ = device.poll(wgpu::PollType::Poll);
         for slot in &mut self.readback_slots {
             let Some(pending) = slot.pending.as_ref() else {
@@ -545,6 +548,9 @@ impl HdrRenderer {
     }
 
     pub fn update_exposure(&mut self, queue: &wgpu::Queue, delta_seconds: f64) {
+        if !self.auto_exposure_enabled {
+            return;
+        }
         let delta_seconds = delta_seconds.clamp(0.0, 1.0) as f32;
         self.target_exposure = target_exposure(self.average_luminance);
         let interpolation = 1.0 - (-delta_seconds * EXPOSURE_ADAPT_SPEED).exp();
@@ -583,6 +589,9 @@ impl HdrRenderer {
         encoder: &mut wgpu::CommandEncoder,
         timestamps: Option<(&wgpu::QuerySet, u32, u32)>,
     ) {
+        if !self.auto_exposure_enabled {
+            return;
+        }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("HDR luminance extraction"),
@@ -739,6 +748,9 @@ impl HdrRenderer {
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
     ) -> Option<usize> {
+        if !self.auto_exposure_enabled {
+            return None;
+        }
         for offset in 0..self.readback_slots.len() {
             let index = (self.next_readback_slot + offset) % self.readback_slots.len();
             if self.readback_slots[index].pending.is_none() {

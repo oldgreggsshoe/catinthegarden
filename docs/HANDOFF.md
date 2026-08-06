@@ -2121,3 +2121,21 @@ at 23.360523290N, 62.414690487W. `highest_prominence_peak` and the F4 constants 
 that direction and a 152.4m clearance pose. Baker procedural-shape tests, flat/ocean shader tests,
 WGSL validation, and `--validate` pass. The first post-bake run correctly caught the stale 13km
 clearance; the pose was then corrected. A fresh GPU rerun is still required after freeing disk space.
+
+## Performance report P0 pass — 6 August 2026
+
+The root `PERFORMANCE_REVIEW.pdf` P0 recommendations are implemented. In flat-triangle mode,
+`vs_main` keeps baked displacement, geometric normals, and triangle specular but supplies identity
+aerial components instead of evaluating aerial perspective and terrain distance fog whose varyings
+are not consumed by the categorical fragment path. Fixed exposure now skips luminance extraction,
+all downsample passes, readback mapping, and adaptation; profiler metadata records zero luminance
+rather than stale timestamp queries, and the HDR API guards the same invariant. Interactive exposure
+assertions still observe every frame, while JSONL serialization is limited to scenario evidence or
+the existing spatial cadence; logs use a buffered writer and flush after captures, manifests, and
+state drop. Terrain edge-neighbour stitching, mixed incoming/outgoing surface probes, and resident
+tile fallback now probe dyadic level indexes, retaining a full-scan fallback at ambiguous boundaries.
+A frontier-index regression covers mixed-level containment. `cargo fmt --all`, `cargo check -p
+catinthegarden-app`, all 197 app tests (6 ignored), and all baker tests (44) pass. Headless Xvfb
+cannot provide a valid DRI3 presentation surface, so a Quadro A/B GPU timing comparison is still
+pending; P1 atmosphere/background and low-density water experiments remain intentionally deferred
+until that measurement identifies a bound.

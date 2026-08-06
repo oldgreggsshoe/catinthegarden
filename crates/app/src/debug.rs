@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File},
-    io::{self, Write},
+    io::{self, BufWriter, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard, mpsc},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -52,9 +52,18 @@ pub struct SpatialLogSample {
 }
 
 #[derive(Clone)]
-pub(crate) struct SharedFile(Arc<Mutex<File>>);
+pub(crate) struct SharedFile(Arc<Mutex<BufWriter<File>>>);
 
-pub(crate) struct LockedFile<'a>(MutexGuard<'a, File>);
+pub(crate) struct LockedFile<'a>(MutexGuard<'a, BufWriter<File>>);
+
+impl SharedFile {
+    pub(crate) fn flush(&self) -> io::Result<()> {
+        self.0
+            .lock()
+            .map_err(|_| io::Error::other("log file lock poisoned"))?
+            .flush()
+    }
+}
 
 impl Write for LockedFile<'_> {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
@@ -924,7 +933,10 @@ impl RunArtifacts {
         let log_file =
             File::create(artifacts.root.join("log.jsonl")).map_err(|error| error.to_string())?;
 
-        Ok((artifacts, SharedFile(Arc::new(Mutex::new(log_file)))))
+        Ok((
+            artifacts,
+            SharedFile(Arc::new(Mutex::new(BufWriter::new(log_file)))),
+        ))
     }
 
     pub fn configure_assertions(&mut self, assertions: ScenarioAssertions) {
@@ -1062,9 +1074,13 @@ impl RunArtifacts {
         exposure: f32,
         target_exposure: f32,
         average_luminance: f32,
+        serialize: bool,
     ) {
         self.assertion_tracker
             .observe_exposure(exposure, target_exposure, average_luminance);
+        if !serialize {
+            return;
+        }
         tracing::info!(
             target: "catinthegarden::exposure",
             sim_time,

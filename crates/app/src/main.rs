@@ -468,6 +468,7 @@ fn format_vertical_fov(vertical_fov_degrees: f64) -> String {
 struct PendingGpuTimestamp {
     sim_time: f64,
     render_path: RenderPath,
+    luminance_enabled: bool,
     receiver: mpsc::Receiver<bool>,
 }
 
@@ -550,7 +551,13 @@ impl GpuProfiler {
         None
     }
 
-    fn begin_readback(&mut self, index: usize, sim_time: f64, render_path: RenderPath) {
+    fn begin_readback(
+        &mut self,
+        index: usize,
+        sim_time: f64,
+        render_path: RenderPath,
+        luminance_enabled: bool,
+    ) {
         let (sender, receiver) = mpsc::channel();
         self.slots[index]
             .readback_buffer
@@ -561,6 +568,7 @@ impl GpuProfiler {
         self.slots[index].pending = Some(PendingGpuTimestamp {
             sim_time,
             render_path,
+            luminance_enabled,
             receiver,
         });
     }
@@ -577,6 +585,7 @@ impl GpuProfiler {
             };
             let sim_time = pending.sim_time;
             let render_path = pending.render_path;
+            let luminance_enabled = pending.luminance_enabled;
             slot.pending = None;
             if !mapped_ok {
                 continue;
@@ -596,7 +605,14 @@ impl GpuProfiler {
                 } else {
                     0.0
                 },
-                luminance_ms: elapsed(2, 3),
+                // Query 2/3 are intentionally unwritten while fixed
+                // exposure is active; do not interpret stale query memory as
+                // a luminance timing sample.
+                luminance_ms: if luminance_enabled {
+                    elapsed(2, 3)
+                } else {
+                    0.0
+                },
                 sun_ms: elapsed(4, 5),
                 blur_ms: elapsed(6, 7),
                 bloom_ms: elapsed(8, 9),
@@ -666,6 +682,7 @@ struct State {
     scenario: Option<scenario::ScenarioRunner>,
     scenario_flight_initialized: bool,
     artifacts: debug::RunArtifacts,
+    log_writer: debug::SharedFile,
     scenario_capture_failed: bool,
     mouse_captured: bool,
     profile_render: bool,
@@ -699,7 +716,7 @@ impl State {
         let (artifacts, log_writer) =
             debug::RunArtifacts::create_with_assertions(artifact_name, assertions)
                 .expect("test-run storage must be writable");
-        debug::init_tracing(log_writer);
+        debug::init_tracing(log_writer.clone());
         tracing::info!(scenario = artifact_name, ?terrain_source, "run started");
 
         let size = window.inner_size();
@@ -947,6 +964,7 @@ impl State {
             scenario,
             scenario_flight_initialized: false,
             artifacts,
+            log_writer,
             scenario_capture_failed: false,
             mouse_captured: false,
             profile_render,
@@ -1672,16 +1690,22 @@ impl State {
         let velocity_meters_per_second = camera_velocity_world.length();
         self.previous_camera_world_position = camera_world_position;
         self.previous_sim_time = sim_time;
-        self.hdr.collect_completed_luminance(&self.device);
-        // Eye adaptation is a presentation effect, not simulation state. It
-        // must continue to converge while F10 freezes planet animation.
-        self.hdr.update_exposure(&self.queue, f64::from(frame_time));
+        let auto_exposure_enabled = self.hdr.auto_exposure_enabled();
+        if auto_exposure_enabled {
+            self.hdr.collect_completed_luminance(&self.device);
+            // Eye adaptation is a presentation effect, not simulation state.
+            // It must continue to converge while F10 freezes planet
+            // animation, but fixed exposure should not pay for meter/readback
+            // work at all.
+            self.hdr.update_exposure(&self.queue, f64::from(frame_time));
+        }
         let exposure_state = self.hdr.exposure_state();
         self.artifacts.record_exposure_sample(
             sim_time,
             exposure_state.exposure,
             exposure_state.target_exposure,
             exposure_state.average_luminance,
+            self.scenario.is_some() || write_log,
         );
         self.artifacts.observe_lod_frame(
             &self.terrain_stats.level_histogram,
@@ -2283,11 +2307,15 @@ impl State {
                 .slots[slot_index]
                 .query_set
         });
-        self.hdr.encode_luminance(
-            &mut encoder,
-            timestamp_query_set.map(|query_set| (query_set, 2, 3)),
-        );
-        let hdr_luminance_readback_slot = self.hdr.encode_luminance_readback(&mut encoder);
+        if auto_exposure_enabled {
+            self.hdr.encode_luminance(
+                &mut encoder,
+                timestamp_query_set.map(|query_set| (query_set, 2, 3)),
+            );
+        }
+        let hdr_luminance_readback_slot = auto_exposure_enabled
+            .then(|| self.hdr.encode_luminance_readback(&mut encoder))
+            .flatten();
         // The disc and corona are a camera-only visual aid. Composite them
         // after the meter has sampled the physical atmosphere/terrain scene so
         // their terrain occlusion cannot drive a false exposure rebound at
@@ -2421,7 +2449,12 @@ impl State {
             self.gpu_profiler
                 .as_mut()
                 .expect("GPU profiler exists")
-                .begin_readback(slot_index, sim_time, self.render_path);
+                .begin_readback(
+                    slot_index,
+                    sim_time,
+                    self.render_path,
+                    auto_exposure_enabled,
+                );
         }
         let gpu_timestamp_readback_ms = gpu_readback_started.elapsed().as_secs_f32() * 1_000.0;
         let present_started = Instant::now();
@@ -2444,6 +2477,9 @@ impl State {
                     tracing::error!(%error, "screenshot capture failed");
                 }
             }
+            // Captures are externally consumed while a run is in progress;
+            // make the JSONL evidence durable alongside the PNG.
+            let _ = self.log_writer.flush();
         }
         let capture_readback_ms = capture_started.elapsed().as_secs_f32() * 1_000.0;
         if let (Some(pending), Some(geometry)) = (pending_depth_probe, probe_geometry) {
@@ -2559,11 +2595,18 @@ impl State {
             self.artifacts.finish(harness_passed).unwrap_or_else(
                 |error| tracing::error!(%error, "could not finalize test-run manifest"),
             );
+            let _ = self.log_writer.flush();
             tracing::info!(passed, "scenario completed");
             return Some(passed);
         }
 
         None
+    }
+}
+
+impl Drop for State {
+    fn drop(&mut self) {
+        let _ = self.log_writer.flush();
     }
 }
 

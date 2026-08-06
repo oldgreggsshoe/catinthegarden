@@ -1,10 +1,7 @@
-I inspected capture 1786024172-1341075. It showed two faults: black square/vertical-fin holes from fixed-L7 terrain competing with the analytic ocean shell over mixed L4 land/water tiles, and a broad plateau-like procedural macro surface.
+Performance report pass completed for the low-risk P0 items:
+- flat-triangle vertex aerial/fog work bypassed;
+- fixed exposure skips luminance mip/readback/adaptation and profiler marks it zero;
+- terrain frontier/transition/tile lookups indexed with correctness fallbacks;
+- exposure logs buffered and interactive serialization throttled, with capture/manifest/shutdown flushes.
 
-Fixed and pushed as d5d8ba9:
-- flat mode now keeps the categorical terrain pass and skips analytic ocean-shell batches, removing the ownership race; normal rendering keeps the shell;
-- procedural relief lowers broad plateau terms and adds thresholded frequency-360 local ridge peaks;
-- active bake regenerated/validated and backed up at assets/outmaps/test-planet.pre-local-mountain-backup-20260806-1540; manifest SHA-256 010fd7cecb15edf1e0d91a0e63cbcf062113b08615bcb27bdf5783578c67d0ea;
-- summit survey: 25,255.259589m at 23.360523N, 62.414690W; F4/highest-prominence constants/pose re-authored.
-
-Baker shape, shader flat/ocean/WGSL tests and bake validation passed. A stale-pose GPU run first measured 13,089m, then the re-authored pose measured 299.876m; it was lowered by 147.476m to target 152.4m. Final GPU rerun is blocked by the full filesystem, not by a renderer assertion.
-                                                                                                                                                                                                                                                                                    
+Validation: cargo fmt; app check; 197 app tests (6 ignored); 44 baker tests. Workspace build/tests passed before final guard/index edits; rerun the full workspace suite if the host remains available. Headless Xvfb lacks DRI3, so no trustworthy GPU A/B ms comparison was possible. P1 atmosphere/water/atlas work remains deferred pending real Quadro profiling.
