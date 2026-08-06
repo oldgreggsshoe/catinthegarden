@@ -2122,6 +2122,19 @@ that direction and a 152.4m clearance pose. Baker procedural-shape tests, flat/o
 WGSL validation, and `--validate` pass. The first post-bake run correctly caught the stale 13km
 clearance; the pose was then corrected. A fresh GPU rerun is still required after freeing disk space.
 
+The next manual set (`test-runs/manual/1786040127-1473748`) confirmed that the renderer was not
+using stale terrain: its log names the active `assets/outmaps/test-planet` source and its local
+CPU probes are approximately 1,000-1,200m. The view was simply a broad lowland, and the prior L4
+surface contained only 5.012% sampled values above 1,000m. To make the game-scale terrain read as
+mountainous across more of the planet, the generator now widens the mountain-region mask and adds
+a resolvable foothill field, while retaining the narrow and local peak thresholds. The validated
+1024x512 staging bake `assets/outmaps/test-planet.foothills-20260806-1835` is now active with
+manifest SHA-256 `3e1d773bcbc1d2050d84db30bbdc0c1417d3bd14c8bcd63cfab95355f66126e`; the immediately
+prior active directory is preserved at `assets/outmaps/test-planet.pre-foothills-backup-20260806-192315`.
+Sampled dense-L4 coverage is now 17.723% above 1,000m, 3.376% above 2,000m, and 0.611% above
+3,000m (previously 5.012%, 0.745%, and 0.098%). `cargo test -p catinthegarden-baker
+procedural_game_shape_is_deterministic_asymmetric_and_varied` and baker `--validate` pass. A fresh
+GPU/manual capture remains the final visual check.
 ## Performance report P0 pass — 6 August 2026
 
 The root `PERFORMANCE_REVIEW.pdf` P0 recommendations are implemented. In flat-triangle mode,

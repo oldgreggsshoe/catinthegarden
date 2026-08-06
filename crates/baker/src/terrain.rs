@@ -773,7 +773,7 @@ fn generate_procedural_game_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
 
             let interior = smoother_step((signed_land / 0.42).clamp(0.0, 1.0));
             let mountain_region = smoother_step(
-                ((fbm(&regions, warped, 1.75, 4) + 0.12 * broad_relief - 0.05) / 0.38)
+                ((fbm(&regions, warped, 1.75, 4) + 0.12 * broad_relief + 0.08) / 0.34)
                     .clamp(0.0, 1.0),
             );
             let ridge = ridged_fbm(&ridges, warped, 3.35, 5);
@@ -790,11 +790,18 @@ fn generate_procedural_game_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
             let narrow_peak = ((narrow_ridge - 0.68) / 0.32).clamp(0.0, 1.0).powi(3);
             let local_ridge = ridged_fbm(&narrow_ridges, warped, 360.0, 3);
             let local_peak = ((local_ridge - 0.70) / 0.30).clamp(0.0, 1.0).powi(3);
+            // The previous field left most positive land in a nearly planar
+            // 50-850m band. Add a resolvable foothill field across land, then
+            // let the thresholded mountain belts rise out of it. This keeps
+            // the peaks narrow without requiring source frequencies finer
+            // than the dense L4 bake can represent.
+            let foothills = interior * ridged_fbm(&regions, warped, 8.0, 3).powi(2) * 900.0;
             let highland = (0.5 + broad_relief * 0.5).max(0.0);
             let fine_breakup = fbm(&detail, warped, 12.0, 3);
-            let lowland = 50.0 + interior * (300.0 + highland * 500.0) + fine_breakup * 70.0;
+            let lowland =
+                80.0 + interior * (360.0 + highland * 620.0) + foothills + fine_breakup * 70.0;
             let mountain_height = mountain_region
-                * (300.0 + sharp_ridge * 4_500.0 + highland * 700.0)
+                * (220.0 + sharp_ridge * 4_500.0 + highland * 700.0)
                 + mountain_region * narrow_peak * 5_000.0
                 + mountain_region * local_peak * 2_200.0;
             (lowland + mountain_height).clamp(1.0, MAX_HEIGHT_METERS)
