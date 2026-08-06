@@ -1,13 +1,14 @@
-Done. Created `PERFORMANCE_REVIEW.pdf` in the project root.
+Updated `PERFORMANCE_REVIEW.pdf` for the complete raymarch-renderer removal case.
 
-It is an 11-page, source-referenced review covering the raster/flat-L6 path, atmosphere, HDR/exposure, terrain CPU/streaming, ray renderer, baker, core types, and build profile. The top recommendations are:
+The report now covers the ray-only removal inventory, what raster functionality must remain, realistic performance expectations, stale-reference cleanup, and a raster-only validation plan. It explicitly avoids claiming a direct raster FPS gain from removing a path that was not running concurrently.
 
-1. Skip unused aerial/fog vertex work in flat-triangle mode.
-2. Suspend or throttle luminance metering while auto exposure is disabled.
-3. Index repeated terrain edge and height queries.
-4. Throttle and buffer interactive JSON logging.
+Validation passed:
+- 11-page A4 PDF regenerated, rendered, and visually inspected
+- PDF metadata/text checks and stale-heading checks
+- `CARGO_TARGET_DIR=/home/dad/catingard/.target-flat4 cargo check --workspace`
+- `git diff --check`
 
-The PDF was rendered and visually checked page-by-page. `cargo check --workspace`, PDF metadata/text validation, and `git diff --check` all pass. No runtime source was changed. The PDF and this response were committed and pushed to `experiment/flat-triangle-wireframe`.
+No runtime source was changed. The updated PDF and response are ready to commit and push.
 
 <oai-mem-citation>
 <citation_entries>
