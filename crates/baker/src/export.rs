@@ -85,6 +85,7 @@ pub fn refine_existing_outmap(output: &Path) -> BakeResult<OutmapManifest> {
         output: output.to_path_buf(),
         etopo: None,
         game_terrain: false,
+        zoomed_terrain: false,
         seed: existing.seed,
         width: existing.working_width as usize,
         height: existing.working_height as usize,
@@ -338,7 +339,9 @@ fn build_manifest(
             } else {
                 "authored Earth-like generator"
             };
-            let profile = if config.game_terrain {
+            let profile = if config.zoomed_terrain {
+                "; zoomed-game-terrain relief v2"
+            } else if config.game_terrain {
                 "; game-terrain relief v1"
             } else {
                 ""

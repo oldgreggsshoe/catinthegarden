@@ -1,23 +1,20 @@
-Done. The active planet now uses a new `--game-terrain` ETOPO bake:
+Done — I replaced the previous Earth-scale bake with a deliberately game-like zoomed terrain profile.
 
-- Positive land amplified 1.6x.
-- Deterministic 150x/520x ridged mountain detail baked into the shared height source, capped at 2,400m.
-- Coastlines, sea level, bathymetry, and water ownership unchanged.
-- Previous bake backed up at `assets/outmaps/test-planet.pre-game-terrain-backup-20260806-101349`.
-- New manifest SHA-256: `70855c129545aead5e69731cfc77988d697b76e317e8623845ba0f44c1b9937f`.
+What changed:
+- Added baker option `--zoomed-terrain`.
+- It samples a compact 48° x 36° Himalaya/India/Tibet window and repeats it smoothly 4x around longitude and 2x around latitude.
+- Positive land now gets a 2.6x lift plus up to 7,000m of ridged mountain uplift. Runtime presentation makes the largest peaks roughly 36km above sea level.
+- Coastlines, sea level, bathymetry, CPU clearance, normals, LOD bounds, and F4 use the same baked surface.
+- Re-authored F4 and `highest_prominence_peak` to the new highest summit: 19.296266°N, 93.023061°W, 36,200.491m presented prominence.
+- Backed up all prior active bakes. Active manifest SHA-256: `998e55e8b89e88de3feef90c7d9547e5655d745399e726a85d1aaa1552a01b9c`.
 
-To ensure mountains occupy more than a handful of flat facets, the flat-triangle experiment is now fixed at L7. The source remains authoritative; only the presentation topology is denser.
+Validation:
+- `cargo test --workspace`: 196 app + 31 baker lib + 4 baker bin + 6 baker integration + 6 coretypes passed; 6 ignored.
+- Raster orbit: `1786011609-1231134`, passed, 21.624ms settled, 0m seam.
+- Raster summit: `1786011581-1230898`, passed, 151.711m clearance.
+- The summit capture now visibly shows dense, sharp, repeated mountain ranges rather than the prior broad Earth-scale relief.
 
-Measured result:
-- Raw summit: 9,000m export ceiling.
-- Presented summit survey: 36,200.028m at 35.251182N, 77.095728E.
-- Raster orbit: pass, 23.884ms settled.
-- Highest-prominence raster: pass, 151.711m clearance, 20.087ms.
-- Ground-detail raster: pass.
-- Workspace tests: 196 app + 30 baker + 6 integration + 6 coretypes passed; 6 ignored.
-- `cargo check --workspace`: passed.
-
-I also re-authored F4/highest-prominence to the new summit. Fresh captures still show the known mixed-LOD dark foreground facets in the flat experiment, so visual sign-off is still pending even though terrain, clearance, seams, and deterministic assertions pass.
+The separate flat-triangle experiment still has its known mixed-LOD foreground facet artifact; this terrain pass does not mask or rewrite that renderer issue.
 
 Committed and pushed to `experiment/flat-triangle-wireframe`.
 

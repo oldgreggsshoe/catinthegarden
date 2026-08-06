@@ -13,6 +13,10 @@ pub struct BakeConfig {
     /// positive land is vertically amplified and receives dense, bounded
     /// ridge detail while coastlines, sea level, and bathymetry remain fixed.
     pub game_terrain: bool,
+    /// Remap a compact observed source window across the globe before the
+    /// game-relief pass. This is intentionally non-Earth-like: a small,
+    /// mountain-rich "zoomed map" becomes the whole playable planet.
+    pub zoomed_terrain: bool,
     pub seed: u32,
     pub width: usize,
     pub height: usize,
@@ -30,6 +34,7 @@ impl Default for BakeConfig {
             output: PathBuf::from("assets/outmaps/test-planet"),
             etopo: None,
             game_terrain: false,
+            zoomed_terrain: false,
             // Coastline and regional-detail seed for the Earth-like macro
             // layout in terrain.rs. The large continent and mountain-belt
             // placement is authored; this keeps its smaller shapes

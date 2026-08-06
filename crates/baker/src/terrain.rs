@@ -21,6 +21,17 @@ const GAME_TERRAIN_LAND_SCALE: f64 = 1.6;
 const GAME_TERRAIN_RIDGE_AMPLITUDE_METERS: f64 = 2_400.0;
 const GAME_TERRAIN_RIDGE_BASE_FREQUENCY: f64 = 150.0;
 const GAME_TERRAIN_RIDGE_DETAIL_FREQUENCY: f64 = 520.0;
+// The zoomed profile samples this compact observed window repeatedly. Smooth
+// sinusoidal coordinates return to the window centre at every repeat boundary,
+// so the intentionally repeated game map has no hard longitude/latitude seams.
+const ZOOMED_TERRAIN_CENTER_LATITUDE_DEGREES: f64 = 35.0;
+const ZOOMED_TERRAIN_CENTER_LONGITUDE_DEGREES: f64 = 77.0;
+const ZOOMED_TERRAIN_SOURCE_HALF_LATITUDE_DEGREES: f64 = 18.0;
+const ZOOMED_TERRAIN_SOURCE_HALF_LONGITUDE_DEGREES: f64 = 24.0;
+const ZOOMED_TERRAIN_LONGITUDE_REPEATS: f64 = 4.0;
+const ZOOMED_TERRAIN_LATITUDE_REPEATS: f64 = 4.0;
+const ZOOMED_TERRAIN_LAND_SCALE: f64 = 2.6;
+const ZOOMED_TERRAIN_RIDGE_AMPLITUDE_METERS: f64 = 7_000.0;
 // The atlas stores regional averages. Erosion models unresolved local relief
 // instead of treating an entire coarse atlas cell as one planar slope.
 const MAX_EROSION_CELL_METERS: f64 = 8_000.0;
@@ -57,8 +68,16 @@ impl Terrain {
         } else {
             generate_base_shape(&grid, config.seed)
         };
-        if config.game_terrain {
-            apply_game_terrain_relief(&grid, &mut height_meters, config.seed);
+        if config.zoomed_terrain {
+            height_meters = zoom_source_window(&grid, &height_meters);
+        }
+        if config.game_terrain || config.zoomed_terrain {
+            apply_game_terrain_relief(
+                &grid,
+                &mut height_meters,
+                config.seed,
+                config.zoomed_terrain,
+            );
         }
         let len = grid.len();
         let mut terrain = Self {
@@ -592,7 +611,7 @@ impl Terrain {
 /// direction-domain ridged bands add narrow mountain shoulders and peaks. The
 /// relief gate is based on the incoming elevation, so oceans, lakes, and
 /// coastlines are not raised or reclassified by this pass.
-fn apply_game_terrain_relief(grid: &SphericalGrid, heights: &mut [f64], seed: u32) {
+fn apply_game_terrain_relief(grid: &SphericalGrid, heights: &mut [f64], seed: u32, zoomed: bool) {
     let ridges = Perlin::new(seed ^ 0x4752_4944);
     let detail = Perlin::new(seed ^ 0x4D54_4E31);
     heights
@@ -603,15 +622,57 @@ fn apply_game_terrain_relief(grid: &SphericalGrid, heights: &mut [f64], seed: u3
                 return;
             }
             let source_height = *height;
-            let mountain_gate = smoother_step(((source_height - 800.0) / 2_400.0).clamp(0.0, 1.0));
+            let gate_start = if zoomed { 300.0 } else { 800.0 };
+            let gate_span = if zoomed { 1_800.0 } else { 2_400.0 };
+            let mountain_gate =
+                smoother_step(((source_height - gate_start) / gate_span).clamp(0.0, 1.0));
             let direction = grid.direction(index).to_array();
             let broad_ridge = ridged_fbm(&ridges, direction, GAME_TERRAIN_RIDGE_BASE_FREQUENCY, 3);
             let fine_ridge = ridged_fbm(&detail, direction, GAME_TERRAIN_RIDGE_DETAIL_FREQUENCY, 2);
             let ridge = (broad_ridge * 0.72 + fine_ridge * 0.28 - 0.52).max(0.0) / 0.48;
-            let added_ridge = mountain_gate * ridge.min(1.0) * GAME_TERRAIN_RIDGE_AMPLITUDE_METERS;
-            *height = (source_height * GAME_TERRAIN_LAND_SCALE + added_ridge)
-                .clamp(1.0, MAX_HEIGHT_METERS);
+            let ridge_amplitude = if zoomed {
+                ZOOMED_TERRAIN_RIDGE_AMPLITUDE_METERS
+            } else {
+                GAME_TERRAIN_RIDGE_AMPLITUDE_METERS
+            };
+            let land_scale = if zoomed {
+                ZOOMED_TERRAIN_LAND_SCALE
+            } else {
+                GAME_TERRAIN_LAND_SCALE
+            };
+            let added_ridge = mountain_gate * ridge.min(1.0) * ridge_amplitude;
+            *height = (source_height * land_scale + added_ridge).clamp(1.0, MAX_HEIGHT_METERS);
         });
+}
+
+/// Samples the Himalaya/India/Tibet-sized portion of the source repeatedly
+/// across the planet. The sinusoidal coordinate map is periodic in both
+/// dimensions and keeps the source window continuous at each repeat boundary.
+fn zoom_source_window(grid: &SphericalGrid, source_heights: &[f64]) -> Vec<f64> {
+    let centre_latitude = ZOOMED_TERRAIN_CENTER_LATITUDE_DEGREES.to_radians();
+    let centre_longitude = ZOOMED_TERRAIN_CENTER_LONGITUDE_DEGREES.to_radians();
+    let half_latitude = ZOOMED_TERRAIN_SOURCE_HALF_LATITUDE_DEGREES.to_radians();
+    let half_longitude = ZOOMED_TERRAIN_SOURCE_HALF_LONGITUDE_DEGREES.to_radians();
+    (0..grid.len())
+        .into_par_iter()
+        .map(|index| {
+            let direction = grid.direction(index);
+            let latitude = direction.y.asin();
+            let longitude = direction.z.atan2(direction.x);
+            let source_latitude = centre_latitude
+                + half_latitude
+                    * ((latitude - centre_latitude) * ZOOMED_TERRAIN_LATITUDE_REPEATS).sin();
+            let source_longitude = centre_longitude
+                + half_longitude
+                    * ((longitude - centre_longitude) * ZOOMED_TERRAIN_LONGITUDE_REPEATS).sin();
+            let source_direction = glam::DVec3::new(
+                source_latitude.cos() * source_longitude.cos(),
+                source_latitude.sin(),
+                source_latitude.cos() * source_longitude.sin(),
+            );
+            grid.sample_f64(source_heights, source_direction)
+        })
+        .collect()
 }
 
 /// Authored land-ice footprint used when ETOPO supplies observed elevations
@@ -931,7 +992,7 @@ mod tests {
             .map(|index| if index % 5 == 0 { -250.0 } else { 3_000.0 })
             .collect();
         let original = heights.clone();
-        apply_game_terrain_relief(&grid, &mut heights, 0xEA27_2026);
+        apply_game_terrain_relief(&grid, &mut heights, 0xEA27_2026, false);
 
         assert!(
             heights
@@ -950,6 +1011,19 @@ mod tests {
                 .len()
                 > 8
         );
+    }
+
+    #[test]
+    fn zoomed_source_window_repeats_without_nonfinite_or_sea_level_drift() {
+        let grid = SphericalGrid::new(128, 64);
+        let source: Vec<_> = (0..grid.len())
+            .map(|index| grid.direction(index).y * 6_000.0 - 3_000.0)
+            .collect();
+        let zoomed = zoom_source_window(&grid, &source);
+        assert_eq!(zoomed.len(), source.len());
+        assert!(zoomed.iter().all(|height| height.is_finite()));
+        assert!(zoomed.iter().any(|&height| height > 500.0));
+        assert!(zoomed.iter().any(|&height| height < -500.0));
     }
 
     #[test]

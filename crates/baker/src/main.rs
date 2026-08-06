@@ -79,6 +79,9 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if config.game_terrain {
         println!("relief profile: game terrain (amplified land + dense mountain ridges)");
     }
+    if config.zoomed_terrain {
+        println!("relief profile: zoomed game terrain (compact Himalaya window repeated globally)");
+    }
     print_sparse_coverage(&config);
     let manifest = bake(&config)?;
     let [landing_x, landing_y, landing_z] = manifest.sparse_landing_direction;
@@ -136,6 +139,11 @@ fn parse_config(arguments: &[String]) -> Result<BakeConfig, String> {
                 index += 2;
             }
             "--game-terrain" => {
+                config.game_terrain = true;
+                index += 1;
+            }
+            "--zoomed-terrain" => {
+                config.zoomed_terrain = true;
                 config.game_terrain = true;
                 index += 1;
             }
@@ -203,6 +211,7 @@ fn print_help() {
            --output PATH              Output root (default assets/outmaps/test-planet)\n\
            --etopo PATH               NOAA ETOPO 2022 Ice Surface GeoTIFF macro source\n\
            --game-terrain              Amplify land and add dense baked mountain ridges\n\
+           --zoomed-terrain             Repeat a compact mountain-rich source window globally\n\
            --seed N                   Decimal or 0x-prefixed deterministic seed\n\
            --width N                  Working equirectangular grid width\n\
            --height N                 Working grid height\n\
@@ -247,6 +256,14 @@ mod tests {
     fn parses_game_terrain_profile() {
         let arguments = ["--game-terrain".to_owned()];
         let config = parse_config(&arguments).unwrap();
+        assert!(config.game_terrain);
+    }
+
+    #[test]
+    fn parses_zoomed_terrain_profile_and_enables_game_relief() {
+        let arguments = ["--zoomed-terrain".to_owned()];
+        let config = parse_config(&arguments).unwrap();
+        assert!(config.zoomed_terrain);
         assert!(config.game_terrain);
     }
 }

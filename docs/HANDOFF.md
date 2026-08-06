@@ -113,6 +113,34 @@ at 23.884ms settled with 0.000488m seam, `highest_prominence_peak/1786008708-119
 finite/LOD assertions. Fresh low-flight visual sign-off is still pending because the known
 mixed-LOD foreground dark facets remain visible in the flat experiment.
 
+### Zoomed game-terrain rebake — 6 August 2026
+
+The previous game bake still read as Earth at planetary scale, so the baker now has an explicit
+`--zoomed-terrain` profile. It remaps a compact **48° longitude by 36° latitude** window centred
+on the Himalaya/India/Tibet source (35°N, 77°E) across the planet with smooth periodic sine
+coordinates: four repeats around longitude and two around latitude. Repeat boundaries return to
+the source-window centre rather than introducing hard equirectangular seams. The profile implies
+`--game-terrain`, then applies a deliberately exaggerated **2.6x** positive-land lift and a
+**7,000m** ridged uplift gated from 300m to 2,100m source elevation; oceans, sea level, and
+bathymetry remain untouched.
+
+The active outmap is the validated 3,252-tile L0-L18 bake at
+`assets/outmaps/test-planet`, with manifest SHA-256
+`998e55e8b89e88de3feef90c7d9547e5655d745399e726a85d1aaa1552a01b9c`. On the dense L4 samples,
+the fraction above 5,000m increased from 1.76% in the prior game bake to 2.33% in this profile;
+the raw export ceiling remains 9,000m and the existing runtime 4x presentation makes those peaks
+up to roughly 36km above sea level. The prior active copies are retained at
+`assets/outmaps/test-planet.pre-zoomed-game-terrain-backup-20260806-104956`,
+`assets/outmaps/test-planet.pre-zoomed-game-terrain-v2-backup-20260806-110444`, and
+`assets/outmaps/test-planet.pre-zoomed-game-terrain-v3-backup-20260806-111636`.
+
+The global prominence survey now finds 36,200.491m at 19.296266°N, 93.023061°W. F4 and
+`highest_prominence_peak` use that repeated mountain; the summit scenario passes at 151.711m
+clearance with 0m seam delta. Raster `orbit_once/1786011609-1231134` passes at 21.624ms settled
+and raster `highest_prominence_peak/1786011581-1230898` passes at 13.604ms. The screenshots still
+show the experimental flat-triangle renderer's known mixed-LOD foreground facets; this bake pass
+changes the macro geography/relief, not that separate presentation fault.
+
 ### Polar cap and flat-water correction — 4 August 2026
 
 The imported ETOPO classification no longer lets the old `|latitude| > 66°` rule turn polar ocean
