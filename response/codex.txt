@@ -1,11 +1,10 @@
-I inspected the newest manual capture. It had two separate faults:
-- the black square/vertical-fin artifacts were flat L7 terrain competing with the analytic ocean shell across mixed L4 land/water tiles;
-- the broad lime surface was the procedural macro's highland/mountain base being too wide and plateau-like.
+I inspected capture 1786024172-1341075. It showed two faults: black square/vertical-fin holes from fixed-L7 terrain competing with the analytic ocean shell over mixed L4 land/water tiles, and a broad plateau-like procedural macro surface.
 
-Fixes applied:
-- flat-triangle mode now owns the categorical surface and suppresses the analytic ocean shell, so mixed land/water fallback cannot punch square holes through it;
-- procedural relief lowers the broad lowland/highland plateaus and adds a thresholded local ridge field (frequency 360) with tighter, steeper summits;
-- the active bake was regenerated and backed up at assets/outmaps/test-planet.pre-local-mountain-backup-20260806-1540. New active manifest: 010fd7cecb15edf1e0d91a0e63cbcf062113b08615bcb27bdf5783578c67d0ea (dense L4 bake; stale old sparse files remain physically but are not listed by the manifest).
-- the standard summit survey now reports 25,255.259589m at 23.360523N, 62.414690W; F4/highest-prominence constants and pose were re-authored.
+Fixed and pushed as d5d8ba9:
+- flat mode now keeps the categorical terrain pass and skips analytic ocean-shell batches, removing the ownership race; normal rendering keeps the shell;
+- procedural relief lowers broad plateau terms and adds thresholded frequency-360 local ridge peaks;
+- active bake regenerated/validated and backed up at assets/outmaps/test-planet.pre-local-mountain-backup-20260806-1540; manifest SHA-256 010fd7cecb15edf1e0d91a0e63cbcf062113b08615bcb27bdf5783578c67d0ea;
+- summit survey: 25,255.259589m at 23.360523N, 62.414690W; F4/highest-prominence constants/pose re-authored.
 
-Validation: baker procedural-shape test, shader parser/flat/ocean tests, and bake validation passed. The first post-bake summit run correctly exposed the old pose (13,089m clearance), so the pose was re-authored; a fresh GPU scenario rerun is pending because the full target/output directories exhausted disk space.
+Baker shape, shader flat/ocean/WGSL tests and bake validation passed. A stale-pose GPU run first measured 13,089m, then the re-authored pose measured 299.876m; it was lowered by 147.476m to target 152.4m. Final GPU rerun is blocked by the full filesystem, not by a renderer assertion.
+                                                                                                                                                                                                                                                                                    
