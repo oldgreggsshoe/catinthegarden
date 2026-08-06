@@ -2219,3 +2219,11 @@ path now applies that flattening only when the sampled macro height is non-posit
 positive mixed shoreline/ancestor-fallback samples continuous with adjacent land. The focused
 terrain suite remains green (48 tests) and `cargo check -p catinthegarden-app` passes; a fresh GPU
 capture is still required to verify the wall reduction visually.
+
+The next manual run `test-runs/manual/1786051770-106236` logged the fixed-L7 view while the
+camera was moving (up to 300 drawn chunks against the 256 active budget), but its screenshot
+manifest was empty. The depth-fighting report is consistent with the flat experiment's outgoing
+and incoming LOD grids being rendered together during camera-driven frontier changes. Flat mode
+now disables those cross-fades and clears stale transition nodes; the normal renderer retains its
+existing dithered transitions. Focused terrain tests and app checking pass; a new PNG capture is
+still needed for visual confirmation.

@@ -2052,6 +2052,17 @@ impl TerrainRenderer {
         active_render_nodes: &BTreeSet<QuadtreeNode>,
         presentation_time: f64,
     ) {
+        // The flat-triangle presentation is a fixed-topology diagnostic view.
+        // Cross-fading an outgoing patch with its replacement puts two nearly
+        // coplanar depth-writing grids over the same pixels while the camera
+        // moves, which reads as z-fighting even though the normal renderer's
+        // dithered transition is safe for its material path.
+        if self.flat_triangle_experiment {
+            self.fading_out_chunks.clear();
+            self.fade_in_started_at.clear();
+            self.active_render_nodes = active_render_nodes.clone();
+            return;
+        }
         if self.active_render_nodes.is_empty() {
             self.active_render_nodes = active_render_nodes.clone();
             return;
