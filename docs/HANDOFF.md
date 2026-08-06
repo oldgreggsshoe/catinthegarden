@@ -196,6 +196,33 @@ all 33 baker-library, 5 baker-binary, and 6 baker-integration tests pass. The
 full workspace suite was not rerun because the repository contains several
 large untracked target trees and the session is disk-pressure constrained.
 
+### Narrow-ridge prominence pass — 6 August 2026
+
+The first procedural bake had the right global asymmetry but its mountains still
+spread their height over broad, smooth regions. The procedural generator now
+keeps a broad mountain-region mask and adds a separate thresholded, cubed
+ridged fold at frequency 11 with a 7,000m cap. That narrow spine is added before
+the same erosion/hydrology pipeline, so the new peaks are steep and locally
+prominent rather than a second low-frequency blanket. The baker test pins a
+greater-than-250m neighbour-scale summit prominence on the deterministic field;
+the continuous direction-domain sampling remains seam-safe.
+
+The active validated outmap is `assets/outmaps/test-planet`, with manifest
+SHA-256 `c0bb366d115d14abbff71917a4b8f3cf93e82b1437166e6aba7ad190127bcf59`.
+The generator profile is now recorded as `procedural-game-terrain narrow-ridge
+relief v2`. The immediately prior procedural surfaces remain at
+`assets/outmaps/test-planet.procedural-narrow-5500-backup-20260806-140234`,
+`assets/outmaps/test-planet.pre-narrow-mountains-backup-20260806-135650`, and
+the earlier backups above.
+
+The global summit survey now measures **35,302.559m** presented prominence at
+23.485719°N, 62.546713°W (raw L4 maximum 8,820.148m), up from 31,449.742m on
+the first procedural bake. F4 and `highest_prominence_peak` were re-authored;
+raster `highest_prominence_peak/1786021735-1323655` passes at 152.400m
+clearance and zero seam. The final height/biome previews show narrow bright
+mountain spines over the non-repeating continents. Baker tests (33 library, 5
+binary, 6 integration) and all 196 non-ignored app tests pass.
+
 ### Polar cap and flat-water correction — 4 August 2026
 
 The imported ETOPO classification no longer lets the old `|latitude| > 66°` rule turn polar ocean

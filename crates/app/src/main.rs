@@ -75,13 +75,13 @@ const LOW_FLIGHT_ALTITUDE_METERS: f64 = 10.0;
 /// is measured by the standard global-summit/prominence instrument; as the
 /// planet's highest summit it uses sea level as its key col.
 const ACTIVE_HIGHEST_PROMINENCE_DIRECTION: glam::DVec3 = glam::DVec3::new(
-    0.514_066_312_449_577,
-    0.835_660_523_248_427,
-    -0.193_409_710_947_146,
+    0.422_833_683_097_551,
+    0.398_520_482_420_953,
+    0.813_875_359_947_167,
 );
-const ACTIVE_HIGHEST_PROMINENCE_METERS: f64 = 31_449.742_467_607;
+const ACTIVE_HIGHEST_PROMINENCE_METERS: f64 = 35_302.559_463_870;
 #[cfg(test)]
-const ACTIVE_HIGHEST_RAW_MACRO_ELEVATION_METERS: f64 = 7_821.087_402_344;
+const ACTIVE_HIGHEST_RAW_MACRO_ELEVATION_METERS: f64 = 8_820.148_437_500;
 /// How close to the ground flight may descend. This used to be the entry
 /// altitude above, doing double duty, so the camera could never get nearer the
 /// surface than 500 ft and eye-level views of the terrain were unreachable.
@@ -3275,9 +3275,9 @@ mod tests {
     fn active_peak_measurement_uses_standard_global_summit_prominence() {
         let direction = ACTIVE_HIGHEST_PROMINENCE_DIRECTION;
         assert!((direction.length() - 1.0).abs() < 1.0e-12);
-        assert!((direction.y.asin().to_degrees() - 56.684_679_157).abs() < 1.0e-6);
+        assert!((direction.y.asin().to_degrees() - 23.485_719_221).abs() < 1.0e-6);
         assert!(
-            (crate::planet::geographic_longitude_degrees(direction) - 20.618_053_688).abs()
+            (crate::planet::geographic_longitude_degrees(direction) + 62.546_713_328).abs()
                 < 1.0e-6
         );
 

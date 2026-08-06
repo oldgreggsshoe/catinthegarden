@@ -731,6 +731,7 @@ fn generate_procedural_game_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
     let warp = Perlin::new(seed ^ 0xD04A_1A7E);
     let regions = Perlin::new(seed ^ 0xA07E_7A1B);
     let ridges = Perlin::new(seed ^ 0xB1D6_E5B1);
+    let narrow_ridges = Perlin::new(seed ^ 0xC11F_7EAD);
     let detail = Perlin::new(seed ^ 0xD37A_11A4);
     (0..grid.len())
         .into_par_iter()
@@ -777,11 +778,19 @@ fn generate_procedural_game_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
             );
             let ridge = ridged_fbm(&ridges, warped, 3.35, 5);
             let sharp_ridge = ((ridge - 0.52) / 0.48).clamp(0.0, 1.0).powi(2);
+            // Keep the mountain region broad enough to read as a range, but
+            // put its strongest elevation on a much narrower spine. The
+            // high-frequency fold is deliberately thresholded and cubed so
+            // it creates isolated, steep summits rather than another smooth
+            // blanket of hills.
+            let narrow_ridge = ridged_fbm(&narrow_ridges, warped, 11.0, 4);
+            let narrow_peak = ((narrow_ridge - 0.68) / 0.32).clamp(0.0, 1.0).powi(3);
             let highland = (0.5 + broad_relief * 0.5).max(0.0);
             let fine_breakup = fbm(&detail, warped, 12.0, 3);
             let lowland = 80.0 + interior * (650.0 + highland * 1_150.0) + fine_breakup * 90.0;
-            let mountain_height =
-                mountain_region * (1_250.0 + sharp_ridge * 6_300.0 + highland * 1_200.0);
+            let mountain_height = mountain_region
+                * (1_100.0 + sharp_ridge * 5_800.0 + highland * 1_000.0)
+                + mountain_region * narrow_peak * 7_000.0;
             (lowland + mountain_height).clamp(1.0, MAX_HEIGHT_METERS)
         })
         .collect()
@@ -1105,6 +1114,22 @@ mod tests {
         assert!(
             asymmetry > 50.0,
             "procedural field was too symmetric: {asymmetry:.1}m"
+        );
+
+        let summit = first
+            .iter()
+            .enumerate()
+            .max_by(|(_, left), (_, right)| left.total_cmp(right))
+            .map(|(index, _)| index)
+            .expect("procedural field has samples");
+        let neighbour_max = (0..8)
+            .filter_map(|slot| grid.neighbor(summit, slot))
+            .map(|index| first[index])
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            first[summit] - neighbour_max > 250.0,
+            "highest summit is too broad: {:.1}m local prominence",
+            first[summit] - neighbour_max
         );
     }
 

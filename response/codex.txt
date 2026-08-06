@@ -1,9 +1,8 @@
-Implemented and pushed commit 2ef65da (`Generate asymmetric procedural eroded terrain`).
+Implemented and pushed the narrow-scale prominence pass.
 
-- Added `--procedural-terrain`: continuous 3D warped continents/highlands/mountain ridges/detail on the sphere; no ETOPO, authored Earth ellipses, source-window repeat, or mirroring.
-- Retained hydraulic/thermal erosion, flow, rivers, lakes, glacial valleys, moisture, and biome stages. Procedural mode rejects `--etopo` and avoids double relief scaling.
-- Baked/promoted active `assets/outmaps/test-planet` (4096x2048, 3,252 tiles, 256 erosion iterations). Manifest SHA-256: `e26a75faec284c3d519f84ed2c9b97b397001be71dfb91a95d62237763efa2fa`.
-- Preserved prior surfaces at `assets/outmaps/test-planet.pre-procedural-backup-20260806-125500` and `assets/outmaps/test-planet.procedural-relief-pass-backup-20260806-130200`.
-- Re-surveyed highest prominence: 31,449.742m at 56.684679N, 20.618054E; F4 and summit scenario now target it.
-- Raster `highest_prominence_peak/1786018012-1292807`: passed, 152.400m clearance, zero seam.
-- Tests: baker 33 library + 5 binary + 6 integration pass; app 196 non-ignored pass. Full workspace rerun deferred because of disk pressure from existing untracked target trees.
+- Procedural terrain now keeps broad ranges but adds a thresholded/cubed frequency-11 ridged spine with a 7,000m cap before erosion. This creates sharper, locally prominent peaks instead of broad smooth uplifts.
+- Active bake: `assets/outmaps/test-planet`, 3,252 validated tiles, manifest SHA-256 `c0bb366d115d14abbff71917a4b8f3cf93e82b1437166e6aba7ad190127bcf59`.
+- Global summit rose from 31,449.742m to 35,302.559m presented prominence; raw L4 maximum is 8,820.148m. New summit: 23.485719N, 62.546713W.
+- F4/highest-prominence pose updated. Raster `highest_prominence_peak/1786021735-1323655` passes at 152.400m clearance and zero seam.
+- Baker: 33 library + 5 binary + 6 integration tests pass. App: 196 non-ignored tests pass.
+- Prior procedural surfaces remain backed up. Final height/biome previews show narrower bright mountain spines.
