@@ -1,10 +1,11 @@
-Implemented and pushed as e21313d (Naturalize mountain relief with glacial valleys).
+Implemented and pushed as f536581 (Double mountain width and height).
 
-- Replaced aliased 750/1500 relief bands with resolved 250/500/1000 and 600/1200 bands.
-- Added broad mountain-region gating and smoother relief thresholds to remove needle-like spikes.
-- Added sustained-flow glacial U-valleys: 250–1,200m carve depth, 1,000m shoulders; recompute hydrology afterward.
-- Backed up prior terrain: assets/outmaps/test-planet.pre-glacial-valley-v5-backup-20260807-180657
-- New bake: 4096x2048, SHA-256 4e4feb6dbd3573242a1773289578bd6abffd553d7ac32d465950bb5d19822181, height -4,428.371..17,963.693m, 13.76% mountain coverage.
-- Re-authored F4/highest-prominence to 65.822892S, 147.056036E. GPU scenario passes at 152.400m clearance; orbit passes.
-- Baker tests: 33 passed, 2 ignored. App tests: 198 passed, 1 pre-existing collision-sweep failure, 7 ignored. Workspace check passes.
-- Fresh low-flight visual capture is still the final sign-off for valley width/naturalness.
+- Halved the mountain-band, ridge, coverage, and local relief frequencies for another 2x width.
+- Doubled positive relief amplitudes and glacial valley depth/shoulder bounds.
+- Raised the export ceiling to 72,000m to prevent hard-clipped plateaus from overlapping doubled ridges.
+- Backup: assets/outmaps/test-planet.pre-double-wide-tall-backup-20260807-184048
+- New bake SHA-256: a0c393c0d843eb527f333b79064ae8bf0ee1bf86542d65ef446012af0417f0af
+- Height range: -4,428.371..53,262.195m; mountain coverage 21.47%.
+- Re-authored summit/F4 at 19.024872S, 42.641923W; GPU summit passes at 152.400m clearance; orbit passes.
+- Baker: 33 passed, 2 ignored. App: 198 passed, 1 pre-existing collision-sweep failure, 7 ignored. Workspace check passes.
+- Your unrelated 3.0x interactive rotation change remains unstaged and untouched.
