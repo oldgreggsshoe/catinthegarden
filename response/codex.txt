@@ -5,4 +5,4 @@ Fix:
 - raised neutral overhead fallback 0.75 -> 0.90;
 - restored affine aerial transmittance/in-scatter for flat facets beyond 80 km, retaining the cheaper near-field path.
 
-Same-pose outlined-shadows comparison: 15.309 ms prior vs 18.476 ms corrected. The corrected screenshot visibly lifts distant terrain and reduces the foreground red cast. `cargo fmt --check`, workspace `cargo check`, focused shader test, and corrected GPU scenario pass. Full app tests: 197 passed, 7 ignored; one pre-existing collision-sweep assertion remains failing.
+Same-pose outlined-shadows comparison: 15.309 ms prior vs 18.476 ms corrected. The corrected screenshot visibly lifts distant terrain and reduces the foreground red cast. `cargo fmt --check`, workspace `cargo check`, focused shader test, and corrected GPU scenario pass. Full app tests: 198 passed, 7 ignored; one pre-existing collision-sweep assertion remains failing.
