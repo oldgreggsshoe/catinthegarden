@@ -36,6 +36,11 @@ pub const EARTH_AXIAL_TILT_RADIANS: f64 = 23.439_281_f64.to_radians();
 /// 640px reference size this still provides more mesh cells than pixels while
 /// preventing narrow optical zoom from expanding into thousands of draws.
 pub const DEFAULT_MAX_ACTIVE_CHUNKS: usize = 256;
+/// When the leaf budget binds, retain the finest requested patches around the
+/// camera and spend the remaining leaves on the lower-detail horizon. Without
+/// this bounded bias, the level-normalised split priority can spend too much
+/// of the budget on distant coarse demand, pulling the L6/L7 boundary inward.
+const LOD_NEAR_DETAIL_PRIORITY_FLOOR: f64 = 0.35;
 /// Measurement hook for the budget itself. The cap is load-bearing -- it is the
 /// only thing holding the mountains under 40ms -- so the question that keeps
 /// coming up is not "what should it be" but "is it binding, and by how much".
@@ -1160,6 +1165,19 @@ fn projected_error_pixels_with_height_range_and_ratio(
     node.geometric_error_meters_with_ratio(geometric_error_ratio) * projection_scale / distance
 }
 
+fn near_camera_lod_priority_weight(
+    node: QuadtreeNode,
+    camera_world: DVec3,
+    terrain_height_range: TerrainHeightRange,
+) -> f64 {
+    let camera_altitude = (camera_world.length() - PLANET_RADIUS_METERS).max(1.0);
+    let node_distance =
+        minimum_node_distance_with_height_range(node, camera_world, terrain_height_range).max(1.0);
+    ((camera_altitude + 1.0) / (camera_altitude + node_distance + 1.0))
+        .sqrt()
+        .clamp(LOD_NEAR_DETAIL_PRIORITY_FLOOR, 1.0)
+}
+
 #[derive(Clone, Debug)]
 pub struct LodMetrics {
     pub level_histogram: [u32; MAX_LOD_LEVEL as usize + 1],
@@ -1899,7 +1917,9 @@ impl PlanetLod {
         // Once the global leaf budget is approached, favour the
         // nearest/deepest visible demand instead of breadth-refining the
         // horizon.
-        let priority = evaluation.projected_error_pixels * f64::from(1_u32 << node.level);
+        let priority = evaluation.projected_error_pixels
+            * f64::from(1_u32 << node.level)
+            * near_camera_lod_priority_weight(node, camera_world, terrain_height_range);
         Some(SplitCandidate {
             node,
             priority,
@@ -2716,9 +2736,10 @@ mod tests {
         TERRAIN_DETAIL_START_WAVELENGTH_METERS, TerrainHeightRange, build_chunk_mesh,
         build_chunk_mesh_with_quads, continuous_baked_sample_spacing_meters, cube_face_basis,
         cube_face_direction, default_sun_direction, detailed_outmap_land_height_meters,
-        global_terrain_detail_meters, minimum_vertical_fov_radians_for_viewport, near_plane_meters,
-        outmap_surface_height_meters, outmap_terrain_height_scale, placeholder_height_meters,
-        planet_local_vector, planet_rotation_radians, projected_error_pixels_with_height_range,
+        global_terrain_detail_meters, minimum_vertical_fov_radians_for_viewport,
+        near_camera_lod_priority_weight, near_plane_meters, outmap_surface_height_meters,
+        outmap_terrain_height_scale, placeholder_height_meters, planet_local_vector,
+        planet_rotation_radians, projected_error_pixels_with_height_range,
         scaled_outmap_macro_height_meters, terrain_detail_meters, terrain_detail_value_noise,
         unbalanced_coarse_neighbors,
     };
@@ -2761,6 +2782,28 @@ mod tests {
         assert!(policy.should_split(0.0, FLAT_TRIANGLE_LOD_LEVEL - 1));
         assert!(!policy.should_split(0.0, FLAT_TRIANGLE_LOD_LEVEL));
         assert!(!policy.should_merge(0.0, FLAT_TRIANGLE_LOD_LEVEL));
+    }
+
+    #[test]
+    fn near_camera_priority_favours_detail_over_horizon_demand() {
+        let camera = DVec3::X * (PLANET_RADIUS_METERS + 1_000.0);
+        let terrain_range = TerrainHeightRange::default();
+        let near = QuadtreeNode {
+            face: 0,
+            level: 7,
+            x: 64,
+            y: 64,
+        };
+        let far = QuadtreeNode {
+            face: 1,
+            level: 2,
+            x: 0,
+            y: 0,
+        };
+        assert!(
+            near_camera_lod_priority_weight(near, camera, terrain_range)
+                > near_camera_lod_priority_weight(far, camera, terrain_range)
+        );
     }
 
     #[test]

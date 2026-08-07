@@ -2246,3 +2246,8 @@ Manual capture `test-runs/manual/1786098424-478229` still showed stippled mixed-
 bands. Flat terrain now discards skirt filler fragments, leaving only actual surface triangles in
 the diagnostic path. Forty-eight terrain tests and app checking pass; fresh visual confirmation
 remains required.
+
+The LOD frontier remains intentionally mixed under the 256-leaf budget, but its split priority
+now applies a bounded near-camera weight. When the cap binds, L6/L7 demand near the camera wins
+over level-normalised horizon demand, moving lower-detail boundaries outward without increasing
+the draw budget. The priority regression passes alongside the existing terrain suite.
