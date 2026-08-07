@@ -10,7 +10,7 @@ use rayon::prelude::*;
 use crate::{BakeResult, config::BakeConfig, etopo::load_etopo, grid::SphericalGrid};
 
 pub const MIN_HEIGHT_METERS: f64 = -5_000.0;
-pub const MAX_HEIGHT_METERS: f64 = 9_000.0;
+pub const MAX_HEIGHT_METERS: f64 = 18_000.0;
 const FLOW_REFRESH_INTERVAL: usize = 32;
 const THERMAL_INTERVAL: usize = 8;
 const EROSION_PARALLEL_TILE_CELLS: usize = 4_096;
@@ -858,10 +858,10 @@ fn generate_procedural_game_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
 
             let interior = smoother_step((signed_land / 0.42).clamp(0.0, 1.0));
             let mountain_region = smoother_step(
-                ((fbm(&regions, warped, 1.75, 4) + 0.12 * broad_relief + 0.08) / 0.34)
+                ((fbm(&regions, warped, 0.875, 4) + 0.12 * broad_relief + 0.08) / 0.34)
                     .clamp(0.0, 1.0),
             );
-            let ridge = ridged_fbm(&ridges, warped, 3.35, 5);
+            let ridge = ridged_fbm(&ridges, warped, 1.675, 5);
             let sharp_ridge = ((ridge - 0.52) / 0.48).clamp(0.0, 1.0).powi(2);
             // Keep the mountain region broad enough to read as a range, but
             // put its strongest elevation on a much narrower spine. The
@@ -871,6 +871,9 @@ fn generate_procedural_game_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
             // continental scale: it is the local peak spacing that makes a
             // valley feel enclosed by nearby high ground instead of sitting
             // on a kilometre-wide plateau.
+            // Keep the summit spine frequency intact while widening the
+            // surrounding mountain belt; this preserves pointed local peaks
+            // instead of turning the doubled ranges into flat caps.
             let narrow_ridge = ridged_fbm(&narrow_ridges, warped, 11.0, 4);
             let narrow_peak = ((narrow_ridge - 0.68) / 0.32).clamp(0.0, 1.0).powi(3);
             let local_ridge = ridged_fbm(&narrow_ridges, warped, 360.0, 3);
@@ -893,10 +896,10 @@ fn generate_procedural_game_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
             let lowland =
                 80.0 + interior * (360.0 + highland * 620.0) + foothills + fine_breakup * 70.0;
             let mountain_height = mountain_region
-                * (220.0 + sharp_ridge * 4_500.0 + highland * 700.0)
-                + mountain_region * narrow_peak * 5_000.0
-                + mountain_region * local_peak * 2_200.0
-                + interior * coverage_peak * 8_500.0;
+                * (440.0 + sharp_ridge * 9_000.0 + highland * 1_400.0)
+                + mountain_region * narrow_peak * 10_000.0
+                + mountain_region * local_peak * 4_400.0
+                + interior * coverage_peak * 17_000.0;
             // Keep the coverage ridge below the export ceiling instead of
             // producing a population of clipped, identical 9km summits.
             let mountain_headroom = (MAX_HEIGHT_METERS - lowland - 100.0).max(0.0);
@@ -1282,7 +1285,7 @@ mod tests {
         assert!(first.iter().any(|&height| height > 3_000.0));
         let maximum = first.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         assert!(
-            maximum < 8_950.0,
+            maximum < 17_950.0,
             "procedural ridges clipped at {maximum:.1}m"
         );
         assert!(

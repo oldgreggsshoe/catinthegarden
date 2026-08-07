@@ -2315,3 +2315,21 @@ intersects the camera centre ray with the conservative terrain shell and applies
 priority boost to the leaf containing that hit, propagated through its split ladder. The budget
 and normal horizon falloff are unchanged. Fifty planet tests (one ignored) and app checking pass;
 a fresh orbital capture is required to confirm the square is gone.
+
+## Wide/tall procedural mountain rebake — 7 August 2026
+
+The active procedural mountain-coverage bake was backed up before replacement at
+`assets/outmaps/test-planet.pre-wide-tall-mountains-backup-20260807-154700` (358 MB). The
+procedural generator now doubles the broad mountain-belt wavelength and doubles the mountain
+amplitudes; the sharp summit-spine frequencies remain unchanged so the wider ranges do not become
+flat caps. The export ceiling is raised from 9,000m to 18,000m so the requested height increase is
+not clipped.
+
+The active replacement was baked with seed `0xEA272026`, 1024x512 working grid, dense/max L4,
+256 erosion iterations, and `--procedural-terrain --mountain-coverage`. It validates 2,046 tiles;
+manifest SHA-256 is `618b3a76a60f0d0ce9947c9b5c9ee89585530c810b3ec09c1ff829637e72e847`, generated
+height range is -4,427.945m to 17,636.729m, and the area-weighted mountain gate reports 8.54%
+passing land positions (42,451/275,906; 481,178 qualifying rays), up from 1.37% on the prior
+candidate. Workspace checking and all 35 baker tests (33 passed, 2 ignored) pass. Renderer/F4
+poses and fresh GPU/manual visual sign-off remain pending because the source height ceiling and
+summit location changed.

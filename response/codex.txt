@@ -1,5 +1,8 @@
-Checked latest run 1786113396-610508. At 6,000km altitude the 256-leaf budget was binding, and the active L2-L7 frontier left a coarse square under the screen centre while off-centre L7 leaves refined.
+Re-baked the active procedural mountain terrain after backing up the previous 358 MB outmap:
+assets/outmaps/test-planet.pre-wide-tall-mountains-backup-20260807-154700
 
-Fixed the selector: when the camera ray intersects the terrain shell, the leaf containing that screen-centre hit gets a bounded 4x split-priority boost through the ladder. The global budget and horizon falloff remain unchanged.
+Changes: doubled broad mountain-belt width and mountain amplitudes, preserved sharp summit-spine frequencies, raised export ceiling 9,000m -> 18,000m.
 
-Validation: 50 planet tests passed (1 ignored); app cargo check and diff check passed. Fresh orbital capture is still required.
+Bake: seed 0xEA272026, 1024x512, L4, 256 erosion iterations, 2,046 tiles. Height range -4,427.945m .. 17,636.729m. Mountain coverage 8.54% (42,451/275,906 positions; 481,178 qualifying rays). Manifest SHA-256: 618b3a76a60f0d0ce9947c9b5c9ee89585530c810b3ec09c1ff829637e72e847.
+
+Validation: baker 33 passed / 2 ignored; workspace cargo check passed. F4/summit poses and fresh GPU capture still need re-authoring/visual confirmation.
