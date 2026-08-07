@@ -2439,3 +2439,26 @@ surface and the GPU scenario passes. Orbit also passes. Baker tests (33 passed, 
 workspace check, and app tests (198 passed, 1 pre-existing collision-sweep failure, 7 ignored)
 complete successfully. A fresh low-flight human capture is still the final visual sign-off for
 valley width and naturalness.
+
+## Double-wide and double-tall mountain rebake — 7 August 2026
+
+Following the v5 valley pass, the procedural relief bands were widened again: the mountain belt
+and primary ridge frequencies were halved, as were the resolved 125/250/500m coverage and
+300/600m local families. The narrow summit spine remains resolved so local prominence is not
+flattened. Positive relief amplitudes were doubled, including the glacial valley depth/shoulder
+bounds. The export ceiling is now 72,000m to avoid clipping overlapping ridge families into
+unnatural plateaus.
+
+The prior active outmap is preserved at
+`assets/outmaps/test-planet.pre-double-wide-tall-backup-20260807-184048`. The replacement
+4096x2048 bake has manifest SHA-256
+`a0c393c0d843eb527f333b79064ae8bf0ee1bf86542d65ef446012af0417f0af`, height range
+-4,428.371m .. 53,262.195m, and 21.47% mountain-visibility coverage (907,631/4,403,618
+positions; 10,072,959 qualifying rays).
+
+The global summit survey now measures 213,085.256m ASL at 19.024872S, 42.641923W; the runtime
+surface at the re-authored pose is 213,049.325m. F4/highest-prominence starts 152.4m above that
+surface and the GPU summit scenario passes. Orbit passes. Baker tests (33 passed, 2 ignored),
+workspace check, and app tests (198 passed, 1 pre-existing collision-sweep failure, 7 ignored)
+complete successfully. A fresh low-flight capture remains required for visual sign-off because
+this is a deliberately extreme game-scale height change.

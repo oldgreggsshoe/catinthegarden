@@ -10,7 +10,9 @@ use rayon::prelude::*;
 use crate::{BakeResult, config::BakeConfig, etopo::load_etopo, grid::SphericalGrid};
 
 pub const MIN_HEIGHT_METERS: f64 = -5_000.0;
-pub const MAX_HEIGHT_METERS: f64 = 18_000.0;
+// The doubled relief terms can sum across several overlapping ridge families;
+// leave headroom so the export does not flatten summits against a hard ceiling.
+pub const MAX_HEIGHT_METERS: f64 = 72_000.0;
 const FLOW_REFRESH_INTERVAL: usize = 32;
 const THERMAL_INTERVAL: usize = 8;
 const EROSION_PARALLEL_TILE_CELLS: usize = 4_096;
@@ -443,9 +445,9 @@ impl Terrain {
             let width = 3_isize;
             // A broad U-section: deep enough to read at game scale, with
             // raised shoulders that preserve the surrounding mountain wall.
-            let depth = (before_height * 0.12).clamp(250.0, 1_200.0);
+            let depth = (before_height * 0.12).clamp(500.0, 2_400.0);
             let floor = before_height - depth;
-            let shoulder_rise = depth + 1_000.0;
+            let shoulder_rise = depth + 2_000.0;
             for offset in -width..=width {
                 let Some(cross_index) = self.grid.offset_index(
                     index,
@@ -871,14 +873,14 @@ fn generate_procedural_game_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
             }
 
             let interior = smoother_step((signed_land / 0.42).clamp(0.0, 1.0));
-            // The broad belt and primary ridge are intentionally three times
-            // wider than the previous bake. Keep the narrow/local families
-            // below unchanged so wider ranges still contain sharp peaks.
+            // The broad belt and primary ridge are intentionally widened again
+            // for the game-scale mountain pass. Relief remains resolved by the
+            // production source grid rather than relying on aliased detail.
             let mountain_region = smoother_step(
-                ((fbm(&regions, warped, 0.2916667, 4) + 0.12 * broad_relief + 0.08) / 0.34)
+                ((fbm(&regions, warped, 0.14583335, 4) + 0.12 * broad_relief + 0.08) / 0.34)
                     .clamp(0.0, 1.0),
             );
-            let ridge = ridged_fbm(&ridges, warped, 0.5583333, 5);
+            let ridge = ridged_fbm(&ridges, warped, 0.27916665, 5);
             let sharp_ridge = ((ridge - 0.52) / 0.48).clamp(0.0, 1.0).powi(2);
             // Keep the mountain region broad enough to read as a range, but
             // put its strongest elevation on a much narrower spine. The
@@ -891,14 +893,16 @@ fn generate_procedural_game_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
             // Keep the summit spine frequency intact while widening the
             // surrounding mountain belt; this preserves pointed local peaks
             // instead of turning the doubled ranges into flat caps.
+            // Keep the summit spine narrow while the range/base families
+            // widen; this preserves local prominence inside the broad belt.
             let narrow_ridge = ridged_fbm(&narrow_ridges, warped, 11.0, 4);
             let narrow_peak = ((narrow_ridge - 0.68) / 0.32).clamp(0.0, 1.0).powi(3);
-            // Keep every relief octave resolved by the 4096x2048 source grid.
-            // The former 750/1500 families aliased at their higher octaves,
-            // turning otherwise broad ranges into rows of needles.
-            let local_ridge = ridged_fbm(&narrow_ridges, warped, 600.0, 2);
+            // Keep every relief octave resolved by the 4096x2048 source grid;
+            // the lower base frequencies widen both the major ranges and the
+            // smaller valleys between them.
+            let local_ridge = ridged_fbm(&narrow_ridges, warped, 300.0, 2);
             let local_peak = smoother_step(((local_ridge - 0.42) / 0.50).clamp(0.0, 1.0));
-            let coverage_ridge = ridged_fbm(&coverage_ridges, warped, 250.0, 3);
+            let coverage_ridge = ridged_fbm(&coverage_ridges, warped, 125.0, 3);
             let coverage_peak = smoother_step(((coverage_ridge - 0.30) / 0.50).clamp(0.0, 1.0));
             // Concentrate relief in broad mountain belts, while retaining a
             // modest foothill floor across other positive land. This removes
@@ -914,10 +918,11 @@ fn generate_procedural_game_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
             let fine_breakup = fbm(&detail, warped, 12.0, 3);
             let lowland =
                 80.0 + interior * (360.0 + highland * 620.0) + foothills + fine_breakup * 70.0;
-            let mountain_height = range_gate * (440.0 + sharp_ridge * 6_500.0 + highland * 1_400.0)
-                + range_gate * narrow_peak * 6_500.0
-                + range_gate * local_peak * 2_500.0
-                + range_gate * coverage_peak * 17_000.0;
+            let mountain_height = range_gate
+                * (880.0 + sharp_ridge * 13_000.0 + highland * 2_800.0)
+                + range_gate * narrow_peak * 13_000.0
+                + range_gate * local_peak * 5_000.0
+                + range_gate * coverage_peak * 34_000.0;
             // Keep the coverage ridge below the export ceiling instead of
             // producing a population of clipped, identical 9km summits.
             let mountain_headroom = (MAX_HEIGHT_METERS - lowland - 100.0).max(0.0);
@@ -1303,7 +1308,7 @@ mod tests {
         assert!(first.iter().any(|&height| height > 3_000.0));
         let maximum = first.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         assert!(
-            maximum < 17_950.0,
+            maximum < MAX_HEIGHT_METERS - 50.0,
             "procedural ridges clipped at {maximum:.1}m"
         );
         assert!(
