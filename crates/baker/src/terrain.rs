@@ -133,6 +133,10 @@ impl Terrain {
             terrain.carve_rivers();
             terrain.fill_lakes();
             terrain.carve_glacial_valleys();
+            // Valley carving changes local slopes and drainage. Recompute the
+            // flow field before deriving moisture/biomes so the carved floor
+            // remains the authoritative downstream surface.
+            terrain.recompute_flow();
         }
         terrain.compute_moisture();
         terrain.classify_biomes(imported);
@@ -407,13 +411,19 @@ impl Terrain {
 
     fn carve_glacial_valleys(&mut self) {
         let before = self.height_meters.clone();
+        // Skip tiny runoff traces: glacial U-valleys should follow sustained
+        // drainage, not every one-cell river flag.
+        let accumulation_threshold = (self.grid.len() as f64 / 1024.0).max(8.0) * 4.0;
         for (index, &before_height) in before.iter().enumerate() {
             if !self.river[index] {
                 continue;
             }
+            if self.flow_accumulation[index] < accumulation_threshold {
+                continue;
+            }
             let latitude = self.grid.latitude(index);
             let snowline = snowline_meters(latitude);
-            if latitude.abs() < 50.0_f64.to_radians() && before_height < snowline * 0.75 {
+            if before_height < snowline.max(1_800.0) * 0.75 {
                 continue;
             }
             let Some(downstream) = self.flow_to[index] else {
@@ -431,7 +441,11 @@ impl Terrain {
                 continue;
             }
             let width = 3_isize;
-            let center_height = before_height - 35.0;
+            // A broad U-section: deep enough to read at game scale, with
+            // raised shoulders that preserve the surrounding mountain wall.
+            let depth = (before_height * 0.12).clamp(250.0, 1_200.0);
+            let floor = before_height - depth;
+            let shoulder_rise = depth + 1_000.0;
             for offset in -width..=width {
                 let Some(cross_index) = self.grid.offset_index(
                     index,
@@ -441,7 +455,7 @@ impl Terrain {
                     continue;
                 };
                 let normalized = offset as f64 / width as f64;
-                let target = center_height + 95.0 * normalized * normalized;
+                let target = floor + shoulder_rise * normalized * normalized;
                 self.height_meters[cross_index] = self.height_meters[cross_index].min(target);
                 self.glacial_valley[cross_index] = true;
             }
@@ -879,14 +893,17 @@ fn generate_procedural_game_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
             // instead of turning the doubled ranges into flat caps.
             let narrow_ridge = ridged_fbm(&narrow_ridges, warped, 11.0, 4);
             let narrow_peak = ((narrow_ridge - 0.68) / 0.32).clamp(0.0, 1.0).powi(3);
-            let local_ridge = ridged_fbm(&narrow_ridges, warped, 1_500.0, 3);
-            let local_peak = ((local_ridge - 0.70) / 0.30).clamp(0.0, 1.0).powi(3);
-            // The major coverage family is deliberately broad enough for the
-            // production 4096x2048 bake to resolve several samples across its
-            // base. The separate local family above remains smaller and fills
-            // the valleys between major ranges.
-            let coverage_ridge = ridged_fbm(&coverage_ridges, warped, 750.0, 3);
-            let coverage_peak = ((coverage_ridge - 0.55) / 0.20).clamp(0.0, 1.0);
+            // Keep every relief octave resolved by the 4096x2048 source grid.
+            // The former 750/1500 families aliased at their higher octaves,
+            // turning otherwise broad ranges into rows of needles.
+            let local_ridge = ridged_fbm(&narrow_ridges, warped, 600.0, 2);
+            let local_peak = smoother_step(((local_ridge - 0.42) / 0.50).clamp(0.0, 1.0));
+            let coverage_ridge = ridged_fbm(&coverage_ridges, warped, 250.0, 3);
+            let coverage_peak = smoother_step(((coverage_ridge - 0.30) / 0.50).clamp(0.0, 1.0));
+            // Concentrate relief in broad mountain belts, while retaining a
+            // modest foothill floor across other positive land. This removes
+            // the all-land speckle that made isolated spikes read as teeth.
+            let range_gate = interior * (0.20 + 0.80 * mountain_region);
             // The previous field left most positive land in a nearly planar
             // 50-850m band. Add a resolvable foothill field across land, then
             // let the thresholded mountain belts rise out of it. This keeps
@@ -897,11 +914,10 @@ fn generate_procedural_game_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
             let fine_breakup = fbm(&detail, warped, 12.0, 3);
             let lowland =
                 80.0 + interior * (360.0 + highland * 620.0) + foothills + fine_breakup * 70.0;
-            let mountain_height = mountain_region
-                * (440.0 + sharp_ridge * 9_000.0 + highland * 1_400.0)
-                + mountain_region * narrow_peak * 10_000.0
-                + interior * local_peak * 3_500.0
-                + interior * coverage_peak * 17_000.0;
+            let mountain_height = range_gate * (440.0 + sharp_ridge * 6_500.0 + highland * 1_400.0)
+                + range_gate * narrow_peak * 6_500.0
+                + range_gate * local_peak * 2_500.0
+                + range_gate * coverage_peak * 17_000.0;
             // Keep the coverage ridge below the export ceiling instead of
             // producing a population of clipped, identical 9km summits.
             let mountain_headroom = (MAX_HEIGHT_METERS - lowland - 100.0).max(0.0);
@@ -1673,10 +1689,13 @@ mod tests {
         let mut terrain = Terrain::from_heights(width, height, heights);
         terrain.river[center] = true;
         terrain.flow_to[center] = Some(downstream);
+        terrain.flow_accumulation[center] = 64.0;
         terrain.carve_glacial_valleys();
         assert!(terrain.glacial_valley[center]);
         assert!(terrain.glacial_valley[center + 1]);
-        assert!(terrain.height_meters[center] < terrain.height_meters[center + 3]);
+        assert!(terrain.height_meters[center] <= 3_750.0);
+        assert!(terrain.height_meters[center + 1] < 4_000.0);
+        assert_eq!(terrain.height_meters[center + 3], 4_000.0);
     }
 
     #[test]

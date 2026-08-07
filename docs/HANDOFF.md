@@ -2411,3 +2411,31 @@ Flat-mode aerial transmittance remains continuous, but in-scatter now fades smoo
 normal renderer's twilight constants. Focused shader, baker, summit, orbit, workspace-check, and
 full app validation pass; the only full-app failure remains the pre-existing flight collision
 sweep assertion (198 passed, 1 failed, 7 ignored).
+
+## Natural mountain relief and glacial valleys — 7 August 2026
+
+The latest manual capture `test-runs/manual/1786121751-736278/capture-001.png` still showed
+needle-like peaks. The cause was source-grid aliasing: the v4 750/1500 relief families reached
+undersampled higher octaves at the production grid. The procedural profile now uses resolved
+250/500/1000m-scale coverage and 600/1200m local relief, smoother thresholds, a mountain-belt
+range gate, and lower narrow-spine amplitudes. Broad ranges remain high while isolated all-land
+teeth are suppressed.
+
+The bake also now carves sustained high-flow rivers into a 3-cell-wide U-shaped glacial valley.
+The centre drops by 12% of local height, bounded to 250–1,200m, with a 1,000m shoulder rise;
+small runoff traces are ignored. Flow is recomputed after carving before moisture and biome
+classification so the valley floor remains hydrologically authoritative.
+
+The previous active outmap is preserved at
+`assets/outmaps/test-planet.pre-glacial-valley-v5-backup-20260807-180657`. The replacement is a
+4096x2048 procedural/mountain-coverage bake with 256 erosion iterations, manifest SHA-256
+`4e4feb6dbd3573242a1773289578bd6abffd553d7ac32d465950bb5d19822181`, height range
+-4,428.371m .. 17,963.693m, and 13.76% mountain-visibility coverage (555,989/4,405,469
+positions; 6,365,555 qualifying rays).
+
+The global summit survey now measures 72,022.334m ASL at 65.822892S, 147.056036E; the runtime
+surface at the re-authored pose is 71,851.459m. F4/highest-prominence starts 152.4m above that
+surface and the GPU scenario passes. Orbit also passes. Baker tests (33 passed, 2 ignored),
+workspace check, and app tests (198 passed, 1 pre-existing collision-sweep failure, 7 ignored)
+complete successfully. A fresh low-flight human capture is still the final visual sign-off for
+valley width and naturalness.

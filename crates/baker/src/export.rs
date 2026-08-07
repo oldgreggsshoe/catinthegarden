@@ -343,7 +343,7 @@ fn build_manifest(
                 "authored Earth-like generator"
             };
             let profile = if config.procedural_terrain {
-                "; procedural-game-terrain mountain-coverage relief v4 wide-spaced"
+                "; procedural-game-terrain mountain-coverage relief v5 glacial-valleys"
             } else if config.zoomed_terrain {
                 "; zoomed-game-terrain relief v2"
             } else if config.game_terrain {
