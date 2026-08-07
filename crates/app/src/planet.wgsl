@@ -622,28 +622,32 @@ fn vs_main(input: VertexInput) -> VertexOutput {
             camera_relative_view_position,
         );
     }
-    // Flat-triangle mode returns a categorical colour before the aerial
-    // varyings are consumed by the fragment stage. Keep geometry, normals,
-    // and specular lighting intact, but avoid the expensive atmosphere/fog
-    // integrations for this intentionally diagnostic presentation.
+    // Flat-triangle mode keeps the categorical material and face lighting, but
+    // still needs the ordinary aerial path so distant facets fade toward the
+    // same atmosphere as the rest of the terrain. Skip only the optional
+    // low-flight horizon fog overlay in this diagnostic presentation.
     var aerial = AerialPerspectiveComponents(
         vec3<f32>(1.0),
         vec3<f32>(0.0),
     );
-    if !flat_triangles {
+    // Flat mode is primarily used close to the surface, where atmospheric
+    // integration adds cost without visible benefit. Re-enable it for the
+    // normal path and for genuinely distant flat facets, where it is the
+    // difference between a readable silhouette and a black one.
+    if !flat_triangles || camera_distance_meters > 80000.0 {
         aerial = aerial_perspective_components(
             camera_relative_view_position,
             direction,
             surface_height,
         );
-        if !lake {
-            aerial = terrain_distance_fog_components(
-                aerial,
-                camera_relative_view_position,
-                direction,
-                surface_height,
-            );
-        }
+    }
+    if !flat_triangles && !lake {
+        aerial = terrain_distance_fog_components(
+            aerial,
+            camera_relative_view_position,
+            direction,
+            surface_height,
+        );
     }
     let detail_anchor_or_flat_source_offset = select(
         anchor_direction,
@@ -892,8 +896,12 @@ fn flat_triangle_colour(
         input.source_uv_scale_and_latitude.w,
         true,
     );
+    // Keep flat fills categorical, but apply the same affine atmospheric
+    // composition as smooth terrain. This lifts distant shadowed facets
+    // toward the sky instead of leaving them at raw face-lighting black.
+    let aerial_lit = lit * input.aerial_transmittance + input.aerial_in_scatter;
     let edge = flat_triangle_edge(input.tile_uv, input.skirt_depth_meters);
-    return vec4<f32>(mix(lit, vec3<f32>(0.015, 0.02, 0.025), edge), 1.0);
+    return vec4<f32>(mix(aerial_lit, vec3<f32>(0.015, 0.02, 0.025), edge), 1.0);
 }
 
 fn flat_ocean_colour(input: OceanVertexOutput) -> vec4<f32> {

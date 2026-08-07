@@ -2333,3 +2333,25 @@ passing land positions (42,451/275,906; 481,178 qualifying rays), up from 1.37% 
 candidate. Workspace checking and all 35 baker tests (33 passed, 2 ignored) pass. Renderer/F4
 poses and fresh GPU/manual visual sign-off remain pending because the source height ceiling and
 summit location changed.
+
+## Twilight terrain balance and distant facet lift — 7 August 2026
+
+The latest manual capture `test-runs/manual/1786114540-629317/capture-001.png` was the fixed-L7
+flat-triangle presentation at 146.7km altitude, with exposure fixed at 1.0 and solar elevation
+about -1.54 degrees. Flat mode intentionally bypassed both aerial perspective and distance fog,
+so the foreground inherited the full synthetic red sunward-horizon ambient while distant
+back-facing facets had no atmospheric fill and fell nearly black. This was not an exposure or
+fog defect.
+
+Terrain sky-fill weighting now reduces the sunward-horizon contribution from 0.65 to 0.49
+(approximately 75% of the prior red ambience) and raises the neutral overhead fallback from 0.75
+to 0.90. Flat terrain now composes its categorical face lighting with the existing affine aerial
+transmittance/in-scatter path for facets beyond 80km; near flat-mode facets retain the cheaper
+path, and smooth terrain behaviour is unchanged apart from the shared ambient weighting.
+
+Same-pose `outlined_shadows` capture comparison: the prior binary logged 15.309ms for the final
+frame and remained nearly black away from the sunward strip; the corrected build logged 18.476ms
+and visibly lifted the distant terrain while reducing the foreground red cast. The corrected run
+passed its finite-metric and capture assertions. `cargo fmt --check`, workspace `cargo check`,
+the focused shader test, and the full app suite otherwise pass; the only full-suite failure is the
+pre-existing `flight_collision_sweep_catches_ground_between_safe_endpoints` assertion.

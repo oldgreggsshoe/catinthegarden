@@ -1027,8 +1027,10 @@ fn sky_diffuse_irradiance(
         vec3<f32>(0.0),
     );
     // At sunrise/sunset the visible sky is concentrated near the sunward
-    // horizon, while the zenith sample can remain dark. Use that horizon
-    // radiance as a bounded fill source for facets whose normals miss it.
+    // horizon, while the zenith sample can remain dark. Use a restrained
+    // fraction of that horizon radiance as a fill source for facets whose
+    // normals miss it; the overhead sample carries more neutral fill so
+    // distant shadowed facets do not disappear into black.
     let sunward_horizon_direction = normalize(surface_direction + sunward_tangent * 1.25);
     let sunward_horizon_sky = max(
         sky_radiance(
@@ -1043,7 +1045,7 @@ fn sky_diffuse_irradiance(
         local_sky,
         max(
             sunward_sky * 0.65,
-            max(overhead_sky * 0.75, sunward_horizon_sky * 0.65),
+            max(overhead_sky * 0.90, sunward_horizon_sky * 0.49),
         ),
     );
     let peak = max(max(sky.x, sky.y), sky.z);

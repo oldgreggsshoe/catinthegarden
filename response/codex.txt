@@ -1,8 +1,8 @@
-Re-baked the active procedural mountain terrain after backing up the previous 358 MB outmap:
-assets/outmaps/test-planet.pre-wide-tall-mountains-backup-20260807-154700
+Latest capture diagnosis: it was flat-L7 at 146.7 km, exposure fixed at 1.0. Flat mode skipped aerial/fog, so distant back-facing facets went black; foreground red came from the shared sunward-horizon ambient.
 
-Changes: doubled broad mountain-belt width and mountain amplitudes, preserved sharp summit-spine frequencies, raised export ceiling 9,000m -> 18,000m.
+Fix:
+- reduced sunward-horizon terrain ambient 0.65 -> 0.49 (~75%);
+- raised neutral overhead fallback 0.75 -> 0.90;
+- restored affine aerial transmittance/in-scatter for flat facets beyond 80 km, retaining the cheaper near-field path.
 
-Bake: seed 0xEA272026, 1024x512, L4, 256 erosion iterations, 2,046 tiles. Height range -4,427.945m .. 17,636.729m. Mountain coverage 8.54% (42,451/275,906 positions; 481,178 qualifying rays). Manifest SHA-256: 618b3a76a60f0d0ce9947c9b5c9ee89585530c810b3ec09c1ff829637e72e847.
-
-Validation: baker 33 passed / 2 ignored; workspace cargo check passed. F4/summit poses and fresh GPU capture still need re-authoring/visual confirmation.
+Same-pose outlined-shadows comparison: 15.309 ms prior vs 18.476 ms corrected. The corrected screenshot visibly lifts distant terrain and reduces the foreground red cast. `cargo fmt --check`, workspace `cargo check`, focused shader test, and corrected GPU scenario pass. Full app tests: 197 passed, 7 ignored; one pre-existing collision-sweep assertion remains failing.

@@ -3541,9 +3541,9 @@ mod tests {
         assert!(shader.contains("pow(max(dot(normal, half_vector), 0.0), 64.0)"));
         assert!(shader.contains("const SKY_DIFFUSE_LIGHT_SCALE: f32 = 0.70;"));
         assert!(shader.contains("let overhead_sky = max("));
-        assert!(shader.contains("overhead_sky * 0.75"));
+        assert!(shader.contains("overhead_sky * 0.90"));
         assert!(shader.contains("let sunward_horizon_sky = max("));
-        assert!(shader.contains("sunward_horizon_sky * 0.65"));
+        assert!(shader.contains("sunward_horizon_sky * 0.49"));
         assert!(
             shader.contains(
                 "const TWILIGHT_RED_RADIANCE: vec3<f32> = vec3<f32>(0.30, 0.012, 0.001);"
@@ -3559,10 +3559,11 @@ mod tests {
             "if u32(camera.projection.w + 0.5) == RENDER_DEBUG_FLAT_TRIANGLES {\n        return terrain_fragment_color(input);"
         ));
         assert!(shader.contains("var aerial = AerialPerspectiveComponents(\n        vec3<f32>(1.0),\n        vec3<f32>(0.0),\n    );"));
-        assert!(
-            shader
-                .contains("if !flat_triangles {\n        aerial = aerial_perspective_components(")
-        );
+        assert!(shader.contains("aerial_perspective_components("));
+        assert!(shader.contains("camera_distance_meters > 80000.0"));
+        assert!(shader.contains(
+            "let aerial_lit = lit * input.aerial_transmittance + input.aerial_in_scatter;"
+        ));
         // The experiment intentionally bypasses the material texture stack;
         // biome palette ownership remains the only fill colour source.
         let flat = shader
