@@ -1,5 +1,3 @@
-Checked the newest screenshots: capture-003/004 show steep mountain faces collapsing to near-black while sun-facing snow is bright. The cause was sky_diffuse_irradiance sampling only the terrain normal, which returns zero for back-facing facets even in daylight.
+Fixed the startup panic. The ambient-light change added vertex output location 16, but this adapter supports only locations 0-15. Flat mode now reuses the existing flat detail-anchor slot for the source UV offset; normal mode is unchanged. No extra inter-stage location remains.
 
-Fixed with a bounded zenith-sky ambient contribution (35% before the existing cap). It is shared by flat and ordinary terrain/ocean lighting, remains zero when the night-side sky is zero, and does not create moonless emission.
-
-Validation: 48 terrain tests passed; app cargo check and git diff --check passed. Changes are ready to commit/push after final status check; a fresh daylight GPU capture is still needed to tune visual strength.
+Validation: 48 terrain tests passed; release app build passed; shader source has no location 16. The headless shell exits before window creation, so a Quadro/manual launch is still needed for final runtime confirmation. Changes are ready to commit/push.

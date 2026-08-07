@@ -43,7 +43,10 @@ struct VertexOutput {
     @location(10) surface_height: f32,
     // Detail is evaluated anchor-locally for precision, so the pixel needs the
     // same anchor the vertex used. Flat: it is constant across the node, and
-    // interpolating it would defeat the exact-integer cell it provides.
+    // interpolating it would defeat the exact-integer cell it provides. In
+    // flat-triangle mode this otherwise-unused slot carries the instance-flat
+    // source UV offset, keeping the inter-stage location count within wgpu's
+    // limit.
     @location(11) @interpolate(flat) detail_anchor_direction: vec3<f32>,
     @location(12) detail_local_meters: vec3<f32>,
     // Mesh vertex spacing for this node. Flat because it is genuinely constant
@@ -57,11 +60,6 @@ struct VertexOutput {
     // carries the provoking vertex latitude for flat-triangle palette fades;
     // w carries the terrain triangle's single specular value.
     @location(15) @interpolate(flat) source_uv_scale_and_latitude: vec4<f32>,
-    // The offset is instance-constant too. Keeping it flat lets the
-    // categorical triangle path reconstruct its cell-centre and corner UVs
-    // without subtracting perspective-interpolated varyings (which can cross
-    // a nearest-neighbour biome texel inside one triangle).
-    @location(16) @interpolate(flat) source_uv_offset: vec2<f32>,
 }
 
 struct OceanVertexOutput {
@@ -647,6 +645,11 @@ fn vs_main(input: VertexInput) -> VertexOutput {
             );
         }
     }
+    let detail_anchor_or_flat_source_offset = select(
+        anchor_direction,
+        vec3<f32>(input.source_uv_offset, 0.0),
+        flat_triangles,
+    );
     return VertexOutput(
         camera.projection_matrix * vec4<f32>(camera_relative_view_position, 1.0),
         camera_relative_view_position,
@@ -660,12 +663,11 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         aerial.transmittance,
         terrain_detail_meters,
         surface_height,
-        anchor_direction,
+        detail_anchor_or_flat_source_offset,
         anchor_relative_position,
         select(0.0, vertex_spacing_meters, outmap),
         tile_uv,
         vec4<f32>(input.source_uv_scale, direction.y, flat_specular),
-        input.source_uv_offset,
     );
 }
 
@@ -822,7 +824,8 @@ fn flat_triangle_colour(
 ) -> vec4<f32> {
     let centre_tile_uv = flat_triangle_cell(input.tile_uv);
     let source_uv_scale = input.source_uv_scale_and_latitude.xy;
-    let centre_source_uv = input.source_uv_offset + centre_tile_uv * source_uv_scale;
+    let source_uv_offset = input.detail_anchor_direction.xy;
+    let centre_source_uv = source_uv_offset + centre_tile_uv * source_uv_scale;
     let cell = floor(input.tile_uv * FLAT_TRIANGLE_GRID_QUADS);
     let local = fract(input.tile_uv * FLAT_TRIANGLE_GRID_QUADS);
     let upper = local.x + local.y > 1.0;
@@ -834,9 +837,9 @@ fn flat_triangle_colour(
         second_tile_uv = (cell + vec2<f32>(1.0, 1.0)) / FLAT_TRIANGLE_GRID_QUADS;
         third_tile_uv = (cell + vec2<f32>(0.0, 1.0)) / FLAT_TRIANGLE_GRID_QUADS;
     }
-    let first_source_uv = input.source_uv_offset + first_tile_uv * source_uv_scale;
-    let second_source_uv = input.source_uv_offset + second_tile_uv * source_uv_scale;
-    let third_source_uv = input.source_uv_offset + third_tile_uv * source_uv_scale;
+    let first_source_uv = source_uv_offset + first_tile_uv * source_uv_scale;
+    let second_source_uv = source_uv_offset + second_tile_uv * source_uv_scale;
+    let third_source_uv = source_uv_offset + third_tile_uv * source_uv_scale;
     let first_biome = sample_biome(first_source_uv);
     let second_biome = sample_biome(second_source_uv);
     let third_biome = sample_biome(third_source_uv);

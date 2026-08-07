@@ -2274,3 +2274,13 @@ then applies the existing irradiance cap. This lifts shadowed terrain without ad
 night-side emission and is shared by flat and ordinary terrain/ocean lighting. The focused terrain
 suite (48 tests) and app checking pass; a fresh daylight GPU capture is required to tune/sign off
 the visual level.
+
+## Flat ambient varying inter-stage limit correction — 7 August 2026
+
+The first ambient-fill follow-up accidentally added vertex output location 16. wgpu 29 permits
+locations 0 through 15 on this adapter, so the renderer panicked while creating the LOD terrain
+pipeline before drawing. The extra varying is removed: flat mode reuses the existing flat
+`detail_anchor_direction` slot to carry the source UV offset, while normal mode still carries the
+anchor direction. The shader remains within the 15-location limit; terrain tests and release
+compilation pass. A GPU launch on this headless shell exits before window creation, so Quadro
+visual validation remains pending.
