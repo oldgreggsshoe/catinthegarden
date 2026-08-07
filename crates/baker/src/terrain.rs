@@ -857,11 +857,14 @@ fn generate_procedural_game_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
             }
 
             let interior = smoother_step((signed_land / 0.42).clamp(0.0, 1.0));
+            // The broad belt and primary ridge are intentionally three times
+            // wider than the previous bake. Keep the narrow/local families
+            // below unchanged so wider ranges still contain sharp peaks.
             let mountain_region = smoother_step(
-                ((fbm(&regions, warped, 0.875, 4) + 0.12 * broad_relief + 0.08) / 0.34)
+                ((fbm(&regions, warped, 0.2916667, 4) + 0.12 * broad_relief + 0.08) / 0.34)
                     .clamp(0.0, 1.0),
             );
-            let ridge = ridged_fbm(&ridges, warped, 1.675, 5);
+            let ridge = ridged_fbm(&ridges, warped, 0.5583333, 5);
             let sharp_ridge = ((ridge - 0.52) / 0.48).clamp(0.0, 1.0).powi(2);
             // Keep the mountain region broad enough to read as a range, but
             // put its strongest elevation on a much narrower spine. The

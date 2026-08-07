@@ -2355,3 +2355,30 @@ and visibly lifted the distant terrain while reducing the foreground red cast. T
 passed its finite-metric and capture assertions. `cargo fmt --check`, workspace `cargo check`,
 the focused shader test, and the full app suite otherwise pass; the only full-suite failure is the
 pre-existing `flight_collision_sweep_catches_ground_between_safe_endpoints` assertion.
+
+## Continuous flat-mode aerial handoff and triple-width mountain rebake — 7 August 2026
+
+The latest manual capture `test-runs/manual/1786119079-698000/capture-001.png` straddled the
+80km flat-mode aerial cutoff introduced by the previous lighting fix: camera clearance was
+61,473.9m, the centre hit was 74,620.3m, and farther vertices crossed 80km. Flat facets therefore
+jumped from identity lighting to full aerial transmittance/in-scatter. The cutoff is removed;
+flat terrain now evaluates the bounded aerial model continuously at every distance while still
+skipping only the optional smooth-mode horizon fog overlay. The fixed-L7 categorical fill remains
+unchanged.
+
+The active outmap was backed up at
+`assets/outmaps/test-planet.pre-triple-width-mountains-backup-20260807-172229` before rebaking.
+The procedural mountain-region frequency changed 0.875 -> 0.2916667 and the primary ridge
+frequency 1.675 -> 0.5583333, tripling broad range width while retaining the 11x/360x sharp
+summit families and 18,000m ceiling. The new v3 triple-width bake has manifest SHA-256
+`fdd816aa0240405855ed26525ab3b19debb308c78998aff811fefe92680926ee`, height range
+-4,427.945m .. 17,681.004m, and 8.16% mountain-visibility coverage (42,174/275,827 positions;
+470,541 qualifying rays).
+
+The active highest-prominence pose was re-authored to direction
+[0.903665234, -0.419385975, -0.086628801] (24.795828S, 5.475859E). Runtime landing height is
+70,537.257m; the F4/highest-prominence scenario now starts at 152.4m clearance and passes.
+Baker tests pass, the app suite reports 198 passed / 1 pre-existing collision-sweep failure / 7
+ignored, and the GPU highest-prominence scenario passes with 152.400m measured clearance.
+Stale generated Cargo target caches were cleaned, leaving only `.target-ambient` and
+`.target-baker-triple`.

@@ -1,8 +1,7 @@
-Latest capture diagnosis: it was flat-L7 at 146.7 km, exposure fixed at 1.0. Flat mode skipped aerial/fog, so distant back-facing facets went black; foreground red came from the shared sunward-horizon ambient.
+Cleaned stale generated Cargo targets: removed old .target-* caches, preserving only .target-ambient and .target-baker-triple. /home recovered from 0 bytes free to about 36 GB free.
 
-Fix:
-- reduced sunward-horizon terrain ambient 0.65 -> 0.49 (~75%);
-- raised neutral overhead fallback 0.75 -> 0.90;
-- restored affine aerial transmittance/in-scatter for flat facets beyond 80 km, retaining the cheaper near-field path.
+Fixed the fog boundary: the hard 80 km flat-mode aerial cutoff is gone; flat terrain now evaluates aerial transmittance/in-scatter continuously, eliminating the sudden terrain-to-fog ring.
 
-Same-pose outlined-shadows comparison: 15.309 ms prior vs 18.476 ms corrected. The corrected screenshot visibly lifts distant terrain and reduces the foreground red cast. `cargo fmt --check`, workspace `cargo check`, focused shader test, and corrected GPU scenario pass. Full app tests: 198 passed, 7 ignored; one pre-existing collision-sweep assertion remains failing.
+Rebaked wider mountains after backing up assets/outmaps/test-planet.pre-triple-width-mountains-backup-20260807-172229. Broad mountain and primary ridge frequencies were divided by 3; sharp 11x/360x summit detail remained. New manifest SHA-256: fdd816aa0240405855ed26525ab3b19debb308c78998aff811fefe92680926ee. Height range -4427.945m..17681.004m; mountain coverage 8.16%.
+
+Re-authored active summit/F4 pose. GPU highest-prominence scenario passes at 152.400m clearance. Baker tests pass; app tests 198 passed, 1 pre-existing collision-sweep failure, 7 ignored.

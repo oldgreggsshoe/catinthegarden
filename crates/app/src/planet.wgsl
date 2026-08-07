@@ -630,17 +630,15 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         vec3<f32>(1.0),
         vec3<f32>(0.0),
     );
-    // Flat mode is primarily used close to the surface, where atmospheric
-    // integration adds cost without visible benefit. Re-enable it for the
-    // normal path and for genuinely distant flat facets, where it is the
-    // difference between a readable silhouette and a black one.
-    if !flat_triangles || camera_distance_meters > 80000.0 {
-        aerial = aerial_perspective_components(
-            camera_relative_view_position,
-            direction,
-            surface_height,
-        );
-    }
+    // Evaluate the same continuous aerial model for flat facets at every
+    // distance. A hard near/far cutoff creates a visible ring when a triangle
+    // crosses the threshold, while the bounded atmospheric column already
+    // fades naturally toward the camera.
+    aerial = aerial_perspective_components(
+        camera_relative_view_position,
+        direction,
+        surface_height,
+    );
     if !flat_triangles && !lake {
         aerial = terrain_distance_fog_components(
             aerial,
