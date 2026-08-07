@@ -3532,6 +3532,8 @@ mod tests {
         ));
         assert!(shader.contains("fn flat_triangle_land_biome("));
         assert!(shader.contains("source_uv_scale_and_latitude"));
+        assert!(shader.contains("@location(16) @interpolate(flat) source_uv_offset: vec2<f32>"));
+        assert!(shader.contains("input.source_uv_offset + centre_tile_uv * source_uv_scale"));
         assert!(shader.contains("fn flat_triangle_vertex_specular("));
         assert!(shader.contains("input.source_uv_scale_and_latitude.w"));
         assert!(shader.contains("use_triangle_specular"));

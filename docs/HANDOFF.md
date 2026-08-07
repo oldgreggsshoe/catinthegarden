@@ -2251,3 +2251,15 @@ The LOD frontier remains intentionally mixed under the 256-leaf budget, but its 
 now applies a bounded near-camera weight. When the cap binds, L6/L7 demand near the camera wins
 over level-normalised horizon demand, moving lower-detail boundaries outward without increasing
 the draw budget. The priority regression passes alongside the existing terrain suite.
+
+## Flat snow/grass stipple repair — 7 August 2026
+
+Manual capture `test-runs/manual/1786110636-583021` still showed salt-and-pepper colour changes
+where categorical snow met grass. The flat fragment path was reconstructing the triangle-centre
+and corner source UVs from perspective-interpolated `source_uv`/`tile_uv` varyings; nearest
+biome samples could therefore change inside one rendered triangle. The vertex output now carries
+the instance-constant source UV offset as a flat varying, and the flat palette path reconstructs
+all centre/corner samples from that offset plus the flat source scale. Each triangle consequently
+keeps one stable biome colour while its geometric normal and per-triangle lighting remain intact.
+The focused flat shader test, 49 planet tests (one ignored), and app checking pass; a fresh GPU
+capture is still the final visual confirmation.
