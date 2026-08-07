@@ -3561,6 +3561,7 @@ mod tests {
         assert!(shader.contains("var aerial = AerialPerspectiveComponents(\n        vec3<f32>(1.0),\n        vec3<f32>(0.0),\n    );"));
         assert!(shader.contains("aerial_perspective_components("));
         assert!(!shader.contains("camera_distance_meters > 80000.0"));
+        assert!(shader.contains("smoothstep(20000.0, 180000.0, camera_distance_meters)"));
         assert!(shader.contains(
             "let aerial_lit = lit * input.aerial_transmittance + input.aerial_in_scatter;"
         ));

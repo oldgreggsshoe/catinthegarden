@@ -1,7 +1,12 @@
-Cleaned stale generated Cargo targets: removed old .target-* caches, preserving only .target-ambient and .target-baker-triple. /home recovered from 0 bytes free to about 36 GB free.
+Reviewed captures 001-003. The narrow/dense peaks were caused by the 1500x coverage field being undersampled by the 1024x512 bake. The daytime orange horizon was flat-terrain aerial Mie in-scatter, not the blue sky or exposure.
 
-Fixed the fog boundary: the hard 80 km flat-mode aerial cutoff is gone; flat terrain now evaluates aerial transmittance/in-scatter continuously, eliminating the sudden terrain-to-fog ring.
+Fixes:
+- production 4096x2048 rebake;
+- major coverage frequency 1500 -> 750 for twice-wide, less-dense major mountains;
+- separate 1500x local family gated across land interior at 3500m to fill gaps with smaller mountains;
+- flat aerial in-scatter fades smoothly from 0 at 20km to full at 180km, avoiding orange daytime terrain and hard bands.
 
-Rebaked wider mountains after backing up assets/outmaps/test-planet.pre-triple-width-mountains-backup-20260807-172229. Broad mountain and primary ridge frequencies were divided by 3; sharp 11x/360x summit detail remained. New manifest SHA-256: fdd816aa0240405855ed26525ab3b19debb308c78998aff811fefe92680926ee. Height range -4427.945m..17681.004m; mountain coverage 8.16%.
-
-Re-authored active summit/F4 pose. GPU highest-prominence scenario passes at 152.400m clearance. Baker tests pass; app tests 198 passed, 1 pre-existing collision-sweep failure, 7 ignored.
+Backup: assets/outmaps/test-planet.pre-wide-spaced-mountains-backup-20260807-174725
+New manifest SHA-256: 6c329c435316ff43501a1117a77d2caff6d09ec8040670ba7eba121b6169ad60
+Height range: -4428.371..17754.176m; mountain visibility: 36.09%.
+F4/highest-prominence GPU scenario passes at 152.400m. Orbit scenario, baker tests, workspace check pass. App tests: 198 passed, 1 pre-existing collision-sweep failure, 7 ignored.

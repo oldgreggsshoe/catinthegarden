@@ -639,6 +639,17 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         direction,
         surface_height,
     );
+    if flat_triangles {
+        // Keep flat-mode extinction continuous, but fade the warm forward
+        // aerial in-scatter in over distance. Without this bounded blend the
+        // diagnostic terrain can turn orange while the daytime sky remains
+        // blue; a hard cutoff would recreate the old visible ring.
+        let flat_aerial_weight = smoothstep(20000.0, 180000.0, camera_distance_meters);
+        aerial = AerialPerspectiveComponents(
+            aerial.transmittance,
+            aerial.in_scatter * flat_aerial_weight,
+        );
+    }
     if !flat_triangles && !lake {
         aerial = terrain_distance_fog_components(
             aerial,

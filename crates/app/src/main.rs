@@ -75,13 +75,13 @@ const LOW_FLIGHT_ALTITUDE_METERS: f64 = 2.0;
 /// is measured by the standard global-summit/prominence instrument; as the
 /// planet's highest summit it uses sea level as its key col.
 const ACTIVE_HIGHEST_PROMINENCE_DIRECTION: glam::DVec3 = glam::DVec3::new(
-    0.903_665_233_909_516,
-    -0.419_385_974_898_880,
-    -0.086_628_800_530_626,
+    -0.268_482_613_828_828,
+    0.188_177_530_211_090,
+    0.944_725_517_383_380,
 );
-const ACTIVE_HIGHEST_PROMINENCE_METERS: f64 = 70_537.257_348_588;
+const ACTIVE_HIGHEST_PROMINENCE_METERS: f64 = 71_000.415_234_053;
 #[cfg(test)]
-const ACTIVE_HIGHEST_RAW_MACRO_ELEVATION_METERS: f64 = 17_634.143_739_066;
+const ACTIVE_HIGHEST_RAW_MACRO_ELEVATION_METERS: f64 = 17_749.959_990_038;
 /// How close to the ground flight may descend. CPU clearance evaluates the
 /// same synthesised relief the shader displaces, so a sub-metre floor is safe.
 const LOW_FLIGHT_MINIMUM_CLEARANCE_METERS: f64 = 0.75;
@@ -3311,9 +3311,10 @@ mod tests {
     fn active_peak_measurement_uses_standard_global_summit_prominence() {
         let direction = ACTIVE_HIGHEST_PROMINENCE_DIRECTION;
         assert!((direction.length() - 1.0).abs() < 1.0e-12);
-        assert!((direction.y.asin().to_degrees() + 24.795_827_590).abs() < 1.0e-6);
+        assert!((direction.y.asin().to_degrees() - 10.846_446_014).abs() < 1.0e-6);
         assert!(
-            (crate::planet::geographic_longitude_degrees(direction) - 5.475_859_007).abs() < 1.0e-6
+            (crate::planet::geographic_longitude_degrees(direction) + 105.864_679_614).abs()
+                < 1.0e-6
         );
 
         // A planet's highest summit has no higher parent. As for Everest, its

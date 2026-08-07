@@ -879,14 +879,13 @@ fn generate_procedural_game_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
             // instead of turning the doubled ranges into flat caps.
             let narrow_ridge = ridged_fbm(&narrow_ridges, warped, 11.0, 4);
             let narrow_peak = ((narrow_ridge - 0.68) / 0.32).clamp(0.0, 1.0).powi(3);
-            let local_ridge = ridged_fbm(&narrow_ridges, warped, 360.0, 3);
+            let local_ridge = ridged_fbm(&narrow_ridges, warped, 1_500.0, 3);
             let local_peak = ((local_ridge - 0.70) / 0.30).clamp(0.0, 1.0).powi(3);
-            // A separate, continuous ridge family gives the generator a
-            // measurable mountain-coverage target rather than concentrating
-            // all relief in one rare global massif. Its 1500x wavelength is
-            // narrow enough for a 2km look-ahead to see a steep wall while
-            // remaining seam-safe in the direction domain.
-            let coverage_ridge = ridged_fbm(&coverage_ridges, warped, 1_500.0, 3);
+            // The major coverage family is deliberately broad enough for the
+            // production 4096x2048 bake to resolve several samples across its
+            // base. The separate local family above remains smaller and fills
+            // the valleys between major ranges.
+            let coverage_ridge = ridged_fbm(&coverage_ridges, warped, 750.0, 3);
             let coverage_peak = ((coverage_ridge - 0.55) / 0.20).clamp(0.0, 1.0);
             // The previous field left most positive land in a nearly planar
             // 50-850m band. Add a resolvable foothill field across land, then
@@ -901,7 +900,7 @@ fn generate_procedural_game_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
             let mountain_height = mountain_region
                 * (440.0 + sharp_ridge * 9_000.0 + highland * 1_400.0)
                 + mountain_region * narrow_peak * 10_000.0
-                + mountain_region * local_peak * 4_400.0
+                + interior * local_peak * 3_500.0
                 + interior * coverage_peak * 17_000.0;
             // Keep the coverage ridge below the export ceiling instead of
             // producing a population of clipped, identical 9km summits.

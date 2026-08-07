@@ -2382,3 +2382,32 @@ Baker tests pass, the app suite reports 198 passed / 1 pre-existing collision-sw
 ignored, and the GPU highest-prominence scenario passes with 152.400m measured clearance.
 Stale generated Cargo target caches were cleaned, leaving only `.target-ambient` and
 `.target-baker-triple`.
+
+## Wide-spaced mountain bases and daytime horizon correction — 7 August 2026
+
+Manual set `test-runs/manual/1786120502-723576` confirmed two separate issues. Captures 001 and
+003 showed the visually dominant coverage term as undersampled one-sample cones: its 1500x
+frequency was below the roughly 24.5km equatorial spacing of the 1024x512 bake. Capture 002 was
+not a sky-colour failure—the sky probe was blue while the daytime terrain horizon was orange. The
+new all-distance flat aerial path was injecting high-gain forward Mie in-scatter into the flat
+terrain while the fullscreen sky remained blue.
+
+The coverage family now uses frequency 750 (twice the base width and fewer major ranges). The
+separate local family uses frequency 1500, is gated by land interior rather than the major
+mountain belt, and is reduced to 3,500m so smaller mountains fill the gaps without becoming
+competing peaks. The replacement was baked at the production 4096x2048 grid, not the aliased
+1024x512 preview. The prior v3 active outmap is backed up at
+`assets/outmaps/test-planet.pre-wide-spaced-mountains-backup-20260807-174725`.
+
+The v4 active bake manifest SHA-256 is
+`6c329c435316ff43501a1117a77d2caff6d09ec8040670ba7eba121b6169ad60`; height range is
+-4,428.371m .. 17,754.176m and the visibility survey reports 36.09% passing land positions
+(1,699,827/4,423,187; 22,439,038 qualifying rays). The summit/F4 pose was re-authored to
+10.846446N, 105.864680W; the runtime landing height is 71,000.415m and the GPU summit scenario
+passes at 152.400m.
+
+Flat-mode aerial transmittance remains continuous, but in-scatter now fades smoothly from zero at
+20km to full strength at 180km. This removes the orange daytime terrain band without changing the
+normal renderer's twilight constants. Focused shader, baker, summit, orbit, workspace-check, and
+full app validation pass; the only full-app failure remains the pre-existing flight collision
+sweep assertion (198 passed, 1 failed, 7 ignored).
