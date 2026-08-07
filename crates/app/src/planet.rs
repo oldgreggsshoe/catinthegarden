@@ -1178,6 +1178,30 @@ fn near_camera_lod_priority_weight(
         .clamp(LOD_NEAR_DETAIL_PRIORITY_FLOOR, 1.0)
 }
 
+fn camera_center_surface_direction(
+    camera_world: DVec3,
+    camera_forward: DVec3,
+    terrain_height_range: TerrainHeightRange,
+) -> Option<DVec3> {
+    let direction = camera_forward.normalize_or_zero();
+    if direction.length_squared() <= f64::EPSILON {
+        return None;
+    }
+    let radius = terrain_height_range.maximum_radius();
+    let projection = camera_world.dot(direction);
+    let discriminant = projection * projection - (camera_world.length_squared() - radius * radius);
+    if discriminant <= 0.0 {
+        return None;
+    }
+    let near_distance = -projection - discriminant.sqrt();
+    let distance = if near_distance > 0.0 {
+        near_distance
+    } else {
+        -projection + discriminant.sqrt()
+    };
+    (distance > 0.0).then(|| (camera_world + direction * distance).normalize())
+}
+
 #[derive(Clone, Debug)]
 pub struct LodMetrics {
     pub level_histogram: [u32; MAX_LOD_LEVEL as usize + 1],
@@ -1916,10 +1940,21 @@ impl PlanetLod {
         }
         // Once the global leaf budget is approached, favour the
         // nearest/deepest visible demand instead of breadth-refining the
-        // horizon.
+        // horizon. Preserve a compact high-detail patch around the actual
+        // screen-centre ray as well; otherwise the level multiplier can spend
+        // the leaf budget on off-centre L7 leaves and leave a conspicuous
+        // coarse square directly under the crosshair.
+        let screen_centre_boost = camera_basis
+            .and_then(|basis| {
+                camera_center_surface_direction(camera_world, basis.forward, terrain_height_range)
+            })
+            .is_some_and(|direction| node_contains_direction(node, direction))
+            .then_some(4.0)
+            .unwrap_or(1.0);
         let priority = evaluation.projected_error_pixels
             * f64::from(1_u32 << node.level)
-            * near_camera_lod_priority_weight(node, camera_world, terrain_height_range);
+            * near_camera_lod_priority_weight(node, camera_world, terrain_height_range)
+            * screen_centre_boost;
         Some(SplitCandidate {
             node,
             priority,
@@ -2804,6 +2839,40 @@ mod tests {
             near_camera_lod_priority_weight(near, camera, terrain_range)
                 > near_camera_lod_priority_weight(far, camera, terrain_range)
         );
+    }
+
+    #[test]
+    fn camera_center_leaf_receives_detail_priority() {
+        let camera = DVec3::new(
+            3_844_538.706_859_7367,
+            -1_062_789.178_810_5723,
+            -414_352.755_166_1257,
+        );
+        let forward = super::planet_local_vector(
+            DVec3::new(0.113, 0.546, 0.830).normalize(),
+            4.147_097_337_208_69,
+        );
+        let up = camera.normalize();
+        let mut lod = PlanetLod::new(
+            LodPolicy::fixed(FLAT_TRIANGLE_LOD_LEVEL),
+            DEFAULT_MAX_ACTIVE_CHUNKS,
+        );
+        lod.set_terrain_height_range(TerrainHeightRange::new(-5_000.0, 40_000.0));
+        let update = lod.update_for_view_with_up(
+            camera,
+            forward,
+            up,
+            16.0 / 9.0,
+            540,
+            45.0_f64.to_radians(),
+        );
+        let centre_direction = camera.normalize();
+        let centre = update
+            .active_nodes
+            .iter()
+            .find(|node| super::node_contains_direction(**node, centre_direction))
+            .expect("camera-facing direction has a selected leaf");
+        assert!(centre.level >= FLAT_TRIANGLE_LOD_LEVEL - 1);
     }
 
     #[test]

@@ -1,5 +1,5 @@
-Checked the latest captures 1786112609-603233. They still show nearly black terrain beneath a bright orange sunrise/sunset sky; the first frame measured average luminance 0.033 with exposure 3.998.
+Checked latest run 1786113396-610508. At 6,000km altitude the 256-leaf budget was binding, and the active L2-L7 frontier left a coarse square under the screen centre while off-centre L7 leaves refined.
 
-The local/zenith ambient samples were too dark at low solar elevation. Added a bounded sunward-horizon analytic sky sample (65% before the existing cap), retaining the 0.70 diffuse scale and 0.75 zenith share. Deep night remains dark.
+Fixed the selector: when the camera ray intersects the terrain shell, the leaf containing that screen-centre hit gets a bounded 4x split-priority boost through the ladder. The global budget and horizon falloff remain unchanged.
 
-Validation: 48 terrain tests passed; app cargo check and diff check passed. Fresh Quadro capture is still required.
+Validation: 50 planet tests passed (1 ignored); app cargo check and diff check passed. Fresh orbital capture is still required.

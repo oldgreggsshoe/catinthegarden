@@ -2304,3 +2304,14 @@ ambient path now adds a bounded sunward-horizon analytic sky sample (65% before 
 while retaining the 70% diffuse scale and 75% zenith share. This is still zero on the deep night
 side and only supplies twilight-coloured fill to shadowed facets. The 48-test terrain suite and
 app checking pass; fresh Quadro capture is required to verify the result.
+
+## Screen-centre LOD priority repair — 7 August 2026
+
+Manual capture `test-runs/manual/1786113396-610508` showed a conspicuous coarse square around the
+screen centre while farther surface regions were L7. The run was orbiting at 6,000km with the
+256-leaf budget binding and an L2–L7 frontier. Split priority already favoured depth and near
+camera distance, but it could still spend the cap on off-centre L7 candidates. The selector now
+intersects the camera centre ray with the conservative terrain shell and applies a bounded 4x
+priority boost to the leaf containing that hit, propagated through its split ladder. The budget
+and normal horizon falloff are unchanged. Fifty planet tests (one ignored) and app checking pass;
+a fresh orbital capture is required to confirm the square is gone.
