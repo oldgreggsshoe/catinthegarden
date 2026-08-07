@@ -1,3 +1,5 @@
-Fixed the startup panic. The ambient-light change added vertex output location 16, but this adapter supports only locations 0-15. Flat mode now reuses the existing flat detail-anchor slot for the source UV offset; normal mode is unchanged. No extra inter-stage location remains.
+Checked latest capture 1786112204-598838/capture-001. The sky is bright blue while most terrain facets remain nearly black, so the previous ambient fill was too weak at this altitude.
 
-Validation: 48 terrain tests passed; release app build passed; shader source has no location 16. The headless shell exits before window creation, so a Quadro/manual launch is still needed for final runtime confirmation. Changes are ready to commit/push.
+Raised the bounded ambient response: SKY_DIFFUSE_LIGHT_SCALE 0.40 -> 0.70 and zenith-sky share 0.35 -> 0.75. It remains analytic-sky-driven, so the night side does not become emissive.
+
+Validation: 48 terrain tests passed; app cargo check and diff check passed. Fresh Quadro capture is still needed for visual balance confirmation.

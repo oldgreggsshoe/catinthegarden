@@ -2284,3 +2284,13 @@ pipeline before drawing. The extra varying is removed: flat mode reuses the exis
 anchor direction. The shader remains within the 15-location limit; terrain tests and release
 compilation pass. A GPU launch on this headless shell exits before window creation, so Quadro
 visual validation remains pending.
+
+## Daylight ambient boost — 7 August 2026
+
+Manual capture `test-runs/manual/1786112204-598838/capture-001` showed a bright blue sky and
+near-black terrain facets. The prior bounded zenith fill (35% share, `SKY_DIFFUSE_LIGHT_SCALE`
+0.40) was too weak at this high-altitude view. The shared sky diffuse response is now raised to
+`0.70`, with the zenith contribution increased to 75% before the existing peak cap. It remains
+fully analytic-sky-driven, so the moonless/night-side path still receives no artificial baseline.
+The 48-test terrain suite and app checking pass; fresh Quadro capture is required to confirm the
+new daylight balance and ensure snow highlights remain controlled.

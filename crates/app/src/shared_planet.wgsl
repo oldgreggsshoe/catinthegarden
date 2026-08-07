@@ -142,7 +142,7 @@ const SOLAR_RADIANCE: f32 = 2.0;
 const SURFACE_SUNLIGHT_SCALE: f32 = 2.0;
 // Local overhead sky fill is intentionally stronger than the former 0.18
 // artistic scale so terrain remains readable while the sun is low/visible.
-const SKY_DIFFUSE_LIGHT_SCALE: f32 = 0.40;
+const SKY_DIFFUSE_LIGHT_SCALE: f32 = 0.70;
 const TWILIGHT_RED_RADIANCE: vec3<f32> = vec3<f32>(0.30, 0.012, 0.001);
 const AERIAL_IN_SCATTER_SAMPLE_COUNT: u32 = 2u;
 const AERIAL_DENSITY_SAMPLE_EXPONENT: f32 = 3.0;
@@ -1026,7 +1026,7 @@ fn sky_diffuse_irradiance(
         ),
         vec3<f32>(0.0),
     );
-    let sky = max(local_sky, max(sunward_sky * 0.65, overhead_sky * 0.35));
+    let sky = max(local_sky, max(sunward_sky * 0.65, overhead_sky * 0.75));
     let peak = max(max(sky.x, sky.y), sky.z);
     let bounded_sky = sky / max(1.0, peak / 0.35);
     return bounded_sky * SKY_DIFFUSE_LIGHT_SCALE;
