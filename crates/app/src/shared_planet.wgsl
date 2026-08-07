@@ -1012,7 +1012,21 @@ fn sky_diffuse_irradiance(
         ),
         vec3<f32>(0.0),
     );
-    let sky = max(local_sky, sunward_sky * 0.65);
+    // A steep or back-facing terrain facet can point below the visible sky
+    // hemisphere even though the surface is still surrounded by daylight.
+    // Keep a bounded fraction of the zenith radiance as ambient fill so those
+    // faces do not collapse to black; sky_radiance remains zero on the night
+    // side, so this does not create moonless self-emission.
+    let overhead_sky = max(
+        sky_radiance(
+            surface_direction,
+            surface_direction,
+            surface_altitude_meters,
+            sun_direction,
+        ),
+        vec3<f32>(0.0),
+    );
+    let sky = max(local_sky, max(sunward_sky * 0.65, overhead_sky * 0.35));
     let peak = max(max(sky.x, sky.y), sky.z);
     let bounded_sky = sky / max(1.0, peak / 0.35);
     return bounded_sky * SKY_DIFFUSE_LIGHT_SCALE;

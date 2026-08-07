@@ -1,3 +1,5 @@
-Checked manual capture 1786110636-583021. The snow/grass stipple was caused by flat-mode biome samples being reconstructed from perspective-interpolated UVs, so nearest-neighbour ownership could change within one triangle. Fixed by carrying the source UV offset as a flat varying and reconstructing all flat triangle centre/corner samples from flat offset + scale. This keeps each triangle one stable biome colour without changing normals, lighting, LOD, or ordinary rendering.
+Checked the newest screenshots: capture-003/004 show steep mountain faces collapsing to near-black while sun-facing snow is bright. The cause was sky_diffuse_irradiance sampling only the terrain normal, which returns zero for back-facing facets even in daylight.
 
-Validation: 48 terrain tests passed; 49 planet tests passed (1 ignored); app cargo check passed; git diff --check passed. Committed and pushed as ea69a7b (`Stabilize flat terrain biome colours`). A fresh manual GPU capture is still needed for visual sign-off.
+Fixed with a bounded zenith-sky ambient contribution (35% before the existing cap). It is shared by flat and ordinary terrain/ocean lighting, remains zero when the night-side sky is zero, and does not create moonless emission.
+
+Validation: 48 terrain tests passed; app cargo check and git diff --check passed. Changes are ready to commit/push after final status check; a fresh daylight GPU capture is still needed to tune visual strength.

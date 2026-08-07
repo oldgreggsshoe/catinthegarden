@@ -2263,3 +2263,14 @@ all centre/corner samples from that offset plus the flat source scale. Each tria
 keeps one stable biome colour while its geometric normal and per-triangle lighting remain intact.
 The focused flat shader test, 49 planet tests (one ignored), and app checking pass; a fresh GPU
 capture is still the final visual confirmation.
+
+## Terrain ambient-fill repair — 7 August 2026
+
+The latest manual frames `test-runs/manual/1786110636-583021` (`capture-003/004`) showed steep
+mountain facets collapsing to near-black while the sun-facing snow was bright. `sky_diffuse_irradiance`
+was sampling only the facet normal and could therefore return zero for back-facing terrain even
+under daylight. It now retains a bounded 35% contribution from the analytic zenith sky radiance,
+then applies the existing irradiance cap. This lifts shadowed terrain without adding moonless
+night-side emission and is shared by flat and ordinary terrain/ocean lighting. The focused terrain
+suite (48 tests) and app checking pass; a fresh daylight GPU capture is required to tune/sign off
+the visual level.
