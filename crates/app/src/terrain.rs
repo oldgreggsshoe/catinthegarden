@@ -3546,6 +3546,9 @@ mod tests {
         assert!(shader.contains("fn flat_triangle_colour("));
         assert!(shader.contains("return flat_triangle_colour(input);"));
         assert!(shader.contains("return flat_ocean_colour(input);"));
+        assert!(
+            shader.contains("if input.skirt_depth_meters > 0.0 {\n            discard;\n        }")
+        );
         assert!(shader.contains(
             "if u32(camera.projection.w + 0.5) == RENDER_DEBUG_FLAT_TRIANGLES {\n        return terrain_fragment_color(input);"
         ));

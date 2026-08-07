@@ -2235,3 +2235,14 @@ Flat fragment entry points now bypass the LOD discard entirely (terrain and ocea
 the CPU-side transition disable. This prevents stale binaries or a transient transition pipeline
 from exposing competing depth-writing facets in the diagnostic view. Focused tests and checking
 pass; another rebuilt capture is required.
+
+## Checkout metadata relocation and flat frontier skirt repair — 7 August 2026
+
+The checkout's `.git` directory was still the old 67MB metadata store at `fe24c5b` after the
+active 69MB metadata directory moved to `/home/dad/catingard-tmp/catingard-git`. The old directory
+is preserved at `/home/dad/catingard-tmp/catingard-dotgit-stale-20260807`; the checkout now uses a
+`.git` file pointing at the relocated store and default `git status` resolves to `101c433`.
+Manual capture `test-runs/manual/1786098424-478229` still showed stippled mixed-L3/L7 frontier
+bands. Flat terrain now discards skirt filler fragments, leaving only actual surface triangles in
+the diagnostic path. Forty-eight terrain tests and app checking pass; fresh visual confirmation
+remains required.
