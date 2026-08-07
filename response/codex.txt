@@ -1,5 +1,5 @@
-Checked latest capture 1786112204-598838/capture-001. The sky is bright blue while most terrain facets remain nearly black, so the previous ambient fill was too weak at this altitude.
+Checked the latest captures 1786112609-603233. They still show nearly black terrain beneath a bright orange sunrise/sunset sky; the first frame measured average luminance 0.033 with exposure 3.998.
 
-Raised the bounded ambient response: SKY_DIFFUSE_LIGHT_SCALE 0.40 -> 0.70 and zenith-sky share 0.35 -> 0.75. It remains analytic-sky-driven, so the night side does not become emissive.
+The local/zenith ambient samples were too dark at low solar elevation. Added a bounded sunward-horizon analytic sky sample (65% before the existing cap), retaining the 0.70 diffuse scale and 0.75 zenith share. Deep night remains dark.
 
-Validation: 48 terrain tests passed; app cargo check and diff check passed. Fresh Quadro capture is still needed for visual balance confirmation.
+Validation: 48 terrain tests passed; app cargo check and diff check passed. Fresh Quadro capture is still required.

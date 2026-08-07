@@ -3542,6 +3542,8 @@ mod tests {
         assert!(shader.contains("const SKY_DIFFUSE_LIGHT_SCALE: f32 = 0.70;"));
         assert!(shader.contains("let overhead_sky = max("));
         assert!(shader.contains("overhead_sky * 0.75"));
+        assert!(shader.contains("let sunward_horizon_sky = max("));
+        assert!(shader.contains("sunward_horizon_sky * 0.65"));
         assert!(
             shader.contains(
                 "const TWILIGHT_RED_RADIANCE: vec3<f32> = vec3<f32>(0.30, 0.012, 0.001);"

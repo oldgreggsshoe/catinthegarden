@@ -2294,3 +2294,13 @@ near-black terrain facets. The prior bounded zenith fill (35% share, `SKY_DIFFUS
 fully analytic-sky-driven, so the moonless/night-side path still receives no artificial baseline.
 The 48-test terrain suite and app checking pass; fresh Quadro capture is required to confirm the
 new daylight balance and ensure snow highlights remain controlled.
+
+## Twilight horizon ambient fill — 7 August 2026
+
+The follow-up capture `test-runs/manual/1786112609-603233` still showed nearly black terrain
+under a bright orange sunrise/sunset sky (average luminance 0.033, exposure at 3.998). The local
+and zenith sky samples used by terrain lighting remained dark at these low solar elevations. The
+ambient path now adds a bounded sunward-horizon analytic sky sample (65% before the existing cap),
+while retaining the 70% diffuse scale and 75% zenith share. This is still zero on the deep night
+side and only supplies twilight-coloured fill to shadowed facets. The 48-test terrain suite and
+app checking pass; fresh Quadro capture is required to verify the result.
