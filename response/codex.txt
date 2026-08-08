@@ -1,15 +1,19 @@
-coverage_peak is in crates/baker/src/terrain.rs, around lines 900-925:
+To do the suggested trial manually:
 
-let coverage_ridge = ridged_fbm(&coverage_ridges, warped, 125.0, 3);
-let coverage_peak = smoother_step(((coverage_ridge - 0.30) / 0.50).clamp(0.0, 1.0));
-...
-+ range_gate * coverage_peak * 34_000.0;
+1. In /home/dad/catingard run:
+   nano crates/baker/src/terrain.rs
+2. Search for `let coverage_ridge` (Ctrl+W). Change the two lines to:
+   let coverage_ridge = ridged_fbm(&coverage_ridges, warped, 64.0, 2);
+   let coverage_peak = smoother_step(((coverage_ridge - 0.36) / 0.64).clamp(0.0, 1.0));
+3. Change the coverage amplitude on the mountain_height expression from `34_000.0` to `24_000.0`.
+4. Save with Ctrl+O, Enter; exit with Ctrl+X.
+5. Validate/build the baker:
+   TMPDIR=/home/dad/catingard/tmp-rust CARGO_TARGET_DIR=/home/dad/catingard/.target-baker-triple cargo fmt --all -- --check
+   TMPDIR=/home/dad/catingard/tmp-rust CARGO_TARGET_DIR=/home/dad/catingard/.target-baker-triple cargo build --release -p catinthegarden-baker
+6. Back up the current bake before replacing it:
+   cp -a assets/outmaps/test-planet assets/outmaps/test-planet.pre-manual-coverage-tuning-$(date +%Y%m%d-%H%M%S)
+7. Re-bake with the existing production command:
+   TMPDIR=/home/dad/catingard/tmp-rust .target-baker-triple/release/catinthegarden-baker --output assets/outmaps/test-planet --procedural-terrain --mountain-coverage --width 4096 --height 2048 --dense-level 4 --max-level 4 --erosion-iterations 256 --seed 0xEA272026
+8. Fully quit and restart the app; it loads the outmap only at startup.
 
-Tuning:
-- 125.0: spatial frequency. Lower = wider/fewer ranges; higher = narrower/more.
-- 3: octave count. Lower to 2 to remove fine spiky substructure.
-- 0.30: activation threshold. Higher = fewer peaks; lower = more coverage.
-- 0.50: transition width. Larger = softer, broader slopes; smaller = sharper cutoff.
-- 34_000.0: vertical amplitude. Lower to reduce height/spikiness.
-
-A good first softer trial is frequency 64, 2 octaves, threshold 0.36, transition 0.64, amplitude 24,000. Then rebuild the baker, back up assets/outmaps/test-planet, run the production bake command, and restart the app so it reloads the outmap.
+If the result is too flat, raise 24_000.0; if still too spiky, lower it or reduce frequency further.
