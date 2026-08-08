@@ -1,11 +1,1 @@
-The low green areas are mostly flat because the generator deliberately puts almost all of its strong relief behind a mountain-region gate.
-
-In `crates/baker/src/terrain.rs`:
-- Lowland land gets only about 360–980 m of broad height, ~900 m of foothill noise, and ~70 m fine breakup.
-- Strong ridges/peaks are multiplied by `range_gate`, which is driven by the low-frequency `mountain_region`; outside those belts it contributes only its 20% floor.
-- Biome classification labels terrain above 2,400 m as mountain rock/snow, so visibly rugged terrain stops being green.
-- The 256-iteration erosion/hydrology pass further softens the lowland relief.
-
-The existing coverage instrument confirms the imbalance: only 2 of 272,856 land samples pass the 30-degree / 2 km mountain test (0.00% when rounded).
-
-So this is not a renderer/LOD fault. It is a generator/material coupling: green is currently synonymous with low, gently varying terrain, while the strong hills are concentrated in sparse mountain belts. The smallest visual correction would be to add a broader, lower-amplitude rolling-hill field to `lowland` and leave the high mountain families unchanged; I have not edited or rebaked yet.
+No. I only diagnosed the cause; I have not changed the lowland field or rebaked the terrain. The major mountain ranges remain unchanged. I can make that targeted adjustment next.
