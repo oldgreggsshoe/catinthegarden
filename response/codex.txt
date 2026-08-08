@@ -1,9 +1,13 @@
-Calibration completed for the latest active terrain bake.
+Completed and pushed summit calibration as commit `8c8b038`.
 
-- Re-ran `relief_survey::tests::global_highest_summit` against the live outmap.
-- Updated F4/highest-prominence constants to 178,134.275165 m prominence at 20.349651S, 51.995568W; raw macro at that summit is 44,531.544983 m.
-- Kept `relief_survey.rs` and made the ignored survey fail when direction, prominence, or summit raw height drifts from the checked-in constants.
-- Re-authored `highest_prominence_peak` to the runtime surface. GPU scenario passes with 152.400 m clearance, zero LOD thrash, finite metrics, and two screenshots.
-- `cargo fmt --all -- --check`, `cargo check --workspace`, and all 201 non-ignored app tests pass (7 ignored).
+The live post-retune bake measures:
+- standard prominence: 178,134.275165 m
+- summit direction: 20.349651S, 51.995568W
+- raw macro at that summit: 44,531.544983 m
+- global raw L4 maximum (a different sample): 44,531.671875 m
 
-The unrelated dirty renderer/baker changes, README/.github, screenshots, report PDF, `.gitignore`, and handoff deletion remain untouched and unstaged.
+Updated F4 constants, scenario pose, and scenario assertions. Kept `relief_survey.rs` and bound its ignored global survey to the checked-in constants, so a later rebake fails loudly until recalibrated.
+
+Validation: survey instrument pass; GPU `highest_prominence_peak` pass at 152.400 m clearance with zero LOD thrash; `cargo fmt --all -- --check`; `cargo check --workspace`; 201 app tests passed, 7 ignored.
+
+Unrelated dirty renderer/baker work, `.gitignore`, handoff deletion, README/.github, screenshots, and PDF remain untouched/unstaged.
