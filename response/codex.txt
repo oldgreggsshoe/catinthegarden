@@ -1,11 +1,3 @@
-Implemented and pushed wider snow-covered summit peaks.
+The latest capture is not simply stale: its manifest reports git commit 8237c1a, and it was taken after the widened-peak bake was active. A running app only loads outmap data at startup, so restarting is required after any bake, but this run already appears to have restarted on the current build.
 
-- The white needle peaks are the baked narrow_peak family, not runtime local detail.
-- Changed its base frequency 11.0 -> 4.4 for approximately 2.5x wider, fewer peaks.
-- Broad mountain range height/coverage unchanged.
-- Backup: assets/outmaps/test-planet.pre-wider-snow-peaks-backup-20260808-205513
-- New bake SHA-256: c2eeb24ad2b353c6819890b4c7fbb0933ca204dc67edcc184f24f75f3e122e0a
-- Height range: -4,428.371..51,685.105m; mountain coverage 21.46%.
-- Re-authored F4 summit: 28.400852S, 35.558844W; summit scenario passes at 152.400m clearance; orbit passes.
-- Baker tests: 33 passed, 2 ignored. Focused app scenario and workspace check pass.
-- Existing unrelated `PLANET_SIM_HANDOFF.md` deletion and 3x rotation edit remain unstaged/untouched.
+Why it still looks spiky: widening the 11->4.4 narrow snow family reduced that family, but the remaining silhouette is dominated by the baked 125-base coverage ridge family at 34,000m amplitude, multiplied by the 4x macro presentation scale. The HUD also shows 241 fallback chunks/source-L4 data and flat L7 triangles, which exaggerates the facets. Runtime local detail is not the cause. The next fix needs to soften/widen the coverage ridge or reduce its summit amplitude, not rebuild the same code.
