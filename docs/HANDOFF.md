@@ -2462,3 +2462,25 @@ surface and the GPU summit scenario passes. Orbit passes. Baker tests (33 passed
 workspace check, and app tests (198 passed, 1 pre-existing collision-sweep failure, 7 ignored)
 complete successfully. A fresh low-flight capture remains required for visual sign-off because
 this is a deliberately extreme game-scale height change.
+
+## Wider snow-covered summit peaks — 8 August 2026
+
+The latest manual capture `test-runs/manual/1786218516-25893/capture-001.png` showed that the
+large mountain range itself read well, but its white summit peaks were too needle-like. Those
+peaks are the baked `narrow_peak` family, not runtime local detail (`GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE`
+remains zero). Its base frequency is now 4.4 instead of 11.0, widening the snow-covered summit
+features by approximately 2.5x and reducing their count while leaving the broad range height and
+coverage families unchanged.
+
+The prior active outmap is preserved at
+`assets/outmaps/test-planet.pre-wider-snow-peaks-backup-20260808-205513`. The replacement
+4096x2048 bake has manifest SHA-256
+`c2eeb24ad2b353c6819890b4c7fbb0933ca204dc67edcc184f24f75f3e122e0a`, height range
+-4,428.371m .. 51,685.105m, and 21.46% mountain-visibility coverage (907,105/4,403,613
+positions; 10,068,976 qualifying rays).
+
+The global summit survey now measures 206,722.059m ASL at 28.400852S, 35.558844W; runtime
+surface at the re-authored pose is 206,615.545m. F4/highest-prominence starts 152.4m above
+that surface and passes. Orbit passes. Baker tests (33 passed, 2 ignored), focused scenario
+validation, and workspace check pass. The existing full-app collision-sweep failure remains
+unrelated and pre-existing.

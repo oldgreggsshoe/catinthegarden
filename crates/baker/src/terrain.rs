@@ -890,12 +890,10 @@ fn generate_procedural_game_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
             // continental scale: it is the local peak spacing that makes a
             // valley feel enclosed by nearby high ground instead of sitting
             // on a kilometre-wide plateau.
-            // Keep the summit spine frequency intact while widening the
-            // surrounding mountain belt; this preserves pointed local peaks
-            // instead of turning the doubled ranges into flat caps.
-            // Keep the summit spine narrow while the range/base families
-            // widen; this preserves local prominence inside the broad belt.
-            let narrow_ridge = ridged_fbm(&narrow_ridges, warped, 11.0, 4);
+            // Snow-covered summit spines were too needle-like. Widen this
+            // family by 2.5x while keeping the broad range and its height
+            // unchanged, producing fewer, broader high peaks.
+            let narrow_ridge = ridged_fbm(&narrow_ridges, warped, 4.4, 4);
             let narrow_peak = ((narrow_ridge - 0.68) / 0.32).clamp(0.0, 1.0).powi(3);
             // Keep every relief octave resolved by the 4096x2048 source grid;
             // the lower base frequencies widen both the major ranges and the
