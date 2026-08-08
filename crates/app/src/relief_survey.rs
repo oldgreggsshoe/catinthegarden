@@ -1,7 +1,5 @@
-//! Temporary instrument: what the detail ladder actually builds at the
-//! mountains, in the terms a hill is described in.
-//!
-//! Delete once the mountain character question is settled.
+//! Calibration instruments for the active baked terrain, including the
+//! standard global summit/prominence survey used to author F4's peak pose.
 
 #[cfg(test)]
 mod tests {
@@ -664,6 +662,49 @@ mod tests {
             best.2.x, best.2.y, best.2.z
         );
         println!("   raw macro at summit: {:.9}m", best.1);
+
+        // The instrument is also the guard. `ACTIVE_HIGHEST_PROMINENCE_*` are
+        // hand-copied from this output and drive F4's entry pose and the
+        // `highest_prominence_peak` scenario, but nothing tied them to the bake
+        // they describe: the mountain-coverage retune moved the summit 124 km
+        // and lowered it 7.7% while every test stayed green, because the only
+        // assertions compared the constants against each other.
+        //
+        // This test is `#[ignore]`d because it needs the outmap, so it cannot
+        // run in CI -- it has to be run by hand after a rebake. Failing loudly
+        // at that moment is still far better than never failing at all.
+        let measured_direction = best.2;
+        let separation_degrees = crate::ACTIVE_HIGHEST_PROMINENCE_DIRECTION
+            .normalize()
+            .dot(measured_direction)
+            .clamp(-1.0, 1.0)
+            .acos()
+            .to_degrees();
+        let summit_drift_meters = (best.0 - crate::ACTIVE_HIGHEST_PROMINENCE_METERS).abs();
+        let raw_drift_meters = (best.1 - crate::ACTIVE_HIGHEST_RAW_MACRO_ELEVATION_METERS).abs();
+        assert!(
+            separation_degrees < 1.0e-4
+                && summit_drift_meters < 1.0e-3
+                && raw_drift_meters < 1.0e-3,
+            "the active bake's summit no longer matches the constants in main.rs \
+             (separation {separation_degrees:.6} deg, summit {summit_drift_meters:.6} m, \
+              raw {raw_drift_meters:.6} m). Update them to:\n\
+             const ACTIVE_HIGHEST_PROMINENCE_DIRECTION: glam::DVec3 = glam::DVec3::new(\n\
+             \x20   {:.15},\n\x20   {:.15},\n\x20   {:.15},\n\
+             );\n\
+             const ACTIVE_HIGHEST_PROMINENCE_METERS: f64 = {:.9};\n\
+             const ACTIVE_HIGHEST_RAW_MACRO_ELEVATION_METERS: f64 = {:.9};\n\
+             and the latitude/longitude in \
+             active_peak_measurement_uses_standard_global_summit_prominence to \
+             {:.9} / {:.9} deg.",
+            measured_direction.x,
+            measured_direction.y,
+            measured_direction.z,
+            best.0,
+            best.1,
+            measured_direction.y.asin().to_degrees(),
+            crate::planet::geographic_longitude_degrees(measured_direction),
+        );
     }
 
     #[test]

@@ -2484,3 +2484,17 @@ surface at the re-authored pose is 206,615.545m. F4/highest-prominence starts 15
 that surface and passes. Orbit passes. Baker tests (33 passed, 2 ignored), focused scenario
 validation, and workspace check pass. The existing full-app collision-sweep failure remains
 unrelated and pre-existing.
+
+## Active summit calibration after coverage retune — 8 August 2026
+
+The latest active outmap was rebaked after the mountain-coverage change. The retained
+`relief_survey::tests::global_highest_summit` instrument now binds the checked-in F4 and
+`highest_prominence_peak` calibration values to the bake instead of comparing constants only
+against themselves. It measures a standard global-summit prominence of 178,134.275165m at
+20.349651S, 51.995568W, direction `[0.577293926784803, -0.347748275323568,
+0.738784717699863]`, with 44,531.544983m raw macro elevation at that summit. The global raw
+L4 maximum is 44,531.671875m at a different sample.
+
+F4/highest-prominence was re-authored to the measured runtime surface: the scenario starts
+152.400m above the surface (runtime surface 178,125.699371m), with two screenshots. The
+focused scenario passes finite-metric, no-thrash, clearance, and screenshot assertions.

@@ -74,14 +74,22 @@ const LOW_FLIGHT_ALTITUDE_METERS: f64 = 2.0;
 /// runtime macro presentation and bounded detail are applied. The direction
 /// is measured by the standard global-summit/prominence instrument; as the
 /// planet's highest summit it uses sea level as its key col.
+/// Re-measure after every rebake with
+/// `cargo test -- --ignored --nocapture global_highest_summit`, which asserts
+/// these three values against the outmap it scans and prints the replacements
+/// when they drift. The latest mountain-coverage retune moved and lowered the
+/// summit; the ignored calibration instrument keeps this pose in lockstep.
 const ACTIVE_HIGHEST_PROMINENCE_DIRECTION: glam::DVec3 = glam::DVec3::new(
-    0.715_604_809_297_163,
-    -0.475_637_288_329_002,
-    0.511_545_625_396_019,
+    0.577_293_926_784_803,
+    -0.347_748_275_323_568,
+    0.738_784_717_699_863,
 );
-const ACTIVE_HIGHEST_PROMINENCE_METERS: f64 = 206_615.544_607_085;
+const ACTIVE_HIGHEST_PROMINENCE_METERS: f64 = 178_134.275_164_775;
 #[cfg(test)]
-const ACTIVE_HIGHEST_RAW_MACRO_ELEVATION_METERS: f64 = 51_653.768_590_927;
+/// Raw macro elevation *at the summit above*, not the global raw L4 maximum --
+/// since the coverage retune those are different points, and the prominence
+/// relationship this feeds only holds when both describe the same place.
+const ACTIVE_HIGHEST_RAW_MACRO_ELEVATION_METERS: f64 = 44_531.544_982_910;
 /// How close to the ground flight may descend. CPU clearance evaluates the
 /// same synthesised relief the shader displaces, so a sub-metre floor is safe.
 const LOW_FLIGHT_MINIMUM_CLEARANCE_METERS: f64 = 0.75;

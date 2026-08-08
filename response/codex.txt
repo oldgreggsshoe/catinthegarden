@@ -1,13 +1,9 @@
-Reviewed current worktree without changing user edits.
+Calibration completed for the latest active terrain bake.
 
-Summary:
-- Coverage change is active in source: 125/3 octaves -> 25/2, threshold 0.30 -> 0.50. This is a very strong widening/fewer-ranges change, not a subtle tweak. Active manifest mtime is newer than terrain.rs, so it appears rebaked; current raw range is -4,405.830..53,340.363m.
-- FrameInputs/HudInputs/SpatialLogInputs refactor is coherent and cargo check/app tests pass. It removes the fragile bool tuple and moves HUD/log assembly into focused methods.
-- Foveated debug now reuses shared aerial_density_sample_fraction; WGSL validation/tests pass. Experiment-bit parity test is useful; experiment 3 remains intentionally dead/reserved.
-- Planet radius re-export from coretypes is a good CPU consistency fix, with a shader parity test.
-- The collision-sweep test now derives its expected lift from the hidden peak and clearance floor; this is valid but changes the test baseline rather than renderer behavior.
-- .gitignore additions are sensible for target/tmp/response artifacts. CI is present, but clippy remains continue-on-error, so it is advisory rather than a gate.
+- Re-ran `relief_survey::tests::global_highest_summit` against the live outmap.
+- Updated F4/highest-prominence constants to 178,134.275165 m prominence at 20.349651S, 51.995568W; raw macro at that summit is 44,531.544983 m.
+- Kept `relief_survey.rs` and made the ignored survey fail when direction, prominence, or summit raw height drifts from the checked-in constants.
+- Re-authored `highest_prominence_peak` to the runtime surface. GPU scenario passes with 152.400 m clearance, zero LOD thrash, finite metrics, and two screenshots.
+- `cargo fmt --all -- --check`, `cargo check --workspace`, and all 201 non-ignored app tests pass (7 ignored).
 
-Validation: fmt check, cargo check --workspace, app tests 201 passed/7 ignored, baker tests 44 passed/2 ignored.
-
-Items to decide: PLANET_SIM_HANDOFF.md is still deleted, and README.md/.github/ are untracked. I left all of those user changes untouched.
+The unrelated dirty renderer/baker changes, README/.github, screenshots, report PDF, `.gitignore`, and handoff deletion remain untouched and unstaged.
