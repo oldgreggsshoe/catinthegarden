@@ -1,3 +1,15 @@
-The latest capture is not simply stale: its manifest reports git commit 8237c1a, and it was taken after the widened-peak bake was active. A running app only loads outmap data at startup, so restarting is required after any bake, but this run already appears to have restarted on the current build.
+coverage_peak is in crates/baker/src/terrain.rs, around lines 900-925:
 
-Why it still looks spiky: widening the 11->4.4 narrow snow family reduced that family, but the remaining silhouette is dominated by the baked 125-base coverage ridge family at 34,000m amplitude, multiplied by the 4x macro presentation scale. The HUD also shows 241 fallback chunks/source-L4 data and flat L7 triangles, which exaggerates the facets. Runtime local detail is not the cause. The next fix needs to soften/widen the coverage ridge or reduce its summit amplitude, not rebuild the same code.
+let coverage_ridge = ridged_fbm(&coverage_ridges, warped, 125.0, 3);
+let coverage_peak = smoother_step(((coverage_ridge - 0.30) / 0.50).clamp(0.0, 1.0));
+...
++ range_gate * coverage_peak * 34_000.0;
+
+Tuning:
+- 125.0: spatial frequency. Lower = wider/fewer ranges; higher = narrower/more.
+- 3: octave count. Lower to 2 to remove fine spiky substructure.
+- 0.30: activation threshold. Higher = fewer peaks; lower = more coverage.
+- 0.50: transition width. Larger = softer, broader slopes; smaller = sharper cutoff.
+- 34_000.0: vertical amplitude. Lower to reduce height/spikiness.
+
+A good first softer trial is frequency 64, 2 octaves, threshold 0.36, transition 0.64, amplitude 24,000. Then rebuild the baker, back up assets/outmaps/test-planet, run the production bake command, and restart the app so it reloads the outmap.
