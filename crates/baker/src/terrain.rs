@@ -914,8 +914,17 @@ fn generate_procedural_game_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
             let foothills = interior * ridged_fbm(&regions, warped, 8.0, 3).powi(2) * 900.0;
             let highland = (0.5 + broad_relief * 0.5).max(0.0);
             let fine_breakup = fbm(&detail, warped, 12.0, 3);
-            let lowland =
-                80.0 + interior * (360.0 + highland * 620.0) + foothills + fine_breakup * 70.0;
+            // Give ordinary green land broad rolling relief without feeding
+            // the mountain belts: this signed, low-frequency term stays well
+            // below the ridge families and is gated by continental interior
+            // so coastlines cannot turn into inland water holes.
+            let rolling_hills = interior * fbm(&regions, warped, 0.85, 3) * 520.0;
+            let lowland = (80.0
+                + interior * (360.0 + highland * 620.0)
+                + rolling_hills
+                + foothills
+                + fine_breakup * 70.0)
+                .max(1.0);
             let mountain_height = range_gate
                 * (880.0 + sharp_ridge * 13_000.0 + highland * 2_800.0)
                 + range_gate * narrow_peak * 13_000.0

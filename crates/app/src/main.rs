@@ -84,12 +84,12 @@ const ACTIVE_HIGHEST_PROMINENCE_DIRECTION: glam::DVec3 = glam::DVec3::new(
     -0.347_748_275_323_568,
     0.738_784_717_699_863,
 );
-const ACTIVE_HIGHEST_PROMINENCE_METERS: f64 = 178_134.275_164_775;
+const ACTIVE_HIGHEST_PROMINENCE_METERS: f64 = 180_943.291_155_986;
 #[cfg(test)]
 /// Raw macro elevation *at the summit above*, not the global raw L4 maximum --
 /// since the coverage retune those are different points, and the prominence
 /// relationship this feeds only holds when both describe the same place.
-const ACTIVE_HIGHEST_RAW_MACRO_ELEVATION_METERS: f64 = 44_531.544_982_910;
+const ACTIVE_HIGHEST_RAW_MACRO_ELEVATION_METERS: f64 = 45_233.798_980_713;
 /// How close to the ground flight may descend. CPU clearance evaluates the
 /// same synthesised relief the shader displaces, so a sub-metre floor is safe.
 const LOW_FLIGHT_MINIMUM_CLEARANCE_METERS: f64 = 0.75;

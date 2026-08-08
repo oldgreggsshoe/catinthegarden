@@ -2498,3 +2498,23 @@ L4 maximum is 44,531.671875m at a different sample.
 F4/highest-prominence was re-authored to the measured runtime surface: the scenario starts
 152.400m above the surface (runtime surface 178,125.699371m), with two screenshots. The
 focused scenario passes finite-metric, no-thrash, clearance, and screenshot assertions.
+
+## Broad lowland rolling hills — 8 August 2026
+
+The procedural lowland field now adds one signed, low-frequency rolling-hill octave at
+520m amplitude, gated by continental interior. It is added only to `lowland`; the mountain
+region gate, narrow peaks, coverage ridges, and their amplitudes are unchanged. The interior
+gate and a 1m floor prevent the new term from creating inland water holes near coasts.
+
+The active 4096x2048, 256-erosion bake was regenerated with
+`--procedural-terrain --mountain-coverage --erosion-iterations 256`. Its manifest SHA-256 is
+`c969c79fc772249b8cfb29e53e69a5f73d1249d8b4c5dd2e04aa1abe303c18bc`; the prior active outmap
+is preserved at `assets/outmaps/test-planet.pre-rolling-hills-backup-20260808-231451`.
+The bake completed with 164/4,369,479 land samples passing the existing steep-mountain
+coverage instrument (0.01% rounded), so this change targets broad green hills rather than
+trying to inflate the major-mountain coverage metric.
+
+The summit survey remains at the same direction, now measuring 180,943.291156m prominence
+and 45,233.798981m raw macro elevation. F4/highest-prominence was re-authored to the new
+runtime surface and passes at 152.400m clearance. Baker tests (33 library, 5 binary, 6
+integration), workspace checking, and all 201 non-ignored app tests pass.

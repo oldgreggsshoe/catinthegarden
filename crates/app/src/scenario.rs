@@ -928,7 +928,7 @@ mod tests {
             (crate::planet::geographic_longitude_degrees(direction) + 51.995_567_522_201).abs()
                 < 1.0e-6
         );
-        assert!((position.length() - 4_178_278.099_370_877).abs() < 1.0e-6);
+        assert!((position.length() - 4_181_087.114_995_877).abs() < 1.0e-6);
         assert_eq!(scenario.expected_screenshots(), 2);
         assert_eq!(scenario.assertions().min_camera_clearance_m, Some(150.0));
         assert_eq!(scenario.assertions().max_camera_clearance_m, Some(155.0));

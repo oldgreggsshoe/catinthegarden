@@ -1,1 +1,15 @@
-No. I only diagnosed the cause; I have not changed the lowland field or rebaked the terrain. The major mountain ranges remain unchanged. I can make that targeted adjustment next.
+Implemented the broader lowland hills and rebaked the active planet.
+
+Change:
+- Added a signed 520 m, low-frequency rolling-hill term to procedural lowland terrain.
+- It is interior-gated with a 1 m floor, so coastlines and water remain unchanged.
+- Major mountain gates, ridges, peaks, and amplitudes were not modified.
+
+Bake:
+- Rebuilt with `--procedural-terrain --mountain-coverage --erosion-iterations 256`.
+- Previous active outmap backed up at `assets/outmaps/test-planet.pre-rolling-hills-backup-20260808-231451`.
+- New manifest SHA-256: `c969c79fc772249b8cfb29e53e69a5f73d1249d8b4c5dd2e04aa1abe303c18bc`.
+
+Calibration moved only in height, not location: prominence is now 180,943.291156 m at the same summit direction. F4/highest-prominence passes at 152.400 m clearance.
+
+Validation: baker tests 33+5+6 passed, workspace check passed, app tests 201 passed/7 ignored, summit survey passed, GPU highest-prominence scenario passed.
