@@ -1,15 +1,5 @@
-Implemented the broader lowland hills and rebaked the active planet.
+That is a terrain geometry spike, not a sky/fog line.
 
-Change:
-- Added a signed 520 m, low-frequency rolling-hill term to procedural lowland terrain.
-- It is interior-gated with a 1 m floor, so coastlines and water remain unchanged.
-- Major mountain gates, ridges, peaks, and amplitudes were not modified.
+The capture is at 25,705 m altitude, lat -19.0016°, lon -86.5117°, in flat L7 mode with outlines off. The line rises exactly from the terrain silhouette and continues toward the camera as a very narrow dark facet. The HUD shows 246/256 chunks using ancestor fallback across L3-L7, so this is most likely one coarse fallback/LOD triangle carrying a large height jump. `Seam: 0.0000 m` only proves shared node borders agree; it does not catch a bad source-height outlier or an isolated long triangle.
 
-Bake:
-- Rebuilt with `--procedural-terrain --mountain-coverage --erosion-iterations 256`.
-- Previous active outmap backed up at `assets/outmaps/test-planet.pre-rolling-hills-backup-20260808-231451`.
-- New manifest SHA-256: `c969c79fc772249b8cfb29e53e69a5f73d1249d8b4c5dd2e04aa1abe303c18bc`.
-
-Calibration moved only in height, not location: prominence is now 180,943.291156 m at the same summit direction. F4/highest-prominence passes at 152.400 m clearance.
-
-Validation: baker tests 33+5+6 passed, workspace check passed, app tests 201 passed/7 ignored, summit survey passed, GPU highest-prominence scenario passed.
+I would verify it with the same pose using F9 albedo and O outlines. If it remains in albedo, it is definitely geometry; if only lighting shows it, it is a face-normal/specular issue. I have not changed code for this diagnosis yet.
