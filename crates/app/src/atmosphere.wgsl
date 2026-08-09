@@ -1,16 +1,16 @@
 const PLANET_RADIUS_METERS: f32 = 4000000.0;
-const ATMOSPHERE_HEIGHT_METERS: f32 = 720000.0;
-const ATMOSPHERE_EDGE_FADE_METERS: f32 = 480000.0;
+const ATMOSPHERE_HEIGHT_METERS: f32 = 1440000.0;
+const ATMOSPHERE_EDGE_FADE_METERS: f32 = 960000.0;
 const ATMOSPHERE_RADIUS_METERS: f32 = PLANET_RADIUS_METERS + ATMOSPHERE_HEIGHT_METERS;
-const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 36000.0;
-const MIE_SCALE_HEIGHT_METERS: f32 = 4800.0;
+const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 72000.0;
+const MIE_SCALE_HEIGHT_METERS: f32 = 9600.0;
 const RAYLEIGH_COEFFICIENT: vec3<f32> = vec3<f32>(5.8e-6, 13.5e-6, 33.1e-6);
 const MIE_COEFFICIENT: vec3<f32> = vec3<f32>(0.5e-6);
 const MIE_G: f32 = 0.76;
 const SOLAR_RADIANCE: f32 = 2.0;
 const SKY_SAMPLE_COUNT: u32 = 16u;
 const SKY_DENSITY_SAMPLE_EXPONENT: f32 = 3.0;
-const TWILIGHT_SHADOW_TRANSITION_METERS: f32 = 36000.0;
+const TWILIGHT_SHADOW_TRANSITION_METERS: f32 = 72000.0;
 const ANTISOLAR_TWILIGHT_MIN_SCATTER: f32 = 0.48;
 // Clear Earth skies are blue without the neon cyan crossover that a high
 // saturation pass produces in a screenshot.  Keep the transform modest so
@@ -170,7 +170,7 @@ fn twilight_solar_air_mass(solar_zenith_cosine: f32, sample_altitude_meters: f32
     // column there so a high-altitude sunrise/sunset still loses blue before
     // fading to night; daytime illumination remains unchanged.
     let horizon_amount = 1.0 - smoothstep(0.08, 0.30, solar_zenith_cosine);
-    let upper_atmosphere_amount = smoothstep(30000.0, 120000.0, sample_altitude_meters);
+    let upper_atmosphere_amount = smoothstep(60000.0, 240000.0, sample_altitude_meters);
     return base_air_mass * mix(1.0, 8.0, horizon_amount * upper_atmosphere_amount);
 }
 

@@ -129,11 +129,11 @@ const TERRAIN_DETAIL_RIDGE_NORMALISATION: f32 = 1.0;
 const TERRAIN_DETAIL_ATTENUATION_SLOPE: f32 = 4.0;
 const TERRAIN_SKIRT_DEPTH_RATIO: f32 = 0.075;
 const MAX_TERRAIN_SKIRT_DEPTH_METERS: f32 = 10.0;
-const ATMOSPHERE_HEIGHT_METERS: f32 = 720000.0;
-const ATMOSPHERE_EDGE_FADE_METERS: f32 = 480000.0;
+const ATMOSPHERE_HEIGHT_METERS: f32 = 1440000.0;
+const ATMOSPHERE_EDGE_FADE_METERS: f32 = 960000.0;
 const ATMOSPHERE_RADIUS_METERS: f32 = PLANET_RADIUS_METERS + ATMOSPHERE_HEIGHT_METERS;
-const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 36000.0;
-const MIE_SCALE_HEIGHT_METERS: f32 = 4800.0;
+const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 72000.0;
+const MIE_SCALE_HEIGHT_METERS: f32 = 9600.0;
 const RAYLEIGH_COEFFICIENT: vec3<f32> = vec3<f32>(5.8e-6, 13.5e-6, 33.1e-6);
 const MIE_COEFFICIENT: vec3<f32> = vec3<f32>(0.5e-6);
 const MIE_G: f32 = 0.76;
@@ -155,10 +155,10 @@ const AERIAL_IN_SCATTER_GAIN: f32 = 3.0;
 const OCEAN_AERIAL_PERSPECTIVE_WEIGHT: f32 = 0.35;
 const OCEAN_REFLECTION_SCALE: f32 = 0.35;
 const OCEAN_SUN_GLINT_SCALE: f32 = 3.0;
-const TWILIGHT_SHADOW_TRANSITION_METERS: f32 = 36000.0;
-const TERRAIN_FOG_START_METERS: f32 = 2000.0;
-const TERRAIN_FOG_END_METERS: f32 = 60000.0;
-const TERRAIN_FOG_MAX_CAMERA_ALTITUDE_METERS: f32 = 100000.0;
+const TWILIGHT_SHADOW_TRANSITION_METERS: f32 = 72000.0;
+const TERRAIN_FOG_START_METERS: f32 = 4000.0;
+const TERRAIN_FOG_END_METERS: f32 = 120000.0;
+const TERRAIN_FOG_MAX_CAMERA_ALTITUDE_METERS: f32 = 200000.0;
 const TERRAIN_FOG_FULL_HORIZON_COSINE: f32 = 0.05;
 const TERRAIN_FOG_CLEAR_HORIZON_COSINE: f32 = 0.35;
 const TERRAIN_MATERIAL_TILE_METERS: f32 = 2048.0;
@@ -769,7 +769,7 @@ fn twilight_solar_air_mass(solar_zenith_cosine: f32, sample_altitude_meters: f32
     let twilight_depth = smoothstep(0.0, 0.12, max(-solar_zenith_cosine, 0.0));
     let base_air_mass = mix(grazing_air_mass, 12.0, twilight_depth);
     let horizon_amount = 1.0 - smoothstep(0.08, 0.30, solar_zenith_cosine);
-    let upper_atmosphere_amount = smoothstep(30000.0, 120000.0, sample_altitude_meters);
+    let upper_atmosphere_amount = smoothstep(60000.0, 240000.0, sample_altitude_meters);
     return base_air_mass * mix(1.0, 8.0, horizon_amount * upper_atmosphere_amount);
 }
 
@@ -786,7 +786,7 @@ fn terrain_aerial_solar_air_mass(
     // facets makes a daytime horizon turn orange. Keep terrain's long view
     // rays warm without letting the upper-atmosphere multiplier dominate.
     let horizon_amount = 1.0 - smoothstep(0.08, 0.30, solar_zenith_cosine);
-    let upper_atmosphere_amount = smoothstep(30000.0, 120000.0, sample_altitude_meters);
+    let upper_atmosphere_amount = smoothstep(60000.0, 240000.0, sample_altitude_meters);
     return base_air_mass
         * mix(
             1.0,

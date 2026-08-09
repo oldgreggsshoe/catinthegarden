@@ -1,14 +1,10 @@
-Fixed both reported faults.
+Atmosphere scaling is implemented and validated.
 
-- Terrain seam: flat-triangle terrain now keeps the existing mixed-LOD skirt triangles instead of discarding them. They close residual parent/child edge gaps, while the skirt path still suppresses wireframe outlines.
-- Orange horizon: terrain aerial in-scattering now uses a terrain-only upper-atmosphere horizon multiplier (`0.42`). The fullscreen sky keeps its stronger twilight column, so sunset/sunrise sky timing is unchanged while distant daytime terrain is less red/orange.
+- Shell height and edge fade: 2x (1,440 km / 960 km).
+- Rayleigh/Mie scale heights and twilight shadow width: 2x.
+- Upper-atmosphere transition and terrain-fog distance gates: 2x.
+- Scattering coefficients, colours, radiance, sample counts, terrain geometry, and exposure unchanged.
 
-Validation:
-- `cargo fmt --all -- --check`
-- focused flat-triangle test: passed
-- 13 shader/WGSL tests: passed
-- full workspace: 201 app + 33 baker + 5 baker-bin + 6 integration + 6 coretypes tests passed; 7 ignored
-- release `orbit_once`: passed, seam assertion max 0.000488m
-- release `tour_mountains`: passed, 4 screenshots captured
+Validation: formatting, the doubled/synchronised atmosphere test, 13 WGSL/shader tests, and full workspace tests (202 app + 33 baker + 5 baker-bin + 6 integration + 6 coretypes; 7 ignored) passed. GPU scenarios could not start in this session because the X display was unavailable.
 
-The deterministic summit scenario still reports its pre-existing 130.7m clearance versus the 150m assertion; this change does not alter top-surface height or camera placement.
+Next requested task: add baker progress reporting.

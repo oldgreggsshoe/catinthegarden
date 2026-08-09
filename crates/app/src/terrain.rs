@@ -4084,6 +4084,28 @@ mod tests {
     }
 
     #[test]
+    fn atmosphere_distance_constants_are_doubled_and_synchronised() {
+        let planet_shader = planet_shader_source();
+        for shader in [planet_shader.as_str(), include_str!("atmosphere.wgsl")] {
+            for declaration in [
+                "const ATMOSPHERE_HEIGHT_METERS: f32 = 1440000.0;",
+                "const ATMOSPHERE_EDGE_FADE_METERS: f32 = 960000.0;",
+                "const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 72000.0;",
+                "const MIE_SCALE_HEIGHT_METERS: f32 = 9600.0;",
+                "const TWILIGHT_SHADOW_TRANSITION_METERS: f32 = 72000.0;",
+            ] {
+                assert!(shader.contains(declaration), "missing {declaration}");
+            }
+            assert!(shader.contains("smoothstep(60000.0, 240000.0"));
+        }
+        assert!(planet_shader.contains("const TERRAIN_FOG_START_METERS: f32 = 4000.0;"));
+        assert!(planet_shader.contains("const TERRAIN_FOG_END_METERS: f32 = 120000.0;"));
+        assert!(
+            planet_shader.contains("const TERRAIN_FOG_MAX_CAMERA_ALTITUDE_METERS: f32 = 200000.0;")
+        );
+    }
+
+    #[test]
     fn direct_surface_sunlight_fades_before_geometric_sunset() {
         let shader = planet_shader_source();
         let normalized_shader = shader.split_whitespace().collect::<Vec<_>>().join(" ");
