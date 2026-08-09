@@ -19,12 +19,16 @@ pub const CHUNK_GRID_VERTICES: usize = CHUNK_GRID_QUADS + 1;
 /// canonical sampling density without increasing the global leaf budget.
 pub const NEAR_FIELD_GRID_QUADS: usize = 40;
 pub const MAX_LOD_LEVEL: u8 = 18;
+/// Hard cap for the rendered terrain frontier. Source/data levels may still
+/// be represented by the outmap, but the raster renderer never selects a
+/// chunk finer than this level.
+pub const RENDER_LOD_LEVEL_CAP: u8 = 1;
 /// The coarsest rendered quadtree leaf. Screen-space error raises the LOD into
 /// finer levels only when their geometric error can affect visible pixels.
 pub const MINIMUM_LOD_LEVEL: u8 = 2;
-/// Fixed level used by the flat-triangle experiment; five refinements above the
-/// normal coarsest level so broad game-terrain mountains span materially more
-/// than a handful of filled triangles.
+/// Historical test fixture for the fixed-policy selector tests. The runtime
+/// renderer is now hard-capped by `RENDER_LOD_LEVEL_CAP` in every mode.
+#[cfg(test)]
 pub const FLAT_TRIANGLE_LOD_LEVEL: u8 = MINIMUM_LOD_LEVEL + 5;
 /// Deliberately game-time-scaled so axial rotation is visible during normal play.
 pub const PLANET_ROTATION_PERIOD_SECONDS: f64 = 15.0;

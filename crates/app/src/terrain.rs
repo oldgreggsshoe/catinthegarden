@@ -17,12 +17,12 @@ use wgpu::util::DeviceExt;
 use crate::{
     outmap::{Outmap, OutmapError, TileData},
     planet::{
-        CHUNK_GRID_QUADS, CameraViewBasis, ChunkVertex, FLAT_TRIANGLE_LOD_LEVEL,
-        GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE,
-        GeometricErrorRatio, LodPolicy, MAX_LOD_LEVEL, NEAR_FIELD_GRID_QUADS,
-        OUTMAP_TERRAIN_FAR_HEIGHT_SCALE, OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS,
-        OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS, OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE,
-        PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode, TERRAIN_DETAIL_MIN_FILTER_METERS,
+        CHUNK_GRID_QUADS, CameraViewBasis, ChunkVertex, GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
+        GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, GeometricErrorRatio, LodPolicy, MAX_LOD_LEVEL,
+        NEAR_FIELD_GRID_QUADS, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE,
+        OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS, OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS,
+        OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode,
+        RENDER_LOD_LEVEL_CAP, TERRAIN_DETAIL_MIN_FILTER_METERS,
         TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS, TerrainHeightRange, build_chunk_mesh,
         build_chunk_mesh_with_quads, continuous_baked_sample_spacing_meters, cube_face_basis,
         cube_face_direction, max_active_chunks_from_env, outmap_surface_height_meters,
@@ -822,14 +822,14 @@ impl TerrainRenderer {
         }
         let initial_tile_last_used = initial_tile_cache.keys().map(|key| (*key, 0)).collect();
 
-        let mut lod = if flat_triangle_experiment {
-            PlanetLod::new(
-                LodPolicy::fixed(FLAT_TRIANGLE_LOD_LEVEL),
-                max_active_chunks_from_env(),
-            )
-        } else {
-            PlanetLod::default()
-        };
+        // Keep the actual renderer at the requested coarse diagnostic level in
+        // every shading mode. The flat-triangle flag still controls materials
+        // and transition behaviour, but it must not be the only path that can
+        // bypass normal SSE refinement.
+        let mut lod = PlanetLod::new(
+            LodPolicy::fixed(RENDER_LOD_LEVEL_CAP),
+            max_active_chunks_from_env(),
+        );
         lod.set_terrain_height_range(terrain_height_range);
         let renderer = Self {
             device: device.clone(),
@@ -1169,8 +1169,11 @@ impl TerrainRenderer {
             return None;
         };
         let manifest = outmap.manifest();
-        let level =
-            near_field_window_level(clearance_meters, manifest.dense_level, manifest.max_level)?;
+        let level = near_field_window_level(
+            clearance_meters,
+            manifest.dense_level,
+            manifest.max_level.min(RENDER_LOD_LEVEL_CAP),
+        )?;
         let (face, face_uv) = cube_face_uv(camera_local_direction)?;
         let tiles_per_side = 1_u32 << level;
         // Centre the window on the camera, then pull it inside the face. A
