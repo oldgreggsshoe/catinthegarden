@@ -1,10 +1,12 @@
-Atmosphere scaling is implemented and validated.
+Baker progress indicator added.
 
-- Shell height and edge fade: 2x (1,440 km / 960 km).
-- Rayleigh/Mie scale heights and twilight shadow width: 2x.
-- Upper-atmosphere transition and terrain-fog distance gates: 2x.
-- Scattering coefficients, colours, radiance, sample counts, terrain geometry, and exposure unchanged.
+- CLI bake, --refine-existing, and --validate now report stage, percentage, completed/total work, and an elapsed-time ETA on stderr.
+- Progress covers terrain source/erosion/hydrology/biomes, preview rows, tile export, refinement, and output validation. Completed stages are explicitly marked.
+- Existing library APIs remain quiet by default; callers can opt in with BakeProgress and bake_with_progress/validate_output_with_progress.
+- No baked terrain values or rendering behavior were changed.
 
-Validation: formatting, the doubled/synchronised atmosphere test, 13 WGSL/shader tests, and full workspace tests (202 app + 33 baker + 5 baker-bin + 6 integration + 6 coretypes; 7 ignored) passed. GPU scenarios could not start in this session because the X display was unavailable.
-
-Next requested task: add baker progress reporting.
+Validation:
+- cargo fmt --all
+- cargo test --workspace: 202 app tests, 33 baker library tests, 5 baker binary tests, 6 baker integration tests, 6 coretypes tests; 7 app and 2 baker tests ignored.
+- Quick baker smoke bake wrote and validated 33 tiles plus previews and emitted percentage/ETA progress output.
+- Atmosphere scaling remains in pushed commit 91e21cf.

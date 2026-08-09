@@ -1,8 +1,8 @@
 use std::{env, path::PathBuf, process::ExitCode};
 
 use catinthegarden_baker::{
-    BakeConfig, bake, bake_with_mountain_coverage, refine_existing_outmap, sparse_radius_for_level,
-    validate_output,
+    BakeConfig, BakeProgress, bake_with_progress, refine_existing_outmap_with_progress,
+    sparse_radius_for_level, validate_output_with_progress,
 };
 use catinthegarden_coretypes::{PLANET_RADIUS_METERS, TILE_LOGICAL_SIZE};
 
@@ -32,7 +32,9 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let output = arguments
             .get(index + 1)
             .ok_or("--validate requires an output directory")?;
-        let manifest = validate_output(PathBuf::from(output).as_path())?;
+        let mut progress = BakeProgress::new();
+        let manifest =
+            validate_output_with_progress(PathBuf::from(output).as_path(), &mut progress)?;
         println!(
             "validated {} tiles in schema {}",
             manifest.available_tiles.len(),
@@ -47,7 +49,9 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let output = arguments
             .get(index + 1)
             .ok_or("--refine-existing requires an outmap directory")?;
-        let manifest = refine_existing_outmap(PathBuf::from(output).as_path())?;
+        let mut progress = BakeProgress::new();
+        let manifest =
+            refine_existing_outmap_with_progress(PathBuf::from(output).as_path(), &mut progress)?;
         println!(
             "refined and validated {} tiles at {}",
             manifest.available_tiles.len(),
@@ -90,11 +94,9 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         println!("macro source: procedural continents + mountain regions + erosion");
     }
     print_sparse_coverage(&config);
-    let (manifest, mountain_coverage) = if report_mountain_coverage {
-        bake_with_mountain_coverage(&config)?
-    } else {
-        (bake(&config)?, Default::default())
-    };
+    let mut progress = BakeProgress::new();
+    let (manifest, mountain_coverage) =
+        bake_with_progress(&config, report_mountain_coverage, &mut progress)?;
     let [landing_x, landing_y, landing_z] = manifest.sparse_landing_direction;
     println!("selected dry coastal sparse centre [{landing_x:.6}, {landing_y:.6}, {landing_z:.6}]");
     println!(

@@ -7,7 +7,7 @@ use catinthegarden_coretypes::{BiomeId, direction_to_face_uv};
 use noise::{NoiseFn, Perlin};
 use rayon::prelude::*;
 
-use crate::{BakeResult, config::BakeConfig, etopo::load_etopo, grid::SphericalGrid};
+use crate::{BakeProgress, BakeResult, config::BakeConfig, etopo::load_etopo, grid::SphericalGrid};
 
 pub const MIN_HEIGHT_METERS: f64 = -5_000.0;
 // The doubled relief terms can sum across several overlapping ridge families;
@@ -83,7 +83,16 @@ impl Terrain {
     }
 
     pub fn try_generate(config: &BakeConfig) -> BakeResult<Self> {
+        let mut progress = BakeProgress::disabled();
+        Self::try_generate_with_progress(config, &mut progress)
+    }
+
+    pub(crate) fn try_generate_with_progress(
+        config: &BakeConfig,
+        progress: &mut BakeProgress,
+    ) -> BakeResult<Self> {
         let grid = SphericalGrid::new(config.width, config.height);
+        progress.stage("terrain source");
         let imported = config.etopo.is_some() && !config.procedural_terrain;
         let mut height_meters = if config.procedural_terrain {
             generate_procedural_game_shape(&grid, config.seed)
@@ -130,7 +139,8 @@ impl Terrain {
             terrain.mark_rivers();
             terrain.mark_inland_negative_lakes();
         } else {
-            terrain.erode(config.erosion_iterations);
+            terrain.erode_with_progress(config.erosion_iterations, progress);
+            progress.stage("hydrology");
             terrain.recompute_flow();
             terrain.carve_rivers();
             terrain.fill_lakes();
@@ -140,6 +150,7 @@ impl Terrain {
             // remains the authoritative downstream surface.
             terrain.recompute_flow();
         }
+        progress.stage("moisture and biomes");
         terrain.compute_moisture();
         terrain.classify_biomes(imported);
         Ok(terrain)
@@ -163,13 +174,20 @@ impl Terrain {
         }
     }
 
+    #[cfg(test)]
     fn erode(&mut self, iterations: usize) {
+        let mut progress = BakeProgress::disabled();
+        self.erode_with_progress(iterations, &mut progress);
+    }
+
+    fn erode_with_progress(&mut self, iterations: usize, progress: &mut BakeProgress) {
+        progress.begin("erosion", iterations);
         for iteration in 0..iterations {
             if iteration % FLOW_REFRESH_INTERVAL == 0 {
                 self.recompute_flow();
             }
-            let progress = iteration as f64 / iterations.max(1) as f64;
-            let step = 1.0 - progress * 0.95;
+            let erosion_progress = iteration as f64 / iterations.max(1) as f64;
+            let step = 1.0 - erosion_progress * 0.95;
             let heights = &self.height_meters;
             let flow_to = &self.flow_to;
             let accumulation = &self.flow_accumulation;
@@ -204,7 +222,9 @@ impl Terrain {
             if iteration % THERMAL_INTERVAL == 0 {
                 self.thermal_step(step);
             }
+            progress.update(iteration + 1, iterations);
         }
+        progress.done();
         self.height_meters
             .par_iter_mut()
             .for_each(|height| *height = height.clamp(MIN_HEIGHT_METERS, MAX_HEIGHT_METERS));

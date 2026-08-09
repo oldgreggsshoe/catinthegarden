@@ -15,7 +15,7 @@ use image::{GrayImage, ImageBuffer, ImageReader, Luma, Rgb, RgbImage};
 use noise::{NoiseFn, Perlin};
 
 use crate::{
-    BakeResult,
+    BakeProgress, BakeResult,
     config::BakeConfig,
     terrain::{MAX_HEIGHT_METERS, MIN_HEIGHT_METERS, Terrain, snowline_meters},
 };
@@ -42,14 +42,19 @@ const SPARSE_DETAIL_BANDS: [(u8, f64, f64); 7] = [
 const BAKED_BIOME_DETAIL_START_LEVEL: u8 = 3;
 const BAKED_BIOME_DETAIL_FREQUENCY: f64 = 280.0;
 
-pub fn export_outmap(config: &BakeConfig, terrain: &Terrain) -> BakeResult<OutmapManifest> {
+pub(crate) fn export_outmap_with_progress(
+    config: &BakeConfig,
+    terrain: &Terrain,
+    progress: &mut BakeProgress,
+) -> BakeResult<OutmapManifest> {
     fs::create_dir_all(&config.output)?;
-    write_previews(&config.output.join("previews"), terrain)?;
+    write_previews(&config.output.join("previews"), terrain, progress)?;
     let landing_direction = terrain.sparse_landing_direction();
     let available_tiles = available_tile_keys(config, landing_direction);
     let mut generated_tiles = BTreeMap::new();
     let microrelief = Perlin::new(config.seed ^ 0x4D49_4352);
-    for &key in &available_tiles {
+    progress.begin("exporting tiles", available_tiles.len());
+    for (index, &key) in available_tiles.iter().enumerate() {
         let mut tile = sample_tile(terrain, key, landing_direction, &microrelief);
         if let Some(parent) = key.parent() {
             let parent_tile = generated_tiles
@@ -59,7 +64,9 @@ pub fn export_outmap(config: &BakeConfig, terrain: &Terrain) -> BakeResult<Outma
         }
         write_tile(&config.output, key, &tile)?;
         generated_tiles.insert(key, tile);
+        progress.update(index + 1, available_tiles.len());
     }
+    progress.done();
     let manifest = build_manifest(config, landing_direction, available_tiles);
     manifest
         .validate()
@@ -76,6 +83,14 @@ pub fn export_outmap(config: &BakeConfig, terrain: &Terrain) -> BakeResult<Outma
 /// terrain; new sparse tiles bilinearly refine those samples and add only the
 /// deterministic, level-band-limited detail defined above.
 pub fn refine_existing_outmap(output: &Path) -> BakeResult<OutmapManifest> {
+    let mut progress = BakeProgress::disabled();
+    refine_existing_outmap_with_progress(output, &mut progress)
+}
+
+pub fn refine_existing_outmap_with_progress(
+    output: &Path,
+    progress: &mut BakeProgress,
+) -> BakeResult<OutmapManifest> {
     let existing: OutmapManifest =
         serde_json::from_slice(&fs::read(output.join("manifest.json"))?)?;
     existing
@@ -106,10 +121,14 @@ pub fn refine_existing_outmap(output: &Path) -> BakeResult<OutmapManifest> {
     let detail_noise = Perlin::new(config.seed ^ 0x4D49_4352);
     let mut dense_tiles = BTreeMap::new();
     let mut generated_tiles = BTreeMap::new();
-    for &key in available_tiles
+    let sparse_tiles: Vec<_> = available_tiles
         .iter()
         .filter(|key| key.level > config.dense_level)
-    {
+        .copied()
+        .collect();
+    let sparse_tile_count = sparse_tiles.len();
+    progress.begin("refining tiles", sparse_tile_count);
+    for (index, key) in sparse_tiles.into_iter().enumerate() {
         let mut tile = sample_refined_tile_from_dense(
             output,
             config.dense_level,
@@ -130,7 +149,9 @@ pub fn refine_existing_outmap(output: &Path) -> BakeResult<OutmapManifest> {
         constrain_logical_border_to_parent(&mut tile, key, &parent_tile);
         write_tile(output, key, &tile)?;
         generated_tiles.insert(key, tile);
+        progress.update(index + 1, sparse_tile_count);
     }
+    progress.done();
 
     let mut manifest = build_manifest(&config, landing_direction, available_tiles);
     // Refinement does not reload the original macro source, but it must not
@@ -143,11 +164,20 @@ pub fn refine_existing_outmap(output: &Path) -> BakeResult<OutmapManifest> {
         output.join("manifest.json"),
         serde_json::to_vec_pretty(&manifest)?,
     )?;
-    validate_output(output)?;
+    progress.stage("validating output");
+    validate_output_with_progress(output, progress)?;
     Ok(manifest)
 }
 
 pub fn validate_output(output: &Path) -> BakeResult<OutmapManifest> {
+    let mut progress = BakeProgress::disabled();
+    validate_output_with_progress(output, &mut progress)
+}
+
+pub(crate) fn validate_output_with_progress(
+    output: &Path,
+    progress: &mut BakeProgress,
+) -> BakeResult<OutmapManifest> {
     let manifest: OutmapManifest =
         serde_json::from_slice(&fs::read(output.join("manifest.json"))?)?;
     manifest
@@ -156,7 +186,8 @@ pub fn validate_output(output: &Path) -> BakeResult<OutmapManifest> {
     validate_channels(&manifest)?;
     validate_previews(output, &manifest)?;
     let mut height_tiles = BTreeMap::new();
-    for &key in &manifest.available_tiles {
+    progress.begin("validating tile payloads", manifest.available_tiles.len());
+    for (index, &key) in manifest.available_tiles.iter().enumerate() {
         let directory = output.join(key.relative_path());
         let height = fs::read(directory.join(HEIGHT_FILE))?;
         let biome = fs::read(directory.join(BIOME_FILE))?;
@@ -193,7 +224,9 @@ pub fn validate_output(output: &Path) -> BakeResult<OutmapManifest> {
             )));
         }
         height_tiles.insert(key, decoded_height);
+        progress.update(index + 1, manifest.available_tiles.len());
     }
+    progress.done();
     validate_fallback_edges(&manifest, &height_tiles)?;
     validate_landing_height(output, &manifest)?;
     Ok(manifest)
@@ -459,13 +492,14 @@ pub fn sparse_radius_for_level(config: &BakeConfig, level: u8) -> u32 {
     }
 }
 
-fn write_previews(output: &Path, terrain: &Terrain) -> BakeResult<()> {
+fn write_previews(output: &Path, terrain: &Terrain, progress: &mut BakeProgress) -> BakeResult<()> {
     fs::create_dir_all(output)?;
     let width = terrain.grid.width() as u32;
     let height = terrain.grid.height() as u32;
     let mut height_image: ImageBuffer<Luma<u16>, Vec<u16>> = ImageBuffer::new(width, height);
     let mut biome_image = RgbImage::new(width, height);
     let mut moisture_image = GrayImage::new(width, height);
+    progress.begin("writing previews", height as usize);
     for y in 0..height as usize {
         for x in 0..width as usize {
             let index = terrain.grid.index(x, y);
@@ -476,7 +510,9 @@ fn write_previews(output: &Path, terrain: &Terrain) -> BakeResult<()> {
             biome_image.put_pixel(x as u32, y as u32, Rgb(terrain.biome[index].color()));
             moisture_image.put_pixel(x as u32, y as u32, Luma([terrain.moisture[index]]));
         }
+        progress.update(y + 1, height as usize);
     }
+    progress.done();
     height_image.save(output.join("height.png"))?;
     biome_image.save(output.join("biome.png"))?;
     moisture_image.save(output.join("moisture.png"))?;
