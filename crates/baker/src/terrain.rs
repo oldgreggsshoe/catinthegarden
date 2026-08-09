@@ -16,6 +16,15 @@ pub const MAX_HEIGHT_METERS: f64 = 72_000.0;
 const FLOW_REFRESH_INTERVAL: usize = 32;
 const THERMAL_INTERVAL: usize = 8;
 const EROSION_PARALLEL_TILE_CELLS: usize = 4_096;
+/// Keep the generated game planet land-dominant rather than reproducing
+/// Earth's ocean-heavy area ratio. This shifts the continuous coast field,
+/// not the relief, so shorelines remain seam-safe and erosion still owns the
+/// resulting surface.
+const LAND_COVERAGE_BIAS: f64 = 0.12;
+/// The authored ellipse field has sharper continent boundaries than the
+/// procedural noise field, so it needs a larger positive offset to cross the
+/// same land-majority threshold after raster sampling.
+const EARTHLIKE_LAND_COVERAGE_BIAS: f64 = 0.20;
 /// The optional presentation bake intentionally exaggerates positive relief
 /// while leaving the planet radius, coastline, sea level, and bathymetry
 /// unchanged. The runtime's existing terrain scale then applies on top.
@@ -884,7 +893,7 @@ fn generate_procedural_game_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
             ];
             let continental = fbm(&continents, warped, 1.35, 5);
             let coast_detail = fbm(&continents, warped, 5.2, 3) * 0.14;
-            let signed_land = continental + coast_detail - 0.015;
+            let signed_land = continental + coast_detail + LAND_COVERAGE_BIAS;
             let broad_relief = fbm(&continents, warped, 2.25, 4);
             if signed_land <= 0.0 {
                 let basin = smoother_step((-signed_land / 0.62).clamp(0.0, 1.0));
@@ -1070,7 +1079,7 @@ fn earthlike_base_height(
     ];
     let continent = earthlike_continent_field(latitude_degrees, longitude_degrees);
     let coast_detail = fbm(base, warped, 1.7, 6) * 0.23 + fbm(base, warped, 6.5, 3) * 0.045;
-    let signed_land = continent + coast_detail;
+    let signed_land = continent + coast_detail + EARTHLIKE_LAND_COVERAGE_BIAS;
     let broad_relief = fbm(base, warped, 2.8, 5);
     if signed_land <= 0.0 {
         let ocean_depth = smoother_step((-signed_land / 0.72).clamp(0.0, 1.0));
@@ -1322,6 +1331,12 @@ mod tests {
         assert!(first.iter().any(|&height| height < 0.0));
         assert!(first.iter().any(|&height| height > 2_000.0));
         assert!(first.iter().all(|&height| height <= MAX_HEIGHT_METERS));
+        let land = first.iter().filter(|&&height| height > 0.0).count();
+        assert!(
+            land > first.len() / 2,
+            "authored generator must produce a land majority: {land}/{}",
+            first.len()
+        );
     }
 
     #[test]
@@ -1344,7 +1359,11 @@ mod tests {
                 .all(|&height| { (MIN_HEIGHT_METERS..=MAX_HEIGHT_METERS).contains(&height) })
         );
         let positive = first.iter().filter(|&&height| height > 0.0).count();
-        assert!(positive > first.len() / 8 && positive < first.len() * 7 / 8);
+        assert!(
+            positive > first.len() / 2 && positive < first.len() * 7 / 8,
+            "procedural generator must produce a land majority: {positive}/{}",
+            first.len()
+        );
         // Opposite directions must not collapse to a mirrored or antipodal
         // copy of the same macro surface.
         let asymmetry: f64 = first

@@ -908,7 +908,9 @@ fn flat_triangle_colour(
     // Keep flat fills categorical, but apply the same affine atmospheric
     // composition as smooth terrain. This lifts distant shadowed facets
     // toward the sky instead of leaving them at raw face-lighting black.
-    let aerial_lit = lit * input.aerial_transmittance + input.aerial_in_scatter;
+    let aerial_lit = lit
+        * terrain_material_transmittance(input.aerial_transmittance, fill_biome)
+        + terrain_material_in_scatter(input.aerial_in_scatter, fill_biome);
     let edge = flat_triangle_edge(input.tile_uv, input.skirt_depth_meters);
     return vec4<f32>(mix(aerial_lit, vec3<f32>(0.015, 0.02, 0.025), edge), 1.0);
 }
@@ -1250,14 +1252,18 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             biome_color(2u) * 0.65 * ice_light_floor,
         );
     }
+    textured_surface_lighting = neutralize_snow_surface_lighting(
+        textured_surface_lighting,
+        biome_id,
+    );
     // Aerial perspective is affine: attenuate the fragment-frequency surface
     // by the interpolated view transmittance, then add in-scatter. Rebuilding
     // this from a ratio of two vertex colours used to require a hard threshold
     // near black. Low-sun shadows crossed that threshold per channel, lifting
     // their interiors by up to 16x while leaving a dark outline at the switch.
     let textured_aerial_color = textured_surface_lighting
-        * input.aerial_transmittance
-        + input.aerial_in_scatter;
+        * terrain_material_transmittance(input.aerial_transmittance, biome_id)
+        + terrain_material_in_scatter(input.aerial_in_scatter, biome_id);
     if ocean_coverage <= 0.0 {
         if render_debug_mode == RENDER_DEBUG_SURFACE_LIGHTING {
             return vec4<f32>(textured_surface_lighting, 1.0);

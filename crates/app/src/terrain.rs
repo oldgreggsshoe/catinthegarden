@@ -3572,7 +3572,7 @@ mod tests {
         assert!(!shader.contains("camera_distance_meters > 80000.0"));
         assert!(shader.contains("smoothstep(20000.0, 180000.0, camera_distance_meters)"));
         assert!(shader.contains(
-            "let aerial_lit = lit * input.aerial_transmittance + input.aerial_in_scatter;"
+            "let aerial_lit = lit\n        * terrain_material_transmittance(input.aerial_transmittance, fill_biome)\n        + terrain_material_in_scatter(input.aerial_in_scatter, fill_biome);"
         ));
         // The experiment intentionally bypasses the material texture stack;
         // biome palette ownership remains the only fill colour source.
@@ -4173,7 +4173,7 @@ mod tests {
         assert!(shader.contains("@location(2) aerial_in_scatter: vec3<f32>"));
         assert!(shader.contains("@location(8) aerial_transmittance: vec3<f32>"));
         assert!(normalized_shader.contains(
-            "let textured_aerial_color = textured_surface_lighting * input.aerial_transmittance + input.aerial_in_scatter;"
+            "let textured_aerial_color = textured_surface_lighting * terrain_material_transmittance(input.aerial_transmittance, biome_id) + terrain_material_in_scatter(input.aerial_in_scatter, biome_id);"
         ));
         assert!(!shader.contains("let aerial_ratio ="));
         assert!(!shader.contains("input.surface_lighting > vec3<f32>(1.0e-3)"));

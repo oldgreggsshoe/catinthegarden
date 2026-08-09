@@ -1531,7 +1531,10 @@ fn outmap_ocean_coverage(outmap: bool, height_meters: f32) -> f32 {
     if !outmap {
         return select(0.0, 1.0, height_meters <= 0.0);
     }
-    return 1.0 - smoothstep(-80.0, 120.0, height_meters);
+    // Water colour must never climb a positive land slope. Positive samples
+    // remain land (with the beach material handling the shoreline); only
+    // non-positive ocean samples can blend toward the analytic sea shell.
+    return select(0.0, 1.0 - smoothstep(-80.0, 0.0, height_meters), height_meters <= 0.0);
 }
 
 // Lakes use the same shallow 200m coast transition as open ocean. Their
@@ -1540,9 +1543,56 @@ fn outmap_ocean_coverage(outmap: bool, height_meters: f32) -> f32 {
 fn lake_coast_coverage(biome_id: u32, macro_height_meters: f32) -> f32 {
     return select(
         0.0,
-        1.0 - smoothstep(0.0, 200.0, macro_height_meters),
-        biome_id == 1u,
+        1.0 - smoothstep(-80.0, 0.0, macro_height_meters),
+        biome_id == 1u && macro_height_meters <= 0.0,
     );
+}
+
+fn terrain_material_is_vegetation(biome_id: u32) -> bool {
+    return biome_id == 4u || biome_id == 5u || biome_id == 6u;
+}
+
+fn terrain_material_is_snow(biome_id: u32) -> bool {
+    return biome_id == 2u || biome_id == 9u;
+}
+
+fn terrain_material_transmittance(
+    transmittance: vec3<f32>,
+    biome_id: u32,
+) -> vec3<f32> {
+    var neutrality = 0.0;
+    if terrain_material_is_vegetation(biome_id) {
+        neutrality = 0.82;
+    } else if terrain_material_is_snow(biome_id) {
+        neutrality = 0.92;
+    }
+    let luminance = dot(transmittance, vec3<f32>(0.2126, 0.7152, 0.0722));
+    return mix(transmittance, vec3<f32>(luminance), neutrality);
+}
+
+fn terrain_material_in_scatter(
+    in_scatter: vec3<f32>,
+    biome_id: u32,
+) -> vec3<f32> {
+    var neutrality = 0.0;
+    if terrain_material_is_vegetation(biome_id) {
+        neutrality = 0.82;
+    } else if terrain_material_is_snow(biome_id) {
+        neutrality = 0.92;
+    }
+    let luminance = dot(in_scatter, vec3<f32>(0.2126, 0.7152, 0.0722));
+    return mix(in_scatter, vec3<f32>(luminance), neutrality);
+}
+
+fn neutralize_snow_surface_lighting(
+    lighting: vec3<f32>,
+    biome_id: u32,
+) -> vec3<f32> {
+    if !terrain_material_is_snow(biome_id) {
+        return lighting;
+    }
+    let luminance = dot(lighting, vec3<f32>(0.2126, 0.7152, 0.0722));
+    return mix(lighting, vec3<f32>(luminance), 0.82);
 }
 
 struct BiomeBlendSample {

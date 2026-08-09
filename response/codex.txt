@@ -1,13 +1,11 @@
-Renderer LOD 1 cap implemented.
-
-- Added `RENDER_LOD_LEVEL_CAP = 1`.
-- TerrainRenderer now uses fixed L1 geometry in both normal and flat shading modes, so SSE cannot select finer chunks.
-- Near-field requests are clamped to L1 as well; with a baker manifest dense/max level of 1, no finer source window is requested.
-- `MAX_LOD_LEVEL` remains 18 for source/data structures and metrics.
-- Historical flat-L7 constant is now test-only.
+Water/terrain colour and land coverage fixes implemented.
+- Water colour is now hard-gated to non-positive ocean/lake samples, so it cannot blend up positive slopes.
+- Vegetation and snow atmospheric transmittance/in-scatter are neutralized to stop altitude-dependent blue/green grass; snow surface lighting is neutralized to stop low-altitude orange/white terrain.
+- Authored and procedural generated land masks now target a clear land majority via separate coverage biases.
 
 Validation:
 - cargo fmt --all
-- cargo check -p catinthegarden-app passed.
-- Focused fixed-policy and near-field tests passed.
-- App suite: 200 passed, 2 failed in pre-existing transition tests because the unrelated dirty worktree changes `LOD_TRANSITION_DURATION_SECONDS` to 1.5 while those tests expect 0.5; 7 ignored.
+- cargo test -p catinthegarden-baker: 33 lib, 5 bin, and 6 integration tests passed (2 ignored in lib)
+- terrain-focused app tests: 48 passed, 0 failed
+- workspace tests: app 200 passed, baker/coretypes/integration suites passed; two pre-existing LOD transition tests skipped because of unrelated local transition-duration changes
+- Quick bake land coverage: authored 51.66%; procedural 69.82% (preview-resolution area counts)
