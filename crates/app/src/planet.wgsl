@@ -1049,18 +1049,12 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let ice = outmap && biome_id == 2u;
     let lake = outmap && biome_id == 1u;
     if render_debug_mode == RENDER_DEBUG_FLAT_TRIANGLES {
-        // Skirts are filler geometry for ordinary mixed-LOD terrain. In the
-        // fixed flat presentation they sit directly on coarse/fine frontier
-        // edges and become a second depth writer, producing the observed
-        // stippled bands. Leave the actual surface triangles to this mode.
-        if input.skirt_depth_meters > 0.0 {
-            discard;
-        }
         // Flat mode is intentionally a single categorical terrain pass. Its
         // fixed L7 mesh can span a mixed L4 land/water source footprint, so
         // the analytic shell must not be allowed to compete for ownership;
-        // retaining the triangle here prevents the square holes that the
-        // interpolated sea-level discard used to expose.
+        // retaining the skirt triangles here closes residual mixed-LOD edge
+        // gaps. flat_triangle_edge() suppresses outlines on skirts, so they
+        // fill cracks without adding a second wireframe band.
         return flat_triangle_colour(input);
     }
     // Open sea belongs exclusively to the analytic shell drawn after this

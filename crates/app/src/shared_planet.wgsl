@@ -1,4 +1,5 @@
 const PLANET_RADIUS_METERS: f32 = 4000000.0;
+const TERRAIN_AERIAL_UPPER_HORIZON_AIR_MASS_SCALE: f32 = 0.42;
 // Material/height tiles are intentionally denser than the fixed 32x32 chunk
 // grid, so material detail and coastline transitions do not inherit mesh size.
 const MATERIAL_TILE_LOGICAL_QUADS: f32 = 128.0;
@@ -772,6 +773,28 @@ fn twilight_solar_air_mass(solar_zenith_cosine: f32, sample_altitude_meters: f32
     return base_air_mass * mix(1.0, 8.0, horizon_amount * upper_atmosphere_amount);
 }
 
+fn terrain_aerial_solar_air_mass(
+    solar_zenith_cosine: f32,
+    sample_altitude_meters: f32,
+) -> f32 {
+    let base_air_mass = twilight_solar_air_mass(
+        solar_zenith_cosine,
+        sample_altitude_meters,
+    );
+    // The fullscreen sky needs the stronger limb column for the visible
+    // twilight gradient, but applying that same boost to distant terrain
+    // facets makes a daytime horizon turn orange. Keep terrain's long view
+    // rays warm without letting the upper-atmosphere multiplier dominate.
+    let horizon_amount = 1.0 - smoothstep(0.08, 0.30, solar_zenith_cosine);
+    let upper_atmosphere_amount = smoothstep(30000.0, 120000.0, sample_altitude_meters);
+    return base_air_mass
+        * mix(
+            1.0,
+            TERRAIN_AERIAL_UPPER_HORIZON_AIR_MASS_SCALE,
+            horizon_amount * upper_atmosphere_amount,
+        );
+}
+
 fn transmittance(
     start_altitude_meters: f32,
     end_altitude_meters: f32,
@@ -1189,7 +1212,10 @@ fn aerial_perspective_components(
             ),
         );
         let sun_zenith_cosine = dot(in_scatter_direction, sun_direction);
-        let sun_air_mass = twilight_solar_air_mass(sun_zenith_cosine, in_scatter_altitude);
+        let sun_air_mass = terrain_aerial_solar_air_mass(
+            sun_zenith_cosine,
+            in_scatter_altitude,
+        );
         let sun_transmittance = exp(-(
             RAYLEIGH_COEFFICIENT
                 * density(in_scatter_altitude, RAYLEIGH_SCALE_HEIGHT_METERS)

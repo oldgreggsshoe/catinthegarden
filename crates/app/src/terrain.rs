@@ -3552,9 +3552,15 @@ mod tests {
         assert!(shader.contains("fn flat_triangle_colour("));
         assert!(shader.contains("return flat_triangle_colour(input);"));
         assert!(shader.contains("return flat_ocean_colour(input);"));
-        assert!(
-            shader.contains("if input.skirt_depth_meters > 0.0 {\n            discard;\n        }")
-        );
+        let flat_fragment = shader
+            .split("fn terrain_fragment_color(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("raster terrain fragment path is present");
+        assert!(flat_fragment.contains("return flat_triangle_colour(input);"));
+        assert!(!flat_fragment.contains("input.skirt_depth_meters > 0.0"));
+        assert!(shader.contains("fn terrain_aerial_solar_air_mass("));
+        assert!(shader.contains("TERRAIN_AERIAL_UPPER_HORIZON_AIR_MASS_SCALE: f32 = 0.42"));
         assert!(shader.contains(
             "if u32(camera.projection.w + 0.5) == RENDER_DEBUG_FLAT_TRIANGLES {\n        return terrain_fragment_color(input);"
         ));

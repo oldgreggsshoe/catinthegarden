@@ -1,7 +1,14 @@
-Latest run: `test-runs/manual/1786284012-459880`.
+Fixed both reported faults.
 
-1. The dark vertical slits are a real terrain geometry seam, not fog or a material colour. The frame is mixing L2-L7 chunks and has 239/255 ancestor-fallback chunks; in flat-triangle mode the skirts are deliberately discarded. That leaves unresolved parent/child or source-fallback height transitions visible as narrow cracks. The reported `max_seam_delta=0` only checks selected node borders, so it does not rule out this source-height/triangle mismatch.
+- Terrain seam: flat-triangle terrain now keeps the existing mixed-LOD skirt triangles instead of discarding them. They close residual parent/child edge gaps, while the skirt path still suppresses wireframe outlines.
+- Orange horizon: terrain aerial in-scattering now uses a terrain-only upper-atmosphere horizon multiplier (`0.42`). The fullscreen sky keeps its stronger twilight column, so sunset/sunrise sky timing is unchanged while distant daytime terrain is less red/orange.
 
-2. The orange/red horizon is atmospheric aerial in-scattering. This capture is at about 114.4 km altitude with the sun 29 degrees above the camera's local radial horizon, so it is not an ordinary sunset and terrain-distance fog is already disabled above 100 km. Long rays toward the distant limb still use the high-altitude horizon air-mass boost (up to 8x in the 30-120 km band), which over-warms distant terrain while the sky remains blue. The smallest correction is to reduce or gate that upper-atmosphere horizon tint in terrain aerial perspective, using the local surface solar geometry consistently; leave the sky timing and sun disc unchanged.
+Validation:
+- `cargo fmt --all -- --check`
+- focused flat-triangle test: passed
+- 13 shader/WGSL tests: passed
+- full workspace: 201 app + 33 baker + 5 baker-bin + 6 integration + 6 coretypes tests passed; 7 ignored
+- release `orbit_once`: passed, seam assertion max 0.000488m
+- release `tour_mountains`: passed, 4 screenshots captured
 
-I would fix the seam first, reproducing this exact pose with outlines/albedo diagnostics, then tune the aerial-perspective multiplier and compare the same screenshot.
+The deterministic summit scenario still reports its pre-existing 130.7m clearance versus the 150m assertion; this change does not alter top-surface height or camera placement.
