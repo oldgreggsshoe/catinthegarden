@@ -1,11 +1,7 @@
-Baker progress indicator added and pushed as commit 42d2eb8.
+Yes, but “LOD level 1 globally with no exceptions” needs a precise scope.
 
-- CLI bake, --refine-existing, and --validate now report stage, percentage, completed/total work, and elapsed-time ETA on stderr.
-- Progress covers terrain source/erosion/hydrology/biomes, preview rows, tile export, refinement, and output validation. Completed stages are explicitly marked.
-- Existing library APIs remain quiet by default; callers can opt in with BakeProgress and bake_with_progress/validate_output_with_progress.
-- No baked terrain values or rendering behavior changed.
+For rendered quadtree geometry, the current system can be hard-capped at L1. Today normal mode starts at L2 and can refine to L18; flat-triangle mode explicitly fixes L7. A true L1 cap would override both policies and prevent any chunk from rendering above L1.
 
-Validation:
-- cargo fmt --all
-- cargo test --workspace: 202 app tests, 33 baker library tests, 5 baker binary tests, 6 baker integration tests, 6 coretypes tests; 7 app and 2 baker tests ignored.
-- Quick baker smoke bake wrote and validated 33 tiles plus previews and emitted percentage/ETA progress output.
+It would not automatically stop higher-resolution baked tiles or near-field/ray data from being streamed, because those are separate from rendered mesh LOD. If “no exceptions” includes data streaming too, those paths would also need to be capped/disabled.
+
+Expected result: six cube faces × four L1 chunks = 24 coarse chunks (before culling), with very low triangle count but continent-scale facets and almost no mountain detail. Existing L2+ assumptions/tests would need updating. No code changed.
