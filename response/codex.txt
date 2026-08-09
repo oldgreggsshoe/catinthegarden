@@ -1,12 +1,11 @@
-Sunset twilight colour sequence fixed.
-- Blue-hour onset now overlaps the fading red bridge, preventing the red -> black -> blue gap.
-- The artificial red twilight bridge now fades monotonically with horizon-relative solar depression, so it cannot disappear and reappear as view direction changes.
-- The red bridge is weighted by camera altitude rather than the moving ray minimum, removing view-angle-driven red flashes.
-- Blue hour remains visible as dark blue before fading to night.
+Ocean colour consistency fix implemented.
+
+- Flat-triangle water now uses the ocean-specific aerial blend instead of generic terrain in-scatter, preventing green/grey altitude and view-angle shifts.
+- Reduced the ocean aerial-perspective weight from 0.35 to 0.18. Distant atmospheric haze remains, while the sea body stays blue from orbit.
+- Preserved the existing water ownership/slope safeguards.
 
 Validation:
 - cargo fmt --all
-- Full workspace tests: app 200 passed, baker 33 lib + 5 bin + 6 integration passed, coretypes 6 passed; 2 pre-existing LOD transition tests skipped
-- GPU scenario `sunset_blue_hour`: passed all 5 assertions, including blue-hour luminance/colour transition
-- Latest sky samples progress from red through mixed twilight to blue, then dark blue: final blue/red 2.667 and final/peak luminance 0.198
-- Existing `sunset_sweep` still reports its older final-warm assertion (0.625); it ends before the post-sunset blue-hour interval and is unrelated to the repaired sequence
+- Full workspace tests passed: app 200, baker library 33, baker binary 5, baker integration 6, coretypes 6; only the two pre-existing LOD transition tests remain skipped.
+- GPU `ocean_flyover` passed all assertions.
+- GPU `orbit_once` after the fix shows a blue-dominant ocean from orbit; latest capture: `test-runs/orbit_once/1786303759-642863/`.

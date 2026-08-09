@@ -908,10 +908,23 @@ fn flat_triangle_colour(
     // Keep flat fills categorical, but apply the same affine atmospheric
     // composition as smooth terrain. This lifts distant shadowed facets
     // toward the sky instead of leaving them at raw face-lighting black.
-    let aerial_lit = lit
+    var aerial_lit = lit
         * terrain_material_transmittance(input.aerial_transmittance, fill_biome)
         + terrain_material_in_scatter(input.aerial_in_scatter, fill_biome);
     let edge = flat_triangle_edge(input.tile_uv, input.skirt_depth_meters);
+    if fill_biome == 0u || fill_biome == 1u {
+        // Flat mode's terrain path still owns coarse water triangles because
+        // the separate analytic ocean shell is disabled there. Keep those
+        // triangles on the ocean-specific aerial blend; the generic terrain
+        // in-scatter is strong and green enough at altitude to turn blue water
+        // olive as the camera moves away or changes view angle.
+        aerial_lit = ocean_aerial_perspective(
+            lit,
+            input.camera_relative_view_position,
+            normalize(input.surface_direction),
+            0.0,
+        );
+    }
     return vec4<f32>(mix(aerial_lit, vec3<f32>(0.015, 0.02, 0.025), edge), 1.0);
 }
 

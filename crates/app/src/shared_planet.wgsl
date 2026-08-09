@@ -150,9 +150,11 @@ const AERIAL_DENSITY_SAMPLE_EXPONENT: f32 = 3.0;
 // Artistic aerial-only control, applied after physically bounded integration.
 // It does not alter extinction, direct terrain/ocean lighting, or the sky pass.
 const AERIAL_IN_SCATTER_GAIN: f32 = 3.0;
-// Keep the intentionally strong global aerial effect from washing the ocean
-// body colour to grey in the final composition. Terrain and sky stay unchanged.
-const OCEAN_AERIAL_PERSPECTIVE_WEIGHT: f32 = 0.35;
+// Keep only a restrained fraction of the global aerial effect on water. The
+// full in-scatter is deliberately retained for terrain and sky, but its warm
+// high-altitude contribution can wash a blue ocean toward green/grey from
+// orbit. The ocean shell and atmosphere limb still provide the distant haze.
+const OCEAN_AERIAL_PERSPECTIVE_WEIGHT: f32 = 0.18;
 const OCEAN_REFLECTION_SCALE: f32 = 0.35;
 const OCEAN_SUN_GLINT_SCALE: f32 = 3.0;
 const TWILIGHT_SHADOW_TRANSITION_METERS: f32 = 72000.0;

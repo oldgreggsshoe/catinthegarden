@@ -3572,8 +3572,10 @@ mod tests {
         assert!(!shader.contains("camera_distance_meters > 80000.0"));
         assert!(shader.contains("smoothstep(20000.0, 180000.0, camera_distance_meters)"));
         assert!(shader.contains(
-            "let aerial_lit = lit\n        * terrain_material_transmittance(input.aerial_transmittance, fill_biome)\n        + terrain_material_in_scatter(input.aerial_in_scatter, fill_biome);"
+            "var aerial_lit = lit\n        * terrain_material_transmittance(input.aerial_transmittance, fill_biome)\n        + terrain_material_in_scatter(input.aerial_in_scatter, fill_biome);"
         ));
+        assert!(shader.contains("if fill_biome == 0u || fill_biome == 1u {"));
+        assert!(shader.contains("aerial_lit = ocean_aerial_perspective("));
         // The experiment intentionally bypasses the material texture stack;
         // biome palette ownership remains the only fill colour source.
         let flat = shader
@@ -4134,8 +4136,8 @@ mod tests {
     #[test]
     fn ocean_aerial_perspective_preserves_the_dark_water_body() {
         let shader = planet_shader_source();
-        assert!(shader.contains("const OCEAN_AERIAL_PERSPECTIVE_WEIGHT: f32 = 0.35;"));
-        assert_eq!(shader.matches("ocean_aerial_perspective(").count(), 5);
+        assert!(shader.contains("const OCEAN_AERIAL_PERSPECTIVE_WEIGHT: f32 = 0.18;"));
+        assert_eq!(shader.matches("ocean_aerial_perspective(").count(), 6);
         assert!(shader.contains("water_surface_color,\n        aerial_color,"));
         assert!(shader.contains("sky_diffuse * daylight"));
     }
