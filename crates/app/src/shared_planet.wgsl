@@ -1000,7 +1000,16 @@ fn sky_radiance(
     let solar_elevation = dot(surface_direction, sun_direction);
     let red_rising = smoothstep(-0.14, -0.03, solar_elevation);
     let red_fading = 1.0 - smoothstep(0.0, 0.09, solar_elevation);
-    let red_transition = red_rising * red_fading;
+    // Keep terrain's local sky fill on the same continuous red-to-blue ramp as
+    // the fullscreen atmosphere. Without this lower-depression fade, the red
+    // bridge could return after blue hour when a different view ray sampled a
+    // denser part of the atmosphere.
+    let red_fade_into_blue = 1.0 - smoothstep(
+        0.04,
+        0.13,
+        max(-solar_elevation, 0.0),
+    );
+    let red_transition = red_rising * red_fading * red_fade_into_blue;
     let sunward_red = mix(
         0.35,
         1.0,

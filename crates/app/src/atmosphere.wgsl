@@ -16,13 +16,13 @@ const ANTISOLAR_TWILIGHT_MIN_SCATTER: f32 = 0.48;
 // saturation pass produces in a screenshot.  Keep the transform modest so
 // camera exposure and the physical scattering coefficients remain visible.
 const SKY_ATMOSPHERE_SATURATION: f32 = 1.18;
-// The useful photographic blue hour is the short interval after the red
-// sunset, not the whole astronomical twilight.  These sine values correspond
-// roughly to -4, -7, -12, and -16 degrees solar elevation.
-const BLUE_HOUR_START_SINE: f32 = 0.07;
-const BLUE_HOUR_FULL_SINE: f32 = 0.12;
-const BLUE_HOUR_FADE_SINE: f32 = 0.28;
-const BLUE_HOUR_END_SINE: f32 = 0.36;
+// Start blue hour before the red bridge has fully disappeared. These values
+// correspond roughly to 2, 4, 14, and 22 degrees of solar depression and keep
+// the sunset sequence continuous instead of dropping through black.
+const BLUE_HOUR_START_SINE: f32 = 0.03;
+const BLUE_HOUR_FULL_SINE: f32 = 0.07;
+const BLUE_HOUR_FADE_SINE: f32 = 0.24;
+const BLUE_HOUR_END_SINE: f32 = 0.38;
 const BLUE_HOUR_SCATTER_GAIN: f32 = 0.26;
 const BLUE_HOUR_TINT: vec3<f32> = vec3<f32>(0.55, 0.75, 1.0);
 // A bounded warm bridge keeps the visible sky intensity rising through the
@@ -133,10 +133,19 @@ fn blue_hour_rayleigh_scattering(
     return optical_depth / (vec3<f32>(1.0) + optical_depth) * rayleigh_phase;
 }
 
-fn low_sun_red_transition(solar_elevation: f32) -> f32 {
+fn low_sun_red_transition(
+    solar_elevation: f32,
+    solar_depression_sine: f32,
+) -> f32 {
     let rising = smoothstep(-0.14, -0.03, solar_elevation);
     let fading = 1.0 - smoothstep(0.0, 0.09, solar_elevation);
-    return rising * fading;
+    // The old red bridge stayed at full strength for every angle below the
+    // horizon. As view direction and camera altitude changed, it could vanish
+    // and then reappear after blue hour had already begun. Fade it by the same
+    // horizon-relative depression that drives blue hour, with overlap so the
+    // two colours form one continuous twilight ramp.
+    let fade_into_blue = 1.0 - smoothstep(0.04, 0.13, solar_depression_sine);
+    return rising * fading * fade_into_blue;
 }
 
 fn twilight_directional_weight(
@@ -335,12 +344,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let closest_distance = clamp(-radial_dot_ray, start_distance, end_distance);
     let closest_fraction = (closest_distance - start_distance) / atmosphere_path_length;
     // The red bridge is a bounded low-sun fill, not a second atmosphere
-    // shell.  Weight it by the density at the ray's lowest point so an
-    // orbital view gets a thin, physical red limb instead of a solid red
-    // annulus across the full 720 km shell.  Near the surface the lowest
-    // point is the camera itself, preserving the validated sunrise band.
+    // shell. Use camera altitude rather than the ray's moving lowest point:
+    // the latter changed with view direction and could make red disappear,
+    // then reappear after blue hour as the camera rotated. Orbital views still
+    // fade naturally because the camera density is negligible there.
     let red_twilight_atmosphere_weight = density(
-        altitude_along_ray(camera_radius, radial_dot_ray, closest_distance),
+        camera_altitude,
         RAYLEIGH_SCALE_HEIGHT_METERS,
     );
     let atmosphere_entry_altitude = altitude_along_ray(
@@ -355,6 +364,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let camera_solar_zenith_cosine = dot(
         camera.camera_planet_direction_view_altitude.xyz,
         sun,
+    );
+    let horizon_solar_zenith_cosine = -sqrt(max(
+        1.0 - (PLANET_RADIUS_METERS / max(camera_radius, PLANET_RADIUS_METERS))
+            * (PLANET_RADIUS_METERS / max(camera_radius, PLANET_RADIUS_METERS)),
+        0.0,
+    ));
+    let solar_depression_sine = max(
+        horizon_solar_zenith_cosine - camera_solar_zenith_cosine,
+        0.0,
     );
     let directional_weight = twilight_directional_weight(
         cos_theta,
@@ -434,7 +452,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         * (SOLAR_RADIANCE * BLUE_HOUR_SCATTER_GAIN)
         * blue_hour_weight(camera_solar_zenith_cosine, camera_radius);
     let red_twilight_radiance = TWILIGHT_RED_RADIANCE
-        * low_sun_red_transition(camera_solar_zenith_cosine)
+        * low_sun_red_transition(
+            camera_solar_zenith_cosine,
+            solar_depression_sine,
+        )
         * red_twilight_atmosphere_weight
         * mix(
             0.35,

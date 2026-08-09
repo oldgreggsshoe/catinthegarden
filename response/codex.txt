@@ -1,11 +1,12 @@
-Water/terrain colour and land coverage fixes implemented.
-- Water colour is now hard-gated to non-positive ocean/lake samples, so it cannot blend up positive slopes.
-- Vegetation and snow atmospheric transmittance/in-scatter are neutralized to stop altitude-dependent blue/green grass; snow surface lighting is neutralized to stop low-altitude orange/white terrain.
-- Authored and procedural generated land masks now target a clear land majority via separate coverage biases.
+Sunset twilight colour sequence fixed.
+- Blue-hour onset now overlaps the fading red bridge, preventing the red -> black -> blue gap.
+- The artificial red twilight bridge now fades monotonically with horizon-relative solar depression, so it cannot disappear and reappear as view direction changes.
+- The red bridge is weighted by camera altitude rather than the moving ray minimum, removing view-angle-driven red flashes.
+- Blue hour remains visible as dark blue before fading to night.
 
 Validation:
 - cargo fmt --all
-- cargo test -p catinthegarden-baker: 33 lib, 5 bin, and 6 integration tests passed (2 ignored in lib)
-- terrain-focused app tests: 48 passed, 0 failed
-- workspace tests: app 200 passed, baker/coretypes/integration suites passed; two pre-existing LOD transition tests skipped because of unrelated local transition-duration changes
-- Quick bake land coverage: authored 51.66%; procedural 69.82% (preview-resolution area counts)
+- Full workspace tests: app 200 passed, baker 33 lib + 5 bin + 6 integration passed, coretypes 6 passed; 2 pre-existing LOD transition tests skipped
+- GPU scenario `sunset_blue_hour`: passed all 5 assertions, including blue-hour luminance/colour transition
+- Latest sky samples progress from red through mixed twilight to blue, then dark blue: final blue/red 2.667 and final/peak luminance 0.198
+- Existing `sunset_sweep` still reports its older final-warm assertion (0.625); it ends before the post-sunset blue-hour interval and is unrelated to the repaired sequence

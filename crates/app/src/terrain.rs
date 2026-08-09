@@ -4199,9 +4199,19 @@ mod tests {
         assert!(shader.contains("fn blue_hour_rayleigh_scattering("));
         assert!(shader.contains("optical_depth / (vec3<f32>(1.0) + optical_depth)"));
         assert!(shader.contains("suppress_green_dominance(saturate_sky_color(sky_radiance))"));
-        assert!(shader.contains("fn low_sun_red_transition(solar_elevation: f32)"));
+        assert!(shader.contains(
+            "fn low_sun_red_transition(\n    solar_elevation: f32,\n    solar_depression_sine: f32,\n)"
+        ));
+        assert!(
+            shader.contains(
+                "let fade_into_blue = 1.0 - smoothstep(0.04, 0.13, solar_depression_sine);"
+            )
+        );
+        assert!(shader.contains("const BLUE_HOUR_START_SINE: f32 = 0.03;"));
         assert!(shader.contains("let red_twilight_atmosphere_weight = density("));
         assert!(shader.contains("let red_twilight_radiance = TWILIGHT_RED_RADIANCE"));
+        let shared_shader = include_str!("shared_planet.wgsl");
+        assert!(shared_shader.contains("let red_fade_into_blue = 1.0 - smoothstep("));
     }
 
     #[test]
