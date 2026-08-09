@@ -1,7 +1,13 @@
-Yes, but “LOD level 1 globally with no exceptions” needs a precise scope.
+To hard-fix rendered terrain geometry at LOD 1, use a separate render cap rather than lowering MAX_LOD_LEVEL, because MAX_LOD_LEVEL also sizes LOD metrics and describes source/data ranges.
 
-For rendered quadtree geometry, the current system can be hard-capped at L1. Today normal mode starts at L2 and can refine to L18; flat-triangle mode explicitly fixes L7. A true L1 cap would override both policies and prevent any chunk from rendering above L1.
+Recommended locations:
+1. crates/app/src/planet.rs: add `RENDER_LOD_CAP: u8 = 1`.
+2. In `PlanetLod::new`, clamp `policy.max_level = policy.max_level.min(RENDER_LOD_CAP)` after the existing MAX_LOD_LEVEL clamp. This catches both normal SSE policy and the current flat-mode fixed-L7 policy.
+3. Optionally set `MINIMUM_LOD_LEVEL` to 1 for semantic consistency; the existing `minimum_level()` already clamps it to the policy max.
+4. crates/app/src/terrain.rs: the TerrainRenderer construction can remain unchanged because the central PlanetLod clamp applies to every renderer policy. If you want an explicit diagnostic mode instead, replace the normal/flat conditional with `LodPolicy::fixed(1)`.
 
-It would not automatically stop higher-resolution baked tiles or near-field/ray data from being streamed, because those are separate from rendered mesh LOD. If “no exceptions” includes data streaming too, those paths would also need to be capped/disabled.
+With a bake whose manifest dense/max levels are both 1, near-field requests naturally have no finer level to request. If the manifest still advertises higher levels, clamp near-field requests too; otherwise higher-resolution source tiles may still stream even though no mesh above L1 renders.
 
-Expected result: six cube faces × four L1 chunks = 24 coarse chunks (before culling), with very low triangle count but continent-scale facets and almost no mountain detail. Existing L2+ assumptions/tests would need updating. No code changed.
+Do not set MAX_LOD_LEVEL to 1 unless also auditing metric array sizes, source-level logic, tests, and scenario assertions. That constant is broader than the rendered-geometry cap.
+
+No code changed; this is guidance only.
