@@ -1,5 +1,7 @@
-That is a terrain geometry spike, not a sky/fog line.
+Latest run: `test-runs/manual/1786284012-459880`.
 
-The capture is at 25,705 m altitude, lat -19.0016°, lon -86.5117°, in flat L7 mode with outlines off. The line rises exactly from the terrain silhouette and continues toward the camera as a very narrow dark facet. The HUD shows 246/256 chunks using ancestor fallback across L3-L7, so this is most likely one coarse fallback/LOD triangle carrying a large height jump. `Seam: 0.0000 m` only proves shared node borders agree; it does not catch a bad source-height outlier or an isolated long triangle.
+1. The dark vertical slits are a real terrain geometry seam, not fog or a material colour. The frame is mixing L2-L7 chunks and has 239/255 ancestor-fallback chunks; in flat-triangle mode the skirts are deliberately discarded. That leaves unresolved parent/child or source-fallback height transitions visible as narrow cracks. The reported `max_seam_delta=0` only checks selected node borders, so it does not rule out this source-height/triangle mismatch.
 
-I would verify it with the same pose using F9 albedo and O outlines. If it remains in albedo, it is definitely geometry; if only lighting shows it, it is a face-normal/specular issue. I have not changed code for this diagnosis yet.
+2. The orange/red horizon is atmospheric aerial in-scattering. This capture is at about 114.4 km altitude with the sun 29 degrees above the camera's local radial horizon, so it is not an ordinary sunset and terrain-distance fog is already disabled above 100 km. Long rays toward the distant limb still use the high-altitude horizon air-mass boost (up to 8x in the 30-120 km band), which over-warms distant terrain while the sky remains blue. The smallest correction is to reduce or gate that upper-atmosphere horizon tint in terrain aerial perspective, using the local surface solar geometry consistently; leave the sky timing and sun disc unchanged.
+
+I would fix the seam first, reproducing this exact pose with outlines/albedo diagnostics, then tune the aerial-perspective multiplier and compare the same screenshot.
