@@ -155,6 +155,10 @@ const AERIAL_IN_SCATTER_GAIN: f32 = 3.0;
 // high-altitude contribution can wash a blue ocean toward green/grey from
 // orbit. The ocean shell and atmosphere limb still provide the distant haze.
 const OCEAN_AERIAL_PERSPECTIVE_WEIGHT: f32 = 0.18;
+// Vegetation should keep its reflected green body colour in orbital views.
+// A full atmospheric in-scatter term is correct for bare distant haze, but it
+// overwhelms grass/forest albedo long before the land should read as blue.
+const VEGETATION_AERIAL_IN_SCATTER_SCALE: f32 = 0.42;
 const OCEAN_REFLECTION_SCALE: f32 = 0.35;
 const OCEAN_SUN_GLINT_SCALE: f32 = 3.0;
 const TWILIGHT_SHADOW_TRANSITION_METERS: f32 = 72000.0;
@@ -1592,7 +1596,12 @@ fn terrain_material_in_scatter(
         neutrality = 0.92;
     }
     let luminance = dot(in_scatter, vec3<f32>(0.2126, 0.7152, 0.0722));
-    return mix(in_scatter, vec3<f32>(luminance), neutrality);
+    let material_scatter = mix(in_scatter, vec3<f32>(luminance), neutrality);
+    return material_scatter * select(
+        1.0,
+        VEGETATION_AERIAL_IN_SCATTER_SCALE,
+        terrain_material_is_vegetation(biome_id),
+    );
 }
 
 fn neutralize_snow_surface_lighting(

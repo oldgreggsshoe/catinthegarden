@@ -4143,6 +4143,20 @@ mod tests {
     }
 
     #[test]
+    fn vegetation_keeps_green_albedo_through_orbital_aerial_perspective() {
+        let shader = planet_shader_source();
+        assert!(shader.contains("const VEGETATION_AERIAL_IN_SCATTER_SCALE: f32 = 0.42;"));
+        assert!(
+            shader.contains(
+                "let material_scatter = mix(in_scatter, vec3<f32>(luminance), neutrality);"
+            )
+        );
+        assert!(shader.contains(
+            "VEGETATION_AERIAL_IN_SCATTER_SCALE,\n        terrain_material_is_vegetation(biome_id),"
+        ));
+    }
+
+    #[test]
     fn close_terrain_detail_relight_is_bounded() {
         let shader = planet_shader_source();
         assert!(shader.contains("let detail_relight = clamp("));

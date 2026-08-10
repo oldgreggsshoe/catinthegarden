@@ -1,11 +1,15 @@
-Ocean colour consistency fix implemented.
+Grass colour at altitude fixed.
 
-- Flat-triangle water now uses the ocean-specific aerial blend instead of generic terrain in-scatter, preventing green/grey altitude and view-angle shifts.
-- Reduced the ocean aerial-perspective weight from 0.35 to 0.18. Distant atmospheric haze remains, while the sea body stays blue from orbit.
-- Preserved the existing water ownership/slope safeguards.
+The latest manual sequence showed the direct grass albedo was being overwhelmed by the generic atmospheric in-scatter term. Close to the surface it stayed green; at altitude the added blue/neutral haze dominated.
+
+Change:
+- Added a vegetation-only aerial in-scatter scale of 0.42.
+- Grassland, forest, and tropical vegetation now retain their green reflected colour at altitude.
+- Water, snow, sky, direct sunlight, and material ownership are unchanged.
 
 Validation:
 - cargo fmt --all
-- Full workspace tests passed: app 200, baker library 33, baker binary 5, baker integration 6, coretypes 6; only the two pre-existing LOD transition tests remain skipped.
-- GPU `ocean_flyover` passed all assertions.
-- GPU `orbit_once` after the fix shows a blue-dominant ocean from orbit; latest capture: `test-runs/orbit_once/1786303759-642863/`.
+- Focused vegetation and aerial shader tests passed.
+- cargo check -p catinthegarden-app passed.
+- App tests: 201 passed, 2 existing LOD-transition tests fail because the worktree already changes the transition duration from 0.5s to 1.5s; 7 ignored.
+- The orbit scenario launched and produced captures, but its fixed view was near-black, so it is not a useful colour sign-off.
