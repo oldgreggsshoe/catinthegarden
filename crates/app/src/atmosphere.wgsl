@@ -25,6 +25,12 @@ const BLUE_HOUR_FADE_SINE: f32 = 0.24;
 const BLUE_HOUR_END_SINE: f32 = 0.38;
 const BLUE_HOUR_SCATTER_GAIN: f32 = 0.26;
 const BLUE_HOUR_TINT: vec3<f32> = vec3<f32>(0.55, 0.75, 1.0);
+// A small horizon-relative blue floor bridges the last red scattering and
+// blue hour.  Without it, view rays whose direct samples are already in the
+// planet shadow briefly fall to black before the indirect blue term ramps in.
+// It is deliberately local to dense air and fades before astronomical night.
+const TWILIGHT_BLUE_FLOOR: vec3<f32> = vec3<f32>(0.050, 0.080, 0.150);
+const LOW_SUN_WARM_SKY: vec3<f32> = vec3<f32>(1.0, 0.18, 0.06);
 // A bounded warm bridge keeps the visible sky intensity rising through the
 // last blue-hour frame into the strong red horizon band. It is deliberately
 // separate from direct terrain/ocean sunlight and adds no raymarch samples.
@@ -462,10 +468,31 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             1.0,
             smoothstep(0.0, 1.0, max(cos_theta, 0.0)),
         );
+    // Start the cool fill as the sun reaches the local horizon, not only
+    // after it is geometrically below it. This overlaps the warm transition
+    // and prevents a moving view ray from exposing a black gap between red
+    // scattering and blue hour.
+    let horizon_floor = 1.0 - smoothstep(-0.20, 0.10, camera_solar_zenith_cosine);
+    let depression_floor = smoothstep(0.0, 0.12, solar_depression_sine)
+        * (1.0 - smoothstep(0.16, 0.30, solar_depression_sine));
+    let twilight_blue_floor_weight = max(horizon_floor, depression_floor)
+        * (1.0 - smoothstep(0.20, 0.34, solar_depression_sine))
+        * red_twilight_atmosphere_weight;
+    let twilight_blue_floor = TWILIGHT_BLUE_FLOOR * twilight_blue_floor_weight;
+    let direct_sky_radiance = radiance * SOLAR_RADIANCE * directional_weight;
+    // Rayleigh extinction alone drives the sunset sample to an unnaturally
+    // pure red. Multiple scattering keeps a warm red while retaining a small
+    // orange/blue component. Apply this chroma guard only in the low-sun
+    // window; daytime Rayleigh/Mie colours remain untouched.
+    let low_sun_amount = 1.0 - smoothstep(0.0, 0.12, camera_solar_zenith_cosine);
+    let direct_luminance = dot(direct_sky_radiance, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let warm_sky_floor = direct_luminance * LOW_SUN_WARM_SKY;
+    let direct_sky = mix(direct_sky_radiance, warm_sky_floor, 0.55 * low_sun_amount);
     let sky_radiance = max(
-        radiance * SOLAR_RADIANCE * directional_weight
+        direct_sky
             + blue_hour_radiance
-            + red_twilight_radiance,
+            + red_twilight_radiance
+            + twilight_blue_floor,
         vec3<f32>(0.0),
     );
     return vec4<f32>(

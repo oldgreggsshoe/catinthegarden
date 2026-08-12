@@ -4226,6 +4226,22 @@ mod tests {
         assert!(shader.contains("const BLUE_HOUR_START_SINE: f32 = 0.03;"));
         assert!(shader.contains("let red_twilight_atmosphere_weight = density("));
         assert!(shader.contains("let red_twilight_radiance = TWILIGHT_RED_RADIANCE"));
+        assert!(
+            shader
+                .contains("const TWILIGHT_BLUE_FLOOR: vec3<f32> = vec3<f32>(0.050, 0.080, 0.150);")
+        );
+        assert!(
+            shader
+                .contains("let twilight_blue_floor_weight = max(horizon_floor, depression_floor)")
+        );
+        assert!(shader.contains("smoothstep(0.0, 0.12, solar_depression_sine)"));
+        assert!(shader.contains("+ twilight_blue_floor,"));
+        assert!(shader.contains("const LOW_SUN_WARM_SKY: vec3<f32> = vec3<f32>(1.0, 0.18, 0.06);"));
+        assert!(
+            shader.contains(
+                "let direct_sky_radiance = radiance * SOLAR_RADIANCE * directional_weight;"
+            )
+        );
         let shared_shader = include_str!("shared_planet.wgsl");
         assert!(shared_shader.contains("let red_fade_into_blue = 1.0 - smoothstep("));
     }
