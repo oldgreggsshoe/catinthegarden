@@ -4220,10 +4220,10 @@ mod tests {
         ));
         assert!(
             shader.contains(
-                "let fade_into_blue = 1.0 - smoothstep(0.04, 0.13, solar_depression_sine);"
+                "let fade_into_blue = 1.0 - smoothstep(0.08, 0.18, solar_depression_sine);"
             )
         );
-        assert!(shader.contains("const BLUE_HOUR_START_SINE: f32 = 0.03;"));
+        assert!(shader.contains("const BLUE_HOUR_START_SINE: f32 = 0.05;"));
         assert!(shader.contains("let red_twilight_atmosphere_weight = density("));
         assert!(shader.contains("let red_twilight_radiance = TWILIGHT_RED_RADIANCE"));
         assert!(
@@ -4255,8 +4255,10 @@ mod tests {
                 .contains("const BLUE_HOUR_AMBIENT_TINT: vec3<f32> = vec3<f32>(0.55, 0.75, 1.0);")
         );
         assert!(shared_shader.contains("fn blue_hour_ambient_radiance("));
+        assert!(shared_shader.contains("const BLUE_HOUR_AMBIENT_GAIN: f32 = 0.225;"));
+        assert!(shared_shader.contains("let rise = smoothstep(0.03, 0.10, solar_depression);"));
         assert!(shared_shader.contains("let blue_hour_ambient = blue_hour_ambient_radiance("));
-        assert!(shader.contains("let pre_horizon_blue_weight = 1.0"));
+        assert!(shader.contains("let pre_horizon_blue_weight = smoothstep(0.0, 0.18"));
         assert!(shader.contains("let pre_horizon_blue_radiance = blue_hour_rayleigh_scattering("));
     }
 

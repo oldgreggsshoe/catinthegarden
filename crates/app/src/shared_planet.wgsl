@@ -146,7 +146,7 @@ const SURFACE_SUNLIGHT_SCALE: f32 = 2.0;
 const SKY_DIFFUSE_LIGHT_SCALE: f32 = 0.70;
 const TWILIGHT_RED_RADIANCE: vec3<f32> = vec3<f32>(0.30, 0.012, 0.001);
 const BLUE_HOUR_AMBIENT_TINT: vec3<f32> = vec3<f32>(0.55, 0.75, 1.0);
-const BLUE_HOUR_AMBIENT_GAIN: f32 = 0.45;
+const BLUE_HOUR_AMBIENT_GAIN: f32 = 0.225;
 const AERIAL_IN_SCATTER_SAMPLE_COUNT: u32 = 2u;
 const AERIAL_DENSITY_SAMPLE_EXPONENT: f32 = 3.0;
 // Artistic aerial-only control, applied after physically bounded integration.
@@ -1013,8 +1013,8 @@ fn sky_radiance(
     // bridge could return after blue hour when a different view ray sampled a
     // denser part of the atmosphere.
     let red_fade_into_blue = 1.0 - smoothstep(
-        0.04,
-        0.13,
+        0.08,
+        0.18,
         max(-solar_elevation, 0.0),
     );
     let red_transition = red_rising * red_fading * red_fade_into_blue;
@@ -1032,7 +1032,7 @@ fn blue_hour_ambient_radiance(
     solar_elevation: f32,
 ) -> vec3<f32> {
     let solar_depression = max(-solar_elevation, 0.0);
-    let rise = smoothstep(0.015, 0.08, solar_depression);
+    let rise = smoothstep(0.03, 0.10, solar_depression);
     let fade = 1.0 - smoothstep(0.24, 0.40, solar_depression);
     let optical_depth = RAYLEIGH_COEFFICIENT
         * density(surface_altitude_meters, RAYLEIGH_SCALE_HEIGHT_METERS)

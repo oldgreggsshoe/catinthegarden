@@ -1,13 +1,15 @@
-Reviewed manual capture `test-runs/manual/1786563730-161514/screenshots/capture-001.png` at sim time 9.7298s. The camera was 10m above ground with the sun about 5.36 degrees above the local horizon. The horizon retained warm light, but the upper sky had a dark interval because the blue-hour analytic fill started only after the sun crossed below the horizon.
+Reviewed the latest manual sunset sequence (`test-runs/manual/1786566248-180689`). The issue was the new pre-horizon blue fill peaking at the horizon: it made the sky pale blue just as the sun reached sunset, while the red bridge was already yielding to blue.
 
-Fixes:
-- Fullscreen atmosphere now adds a restrained pre-horizon blue contribution from 0-10 degrees low sun, bridging that dark upper-sky interval without changing the established red/pink band.
-- Terrain sky diffuse now includes a bounded blue-hour ambient Rayleigh fill after sunset/before sunrise. It is altitude-density weighted, fades through astronomical twilight, and is added through the existing terrain ambient path so land receives blue light rather than remaining black.
+Changes:
+- Halved blue-hour terrain ambient gain from 0.45 to 0.225.
+- Pre-horizon blue now fills the earlier low-sun interval and fades to zero at the horizon, so the red/pink sunset colour owns the actual sunset moment.
+- Delayed the red-to-blue handoff from depression sine 0.04-0.13 to 0.08-0.18.
+- Delayed blue-hour start from 0.03/0.07 to 0.05/0.09; terrain ambient onset moves from 0.015-0.08 to 0.03-0.10.
 
 Validation:
-- fullscreen atmosphere shader regression: passed
-- planet shader WGSL parse/validation: passed
+- fullscreen atmosphere shader test: passed
+- planet WGSL validation test: passed
 - cargo check -p catinthegarden-app: passed
-- fresh GPU replay was not available in this environment because X display creation failed; manual capture remains the visual sign-off step.
+- GPU replay was not available in this environment because X display creation failed; the cited manual sequence was used for diagnosis.
 
-Only atmosphere.wgsl, shared_planet.wgsl, and focused terrain assertions were staged. Unrelated working-tree changes remain untouched.
+Only atmosphere.wgsl, shared_planet.wgsl, and focused terrain assertions are staged. Unrelated working-tree changes remain untouched.

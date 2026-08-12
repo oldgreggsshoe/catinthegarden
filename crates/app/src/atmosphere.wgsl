@@ -19,8 +19,8 @@ const SKY_ATMOSPHERE_SATURATION: f32 = 1.18;
 // Start blue hour before the red bridge has fully disappeared. These values
 // correspond roughly to 2, 4, 14, and 22 degrees of solar depression and keep
 // the sunset sequence continuous instead of dropping through black.
-const BLUE_HOUR_START_SINE: f32 = 0.03;
-const BLUE_HOUR_FULL_SINE: f32 = 0.07;
+const BLUE_HOUR_START_SINE: f32 = 0.05;
+const BLUE_HOUR_FULL_SINE: f32 = 0.09;
 const BLUE_HOUR_FADE_SINE: f32 = 0.24;
 const BLUE_HOUR_END_SINE: f32 = 0.38;
 const BLUE_HOUR_SCATTER_GAIN: f32 = 0.26;
@@ -160,7 +160,7 @@ fn low_sun_red_transition(
     // and then reappear after blue hour had already begun. Fade it by the same
     // horizon-relative depression that drives blue hour, with overlap so the
     // two colours form one continuous twilight ramp.
-    let fade_into_blue = 1.0 - smoothstep(0.04, 0.13, solar_depression_sine);
+    let fade_into_blue = 1.0 - smoothstep(0.08, 0.18, solar_depression_sine);
     return rising * fading * fade_into_blue;
 }
 
@@ -471,8 +471,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // crossed the horizon. That left a short, visibly dark interval while the
     // low sun was still visible. A restrained pre-horizon contribution keeps
     // the upper sky continuous without changing the established red band.
-    let pre_horizon_blue_weight = 1.0
-        - smoothstep(0.0, 0.18, max(camera_solar_zenith_cosine, 0.0));
+    let pre_horizon_blue_weight = smoothstep(0.0, 0.18, max(camera_solar_zenith_cosine, 0.0));
     let pre_horizon_blue_radiance = blue_hour_rayleigh_scattering(
         camera_altitude,
         max(
