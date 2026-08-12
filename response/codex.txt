@@ -1,11 +1,13 @@
-Investigated the latest manual run and clean sunset_blue_hour replay. The repeated dark gaps came from direct single-scattering reaching zero before the analytic blue-hour term ramped up; the warm transition also became unnaturally pure red. Real-world references (NASA/NOAA/UCAR) support a continuous warm horizon -> blue/purple twilight rather than black gaps.
+The requested correction is now implemented. The issue was luminance, not only hue: red has a lower perceived luminance than pink at the same RGB magnitude, while the additive twilight terms also changed energy between stages.
 
-Fixed only the fullscreen atmosphere path: added a bounded horizon-relative blue floor overlapping the red transition, and a low-sun chroma guard that retains a warm red/orange component without changing daytime scattering. Added shader parse/regression assertions.
+Change:
+- Added a narrow horizon-band luminance normalization in atmosphere.wgsl.
+- Pink and red are now held near one target twilight luminance (0.32) while the blue-hour ramp and daytime scattering remain untouched.
+- Added regression assertions for the target and normalization path.
 
 Validation:
-- focused atmosphere shader test: passed
-- cargo check -p catinthegarden-app: passed
-- release sunset_blue_hour: passed (run 1786536644-284209)
-- haze sequence now remains continuous: red 0.0375/0.0027/0, warm red 0.6292/0.0510/0.0601, pink 0.6448/0.3616/0.4991, blue 0.3175/0.4514/0.6180, blue 0.2773/0.4095/0.5779, dark blue 0.0250/0.0470/0.0749.
+- focused fullscreen-atmosphere shader test: passed
+- release shader compilation: passed
+- sunset_blue_hour was attempted, but this environment has no usable X display (XOpenDisplayFailed under xvfb), so a fresh GPU screenshot/manifest could not be produced in this turn.
 
-Unrelated working-tree changes were not staged.
+Only atmosphere.wgsl and the corresponding terrain shader assertions are staged. Existing unrelated working-tree changes remain untouched.

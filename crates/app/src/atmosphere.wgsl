@@ -31,6 +31,10 @@ const BLUE_HOUR_TINT: vec3<f32> = vec3<f32>(0.55, 0.75, 1.0);
 // It is deliberately local to dense air and fades before astronomical night.
 const TWILIGHT_BLUE_FLOOR: vec3<f32> = vec3<f32>(0.050, 0.080, 0.150);
 const LOW_SUN_WARM_SKY: vec3<f32> = vec3<f32>(1.0, 0.18, 0.06);
+// Pink and red are perceived at different RGB values because red contributes
+// less to luminance. Hold their narrow horizon band to one energy level so the
+// sunrise sequence does not dip into dark red or jump into bright red.
+const TWILIGHT_TARGET_LUMINANCE: f32 = 0.32;
 // A bounded warm bridge keeps the visible sky intensity rising through the
 // last blue-hour frame into the strong red horizon band. It is deliberately
 // separate from direct terrain/ocean sunlight and adds no raymarch samples.
@@ -488,13 +492,29 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let direct_luminance = dot(direct_sky_radiance, vec3<f32>(0.2126, 0.7152, 0.0722));
     let warm_sky_floor = direct_luminance * LOW_SUN_WARM_SKY;
     let direct_sky = mix(direct_sky_radiance, warm_sky_floor, 0.55 * low_sun_amount);
-    let sky_radiance = max(
+    let raw_sky_radiance = max(
         direct_sky
             + blue_hour_radiance
             + red_twilight_radiance
             + twilight_blue_floor,
         vec3<f32>(0.0),
     );
+    let raw_sky_luminance = dot(raw_sky_radiance, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let horizon_band = 1.0
+        - smoothstep(
+            0.05,
+            0.14,
+            abs(camera_solar_zenith_cosine),
+        );
+    let twilight_luminance_scale = mix(
+        1.0,
+        min(
+            4.0,
+            TWILIGHT_TARGET_LUMINANCE / max(raw_sky_luminance, 1.0e-4),
+        ),
+        horizon_band,
+    );
+    let sky_radiance = raw_sky_radiance * twilight_luminance_scale;
     return vec4<f32>(
         suppress_green_dominance(saturate_sky_color(sky_radiance)),
         1.0,
