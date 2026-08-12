@@ -32,9 +32,11 @@ const BLUE_HOUR_TINT: vec3<f32> = vec3<f32>(0.55, 0.75, 1.0);
 const TWILIGHT_BLUE_FLOOR: vec3<f32> = vec3<f32>(0.050, 0.080, 0.150);
 const LOW_SUN_WARM_SKY: vec3<f32> = vec3<f32>(1.0, 0.18, 0.06);
 // Pink and red are perceived at different RGB values because red contributes
-// less to luminance. Hold their narrow horizon band to one energy level so the
-// sunrise sequence does not dip into dark red or jump into bright red.
-const TWILIGHT_TARGET_LUMINANCE: f32 = 0.32;
+// less to luminance. Keep the warm colours near one perceived level, then let
+// the blue-hour tail gently fall toward night instead of jumping in intensity.
+const TWILIGHT_WARM_LUMINANCE: f32 = 0.34;
+const TWILIGHT_PINK_LUMINANCE: f32 = 0.32;
+const TWILIGHT_BLUE_LUMINANCE: f32 = 0.16;
 // A bounded warm bridge keeps the visible sky intensity rising through the
 // last blue-hour frame into the strong red horizon band. It is deliberately
 // separate from direct terrain/ocean sunlight and adds no raymarch samples.
@@ -97,6 +99,10 @@ fn suppress_green_dominance(color: vec3<f32>) -> vec3<f32> {
     // crossover. Preserve yellow, cyan, blue, and red, but do not let green
     // become the largest sky channel.
     return vec3<f32>(color.r, min(color.g, max(color.r, color.b)), color.b);
+}
+
+fn perceived_luminance(color: vec3<f32>) -> f32 {
+    return dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
 }
 
 fn blue_hour_weight(
@@ -499,20 +505,34 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             + twilight_blue_floor,
         vec3<f32>(0.0),
     );
-    let raw_sky_luminance = dot(raw_sky_radiance, vec3<f32>(0.2126, 0.7152, 0.0722));
-    let horizon_band = 1.0
-        - smoothstep(
-            0.05,
-            0.14,
-            abs(camera_solar_zenith_cosine),
-        );
+    let raw_sky_luminance = perceived_luminance(raw_sky_radiance);
+    // Hold red and pink nearly level, then lower the target smoothly as blue
+    // hour develops. The final fade prevents this corrective fill from
+    // keeping the astronomical night artificially bright.
+    let warm_to_blue = smoothstep(0.06, 0.22, solar_depression_sine);
+    let warm_hold = smoothstep(0.0, 0.06, solar_depression_sine);
+    let warm_target = mix(
+        TWILIGHT_WARM_LUMINANCE,
+        TWILIGHT_PINK_LUMINANCE,
+        warm_hold,
+    );
+    let twilight_target_luminance = mix(
+        warm_target,
+        TWILIGHT_BLUE_LUMINANCE,
+        warm_to_blue,
+    ) * (1.0 - smoothstep(0.18, 0.38, solar_depression_sine));
+    let twilight_weight = max(
+        1.0 - smoothstep(0.0, 0.12, camera_solar_zenith_cosine),
+        blue_hour_weight(camera_solar_zenith_cosine, camera_radius),
+    );
     let twilight_luminance_scale = mix(
         1.0,
-        min(
+        clamp(
+            twilight_target_luminance / max(raw_sky_luminance, 1.0e-4),
+            0.5,
             4.0,
-            TWILIGHT_TARGET_LUMINANCE / max(raw_sky_luminance, 1.0e-4),
         ),
-        horizon_band,
+        twilight_weight,
     );
     let sky_radiance = raw_sky_radiance * twilight_luminance_scale;
     return vec4<f32>(

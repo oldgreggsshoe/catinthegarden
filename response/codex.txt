@@ -1,13 +1,15 @@
-The requested correction is now implemented. The issue was luminance, not only hue: red has a lower perceived luminance than pink at the same RGB magnitude, while the additive twilight terms also changed energy between stages.
+Adjusted the sunset intensity progression.
 
-Change:
-- Added a narrow horizon-band luminance normalization in atmosphere.wgsl.
-- Pink and red are now held near one target twilight luminance (0.32) while the blue-hour ramp and daytime scattering remain untouched.
-- Added regression assertions for the target and normalization path.
+The previous fixed luminance target made the red phase too dark in some views. The atmosphere now uses perceived luminance (Rec.709 weights 0.2126/0.7152/0.0722) with a staged target:
+- warm red: 0.34
+- pink: 0.32
+- blue-hour tail: 0.16
+
+The red/pink portion is held nearly level, then the target lowers smoothly as solar depression increases. The correction is blended only into the low-sun/blue-hour interval, and fades out before astronomical night. Daytime scattering is unchanged.
 
 Validation:
 - focused fullscreen-atmosphere shader test: passed
-- release shader compilation: passed
-- sunset_blue_hour was attempted, but this environment has no usable X display (XOpenDisplayFailed under xvfb), so a fresh GPU screenshot/manifest could not be produced in this turn.
+- cargo check -p catinthegarden-app: passed
+- a fresh GPU sunset replay could not start here because the current environment has no usable X display.
 
-Only atmosphere.wgsl and the corresponding terrain shader assertions are staged. Existing unrelated working-tree changes remain untouched.
+Only atmosphere.wgsl and its focused terrain shader assertions are staged; unrelated worktree changes remain untouched.
