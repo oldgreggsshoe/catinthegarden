@@ -37,6 +37,8 @@ const LOW_SUN_WARM_SKY: vec3<f32> = vec3<f32>(1.0, 0.18, 0.06);
 const TWILIGHT_WARM_LUMINANCE: f32 = 0.34;
 const TWILIGHT_PINK_LUMINANCE: f32 = 0.32;
 const TWILIGHT_BLUE_LUMINANCE: f32 = 0.16;
+const BLUE_HOUR_FILL_START_LUMINANCE: f32 = 0.028;
+const BLUE_HOUR_FILL_END_LUMINANCE: f32 = 0.004;
 // A bounded warm bridge keeps the visible sky intensity rising through the
 // last blue-hour frame into the strong red horizon band. It is deliberately
 // separate from direct terrain/ocean sunlight and adds no raymarch samples.
@@ -508,7 +510,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let twilight_blue_floor_weight = max(horizon_floor, depression_floor)
         * (1.0 - smoothstep(0.20, 0.34, solar_depression_sine))
         * red_twilight_atmosphere_weight;
-    let twilight_blue_floor = TWILIGHT_BLUE_FLOOR * twilight_blue_floor_weight;
+    let twilight_blue_floor = TWILIGHT_BLUE_FLOOR * twilight_blue_floor_weight * 0.04;
     let direct_sky_radiance = radiance * SOLAR_RADIANCE * directional_weight;
     // Rayleigh extinction alone drives the sunset sample to an unnaturally
     // pure red. Multiple scattering keeps a warm red while retaining a small
@@ -518,12 +520,43 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let direct_luminance = dot(direct_sky_radiance, vec3<f32>(0.2126, 0.7152, 0.0722));
     let warm_sky_floor = direct_luminance * LOW_SUN_WARM_SKY;
     let direct_sky = mix(direct_sky_radiance, warm_sky_floor, 0.55 * low_sun_amount);
+    // Twilight bridges change chroma, not energy. Match their luminance to
+    // the current direct term before blending; the old additive form caused
+    // several-stop jumps when red and blue weights overlapped.
+    let red_weight = low_sun_red_transition(
+        camera_solar_zenith_cosine,
+        solar_depression_sine,
+    );
+    let warm_sky = mix(
+        direct_sky,
+        direct_luminance * vec3<f32>(4.1, 0.164, 0.014),
+        clamp(red_weight, 0.0, 1.0),
+    );
+    let blue_weight = max(
+        smoothstep(0.0, 0.10, solar_depression_sine),
+        blue_hour_weight(camera_solar_zenith_cosine, camera_radius),
+    );
+    let blue_sky = mix(
+        warm_sky,
+        direct_luminance * vec3<f32>(0.762, 1.039, 1.385),
+        clamp(blue_weight, 0.0, 1.0),
+    );
+    let blue_fill_luminance = mix(
+        BLUE_HOUR_FILL_START_LUMINANCE,
+        BLUE_HOUR_FILL_END_LUMINANCE,
+        smoothstep(0.05, 0.38, solar_depression_sine),
+    );
+    let blue_fill = BLUE_HOUR_TINT
+        * blue_fill_luminance
+        / max(perceived_luminance(BLUE_HOUR_TINT), 1.0e-4)
+        * blue_weight;
+    // The bounded floor replaces the former additive `+ twilight_blue_floor,`
+    // energy path.
+    // Keep a small, smooth blue-hour floor so the post-red interval reads as
+    // blue rather than clipping straight to black. It fades before night and
+    // remains far below the daylight level.
     let raw_sky_radiance = max(
-        direct_sky
-            + blue_hour_radiance
-            + pre_horizon_blue_radiance
-            + red_twilight_radiance
-            + twilight_blue_floor,
+        max(max(blue_sky, blue_fill), twilight_blue_floor),
         vec3<f32>(0.0),
     );
     let raw_sky_luminance = perceived_luminance(raw_sky_radiance);
@@ -548,11 +581,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     );
     let twilight_luminance_scale = mix(
         1.0,
-        clamp(
-            twilight_target_luminance / max(raw_sky_luminance, 1.0e-4),
-            0.5,
-            4.0,
-        ),
+        min(1.0, twilight_target_luminance / max(raw_sky_luminance, 1.0e-4)),
         twilight_weight,
     );
     let sky_radiance = raw_sky_radiance * twilight_luminance_scale;
