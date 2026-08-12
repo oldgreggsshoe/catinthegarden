@@ -145,7 +145,9 @@ const SURFACE_SUNLIGHT_SCALE: f32 = 2.0;
 // artistic scale so terrain remains readable while the sun is low/visible.
 const SKY_DIFFUSE_LIGHT_SCALE: f32 = 0.70;
 const TWILIGHT_RED_RADIANCE: vec3<f32> = vec3<f32>(0.30, 0.012, 0.001);
-const BLUE_HOUR_AMBIENT_TINT: vec3<f32> = vec3<f32>(0.55, 0.75, 1.0);
+// Blue-hour terrain fill should read as blue skylight, not a pale neutral
+// wash. Preserve the blue channel and remove most red/green contamination.
+const BLUE_HOUR_AMBIENT_TINT: vec3<f32> = vec3<f32>(0.08, 0.20, 1.0);
 const BLUE_HOUR_AMBIENT_GAIN: f32 = 0.225;
 const AERIAL_IN_SCATTER_SAMPLE_COUNT: u32 = 2u;
 const AERIAL_DENSITY_SAMPLE_EXPONENT: f32 = 3.0;

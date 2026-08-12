@@ -1,13 +1,10 @@
-The newest screenshot is still blue at the visible sunset. The run shows why: the camera was about 49km up, with the sun roughly 12 degrees below the local radial plane, but only about 3 degrees below the camera's geometric horizon. The red bridge was using a fixed radial elevation threshold, so it shut off before the high-altitude horizon sunset.
+Adjusted the terrain blue-hour ambient tint only.
 
-Fixed:
-- Red twilight now keys its rising edge to horizon-relative solar depression rather than the fixed -0.14 radial threshold.
-- At high altitude, the red phase therefore remains present while the sun is visibly at the horizon; blue takes over after the sun has actually set.
-- The previous half-strength blue terrain ambient remains unchanged.
+The blue channel is unchanged at 1.0; red and green are reduced from 0.55/0.75 to 0.08/0.20, removing most of the pale neutral wash while preserving the existing ambient gain and brightness behaviour.
 
 Validation:
-- fullscreen atmosphere shader regression: passed
+- fullscreen atmosphere/blue-hour shader test: passed
+- planet WGSL validation test: passed
 - cargo check -p catinthegarden-app: passed
-- latest manual screenshot was used for diagnosis; a new GPU replay is still unavailable in this environment.
 
-Only atmosphere.wgsl and its focused terrain assertion are staged. Unrelated worktree changes remain untouched.
+Only shared_planet.wgsl and its focused terrain assertion are staged. Unrelated worktree changes remain untouched.

@@ -4253,7 +4253,7 @@ mod tests {
         assert!(shared_shader.contains("let red_fade_into_blue = 1.0 - smoothstep("));
         assert!(
             shared_shader
-                .contains("const BLUE_HOUR_AMBIENT_TINT: vec3<f32> = vec3<f32>(0.55, 0.75, 1.0);")
+                .contains("const BLUE_HOUR_AMBIENT_TINT: vec3<f32> = vec3<f32>(0.08, 0.20, 1.0);")
         );
         assert!(shared_shader.contains("fn blue_hour_ambient_radiance("));
         assert!(shared_shader.contains("const BLUE_HOUR_AMBIENT_GAIN: f32 = 0.225;"));
