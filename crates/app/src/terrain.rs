@@ -4257,7 +4257,7 @@ mod tests {
         );
         assert!(shared_shader.contains("fn blue_hour_ambient_radiance("));
         assert!(shared_shader.contains("const BLUE_HOUR_AMBIENT_GAIN: f32 = 0.225;"));
-        assert!(shared_shader.contains("let rise = smoothstep(0.03, 0.10, solar_depression);"));
+        assert!(shared_shader.contains("let rise = smoothstep(0.12, 0.22, solar_depression);"));
         assert!(shared_shader.contains("let blue_hour_ambient = blue_hour_ambient_radiance("));
         assert!(shader.contains("let pre_horizon_blue_weight = smoothstep(0.0, 0.18"));
         assert!(shader.contains("let pre_horizon_blue_radiance = blue_hour_rayleigh_scattering("));

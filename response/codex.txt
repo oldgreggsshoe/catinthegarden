@@ -1,9 +1,12 @@
-Adjusted the terrain blue-hour ambient tint only.
+Checked the newest screenshot (`test-runs/manual/1786569749-13077/screenshots/capture-001.png`). The terrain was already receiving blue-hour ambient while the sky was still in the warm sunset phase. At the capture point the sun was about 9 degrees below the local radial plane, so the previous 0.03-0.10 depression ramp was already near full strength.
 
-The blue channel is unchanged at 1.0; red and green are reduced from 0.55/0.75 to 0.08/0.20, removing most of the pale neutral wash while preserving the existing ambient gain and brightness behaviour.
+Delayed terrain blue-hour ambient symmetrically for sunset and sunrise:
+- onset/ramp moved from depression sine 0.03-0.10 to 0.12-0.22
+- this lets the warm sky phase finish before terrain blue fill appears
+- the existing half-strength gain and blue-only tint are unchanged
 
 Validation:
-- fullscreen atmosphere/blue-hour shader test: passed
+- fullscreen atmosphere shader test: passed
 - planet WGSL validation test: passed
 - cargo check -p catinthegarden-app: passed
 

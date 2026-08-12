@@ -1034,7 +1034,10 @@ fn blue_hour_ambient_radiance(
     solar_elevation: f32,
 ) -> vec3<f32> {
     let solar_depression = max(-solar_elevation, 0.0);
-    let rise = smoothstep(0.03, 0.10, solar_depression);
+    // Let the warm sunset/sunrise colours finish first. Terrain blue fill
+    // begins later than the sky transition and ramps symmetrically after the
+    // sun is several degrees below the local horizon.
+    let rise = smoothstep(0.12, 0.22, solar_depression);
     let fade = 1.0 - smoothstep(0.24, 0.40, solar_depression);
     let optical_depth = RAYLEIGH_COEFFICIENT
         * density(surface_altitude_meters, RAYLEIGH_SCALE_HEIGHT_METERS)
