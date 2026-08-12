@@ -4224,6 +4224,7 @@ mod tests {
             )
         );
         assert!(shader.contains("const BLUE_HOUR_START_SINE: f32 = 0.05;"));
+        assert!(shader.contains("let rising = 1.0 - smoothstep(0.0, 0.10, solar_depression_sine);"));
         assert!(shader.contains("let red_twilight_atmosphere_weight = density("));
         assert!(shader.contains("let red_twilight_radiance = TWILIGHT_RED_RADIANCE"));
         assert!(

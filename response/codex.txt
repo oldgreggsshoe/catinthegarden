@@ -1,15 +1,13 @@
-Reviewed the latest manual sunset sequence (`test-runs/manual/1786566248-180689`). The issue was the new pre-horizon blue fill peaking at the horizon: it made the sky pale blue just as the sun reached sunset, while the red bridge was already yielding to blue.
+The newest screenshot is still blue at the visible sunset. The run shows why: the camera was about 49km up, with the sun roughly 12 degrees below the local radial plane, but only about 3 degrees below the camera's geometric horizon. The red bridge was using a fixed radial elevation threshold, so it shut off before the high-altitude horizon sunset.
 
-Changes:
-- Halved blue-hour terrain ambient gain from 0.45 to 0.225.
-- Pre-horizon blue now fills the earlier low-sun interval and fades to zero at the horizon, so the red/pink sunset colour owns the actual sunset moment.
-- Delayed the red-to-blue handoff from depression sine 0.04-0.13 to 0.08-0.18.
-- Delayed blue-hour start from 0.03/0.07 to 0.05/0.09; terrain ambient onset moves from 0.015-0.08 to 0.03-0.10.
+Fixed:
+- Red twilight now keys its rising edge to horizon-relative solar depression rather than the fixed -0.14 radial threshold.
+- At high altitude, the red phase therefore remains present while the sun is visibly at the horizon; blue takes over after the sun has actually set.
+- The previous half-strength blue terrain ambient remains unchanged.
 
 Validation:
-- fullscreen atmosphere shader test: passed
-- planet WGSL validation test: passed
+- fullscreen atmosphere shader regression: passed
 - cargo check -p catinthegarden-app: passed
-- GPU replay was not available in this environment because X display creation failed; the cited manual sequence was used for diagnosis.
+- latest manual screenshot was used for diagnosis; a new GPU replay is still unavailable in this environment.
 
-Only atmosphere.wgsl, shared_planet.wgsl, and focused terrain assertions are staged. Unrelated working-tree changes remain untouched.
+Only atmosphere.wgsl and its focused terrain assertion are staged. Unrelated worktree changes remain untouched.

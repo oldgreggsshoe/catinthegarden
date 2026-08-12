@@ -153,7 +153,11 @@ fn low_sun_red_transition(
     solar_elevation: f32,
     solar_depression_sine: f32,
 ) -> f32 {
-    let rising = smoothstep(-0.14, -0.03, solar_elevation);
+    // Use the camera's horizon-relative depression for the rising edge. A
+    // high-altitude observer sees the geometric horizon several degrees below
+    // the local radial plane; the old fixed -0.14 threshold therefore removed
+    // the red bridge while the sun was still visibly on the horizon.
+    let rising = 1.0 - smoothstep(0.0, 0.10, solar_depression_sine);
     let fading = 1.0 - smoothstep(0.0, 0.09, solar_elevation);
     // The old red bridge stayed at full strength for every angle below the
     // horizon. As view direction and camera altitude changed, it could vanish
