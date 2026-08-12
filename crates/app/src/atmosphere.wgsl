@@ -467,6 +467,23 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         * BLUE_HOUR_TINT
         * (SOLAR_RADIANCE * BLUE_HOUR_SCATTER_GAIN)
         * blue_hour_weight(camera_solar_zenith_cosine, camera_radius);
+    // The analytic blue-hour term traditionally began only after the sun had
+    // crossed the horizon. That left a short, visibly dark interval while the
+    // low sun was still visible. A restrained pre-horizon contribution keeps
+    // the upper sky continuous without changing the established red band.
+    let pre_horizon_blue_weight = 1.0
+        - smoothstep(0.0, 0.18, max(camera_solar_zenith_cosine, 0.0));
+    let pre_horizon_blue_radiance = blue_hour_rayleigh_scattering(
+        camera_altitude,
+        max(
+            dot(camera.camera_planet_direction_view_altitude.xyz, ray),
+            0.0,
+        ),
+        rayleigh_phase,
+    )
+        * BLUE_HOUR_TINT
+        * (SOLAR_RADIANCE * BLUE_HOUR_SCATTER_GAIN * 0.35)
+        * pre_horizon_blue_weight;
     let red_twilight_radiance = TWILIGHT_RED_RADIANCE
         * low_sun_red_transition(
             camera_solar_zenith_cosine,
@@ -501,6 +518,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let raw_sky_radiance = max(
         direct_sky
             + blue_hour_radiance
+            + pre_horizon_blue_radiance
             + red_twilight_radiance
             + twilight_blue_floor,
         vec3<f32>(0.0),

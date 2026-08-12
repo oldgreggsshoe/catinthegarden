@@ -145,6 +145,8 @@ const SURFACE_SUNLIGHT_SCALE: f32 = 2.0;
 // artistic scale so terrain remains readable while the sun is low/visible.
 const SKY_DIFFUSE_LIGHT_SCALE: f32 = 0.70;
 const TWILIGHT_RED_RADIANCE: vec3<f32> = vec3<f32>(0.30, 0.012, 0.001);
+const BLUE_HOUR_AMBIENT_TINT: vec3<f32> = vec3<f32>(0.55, 0.75, 1.0);
+const BLUE_HOUR_AMBIENT_GAIN: f32 = 0.45;
 const AERIAL_IN_SCATTER_SAMPLE_COUNT: u32 = 2u;
 const AERIAL_DENSITY_SAMPLE_EXPONENT: f32 = 3.0;
 // Artistic aerial-only control, applied after physically bounded integration.
@@ -1025,6 +1027,25 @@ fn sky_radiance(
         + TWILIGHT_RED_RADIANCE * red_transition * sunward_red;
 }
 
+fn blue_hour_ambient_radiance(
+    surface_altitude_meters: f32,
+    solar_elevation: f32,
+) -> vec3<f32> {
+    let solar_depression = max(-solar_elevation, 0.0);
+    let rise = smoothstep(0.015, 0.08, solar_depression);
+    let fade = 1.0 - smoothstep(0.24, 0.40, solar_depression);
+    let optical_depth = RAYLEIGH_COEFFICIENT
+        * density(surface_altitude_meters, RAYLEIGH_SCALE_HEIGHT_METERS)
+        * RAYLEIGH_SCALE_HEIGHT_METERS
+        * 0.35;
+    let scattered_fraction = vec3<f32>(1.0) - exp(-optical_depth);
+    return scattered_fraction
+        * BLUE_HOUR_AMBIENT_TINT
+        * (SOLAR_RADIANCE * BLUE_HOUR_AMBIENT_GAIN)
+        * rise
+        * fade;
+}
+
 fn sky_diffuse_irradiance(
     normal: vec3<f32>,
     surface_direction: vec3<f32>,
@@ -1079,11 +1100,18 @@ fn sky_diffuse_irradiance(
         ),
         vec3<f32>(0.0),
     );
+    let blue_hour_ambient = blue_hour_ambient_radiance(
+        surface_altitude_meters,
+        dot(surface_direction, sun_direction),
+    );
     let sky = max(
         local_sky,
         max(
             sunward_sky * 0.65,
-            max(overhead_sky * 0.90, sunward_horizon_sky * 0.49),
+            max(
+                overhead_sky * 0.90,
+                max(sunward_horizon_sky * 0.49, blue_hour_ambient),
+            ),
         ),
     );
     let peak = max(max(sky.x, sky.y), sky.z);

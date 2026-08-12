@@ -1,15 +1,13 @@
-Adjusted the sunset intensity progression.
+Reviewed manual capture `test-runs/manual/1786563730-161514/screenshots/capture-001.png` at sim time 9.7298s. The camera was 10m above ground with the sun about 5.36 degrees above the local horizon. The horizon retained warm light, but the upper sky had a dark interval because the blue-hour analytic fill started only after the sun crossed below the horizon.
 
-The previous fixed luminance target made the red phase too dark in some views. The atmosphere now uses perceived luminance (Rec.709 weights 0.2126/0.7152/0.0722) with a staged target:
-- warm red: 0.34
-- pink: 0.32
-- blue-hour tail: 0.16
-
-The red/pink portion is held nearly level, then the target lowers smoothly as solar depression increases. The correction is blended only into the low-sun/blue-hour interval, and fades out before astronomical night. Daytime scattering is unchanged.
+Fixes:
+- Fullscreen atmosphere now adds a restrained pre-horizon blue contribution from 0-10 degrees low sun, bridging that dark upper-sky interval without changing the established red/pink band.
+- Terrain sky diffuse now includes a bounded blue-hour ambient Rayleigh fill after sunset/before sunrise. It is altitude-density weighted, fades through astronomical twilight, and is added through the existing terrain ambient path so land receives blue light rather than remaining black.
 
 Validation:
-- focused fullscreen-atmosphere shader test: passed
+- fullscreen atmosphere shader regression: passed
+- planet shader WGSL parse/validation: passed
 - cargo check -p catinthegarden-app: passed
-- a fresh GPU sunset replay could not start here because the current environment has no usable X display.
+- fresh GPU replay was not available in this environment because X display creation failed; manual capture remains the visual sign-off step.
 
-Only atmosphere.wgsl and its focused terrain shader assertions are staged; unrelated worktree changes remain untouched.
+Only atmosphere.wgsl, shared_planet.wgsl, and focused terrain assertions were staged. Unrelated working-tree changes remain untouched.
