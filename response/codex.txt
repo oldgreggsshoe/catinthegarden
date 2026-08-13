@@ -1,12 +1,7 @@
-Implemented and pushed the sunset twilight fix.
+Audited and cleaned stale build targets.
 
-- Sunset red now transitions promptly to a pale yellow whose captured perceived luminance stays below the red stage.
-- Pale yellow then transitions to a dim, blue-dominant hour; late twilight replaces residual red instead of mixing it back in.
-- Blue-hour luminance now fades smoothly toward night without the former spikes/black jump.
+Before: /home was 150G/168G (94%); this checkout held about 26G of old target directories and tmp-rust caches.
+Removed: old .target-* checkouts, target-summit, old tmp-rust Cargo targets, baker test targets, logs, patches, and temporary source snapshots.
+Kept: the normal `target/` (4.6G) and the newest `tmp-rust/target-sunset-yellow` cache (3.6G).
 
-Validation:
-- Fresh GPU scenario: `test-runs/sunset_blue_hour/1786615843-337347` — all assertions passed.
-- Captured luminance: red 0.1785, pale yellow 0.1292, blue-hour 0.0400 -> 0.0211 -> 0.0039.
-- `cargo fmt --all -- --check`, focused shader/scenario tests, and `cargo check -p catinthegarden-app` passed.
-
-Committed and pushed as `9caa9a2` (`Tune sunset red yellow blue transition`). Existing unrelated worktree changes remain untouched.
+After: /home is 125G/168G (79%), with 35G free. `/tmp` remains 4% used. Root `/` is still 97% used but was not affected by these home-directory targets. No Cargo/rustc/app process was running, and unrelated git worktree changes remain untouched.
