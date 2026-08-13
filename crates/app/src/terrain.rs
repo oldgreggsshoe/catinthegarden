@@ -4347,9 +4347,9 @@ mod tests {
         assert!(shader.contains("var atmosphere_transmittance_lut: texture_2d<f32>;"));
         assert!(shader.contains("let inner_glare = pow("));
         assert!(shader.contains("let relative_transmittance = clamp("));
-        assert!(
-            shader.contains("let glare_visibility = max(pow(strongest_channel, 10.0), 0.003);")
-        );
+        assert!(shader.contains(
+            "let glare_visibility = max(pow(strongest_channel, 4.0), SUN_GLARE_VISIBILITY_FLOOR);"
+        ));
     }
 
     #[test]

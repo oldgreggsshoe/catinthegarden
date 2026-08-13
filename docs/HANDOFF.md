@@ -2611,3 +2611,27 @@ continuously with the planet rather than alternating between LUT rows. Regressio
 204 passed and seven ignored but still reports the two unrelated pre-existing LOD-transition
 timing failures in the already-dirty `terrain.rs`; neither failed test or implementation is part
 of this atmosphere change.
+
+## Visual sun limb and sunset presentation — 13 August 2026
+
+The camera-only sun overlay was still perceived to shrink near the horizon. Its geometric
+coverage was already the correct fixed 0.53-degree solar disc, but the old shader multiplied the
+core, glare, and halo by a steep `pow(transmittance, 10)` visibility term. As the atmospheric
+column reddened, that term erased the outer disc/halo first, making the sun look smaller rather
+than merely dimmer.
+
+The overlay now separates geometry from radiance. The core retains its constant angular
+coverage and receives wavelength-dependent physical transmittance. The halo/glare uses its own
+bounded, smoother visibility floor. At low positive solar elevation, a camera-only second optical
+column plus a bounded red limb tint keeps the transmitted core from clipping back to white while
+preserving the physical LUT-driven colour ordering. A 0.12 core visibility floor is only for
+camera presentation; it does not feed terrain, ocean, sky lighting, or exposure. The extra work is
+limited to a handful of arithmetic operations in the existing fullscreen sun pass.
+
+Focused source regressions pin the separated core/glare paths and fixed angular coverage. Fresh
+`sunset_blue_hour/1786655142-151491` passes all existing atmosphere assertions and shows the sun
+remaining present and warm at the low-sun sample. The same build also passes
+`sunrise_midday_surface/1786655279-154429`, `orbital_atmosphere_profile/1786655280-154453`,
+`ground_to_orbit/1786655281-154481`, `night_side_atmosphere/1786655290-154569`, and
+`limb_atmosphere/1786655292-154620`. No atmosphere LUT dimensions, sample counts, or
+near-surface terrain lighting were changed.

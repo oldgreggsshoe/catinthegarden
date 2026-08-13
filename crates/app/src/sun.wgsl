@@ -11,6 +11,11 @@ const SUN_INNER_GLARE_RADIUS_SCALE: f32 = 2.5;
 // This multiplier belongs only to the camera-facing HDR disc.  Terrain,
 // ocean, and atmosphere lighting use their own physical solar radiance.
 const SUN_VISUAL_RADIANCE_SCALE: f32 = 5.0;
+// Keep the physically tinted core legible at the horizon. This is a camera
+// presentation floor, not a lighting contribution; the terrain and sky still
+// receive the unmodified atmospheric transmittance.
+const SUN_CORE_VISIBILITY_FLOOR: f32 = 0.12;
+const SUN_GLARE_VISIBILITY_FLOOR: f32 = 0.18;
 const SUN_CORE_RADIANCE: vec3<f32> = vec3<f32>(72.0, 65.0, 52.0);
 const SUN_HALO_RADIANCE: vec3<f32> = vec3<f32>(10.0, 7.0, 3.5);
 const SUN_GLARE_RADIANCE: vec3<f32> = vec3<f32>(8.0, 5.5, 2.5);
@@ -73,15 +78,10 @@ fn sun_disc_atmospheric_transmittance(solar_elevation: f32) -> vec3<f32> {
         vec3<f32>(0.0),
         vec3<f32>(1.0),
     );
-    // Preserve that physical chromaticity, but reduce camera-only glare as
-    // the whole transmitted column fades. Otherwise the deliberately
-    // overbright HDR core clips every remaining channel back to white.
-    let strongest_channel = max(
-        relative_transmittance.r,
-        max(relative_transmittance.g, relative_transmittance.b),
-    );
-    let glare_visibility = max(pow(strongest_channel, 10.0), 0.003);
-    return relative_transmittance * glare_visibility;
+    // Return the physical wavelength-dependent attenuation only. The disc's
+    // angular coverage must remain constant as it approaches the horizon;
+    // camera-only glare can fade separately without shrinking the solar core.
+    return relative_transmittance;
 }
 
 @vertex
@@ -117,10 +117,40 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         normalize(camera.sun_direction_view.xyz),
     );
     let tint = sun_disc_atmospheric_transmittance(solar_elevation);
+    // Preserve the real angular diameter while atmospheric distance dims and
+    // reddens the core. Only the glare/halo receives the stronger visibility
+    // rolloff, so a sunset sun does not appear to contract toward a point.
+    // A second bounded camera-only optical column prevents the overbright HDR
+    // core from clipping its physical red shift back to white at the limb.
+    let low_sun_amount = 1.0 - smoothstep(-0.05, 0.25, solar_elevation);
+    let limb_tint = mix(
+        vec3<f32>(1.0),
+        vec3<f32>(1.0, 0.20, 0.03),
+        low_sun_amount,
+    );
+    let presentation_tint = tint
+        * limb_tint
+        * mix(vec3<f32>(1.0), tint, low_sun_amount);
+    let core_radiance_scale = mix(
+        0.20,
+        1.0,
+        smoothstep(-0.05, 0.25, solar_elevation),
+    );
+    let strongest_channel = max(
+        presentation_tint.r,
+        max(presentation_tint.g, presentation_tint.b),
+    );
+    let core_visibility = max(strongest_channel, SUN_CORE_VISIBILITY_FLOOR);
+    let core_tint = presentation_tint
+        * (core_visibility / max(strongest_channel, 1.0e-4));
+    let glare_visibility = max(pow(strongest_channel, 4.0), SUN_GLARE_VISIBILITY_FLOOR);
+    let atmospheric_core = core_radiance_scale * core_tint * (
+        SUN_CORE_RADIANCE * disc_coverage * limb_darkening
+    );
+    let atmospheric_glare = presentation_tint * glare_visibility * (
+        SUN_HALO_RADIANCE * halo + SUN_GLARE_RADIANCE * inner_glare
+    );
     let radiance = SUN_VISUAL_RADIANCE_SCALE
-        * tint
-        * (SUN_CORE_RADIANCE * disc_coverage * limb_darkening
-            + SUN_HALO_RADIANCE * halo
-            + SUN_GLARE_RADIANCE * inner_glare);
+        * (atmospheric_core + atmospheric_glare);
     return vec4<f32>(radiance, 1.0);
 }

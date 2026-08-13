@@ -130,4 +130,23 @@ mod tests {
         assert!(shader.contains("sun_disc_atmospheric_transmittance(solar_elevation)"));
         assert!(!shader.contains("vec3<f32>(1.0, 0.48, 0.16)"));
     }
+
+    #[test]
+    fn visible_sun_keeps_angular_disc_size_when_glare_dims_at_low_sun() {
+        let shader = include_str!("sun.wgsl");
+        let compact: String = shader.split_whitespace().collect();
+        assert!(shader.contains("const SUN_CORE_VISIBILITY_FLOOR: f32 = 0.12;"));
+        assert!(shader.contains("const SUN_GLARE_VISIBILITY_FLOOR: f32 = 0.18;"));
+        assert!(shader.contains("let presentation_tint = tint"));
+        assert!(shader.contains("let limb_tint = mix("));
+        assert!(shader.contains("let core_radiance_scale = mix("));
+        assert!(shader.contains("let atmospheric_core = core_radiance_scale * core_tint * ("));
+        assert!(
+            shader.contains("let atmospheric_glare = presentation_tint * glare_visibility * (")
+        );
+        assert!(compact.contains(
+            "letradiance=SUN_VISUAL_RADIANCE_SCALE*(atmospheric_core+atmospheric_glare);"
+        ));
+        assert!(!compact.contains("letradiance=SUN_VISUAL_RADIANCE_SCALE*tint*(SUN_CORE_RADIANCE"));
+    }
 }
