@@ -925,7 +925,10 @@ fn flat_triangle_colour(
             0.0,
         );
     }
-    return vec4<f32>(mix(aerial_lit, vec3<f32>(0.015, 0.02, 0.025), edge), 1.0);
+    // Outlines are unlit geometry edges, not emissive ink. Darken the
+    // physically composed triangle so night-side lines fade with their
+    // surroundings instead of imposing a blue-grey luminance floor.
+    return vec4<f32>(mix(aerial_lit, aerial_lit * 0.08, edge), 1.0);
 }
 
 fn flat_ocean_colour(input: OceanVertexOutput) -> vec4<f32> {
@@ -948,7 +951,7 @@ fn flat_ocean_colour(input: OceanVertexOutput) -> vec4<f32> {
         false,
     );
     let edge = flat_triangle_edge(input.tile_uv, 0.0);
-    return vec4<f32>(mix(lit, vec3<f32>(0.015, 0.02, 0.025), edge), 1.0);
+    return vec4<f32>(mix(lit, lit * 0.08, edge), 1.0);
 }
 
 @fragment

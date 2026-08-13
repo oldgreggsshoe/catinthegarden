@@ -25,6 +25,7 @@ const LUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 pub struct AtmosphereRenderer {
     pipeline: wgpu::RenderPipeline,
     sky_view_pipeline: wgpu::RenderPipeline,
+    transmittance: wgpu::TextureView,
     sky_view: wgpu::TextureView,
     surface_irradiance: wgpu::TextureView,
     physical_sampler: wgpu::Sampler,
@@ -34,6 +35,7 @@ pub struct AtmosphereRenderer {
 }
 
 pub struct SurfaceLightingResources<'a> {
+    pub transmittance: &'a wgpu::TextureView,
     pub irradiance: &'a wgpu::TextureView,
     pub physical_sampler: &'a wgpu::Sampler,
     pub sky_view: &'a wgpu::TextureView,
@@ -328,6 +330,7 @@ impl AtmosphereRenderer {
         Self {
             pipeline,
             sky_view_pipeline,
+            transmittance: transmittance_view,
             sky_view,
             surface_irradiance,
             physical_sampler,
@@ -339,6 +342,7 @@ impl AtmosphereRenderer {
 
     pub fn surface_lighting_resources(&self) -> SurfaceLightingResources<'_> {
         SurfaceLightingResources {
+            transmittance: &self.transmittance,
             irradiance: &self.surface_irradiance,
             physical_sampler: &self.physical_sampler,
             sky_view: &self.sky_view,

@@ -802,6 +802,10 @@ impl TerrainRenderer {
                     binding: 11,
                     resource: wgpu::BindingResource::Sampler(atmosphere.sky_view_sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 12,
+                    resource: wgpu::BindingResource::TextureView(atmosphere.transmittance),
+                },
             ],
         });
         let placeholder_tile = create_gpu_tile(
@@ -2158,7 +2162,7 @@ pub fn create_shared_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroup
             texture_layout_entry(8, wgpu::TextureSampleType::Float { filterable: true }),
             wgpu::BindGroupLayoutEntry {
                 binding: 9,
-                visibility: wgpu::ShaderStages::FRAGMENT,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
@@ -2169,6 +2173,7 @@ pub fn create_shared_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroup
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
+            texture_layout_entry(12, wgpu::TextureSampleType::Float { filterable: true }),
         ],
     })
 }
@@ -3585,6 +3590,9 @@ mod tests {
             .and_then(|source| source.split("\nfn ").next())
             .expect("raster terrain fragment path is present");
         assert!(flat_fragment.contains("return flat_triangle_colour(input);"));
+        assert!(shader.contains("mix(aerial_lit, aerial_lit * 0.08, edge)"));
+        assert!(shader.contains("mix(lit, lit * 0.08, edge)"));
+        assert!(!shader.contains("vec3<f32>(0.015, 0.02, 0.025)"));
         assert!(!flat_fragment.contains("input.skirt_depth_meters > 0.0"));
         assert!(shader.contains("fn terrain_aerial_solar_air_mass("));
         assert!(shader.contains("TERRAIN_AERIAL_UPPER_HORIZON_AIR_MASS_SCALE: f32 = 0.42"));
@@ -4155,24 +4163,17 @@ mod tests {
     }
 
     #[test]
-    fn direct_surface_sunlight_fades_before_geometric_sunset() {
+    fn direct_surface_sunlight_uses_the_physical_transmittance_lut() {
         let shader = planet_shader_source();
         let normalized_shader = shader.split_whitespace().collect::<Vec<_>>().join(" ");
-        assert!(shader.contains("let solar_elevation = dot(surface_direction, sun_direction);"));
-        assert!(
-            shader.contains("smoothstep(\n        -0.01,\n        0.08,\n        solar_elevation,")
-        );
-        assert!(normalized_shader.contains("sun_transmittance * specular"));
-        assert!(normalized_shader.contains("terrain_sun_transmittance * terrain_direct_light"));
-    }
-
-    #[test]
-    fn direct_surface_sunlight_progresses_from_orange_to_red_before_darkness() {
-        let shader = planet_shader_source();
-        let normalized_shader = shader.split_whitespace().collect::<Vec<_>>().join(" ");
-        assert!(shader.contains("let orange_tint = vec3<f32>(1.20, 0.55, 0.16);"));
-        assert!(shader.contains("let red_tint = vec3<f32>(1.35, 0.12, 0.03);"));
-        assert!(shader.contains("return transmitted_sunlight * low_sun_tint * solar_visibility;"));
+        assert!(shader.contains("atmosphere_transmittance_lut"));
+        assert!(shader.contains("textureSampleLevel(\n        atmosphere_transmittance_lut,"));
+        for authored_tint in ["orange_tint", "red_tint", "low_sun_tint"] {
+            assert!(
+                !shader.contains(authored_tint),
+                "direct sunlight still contains authored tint {authored_tint}",
+            );
+        }
         assert!(normalized_shader.contains("sun_transmittance * specular"));
         assert!(normalized_shader.contains("terrain_sun_transmittance * terrain_direct_light"));
     }
@@ -4312,8 +4313,20 @@ mod tests {
 
         let planet = planet_shader_source();
         assert!(planet.contains("atmosphere_surface_irradiance_lut"));
+        assert!(planet.contains("atmosphere_transmittance_lut"));
         assert!(planet.contains("physical_camera_sky_radiance(camera_to_surface_ray_view)"));
         assert!(!planet.contains("sky_diffuse * daylight"));
+        for authored_schedule in [
+            "TWILIGHT_RED_RADIANCE",
+            "BLUE_HOUR_AMBIENT_TINT",
+            "blue_hour_ambient_radiance",
+            "fn sky_radiance(",
+        ] {
+            assert!(
+                !planet.contains(authored_schedule),
+                "surface shader still contains authored schedule {authored_schedule}",
+            );
+        }
     }
 
     #[test]

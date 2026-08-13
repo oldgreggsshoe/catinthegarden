@@ -145,11 +145,6 @@ const SURFACE_SUNLIGHT_SCALE: f32 = 2.0;
 // Local overhead sky fill is intentionally stronger than the former 0.18
 // artistic scale so terrain remains readable while the sun is low/visible.
 const SKY_DIFFUSE_LIGHT_SCALE: f32 = 0.70;
-const TWILIGHT_RED_RADIANCE: vec3<f32> = vec3<f32>(0.30, 0.012, 0.001);
-// Blue-hour terrain fill should read as blue skylight, not a pale neutral
-// wash. Preserve the blue channel and remove most red/green contamination.
-const BLUE_HOUR_AMBIENT_TINT: vec3<f32> = vec3<f32>(0.08, 0.20, 1.0);
-const BLUE_HOUR_AMBIENT_GAIN: f32 = 0.225;
 const AERIAL_IN_SCATTER_SAMPLE_COUNT: u32 = 2u;
 const AERIAL_DENSITY_SAMPLE_EXPONENT: f32 = 3.0;
 // Artistic aerial-only control, applied after physically bounded integration.
@@ -277,6 +272,9 @@ var atmosphere_sky_view_lut: texture_2d<f32>;
 
 @group(2) @binding(11)
 var atmosphere_sky_view_sampler: sampler;
+
+@group(2) @binding(12)
+var atmosphere_transmittance_lut: texture_2d<f32>;
 
 struct OceanWaveContribution {
     horizontal_displacement: vec3<f32>,
@@ -886,182 +884,21 @@ fn surface_direct_sun_transmittance(
     surface_altitude_meters: f32,
     sun_direction: vec3<f32>,
 ) -> vec3<f32> {
-    let surface_radius = PLANET_RADIUS_METERS + surface_altitude_meters;
-    let solar_elevation = dot(surface_direction, sun_direction);
-    let radial_dot_sun = surface_radius * solar_elevation;
-    // The RGB transmittance below progressively removes blue at low solar
-    // elevation. Start reducing its intensity before geometric sunset too, so
-    // terrain diffuse and ocean glints become dim red rather than staying
-    // bright until they abruptly disappear behind the planet.
-    let solar_visibility = smoothstep(
-        -0.01,
-        0.08,
-        solar_elevation,
+    let optical_altitude = max(surface_altitude_meters, 0.0) / 9.0;
+    let uv = vec2<f32>(
+        clamp(dot(surface_direction, sun_direction) * 0.5 + 0.5, 0.0, 1.0),
+        sqrt(clamp(optical_altitude / 160000.0, 0.0, 1.0)),
     );
-
-    // The generic endpoint-average estimate spans the full 360km shell for
-    // a noon surface point. That makes the near-zero density at its top count
-    // as half the density of the entire path, nearly extinguishing direct
-    // daylight before the existing surface-only intensity scale can matter.
-    // Estimate a local scale-height air mass instead. It retains directional
-    // warm attenuation near the terminator without altering sky scattering.
-    let sun_zenith_cosine = max(solar_elevation, 0.0);
-    let air_mass = min(1.0 / max(sun_zenith_cosine, 0.08), 12.0);
-    let rayleigh_optical_depth = RAYLEIGH_COEFFICIENT
-        * density(surface_altitude_meters, RAYLEIGH_SCALE_HEIGHT_METERS)
-        * RAYLEIGH_SCALE_HEIGHT_METERS
-        * air_mass;
-    let mie_optical_depth = MIE_COEFFICIENT
-        * density(surface_altitude_meters, MIE_SCALE_HEIGHT_METERS)
-        * MIE_SCALE_HEIGHT_METERS
-        * air_mass;
-    let transmitted_sunlight = exp(-(rayleigh_optical_depth + mie_optical_depth));
-    // Keep the physically wavelength-dependent extinction, then make its last
-    // visible range read as two distinct ground-light bands: orange first,
-    // then red as the existing visibility fade takes the sun below the limb.
-    let orange_amount = 1.0 - smoothstep(0.08, 0.30, max(solar_elevation, 0.0));
-    let red_amount = 1.0 - smoothstep(-0.01, 0.08, solar_elevation);
-    let orange_tint = vec3<f32>(1.20, 0.55, 0.16);
-    let red_tint = vec3<f32>(1.35, 0.12, 0.03);
-    let low_sun_tint = mix(
-        mix(vec3<f32>(1.0), orange_tint, orange_amount),
-        red_tint,
-        red_amount,
-    );
-    return transmitted_sunlight * low_sun_tint * solar_visibility;
-}
-
-fn sky_radiance(
-    normal: vec3<f32>,
-    surface_direction: vec3<f32>,
-    surface_altitude_meters: f32,
-    sun_direction: vec3<f32>,
-) -> vec3<f32> {
-    let surface_radius = PLANET_RADIUS_METERS + surface_altitude_meters;
-    let ray = normalize(normal + surface_direction * 0.05);
-    let radial_dot_ray = surface_radius * dot(surface_direction, ray);
-    let ray_length = atmosphere_exit_distance(surface_radius, radial_dot_ray);
-    if ray_length <= 0.0 {
-        return vec3<f32>(0.0);
-    }
-
-    // Use one density-weighted representative for each local sky direction.
-    // A terrain-vertex raymarch multiplied by every visible chunk is too costly;
-    // scale-height path lengths retain the same colour-producing coefficients
-    // while keeping the work bounded to three analytic sky samples per vertex.
-    let zenith_cosine = max(dot(surface_direction, ray), 0.08);
-    let rayleigh_path_length = min(
-        ray_length,
-        RAYLEIGH_SCALE_HEIGHT_METERS / zenith_cosine,
-    );
-    let mie_path_length = min(
-        ray_length,
-        MIE_SCALE_HEIGHT_METERS / zenith_cosine,
-    );
-    let sample_distance = 0.5 * rayleigh_path_length;
-    let sample_position = surface_direction * surface_radius + ray * sample_distance;
-    let sample_radius = length(sample_position);
-    let sample_direction = sample_position / sample_radius;
-    let sample_altitude = sample_radius - PLANET_RADIUS_METERS;
-    let sample_radial_dot_sun = sample_radius * dot(sample_direction, sun_direction);
-    let lower_atmosphere_weight = density(sample_altitude, RAYLEIGH_SCALE_HEIGHT_METERS);
-    let shadow_transition_meters = TWILIGHT_SHADOW_TRANSITION_METERS
-        * mix(1.0, 2.0, lower_atmosphere_weight);
-    let view_transmittance = transmittance(
-        surface_altitude_meters,
-        sample_altitude,
-        sample_distance,
-    );
-    let sun_air_mass = twilight_solar_air_mass(
-        dot(sample_direction, sun_direction),
-        sample_altitude,
-    );
-    let sun_transmittance = exp(-(
-        RAYLEIGH_COEFFICIENT
-            * density(sample_altitude, RAYLEIGH_SCALE_HEIGHT_METERS)
-            * RAYLEIGH_SCALE_HEIGHT_METERS
-            * sun_air_mass
-            + MIE_COEFFICIENT
-                * density(sample_altitude, MIE_SCALE_HEIGHT_METERS)
-                * MIE_SCALE_HEIGHT_METERS
-                * sun_air_mass
-    )) * sun_visibility(
-        sample_radius,
-        sample_radial_dot_sun,
-        shadow_transition_meters,
-    );
-    let cos_theta = dot(ray, sun_direction);
-    // Optical depth of the representative column, then the fraction of it that
-    // actually scatters. This has to saturate, and the form it replaces did
-    // not: `transmittance * coefficient * path_length` multiplies a term
-    // growing linearly in path by one decaying exponentially in it, so the
-    // product peaks and then collapses back toward zero. The channel with the
-    // largest coefficient enters that collapse first, which is blue -- so the
-    // horizon, where the column is longest, lost precisely the wavelength that
-    // should dominate it. Measured before this: the horizon sky read
-    // [0.640 0.627 0.083], a blue-to-red ratio of 0.13 under a 45-degree sun,
-    // and terrain hazing correctly toward it therefore read as dimming rather
-    // than as distance.
-    //
-    // `1 - exp(-optical_depth)` is the same form `aerial_perspective` has been
-    // using all along; these two are one model and disagreed about it.
-    let rayleigh_optical_depth = RAYLEIGH_COEFFICIENT
-        * density(sample_altitude, RAYLEIGH_SCALE_HEIGHT_METERS)
-        * rayleigh_path_length;
-    let mie_optical_depth = MIE_COEFFICIENT
-        * density(sample_altitude, MIE_SCALE_HEIGHT_METERS)
-        * mie_path_length;
-    let total_optical_depth = rayleigh_optical_depth + mie_optical_depth;
-    let phase_weight = (
-        rayleigh_optical_depth * phase_rayleigh(cos_theta)
-            + mie_optical_depth * phase_mie(cos_theta)
-    ) / max(total_optical_depth, vec3<f32>(1.0e-6));
-    let scattered_fraction = vec3<f32>(1.0) - exp(-total_optical_depth);
-    // No view transmittance here: the saturating fraction already accounts for
-    // attenuation along the column it integrates. Applying both extinguished
-    // the column twice, which is what drove the collapse.
-    let solar_elevation = dot(surface_direction, sun_direction);
-    let red_rising = smoothstep(-0.14, -0.03, solar_elevation);
-    let red_fading = 1.0 - smoothstep(0.0, 0.09, solar_elevation);
-    // Keep terrain's local sky fill on the same continuous red-to-blue ramp as
-    // the fullscreen atmosphere. Without this lower-depression fade, the red
-    // bridge could return after blue hour when a different view ray sampled a
-    // denser part of the atmosphere.
-    let red_fade_into_blue = 1.0 - smoothstep(
-        0.08,
-        0.18,
-        max(-solar_elevation, 0.0),
-    );
-    let red_transition = red_rising * red_fading * red_fade_into_blue;
-    let sunward_red = mix(
-        0.35,
-        1.0,
-        smoothstep(0.0, 1.0, max(cos_theta, 0.0)),
-    );
-    return sun_transmittance * phase_weight * scattered_fraction * SOLAR_RADIANCE
-        + TWILIGHT_RED_RADIANCE * red_transition * sunward_red;
-}
-
-fn blue_hour_ambient_radiance(
-    surface_altitude_meters: f32,
-    solar_elevation: f32,
-) -> vec3<f32> {
-    let solar_depression = max(-solar_elevation, 0.0);
-    // Let the warm sunset/sunrise colours finish first. Terrain blue fill
-    // begins later than the sky transition and ramps symmetrically after the
-    // sun is several degrees below the local horizon.
-    let rise = smoothstep(0.12, 0.22, solar_depression);
-    let fade = 1.0 - smoothstep(0.24, 0.40, solar_depression);
-    let optical_depth = RAYLEIGH_COEFFICIENT
-        * density(surface_altitude_meters, RAYLEIGH_SCALE_HEIGHT_METERS)
-        * RAYLEIGH_SCALE_HEIGHT_METERS
-        * 0.35;
-    let scattered_fraction = vec3<f32>(1.0) - exp(-optical_depth);
-    return scattered_fraction
-        * BLUE_HOUR_AMBIENT_TINT
-        * (SOLAR_RADIANCE * BLUE_HOUR_AMBIENT_GAIN)
-        * rise
-        * fade;
+    // This is the same wavelength-dependent optical column used while
+    // generating the physical sky. Below the geometric horizon the LUT is
+    // black because the ray intersects the solid planet; near the limb its
+    // filtered samples redden and fade continuously without a timed tint.
+    return textureSampleLevel(
+        atmosphere_transmittance_lut,
+        atmosphere_physical_sampler,
+        uv,
+        0.0,
+    ).rgb;
 }
 
 fn sky_diffuse_irradiance(
