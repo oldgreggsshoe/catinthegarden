@@ -2,17 +2,17 @@
 // The visible atmosphere is 1,440 km deep in world space so the exaggerated
 // game terrain remains inside useful air. Sky visibility is clipped against
 // that world-space shell, while LUT integration maps its density profile into
-// a 160 km optical atmosphere around the actual 4,000 km planet. This keeps
+// a 320 km optical atmosphere around the actual 4,000 km planet. This keeps
 // the requested shell extent without changing the established Earth-like
 // extinction or relying on a timed twilight palette.
 const PI: f32 = 3.141592653589793;
 const PLANET_RADIUS_METERS: f32 = 4000000.0;
-const ATMOSPHERE_VERTICAL_SCALE: f32 = 9.0;
+const ATMOSPHERE_VERTICAL_SCALE: f32 = 4.5;
 const ATMOSPHERE_HEIGHT_METERS: f32 = 1440000.0;
 const OPTICAL_PLANET_RADIUS_METERS: f32 = PLANET_RADIUS_METERS;
 const OPTICAL_ATMOSPHERE_HEIGHT_METERS: f32 =
     ATMOSPHERE_HEIGHT_METERS / ATMOSPHERE_VERTICAL_SCALE;
-const OPTICAL_ATMOSPHERE_EDGE_FADE_METERS: f32 = 106666.667;
+const OPTICAL_ATMOSPHERE_EDGE_FADE_METERS: f32 = 213333.334;
 const OPTICAL_ATMOSPHERE_RADIUS_METERS: f32 =
     OPTICAL_PLANET_RADIUS_METERS + OPTICAL_ATMOSPHERE_HEIGHT_METERS;
 const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 8000.0;

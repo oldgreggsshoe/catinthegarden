@@ -4144,7 +4144,7 @@ mod tests {
 
         let atmosphere = include_str!("atmosphere_lut_common.wgsl");
         for declaration in [
-            "const ATMOSPHERE_VERTICAL_SCALE: f32 = 9.0;",
+            "const ATMOSPHERE_VERTICAL_SCALE: f32 = 4.5;",
             "const ATMOSPHERE_HEIGHT_METERS: f32 = 1440000.0;",
             "const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 8000.0;",
             "const MIE_SCALE_HEIGHT_METERS: f32 = 1200.0;",

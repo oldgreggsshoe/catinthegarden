@@ -53,10 +53,10 @@ fn sampled_sun_transmittance(solar_elevation: f32) -> vec3<f32> {
     let optical_altitude = max(
         camera.camera_planet_direction_view_altitude.w,
         0.0,
-    ) / 9.0;
+    ) / 4.5;
     let uv = vec2<f32>(
         clamp(solar_elevation * 0.5 + 0.5, 0.0, 1.0),
-        sqrt(clamp(optical_altitude / 160000.0, 0.0, 1.0)),
+        sqrt(clamp(optical_altitude / 320000.0, 0.0, 1.0)),
     );
     return textureSampleLevel(
         atmosphere_transmittance_lut,

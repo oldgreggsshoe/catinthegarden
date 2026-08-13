@@ -572,4 +572,21 @@ mod tests {
         let orbital_rows = (0.88 - 0.72) * 128.0;
         assert!(orbital_rows >= 16.0);
     }
+
+    #[test]
+    fn optical_atmosphere_covers_the_presented_mountain_summit() {
+        let common = include_str!("atmosphere_lut_common.wgsl");
+        let display = include_str!("atmosphere.wgsl");
+        let surface = include_str!("shared_planet.wgsl");
+        let sun = include_str!("sun.wgsl");
+        assert!(common.contains("const ATMOSPHERE_VERTICAL_SCALE: f32 = 4.5;"));
+        assert!(common.contains("const OPTICAL_ATMOSPHERE_EDGE_FADE_METERS: f32 = 213333.334;"));
+        assert!(display.contains("const OPTICAL_ATMOSPHERE_HEIGHT_METERS: f32 = 320000.0;"));
+        assert!(
+            surface.contains("const SKY_VIEW_OPTICAL_ATMOSPHERE_HEIGHT_METERS: f32 = 320000.0;")
+        );
+        assert!(sun.contains("/ 4.5;"));
+        assert!(sun.contains("optical_altitude / 320000.0"));
+        assert!(320_000.0_f32 > 180_943.3_f32);
+    }
 }

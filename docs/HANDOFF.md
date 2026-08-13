@@ -2635,3 +2635,25 @@ remaining present and warm at the low-sun sample. The same build also passes
 `ground_to_orbit/1786655281-154481`, `night_side_atmosphere/1786655290-154569`, and
 `limb_atmosphere/1786655292-154620`. No atmosphere LUT dimensions, sample counts, or
 near-surface terrain lighting were changed.
+
+## Optical atmosphere extension — 13 August 2026
+
+Space captures showed the highest mountains silhouetted against black because the optical sky
+profile ended at 160km while the currently presented summit reaches 180,943m. The gameplay
+atmosphere shell itself is 1.44Mm, so this was a mismatch between the visual LUT mapping and the
+world shell rather than a terrain or camera-height fault.
+
+The optical profile is now 320km: the shared LUT mapping changes from 9:1 to 4.5:1, its edge
+fade doubles to 213,333.334m, and the fullscreen sky, terrain sky/irradiance, and sun
+transmittance paths use the same 320km/4.5 values. Rayleigh/Mie scale heights, the 1.44Mm
+gameplay shell, near-surface lighting, LUT dimensions, and sample counts are unchanged. This
+puts the presented summit inside the visible atmosphere without changing the signed-off ground
+appearance. The focused `optical_atmosphere_covers_the_presented_mountain_summit` regression
+guards the cross-shader contract.
+
+Validation from the dedicated release build: `orbital_atmosphere_profile/1786656657-175207`,
+`ground_to_orbit/1786656666-175299`, and the latest `sunrise_midday_surface`,
+`sunset_blue_hour`, `night_side_atmosphere`, and `limb_atmosphere` runs pass. The full app suite
+reports 206 passed, seven ignored, and the two pre-existing dirty-worktree LOD-transition timing
+failures; `highest_prominence_peak` also remains blocked by its existing flat-mode clearance pose
+rather than this atmosphere change.

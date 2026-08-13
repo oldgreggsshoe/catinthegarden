@@ -131,7 +131,7 @@ const TERRAIN_SKIRT_DEPTH_RATIO: f32 = 0.075;
 const MAX_TERRAIN_SKIRT_DEPTH_METERS: f32 = 10.0;
 const ATMOSPHERE_HEIGHT_METERS: f32 = 1440000.0;
 const PHYSICAL_ATMOSPHERE_PI: f32 = 3.141592653589793;
-const SKY_VIEW_OPTICAL_ATMOSPHERE_HEIGHT_METERS: f32 = 160000.0;
+const SKY_VIEW_OPTICAL_ATMOSPHERE_HEIGHT_METERS: f32 = 320000.0;
 const SKY_VIEW_ORBITAL_BLEND_START_METERS: f32 = 200000.0;
 const SKY_VIEW_ORBITAL_BLEND_END_METERS: f32 = 400000.0;
 const SKY_VIEW_ORBITAL_ATMOSPHERE_LUT_V: f32 = 0.72;
@@ -889,10 +889,10 @@ fn surface_direct_sun_transmittance(
     surface_altitude_meters: f32,
     sun_direction: vec3<f32>,
 ) -> vec3<f32> {
-    let optical_altitude = max(surface_altitude_meters, 0.0) / 9.0;
+    let optical_altitude = max(surface_altitude_meters, 0.0) / 4.5;
     let uv = vec2<f32>(
         clamp(dot(surface_direction, sun_direction) * 0.5 + 0.5, 0.0, 1.0),
-        sqrt(clamp(optical_altitude / 160000.0, 0.0, 1.0)),
+        sqrt(clamp(optical_altitude / 320000.0, 0.0, 1.0)),
     );
     // This is the same wavelength-dependent optical column used while
     // generating the physical sky. Below the geometric horizon the LUT is
@@ -912,10 +912,10 @@ fn sky_diffuse_irradiance(
     surface_altitude_meters: f32,
     sun_direction: vec3<f32>,
 ) -> vec3<f32> {
-    let optical_altitude = max(surface_altitude_meters, 0.0) / 9.0;
+    let optical_altitude = max(surface_altitude_meters, 0.0) / 4.5;
     let uv = vec2<f32>(
         clamp(dot(surface_direction, sun_direction) * 0.5 + 0.5, 0.0, 1.0),
-        sqrt(clamp(optical_altitude / 160000.0, 0.0, 1.0)),
+        sqrt(clamp(optical_altitude / 320000.0, 0.0, 1.0)),
     );
     let horizontal_diffuse = textureSampleLevel(
         atmosphere_surface_irradiance_lut,
