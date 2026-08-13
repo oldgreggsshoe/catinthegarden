@@ -535,4 +535,41 @@ mod tests {
             display.contains("mix(perceptual_sky_radiance(radiance), radiance, orbital_blend)")
         );
     }
+
+    #[test]
+    fn orbital_sky_view_reserves_rows_for_the_atmosphere_band() {
+        let generation = include_str!("atmosphere_sky_view.wgsl");
+        let display = include_str!("atmosphere.wgsl");
+        let surface = include_str!("shared_planet.wgsl");
+        for declaration in [
+            "const ORBITAL_ATMOSPHERE_LUT_V: f32 = 0.72;",
+            "const ORBITAL_GROUND_LUT_V: f32 = 0.88;",
+        ] {
+            assert!(generation.contains(declaration));
+            assert!(display.contains(declaration));
+        }
+        assert!(generation.contains("fn sky_view_zenith_cosine_from_v("));
+        assert!(display.contains("fn sky_view_v_from_zenith_cosine("));
+        assert!(
+            generation.contains("let world_view_zenith_cosine = sky_view_zenith_cosine_from_v(")
+        );
+        assert!(display.contains("sky_view_v_from_zenith_cosine("));
+        assert!(display.contains("view_zenith_cosine,"));
+        assert!(surface.contains("fn physical_sky_view_v_from_zenith_cosine("));
+        assert!(surface.contains("physical_sky_view_v_from_zenith_cosine("));
+
+        // At the furthest reported altitude, linear cosine mapping allocates
+        // much less than one texel to the whole visible atmosphere. The
+        // horizon-focused orbital mapping must retain a stable multi-row band.
+        let camera_radius = 4_000_000.0_f64 + 15_000_000.0;
+        let ground_cosine = -(1.0 - (4_000_000.0 / camera_radius).powi(2)).sqrt();
+        let atmosphere_cosine = -(1.0 - (4_160_000.0 / camera_radius).powi(2)).sqrt();
+        let linear_rows = (atmosphere_cosine - ground_cosine) * 0.5 * 128.0;
+        assert!(
+            linear_rows < 1.0,
+            "repro requires sub-texel linear coverage"
+        );
+        let orbital_rows = (0.88 - 0.72) * 128.0;
+        assert!(orbital_rows >= 16.0);
+    }
 }

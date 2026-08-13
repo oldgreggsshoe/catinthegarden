@@ -2580,3 +2580,34 @@ visual disc/corona; it does not feed exposure or alter sky, terrain, or ocean il
 `sunset_sweep` red/blue-growth assertion still fails on its off-axis sky sample under the already
 committed physical atmosphere (`0.000` observed); the current changes are branch-identical below
 200km at that sample and do not claim that pre-existing assertion as repaired.
+
+## Orbital atmosphere angular-resolution correction — 13 August 2026
+
+Manual approach sequence `test-runs/manual/1786642982-43527` exposed a second orbital-only
+problem after the oversized-shell correction: as the planet grew between roughly 15,000km and
+6,000km datum altitude, the thin atmosphere held one apparent radius, jumped outward, then
+repeated. Camera FOV and scene time were fixed. The discontinuity came from sky-view LUT angular
+quantisation, not LOD or atmosphere geometry. With the former linear-cosine vertical mapping, the
+complete projected 160km atmosphere occupied only 0.118 of one 128-row LUT texel at 15,000km and
+0.458 texel at 6,000km. Bilinear sampling therefore snapped between adjacent LUT rows as the
+planet's angular size changed.
+
+The LUT now applies a matched, analytic piecewise direction warp in all three consumers: sky-view
+generation, fullscreen sky display, and terrain aerial/fog sampling. Above 400km, the atmosphere
+tangent and solid-planet tangent map to V=0.72 and V=0.88, reserving 20.48 rows for the physical
+atmosphere at every orbital distance. Between 200km and 400km those anchors blend continuously;
+at and below 200km they reduce exactly to the previous linear-cosine mapping, so the signed-off
+near-surface sky and mountain-horizon correction do not change. The physical integration,
+160km optical height, sample count, LUT dimensions, atmosphere brightness, and post-processing
+are unchanged.
+
+New fixed-exposure scenario `orbital_atmosphere_continuity` moves directly from 15,000km to
+6,000km in twelve half-second captures. Run `1786643763-54807` passes and shows the limb expanding
+continuously with the planet rather than alternating between LUT rows. Regression runs also pass:
+`orbital_atmosphere_profile/1786643906-55942`, `ground_to_orbit/1786643907-55971`,
+`sunrise_midday_surface/1786643916-56057`, `sunset_blue_hour/1786643917-56086`,
+`night_side_atmosphere/1786643929-56212`, and `limb_atmosphere/1786643931-56246`.
+`cargo fmt --all -- --check` and `cargo check --workspace` pass. The full workspace test run reaches
+204 passed and seven ignored but still reports the two unrelated pre-existing LOD-transition
+timing failures in the already-dirty `terrain.rs`; neither failed test or implementation is part
+of this atmosphere change.

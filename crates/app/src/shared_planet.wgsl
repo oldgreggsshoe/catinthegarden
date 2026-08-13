@@ -131,6 +131,11 @@ const TERRAIN_SKIRT_DEPTH_RATIO: f32 = 0.075;
 const MAX_TERRAIN_SKIRT_DEPTH_METERS: f32 = 10.0;
 const ATMOSPHERE_HEIGHT_METERS: f32 = 1440000.0;
 const PHYSICAL_ATMOSPHERE_PI: f32 = 3.141592653589793;
+const SKY_VIEW_OPTICAL_ATMOSPHERE_HEIGHT_METERS: f32 = 160000.0;
+const SKY_VIEW_ORBITAL_BLEND_START_METERS: f32 = 200000.0;
+const SKY_VIEW_ORBITAL_BLEND_END_METERS: f32 = 400000.0;
+const SKY_VIEW_ORBITAL_ATMOSPHERE_LUT_V: f32 = 0.72;
+const SKY_VIEW_ORBITAL_GROUND_LUT_V: f32 = 0.88;
 const ATMOSPHERE_EDGE_FADE_METERS: f32 = 960000.0;
 const ATMOSPHERE_RADIUS_METERS: f32 = PLANET_RADIUS_METERS + ATMOSPHERE_HEIGHT_METERS;
 const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 72000.0;
@@ -932,6 +937,62 @@ fn sky_diffuse_irradiance(
         * SKY_DIFFUSE_LIGHT_SCALE;
 }
 
+fn physical_sky_sphere_horizon_cosine(camera_radius: f32, sphere_radius: f32) -> f32 {
+    let radius_ratio = clamp(
+        sphere_radius / max(camera_radius, sphere_radius),
+        0.0,
+        1.0,
+    );
+    return -sqrt(max(1.0 - radius_ratio * radius_ratio, 0.0));
+}
+
+fn physical_sky_view_v_from_zenith_cosine(
+    zenith_cosine: f32,
+    camera_radius: f32,
+    camera_altitude: f32,
+) -> f32 {
+    let atmosphere_horizon = physical_sky_sphere_horizon_cosine(
+        camera_radius,
+        PLANET_RADIUS_METERS + SKY_VIEW_OPTICAL_ATMOSPHERE_HEIGHT_METERS,
+    );
+    let ground_horizon = physical_sky_sphere_horizon_cosine(
+        camera_radius,
+        PLANET_RADIUS_METERS,
+    );
+    let orbital_amount = smoothstep(
+        SKY_VIEW_ORBITAL_BLEND_START_METERS,
+        SKY_VIEW_ORBITAL_BLEND_END_METERS,
+        camera_altitude,
+    );
+    let atmosphere_v = mix(
+        (1.0 - atmosphere_horizon) * 0.5,
+        SKY_VIEW_ORBITAL_ATMOSPHERE_LUT_V,
+        orbital_amount,
+    );
+    let ground_v = mix(
+        (1.0 - ground_horizon) * 0.5,
+        SKY_VIEW_ORBITAL_GROUND_LUT_V,
+        orbital_amount,
+    );
+    if zenith_cosine >= atmosphere_horizon {
+        return atmosphere_v * (1.0 - zenith_cosine)
+            / max(1.0 - atmosphere_horizon, 1.0e-6);
+    }
+    if zenith_cosine >= ground_horizon {
+        return mix(
+            atmosphere_v,
+            ground_v,
+            (atmosphere_horizon - zenith_cosine)
+                / max(atmosphere_horizon - ground_horizon, 1.0e-6),
+        );
+    }
+    return mix(
+        ground_v,
+        1.0,
+        (ground_horizon - zenith_cosine) / max(ground_horizon + 1.0, 1.0e-6),
+    );
+}
+
 fn physical_sky_view_uv(ray_view: vec3<f32>) -> vec2<f32> {
     let up = normalize(camera.camera_planet_direction_view_altitude.xyz);
     let sun = normalize(camera.sun_direction_view.xyz);
@@ -952,9 +1013,19 @@ fn physical_sky_view_uv(ray_view: vec3<f32>) -> vec2<f32> {
             dot(horizontal_direction, toward_sun),
         );
     }
+    let camera_altitude = camera.camera_planet_direction_view_altitude.w;
+    let camera_radius = PLANET_RADIUS_METERS + camera_altitude;
     return vec2<f32>(
         fract(azimuth / (2.0 * PHYSICAL_ATMOSPHERE_PI) + 0.5),
-        clamp((1.0 - view_zenith_cosine) * 0.5, 0.0, 1.0),
+        clamp(
+            physical_sky_view_v_from_zenith_cosine(
+                view_zenith_cosine,
+                camera_radius,
+                camera_altitude,
+            ),
+            0.0,
+            1.0,
+        ),
     );
 }
 

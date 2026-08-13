@@ -218,6 +218,9 @@ impl ScenarioRunner {
             "orbital_atmosphere_profile" => {
                 include_str!("../scenarios/orbital_atmosphere_profile.json")
             }
+            "orbital_atmosphere_continuity" => {
+                include_str!("../scenarios/orbital_atmosphere_continuity.json")
+            }
             "ground_to_orbit" => include_str!("../scenarios/ground_to_orbit.json"),
             "stare_at_sun" => include_str!("../scenarios/stare_at_sun.json"),
             "ocean_flyover" => include_str!("../scenarios/ocean_flyover.json"),
@@ -1275,6 +1278,11 @@ mod tests {
             .expect("orbital atmosphere profile scenario parses");
         assert_eq!(orbital_profile.expected_screenshots(), 1);
         assert_eq!(orbital_profile.assertions().max_sky_luminance, Some(0.08));
+
+        let orbital_continuity = ScenarioRunner::load("orbital_atmosphere_continuity")
+            .expect("orbital atmosphere continuity scenario parses");
+        assert_eq!(orbital_continuity.expected_screenshots(), 12);
+        assert!(orbital_continuity.uses_fixed_exposure());
 
         let ascent = ScenarioRunner::load("ground_to_orbit").expect("ascent scenario parses");
         assert_eq!(ascent.expected_screenshots(), 7);

@@ -4,6 +4,11 @@ const SKY_VIEW_SAMPLE_COUNT: u32 = 20u;
 // does not see the compressed optical atmosphere as a large solid bubble.
 const ORBITAL_GEOMETRY_BLEND_START_METERS: f32 = 200000.0;
 const ORBITAL_GEOMETRY_BLEND_END_METERS: f32 = 400000.0;
+// Linear cosine rows collapse the complete orbital atmosphere into less than
+// one LUT row at long range. Keep fixed row bands for the atmosphere and the
+// solid planet once the camera is above all authored terrain.
+const ORBITAL_ATMOSPHERE_LUT_V: f32 = 0.72;
+const ORBITAL_GROUND_LUT_V: f32 = 0.88;
 
 struct Camera {
     projection_matrix: mat4x4<f32>,
@@ -57,12 +62,63 @@ fn sky_basis(up: vec3<f32>, sun: vec3<f32>) -> mat3x3<f32> {
 }
 
 fn ground_horizon_cosine(camera_radius: f32) -> f32 {
+    return sphere_horizon_cosine(camera_radius, PLANET_RADIUS_METERS);
+}
+
+fn sphere_horizon_cosine(camera_radius: f32, sphere_radius: f32) -> f32 {
     let radius_ratio = clamp(
-        PLANET_RADIUS_METERS / max(camera_radius, PLANET_RADIUS_METERS),
+        sphere_radius / max(camera_radius, sphere_radius),
         0.0,
         1.0,
     );
     return -sqrt(max(1.0 - radius_ratio * radius_ratio, 0.0));
+}
+
+fn sky_view_mapping_rows(camera_radius: f32, camera_altitude: f32) -> vec4<f32> {
+    let atmosphere_horizon = sphere_horizon_cosine(
+        camera_radius,
+        PLANET_RADIUS_METERS + OPTICAL_ATMOSPHERE_HEIGHT_METERS,
+    );
+    let ground_horizon = ground_horizon_cosine(camera_radius);
+    let orbital_amount = smoothstep(
+        ORBITAL_GEOMETRY_BLEND_START_METERS,
+        ORBITAL_GEOMETRY_BLEND_END_METERS,
+        camera_altitude,
+    );
+    let atmosphere_v = mix(
+        (1.0 - atmosphere_horizon) * 0.5,
+        ORBITAL_ATMOSPHERE_LUT_V,
+        orbital_amount,
+    );
+    let ground_v = mix(
+        (1.0 - ground_horizon) * 0.5,
+        ORBITAL_GROUND_LUT_V,
+        orbital_amount,
+    );
+    return vec4<f32>(atmosphere_horizon, ground_horizon, atmosphere_v, ground_v);
+}
+
+fn sky_view_zenith_cosine_from_v(
+    v: f32,
+    camera_radius: f32,
+    camera_altitude: f32,
+) -> f32 {
+    let mapping = sky_view_mapping_rows(camera_radius, camera_altitude);
+    if v <= mapping.z {
+        return mix(1.0, mapping.x, v / max(mapping.z, 1.0e-6));
+    }
+    if v <= mapping.w {
+        return mix(
+            mapping.x,
+            mapping.y,
+            (v - mapping.z) / max(mapping.w - mapping.z, 1.0e-6),
+        );
+    }
+    return mix(
+        mapping.y,
+        -1.0,
+        (v - mapping.w) / max(1.0 - mapping.w, 1.0e-6),
+    );
 }
 
 fn optical_zenith_cosine(world_cosine: f32, world_radius: f32, optical_radius: f32) -> f32 {
@@ -177,7 +233,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     );
     let world_basis = sky_basis(up, sun);
     let optical_basis = sky_basis(up, optical_sun);
-    let world_view_zenith_cosine = clamp(1.0 - 2.0 * input.uv.y, -1.0, 1.0);
+    let world_view_zenith_cosine = sky_view_zenith_cosine_from_v(
+        input.uv.y,
+        world_camera_radius,
+        camera.camera_planet_direction_view_altitude.w,
+    );
     let optical_view_zenith_cosine = optical_zenith_cosine(
         world_view_zenith_cosine,
         world_camera_radius,
