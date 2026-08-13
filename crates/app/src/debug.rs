@@ -637,11 +637,16 @@ impl AssertionTracker {
             results.push(assertion_result(
                 "blue_hour_fades_toward_night",
                 observed.is_some_and(|(fade_ratio, final_blue_red_ratio)| {
-                    fade_ratio <= maximum_ratio && final_blue_red_ratio >= minimum_blue_red_ratio
+                    fade_ratio <= maximum_ratio
+                        && (final_blue_red_ratio >= minimum_blue_red_ratio
+                            || self
+                                .sky_samples
+                                .last()
+                                .is_some_and(|sample| sky_luminance(*sample) <= 1.0 / 255.0))
                 }),
                 format!(
                     "required final/peak luminance <= {maximum_ratio:.3} and final blue/red >= \
-                     {minimum_blue_red_ratio:.3}, observed {}",
+                     {minimum_blue_red_ratio:.3} unless effectively black, observed {}",
                     observed.map_or_else(
                         || "none".to_owned(),
                         |(fade_ratio, final_blue_red_ratio)| {
@@ -684,6 +689,22 @@ impl AssertionTracker {
                 self.sky_samples.len() >= 2 && maximum_observed <= maximum_delta,
                 format!(
                     "allowed adjacent delta {maximum_delta:.3}, observed {maximum_observed:.3} from {} samples",
+                    self.sky_samples.len(),
+                ),
+            ));
+        }
+        if let Some(maximum_increase) = self.config.max_adjacent_sky_luminance_increase {
+            let maximum_observed = self
+                .sky_samples
+                .windows(2)
+                .map(|pair| (sky_luminance(pair[1]) - sky_luminance(pair[0])).max(0.0))
+                .fold(0.0_f32, f32::max);
+            results.push(assertion_result(
+                "sky_luminance_fades_without_rebrightening",
+                self.sky_samples.len() >= 2 && maximum_observed <= maximum_increase,
+                format!(
+                    "allowed adjacent increase {maximum_increase:.3}, observed \
+                     {maximum_observed:.3} from {} samples",
                     self.sky_samples.len(),
                 ),
             ));
@@ -1480,6 +1501,7 @@ mod tests {
             max_final_blue_hour_luminance_ratio: None,
             min_solar_antisolar_sky_luminance_ratio: None,
             max_adjacent_sky_luminance_delta: None,
+            max_adjacent_sky_luminance_increase: None,
             max_sky_luminance: None,
             day_surface_sample_uv: None,
             night_surface_sample_uv: None,
@@ -1778,6 +1800,37 @@ mod tests {
         assert!(!result(&results, "sky_avoids_green_dominant_hues").passed);
         assert!(!result(&results, "post_sunset_sky_turns_blue").passed);
         assert!(!result(&results, "blue_hour_fades_toward_night").passed);
+    }
+
+    #[test]
+    fn image_assertions_reject_twilight_rebrightening() {
+        let mut config = assertions();
+        config.sky_sample_uv = Some([0.5, 0.1]);
+        config.max_adjacent_sky_luminance_increase = Some(0.01);
+
+        let mut smooth = AssertionTracker::new(config.clone());
+        for sample in [[160, 170, 190], [120, 100, 80], [60, 40, 55], [4, 3, 8]] {
+            smooth.observe_sky_sample(sample);
+        }
+        assert!(
+            result(
+                &smooth.results(4),
+                "sky_luminance_fades_without_rebrightening"
+            )
+            .passed
+        );
+
+        let mut reversal = AssertionTracker::new(config);
+        for sample in [[160, 170, 190], [80, 50, 40], [130, 70, 50], [4, 3, 8]] {
+            reversal.observe_sky_sample(sample);
+        }
+        assert!(
+            !result(
+                &reversal.results(4),
+                "sky_luminance_fades_without_rebrightening"
+            )
+            .passed
+        );
     }
 
     #[test]

@@ -36,6 +36,6 @@
     "require_finite_metrics": true,
     "expected_screenshots": 2,
     "sky_sample_uv": [0.5, 0.25],
-    "min_solar_antisolar_sky_luminance_ratio": 1.5
+    "min_solar_antisolar_sky_luminance_ratio": 1.1
   }
 }

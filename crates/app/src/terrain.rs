@@ -4077,32 +4077,52 @@ mod tests {
     }
 
     #[test]
-    fn shaders_use_the_same_altitude_aware_twilight_column() {
+    fn surface_and_sky_use_altitude_aware_solar_extinction() {
         let planet_shader = planet_shader_source();
-        for shader in [planet_shader.as_str(), include_str!("atmosphere.wgsl")] {
-            assert!(shader.contains(
-                "fn twilight_solar_air_mass(solar_zenith_cosine: f32, sample_altitude_meters: f32)"
-            ));
-            assert!(shader.contains("upper_atmosphere_amount"));
-            assert!(shader.contains("horizon_amount"));
-        }
+        assert!(planet_shader.contains(
+            "fn twilight_solar_air_mass(solar_zenith_cosine: f32, sample_altitude_meters: f32)"
+        ));
+        assert!(planet_shader.contains("upper_atmosphere_amount"));
+        assert!(planet_shader.contains("horizon_amount"));
+
+        let atmosphere_common = include_str!("atmosphere_lut_common.wgsl");
+        let transmittance = include_str!("atmosphere_transmittance.wgsl");
+        assert!(atmosphere_common.contains("fn medium_extinction("));
+        assert!(atmosphere_common.contains("const OZONE_ABSORPTION: vec3<f32>"));
+        assert!(transmittance.contains("optical_depth += medium_extinction(sample_altitude)"));
+        assert!(transmittance.contains("return vec4<f32>(exp(-optical_depth), 1.0);"));
     }
 
     #[test]
     fn atmosphere_distance_constants_are_doubled_and_synchronised() {
         let planet_shader = planet_shader_source();
-        for shader in [planet_shader.as_str(), include_str!("atmosphere.wgsl")] {
-            for declaration in [
-                "const ATMOSPHERE_HEIGHT_METERS: f32 = 1440000.0;",
-                "const ATMOSPHERE_EDGE_FADE_METERS: f32 = 960000.0;",
-                "const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 72000.0;",
-                "const MIE_SCALE_HEIGHT_METERS: f32 = 9600.0;",
-                "const TWILIGHT_SHADOW_TRANSITION_METERS: f32 = 72000.0;",
-            ] {
-                assert!(shader.contains(declaration), "missing {declaration}");
-            }
-            assert!(shader.contains("smoothstep(60000.0, 240000.0"));
+        for declaration in [
+            "const ATMOSPHERE_HEIGHT_METERS: f32 = 1440000.0;",
+            "const ATMOSPHERE_EDGE_FADE_METERS: f32 = 960000.0;",
+            "const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 72000.0;",
+            "const MIE_SCALE_HEIGHT_METERS: f32 = 9600.0;",
+            "const TWILIGHT_SHADOW_TRANSITION_METERS: f32 = 72000.0;",
+        ] {
+            assert!(
+                planet_shader.contains(declaration),
+                "surface shader is missing {declaration}"
+            );
         }
+        assert!(planet_shader.contains("smoothstep(60000.0, 240000.0"));
+
+        let atmosphere = include_str!("atmosphere_lut_common.wgsl");
+        for declaration in [
+            "const ATMOSPHERE_VERTICAL_SCALE: f32 = 9.0;",
+            "const ATMOSPHERE_HEIGHT_METERS: f32 = 1440000.0;",
+            "const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 8000.0;",
+            "const MIE_SCALE_HEIGHT_METERS: f32 = 1200.0;",
+        ] {
+            assert!(
+                atmosphere.contains(declaration),
+                "physical atmosphere model is missing {declaration}"
+            );
+        }
+        assert!(atmosphere.contains("ATMOSPHERE_HEIGHT_METERS / ATMOSPHERE_VERTICAL_SCALE"));
         assert!(planet_shader.contains("const TERRAIN_FOG_START_METERS: f32 = 4000.0;"));
         assert!(planet_shader.contains("const TERRAIN_FOG_END_METERS: f32 = 120000.0;"));
         assert!(
@@ -4196,71 +4216,72 @@ mod tests {
     }
 
     #[test]
-    fn fullscreen_sky_applies_saturation_without_green_and_retains_blue_hour() {
-        let shader = include_str!("atmosphere.wgsl");
-        let module = wgpu::naga::front::wgsl::parse_str(shader)
-            .expect("atmosphere shader must parse before WGPU creates the pipeline");
+    fn fullscreen_sky_uses_physical_atmosphere_luts() {
+        let common = include_str!("atmosphere_lut_common.wgsl");
+        let stages = [
+            (
+                "transmittance",
+                include_str!("atmosphere_transmittance.wgsl"),
+            ),
+            (
+                "multiple scattering",
+                include_str!("atmosphere_multiscattering.wgsl"),
+            ),
+            ("sky view", include_str!("atmosphere_sky_view.wgsl")),
+        ];
+        for (label, stage) in stages {
+            let shader = format!("{common}\n{stage}");
+            let module = wgpu::naga::front::wgsl::parse_str(&shader)
+                .unwrap_or_else(|error| panic!("{label} shader must parse: {error}"));
+            wgpu::naga::valid::Validator::new(
+                wgpu::naga::valid::ValidationFlags::all(),
+                wgpu::naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .unwrap_or_else(|error| panic!("{label} shader must validate: {error}"));
+        }
+
+        let display = include_str!("atmosphere.wgsl");
+        let module = wgpu::naga::front::wgsl::parse_str(display)
+            .expect("atmosphere display shader must parse");
         wgpu::naga::valid::Validator::new(
             wgpu::naga::valid::ValidationFlags::all(),
             wgpu::naga::valid::Capabilities::all(),
         )
         .validate(&module)
-        .expect("atmosphere shader must validate before WGPU creates the pipeline");
-        assert!(shader.contains("const SKY_ATMOSPHERE_SATURATION: f32 = 1.18;"));
-        assert!(shader.contains("fn saturate_sky_color(color: vec3<f32>)"));
-        assert!(shader.contains("fn suppress_green_dominance(color: vec3<f32>)"));
-        assert!(shader.contains("fn blue_hour_weight(\n    camera_solar_zenith_cosine: f32,"));
-        assert!(shader.contains("let horizon_solar_zenith_cosine = -sqrt("));
-        assert!(shader.contains("horizon_solar_zenith_cosine - camera_solar_zenith_cosine"));
-        assert!(shader.contains("fn blue_hour_rayleigh_scattering("));
-        assert!(shader.contains("optical_depth / (vec3<f32>(1.0) + optical_depth)"));
-        assert!(shader.contains("suppress_green_dominance(saturate_sky_color(sky_radiance))"));
-        assert!(shader.contains(
-            "fn low_sun_red_transition(\n    solar_elevation: f32,\n    solar_depression_sine: f32,\n)"
-        ));
+        .expect("atmosphere display shader must validate");
+
+        assert!(common.contains("const OZONE_ABSORPTION: vec3<f32>"));
+        assert!(common.contains("fn sample_transmittance_lut("));
+        assert!(common.contains("fn sample_multiple_scattering_lut("));
+        assert!(stages[0].1.contains("0.5 - position.y * 0.5"));
+        assert!(stages[1].1.contains("0.5 - position.y * 0.5"));
         assert!(
-            shader.contains(
-                "let fade_into_blue = 1.0 - smoothstep(0.08, 0.18, solar_depression_sine);"
-            )
-        );
-        assert!(shader.contains("const BLUE_HOUR_START_SINE: f32 = 0.05;"));
-        assert!(shader.contains("let rising = 1.0 - smoothstep(0.0, 0.10, solar_depression_sine);"));
-        assert!(shader.contains("let red_twilight_atmosphere_weight = density("));
-        assert!(shader.contains("let red_twilight_radiance = TWILIGHT_RED_RADIANCE"));
-        assert!(
-            shader
-                .contains("const TWILIGHT_BLUE_FLOOR: vec3<f32> = vec3<f32>(0.050, 0.080, 0.150);")
+            stages[1]
+                .1
+                .contains("* (SOLAR_LUMINANCE / (4.0 * PI));")
         );
         assert!(
-            shader
-                .contains("let twilight_blue_floor_weight = max(horizon_floor, depression_floor)")
+            stages[1]
+                .1
+                .contains("let infinite_scattering = second_order_luminance")
         );
-        assert!(shader.contains("smoothstep(0.0, 0.12, solar_depression_sine)"));
-        assert!(shader.contains("+ twilight_blue_floor,"));
-        assert!(shader.contains("const LOW_SUN_WARM_SKY: vec3<f32> = vec3<f32>(1.0, 0.18, 0.06);"));
-        assert!(shader.contains("const TWILIGHT_WARM_LUMINANCE: f32 = 0.18;"));
-        assert!(shader.contains("const TWILIGHT_PINK_LUMINANCE: f32 = 0.16;"));
-        assert!(shader.contains("const TWILIGHT_BLUE_LUMINANCE: f32 = 0.006;"));
-        assert!(shader.contains("fn perceived_luminance(color: vec3<f32>)"));
-        assert!(
-            shader.contains(
-                "let direct_sky_radiance = radiance * SOLAR_RADIANCE * directional_weight;"
-            )
-        );
-        assert!(shader.contains("let twilight_target_luminance = mix("));
-        assert!(shader.contains("let twilight_luminance_scale = select("));
-        let shared_shader = include_str!("shared_planet.wgsl");
-        assert!(shared_shader.contains("let red_fade_into_blue = 1.0 - smoothstep("));
-        assert!(
-            shared_shader
-                .contains("const BLUE_HOUR_AMBIENT_TINT: vec3<f32> = vec3<f32>(0.08, 0.20, 1.0);")
-        );
-        assert!(shared_shader.contains("fn blue_hour_ambient_radiance("));
-        assert!(shared_shader.contains("const BLUE_HOUR_AMBIENT_GAIN: f32 = 0.225;"));
-        assert!(shared_shader.contains("let rise = smoothstep(0.12, 0.22, solar_depression);"));
-        assert!(shared_shader.contains("let blue_hour_ambient = blue_hour_ambient_radiance("));
-        assert!(shader.contains("let pre_horizon_blue_weight = smoothstep(0.0, 0.18"));
-        assert!(shader.contains("let pre_horizon_blue_radiance = blue_hour_rayleigh_scattering("));
+        assert!(stages[2].1.contains("+ multiple_scattering * scattering;"));
+        assert!(display.contains("sky_view_lut"));
+        assert!(display.contains("fn perceptual_sky_radiance("));
+        assert!(display.contains("let perceived_luminance = 0.22 * pow(luminance, 0.42);"));
+        for authored_schedule in [
+            "TWILIGHT_RED_COLOR",
+            "TWILIGHT_YELLOW_COLOR",
+            "TWILIGHT_BLUE_COLOR",
+            "low_sun_red_transition",
+            "blue_hour_weight",
+        ] {
+            assert!(
+                !display.contains(authored_schedule),
+                "fullscreen sky still contains authored schedule {authored_schedule}",
+            );
+        }
     }
 
     #[test]

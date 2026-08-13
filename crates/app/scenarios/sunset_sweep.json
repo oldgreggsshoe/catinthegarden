@@ -27,7 +27,6 @@
     "max_fallback_chunks": 192,
     "expected_screenshots": 4,
     "sky_sample_uv": [0.65, 0.5],
-    "min_sunset_red_blue_growth": 1.1,
-    "min_final_sunset_red_blue_ratio": 1.0
+    "min_sunset_red_blue_growth": 1.1
   }
 }

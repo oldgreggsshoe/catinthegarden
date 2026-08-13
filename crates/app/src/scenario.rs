@@ -27,6 +27,7 @@ pub struct ScenarioAssertions {
     pub max_final_blue_hour_luminance_ratio: Option<f32>,
     pub min_solar_antisolar_sky_luminance_ratio: Option<f32>,
     pub max_adjacent_sky_luminance_delta: Option<f32>,
+    pub max_adjacent_sky_luminance_increase: Option<f32>,
     pub max_sky_luminance: Option<f32>,
     pub day_surface_sample_uv: Option<[f32; 2]>,
     pub night_surface_sample_uv: Option<[f32; 2]>,
@@ -79,6 +80,7 @@ impl Default for ScenarioAssertions {
             max_final_blue_hour_luminance_ratio: None,
             min_solar_antisolar_sky_luminance_ratio: None,
             max_adjacent_sky_luminance_delta: None,
+            max_adjacent_sky_luminance_increase: None,
             max_sky_luminance: None,
             day_surface_sample_uv: None,
             night_surface_sample_uv: None,
@@ -667,6 +669,7 @@ fn validate_assertions(
         || assertions.max_final_blue_hour_luminance_ratio.is_some()
         || assertions.min_solar_antisolar_sky_luminance_ratio.is_some()
         || assertions.max_adjacent_sky_luminance_delta.is_some()
+        || assertions.max_adjacent_sky_luminance_increase.is_some()
         || assertions.max_sky_luminance.is_some();
     if needs_sky_sample && assertions.sky_sample_uv.is_none() {
         return Err("sky image assertions require sky_sample_uv".to_owned());
@@ -733,6 +736,10 @@ fn validate_assertions(
         (
             "maximum adjacent sky luminance delta",
             assertions.max_adjacent_sky_luminance_delta,
+        ),
+        (
+            "maximum adjacent sky luminance increase",
+            assertions.max_adjacent_sky_luminance_increase,
         ),
         ("maximum sky luminance", assertions.max_sky_luminance),
         (
@@ -1248,7 +1255,7 @@ mod tests {
             directionality
                 .assertions()
                 .min_solar_antisolar_sky_luminance_ratio,
-            Some(1.5)
+            Some(1.1)
         );
 
         let night_side = ScenarioRunner::load("night_side_atmosphere")
@@ -1300,15 +1307,20 @@ mod tests {
         let scenario = ScenarioRunner::load("sunset_blue_hour").expect("blue-hour scenario parses");
         assert_eq!(scenario.expected_screenshots(), 6);
         assert!(scenario.uses_fixed_exposure());
+        assert_eq!(scenario.assertions().sky_sample_uv, Some([0.5, 0.1]));
         assert_eq!(scenario.assertions().max_sky_green_dominance, Some(0.0));
         assert_eq!(
             scenario.assertions().min_blue_hour_blue_red_ratio,
-            Some(1.5)
+            Some(1.2)
         );
-        assert_eq!(scenario.assertions().min_blue_hour_luminance, Some(0.01));
+        assert_eq!(scenario.assertions().min_blue_hour_luminance, Some(0.03));
         assert_eq!(
             scenario.assertions().max_final_blue_hour_luminance_ratio,
-            Some(0.25)
+            Some(0.02)
+        );
+        assert_eq!(
+            scenario.assertions().max_adjacent_sky_luminance_increase,
+            Some(0.005)
         );
         assert_eq!(scenario.definition.sun_waypoints.len(), 7);
         assert_eq!(scenario.definition.sun_waypoints[1].time_s, 1.0);

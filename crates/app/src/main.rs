@@ -876,6 +876,7 @@ impl State {
         }
         let atmosphere = atmosphere::AtmosphereRenderer::new(
             &device,
+            &queue,
             hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
         );
@@ -2149,6 +2150,10 @@ impl State {
         let vertex_rebase_ms = 0.0;
         let vertex_upload_ms = upload_started.elapsed().as_secs_f32() * 1_000.0;
         let encode_started = Instant::now();
+        if !solid_color_screen && self.render_path == RenderPath::Raster {
+            self.atmosphere
+                .update(&mut encoder, &self.camera_bind_group);
+        }
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("cube-sphere pass"),
