@@ -1,16 +1,12 @@
-Implemented the sunset twilight transition in the active renderer.
+Implemented and pushed the sunset twilight fix.
 
-Changes:
-- Replaced the additive red/blue-hour energy path with a bounded red -> pale-yellow -> blue palette.
-- Pale yellow now uses a broad warm colour but a low linear-radiance target, so the captured perceived luminance stays below the sunset-red stage.
-- Late twilight forces the authored blue palette instead of retaining residual red direct light.
-- Blue-hour luminance is dimmed and fades smoothly toward night while retaining a measurable blue hue.
-- Updated the sunset scenario threshold to match the intentionally dimmer blue-hour presentation.
+- Sunset red now transitions promptly to a pale yellow whose captured perceived luminance stays below the red stage.
+- Pale yellow then transitions to a dim, blue-dominant hour; late twilight replaces residual red instead of mixing it back in.
+- Blue-hour luminance now fades smoothly toward night without the former spikes/black jump.
 
 Validation:
-- `cargo fmt --all -- --check` passed.
-- Focused atmosphere shader test passed.
-- Focused scenario parsing/assertion test passed.
-- `cargo check -p catinthegarden-app` passed.
-- Fresh GPU scenario `test-runs/sunset_blue_hour/1786615843-337347` passed all assertions.
-- Haze luminance samples (sRGB capture metric): red 0.1785, pale yellow 0.1292, blue-hour 0.0400 -> 0.0211 -> 0.0039; no yellow brightness spike and a monotonic blue fade.
+- Fresh GPU scenario: `test-runs/sunset_blue_hour/1786615843-337347` — all assertions passed.
+- Captured luminance: red 0.1785, pale yellow 0.1292, blue-hour 0.0400 -> 0.0211 -> 0.0039.
+- `cargo fmt --all -- --check`, focused shader/scenario tests, and `cargo check -p catinthegarden-app` passed.
+
+Committed and pushed as `9caa9a2` (`Tune sunset red yellow blue transition`). Existing unrelated worktree changes remain untouched.
