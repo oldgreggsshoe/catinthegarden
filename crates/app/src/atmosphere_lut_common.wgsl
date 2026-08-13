@@ -1,10 +1,10 @@
 // Shared physical atmosphere model for the LUT generation passes.
 // The visible atmosphere is 1,440 km deep in world space so the exaggerated
-// game terrain remains inside useful air. LUT integration maps that height
-// into a 160 km optical atmosphere around the actual 4,000 km planet. This
-// preserves the world's requested thick-atmosphere geometry while Earth-like
-// density and extinction make low-sun columns redden naturally instead of
-// relying on a timed twilight palette.
+// game terrain remains inside useful air. Sky visibility is clipped against
+// that world-space shell, while LUT integration maps its density profile into
+// a 160 km optical atmosphere around the actual 4,000 km planet. This keeps
+// the requested shell extent without changing the established Earth-like
+// extinction or relying on a timed twilight palette.
 const PI: f32 = 3.141592653589793;
 const PLANET_RADIUS_METERS: f32 = 4000000.0;
 const ATMOSPHERE_VERTICAL_SCALE: f32 = 9.0;

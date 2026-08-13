@@ -485,3 +485,42 @@ fn draw_lut(
     }
     render_pass.draw(0..3, 0..1);
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn sky_view_generation_and_display_share_the_vertical_convention() {
+        for (label, shader) in [
+            (
+                "transmittance",
+                include_str!("atmosphere_transmittance.wgsl"),
+            ),
+            (
+                "multiple scattering",
+                include_str!("atmosphere_multiscattering.wgsl"),
+            ),
+            (
+                "surface irradiance",
+                include_str!("atmosphere_irradiance.wgsl"),
+            ),
+            ("sky view", include_str!("atmosphere_sky_view.wgsl")),
+        ] {
+            assert!(
+                shader.contains("0.5 - position.y * 0.5"),
+                "{label} LUT would be stored upside-down relative to texture sampling",
+            );
+        }
+
+        let display = include_str!("atmosphere.wgsl");
+        assert!(display.contains("ndc.y * camera.projection.y"));
+        assert!(!display.contains("-ndc.y * camera.projection.y"));
+
+        let sky_view = include_str!("atmosphere_sky_view.wgsl");
+        assert!(sky_view.contains("PLANET_RADIUS_METERS + ATMOSPHERE_HEIGHT_METERS"));
+        assert!(sky_view.contains("world_atmosphere_interval.y"));
+        assert!(sky_view.contains("optical_camera_altitude"));
+        assert!(sky_view.contains("fn optical_zenith_cosine("));
+        assert!(sky_view.contains("optical_zenith_cosine(dot(sun, up)"));
+        assert!(sky_view.contains("world_ray"));
+    }
+}

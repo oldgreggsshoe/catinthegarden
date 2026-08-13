@@ -38,7 +38,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 fn view_direction(ndc: vec2<f32>) -> vec3<f32> {
     let view = vec3<f32>(
         ndc.x * camera.projection.x * camera.projection.y,
-        -ndc.y * camera.projection.y,
+        ndc.y * camera.projection.y,
         -1.0,
     );
     return normalize(view);

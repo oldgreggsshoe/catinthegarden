@@ -34,7 +34,10 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
         vec2<f32>(-1.0, 3.0),
     );
     let position = positions[vertex_index];
-    return VertexOutput(vec4<f32>(position, 0.0, 1.0), position * 0.5 + 0.5);
+    // Generated LUT textures start at the render target's top-left, while
+    // clip-space Y points upward. Keep v=0 at the sky zenith when sampled.
+    let uv = vec2<f32>(position.x * 0.5 + 0.5, 0.5 - position.y * 0.5);
+    return VertexOutput(vec4<f32>(position, 0.0, 1.0), uv);
 }
 
 fn sky_basis(up: vec3<f32>, sun: vec3<f32>) -> mat3x3<f32> {
@@ -48,23 +51,95 @@ fn sky_basis(up: vec3<f32>, sun: vec3<f32>) -> mat3x3<f32> {
     return mat3x3<f32>(toward_sun, side, up);
 }
 
+fn ground_horizon_cosine(camera_radius: f32) -> f32 {
+    let radius_ratio = clamp(
+        PLANET_RADIUS_METERS / max(camera_radius, PLANET_RADIUS_METERS),
+        0.0,
+        1.0,
+    );
+    return -sqrt(max(1.0 - radius_ratio * radius_ratio, 0.0));
+}
+
+fn optical_zenith_cosine(world_cosine: f32, world_radius: f32, optical_radius: f32) -> f32 {
+    let world_horizon = ground_horizon_cosine(world_radius);
+    let optical_horizon = ground_horizon_cosine(optical_radius);
+    if world_cosine >= world_horizon {
+        let amount = (world_cosine - world_horizon) / max(1.0 - world_horizon, 1.0e-6);
+        return mix(optical_horizon, 1.0, amount);
+    }
+    let amount = (world_cosine + 1.0) / max(world_horizon + 1.0, 1.0e-6);
+    return mix(-1.0, optical_horizon, amount);
+}
+
+fn direction_with_zenith_cosine(
+    direction: vec3<f32>,
+    up: vec3<f32>,
+    zenith_cosine: f32,
+) -> vec3<f32> {
+    var horizontal = direction - up * dot(direction, up);
+    if dot(horizontal, horizontal) < 1.0e-8 {
+        horizontal = camera.camera_right.xyz
+            - up * dot(camera.camera_right.xyz, up);
+    }
+    let horizontal_direction = normalize(horizontal);
+    let horizontal_length = sqrt(max(1.0 - zenith_cosine * zenith_cosine, 0.0));
+    return horizontal_direction * horizontal_length + up * zenith_cosine;
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let up = normalize(camera.camera_planet_direction_view_altitude.xyz);
     let sun = normalize(camera.sun_direction_view.xyz);
-    let basis = sky_basis(up, sun);
-    let view_zenith_cosine = clamp(1.0 - 2.0 * input.uv.y, -1.0, 1.0);
-    let azimuth = (input.uv.x * 2.0 - 1.0) * PI;
-    let horizontal_length = sqrt(max(1.0 - view_zenith_cosine * view_zenith_cosine, 0.0));
-    let ray = basis * vec3<f32>(
-        cos(azimuth) * horizontal_length,
-        sin(azimuth) * horizontal_length,
-        view_zenith_cosine,
-    );
-
+    let world_camera_radius = PLANET_RADIUS_METERS
+        + camera.camera_planet_direction_view_altitude.w;
     let optical_camera_altitude =
         camera.camera_planet_direction_view_altitude.w / ATMOSPHERE_VERTICAL_SCALE;
     let camera_radius = OPTICAL_PLANET_RADIUS_METERS + optical_camera_altitude;
+    let optical_sun = direction_with_zenith_cosine(
+        sun,
+        up,
+        optical_zenith_cosine(dot(sun, up), world_camera_radius, camera_radius),
+    );
+    let world_basis = sky_basis(up, sun);
+    let optical_basis = sky_basis(up, optical_sun);
+    let world_view_zenith_cosine = clamp(1.0 - 2.0 * input.uv.y, -1.0, 1.0);
+    let optical_view_zenith_cosine = optical_zenith_cosine(
+        world_view_zenith_cosine,
+        world_camera_radius,
+        camera_radius,
+    );
+    let azimuth = (input.uv.x * 2.0 - 1.0) * PI;
+    let world_horizontal_length = sqrt(max(
+        1.0 - world_view_zenith_cosine * world_view_zenith_cosine,
+        0.0,
+    ));
+    let world_ray = world_basis * vec3<f32>(
+        cos(azimuth) * world_horizontal_length,
+        sin(azimuth) * world_horizontal_length,
+        world_view_zenith_cosine,
+    );
+    let optical_horizontal_length = sqrt(max(
+        1.0 - optical_view_zenith_cosine * optical_view_zenith_cosine,
+        0.0,
+    ));
+    let ray = optical_basis * vec3<f32>(
+        cos(azimuth) * optical_horizontal_length,
+        sin(azimuth) * optical_horizontal_length,
+        optical_view_zenith_cosine,
+    );
+
+    // The optical profile deliberately compresses the unusually thick game
+    // atmosphere, but it must not make that shell occupy a different part of
+    // the sky. Reject rays that miss the actual world-space shell first.
+    let world_atmosphere_interval = sphere_interval(
+        up * world_camera_radius,
+        world_ray,
+        PLANET_RADIUS_METERS + ATMOSPHERE_HEIGHT_METERS,
+    );
+    if world_atmosphere_interval.y <= max(world_atmosphere_interval.x, 0.0) {
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+
     let camera_position = up * camera_radius;
     let atmosphere_interval = sphere_interval(
         camera_position,
@@ -108,7 +183,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let segment_transmittance = exp(-extinction * segment_length);
         let integrated_segment = (vec3<f32>(1.0) - segment_transmittance)
             / max(extinction, vec3<f32>(1.0e-9));
-        let solar_zenith_cosine = dot(sample_direction, sun);
+        let solar_zenith_cosine = dot(sample_direction, optical_sun);
         let direct_sun = sample_transmittance_lut(
             transmittance_lut,
             atmosphere_sampler,
@@ -122,7 +197,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             solar_zenith_cosine,
         );
         let source = direct_sun
-                * phase_scattering(sample_altitude, dot(ray, sun))
+                * phase_scattering(sample_altitude, dot(ray, optical_sun))
                 * SOLAR_LUMINANCE
             + multiple_scattering * scattering;
         luminance += view_transmittance * source * integrated_segment;

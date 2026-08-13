@@ -2518,3 +2518,30 @@ The summit survey remains at the same direction, now measuring 180,943.291156m p
 and 45,233.798981m raw macro elevation. F4/highest-prominence was re-authored to the new
 runtime surface and passes at 152.400m clearance. Baker tests (33 library, 5 binary, 6
 integration), workspace checking, and all 201 non-ignored app tests pass.
+
+## Physical sky-view world-horizon correction — 13 August 2026
+
+Manual run `test-runs/manual/1786627396-456527` held the camera at the same 169,071m datum
+altitude while pitching upward. Its bright atmospheric band moved upward through the frame,
+opposite the terrain and sun. Two coordinate errors caused that motion: the generated sky-view
+LUT alone omitted the render-target V flip used by every other atmosphere data LUT, while the
+fullscreen display alone negated screen Y instead of using the camera-ray convention shared by
+the sun and ray renderer.
+
+The remaining ocean-like line was the optical model's false ground horizon. Its deliberate 9:1
+height compression treated the high-mountain camera as only about 18.8km above the optical
+surface, so both the haze band and sunset timing followed the wrong horizon. Sky-view LUT rows
+still retain the established optical scattering solution, but their view and solar zenith angles
+are now monotonically remapped so the optical ground horizon lands on the actual world-space
+horizon for the camera's true altitude. Rays that miss the real 1,440km world atmosphere shell
+are rejected before optical integration. Terrain fog already samples this same sky-view LUT, so
+it receives the corrected world-space alignment without a second approximation.
+
+The exact reported position and two logged pitch directions were replayed temporarily through
+`sunrise_midday_surface/1786628624-470427`: at the 169,071m datum altitude the true horizon is
+about 16.4 degrees below level, and the corrected band moves down behind terrain and then out of
+frame as the view pitches upward. The ordinary checked-in scenarios also pass unchanged:
+`sunrise_midday_surface/1786628718-471743`, `sunset_blue_hour/1786628496-469465`, and
+`night_side_atmosphere/1786628520-469653`. Focused LUT-coordinate and full physical-atmosphere
+WGSL parse/validation tests pass. The one-off exact-pose scenario content was restored after the
+capture; only its run artefact remains for comparison.
