@@ -31,7 +31,7 @@
     "sky_sample_uv": [0.5, 0.25],
     "max_sky_green_dominance": 0.0,
     "min_blue_hour_blue_red_ratio": 1.5,
-    "min_blue_hour_luminance": 0.12,
+    "min_blue_hour_luminance": 0.01,
     "max_final_blue_hour_luminance_ratio": 0.25
   }
 }

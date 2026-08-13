@@ -4238,9 +4238,9 @@ mod tests {
         assert!(shader.contains("smoothstep(0.0, 0.12, solar_depression_sine)"));
         assert!(shader.contains("+ twilight_blue_floor,"));
         assert!(shader.contains("const LOW_SUN_WARM_SKY: vec3<f32> = vec3<f32>(1.0, 0.18, 0.06);"));
-        assert!(shader.contains("const TWILIGHT_WARM_LUMINANCE: f32 = 0.34;"));
-        assert!(shader.contains("const TWILIGHT_PINK_LUMINANCE: f32 = 0.32;"));
-        assert!(shader.contains("const TWILIGHT_BLUE_LUMINANCE: f32 = 0.16;"));
+        assert!(shader.contains("const TWILIGHT_WARM_LUMINANCE: f32 = 0.18;"));
+        assert!(shader.contains("const TWILIGHT_PINK_LUMINANCE: f32 = 0.16;"));
+        assert!(shader.contains("const TWILIGHT_BLUE_LUMINANCE: f32 = 0.006;"));
         assert!(shader.contains("fn perceived_luminance(color: vec3<f32>)"));
         assert!(
             shader.contains(
@@ -4248,7 +4248,7 @@ mod tests {
             )
         );
         assert!(shader.contains("let twilight_target_luminance = mix("));
-        assert!(shader.contains("let twilight_luminance_scale = mix("));
+        assert!(shader.contains("let twilight_luminance_scale = select("));
         let shared_shader = include_str!("shared_planet.wgsl");
         assert!(shared_shader.contains("let red_fade_into_blue = 1.0 - smoothstep("));
         assert!(

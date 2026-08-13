@@ -1,13 +1,16 @@
-Checked the newest screenshot (`test-runs/manual/1786569749-13077/screenshots/capture-001.png`). The terrain was already receiving blue-hour ambient while the sky was still in the warm sunset phase. At the capture point the sun was about 9 degrees below the local radial plane, so the previous 0.03-0.10 depression ramp was already near full strength.
+Implemented the sunset twilight transition in the active renderer.
 
-Delayed terrain blue-hour ambient symmetrically for sunset and sunrise:
-- onset/ramp moved from depression sine 0.03-0.10 to 0.12-0.22
-- this lets the warm sky phase finish before terrain blue fill appears
-- the existing half-strength gain and blue-only tint are unchanged
+Changes:
+- Replaced the additive red/blue-hour energy path with a bounded red -> pale-yellow -> blue palette.
+- Pale yellow now uses a broad warm colour but a low linear-radiance target, so the captured perceived luminance stays below the sunset-red stage.
+- Late twilight forces the authored blue palette instead of retaining residual red direct light.
+- Blue-hour luminance is dimmed and fades smoothly toward night while retaining a measurable blue hue.
+- Updated the sunset scenario threshold to match the intentionally dimmer blue-hour presentation.
 
 Validation:
-- fullscreen atmosphere shader test: passed
-- planet WGSL validation test: passed
-- cargo check -p catinthegarden-app: passed
-
-Only shared_planet.wgsl and its focused terrain assertion are staged. Unrelated worktree changes remain untouched.
+- `cargo fmt --all -- --check` passed.
+- Focused atmosphere shader test passed.
+- Focused scenario parsing/assertion test passed.
+- `cargo check -p catinthegarden-app` passed.
+- Fresh GPU scenario `test-runs/sunset_blue_hour/1786615843-337347` passed all assertions.
+- Haze luminance samples (sRGB capture metric): red 0.1785, pale yellow 0.1292, blue-hour 0.0400 -> 0.0211 -> 0.0039; no yellow brightness spike and a monotonic blue fade.

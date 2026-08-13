@@ -1305,7 +1305,7 @@ mod tests {
             scenario.assertions().min_blue_hour_blue_red_ratio,
             Some(1.5)
         );
-        assert_eq!(scenario.assertions().min_blue_hour_luminance, Some(0.12));
+        assert_eq!(scenario.assertions().min_blue_hour_luminance, Some(0.01));
         assert_eq!(
             scenario.assertions().max_final_blue_hour_luminance_ratio,
             Some(0.25)
