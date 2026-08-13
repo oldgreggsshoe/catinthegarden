@@ -10,6 +10,11 @@ const MULTIPLE_SCATTERING_LUT_SIZE: wgpu::Extent3d = wgpu::Extent3d {
     height: 32,
     depth_or_array_layers: 1,
 };
+const IRRADIANCE_LUT_SIZE: wgpu::Extent3d = wgpu::Extent3d {
+    width: 64,
+    height: 32,
+    depth_or_array_layers: 1,
+};
 const SKY_VIEW_LUT_SIZE: wgpu::Extent3d = wgpu::Extent3d {
     width: 256,
     height: 128,
@@ -21,8 +26,18 @@ pub struct AtmosphereRenderer {
     pipeline: wgpu::RenderPipeline,
     sky_view_pipeline: wgpu::RenderPipeline,
     sky_view: wgpu::TextureView,
+    surface_irradiance: wgpu::TextureView,
+    physical_sampler: wgpu::Sampler,
+    sky_view_sampler: wgpu::Sampler,
     physical_luts_bind_group: wgpu::BindGroup,
     sky_view_bind_group: wgpu::BindGroup,
+}
+
+pub struct SurfaceLightingResources<'a> {
+    pub irradiance: &'a wgpu::TextureView,
+    pub physical_sampler: &'a wgpu::Sampler,
+    pub sky_view: &'a wgpu::TextureView,
+    pub sky_view_sampler: &'a wgpu::Sampler,
 }
 
 impl AtmosphereRenderer {
@@ -62,6 +77,11 @@ impl AtmosphereRenderer {
             "physical atmosphere multiple-scattering LUT",
             MULTIPLE_SCATTERING_LUT_SIZE,
         );
+        let surface_irradiance_texture = create_lut(
+            device,
+            "physical atmosphere surface-irradiance LUT",
+            IRRADIANCE_LUT_SIZE,
+        );
         let sky_view_texture = create_lut(
             device,
             "physical atmosphere sky-view LUT",
@@ -70,6 +90,8 @@ impl AtmosphereRenderer {
         let transmittance_view = transmittance.create_view(&wgpu::TextureViewDescriptor::default());
         let multiple_scattering_view =
             multiple_scattering.create_view(&wgpu::TextureViewDescriptor::default());
+        let surface_irradiance =
+            surface_irradiance_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let sky_view = sky_view_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let physical_luts_layout =
@@ -178,6 +200,12 @@ impl AtmosphereRenderer {
             common,
             include_str!("atmosphere_sky_view.wgsl"),
         );
+        let irradiance_shader = shader_module(
+            device,
+            "physical atmosphere surface-irradiance shader",
+            common,
+            include_str!("atmosphere_irradiance.wgsl"),
+        );
         let display_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("physical atmosphere display shader"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("atmosphere.wgsl"))),
@@ -218,6 +246,18 @@ impl AtmosphereRenderer {
             "physical atmosphere sky-view pipeline",
             &sky_view_pipeline_layout,
             &sky_view_shader,
+        );
+        let irradiance_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("physical atmosphere surface-irradiance pipeline layout"),
+                bind_group_layouts: &[Some(&physical_luts_layout)],
+                immediate_size: 0,
+            });
+        let irradiance_pipeline = lut_pipeline(
+            device,
+            "physical atmosphere surface-irradiance pipeline",
+            &irradiance_pipeline_layout,
+            &irradiance_shader,
         );
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("physical atmosphere display pipeline layout"),
@@ -276,14 +316,33 @@ impl AtmosphereRenderer {
             &multiple_scattering_pipeline,
             Some(&multiple_scattering_input),
         );
+        draw_lut(
+            &mut encoder,
+            "physical atmosphere surface-irradiance LUT pass",
+            &surface_irradiance,
+            &irradiance_pipeline,
+            Some(&physical_luts_bind_group),
+        );
         queue.submit(Some(encoder.finish()));
 
         Self {
             pipeline,
             sky_view_pipeline,
             sky_view,
+            surface_irradiance,
+            physical_sampler,
+            sky_view_sampler,
             physical_luts_bind_group,
             sky_view_bind_group,
+        }
+    }
+
+    pub fn surface_lighting_resources(&self) -> SurfaceLightingResources<'_> {
+        SurfaceLightingResources {
+            irradiance: &self.surface_irradiance,
+            physical_sampler: &self.physical_sampler,
+            sky_view: &self.sky_view,
+            sky_view_sampler: &self.sky_view_sampler,
         }
     }
 

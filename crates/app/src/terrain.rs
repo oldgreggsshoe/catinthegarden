@@ -563,6 +563,7 @@ impl TerrainRenderer {
         surface_format: wgpu::TextureFormat,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
         shared_bind_group_layout: wgpu::BindGroupLayout,
+        atmosphere: crate::atmosphere::SurfaceLightingResources<'_>,
         source: TerrainSource,
     ) -> Result<Self, TerrainError> {
         let source = match source {
@@ -784,6 +785,22 @@ impl TerrainRenderer {
                 wgpu::BindGroupEntry {
                     binding: 7,
                     resource: wgpu::BindingResource::Sampler(&terrain_material_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::TextureView(atmosphere.irradiance),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: wgpu::BindingResource::Sampler(atmosphere.physical_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: wgpu::BindingResource::TextureView(atmosphere.sky_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: wgpu::BindingResource::Sampler(atmosphere.sky_view_sampler),
                 },
             ],
         });
@@ -2135,6 +2152,20 @@ pub fn create_shared_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroup
             wgpu::BindGroupLayoutEntry {
                 binding: 7,
                 visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            texture_layout_entry(8, wgpu::TextureSampleType::Float { filterable: true }),
+            wgpu::BindGroupLayoutEntry {
+                binding: 9,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            texture_layout_entry(10, wgpu::TextureSampleType::Float { filterable: true }),
+            wgpu::BindGroupLayoutEntry {
+                binding: 11,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
@@ -3543,15 +3574,8 @@ mod tests {
         assert!(shader.contains("surface_direct_sun_transmittance("));
         assert!(shader.contains("pow(max(dot(normal, half_vector), 0.0), 64.0)"));
         assert!(shader.contains("const SKY_DIFFUSE_LIGHT_SCALE: f32 = 0.70;"));
-        assert!(shader.contains("let overhead_sky = max("));
-        assert!(shader.contains("overhead_sky * 0.90"));
-        assert!(shader.contains("let sunward_horizon_sky = max("));
-        assert!(shader.contains("sunward_horizon_sky * 0.49"));
-        assert!(
-            shader.contains(
-                "const TWILIGHT_RED_RADIANCE: vec3<f32> = vec3<f32>(0.30, 0.012, 0.001);"
-            )
-        );
+        assert!(shader.contains("atmosphere_surface_irradiance_lut"));
+        assert!(shader.contains("perceptual_physical_sky_radiance(max(horizontal_diffuse"));
         assert!(shader.contains("fn flat_triangle_colour("));
         assert!(shader.contains("return flat_triangle_colour(input);"));
         assert!(shader.contains("return flat_ocean_colour(input);"));
@@ -4159,7 +4183,8 @@ mod tests {
         assert!(shader.contains("const OCEAN_AERIAL_PERSPECTIVE_WEIGHT: f32 = 0.18;"));
         assert_eq!(shader.matches("ocean_aerial_perspective(").count(), 6);
         assert!(shader.contains("water_surface_color,\n        aerial_color,"));
-        assert!(shader.contains("sky_diffuse * daylight"));
+        assert!(shader.contains("sky_diffuse + sun_transmittance"));
+        assert!(!shader.contains("sky_diffuse * daylight"));
     }
 
     #[test]
@@ -4186,8 +4211,8 @@ mod tests {
     #[test]
     fn terrain_fog_targets_the_camera_sky_ray() {
         let shader = planet_shader_source();
-        assert!(shader.contains("let camera_fog_color = sky_radiance("));
-        assert!(shader.contains("mix(local_fog_color, camera_fog_color, 0.75)"));
+        assert!(shader.contains("let camera_to_surface_ray_view = normalize("));
+        assert!(shader.contains("physical_camera_sky_radiance(camera_to_surface_ray_view)"));
     }
 
     #[test]
@@ -4228,6 +4253,10 @@ mod tests {
                 include_str!("atmosphere_multiscattering.wgsl"),
             ),
             ("sky view", include_str!("atmosphere_sky_view.wgsl")),
+            (
+                "surface irradiance",
+                include_str!("atmosphere_irradiance.wgsl"),
+            ),
         ];
         for (label, stage) in stages {
             let shader = format!("{common}\n{stage}");
@@ -4256,17 +4285,15 @@ mod tests {
         assert!(common.contains("fn sample_multiple_scattering_lut("));
         assert!(stages[0].1.contains("0.5 - position.y * 0.5"));
         assert!(stages[1].1.contains("0.5 - position.y * 0.5"));
-        assert!(
-            stages[1]
-                .1
-                .contains("* (SOLAR_LUMINANCE / (4.0 * PI));")
-        );
+        assert!(stages[1].1.contains("* (SOLAR_LUMINANCE / (4.0 * PI));"));
         assert!(
             stages[1]
                 .1
                 .contains("let infinite_scattering = second_order_luminance")
         );
         assert!(stages[2].1.contains("+ multiple_scattering * scattering;"));
+        assert!(stages[3].1.contains("2.0 * zenith_cosine"));
+        assert!(stages[3].1.contains("+ multiple_scattering * scattering;"));
         assert!(display.contains("sky_view_lut"));
         assert!(display.contains("fn perceptual_sky_radiance("));
         assert!(display.contains("let perceived_luminance = 0.22 * pow(luminance, 0.42);"));
@@ -4282,6 +4309,11 @@ mod tests {
                 "fullscreen sky still contains authored schedule {authored_schedule}",
             );
         }
+
+        let planet = planet_shader_source();
+        assert!(planet.contains("atmosphere_surface_irradiance_lut"));
+        assert!(planet.contains("physical_camera_sky_radiance(camera_to_surface_ray_view)"));
+        assert!(!planet.contains("sky_diffuse * daylight"));
     }
 
     #[test]

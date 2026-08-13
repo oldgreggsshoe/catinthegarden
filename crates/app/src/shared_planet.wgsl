@@ -130,6 +130,7 @@ const TERRAIN_DETAIL_ATTENUATION_SLOPE: f32 = 4.0;
 const TERRAIN_SKIRT_DEPTH_RATIO: f32 = 0.075;
 const MAX_TERRAIN_SKIRT_DEPTH_METERS: f32 = 10.0;
 const ATMOSPHERE_HEIGHT_METERS: f32 = 1440000.0;
+const PHYSICAL_ATMOSPHERE_PI: f32 = 3.141592653589793;
 const ATMOSPHERE_EDGE_FADE_METERS: f32 = 960000.0;
 const ATMOSPHERE_RADIUS_METERS: f32 = PLANET_RADIUS_METERS + ATMOSPHERE_HEIGHT_METERS;
 const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 72000.0;
@@ -264,6 +265,18 @@ var terrain_material_map: texture_2d_array<f32>;
 
 @group(2) @binding(7)
 var terrain_material_sampler: sampler;
+
+@group(2) @binding(8)
+var atmosphere_surface_irradiance_lut: texture_2d<f32>;
+
+@group(2) @binding(9)
+var atmosphere_physical_sampler: sampler;
+
+@group(2) @binding(10)
+var atmosphere_sky_view_lut: texture_2d<f32>;
+
+@group(2) @binding(11)
+var atmosphere_sky_view_sampler: sampler;
 
 struct OceanWaveContribution {
     horizontal_displacement: vec3<f32>,
@@ -1057,71 +1070,75 @@ fn sky_diffuse_irradiance(
     surface_altitude_meters: f32,
     sun_direction: vec3<f32>,
 ) -> vec3<f32> {
-    // Sample the atmosphere directly above the surface. Near-horizontal rays
-    // have extremely long optical paths and caused unstable, overbright bands
-    // when evaluated sparsely per terrain vertex. Preserve the overhead sky's
-    // colour while bounding its irradiance before HDR exposure and bloom.
-    let local_sky = max(
-        sky_radiance(normal, surface_direction, surface_altitude_meters, sun_direction),
-        vec3<f32>(0.0),
+    let optical_altitude = max(surface_altitude_meters, 0.0) / 9.0;
+    let uv = vec2<f32>(
+        clamp(dot(surface_direction, sun_direction) * 0.5 + 0.5, 0.0, 1.0),
+        sqrt(clamp(optical_altitude / 160000.0, 0.0, 1.0)),
     );
-    let sunward_tangent = sun_direction
-        - surface_direction * dot(surface_direction, sun_direction);
-    let sunward_sky = max(
-        sky_radiance(
-            normalize(normal + sunward_tangent * 0.45),
-            surface_direction,
-            surface_altitude_meters,
-            sun_direction,
-        ),
-        vec3<f32>(0.0),
+    let horizontal_diffuse = textureSampleLevel(
+        atmosphere_surface_irradiance_lut,
+        atmosphere_physical_sampler,
+        uv,
+        0.0,
+    ).rgb;
+    // The LUT integrates a horizontal Lambertian receiver. Retain most of
+    // that broad sky fill on steep facets, while allowing upward-facing
+    // terrain to receive the full physical E/pi value.
+    let upward_facing = sqrt(max(dot(normal, surface_direction), 0.0));
+    // The sky display applies one fixed, hue-preserving perceptual curve so
+    // nautical twilight remains visible without auto exposure. Apply that
+    // same presentation to E/pi before it lights the surface; otherwise the
+    // visible blue sky would illuminate the terrain with its much smaller raw
+    // radiometric value and appear disconnected from it.
+    return perceptual_physical_sky_radiance(max(horizontal_diffuse, vec3<f32>(0.0)))
+        * mix(0.65, 1.0, upward_facing)
+        * SKY_DIFFUSE_LIGHT_SCALE;
+}
+
+fn physical_sky_view_uv(ray_view: vec3<f32>) -> vec2<f32> {
+    let up = normalize(camera.camera_planet_direction_view_altitude.xyz);
+    let sun = normalize(camera.sun_direction_view.xyz);
+    var toward_sun = sun - up * dot(up, sun);
+    if dot(toward_sun, toward_sun) < 1.0e-6 {
+        toward_sun = normalize(camera.camera_right.xyz);
+    } else {
+        toward_sun = normalize(toward_sun);
+    }
+    let side = normalize(cross(up, toward_sun));
+    let view_zenith_cosine = clamp(dot(ray_view, up), -1.0, 1.0);
+    let horizontal = ray_view - up * view_zenith_cosine;
+    var azimuth = 0.0;
+    if dot(horizontal, horizontal) > 1.0e-8 {
+        let horizontal_direction = normalize(horizontal);
+        azimuth = atan2(
+            dot(horizontal_direction, side),
+            dot(horizontal_direction, toward_sun),
+        );
+    }
+    return vec2<f32>(
+        fract(azimuth / (2.0 * PHYSICAL_ATMOSPHERE_PI) + 0.5),
+        clamp((1.0 - view_zenith_cosine) * 0.5, 0.0, 1.0),
     );
-    // A steep or back-facing terrain facet can point below the visible sky
-    // hemisphere even though the surface is still surrounded by daylight.
-    // Keep a bounded fraction of the zenith radiance as ambient fill so those
-    // faces do not collapse to black; sky_radiance remains zero on the night
-    // side, so this does not create moonless self-emission.
-    let overhead_sky = max(
-        sky_radiance(
-            surface_direction,
-            surface_direction,
-            surface_altitude_meters,
-            sun_direction,
-        ),
-        vec3<f32>(0.0),
-    );
-    // At sunrise/sunset the visible sky is concentrated near the sunward
-    // horizon, while the zenith sample can remain dark. Use a restrained
-    // fraction of that horizon radiance as a fill source for facets whose
-    // normals miss it; the overhead sample carries more neutral fill so
-    // distant shadowed facets do not disappear into black.
-    let sunward_horizon_direction = normalize(surface_direction + sunward_tangent * 1.25);
-    let sunward_horizon_sky = max(
-        sky_radiance(
-            sunward_horizon_direction,
-            surface_direction,
-            surface_altitude_meters,
-            sun_direction,
-        ),
-        vec3<f32>(0.0),
-    );
-    let blue_hour_ambient = blue_hour_ambient_radiance(
-        surface_altitude_meters,
-        dot(surface_direction, sun_direction),
-    );
-    let sky = max(
-        local_sky,
-        max(
-            sunward_sky * 0.65,
-            max(
-                overhead_sky * 0.90,
-                max(sunward_horizon_sky * 0.49, blue_hour_ambient),
-            ),
-        ),
-    );
-    let peak = max(max(sky.x, sky.y), sky.z);
-    let bounded_sky = sky / max(1.0, peak / 0.35);
-    return bounded_sky * SKY_DIFFUSE_LIGHT_SCALE;
+}
+
+fn perceptual_physical_sky_radiance(radiance: vec3<f32>) -> vec3<f32> {
+    let luminance = dot(radiance, vec3<f32>(0.2126, 0.7152, 0.0722));
+    if luminance <= 1.0e-8 {
+        return vec3<f32>(0.0);
+    }
+    let perceived_luminance = 0.22 * pow(luminance, 0.42);
+    let gain = clamp(perceived_luminance / luminance, 0.35, 80.0);
+    return radiance * gain;
+}
+
+fn physical_camera_sky_radiance(ray_view: vec3<f32>) -> vec3<f32> {
+    let radiance = textureSampleLevel(
+        atmosphere_sky_view_lut,
+        atmosphere_sky_view_sampler,
+        physical_sky_view_uv(ray_view),
+        0.0,
+    ).rgb;
+    return perceptual_physical_sky_radiance(radiance);
 }
 
 fn aerial_view_transmittance(
@@ -1372,28 +1389,14 @@ fn terrain_fog(
     if fog_amount <= 0.0 {
         return TerrainFog(0.0, vec3<f32>(0.0));
     }
-    let local_fog_color = sky_radiance(
-        surface_to_camera_direction,
-        surface_direction,
-        surface_altitude_meters,
-        normalize(camera.sun_direction.xyz),
-    );
     // Match the fog endpoint to the same camera sky ray used by the
-    // fullscreen atmosphere. Sampling from the terrain point instead makes
-    // high-relief surfaces use a different optical column, producing a pale
-    // horizontal band against the actual sky background.
-    let camera_surface_direction = normalize(
-        view_to_planet(camera.camera_planet_direction_view_altitude.xyz),
-    );
-    let camera_fog_color = sky_radiance(
-        surface_to_camera_direction,
-        camera_surface_direction,
-        camera.camera_planet_direction_view_altitude.w,
-        normalize(camera.sun_direction.xyz),
-    );
+    // fullscreen physical atmosphere. The matching ray points from the
+    // camera toward this terrain fragment; the opposite direction above is
+    // retained only for the terrain horizon-angle test.
+    let camera_to_surface_ray_view = normalize(camera_relative_view_position);
     return TerrainFog(
         fog_amount,
-        mix(local_fog_color, camera_fog_color, 0.75),
+        physical_camera_sky_radiance(camera_to_surface_ray_view),
     );
 }
 
@@ -1999,8 +2002,7 @@ fn ocean_lighting(
     // Keep the water body a dark blue; direct sunlight and reflection still
     // provide the daylight highlights and glints.
     let diffuse = vec3<f32>(0.008, 0.055, 0.28)
-        * (sky_diffuse * daylight
-            + sun_transmittance * (0.4 * SURFACE_SUNLIGHT_SCALE));
+        * (sky_diffuse + sun_transmittance * (0.4 * SURFACE_SUNLIGHT_SCALE));
     // The Phase 6 cubemap is static. It represents daytime sky reflection, so
     // gate it by direct daylight instead of reflecting a bright blue sky from
     // the fully occluded hemisphere.

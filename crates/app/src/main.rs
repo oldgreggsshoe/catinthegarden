@@ -850,6 +850,12 @@ impl State {
             }],
         });
         let shared_planet_bind_group_layout = terrain::create_shared_bind_group_layout(&device);
+        let atmosphere = atmosphere::AtmosphereRenderer::new(
+            &device,
+            &queue,
+            hdr::HdrRenderer::SCENE_FORMAT,
+            &camera_bind_group_layout,
+        );
         let foveated = foveated::FoveatedRenderer::new(
             &device,
             &queue,
@@ -866,6 +872,7 @@ impl State {
             hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
             shared_planet_bind_group_layout,
+            atmosphere.surface_lighting_resources(),
             terrain_source,
         )
         .expect("terrain renderer must initialize");
@@ -874,12 +881,6 @@ impl State {
         {
             scenario.retarget_sparse_landing_direction(landing_direction);
         }
-        let atmosphere = atmosphere::AtmosphereRenderer::new(
-            &device,
-            &queue,
-            hdr::HdrRenderer::SCENE_FORMAT,
-            &camera_bind_group_layout,
-        );
         let sun = sun::SunRenderer::new(
             &device,
             hdr::HdrRenderer::SCENE_FORMAT,
@@ -2150,7 +2151,7 @@ impl State {
         let vertex_rebase_ms = 0.0;
         let vertex_upload_ms = upload_started.elapsed().as_secs_f32() * 1_000.0;
         let encode_started = Instant::now();
-        if !solid_color_screen && self.render_path == RenderPath::Raster {
+        if !solid_color_screen {
             self.atmosphere
                 .update(&mut encoder, &self.camera_bind_group);
         }
