@@ -885,6 +885,7 @@ impl State {
             &device,
             hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
+            atmosphere.surface_lighting_resources(),
         );
 
         let egui_context = egui::Context::default();

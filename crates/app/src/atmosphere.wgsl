@@ -1,4 +1,6 @@
 const PI: f32 = 3.141592653589793;
+const ORBITAL_GEOMETRY_BLEND_START_METERS: f32 = 200000.0;
+const ORBITAL_GEOMETRY_BLEND_END_METERS: f32 = 400000.0;
 
 struct Camera {
     projection_matrix: mat4x4<f32>,
@@ -93,8 +95,17 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         sky_view_sampler,
         sky_view_uv(ray),
     ).rgb;
+    // The perceptual lift is needed to retain dim twilight for a surface
+    // observer, but in space it turns extremely thin upper air into an opaque
+    // blue shell. Fade only that presentation lift above all authored terrain;
+    // the physical sky-view radiance and world-space shell remain unchanged.
+    let orbital_blend = smoothstep(
+        ORBITAL_GEOMETRY_BLEND_START_METERS,
+        ORBITAL_GEOMETRY_BLEND_END_METERS,
+        camera.camera_planet_direction_view_altitude.w,
+    );
     return vec4<f32>(
-        perceptual_sky_radiance(radiance),
+        mix(perceptual_sky_radiance(radiance), radiance, orbital_blend),
         1.0,
     );
 }

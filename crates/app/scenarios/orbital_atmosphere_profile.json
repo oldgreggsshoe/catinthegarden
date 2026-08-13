@@ -1,0 +1,31 @@
+{
+  "name": "orbital_atmosphere_profile",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 1.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_rotation_time_scale": 0.0,
+  "fixed_exposure": true,
+  "screenshot_times_seconds": [0.5],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [20000000.0, 0.0, 0.0],
+      "look_at": [0.0, 0.0, 0.0]
+    }
+  ],
+  "sun_waypoints": [
+    { "time_s": 0.0, "direction": [0.7, 0.1, 0.7] }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "min_resident_chunks": 1,
+    "max_resident_chunks": 4096,
+    "max_seam_delta_m": 0.1,
+    "max_fallback_chunks": 192,
+    "expected_screenshots": 1,
+    "sky_sample_uv": [0.5, 0.236],
+    "max_sky_luminance": 0.08
+  }
+}

@@ -522,5 +522,17 @@ mod tests {
         assert!(sky_view.contains("fn optical_zenith_cosine("));
         assert!(sky_view.contains("optical_zenith_cosine(dot(sun, up)"));
         assert!(sky_view.contains("world_ray"));
+        for declaration in [
+            "const ORBITAL_GEOMETRY_BLEND_START_METERS: f32 = 200000.0;",
+            "const ORBITAL_GEOMETRY_BLEND_END_METERS: f32 = 400000.0;",
+        ] {
+            assert!(sky_view.contains(declaration));
+            assert!(display.contains(declaration));
+        }
+        assert!(sky_view.contains("fn integrate_world_space_sky("));
+        assert!(sky_view.contains("PLANET_RADIUS_METERS + OPTICAL_ATMOSPHERE_HEIGHT_METERS"));
+        assert!(
+            display.contains("mix(perceptual_sky_radiance(radiance), radiance, orbital_blend)")
+        );
     }
 }

@@ -1,4 +1,9 @@
 const SKY_VIEW_SAMPLE_COUNT: u32 = 20u;
+// Keep the signed-off surface atmosphere byte-for-byte below the tallest game
+// terrain. Above it, blend to world-space shell geometry so an orbital camera
+// does not see the compressed optical atmosphere as a large solid bubble.
+const ORBITAL_GEOMETRY_BLEND_START_METERS: f32 = 200000.0;
+const ORBITAL_GEOMETRY_BLEND_END_METERS: f32 = 400000.0;
 
 struct Camera {
     projection_matrix: mat4x4<f32>,
@@ -86,6 +91,76 @@ fn direction_with_zenith_cosine(
     return horizontal_direction * horizontal_length + up * zenith_cosine;
 }
 
+fn integrate_world_space_sky(
+    camera_position: vec3<f32>,
+    ray: vec3<f32>,
+    sun: vec3<f32>,
+) -> vec3<f32> {
+    let atmosphere_interval = sphere_interval(
+        camera_position,
+        ray,
+        PLANET_RADIUS_METERS + OPTICAL_ATMOSPHERE_HEIGHT_METERS,
+    );
+    let start_distance = max(atmosphere_interval.x, 0.0);
+    var end_distance = atmosphere_interval.y;
+    let ground_distance = nearest_positive_sphere_distance(
+        camera_position,
+        ray,
+        PLANET_RADIUS_METERS,
+    );
+    if ground_distance > start_distance && ground_distance < end_distance {
+        end_distance = ground_distance;
+    }
+    if end_distance <= start_distance {
+        return vec3<f32>(0.0);
+    }
+
+    let ray_length = end_distance - start_distance;
+    var view_transmittance = vec3<f32>(1.0);
+    var luminance = vec3<f32>(0.0);
+    for (var index = 0u; index < SKY_VIEW_SAMPLE_COUNT; index += 1u) {
+        let fraction = (f32(index) + 0.5) / f32(SKY_VIEW_SAMPLE_COUNT);
+        let shaped_fraction = fraction * fraction * (3.0 - 2.0 * fraction);
+        let previous_fraction = f32(index) / f32(SKY_VIEW_SAMPLE_COUNT);
+        let previous_shaped = previous_fraction * previous_fraction
+            * (3.0 - 2.0 * previous_fraction);
+        let next_fraction = f32(index + 1u) / f32(SKY_VIEW_SAMPLE_COUNT);
+        let next_shaped = next_fraction * next_fraction
+            * (3.0 - 2.0 * next_fraction);
+        let segment_length = (next_shaped - previous_shaped) * ray_length;
+        let sample_position = camera_position
+            + ray * (start_distance + shaped_fraction * ray_length);
+        let sample_radius = length(sample_position);
+        let sample_direction = sample_position / sample_radius;
+        let sample_altitude = sample_radius - PLANET_RADIUS_METERS;
+        let extinction = medium_extinction(sample_altitude);
+        let scattering = medium_scattering(sample_altitude);
+        let segment_transmittance = exp(-extinction * segment_length);
+        let integrated_segment = (vec3<f32>(1.0) - segment_transmittance)
+            / max(extinction, vec3<f32>(1.0e-9));
+        let solar_zenith_cosine = dot(sample_direction, sun);
+        let direct_sun = sample_transmittance_lut(
+            transmittance_lut,
+            atmosphere_sampler,
+            sample_altitude,
+            solar_zenith_cosine,
+        );
+        let multiple_scattering = sample_multiple_scattering_lut(
+            multiple_scattering_lut,
+            atmosphere_sampler,
+            sample_altitude,
+            solar_zenith_cosine,
+        );
+        let source = direct_sun
+                * phase_scattering(sample_altitude, dot(ray, sun))
+                * SOLAR_LUMINANCE
+            + multiple_scattering * scattering;
+        luminance += view_transmittance * source * integrated_segment;
+        view_transmittance *= segment_transmittance;
+    }
+    return max(luminance, vec3<f32>(0.0));
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let up = normalize(camera.camera_planet_direction_view_altitude.xyz);
@@ -118,6 +193,21 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         sin(azimuth) * world_horizontal_length,
         world_view_zenith_cosine,
     );
+    var world_space_luminance = vec3<f32>(0.0);
+    if camera.camera_planet_direction_view_altitude.w
+        > ORBITAL_GEOMETRY_BLEND_START_METERS
+    {
+        world_space_luminance = integrate_world_space_sky(
+            up * world_camera_radius,
+            world_ray,
+            sun,
+        );
+        if camera.camera_planet_direction_view_altitude.w
+            >= ORBITAL_GEOMETRY_BLEND_END_METERS
+        {
+            return vec4<f32>(world_space_luminance, 1.0);
+        }
+    }
     let optical_horizontal_length = sqrt(max(
         1.0 - optical_view_zenith_cosine * optical_view_zenith_cosine,
         0.0,
@@ -203,5 +293,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         luminance += view_transmittance * source * integrated_segment;
         view_transmittance *= segment_transmittance;
     }
-    return vec4<f32>(max(luminance, vec3<f32>(0.0)), 1.0);
+    let optical_luminance = max(luminance, vec3<f32>(0.0));
+    let orbital_blend = smoothstep(
+        ORBITAL_GEOMETRY_BLEND_START_METERS,
+        ORBITAL_GEOMETRY_BLEND_END_METERS,
+        camera.camera_planet_direction_view_altitude.w,
+    );
+    return vec4<f32>(mix(optical_luminance, world_space_luminance, orbital_blend), 1.0);
 }

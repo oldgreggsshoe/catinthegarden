@@ -2545,3 +2545,38 @@ frame as the view pitches upward. The ordinary checked-in scenarios also pass un
 `night_side_atmosphere/1786628520-469653`. Focused LUT-coordinate and full physical-atmosphere
 WGSL parse/validation tests pass. The one-off exact-pose scenario content was restored after the
 capture; only its run artefact remains for comparison.
+
+## Orbital atmosphere profile and physical sun-disc tint — 13 August 2026
+
+Manual altitude sweep `test-runs/manual/1786640461-8499` showed a separate high-altitude defect:
+from 38,248km down through the orbital views, the 4,000km planet sat inside an almost solid blue
+shell whose outside radius matched the full 5,440km atmosphere radius. The surface correction
+above was still right. The orbital artefact came from applying its compressed horizon mapping and
+surface-only perceptual twilight lift to every camera altitude, making very thin upper-air
+radiance occupy and visibly fill the full 1,440km gameplay shell.
+
+Sky generation is therefore split only by camera altitude. Up to 200km it executes the signed-off
+compressed optical path unchanged, which includes the 169km mountain replay. From 200-400km it
+smoothly transitions to direct world-space integration around the 160km optical atmosphere; above
+400km only that path runs. The fullscreen surface-twilight perceptual lift uses the identical
+transition and is absent in orbit. The full 1,440km gameplay shell remains the near-surface
+visibility/horizon bound, while orbital radiance presents as a thin atmospheric limb rather than
+an opaque enclosing sphere. Outside the narrow transition, sample count and pass cost are
+unchanged.
+
+New fixed-exposure scenario `orbital_atmosphere_profile` looks at the planet from 16,000km datum
+altitude and samples the former bright annulus. Its encoded luminance fell from 0.452 in the
+reported presentation to 0.016 in `orbital_atmosphere_profile/1786642069-31422`, below the 0.080
+regression ceiling. `ground_to_orbit/1786642071-31454` also passes and retains the established
+surface views before resolving to the thinner space limb.
+
+The camera-only sun disc no longer uses its separate authored orange tint. `SunRenderer` binds the
+same physical transmittance LUT and sampler used by terrain and ocean direct sunlight, normalises
+against the local zenith column to retain midday brightness, and preserves that wavelength-
+dependent chromaticity as the low sun dims. An achromatic glare rolloff prevents the deliberately
+overbright HDR core from clipping the physical red shift back to white. This changes only the
+visual disc/corona; it does not feed exposure or alter sky, terrain, or ocean illumination.
+`sunrise_midday_surface/1786642079-31545` passes with the final tint path. The older
+`sunset_sweep` red/blue-growth assertion still fails on its off-axis sky sample under the already
+committed physical atmosphere (`0.000` observed); the current changes are branch-identical below
+200km at that sample and do not claim that pre-existing assertion as repaired.

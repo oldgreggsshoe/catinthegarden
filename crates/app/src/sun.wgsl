@@ -28,6 +28,10 @@ struct Camera {
 
 @group(0) @binding(0)
 var<uniform> camera: Camera;
+@group(1) @binding(0)
+var atmosphere_transmittance_lut: texture_2d<f32>;
+@group(1) @binding(1)
+var atmosphere_physical_sampler: sampler;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -40,17 +44,44 @@ fn view_direction(ndc: vec2<f32>) -> vec3<f32> {
     return normalize(vec3<f32>(horizontal, vertical, -1.0));
 }
 
-fn sun_disc_tint(solar_elevation: f32) -> vec3<f32> {
-    // The atmosphere shader carries the detailed path extinction.  This
-    // bounded camera-only tint keeps the visible disk itself from remaining
-    // white at the horizon, matching the yellow/orange/red progression in
-    // outdoor photographs without double-counting terrain lighting.
-    let low_sun = 1.0 - smoothstep(-0.02, 0.30, solar_elevation);
-    return mix(
-        vec3<f32>(1.0, 0.96, 0.88),
-        vec3<f32>(1.0, 0.48, 0.16),
-        low_sun,
+fn sampled_sun_transmittance(solar_elevation: f32) -> vec3<f32> {
+    let optical_altitude = max(
+        camera.camera_planet_direction_view_altitude.w,
+        0.0,
+    ) / 9.0;
+    let uv = vec2<f32>(
+        clamp(solar_elevation * 0.5 + 0.5, 0.0, 1.0),
+        sqrt(clamp(optical_altitude / 160000.0, 0.0, 1.0)),
     );
+    return textureSampleLevel(
+        atmosphere_transmittance_lut,
+        atmosphere_physical_sampler,
+        uv,
+        0.0,
+    ).rgb;
+}
+
+fn sun_disc_atmospheric_transmittance(solar_elevation: f32) -> vec3<f32> {
+    // Use the same wavelength-dependent column as direct terrain and ocean
+    // light. Dividing by the local zenith result preserves the established
+    // midday disc brightness while retaining the LUT's low-sun dimming and
+    // red shift instead of imposing a separately timed authored tint.
+    let transmitted = sampled_sun_transmittance(solar_elevation);
+    let zenith = sampled_sun_transmittance(1.0);
+    let relative_transmittance = clamp(
+        transmitted / max(zenith, vec3<f32>(1.0e-4)),
+        vec3<f32>(0.0),
+        vec3<f32>(1.0),
+    );
+    // Preserve that physical chromaticity, but reduce camera-only glare as
+    // the whole transmitted column fades. Otherwise the deliberately
+    // overbright HDR core clips every remaining channel back to white.
+    let strongest_channel = max(
+        relative_transmittance.r,
+        max(relative_transmittance.g, relative_transmittance.b),
+    );
+    let glare_visibility = max(pow(strongest_channel, 10.0), 0.003);
+    return relative_transmittance * glare_visibility;
 }
 
 @vertex
@@ -85,14 +116,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         normalize(camera.camera_planet_direction_view_altitude.xyz),
         normalize(camera.sun_direction_view.xyz),
     );
-    let tint = sun_disc_tint(solar_elevation);
-    // Keep the clipped photographic core close to white while allowing the
-    // corona and inner glare to carry the visible low-sun colour.
-    let core_tint = mix(vec3<f32>(1.0), tint, 0.25);
-    let halo_tint = mix(vec3<f32>(1.0), tint, 0.85);
+    let tint = sun_disc_atmospheric_transmittance(solar_elevation);
     let radiance = SUN_VISUAL_RADIANCE_SCALE
-        * (core_tint * SUN_CORE_RADIANCE * disc_coverage * limb_darkening
-            + halo_tint * SUN_HALO_RADIANCE * halo
-            + halo_tint * SUN_GLARE_RADIANCE * inner_glare);
+        * tint
+        * (SUN_CORE_RADIANCE * disc_coverage * limb_darkening
+            + SUN_HALO_RADIANCE * halo
+            + SUN_GLARE_RADIANCE * inner_glare);
     return vec4<f32>(radiance, 1.0);
 }

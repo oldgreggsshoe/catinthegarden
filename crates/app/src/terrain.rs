@@ -4343,10 +4343,13 @@ mod tests {
         assert!(shader.contains("const VISUAL_SUN_SIZE_SCALE: f32 = 1.0;"));
         assert!(shader.contains("const SUN_HALO_RADIUS_SCALE: f32 = 6.5;"));
         assert!(shader.contains("const SUN_INNER_GLARE_RADIUS_SCALE: f32 = 2.5;"));
-        assert!(shader.contains("fn sun_disc_tint(solar_elevation: f32)"));
+        assert!(shader.contains("fn sun_disc_atmospheric_transmittance(solar_elevation: f32)"));
+        assert!(shader.contains("var atmosphere_transmittance_lut: texture_2d<f32>;"));
         assert!(shader.contains("let inner_glare = pow("));
-        assert!(shader.contains("let core_tint = mix(vec3<f32>(1.0), tint, 0.25);"));
-        assert!(shader.contains("let halo_tint = mix(vec3<f32>(1.0), tint, 0.85);"));
+        assert!(shader.contains("let relative_transmittance = clamp("));
+        assert!(
+            shader.contains("let glare_visibility = max(pow(strongest_channel, 10.0), 0.003);")
+        );
     }
 
     #[test]

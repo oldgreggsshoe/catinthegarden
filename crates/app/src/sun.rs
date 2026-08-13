@@ -1,5 +1,6 @@
 pub struct SunRenderer {
     pipeline: wgpu::RenderPipeline,
+    atmosphere_bind_group: wgpu::BindGroup,
 }
 
 impl SunRenderer {
@@ -7,10 +8,50 @@ impl SunRenderer {
         device: &wgpu::Device,
         hdr_format: wgpu::TextureFormat,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
+        atmosphere: crate::atmosphere::SurfaceLightingResources<'_>,
     ) -> Self {
+        let atmosphere_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("sun atmosphere transmittance layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let atmosphere_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("sun atmosphere transmittance bind group"),
+            layout: &atmosphere_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(atmosphere.transmittance),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(atmosphere.physical_sampler),
+                },
+            ],
+        });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("sun disc pipeline layout"),
-            bind_group_layouts: &[Some(camera_bind_group_layout)],
+            bind_group_layouts: &[
+                Some(camera_bind_group_layout),
+                Some(&atmosphere_bind_group_layout),
+            ],
             immediate_size: 0,
         });
         let shader = device.create_shader_module(wgpu::include_wgsl!("sun.wgsl"));
@@ -61,7 +102,10 @@ impl SunRenderer {
             multiview_mask: None,
             cache: None,
         });
-        Self { pipeline }
+        Self {
+            pipeline,
+            atmosphere_bind_group,
+        }
     }
 
     pub fn draw<'pass>(
@@ -71,6 +115,19 @@ impl SunRenderer {
     ) {
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, camera_bind_group, &[]);
+        render_pass.set_bind_group(1, &self.atmosphere_bind_group, &[]);
         render_pass.draw(0..3, 0..1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn visible_sun_uses_the_surface_transmittance_lut() {
+        let shader = include_str!("sun.wgsl");
+        assert!(shader.contains("var atmosphere_transmittance_lut: texture_2d<f32>;"));
+        assert!(shader.contains("textureSampleLevel("));
+        assert!(shader.contains("sun_disc_atmospheric_transmittance(solar_elevation)"));
+        assert!(!shader.contains("vec3<f32>(1.0, 0.48, 0.16)"));
     }
 }

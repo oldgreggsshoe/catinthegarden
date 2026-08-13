@@ -215,6 +215,9 @@ impl ScenarioRunner {
             }
             "night_side_atmosphere" => include_str!("../scenarios/night_side_atmosphere.json"),
             "limb_atmosphere" => include_str!("../scenarios/limb_atmosphere.json"),
+            "orbital_atmosphere_profile" => {
+                include_str!("../scenarios/orbital_atmosphere_profile.json")
+            }
             "ground_to_orbit" => include_str!("../scenarios/ground_to_orbit.json"),
             "stare_at_sun" => include_str!("../scenarios/stare_at_sun.json"),
             "ocean_flyover" => include_str!("../scenarios/ocean_flyover.json"),
@@ -1267,6 +1270,11 @@ mod tests {
             ScenarioRunner::load("limb_atmosphere").expect("limb atmosphere scenario parses");
         assert_eq!(limb.expected_screenshots(), 1);
         assert_eq!(limb.definition.planet_rotation_time_scale, 0.0);
+
+        let orbital_profile = ScenarioRunner::load("orbital_atmosphere_profile")
+            .expect("orbital atmosphere profile scenario parses");
+        assert_eq!(orbital_profile.expected_screenshots(), 1);
+        assert_eq!(orbital_profile.assertions().max_sky_luminance, Some(0.08));
 
         let ascent = ScenarioRunner::load("ground_to_orbit").expect("ascent scenario parses");
         assert_eq!(ascent.expected_screenshots(), 7);
