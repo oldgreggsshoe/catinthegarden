@@ -1,7 +1,25 @@
-Audited and cleaned stale build targets.
+Yes — I think that is the right conclusion, and the latest captures prove why.
 
-Before: /home was 150G/168G (94%); this checkout held about 26G of old target directories and tmp-rust caches.
-Removed: old .target-* checkouts, target-summit, old tmp-rust Cargo targets, baker test targets, logs, patches, and temporary source snapshots.
-Kept: the normal `target/` (4.6G) and the newest `tmp-rust/target-sunset-yellow` cache (3.6G).
+In `manual/1786617242-350635`, with fixed exposure 1.0, the sampled sky luminance falls 0.1283 -> 0.1049 while the sun moves from +8.2 to +7.1 degrees radial elevation, then climbs to 0.1727 by +1.6 degrees when the authored red stage takes over. The visible dark-before-red dip is therefore in the sky model, not exposure.
 
-After: /home is 125G/168G (79%), with 35G free. `/tmp` remains 4% used. Root `/` is still 97% used but was not affected by these home-directory targets. No Cargo/rustc/app process was running, and unrelated git worktree changes remain untouched.
+I also ran a temporary physical-only diagnostic (then restored the source). With the authored palette bypassed, the existing single-scattering path collapses near sunset: 0.0099 -> 0.0024 before a small rebound. The palette is hiding that missing energy, then creating its own obvious switch. This confirms both parts of the fault.
+
+The current architecture cannot produce a natural Earth sunset reliably:
+- Fullscreen `twilight_palette` is based mainly on camera/sun elevation, not the individual view ray, so it recolours the whole sky as one timed stage.
+- The underlying renderer is direct single scattering; it loses the multiple-scattered light that keeps the real sky luminous near sunset.
+- Terrain has separate hand-authored orange/red/blue-hour rules, so its ambient colour can drift from the sky.
+- The foveated ray path uses yet another atmosphere calculation.
+
+Recommendation: replace those schedules with a small physically based LUT atmosphere, following the Hillaire production model rather than adding another colour tweak:
+1. Transmittance LUT for wavelength-dependent extinction.
+2. Multiple-scattering LUT, including ground bounce.
+3. Per-frame sky-view LUT driven by camera position, sun direction, and view direction.
+4. Earth-like Rayleigh, Mie, and ozone absorption parameters, calibrated to the game-scaled atmosphere.
+5. Sample the same model for raster sky, terrain/ocean skylight and direct-sun attenuation, and the foveated path.
+6. Remove the authored red/yellow/blue timing code only once the replacement is active.
+
+That naturally puts warm sunset light around the terminator somewhere on the planet at all times; blue zenith, yellow/orange/red horizon, blue hour, and night emerge from geometry and optical depth rather than a global clock. It should also be faster eventually: the current fullscreen sky performs 16 samples per output pixel, whereas the expensive work moves to small LUTs and the fullscreen pass becomes texture sampling.
+
+One important calibration detail: the game has terrain tens to hundreds of kilometres high. Literal Earth density scale heights would put high peaks in near-vacuum, so I would retain a game-scaled vertical density distribution while matching Earth optical depth, aerosol behaviour, ozone absorption, and colour response.
+
+This is a genuine atmosphere-renderer refactor touching `atmosphere.rs`, the atmosphere/shared WGSL, bindings, terrain lighting, and foveated parity—not another safe one-line tweak. I recommend doing it, in staged commits with before/after sunset, midday, orbit, and performance captures. If you approve that scope, I will start with the LUT sky and its deterministic continuity test, then unify terrain lighting.
