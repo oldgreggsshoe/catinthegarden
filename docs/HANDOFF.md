@@ -2657,3 +2657,18 @@ Validation from the dedicated release build: `orbital_atmosphere_profile/1786656
 reports 206 passed, seven ignored, and the two pre-existing dirty-worktree LOD-transition timing
 failures; `highest_prominence_peak` also remains blocked by its existing flat-mode clearance pose
 rather than this atmosphere change.
+
+## Solar-disc visibility floor — 14 August 2026
+
+Manual set `1786661970-210103` confirmed the intended distinction: the corona and glare should
+collapse as atmospheric intensity falls, but the physical solar disc must remain identifiable at
+its fixed angular coverage until the planet geometrically occludes it. The previous camera-only
+core floor was multiplied by a 0.20 low-sun radiance scale, leaving the final disc too dim at the
+last above-horizon samples and making it read as a shrinking point.
+
+The sun shader now keeps a bounded `SUN_CORE_RADIANCE_FLOOR` of 0.50 for the core only. Glare and
+halo visibility still follow the atmospheric transmittance and can fade substantially. The floor
+is camera presentation only; it does not affect sky, terrain, ocean lighting, or exposure, and the
+existing depth-equal overlay continues to let the planet occlude the sun after sunset/before
+sunrise. The sunset blue-hour regression remains passing, with the low-sun disc still visibly
+red/orange rather than white.

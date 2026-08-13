@@ -136,10 +136,12 @@ mod tests {
         let shader = include_str!("sun.wgsl");
         let compact: String = shader.split_whitespace().collect();
         assert!(shader.contains("const SUN_CORE_VISIBILITY_FLOOR: f32 = 0.12;"));
+        assert!(shader.contains("const SUN_CORE_RADIANCE_FLOOR: f32 = 0.50;"));
         assert!(shader.contains("const SUN_GLARE_VISIBILITY_FLOOR: f32 = 0.18;"));
         assert!(shader.contains("let presentation_tint = tint"));
         assert!(shader.contains("let limb_tint = mix("));
         assert!(shader.contains("let core_radiance_scale = mix("));
+        assert!(shader.contains("SUN_CORE_RADIANCE_FLOOR"));
         assert!(shader.contains("let atmospheric_core = core_radiance_scale * core_tint * ("));
         assert!(
             shader.contains("let atmospheric_glare = presentation_tint * glare_visibility * (")

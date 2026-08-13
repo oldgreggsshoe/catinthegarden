@@ -15,6 +15,10 @@ const SUN_VISUAL_RADIANCE_SCALE: f32 = 5.0;
 // presentation floor, not a lighting contribution; the terrain and sky still
 // receive the unmodified atmospheric transmittance.
 const SUN_CORE_VISIBILITY_FLOOR: f32 = 0.12;
+// Keep the physical disc readable at the last above-horizon samples. The
+// surrounding glare may collapse with transmittance; the disc itself must not
+// disappear before geometric occultation by the planet.
+const SUN_CORE_RADIANCE_FLOOR: f32 = 0.50;
 const SUN_GLARE_VISIBILITY_FLOOR: f32 = 0.18;
 const SUN_CORE_RADIANCE: vec3<f32> = vec3<f32>(72.0, 65.0, 52.0);
 const SUN_HALO_RADIANCE: vec3<f32> = vec3<f32>(10.0, 7.0, 3.5);
@@ -132,7 +136,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         * limb_tint
         * mix(vec3<f32>(1.0), tint, low_sun_amount);
     let core_radiance_scale = mix(
-        0.20,
+        SUN_CORE_RADIANCE_FLOOR,
         1.0,
         smoothstep(-0.05, 0.25, solar_elevation),
     );
