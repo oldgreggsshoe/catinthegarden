@@ -2708,3 +2708,18 @@ underflowed. Run `1786702181-501440` passes all eight captures with minimum chan
 against the 0.050 floor and visibly retains the fixed-size disc. Regression runs also pass:
 `sunset_blue_hour/1786702265-502173`, `sunrise_midday_surface/1786702283-502352`,
 `night_side_atmosphere/1786702284-502395`, and `limb_atmosphere/1786702288-502506`.
+
+## Interactive F4/F6/F10 startup — 14 August 2026
+
+Ordinary interactive launches now finish initialization by calling the same toggle helpers as one
+press each of F4, F6, and F10, in that order. The game therefore starts in summit low-flight mode
+with blur enabled and scene animation frozen; WASD/mouse framing remains responsive under the
+existing frozen-flight clock rule. Automated scenarios skip these startup toggles and retain their
+authored camera, post-processing, and simulation time.
+
+Debug Xvfb smoke run `manual/1786704906-526933` logs low-flight camera mode, blur enabled, and
+animation frozen on startup, then keeps simulation time fixed across spatial samples. Control run
+`still_5s/1786704929-527139` passes and contains no interactive-startup toggle event. Formatting,
+`cargo check -p catinthegarden-app`, and the focused fullscreen/frozen-flight tests pass. The full app
+suite remains at 207 passed and seven ignored with the two unrelated dirty-worktree LOD-transition
+timing failures.

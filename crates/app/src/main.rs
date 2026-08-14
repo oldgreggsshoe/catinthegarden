@@ -993,7 +993,27 @@ impl State {
             state.hdr.set_auto_exposure_enabled(&state.queue, false);
         }
         state.apply_startup_experiment_overrides();
+        state.apply_interactive_startup_controls();
         state
+    }
+
+    /// Match pressing F4, F6, then F10 once after an interactive launch.
+    /// Scenarios retain their authored camera, post-processing, and clock.
+    fn apply_interactive_startup_controls(&mut self) {
+        if self.scenario.is_some() {
+            return;
+        }
+
+        self.toggle_camera_mode();
+        self.toggle_blur();
+        self.toggle_animation_freeze();
+        tracing::info!(
+            target: "catinthegarden::startup",
+            camera_mode = self.camera_mode.label(),
+            blur_enabled = self.hdr.blur_enabled(),
+            animation_frozen = self.animation_frozen,
+            "interactive startup controls applied"
+        );
     }
 
     /// Applies the render path and ray-experiment toggles requested through the
