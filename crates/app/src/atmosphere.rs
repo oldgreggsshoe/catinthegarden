@@ -537,6 +537,26 @@ mod tests {
     }
 
     #[test]
+    fn visible_sky_gain_is_presentation_only() {
+        let display = include_str!("atmosphere.wgsl");
+        assert!(display.contains("const VISIBLE_SKY_RADIANCE_SCALE: f32 = 2.0;"));
+        assert!(display.contains(
+            "VISIBLE_SKY_RADIANCE_SCALE\n            * mix(perceptual_sky_radiance(radiance), radiance, orbital_blend)"
+        ));
+        for physical_stage in [
+            include_str!("atmosphere_lut_common.wgsl"),
+            include_str!("atmosphere_transmittance.wgsl"),
+            include_str!("atmosphere_multiscattering.wgsl"),
+            include_str!("atmosphere_sky_view.wgsl"),
+            include_str!("atmosphere_irradiance.wgsl"),
+            include_str!("shared_planet.wgsl"),
+            include_str!("clouds.wgsl"),
+        ] {
+            assert!(!physical_stage.contains("VISIBLE_SKY_RADIANCE_SCALE"));
+        }
+    }
+
+    #[test]
     fn orbital_sky_view_reserves_rows_for_the_atmosphere_band() {
         let generation = include_str!("atmosphere_sky_view.wgsl");
         let display = include_str!("atmosphere.wgsl");

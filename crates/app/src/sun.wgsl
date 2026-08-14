@@ -1,4 +1,5 @@
 const PHYSICAL_SUN_ANGULAR_RADIUS_RADIANS: f32 = 0.004625;
+const PLANET_RADIUS_METERS: f32 = 4000000.0;
 // Use the real solar angular diameter (~0.53 degrees) for near-surface views.
 // The previous 0.159 degree presentation made the sun read like a distant
 // star rather than the disk seen in an Earth-sky photograph.
@@ -97,6 +98,31 @@ fn sun_disc_atmospheric_transmittance(solar_elevation: f32) -> vec3<f32> {
     return relative_transmittance;
 }
 
+fn sun_disc_is_fully_occulted() -> bool {
+    let camera_radius = max(
+        PLANET_RADIUS_METERS + camera.camera_planet_direction_view_altitude.w,
+        PLANET_RADIUS_METERS,
+    );
+    let planet_center_direction = -normalize(
+        camera.camera_planet_direction_view_altitude.xyz,
+    );
+    let sun_direction = normalize(camera.sun_direction_view.xyz);
+    let center_angle = acos(clamp(
+        dot(sun_direction, planet_center_direction),
+        -1.0,
+        1.0,
+    ));
+    let planet_angular_radius = asin(clamp(
+        PLANET_RADIUS_METERS / camera_radius,
+        0.0,
+        1.0,
+    ));
+    // Depth still clips each fragment during partial occultation. Once the
+    // complete physical disc is behind the solid planet, discard the whole
+    // camera overlay so the larger halo cannot remain around the silhouette.
+    return center_angle + SUN_ANGULAR_RADIUS_RADIANS <= planet_angular_radius;
+}
+
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     var positions = array<vec2<f32>, 3>(
@@ -110,6 +136,9 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    if sun_disc_is_fully_occulted() {
+        discard;
+    }
     let ray = view_direction(input.ndc);
     let sun = normalize(camera.sun_direction_view.xyz);
     let alignment = clamp(dot(ray, sun), -1.0, 1.0);

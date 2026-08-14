@@ -154,4 +154,23 @@ mod tests {
         ));
         assert!(!compact.contains("letradiance=SUN_VISUAL_RADIANCE_SCALE*tint*(SUN_CORE_RADIANCE"));
     }
+
+    #[test]
+    fn visible_sun_disc_controls_the_halo_after_planet_occultation() {
+        let shader = include_str!("sun.wgsl");
+        let module = wgpu::naga::front::wgsl::parse_str(shader)
+            .expect("sun shader must parse before WGPU creates the pipeline");
+        wgpu::naga::valid::Validator::new(
+            wgpu::naga::valid::ValidationFlags::all(),
+            wgpu::naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("sun shader must validate before WGPU creates the pipeline");
+        assert!(shader.contains("fn sun_disc_is_fully_occulted() -> bool"));
+        assert!(
+            shader.contains("center_angle + SUN_ANGULAR_RADIUS_RADIANS <= planet_angular_radius")
+        );
+        assert!(shader.contains("if sun_disc_is_fully_occulted()"));
+        assert!(shader.contains("discard;"));
+    }
 }

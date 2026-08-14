@@ -2761,3 +2761,22 @@ captures pass at `sunset_blue_hour/1786712168-604722`,
 `night_side_atmosphere/1786712180-604855`, and
 `orbital_atmosphere_profile/1786712183-604898`; foveated-ray
 `orbit_once/1786712184-604924` also passes.
+
+## Brighter sky and complete solar-halo occultation — 14 August 2026
+
+The camera-visible sky is presented at a fixed 2x radiance scale after the physical sky-view LUT
+lookup. The gain is deliberately absent from atmosphere generation, surface/cloud irradiance,
+extinction, and exposure, so this changes sky appearance without doubling world lighting or
+altering the scattering solution.
+
+The camera-only sun overlay now compares the complete physical solar disc against the solid
+planet's angular silhouette. Existing reversed-Z depth equality still clips the disc and halo
+fragment-by-fragment while the sun is partially occulted; once the final edge of the disc is behind
+the planet, the entire overlay is discarded so the larger halo cannot remain visible around the
+dark limb.
+
+Focused atmosphere/sun tests and shader validation pass. Raster scenarios pass at
+`sun_horizon_visibility/1786717296-655672`, `sunset_blue_hour/1786717304-655780`, and
+`orbital_atmosphere_profile/1786717316-655893`; foveated-ray `orbit_once/1786717318-655919` also
+passes. The full app suite reports 214 passed and seven ignored, with only the same two unrelated
+dirty-worktree LOD-transition timing failures.
