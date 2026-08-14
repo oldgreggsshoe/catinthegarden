@@ -142,6 +142,7 @@ struct AssertionTracker {
     fallback_violations: usize,
     maximum_fallback_chunks: u32,
     sky_samples: Vec<[u8; 3]>,
+    sun_background_samples: Vec<[u8; 3]>,
     day_night_surface_luminance_ratios: Vec<f32>,
     ice_samples: Vec<[u8; 3]>,
     exposure_sample_count: usize,
@@ -186,6 +187,7 @@ impl AssertionTracker {
             fallback_violations: 0,
             maximum_fallback_chunks: 0,
             sky_samples: Vec::new(),
+            sun_background_samples: Vec::new(),
             day_night_surface_luminance_ratios: Vec::new(),
             ice_samples: Vec::new(),
             exposure_sample_count: 0,
@@ -353,6 +355,10 @@ impl AssertionTracker {
 
     fn observe_sky_sample(&mut self, sample: [u8; 3]) {
         self.sky_samples.push(sample);
+    }
+
+    fn observe_sun_background_sample(&mut self, sample: [u8; 3]) {
+        self.sun_background_samples.push(sample);
     }
 
     fn observe_day_night_surface_luminance_ratio(&mut self, ratio: f32) {
@@ -706,6 +712,31 @@ impl AssertionTracker {
                     "allowed adjacent increase {maximum_increase:.3}, observed \
                      {maximum_observed:.3} from {} samples",
                     self.sky_samples.len(),
+                ),
+            ));
+        }
+        if let Some(minimum) = self.config.min_visible_sun_contrast {
+            let minimum_observed = self
+                .sky_samples
+                .iter()
+                .zip(&self.sun_background_samples)
+                .map(|(sun, background)| {
+                    sun.iter()
+                        .zip(background)
+                        .map(|(sun, background)| sun.abs_diff(*background) as f32 / 255.0)
+                        .fold(0.0_f32, f32::max)
+                })
+                .reduce(f32::min);
+            results.push(assertion_result(
+                "sun_disc_remains_distinct_from_the_surrounding_sky",
+                minimum_observed.is_some_and(|observed| observed >= minimum),
+                format!(
+                    "required channel contrast {minimum:.3}, observed {} from {} paired samples",
+                    minimum_observed
+                        .map_or_else(|| "none".to_owned(), |observed| format!("{observed:.3}")),
+                    self.sky_samples
+                        .len()
+                        .min(self.sun_background_samples.len()),
                 ),
             ));
         }
@@ -1227,12 +1258,22 @@ impl RunArtifacts {
 
     fn record_sky_sample(&mut self, pixels: &[u8], width: u32, height: u32) -> Option<[u8; 3]> {
         let [u, v] = self.assertion_tracker.config.sky_sample_uv?;
-        let x = (u * (width.saturating_sub(1)) as f32).round() as usize;
-        let y = (v * (height.saturating_sub(1)) as f32).round() as usize;
-        let pixel = pixels[(y * width as usize + x) * 4..][..3]
-            .try_into()
-            .expect("sample coordinate is inside the screenshot");
+        let sample = |u: f32, v: f32| {
+            let x = (u * (width.saturating_sub(1)) as f32).round() as usize;
+            let y = (v * (height.saturating_sub(1)) as f32).round() as usize;
+            pixels[(y * width as usize + x) * 4..][..3]
+                .try_into()
+                .expect("sample coordinate is inside the screenshot")
+        };
+        let pixel = sample(u, v);
         self.assertion_tracker.observe_sky_sample(pixel);
+        if let Some([background_u, background_v]) =
+            self.assertion_tracker.config.sun_background_sample_uv
+        {
+            let background = sample(background_u, background_v);
+            self.assertion_tracker
+                .observe_sun_background_sample(background);
+        }
         Some(pixel)
     }
 
@@ -1503,6 +1544,8 @@ mod tests {
             max_adjacent_sky_luminance_delta: None,
             max_adjacent_sky_luminance_increase: None,
             max_sky_luminance: None,
+            sun_background_sample_uv: None,
+            min_visible_sun_contrast: None,
             day_surface_sample_uv: None,
             night_surface_sample_uv: None,
             min_day_night_surface_luminance_ratio: None,
@@ -1762,6 +1805,36 @@ mod tests {
         ] {
             assert!(result(&results, name).passed, "{name} should pass");
         }
+    }
+
+    #[test]
+    fn sun_visibility_assertion_requires_local_disc_contrast() {
+        let mut config = ScenarioAssertions::default();
+        config.sky_sample_uv = Some([0.5, 0.5]);
+        config.sun_background_sample_uv = Some([0.56, 0.5]);
+        config.min_visible_sun_contrast = Some(0.1);
+
+        let mut visible = AssertionTracker::new(config.clone());
+        visible.observe_sky_sample([255, 120, 24]);
+        visible.observe_sun_background_sample([180, 90, 20]);
+        assert!(
+            result(
+                &visible.results(1),
+                "sun_disc_remains_distinct_from_the_surrounding_sky"
+            )
+            .passed
+        );
+
+        let mut vanished = AssertionTracker::new(config);
+        vanished.observe_sky_sample([181, 90, 20]);
+        vanished.observe_sun_background_sample([180, 90, 20]);
+        assert!(
+            !result(
+                &vanished.results(1),
+                "sun_disc_remains_distinct_from_the_surrounding_sky"
+            )
+            .passed
+        );
     }
 
     #[test]

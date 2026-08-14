@@ -2686,3 +2686,25 @@ horizon, then holds it while the existing depth-equal overlay still removes the 
 actually covers its ray. This is camera-only; the physical sky, terrain/ocean lighting, and exposure
 still use the unclamped atmosphere. Focused sun tests and the sunset, sunrise, night-side, and limb
 scenarios pass.
+
+## Horizon solar-disc LUT underflow repair — 14 August 2026
+
+The timing correction in `f303f00` moved the visual sun's transmittance sample in the wrong
+direction. Subtracting 0.05 from the solar-direction cosine selected the LUT's opaque horizon rows
+roughly three degrees early. The existing 0.12 camera-only visibility floor then multiplied an RGB
+value which had already underflowed to zero, so it could not keep any disc visible.
+
+The camera-only overlay now samples the last useful physical red column by adding 0.05, presents
+that column at the geometric horizon, and holds it below the horizon until the unchanged depth-equal
+planet/terrain test occludes the disc. The core preserves the physical transmitted hue while the LUT
+value is representable and has a limiting red hue only for half-float underflow. Atmosphere, terrain,
+ocean lighting, exposure, angular sun size, and depth occultation are unchanged.
+
+A new fixed-exposure `sun_horizon_visibility` scenario tracks the sun at 9,251.631m altitude through
+5, 3, 1, 0, -1, -2, -3, and -3.5 degree samples; the sea-level geometric horizon there is about
+-3.89 degrees. It compares the centred disc against adjacent sky rather than mistaking a bright sky
+for a visible sun. Before the correction, centred contrast collapsed to about 0.004 once the LUT
+underflowed. Run `1786702181-501440` passes all eight captures with minimum channel contrast 0.447
+against the 0.050 floor and visibly retains the fixed-size disc. Regression runs also pass:
+`sunset_blue_hour/1786702265-502173`, `sunrise_midday_surface/1786702283-502352`,
+`night_side_atmosphere/1786702284-502395`, and `limb_atmosphere/1786702288-502506`.

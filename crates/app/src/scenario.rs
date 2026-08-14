@@ -29,6 +29,8 @@ pub struct ScenarioAssertions {
     pub max_adjacent_sky_luminance_delta: Option<f32>,
     pub max_adjacent_sky_luminance_increase: Option<f32>,
     pub max_sky_luminance: Option<f32>,
+    pub sun_background_sample_uv: Option<[f32; 2]>,
+    pub min_visible_sun_contrast: Option<f32>,
     pub day_surface_sample_uv: Option<[f32; 2]>,
     pub night_surface_sample_uv: Option<[f32; 2]>,
     pub min_day_night_surface_luminance_ratio: Option<f32>,
@@ -82,6 +84,8 @@ impl Default for ScenarioAssertions {
             max_adjacent_sky_luminance_delta: None,
             max_adjacent_sky_luminance_increase: None,
             max_sky_luminance: None,
+            sun_background_sample_uv: None,
+            min_visible_sun_contrast: None,
             day_surface_sample_uv: None,
             night_surface_sample_uv: None,
             min_day_night_surface_luminance_ratio: None,
@@ -223,6 +227,9 @@ impl ScenarioRunner {
             }
             "ground_to_orbit" => include_str!("../scenarios/ground_to_orbit.json"),
             "stare_at_sun" => include_str!("../scenarios/stare_at_sun.json"),
+            "sun_horizon_visibility" => {
+                include_str!("../scenarios/sun_horizon_visibility.json")
+            }
             "ocean_flyover" => include_str!("../scenarios/ocean_flyover.json"),
             "ocean_coastline" => include_str!("../scenarios/ocean_coastline.json"),
             "orbital_zoom_lod" => include_str!("../scenarios/orbital_zoom_lod.json"),
@@ -676,7 +683,8 @@ fn validate_assertions(
         || assertions.min_solar_antisolar_sky_luminance_ratio.is_some()
         || assertions.max_adjacent_sky_luminance_delta.is_some()
         || assertions.max_adjacent_sky_luminance_increase.is_some()
-        || assertions.max_sky_luminance.is_some();
+        || assertions.max_sky_luminance.is_some()
+        || assertions.min_visible_sun_contrast.is_some();
     if needs_sky_sample && assertions.sky_sample_uv.is_none() {
         return Err("sky image assertions require sky_sample_uv".to_owned());
     }
@@ -685,6 +693,17 @@ fn validate_assertions(
             .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
     }) {
         return Err("sky_sample_uv must be finite normalized coordinates".to_owned());
+    }
+    if assertions.min_visible_sun_contrast.is_some()
+        && assertions.sun_background_sample_uv.is_none()
+    {
+        return Err("sun contrast assertions require sun_background_sample_uv".to_owned());
+    }
+    if assertions.sun_background_sample_uv.is_some_and(|uv| {
+        uv.iter()
+            .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+    }) {
+        return Err("sun_background_sample_uv must be finite normalized coordinates".to_owned());
     }
     let needs_surface_samples = assertions.min_day_night_surface_luminance_ratio.is_some();
     if needs_surface_samples
@@ -748,6 +767,10 @@ fn validate_assertions(
             assertions.max_adjacent_sky_luminance_increase,
         ),
         ("maximum sky luminance", assertions.max_sky_luminance),
+        (
+            "minimum visible sun contrast",
+            assertions.min_visible_sun_contrast,
+        ),
         (
             "minimum day/night surface luminance ratio",
             assertions.min_day_night_surface_luminance_ratio,
@@ -1294,6 +1317,19 @@ mod tests {
                 .is_some()
         );
         assert_eq!(ascent.assertions().min_exposure, Some(0.05));
+
+        let horizon_sun =
+            ScenarioRunner::load("sun_horizon_visibility").expect("horizon sun scenario parses");
+        assert_eq!(horizon_sun.expected_screenshots(), 8);
+        assert!(horizon_sun.uses_fixed_exposure());
+        assert_eq!(
+            horizon_sun.assertions().sun_background_sample_uv,
+            Some([0.56, 0.5])
+        );
+        assert_eq!(
+            horizon_sun.assertions().min_visible_sun_contrast,
+            Some(0.05)
+        );
 
         let stare_at_sun = ScenarioRunner::load("stare_at_sun").expect("sun scenario parses");
         assert_eq!(stare_at_sun.expected_screenshots(), 3);

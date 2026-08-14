@@ -20,10 +20,10 @@ const SUN_CORE_VISIBILITY_FLOOR: f32 = 0.12;
 // disappear before geometric occultation by the planet.
 const SUN_CORE_RADIANCE_FLOOR: f32 = 0.50;
 const SUN_GLARE_VISIBILITY_FLOOR: f32 = 0.18;
-// The last visible above-horizon sample used a roughly -0.05 radian optical
-// column. Hold that same physical-looking red/dim state once the centre
-// reaches the horizon, rather than letting the overlay fade through black.
-const SUN_HORIZON_LUT_ELEVATION_RADIANS: f32 = -0.05;
+// The last useful physical red column sits about 0.05 in solar-direction
+// cosine above the LUT's opaque horizon row. Present that column at the
+// geometric horizon and hold it below, rather than sampling into black.
+const SUN_HORIZON_LUT_ELEVATION: f32 = 0.05;
 const SUN_CORE_RADIANCE: vec3<f32> = vec3<f32>(72.0, 65.0, 52.0);
 const SUN_HALO_RADIANCE: vec3<f32> = vec3<f32>(10.0, 7.0, 3.5);
 const SUN_GLARE_RADIANCE: vec3<f32> = vec3<f32>(8.0, 5.5, 2.5);
@@ -79,14 +79,11 @@ fn sun_disc_atmospheric_transmittance(solar_elevation: f32) -> vec3<f32> {
     // light. Dividing by the local zenith result preserves the established
     // midday disc brightness while retaining the LUT's low-sun dimming and
     // red shift instead of imposing a separately timed authored tint.
-    // Shift the optical column so its red/dim endpoint is reached at the
-    // geometric horizon, then hold that endpoint below it. The planet/depth
-    // test remains responsible for removing the disc; the overlay must not
-    // disappear merely because the LUT was sampled farther down the column.
-    let visible_solar_elevation = max(
-        solar_elevation - 0.05,
-        SUN_HORIZON_LUT_ELEVATION_RADIANS,
-    );
+    // Delay the useful red endpoint until the geometric horizon. Subtracting
+    // this offset sampled the LUT's opaque rows early and was the direct cause
+    // of the disc disappearing while it was still visibly above the horizon.
+    let visible_solar_elevation = max(solar_elevation, 0.0)
+        + SUN_HORIZON_LUT_ELEVATION;
     let transmitted = sampled_sun_transmittance(visible_solar_elevation);
     let zenith = sampled_sun_transmittance(1.0);
     let relative_transmittance = clamp(
@@ -157,8 +154,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         max(presentation_tint.g, presentation_tint.b),
     );
     let core_visibility = max(strongest_channel, SUN_CORE_VISIBILITY_FLOOR);
-    let core_tint = presentation_tint
-        * (core_visibility / max(strongest_channel, 1.0e-4));
+    // A visibility floor cannot revive a zero vector. Preserve the physical
+    // transmitted hue while it is representable, then use its limiting red
+    // hue if half-float LUT precision has underflowed. This affects only the
+    // camera overlay, never atmosphere or surface lighting.
+    var core_hue = vec3<f32>(1.0, 0.08, 0.01);
+    if strongest_channel > 1.0e-4 {
+        core_hue = presentation_tint / strongest_channel;
+    }
+    let core_tint = core_hue * core_visibility;
     let glare_visibility = max(pow(strongest_channel, 4.0), SUN_GLARE_VISIBILITY_FLOOR);
     let atmospheric_core = core_radiance_scale * core_tint * (
         SUN_CORE_RADIANCE * disc_coverage * limb_darkening

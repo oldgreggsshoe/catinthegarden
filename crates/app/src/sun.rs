@@ -87,10 +87,9 @@ impl SunRenderer {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 ..Default::default()
             },
-            // Draw after the physical scene and its luminance meter. Equal
-            // matches only the untouched reversed-Z clear depth (0.0), so the
-            // planet still occludes the visual-only disc without letting it
-            // influence exposure.
+            // Draw after the physical scene and its luminance meter, only
+            // where the depth buffer still contains the reversed-Z far value.
+            // Terrain and the solid planet therefore continue to occlude it.
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: Some(false),
@@ -128,8 +127,9 @@ mod tests {
         assert!(shader.contains("var atmosphere_transmittance_lut: texture_2d<f32>;"));
         assert!(shader.contains("textureSampleLevel("));
         assert!(shader.contains("sun_disc_atmospheric_transmittance(solar_elevation)"));
-        assert!(shader.contains("const SUN_HORIZON_LUT_ELEVATION_RADIANS: f32 = -0.05;"));
-        assert!(shader.contains("solar_elevation - 0.05"));
+        assert!(shader.contains("const SUN_HORIZON_LUT_ELEVATION: f32 = 0.05;"));
+        assert!(shader.contains("max(solar_elevation, 0.0)"));
+        assert!(shader.contains("+ SUN_HORIZON_LUT_ELEVATION"));
         assert!(!shader.contains("vec3<f32>(1.0, 0.48, 0.16)"));
     }
 
@@ -141,6 +141,7 @@ mod tests {
         assert!(shader.contains("const SUN_CORE_RADIANCE_FLOOR: f32 = 0.50;"));
         assert!(shader.contains("const SUN_GLARE_VISIBILITY_FLOOR: f32 = 0.18;"));
         assert!(shader.contains("let presentation_tint = tint"));
+        assert!(shader.contains("var core_hue = vec3<f32>(1.0, 0.08, 0.01);"));
         assert!(shader.contains("let limb_tint = mix("));
         assert!(shader.contains("let core_radiance_scale = mix("));
         assert!(shader.contains("SUN_CORE_RADIANCE_FLOOR"));
