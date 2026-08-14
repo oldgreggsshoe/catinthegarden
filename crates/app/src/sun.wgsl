@@ -75,7 +75,12 @@ fn sun_disc_atmospheric_transmittance(solar_elevation: f32) -> vec3<f32> {
     // light. Dividing by the local zenith result preserves the established
     // midday disc brightness while retaining the LUT's low-sun dimming and
     // red shift instead of imposing a separately timed authored tint.
-    let transmitted = sampled_sun_transmittance(solar_elevation);
+    // Once the disc reaches the geometric horizon, hold its camera-only
+    // presentation at that value. The planet/depth test remains responsible
+    // for removing it; continuing the atmospheric column below zero makes an
+    // otherwise visible disc collapse and disappear before occultation.
+    let visible_solar_elevation = max(solar_elevation, 0.0);
+    let transmitted = sampled_sun_transmittance(visible_solar_elevation);
     let zenith = sampled_sun_transmittance(1.0);
     let relative_transmittance = clamp(
         transmitted / max(zenith, vec3<f32>(1.0e-4)),

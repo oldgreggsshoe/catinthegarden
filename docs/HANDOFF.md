@@ -2672,3 +2672,17 @@ is camera presentation only; it does not affect sky, terrain, ocean lighting, or
 existing depth-equal overlay continues to let the planet occlude the sun after sunset/before
 sunrise. The sunset blue-hour regression remains passing, with the low-sun disc still visibly
 red/orange rather than white.
+
+## Horizon solar-disc hold — 14 August 2026
+
+The next manual set `1786695385-425559` showed that the core floor fixed the disc’s visibility,
+but the atmospheric transmittance continued decreasing for negative solar elevations. The disc
+therefore changed again after the horizon sample: the glow collapsed in captures 5–6 and the
+camera-only overlay could disappear before the intended occultation point.
+
+`sun_disc_atmospheric_transmittance` now clamps its presentation sample to non-negative solar
+elevation. At the horizon it holds the capture-4 appearance (including the red atmospheric tint)
+while the existing depth-equal overlay still removes the sun when the planet actually covers its
+ray. This is camera-only; the physical sky, terrain/ocean lighting, and exposure still use the
+unclamped atmosphere. Focused sun tests and the sunset, sunrise, night-side, and limb scenarios
+pass.
