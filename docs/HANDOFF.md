@@ -2723,3 +2723,16 @@ animation frozen on startup, then keeps simulation time fixed across spatial sam
 `cargo check -p catinthegarden-app`, and the focused fullscreen/frozen-flight tests pass. The full app
 suite remains at 207 passed and seven ignored with the two unrelated dirty-worktree LOD-transition
 timing failures.
+
+## Interactive planet-rotation speed controls — 14 August 2026
+
+F1 now halves the interactive planet rotation time scale and F2 doubles it. Repeated presses clamp
+the scale to 1/32x through 32x of `INTERACTIVE_PLANET_ROTATION_TIME_SCALE`. Changing rate preserves
+the accumulated rotation phase, so it does not jump the planet, terrain, ocean, or sun; this also
+works while the F10-frozen startup state is active, taking effect continuously when animation is
+resumed. Scenario time scales remain authored and ignore these interactive controls.
+
+The focused continuity/bounds test and existing world-space-sun rotation test pass. Debug scenario
+`still_5s/1786705608-538095` passes unchanged, formatting and `cargo check` pass, and the full app
+suite reports 208 passed and seven ignored with only the same two unrelated dirty-worktree
+LOD-transition timing failures.

@@ -110,6 +110,11 @@ const LOW_FLIGHT_APPARENT_MOTION_REFERENCE_ALTITUDE_METERS: f64 = 100.0;
 const LOW_FLIGHT_BOOST_SPEED_MULTIPLIER: f64 = 4.0;
 const LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND: f64 = 40_000_000.0;
 const LOW_FLIGHT_VERTICAL_FOV_DEGREES: f64 = 60.0;
+const PLANET_ROTATION_SCALE_STEP: f64 = 2.0;
+const MINIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 =
+    INTERACTIVE_PLANET_ROTATION_TIME_SCALE / 32.0;
+const MAXIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 =
+    INTERACTIVE_PLANET_ROTATION_TIME_SCALE * 32.0;
 /// Start with the landing site visibly below the horizon. A tangent view at
 /// 5,000 ft spent most of the frame on atmosphere and made the finest sparse
 /// terrain patch effectively invisible even though the camera was above it.
@@ -349,6 +354,21 @@ fn interactive_camera_delta_seconds(
         CameraMode::Orbit => scene_delta_seconds,
         CameraMode::LowFlight => frame_delta_seconds.min(MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS),
     }
+}
+
+fn retimed_planet_rotation(
+    sim_time: f64,
+    old_scale: f64,
+    old_offset: f64,
+    scale_factor: f64,
+) -> (f64, f64) {
+    let rotation_time = sim_time * old_scale + old_offset;
+    let new_scale = (old_scale * scale_factor).clamp(
+        MINIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
+        MAXIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
+    );
+    let new_offset = rotation_time - sim_time * new_scale;
+    (new_scale, new_offset)
 }
 
 fn focus_of_expansion_ndc(
@@ -677,6 +697,8 @@ struct State {
     animation_frozen: bool,
     frozen_sim_time: f64,
     interactive_scene_time_offset_seconds: f64,
+    interactive_planet_rotation_time_scale: f64,
+    interactive_planet_rotation_time_offset_seconds: f64,
     manual_screenshot_requested: bool,
     next_spatial_log_presentation_time: f64,
     capture_number: usize,
@@ -962,6 +984,8 @@ impl State {
             animation_frozen: false,
             frozen_sim_time: 0.0,
             interactive_scene_time_offset_seconds: 0.0,
+            interactive_planet_rotation_time_scale: INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
+            interactive_planet_rotation_time_offset_seconds: 0.0,
             manual_screenshot_requested: false,
             next_spatial_log_presentation_time: 0.0,
             capture_number: 0,
@@ -1438,6 +1462,33 @@ impl State {
         self.mark_hud_dirty();
     }
 
+    fn adjust_planet_rotation_speed(&mut self, scale_factor: f64) {
+        if self.scenario.is_some() {
+            return;
+        }
+
+        let sim_time = self.interactive_sim_time();
+        let (new_scale, new_offset) = retimed_planet_rotation(
+            sim_time,
+            self.interactive_planet_rotation_time_scale,
+            self.interactive_planet_rotation_time_offset_seconds,
+            scale_factor,
+        );
+        self.interactive_planet_rotation_time_scale = new_scale;
+        self.interactive_planet_rotation_time_offset_seconds = new_offset;
+        tracing::info!(
+            target: "catinthegarden::controls",
+            rotation_time_scale = new_scale,
+            "interactive planet rotation speed changed"
+        );
+        self.mark_hud_dirty();
+    }
+
+    fn interactive_planet_rotation_time(&self, sim_time: f64) -> f64 {
+        sim_time * self.interactive_planet_rotation_time_scale
+            + self.interactive_planet_rotation_time_offset_seconds
+    }
+
     fn flush_gpu_profile(&mut self) {
         if self.gpu_profiler.is_none() {
             return;
@@ -1560,8 +1611,12 @@ impl State {
         if let Some(sun_direction) = scenario_sun_direction {
             self.sun_direction = sun_direction.normalize();
         }
-        let planet_rotation_radians =
-            planet::planet_rotation_radians(sim_time * scenario_planet_rotation_time_scale);
+        let planet_rotation_time = if self.scenario.is_some() {
+            sim_time * scenario_planet_rotation_time_scale
+        } else {
+            self.interactive_planet_rotation_time(sim_time)
+        };
+        let planet_rotation_radians = planet::planet_rotation_radians(planet_rotation_time);
         let scene_delta_seconds = (sim_time - self.last_auto_orbit_sim_time).max(0.0);
         if let Some(forward_held) = scenario_forward_flight_held {
             if !self.scenario_flight_initialized {
@@ -2784,6 +2839,20 @@ impl ApplicationHandler for App {
                 }
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::F1) =>
+                {
+                    state.adjust_planet_rotation_speed(1.0 / PLANET_ROTATION_SCALE_STEP);
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::F2) =>
+                {
+                    state.adjust_planet_rotation_speed(PLANET_ROTATION_SCALE_STEP);
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
                         && event.physical_key == PhysicalKey::Code(KeyCode::F3) =>
                 {
                     state.toggle_debug_overlay();
@@ -3088,12 +3157,14 @@ mod tests {
         FlightMovementInput, FlightSpeedState, INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
         LOW_FLIGHT_ALTITUDE_METERS, LOW_FLIGHT_INITIAL_PITCH_RADIANS,
         LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND, LOW_FLIGHT_MINIMUM_CLEARANCE_METERS,
-        MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS, RenderPath, advance_flight_position_on_sphere,
-        advance_flight_speed, device_mouse_look_enabled, find_default_outmap,
-        flight_movement_direction, flight_view_direction, focus_of_expansion_ndc,
-        initial_flight_tangent, interactive_camera_delta_seconds, projected_planet_coverage,
-        render_size_for_surface_resize, should_enter_fullscreen,
-        should_start_interactive_fullscreen, swept_flight_clearance_lift, transport_flight_tangent,
+        MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS, MAXIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
+        MINIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE, PLANET_ROTATION_SCALE_STEP, RenderPath,
+        advance_flight_position_on_sphere, advance_flight_speed, device_mouse_look_enabled,
+        find_default_outmap, flight_movement_direction, flight_view_direction,
+        focus_of_expansion_ndc, initial_flight_tangent, interactive_camera_delta_seconds,
+        projected_planet_coverage, render_size_for_surface_resize, retimed_planet_rotation,
+        should_enter_fullscreen, should_start_interactive_fullscreen, swept_flight_clearance_lift,
+        transport_flight_tangent,
     };
     use crate::planet::{
         CameraUniform, OrbitCamera, PLANET_ROTATION_PERIOD_SECONDS, RenderDebugMode,
@@ -3424,6 +3495,53 @@ mod tests {
         assert_eq!(
             interactive_camera_delta_seconds(CameraMode::LowFlight, 0.0, 0.25),
             MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS,
+        );
+    }
+
+    #[test]
+    fn planet_rotation_speed_steps_are_continuous_and_bounded() {
+        let sim_time = 123.0;
+        let old_scale = INTERACTIVE_PLANET_ROTATION_TIME_SCALE;
+        let old_offset = 0.7;
+        let rotation_time_before = sim_time * old_scale + old_offset;
+
+        let (slower_scale, slower_offset) = retimed_planet_rotation(
+            sim_time,
+            old_scale,
+            old_offset,
+            1.0 / PLANET_ROTATION_SCALE_STEP,
+        );
+        assert_eq!(slower_scale, old_scale * 0.5);
+        assert!((sim_time * slower_scale + slower_offset - rotation_time_before).abs() < 1.0e-12);
+
+        let (faster_scale, faster_offset) = retimed_planet_rotation(
+            sim_time,
+            slower_scale,
+            slower_offset,
+            PLANET_ROTATION_SCALE_STEP,
+        );
+        assert_eq!(faster_scale, old_scale);
+        assert!((sim_time * faster_scale + faster_offset - rotation_time_before).abs() < 1.0e-12);
+
+        assert_eq!(
+            retimed_planet_rotation(
+                sim_time,
+                MINIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
+                old_offset,
+                0.5,
+            )
+            .0,
+            MINIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
+        );
+        assert_eq!(
+            retimed_planet_rotation(
+                sim_time,
+                MAXIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
+                old_offset,
+                2.0,
+            )
+            .0,
+            MAXIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
         );
     }
 
