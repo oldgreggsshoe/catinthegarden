@@ -2736,3 +2736,28 @@ The focused continuity/bounds test and existing world-space-sun rotation test pa
 `still_5s/1786705608-538095` passes unchanged, formatting and `cargo check` pass, and the full app
 suite reports 208 passed and seven ignored with only the same two unrelated dirty-worktree
 LOD-transition timing failures.
+
+## Solid low-poly cloud systems — 14 August 2026
+
+The rejected fullscreen procedural shells were replaced before commit by actual solid cloud
+geometry. Two deterministic altitude bands contain independently moving cloud systems, each built
+from overlapping, non-uniform 20-face icosahedron puffs. The puffs retain flat per-face normals and
+write reversed-Z depth after raster terrain or the foveated-ray unwarp, so they are real opaque
+scene objects; overlapping systems can visually merge and the shared depth buffer lets terrain,
+clouds, and the camera-only sun occlude one another in the expected order.
+
+Every system has a deterministic tangent wind direction and speed. The lower band moves at 24-60m/s
+around 110-150km altitude, while the thinner upper band moves at 55-110m/s around 220-270km. GPU vertex
+motion rotates whole puff groups around the planet on great-circle wind paths using simulation time,
+so systems drift and cross without CPU uploads and F10 freezes them with the rest of the scene.
+
+Cloud illumination has no authored day/sunset palette. Every flat face samples the same RGB physical
+atmosphere transmittance LUT as terrain/ocean direct sunlight and the same generated
+surface-irradiance LUT for diffuse sky fill. Daylight is therefore naturally near-white, the long
+sunrise/sunset optical column dims and reddens the clouds, and the night side loses direct light.
+Flat-mesh, deterministic-wind, physical-lighting-contract, and WGSL validation tests pass. Raster
+captures pass at `sunset_blue_hour/1786712168-604722`,
+`sunrise_midday_surface/1786712180-604830`,
+`night_side_atmosphere/1786712180-604855`, and
+`orbital_atmosphere_profile/1786712183-604898`; foveated-ray
+`orbit_once/1786712184-604924` also passes.
