@@ -2680,9 +2680,9 @@ but the atmospheric transmittance continued decreasing for negative solar elevat
 therefore changed again after the horizon sample: the glow collapsed in captures 5–6 and the
 camera-only overlay could disappear before the intended occultation point.
 
-`sun_disc_atmospheric_transmittance` now clamps its presentation sample to non-negative solar
-elevation. At the horizon it holds the capture-4 appearance (including the red atmospheric tint)
-while the existing depth-equal overlay still removes the sun when the planet actually covers its
-ray. This is camera-only; the physical sky, terrain/ocean lighting, and exposure still use the
-unclamped atmosphere. Focused sun tests and the sunset, sunrise, night-side, and limb scenarios
-pass.
+`sun_disc_atmospheric_transmittance` now shifts the optical sample by 0.05 radians and clamps it
+to the capture-4 endpoint (`-0.05` radians). That makes the red/dim stage arrive at the geometric
+horizon, then holds it while the existing depth-equal overlay still removes the sun when the planet
+actually covers its ray. This is camera-only; the physical sky, terrain/ocean lighting, and exposure
+still use the unclamped atmosphere. Focused sun tests and the sunset, sunrise, night-side, and limb
+scenarios pass.

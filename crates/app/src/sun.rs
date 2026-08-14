@@ -128,7 +128,8 @@ mod tests {
         assert!(shader.contains("var atmosphere_transmittance_lut: texture_2d<f32>;"));
         assert!(shader.contains("textureSampleLevel("));
         assert!(shader.contains("sun_disc_atmospheric_transmittance(solar_elevation)"));
-        assert!(shader.contains("let visible_solar_elevation = max(solar_elevation, 0.0);"));
+        assert!(shader.contains("const SUN_HORIZON_LUT_ELEVATION_RADIANS: f32 = -0.05;"));
+        assert!(shader.contains("solar_elevation - 0.05"));
         assert!(!shader.contains("vec3<f32>(1.0, 0.48, 0.16)"));
     }
 

@@ -20,6 +20,10 @@ const SUN_CORE_VISIBILITY_FLOOR: f32 = 0.12;
 // disappear before geometric occultation by the planet.
 const SUN_CORE_RADIANCE_FLOOR: f32 = 0.50;
 const SUN_GLARE_VISIBILITY_FLOOR: f32 = 0.18;
+// The last visible above-horizon sample used a roughly -0.05 radian optical
+// column. Hold that same physical-looking red/dim state once the centre
+// reaches the horizon, rather than letting the overlay fade through black.
+const SUN_HORIZON_LUT_ELEVATION_RADIANS: f32 = -0.05;
 const SUN_CORE_RADIANCE: vec3<f32> = vec3<f32>(72.0, 65.0, 52.0);
 const SUN_HALO_RADIANCE: vec3<f32> = vec3<f32>(10.0, 7.0, 3.5);
 const SUN_GLARE_RADIANCE: vec3<f32> = vec3<f32>(8.0, 5.5, 2.5);
@@ -75,11 +79,14 @@ fn sun_disc_atmospheric_transmittance(solar_elevation: f32) -> vec3<f32> {
     // light. Dividing by the local zenith result preserves the established
     // midday disc brightness while retaining the LUT's low-sun dimming and
     // red shift instead of imposing a separately timed authored tint.
-    // Once the disc reaches the geometric horizon, hold its camera-only
-    // presentation at that value. The planet/depth test remains responsible
-    // for removing it; continuing the atmospheric column below zero makes an
-    // otherwise visible disc collapse and disappear before occultation.
-    let visible_solar_elevation = max(solar_elevation, 0.0);
+    // Shift the optical column so its red/dim endpoint is reached at the
+    // geometric horizon, then hold that endpoint below it. The planet/depth
+    // test remains responsible for removing the disc; the overlay must not
+    // disappear merely because the LUT was sampled farther down the column.
+    let visible_solar_elevation = max(
+        solar_elevation - 0.05,
+        SUN_HORIZON_LUT_ELEVATION_RADIANS,
+    );
     let transmitted = sampled_sun_transmittance(visible_solar_elevation);
     let zenith = sampled_sun_transmittance(1.0);
     let relative_transmittance = clamp(
@@ -131,7 +138,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // rolloff, so a sunset sun does not appear to contract toward a point.
     // A second bounded camera-only optical column prevents the overbright HDR
     // core from clipping its physical red shift back to white at the limb.
-    let low_sun_amount = 1.0 - smoothstep(-0.05, 0.25, solar_elevation);
+    let low_sun_amount = 1.0 - smoothstep(0.0, 0.25, solar_elevation);
     let limb_tint = mix(
         vec3<f32>(1.0),
         vec3<f32>(1.0, 0.20, 0.03),
@@ -143,7 +150,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let core_radiance_scale = mix(
         SUN_CORE_RADIANCE_FLOOR,
         1.0,
-        smoothstep(-0.05, 0.25, solar_elevation),
+        smoothstep(0.0, 0.25, solar_elevation),
     );
     let strongest_channel = max(
         presentation_tint.r,
