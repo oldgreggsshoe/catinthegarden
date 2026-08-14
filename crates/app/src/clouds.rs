@@ -3,8 +3,10 @@ use std::mem::size_of;
 use glam::Vec3;
 use wgpu::util::DeviceExt;
 
-const LOWER_CLUSTER_COUNT: u32 = 42;
-const UPPER_CLUSTER_COUNT: u32 = 24;
+const CLOUD_SYSTEM_DENSITY_MULTIPLIER: u32 = 2;
+const CLOUD_SYSTEM_LINEAR_SCALE: f32 = 0.5;
+const LOWER_CLUSTER_COUNT: u32 = 42 * CLOUD_SYSTEM_DENSITY_MULTIPLIER;
+const UPPER_CLUSTER_COUNT: u32 = 24 * CLOUD_SYSTEM_DENSITY_MULTIPLIER;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -305,10 +307,13 @@ fn append_cloud_layer(
         } else {
             24.0 + 36.0 * hash01(cluster, 3)
         };
+        // Systems are distributed twice as densely, so use fewer overlapping
+        // puffs per system. This produces 419 visible puffs instead of the
+        // former 449 while still doubling the number of distinct formations.
         let lobe_count = if upper {
-            4 + (hash_u32(cluster, 4) % 4)
+            2 + (hash_u32(cluster, 4) % 2)
         } else {
-            6 + (hash_u32(cluster, 4) % 4)
+            3 + (hash_u32(cluster, 4) % 2)
         };
 
         for lobe in 0..lobe_count {
@@ -317,9 +322,9 @@ fn append_cloud_layer(
             let offset_radius = if lobe == 0 {
                 0.0
             } else if upper {
-                30_000.0 + 150_000.0 * hash01(key, 6).sqrt()
+                (30_000.0 + 150_000.0 * hash01(key, 6).sqrt()) * CLOUD_SYSTEM_LINEAR_SCALE
             } else {
-                20_000.0 + 105_000.0 * hash01(key, 6).sqrt()
+                (20_000.0 + 105_000.0 * hash01(key, 6).sqrt()) * CLOUD_SYSTEM_LINEAR_SCALE
             };
             let offset = tangent_a * (offset_angle.cos() * offset_radius)
                 + tangent_b * (offset_angle.sin() * offset_radius);
@@ -336,13 +341,13 @@ fn append_cloud_layer(
                     (100_000.0 + 130_000.0 * hash01(key, 8)) * central_scale,
                     (55_000.0 + 75_000.0 * hash01(key, 9)) * central_scale,
                     (25_000.0 + 20_000.0 * hash01(key, 10)) * central_scale,
-                )
+                ) * CLOUD_SYSTEM_LINEAR_SCALE
             } else {
                 Vec3::new(
                     (70_000.0 + 115_000.0 * hash01(key, 8)) * central_scale,
                     (58_000.0 + 105_000.0 * hash01(key, 9)) * central_scale,
                     (45_000.0 + 35_000.0 * hash01(key, 10)) * central_scale,
-                )
+                ) * CLOUD_SYSTEM_LINEAR_SCALE
             };
             instances.push(CloudInstance {
                 center_speed: [
@@ -381,8 +386,8 @@ fn hash01(value: u32, stream: u32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        LOWER_CLUSTER_COUNT, UPPER_CLUSTER_COUNT, generate_cloud_instances,
-        low_poly_sphere_vertices,
+        CLOUD_SYSTEM_DENSITY_MULTIPLIER, CLOUD_SYSTEM_LINEAR_SCALE, LOWER_CLUSTER_COUNT,
+        UPPER_CLUSTER_COUNT, generate_cloud_instances, low_poly_sphere_vertices,
     };
 
     #[test]
@@ -429,6 +434,22 @@ mod tests {
                 .iter()
                 .all(|instance| instance.radii_brightness[2] > 0.0)
         );
+    }
+
+    #[test]
+    fn cloud_systems_are_smaller_and_more_numerous() {
+        assert_eq!(CLOUD_SYSTEM_DENSITY_MULTIPLIER, 2);
+        assert_eq!(CLOUD_SYSTEM_LINEAR_SCALE, 0.5);
+        assert_eq!(LOWER_CLUSTER_COUNT, 84);
+        assert_eq!(UPPER_CLUSTER_COUNT, 48);
+
+        let instances = generate_cloud_instances();
+        assert_eq!(instances.len(), 419);
+        assert!(instances.iter().all(|instance| {
+            instance.radii_brightness[0] <= 141_000.0
+                && instance.radii_brightness[1] <= 100_000.0
+                && instance.radii_brightness[2] <= 49_000.0
+        }));
     }
 
     #[test]

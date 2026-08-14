@@ -2780,3 +2780,21 @@ Focused atmosphere/sun tests and shader validation pass. Raster scenarios pass a
 `orbital_atmosphere_profile/1786717316-655893`; foveated-ray `orbit_once/1786717318-655919` also
 passes. The full app suite reports 214 passed and seven ignored, with only the same two unrelated
 dirty-worktree LOD-transition timing failures.
+
+## Smaller, denser solid clouds — 14 August 2026
+
+Both deterministic cloud bands now distribute twice as many distinct systems globally: 84 lower
+and 48 upper, versus 42 and 24. Every system's lobe radii and internal offsets are scaled to 50%,
+so the former sparse giant formations become smaller, more numerous formations without changing
+their altitude ranges, wind speeds, flat geometry, depth behaviour, or physical atmosphere light.
+
+To avoid paying twice for overlapping puff geometry, lower systems use 3-4 lobes and upper systems
+2-3. This yields 419 drawn puff instances, below the former 449, despite doubling the formation
+count. The focused deterministic size/density/lighting/WGSL tests pass. Raster captures pass at
+`sunrise_midday_surface/1786729263-750971` and
+`orbital_atmosphere_profile/1786729288-751249`; the latter visibly shows the finer global cloud
+distribution. The foveated-ray path produced the expected finer-cloud capture, but its orbit run
+later stalled in the current GPU/session state; an immediate A/B rerun of the unchanged committed
+baseline stalled identically, while the new population contains fewer total puff instances. The
+full app suite reports 215 passed and seven ignored with only the same two unrelated dirty-worktree
+LOD-transition timing failures.
