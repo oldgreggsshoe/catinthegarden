@@ -449,8 +449,32 @@ mod tests {
         assert!((1_400.0..6_700.0).contains(&drift_meters));
 
         let shader = include_str!("clouds.wgsl");
-        assert!(shader.contains("camera.projection.z * input.center_speed.w"));
+        assert!(shader.contains("camera.flat_triangle_options.y * input.center_speed.w"));
         assert!(shader.contains("rotate_about_axis(input.center_speed.xyz"));
+    }
+
+    #[test]
+    fn direct_sun_uses_the_world_altitude_flat_horizon() {
+        for shader in [
+            include_str!("clouds.wgsl"),
+            include_str!("shared_planet.wgsl"),
+        ] {
+            assert!(shader.contains("fn flat_horizon_sun_visibility("));
+            assert!(shader.contains("PLANET_RADIUS_METERS + max(altitude_meters, 0.0)"));
+            assert!(shader.contains("max(solar_zenith_cosine, 0.0)"));
+            assert!(shader.contains("return transmittance * visibility;"));
+        }
+
+        let horizon_cosine = |altitude_meters: f32| {
+            let radius = 4_000_000.0 + altitude_meters;
+            -(1.0 - (4_000_000.0 / radius).powi(2)).sqrt()
+        };
+        assert_eq!(horizon_cosine(0.0), -0.0);
+        assert!(horizon_cosine(80_000.0) < -0.19);
+        assert!(horizon_cosine(190_000.0) < -0.29);
+        assert!(horizon_cosine(310_000.0) < -0.37);
+        assert!(-0.20 < horizon_cosine(0.0));
+        assert!(-0.20 > horizon_cosine(190_000.0));
     }
 
     #[test]
@@ -495,7 +519,7 @@ mod tests {
         assert!(shader.contains("atmosphere_surface_irradiance_lut"));
         assert!(shader.contains("sample_sun_transmittance"));
         assert!(shader.contains("sample_sky_irradiance"));
-        assert!(shader.contains("camera.projection.z * input.center_speed.w"));
+        assert!(shader.contains("camera.flat_triangle_options.y * input.center_speed.w"));
         assert!(!shader.contains("SUNSET_CLOUD_COLOR"));
     }
 }

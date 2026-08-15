@@ -2674,6 +2674,7 @@ impl CameraUniform {
         sun_direction: DVec3,
         planet_rotation_radians: f64,
         sim_time: f64,
+        presentation_time: f64,
         render_debug_mode: RenderDebugMode,
         flat_triangle_outlines_enabled: bool,
         // Terrain height under the camera, so the near plane can be set from
@@ -2733,7 +2734,7 @@ impl CameraUniform {
                 } else {
                     0.0
                 },
-                0.0,
+                presentation_time as f32,
                 0.0,
                 0.0,
             ],
@@ -3850,6 +3851,7 @@ mod tests {
             DVec3::new(0.4, 0.7, 0.6).normalize(),
             0.0,
             0.0,
+            0.0,
             RenderDebugMode::Final,
             true,
             0.0,
@@ -3878,6 +3880,7 @@ mod tests {
                 default_sun_direction(),
                 0.0,
                 0.0,
+                0.0,
                 RenderDebugMode::FlatTriangles,
                 enabled,
                 0.0,
@@ -3886,6 +3889,24 @@ mod tests {
 
         assert_eq!(uniform(true).flat_triangle_options[0], 1.0);
         assert_eq!(uniform(false).flat_triangle_options[0], 0.0);
+    }
+
+    #[test]
+    fn camera_uniform_keeps_cloud_wind_time_independent_of_frozen_simulation_time() {
+        let uniform = CameraUniform::from_camera(
+            &OrbitCamera::default(),
+            1.0,
+            default_sun_direction(),
+            0.0,
+            3.0,
+            17.0,
+            RenderDebugMode::Final,
+            true,
+            0.0,
+        );
+
+        assert_eq!(uniform.projection[2], 3.0);
+        assert_eq!(uniform.flat_triangle_options[1], 17.0);
     }
 
     #[test]

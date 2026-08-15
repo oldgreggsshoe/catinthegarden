@@ -884,26 +884,44 @@ fn sun_visibility(
     return smoothstep(-transition_meters, 0.0, clearance_meters);
 }
 
+fn flat_horizon_sun_visibility(altitude_meters: f32, solar_zenith_cosine: f32) -> f32 {
+    let radius_meters = PLANET_RADIUS_METERS + max(altitude_meters, 0.0);
+    let planet_radius_ratio = PLANET_RADIUS_METERS / radius_meters;
+    let horizon_cosine = -sqrt(max(1.0 - planet_radius_ratio * planet_radius_ratio, 0.0));
+    let solar_angular_radius_sine = 0.004625;
+    return smoothstep(
+        horizon_cosine - solar_angular_radius_sine,
+        horizon_cosine + solar_angular_radius_sine,
+        solar_zenith_cosine,
+    );
+}
+
 fn surface_direct_sun_transmittance(
     surface_direction: vec3<f32>,
     surface_altitude_meters: f32,
     sun_direction: vec3<f32>,
 ) -> vec3<f32> {
     let optical_altitude = max(surface_altitude_meters, 0.0) / 4.5;
+    let solar_zenith_cosine = dot(surface_direction, sun_direction);
+    let visibility = flat_horizon_sun_visibility(
+        surface_altitude_meters,
+        solar_zenith_cosine,
+    );
     let uv = vec2<f32>(
-        clamp(dot(surface_direction, sun_direction) * 0.5 + 0.5, 0.0, 1.0),
+        clamp(max(solar_zenith_cosine, 0.0) * 0.5 + 0.5, 0.0, 1.0),
         sqrt(clamp(optical_altitude / 320000.0, 0.0, 1.0)),
     );
     // This is the same wavelength-dependent optical column used while
-    // generating the physical sky. Below the geometric horizon the LUT is
-    // black because the ray intersects the solid planet; near the limb its
-    // filtered samples redden and fade continuously without a timed tint.
-    return textureSampleLevel(
+    // generating the physical sky. The LUT's below-horizon samples include
+    // solid-planet occlusion, so visibility is instead evaluated against the
+    // simple geometric horizon at the actual surface altitude.
+    let transmittance = textureSampleLevel(
         atmosphere_transmittance_lut,
         atmosphere_physical_sampler,
         uv,
         0.0,
     ).rgb;
+    return transmittance * visibility;
 }
 
 fn sky_diffuse_irradiance(

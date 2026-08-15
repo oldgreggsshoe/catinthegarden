@@ -59,7 +59,7 @@ fn planet_to_view(vector: vec3<f32>) -> vec3<f32> {
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
     let wind_axis = normalize(input.wind_axis.xyz);
-    let wind_angle = camera.projection.z * input.center_speed.w;
+    let wind_angle = camera.flat_triangle_options.y * input.center_speed.w;
     let center = rotate_about_axis(input.center_speed.xyz, wind_axis, wind_angle);
     let radial = normalize(center);
     let base_along_wind = normalize(cross(wind_axis, radial));
@@ -102,13 +102,29 @@ fn atmosphere_lut_uv(altitude_meters: f32, solar_zenith_cosine: f32) -> vec2<f32
     );
 }
 
+fn flat_horizon_sun_visibility(altitude_meters: f32, solar_zenith_cosine: f32) -> f32 {
+    let radius_meters = PLANET_RADIUS_METERS + max(altitude_meters, 0.0);
+    let planet_radius_ratio = PLANET_RADIUS_METERS / radius_meters;
+    let horizon_cosine = -sqrt(max(1.0 - planet_radius_ratio * planet_radius_ratio, 0.0));
+    // Resolve the solar disc over a narrow interval instead of popping when
+    // its centre crosses the altitude-dependent geometric horizon.
+    let solar_angular_radius_sine = 0.004625;
+    return smoothstep(
+        horizon_cosine - solar_angular_radius_sine,
+        horizon_cosine + solar_angular_radius_sine,
+        solar_zenith_cosine,
+    );
+}
+
 fn sample_sun_transmittance(altitude_meters: f32, solar_zenith_cosine: f32) -> vec3<f32> {
-    return textureSampleLevel(
+    let visibility = flat_horizon_sun_visibility(altitude_meters, solar_zenith_cosine);
+    let transmittance = textureSampleLevel(
         atmosphere_transmittance_lut,
         atmosphere_physical_sampler,
-        atmosphere_lut_uv(altitude_meters, solar_zenith_cosine),
+        atmosphere_lut_uv(altitude_meters, max(solar_zenith_cosine, 0.0)),
         0.0,
     ).rgb;
+    return transmittance * visibility;
 }
 
 fn sample_sky_irradiance(altitude_meters: f32, solar_zenith_cosine: f32) -> vec3<f32> {

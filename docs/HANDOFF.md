@@ -2819,3 +2819,25 @@ All five focused cloud tests and WGSL validation pass. Raster captures pass at
 `orbital_atmosphere_profile/1786769734-1010374`; the surface/orbit images show the wider, denser,
 mixed-grey population. The full app suite reports 215 passed and seven ignored with only the same
 two unrelated dirty-worktree LOD-transition timing failures.
+
+## Altitude-aware direct sunlight and unfrozen cloud wind — 15 August 2026
+
+Clouds and elevated terrain no longer inherit the transmittance LUT's sea-level solid-planet
+occlusion. Their direct-sun path now performs one explicit geometric flat-horizon test at the
+actual world altitude: the horizon cosine is derived from the 4,000km planet radius plus the
+surface/cloud altitude, with only a solar-disc-width transition to avoid a visible pop. While that
+test says the sun remains above the hypothetical horizon, the wavelength-dependent LUT is sampled
+at its grazing column rather than its black below-horizon row. Terrain face-normal diffuse remains
+unchanged; no terrain/cloud ray occlusion or authored sunset timing was added.
+
+Cloud great-circle wind now uses presentation time rather than the F10-frozen scene clock. Clouds
+therefore keep drifting during the default frozen-world startup while planet rotation, ocean phase,
+and the other deliberately frozen simulation state remain stopped; deterministic scenarios still
+use their authored clock. The focused altitude thresholds cover sea level and the 80km, 190km, and
+310km cloud heights, and a camera-uniform regression proves wind time is independent from simulation
+time. Debug raster `sunset_blue_hour/1786772828-1037962` passes all six colour/luminance captures and
+visibly keeps the elevated clouds illuminated after the ground has darkened;
+`sunrise_midday_surface/1786773053-1040143` also passes all four captures. The exact staged snapshot
+passes 215 tests with seven ignored; its two failures are the pre-existing active-bake prominence
+constant and collision-clearance expectations, while the broader dirty worktree passes 217 tests
+and retains its two unrelated LOD-transition timing failures.
