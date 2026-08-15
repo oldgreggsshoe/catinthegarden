@@ -2798,3 +2798,24 @@ later stalled in the current GPU/session state; an immediate A/B rerun of the un
 baseline stalled identically, while the new population contains fewer total puff instances. The
 full app suite reports 215 passed and seven ignored with only the same two unrelated dirty-worktree
 LOD-transition timing failures.
+
+## Wider, altitude-varied drifting clouds — 15 August 2026
+
+The cloud population doubles again to 168 lower and 96 upper independently distributed systems.
+Each formation is 1.5x wider in both tangent axes than the preceding pass while retaining its
+smaller vertical thickness. Lower centers now span 80-190km and upper centers 190-310km, making the
+two solid layers visibly less uniform in altitude. Deterministic albedo brightness now ranges from
+0.58-0.98, so some physically illuminated formations read as grey while others remain white; sun
+and sky colour still come exclusively from the atmosphere LUTs.
+
+Each system uses only one or two puffs, leaving 399 total instances versus the preceding 419 even
+though the formation count doubled. Existing great-circle simulated wind remains active at 24-60m/s
+in the lower population and 55-110m/s above, with independent tangent direction per system and F10
+still freezing motion through scene time. A focused one-minute displacement regression now binds
+the CPU wind data to the shader's simulation-time rotation path.
+
+All five focused cloud tests and WGSL validation pass. Raster captures pass at
+`sunrise_midday_surface/1786769717-1010100`, `sunset_blue_hour/1786769718-1010135`, and
+`orbital_atmosphere_profile/1786769734-1010374`; the surface/orbit images show the wider, denser,
+mixed-grey population. The full app suite reports 215 passed and seven ignored with only the same
+two unrelated dirty-worktree LOD-transition timing failures.

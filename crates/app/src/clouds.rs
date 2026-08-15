@@ -3,8 +3,9 @@ use std::mem::size_of;
 use glam::Vec3;
 use wgpu::util::DeviceExt;
 
-const CLOUD_SYSTEM_DENSITY_MULTIPLIER: u32 = 2;
+const CLOUD_SYSTEM_DENSITY_MULTIPLIER: u32 = 4;
 const CLOUD_SYSTEM_LINEAR_SCALE: f32 = 0.5;
+const CLOUD_SYSTEM_HORIZONTAL_SCALE: f32 = 1.5;
 const LOWER_CLUSTER_COUNT: u32 = 42 * CLOUD_SYSTEM_DENSITY_MULTIPLIER;
 const UPPER_CLUSTER_COUNT: u32 = 24 * CLOUD_SYSTEM_DENSITY_MULTIPLIER;
 
@@ -307,14 +308,10 @@ fn append_cloud_layer(
         } else {
             24.0 + 36.0 * hash01(cluster, 3)
         };
-        // Systems are distributed twice as densely, so use fewer overlapping
-        // puffs per system. This produces 419 visible puffs instead of the
-        // former 449 while still doubling the number of distinct formations.
-        let lobe_count = if upper {
-            2 + (hash_u32(cluster, 4) % 2)
-        } else {
-            3 + (hash_u32(cluster, 4) % 2)
-        };
+        // Keep each of the more numerous systems distinct rather than building
+        // a few large piles of overlapping geometry. The complete population
+        // is 399 puffs, below the previous 419, despite twice as many systems.
+        let lobe_count = 1 + (hash_u32(cluster, 4) % 2);
 
         for lobe in 0..lobe_count {
             let key = cluster.wrapping_mul(11).wrapping_add(lobe);
@@ -322,21 +319,25 @@ fn append_cloud_layer(
             let offset_radius = if lobe == 0 {
                 0.0
             } else if upper {
-                (30_000.0 + 150_000.0 * hash01(key, 6).sqrt()) * CLOUD_SYSTEM_LINEAR_SCALE
+                (30_000.0 + 150_000.0 * hash01(key, 6).sqrt())
+                    * CLOUD_SYSTEM_LINEAR_SCALE
+                    * CLOUD_SYSTEM_HORIZONTAL_SCALE
             } else {
-                (20_000.0 + 105_000.0 * hash01(key, 6).sqrt()) * CLOUD_SYSTEM_LINEAR_SCALE
+                (20_000.0 + 105_000.0 * hash01(key, 6).sqrt())
+                    * CLOUD_SYSTEM_LINEAR_SCALE
+                    * CLOUD_SYSTEM_HORIZONTAL_SCALE
             };
             let offset = tangent_a * (offset_angle.cos() * offset_radius)
                 + tangent_b * (offset_angle.sin() * offset_radius);
             let lobe_direction = (direction + offset / PLANET_RADIUS_METERS).normalize();
             let altitude = if upper {
-                220_000.0 + 50_000.0 * hash01(key, 7)
+                190_000.0 + 120_000.0 * hash01(key, 7)
             } else {
-                110_000.0 + 40_000.0 * hash01(key, 7)
+                80_000.0 + 110_000.0 * hash01(key, 7)
             };
             let center = lobe_direction * (PLANET_RADIUS_METERS + altitude);
             let central_scale = if lobe == 0 { 1.22 } else { 1.0 };
-            let radii = if upper {
+            let mut radii = if upper {
                 Vec3::new(
                     (100_000.0 + 130_000.0 * hash01(key, 8)) * central_scale,
                     (55_000.0 + 75_000.0 * hash01(key, 9)) * central_scale,
@@ -349,6 +350,8 @@ fn append_cloud_layer(
                     (45_000.0 + 35_000.0 * hash01(key, 10)) * central_scale,
                 ) * CLOUD_SYSTEM_LINEAR_SCALE
             };
+            radii.x *= CLOUD_SYSTEM_HORIZONTAL_SCALE;
+            radii.y *= CLOUD_SYSTEM_HORIZONTAL_SCALE;
             instances.push(CloudInstance {
                 center_speed: [
                     center.x,
@@ -362,7 +365,9 @@ fn append_cloud_layer(
                     wind_axis.z,
                     std::f32::consts::TAU * hash01(key, 12),
                 ],
-                radii_brightness: [radii.x, radii.y, radii.z, 0.86 + 0.12 * hash01(key, 11)],
+                // Preserve a bright cloud population while allowing a visible
+                // minority of physically lit formations to read as grey.
+                radii_brightness: [radii.x, radii.y, radii.z, 0.58 + 0.40 * hash01(key, 11)],
             });
         }
     }
@@ -386,8 +391,9 @@ fn hash01(value: u32, stream: u32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        CLOUD_SYSTEM_DENSITY_MULTIPLIER, CLOUD_SYSTEM_LINEAR_SCALE, LOWER_CLUSTER_COUNT,
-        UPPER_CLUSTER_COUNT, generate_cloud_instances, low_poly_sphere_vertices,
+        CLOUD_SYSTEM_DENSITY_MULTIPLIER, CLOUD_SYSTEM_HORIZONTAL_SCALE, CLOUD_SYSTEM_LINEAR_SCALE,
+        LOWER_CLUSTER_COUNT, UPPER_CLUSTER_COUNT, generate_cloud_instances,
+        low_poly_sphere_vertices,
     };
 
     #[test]
@@ -434,22 +440,52 @@ mod tests {
                 .iter()
                 .all(|instance| instance.radii_brightness[2] > 0.0)
         );
+        let instance = first[0];
+        let center = glam::Vec3::from_slice(&instance.center_speed[..3]);
+        let axis = glam::Vec3::from_slice(&instance.wind_axis[..3]).normalize();
+        let after_one_minute =
+            glam::Quat::from_axis_angle(axis, 60.0 * instance.center_speed[3]) * center;
+        let drift_meters = center.distance(after_one_minute);
+        assert!((1_400.0..6_700.0).contains(&drift_meters));
+
+        let shader = include_str!("clouds.wgsl");
+        assert!(shader.contains("camera.projection.z * input.center_speed.w"));
+        assert!(shader.contains("rotate_about_axis(input.center_speed.xyz"));
     }
 
     #[test]
-    fn cloud_systems_are_smaller_and_more_numerous() {
-        assert_eq!(CLOUD_SYSTEM_DENSITY_MULTIPLIER, 2);
+    fn cloud_systems_are_wider_more_numerous_and_altitude_varied() {
+        assert_eq!(CLOUD_SYSTEM_DENSITY_MULTIPLIER, 4);
         assert_eq!(CLOUD_SYSTEM_LINEAR_SCALE, 0.5);
-        assert_eq!(LOWER_CLUSTER_COUNT, 84);
-        assert_eq!(UPPER_CLUSTER_COUNT, 48);
+        assert_eq!(CLOUD_SYSTEM_HORIZONTAL_SCALE, 1.5);
+        assert_eq!(LOWER_CLUSTER_COUNT, 168);
+        assert_eq!(UPPER_CLUSTER_COUNT, 96);
 
         let instances = generate_cloud_instances();
-        assert_eq!(instances.len(), 419);
+        assert_eq!(instances.len(), 399);
         assert!(instances.iter().all(|instance| {
-            instance.radii_brightness[0] <= 141_000.0
-                && instance.radii_brightness[1] <= 100_000.0
+            instance.radii_brightness[0] <= 211_500.0
+                && instance.radii_brightness[1] <= 150_000.0
                 && instance.radii_brightness[2] <= 49_000.0
         }));
+        let altitudes = instances
+            .iter()
+            .map(|instance| {
+                glam::Vec3::from_slice(&instance.center_speed[..3]).length() - 4_000_000.0
+            })
+            .collect::<Vec<_>>();
+        assert!(altitudes.iter().copied().fold(f32::INFINITY, f32::min) < 90_000.0);
+        assert!(altitudes.iter().copied().fold(f32::NEG_INFINITY, f32::max) > 300_000.0);
+        assert!(
+            instances
+                .iter()
+                .any(|instance| instance.radii_brightness[3] < 0.70)
+        );
+        assert!(
+            instances
+                .iter()
+                .any(|instance| instance.radii_brightness[3] > 0.90)
+        );
     }
 
     #[test]
