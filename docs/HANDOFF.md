@@ -3040,3 +3040,16 @@ thermal balance -> pressure/wind -> lapse/orographic uplift -> evaporation -> te
 -> humidity advection -> condensation -> precipitation. Twenty-one focused weather tests and a
 workspace check pass. Snow partitioning, runoff/rivers, terrain-derived water, and rendered rain
 remain deferred.
+
+## Experimental weather latent heat and storm diagnostic - 20 August 2026
+
+Condensation now releases a bounded latent-temperature tendency, while cloud re-evaporation applies
+its equal-and-opposite cooling. The tendency is applied locally before precipitation, so the next
+fixed step's pressure diagnosis can respond to the thermal anomaly without an unstable same-step
+feedback loop.
+
+Each cell also reports a normalized storm intensity built from cloud water, positive orographic
+uplift, and latent-heating magnitude. It is a diagnostic signal only for now; no pressure vortex,
+GPU cloud rendering, or storm visuals are introduced in this milestone. The HUD reports maximum and
+area-mean storm intensity plus peak latent temperature change. Twenty-two focused weather tests and
+a workspace check pass.

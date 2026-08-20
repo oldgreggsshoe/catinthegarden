@@ -1,10 +1,9 @@
-Milestone 9 is complete and pushed next in line.
+Milestone 10 is complete and pushed.
 
-- Excess cloud water now precipitates with a bounded 3,600s relaxation.
-- Land precipitation replenishes ground moisture; ocean precipitation exits the local reservoir.
-- HUD reports ground-moisture range/mean and rain-equivalent precipitation in mm/h.
-- Snow partitioning, runoff/rivers, terrain-derived water, and rendered rain are still deferred.
+- Condensation now releases bounded latent heat; cloud re-evaporation applies equal cooling.
+- A normalized storm-intensity diagnostic combines cloud water, positive uplift, and latent heating.
+- The thermal anomaly feeds the next fixed tick's pressure/wind update, avoiding unstable same-step feedback.
+- HUD reports storm intensity and latent temperature change; no storm rendering yet.
 
-Validation: 21 focused weather tests passed; cargo check --workspace passed.
-I also noted the intermittent copied/offset startup window as a separate renderer issue and did not mix it into this weather change.
-Next: milestone 10, latent-heat feedback and storms.
+Validation: 22 focused weather tests passed; cargo check --workspace passed.
+Next: milestone 11, GPU field upload, temporal blending, and the first rendered cloud shell.

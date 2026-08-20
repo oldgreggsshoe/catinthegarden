@@ -26,6 +26,8 @@ const WEATHER_MAX_LAPSE_DISPLACEMENT_METERS_PER_STEP: f64 = 750.0;
 const WEATHER_PRECIPITATION_TIME_CONSTANT_SECONDS: f64 = 3_600.0;
 const WEATHER_CLOUD_PRECIPITATION_THRESHOLD: f64 = 0.18;
 const WEATHER_CLOUD_WATER_DEPTH_MILLIMETERS: f64 = 2.0;
+const WEATHER_LATENT_HEATING_KELVIN_PER_UNIT: f64 = 2.5;
+const WEATHER_STORM_LATENT_HEAT_SCALE_KELVIN: f64 = 2.5;
 const WEATHER_FACE_COUNT: usize = 6;
 const OVERLAY_BINS: usize = 16;
 const NEIGHBOUR_COUNT: usize = 4;
@@ -195,6 +197,8 @@ pub struct WeatherCellState {
     pub surface_elevation_meters: f32,
     pub orographic_uplift_meters_per_second: f32,
     pub precipitation_millimeters_per_hour: f32,
+    pub latent_temperature_tendency_kelvin: f32,
+    pub storm_intensity: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -231,6 +235,9 @@ pub struct WeatherFieldDiagnostics {
     pub mean_ground_moisture: f32,
     pub maximum_precipitation_millimeters_per_hour: f32,
     pub mean_precipitation_millimeters_per_hour: f32,
+    pub maximum_latent_temperature_tendency_kelvin: f32,
+    pub maximum_storm_intensity: f32,
+    pub mean_storm_intensity: f32,
     pub maximum_wind_meters_per_second: f32,
     pub maximum_cfl: f64,
     pub relaxation_weight_at_1800_seconds: f64,
@@ -363,15 +370,30 @@ impl WeatherFields {
             let saturation = saturation_specific_humidity(f64::from(state.temperature_kelvin));
             let humidity = f64::from(state.specific_humidity);
             let cloud_water = f64::from(state.cloud_water);
+            let mut latent_tendency = 0.0;
             if humidity > saturation {
                 let condensed = ((humidity - saturation) * relaxation).min(humidity);
                 state.specific_humidity = (humidity - condensed).clamp(0.0, 1.0) as f32;
                 state.cloud_water = (cloud_water + condensed).clamp(0.0, 1.0) as f32;
+                latent_tendency = condensed * WEATHER_LATENT_HEATING_KELVIN_PER_UNIT;
             } else if cloud_water > 0.0 {
                 let evaporated = ((saturation - humidity) * relaxation).min(cloud_water);
                 state.specific_humidity = (humidity + evaporated).clamp(0.0, 1.0) as f32;
                 state.cloud_water = (cloud_water - evaporated).clamp(0.0, 1.0) as f32;
+                latent_tendency = -evaporated * WEATHER_LATENT_HEATING_KELVIN_PER_UNIT;
             }
+            state.temperature_kelvin = (f64::from(state.temperature_kelvin) + latent_tendency)
+                .clamp(180.0, 340.0) as f32;
+            state.latent_temperature_tendency_kelvin = latent_tendency as f32;
+            let uplift_factor = (f64::from(state.orographic_uplift_meters_per_second).max(0.0)
+                / WEATHER_MAX_OROGRAPHIC_UPLIFT_METERS_PER_SECOND)
+                .clamp(0.0, 1.0);
+            let latent_factor =
+                (latent_tendency.abs() / WEATHER_STORM_LATENT_HEAT_SCALE_KELVIN).clamp(0.0, 1.0);
+            state.storm_intensity = (0.55 * f64::from(state.cloud_water)
+                + 0.30 * uplift_factor
+                + 0.15 * latent_factor)
+                .clamp(0.0, 1.0) as f32;
         }
     }
 
@@ -604,12 +626,15 @@ impl WeatherFields {
         let mut min_ground_moisture = f32::INFINITY;
         let mut max_ground_moisture = f32::NEG_INFINITY;
         let mut maximum_precipitation = 0.0_f32;
+        let mut maximum_latent_tendency = 0.0_f32;
+        let mut maximum_storm_intensity = 0.0_f32;
         let mut mean_temperature = 0.0_f64;
         let mut mean_pressure = 0.0_f64;
         let mut mean_humidity = 0.0_f64;
         let mut mean_cloud_water = 0.0_f64;
         let mut mean_ground_moisture = 0.0_f64;
         let mut mean_precipitation = 0.0_f64;
+        let mut mean_storm_intensity = 0.0_f64;
         let mut maximum_wind = 0.0_f32;
         let mut maximum_cfl = 0.0_f64;
         let mut pressure_integral = 0.0_f64;
@@ -637,6 +662,9 @@ impl WeatherFields {
             max_ground_moisture = max_ground_moisture.max(state.ground_moisture);
             maximum_precipitation = maximum_precipitation
                 .max(state.precipitation_millimeters_per_hour);
+            maximum_latent_tendency = maximum_latent_tendency
+                .max(state.latent_temperature_tendency_kelvin.abs());
+            maximum_storm_intensity = maximum_storm_intensity.max(state.storm_intensity);
             maximum_wind = maximum_wind.max(wind_speed);
             maximum_cfl = maximum_cfl.max(cfl);
             mean_temperature += f64::from(state.temperature_kelvin) * area;
@@ -646,6 +674,7 @@ impl WeatherFields {
             mean_ground_moisture += f64::from(state.ground_moisture) * area;
             mean_precipitation +=
                 f64::from(state.precipitation_millimeters_per_hour) * area;
+            mean_storm_intensity += f64::from(state.storm_intensity) * area;
             pressure_integral += f64::from(state.surface_pressure_pascals) * area;
             humidity_integral += f64::from(state.specific_humidity) * area;
         }
@@ -671,6 +700,9 @@ impl WeatherFields {
             mean_ground_moisture: (mean_ground_moisture / total_area) as f32,
             maximum_precipitation_millimeters_per_hour: maximum_precipitation,
             mean_precipitation_millimeters_per_hour: (mean_precipitation / total_area) as f32,
+            maximum_latent_temperature_tendency_kelvin: maximum_latent_tendency,
+            maximum_storm_intensity,
+            mean_storm_intensity: (mean_storm_intensity / total_area) as f32,
             maximum_wind_meters_per_second: maximum_wind,
             maximum_cfl,
             relaxation_weight_at_1800_seconds: exponential_relaxation_weight(
@@ -1149,6 +1181,8 @@ fn initial_cell_state(direction: DVec3) -> WeatherCellState {
         surface_elevation_meters: surface_elevation as f32,
         orographic_uplift_meters_per_second: 0.0,
         precipitation_millimeters_per_hour: 0.0,
+        latent_temperature_tendency_kelvin: 0.0,
+        storm_intensity: 0.0,
     }
 }
 
@@ -1630,6 +1664,33 @@ mod tests {
                 && (0.0..=1.0).contains(&state.ground_moisture)
                 && state.precipitation_millimeters_per_hour.is_finite()
                 && state.precipitation_millimeters_per_hour >= 0.0
+        }));
+    }
+
+    #[test]
+    fn latent_heat_feedback_warms_condensation_and_bounds_storm_signal() {
+        let grid = WeatherGrid::new();
+        let target_index = cell_index(0, WEATHER_GRID_SIDE / 2, WEATHER_GRID_SIDE / 2);
+        let mut first = WeatherFields::initial(&grid);
+        let mut second = WeatherFields::initial(&grid);
+        for fields in [&mut first, &mut second] {
+            fields.cells[target_index].temperature_kelvin = 250.0;
+            fields.cells[target_index].specific_humidity = 0.95;
+            fields.cells[target_index].cloud_water = 0.0;
+            fields.cells[target_index].orographic_uplift_meters_per_second = 4.0;
+            fields.condense_cloud_water(WEATHER_TIMESTEP_SECONDS);
+        }
+        assert_eq!(first.cells(), second.cells());
+        let state = first.cells()[target_index];
+        assert!(state.cloud_water > 0.0);
+        assert!(state.specific_humidity < 0.95);
+        assert!(state.latent_temperature_tendency_kelvin > 0.0);
+        assert!(state.temperature_kelvin > 250.0);
+        assert!((0.0..=1.0).contains(&state.storm_intensity));
+        assert!(first.cells().iter().all(|state| {
+            state.latent_temperature_tendency_kelvin.is_finite()
+                && state.storm_intensity.is_finite()
+                && (0.0..=1.0).contains(&state.storm_intensity)
         }));
     }
 

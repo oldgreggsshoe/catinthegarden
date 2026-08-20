@@ -1993,6 +1993,12 @@ impl State {
                                 field.mean_precipitation_millimeters_per_hour,
                             ));
                             ui.label(format!(
+                                "Weather storms: intensity max {:.2} (mean {:.2})  |  latent ΔT max {:.2}K",
+                                field.maximum_storm_intensity,
+                                field.mean_storm_intensity,
+                                field.maximum_latent_temperature_tendency_kelvin,
+                            ));
+                            ui.label(format!(
                                 "Weather wind: max {:.1}m/s  |  CFL@{}s {:.3}  |  relax@1800s {:.3}  |  conservation Δp {:.2e} Δq {:.2e}",
                                 field.maximum_wind_meters_per_second,
                                 weather::WEATHER_TIMESTEP_SECONDS as u32,
