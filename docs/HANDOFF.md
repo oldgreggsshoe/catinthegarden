@@ -2856,3 +2856,19 @@ advice is the separation of simulation scale from visual scale and the explicit 
 instrumentation. Before implementation, the proposed equal-angle warp, 600-second timestep/CFL
 budget, pressure units, latent-heat feedback, and terrain-to-weather sampling contract should be
 validated against this renderer rather than adopted as untested constants.
+
+## Weather grid diagnostics foundation - 20 August 2026
+
+The first replacement-weather slice is now in place on `experimental-weather`. A CPU-owned
+six-face cube-sphere grid contains 64x64 cells per face (24,576 total), using the renderer's
+existing seam-safe raw cube-face mapping. Each cell precomputes its world direction, orthonormal
+east/north tangent basis, spherical surface area, and four cross-face neighbour indices. The
+implementation deliberately does not introduce the proposed equal-angle warp yet: that mapping
+must first be compared against renderer coordinates before it becomes a simulation contract.
+
+The grid has deterministic tests for complete planetary area, tangent orthonormality, reciprocal
+seam neighbours, cell count, and bounded latitude diagnostics. HUD key `7` toggles a six-face
+latitude field diagnostic and reports cell-area range, tangent error, and a stable neighbour
+fingerprint. Wind arrows are intentionally labelled idle until the momentum state exists; no
+weather physics or rendering has been added in this slice. The next slice should add field storage
+and conservation/CFL telemetry before transfer terms are implemented.

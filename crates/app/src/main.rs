@@ -12,6 +12,7 @@ mod relief_survey;
 mod scenario;
 mod sun;
 mod terrain;
+mod weather;
 
 use std::{
     path::PathBuf,
@@ -662,6 +663,7 @@ struct State {
     depth_view: wgpu::TextureView,
     hdr: hdr::HdrRenderer,
     atmosphere: atmosphere::AtmosphereRenderer,
+    weather: weather::WeatherState,
     sun: sun::SunRenderer,
     foveated: foveated::FoveatedRenderer,
     terrain: terrain::TerrainRenderer,
@@ -937,6 +939,7 @@ impl State {
             depth_view,
             hdr,
             atmosphere,
+            weather: weather::WeatherState::new(),
             sun,
             foveated,
             terrain,
@@ -1886,6 +1889,7 @@ impl State {
             let flight_speed_meters_per_second = self.flight_speed.speed_meters_per_second;
             let adapter_label = self.adapter_label.clone();
             let terrain_stats = self.terrain_stats.clone();
+            let weather_snapshot = self.weather.debug_snapshot();
             let minimum_lod_level = terrain_stats
                 .level_histogram
                 .iter()
@@ -1928,6 +1932,20 @@ impl State {
                                 "Ocean: {} chunks  |  {} triangles",
                                 terrain_stats.ocean_chunks, terrain_stats.ocean_triangles,
                             ));
+                            ui.label(format!(
+                                "Weather grid: {} cells  |  area {:.6e} m²  |  cell area {:.3e}-{:.3e} m²",
+                                weather_snapshot.total_cells,
+                                weather_snapshot.total_area_square_meters,
+                                weather_snapshot.minimum_cell_area_square_meters,
+                                weather_snapshot.maximum_cell_area_square_meters,
+                            ));
+                            ui.label(format!(
+                                "Weather topology tangent error: {:.3e}  |  neighbours {:016x}  |  overlay {} (7)",
+                                weather_snapshot.maximum_tangent_error,
+                                weather_snapshot.neighbour_checksum,
+                                if weather_snapshot.overlay_enabled { "on" } else { "off" },
+                            ));
+                            weather_snapshot.paint_overlay(ui);
                             ui.label(format!("Camera mode: {}", camera_mode.label()));
                             if camera_mode == CameraMode::LowFlight {
                                 ui.label(format!(
@@ -1992,7 +2010,7 @@ impl State {
                             ));
                             ui.label(format!("Ocean Gerstner range: {ocean_wave_range:.2} m"));
                             ui.label(
-                                "F: fullscreen  |  F3: overlay  |  F4: camera mode  |  F5: render path  |  WASD: fly  |  O: triangle outlines  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
+                                "F: fullscreen  |  F3: overlay  |  F4: camera mode  |  F5: render path  |  WASD: fly  |  O: triangle outlines  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
                             );
                             ui.label("Default: fullscreen, HUD hidden, auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc/Q: quit");
                         });
@@ -2916,6 +2934,14 @@ impl ApplicationHandler for App {
                         && event.physical_key == PhysicalKey::Code(KeyCode::Digit6) =>
                 {
                     state.toggle_auto_exposure();
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::Digit7) =>
+                {
+                    state.weather.toggle_overlay();
+                    state.hud_dirty = true;
                     window.request_redraw();
                 }
                 WindowEvent::KeyboardInput { event, .. }
