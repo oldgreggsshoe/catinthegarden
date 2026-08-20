@@ -1,5 +1,4 @@
 mod atmosphere;
-mod clouds;
 mod debug;
 mod foveated;
 mod haze;
@@ -663,7 +662,6 @@ struct State {
     depth_view: wgpu::TextureView,
     hdr: hdr::HdrRenderer,
     atmosphere: atmosphere::AtmosphereRenderer,
-    clouds: clouds::CloudRenderer,
     sun: sun::SunRenderer,
     foveated: foveated::FoveatedRenderer,
     terrain: terrain::TerrainRenderer,
@@ -880,12 +878,6 @@ impl State {
             hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
         );
-        let clouds = clouds::CloudRenderer::new(
-            &device,
-            hdr::HdrRenderer::SCENE_FORMAT,
-            &camera_bind_group_layout,
-            atmosphere.surface_lighting_resources(),
-        );
         let foveated = foveated::FoveatedRenderer::new(
             &device,
             &queue,
@@ -945,7 +937,6 @@ impl State {
             depth_view,
             hdr,
             atmosphere,
-            clouds,
             sun,
             foveated,
             terrain,
@@ -2111,7 +2102,6 @@ impl State {
             self.sun_direction,
             planet_rotation_radians,
             sim_time,
-            presentation_time,
             self.render_debug_mode,
             self.flat_triangle_outlines_enabled,
             camera_surface_height_meters,
@@ -2380,8 +2370,6 @@ impl State {
                 self.foveated.copy_to_history(&mut encoder);
             }
         }
-        // Preserve terrain-only depth for screenshot probes before solid
-        // clouds write their own nearer depth into the shared attachment.
         let pending_depth_probe = probe_requested.then(|| {
             probe::schedule_depth_readback(
                 &self.device,
@@ -2391,40 +2379,6 @@ impl State {
                 self.size.height,
             )
         });
-        if !solid_color_screen
-            && matches!(
-                self.render_debug_mode,
-                planet::RenderDebugMode::Final | planet::RenderDebugMode::FlatTriangles
-            )
-            && !(self.render_path == RenderPath::FoveatedRay
-                && self.render_debug_mode == planet::RenderDebugMode::Final
-                && self.foveated.warp_debug_visible())
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("cloud layers pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: self.hdr.scene_view(),
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                occlusion_query_set: None,
-                timestamp_writes: None,
-                multiview_mask: None,
-            });
-            self.clouds.draw(&mut render_pass, &self.camera_bind_group);
-        }
         let timestamp_query_set = gpu_slot_index.map(|slot_index| {
             &self
                 .gpu_profiler
@@ -2443,7 +2397,7 @@ impl State {
             .then(|| self.hdr.encode_luminance_readback(&mut encoder))
             .flatten();
         // The disc and corona are a camera-only visual aid. Composite them
-        // after the meter has sampled the physical atmosphere/terrain/cloud scene so
+        // after the meter has sampled the physical atmosphere and terrain scene so
         // their terrain occlusion cannot drive a false exposure rebound at
         // sunset. They remain HDR input for bloom and tone mapping below.
         {

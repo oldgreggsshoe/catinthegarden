@@ -550,7 +550,6 @@ mod tests {
             include_str!("atmosphere_sky_view.wgsl"),
             include_str!("atmosphere_irradiance.wgsl"),
             include_str!("shared_planet.wgsl"),
-            include_str!("clouds.wgsl"),
         ] {
             assert!(!physical_stage.contains("VISIBLE_SKY_RADIANCE_SCALE"));
         }

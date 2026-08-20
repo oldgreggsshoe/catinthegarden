@@ -6,7 +6,7 @@ const OPTICAL_ATMOSPHERE_HEIGHT_METERS: f32 = 320000.0;
 const ORBITAL_ATMOSPHERE_LUT_V: f32 = 0.72;
 const ORBITAL_GROUND_LUT_V: f32 = 0.88;
 // Presentation-only gain for the visible sky. Keep this outside the physical
-// LUTs so surface/cloud lighting, extinction, and exposure remain unchanged.
+// LUTs so surface lighting, extinction, and exposure remain unchanged.
 const VISIBLE_SKY_RADIANCE_SCALE: f32 = 2.0;
 
 struct Camera {

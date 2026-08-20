@@ -2841,3 +2841,18 @@ visibly keeps the elevated clouds illuminated after the ground has darkened;
 passes 215 tests with seven ignored; its two failures are the pre-existing active-bake prominence
 constant and collision-clearance expectations, while the broader dirty worktree passes 217 tests
 and retains its two unrelated LOD-transition timing failures.
+
+## Experimental weather branch removes the legacy cloud renderer - 20 August 2026
+
+Branch `experimental-weather` intentionally removes the previous deterministic solid low-poly
+cloud renderer and its WGSL shader, GPU pipeline, instance generation, render pass, and
+presentation-time camera plumbing. Atmosphere LUTs, terrain lighting, the sun, and all existing
+terrain/ocean rendering remain intact. No replacement weather simulation has been started yet.
+
+The accompanying `planetary-weather-implementation.pdf` proposes a substantially better next
+architecture: a coarse six-face cube-sphere field for synoptic state, CPU-first fixed-step
+simulation, seam-safe world-space tangent velocity, and render-time local detail. Its strongest
+advice is the separation of simulation scale from visual scale and the explicit conservation/debug
+instrumentation. Before implementation, the proposed equal-angle warp, 600-second timestep/CFL
+budget, pressure units, latent-heat feedback, and terrain-to-weather sampling contract should be
+validated against this renderer rather than adopted as untested constants.
