@@ -1,11 +1,11 @@
-Stage 6 complete and pushed as `829acae`.
+Stage 7 complete and pushed as `2a30c9c`.
 
-- Added pressure-gradient tangent wind momentum using seam-safe neighbours.
-- Applied exponential damping and a 60 m/s cap to keep the field stable.
-- Humidity transport now uses the updated wind field with capacity-aware conservative transfers.
-- Wind arrows and diagnostics remain available in the overlay.
+- Added fixed-step insolation, albedo-weighted absorption, Stefan-Boltzmann radiative cooling, and a bounded humidity greenhouse factor.
+- Added a deterministic land/ocean thermal-inertia proxy; ocean-like cells carry five times the heat capacity of land-like cells.
+- Pressure is now re-diagnosed from temperature before wind momentum; humidity transport remains conservative.
+- The render loop passes the scenario/interactive sun in planet-local coordinates.
 
 Validation:
-- Weather tests: 13 passed.
-- `cargo check --workspace`: passed with no warnings.
+- Focused weather tests: 14 passed.
+- `cargo check --workspace`: passed.
 - Existing unrelated worktree changes were preserved.
