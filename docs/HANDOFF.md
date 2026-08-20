@@ -2973,3 +2973,15 @@ Interactive debugging now exposes key `9` as a manual weather step. It executes 
 and works while F10 holds the normal scene clock. The production fixed-step clock and all scenario
 timelines are unchanged; this is only a deterministic inspection control for temperature, pressure,
 wind, humidity, and Coriolis changes without waiting ten real minutes.
+
+## Experimental weather temperature advection - 20 August 2026
+
+Each fixed weather step now semi-Lagrangian-advects temperature after the thermal and momentum
+passes. Backtraces use the updated seam-safe tangent wind, and bilinear samples use fractional
+cube-face coordinates with the existing cross-face neighbour mapping, so warm/cold tongues move
+across seams without a face-aligned lookup discontinuity. The result is clamped to the established
+180-340K safety bounds; pressure on the next tick is diagnosed from the advected field.
+
+The deterministic weather suite now has 17 focused tests, including bounded temperature transport
+and repeatability. Workspace check passes. Humidity remains on its conservative mass-flux path;
+MacCormack sharpening, terrain drag, and rendered weather fields are still deferred.

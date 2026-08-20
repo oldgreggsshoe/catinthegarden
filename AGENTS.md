@@ -283,3 +283,4 @@ Test the baker standalone with the PNG preview before ever wiring it into the re
 - Phase 7 experimental-weather insolation/thermal response: added sun-direction insolation, albedo-weighted absorption, Stefan-Boltzmann cooling, humidity greenhouse factor, and a bounded land/ocean heat-capacity proxy before pressure diagnosis and wind; 14 focused weather tests and workspace check pass.
 - Phase 7 experimental-weather Coriolis momentum: projected Earth-rate Coriolis acceleration into the seam-safe local tangent frame, with a hemisphere-reversal/equator regression; 15 focused weather tests and workspace check pass.
 - Phase 7 experimental-weather manual stepping: added interactive key 9 to run one exact 600s weather tick while F10 is frozen; normal clock/scenario timing remains unchanged.
+- Phase 7 experimental-weather temperature advection: added bounded semi-Lagrangian backtracing with bilinear cross-face sampling; 17 focused weather tests and workspace check pass.

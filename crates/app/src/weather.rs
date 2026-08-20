@@ -287,6 +287,32 @@ impl WeatherFields {
         }
     }
 
+    /// Semi-Lagrangian temperature advection. Each destination cell traces
+    /// backwards through the updated tangent wind and bilinearly samples the
+    /// previous temperature field, including cross-face neighbours.
+    pub fn advect_temperature(&mut self, grid: &WeatherGrid, step_seconds: f64) {
+        if step_seconds <= 0.0 {
+            return;
+        }
+        let old_temperature = self
+            .cells
+            .iter()
+            .map(|state| f64::from(state.temperature_kelvin))
+            .collect::<Vec<_>>();
+        let mut next_temperature = vec![0.0_f32; self.cells.len()];
+        for (index, cell) in grid.cells().iter().enumerate() {
+            let velocity = cell.east * f64::from(self.cells[index].east_wind_meters_per_second)
+                + cell.north * f64::from(self.cells[index].north_wind_meters_per_second);
+            let source_direction =
+                (cell.direction - velocity * (step_seconds / PLANET_RADIUS_METERS)).normalize();
+            next_temperature[index] = sample_scalar_bilinear(&old_temperature, source_direction)
+                .clamp(180.0, 340.0) as f32;
+        }
+        for (state, temperature) in self.cells.iter_mut().zip(next_temperature) {
+            state.temperature_kelvin = temperature;
+        }
+    }
+
     /// Moves humidity along the local tangent wind field using conservative
     /// mass fluxes. Each source emits to one seam-safe neighbouring cell; the
     /// area-weighted humidity integral is unchanged by construction.
@@ -693,6 +719,8 @@ impl WeatherState {
         self.fields
             .update_wind_from_pressure(&self.grid, WEATHER_TIMESTEP_SECONDS);
         self.fields
+            .advect_temperature(&self.grid, WEATHER_TIMESTEP_SECONDS);
+        self.fields
             .advect_humidity(&self.grid, WEATHER_TIMESTEP_SECONDS);
     }
 
@@ -754,7 +782,36 @@ fn adjacent_cell_index(face: u8, i: isize, j: isize) -> u32 {
     cell_index(mapped_face, mapped_i, mapped_j) as u32
 }
 
+fn sample_scalar_bilinear(values: &[f64], direction: DVec3) -> f64 {
+    let (face, fractional_i, fractional_j) = direction_to_fractional_cell(direction);
+    let i0 = fractional_i.floor() as isize;
+    let j0 = fractional_j.floor() as isize;
+    let tx = fractional_i - i0 as f64;
+    let ty = fractional_j - j0 as f64;
+    let sample = |i: isize, j: isize| values[adjacent_cell_index(face, i, j) as usize];
+    let west_south = sample(i0, j0);
+    let east_south = sample(i0 + 1, j0);
+    let west_north = sample(i0, j0 + 1);
+    let east_north = sample(i0 + 1, j0 + 1);
+    let south = west_south + (east_south - west_south) * tx;
+    let north = west_north + (east_north - west_north) * tx;
+    south + (north - south) * ty
+}
+
 fn direction_to_cell(direction: DVec3) -> (u8, usize, usize) {
+    let (best_face, fractional_i, fractional_j) = direction_to_fractional_cell(direction);
+    (
+        best_face,
+        fractional_i
+            .round()
+            .clamp(0.0, (WEATHER_GRID_SIDE - 1) as f64) as usize,
+        fractional_j
+            .round()
+            .clamp(0.0, (WEATHER_GRID_SIDE - 1) as f64) as usize,
+    )
+}
+
+fn direction_to_fractional_cell(direction: DVec3) -> (u8, f64, f64) {
     let mut best_face = 0;
     let mut best_normal_dot = f64::NEG_INFINITY;
     for face in 0..WEATHER_FACE_COUNT as u8 {
@@ -768,11 +825,9 @@ fn direction_to_cell(direction: DVec3) -> (u8, usize, usize) {
     let (_normal, tangent_u, tangent_v) = cube_face_basis(best_face);
     let u = direction.dot(tangent_u) / best_normal_dot;
     let v = direction.dot(tangent_v) / best_normal_dot;
-    let i = (((u + 1.0) * 0.5 * WEATHER_GRID_SIDE as f64 - 0.5).round() as isize)
-        .clamp(0, WEATHER_GRID_SIDE as isize - 1) as usize;
-    let j = (((v + 1.0) * 0.5 * WEATHER_GRID_SIDE as f64 - 0.5).round() as isize)
-        .clamp(0, WEATHER_GRID_SIDE as isize - 1) as usize;
-    (best_face, i, j)
+    let fractional_i = (u + 1.0) * 0.5 * WEATHER_GRID_SIDE as f64 - 0.5;
+    let fractional_j = (v + 1.0) * 0.5 * WEATHER_GRID_SIDE as f64 - 0.5;
+    (best_face, fractional_i, fractional_j)
 }
 
 fn tangent_basis(direction: DVec3) -> (DVec3, DVec3) {
@@ -1102,6 +1157,30 @@ mod tests {
         assert!(maximum_heat_capacity / minimum_heat_capacity > 3.0);
         assert!(day_diagnostics.mean_temperature_kelvin.is_finite());
         assert!(initial.mean_temperature_kelvin.is_finite());
+    }
+
+    #[test]
+    fn temperature_advection_is_deterministic_bounded_and_changes_the_field() {
+        let grid = WeatherGrid::new();
+        let mut first = WeatherFields::initial(&grid);
+        let mut second = WeatherFields::initial(&grid);
+        let before = first.cells().to_vec();
+        for fields in [&mut first, &mut second] {
+            fields.update_wind_from_pressure(&grid, WEATHER_TIMESTEP_SECONDS);
+            fields.advect_temperature(&grid, WEATHER_TIMESTEP_SECONDS);
+        }
+        assert_eq!(first.cells(), second.cells());
+        assert!(first.cells().iter().all(|state| {
+            state.temperature_kelvin.is_finite()
+                && (180.0..=340.0).contains(&state.temperature_kelvin)
+        }));
+        assert!(
+            first
+                .cells()
+                .iter()
+                .zip(before)
+                .any(|(after, before)| after.temperature_kelvin != before.temperature_kelvin)
+        );
     }
 
     #[test]
