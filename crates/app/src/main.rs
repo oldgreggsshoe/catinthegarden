@@ -1945,6 +1945,28 @@ impl State {
                                 weather_snapshot.neighbour_checksum,
                                 if weather_snapshot.overlay_enabled { "on" } else { "off" },
                             ));
+                            let field = weather_snapshot.field_diagnostics;
+                            ui.label(format!(
+                                "Weather fields: T {:.1}-{:.1}K (mean {:.1})  |  p {:.0}-{:.0}Pa (mean {:.0})  |  RH {:.2}-{:.2} (mean {:.2})",
+                                field.minimum_temperature_kelvin,
+                                field.maximum_temperature_kelvin,
+                                field.mean_temperature_kelvin,
+                                field.minimum_pressure_pascals,
+                                field.maximum_pressure_pascals,
+                                field.mean_pressure_pascals,
+                                field.minimum_humidity,
+                                field.maximum_humidity,
+                                field.mean_humidity,
+                            ));
+                            ui.label(format!(
+                                "Weather wind: max {:.1}m/s  |  CFL@{}s {:.3}  |  relax@1800s {:.3}  |  conservation Δp {:.2e} Δq {:.2e}",
+                                field.maximum_wind_meters_per_second,
+                                weather::WEATHER_TIMESTEP_SECONDS as u32,
+                                field.maximum_cfl,
+                                field.relaxation_weight_at_1800_seconds,
+                                field.pressure_conservation_error,
+                                field.humidity_conservation_error,
+                            ));
                             weather_snapshot.paint_overlay(ui);
                             ui.label(format!("Camera mode: {}", camera_mode.label()));
                             if camera_mode == CameraMode::LowFlight {

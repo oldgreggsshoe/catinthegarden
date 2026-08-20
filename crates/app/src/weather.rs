@@ -3,6 +3,7 @@ use glam::DVec3;
 use crate::planet::{PLANET_RADIUS_METERS, cube_face_basis, cube_face_direction};
 
 pub const WEATHER_GRID_SIDE: usize = 64;
+pub const WEATHER_TIMESTEP_SECONDS: f64 = 600.0;
 const WEATHER_FACE_COUNT: usize = 6;
 const OVERLAY_BINS: usize = 16;
 const NEIGHBOUR_COUNT: usize = 4;
@@ -150,6 +151,178 @@ impl Default for WeatherGrid {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WeatherCellState {
+    pub temperature_kelvin: f32,
+    pub surface_pressure_pascals: f32,
+    pub specific_humidity: f32,
+    pub east_wind_meters_per_second: f32,
+    pub north_wind_meters_per_second: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WeatherOverlayWind {
+    pub east_meters_per_second: f32,
+    pub north_meters_per_second: f32,
+    pub speed_meters_per_second: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WeatherConservationBaseline {
+    pub pressure_area_integral: f64,
+    pub humidity_area_integral: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WeatherFieldDiagnostics {
+    pub minimum_temperature_kelvin: f32,
+    pub maximum_temperature_kelvin: f32,
+    pub mean_temperature_kelvin: f32,
+    pub minimum_pressure_pascals: f32,
+    pub maximum_pressure_pascals: f32,
+    pub mean_pressure_pascals: f32,
+    pub minimum_humidity: f32,
+    pub maximum_humidity: f32,
+    pub mean_humidity: f32,
+    pub maximum_wind_meters_per_second: f32,
+    pub maximum_cfl: f64,
+    pub relaxation_weight_at_1800_seconds: f64,
+    pub pressure_conservation_error: f64,
+    pub humidity_conservation_error: f64,
+}
+
+#[derive(Debug)]
+pub struct WeatherFields {
+    cells: Vec<WeatherCellState>,
+    conservation_baseline: WeatherConservationBaseline,
+}
+
+impl WeatherFields {
+    pub fn initial(grid: &WeatherGrid) -> Self {
+        let cells = grid
+            .cells()
+            .iter()
+            .map(|cell| initial_cell_state(cell.direction))
+            .collect::<Vec<_>>();
+        let conservation_baseline = conservation_baseline(grid, &cells);
+        Self {
+            cells,
+            conservation_baseline,
+        }
+    }
+
+    pub fn cells(&self) -> &[WeatherCellState] {
+        &self.cells
+    }
+
+    pub fn diagnostics(&self, grid: &WeatherGrid) -> WeatherFieldDiagnostics {
+        let mut min_temperature = f32::INFINITY;
+        let mut max_temperature = f32::NEG_INFINITY;
+        let mut min_pressure = f32::INFINITY;
+        let mut max_pressure = f32::NEG_INFINITY;
+        let mut min_humidity = f32::INFINITY;
+        let mut max_humidity = f32::NEG_INFINITY;
+        let mut mean_temperature = 0.0_f64;
+        let mut mean_pressure = 0.0_f64;
+        let mut mean_humidity = 0.0_f64;
+        let mut maximum_wind = 0.0_f32;
+        let mut maximum_cfl = 0.0_f64;
+        let mut pressure_integral = 0.0_f64;
+        let mut humidity_integral = 0.0_f64;
+
+        for (cell, state) in grid.cells().iter().zip(&self.cells) {
+            let area = cell.area_square_meters;
+            let wind_speed = state
+                .east_wind_meters_per_second
+                .hypot(state.north_wind_meters_per_second);
+            let cfl = WEATHER_TIMESTEP_SECONDS * f64::from(wind_speed) / area.sqrt();
+            min_temperature = min_temperature.min(state.temperature_kelvin);
+            max_temperature = max_temperature.max(state.temperature_kelvin);
+            min_pressure = min_pressure.min(state.surface_pressure_pascals);
+            max_pressure = max_pressure.max(state.surface_pressure_pascals);
+            min_humidity = min_humidity.min(state.specific_humidity);
+            max_humidity = max_humidity.max(state.specific_humidity);
+            maximum_wind = maximum_wind.max(wind_speed);
+            maximum_cfl = maximum_cfl.max(cfl);
+            mean_temperature += f64::from(state.temperature_kelvin) * area;
+            mean_pressure += f64::from(state.surface_pressure_pascals) * area;
+            mean_humidity += f64::from(state.specific_humidity) * area;
+            pressure_integral += f64::from(state.surface_pressure_pascals) * area;
+            humidity_integral += f64::from(state.specific_humidity) * area;
+        }
+
+        let total_area = grid.total_area_square_meters();
+        WeatherFieldDiagnostics {
+            minimum_temperature_kelvin: min_temperature,
+            maximum_temperature_kelvin: max_temperature,
+            mean_temperature_kelvin: (mean_temperature / total_area) as f32,
+            minimum_pressure_pascals: min_pressure,
+            maximum_pressure_pascals: max_pressure,
+            mean_pressure_pascals: (mean_pressure / total_area) as f32,
+            minimum_humidity: min_humidity,
+            maximum_humidity: max_humidity,
+            mean_humidity: (mean_humidity / total_area) as f32,
+            maximum_wind_meters_per_second: maximum_wind,
+            maximum_cfl,
+            relaxation_weight_at_1800_seconds: exponential_relaxation_weight(
+                WEATHER_TIMESTEP_SECONDS,
+                1_800.0,
+            ),
+            pressure_conservation_error: relative_error(
+                pressure_integral,
+                self.conservation_baseline.pressure_area_integral,
+            ),
+            humidity_conservation_error: relative_error(
+                humidity_integral,
+                self.conservation_baseline.humidity_area_integral,
+            ),
+        }
+    }
+
+    pub fn overlay_wind_bins(
+        &self,
+        grid: &WeatherGrid,
+    ) -> [[WeatherOverlayWind; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT] {
+        let mut bins = [[WeatherOverlayWind {
+            east_meters_per_second: 0.0,
+            north_meters_per_second: 0.0,
+            speed_meters_per_second: 0.0,
+        }; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT];
+        let cells_per_bin = WEATHER_GRID_SIDE / OVERLAY_BINS;
+        for face in 0..WEATHER_FACE_COUNT {
+            for y in 0..OVERLAY_BINS {
+                for x in 0..OVERLAY_BINS {
+                    let mut east = 0.0_f64;
+                    let mut north = 0.0_f64;
+                    let mut area = 0.0_f64;
+                    for local_y in 0..cells_per_bin {
+                        for local_x in 0..cells_per_bin {
+                            let index = cell_index(
+                                face as u8,
+                                x * cells_per_bin + local_x,
+                                y * cells_per_bin + local_y,
+                            );
+                            let cell_area = grid.cells()[index].area_square_meters;
+                            let state = self.cells()[index];
+                            east += f64::from(state.east_wind_meters_per_second) * cell_area;
+                            north += f64::from(state.north_wind_meters_per_second) * cell_area;
+                            area += cell_area;
+                        }
+                    }
+                    let east = (east / area) as f32;
+                    let north = (north / area) as f32;
+                    bins[face][y * OVERLAY_BINS + x] = WeatherOverlayWind {
+                        east_meters_per_second: east,
+                        north_meters_per_second: north,
+                        speed_meters_per_second: east.hypot(north),
+                    };
+                }
+            }
+        }
+        bins
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct WeatherDebugSnapshot {
     pub overlay_enabled: bool,
@@ -159,7 +332,9 @@ pub struct WeatherDebugSnapshot {
     pub maximum_cell_area_square_meters: f64,
     pub maximum_tangent_error: f64,
     pub neighbour_checksum: u64,
+    pub field_diagnostics: WeatherFieldDiagnostics,
     pub latitude_bins: [[f32; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT],
+    pub wind_bins: [[WeatherOverlayWind; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT],
 }
 
 impl WeatherDebugSnapshot {
@@ -169,7 +344,7 @@ impl WeatherDebugSnapshot {
         }
 
         ui.separator();
-        ui.label("Weather field overlay: latitude diagnostic (physics not started)");
+        ui.label("Weather field overlay: latitude / initial wind diagnostic");
         let panel_size = egui::vec2(256.0, 176.0);
         let (rect, _) = ui.allocate_exact_size(panel_size, egui::Sense::hover());
         let painter = ui.painter_at(rect);
@@ -190,6 +365,34 @@ impl WeatherDebugSnapshot {
                     painter.rect_filled(cell, 0.0, colour);
                 }
             }
+            for y in 0..OVERLAY_BINS {
+                for x in 0..OVERLAY_BINS {
+                    let wind = self.wind_bins[face][y * OVERLAY_BINS + x];
+                    let center = origin + egui::vec2(x as f32 * 4.0 + 2.0, y as f32 * 4.0 + 2.0);
+                    let maximum_arrow_speed = 24.0_f32;
+                    let arrow =
+                        egui::vec2(wind.east_meters_per_second, -wind.north_meters_per_second)
+                            * (10.0 / maximum_arrow_speed);
+                    if arrow.length_sq() > 0.25 {
+                        let tip = center + arrow;
+                        let direction = arrow.normalized();
+                        let side = egui::vec2(-direction.y, direction.x);
+                        let head = 2.0;
+                        painter.line_segment(
+                            [center - arrow * 0.35, tip],
+                            egui::Stroke::new(0.8, egui::Color32::WHITE),
+                        );
+                        painter.line_segment(
+                            [tip, tip - direction * head + side * head * 0.6],
+                            egui::Stroke::new(0.8, egui::Color32::WHITE),
+                        );
+                        painter.line_segment(
+                            [tip, tip - direction * head - side * head * 0.6],
+                            egui::Stroke::new(0.8, egui::Color32::WHITE),
+                        );
+                    }
+                }
+            }
             painter.text(
                 origin + egui::vec2(3.0, 3.0),
                 egui::Align2::LEFT_TOP,
@@ -198,19 +401,23 @@ impl WeatherDebugSnapshot {
                 egui::Color32::WHITE,
             );
         }
-        ui.label("Wind arrows: idle until the momentum step is implemented");
+        ui.label("Arrows: initial tangent wind (transport not started)");
     }
 }
 
 pub struct WeatherState {
     grid: WeatherGrid,
+    fields: WeatherFields,
     overlay_enabled: bool,
 }
 
 impl WeatherState {
     pub fn new() -> Self {
+        let grid = WeatherGrid::new();
+        let fields = WeatherFields::initial(&grid);
         Self {
-            grid: WeatherGrid::new(),
+            grid,
+            fields,
             overlay_enabled: false,
         }
     }
@@ -230,7 +437,9 @@ impl WeatherState {
             maximum_cell_area_square_meters,
             maximum_tangent_error: self.grid.max_tangent_error(),
             neighbour_checksum: self.grid.neighbour_checksum(),
+            field_diagnostics: self.fields.diagnostics(&self.grid),
             latitude_bins: self.grid.overlay_latitude_bins(),
+            wind_bins: self.fields.overlay_wind_bins(&self.grid),
         }
     }
 }
@@ -325,6 +534,68 @@ fn cell_area_square_meters(face: u8, i: usize, j: usize) -> f64 {
         * PLANET_RADIUS_METERS
 }
 
+fn initial_cell_state(direction: DVec3) -> WeatherCellState {
+    let latitude = direction.y.clamp(-1.0, 1.0).asin();
+    let longitude = direction.z.atan2(direction.x);
+    let latitude_sine = latitude.sin().abs();
+    let temperature_kelvin = 288.0 - 42.0 * latitude_sine;
+    let surface_pressure_pascals =
+        101_325.0 * (1.0 - 0.04 * latitude_sine + 0.01 * (longitude * 2.0).cos());
+    let specific_humidity =
+        (0.76 - 0.34 * latitude_sine + 0.04 * longitude.sin()).clamp(0.08, 0.82);
+    let east_wind_meters_per_second =
+        18.0 * (2.0 * latitude).sin() - 8.0 * (3.0 * latitude).sin() * longitude.cos();
+    let north_wind_meters_per_second = 4.0 * latitude.cos() * (2.0 * longitude).sin();
+    WeatherCellState {
+        temperature_kelvin: temperature_kelvin as f32,
+        surface_pressure_pascals: surface_pressure_pascals as f32,
+        specific_humidity: specific_humidity as f32,
+        east_wind_meters_per_second: east_wind_meters_per_second as f32,
+        north_wind_meters_per_second: north_wind_meters_per_second as f32,
+    }
+}
+
+fn conservation_baseline(
+    grid: &WeatherGrid,
+    cells: &[WeatherCellState],
+) -> WeatherConservationBaseline {
+    let (pressure_area_integral, humidity_area_integral) =
+        grid.cells()
+            .iter()
+            .zip(cells)
+            .fold((0.0, 0.0), |(pressure, humidity), (cell, state)| {
+                let area = cell.area_square_meters;
+                (
+                    pressure + f64::from(state.surface_pressure_pascals) * area,
+                    humidity + f64::from(state.specific_humidity) * area,
+                )
+            });
+    WeatherConservationBaseline {
+        pressure_area_integral,
+        humidity_area_integral,
+    }
+}
+
+fn relative_error(value: f64, reference: f64) -> f64 {
+    if reference == 0.0 {
+        (value - reference).abs()
+    } else {
+        (value - reference).abs() / reference.abs()
+    }
+}
+
+/// Returns the bounded fraction of a reservoir transfer completed in one
+/// fixed step. Unlike an explicit `dt / tau` factor, this cannot overshoot.
+pub fn exponential_relaxation_weight(step_seconds: f64, time_constant_seconds: f64) -> f64 {
+    if step_seconds <= 0.0 {
+        0.0
+    } else if time_constant_seconds <= 0.0 {
+        1.0
+    } else {
+        1.0 - (-step_seconds / time_constant_seconds).exp()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,5 +652,60 @@ mod tests {
                 .flatten()
                 .all(|value| (0.0..=1.0).contains(&value))
         );
+    }
+
+    #[test]
+    fn initial_fields_are_deterministic_finite_and_physically_bounded() {
+        let grid = WeatherGrid::new();
+        let first = WeatherFields::initial(&grid);
+        let second = WeatherFields::initial(&grid);
+        assert_eq!(first.cells(), second.cells());
+        assert!(first.cells().iter().all(|state| {
+            state.temperature_kelvin.is_finite()
+                && (246.0..=289.0).contains(&state.temperature_kelvin)
+                && state.surface_pressure_pascals.is_finite()
+                && (96_000.0..=103_000.0).contains(&state.surface_pressure_pascals)
+                && (0.0..=1.0).contains(&state.specific_humidity)
+                && state.east_wind_meters_per_second.is_finite()
+                && state.north_wind_meters_per_second.is_finite()
+        }));
+    }
+
+    #[test]
+    fn diagnostics_have_bounded_cfl_and_zero_initial_conservation_error() {
+        let grid = WeatherGrid::new();
+        let fields = WeatherFields::initial(&grid);
+        let diagnostics = fields.diagnostics(&grid);
+        assert!((250.0..=290.0).contains(&diagnostics.mean_temperature_kelvin));
+        assert!((99_000.0..=102_000.0).contains(&diagnostics.mean_pressure_pascals));
+        assert!((0.2..=0.8).contains(&diagnostics.mean_humidity));
+        assert!(diagnostics.maximum_cfl < 1.0);
+        assert!(diagnostics.pressure_conservation_error < f64::EPSILON);
+        assert!(diagnostics.humidity_conservation_error < f64::EPSILON);
+    }
+
+    #[test]
+    fn exponential_relaxation_never_overshoots() {
+        let weight = exponential_relaxation_weight(WEATHER_TIMESTEP_SECONDS, 1_800.0);
+        assert!((0.0..1.0).contains(&weight));
+        let start = 280.0;
+        let target = 320.0;
+        let next = start + (target - start) * weight;
+        assert!((start..=target).contains(&next));
+        assert_eq!(exponential_relaxation_weight(0.0, 1_800.0), 0.0);
+        assert_eq!(exponential_relaxation_weight(600.0, 0.0), 1.0);
+    }
+
+    #[test]
+    fn wind_overlay_is_deterministic_and_non_zero() {
+        let grid = WeatherGrid::new();
+        let fields = WeatherFields::initial(&grid);
+        let first = fields.overlay_wind_bins(&grid);
+        assert_eq!(first, fields.overlay_wind_bins(&grid));
+        assert!(first.into_iter().flatten().any(|wind| {
+            wind.speed_meters_per_second > 1.0
+                && wind.east_meters_per_second.is_finite()
+                && wind.north_meters_per_second.is_finite()
+        }));
     }
 }

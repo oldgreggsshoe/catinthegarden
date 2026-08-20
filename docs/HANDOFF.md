@@ -2872,3 +2872,18 @@ latitude field diagnostic and reports cell-area range, tangent error, and a stab
 fingerprint. Wind arrows are intentionally labelled idle until the momentum state exists; no
 weather physics or rendering has been added in this slice. The next slice should add field storage
 and conservation/CFL telemetry before transfer terms are implemented.
+
+## Weather initial fields and diagnostics - 20 August 2026
+
+The weather state now owns deterministic initial near-surface fields for temperature, pressure,
+specific humidity, and tangent east/north wind on every grid cell. The initial field is deliberately
+an inspectable hypothesis rather than a production climate model: temperature follows latitude,
+pressure and humidity have small longitude structure, and wind is a smooth zonal/meridional test
+pattern. No transport, heating, precipitation, or terrain coupling runs yet.
+
+The HUD weather section now reports weighted field ranges/means, maximum wind speed, the proposed
+600-second-step CFL estimate, and pressure/humidity area-integral conservation error. A six-face
+overlay draws the initial tangent wind vectors over the latitude colour field, making direction and
+seam placement visible before momentum exists. The transfer helper uses exponential relaxation,
+`1-exp(-dt/tau)`, so later 600-second transfers cannot overshoot. Nine focused weather tests cover
+field determinism/bounds, diagnostics/CFL/conservation, wind overlays, and relaxation behaviour.
