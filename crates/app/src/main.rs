@@ -1933,11 +1933,13 @@ impl State {
                                 terrain_stats.ocean_chunks, terrain_stats.ocean_triangles,
                             ));
                             ui.label(format!(
-                                "Weather grid: {} cells  |  area {:.6e} m²  |  cell area {:.3e}-{:.3e} m²",
+                                "Weather grid: {} cells  |  area {:.6e} m²  |  cell area {:.3e}-{:.3e} m²  |  t {:.0}s / {} steps",
                                 weather_snapshot.total_cells,
                                 weather_snapshot.total_area_square_meters,
                                 weather_snapshot.minimum_cell_area_square_meters,
                                 weather_snapshot.maximum_cell_area_square_meters,
+                                weather_snapshot.simulation_time_seconds,
+                                weather_snapshot.completed_steps,
                             ));
                             ui.label(format!(
                                 "Weather topology tangent error: {:.3e}  |  neighbours {:016x}  |  overlay {} (7)",

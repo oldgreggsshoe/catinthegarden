@@ -2887,3 +2887,19 @@ overlay draws the initial tangent wind vectors over the latitude colour field, m
 seam placement visible before momentum exists. The transfer helper uses exponential relaxation,
 `1-exp(-dt/tau)`, so later 600-second transfers cannot overshoot. Nine focused weather tests cover
 field determinism/bounds, diagnostics/CFL/conservation, wind overlays, and relaxation behaviour.
+
+## Weather fixed-step humidity transport - 20 August 2026
+
+The weather state now has a fixed 600-second clock (`WeatherState::advance_to`). Render or scenario
+time can arrive at any cadence; only complete weather steps are consumed, so partial frames cannot
+change the field. Each step performs one conservative humidity mass-flux pass: local tangent wind
+chooses the best of the four seam-safe neighbours, source mass is reduced, and the exact same mass
+is added to the destination before converting back to area-normalised humidity. Humidity remains
+bounded and the area integral is monitored against its baseline. Temperature, pressure, wind,
+heating, precipitation, and terrain coupling remain unchanged.
+
+The clock is exposed in the HUD as weather seconds and completed steps. Twelve focused tests now
+cover fixed-step cadence, bounded humidity, area-integral conservation, cross-face transport, and
+the existing topology/field diagnostics. Runtime wiring to the renderer's frame clock is kept as a
+small follow-up because the checkout still contains the unrelated uncommitted render-loop
+refactor; the transport API is ready for that integration without mixing the two changes.

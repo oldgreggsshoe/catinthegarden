@@ -98,6 +98,31 @@ impl WeatherGrid {
             .fold(0, u64::wrapping_add)
     }
 
+    #[allow(dead_code)] // consumed when the render-loop clock is wired in
+    fn directional_neighbour_index(&self, index: usize, direction: DVec3) -> u32 {
+        let cell = self.cells[index];
+        let mut best_index = cell.neighbour(WeatherNeighbour::East);
+        let mut best_dot = f64::NEG_INFINITY;
+        for side in [
+            WeatherNeighbour::West,
+            WeatherNeighbour::East,
+            WeatherNeighbour::South,
+            WeatherNeighbour::North,
+        ] {
+            let neighbour_index = cell.neighbour(side);
+            let neighbour = self.cell(neighbour_index);
+            let tangent = (neighbour.direction
+                - cell.direction * neighbour.direction.dot(cell.direction))
+            .normalize();
+            let alignment = tangent.dot(direction);
+            if alignment > best_dot {
+                best_dot = alignment;
+                best_index = neighbour_index;
+            }
+        }
+        best_index
+    }
+
     pub fn total_area_square_meters(&self) -> f64 {
         self.cells.iter().map(|cell| cell.area_square_meters).sum()
     }
@@ -213,6 +238,37 @@ impl WeatherFields {
 
     pub fn cells(&self) -> &[WeatherCellState] {
         &self.cells
+    }
+
+    /// Moves humidity along the local tangent wind field using conservative
+    /// mass fluxes. Each source emits to one seam-safe neighbouring cell; the
+    /// area-weighted humidity integral is unchanged by construction.
+    #[allow(dead_code)] // consumed when the render-loop clock is wired in
+    pub fn advect_humidity(&mut self, grid: &WeatherGrid, step_seconds: f64) {
+        if step_seconds <= 0.0 {
+            return;
+        }
+        let mut mass_delta = vec![0.0_f64; self.cells.len()];
+        for (index, (cell, state)) in grid.cells().iter().zip(&self.cells).enumerate() {
+            let wind = cell.east * f64::from(state.east_wind_meters_per_second)
+                + cell.north * f64::from(state.north_wind_meters_per_second);
+            let speed = wind.length();
+            if speed <= f64::EPSILON {
+                continue;
+            }
+            let fraction = (step_seconds * speed / cell.area_square_meters.sqrt()).min(0.95);
+            let target = grid.directional_neighbour_index(index, wind / speed) as usize;
+            let mass = f64::from(state.specific_humidity) * cell.area_square_meters;
+            let transfer = mass * fraction;
+            mass_delta[index] -= transfer;
+            mass_delta[target] += transfer;
+        }
+
+        for (index, (cell, state)) in grid.cells().iter().zip(&mut self.cells).enumerate() {
+            let mass =
+                f64::from(state.specific_humidity) * cell.area_square_meters + mass_delta[index];
+            state.specific_humidity = (mass / cell.area_square_meters).clamp(0.0, 1.0) as f32;
+        }
     }
 
     pub fn diagnostics(&self, grid: &WeatherGrid) -> WeatherFieldDiagnostics {
@@ -332,6 +388,8 @@ pub struct WeatherDebugSnapshot {
     pub maximum_cell_area_square_meters: f64,
     pub maximum_tangent_error: f64,
     pub neighbour_checksum: u64,
+    pub simulation_time_seconds: f64,
+    pub completed_steps: u64,
     pub field_diagnostics: WeatherFieldDiagnostics,
     pub latitude_bins: [[f32; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT],
     pub wind_bins: [[WeatherOverlayWind; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT],
@@ -405,10 +463,15 @@ impl WeatherDebugSnapshot {
     }
 }
 
+#[allow(dead_code)] // the clock is intentionally staged before render-loop integration
 pub struct WeatherState {
     grid: WeatherGrid,
     fields: WeatherFields,
     overlay_enabled: bool,
+    last_input_time_seconds: f64,
+    accumulator_seconds: f64,
+    simulation_time_seconds: f64,
+    completed_steps: u64,
 }
 
 impl WeatherState {
@@ -419,11 +482,37 @@ impl WeatherState {
             grid,
             fields,
             overlay_enabled: false,
+            last_input_time_seconds: 0.0,
+            accumulator_seconds: 0.0,
+            simulation_time_seconds: 0.0,
+            completed_steps: 0,
         }
     }
 
     pub fn toggle_overlay(&mut self) {
         self.overlay_enabled = !self.overlay_enabled;
+    }
+
+    /// Consumes scene time through a fixed 600-second weather clock. The
+    /// caller may provide render/scenario time at any cadence; no partial
+    /// transfer is applied between fixed steps.
+    #[allow(dead_code)] // consumed when the render-loop clock is wired in
+    pub fn advance_to(&mut self, scene_time_seconds: f64) -> u64 {
+        if !scene_time_seconds.is_finite() || scene_time_seconds <= self.last_input_time_seconds {
+            return 0;
+        }
+        self.accumulator_seconds += scene_time_seconds - self.last_input_time_seconds;
+        self.last_input_time_seconds = scene_time_seconds;
+        let mut completed = 0;
+        while self.accumulator_seconds >= WEATHER_TIMESTEP_SECONDS {
+            self.fields
+                .advect_humidity(&self.grid, WEATHER_TIMESTEP_SECONDS);
+            self.accumulator_seconds -= WEATHER_TIMESTEP_SECONDS;
+            self.simulation_time_seconds += WEATHER_TIMESTEP_SECONDS;
+            self.completed_steps += 1;
+            completed += 1;
+        }
+        completed
     }
 
     pub fn debug_snapshot(&self) -> WeatherDebugSnapshot {
@@ -437,6 +526,8 @@ impl WeatherState {
             maximum_cell_area_square_meters,
             maximum_tangent_error: self.grid.max_tangent_error(),
             neighbour_checksum: self.grid.neighbour_checksum(),
+            simulation_time_seconds: self.simulation_time_seconds,
+            completed_steps: self.completed_steps,
             field_diagnostics: self.fields.diagnostics(&self.grid),
             latitude_bins: self.grid.overlay_latitude_bins(),
             wind_bins: self.fields.overlay_wind_bins(&self.grid),
@@ -707,5 +798,64 @@ mod tests {
                 && wind.east_meters_per_second.is_finite()
                 && wind.north_meters_per_second.is_finite()
         }));
+    }
+
+    #[test]
+    fn humidity_transport_preserves_area_integral_and_bounds() {
+        let grid = WeatherGrid::new();
+        let mut fields = WeatherFields::initial(&grid);
+        let before = fields.diagnostics(&grid);
+        fields.advect_humidity(&grid, WEATHER_TIMESTEP_SECONDS);
+        let after = fields.diagnostics(&grid);
+        assert!(after.maximum_cfl < 1.0);
+        assert!(after.minimum_humidity >= 0.0);
+        assert!(after.maximum_humidity <= 1.0);
+        assert!(
+            after.humidity_conservation_error < 1.0e-6,
+            "humidity conservation drift: {:#?}",
+            after
+        );
+        assert!((before.mean_humidity - after.mean_humidity).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn fixed_clock_only_runs_complete_weather_steps() {
+        let mut state = WeatherState::new();
+        assert_eq!(state.advance_to(WEATHER_TIMESTEP_SECONDS - 0.1), 0);
+        assert_eq!(state.debug_snapshot().completed_steps, 0);
+        assert_eq!(state.advance_to(WEATHER_TIMESTEP_SECONDS), 1);
+        assert_eq!(state.debug_snapshot().completed_steps, 1);
+        assert_eq!(state.advance_to(WEATHER_TIMESTEP_SECONDS), 0);
+        assert_eq!(state.advance_to(WEATHER_TIMESTEP_SECONDS * 2.0 + 0.1), 1);
+        assert_eq!(state.debug_snapshot().completed_steps, 2);
+    }
+
+    #[test]
+    fn transport_can_cross_a_cube_face_seam() {
+        let grid = WeatherGrid::new();
+        let mut fields = WeatherFields::initial(&grid);
+        let source_index = cell_index(0, 0, WEATHER_GRID_SIDE / 2);
+        let source = grid.cells()[source_index];
+        let target_index = grid.directional_neighbour_index(source_index, source.east) as usize;
+        assert_ne!(source_index, target_index);
+        for state in &mut fields.cells {
+            state.east_wind_meters_per_second = 0.0;
+            state.north_wind_meters_per_second = 0.0;
+        }
+        fields.cells[source_index].east_wind_meters_per_second = 20.0;
+        fields.cells[source_index].specific_humidity = 0.8;
+        fields.cells[target_index].specific_humidity = 0.2;
+        fields.conservation_baseline = conservation_baseline(&grid, &fields.cells);
+        let before = fields.diagnostics(&grid);
+        fields.advect_humidity(&grid, WEATHER_TIMESTEP_SECONDS);
+        let after = fields.diagnostics(&grid);
+        assert!(
+            after.humidity_conservation_error < 1.0e-6,
+            "humidity conservation drift: {:#?}",
+            after
+        );
+        assert!(fields.cells[source_index].specific_humidity < 0.8);
+        assert!(fields.cells[target_index].specific_humidity > 0.2);
+        assert!((before.mean_humidity - after.mean_humidity).abs() < 1.0e-6);
     }
 }
