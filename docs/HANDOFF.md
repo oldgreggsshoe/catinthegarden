@@ -2985,3 +2985,17 @@ across seams without a face-aligned lookup discontinuity. The result is clamped 
 The deterministic weather suite now has 17 focused tests, including bounded temperature transport
 and repeatability. Workspace check passes. Humidity remains on its conservative mass-flux path;
 MacCormack sharpening, terrain drag, and rendered weather fields are still deferred.
+
+## Experimental weather evaporation - 20 August 2026
+
+The moisture stage now adds bounded evaporation before advection. Ocean-like cells act as a wet
+surface source; land-like cells draw from a normalized ground-moisture reservoir initialized by
+the same deterministic surface proxy used for heat capacity. Evaporation scales with wind speed,
+temperature, and humidity deficit, uses exponential relaxation over 1,800 seconds, adds humidity,
+depletes land moisture, and applies a small latent cooling term. Humidity and ground moisture stay
+within `[0,1]`.
+
+The fixed-step sequence is now thermal balance -> pressure/momentum -> evaporation -> temperature
+advection -> humidity advection. Eighteen focused weather tests pass, including source bounds and
+cooling. This is still a normalized diagnostic moisture field: precipitation, condensation, and
+terrain-derived water are deferred.

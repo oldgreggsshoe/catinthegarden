@@ -16,6 +16,8 @@ const WEATHER_LAND_ALBEDO: f64 = 0.28;
 const WEATHER_OCEAN_ALBEDO: f64 = 0.08;
 const WEATHER_GREENHOUSE_FACTOR: f64 = 0.12;
 const WEATHER_PRESSURE_PER_KELVIN_PASCALS: f64 = 75.0;
+const WEATHER_EVAPORATION_TIME_CONSTANT_SECONDS: f64 = 1_800.0;
+const WEATHER_LATENT_COOLING_KELVIN_PER_UNIT: f64 = 2.5;
 const WEATHER_FACE_COUNT: usize = 6;
 const OVERLAY_BINS: usize = 16;
 const NEIGHBOUR_COUNT: usize = 4;
@@ -180,6 +182,7 @@ pub struct WeatherCellState {
     pub north_wind_meters_per_second: f32,
     pub surface_albedo: f32,
     pub heat_capacity_joules_per_square_meter_kelvin: f32,
+    pub ground_moisture: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -284,6 +287,42 @@ impl WeatherFields {
                 - WEATHER_PRESSURE_PER_KELVIN_PASCALS
                     * (f64::from(state.temperature_kelvin) - mean_temperature))
                 as f32;
+        }
+    }
+
+    /// Adds bounded surface evaporation before moisture advection. Ocean-like
+    /// cells provide an effectively unlimited source; land cells draw from
+    /// their local ground-moisture reservoir. The normalized humidity field
+    /// relaxes toward saturation without an explicit `dt / tau` overshoot.
+    pub fn evaporate_moisture(&mut self, step_seconds: f64) {
+        if step_seconds <= 0.0 {
+            return;
+        }
+        let relaxation =
+            exponential_relaxation_weight(step_seconds, WEATHER_EVAPORATION_TIME_CONSTANT_SECONDS);
+        for state in &mut self.cells {
+            let speed = f64::from(state.east_wind_meters_per_second)
+                .hypot(f64::from(state.north_wind_meters_per_second));
+            let ocean_fraction = ocean_fraction_from_albedo(f64::from(state.surface_albedo));
+            let land_fraction = 1.0 - ocean_fraction;
+            let source_wetness = (ocean_fraction
+                + land_fraction * f64::from(state.ground_moisture) * 0.4)
+                .clamp(0.0, 1.0);
+            let wind_factor = (1.0 + speed / 30.0).clamp(1.0, 3.0);
+            let thermal_factor =
+                ((f64::from(state.temperature_kelvin) - 245.0) / 35.0).clamp(0.0, 1.0);
+            let deficit = (1.0 - f64::from(state.specific_humidity)).clamp(0.0, 1.0);
+            let evaporated =
+                (deficit * relaxation * source_wetness * wind_factor * thermal_factor * 0.35)
+                    .min(deficit);
+            state.specific_humidity =
+                (f64::from(state.specific_humidity) + evaporated).clamp(0.0, 1.0) as f32;
+            state.ground_moisture = (f64::from(state.ground_moisture)
+                - evaporated * land_fraction * 0.35)
+                .clamp(0.0, 1.0) as f32;
+            state.temperature_kelvin = (f64::from(state.temperature_kelvin)
+                - evaporated * WEATHER_LATENT_COOLING_KELVIN_PER_UNIT)
+                .clamp(180.0, 340.0) as f32;
         }
     }
 
@@ -718,6 +757,7 @@ impl WeatherState {
         self.fields.diagnose_pressure_from_temperature(&self.grid);
         self.fields
             .update_wind_from_pressure(&self.grid, WEATHER_TIMESTEP_SECONDS);
+        self.fields.evaporate_moisture(WEATHER_TIMESTEP_SECONDS);
         self.fields
             .advect_temperature(&self.grid, WEATHER_TIMESTEP_SECONDS);
         self.fields
@@ -880,6 +920,7 @@ fn initial_cell_state(direction: DVec3) -> WeatherCellState {
         + (WEATHER_LAND_HEAT_CAPACITY_JOULES_PER_SQUARE_METER_KELVIN
             - WEATHER_OCEAN_HEAT_CAPACITY_JOULES_PER_SQUARE_METER_KELVIN)
             * land_fraction;
+    let ground_moisture = 0.65 * land_fraction;
     WeatherCellState {
         temperature_kelvin: temperature_kelvin as f32,
         surface_pressure_pascals: surface_pressure_pascals as f32,
@@ -888,6 +929,7 @@ fn initial_cell_state(direction: DVec3) -> WeatherCellState {
         north_wind_meters_per_second: north_wind_meters_per_second as f32,
         surface_albedo: surface_albedo as f32,
         heat_capacity_joules_per_square_meter_kelvin: heat_capacity as f32,
+        ground_moisture: ground_moisture as f32,
     }
 }
 
@@ -902,6 +944,10 @@ fn proxy_land_fraction(direction: DVec3, latitude: f64, longitude: f64) -> f64 {
         + 0.10 * direction.x * direction.y
         + 0.07 * (5.0 * longitude + 1.2 * latitude).sin();
     ((continental_signal - 0.40) / 0.20).clamp(0.0, 1.0)
+}
+
+fn ocean_fraction_from_albedo(albedo: f64) -> f64 {
+    ((WEATHER_LAND_ALBEDO - albedo) / (WEATHER_LAND_ALBEDO - WEATHER_OCEAN_ALBEDO)).clamp(0.0, 1.0)
 }
 
 fn weather_sun_direction(scene_time_seconds: f64) -> DVec3 {
@@ -1180,6 +1226,40 @@ mod tests {
                 .iter()
                 .zip(before)
                 .any(|(after, before)| after.temperature_kelvin != before.temperature_kelvin)
+        );
+    }
+
+    #[test]
+    fn evaporation_adds_bounded_humidity_and_cools_source_cells() {
+        let grid = WeatherGrid::new();
+        let mut fields = WeatherFields::initial(&grid);
+        let before = fields.cells().to_vec();
+        fields.evaporate_moisture(WEATHER_TIMESTEP_SECONDS);
+        assert!(fields.cells().iter().all(|state| {
+            (0.0..=1.0).contains(&state.specific_humidity)
+                && (0.0..=1.0).contains(&state.ground_moisture)
+                && (180.0..=340.0).contains(&state.temperature_kelvin)
+        }));
+        assert!(
+            fields
+                .cells()
+                .iter()
+                .zip(&before)
+                .any(|(after, before)| after.specific_humidity > before.specific_humidity)
+        );
+        assert!(
+            fields
+                .cells()
+                .iter()
+                .zip(&before)
+                .any(|(after, before)| after.temperature_kelvin < before.temperature_kelvin)
+        );
+        assert!(
+            fields
+                .cells()
+                .iter()
+                .zip(&before)
+                .all(|(after, before)| after.ground_moisture <= before.ground_moisture)
         );
     }
 
