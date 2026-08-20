@@ -3027,3 +3027,16 @@ humidity/cloud/wind view. Uplift cooling feeds evaporation, temperature advectio
 condensation, so rising cells can reach saturation without an authored cloud schedule. Twenty
 focused weather tests and a workspace check pass; real baked terrain coupling and precipitation
 remain deferred.
+
+## Experimental weather precipitation and ground moisture - 20 August 2026
+
+After condensation, each fixed 600-second step now removes a bounded fraction of cloud water above a
+normalized 0.18 threshold using a 3,600-second relaxation. The removed cloud water is reported as a
+rain-equivalent millimetres-per-hour diagnostic. Land cells route it into their bounded ground-
+moisture reservoir; ocean cells treat it as an outlet until runoff and ocean coupling are defined.
+
+The HUD now reports ground-moisture range/mean and precipitation range/mean. The sequence is
+thermal balance -> pressure/wind -> lapse/orographic uplift -> evaporation -> temperature advection
+-> humidity advection -> condensation -> precipitation. Twenty-one focused weather tests and a
+workspace check pass. Snow partitioning, runoff/rivers, terrain-derived water, and rendered rain
+remain deferred.

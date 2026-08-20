@@ -23,6 +23,9 @@ const WEATHER_LAPSE_RATE_KELVIN_PER_METER: f64 = 0.0065;
 const WEATHER_OROGRAPHIC_RESPONSE_FRACTION: f64 = 0.2;
 const WEATHER_MAX_OROGRAPHIC_UPLIFT_METERS_PER_SECOND: f64 = 8.0;
 const WEATHER_MAX_LAPSE_DISPLACEMENT_METERS_PER_STEP: f64 = 750.0;
+const WEATHER_PRECIPITATION_TIME_CONSTANT_SECONDS: f64 = 3_600.0;
+const WEATHER_CLOUD_PRECIPITATION_THRESHOLD: f64 = 0.18;
+const WEATHER_CLOUD_WATER_DEPTH_MILLIMETERS: f64 = 2.0;
 const WEATHER_FACE_COUNT: usize = 6;
 const OVERLAY_BINS: usize = 16;
 const NEIGHBOUR_COUNT: usize = 4;
@@ -191,6 +194,7 @@ pub struct WeatherCellState {
     pub cloud_water: f32,
     pub surface_elevation_meters: f32,
     pub orographic_uplift_meters_per_second: f32,
+    pub precipitation_millimeters_per_hour: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -222,6 +226,11 @@ pub struct WeatherFieldDiagnostics {
     pub mean_cloud_water: f32,
     pub maximum_surface_elevation_meters: f32,
     pub maximum_orographic_uplift_meters_per_second: f32,
+    pub minimum_ground_moisture: f32,
+    pub maximum_ground_moisture: f32,
+    pub mean_ground_moisture: f32,
+    pub maximum_precipitation_millimeters_per_hour: f32,
+    pub mean_precipitation_millimeters_per_hour: f32,
     pub maximum_wind_meters_per_second: f32,
     pub maximum_cfl: f64,
     pub relaxation_weight_at_1800_seconds: f64,
@@ -363,6 +372,37 @@ impl WeatherFields {
                 state.specific_humidity = (humidity + evaporated).clamp(0.0, 1.0) as f32;
                 state.cloud_water = (cloud_water - evaporated).clamp(0.0, 1.0) as f32;
             }
+        }
+    }
+
+    /// Removes cloud water above the precipitation threshold and returns the
+    /// land fraction to the ground-moisture reservoir. Ocean precipitation is
+    /// deliberately an outlet at this stage; runoff, rivers, snowpack, and
+    /// terrain-derived water are later couplings. The emitted rate is a
+    /// diagnostic rain-equivalent in millimetres per hour.
+    pub fn precipitate_and_update_ground_moisture(&mut self, step_seconds: f64) {
+        if step_seconds <= 0.0 {
+            return;
+        }
+        let relaxation = exponential_relaxation_weight(
+            step_seconds,
+            WEATHER_PRECIPITATION_TIME_CONSTANT_SECONDS,
+        );
+        for state in &mut self.cells {
+            let cloud_water = f64::from(state.cloud_water);
+            let cloud_excess = ((cloud_water - WEATHER_CLOUD_PRECIPITATION_THRESHOLD)
+                / (1.0 - WEATHER_CLOUD_PRECIPITATION_THRESHOLD))
+                .clamp(0.0, 1.0);
+            let removed = (cloud_excess * relaxation).min(cloud_water);
+            state.cloud_water = (cloud_water - removed).clamp(0.0, 1.0) as f32;
+            let ocean_fraction = ocean_fraction_from_albedo(f64::from(state.surface_albedo));
+            let land_fraction = 1.0 - ocean_fraction;
+            let ground_input = removed * land_fraction * (0.75 + 0.25 * (1.0 - f64::from(state.ground_moisture)));
+            state.ground_moisture =
+                (f64::from(state.ground_moisture) + ground_input).clamp(0.0, 1.0) as f32;
+            state.precipitation_millimeters_per_hour =
+                (removed * WEATHER_CLOUD_WATER_DEPTH_MILLIMETERS * 3_600.0 / step_seconds)
+                    as f32;
         }
     }
 
@@ -561,10 +601,15 @@ impl WeatherFields {
         let mut max_cloud_water = f32::NEG_INFINITY;
         let mut maximum_surface_elevation = 0.0_f32;
         let mut maximum_orographic_uplift = 0.0_f32;
+        let mut min_ground_moisture = f32::INFINITY;
+        let mut max_ground_moisture = f32::NEG_INFINITY;
+        let mut maximum_precipitation = 0.0_f32;
         let mut mean_temperature = 0.0_f64;
         let mut mean_pressure = 0.0_f64;
         let mut mean_humidity = 0.0_f64;
         let mut mean_cloud_water = 0.0_f64;
+        let mut mean_ground_moisture = 0.0_f64;
+        let mut mean_precipitation = 0.0_f64;
         let mut maximum_wind = 0.0_f32;
         let mut maximum_cfl = 0.0_f64;
         let mut pressure_integral = 0.0_f64;
@@ -588,12 +633,19 @@ impl WeatherFields {
                 maximum_surface_elevation.max(state.surface_elevation_meters);
             maximum_orographic_uplift = maximum_orographic_uplift
                 .max(state.orographic_uplift_meters_per_second.abs());
+            min_ground_moisture = min_ground_moisture.min(state.ground_moisture);
+            max_ground_moisture = max_ground_moisture.max(state.ground_moisture);
+            maximum_precipitation = maximum_precipitation
+                .max(state.precipitation_millimeters_per_hour);
             maximum_wind = maximum_wind.max(wind_speed);
             maximum_cfl = maximum_cfl.max(cfl);
             mean_temperature += f64::from(state.temperature_kelvin) * area;
             mean_pressure += f64::from(state.surface_pressure_pascals) * area;
             mean_humidity += f64::from(state.specific_humidity) * area;
             mean_cloud_water += f64::from(state.cloud_water) * area;
+            mean_ground_moisture += f64::from(state.ground_moisture) * area;
+            mean_precipitation +=
+                f64::from(state.precipitation_millimeters_per_hour) * area;
             pressure_integral += f64::from(state.surface_pressure_pascals) * area;
             humidity_integral += f64::from(state.specific_humidity) * area;
         }
@@ -614,6 +666,11 @@ impl WeatherFields {
             mean_cloud_water: (mean_cloud_water / total_area) as f32,
             maximum_surface_elevation_meters: maximum_surface_elevation,
             maximum_orographic_uplift_meters_per_second: maximum_orographic_uplift,
+            minimum_ground_moisture: min_ground_moisture,
+            maximum_ground_moisture: max_ground_moisture,
+            mean_ground_moisture: (mean_ground_moisture / total_area) as f32,
+            maximum_precipitation_millimeters_per_hour: maximum_precipitation,
+            mean_precipitation_millimeters_per_hour: (mean_precipitation / total_area) as f32,
             maximum_wind_meters_per_second: maximum_wind,
             maximum_cfl,
             relaxation_weight_at_1800_seconds: exponential_relaxation_weight(
@@ -916,6 +973,8 @@ impl WeatherState {
         self.fields
             .advect_humidity(&self.grid, WEATHER_TIMESTEP_SECONDS);
         self.fields.condense_cloud_water(WEATHER_TIMESTEP_SECONDS);
+        self.fields
+            .precipitate_and_update_ground_moisture(WEATHER_TIMESTEP_SECONDS);
     }
 
     pub fn debug_snapshot(&self) -> WeatherDebugSnapshot {
@@ -1089,6 +1148,7 @@ fn initial_cell_state(direction: DVec3) -> WeatherCellState {
         cloud_water: 0.0,
         surface_elevation_meters: surface_elevation as f32,
         orographic_uplift_meters_per_second: 0.0,
+        precipitation_millimeters_per_hour: 0.0,
     }
 }
 
@@ -1521,6 +1581,56 @@ mod tests {
         directional.apply_lapse_rate_and_orographic_uplift(&grid, WEATHER_TIMESTEP_SECONDS);
         assert!(directional.cells[target_index].orographic_uplift_meters_per_second < 0.0);
         assert!(directional.cells[target_index].temperature_kelvin > 280.0);
+    }
+
+    #[test]
+    fn precipitation_wets_land_and_is_bounded_with_ocean_outlet() {
+        let grid = WeatherGrid::new();
+        let initial = WeatherFields::initial(&grid);
+        let land_index = grid
+            .cells()
+            .iter()
+            .enumerate()
+            .find(|(index, _)| {
+                1.0 - ocean_fraction_from_albedo(f64::from(initial.cells()[*index].surface_albedo))
+                    > 0.9
+            })
+            .map(|(index, _)| index)
+            .expect("proxy should contain land");
+        let ocean_index = grid
+            .cells()
+            .iter()
+            .enumerate()
+            .find(|(index, _)| {
+                ocean_fraction_from_albedo(f64::from(initial.cells()[*index].surface_albedo)) > 0.9
+            })
+            .map(|(index, _)| index)
+            .expect("proxy should contain ocean");
+        let mut first = WeatherFields::initial(&grid);
+        let mut second = WeatherFields::initial(&grid);
+        for fields in [&mut first, &mut second] {
+            fields.cells[land_index].cloud_water = 0.9;
+            fields.cells[land_index].ground_moisture = 0.0;
+            fields.cells[land_index].surface_albedo = WEATHER_LAND_ALBEDO as f32;
+            fields.cells[ocean_index].cloud_water = 0.9;
+            fields.cells[ocean_index].ground_moisture = 0.3;
+            fields.cells[ocean_index].surface_albedo = WEATHER_OCEAN_ALBEDO as f32;
+            fields.precipitate_and_update_ground_moisture(WEATHER_TIMESTEP_SECONDS);
+        }
+        assert_eq!(first.cells(), second.cells());
+        let land = first.cells()[land_index];
+        let ocean = first.cells()[ocean_index];
+        assert!(land.cloud_water < 0.9);
+        assert!(land.ground_moisture > 0.0);
+        assert!(land.precipitation_millimeters_per_hour > 0.0);
+        assert!(ocean.cloud_water < 0.9);
+        assert!((ocean.ground_moisture - 0.3).abs() < 1.0e-6);
+        assert!(first.cells().iter().all(|state| {
+            (0.0..=1.0).contains(&state.cloud_water)
+                && (0.0..=1.0).contains(&state.ground_moisture)
+                && state.precipitation_millimeters_per_hour.is_finite()
+                && state.precipitation_millimeters_per_hour >= 0.0
+        }));
     }
 
     #[test]

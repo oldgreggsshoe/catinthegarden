@@ -1985,6 +1985,14 @@ impl State {
                                 field.maximum_orographic_uplift_meters_per_second,
                             ));
                             ui.label(format!(
+                                "Weather water: ground {:.2}-{:.2} (mean {:.2})  |  precip max {:.2}mm/h (mean {:.2})",
+                                field.minimum_ground_moisture,
+                                field.maximum_ground_moisture,
+                                field.mean_ground_moisture,
+                                field.maximum_precipitation_millimeters_per_hour,
+                                field.mean_precipitation_millimeters_per_hour,
+                            ));
+                            ui.label(format!(
                                 "Weather wind: max {:.1}m/s  |  CFL@{}s {:.3}  |  relax@1800s {:.3}  |  conservation Δp {:.2e} Δq {:.2e}",
                                 field.maximum_wind_meters_per_second,
                                 weather::WEATHER_TIMESTEP_SECONDS as u32,

@@ -1,9 +1,10 @@
-Milestone 8 is complete and validated.
+Milestone 9 is complete and pushed next in line.
 
-- Added a deterministic seam-safe relief proxy to the weather cells.
-- Wind crossing the relief gradient now produces bounded orographic uplift.
-- A 6.5 K/km lapse tendency cools rising air and warms descending air.
-- HUD now reports proxy relief and maximum uplift; uplift feeds evaporation, advection, and condensation.
+- Excess cloud water now precipitates with a bounded 3,600s relaxation.
+- Land precipitation replenishes ground moisture; ocean precipitation exits the local reservoir.
+- HUD reports ground-moisture range/mean and rain-equivalent precipitation in mm/h.
+- Snow partitioning, runoff/rivers, terrain-derived water, and rendered rain are still deferred.
 
-Validation: 20 focused weather tests passed; cargo check --workspace passed.
-Next: milestone 9, precipitation and ground-moisture consequences.
+Validation: 21 focused weather tests passed; cargo check --workspace passed.
+I also noted the intermittent copied/offset startup window as a separate renderer issue and did not mix it into this weather change.
+Next: milestone 10, latent-heat feedback and storms.
