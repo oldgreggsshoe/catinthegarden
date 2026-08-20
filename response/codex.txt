@@ -1,3 +1,11 @@
-Thermal stage visibility clarification:
+Coriolis stage complete and pushed as `3e48564`.
 
-No new scene rendering is expected yet. The stage updates CPU weather temperature and pressure only. The HUD temperature/pressure diagnostics change after each completed 600-second weather step; key `7` still visualizes humidity and wind. Startup is F10-frozen, so toggle F10 off to let weather advance. Terrain, sky, and clouds are not coupled to the weather fields yet.
+- Added Earth-rate Coriolis acceleration to tangent wind momentum.
+- Acceleration is projected back onto the spherical tangent plane before east/north conversion.
+- Northern and southern deflection reverses across the equator; equatorial deflection tends to zero.
+- Existing damping, 60 m/s cap, CFL, and humidity conservation remain active.
+
+Validation:
+- Focused weather tests: 15 passed.
+- `cargo check --workspace`: passed.
+- Existing unrelated worktree changes were preserved.
