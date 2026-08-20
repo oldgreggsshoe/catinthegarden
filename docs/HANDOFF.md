@@ -2911,3 +2911,12 @@ Interactive F10 freeze therefore holds weather exactly as it holds planet rotati
 a scenario's authored fixed time advances weather deterministically. Repeated timestamps and backward
 time cannot double-step or rewind the weather clock. The existing dirty render-loop refactor is not
 staged; the clean branch integration is a one-line call at the shared scene-time boundary.
+
+## Weather humidity visualisation - 20 August 2026
+
+The `7` overlay now colours each face by area-averaged specific humidity (brown/dry through blue/
+saturated) while retaining white tangent-wind arrows. A text legend removes the previous ambiguity
+about the latitude background. Humidity bins are built from the same 4x4-cell groups as the arrows,
+so a completed 600-second transport step changes the displayed field without changing topology.
+The HUD continues to report humidity range/mean and conservation drift. Deterministic tests verify
+bounded bins and that transport produces a visible bin change.

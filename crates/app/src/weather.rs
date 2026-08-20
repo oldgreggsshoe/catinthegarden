@@ -151,23 +151,6 @@ impl WeatherGrid {
             })
             .fold(0.0, f64::max)
     }
-
-    pub fn overlay_latitude_bins(
-        &self,
-    ) -> [[f32; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT] {
-        let mut bins = [[0.0; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT];
-        for face in 0..WEATHER_FACE_COUNT {
-            for y in 0..OVERLAY_BINS {
-                for x in 0..OVERLAY_BINS {
-                    let u = (x as f64 + 0.5) / OVERLAY_BINS as f64 * 2.0 - 1.0;
-                    let v = (y as f64 + 0.5) / OVERLAY_BINS as f64 * 2.0 - 1.0;
-                    bins[face][y * OVERLAY_BINS + x] =
-                        cube_face_direction(face as u8, u, v).y as f32 * 0.5 + 0.5;
-                }
-            }
-        }
-        bins
-    }
 }
 
 impl Default for WeatherGrid {
@@ -377,6 +360,37 @@ impl WeatherFields {
         }
         bins
     }
+
+    pub fn overlay_humidity_bins(
+        &self,
+        grid: &WeatherGrid,
+    ) -> [[f32; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT] {
+        let mut bins = [[0.0; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT];
+        let cells_per_bin = WEATHER_GRID_SIDE / OVERLAY_BINS;
+        for face in 0..WEATHER_FACE_COUNT {
+            for y in 0..OVERLAY_BINS {
+                for x in 0..OVERLAY_BINS {
+                    let mut humidity = 0.0_f64;
+                    let mut area = 0.0_f64;
+                    for local_y in 0..cells_per_bin {
+                        for local_x in 0..cells_per_bin {
+                            let index = cell_index(
+                                face as u8,
+                                x * cells_per_bin + local_x,
+                                y * cells_per_bin + local_y,
+                            );
+                            let cell_area = grid.cells()[index].area_square_meters;
+                            humidity +=
+                                f64::from(self.cells()[index].specific_humidity) * cell_area;
+                            area += cell_area;
+                        }
+                    }
+                    bins[face][y * OVERLAY_BINS + x] = (humidity / area) as f32;
+                }
+            }
+        }
+        bins
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -391,7 +405,7 @@ pub struct WeatherDebugSnapshot {
     pub simulation_time_seconds: f64,
     pub completed_steps: u64,
     pub field_diagnostics: WeatherFieldDiagnostics,
-    pub latitude_bins: [[f32; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT],
+    pub humidity_bins: [[f32; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT],
     pub wind_bins: [[WeatherOverlayWind; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT],
 }
 
@@ -402,7 +416,7 @@ impl WeatherDebugSnapshot {
         }
 
         ui.separator();
-        ui.label("Weather field overlay: latitude / initial wind diagnostic");
+        ui.label("Weather field overlay: humidity (dry brown -> saturated blue) / wind");
         let panel_size = egui::vec2(256.0, 176.0);
         let (rect, _) = ui.allocate_exact_size(panel_size, egui::Sense::hover());
         let painter = ui.painter_at(rect);
@@ -410,11 +424,11 @@ impl WeatherDebugSnapshot {
             let origin = rect.min + egui::vec2((face % 3) as f32 * 86.0, (face / 3) as f32 * 86.0);
             for y in 0..OVERLAY_BINS {
                 for x in 0..OVERLAY_BINS {
-                    let value = self.latitude_bins[face][y * OVERLAY_BINS + x];
+                    let value = self.humidity_bins[face][y * OVERLAY_BINS + x].clamp(0.0, 1.0);
                     let colour = egui::Color32::from_rgb(
-                        (30.0 + 220.0 * value) as u8,
-                        (50.0 + 150.0 * (1.0 - (2.0 * value - 1.0).abs())) as u8,
-                        (220.0 - 170.0 * value) as u8,
+                        (185.0 - 145.0 * value) as u8,
+                        (85.0 + 115.0 * value) as u8,
+                        (45.0 + 190.0 * value) as u8,
                     );
                     let cell = egui::Rect::from_min_size(
                         origin + egui::vec2(x as f32 * 4.0, y as f32 * 4.0),
@@ -459,7 +473,7 @@ impl WeatherDebugSnapshot {
                 egui::Color32::WHITE,
             );
         }
-        ui.label("Arrows: initial tangent wind (transport not started)");
+        ui.label("Colour: 0 dry -> 1 saturated humidity | arrows: tangent wind");
     }
 }
 
@@ -529,7 +543,7 @@ impl WeatherState {
             simulation_time_seconds: self.simulation_time_seconds,
             completed_steps: self.completed_steps,
             field_diagnostics: self.fields.diagnostics(&self.grid),
-            latitude_bins: self.grid.overlay_latitude_bins(),
+            humidity_bins: self.fields.overlay_humidity_bins(&self.grid),
             wind_bins: self.fields.overlay_wind_bins(&self.grid),
         }
     }
@@ -733,19 +747,6 @@ mod tests {
     }
 
     #[test]
-    fn latitude_overlay_is_deterministic_and_bounded() {
-        let first = WeatherGrid::new().overlay_latitude_bins();
-        let second = WeatherGrid::new().overlay_latitude_bins();
-        assert_eq!(first, second);
-        assert!(
-            first
-                .into_iter()
-                .flatten()
-                .all(|value| (0.0..=1.0).contains(&value))
-        );
-    }
-
-    #[test]
     fn initial_fields_are_deterministic_finite_and_physically_bounded() {
         let grid = WeatherGrid::new();
         let first = WeatherFields::initial(&grid);
@@ -798,6 +799,28 @@ mod tests {
                 && wind.east_meters_per_second.is_finite()
                 && wind.north_meters_per_second.is_finite()
         }));
+    }
+
+    #[test]
+    fn humidity_overlay_is_bounded_and_changes_after_transport() {
+        let grid = WeatherGrid::new();
+        let mut fields = WeatherFields::initial(&grid);
+        let before = fields.overlay_humidity_bins(&grid);
+        assert!(
+            before
+                .iter()
+                .flatten()
+                .all(|value| (0.0..=1.0).contains(value))
+        );
+        fields.advect_humidity(&grid, WEATHER_TIMESTEP_SECONDS);
+        let after = fields.overlay_humidity_bins(&grid);
+        assert!(before != after);
+        assert!(
+            after
+                .iter()
+                .flatten()
+                .all(|value| (0.0..=1.0).contains(value))
+        );
     }
 
     #[test]
