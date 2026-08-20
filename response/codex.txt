@@ -1,11 +1,17 @@
-Evaporation stage complete and pushed as `120b759`.
+Roadmap status:
 
-- Added bounded ocean/ground evaporation driven by wind, temperature, and humidity deficit.
-- Added normalized land ground-moisture reservoirs and latent cooling.
-- Fixed-step order is now thermal balance -> momentum -> evaporation -> temperature advection -> humidity advection.
-- Humidity and ground moisture remain within [0,1].
+Completed: milestones 1-6 — grid, thermal balance, pressure/wind, Coriolis, temperature advection, and evaporation/humidity transport.
 
-Validation:
-- Focused weather tests: 18 passed.
-- `cargo check --workspace`: passed without warnings.
-- Existing unrelated worktree changes were preserved.
+Remaining: 9 of the 15 roadmap milestones:
+
+7. Condensation/cloud field (debug overlay only)
+8. Lapse rate and orographic uplift
+9. Precipitation and ground moisture consequences
+10. Latent-heat feedback and self-organising storms
+11. GPU field upload, temporal blending, and first rendered cloud shell
+12. Stacked cloud shells and flowmap detail
+13. Cloud shadows on terrain
+14. Rain particles, wet ground, and snow cover
+15. Seasons, optional MacCormack sharpening, and local impostors/polish
+
+The first four remaining items complete the core simulation. Visible clouds begin at item 11. Current fields are still normalized diagnostic proxies; terrain-derived water and production cloud rendering are not implemented yet.
