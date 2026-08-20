@@ -1,11 +1,11 @@
-Coriolis stage complete and pushed as `3e48564`.
+Manual weather stepping is now available and pushed as `9a9240c`.
 
-- Added Earth-rate Coriolis acceleration to tangent wind momentum.
-- Acceleration is projected back onto the spherical tangent plane before east/north conversion.
-- Northern and southern deflection reverses across the equator; equatorial deflection tends to zero.
-- Existing damping, 60 m/s cap, CFL, and humidity conservation remain active.
+- Press `9` to execute exactly one 600-second weather tick immediately.
+- It works while F10 is frozen and uses the current planet-local sun direction.
+- The normal fixed clock and scenario timelines are unchanged.
+- The HUD control legend now shows `9: weather step`.
 
 Validation:
-- Focused weather tests: 15 passed.
+- Focused weather tests: 16 passed.
 - `cargo check --workspace`: passed.
 - Existing unrelated worktree changes were preserved.
