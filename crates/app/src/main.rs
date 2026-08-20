@@ -1594,7 +1594,6 @@ impl State {
                 None,
             )
         };
-        self.weather.advance_to(sim_time);
         if let Some((position, look_at)) = scenario_pose {
             // Surface-level scenarios need the horizon level, so their up axis
             // is pinned to the local radial. Orbital scenarios keep the default
@@ -1621,6 +1620,10 @@ impl State {
             self.interactive_planet_rotation_time(sim_time)
         };
         let planet_rotation_radians = planet::planet_rotation_radians(planet_rotation_time);
+        let weather_sun_direction =
+            planet::planet_local_vector(self.sun_direction, planet_rotation_radians);
+        self.weather
+            .advance_to_with_sun(sim_time, weather_sun_direction);
         let scene_delta_seconds = (sim_time - self.last_auto_orbit_sim_time).max(0.0);
         if let Some(forward_held) = scenario_forward_flight_held {
             if !self.scenario_flight_initialized {

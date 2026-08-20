@@ -2934,3 +2934,20 @@ The multi-step regression runs ten steps deterministically, checks finite bounde
 stays below one, and retains humidity conservation within the current f32 field tolerance. This is
 a tunable hypothesis, not a production pressure solver; the constants remain explicitly measured
 telemetry targets for the next calibration pass.
+
+## Experimental weather insolation and thermal response - 20 August 2026
+
+The next weather checkpoint adds a fixed-step surface energy balance. Each cell now applies
+short-wave insolation from the renderer's planet-local sun direction, albedo-weighted absorption,
+Stefan-Boltzmann radiative cooling, and a bounded humidity greenhouse factor before pressure is
+diagnosed and wind momentum is updated. A deterministic land/ocean surface proxy supplies five
+times more heat capacity to ocean-like cells than land-like cells, so ocean temperatures respond
+more slowly without importing renderer tile state into this CPU-first slice.
+
+`WeatherState::advance_to_with_sun` is used by the render loop after the scenario sun and planet
+rotation are resolved; the legacy `advance_to` helper remains deterministic for tests with a slow
+day-phase fallback. Temperature stays bounded to 180-340K, pressure is explicitly diagnostic rather
+than conserved, and humidity conservation remains unchanged. Fourteen focused weather tests pass,
+including day/night ordering, bounded thermal response, and heat-capacity separation. Terrain
+sampling, Coriolis, temperature advection, and moisture source/sink terms remain deferred to their
+later milestones.

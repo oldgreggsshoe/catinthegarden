@@ -7,6 +7,14 @@ pub const WEATHER_TIMESTEP_SECONDS: f64 = 600.0;
 const WEATHER_REFERENCE_AIR_DENSITY_KG_PER_CUBIC_METER: f64 = 1.225;
 const WEATHER_MOMENTUM_DAMPING_SECONDS: f64 = 7_200.0;
 const WEATHER_MAX_WIND_SPEED_METERS_PER_SECOND: f64 = 60.0;
+const WEATHER_SOLAR_CONSTANT_WATTS_PER_SQUARE_METER: f64 = 1_361.0;
+const WEATHER_STEFAN_BOLTZMANN: f64 = 5.670_374_419e-8;
+const WEATHER_LAND_HEAT_CAPACITY_JOULES_PER_SQUARE_METER_KELVIN: f64 = 2.4e6;
+const WEATHER_OCEAN_HEAT_CAPACITY_JOULES_PER_SQUARE_METER_KELVIN: f64 = 1.2e7;
+const WEATHER_LAND_ALBEDO: f64 = 0.28;
+const WEATHER_OCEAN_ALBEDO: f64 = 0.08;
+const WEATHER_GREENHOUSE_FACTOR: f64 = 0.12;
+const WEATHER_PRESSURE_PER_KELVIN_PASCALS: f64 = 75.0;
 const WEATHER_FACE_COUNT: usize = 6;
 const OVERLAY_BINS: usize = 16;
 const NEIGHBOUR_COUNT: usize = 4;
@@ -169,6 +177,8 @@ pub struct WeatherCellState {
     pub specific_humidity: f32,
     pub east_wind_meters_per_second: f32,
     pub north_wind_meters_per_second: f32,
+    pub surface_albedo: f32,
+    pub heat_capacity_joules_per_square_meter_kelvin: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -224,6 +234,56 @@ impl WeatherFields {
 
     pub fn cells(&self) -> &[WeatherCellState] {
         &self.cells
+    }
+
+    /// Applies one fixed-step radiative energy balance. The ocean/land split
+    /// is a deterministic proxy until the terrain sampler is wired into the
+    /// weather field; ocean cells deliberately carry five times the thermal
+    /// inertia of land so their temperature responds more slowly.
+    pub fn apply_insolation_and_radiative_cooling(
+        &mut self,
+        grid: &WeatherGrid,
+        sun_direction: DVec3,
+        step_seconds: f64,
+    ) {
+        if step_seconds <= 0.0 {
+            return;
+        }
+        let sun_direction = sun_direction.normalize_or_zero();
+        for (cell, state) in grid.cells().iter().zip(&mut self.cells) {
+            let insolation = cell.direction.dot(sun_direction).max(0.0);
+            let absorbed = WEATHER_SOLAR_CONSTANT_WATTS_PER_SQUARE_METER
+                * insolation
+                * (1.0 - f64::from(state.surface_albedo));
+            let humidity = f64::from(state.specific_humidity);
+            let emissivity = (1.0 - WEATHER_GREENHOUSE_FACTOR * humidity).clamp(0.75, 1.0);
+            let temperature = f64::from(state.temperature_kelvin).clamp(180.0, 340.0);
+            let emitted = WEATHER_STEFAN_BOLTZMANN * temperature.powi(4) * emissivity;
+            let net_flux = absorbed - emitted;
+            let heat_capacity = f64::from(state.heat_capacity_joules_per_square_meter_kelvin);
+            state.temperature_kelvin =
+                (temperature + net_flux * step_seconds / heat_capacity).clamp(180.0, 340.0) as f32;
+        }
+    }
+
+    /// Diagnoses surface pressure from the current temperature field. Pressure
+    /// is intentionally not conserved: it is a diagnostic response to thermal
+    /// gradients and is refreshed before the momentum pass.
+    pub fn diagnose_pressure_from_temperature(&mut self, grid: &WeatherGrid) {
+        let total_area = grid.total_area_square_meters();
+        let mean_temperature = grid
+            .cells()
+            .iter()
+            .zip(&self.cells)
+            .map(|(cell, state)| f64::from(state.temperature_kelvin) * cell.area_square_meters)
+            .sum::<f64>()
+            / total_area;
+        for state in &mut self.cells {
+            state.surface_pressure_pascals = (101_325.0
+                - WEATHER_PRESSURE_PER_KELVIN_PASCALS
+                    * (f64::from(state.temperature_kelvin) - mean_temperature))
+                as f32;
+        }
     }
 
     /// Moves humidity along the local tangent wind field using conservative
@@ -583,6 +643,14 @@ impl WeatherState {
     /// transfer is applied between fixed steps.
     #[allow(dead_code)] // consumed when the render-loop clock is wired in
     pub fn advance_to(&mut self, scene_time_seconds: f64) -> u64 {
+        let sun_direction = weather_sun_direction(scene_time_seconds);
+        self.advance_to_with_sun(scene_time_seconds, sun_direction)
+    }
+
+    /// Advances the fixed weather clock using a sun direction expressed in the
+    /// planet-local frame. The renderer uses this entry point so scenario sun
+    /// waypoints and the weather terminator share the same lighting direction.
+    pub fn advance_to_with_sun(&mut self, scene_time_seconds: f64, sun_direction: DVec3) -> u64 {
         if !scene_time_seconds.is_finite() || scene_time_seconds <= self.last_input_time_seconds {
             return 0;
         }
@@ -590,6 +658,12 @@ impl WeatherState {
         self.last_input_time_seconds = scene_time_seconds;
         let mut completed = 0;
         while self.accumulator_seconds >= WEATHER_TIMESTEP_SECONDS {
+            self.fields.apply_insolation_and_radiative_cooling(
+                &self.grid,
+                sun_direction,
+                WEATHER_TIMESTEP_SECONDS,
+            );
+            self.fields.diagnose_pressure_from_temperature(&self.grid);
             self.fields
                 .update_wind_from_pressure(&self.grid, WEATHER_TIMESTEP_SECONDS);
             self.fields
@@ -724,13 +798,40 @@ fn initial_cell_state(direction: DVec3) -> WeatherCellState {
     let east_wind_meters_per_second =
         18.0 * (2.0 * latitude).sin() - 8.0 * (3.0 * latitude).sin() * longitude.cos();
     let north_wind_meters_per_second = 4.0 * latitude.cos() * (2.0 * longitude).sin();
+    let land_fraction = proxy_land_fraction(direction, latitude, longitude);
+    let surface_albedo =
+        WEATHER_OCEAN_ALBEDO + (WEATHER_LAND_ALBEDO - WEATHER_OCEAN_ALBEDO) * land_fraction;
+    let heat_capacity = WEATHER_OCEAN_HEAT_CAPACITY_JOULES_PER_SQUARE_METER_KELVIN
+        + (WEATHER_LAND_HEAT_CAPACITY_JOULES_PER_SQUARE_METER_KELVIN
+            - WEATHER_OCEAN_HEAT_CAPACITY_JOULES_PER_SQUARE_METER_KELVIN)
+            * land_fraction;
     WeatherCellState {
         temperature_kelvin: temperature_kelvin as f32,
         surface_pressure_pascals: surface_pressure_pascals as f32,
         specific_humidity: specific_humidity as f32,
         east_wind_meters_per_second: east_wind_meters_per_second as f32,
         north_wind_meters_per_second: north_wind_meters_per_second as f32,
+        surface_albedo: surface_albedo as f32,
+        heat_capacity_joules_per_square_meter_kelvin: heat_capacity as f32,
     }
+}
+
+/// Temporary climate-surface proxy. It provides broad land/ocean thermal
+/// inertia without importing renderer tile state into the weather module; the
+/// terrain sampler will replace this with baked ocean coverage in a later
+/// coupling stage.
+fn proxy_land_fraction(direction: DVec3, latitude: f64, longitude: f64) -> f64 {
+    let continental_signal = 0.5
+        + 0.22 * (2.0 * longitude + 0.7).sin() * latitude.cos()
+        + 0.16 * (3.0 * longitude - 0.4).cos() * (2.0 * latitude).cos()
+        + 0.10 * direction.x * direction.y
+        + 0.07 * (5.0 * longitude + 1.2 * latitude).sin();
+    ((continental_signal - 0.40) / 0.20).clamp(0.0, 1.0)
+}
+
+fn weather_sun_direction(scene_time_seconds: f64) -> DVec3 {
+    let day_phase = scene_time_seconds.rem_euclid(86_400.0) / 86_400.0 * std::f64::consts::TAU;
+    DVec3::new(day_phase.cos(), 0.25, day_phase.sin()).normalize()
 }
 
 fn conservation_baseline(
@@ -938,6 +1039,49 @@ mod tests {
             state.east_wind_meters_per_second.is_finite()
                 && state.north_wind_meters_per_second.is_finite()
         }));
+    }
+
+    #[test]
+    fn radiative_balance_is_deterministic_day_night_and_heat_capacity_bounded() {
+        let grid = WeatherGrid::new();
+        let mut day = WeatherFields::initial(&grid);
+        let mut night = WeatherFields::initial(&grid);
+        let initial = day.diagnostics(&grid);
+        let initial_cells = day.cells().to_vec();
+        let sun = DVec3::X;
+        day.apply_insolation_and_radiative_cooling(&grid, sun, WEATHER_TIMESTEP_SECONDS);
+        night.apply_insolation_and_radiative_cooling(&grid, -sun, WEATHER_TIMESTEP_SECONDS);
+        day.diagnose_pressure_from_temperature(&grid);
+        night.diagnose_pressure_from_temperature(&grid);
+        let day_diagnostics = day.diagnostics(&grid);
+        let night_diagnostics = night.diagnostics(&grid);
+        assert!(
+            day_diagnostics.mean_temperature_kelvin > night_diagnostics.mean_temperature_kelvin
+        );
+        assert!(day.cells().iter().all(|state| {
+            state.temperature_kelvin.is_finite()
+                && (180.0..=340.0).contains(&state.temperature_kelvin)
+                && state.surface_pressure_pascals.is_finite()
+        }));
+        assert!(
+            day.cells()
+                .iter()
+                .zip(&initial_cells)
+                .any(|(after, before)| after.temperature_kelvin != before.temperature_kelvin)
+        );
+        let minimum_heat_capacity = day
+            .cells()
+            .iter()
+            .map(|state| f64::from(state.heat_capacity_joules_per_square_meter_kelvin))
+            .fold(f64::INFINITY, f64::min);
+        let maximum_heat_capacity = day
+            .cells()
+            .iter()
+            .map(|state| f64::from(state.heat_capacity_joules_per_square_meter_kelvin))
+            .fold(0.0, f64::max);
+        assert!(maximum_heat_capacity / minimum_heat_capacity > 3.0);
+        assert!(day_diagnostics.mean_temperature_kelvin.is_finite());
+        assert!(initial.mean_temperature_kelvin.is_finite());
     }
 
     #[test]
