@@ -2920,3 +2920,17 @@ about the latitude background. Humidity bins are built from the same 4x4-cell gr
 so a completed 600-second transport step changes the displayed field without changing topology.
 The HUD continues to report humidity range/mean and conservation drift. Deterministic tests verify
 bounded bins and that transport produces a visible bin change.
+
+## Weather pressure-gradient momentum - 20 August 2026
+
+Each completed 600-second weather step now updates tangent east/north wind from the prescribed
+surface-pressure gradients sampled through seam-safe neighbours, then advects humidity using the
+updated wind. A 7,200-second exponential momentum damping and 60m/s speed cap keep this deliberately
+small first closure stable; pressure remains static and there is no Coriolis, heating, or terrain
+feedback yet. The existing white arrows therefore change after each weather step, while the HUD max
+wind and CFL values expose the stability margin.
+
+The multi-step regression runs ten steps deterministically, checks finite bounded wind, verifies CFL
+stays below one, and retains humidity conservation within the current f32 field tolerance. This is
+a tunable hypothesis, not a production pressure solver; the constants remain explicitly measured
+telemetry targets for the next calibration pass.

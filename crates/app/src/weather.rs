@@ -4,6 +4,9 @@ use crate::planet::{PLANET_RADIUS_METERS, cube_face_basis, cube_face_direction};
 
 pub const WEATHER_GRID_SIDE: usize = 64;
 pub const WEATHER_TIMESTEP_SECONDS: f64 = 600.0;
+const WEATHER_REFERENCE_AIR_DENSITY_KG_PER_CUBIC_METER: f64 = 1.225;
+const WEATHER_MOMENTUM_DAMPING_SECONDS: f64 = 7_200.0;
+const WEATHER_MAX_WIND_SPEED_METERS_PER_SECOND: f64 = 60.0;
 const WEATHER_FACE_COUNT: usize = 6;
 const OVERLAY_BINS: usize = 16;
 const NEIGHBOUR_COUNT: usize = 4;
@@ -231,8 +234,15 @@ impl WeatherFields {
         if step_seconds <= 0.0 {
             return;
         }
-        let mut mass_delta = vec![0.0_f64; self.cells.len()];
-        for (index, (cell, state)) in grid.cells().iter().zip(&self.cells).enumerate() {
+        let old_humidity = self
+            .cells
+            .iter()
+            .map(|state| f64::from(state.specific_humidity))
+            .collect::<Vec<_>>();
+        let mut transfers = vec![(0_usize, 0.0_f64); self.cells.len()];
+        let mut incoming = vec![0.0_f64; self.cells.len()];
+        for (index, cell) in grid.cells().iter().enumerate() {
+            let state = self.cells[index];
             let wind = cell.east * f64::from(state.east_wind_meters_per_second)
                 + cell.north * f64::from(state.north_wind_meters_per_second);
             let speed = wind.length();
@@ -243,14 +253,75 @@ impl WeatherFields {
             let target = grid.directional_neighbour_index(index, wind / speed) as usize;
             let mass = f64::from(state.specific_humidity) * cell.area_square_meters;
             let transfer = mass * fraction;
-            mass_delta[index] -= transfer;
-            mass_delta[target] += transfer;
+            transfers[index] = (target, transfer);
+            incoming[target] += transfer;
         }
 
+        let mut mass_delta = vec![0.0_f64; self.cells.len()];
+        for (index, (target, transfer)) in transfers.into_iter().enumerate() {
+            if transfer == 0.0 {
+                continue;
+            }
+            let target_capacity =
+                grid.cells()[target].area_square_meters * (1.0 - old_humidity[target]);
+            let target_scale = if incoming[target] > target_capacity {
+                (target_capacity / incoming[target]).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            let actual_transfer = transfer * target_scale;
+            mass_delta[index] -= actual_transfer;
+            mass_delta[target] += actual_transfer;
+        }
         for (index, (cell, state)) in grid.cells().iter().zip(&mut self.cells).enumerate() {
-            let mass =
-                f64::from(state.specific_humidity) * cell.area_square_meters + mass_delta[index];
+            let mass = old_humidity[index] * cell.area_square_meters + mass_delta[index];
             state.specific_humidity = (mass / cell.area_square_meters).clamp(0.0, 1.0) as f32;
+        }
+    }
+
+    /// Applies one pressure-gradient momentum update in each cell's tangent
+    /// frame. Pressure remains a prescribed diagnostic field for now; damping
+    /// and the explicit speed cap keep this first momentum pass stable while
+    /// the thermodynamic closures are still being built.
+    pub fn update_wind_from_pressure(&mut self, grid: &WeatherGrid, step_seconds: f64) {
+        if step_seconds <= 0.0 {
+            return;
+        }
+        let damping = (-step_seconds / WEATHER_MOMENTUM_DAMPING_SECONDS).exp();
+        let mut next_wind = vec![(0.0_f32, 0.0_f32); self.cells.len()];
+        for (index, cell) in grid.cells().iter().enumerate() {
+            let east_index = grid.directional_neighbour_index(index, cell.east) as usize;
+            let west_index = grid.directional_neighbour_index(index, -cell.east) as usize;
+            let north_index = grid.directional_neighbour_index(index, cell.north) as usize;
+            let south_index = grid.directional_neighbour_index(index, -cell.north) as usize;
+            let width = cell.area_square_meters.sqrt();
+            let east_gradient = (f64::from(self.cells[east_index].surface_pressure_pascals)
+                - f64::from(self.cells[west_index].surface_pressure_pascals))
+                / (2.0 * width);
+            let north_gradient = (f64::from(self.cells[north_index].surface_pressure_pascals)
+                - f64::from(self.cells[south_index].surface_pressure_pascals))
+                / (2.0 * width);
+            let east_acceleration =
+                -east_gradient / WEATHER_REFERENCE_AIR_DENSITY_KG_PER_CUBIC_METER;
+            let north_acceleration =
+                -north_gradient / WEATHER_REFERENCE_AIR_DENSITY_KG_PER_CUBIC_METER;
+            let mut east = (f64::from(self.cells[index].east_wind_meters_per_second)
+                + east_acceleration * step_seconds)
+                * damping;
+            let mut north = (f64::from(self.cells[index].north_wind_meters_per_second)
+                + north_acceleration * step_seconds)
+                * damping;
+            let speed = east.hypot(north);
+            if speed > WEATHER_MAX_WIND_SPEED_METERS_PER_SECOND {
+                let scale = WEATHER_MAX_WIND_SPEED_METERS_PER_SECOND / speed;
+                east *= scale;
+                north *= scale;
+            }
+            next_wind[index] = (east as f32, north as f32);
+        }
+        for (state, (east, north)) in self.cells.iter_mut().zip(next_wind) {
+            state.east_wind_meters_per_second = east;
+            state.north_wind_meters_per_second = north;
         }
     }
 
@@ -519,6 +590,8 @@ impl WeatherState {
         self.last_input_time_seconds = scene_time_seconds;
         let mut completed = 0;
         while self.accumulator_seconds >= WEATHER_TIMESTEP_SECONDS {
+            self.fields
+                .update_wind_from_pressure(&self.grid, WEATHER_TIMESTEP_SECONDS);
             self.fields
                 .advect_humidity(&self.grid, WEATHER_TIMESTEP_SECONDS);
             self.accumulator_seconds -= WEATHER_TIMESTEP_SECONDS;
@@ -839,6 +912,32 @@ mod tests {
             after
         );
         assert!((before.mean_humidity - after.mean_humidity).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn pressure_momentum_is_deterministic_bounded_and_cfl_safe() {
+        let grid = WeatherGrid::new();
+        let mut first = WeatherFields::initial(&grid);
+        let mut second = WeatherFields::initial(&grid);
+        for _ in 0..10 {
+            first.update_wind_from_pressure(&grid, WEATHER_TIMESTEP_SECONDS);
+            first.advect_humidity(&grid, WEATHER_TIMESTEP_SECONDS);
+            second.update_wind_from_pressure(&grid, WEATHER_TIMESTEP_SECONDS);
+            second.advect_humidity(&grid, WEATHER_TIMESTEP_SECONDS);
+        }
+        assert_eq!(first.cells(), second.cells());
+        let diagnostics = first.diagnostics(&grid);
+        assert!(diagnostics.maximum_wind_meters_per_second <= 60.0);
+        assert!(diagnostics.maximum_cfl < 1.0);
+        assert!(
+            diagnostics.humidity_conservation_error < 1.0e-5,
+            "momentum humidity drift: {:#?}",
+            diagnostics
+        );
+        assert!(first.cells().iter().all(|state| {
+            state.east_wind_meters_per_second.is_finite()
+                && state.north_wind_meters_per_second.is_finite()
+        }));
     }
 
     #[test]
