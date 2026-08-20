@@ -1,17 +1,7 @@
-Roadmap status:
+We have 9 of 15 roadmap milestones left.
 
-Completed: milestones 1-6 — grid, thermal balance, pressure/wind, Coriolis, temperature advection, and evaporation/humidity transport.
+- 7–10: finish the weather physics (condensation, orographic rain shadows, precipitation, storms).
+- 11–14: add visible clouds and surface effects (cloud shell, layered detail, shadows, rain/snow).
+- 15: final polish (seasons, optional sharpening, local impostors/polish).
 
-Remaining: 9 of the 15 roadmap milestones:
-
-7. Condensation/cloud field (debug overlay only)
-8. Lapse rate and orographic uplift
-9. Precipitation and ground moisture consequences
-10. Latent-heat feedback and self-organising storms
-11. GPU field upload, temporal blending, and first rendered cloud shell
-12. Stacked cloud shells and flowmap detail
-13. Cloud shadows on terrain
-14. Rain particles, wet ground, and snow cover
-15. Seasons, optional MacCormack sharpening, and local impostors/polish
-
-The first four remaining items complete the core simulation. Visible clouds begin at item 11. Current fields are still normalized diagnostic proxies; terrain-derived water and production cloud rendering are not implemented yet.
+Visible rendered clouds begin at milestone 11. The current fields are still normalized diagnostic proxies, so terrain-derived water and production cloud rendering remain ahead.
