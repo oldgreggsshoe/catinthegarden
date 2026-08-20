@@ -2903,3 +2903,11 @@ cover fixed-step cadence, bounded humidity, area-integral conservation, cross-fa
 the existing topology/field diagnostics. Runtime wiring to the renderer's frame clock is kept as a
 small follow-up because the checkout still contains the unrelated uncommitted render-loop
 refactor; the transport API is ready for that integration without mixing the two changes.
+
+## Weather render-clock integration - 20 August 2026
+
+The render path now feeds its existing scene time into `WeatherState::advance_to` once per frame.
+Interactive F10 freeze therefore holds weather exactly as it holds planet rotation and ocean phase;
+a scenario's authored fixed time advances weather deterministically. Repeated timestamps and backward
+time cannot double-step or rewind the weather clock. The existing dirty render-loop refactor is not
+staged; the clean branch integration is a one-line call at the shared scene-time boundary.

@@ -1594,6 +1594,7 @@ impl State {
                 None,
             )
         };
+        self.weather.advance_to(sim_time);
         if let Some((position, look_at)) = scenario_pose {
             // Surface-level scenarios need the horizon level, so their up axis
             // is pinned to the local radial. Orbital scenarios keep the default

@@ -826,6 +826,7 @@ mod tests {
         assert_eq!(state.advance_to(WEATHER_TIMESTEP_SECONDS), 1);
         assert_eq!(state.debug_snapshot().completed_steps, 1);
         assert_eq!(state.advance_to(WEATHER_TIMESTEP_SECONDS), 0);
+        assert_eq!(state.advance_to(1.0), 0);
         assert_eq!(state.advance_to(WEATHER_TIMESTEP_SECONDS * 2.0 + 0.1), 1);
         assert_eq!(state.debug_snapshot().completed_steps, 2);
     }
