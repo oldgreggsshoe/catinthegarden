@@ -32,6 +32,8 @@ const WEATHER_FACE_COUNT: usize = 6;
 const OVERLAY_BINS: usize = 16;
 const NEIGHBOUR_COUNT: usize = 4;
 
+pub const WEATHER_FIELD_TEXTURE_SIDE: u32 = OVERLAY_BINS as u32;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WeatherNeighbour {
     West = 0,
@@ -948,6 +950,46 @@ impl WeatherState {
         self.overlay_enabled = !self.overlay_enabled;
     }
 
+    /// Packs the area-averaged cloud field into six RGBA8 cube-face layers.
+    /// The channels are cloud water, storm intensity, humidity, and an opaque
+    /// marker. A renderer can upload this infrequently, after fixed weather
+    /// ticks, rather than reading the 64x64 simulation grid on the GPU.
+    pub fn cloud_field_texture_data(&self) -> Vec<u8> {
+        let cells_per_bin = WEATHER_GRID_SIDE / OVERLAY_BINS;
+        let mut bytes = vec![0_u8; WEATHER_FACE_COUNT * OVERLAY_BINS * OVERLAY_BINS * 4];
+        for face in 0..WEATHER_FACE_COUNT {
+            for y in 0..OVERLAY_BINS {
+                for x in 0..OVERLAY_BINS {
+                    let mut cloud = 0.0_f64;
+                    let mut storm = 0.0_f64;
+                    let mut humidity = 0.0_f64;
+                    let mut area = 0.0_f64;
+                    for local_y in 0..cells_per_bin {
+                        for local_x in 0..cells_per_bin {
+                            let index = cell_index(
+                                face as u8,
+                                x * cells_per_bin + local_x,
+                                y * cells_per_bin + local_y,
+                            );
+                            let cell_area = self.grid.cells()[index].area_square_meters;
+                            let state = self.fields.cells()[index];
+                            cloud += f64::from(state.cloud_water) * cell_area;
+                            storm += f64::from(state.storm_intensity) * cell_area;
+                            humidity += f64::from(state.specific_humidity) * cell_area;
+                            area += cell_area;
+                        }
+                    }
+                    let offset = ((face * OVERLAY_BINS + y) * OVERLAY_BINS + x) * 4;
+                    bytes[offset] = ((cloud / area).clamp(0.0, 1.0) * 255.0).round() as u8;
+                    bytes[offset + 1] = ((storm / area).clamp(0.0, 1.0) * 255.0).round() as u8;
+                    bytes[offset + 2] = ((humidity / area).clamp(0.0, 1.0) * 255.0).round() as u8;
+                    bytes[offset + 3] = 255;
+                }
+            }
+        }
+        bytes
+    }
+
     /// Consumes scene time through a fixed 600-second weather clock. The
     /// caller may provide render/scenario time at any cadence; no partial
     /// transfer is applied between fixed steps.
@@ -1768,6 +1810,15 @@ mod tests {
         assert_eq!(state.advance_to(1.0), 0);
         assert_eq!(state.advance_to(WEATHER_TIMESTEP_SECONDS * 2.0 + 0.1), 1);
         assert_eq!(state.debug_snapshot().completed_steps, 2);
+    }
+
+    #[test]
+    fn cloud_field_upload_is_deterministic_and_rgba8_bounded() {
+        let state = WeatherState::new();
+        let first = state.cloud_field_texture_data();
+        assert_eq!(first.len(), WEATHER_FACE_COUNT * OVERLAY_BINS * OVERLAY_BINS * 4);
+        assert!(first.chunks_exact(4).all(|texel| texel[3] == 255));
+        assert_eq!(first, state.cloud_field_texture_data());
     }
 
     #[test]

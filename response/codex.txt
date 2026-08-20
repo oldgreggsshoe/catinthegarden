@@ -1,9 +1,10 @@
-Milestone 10 is complete and pushed.
+Milestone 11 is complete and pushed.
 
-- Condensation now releases bounded latent heat; cloud re-evaporation applies equal cooling.
-- A normalized storm-intensity diagnostic combines cloud water, positive uplift, and latent heating.
-- The thermal anomaly feeds the next fixed tick's pressure/wind update, avoiding unstable same-step feedback.
-- HUD reports storm intensity and latent temperature change; no storm rendering yet.
+- Added a GPU weather field upload: six 16x16 RGBA8 cube-face layers carrying cloud water, storm intensity, and humidity.
+- Added double buffering and a 1.5-second temporal blend after each fixed weather tick.
+- Added the first camera-relative cloud shell pass, with alpha blending, depth-aware composition, and the existing atmospheric transmittance/irradiance lighting.
+- Added a small humid-air precursor so the first run is not empty before condensation; F10 remains respected and key 9 updates the rendered field.
+- Terrain, ocean, atmosphere, and sun paths remain unchanged.
 
-Validation: 22 focused weather tests passed; cargo check --workspace passed.
-Next: milestone 11, GPU field upload, temporal blending, and the first rendered cloud shell.
+Validation: 25 focused weather/render tests passed, workspace check passed, and raster orbit_once GPU run passed (4 captures, finite metrics, zero seam violations).
+Next: milestone 12, stacked shells plus flow/noise detail.

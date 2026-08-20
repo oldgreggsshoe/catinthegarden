@@ -13,6 +13,7 @@ mod scenario;
 mod sun;
 mod terrain;
 mod weather;
+mod weather_render;
 
 use std::{
     path::PathBuf,
@@ -664,6 +665,7 @@ struct State {
     hdr: hdr::HdrRenderer,
     atmosphere: atmosphere::AtmosphereRenderer,
     weather: weather::WeatherState,
+    weather_clouds: weather_render::WeatherCloudRenderer,
     sun: sun::SunRenderer,
     foveated: foveated::FoveatedRenderer,
     terrain: terrain::TerrainRenderer,
@@ -880,6 +882,15 @@ impl State {
             hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
         );
+        let weather = weather::WeatherState::new();
+        let mut weather_clouds = weather_render::WeatherCloudRenderer::new(
+            &device,
+            &queue,
+            hdr::HdrRenderer::SCENE_FORMAT,
+            &camera_bind_group_layout,
+            atmosphere.surface_lighting_resources(),
+        );
+        weather_clouds.replace_field(&device, &queue, &weather.cloud_field_texture_data());
         let foveated = foveated::FoveatedRenderer::new(
             &device,
             &queue,
@@ -939,7 +950,8 @@ impl State {
             depth_view,
             hdr,
             atmosphere,
-            weather: weather::WeatherState::new(),
+            weather,
+            weather_clouds,
             sun,
             foveated,
             terrain,
@@ -1474,6 +1486,9 @@ impl State {
             planet::planet_rotation_radians(self.interactive_planet_rotation_time(sim_time));
         let sun_direction = planet::planet_local_vector(self.sun_direction, planet_rotation);
         self.weather.step_once(sun_direction);
+        let weather_field = self.weather.cloud_field_texture_data();
+        self.weather_clouds
+            .replace_field(&self.device, &self.queue, &weather_field);
         self.mark_hud_dirty();
     }
 
@@ -1634,8 +1649,16 @@ impl State {
         let planet_rotation_radians = planet::planet_rotation_radians(planet_rotation_time);
         let weather_sun_direction =
             planet::planet_local_vector(self.sun_direction, planet_rotation_radians);
-        self.weather
+        let weather_steps = self
+            .weather
             .advance_to_with_sun(sim_time, weather_sun_direction);
+        if weather_steps > 0 {
+            let weather_field = self.weather.cloud_field_texture_data();
+            self.weather_clouds
+                .replace_field(&self.device, &self.queue, &weather_field);
+        }
+        self.weather_clouds
+            .advance_temporal(&self.queue, frame_time);
         let scene_delta_seconds = (sim_time - self.last_auto_orbit_sim_time).max(0.0);
         if let Some(forward_held) = scenario_forward_flight_held {
             if !self.scenario_flight_initialized {
@@ -2449,6 +2472,41 @@ impl State {
             if self.foveated.experiment_enabled(2) {
                 self.foveated.copy_to_history(&mut encoder);
             }
+        }
+        if !solid_color_screen
+            && matches!(
+                self.render_debug_mode,
+                planet::RenderDebugMode::Final | planet::RenderDebugMode::FlatTriangles
+            )
+            && !(self.render_path == RenderPath::FoveatedRay
+                && self.render_debug_mode == planet::RenderDebugMode::Final
+                && self.foveated.warp_debug_visible())
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("weather cloud shell pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: self.hdr.scene_view(),
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                occlusion_query_set: None,
+                timestamp_writes: None,
+                multiview_mask: None,
+            });
+            self.weather_clouds
+                .draw(&mut render_pass, &self.camera_bind_group);
         }
         let pending_depth_probe = probe_requested.then(|| {
             probe::schedule_depth_readback(

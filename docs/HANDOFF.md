@@ -3053,3 +3053,14 @@ uplift, and latent-heating magnitude. It is a diagnostic signal only for now; no
 GPU cloud rendering, or storm visuals are introduced in this milestone. The HUD reports maximum and
 area-mean storm intensity plus peak latent temperature change. Twenty-two focused weather tests and
 a workspace check pass.
+
+## Experimental weather GPU cloud shell - 21 August 2026
+
+Milestone 11 uploads the weather cloud/storm/humidity field as six 16x16 RGBA8 cube-face layers.
+The renderer keeps two resident field textures and cross-fades the previous/current field over 1.5
+seconds after each fixed weather tick. A camera-relative 14km shell renders the field with alpha
+blending, shared atmospheric transmittance/irradiance lighting, altitude-aware geometric solar
+visibility, and a very small humid-air precursor so a new run is not visually empty before the first
+condensation tick. The shell is an additive scene pass after terrain/ray unwarp and before exposure;
+terrain, ocean, atmosphere, and sun paths are unchanged. Two shader/mesh tests and the weather field
+packing regression pass; interactive GPU capture remains the next manual sign-off.
