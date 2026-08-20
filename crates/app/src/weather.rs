@@ -18,6 +18,7 @@ const WEATHER_GREENHOUSE_FACTOR: f64 = 0.12;
 const WEATHER_PRESSURE_PER_KELVIN_PASCALS: f64 = 75.0;
 const WEATHER_EVAPORATION_TIME_CONSTANT_SECONDS: f64 = 1_800.0;
 const WEATHER_LATENT_COOLING_KELVIN_PER_UNIT: f64 = 2.5;
+const WEATHER_CONDENSATION_TIME_CONSTANT_SECONDS: f64 = 900.0;
 const WEATHER_FACE_COUNT: usize = 6;
 const OVERLAY_BINS: usize = 16;
 const NEIGHBOUR_COUNT: usize = 4;
@@ -183,6 +184,7 @@ pub struct WeatherCellState {
     pub surface_albedo: f32,
     pub heat_capacity_joules_per_square_meter_kelvin: f32,
     pub ground_moisture: f32,
+    pub cloud_water: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -209,6 +211,9 @@ pub struct WeatherFieldDiagnostics {
     pub minimum_humidity: f32,
     pub maximum_humidity: f32,
     pub mean_humidity: f32,
+    pub minimum_cloud_water: f32,
+    pub maximum_cloud_water: f32,
+    pub mean_cloud_water: f32,
     pub maximum_wind_meters_per_second: f32,
     pub maximum_cfl: f64,
     pub relaxation_weight_at_1800_seconds: f64,
@@ -323,6 +328,33 @@ impl WeatherFields {
             state.temperature_kelvin = (f64::from(state.temperature_kelvin)
                 - evaporated * WEATHER_LATENT_COOLING_KELVIN_PER_UNIT)
                 .clamp(180.0, 340.0) as f32;
+        }
+    }
+
+    /// Relaxes normalized water vapour toward a temperature-dependent
+    /// saturation value. Supersaturated vapour becomes cloud water; when the
+    /// cell is undersaturated, cloud water re-evaporates. The phase change is
+    /// local and conservative, so this stage creates a diagnostic cloud field
+    /// without pretending to model precipitation or terrain water yet.
+    pub fn condense_cloud_water(&mut self, step_seconds: f64) {
+        if step_seconds <= 0.0 {
+            return;
+        }
+        let relaxation =
+            exponential_relaxation_weight(step_seconds, WEATHER_CONDENSATION_TIME_CONSTANT_SECONDS);
+        for state in &mut self.cells {
+            let saturation = saturation_specific_humidity(f64::from(state.temperature_kelvin));
+            let humidity = f64::from(state.specific_humidity);
+            let cloud_water = f64::from(state.cloud_water);
+            if humidity > saturation {
+                let condensed = ((humidity - saturation) * relaxation).min(humidity);
+                state.specific_humidity = (humidity - condensed).clamp(0.0, 1.0) as f32;
+                state.cloud_water = (cloud_water + condensed).clamp(0.0, 1.0) as f32;
+            } else if cloud_water > 0.0 {
+                let evaporated = ((saturation - humidity) * relaxation).min(cloud_water);
+                state.specific_humidity = (humidity + evaporated).clamp(0.0, 1.0) as f32;
+                state.cloud_water = (cloud_water - evaporated).clamp(0.0, 1.0) as f32;
+            }
         }
     }
 
@@ -464,9 +496,12 @@ impl WeatherFields {
         let mut max_pressure = f32::NEG_INFINITY;
         let mut min_humidity = f32::INFINITY;
         let mut max_humidity = f32::NEG_INFINITY;
+        let mut min_cloud_water = f32::INFINITY;
+        let mut max_cloud_water = f32::NEG_INFINITY;
         let mut mean_temperature = 0.0_f64;
         let mut mean_pressure = 0.0_f64;
         let mut mean_humidity = 0.0_f64;
+        let mut mean_cloud_water = 0.0_f64;
         let mut maximum_wind = 0.0_f32;
         let mut maximum_cfl = 0.0_f64;
         let mut pressure_integral = 0.0_f64;
@@ -484,11 +519,14 @@ impl WeatherFields {
             max_pressure = max_pressure.max(state.surface_pressure_pascals);
             min_humidity = min_humidity.min(state.specific_humidity);
             max_humidity = max_humidity.max(state.specific_humidity);
+            min_cloud_water = min_cloud_water.min(state.cloud_water);
+            max_cloud_water = max_cloud_water.max(state.cloud_water);
             maximum_wind = maximum_wind.max(wind_speed);
             maximum_cfl = maximum_cfl.max(cfl);
             mean_temperature += f64::from(state.temperature_kelvin) * area;
             mean_pressure += f64::from(state.surface_pressure_pascals) * area;
             mean_humidity += f64::from(state.specific_humidity) * area;
+            mean_cloud_water += f64::from(state.cloud_water) * area;
             pressure_integral += f64::from(state.surface_pressure_pascals) * area;
             humidity_integral += f64::from(state.specific_humidity) * area;
         }
@@ -504,6 +542,9 @@ impl WeatherFields {
             minimum_humidity: min_humidity,
             maximum_humidity: max_humidity,
             mean_humidity: (mean_humidity / total_area) as f32,
+            minimum_cloud_water: min_cloud_water,
+            maximum_cloud_water: max_cloud_water,
+            mean_cloud_water: (mean_cloud_water / total_area) as f32,
             maximum_wind_meters_per_second: maximum_wind,
             maximum_cfl,
             relaxation_weight_at_1800_seconds: exponential_relaxation_weight(
@@ -594,6 +635,36 @@ impl WeatherFields {
         }
         bins
     }
+
+    pub fn overlay_cloud_water_bins(
+        &self,
+        grid: &WeatherGrid,
+    ) -> [[f32; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT] {
+        let mut bins = [[0.0; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT];
+        let cells_per_bin = WEATHER_GRID_SIDE / OVERLAY_BINS;
+        for face in 0..WEATHER_FACE_COUNT {
+            for y in 0..OVERLAY_BINS {
+                for x in 0..OVERLAY_BINS {
+                    let mut cloud_water = 0.0_f64;
+                    let mut area = 0.0_f64;
+                    for local_y in 0..cells_per_bin {
+                        for local_x in 0..cells_per_bin {
+                            let index = cell_index(
+                                face as u8,
+                                x * cells_per_bin + local_x,
+                                y * cells_per_bin + local_y,
+                            );
+                            let cell_area = grid.cells()[index].area_square_meters;
+                            cloud_water += f64::from(self.cells()[index].cloud_water) * cell_area;
+                            area += cell_area;
+                        }
+                    }
+                    bins[face][y * OVERLAY_BINS + x] = (cloud_water / area) as f32;
+                }
+            }
+        }
+        bins
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -609,6 +680,7 @@ pub struct WeatherDebugSnapshot {
     pub completed_steps: u64,
     pub field_diagnostics: WeatherFieldDiagnostics,
     pub humidity_bins: [[f32; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT],
+    pub cloud_water_bins: [[f32; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT],
     pub wind_bins: [[WeatherOverlayWind; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT],
 }
 
@@ -619,7 +691,7 @@ impl WeatherDebugSnapshot {
         }
 
         ui.separator();
-        ui.label("Weather field overlay: humidity (dry brown -> saturated blue) / wind");
+        ui.label("Weather field overlay: humidity tint / cloud water / wind");
         let panel_size = egui::vec2(256.0, 176.0);
         let (rect, _) = ui.allocate_exact_size(panel_size, egui::Sense::hover());
         let painter = ui.painter_at(rect);
@@ -628,10 +700,18 @@ impl WeatherDebugSnapshot {
             for y in 0..OVERLAY_BINS {
                 for x in 0..OVERLAY_BINS {
                     let value = self.humidity_bins[face][y * OVERLAY_BINS + x].clamp(0.0, 1.0);
+                    let cloud_water = self.cloud_water_bins[face][y * OVERLAY_BINS + x]
+                        .clamp(0.0, 1.0)
+                        .sqrt();
+                    let base = [
+                        185.0 - 145.0 * value,
+                        85.0 + 115.0 * value,
+                        45.0 + 190.0 * value,
+                    ];
                     let colour = egui::Color32::from_rgb(
-                        (185.0 - 145.0 * value) as u8,
-                        (85.0 + 115.0 * value) as u8,
-                        (45.0 + 190.0 * value) as u8,
+                        (base[0] + (235.0 - base[0]) * cloud_water) as u8,
+                        (base[1] + (235.0 - base[1]) * cloud_water) as u8,
+                        (base[2] + (235.0 - base[2]) * cloud_water) as u8,
                     );
                     let cell = egui::Rect::from_min_size(
                         origin + egui::vec2(x as f32 * 4.0, y as f32 * 4.0),
@@ -676,7 +756,7 @@ impl WeatherDebugSnapshot {
                 egui::Color32::WHITE,
             );
         }
-        ui.label("Colour: 0 dry -> 1 saturated humidity | arrows: tangent wind");
+        ui.label("Colour: humidity (brown -> blue), cloud water whitens | arrows: tangent wind");
     }
 }
 
@@ -762,6 +842,7 @@ impl WeatherState {
             .advect_temperature(&self.grid, WEATHER_TIMESTEP_SECONDS);
         self.fields
             .advect_humidity(&self.grid, WEATHER_TIMESTEP_SECONDS);
+        self.fields.condense_cloud_water(WEATHER_TIMESTEP_SECONDS);
     }
 
     pub fn debug_snapshot(&self) -> WeatherDebugSnapshot {
@@ -779,6 +860,7 @@ impl WeatherState {
             completed_steps: self.completed_steps,
             field_diagnostics: self.fields.diagnostics(&self.grid),
             humidity_bins: self.fields.overlay_humidity_bins(&self.grid),
+            cloud_water_bins: self.fields.overlay_cloud_water_bins(&self.grid),
             wind_bins: self.fields.overlay_wind_bins(&self.grid),
         }
     }
@@ -930,7 +1012,15 @@ fn initial_cell_state(direction: DVec3) -> WeatherCellState {
         surface_albedo: surface_albedo as f32,
         heat_capacity_joules_per_square_meter_kelvin: heat_capacity as f32,
         ground_moisture: ground_moisture as f32,
+        cloud_water: 0.0,
     }
+}
+
+/// Saturation in the normalized humidity units used by this diagnostic
+/// model. It follows the expected Clausius-Clapeyron direction (warmer air
+/// holds more vapour) while staying inside the field's `[0,1]` contract.
+fn saturation_specific_humidity(temperature_kelvin: f64) -> f64 {
+    (0.55 * (0.045 * (temperature_kelvin - 273.15)).exp()).clamp(0.05, 0.98)
 }
 
 /// Temporary climate-surface proxy. It provides broad land/ocean thermal
@@ -1260,6 +1350,37 @@ mod tests {
                 .iter()
                 .zip(&before)
                 .all(|(after, before)| after.ground_moisture <= before.ground_moisture)
+        );
+    }
+
+    #[test]
+    fn condensation_creates_bounded_cloud_water_and_conserves_local_phase_mass() {
+        let grid = WeatherGrid::new();
+        let mut fields = WeatherFields::initial(&grid);
+        let before = fields.cells().to_vec();
+        fields.condense_cloud_water(WEATHER_TIMESTEP_SECONDS);
+        assert!(fields.cells().iter().all(|state| {
+            (0.0..=1.0).contains(&state.specific_humidity)
+                && (0.0..=1.0).contains(&state.cloud_water)
+        }));
+        assert!(fields.cells().iter().any(|state| state.cloud_water > 0.0));
+        assert!(
+            fields
+                .cells()
+                .iter()
+                .zip(&before)
+                .any(|(after, before)| after.cloud_water > before.cloud_water)
+        );
+        assert!(fields.cells().iter().zip(&before).all(|(after, before)| {
+            let before_total = f64::from(before.specific_humidity) + f64::from(before.cloud_water);
+            let after_total = f64::from(after.specific_humidity) + f64::from(after.cloud_water);
+            (after_total - before_total).abs() < 1.0e-6
+        }));
+        let bins = fields.overlay_cloud_water_bins(&grid);
+        assert!(
+            bins.iter()
+                .flatten()
+                .all(|value| (0.0..=1.0).contains(value))
         );
     }
 

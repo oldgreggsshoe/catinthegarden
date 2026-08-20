@@ -1,7 +1,9 @@
-We have 9 of 15 roadmap milestones left.
+Milestone 7 is complete: condensation/cloud field diagnostics are now running.
 
-- 7–10: finish the weather physics (condensation, orographic rain shadows, precipitation, storms).
-- 11–14: add visible clouds and surface effects (cloud shell, layered detail, shadows, rain/snow).
-- 15: final polish (seasons, optional sharpening, local impostors/polish).
+- Supersaturated vapour condenses into bounded cloud_water; dry cells re-evaporate it.
+- The phase-change pass uses temperature-dependent saturation and a 900s exponential relaxation.
+- The HUD reports cloud-water range/mean; the 7 overlay whitens humidity colour by cloud water.
+- No rendered clouds yet: precipitation, terrain coupling, GPU upload, and cloud geometry remain for later milestones.
 
-Visible rendered clouds begin at milestone 11. The current fields are still normalized diagnostic proxies, so terrain-derived water and production cloud rendering remain ahead.
+Validation: 19 focused weather tests passed; cargo check --workspace passed.
+Next: milestone 8, lapse rate and orographic uplift.

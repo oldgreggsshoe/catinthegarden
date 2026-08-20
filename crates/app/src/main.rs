@@ -1965,7 +1965,7 @@ impl State {
                             ));
                             let field = weather_snapshot.field_diagnostics;
                             ui.label(format!(
-                                "Weather fields: T {:.1}-{:.1}K (mean {:.1})  |  p {:.0}-{:.0}Pa (mean {:.0})  |  RH {:.2}-{:.2} (mean {:.2})",
+                                "Weather fields: T {:.1}-{:.1}K (mean {:.1})  |  p {:.0}-{:.0}Pa (mean {:.0})  |  RH {:.2}-{:.2} (mean {:.2})  |  clouds {:.2}-{:.2} (mean {:.2})",
                                 field.minimum_temperature_kelvin,
                                 field.maximum_temperature_kelvin,
                                 field.mean_temperature_kelvin,
@@ -1975,6 +1975,9 @@ impl State {
                                 field.minimum_humidity,
                                 field.maximum_humidity,
                                 field.mean_humidity,
+                                field.minimum_cloud_water,
+                                field.maximum_cloud_water,
+                                field.mean_cloud_water,
                             ));
                             ui.label(format!(
                                 "Weather wind: max {:.1}m/s  |  CFL@{}s {:.3}  |  relax@1800s {:.3}  |  conservation Δp {:.2e} Δq {:.2e}",

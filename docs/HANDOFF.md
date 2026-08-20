@@ -2999,3 +2999,16 @@ The fixed-step sequence is now thermal balance -> pressure/momentum -> evaporati
 advection -> humidity advection. Eighteen focused weather tests pass, including source bounds and
 cooling. This is still a normalized diagnostic moisture field: precipitation, condensation, and
 terrain-derived water are deferred.
+
+## Experimental weather condensation/cloud field - 20 August 2026
+
+Each fixed 600-second weather step now performs a local phase-change pass after temperature and
+humidity transport. A bounded temperature-dependent saturation proxy converts supersaturated
+normalized vapour into `cloud_water` with a 900-second exponential relaxation; undersaturated cells
+re-evaporate existing cloud water. Vapour plus cloud water is conserved per cell by this stage, and
+both fields remain bounded in `[0,1]`.
+
+The HUD reports cloud-water range/mean, and the `7` six-face diagnostic overlay now whitens its
+humidity colour according to area-averaged cloud water while retaining tangent wind arrows. This is
+still a CPU/debug field only: precipitation, terrain-derived water, GPU upload, and rendered cloud
+geometry remain deferred. Nineteen focused weather tests and a workspace check pass.
