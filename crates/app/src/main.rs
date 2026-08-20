@@ -1465,6 +1465,18 @@ impl State {
         self.mark_hud_dirty();
     }
 
+    fn step_weather_once(&mut self) {
+        if self.scenario.is_some() {
+            return;
+        }
+        let sim_time = self.interactive_sim_time();
+        let planet_rotation =
+            planet::planet_rotation_radians(self.interactive_planet_rotation_time(sim_time));
+        let sun_direction = planet::planet_local_vector(self.sun_direction, planet_rotation);
+        self.weather.step_once(sun_direction);
+        self.mark_hud_dirty();
+    }
+
     fn adjust_planet_rotation_speed(&mut self, scale_factor: f64) {
         if self.scenario.is_some() {
             return;
@@ -2038,7 +2050,7 @@ impl State {
                             ));
                             ui.label(format!("Ocean Gerstner range: {ocean_wave_range:.2} m"));
                             ui.label(
-                                "F: fullscreen  |  F3: overlay  |  F4: camera mode  |  F5: render path  |  WASD: fly  |  O: triangle outlines  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
+                                "F: fullscreen  |  F3: overlay  |  F4: camera mode  |  F5: render path  |  WASD: fly  |  O: triangle outlines  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
                             );
                             ui.label("Default: fullscreen, HUD hidden, auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc/Q: quit");
                         });
@@ -2970,6 +2982,13 @@ impl ApplicationHandler for App {
                 {
                     state.weather.toggle_overlay();
                     state.hud_dirty = true;
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::Digit9) =>
+                {
+                    state.step_weather_once();
                     window.request_redraw();
                 }
                 WindowEvent::KeyboardInput { event, .. }

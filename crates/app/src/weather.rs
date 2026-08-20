@@ -665,22 +665,35 @@ impl WeatherState {
         self.last_input_time_seconds = scene_time_seconds;
         let mut completed = 0;
         while self.accumulator_seconds >= WEATHER_TIMESTEP_SECONDS {
-            self.fields.apply_insolation_and_radiative_cooling(
-                &self.grid,
-                sun_direction,
-                WEATHER_TIMESTEP_SECONDS,
-            );
-            self.fields.diagnose_pressure_from_temperature(&self.grid);
-            self.fields
-                .update_wind_from_pressure(&self.grid, WEATHER_TIMESTEP_SECONDS);
-            self.fields
-                .advect_humidity(&self.grid, WEATHER_TIMESTEP_SECONDS);
+            self.simulate_step(sun_direction);
             self.accumulator_seconds -= WEATHER_TIMESTEP_SECONDS;
             self.simulation_time_seconds += WEATHER_TIMESTEP_SECONDS;
             self.completed_steps += 1;
             completed += 1;
         }
         completed
+    }
+
+    /// Executes exactly one fixed weather step without consuming render-clock
+    /// time. This is a diagnostic control for inspecting field changes while
+    /// the interactive world is paused with F10.
+    pub fn step_once(&mut self, sun_direction: DVec3) {
+        self.simulate_step(sun_direction);
+        self.simulation_time_seconds += WEATHER_TIMESTEP_SECONDS;
+        self.completed_steps += 1;
+    }
+
+    fn simulate_step(&mut self, sun_direction: DVec3) {
+        self.fields.apply_insolation_and_radiative_cooling(
+            &self.grid,
+            sun_direction,
+            WEATHER_TIMESTEP_SECONDS,
+        );
+        self.fields.diagnose_pressure_from_temperature(&self.grid);
+        self.fields
+            .update_wind_from_pressure(&self.grid, WEATHER_TIMESTEP_SECONDS);
+        self.fields
+            .advect_humidity(&self.grid, WEATHER_TIMESTEP_SECONDS);
     }
 
     pub fn debug_snapshot(&self) -> WeatherDebugSnapshot {
@@ -1135,6 +1148,23 @@ mod tests {
                     .hypot(state.north_wind_meters_per_second)
                     <= WEATHER_MAX_WIND_SPEED_METERS_PER_SECOND as f32
         }));
+    }
+
+    #[test]
+    fn manual_step_advances_without_consuming_render_clock() {
+        let mut state = WeatherState::new();
+        state.step_once(DVec3::X);
+        let after_one = state.debug_snapshot();
+        assert_eq!(after_one.completed_steps, 1);
+        assert_eq!(after_one.simulation_time_seconds, WEATHER_TIMESTEP_SECONDS);
+        assert_eq!(state.advance_to(0.0), 0);
+        state.step_once(DVec3::NEG_X);
+        let after_two = state.debug_snapshot();
+        assert_eq!(after_two.completed_steps, 2);
+        assert_eq!(
+            after_two.simulation_time_seconds,
+            WEATHER_TIMESTEP_SECONDS * 2.0
+        );
     }
 
     #[test]

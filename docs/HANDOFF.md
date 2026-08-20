@@ -2965,3 +2965,11 @@ The 15 focused weather tests include a zero-pressure-gradient regression that dr
 eastward winds at matched northern/southern latitudes: the meridional deflection reverses across
 the equator and vanishes at the equator itself. Workspace check passes. Temperature advection,
 terrain slope/drag, moisture sources, and rendered weather fields remain deferred.
+
+## Experimental weather manual stepping - 20 August 2026
+
+Interactive debugging now exposes key `9` as a manual weather step. It executes exactly one
+600-second simulation tick using the current planet-local sun direction, updates the HUD counters,
+and works while F10 holds the normal scene clock. The production fixed-step clock and all scenario
+timelines are unchanged; this is only a deterministic inspection control for temperature, pressure,
+wind, humidity, and Coriolis changes without waiting ten real minutes.
