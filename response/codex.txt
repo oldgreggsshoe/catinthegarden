@@ -1,11 +1,11 @@
-Temperature-advection stage complete and pushed as `c9ce516`.
+Evaporation stage complete and pushed as `120b759`.
 
-- Added bounded semi-Lagrangian temperature advection using updated tangent winds.
-- Backtraces use bilinear fractional cube-face sampling with cross-face seam handling.
-- Temperature remains bounded to 180-340K; pressure uses the transported field on the next tick.
-- Humidity remains on its conservative mass-flux path.
+- Added bounded ocean/ground evaporation driven by wind, temperature, and humidity deficit.
+- Added normalized land ground-moisture reservoirs and latent cooling.
+- Fixed-step order is now thermal balance -> momentum -> evaporation -> temperature advection -> humidity advection.
+- Humidity and ground moisture remain within [0,1].
 
 Validation:
-- Focused weather tests: 17 passed.
+- Focused weather tests: 18 passed.
 - `cargo check --workspace`: passed without warnings.
 - Existing unrelated worktree changes were preserved.
