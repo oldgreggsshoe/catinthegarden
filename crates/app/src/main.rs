@@ -1980,6 +1980,11 @@ impl State {
                                 field.mean_cloud_water,
                             ));
                             ui.label(format!(
+                                "Weather relief: proxy max {:.0}m  |  orographic uplift max {:.2}m/s",
+                                field.maximum_surface_elevation_meters,
+                                field.maximum_orographic_uplift_meters_per_second,
+                            ));
+                            ui.label(format!(
                                 "Weather wind: max {:.1}m/s  |  CFL@{}s {:.3}  |  relax@1800s {:.3}  |  conservation Δp {:.2e} Δq {:.2e}",
                                 field.maximum_wind_meters_per_second,
                                 weather::WEATHER_TIMESTEP_SECONDS as u32,

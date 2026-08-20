@@ -19,6 +19,10 @@ const WEATHER_PRESSURE_PER_KELVIN_PASCALS: f64 = 75.0;
 const WEATHER_EVAPORATION_TIME_CONSTANT_SECONDS: f64 = 1_800.0;
 const WEATHER_LATENT_COOLING_KELVIN_PER_UNIT: f64 = 2.5;
 const WEATHER_CONDENSATION_TIME_CONSTANT_SECONDS: f64 = 900.0;
+const WEATHER_LAPSE_RATE_KELVIN_PER_METER: f64 = 0.0065;
+const WEATHER_OROGRAPHIC_RESPONSE_FRACTION: f64 = 0.2;
+const WEATHER_MAX_OROGRAPHIC_UPLIFT_METERS_PER_SECOND: f64 = 8.0;
+const WEATHER_MAX_LAPSE_DISPLACEMENT_METERS_PER_STEP: f64 = 750.0;
 const WEATHER_FACE_COUNT: usize = 6;
 const OVERLAY_BINS: usize = 16;
 const NEIGHBOUR_COUNT: usize = 4;
@@ -185,6 +189,8 @@ pub struct WeatherCellState {
     pub heat_capacity_joules_per_square_meter_kelvin: f32,
     pub ground_moisture: f32,
     pub cloud_water: f32,
+    pub surface_elevation_meters: f32,
+    pub orographic_uplift_meters_per_second: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -214,6 +220,8 @@ pub struct WeatherFieldDiagnostics {
     pub minimum_cloud_water: f32,
     pub maximum_cloud_water: f32,
     pub mean_cloud_water: f32,
+    pub maximum_surface_elevation_meters: f32,
+    pub maximum_orographic_uplift_meters_per_second: f32,
     pub maximum_wind_meters_per_second: f32,
     pub maximum_cfl: f64,
     pub relaxation_weight_at_1800_seconds: f64,
@@ -358,6 +366,59 @@ impl WeatherFields {
         }
     }
 
+    /// Estimates vertical motion from the tangent wind crossing the local
+    /// surface-elevation gradient. A bounded moist-adiabatic lapse tendency
+    /// cools rising air and warms descending air. The response fraction keeps
+    /// this one-layer proxy stable until real terrain and vertical columns are
+    /// wired into the weather field.
+    pub fn apply_lapse_rate_and_orographic_uplift(
+        &mut self,
+        grid: &WeatherGrid,
+        step_seconds: f64,
+    ) {
+        if step_seconds <= 0.0 {
+            return;
+        }
+        let mut next_uplift = vec![0.0_f32; self.cells.len()];
+        let mut next_temperature = vec![0.0_f32; self.cells.len()];
+        for (index, cell) in grid.cells().iter().enumerate() {
+            let east_index = grid.directional_neighbour_index(index, cell.east) as usize;
+            let west_index = grid.directional_neighbour_index(index, -cell.east) as usize;
+            let north_index = grid.directional_neighbour_index(index, cell.north) as usize;
+            let south_index = grid.directional_neighbour_index(index, -cell.north) as usize;
+            let width = cell.area_square_meters.sqrt();
+            let east_gradient = (f64::from(self.cells[east_index].surface_elevation_meters)
+                - f64::from(self.cells[west_index].surface_elevation_meters))
+                / (2.0 * width);
+            let north_gradient = (f64::from(self.cells[north_index].surface_elevation_meters)
+                - f64::from(self.cells[south_index].surface_elevation_meters))
+                / (2.0 * width);
+            let uplift = (f64::from(self.cells[index].east_wind_meters_per_second)
+                * east_gradient
+                + f64::from(self.cells[index].north_wind_meters_per_second) * north_gradient)
+                .clamp(
+                    -WEATHER_MAX_OROGRAPHIC_UPLIFT_METERS_PER_SECOND,
+                    WEATHER_MAX_OROGRAPHIC_UPLIFT_METERS_PER_SECOND,
+                );
+            let displacement = (uplift
+                * step_seconds
+                * WEATHER_OROGRAPHIC_RESPONSE_FRACTION)
+                .clamp(
+                    -WEATHER_MAX_LAPSE_DISPLACEMENT_METERS_PER_STEP,
+                    WEATHER_MAX_LAPSE_DISPLACEMENT_METERS_PER_STEP,
+                );
+            let lapse_delta = -WEATHER_LAPSE_RATE_KELVIN_PER_METER * displacement;
+            next_uplift[index] = uplift as f32;
+            next_temperature[index] = (f64::from(self.cells[index].temperature_kelvin)
+                + lapse_delta)
+                .clamp(180.0, 340.0) as f32;
+        }
+        for (index, state) in self.cells.iter_mut().enumerate() {
+            state.orographic_uplift_meters_per_second = next_uplift[index];
+            state.temperature_kelvin = next_temperature[index];
+        }
+    }
+
     /// Semi-Lagrangian temperature advection. Each destination cell traces
     /// backwards through the updated tangent wind and bilinearly samples the
     /// previous temperature field, including cross-face neighbours.
@@ -498,6 +559,8 @@ impl WeatherFields {
         let mut max_humidity = f32::NEG_INFINITY;
         let mut min_cloud_water = f32::INFINITY;
         let mut max_cloud_water = f32::NEG_INFINITY;
+        let mut maximum_surface_elevation = 0.0_f32;
+        let mut maximum_orographic_uplift = 0.0_f32;
         let mut mean_temperature = 0.0_f64;
         let mut mean_pressure = 0.0_f64;
         let mut mean_humidity = 0.0_f64;
@@ -521,6 +584,10 @@ impl WeatherFields {
             max_humidity = max_humidity.max(state.specific_humidity);
             min_cloud_water = min_cloud_water.min(state.cloud_water);
             max_cloud_water = max_cloud_water.max(state.cloud_water);
+            maximum_surface_elevation =
+                maximum_surface_elevation.max(state.surface_elevation_meters);
+            maximum_orographic_uplift = maximum_orographic_uplift
+                .max(state.orographic_uplift_meters_per_second.abs());
             maximum_wind = maximum_wind.max(wind_speed);
             maximum_cfl = maximum_cfl.max(cfl);
             mean_temperature += f64::from(state.temperature_kelvin) * area;
@@ -545,6 +612,8 @@ impl WeatherFields {
             minimum_cloud_water: min_cloud_water,
             maximum_cloud_water: max_cloud_water,
             mean_cloud_water: (mean_cloud_water / total_area) as f32,
+            maximum_surface_elevation_meters: maximum_surface_elevation,
+            maximum_orographic_uplift_meters_per_second: maximum_orographic_uplift,
             maximum_wind_meters_per_second: maximum_wind,
             maximum_cfl,
             relaxation_weight_at_1800_seconds: exponential_relaxation_weight(
@@ -837,6 +906,10 @@ impl WeatherState {
         self.fields.diagnose_pressure_from_temperature(&self.grid);
         self.fields
             .update_wind_from_pressure(&self.grid, WEATHER_TIMESTEP_SECONDS);
+        self.fields.apply_lapse_rate_and_orographic_uplift(
+            &self.grid,
+            WEATHER_TIMESTEP_SECONDS,
+        );
         self.fields.evaporate_moisture(WEATHER_TIMESTEP_SECONDS);
         self.fields
             .advect_temperature(&self.grid, WEATHER_TIMESTEP_SECONDS);
@@ -996,6 +1069,7 @@ fn initial_cell_state(direction: DVec3) -> WeatherCellState {
         18.0 * (2.0 * latitude).sin() - 8.0 * (3.0 * latitude).sin() * longitude.cos();
     let north_wind_meters_per_second = 4.0 * latitude.cos() * (2.0 * longitude).sin();
     let land_fraction = proxy_land_fraction(direction, latitude, longitude);
+    let surface_elevation = proxy_surface_elevation_meters(direction, latitude, longitude);
     let surface_albedo =
         WEATHER_OCEAN_ALBEDO + (WEATHER_LAND_ALBEDO - WEATHER_OCEAN_ALBEDO) * land_fraction;
     let heat_capacity = WEATHER_OCEAN_HEAT_CAPACITY_JOULES_PER_SQUARE_METER_KELVIN
@@ -1013,6 +1087,8 @@ fn initial_cell_state(direction: DVec3) -> WeatherCellState {
         heat_capacity_joules_per_square_meter_kelvin: heat_capacity as f32,
         ground_moisture: ground_moisture as f32,
         cloud_water: 0.0,
+        surface_elevation_meters: surface_elevation as f32,
+        orographic_uplift_meters_per_second: 0.0,
     }
 }
 
@@ -1021,6 +1097,22 @@ fn initial_cell_state(direction: DVec3) -> WeatherCellState {
 /// holds more vapour) while staying inside the field's `[0,1]` contract.
 fn saturation_specific_humidity(temperature_kelvin: f64) -> f64 {
     (0.55 * (0.045 * (temperature_kelvin - 273.15)).exp()).clamp(0.05, 0.98)
+}
+
+/// Seam-safe low-resolution relief proxy used until the renderer's baked
+/// terrain sampler is part of the weather contract. Ocean-like cells remain
+/// near sea level while land carries broad and narrower deterministic ridges.
+fn proxy_surface_elevation_meters(direction: DVec3, latitude: f64, longitude: f64) -> f64 {
+    let land_fraction = proxy_land_fraction(direction, latitude, longitude);
+    let broad = (0.5
+        + 0.5 * (2.0 * longitude + 0.3 * latitude).sin() * latitude.cos()
+        + 0.25 * (3.0 * longitude - latitude).cos())
+    .clamp(0.0, 1.0);
+    let ridge = (0.5
+        + 0.5 * (5.0 * longitude - 1.7 * latitude).sin()
+        + 0.25 * (7.0 * longitude + 0.8 * latitude).cos())
+    .clamp(0.0, 1.0);
+    (land_fraction * (250.0 + 2_000.0 * broad + 1_200.0 * ridge)).clamp(0.0, 4_500.0)
 }
 
 /// Temporary climate-surface proxy. It provides broad land/ocean thermal
@@ -1382,6 +1474,53 @@ mod tests {
                 .flatten()
                 .all(|value| (0.0..=1.0).contains(value))
         );
+    }
+
+    #[test]
+    fn orographic_lapse_is_deterministic_bounded_and_has_expected_sign() {
+        let grid = WeatherGrid::new();
+        let mut first = WeatherFields::initial(&grid);
+        let mut second = WeatherFields::initial(&grid);
+        for fields in [&mut first, &mut second] {
+            fields.apply_lapse_rate_and_orographic_uplift(&grid, WEATHER_TIMESTEP_SECONDS);
+        }
+        assert_eq!(first.cells(), second.cells());
+        assert!(first.cells().iter().all(|state| {
+            state.surface_elevation_meters.is_finite()
+                && (0.0..=4_500.0).contains(&state.surface_elevation_meters)
+                && state.orographic_uplift_meters_per_second.is_finite()
+                && state.orographic_uplift_meters_per_second.abs()
+                    <= WEATHER_MAX_OROGRAPHIC_UPLIFT_METERS_PER_SECOND as f32
+                && (180.0..=340.0).contains(&state.temperature_kelvin)
+        }));
+        assert!(first
+            .cells()
+            .iter()
+            .any(|state| state.orographic_uplift_meters_per_second.abs() > 0.01));
+
+        let target_index = cell_index(0, WEATHER_GRID_SIDE / 2, WEATHER_GRID_SIDE / 2);
+        let target = grid.cell(target_index as u32);
+        let east_index = grid.directional_neighbour_index(target_index, target.east) as usize;
+        let west_index = grid.directional_neighbour_index(target_index, -target.east) as usize;
+        assert_ne!(east_index, west_index);
+        let mut directional = WeatherFields::initial(&grid);
+        for state in &mut directional.cells {
+            state.surface_elevation_meters = 0.0;
+            state.temperature_kelvin = 280.0;
+            state.east_wind_meters_per_second = 0.0;
+            state.north_wind_meters_per_second = 0.0;
+        }
+        directional.cells[east_index].surface_elevation_meters = 1_000.0;
+        directional.cells[target_index].east_wind_meters_per_second = 20.0;
+        directional.apply_lapse_rate_and_orographic_uplift(&grid, WEATHER_TIMESTEP_SECONDS);
+        assert!(directional.cells[target_index].orographic_uplift_meters_per_second > 0.0);
+        assert!(directional.cells[target_index].temperature_kelvin < 280.0);
+
+        directional.cells[target_index].temperature_kelvin = 280.0;
+        directional.cells[target_index].east_wind_meters_per_second = -20.0;
+        directional.apply_lapse_rate_and_orographic_uplift(&grid, WEATHER_TIMESTEP_SECONDS);
+        assert!(directional.cells[target_index].orographic_uplift_meters_per_second < 0.0);
+        assert!(directional.cells[target_index].temperature_kelvin > 280.0);
     }
 
     #[test]

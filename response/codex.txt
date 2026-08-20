@@ -1,9 +1,9 @@
-Milestone 7 is complete: condensation/cloud field diagnostics are now running.
+Milestone 8 is complete and validated.
 
-- Supersaturated vapour condenses into bounded cloud_water; dry cells re-evaporate it.
-- The phase-change pass uses temperature-dependent saturation and a 900s exponential relaxation.
-- The HUD reports cloud-water range/mean; the 7 overlay whitens humidity colour by cloud water.
-- No rendered clouds yet: precipitation, terrain coupling, GPU upload, and cloud geometry remain for later milestones.
+- Added a deterministic seam-safe relief proxy to the weather cells.
+- Wind crossing the relief gradient now produces bounded orographic uplift.
+- A 6.5 K/km lapse tendency cools rising air and warms descending air.
+- HUD now reports proxy relief and maximum uplift; uplift feeds evaporation, advection, and condensation.
 
-Validation: 19 focused weather tests passed; cargo check --workspace passed.
-Next: milestone 8, lapse rate and orographic uplift.
+Validation: 20 focused weather tests passed; cargo check --workspace passed.
+Next: milestone 9, precipitation and ground-moisture consequences.

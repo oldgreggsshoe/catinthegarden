@@ -3012,3 +3012,18 @@ The HUD reports cloud-water range/mean, and the `7` six-face diagnostic overlay 
 humidity colour according to area-averaged cloud water while retaining tangent wind arrows. This is
 still a CPU/debug field only: precipitation, terrain-derived water, GPU upload, and rendered cloud
 geometry remain deferred. Nineteen focused weather tests and a workspace check pass.
+
+## Experimental weather lapse rate and orographic uplift - 20 August 2026
+
+The fixed-step sequence now includes a bounded orographic pass after pressure/Coriolis wind
+momentum. Each cell carries a deterministic seam-safe low-resolution surface-relief proxy until
+terrain sampling is part of the weather contract. Tangent wind dotted with the local elevation
+gradient gives vertical uplift; a 6.5 K/km lapse rate cools rising air and warms descending air.
+The response uses a bounded fraction of the resolved vertical displacement so the one-layer proxy
+cannot run away before a true vertical column model exists.
+
+HUD diagnostics report proxy relief and maximum uplift, and the existing `7` overlay remains the
+humidity/cloud/wind view. Uplift cooling feeds evaporation, temperature advection, and then
+condensation, so rising cells can reach saturation without an authored cloud schedule. Twenty
+focused weather tests and a workspace check pass; real baked terrain coupling and precipitation
+remain deferred.
