@@ -1,11 +1,11 @@
-Manual weather stepping is now available and pushed as `9a9240c`.
+Temperature-advection stage complete and pushed as `c9ce516`.
 
-- Press `9` to execute exactly one 600-second weather tick immediately.
-- It works while F10 is frozen and uses the current planet-local sun direction.
-- The normal fixed clock and scenario timelines are unchanged.
-- The HUD control legend now shows `9: weather step`.
+- Added bounded semi-Lagrangian temperature advection using updated tangent winds.
+- Backtraces use bilinear fractional cube-face sampling with cross-face seam handling.
+- Temperature remains bounded to 180-340K; pressure uses the transported field on the next tick.
+- Humidity remains on its conservative mass-flux path.
 
 Validation:
-- Focused weather tests: 16 passed.
-- `cargo check --workspace`: passed.
+- Focused weather tests: 17 passed.
+- `cargo check --workspace`: passed without warnings.
 - Existing unrelated worktree changes were preserved.
