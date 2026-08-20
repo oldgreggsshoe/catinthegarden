@@ -7,6 +7,7 @@ pub const WEATHER_TIMESTEP_SECONDS: f64 = 600.0;
 const WEATHER_REFERENCE_AIR_DENSITY_KG_PER_CUBIC_METER: f64 = 1.225;
 const WEATHER_MOMENTUM_DAMPING_SECONDS: f64 = 7_200.0;
 const WEATHER_MAX_WIND_SPEED_METERS_PER_SECOND: f64 = 60.0;
+const WEATHER_PLANET_ANGULAR_VELOCITY_RADIANS_PER_SECOND: f64 = 7.292_115_9e-5;
 const WEATHER_SOLAR_CONSTANT_WATTS_PER_SQUARE_METER: f64 = 1_361.0;
 const WEATHER_STEFAN_BOLTZMANN: f64 = 5.670_374_419e-8;
 const WEATHER_LAND_HEAT_CAPACITY_JOULES_PER_SQUARE_METER_KELVIN: f64 = 2.4e6;
@@ -339,15 +340,15 @@ impl WeatherFields {
         }
     }
 
-    /// Applies one pressure-gradient momentum update in each cell's tangent
-    /// frame. Pressure remains a prescribed diagnostic field for now; damping
-    /// and the explicit speed cap keep this first momentum pass stable while
-    /// the thermodynamic closures are still being built.
+    /// Applies one pressure-gradient and Coriolis momentum update in each
+    /// cell's tangent frame. Pressure is a diagnosed field; damping and the
+    /// explicit speed cap keep this coarse first closure stable.
     pub fn update_wind_from_pressure(&mut self, grid: &WeatherGrid, step_seconds: f64) {
         if step_seconds <= 0.0 {
             return;
         }
         let damping = (-step_seconds / WEATHER_MOMENTUM_DAMPING_SECONDS).exp();
+        let spin = DVec3::Y * WEATHER_PLANET_ANGULAR_VELOCITY_RADIANS_PER_SECOND;
         let mut next_wind = vec![(0.0_f32, 0.0_f32); self.cells.len()];
         for (index, cell) in grid.cells().iter().enumerate() {
             let east_index = grid.directional_neighbour_index(index, cell.east) as usize;
@@ -365,6 +366,12 @@ impl WeatherFields {
                 -east_gradient / WEATHER_REFERENCE_AIR_DENSITY_KG_PER_CUBIC_METER;
             let north_acceleration =
                 -north_gradient / WEATHER_REFERENCE_AIR_DENSITY_KG_PER_CUBIC_METER;
+            let velocity = cell.east * f64::from(self.cells[index].east_wind_meters_per_second)
+                + cell.north * f64::from(self.cells[index].north_wind_meters_per_second);
+            let coriolis = -2.0 * spin.cross(velocity);
+            let coriolis_tangent = coriolis - cell.direction * coriolis.dot(cell.direction);
+            let east_acceleration = east_acceleration + coriolis_tangent.dot(cell.east);
+            let north_acceleration = north_acceleration + coriolis_tangent.dot(cell.north);
             let mut east = (f64::from(self.cells[index].east_wind_meters_per_second)
                 + east_acceleration * step_seconds)
                 * damping;
@@ -1082,6 +1089,52 @@ mod tests {
         assert!(maximum_heat_capacity / minimum_heat_capacity > 3.0);
         assert!(day_diagnostics.mean_temperature_kelvin.is_finite());
         assert!(initial.mean_temperature_kelvin.is_finite());
+    }
+
+    #[test]
+    fn coriolis_is_tangent_and_reverses_across_the_equator() {
+        let grid = WeatherGrid::new();
+        let mut fields = WeatherFields::initial(&grid);
+        for state in &mut fields.cells {
+            state.surface_pressure_pascals = 101_325.0;
+            state.east_wind_meters_per_second = 20.0;
+            state.north_wind_meters_per_second = 0.0;
+        }
+        let north_target = DVec3::new(1.0, 1.0, 0.0).normalize();
+        let south_target = DVec3::new(1.0, -1.0, 0.0).normalize();
+        let equator_target = DVec3::X;
+        let nearest = |target: DVec3| {
+            grid.cells()
+                .iter()
+                .enumerate()
+                .max_by(|(_, left), (_, right)| {
+                    left.direction
+                        .dot(target)
+                        .partial_cmp(&right.direction.dot(target))
+                        .unwrap()
+                })
+                .map(|(index, _)| index)
+                .unwrap()
+        };
+        let north_index = nearest(north_target);
+        let south_index = nearest(south_target);
+        let equator_index = nearest(equator_target);
+        fields.update_wind_from_pressure(&grid, WEATHER_TIMESTEP_SECONDS);
+        let north_wind = fields.cells[north_index].north_wind_meters_per_second;
+        let south_wind = fields.cells[south_index].north_wind_meters_per_second;
+        let equator_wind = fields.cells[equator_index].north_wind_meters_per_second;
+        assert!(north_wind.abs() > 0.1);
+        assert!(south_wind.abs() > 0.1);
+        assert!(north_wind * south_wind < 0.0);
+        assert!(equator_wind.abs() < 0.1);
+        assert!(fields.cells.iter().all(|state| {
+            state.east_wind_meters_per_second.is_finite()
+                && state.north_wind_meters_per_second.is_finite()
+                && state
+                    .east_wind_meters_per_second
+                    .hypot(state.north_wind_meters_per_second)
+                    <= WEATHER_MAX_WIND_SPEED_METERS_PER_SECOND as f32
+        }));
     }
 
     #[test]

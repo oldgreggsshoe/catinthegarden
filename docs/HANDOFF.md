@@ -2951,3 +2951,17 @@ than conserved, and humidity conservation remains unchanged. Fourteen focused we
 including day/night ordering, bounded thermal response, and heat-capacity separation. Terrain
 sampling, Coriolis, temperature advection, and moisture source/sink terms remain deferred to their
 later milestones.
+
+## Experimental weather Coriolis momentum - 20 August 2026
+
+The pressure-gradient wind update now adds the projected Coriolis acceleration using the
+renderer planet's Y spin axis and an Earth angular velocity of `7.2921159e-5 rad/s`. The
+world-space acceleration is projected back into each cell's tangent plane before conversion to
+the local east/north components, so cube-face seams and the poles do not introduce a radial
+velocity component. The existing exponential damping, 60m/s cap, and CFL telemetry remain in
+force.
+
+The 15 focused weather tests include a zero-pressure-gradient regression that drives equal
+eastward winds at matched northern/southern latitudes: the meridional deflection reverses across
+the equator and vanishes at the equator itself. Workspace check passes. Temperature advection,
+terrain slope/drag, moisture sources, and rendered weather fields remain deferred.
