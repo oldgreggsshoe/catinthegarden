@@ -86,7 +86,14 @@ fn vs_main(input: VertexInput, @builtin(instance_index) instance_index: u32) -> 
     );
 }
 
-fn atmosphere_uv(altitude: f32, solar_zenith_cosine: f32) -> vec2<f32> {
+fn direct_atmosphere_uv(altitude: f32, solar_zenith_cosine: f32) -> vec2<f32> {
+    return vec2<f32>(
+        clamp(max(solar_zenith_cosine, 0.0) * 0.5 + 0.5, 0.0, 1.0),
+        sqrt(clamp(max(altitude, 0.0) / ATMOSPHERE_VERTICAL_SCALE / OPTICAL_ATMOSPHERE_HEIGHT_METERS, 0.0, 1.0)),
+    );
+}
+
+fn irradiance_atmosphere_uv(altitude: f32, solar_zenith_cosine: f32) -> vec2<f32> {
     return vec2<f32>(
         clamp(solar_zenith_cosine * 0.5 + 0.5, 0.0, 1.0),
         sqrt(clamp(max(altitude, 0.0) / ATMOSPHERE_VERTICAL_SCALE / OPTICAL_ATMOSPHERE_HEIGHT_METERS, 0.0, 1.0)),
@@ -112,13 +119,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let transmittance = textureSampleLevel(
         atmosphere_transmittance_lut,
         atmosphere_sampler,
-        atmosphere_uv(input.altitude, solar_zenith_cosine),
+        direct_atmosphere_uv(input.altitude, solar_zenith_cosine),
         0.0,
     ).rgb * flat_horizon_visibility(input.altitude, solar_zenith_cosine);
     let irradiance = textureSampleLevel(
         atmosphere_irradiance_lut,
         atmosphere_sampler,
-        atmosphere_uv(input.altitude, solar_zenith_cosine),
+        irradiance_atmosphere_uv(input.altitude, solar_zenith_cosine),
         0.0,
     ).rgb;
     let direct = transmittance * (0.20 + 0.80 * max(dot(normal, sun_direction), 0.0));

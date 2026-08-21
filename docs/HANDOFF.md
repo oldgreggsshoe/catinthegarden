@@ -3128,3 +3128,21 @@ hole into every coarse mesh cell. The shell is now 96x48: its lowest face stays 
 level while retaining the authored 14km vertex altitude. A geometric regression measures the
 minimum triangle-plane radius, and a constant-density raster replay shows a continuous shell. The
 misdirected field blur was removed, returning cloud density to two texture fetches per fragment.
+
+## Experimental weather elevated sunset lighting - 21 August 2026
+
+Cloud direct light now samples the atmosphere transmittance LUT at the non-negative optical horizon
+and applies solid-planet visibility separately at each shell's real altitude. This matches the
+terrain lighting contract without inheriting the LUT's sea-level below-horizon occlusion: the 14km
+layer remains sunlit after the ground enters shadow, and the 90km layer remains lit deeper into
+twilight. Because the sampled transmittance is RGB, the surviving light naturally shifts through
+yellow/orange/red rather than using an authored sunset tint. Sky irradiance still samples the true
+signed solar angle for ambient fill.
+
+The former constant low-alpha precursor covered both shells globally and could read as sea-level
+fog. Startup visibility is now gated by local humidity and rotated FBM detail, leaving real gaps
+while condensed cloud water remains authoritative. The shell altitudes remain 14km and 90km; in
+manual run `1787341490-431395`, capture 2 was taken at 50.5km, between the two layers rather than
+below both. Twenty-eight focused weather tests, workspace check, raster sunset/blue-hour, orbit, and
+a constant-density sunset-light visual diagnostic confirm the path. The diagnostic intentionally
+obscures the sky and therefore is not expected to satisfy the normal sky-colour assertions.
