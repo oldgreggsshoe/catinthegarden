@@ -3074,3 +3074,18 @@ noise break up the cube-face bins without another texture or CPU pass; the upper
 greyer response so the two altitudes do not read as one opaque sheet. The cloud shader now validates
 its instance, flow, and noise paths; all 25 focused weather tests, workspace check, and raster
 `orbit_once` pass with four captures and zero seam violations.
+
+## Experimental weather transport/noise correction - 21 August 2026
+
+Condensed `cloud_water` now follows the same conservative seam-safe tangent-wind mass-flux
+transport as humidity before condensation and precipitation. This removes the previous source-pinning
+bug: humidity could move while the rendered cloud reservoir stayed in its original cells. A focused
+regression seeds a cloud parcel, verifies movement into its wind target, and checks area-integral
+conservation. The fixed-step exponential relaxation was already present and remains unchanged.
+
+The cloud breakup shader now uses five rotated value-noise octaves, a 32-cycle base scale, and an
+independent upper-shell domain offset. Noise modulates cloud coverage instead of subtracting directly
+from density, avoiding regular circular holes. The humid-air precursor was reduced from 0.75/0.46 to
+0.14/0.08 (lower/upper shell); cloud water remains the authoritative dense contribution. Twenty-six
+focused weather tests, workspace check, and raster `orbit_once` replay pass. Manual verification
+should unfreeze weather or press `9` for exact 600s ticks before judging transport.

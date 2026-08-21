@@ -100,9 +100,7 @@ fn hash_noise(point: vec3<f32>) -> f32 {
     return fract(sin(dot(point, vec3<f32>(12.9898, 78.233, 37.719))) * 43758.5453);
 }
 
-fn cloud_noise(direction: vec3<f32>, shell_index: u32) -> f32 {
-    let scale = weather.noise_scale * select(1.0, 1.7, shell_index == 1u);
-    let point = direction * scale;
+fn value_noise(point: vec3<f32>) -> f32 {
     let cell = floor(point);
     let local = smoothstep(vec3<f32>(0.0), vec3<f32>(1.0), fract(point));
     let n000 = hash_noise(cell);
@@ -116,6 +114,34 @@ fn cloud_noise(direction: vec3<f32>, shell_index: u32) -> f32 {
     let low = mix(mix(n000, n100, local.x), mix(n010, n110, local.x), local.y);
     let high = mix(mix(n001, n101, local.x), mix(n011, n111, local.x), local.y);
     return mix(low, high, local.z) * 2.0 - 1.0;
+}
+
+fn rotate_noise(point: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        0.00 * point.x + 0.80 * point.y + 0.60 * point.z,
+        -0.80 * point.x + 0.36 * point.y - 0.48 * point.z,
+        -0.60 * point.x - 0.48 * point.y + 0.64 * point.z,
+    );
+}
+
+fn cloud_noise(direction: vec3<f32>, shell_index: u32) -> f32 {
+    let scale = weather.noise_scale * select(1.0, 1.7, shell_index == 1u);
+    let shell_offset = select(
+        vec3<f32>(0.0, 0.0, 0.0),
+        vec3<f32>(17.3, -9.1, 5.7),
+        shell_index == 1u,
+    );
+    var point = direction * scale + shell_offset;
+    var value = 0.0;
+    var amplitude = 0.5;
+    var amplitude_sum = 0.0;
+    for (var octave = 0u; octave < 5u; octave = octave + 1u) {
+        value = value + amplitude * value_noise(point);
+        amplitude_sum = amplitude_sum + amplitude;
+        point = rotate_noise(point) * 2.02;
+        amplitude = amplitude * 0.5;
+    }
+    return value / amplitude_sum;
 }
 
 fn flow_warp(direction: vec3<f32>, shell_index: u32) -> vec3<f32> {
@@ -191,10 +217,14 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // Humid air is rendered as a faint nascent cloud before condensation has
     // completed, so the first shell is visible immediately while cloud water
     // remains the authoritative opaque/storm contribution.
+    // Noise modulates coverage instead of being added directly to density.
+    // This keeps a low value-noise sample from carving perfectly round holes
+    // through an otherwise continuous cloud bank.
     let noise = cloud_noise(field_direction, input.shell_index) * weather.noise_strength;
     let humidity_cloud = smoothstep(0.55, 0.82, field.b);
     let shell_cloud = select(field.r, field.r * 0.72, input.shell_index == 1u);
-    let density = max(shell_cloud + noise, humidity_cloud * select(0.75, 0.46, input.shell_index == 1u));
+    let coverage = clamp(0.82 + noise, 0.0, 1.0);
+    let density = max(shell_cloud * coverage, humidity_cloud * select(0.14, 0.08, input.shell_index == 1u));
     let alpha = smoothstep(0.08, 0.26, density)
         * (0.32 + 0.58 * field.g)
         * select(1.0, 0.62, input.shell_index == 1u);

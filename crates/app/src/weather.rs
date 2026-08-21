@@ -522,43 +522,29 @@ impl WeatherFields {
             .iter()
             .map(|state| f64::from(state.specific_humidity))
             .collect::<Vec<_>>();
-        let mut transfers = vec![(0_usize, 0.0_f64); self.cells.len()];
-        let mut incoming = vec![0.0_f64; self.cells.len()];
-        for (index, cell) in grid.cells().iter().enumerate() {
-            let state = self.cells[index];
-            let wind = cell.east * f64::from(state.east_wind_meters_per_second)
-                + cell.north * f64::from(state.north_wind_meters_per_second);
-            let speed = wind.length();
-            if speed <= f64::EPSILON {
-                continue;
-            }
-            let fraction = (step_seconds * speed / cell.area_square_meters.sqrt()).min(0.95);
-            let target = grid.directional_neighbour_index(index, wind / speed) as usize;
-            let mass = f64::from(state.specific_humidity) * cell.area_square_meters;
-            let transfer = mass * fraction;
-            transfers[index] = (target, transfer);
-            incoming[target] += transfer;
+        let next_humidity = advect_scalar_mass(grid, &old_humidity, &self.cells, step_seconds);
+        for (state, humidity) in self.cells.iter_mut().zip(next_humidity) {
+            state.specific_humidity = humidity as f32;
         }
+    }
 
-        let mut mass_delta = vec![0.0_f64; self.cells.len()];
-        for (index, (target, transfer)) in transfers.into_iter().enumerate() {
-            if transfer == 0.0 {
-                continue;
-            }
-            let target_capacity =
-                grid.cells()[target].area_square_meters * (1.0 - old_humidity[target]);
-            let target_scale = if incoming[target] > target_capacity {
-                (target_capacity / incoming[target]).clamp(0.0, 1.0)
-            } else {
-                1.0
-            };
-            let actual_transfer = transfer * target_scale;
-            mass_delta[index] -= actual_transfer;
-            mass_delta[target] += actual_transfer;
+    /// Moves condensed cloud water with the same conservative tangent-wind
+    /// transport as vapour. Without this pass, condensation can create cloud
+    /// over a source region while the cloud reservoir itself remains pinned to
+    /// the original cells even when the wind field is moving.
+    pub fn advect_cloud_water(&mut self, grid: &WeatherGrid, step_seconds: f64) {
+        if step_seconds <= 0.0 {
+            return;
         }
-        for (index, (cell, state)) in grid.cells().iter().zip(&mut self.cells).enumerate() {
-            let mass = old_humidity[index] * cell.area_square_meters + mass_delta[index];
-            state.specific_humidity = (mass / cell.area_square_meters).clamp(0.0, 1.0) as f32;
+        let old_cloud_water = self
+            .cells
+            .iter()
+            .map(|state| f64::from(state.cloud_water))
+            .collect::<Vec<_>>();
+        let next_cloud_water =
+            advect_scalar_mass(grid, &old_cloud_water, &self.cells, step_seconds);
+        for (state, cloud_water) in self.cells.iter_mut().zip(next_cloud_water) {
+            state.cloud_water = cloud_water as f32;
         }
     }
 
@@ -1046,6 +1032,8 @@ impl WeatherState {
             .advect_temperature(&self.grid, WEATHER_TIMESTEP_SECONDS);
         self.fields
             .advect_humidity(&self.grid, WEATHER_TIMESTEP_SECONDS);
+        self.fields
+            .advect_cloud_water(&self.grid, WEATHER_TIMESTEP_SECONDS);
         self.fields.condense_cloud_water(WEATHER_TIMESTEP_SECONDS);
         self.fields
             .precipitate_and_update_ground_moisture(WEATHER_TIMESTEP_SECONDS);
@@ -1086,6 +1074,59 @@ fn cell_direction(face: u8, i: isize, j: isize) -> DVec3 {
     let u = (2.0 * (i as f64 + 0.5) / WEATHER_GRID_SIDE as f64) - 1.0;
     let v = (2.0 * (j as f64 + 0.5) / WEATHER_GRID_SIDE as f64) - 1.0;
     cube_face_direction(face, u, v)
+}
+
+fn advect_scalar_mass(
+    grid: &WeatherGrid,
+    old_values: &[f64],
+    states: &[WeatherCellState],
+    step_seconds: f64,
+) -> Vec<f64> {
+    debug_assert_eq!(old_values.len(), grid.cells().len());
+    debug_assert_eq!(states.len(), grid.cells().len());
+    let mut transfers = vec![(0_usize, 0.0_f64); old_values.len()];
+    let mut incoming = vec![0.0_f64; old_values.len()];
+    for (index, cell) in grid.cells().iter().enumerate() {
+        let state = states[index];
+        let wind = cell.east * f64::from(state.east_wind_meters_per_second)
+            + cell.north * f64::from(state.north_wind_meters_per_second);
+        let speed = wind.length();
+        if speed <= f64::EPSILON {
+            continue;
+        }
+        let fraction = (step_seconds * speed / cell.area_square_meters.sqrt()).min(0.95);
+        let target = grid.directional_neighbour_index(index, wind / speed) as usize;
+        let mass = old_values[index] * cell.area_square_meters;
+        let transfer = mass * fraction;
+        transfers[index] = (target, transfer);
+        incoming[target] += transfer;
+    }
+
+    let mut mass_delta = vec![0.0_f64; old_values.len()];
+    for (index, (target, transfer)) in transfers.into_iter().enumerate() {
+        if transfer == 0.0 {
+            continue;
+        }
+        let target_capacity =
+            grid.cells()[target].area_square_meters * (1.0 - old_values[target]);
+        let target_scale = if incoming[target] > target_capacity {
+            (target_capacity / incoming[target]).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let actual_transfer = transfer * target_scale;
+        mass_delta[index] -= actual_transfer;
+        mass_delta[target] += actual_transfer;
+    }
+
+    grid.cells()
+        .iter()
+        .enumerate()
+        .map(|(index, cell)| {
+            let mass = old_values[index] * cell.area_square_meters + mass_delta[index];
+            (mass / cell.area_square_meters).clamp(0.0, 1.0)
+        })
+        .collect()
 }
 
 fn adjacent_cell_index(face: u8, i: isize, j: isize) -> u32 {
@@ -1452,6 +1493,43 @@ mod tests {
             after
         );
         assert!((before.mean_humidity - after.mean_humidity).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn cloud_water_transport_moves_with_wind_and_preserves_area_integral() {
+        let grid = WeatherGrid::new();
+        let mut fields = WeatherFields::initial(&grid);
+        for state in &mut fields.cells {
+            state.east_wind_meters_per_second = 0.0;
+            state.north_wind_meters_per_second = 0.0;
+            state.cloud_water = 0.0;
+        }
+        let source_index = cell_index(0, 0, WEATHER_GRID_SIDE / 2);
+        let source = grid.cells()[source_index];
+        let target_index = grid.directional_neighbour_index(source_index, source.east) as usize;
+        fields.cells[source_index].east_wind_meters_per_second = 20.0;
+        fields.cells[source_index].cloud_water = 0.8;
+        let before_mass = grid
+            .cells()
+            .iter()
+            .zip(&fields.cells)
+            .map(|(cell, state)| f64::from(state.cloud_water) * cell.area_square_meters)
+            .sum::<f64>();
+
+        fields.advect_cloud_water(&grid, WEATHER_TIMESTEP_SECONDS);
+
+        assert!(fields.cells[target_index].cloud_water > 0.0);
+        let after_mass = grid
+            .cells()
+            .iter()
+            .zip(&fields.cells)
+            .map(|(cell, state)| f64::from(state.cloud_water) * cell.area_square_meters)
+            .sum::<f64>();
+        assert!((before_mass - after_mass).abs() / before_mass < 1.0e-6);
+        assert!(fields
+            .cells
+            .iter()
+            .all(|state| (0.0..=1.0).contains(&state.cloud_water)));
     }
 
     #[test]

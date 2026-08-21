@@ -361,8 +361,8 @@ impl WeatherCloudRenderer {
                 lower_shell_radius_meters: PLANET_RADIUS_METERS as f32
                     + CLOUD_SHELL_ALTITUDE_METERS,
                 upper_shell_radius_meters: PLANET_RADIUS_METERS as f32 + 90_000.0,
-                noise_scale: 11.0,
-                noise_strength: 0.22,
+                noise_scale: 32.0,
+                noise_strength: 0.18,
                 _padding: [0.0; 2],
             }),
         );
