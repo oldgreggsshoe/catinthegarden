@@ -3089,3 +3089,14 @@ from density, avoiding regular circular holes. The humid-air precursor was reduc
 0.14/0.08 (lower/upper shell); cloud water remains the authoritative dense contribution. Twenty-six
 focused weather tests, workspace check, and raster `orbit_once` replay pass. Manual verification
 should unfreeze weather or press `9` for exact 600s ticks before judging transport.
+
+## Experimental weather shared density source - 21 August 2026
+
+The cloud field lookup, tangent flow warp, rotated five-octave FBM, coverage modulation, and
+posterisation now live in `crates/app/src/weather_cloud_density.wgsl` as one `cloudDensity(dir, t)`
+function. The weather shell shader is composed from its render code plus this shared source at
+runtime; its fragment stage no longer reimplements density evaluation. `t` selects the lower/upper
+shell contract (0/1), while the shared function consumes the including shader's weather field
+bindings. Future terrain-shadow and impostor-spawn shaders must compose this same source and provide
+that binding contract rather than copy the evaluation. The WGSL parser test validates the composed
+source and the shared function; the two focused weather-render tests pass.

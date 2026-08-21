@@ -28,6 +28,14 @@ struct CloudVertex {
     normal: [f32; 3],
 }
 
+fn weather_cloud_shader_source() -> String {
+    [
+        include_str!("weather_render.wgsl"),
+        include_str!("weather_cloud_density.wgsl"),
+    ]
+    .join("\n")
+}
+
 impl CloudVertex {
     const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
         wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
@@ -130,7 +138,11 @@ impl WeatherCloudRenderer {
             ],
             immediate_size: 0,
         });
-        let shader = device.create_shader_module(wgpu::include_wgsl!("weather_render.wgsl"));
+        let shader_source = weather_cloud_shader_source();
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("weather cloud shell shader"),
+            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+        });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("weather cloud shell pipeline"),
             layout: Some(&pipeline_layout),
@@ -450,9 +462,9 @@ fn shell_vertices() -> Vec<CloudVertex> {
 mod tests {
     #[test]
     fn weather_cloud_shader_parses_and_uses_temporal_field_pair() {
-        let shader = include_str!("weather_render.wgsl");
+        let shader = super::weather_cloud_shader_source();
         let module =
-            wgpu::naga::front::wgsl::parse_str(shader).expect("weather cloud shader must parse");
+            wgpu::naga::front::wgsl::parse_str(&shader).expect("weather cloud shader must parse");
         wgpu::naga::valid::Validator::new(
             wgpu::naga::valid::ValidationFlags::all(),
             wgpu::naga::valid::Capabilities::all(),
@@ -465,6 +477,8 @@ mod tests {
         assert!(shader.contains("@builtin(instance_index) instance_index"));
         assert!(shader.contains("fn flow_warp"));
         assert!(shader.contains("fn cloud_noise"));
+        assert!(shader.contains("fn cloudDensity"));
+        assert!(shader.contains("let posterized = smoothstep"));
     }
 
     #[test]
