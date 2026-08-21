@@ -3064,3 +3064,13 @@ visibility, and a very small humid-air precursor so a new run is not visually em
 condensation tick. The shell is an additive scene pass after terrain/ray unwarp and before exposure;
 terrain, ocean, atmosphere, and sun paths are unchanged. Two shader/mesh tests and the weather field
 packing regression pass; interactive GPU capture remains the next manual sign-off.
+
+## Experimental weather stacked cloud shells - 21 August 2026
+
+Milestone 12 keeps the same weather field upload and temporal pair, but renders two instances of the
+shell: a denser lower layer at 14km and a thinner upper layer at 90km. Both layers are depth-aware and
+share the physical atmospheric lighting path. A deterministic tangent flow warp and trilinear hash
+noise break up the cube-face bins without another texture or CPU pass; the upper layer uses a weaker,
+greyer response so the two altitudes do not read as one opaque sheet. The cloud shader now validates
+its instance, flow, and noise paths; all 25 focused weather tests, workspace check, and raster
+`orbit_once` pass with four captures and zero seam violations.

@@ -14,8 +14,11 @@ const CLOUD_TEXTURE_BYTES_PER_ROW: u32 = 256;
 struct WeatherRenderUniform {
     blend: f32,
     drift_radians: f32,
-    shell_radius_meters: f32,
-    _padding: f32,
+    lower_shell_radius_meters: f32,
+    upper_shell_radius_meters: f32,
+    noise_scale: f32,
+    noise_strength: f32,
+    _padding: [f32; 2],
 }
 
 #[repr(C)]
@@ -316,7 +319,7 @@ impl WeatherCloudRenderer {
         );
         render_pass.set_bind_group(2, &self.atmosphere_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        render_pass.draw(0..self.vertex_count, 0..1);
+        render_pass.draw(0..self.vertex_count, 0..2);
     }
 
     fn create_field_bind_group(&self, device: &wgpu::Device) -> wgpu::BindGroup {
@@ -355,8 +358,12 @@ impl WeatherCloudRenderer {
             bytemuck::bytes_of(&WeatherRenderUniform {
                 blend: self.blend,
                 drift_radians: self.drift_radians,
-                shell_radius_meters: PLANET_RADIUS_METERS as f32 + CLOUD_SHELL_ALTITUDE_METERS,
-                _padding: 0.0,
+                lower_shell_radius_meters: PLANET_RADIUS_METERS as f32
+                    + CLOUD_SHELL_ALTITUDE_METERS,
+                upper_shell_radius_meters: PLANET_RADIUS_METERS as f32 + 90_000.0,
+                noise_scale: 11.0,
+                noise_strength: 0.22,
+                _padding: [0.0; 2],
             }),
         );
     }
@@ -455,10 +462,14 @@ mod tests {
         assert!(shader.contains("cloud_field_current"));
         assert!(shader.contains("cloud_field_previous"));
         assert!(shader.contains("mix(previous, current, weather.blend)"));
+        assert!(shader.contains("@builtin(instance_index) instance_index"));
+        assert!(shader.contains("fn flow_warp"));
+        assert!(shader.contains("fn cloud_noise"));
     }
 
     #[test]
     fn shell_mesh_is_non_empty_and_has_expected_density() {
         assert_eq!(48 * 24 * 6, 6_912);
+        assert_eq!(48 * 24 * 6 * 2, 13_824);
     }
 }

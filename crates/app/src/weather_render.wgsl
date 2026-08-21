@@ -27,8 +27,11 @@ var cloud_field_sampler: sampler;
 struct WeatherRenderUniform {
     blend: f32,
     drift_radians: f32,
-    shell_radius_meters: f32,
-    _padding: f32,
+    lower_shell_radius_meters: f32,
+    upper_shell_radius_meters: f32,
+    noise_scale: f32,
+    noise_strength: f32,
+    _padding: vec2<f32>,
 }
 
 @group(1) @binding(3)
@@ -51,6 +54,7 @@ struct VertexOutput {
     @location(0) direction: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) altitude: f32,
+    @location(3) @interpolate(flat) shell_index: u32,
 }
 
 fn planet_to_view(vector: vec3<f32>) -> vec3<f32> {
@@ -62,9 +66,14 @@ fn planet_to_view(vector: vec3<f32>) -> vec3<f32> {
 }
 
 @vertex
-fn vs_main(input: VertexInput) -> VertexOutput {
+fn vs_main(input: VertexInput, @builtin(instance_index) instance_index: u32) -> VertexOutput {
     let direction = normalize(input.position);
-    let world_position = direction * weather.shell_radius_meters;
+    let shell_radius = select(
+        weather.lower_shell_radius_meters,
+        weather.upper_shell_radius_meters,
+        instance_index == 1u,
+    );
+    let world_position = direction * shell_radius;
     let camera_position_view = normalize(camera.camera_planet_direction_view_altitude.xyz)
         * (PLANET_RADIUS_METERS + camera.camera_planet_direction_view_altitude.w);
     let camera_relative_view = planet_to_view(world_position) - camera_position_view;
@@ -72,7 +81,8 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         camera.projection_matrix * vec4<f32>(camera_relative_view, 1.0),
         direction,
         normalize(input.normal),
-        weather.shell_radius_meters - PLANET_RADIUS_METERS,
+        shell_radius - PLANET_RADIUS_METERS,
+        instance_index,
     );
 }
 
@@ -84,6 +94,35 @@ fn rotate_drift(direction: vec3<f32>) -> vec3<f32> {
         direction.y,
         direction.x * sine + direction.z * cosine,
     );
+}
+
+fn hash_noise(point: vec3<f32>) -> f32 {
+    return fract(sin(dot(point, vec3<f32>(12.9898, 78.233, 37.719))) * 43758.5453);
+}
+
+fn cloud_noise(direction: vec3<f32>, shell_index: u32) -> f32 {
+    let scale = weather.noise_scale * select(1.0, 1.7, shell_index == 1u);
+    let point = direction * scale;
+    let cell = floor(point);
+    let local = smoothstep(vec3<f32>(0.0), vec3<f32>(1.0), fract(point));
+    let n000 = hash_noise(cell);
+    let n100 = hash_noise(cell + vec3<f32>(1.0, 0.0, 0.0));
+    let n010 = hash_noise(cell + vec3<f32>(0.0, 1.0, 0.0));
+    let n110 = hash_noise(cell + vec3<f32>(1.0, 1.0, 0.0));
+    let n001 = hash_noise(cell + vec3<f32>(0.0, 0.0, 1.0));
+    let n101 = hash_noise(cell + vec3<f32>(1.0, 0.0, 1.0));
+    let n011 = hash_noise(cell + vec3<f32>(0.0, 1.0, 1.0));
+    let n111 = hash_noise(cell + vec3<f32>(1.0, 1.0, 1.0));
+    let low = mix(mix(n000, n100, local.x), mix(n010, n110, local.x), local.y);
+    let high = mix(mix(n001, n101, local.x), mix(n011, n111, local.x), local.y);
+    return mix(low, high, local.z) * 2.0 - 1.0;
+}
+
+fn flow_warp(direction: vec3<f32>, shell_index: u32) -> vec3<f32> {
+    let flow = normalize(vec3<f32>(-direction.z, 0.18, direction.x));
+    let phase = weather.drift_radians * select(0.8, 0.45, shell_index == 1u);
+    let amount = sin(phase + dot(direction, flow) * 18.0) * 0.018;
+    return normalize(direction + flow * amount);
 }
 
 fn cube_field_uv(direction: vec3<f32>) -> vec3<f32> {
@@ -143,7 +182,8 @@ fn flat_horizon_visibility(altitude: f32, solar_zenith_cosine: f32) -> f32 {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let field_direction = rotate_drift(normalize(input.direction));
+    let base_direction = normalize(input.direction);
+    let field_direction = flow_warp(rotate_drift(base_direction), input.shell_index);
     let uv = cube_field_uv(field_direction);
     let current = textureSampleLevel(cloud_field_current, cloud_field_sampler, uv.xy, i32(uv.z), 0.0);
     let previous = textureSampleLevel(cloud_field_previous, cloud_field_sampler, uv.xy, i32(uv.z), 0.0);
@@ -151,9 +191,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // Humid air is rendered as a faint nascent cloud before condensation has
     // completed, so the first shell is visible immediately while cloud water
     // remains the authoritative opaque/storm contribution.
+    let noise = cloud_noise(field_direction, input.shell_index) * weather.noise_strength;
     let humidity_cloud = smoothstep(0.55, 0.82, field.b);
-    let density = max(field.r, humidity_cloud * 0.75);
-    let alpha = smoothstep(0.08, 0.26, density) * (0.32 + 0.58 * field.g);
+    let shell_cloud = select(field.r, field.r * 0.72, input.shell_index == 1u);
+    let density = max(shell_cloud + noise, humidity_cloud * select(0.75, 0.46, input.shell_index == 1u));
+    let alpha = smoothstep(0.08, 0.26, density)
+        * (0.32 + 0.58 * field.g)
+        * select(1.0, 0.62, input.shell_index == 1u);
     if alpha < 0.002 {
         discard;
     }
@@ -175,6 +219,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let direct = transmittance * (0.20 + 0.80 * max(dot(normal, sun_direction), 0.0));
     let sky = mix(vec3<f32>(dot(irradiance, vec3<f32>(0.2126, 0.7152, 0.0722))), irradiance, 0.55);
     let lighting = max(direct + sky * (0.55 + 0.45 * max(dot(normal, normalize(input.direction)), 0.0)), vec3<f32>(0.0));
-    let albedo = mix(vec3<f32>(0.42, 0.46, 0.50), vec3<f32>(0.94, 0.96, 1.0), clamp(density * 2.0, 0.0, 1.0));
+    let albedo = mix(
+        vec3<f32>(0.42, 0.46, 0.50),
+        vec3<f32>(0.94, 0.96, 1.0),
+        clamp(density * 2.0, 0.0, 1.0),
+    ) * select(1.0, 0.82, input.shell_index == 1u);
     return vec4<f32>(albedo * lighting, alpha);
 }

@@ -1,10 +1,8 @@
-Milestone 11 is complete and pushed.
+Milestone 12 is complete and pushed.
 
-- Added a GPU weather field upload: six 16x16 RGBA8 cube-face layers carrying cloud water, storm intensity, and humidity.
-- Added double buffering and a 1.5-second temporal blend after each fixed weather tick.
-- Added the first camera-relative cloud shell pass, with alpha blending, depth-aware composition, and the existing atmospheric transmittance/irradiance lighting.
-- Added a small humid-air precursor so the first run is not empty before condensation; F10 remains respected and key 9 updates the rendered field.
-- Terrain, ocean, atmosphere, and sun paths remain unchanged.
+- Added stacked lower (14km) and upper (90km) weather cloud shells.
+- Added deterministic tangent flow warping and trilinear hash-noise breakup in the cloud shader.
+- Upper clouds are thinner and greyer, while both layers retain shared atmospheric lighting, depth testing, and temporal field blending.
 
-Validation: 25 focused weather/render tests passed, workspace check passed, and raster orbit_once GPU run passed (4 captures, finite metrics, zero seam violations).
-Next: milestone 12, stacked shells plus flow/noise detail.
+Validation: 25 focused weather/render tests passed, workspace check passed, and raster orbit_once passed with four captures, finite metrics, and zero seam violations.
+Next: milestone 13, cloud shadows.
