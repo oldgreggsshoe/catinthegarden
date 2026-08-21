@@ -1,5 +1,1 @@
-No — not as the intended result for this stage.
-
-The cloud layers are present, but this capture is clearly overdrawn: the lower shell is almost an opaque lavender sheet, with large repeated circular holes. That pattern is coming from the coarse 16×16 weather field plus the current noise/alpha combination and stacked-shell blending; it is not realistic cloud structure or cloud-shadowing (shadowing is not implemented yet).
-
-The expected milestone-12 result is sparse, translucent, broken cloud cover with the terrain remaining readable. I have not changed code from this review. The next fix should reduce shell overdraw and humidity-driven density, then make the noise modulate coverage rather than create these regular dark discs.
+I checked the latest available screenshot (`manual/1787296835-8851/capture-001.png`); it is the same result as before. No: the clouds are far too opaque and repetitive, with regular dark circular holes. Visible cloud layers are expected at this milestone, but the terrain should remain readable through broken translucent coverage. This still points to stacked-shell overdraw plus the coarse field/noise density, not intended final rendering.
