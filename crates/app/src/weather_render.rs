@@ -376,6 +376,16 @@ impl WeatherCloudRenderer {
         render_pass.draw(0..self.vertex_count, 0..2);
     }
 
+    pub fn field_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.field_bind_group_layout
+    }
+
+    pub fn field_bind_group(&self) -> &wgpu::BindGroup {
+        self.field_bind_group
+            .as_ref()
+            .expect("weather field bind group")
+    }
+
     fn create_field_bind_group(&self, device: &wgpu::Device) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("weather cloud field bind group"),

@@ -7,6 +7,28 @@ var biome_map: texture_2d<u32>;
 @group(1) @binding(2)
 var moisture_map: texture_2d<f32>;
 
+@group(3) @binding(0)
+var cloud_field_current: texture_cube<f32>;
+
+@group(3) @binding(1)
+var cloud_field_previous: texture_cube<f32>;
+
+@group(3) @binding(2)
+var cloud_field_sampler: sampler;
+
+struct WeatherRenderUniform {
+    blend: f32,
+    drift_radians: f32,
+    lower_shell_radius_meters: f32,
+    upper_shell_radius_meters: f32,
+    noise_scale: f32,
+    noise_strength: f32,
+    _padding: vec2<f32>,
+}
+
+@group(3) @binding(3)
+var<uniform> weather: WeatherRenderUniform;
+
 struct VertexInput {
     @location(0) anchor_relative_position: vec3<f32>,
     @location(1) sphere_direction: vec3<f32>,
@@ -782,6 +804,59 @@ fn flat_triangle_outward_normal(normal: vec3<f32>, surface_direction: vec3<f32>)
     return select(normal, -normal, dot(normal, outward) < 0.0);
 }
 
+fn cloud_shadow_density_at_shell(
+    surface_position: vec3<f32>,
+    sun_direction: vec3<f32>,
+    shell_radius: f32,
+    shell_index: f32,
+) -> f32 {
+    let surface_radius_squared = dot(surface_position, surface_position);
+    if surface_radius_squared >= shell_radius * shell_radius {
+        return 0.0;
+    }
+    let ray_offset = dot(surface_position, sun_direction);
+    let discriminant = ray_offset * ray_offset
+        - (surface_radius_squared - shell_radius * shell_radius);
+    if discriminant <= 0.0 {
+        return 0.0;
+    }
+    let distance = -ray_offset + sqrt(discriminant);
+    if distance <= 0.0 {
+        return 0.0;
+    }
+    let shadow_position = surface_position + sun_direction * distance;
+    let shadow_direction = normalize(shadow_position);
+    return cloudDensityWithOctaves(shadow_direction, shell_index, 3u);
+}
+
+fn cloud_shadow_visibility(
+    surface_direction: vec3<f32>,
+    surface_height: f32,
+    sun_direction: vec3<f32>,
+) -> f32 {
+    let surface_position = normalize(surface_direction)
+        * (PLANET_RADIUS_METERS + max(surface_height, 0.0));
+    let lower_density = cloud_shadow_density_at_shell(
+        surface_position,
+        sun_direction,
+        weather.lower_shell_radius_meters,
+        0.0,
+    );
+    let upper_density = cloud_shadow_density_at_shell(
+        surface_position,
+        sun_direction,
+        weather.upper_shell_radius_meters,
+        1.0,
+    );
+    let combined_density = 1.0
+        - (1.0 - clamp(lower_density, 0.0, 1.0))
+            * (1.0 - clamp(upper_density, 0.0, 1.0));
+    // Match the cloud presentation's deliberately small set of hard density
+    // bands instead of putting a soft photographic shadow under it.
+    let posterized_density = floor(combined_density * 4.0 + 0.5) / 4.0;
+    return 1.0 - posterized_density * 0.72;
+}
+
 fn flat_triangle_lighting(
     albedo: vec3<f32>,
     normal: vec3<f32>,
@@ -790,6 +865,7 @@ fn flat_triangle_lighting(
     camera_relative_view_position: vec3<f32>,
     triangle_specular: f32,
     use_triangle_specular: bool,
+    receive_cloud_shadow: bool,
 ) -> vec3<f32> {
     let sun_direction = normalize(camera.sun_direction.xyz);
     let sun_transmittance = surface_direct_sun_transmittance(
@@ -803,8 +879,18 @@ fn flat_triangle_lighting(
         surface_height,
         sun_direction,
     );
+    var cloud_visibility = 1.0;
+    if receive_cloud_shadow
+        && dot(sun_transmittance, vec3<f32>(0.2126, 0.7152, 0.0722)) > 0.001
+    {
+        cloud_visibility = cloud_shadow_visibility(
+            surface_direction,
+            surface_height,
+            sun_direction,
+        );
+    }
     let diffuse = sky_diffuse
-        + sun_transmittance
+        + sun_transmittance * cloud_visibility
             * max(dot(normal, sun_direction), 0.0)
             * SURFACE_SUNLIGHT_SCALE;
     var specular = triangle_specular;
@@ -815,7 +901,7 @@ fn flat_triangle_lighting(
             * dot(sun_transmittance, vec3<f32>(0.2126, 0.7152, 0.0722))
             * (0.08 * SURFACE_SUNLIGHT_SCALE);
     }
-    return albedo * diffuse + vec3<f32>(specular);
+    return albedo * diffuse + vec3<f32>(specular * cloud_visibility);
 }
 
 fn flat_triangle_land_biome(primary: u32, first: u32, second: u32, third: u32) -> u32 {
@@ -904,6 +990,7 @@ fn flat_triangle_colour(
         input.camera_relative_view_position,
         input.source_uv_scale_and_latitude.w,
         true,
+        true,
     );
     // Keep flat fills categorical, but apply the same affine atmospheric
     // composition as smooth terrain. This lifts distant shadowed facets
@@ -948,6 +1035,7 @@ fn flat_ocean_colour(input: OceanVertexOutput) -> vec4<f32> {
         surface.vertical_displacement,
         input.camera_relative_view_position,
         0.0,
+        false,
         false,
     );
     let edge = flat_triangle_edge(input.tile_uv, 0.0);
@@ -1155,8 +1243,18 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         sun_direction,
     );
     let terrain_direct_light = max(dot(terrain_normal, sun_direction), 0.0);
+    var terrain_cloud_visibility = 1.0;
+    if terrain_direct_light > 0.0
+        && dot(terrain_sun_transmittance, vec3<f32>(0.2126, 0.7152, 0.0722)) > 0.001
+    {
+        terrain_cloud_visibility = cloud_shadow_visibility(
+            direction,
+            input.surface_height,
+            sun_direction,
+        );
+    }
     let terrain_surface_irradiance = terrain_sky_diffuse
-        + terrain_sun_transmittance
+        + terrain_sun_transmittance * terrain_cloud_visibility
             * terrain_direct_light
             * SURFACE_SUNLIGHT_SCALE;
     let terrain_albedo = terrain_material_color(

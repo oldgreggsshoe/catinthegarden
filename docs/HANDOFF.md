@@ -3159,3 +3159,26 @@ A focused upload-orientation regression and composed-WGSL checks pin the cubemap
 high-density diagnostic orbit `orbit_once/1787349576-494773` exercises successive face boundaries
 without the former hard line; the restored normal presentation replay
 `orbit_once/1787349838-497054` passes all scenario assertions.
+
+## Experimental weather terrain cloud shadows - 22 August 2026
+
+Milestone 13 now projects both weather layers onto raster terrain. Each lit terrain fragment starts
+at its real displaced surface position, marches toward the sun to the 14km and 90km shell
+intersections, and evaluates the same field/flow/noise/posterisation source used by the visible
+clouds. This keeps a low sun's shadow displaced in the correct direction instead of sampling the
+cloud directly above the ground. Terrain above a shell correctly receives no shadow from that
+lower layer.
+
+The shared density evaluator accepts an octave budget: visible clouds retain all five FBM octaves,
+while each shadow lookup uses three. The two layers combine conservatively and are quantised into
+four hard coverage bands before attenuating direct sunlight by at most 72%; atmospheric sky fill is
+unchanged, so a cloud shadow cannot turn daylight terrain black. Flat and smooth raster land share
+the path, while ocean and the alternate foveated-ray renderer remain unchanged.
+
+The focused weather suite passes all 29 tests, the relevant physical-sun and shared-density tests
+pass, and workspace checking succeeds. The full 51-test terrain filter has 49 passing tests plus the
+two pre-existing LOD-transition-duration expectation failures in the unrelated dirty terrain work.
+Restored-source orbit `orbit_once/1787354268-533181` passes all assertions at a 16.143ms median
+logged frame time, versus 16.680ms before this milestone. A temporary high-density, cloud-hidden
+diagnostic at `highest_prominence_peak/1787354116-532072` makes the sun-projected hard shadow bands
+visible across the ground; its existing stale summit-clearance assertion is unrelated to rendering.

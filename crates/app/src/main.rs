@@ -907,6 +907,7 @@ impl State {
             hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
             shared_planet_bind_group_layout,
+            weather_clouds.field_bind_group_layout(),
             atmosphere.surface_lighting_resources(),
             terrain_source,
         )
@@ -2376,7 +2377,11 @@ impl State {
                 self.atmosphere
                     .draw(&mut render_pass, &self.camera_bind_group);
                 if self.render_debug_mode != planet::RenderDebugMode::SkyOnly {
-                    self.terrain.draw(&mut render_pass, &self.camera_bind_group);
+                    self.terrain.draw(
+                        &mut render_pass,
+                        &self.camera_bind_group,
+                        self.weather_clouds.field_bind_group(),
+                    );
                 }
             } else if !solid_color_screen && self.render_path == RenderPath::FoveatedRay {
                 if self.render_debug_mode != planet::RenderDebugMode::Final || !use_foveated_warp {

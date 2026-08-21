@@ -54,6 +54,7 @@ fn planet_shader_source() -> String {
     [
         include_str!("shared_planet.wgsl"),
         include_str!("planet.wgsl"),
+        include_str!("weather_cloud_density.wgsl"),
     ]
     .join("\n")
 }
@@ -563,6 +564,7 @@ impl TerrainRenderer {
         surface_format: wgpu::TextureFormat,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
         shared_bind_group_layout: wgpu::BindGroupLayout,
+        weather_field_bind_group_layout: &wgpu::BindGroupLayout,
         atmosphere: crate::atmosphere::SurfaceLightingResources<'_>,
         source: TerrainSource,
     ) -> Result<Self, TerrainError> {
@@ -672,6 +674,7 @@ impl TerrainRenderer {
                 Some(camera_bind_group_layout),
                 Some(&terrain_tile_bind_group_layout),
                 Some(&shared_bind_group_layout),
+                Some(weather_field_bind_group_layout),
             ],
             immediate_size: 0,
         });
@@ -1975,6 +1978,7 @@ impl TerrainRenderer {
         &'pass self,
         render_pass: &mut wgpu::RenderPass<'pass>,
         camera_bind_group: &'pass wgpu::BindGroup,
+        weather_field_bind_group: &'pass wgpu::BindGroup,
     ) {
         let pipeline = if self.fading_out_chunks.is_empty() && self.fade_in_started_at.is_empty() {
             &self.stable_pipeline
@@ -1993,6 +1997,7 @@ impl TerrainRenderer {
         render_pass.set_pipeline(ocean_pipeline);
         render_pass.set_bind_group(0, camera_bind_group, &[]);
         render_pass.set_bind_group(2, &self.shared_bind_group, &[]);
+        render_pass.set_bind_group(3, weather_field_bind_group, &[]);
         render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
         for batch in &self.ocean_draw_batches {
             let (vertex_buffer, index_buffer, index_count) = if batch.dense_near_field {
@@ -3644,6 +3649,28 @@ mod tests {
     }
 
     #[test]
+    fn terrain_cloud_shadows_reuse_the_shared_density_and_project_toward_the_sun() {
+        let shader = planet_shader_source();
+        assert!(shader.contains("fn cloudDensityWithOctaves("));
+        assert!(shader.contains("fn cloud_shadow_visibility("));
+        let projected_lookup = shader
+            .split("fn cloud_shadow_density_at_shell(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("sunward shell lookup is present");
+        assert!(projected_lookup.contains("surface_position + sun_direction * distance"));
+        assert!(
+            projected_lookup.contains("cloudDensityWithOctaves(shadow_direction, shell_index, 3u)")
+        );
+        let shadow = shader
+            .split("fn cloud_shadow_visibility(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("terrain cloud-shadow function is present");
+        assert!(shadow.contains("floor(combined_density * 4.0 + 0.5) / 4.0"));
+    }
+
+    #[test]
     fn shader_skips_surface_work_that_cannot_affect_the_image() {
         let shader = planet_shader_source();
         let detail = shader
@@ -4175,7 +4202,9 @@ mod tests {
             );
         }
         assert!(normalized_shader.contains("sun_transmittance * specular"));
-        assert!(normalized_shader.contains("terrain_sun_transmittance * terrain_direct_light"));
+        assert!(normalized_shader.contains(
+            "terrain_sun_transmittance * terrain_cloud_visibility * terrain_direct_light"
+        ));
     }
 
     #[test]

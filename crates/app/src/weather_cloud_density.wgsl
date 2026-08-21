@@ -47,7 +47,7 @@ fn rotate_noise(point: vec3<f32>) -> vec3<f32> {
     );
 }
 
-fn cloud_noise(direction: vec3<f32>, shell_index: u32) -> f32 {
+fn cloud_noise(direction: vec3<f32>, shell_index: u32, octave_count: u32) -> f32 {
     let scale = weather.noise_scale * select(1.0, 1.7, shell_index == 1u);
     let shell_offset = select(
         vec3<f32>(0.0, 0.0, 0.0),
@@ -58,7 +58,7 @@ fn cloud_noise(direction: vec3<f32>, shell_index: u32) -> f32 {
     var value = 0.0;
     var amplitude = 0.5;
     var amplitude_sum = 0.0;
-    for (var octave = 0u; octave < 5u; octave = octave + 1u) {
+    for (var octave = 0u; octave < min(octave_count, 5u); octave = octave + 1u) {
         value = value + amplitude * value_noise(point);
         amplitude_sum = amplitude_sum + amplitude;
         point = rotate_noise(point) * 2.02;
@@ -74,14 +74,14 @@ fn flow_warp(direction: vec3<f32>, shell_index: u32) -> vec3<f32> {
     return normalize(direction + flow * amount);
 }
 
-fn cloudDensity(dir: vec3<f32>, t: f32) -> f32 {
+fn cloudDensityWithOctaves(dir: vec3<f32>, t: f32, octave_count: u32) -> f32 {
     let shell_index = select(0u, 1u, t >= 0.5);
     let base_direction = normalize(dir);
     let field_direction = flow_warp(rotate_drift(base_direction), shell_index);
     let current = textureSampleLevel(cloud_field_current, cloud_field_sampler, field_direction, 0.0);
     let previous = textureSampleLevel(cloud_field_previous, cloud_field_sampler, field_direction, 0.0);
     let field = mix(previous, current, weather.blend);
-    let detail = cloud_noise(field_direction, shell_index);
+    let detail = cloud_noise(field_direction, shell_index, octave_count);
     let noise = detail * weather.noise_strength;
     let shell_cloud = select(field.r, field.r * 0.72, shell_index == 1u);
     let coverage = clamp(0.82 + noise, 0.0, 1.0);
@@ -98,4 +98,8 @@ fn cloudDensity(dir: vec3<f32>, t: f32) -> f32 {
     return max(posterized, precursor)
         * (0.32 + 0.58 * field.g)
         * select(1.0, 0.62, shell_index == 1u);
+}
+
+fn cloudDensity(dir: vec3<f32>, t: f32) -> f32 {
+    return cloudDensityWithOctaves(dir, t, 5u);
 }
