@@ -1,8 +1,5 @@
-Milestone 12 is complete and pushed.
+No — not as the intended result for this stage.
 
-- Added stacked lower (14km) and upper (90km) weather cloud shells.
-- Added deterministic tangent flow warping and trilinear hash-noise breakup in the cloud shader.
-- Upper clouds are thinner and greyer, while both layers retain shared atmospheric lighting, depth testing, and temporal field blending.
+The cloud layers are present, but this capture is clearly overdrawn: the lower shell is almost an opaque lavender sheet, with large repeated circular holes. That pattern is coming from the coarse 16×16 weather field plus the current noise/alpha combination and stacked-shell blending; it is not realistic cloud structure or cloud-shadowing (shadowing is not implemented yet).
 
-Validation: 25 focused weather/render tests passed, workspace check passed, and raster orbit_once passed with four captures, finite metrics, and zero seam violations.
-Next: milestone 13, cloud shadows.
+The expected milestone-12 result is sparse, translucent, broken cloud cover with the terrain remaining readable. I have not changed code from this review. The next fix should reduce shell overdraw and humidity-driven density, then make the noise modulate coverage rather than create these regular dark discs.
