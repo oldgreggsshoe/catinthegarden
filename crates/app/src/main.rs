@@ -2869,6 +2869,11 @@ struct App {
     scenario_failed: Arc<AtomicBool>,
     window: Option<Arc<Window>>,
     state: Option<State>,
+    /// Defer the compositor fullscreen request until wgpu has presented once.
+    /// On X11, mapping a new window fullscreen during its first surface
+    /// acquire can leave the desktop image visible until a later resize.
+    startup_fullscreen_pending: bool,
+    startup_redraw_seen: bool,
 }
 
 impl App {
@@ -2878,6 +2883,8 @@ impl App {
             scenario_failed: Arc::new(AtomicBool::new(false)),
             window: None,
             state: None,
+            startup_fullscreen_pending: false,
+            startup_redraw_seen: false,
         }
     }
 }
@@ -2907,11 +2914,19 @@ impl ApplicationHandler for App {
             self.launch_options.terrain_source.clone(),
         ));
         if should_start_interactive_fullscreen(self.launch_options.scenario_name.is_some()) {
-            state.toggle_fullscreen(&window);
+            self.startup_fullscreen_pending = true;
+            tracing::info!(
+                target: "catinthegarden::startup",
+                "deferring fullscreen until the first surface frame"
+            );
         }
         state.set_mouse_capture(&window, true);
         self.state = Some(state);
         self.window = Some(window);
+        self.window
+            .as_ref()
+            .expect("window initialized above")
+            .request_redraw();
     }
 
     fn window_event(
@@ -2927,6 +2942,9 @@ impl ApplicationHandler for App {
             return;
         }
         let state = self.state.as_mut().expect("state initialized with window");
+        if self.startup_fullscreen_pending && matches!(&event, WindowEvent::RedrawRequested) {
+            self.startup_redraw_seen = true;
+        }
         if matches!(
             &event,
             WindowEvent::KeyboardInput { event, .. }
@@ -2969,6 +2987,8 @@ impl ApplicationHandler for App {
                     if event.state.is_pressed()
                         && event.physical_key == PhysicalKey::Code(KeyCode::KeyF) =>
                 {
+                    self.startup_fullscreen_pending = false;
+                    self.startup_redraw_seen = false;
                     state.toggle_fullscreen(window);
                     window.request_redraw();
                 }
@@ -3171,6 +3191,18 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.startup_fullscreen_pending && self.startup_redraw_seen {
+            if let (Some(window), Some(state)) = (self.window.as_ref(), self.state.as_mut()) {
+                self.startup_fullscreen_pending = false;
+                self.startup_redraw_seen = false;
+                state.toggle_fullscreen(window);
+                tracing::info!(
+                    target: "catinthegarden::startup",
+                    "entered fullscreen after the first surface frame"
+                );
+                window.request_redraw();
+            }
+        }
         if let Some(window) = self.window.as_ref() {
             event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
             window.request_redraw();

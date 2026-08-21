@@ -880,6 +880,12 @@ while the HDR scene target and luminance meter remain available for diagnostics.
 regression covers the interactive/fullscreen split and the presentation constants; the full
 workspace suite passes.
 
+Interactive launches now render one windowed surface frame before entering borderless fullscreen.
+This avoids an X11/wgpu first-present race observed on the Quadro M1000M where the compositor could
+leave the fullscreen window showing the desktop until F toggled fullscreen again. Deterministic
+scenarios remain windowed; the transition is logged as `deferring fullscreen until the first surface
+frame` followed by `entered fullscreen after the first surface frame`.
+
 ## 3. State: what was red before the Earth-like rebake
 
 The six results below are pre-rebake evidence and now require a fresh matrix. Before the Earth-like
