@@ -1,7 +1,11 @@
-Done: the cloud-density path is now single-source.
+Fixed the weather startup regression.
 
-`crates/app/src/weather_cloud_density.wgsl` owns field lookup, flow warp, rotated FBM, coverage modulation, and posterisation in one `cloudDensity(dir, t)` function. The weather shell is composed from that source at runtime; its fragment shader no longer duplicates the evaluation. The source contract documents the weather bindings and `t=0/1` lower/upper shell selection so terrain shadows and impostor spawning can reuse it rather than copy it.
+Cause: the initial `replace_field` upload only populated one of the two temporal textures and left blend at 0, so the first frames sampled an all-zero previous field. The new `initialize_field` seeds both textures and starts at blend=1; later weather ticks still cross-fade over 1.5s.
 
-The exponential condensation/precipitation path remains intact, and cloud-water transport is already fixed from the previous step. I have not started milestone 13 shadows yet.
+Validation:
+- `cargo test -p catinthegarden-app weather -- --nocapture`: 26 passed
+- `cargo check --workspace`: passed
+- release `orbit_once`: passed, manifest git commit `afaa044`
+- latest capture: `test-runs/orbit_once/1787304223-107886/screenshots/capture-001.png`, weather visible immediately
 
-Validation: 26 focused weather tests, workspace check, and matching raster `orbit_once` pass (`test-runs/orbit_once/1787299908-56526`, commit `880514b`).
+Unrelated dirty worktree files were left untouched.
