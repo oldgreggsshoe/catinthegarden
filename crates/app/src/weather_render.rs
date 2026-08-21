@@ -516,6 +516,8 @@ mod tests {
         assert!(shader.contains("@builtin(instance_index) instance_index"));
         assert!(shader.contains("fn flow_warp"));
         assert!(shader.contains("fn cloud_noise"));
+        assert!(shader.contains("fn sample_cloud_field"));
+        assert!(shader.contains("center * 2.0 + west + east + south + north"));
         assert!(shader.contains("fn cloudDensity"));
         assert!(shader.contains("let posterized = smoothstep"));
     }

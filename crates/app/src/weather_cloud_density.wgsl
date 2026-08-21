@@ -116,13 +116,52 @@ fn cube_field_uv(direction: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(u * 0.5 + 0.5, v * 0.5 + 0.5, face);
 }
 
+// The simulation is intentionally only 64x64 per cube face.  A single
+// filtered texel therefore becomes a conspicuous circular patch when the
+// posterised cloud threshold is viewed from orbit.  Average a small, fixed
+// cross around the lookup before applying coverage; this removes the lattice
+// without turning the field into a costly full-resolution blur.
+fn sample_cloud_field(texture: texture_2d_array<f32>, uv: vec3<f32>) -> vec4<f32> {
+    let texel = vec2<f32>(1.0 / 64.0, 1.0 / 64.0);
+    let center = textureSampleLevel(texture, cloud_field_sampler, uv.xy, i32(uv.z), 0.0);
+    let west = textureSampleLevel(
+        texture,
+        cloud_field_sampler,
+        clamp(uv.xy - vec2<f32>(texel.x, 0.0), vec2<f32>(0.0), vec2<f32>(1.0)),
+        i32(uv.z),
+        0.0,
+    );
+    let east = textureSampleLevel(
+        texture,
+        cloud_field_sampler,
+        clamp(uv.xy + vec2<f32>(texel.x, 0.0), vec2<f32>(0.0), vec2<f32>(1.0)),
+        i32(uv.z),
+        0.0,
+    );
+    let south = textureSampleLevel(
+        texture,
+        cloud_field_sampler,
+        clamp(uv.xy - vec2<f32>(0.0, texel.y), vec2<f32>(0.0), vec2<f32>(1.0)),
+        i32(uv.z),
+        0.0,
+    );
+    let north = textureSampleLevel(
+        texture,
+        cloud_field_sampler,
+        clamp(uv.xy + vec2<f32>(0.0, texel.y), vec2<f32>(0.0), vec2<f32>(1.0)),
+        i32(uv.z),
+        0.0,
+    );
+    return (center * 2.0 + west + east + south + north) / 6.0;
+}
+
 fn cloudDensity(dir: vec3<f32>, t: f32) -> f32 {
     let shell_index = select(0u, 1u, t >= 0.5);
     let base_direction = normalize(dir);
     let field_direction = flow_warp(rotate_drift(base_direction), shell_index);
     let uv = cube_field_uv(field_direction);
-    let current = textureSampleLevel(cloud_field_current, cloud_field_sampler, uv.xy, i32(uv.z), 0.0);
-    let previous = textureSampleLevel(cloud_field_previous, cloud_field_sampler, uv.xy, i32(uv.z), 0.0);
+    let current = sample_cloud_field(cloud_field_current, uv);
+    let previous = sample_cloud_field(cloud_field_previous, uv);
     let field = mix(previous, current, weather.blend);
     let noise = cloud_noise(field_direction, shell_index) * weather.noise_strength;
     let shell_cloud = select(field.r, field.r * 0.72, shell_index == 1u);

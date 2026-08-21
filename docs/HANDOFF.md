@@ -3118,3 +3118,12 @@ shell contract (0/1), while the shared function consumes the including shader's 
 bindings. Future terrain-shadow and impostor-spawn shaders must compose this same source and provide
 that binding contract rather than copy the evaluation. The WGSL parser test validates the composed
 source and the shared function; the two focused weather-render tests pass.
+
+## Experimental weather cloud-lattice smoothing - 21 August 2026
+
+Manual stepped-weather review still showed regularly spaced circular gaps after the native
+64x64 upload and precursor correction. The cause was the single low-resolution field lookup being
+thresholded directly into cloud coverage. The shared `cloudDensity` source now applies a small
+cross-shaped, texel-scale field average before temporal blending and posterisation, preserving
+large weather structures while removing the visible cell lattice. The composed WGSL parser test
+asserts the shared sampler path; focused weather tests and a raster stepped-weather replay pass.
