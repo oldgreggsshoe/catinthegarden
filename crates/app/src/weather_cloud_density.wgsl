@@ -74,55 +74,12 @@ fn flow_warp(direction: vec3<f32>, shell_index: u32) -> vec3<f32> {
     return normalize(direction + flow * amount);
 }
 
-fn cube_field_uv(direction: vec3<f32>) -> vec3<f32> {
-    let absolute = abs(direction);
-    var face = 0.0;
-    var u = 0.0;
-    var v = 0.0;
-    if absolute.x >= absolute.y && absolute.x >= absolute.z {
-        let denominator = max(absolute.x, 1.0e-6);
-        if direction.x >= 0.0 {
-            face = 0.0;
-            u = -direction.z / denominator;
-            v = direction.y / denominator;
-        } else {
-            face = 1.0;
-            u = direction.z / denominator;
-            v = direction.y / denominator;
-        }
-    } else if absolute.y >= absolute.z {
-        let denominator = max(absolute.y, 1.0e-6);
-        if direction.y >= 0.0 {
-            face = 2.0;
-            u = direction.x / denominator;
-            v = -direction.z / denominator;
-        } else {
-            face = 3.0;
-            u = direction.x / denominator;
-            v = direction.z / denominator;
-        }
-    } else {
-        let denominator = max(absolute.z, 1.0e-6);
-        if direction.z >= 0.0 {
-            face = 4.0;
-            u = direction.x / denominator;
-            v = direction.y / denominator;
-        } else {
-            face = 5.0;
-            u = -direction.x / denominator;
-            v = direction.y / denominator;
-        }
-    }
-    return vec3<f32>(u * 0.5 + 0.5, v * 0.5 + 0.5, face);
-}
-
 fn cloudDensity(dir: vec3<f32>, t: f32) -> f32 {
     let shell_index = select(0u, 1u, t >= 0.5);
     let base_direction = normalize(dir);
     let field_direction = flow_warp(rotate_drift(base_direction), shell_index);
-    let uv = cube_field_uv(field_direction);
-    let current = textureSampleLevel(cloud_field_current, cloud_field_sampler, uv.xy, i32(uv.z), 0.0);
-    let previous = textureSampleLevel(cloud_field_previous, cloud_field_sampler, uv.xy, i32(uv.z), 0.0);
+    let current = textureSampleLevel(cloud_field_current, cloud_field_sampler, field_direction, 0.0);
+    let previous = textureSampleLevel(cloud_field_previous, cloud_field_sampler, field_direction, 0.0);
     let field = mix(previous, current, weather.blend);
     let detail = cloud_noise(field_direction, shell_index);
     let noise = detail * weather.noise_strength;

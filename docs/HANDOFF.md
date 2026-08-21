@@ -3141,8 +3141,21 @@ signed solar angle for ambient fill.
 
 The former constant low-alpha precursor covered both shells globally and could read as sea-level
 fog. Startup visibility is now gated by local humidity and rotated FBM detail, leaving real gaps
-while condensed cloud water remains authoritative. The shell altitudes remain 14km and 90km; in
-manual run `1787341490-431395`, capture 2 was taken at 50.5km, between the two layers rather than
-below both. Twenty-eight focused weather tests, workspace check, raster sunset/blue-hour, orbit, and
-a constant-density sunset-light visual diagnostic confirm the path. The diagnostic intentionally
+while condensed cloud water remains authoritative. The shell altitudes remain 14km and 90km.
+Twenty-eight focused weather tests, workspace check, raster sunset/blue-hour, orbit, and a
+constant-density sunset-light visual diagnostic confirm the path. The diagnostic intentionally
 obscures the sky and therefore is not expected to satisfy the normal sky-colour assertions.
+
+## Experimental weather cubemap seam repair - 21 August 2026
+
+Manual orbit capture `manual/1787341490-431395` exposed a straight bright boundary where two
+weather cube faces met. The field was stored as six layers of a 2D array and sampled through a
+manual face/UV lookup with clamp-to-edge filtering, so bilinear filtering could not cross the face
+boundary. The same six layers are now exposed as a native WebGPU cubemap and sampled directly by
+planet direction. Upload rows are vertically flipped to reconcile the weather grid's tangent V
+axis with WebGPU cubemap orientation.
+
+A focused upload-orientation regression and composed-WGSL checks pin the cubemap contract. A
+high-density diagnostic orbit `orbit_once/1787349576-494773` exercises successive face boundaries
+without the former hard line; the restored normal presentation replay
+`orbit_once/1787349838-497054` passes all scenario assertions.

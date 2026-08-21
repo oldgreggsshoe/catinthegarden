@@ -201,8 +201,8 @@ impl WeatherCloudRenderer {
         ];
         let field_views = field_textures.each_ref().map(|texture| {
             texture.create_view(&wgpu::TextureViewDescriptor {
-                label: Some("weather cloud field array view"),
-                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                label: Some("weather cloud field cube view"),
+                dimension: Some(wgpu::TextureViewDimension::Cube),
                 ..Default::default()
             })
         });
@@ -430,7 +430,7 @@ fn texture_array_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
         visibility: wgpu::ShaderStages::FRAGMENT,
         ty: wgpu::BindingType::Texture {
             sample_type: wgpu::TextureSampleType::Float { filterable: true },
-            view_dimension: wgpu::TextureViewDimension::D2Array,
+            view_dimension: wgpu::TextureViewDimension::Cube,
             multisampled: false,
         },
         count: None,
@@ -459,7 +459,10 @@ fn pad_field_rows(data: &[u8]) -> Vec<u8> {
     let mut padded = vec![0_u8; padded_field_size()];
     for layer in 0..6 {
         for row in 0..side {
-            let source = (layer * side + row) * side * 4;
+            // WebGPU cubemaps use the conventional top-down face V axis,
+            // opposite the weather grid's bottom-up tangent V coordinate.
+            let source_row = side - 1 - row;
+            let source = (layer * side + source_row) * side * 4;
             let target = (layer * side + row) * CLOUD_TEXTURE_BYTES_PER_ROW as usize;
             padded[target..target + side * 4].copy_from_slice(&data[source..source + side * 4]);
         }
@@ -526,6 +529,8 @@ mod tests {
         assert!(shader.contains("max(solar_zenith_cosine, 0.0)"));
         assert!(shader.contains("let humidity_precursor"));
         assert!(!shader.contains("let precursor = select(0.08"));
+        assert!(shader.contains("texture_cube<f32>"));
+        assert!(!shader.contains("fn cube_field_uv"));
     }
 
     #[test]
@@ -575,5 +580,26 @@ mod tests {
             deeper_twilight_sun_cosine
                 > horizon_cosine(super::UPPER_CLOUD_SHELL_ALTITUDE_METERS)
         );
+    }
+
+    #[test]
+    fn cubemap_upload_flips_source_rows_to_webgpu_orientation() {
+        let side = crate::weather::WEATHER_FIELD_TEXTURE_SIDE as usize;
+        let mut data = vec![0_u8; side * side * 6 * 4];
+        for layer in 0..6 {
+            for row in 0..side {
+                for column in 0..side {
+                    data[((layer * side + row) * side + column) * 4] = row as u8;
+                }
+            }
+        }
+
+        let padded = super::pad_field_rows(&data);
+        let row_stride = super::CLOUD_TEXTURE_BYTES_PER_ROW as usize;
+        for layer in 0..6 {
+            let layer_start = layer * side * row_stride;
+            assert_eq!(padded[layer_start], (side - 1) as u8);
+            assert_eq!(padded[layer_start + (side - 1) * row_stride], 0);
+        }
     }
 }

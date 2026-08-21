@@ -18,9 +18,9 @@ struct Camera {
 var<uniform> camera: Camera;
 
 @group(1) @binding(0)
-var cloud_field_current: texture_2d_array<f32>;
+var cloud_field_current: texture_cube<f32>;
 @group(1) @binding(1)
-var cloud_field_previous: texture_2d_array<f32>;
+var cloud_field_previous: texture_cube<f32>;
 @group(1) @binding(2)
 var cloud_field_sampler: sampler;
 
