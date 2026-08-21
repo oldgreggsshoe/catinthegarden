@@ -3090,6 +3090,13 @@ from density, avoiding regular circular holes. The humid-air precursor was reduc
 focused weather tests, workspace check, and raster `orbit_once` replay pass. Manual verification
 should unfreeze weather or press `9` for exact 600s ticks before judging transport.
 
+## Experimental weather startup visibility - 21 August 2026
+
+The initial weather field now seeds both temporal GPU textures with `blend = 1`, so the humidity
+precursor is rendered on the first frame instead of fading up from an all-zero previous buffer.
+Subsequent fixed-tick uploads retain the 1.5-second cross-fade. Focused weather tests, workspace
+check, and a raster `orbit_once` replay now show the weather shell immediately.
+
 ## Experimental weather shared density source - 21 August 2026
 
 The cloud field lookup, tangent flow warp, rotated five-octave FBM, coverage modulation, and

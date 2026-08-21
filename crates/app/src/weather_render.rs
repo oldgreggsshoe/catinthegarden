@@ -308,6 +308,45 @@ impl WeatherCloudRenderer {
         self.write_uniform(queue);
     }
 
+    /// Installs the first field into both temporal textures so the weather
+    /// shell is visible on the first rendered frame. Subsequent updates use
+    /// `replace_field` and retain the normal cross-fade.
+    pub fn initialize_field(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, data: &[u8]) {
+        assert_eq!(
+            data.len(),
+            weather::WEATHER_FIELD_TEXTURE_SIDE as usize
+                * weather::WEATHER_FIELD_TEXTURE_SIDE as usize
+                * 6
+                * 4
+        );
+        let padded = pad_field_rows(data);
+        for texture in &self.field_textures {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &padded,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(CLOUD_TEXTURE_BYTES_PER_ROW),
+                    rows_per_image: Some(weather::WEATHER_FIELD_TEXTURE_SIDE),
+                },
+                wgpu::Extent3d {
+                    width: weather::WEATHER_FIELD_TEXTURE_SIDE,
+                    height: weather::WEATHER_FIELD_TEXTURE_SIDE,
+                    depth_or_array_layers: 6,
+                },
+            );
+        }
+        self.current_texture = 0;
+        self.blend = 1.0;
+        self.field_bind_group = Some(self.create_field_bind_group(device));
+        self.write_uniform(queue);
+    }
+
     pub fn advance_temporal(&mut self, queue: &wgpu::Queue, frame_seconds: f32) {
         self.blend = (self.blend + frame_seconds.max(0.0) / TEMPORAL_BLEND_SECONDS).min(1.0);
         self.drift_radians = (self.drift_radians + frame_seconds.max(0.0) * 0.000002)

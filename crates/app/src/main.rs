@@ -890,7 +890,7 @@ impl State {
             &camera_bind_group_layout,
             atmosphere.surface_lighting_resources(),
         );
-        weather_clouds.replace_field(&device, &queue, &weather.cloud_field_texture_data());
+        weather_clouds.initialize_field(&device, &queue, &weather.cloud_field_texture_data());
         let foveated = foveated::FoveatedRenderer::new(
             &device,
             &queue,
