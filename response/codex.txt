@@ -1,1 +1,8 @@
-I checked the latest available screenshot (`manual/1787296835-8851/capture-001.png`); it is the same result as before. No: the clouds are far too opaque and repetitive, with regular dark circular holes. Visible cloud layers are expected at this milestone, but the terrain should remain readable through broken translucent coverage. This still points to stacked-shell overdraw plus the coarse field/noise density, not intended final rendering.
+I followed your diagnosis and fixed the transport path.
+
+- `cloud_water` now advects with the same conservative seam-safe wind pass as humidity; it was previously created by condensation but never transported, which pinned clouds to their source regions.
+- Confirmed the backtrace uses metres / planet radius, damping is exponential, the field update is double-buffered, and the 600-second relaxation fix is present.
+- Replaced the single low-frequency noise sample with five rotated value-noise octaves, a 32-cycle base scale, and an upper-shell offset. Noise now modulates coverage instead of carving density.
+- Reduced the humidity precursor from `0.75/0.46` to `0.14/0.08` (lower/upper shell), removing the opaque circular discs while cloud water remains the dense contribution.
+
+Validation: 26 focused weather tests, workspace check, and raster `orbit_once` pass. Matching replay: `test-runs/orbit_once/1787298727-36618` (commit `46bd2ec`). The screenshot no longer has the repeated circular cloud holes. For transport review, unfreeze with F10 or press `9` for an exact 600-second weather tick; ordinary startup is F10-frozen by design.
