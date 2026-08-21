@@ -3056,7 +3056,7 @@ a workspace check pass.
 
 ## Experimental weather GPU cloud shell - 21 August 2026
 
-Milestone 11 uploads the weather cloud/storm/humidity field as six 16x16 RGBA8 cube-face layers.
+Milestone 11 uploads the weather cloud/storm/humidity field as six native 64x64 RGBA8 cube-face layers.
 The renderer keeps two resident field textures and cross-fades the previous/current field over 1.5
 seconds after each fixed weather tick. A camera-relative 14km shell renders the field with alpha
 blending, shared atmospheric transmittance/irradiance lighting, altitude-aware geometric solar
@@ -3085,10 +3085,15 @@ conservation. The fixed-step exponential relaxation was already present and rema
 
 The cloud breakup shader now uses five rotated value-noise octaves, a 32-cycle base scale, and an
 independent upper-shell domain offset. Noise modulates cloud coverage instead of subtracting directly
-from density, avoiding regular circular holes. The humid-air precursor was reduced from 0.75/0.46 to
-0.14/0.08 (lower/upper shell); cloud water remains the authoritative dense contribution. Twenty-six
+from density, avoiding regular circular holes. Cloud water remains the authoritative posterised
+contribution; startup uses a separate continuous low-alpha veil so no coarse humidity bins are
+turned into discs. Twenty-six
 focused weather tests, workspace check, and raster `orbit_once` replay pass. Manual verification
 should unfreeze weather or press `9` for exact 600s ticks before judging transport.
+
+The GPU upload keeps the weather simulation's native 64x64 face samples rather than averaging each
+face to 16x16. This prevents the humidity precursor from appearing as repeated circular patches at
+orbital distance; the debug `7` overlay remains intentionally coarse.
 
 ## Experimental weather startup visibility - 21 August 2026
 

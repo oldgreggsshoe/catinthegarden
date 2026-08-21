@@ -125,13 +125,16 @@ fn cloudDensity(dir: vec3<f32>, t: f32) -> f32 {
     let previous = textureSampleLevel(cloud_field_previous, cloud_field_sampler, uv.xy, i32(uv.z), 0.0);
     let field = mix(previous, current, weather.blend);
     let noise = cloud_noise(field_direction, shell_index) * weather.noise_strength;
-    let humidity_cloud = smoothstep(0.55, 0.82, field.b);
     let shell_cloud = select(field.r, field.r * 0.72, shell_index == 1u);
     let coverage = clamp(0.82 + noise, 0.0, 1.0);
-    let density = max(
-        shell_cloud * coverage,
-        humidity_cloud * select(0.14, 0.08, shell_index == 1u),
-    );
+    let density = shell_cloud * coverage;
     let posterized = smoothstep(0.08, 0.26, density);
-    return posterized * (0.32 + 0.58 * field.g) * select(1.0, 0.62, shell_index == 1u);
+    // Keep a continuous, low-alpha pre-condensation veil. It is deliberately
+    // not derived from the coarse field or fed through hard posterisation:
+    // either would turn startup humidity into circular discs before cloud
+    // water exists.
+    let precursor = select(0.08, 0.05, shell_index == 1u);
+    return max(posterized, precursor)
+        * (0.32 + 0.58 * field.g)
+        * select(1.0, 0.62, shell_index == 1u);
 }
