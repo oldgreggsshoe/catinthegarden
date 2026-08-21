@@ -6,6 +6,8 @@ use wgpu::util::DeviceExt;
 use crate::{atmosphere::SurfaceLightingResources, planet::PLANET_RADIUS_METERS, weather};
 
 const CLOUD_SHELL_ALTITUDE_METERS: f32 = 14_000.0;
+const CLOUD_SHELL_LONGITUDE_SEGMENTS: usize = 96;
+const CLOUD_SHELL_LATITUDE_SEGMENTS: usize = 48;
 const TEMPORAL_BLEND_SECONDS: f32 = 1.5;
 const CLOUD_TEXTURE_BYTES_PER_ROW: u32 = 256;
 
@@ -464,15 +466,15 @@ fn pad_field_rows(data: &[u8]) -> Vec<u8> {
 }
 
 fn shell_vertices() -> Vec<CloudVertex> {
-    const LONGITUDE_SEGMENTS: usize = 48;
-    const LATITUDE_SEGMENTS: usize = 24;
-    let mut vertices = Vec::with_capacity(LONGITUDE_SEGMENTS * LATITUDE_SEGMENTS * 6);
-    for y in 0..LATITUDE_SEGMENTS {
-        let v0 = y as f32 / LATITUDE_SEGMENTS as f32;
-        let v1 = (y + 1) as f32 / LATITUDE_SEGMENTS as f32;
-        for x in 0..LONGITUDE_SEGMENTS {
-            let u0 = x as f32 / LONGITUDE_SEGMENTS as f32;
-            let u1 = (x + 1) as f32 / LONGITUDE_SEGMENTS as f32;
+    let mut vertices = Vec::with_capacity(
+        CLOUD_SHELL_LONGITUDE_SEGMENTS * CLOUD_SHELL_LATITUDE_SEGMENTS * 6,
+    );
+    for y in 0..CLOUD_SHELL_LATITUDE_SEGMENTS {
+        let v0 = y as f32 / CLOUD_SHELL_LATITUDE_SEGMENTS as f32;
+        let v1 = (y + 1) as f32 / CLOUD_SHELL_LATITUDE_SEGMENTS as f32;
+        for x in 0..CLOUD_SHELL_LONGITUDE_SEGMENTS {
+            let u0 = x as f32 / CLOUD_SHELL_LONGITUDE_SEGMENTS as f32;
+            let u1 = (x + 1) as f32 / CLOUD_SHELL_LONGITUDE_SEGMENTS as f32;
             let p = |u: f32, v: f32| {
                 let latitude = (v - 0.5) * std::f32::consts::PI;
                 let longitude = u * std::f32::consts::TAU;
@@ -516,15 +518,37 @@ mod tests {
         assert!(shader.contains("@builtin(instance_index) instance_index"));
         assert!(shader.contains("fn flow_warp"));
         assert!(shader.contains("fn cloud_noise"));
-        assert!(shader.contains("fn sample_cloud_field"));
-        assert!(shader.contains("center * 2.0 + west + east + south + north"));
         assert!(shader.contains("fn cloudDensity"));
         assert!(shader.contains("let posterized = smoothstep"));
     }
 
     #[test]
     fn shell_mesh_is_non_empty_and_has_expected_density() {
-        assert_eq!(48 * 24 * 6, 6_912);
-        assert_eq!(48 * 24 * 6 * 2, 13_824);
+        assert_eq!(super::shell_vertices().len(), 96 * 48 * 6);
+        assert_eq!(super::shell_vertices().len() * 2, 55_296);
+    }
+
+    #[test]
+    fn lower_cloud_shell_faces_stay_above_ocean_depth() {
+        let minimum_unit_face_radius = super::shell_vertices()
+            .chunks_exact(3)
+            .filter_map(|triangle| {
+                let a = glam::Vec3::from_array(triangle[0].position);
+                let b = glam::Vec3::from_array(triangle[1].position);
+                let c = glam::Vec3::from_array(triangle[2].position);
+                let normal = (b - a).cross(c - a);
+                (normal.length_squared() > 1.0e-12)
+                    .then(|| normal.normalize().dot(a).abs())
+            })
+            .fold(f32::INFINITY, f32::min);
+        let minimum_clearance_meters =
+            (crate::planet::PLANET_RADIUS_METERS as f32 + super::CLOUD_SHELL_ALTITUDE_METERS)
+                * minimum_unit_face_radius
+                - crate::planet::PLANET_RADIUS_METERS as f32;
+
+        assert!(
+            minimum_clearance_meters >= 9_000.0,
+            "lower cloud triangles sag to {minimum_clearance_meters:.3}m above sea level"
+        );
     }
 }

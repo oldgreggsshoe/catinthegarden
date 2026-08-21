@@ -3119,11 +3119,12 @@ bindings. Future terrain-shadow and impostor-spawn shaders must compose this sam
 that binding contract rather than copy the evaluation. The WGSL parser test validates the composed
 source and the shared function; the two focused weather-render tests pass.
 
-## Experimental weather cloud-lattice smoothing - 21 August 2026
+## Experimental weather cloud-shell depth repair - 21 August 2026
 
-Manual stepped-weather review still showed regularly spaced circular gaps after the native
-64x64 upload and precursor correction. The cause was the single low-resolution field lookup being
-thresholded directly into cloud coverage. The shared `cloudDensity` source now applies a small
-cross-shaped, texel-scale field average before temporal blending and posterisation, preserving
-large weather structures while removing the visible cell lattice. The composed WGSL parser test
-asserts the shared sampler path; focused weather tests and a raster stepped-weather replay pass.
+Manual orbital review showed regularly spaced circular gaps even after field filtering, proving
+the pattern was not weather density. The 48x24 lower shell's planar triangle faces sagged 3,134m
+below sea level despite their vertices being at 14km, so the planet depth buffer clipped one round
+hole into every coarse mesh cell. The shell is now 96x48: its lowest face stays 9,705m above sea
+level while retaining the authored 14km vertex altitude. A geometric regression measures the
+minimum triangle-plane radius, and a constant-density raster replay shows a continuous shell. The
+misdirected field blur was removed, returning cloud density to two texture fetches per fragment.
