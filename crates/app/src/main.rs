@@ -1651,6 +1651,11 @@ impl State {
         let planet_rotation_radians = planet::planet_rotation_radians(planet_rotation_time);
         let weather_sun_direction =
             planet::planet_local_vector(self.sun_direction, planet_rotation_radians);
+        let weather_time = if self.scenario.is_some() {
+            presentation_time
+        } else {
+            weather::interactive_weather_time_seconds(presentation_time)
+        };
         if self.weather.prepare_next(weather_sun_direction) {
             let weather_target = self
                 .weather
@@ -1663,7 +1668,7 @@ impl State {
             .weather
             // Weather keeps evolving while F10 freezes the scene clock; the
             // planet-local sun direction above remains frozen with the scene.
-            .advance_to_with_sun(presentation_time, weather_sun_direction);
+            .advance_to_with_sun(weather_time, weather_sun_direction);
         if weather_steps > 0 {
             let weather_target = self
                 .weather
@@ -1680,7 +1685,7 @@ impl State {
         self.weather_clouds.set_temporal_state(
             &self.queue,
             self.weather.interpolation_fraction(),
-            frame_time,
+            self.weather.visual_time_seconds(),
         );
         let scene_delta_seconds = (sim_time - self.last_auto_orbit_sim_time).max(0.0);
         if let Some(forward_held) = scenario_forward_flight_held {

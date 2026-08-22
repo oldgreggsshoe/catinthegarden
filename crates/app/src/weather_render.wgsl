@@ -129,6 +129,18 @@ fn solid_planet_blocks_cloud(
         || (far_t > 1.0e-5 && far_t < 0.99999);
 }
 
+// Forward Mie scattering is what gives a terrestrial cloud its bright silver
+// lining when the sun is immediately behind a thin edge. Henyey-Greenstein is
+// a compact approximation of that strongly forward-peaked phase function.
+fn henyey_greenstein(cosine_theta: f32, asymmetry: f32) -> f32 {
+    let denominator = max(
+        1.0 + asymmetry * asymmetry - 2.0 * asymmetry * cosine_theta,
+        1.0e-4,
+    );
+    return (1.0 - asymmetry * asymmetry)
+        / (4.0 * 3.14159265 * pow(denominator, 1.5));
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let camera_position_view = normalize(
@@ -177,5 +189,25 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let albedo = fair_weather_albedo
         * storm_darkening
         * select(1.0, 0.82, input.shell_index == 1u);
-    return vec4<f32>(albedo * lighting, alpha);
+    let camera_to_cloud = normalize(cloud_position_view - camera_position_view);
+    let sun_alignment = clamp(
+        dot(camera_to_cloud, normalize(camera.sun_direction_view.xyz)),
+        -1.0,
+        1.0,
+    );
+    let forward_phase = clamp(
+        henyey_greenstein(sun_alignment, 0.76)
+            / henyey_greenstein(1.0, 0.76),
+        0.0,
+        1.0,
+    );
+    // Only the optically thin fringe receives the extra forward-scattered
+    // sunlight. Dense storm interiors remain dark rather than emissive.
+    let translucent_edge = smoothstep(0.025, 0.20, alpha)
+        * (1.0 - smoothstep(0.38, 0.62, alpha));
+    let silver_lining = transmittance
+        * forward_phase
+        * translucent_edge
+        * 2.5;
+    return vec4<f32>(albedo * lighting + silver_lining, alpha);
 }

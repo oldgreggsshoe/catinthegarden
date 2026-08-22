@@ -10,6 +10,12 @@ const UPPER_CLOUD_SHELL_ALTITUDE_METERS: f32 = 166_000.0;
 const CLOUD_SHELL_LONGITUDE_SEGMENTS: usize = 96;
 const CLOUD_SHELL_LATITUDE_SEGMENTS: usize = 48;
 const CLOUD_TEXTURE_BYTES_PER_ROW: u32 = 256;
+const CLOUD_DRIFT_RADIANS_PER_SIMULATED_SECOND: f64 = 0.000002;
+
+fn cloud_drift_radians(weather_time_seconds: f64) -> f32 {
+    (weather_time_seconds.max(0.0) * CLOUD_DRIFT_RADIANS_PER_SIMULATED_SECOND)
+        .rem_euclid(std::f64::consts::TAU) as f32
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -353,11 +359,10 @@ impl WeatherCloudRenderer {
         &mut self,
         queue: &wgpu::Queue,
         interpolation_fraction: f32,
-        frame_seconds: f32,
+        weather_time_seconds: f64,
     ) {
         self.blend = interpolation_fraction.clamp(0.0, 1.0);
-        self.drift_radians = (self.drift_radians + frame_seconds.max(0.0) * 0.000002)
-            .rem_euclid(std::f32::consts::TAU);
+        self.drift_radians = cloud_drift_radians(weather_time_seconds);
         self.write_uniform(queue);
     }
 
@@ -544,6 +549,9 @@ mod tests {
         assert!(shader.contains("max(density, smoothstep(0.25, 0.85, density))"));
         assert!(shader.contains("smoothstep(0.10, 0.30, cloud.storm)"));
         assert!(shader.contains("let storm_darkening = 1.0 - 0.72 * storm_weight;"));
+        assert!(shader.contains("fn henyey_greenstein"));
+        assert!(shader.contains("let translucent_edge"));
+        assert!(shader.contains("let silver_lining"));
         assert!(shader.contains("fn direct_atmosphere_uv"));
         assert!(shader.contains("fn solid_planet_blocks_cloud"));
         assert!(shader.contains("if solid_planet_blocks_cloud("));
@@ -558,6 +566,14 @@ mod tests {
     fn shell_mesh_is_non_empty_and_has_expected_density() {
         assert_eq!(super::shell_vertices().len(), 96 * 48 * 6);
         assert_eq!(super::shell_vertices().len() * 2, 55_296);
+    }
+
+    #[test]
+    fn cloud_detail_drift_uses_simulated_weather_time() {
+        let one_real_second_of_weather = super::cloud_drift_radians(
+            crate::weather::INTERACTIVE_WEATHER_TIME_SCALE,
+        );
+        assert!((one_real_second_of_weather - 0.0072).abs() < 1.0e-6);
     }
 
     #[test]

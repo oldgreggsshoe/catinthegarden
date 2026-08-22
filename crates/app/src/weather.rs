@@ -4,6 +4,8 @@ use crate::planet::{PLANET_RADIUS_METERS, cube_face_basis, cube_face_direction};
 
 pub const WEATHER_GRID_SIDE: usize = 64;
 pub const WEATHER_TIMESTEP_SECONDS: f64 = 600.0;
+pub const INTERACTIVE_WEATHER_TIME_SCALE: f64 = 3_600.0;
+const WEATHER_MAX_STEPS_PER_ADVANCE: u64 = 12;
 const WEATHER_REFERENCE_AIR_DENSITY_KG_PER_CUBIC_METER: f64 = 1.225;
 const WEATHER_MOMENTUM_DAMPING_SECONDS: f64 = 7_200.0;
 const WEATHER_MAX_WIND_SPEED_METERS_PER_SECOND: f64 = 60.0;
@@ -33,6 +35,10 @@ const OVERLAY_BINS: usize = 16;
 const NEIGHBOUR_COUNT: usize = 4;
 
 const WEATHER_GPU_FIELD_SIDE: usize = WEATHER_GRID_SIDE;
+
+pub fn interactive_weather_time_seconds(presentation_time_seconds: f64) -> f64 {
+    presentation_time_seconds.max(0.0) * INTERACTIVE_WEATHER_TIME_SCALE
+}
 pub const WEATHER_FIELD_TEXTURE_SIDE: u32 = WEATHER_GPU_FIELD_SIDE as u32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -995,6 +1001,10 @@ impl WeatherState {
         (self.accumulator_seconds / WEATHER_TIMESTEP_SECONDS).clamp(0.0, 1.0) as f32
     }
 
+    pub fn visual_time_seconds(&self) -> f64 {
+        self.simulation_time_seconds + self.accumulator_seconds
+    }
+
     /// Consumes scene time through a fixed 600-second weather clock. The
     /// authoritative physics still changes only on complete steps; the
     /// renderer uses `interpolation_fraction` between those states.
@@ -1015,7 +1025,9 @@ impl WeatherState {
         self.accumulator_seconds += scene_time_seconds - self.last_input_time_seconds;
         self.last_input_time_seconds = scene_time_seconds;
         let mut completed = 0;
-        while self.accumulator_seconds >= WEATHER_TIMESTEP_SECONDS {
+        while self.accumulator_seconds >= WEATHER_TIMESTEP_SECONDS
+            && completed < WEATHER_MAX_STEPS_PER_ADVANCE
+        {
             self.fields = self
                 .next_fields
                 .take()
@@ -1025,6 +1037,11 @@ impl WeatherState {
             self.completed_steps += 1;
             completed += 1;
             self.prepare_next(sun_direction);
+        }
+        if self.accumulator_seconds >= WEATHER_TIMESTEP_SECONDS {
+            self.accumulator_seconds = self
+                .accumulator_seconds
+                .rem_euclid(WEATHER_TIMESTEP_SECONDS);
         }
         completed
     }
@@ -1914,6 +1931,37 @@ mod tests {
         assert_eq!(state.advance_to(1.0), 0);
         assert_eq!(state.advance_to(WEATHER_TIMESTEP_SECONDS * 2.0 + 0.1), 1);
         assert_eq!(state.debug_snapshot().completed_steps, 2);
+    }
+
+    #[test]
+    fn interactive_weather_uses_the_planned_hour_per_real_second_scale() {
+        assert_eq!(interactive_weather_time_seconds(0.0), 0.0);
+        assert_eq!(interactive_weather_time_seconds(1.0), 3_600.0);
+        assert_eq!(interactive_weather_time_seconds(2.5), 9_000.0);
+    }
+
+    #[test]
+    fn one_interactive_second_advances_six_smooth_weather_intervals() {
+        let mut state = WeatherState::new();
+        let mut completed = 0;
+        for frame in 1..=60 {
+            let presentation_time = f64::from(frame) / 60.0;
+            completed += state.advance_to_with_sun(
+                interactive_weather_time_seconds(presentation_time),
+                DVec3::X,
+            );
+        }
+        assert_eq!(completed, 6);
+        assert_eq!(state.debug_snapshot().completed_steps, 6);
+        assert!(state.interpolation_fraction() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn a_long_frame_cannot_trigger_an_unbounded_weather_catch_up() {
+        let mut state = WeatherState::new();
+        let completed = state.advance_to_with_sun(WEATHER_TIMESTEP_SECONDS * 100.0, DVec3::X);
+        assert_eq!(completed, 12);
+        assert!(state.interpolation_fraction() < 1.0);
     }
 
     #[test]

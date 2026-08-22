@@ -3291,3 +3291,38 @@ Two focused state tests pin half-interval interpolation, exact current/future bo
 and manual-step restart. All 26 weather tests, six weather-render tests, and `cargo check
 --workspace` pass. Deterministic `weather_contrast/1787406322-66611` also passes; its three reviewed
 captures retain clear openings and progressively denser storm structure.
+
+## Experimental weather visible motion and cloud silver lining - 22 August 2026
+
+Milestone 14 is still not implemented: the CPU owns precipitation and ground moisture, but there
+are no rain particles, wet-ground material response, or accumulated/melting snow yet.
+
+The continuous current/future weather interpolation was working, but interactive rendering fed it
+unscaled wall seconds. One 600-second transition therefore took ten real minutes and appeared
+static. Interactive weather now uses the implementation plan's `3600x` scale (one real second is one
+simulated hour), producing six exact fixed-step transitions per real second; authored scenarios
+retain their unscaled deterministic simulation clock. Noise drift is derived from absolute
+simulated weather time rather than accumulated render-frame time, so it moves at the same scale,
+continues under F10, and is deterministic across frame rates. At most 12 weather steps may be
+calculated by one advance; a longer pause discards whole stale intervals while preserving the
+fractional phase, preventing a return from suspend from synchronously replaying hundreds of ticks.
+
+Controlled mature-weather captures `weather_contrast/1787410134-94677` cover one equivalent
+interactive second in 600-simulated-second increments. Every adjacent image pair changed, with
+normalised RMSE values from 0.00680 to 0.00708, and the reviewed sequence shows coherent cloud
+movement rather than a static field. The restored standard `weather_contrast/1787410269-96775`
+also passes.
+
+Visible cloud shading now adds a Henyey-Greenstein forward-Mie term (`g = 0.76`) when the camera,
+cloud fragment, and sun align. It is restricted to the translucent alpha fringe and fades out by
+0.62 opacity, so opaque storm interiors remain dark rather than becoming emissive. The term is
+multiplied by the physical atmospheric sun transmittance, giving white daylight silver lining and
+a naturally red/orange sunset lining while vanishing when the elevated sun is geometrically
+hidden. Same-pose 1,800s before/after diagnostics show the transparent cloud around the still
+visible sun brightening. Fully opaque `weather_sun_occlusion/1787410209-95679` still passes at 0.012
+sun/background contrast against the 0.030 maximum. `orbital_sun_visibility/1787410296-97331`,
+`sun_horizon_visibility/1787410302-97422`, and `sunset_blue_hour/1787410322-97602` pass unchanged.
+
+The focused suite has 29 weather tests, seven weather-render tests, 22 scenario tests, five sun
+tests, and a clean `cargo check --workspace`. The next roadmap work remains real baked-terrain
+coupling followed by milestone 14.
