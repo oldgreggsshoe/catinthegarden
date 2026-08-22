@@ -882,7 +882,10 @@ impl State {
             hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
         );
-        let weather = weather::WeatherState::new();
+        let mut weather = weather::WeatherState::new();
+        if scenario.is_none() {
+            weather.enable_background_prediction(planet::default_sun_direction());
+        }
         let mut weather_clouds = weather_render::WeatherCloudRenderer::new(
             &device,
             &queue,
@@ -891,6 +894,15 @@ impl State {
             atmosphere.surface_lighting_resources(),
         );
         weather_clouds.initialize_field(&device, &queue, &weather.cloud_field_texture_data());
+        if scenario.is_none() {
+            weather_clouds.replace_field(
+                &device,
+                &queue,
+                &weather
+                    .next_cloud_field_texture_data()
+                    .expect("interactive weather target must be prepared before rendering"),
+            );
+        }
         let foveated = foveated::FoveatedRenderer::new(
             &device,
             &queue,
@@ -1656,7 +1668,7 @@ impl State {
         } else {
             weather::interactive_weather_time_seconds(presentation_time)
         };
-        if self.weather.prepare_next(weather_sun_direction) {
+        if self.scenario.is_some() && self.weather.prepare_next(weather_sun_direction) {
             let weather_target = self
                 .weather
                 .next_cloud_field_texture_data()
@@ -1664,11 +1676,17 @@ impl State {
             self.weather_clouds
                 .replace_field(&self.device, &self.queue, &weather_target);
         }
-        let weather_steps = self
-            .weather
-            // Weather keeps evolving while F10 freezes the scene clock; the
-            // planet-local sun direction above remains frozen with the scene.
-            .advance_to_with_sun(weather_time, weather_sun_direction);
+        // Weather keeps evolving while F10 freezes the scene clock; the
+        // planet-local sun direction above remains frozen with the scene.
+        // Interactive prediction runs one state further ahead off-thread;
+        // authored scenarios retain the synchronous deterministic path.
+        let weather_steps = if self.scenario.is_some() {
+            self.weather
+                .advance_to_with_sun(weather_time, weather_sun_direction)
+        } else {
+            self.weather
+                .advance_interactive_to_with_sun(weather_time, weather_sun_direction)
+        };
         if weather_steps > 0 {
             let weather_target = self
                 .weather

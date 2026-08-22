@@ -3355,3 +3355,32 @@ The three focused mist/WGSL tests, the affected flat-triangle presentation test,
 flat-presentation literal was corrected and passes on rerun; the remaining three failures are the
 pre-existing dirty-worktree LOD timing assertions and incomplete standalone sun-shader composition,
 not this change.
+
+## Interactive weather frame-pacing worker - 22 August 2026
+
+The intermittent interactive hitch was CPU frame pacing, not the Quadro's steady raster cost and
+not the distance mist. The 3,600x interactive clock crosses six 600-second weather boundaries per
+real second. Each boundary synchronously cloned and simulated all 24,576 weather cells on the
+render thread before encoding the frame. An isolated optimized instrument measured eight state
+predictions at 21.142-23.448ms each, already over the complete 16.667ms 60Hz frame budget; recent
+manual logs showed the resulting isolated 36-141ms frames without any terrain tile/chunk uploads.
+
+Interactive weather now prepares its first target during renderer initialization, then keeps a
+second future state in flight on one named `weather-prediction` worker thread. The render thread
+continues to interpolate current -> next exactly as before. At each boundary it promotes the exact
+next state, installs the already-completed following state, and immediately asks the worker to
+predict one state beyond that. If the worker is unexpectedly late, the visible blend holds at 1.0
+until the complete state arrives rather than blocking or exposing a partial result. Resume backlog
+remains bounded by discarding obsolete whole intervals while retaining one pending boundary and the
+fractional phase. Authored scenarios deliberately keep the old synchronous clock so deterministic
+capture timing and state generation are unchanged.
+
+A byte-for-byte regression compares the first two asynchronous targets against the synchronous
+solver. In a release 60Hz pacing instrument including target texture packing, render-thread weather
+work changed from 21.1-23.4ms prediction pulses to 0.000ms median / 1.206ms p95 / 3.080ms maximum.
+The 30 weather tests and seven weather-render tests pass, as does `cargo check --workspace`.
+Deterministic `weather_contrast/1787413016-123061` passes all finite-metric and capture assertions.
+The full app suite reports 255 passed / 3 pre-existing dirty-worktree failures / 7 ignored. Idle
+interactive smoke `manual/1787413095-123954` starts without errors, but an unfocused window is
+compositor-throttled to roughly 1Hz and is explicitly not used as frame-pacing evidence; fresh
+focused manual flight remains the visual sign-off.

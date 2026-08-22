@@ -1,3 +1,11 @@
+use std::{
+    sync::{
+        Arc,
+        mpsc::{self, Receiver, Sender, TryRecvError},
+    },
+    thread::{self, JoinHandle},
+};
+
 use glam::DVec3;
 
 use crate::planet::{PLANET_RADIUS_METERS, cube_face_basis, cube_face_direction};
@@ -258,6 +266,101 @@ pub struct WeatherFieldDiagnostics {
 pub struct WeatherFields {
     cells: Vec<WeatherCellState>,
     conservation_baseline: WeatherConservationBaseline,
+}
+
+enum WeatherPredictionCommand {
+    Predict {
+        fields: WeatherFields,
+        sun_direction: DVec3,
+    },
+    Shutdown,
+}
+
+struct WeatherPredictionWorker {
+    command_sender: Sender<WeatherPredictionCommand>,
+    result_receiver: Receiver<WeatherFields>,
+    thread: Option<JoinHandle<()>>,
+    in_flight: bool,
+}
+
+impl WeatherPredictionWorker {
+    fn new(grid: Arc<WeatherGrid>) -> Self {
+        let (command_sender, command_receiver) = mpsc::channel();
+        let (result_sender, result_receiver) = mpsc::channel();
+        let thread = thread::Builder::new()
+            .name("weather-prediction".to_owned())
+            .spawn(move || {
+                while let Ok(command) = command_receiver.recv() {
+                    match command {
+                        WeatherPredictionCommand::Predict {
+                            mut fields,
+                            sun_direction,
+                        } => {
+                            WeatherState::simulate_fields_step(&grid, &mut fields, sun_direction);
+                            if result_sender.send(fields).is_err() {
+                                break;
+                            }
+                        }
+                        WeatherPredictionCommand::Shutdown => break,
+                    }
+                }
+            })
+            .expect("weather prediction worker must start");
+        Self {
+            command_sender,
+            result_receiver,
+            thread: Some(thread),
+            in_flight: false,
+        }
+    }
+
+    fn request(&mut self, fields: WeatherFields, sun_direction: DVec3) {
+        assert!(
+            !self.in_flight,
+            "only one weather prediction may be in flight"
+        );
+        self.command_sender
+            .send(WeatherPredictionCommand::Predict {
+                fields,
+                sun_direction,
+            })
+            .expect("weather prediction worker must remain connected");
+        self.in_flight = true;
+    }
+
+    fn poll(&mut self) -> Option<WeatherFields> {
+        if !self.in_flight {
+            return None;
+        }
+        match self.result_receiver.try_recv() {
+            Ok(fields) => {
+                self.in_flight = false;
+                Some(fields)
+            }
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => {
+                panic!("weather prediction worker disconnected")
+            }
+        }
+    }
+
+    fn wait(&mut self) -> WeatherFields {
+        let fields = self
+            .result_receiver
+            .recv()
+            .expect("weather prediction worker must return its in-flight state");
+        self.in_flight = false;
+        fields
+    }
+}
+
+impl Drop for WeatherPredictionWorker {
+    fn drop(&mut self) {
+        let _ = self.command_sender.send(WeatherPredictionCommand::Shutdown);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 impl WeatherFields {
@@ -915,9 +1018,11 @@ impl WeatherDebugSnapshot {
 
 #[allow(dead_code)] // the clock is intentionally staged before render-loop integration
 pub struct WeatherState {
-    grid: WeatherGrid,
+    grid: Arc<WeatherGrid>,
     fields: WeatherFields,
     next_fields: Option<WeatherFields>,
+    following_fields: Option<WeatherFields>,
+    prediction_worker: Option<WeatherPredictionWorker>,
     overlay_enabled: bool,
     last_input_time_seconds: f64,
     accumulator_seconds: f64,
@@ -927,12 +1032,14 @@ pub struct WeatherState {
 
 impl WeatherState {
     pub fn new() -> Self {
-        let grid = WeatherGrid::new();
+        let grid = Arc::new(WeatherGrid::new());
         let fields = WeatherFields::initial(&grid);
         Self {
             grid,
             fields,
             next_fields: None,
+            following_fields: None,
+            prediction_worker: None,
             overlay_enabled: false,
             last_input_time_seconds: 0.0,
             accumulator_seconds: 0.0,
@@ -997,6 +1104,49 @@ impl WeatherState {
         true
     }
 
+    /// Prepares the first visible target before rendering starts, then keeps
+    /// one additional fixed weather state in flight on a dedicated worker.
+    /// The 600-second authoritative states remain identical to the synchronous
+    /// path; only where the already-required prediction is calculated changes.
+    pub fn enable_background_prediction(&mut self, sun_direction: DVec3) {
+        assert!(
+            self.prediction_worker.is_none(),
+            "background weather prediction may only be enabled once"
+        );
+        self.prepare_next(sun_direction);
+        let mut worker = WeatherPredictionWorker::new(Arc::clone(&self.grid));
+        worker.request(
+            self.next_fields
+                .as_ref()
+                .expect("the first weather target must be prepared")
+                .clone(),
+            sun_direction,
+        );
+        self.prediction_worker = Some(worker);
+    }
+
+    fn collect_background_prediction(&mut self) {
+        if self.following_fields.is_some() {
+            return;
+        }
+        self.following_fields = self
+            .prediction_worker
+            .as_mut()
+            .and_then(WeatherPredictionWorker::poll);
+    }
+
+    fn request_background_prediction(&mut self, sun_direction: DVec3) {
+        let fields = self
+            .next_fields
+            .as_ref()
+            .expect("the next weather target must exist before predicting beyond it")
+            .clone();
+        self.prediction_worker
+            .as_mut()
+            .expect("background weather prediction must be enabled")
+            .request(fields, sun_direction);
+    }
+
     pub fn interpolation_fraction(&self) -> f32 {
         (self.accumulator_seconds / WEATHER_TIMESTEP_SECONDS).clamp(0.0, 1.0) as f32
     }
@@ -1018,6 +1168,10 @@ impl WeatherState {
     /// planet-local frame. The renderer uses this entry point so scenario sun
     /// waypoints and the weather terminator share the same lighting direction.
     pub fn advance_to_with_sun(&mut self, scene_time_seconds: f64, sun_direction: DVec3) -> u64 {
+        assert!(
+            self.prediction_worker.is_none(),
+            "interactive weather must use advance_interactive_to_with_sun"
+        );
         if !scene_time_seconds.is_finite() || scene_time_seconds <= self.last_input_time_seconds {
             return 0;
         }
@@ -1046,10 +1200,81 @@ impl WeatherState {
         completed
     }
 
+    /// Advances the interactive clock without ever calculating a weather state
+    /// on the render thread. Normally the one-state-ahead worker has finished
+    /// long before the 600-second boundary. If it has not, presentation holds
+    /// on the exact target at blend 1 until the result arrives rather than
+    /// stalling or handing off to a partial state.
+    pub fn advance_interactive_to_with_sun(
+        &mut self,
+        scene_time_seconds: f64,
+        sun_direction: DVec3,
+    ) -> u64 {
+        assert!(
+            self.prediction_worker.is_some(),
+            "background weather prediction must be enabled"
+        );
+        self.collect_background_prediction();
+        if scene_time_seconds.is_finite() && scene_time_seconds > self.last_input_time_seconds {
+            self.accumulator_seconds += scene_time_seconds - self.last_input_time_seconds;
+            self.last_input_time_seconds = scene_time_seconds;
+        }
+
+        let mut completed = 0;
+        while self.accumulator_seconds >= WEATHER_TIMESTEP_SECONDS
+            && completed < WEATHER_MAX_STEPS_PER_ADVANCE
+        {
+            let Some(following_fields) = self.following_fields.take() else {
+                break;
+            };
+            self.fields = self
+                .next_fields
+                .take()
+                .expect("the visible weather target must exist at a fixed-step boundary");
+            self.next_fields = Some(following_fields);
+            self.accumulator_seconds -= WEATHER_TIMESTEP_SECONDS;
+            self.simulation_time_seconds += WEATHER_TIMESTEP_SECONDS;
+            self.completed_steps += 1;
+            completed += 1;
+            self.request_background_prediction(sun_direction);
+            self.collect_background_prediction();
+        }
+
+        // A resume from suspend must not build an arbitrarily long queue of
+        // obsolete weather states. Keep one pending boundary plus the current
+        // fractional phase; the worker will hand that boundary off smoothly.
+        if self.accumulator_seconds >= WEATHER_TIMESTEP_SECONDS * 2.0 {
+            self.accumulator_seconds = WEATHER_TIMESTEP_SECONDS
+                + self
+                    .accumulator_seconds
+                    .rem_euclid(WEATHER_TIMESTEP_SECONDS);
+        }
+        completed
+    }
+
     /// Executes exactly one fixed weather step without consuming render-clock
     /// time. This is a diagnostic control for inspecting field changes while
     /// the interactive world is paused with F10.
     pub fn step_once(&mut self, sun_direction: DVec3) {
+        if self.prediction_worker.is_some() {
+            self.collect_background_prediction();
+            let following_fields = self.following_fields.take().unwrap_or_else(|| {
+                self.prediction_worker
+                    .as_mut()
+                    .expect("background weather prediction must be enabled")
+                    .wait()
+            });
+            self.fields = self
+                .next_fields
+                .take()
+                .expect("manual weather step must have a prepared target");
+            self.next_fields = Some(following_fields);
+            self.accumulator_seconds = 0.0;
+            self.simulation_time_seconds += WEATHER_TIMESTEP_SECONDS;
+            self.completed_steps += 1;
+            self.request_background_prediction(sun_direction);
+            return;
+        }
         self.prepare_next(sun_direction);
         self.fields = self
             .next_fields
@@ -1953,6 +2178,52 @@ mod tests {
         }
         assert_eq!(completed, 6);
         assert_eq!(state.debug_snapshot().completed_steps, 6);
+        assert!(state.interpolation_fraction() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn background_prediction_hands_off_the_exact_synchronous_states() {
+        let mut reference = WeatherState::new();
+        assert!(reference.prepare_next(DVec3::X));
+        let expected_first = reference
+            .next_cloud_field_texture_data()
+            .expect("synchronous first target");
+        assert_eq!(
+            reference.advance_to_with_sun(WEATHER_TIMESTEP_SECONDS, DVec3::X),
+            1
+        );
+        let expected_second = reference
+            .next_cloud_field_texture_data()
+            .expect("synchronous second target");
+
+        let mut state = WeatherState::new();
+        state.enable_background_prediction(DVec3::X);
+        assert_eq!(
+            state.next_cloud_field_texture_data().as_deref(),
+            Some(expected_first.as_slice())
+        );
+        assert_eq!(
+            state.advance_interactive_to_with_sun(WEATHER_TIMESTEP_SECONDS * 0.5, DVec3::X),
+            0
+        );
+        assert!((state.interpolation_fraction() - 0.5).abs() <= f32::EPSILON);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut completed =
+            state.advance_interactive_to_with_sun(WEATHER_TIMESTEP_SECONDS, DVec3::X);
+        while completed == 0 && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+            completed = state.advance_interactive_to_with_sun(WEATHER_TIMESTEP_SECONDS, DVec3::X);
+        }
+        assert_eq!(
+            completed, 1,
+            "background prediction missed its two-second deadline"
+        );
+        assert_eq!(state.cloud_field_texture_data(), expected_first);
+        assert_eq!(
+            state.next_cloud_field_texture_data().as_deref(),
+            Some(expected_second.as_slice())
+        );
         assert!(state.interpolation_fraction() <= f32::EPSILON);
     }
 
