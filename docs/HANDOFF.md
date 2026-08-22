@@ -3270,3 +3270,24 @@ the sun centre against nearby cloud. Raster run `weather_sun_occlusion/178740467
 quantisation being mistaken for a second warm peak; the real sky samples and thresholds are
 unchanged. All five sun tests, six weather-render tests, 24 weather-physics tests, 22 scenario tests,
 15 debug tests, and `cargo check --workspace` pass.
+
+## Experimental weather continuous prediction and presentation clock - 22 August 2026
+
+The CPU weather solver retains its authoritative 600-second fixed step and existing 60m/s
+(216km/h, 134mph) wind-speed cap. `WeatherState` now keeps the current field plus one fully
+simulated future field. During each interval the shared GPU weather cubemaps blend by the exact
+accumulator fraction rather than completing a cosmetic cross-fade in 1.5 wall-clock seconds. At a
+boundary, the prior future field becomes the authoritative current field byte-for-byte, the next
+future field is calculated, and the render blend restarts from zero. Visible clouds, cloud-driven
+sun occlusion, and terrain cloud shadows all consume that one shared blend, so they meet at the
+boundary without a visual discontinuity. A multi-step frame resynchronises both cubemaps before
+continuing.
+
+Interactive weather now consumes the always-running presentation clock instead of the F10-frozen
+scene clock. F10 still freezes planet rotation, ocean/scene animation, and therefore the
+planet-local illumination direction, but weather evolution and shader drift continue. Authored
+scenarios remain deterministic because their presentation and simulation clocks are identical.
+Two focused state tests pin half-interval interpolation, exact current/future boundary identity,
+and manual-step restart. All 26 weather tests, six weather-render tests, and `cargo check
+--workspace` pass. Deterministic `weather_contrast/1787406322-66611` also passes; its three reviewed
+captures retain clear openings and progressively denser storm structure.

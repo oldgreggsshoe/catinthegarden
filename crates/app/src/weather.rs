@@ -248,7 +248,7 @@ pub struct WeatherFieldDiagnostics {
     pub humidity_conservation_error: f64,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct WeatherFields {
     cells: Vec<WeatherCellState>,
     conservation_baseline: WeatherConservationBaseline,
@@ -911,6 +911,7 @@ impl WeatherDebugSnapshot {
 pub struct WeatherState {
     grid: WeatherGrid,
     fields: WeatherFields,
+    next_fields: Option<WeatherFields>,
     overlay_enabled: bool,
     last_input_time_seconds: f64,
     accumulator_seconds: f64,
@@ -925,6 +926,7 @@ impl WeatherState {
         Self {
             grid,
             fields,
+            next_fields: None,
             overlay_enabled: false,
             last_input_time_seconds: 0.0,
             accumulator_seconds: 0.0,
@@ -942,13 +944,25 @@ impl WeatherState {
     /// marker. A renderer can upload this infrequently, after fixed weather
     /// ticks, without reducing the 64x64 simulation grid to coarse bins.
     pub fn cloud_field_texture_data(&self) -> Vec<u8> {
+        Self::cloud_field_texture_data_for(&self.fields)
+    }
+
+    /// Packs the already-simulated next fixed weather state. The renderer
+    /// blends toward this field throughout the whole 600-second interval.
+    pub fn next_cloud_field_texture_data(&self) -> Option<Vec<u8>> {
+        self.next_fields
+            .as_ref()
+            .map(Self::cloud_field_texture_data_for)
+    }
+
+    fn cloud_field_texture_data_for(fields: &WeatherFields) -> Vec<u8> {
         let mut bytes =
             vec![0_u8; WEATHER_FACE_COUNT * WEATHER_GPU_FIELD_SIDE * WEATHER_GPU_FIELD_SIDE * 4];
         for face in 0..WEATHER_FACE_COUNT {
             for y in 0..WEATHER_GPU_FIELD_SIDE {
                 for x in 0..WEATHER_GPU_FIELD_SIDE {
                     let index = cell_index(face as u8, x, y);
-                    let state = self.fields.cells()[index];
+                    let state = fields.cells()[index];
                     let offset =
                         ((face * WEATHER_GPU_FIELD_SIDE + y) * WEATHER_GPU_FIELD_SIDE + x) * 4;
                     bytes[offset] =
@@ -964,9 +978,26 @@ impl WeatherState {
         bytes
     }
 
+    /// Simulates the next authoritative fixed-step state once, ready for the
+    /// renderer to approach continuously. Returns true only when a new target
+    /// was created and therefore needs uploading.
+    pub fn prepare_next(&mut self, sun_direction: DVec3) -> bool {
+        if self.next_fields.is_some() {
+            return false;
+        }
+        let mut next_fields = self.fields.clone();
+        Self::simulate_fields_step(&self.grid, &mut next_fields, sun_direction);
+        self.next_fields = Some(next_fields);
+        true
+    }
+
+    pub fn interpolation_fraction(&self) -> f32 {
+        (self.accumulator_seconds / WEATHER_TIMESTEP_SECONDS).clamp(0.0, 1.0) as f32
+    }
+
     /// Consumes scene time through a fixed 600-second weather clock. The
-    /// caller may provide render/scenario time at any cadence; no partial
-    /// transfer is applied between fixed steps.
+    /// authoritative physics still changes only on complete steps; the
+    /// renderer uses `interpolation_fraction` between those states.
     #[allow(dead_code)] // consumed when the render-loop clock is wired in
     pub fn advance_to(&mut self, scene_time_seconds: f64) -> u64 {
         let sun_direction = weather_sun_direction(scene_time_seconds);
@@ -980,15 +1011,20 @@ impl WeatherState {
         if !scene_time_seconds.is_finite() || scene_time_seconds <= self.last_input_time_seconds {
             return 0;
         }
+        self.prepare_next(sun_direction);
         self.accumulator_seconds += scene_time_seconds - self.last_input_time_seconds;
         self.last_input_time_seconds = scene_time_seconds;
         let mut completed = 0;
         while self.accumulator_seconds >= WEATHER_TIMESTEP_SECONDS {
-            self.simulate_step(sun_direction);
+            self.fields = self
+                .next_fields
+                .take()
+                .expect("next weather state must be prepared before a fixed-step boundary");
             self.accumulator_seconds -= WEATHER_TIMESTEP_SECONDS;
             self.simulation_time_seconds += WEATHER_TIMESTEP_SECONDS;
             self.completed_steps += 1;
             completed += 1;
+            self.prepare_next(sun_direction);
         }
         completed
     }
@@ -997,34 +1033,36 @@ impl WeatherState {
     /// time. This is a diagnostic control for inspecting field changes while
     /// the interactive world is paused with F10.
     pub fn step_once(&mut self, sun_direction: DVec3) {
-        self.simulate_step(sun_direction);
+        self.prepare_next(sun_direction);
+        self.fields = self
+            .next_fields
+            .take()
+            .expect("manual weather step must have a prepared target");
+        self.accumulator_seconds = 0.0;
         self.simulation_time_seconds += WEATHER_TIMESTEP_SECONDS;
         self.completed_steps += 1;
+        self.prepare_next(sun_direction);
     }
 
-    fn simulate_step(&mut self, sun_direction: DVec3) {
-        self.fields.apply_insolation_and_radiative_cooling(
-            &self.grid,
+    fn simulate_fields_step(
+        grid: &WeatherGrid,
+        fields: &mut WeatherFields,
+        sun_direction: DVec3,
+    ) {
+        fields.apply_insolation_and_radiative_cooling(
+            grid,
             sun_direction,
             WEATHER_TIMESTEP_SECONDS,
         );
-        self.fields.diagnose_pressure_from_temperature(&self.grid);
-        self.fields
-            .update_wind_from_pressure(&self.grid, WEATHER_TIMESTEP_SECONDS);
-        self.fields.apply_lapse_rate_and_orographic_uplift(
-            &self.grid,
-            WEATHER_TIMESTEP_SECONDS,
-        );
-        self.fields.evaporate_moisture(WEATHER_TIMESTEP_SECONDS);
-        self.fields
-            .advect_temperature(&self.grid, WEATHER_TIMESTEP_SECONDS);
-        self.fields
-            .advect_humidity(&self.grid, WEATHER_TIMESTEP_SECONDS);
-        self.fields
-            .advect_cloud_water(&self.grid, WEATHER_TIMESTEP_SECONDS);
-        self.fields.condense_cloud_water(WEATHER_TIMESTEP_SECONDS);
-        self.fields
-            .precipitate_and_update_ground_moisture(WEATHER_TIMESTEP_SECONDS);
+        fields.diagnose_pressure_from_temperature(grid);
+        fields.update_wind_from_pressure(grid, WEATHER_TIMESTEP_SECONDS);
+        fields.apply_lapse_rate_and_orographic_uplift(grid, WEATHER_TIMESTEP_SECONDS);
+        fields.evaporate_moisture(WEATHER_TIMESTEP_SECONDS);
+        fields.advect_temperature(grid, WEATHER_TIMESTEP_SECONDS);
+        fields.advect_humidity(grid, WEATHER_TIMESTEP_SECONDS);
+        fields.advect_cloud_water(grid, WEATHER_TIMESTEP_SECONDS);
+        fields.condense_cloud_water(WEATHER_TIMESTEP_SECONDS);
+        fields.precipitate_and_update_ground_moisture(WEATHER_TIMESTEP_SECONDS);
     }
 
     pub fn debug_snapshot(&self) -> WeatherDebugSnapshot {
@@ -1876,6 +1914,38 @@ mod tests {
         assert_eq!(state.advance_to(1.0), 0);
         assert_eq!(state.advance_to(WEATHER_TIMESTEP_SECONDS * 2.0 + 0.1), 1);
         assert_eq!(state.debug_snapshot().completed_steps, 2);
+    }
+
+    #[test]
+    fn predicted_field_becomes_the_exact_current_field_at_the_boundary() {
+        let mut state = WeatherState::new();
+        assert!(state.prepare_next(DVec3::X));
+        let predicted = state
+            .next_cloud_field_texture_data()
+            .expect("prepared weather target");
+        assert!(!state.prepare_next(DVec3::NEG_X));
+
+        assert_eq!(state.advance_to_with_sun(300.0, DVec3::X), 0);
+        assert!((state.interpolation_fraction() - 0.5).abs() <= f32::EPSILON);
+        assert_eq!(state.advance_to_with_sun(600.0, DVec3::X), 1);
+        assert_eq!(state.interpolation_fraction(), 0.0);
+        assert_eq!(state.cloud_field_texture_data(), predicted);
+        assert!(state.next_cloud_field_texture_data().is_some());
+    }
+
+    #[test]
+    fn manual_step_restarts_continuous_weather_interval_at_the_boundary() {
+        let mut state = WeatherState::new();
+        state.advance_to_with_sun(300.0, DVec3::X);
+        let predicted = state
+            .next_cloud_field_texture_data()
+            .expect("prepared weather target");
+
+        state.step_once(DVec3::X);
+
+        assert_eq!(state.cloud_field_texture_data(), predicted);
+        assert_eq!(state.interpolation_fraction(), 0.0);
+        assert_eq!(state.debug_snapshot().completed_steps, 1);
     }
 
     #[test]

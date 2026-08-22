@@ -9,7 +9,6 @@ const CLOUD_SHELL_ALTITUDE_METERS: f32 = 90_000.0;
 const UPPER_CLOUD_SHELL_ALTITUDE_METERS: f32 = 166_000.0;
 const CLOUD_SHELL_LONGITUDE_SEGMENTS: usize = 96;
 const CLOUD_SHELL_LATITUDE_SEGMENTS: usize = 48;
-const TEMPORAL_BLEND_SECONDS: f32 = 1.5;
 const CLOUD_TEXTURE_BYTES_PER_ROW: u32 = 256;
 
 #[repr(C)]
@@ -350,8 +349,13 @@ impl WeatherCloudRenderer {
         self.write_uniform(queue);
     }
 
-    pub fn advance_temporal(&mut self, queue: &wgpu::Queue, frame_seconds: f32) {
-        self.blend = (self.blend + frame_seconds.max(0.0) / TEMPORAL_BLEND_SECONDS).min(1.0);
+    pub fn set_temporal_state(
+        &mut self,
+        queue: &wgpu::Queue,
+        interpolation_fraction: f32,
+        frame_seconds: f32,
+    ) {
+        self.blend = interpolation_fraction.clamp(0.0, 1.0);
         self.drift_radians = (self.drift_radians + frame_seconds.max(0.0) * 0.000002)
             .rem_euclid(std::f32::consts::TAU);
         self.write_uniform(queue);

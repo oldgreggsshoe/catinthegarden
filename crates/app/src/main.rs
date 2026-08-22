@@ -1651,16 +1651,37 @@ impl State {
         let planet_rotation_radians = planet::planet_rotation_radians(planet_rotation_time);
         let weather_sun_direction =
             planet::planet_local_vector(self.sun_direction, planet_rotation_radians);
+        if self.weather.prepare_next(weather_sun_direction) {
+            let weather_target = self
+                .weather
+                .next_cloud_field_texture_data()
+                .expect("prepared weather target");
+            self.weather_clouds
+                .replace_field(&self.device, &self.queue, &weather_target);
+        }
         let weather_steps = self
             .weather
-            .advance_to_with_sun(sim_time, weather_sun_direction);
+            // Weather keeps evolving while F10 freezes the scene clock; the
+            // planet-local sun direction above remains frozen with the scene.
+            .advance_to_with_sun(presentation_time, weather_sun_direction);
         if weather_steps > 0 {
-            let weather_field = self.weather.cloud_field_texture_data();
+            let weather_target = self
+                .weather
+                .next_cloud_field_texture_data()
+                .expect("advanced weather target");
+            if weather_steps > 1 {
+                let weather_field = self.weather.cloud_field_texture_data();
+                self.weather_clouds
+                    .initialize_field(&self.device, &self.queue, &weather_field);
+            }
             self.weather_clouds
-                .replace_field(&self.device, &self.queue, &weather_field);
+                .replace_field(&self.device, &self.queue, &weather_target);
         }
-        self.weather_clouds
-            .advance_temporal(&self.queue, frame_time);
+        self.weather_clouds.set_temporal_state(
+            &self.queue,
+            self.weather.interpolation_fraction(),
+            frame_time,
+        );
         let scene_delta_seconds = (sim_time - self.last_auto_orbit_sim_time).max(0.0);
         if let Some(forward_held) = scenario_forward_flight_held {
             if !self.scenario_flight_initialized {
