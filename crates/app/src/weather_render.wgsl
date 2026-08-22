@@ -140,8 +140,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     if solid_planet_blocks_cloud(camera_position_view, cloud_position_view) {
         discard;
     }
-    let density = cloudDensity(input.direction, f32(input.shell_index));
-    let alpha = density;
+    let cloud = cloudSample(input.direction, f32(input.shell_index));
+    let density = cloud.density;
+    // Dense cloud is optically thicker than a linear alpha ramp implies. Keep
+    // wisps unchanged, then push only the upper density range toward opacity.
+    let alpha = max(density, smoothstep(0.25, 0.85, density));
     if alpha < 0.002 {
         discard;
     }
@@ -163,10 +166,16 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let direct = transmittance * (0.20 + 0.80 * max(dot(normal, sun_direction), 0.0));
     let sky = mix(vec3<f32>(dot(irradiance, vec3<f32>(0.2126, 0.7152, 0.0722))), irradiance, 0.55);
     let lighting = max(direct + sky * (0.55 + 0.45 * max(dot(normal, normalize(input.direction)), 0.0)), vec3<f32>(0.0));
-    let albedo = mix(
+    let fair_weather_albedo = mix(
         vec3<f32>(0.42, 0.46, 0.50),
         vec3<f32>(0.94, 0.96, 1.0),
         clamp(density * 2.0, 0.0, 1.0),
-    ) * select(1.0, 0.82, input.shell_index == 1u);
+    );
+    let storm_weight = smoothstep(0.10, 0.30, cloud.storm)
+        * smoothstep(0.30, 0.78, density);
+    let storm_darkening = 1.0 - 0.72 * storm_weight;
+    let albedo = fair_weather_albedo
+        * storm_darkening
+        * select(1.0, 0.82, input.shell_index == 1u);
     return vec4<f32>(albedo * lighting, alpha);
 }

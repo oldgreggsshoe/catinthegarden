@@ -230,6 +230,7 @@ impl ScenarioRunner {
             "orbital_sun_visibility" => {
                 include_str!("../scenarios/orbital_sun_visibility.json")
             }
+            "weather_contrast" => include_str!("../scenarios/weather_contrast.json"),
             "sun_horizon_visibility" => {
                 include_str!("../scenarios/sun_horizon_visibility.json")
             }
@@ -435,7 +436,11 @@ impl ScenarioRunner {
     }
 
     pub fn expected_log_samples(&self) -> usize {
-        (self.definition.duration_seconds / 0.5).floor() as usize + 1
+        let cadence_samples = (self.definition.duration_seconds / 0.5).floor() as usize + 1;
+        let rendered_frames = (self.definition.duration_seconds
+            / self.definition.fixed_timestep_seconds)
+            .ceil() as usize;
+        cadence_samples.min(rendered_frames)
     }
 
     pub fn assertions(&self) -> &ScenarioAssertions {
@@ -1201,6 +1206,12 @@ mod tests {
         assert!(end > start);
         assert_eq!(scenario.expected_screenshots(), 5);
         assert_eq!(scenario.expected_log_samples(), 17);
+    }
+
+    #[test]
+    fn long_weather_steps_expect_at_most_one_spatial_log_per_frame() {
+        let scenario = ScenarioRunner::load("weather_contrast").expect("scenario parses");
+        assert_eq!(scenario.expected_log_samples(), 24);
     }
 
     #[test]

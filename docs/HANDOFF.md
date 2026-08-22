@@ -3171,7 +3171,7 @@ lower layer.
 
 The shared density evaluator accepts an octave budget: visible clouds retain all five FBM octaves,
 while each shadow lookup uses three. The two layers combine conservatively and are quantised into
-four hard coverage bands before attenuating direct sunlight by at most 72%; atmospheric sky fill is
+four hard coverage bands before attenuating direct sunlight by at most 88%; atmospheric sky fill is
 unchanged, so a cloud shadow cannot turn daylight terrain black. Flat and smooth raster land share
 the path, while ocean and the alternate foveated-ray renderer remain unchanged.
 
@@ -3217,3 +3217,27 @@ retain the signed-off surface sunrise/sunset path unchanged. New deterministic s
 `orbital_sun_visibility` replays the captured geometry and shows the white orbital sun; the focused
 shader tests plus surface horizon-sun, sunset/blue-hour, stare-at-sun, and orbital-atmosphere
 scenarios pass.
+
+## Experimental weather storm contrast - 22 August 2026
+
+Visible clouds and terrain shadows now share a `CloudSample` containing both the posterised density
+and the simulation's storm-intensity channel. A 24-step calibration measured the mature field at
+0.139 area-mean and 0.310 maximum storm intensity; the former visual ramp did not become strong
+until 0.65, so it could not produce the requested dark weather. The optical-thickness ramp now
+reaches its dense end at 0.32 while retaining zero density in clear cells and leaving the sparse
+pre-condensation humidity precursor unchanged.
+
+The visible shell keeps thin wisps translucent but pushes the upper density range toward opacity.
+Dense cells then darken continuously toward a 72% storm-grey albedo reduction; fair-weather cloud
+remains pale and the upper shell retains its established altitude variation. The same denser shared
+field drives the existing four-band sun-projected terrain shadows, whose maximum direct-light
+attenuation increases from 72% to 88%. Atmospheric sky fill is still preserved, so overcast ground
+becomes substantially darker without becoming artificially black.
+
+New deterministic scenario `weather_contrast` renders 1, 6, and 24 completed 600-second weather
+ticks from one fixed daylight orbit. Its long timestep also exposed and fixed a harness accounting
+bug: expected spatial samples are now capped at one per rendered frame. The scenario, `orbit_once`,
+and `sunset_blue_hour` pass; all five weather-render tests, all 24 weather-physics tests, all 21
+scenario tests, the focused terrain-shadow test, and `cargo check --workspace` pass. Orbit captures
+confirm clear gaps survive while mature regions become more opaque and include grey structure;
+fresh low-flight human tuning remains the final judgement of the requested rain-threatening feel.

@@ -3791,6 +3791,7 @@ mod tests {
             .and_then(|source| source.split("\nfn ").next())
             .expect("terrain cloud-shadow function is present");
         assert!(shadow.contains("floor(combined_density * 4.0 + 0.5) / 4.0"));
+        assert!(shadow.contains("posterized_density * 0.88"));
     }
 
     #[test]

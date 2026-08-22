@@ -854,7 +854,7 @@ fn cloud_shadow_visibility(
     // Match the cloud presentation's deliberately small set of hard density
     // bands instead of putting a soft photographic shadow under it.
     let posterized_density = floor(combined_density * 4.0 + 0.5) / 4.0;
-    return 1.0 - posterized_density * 0.72;
+    return 1.0 - posterized_density * 0.88;
 }
 
 fn flat_triangle_lighting(

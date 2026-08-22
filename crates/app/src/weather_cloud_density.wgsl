@@ -74,7 +74,12 @@ fn flow_warp(direction: vec3<f32>, shell_index: u32) -> vec3<f32> {
     return normalize(direction + flow * amount);
 }
 
-fn cloudDensityWithOctaves(dir: vec3<f32>, t: f32, octave_count: u32) -> f32 {
+struct CloudSample {
+    density: f32,
+    storm: f32,
+}
+
+fn cloudSampleWithOctaves(dir: vec3<f32>, t: f32, octave_count: u32) -> CloudSample {
     let shell_index = select(0u, 1u, t >= 0.5);
     let base_direction = normalize(dir);
     let field_direction = flow_warp(rotate_drift(base_direction), shell_index);
@@ -95,11 +100,33 @@ fn cloudDensityWithOctaves(dir: vec3<f32>, t: f32, octave_count: u32) -> f32 {
     let precursor = humidity_precursor
         * precursor_breakup
         * select(0.13, 0.075, shell_index == 1u);
-    return max(posterized, precursor)
-        * (0.32 + 0.58 * field.g)
+    // Keep weak condensate thinner while driving genuinely stormy cells
+    // toward opacity. This widens contrast without filling the clear gaps or
+    // changing the sparse startup precursor that appears before condensation.
+    // The live field's strongest mature cells sit around 0.3 storm intensity;
+    // reach optical thickness there rather than reserving opacity for values
+    // the current weather model cannot produce.
+    let storm_amount = smoothstep(0.05, 0.32, field.g);
+    let condensed = posterized
+        * mix(0.22, 1.0, storm_amount)
+        * select(1.0, 0.78, shell_index == 1u);
+    let precursor_density = precursor
+        * 0.32
         * select(1.0, 0.62, shell_index == 1u);
+    return CloudSample(
+        clamp(max(condensed, precursor_density), 0.0, 1.0),
+        clamp(field.g, 0.0, 1.0),
+    );
+}
+
+fn cloudDensityWithOctaves(dir: vec3<f32>, t: f32, octave_count: u32) -> f32 {
+    return cloudSampleWithOctaves(dir, t, octave_count).density;
+}
+
+fn cloudSample(dir: vec3<f32>, t: f32) -> CloudSample {
+    return cloudSampleWithOctaves(dir, t, 5u);
 }
 
 fn cloudDensity(dir: vec3<f32>, t: f32) -> f32 {
-    return cloudDensityWithOctaves(dir, t, 5u);
+    return cloudSample(dir, t).density;
 }

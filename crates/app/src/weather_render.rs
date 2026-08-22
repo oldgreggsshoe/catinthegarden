@@ -533,8 +533,13 @@ mod tests {
         assert!(shader.contains("@builtin(instance_index) instance_index"));
         assert!(shader.contains("fn flow_warp"));
         assert!(shader.contains("fn cloud_noise"));
+        assert!(shader.contains("fn cloudSample("));
         assert!(shader.contains("fn cloudDensity"));
         assert!(shader.contains("let posterized = smoothstep"));
+        assert!(shader.contains("smoothstep(0.05, 0.32, field.g)"));
+        assert!(shader.contains("max(density, smoothstep(0.25, 0.85, density))"));
+        assert!(shader.contains("smoothstep(0.10, 0.30, cloud.storm)"));
+        assert!(shader.contains("let storm_darkening = 1.0 - 0.72 * storm_weight;"));
         assert!(shader.contains("fn direct_atmosphere_uv"));
         assert!(shader.contains("fn solid_planet_blocks_cloud"));
         assert!(shader.contains("if solid_planet_blocks_cloud("));
