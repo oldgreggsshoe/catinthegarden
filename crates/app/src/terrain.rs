@@ -3719,7 +3719,7 @@ mod tests {
             .expect("raster terrain fragment path is present");
         assert!(flat_fragment.contains("return flat_triangle_colour(input);"));
         assert!(shader.contains("mix(aerial_lit, aerial_lit * 0.08, edge)"));
-        assert!(shader.contains("mix(lit, lit * 0.08, edge)"));
+        assert!(shader.contains("mix(misted_ocean_lit, misted_ocean_lit * 0.08, edge)"));
         assert!(!shader.contains("vec3<f32>(0.015, 0.02, 0.025)"));
         assert!(!flat_fragment.contains("input.skirt_depth_meters > 0.0"));
         assert!(shader.contains("fn terrain_aerial_solar_air_mass("));
@@ -4308,9 +4308,8 @@ mod tests {
         assert!(atmosphere.contains("ATMOSPHERE_HEIGHT_METERS / ATMOSPHERE_VERTICAL_SCALE"));
         assert!(planet_shader.contains("const TERRAIN_FOG_START_METERS: f32 = 4000.0;"));
         assert!(planet_shader.contains("const TERRAIN_FOG_END_METERS: f32 = 120000.0;"));
-        assert!(
-            planet_shader.contains("const TERRAIN_FOG_MAX_CAMERA_ALTITUDE_METERS: f32 = 200000.0;")
-        );
+        assert!(planet_shader
+            .contains("const TERRAIN_FOG_MAX_CAMERA_CLEARANCE_METERS: f32 = 200000.0;"));
     }
 
     #[test]
@@ -4367,6 +4366,18 @@ mod tests {
         let shader = planet_shader_source();
         assert!(shader.contains("let camera_to_surface_ray_view = normalize("));
         assert!(shader.contains("physical_camera_sky_radiance(camera_to_surface_ray_view)"));
+        assert!(shader.contains(
+            "camera.camera_planet_direction_view_altitude.w - surface_altitude_meters"
+        ));
+        assert!(shader.contains("let fog_amount = distance_amount * near_surface_amount;"));
+    }
+
+    #[test]
+    fn flat_triangle_land_and_water_receive_distance_mist() {
+        let shader = planet_shader_source();
+        assert!(shader.contains("if !lake {\n        aerial = terrain_distance_fog_components("));
+        assert!(shader.contains("aerial_lit = terrain_distance_fog("));
+        assert!(shader.contains("let misted_ocean_lit = terrain_distance_fog("));
     }
 
     #[test]

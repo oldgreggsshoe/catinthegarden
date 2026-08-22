@@ -169,9 +169,7 @@ const OCEAN_SUN_GLINT_SCALE: f32 = 3.0;
 const TWILIGHT_SHADOW_TRANSITION_METERS: f32 = 72000.0;
 const TERRAIN_FOG_START_METERS: f32 = 4000.0;
 const TERRAIN_FOG_END_METERS: f32 = 120000.0;
-const TERRAIN_FOG_MAX_CAMERA_ALTITUDE_METERS: f32 = 200000.0;
-const TERRAIN_FOG_FULL_HORIZON_COSINE: f32 = 0.05;
-const TERRAIN_FOG_CLEAR_HORIZON_COSINE: f32 = 0.35;
+const TERRAIN_FOG_MAX_CAMERA_CLEARANCE_METERS: f32 = 200000.0;
 const TERRAIN_MATERIAL_TILE_METERS: f32 = 2048.0;
 // Close-range material repeat. The 2km tile above covers a whole landscape, so
 // standing on the ground it is one flat colour; this is the tile that actually
@@ -1294,24 +1292,16 @@ fn terrain_fog(
         TERRAIN_FOG_END_METERS,
         length(camera_relative_view_position),
     );
-    let low_altitude_amount = 1.0 - smoothstep(
-        0.0,
-        TERRAIN_FOG_MAX_CAMERA_ALTITUDE_METERS,
-        camera.camera_planet_direction_view_altitude.w,
-    );
-    let surface_to_camera_direction = view_to_planet(
-        normalize(-camera_relative_view_position),
-    );
-    let horizon_cosine = max(
-        dot(surface_direction, surface_to_camera_direction),
+    let camera_clearance_meters = max(
+        camera.camera_planet_direction_view_altitude.w - surface_altitude_meters,
         0.0,
     );
-    let horizon_amount = 1.0 - smoothstep(
-        TERRAIN_FOG_FULL_HORIZON_COSINE,
-        TERRAIN_FOG_CLEAR_HORIZON_COSINE,
-        horizon_cosine,
+    let near_surface_amount = 1.0 - smoothstep(
+        0.0,
+        TERRAIN_FOG_MAX_CAMERA_CLEARANCE_METERS,
+        camera_clearance_meters,
     );
-    let fog_amount = distance_amount * low_altitude_amount * horizon_amount;
+    let fog_amount = distance_amount * near_surface_amount;
     if fog_amount <= 0.0 {
         return TerrainFog(0.0, vec3<f32>(0.0));
     }

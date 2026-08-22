@@ -3326,3 +3326,32 @@ sun/background contrast against the 0.030 maximum. `orbital_sun_visibility/17874
 The focused suite has 29 weather tests, seven weather-render tests, 22 scenario tests, five sun
 tests, and a clean `cargo check --workspace`. The next roadmap work remains real baked-terrain
 coupling followed by milestone 14.
+
+## Flat-terrain distance mist and Quadro cost check - 22 August 2026
+
+The default fixed-L7 flat-triangle presentation was the one remaining raster path that deliberately
+skipped the renderer's existing 4-120km terrain mist. Land now composes that mist into the existing
+per-vertex aerial transmittance/in-scatter values; flat water triangles and the analytic flat-ocean
+path receive the same physical camera-sky endpoint after their ocean-specific lighting. The mist is
+strictly camera-distance based rather than gated by surface horizon angle, so successive landscape
+layers separate even when looking across a valley instead of only at the geometric horizon. Its
+near-surface guard now uses camera clearance above each rendered surface, not absolute altitude
+above sea level, so the unusually tall game mountains do not incorrectly disable it. The foreground
+inside 4km remains unchanged, the ramp completes by 120km, and the existing 200km clearance fade
+prevents the presentation effect from covering orbital views.
+
+The land path initially sampled the physical sky-view LUT per fragment. That was visually correct
+but inappropriate on the Quadro M1000M, so the final implementation folds the sample into the
+already-interpolated vertex aerial components without adding an inter-stage variable. A controlled
+release `highest_prominence_peak` replay measured 16.70ms median before that final distance path and
+16.63ms after (approximately 59.9 versus 60.1 FPS); neither replay had a frame above 25ms. Final run
+`highest_prominence_peak/1787411927-113489` passed finite-metric, no-LOD-thrash, and screenshot-count
+assertions. Its pre-existing active-bake pose mismatch remains explicit: camera clearance is
+12,026.193m against the stale 150-155m scenario expectation, so the scenario is not claimed as an
+overall pass.
+
+The three focused mist/WGSL tests, the affected flat-triangle presentation test, and `cargo check
+--workspace` pass. The full 264-test app run reached 253 passed / 4 failed / 7 ignored: the fog-caused
+flat-presentation literal was corrected and passes on rerun; the remaining three failures are the
+pre-existing dirty-worktree LOD timing assertions and incomplete standalone sun-shader composition,
+not this change.

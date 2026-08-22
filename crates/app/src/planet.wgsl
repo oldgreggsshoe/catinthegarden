@@ -646,8 +646,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     }
     // Flat-triangle mode keeps the categorical material and face lighting, but
     // still needs the ordinary aerial path so distant facets fade toward the
-    // same atmosphere as the rest of the terrain. Skip only the optional
-    // low-flight horizon fog overlay in this diagnostic presentation.
+    // same atmosphere as the rest of the terrain.
     var aerial = AerialPerspectiveComponents(
         vec3<f32>(1.0),
         vec3<f32>(0.0),
@@ -672,7 +671,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
             aerial.in_scatter * flat_aerial_weight,
         );
     }
-    if !flat_triangles && !lake {
+    if !lake {
         aerial = terrain_distance_fog_components(
             aerial,
             camera_relative_view_position,
@@ -1011,6 +1010,14 @@ fn flat_triangle_colour(
             normalize(input.surface_direction),
             0.0,
         );
+        // Water replaces the vertex-composed terrain atmosphere above, so add
+        // its mist here. Land keeps the cheaper vertex-composed path.
+        aerial_lit = terrain_distance_fog(
+            aerial_lit,
+            input.camera_relative_view_position,
+            normalize(input.surface_direction),
+            input.surface_height,
+        );
     }
     // Outlines are unlit geometry edges, not emissive ink. Darken the
     // physically composed triangle so night-side lines fade with their
@@ -1038,8 +1045,14 @@ fn flat_ocean_colour(input: OceanVertexOutput) -> vec4<f32> {
         false,
         false,
     );
+    let misted_ocean_lit = terrain_distance_fog(
+        lit,
+        input.camera_relative_view_position,
+        direction,
+        surface.vertical_displacement,
+    );
     let edge = flat_triangle_edge(input.tile_uv, 0.0);
-    return vec4<f32>(mix(lit, lit * 0.08, edge), 1.0);
+    return vec4<f32>(mix(misted_ocean_lit, misted_ocean_lit * 0.08, edge), 1.0);
 }
 
 @fragment
