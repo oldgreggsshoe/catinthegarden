@@ -1,5 +1,5 @@
 const MULTIPLE_SCATTER_DIRECTION_COUNT: u32 = 64u;
-const MULTIPLE_SCATTER_SAMPLE_COUNT: u32 = 20u;
+const MULTIPLE_SCATTER_SAMPLE_COUNT: u32 = 40u;
 
 @group(0) @binding(0)
 var transmittance_lut: texture_2d<f32>;

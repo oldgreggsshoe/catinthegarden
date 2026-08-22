@@ -425,6 +425,7 @@ struct SurfaceDetailNode {
     node: QuadtreeNode,
     edge_stitch: u32,
     source_key: Option<TileKey>,
+    grid_quads: usize,
 }
 
 /// The selected frontier is a mixed-level quadtree. Looking up its containing
@@ -1174,12 +1175,104 @@ impl TerrainRenderer {
         local_surface_direction: DVec3,
         camera_altitude_meters: f64,
     ) -> Option<f64> {
-        self.raster_surface_height_breakdown_at_distance(
-            local_surface_direction,
-            camera_altitude_meters,
-            0.0,
-        )
-        .map(|surface| surface.height_meters)
+        let sampled_height = self
+            .raster_surface_height_breakdown_at_distance(
+                local_surface_direction,
+                camera_altitude_meters,
+                0.0,
+            )
+            .map(|surface| surface.height_meters);
+        let mesh_height = self
+            .raster_mesh_surface_height_meters_at(local_surface_direction, camera_altitude_meters);
+        match (sampled_height, mesh_height) {
+            (Some(sampled), Some(mesh)) => Some(sampled.max(mesh)),
+            (sampled, mesh) => sampled.or(mesh),
+        }
+    }
+
+    /// Intersects the camera's radial with the actual piecewise-planar raster
+    /// triangle. At deliberately coarse global LOD, sampling the continuous
+    /// height field at the camera direction is not enough: three distant
+    /// vertices can form a facet above that sample and leave a nominally
+    /// ground-level camera underneath the drawn surface.
+    fn raster_mesh_surface_height_meters_at(
+        &self,
+        local_surface_direction: DVec3,
+        camera_altitude_meters: f64,
+    ) -> Option<f64> {
+        let (face, face_uv) = cube_face_uv(local_surface_direction)?;
+        let sample_node = |surface: SurfaceDetailNode| {
+            let [u_min, v_min, u_max, v_max] = surface.node.uv_bounds();
+            let grid_quads = surface.grid_quads.max(1);
+            let grid_position = [
+                ((face_uv[0] - u_min) / (u_max - u_min) * grid_quads as f64)
+                    .clamp(0.0, grid_quads as f64),
+                ((face_uv[1] - v_min) / (v_max - v_min) * grid_quads as f64)
+                    .clamp(0.0, grid_quads as f64),
+            ];
+            let cell_x = (grid_position[0].floor() as usize).min(grid_quads - 1);
+            let cell_y = (grid_position[1].floor() as usize).min(grid_quads - 1);
+            let vertex_position = |x: usize, y: usize| {
+                let u = u_min + (u_max - u_min) * x as f64 / grid_quads as f64;
+                let v = v_min + (v_max - v_min) * y as f64 / grid_quads as f64;
+                let direction = cube_face_direction(surface.node.face, u, v);
+                let camera_position =
+                    local_surface_direction * (PLANET_RADIUS_METERS + camera_altitude_meters);
+                let camera_distance = camera_position.distance(direction * PLANET_RADIUS_METERS);
+                let breakdown = self.surface_detail_height_breakdown(
+                    surface,
+                    direction,
+                    face,
+                    [u, v],
+                    camera_altitude_meters,
+                    camera_distance,
+                    match &self.source {
+                        TerrainDataSource::Placeholder => 0,
+                        TerrainDataSource::Outmap(outmap) => outmap.manifest().dense_level,
+                    },
+                )?;
+                let height =
+                    if self.flat_triangle_experiment && breakdown.macro_height_meters <= 0.0 {
+                        0.0
+                    } else {
+                        breakdown.height_meters
+                    };
+                Some(direction * (PLANET_RADIUS_METERS + height))
+            };
+            let lower_left = vertex_position(cell_x, cell_y)?;
+            let lower_right = vertex_position(cell_x + 1, cell_y)?;
+            let upper_left = vertex_position(cell_x, cell_y + 1)?;
+            let upper_right = vertex_position(cell_x + 1, cell_y + 1)?;
+            [
+                [lower_left, lower_right, upper_left],
+                [lower_right, upper_right, upper_left],
+            ]
+            .into_iter()
+            .filter_map(|triangle| radial_triangle_radius(local_surface_direction, triangle))
+            .map(|radius| radius - PLANET_RADIUS_METERS)
+            .max_by(f64::total_cmp)
+        };
+
+        let mut mesh_height = None;
+        let indexed =
+            self.surface_node_index
+                .for_each_at_direction(local_surface_direction, |index| {
+                    if let Some(candidate) = sample_node(self.surface_detail_nodes[index])
+                        && mesh_height.is_none_or(|height| candidate > height)
+                    {
+                        mesh_height = Some(candidate);
+                    }
+                });
+        if !indexed || mesh_height.is_none() {
+            mesh_height = self
+                .surface_detail_nodes
+                .iter()
+                .copied()
+                .filter(|surface| node_contains_face_uv(surface.node, face, face_uv))
+                .filter_map(sample_node)
+                .max_by(f64::total_cmp);
+        }
+        mesh_height
     }
 
     /// Where the near-field window should sit for this camera, or `None` when
@@ -1775,10 +1868,18 @@ impl TerrainRenderer {
                 0
             };
             let surface_index = self.surface_detail_nodes.len();
+            let dense_near_field = !self.flat_triangle_experiment
+                && near_field
+                && render_node.node.level <= NEAR_FIELD_DENSE_MAX_LEVEL;
             self.surface_detail_nodes.push(SurfaceDetailNode {
                 node: render_node.node,
                 edge_stitch,
                 source_key: tile_key,
+                grid_quads: if dense_near_field {
+                    NEAR_FIELD_GRID_QUADS
+                } else {
+                    CHUNK_GRID_QUADS
+                },
             });
             self.surface_node_index
                 .insert(render_node.node, surface_index);
@@ -1808,9 +1909,7 @@ impl TerrainRenderer {
             prepared_instances.push((
                 if near_field { None } else { tile_key },
                 near_field,
-                !self.flat_triangle_experiment
-                    && near_field
-                    && render_node.node.level <= NEAR_FIELD_DENSE_MAX_LEVEL,
+                dense_near_field,
                 TerrainInstance {
                     anchor_view_position: camera_view_basis
                         .world_to_view(anchor_world - camera_world)
@@ -2272,6 +2371,29 @@ fn node_contains_face_uv(node: QuadtreeNode, face: CubeFace, face_uv: [f64; 2]) 
         face_uv,
     )
     .is_some()
+}
+
+fn radial_triangle_radius(direction: DVec3, triangle: [DVec3; 3]) -> Option<f64> {
+    let edge_one = triangle[1] - triangle[0];
+    let edge_two = triangle[2] - triangle[0];
+    let cross = direction.cross(edge_two);
+    let determinant = edge_one.dot(cross);
+    if determinant.abs() <= 1.0e-12 {
+        return None;
+    }
+    let inverse = 1.0 / determinant;
+    let from_vertex = -triangle[0];
+    let u = from_vertex.dot(cross) * inverse;
+    if !(-1.0e-9..=1.0 + 1.0e-9).contains(&u) {
+        return None;
+    }
+    let barycentric_cross = from_vertex.cross(edge_one);
+    let v = direction.dot(barycentric_cross) * inverse;
+    if v < -1.0e-9 || u + v > 1.0 + 1.0e-9 {
+        return None;
+    }
+    let radius = edge_two.dot(barycentric_cross) * inverse;
+    (radius.is_finite() && radius > 0.0).then_some(radius)
 }
 
 fn surface_detail_filter_meters(
@@ -3348,15 +3470,16 @@ mod tests {
         downsample_srgb_rgba8, edge_stitch_info, edge_stitch_level_delta, fallback_uv_transform,
         height_footprint_is_strictly_land, lod_transition_nodes, lod_transition_progress,
         node_intersects_source_edge_fade, nodes_share_lod_transition, pack_terrain_info,
-        padded_texture_rows, planet_shader_source, purge_expired_lod_transitions, sample_biome_cpu,
-        sample_height_cpu, sample_moisture_cpu, should_animate_lod_transition,
-        source_tile_uv_at_direction, surface_detail_filter_meters, terrain_material_layer_texels,
-        terrain_material_texel, tileable_value_noise,
+        padded_texture_rows, planet_shader_source, purge_expired_lod_transitions,
+        radial_triangle_radius, sample_biome_cpu, sample_height_cpu, sample_moisture_cpu,
+        should_animate_lod_transition, source_tile_uv_at_direction, surface_detail_filter_meters,
+        terrain_material_layer_texels, terrain_material_texel, tileable_value_noise,
     };
     use crate::planet::{
-        GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, MAX_LOD_LEVEL, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE,
-        OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode,
-        TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS, build_chunk_mesh, cube_face_direction,
+        CHUNK_GRID_QUADS, GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, MAX_LOD_LEVEL,
+        OUTMAP_TERRAIN_FAR_HEIGHT_SCALE, OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, PLANET_RADIUS_METERS,
+        PlanetLod, QuadtreeNode, TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS, build_chunk_mesh,
+        cube_face_direction,
     };
     use catinthegarden_coretypes::{
         CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
@@ -4153,11 +4276,11 @@ mod tests {
     }
 
     #[test]
-    fn atmosphere_distance_constants_are_doubled_and_synchronised() {
+    fn atmosphere_distance_constants_are_synchronised() {
         let planet_shader = planet_shader_source();
         for declaration in [
-            "const ATMOSPHERE_HEIGHT_METERS: f32 = 1440000.0;",
-            "const ATMOSPHERE_EDGE_FADE_METERS: f32 = 960000.0;",
+            "const ATMOSPHERE_HEIGHT_METERS: f32 = 2880000.0;",
+            "const ATMOSPHERE_EDGE_FADE_METERS: f32 = 1920000.0;",
             "const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 72000.0;",
             "const MIE_SCALE_HEIGHT_METERS: f32 = 9600.0;",
             "const TWILIGHT_SHADOW_TRANSITION_METERS: f32 = 72000.0;",
@@ -4172,7 +4295,7 @@ mod tests {
         let atmosphere = include_str!("atmosphere_lut_common.wgsl");
         for declaration in [
             "const ATMOSPHERE_VERTICAL_SCALE: f32 = 4.5;",
-            "const ATMOSPHERE_HEIGHT_METERS: f32 = 1440000.0;",
+            "const ATMOSPHERE_HEIGHT_METERS: f32 = 2880000.0;",
             "const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 8000.0;",
             "const MIE_SCALE_HEIGHT_METERS: f32 = 1200.0;",
         ] {
@@ -4551,6 +4674,7 @@ mod tests {
             node,
             edge_stitch: 0,
             source_key: None,
+            grid_quads: CHUNK_GRID_QUADS,
         };
 
         assert!(
@@ -4583,6 +4707,20 @@ mod tests {
                 .abs()
                 < 1.0e-12
         );
+    }
+
+    #[test]
+    fn radial_triangle_intersection_follows_the_drawn_facet_not_vertex_height() {
+        let direction = DVec3::Z;
+        let triangle = [
+            DVec3::new(-10.0, -10.0, 105.0),
+            DVec3::new(10.0, -10.0, 115.0),
+            DVec3::new(-10.0, 10.0, 125.0),
+        ];
+        let radius = radial_triangle_radius(direction, triangle)
+            .expect("the centre radial crosses the sloped raster triangle");
+        assert!((radius - 120.0).abs() < 1.0e-9);
+        assert!(radial_triangle_radius(DVec3::X, triangle).is_none());
     }
 
     #[test]

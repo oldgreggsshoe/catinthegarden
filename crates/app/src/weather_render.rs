@@ -536,6 +536,8 @@ mod tests {
         assert!(shader.contains("fn cloudDensity"));
         assert!(shader.contains("let posterized = smoothstep"));
         assert!(shader.contains("fn direct_atmosphere_uv"));
+        assert!(shader.contains("fn solid_planet_blocks_cloud"));
+        assert!(shader.contains("if solid_planet_blocks_cloud("));
         assert!(shader.contains("max(solar_zenith_cosine, 0.0)"));
         assert!(shader.contains("let humidity_precursor"));
         assert!(!shader.contains("let precursor = select(0.08"));

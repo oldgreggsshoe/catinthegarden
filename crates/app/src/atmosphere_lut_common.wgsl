@@ -1,18 +1,18 @@
 // Shared physical atmosphere model for the LUT generation passes.
-// The visible atmosphere is 1,440 km deep in world space so the exaggerated
+// The visible atmosphere is 2,880 km deep in world space so the exaggerated
 // game terrain remains inside useful air. Sky visibility is clipped against
 // that world-space shell, while LUT integration maps its density profile into
-// a 320 km optical atmosphere around the actual 4,000 km planet. This keeps
+// a 640 km optical atmosphere around the actual 4,000 km planet. This keeps
 // the requested shell extent without changing the established Earth-like
 // extinction or relying on a timed twilight palette.
 const PI: f32 = 3.141592653589793;
 const PLANET_RADIUS_METERS: f32 = 4000000.0;
 const ATMOSPHERE_VERTICAL_SCALE: f32 = 4.5;
-const ATMOSPHERE_HEIGHT_METERS: f32 = 1440000.0;
+const ATMOSPHERE_HEIGHT_METERS: f32 = 2880000.0;
 const OPTICAL_PLANET_RADIUS_METERS: f32 = PLANET_RADIUS_METERS;
 const OPTICAL_ATMOSPHERE_HEIGHT_METERS: f32 =
     ATMOSPHERE_HEIGHT_METERS / ATMOSPHERE_VERTICAL_SCALE;
-const OPTICAL_ATMOSPHERE_EDGE_FADE_METERS: f32 = 213333.334;
+const OPTICAL_ATMOSPHERE_EDGE_FADE_METERS: f32 = 426666.668;
 const OPTICAL_ATMOSPHERE_RADIUS_METERS: f32 =
     OPTICAL_PLANET_RADIUS_METERS + OPTICAL_ATMOSPHERE_HEIGHT_METERS;
 const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 8000.0;
@@ -23,6 +23,11 @@ const RAYLEIGH_SCATTERING: vec3<f32> = vec3<f32>(5.8e-6, 13.5e-6, 33.1e-6);
 const MIE_SCATTERING: vec3<f32> = vec3<f32>(4.0e-6);
 const MIE_ABSORPTION: vec3<f32> = vec3<f32>(0.4e-6);
 const OZONE_ABSORPTION: vec3<f32> = vec3<f32>(0.65e-6, 1.881e-6, 0.085e-6);
+// A stronger ozone column deepens the Chappuis-band absorption along grazing
+// sunlight. This changes the physical optical depth rather than applying a
+// sunset colour, and leaves overhead Rayleigh/Mie daylight structurally
+// unchanged.
+const OZONE_COLUMN_SCALE: f32 = 1.5;
 const GROUND_ALBEDO: vec3<f32> = vec3<f32>(0.12);
 const MIE_G: f32 = 0.76;
 // Relative illuminance used by the Hillaire LUT formulation. Ten keeps the
@@ -63,7 +68,7 @@ fn medium_scattering(altitude_meters: f32) -> vec3<f32> {
 fn medium_extinction(altitude_meters: f32) -> vec3<f32> {
     return medium_scattering(altitude_meters)
         + MIE_ABSORPTION * mie_density(altitude_meters)
-        + OZONE_ABSORPTION * ozone_density(altitude_meters);
+        + OZONE_ABSORPTION * ozone_density(altitude_meters) * OZONE_COLUMN_SCALE;
 }
 
 fn rayleigh_phase(cos_theta: f32) -> f32 {

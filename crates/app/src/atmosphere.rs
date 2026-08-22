@@ -582,7 +582,7 @@ mod tests {
         // horizon-focused orbital mapping must retain a stable multi-row band.
         let camera_radius = 4_000_000.0_f64 + 15_000_000.0;
         let ground_cosine = -(1.0 - (4_000_000.0 / camera_radius).powi(2)).sqrt();
-        let atmosphere_cosine = -(1.0 - (4_160_000.0 / camera_radius).powi(2)).sqrt();
+        let atmosphere_cosine = -(1.0 - (4_640_000.0 / camera_radius).powi(2)).sqrt();
         let linear_rows = (atmosphere_cosine - ground_cosine) * 0.5 * 128.0;
         assert!(
             linear_rows < 1.0,
@@ -593,19 +593,43 @@ mod tests {
     }
 
     #[test]
-    fn optical_atmosphere_covers_the_presented_mountain_summit() {
+    fn doubled_optical_atmosphere_covers_the_presented_mountain_summit() {
         let common = include_str!("atmosphere_lut_common.wgsl");
         let display = include_str!("atmosphere.wgsl");
         let surface = include_str!("shared_planet.wgsl");
         let sun = include_str!("sun.wgsl");
         assert!(common.contains("const ATMOSPHERE_VERTICAL_SCALE: f32 = 4.5;"));
-        assert!(common.contains("const OPTICAL_ATMOSPHERE_EDGE_FADE_METERS: f32 = 213333.334;"));
-        assert!(display.contains("const OPTICAL_ATMOSPHERE_HEIGHT_METERS: f32 = 320000.0;"));
+        assert!(common.contains("const OPTICAL_ATMOSPHERE_EDGE_FADE_METERS: f32 = 426666.668;"));
+        assert!(display.contains("const OPTICAL_ATMOSPHERE_HEIGHT_METERS: f32 = 640000.0;"));
         assert!(
-            surface.contains("const SKY_VIEW_OPTICAL_ATMOSPHERE_HEIGHT_METERS: f32 = 320000.0;")
+            surface.contains("const SKY_VIEW_OPTICAL_ATMOSPHERE_HEIGHT_METERS: f32 = 640000.0;")
         );
         assert!(sun.contains("/ 4.5;"));
-        assert!(sun.contains("optical_altitude / 320000.0"));
-        assert!(320_000.0_f32 > 180_943.3_f32);
+        assert!(sun.contains("optical_altitude / 640000.0"));
+        assert!(640_000.0_f32 > 180_943.3_f32);
+        for (stage, sample_count) in [
+            (include_str!("atmosphere_transmittance.wgsl"), "80u"),
+            (include_str!("atmosphere_multiscattering.wgsl"), "40u"),
+            (include_str!("atmosphere_sky_view.wgsl"), "40u"),
+            (include_str!("atmosphere_irradiance.wgsl"), "24u"),
+        ] {
+            assert!(
+                stage.contains(sample_count),
+                "doubled integration range lost its proportional sample budget"
+            );
+        }
+    }
+
+    #[test]
+    fn sunset_redness_comes_from_physical_ozone_absorption() {
+        let common = include_str!("atmosphere_lut_common.wgsl");
+        assert!(common.contains("const OZONE_COLUMN_SCALE: f32 = 1.5;"));
+        assert!(
+            common
+                .contains("OZONE_ABSORPTION * ozone_density(altitude_meters) * OZONE_COLUMN_SCALE")
+        );
+        for authored_tint in ["sunset_tint", "red_tint", "horizon_tint"] {
+            assert!(!common.contains(authored_tint));
+        }
     }
 }

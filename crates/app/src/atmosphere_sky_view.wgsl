@@ -1,4 +1,4 @@
-const SKY_VIEW_SAMPLE_COUNT: u32 = 20u;
+const SKY_VIEW_SAMPLE_COUNT: u32 = 40u;
 // Keep the signed-off surface atmosphere byte-for-byte below the tallest game
 // terrain. Above it, blend to world-space shell geometry so an orbital camera
 // does not see the compressed optical atmosphere as a large solid bubble.

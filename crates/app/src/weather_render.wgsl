@@ -1,6 +1,6 @@
 const PLANET_RADIUS_METERS: f32 = 4000000.0;
 const ATMOSPHERE_VERTICAL_SCALE: f32 = 4.5;
-const OPTICAL_ATMOSPHERE_HEIGHT_METERS: f32 = 320000.0;
+const OPTICAL_ATMOSPHERE_HEIGHT_METERS: f32 = 640000.0;
 
 struct Camera {
     projection_matrix: mat4x4<f32>,
@@ -106,8 +106,40 @@ fn flat_horizon_visibility(altitude: f32, solar_zenith_cosine: f32) -> f32 {
     return smoothstep(horizon - 0.004625, horizon + 0.004625, solar_zenith_cosine);
 }
 
+// The terrain depth buffer normally rejects clouds behind the ground, but it
+// is not allowed to be the planet's only occluder. A near-plane or coarse-mesh
+// hole must not expose the cloud shell on the other side of the world.
+fn solid_planet_blocks_cloud(
+    camera_position: vec3<f32>,
+    cloud_position: vec3<f32>,
+) -> bool {
+    let segment = cloud_position - camera_position;
+    let a = dot(segment, segment);
+    let b = 2.0 * dot(camera_position, segment);
+    let c = dot(camera_position, camera_position)
+        - PLANET_RADIUS_METERS * PLANET_RADIUS_METERS;
+    let discriminant = b * b - 4.0 * a * c;
+    if discriminant <= 0.0 || a <= 1.0e-6 {
+        return false;
+    }
+    let root = sqrt(discriminant);
+    let near_t = (-b - root) / (2.0 * a);
+    let far_t = (-b + root) / (2.0 * a);
+    return (near_t > 1.0e-5 && near_t < 0.99999)
+        || (far_t > 1.0e-5 && far_t < 0.99999);
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    let camera_position_view = normalize(
+        camera.camera_planet_direction_view_altitude.xyz,
+    ) * (PLANET_RADIUS_METERS + camera.camera_planet_direction_view_altitude.w);
+    let cloud_position_view = planet_to_view(
+        normalize(input.direction) * (PLANET_RADIUS_METERS + input.altitude),
+    );
+    if solid_planet_blocks_cloud(camera_position_view, cloud_position_view) {
+        discard;
+    }
     let density = cloudDensity(input.direction, f32(input.shell_index));
     let alpha = density;
     if alpha < 0.002 {

@@ -1,5 +1,5 @@
 const IRRADIANCE_DIRECTION_COUNT: u32 = 16u;
-const IRRADIANCE_SAMPLE_COUNT: u32 = 12u;
+const IRRADIANCE_SAMPLE_COUNT: u32 = 24u;
 
 @group(0) @binding(0)
 var transmittance_lut: texture_2d<f32>;

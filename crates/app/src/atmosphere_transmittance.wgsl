@@ -1,4 +1,4 @@
-const TRANSMITTANCE_SAMPLE_COUNT: u32 = 40u;
+const TRANSMITTANCE_SAMPLE_COUNT: u32 = 80u;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,

@@ -3182,3 +3182,22 @@ Restored-source orbit `orbit_once/1787354268-533181` passes all assertions at a 
 logged frame time, versus 16.680ms before this milestone. A temporary high-density, cloud-hidden
 diagnostic at `highest_prominence_peak/1787354116-532072` makes the sun-projected hard shadow bands
 visible across the ground; its existing stale summit-clearance assertion is unrelated to rendering.
+
+## Experimental weather planet occlusion and doubled atmosphere - 22 August 2026
+
+Cloud fragments now reject any camera-to-shell segment that intersects the solid 4,000km planet,
+in addition to the normal terrain depth test. A clipped or deliberately coarse terrain facet can
+therefore no longer expose weather on the opposite side of the world. Low-flight raster clearance
+also measures the piecewise-planar triangle actually drawn at the camera radial rather than only
+the continuous height field sampled at that direction; this prevents a fixed coarse-LOD facet from
+passing above a nominally ground-level camera. The captured fault position now remains above the
+drawn facet and the former far-side cloud pattern is absent.
+
+The gameplay atmosphere shell is doubled from 1,440km to 2,880km and its compressed optical domain
+from 320km to 640km. The 4.5 world-to-optical mapping and established 8km Rayleigh/1.2km Mie density
+scale heights remain unchanged, preserving the signed-off near-surface atmosphere instead of
+making the lower air twice as dense. LUT integration sample budgets double with the path length so
+the extension does not introduce altitude-step darkening. A 1.5x ozone column scale strengthens
+physical Chappuis-band absorption on long grazing paths, making the horizon redder without a timed
+sunset colour. Raster sunset/blue-hour, horizon-sun, orbital-continuity, and ground-to-orbit
+scenarios pass; the sunset sequence remains monotonic and the visible sun remains depth-occluded.
