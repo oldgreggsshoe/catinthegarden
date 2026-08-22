@@ -3409,3 +3409,30 @@ zoom with a centred planet view and mature deterministic weather. Baseline
 boundaries. The restored standard `weather_contrast/1787423311-15162` passes all assertions. Eight
 weather-render tests (including composed-WGSL validation and an explicit transition-overlap
 regression) and `cargo check --workspace` pass.
+
+## Experimental weather orbital cloud coverage - 22 August 2026
+
+Manual ascent `manual/1787424675-25273` appeared to show clouds disappearing with camera altitude,
+but the screenshots did not follow one ground patch. The camera moved 22.6 degrees around the planet
+between captures 1 and 2, then reached 35.8 degrees from the cloudy start by capture 8. A matched
+2,827,794m camera/weather/Sun replay reproduced the clear result. Replacing sampled cloud colour
+with an opaque diagnostic covered the whole near-side shell (`weather_contrast/1787425275-29965`),
+proving shell geometry, reversed-Z depth, solid-planet occlusion, and the draw pass were intact. A
+raw RGB field diagnostic (`weather_contrast/1787425405-31014`) then exposed the cause: after 1,356
+weather steps, condensed water had concentrated into narrow fronts and the viewed hemisphere was a
+real coarse-field dry region. Fewer than 1% of its shell pixels exceeded the normal cloud-density
+discard threshold. This was geographic coverage, not an altitude fade or lighting failure.
+
+The upper 166km layer now supplies a sparse fair-weather cirrus component. Five-octave rotated detail
+still cuts explicit clear gaps; a thin 0.45 presentation floor prevents the coarse single-layer
+climate from leaving an entire orbital hemisphere blank, and live humidity increases that component
+toward its 0.24 density ceiling. The lower layer, condensed-water posterisation, storm density and
+darkening, field transport, lighting, shell geometry, depth/planet occlusion, and atmospheric path
+are unchanged. Because this remains in the shared density source, visible cirrus, terrain shadows,
+and camera-to-sun cloud attenuation continue to agree.
+
+The exact captured pose and 813,600s weather state now visibly retain broken high cloud in
+`weather_contrast/1787425971-35794`. Restored standard mature-weather orbit
+`weather_contrast/1787426114-37238` keeps clear holes between broad systems, while low-altitude
+`landing_site_eye_level/1787426132-37442` remains a broken cloud ceiling rather than a uniform film.
+All eight focused weather-render tests, including composed WGSL parse/validation, pass.

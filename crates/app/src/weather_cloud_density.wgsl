@@ -97,9 +97,19 @@ fn cloudSampleWithOctaves(dir: vec3<f32>, t: f32, octave_count: u32) -> CloudSam
     // rotated detail keep this startup signal from reading as fog or a grid.
     let humidity_precursor = smoothstep(0.54, 0.76, field.b);
     let precursor_breakup = smoothstep(-0.16, 0.18, detail);
-    let precursor = humidity_precursor
-        * precursor_breakup
-        * select(0.13, 0.075, shell_index == 1u);
+    let lower_precursor = humidity_precursor * precursor_breakup * 0.13;
+    // Condensed water can concentrate into narrow weather fronts after many
+    // simulated days, leaving an entire orbital hemisphere visually clear.
+    // Use the upper layer for sparse fair-weather cirrus. A thin presentation
+    // floor prevents hemisphere-scale holes in the coarse one-layer climate,
+    // while local vapour raises its density. Rotated detail retains broad
+    // clear gaps instead of restoring the rejected global veil.
+    let upper_precursor = mix(
+        0.45,
+        1.0,
+        smoothstep(0.06, 0.34, field.b),
+    ) * smoothstep(-0.08, 0.22, detail)
+        * 0.24;
     // Keep weak condensate thinner while driving genuinely stormy cells
     // toward opacity. This widens contrast without filling the clear gaps or
     // changing the sparse startup precursor that appears before condensation.
@@ -110,9 +120,11 @@ fn cloudSampleWithOctaves(dir: vec3<f32>, t: f32, octave_count: u32) -> CloudSam
     let condensed = posterized
         * mix(0.22, 1.0, storm_amount)
         * select(1.0, 0.78, shell_index == 1u);
-    let precursor_density = precursor
-        * 0.32
-        * select(1.0, 0.62, shell_index == 1u);
+    let precursor_density = select(
+        lower_precursor * 0.32,
+        upper_precursor,
+        shell_index == 1u,
+    );
     return CloudSample(
         clamp(max(condensed, precursor_density), 0.0, 1.0),
         clamp(field.g, 0.0, 1.0),

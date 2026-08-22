@@ -562,6 +562,10 @@ mod tests {
         assert!(shader.contains("if solid_planet_blocks_cloud("));
         assert!(shader.contains("max(solar_zenith_cosine, 0.0)"));
         assert!(shader.contains("let humidity_precursor"));
+        assert!(shader.contains("let lower_precursor"));
+        assert!(shader.contains("let upper_precursor = mix("));
+        assert!(shader.contains("smoothstep(-0.08, 0.22, detail)"));
+        assert!(shader.contains("upper_precursor,"));
         assert!(!shader.contains("let precursor = select(0.08"));
         assert!(shader.contains("texture_cube<f32>"));
         assert!(!shader.contains("fn cube_field_uv"));
