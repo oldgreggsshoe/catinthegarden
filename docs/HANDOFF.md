@@ -3384,3 +3384,28 @@ The full app suite reports 255 passed / 3 pre-existing dirty-worktree failures /
 interactive smoke `manual/1787413095-123954` starts without errors, but an unfocused window is
 compositor-throttled to roughly 1Hz and is explicitly not used as frame-pacing evidence; fresh
 focused manual flight remains the visual sign-off.
+
+## Experimental weather twilight-layer fade - 22 August 2026
+
+Manual orbit capture `manual/1787422267-4192` showed an isolated mauve cloud band bounded by two
+clean terminator lines. At its 11,530km-altitude camera position the local solar elevation was
+about -13.49 degrees: exactly between the point-height solar horizons of the 90km cloud shell
+(-12.04 degrees) and the 166km shell (-16.23 degrees). The upper shell was therefore fully directly
+lit while the lower shell was fully shadowed, and each changed state across only the Sun's 0.53
+degree disc. This was cloud lighting, not a terrain, atmosphere-LUT, or cube-face seam.
+
+Each rendered shell is now treated as the centre of a 76km-deep cloud volume for direct-light
+visibility. The high edge sees the first part of the Sun and the low edge sees the complete disc
+last; a smooth illuminated-fraction ramp spans that interval. Adjacent layers meet at their shared
+38km half-depth, so the upper layer fades in from night while the lower layer fades into daylight
+with overlapping transitions rather than exposing a hard-edged strip. Shell geometry, density,
+weather physics, atmospheric RGB transmittance, ambient irradiance, and terrain lighting are
+unchanged.
+
+A controlled release replay reused the manual camera position, Sun direction, fixed exposure, and
+zoom with a centred planet view and mature deterministic weather. Baseline
+`weather_contrast/1787423172-13676` reproduces the hard strip; fixed
+`weather_contrast/1787423210-14178` shows the cloud light declining continuously through both old
+boundaries. The restored standard `weather_contrast/1787423311-15162` passes all assertions. Eight
+weather-render tests (including composed-WGSL validation and an explicit transition-overlap
+regression) and `cargo check --workspace` pass.

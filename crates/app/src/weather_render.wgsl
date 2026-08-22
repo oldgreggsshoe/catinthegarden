@@ -100,10 +100,31 @@ fn irradiance_atmosphere_uv(altitude: f32, solar_zenith_cosine: f32) -> vec2<f32
     );
 }
 
-fn flat_horizon_visibility(altitude: f32, solar_zenith_cosine: f32) -> f32 {
+fn cloud_horizon_cosine(altitude: f32) -> f32 {
     let radius = PLANET_RADIUS_METERS + max(altitude, 0.0);
-    let horizon = -sqrt(max(1.0 - (PLANET_RADIUS_METERS / radius) * (PLANET_RADIUS_METERS / radius), 0.0));
-    return smoothstep(horizon - 0.004625, horizon + 0.004625, solar_zenith_cosine);
+    return -sqrt(max(
+        1.0 - (PLANET_RADIUS_METERS / radius) * (PLANET_RADIUS_METERS / radius),
+        0.0,
+    ));
+}
+
+fn cloud_layer_sun_visibility(altitude: f32, solar_zenith_cosine: f32) -> f32 {
+    // A rendered shell is the centre of a cloud volume, not an infinitesimal
+    // sheet. Its high edge sees the sun first and its low edge sees the full
+    // disc last. Integrating that vertical extent removes the isolated,
+    // hard-edged twilight strip produced by the two point-height horizons.
+    let first_light_horizon = cloud_horizon_cosine(
+        altitude + CLOUD_LAYER_HALF_DEPTH_METERS,
+    );
+    let fully_lit_horizon = cloud_horizon_cosine(
+        altitude - CLOUD_LAYER_HALF_DEPTH_METERS,
+    );
+    let solar_angular_radius_sine = 0.004625;
+    return smoothstep(
+        first_light_horizon - solar_angular_radius_sine,
+        fully_lit_horizon + solar_angular_radius_sine,
+        solar_zenith_cosine,
+    );
 }
 
 // The terrain depth buffer normally rejects clouds behind the ground, but it
@@ -168,7 +189,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         atmosphere_sampler,
         direct_atmosphere_uv(input.altitude, solar_zenith_cosine),
         0.0,
-    ).rgb * flat_horizon_visibility(input.altitude, solar_zenith_cosine);
+    ).rgb * cloud_layer_sun_visibility(input.altitude, solar_zenith_cosine);
     let irradiance = textureSampleLevel(
         atmosphere_irradiance_lut,
         atmosphere_sampler,

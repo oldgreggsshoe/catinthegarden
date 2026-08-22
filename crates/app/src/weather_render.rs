@@ -7,6 +7,8 @@ use crate::{atmosphere::SurfaceLightingResources, planet::PLANET_RADIUS_METERS, 
 
 const CLOUD_SHELL_ALTITUDE_METERS: f32 = 90_000.0;
 const UPPER_CLOUD_SHELL_ALTITUDE_METERS: f32 = 166_000.0;
+const CLOUD_LAYER_HALF_DEPTH_METERS: f32 =
+    (UPPER_CLOUD_SHELL_ALTITUDE_METERS - CLOUD_SHELL_ALTITUDE_METERS) * 0.5;
 const CLOUD_SHELL_LONGITUDE_SEGMENTS: usize = 96;
 const CLOUD_SHELL_LATITUDE_SEGMENTS: usize = 48;
 const CLOUD_TEXTURE_BYTES_PER_ROW: u32 = 256;
@@ -37,11 +39,12 @@ struct CloudVertex {
 }
 
 fn weather_cloud_shader_source() -> String {
-    [
+    format!(
+        "const CLOUD_LAYER_HALF_DEPTH_METERS: f32 = {:.1};\n{}\n{}",
+        CLOUD_LAYER_HALF_DEPTH_METERS,
         include_str!("weather_render.wgsl"),
         include_str!("weather_cloud_density.wgsl"),
-    ]
-    .join("\n")
+    )
 }
 
 impl CloudVertex {
@@ -553,6 +556,8 @@ mod tests {
         assert!(shader.contains("let translucent_edge"));
         assert!(shader.contains("let silver_lining"));
         assert!(shader.contains("fn direct_atmosphere_uv"));
+        assert!(shader.contains("fn cloud_layer_sun_visibility"));
+        assert!(shader.contains("CLOUD_LAYER_HALF_DEPTH_METERS: f32 = 38000.0"));
         assert!(shader.contains("fn solid_planet_blocks_cloud"));
         assert!(shader.contains("if solid_planet_blocks_cloud("));
         assert!(shader.contains("max(solar_zenith_cosine, 0.0)"));
@@ -625,6 +630,32 @@ mod tests {
         assert!(deeper_twilight_sun_cosine < horizon_cosine(super::CLOUD_SHELL_ALTITUDE_METERS));
         assert!(
             deeper_twilight_sun_cosine > horizon_cosine(super::UPPER_CLOUD_SHELL_ALTITUDE_METERS)
+        );
+    }
+
+    #[test]
+    fn cloud_layer_depths_overlap_at_the_twilight_handover() {
+        let horizon_cosine = |altitude_meters: f32| {
+            let radius = crate::planet::PLANET_RADIUS_METERS as f32 + altitude_meters;
+            -(1.0 - (crate::planet::PLANET_RADIUS_METERS as f32 / radius).powi(2)).sqrt()
+        };
+        let solar_angular_radius_sine = 0.004625_f32;
+        let transition = |altitude_meters: f32| {
+            (
+                horizon_cosine(altitude_meters + super::CLOUD_LAYER_HALF_DEPTH_METERS)
+                    - solar_angular_radius_sine,
+                horizon_cosine((altitude_meters - super::CLOUD_LAYER_HALF_DEPTH_METERS).max(0.0))
+                    + solar_angular_radius_sine,
+            )
+        };
+        let lower = transition(super::CLOUD_SHELL_ALTITUDE_METERS);
+        let upper = transition(super::UPPER_CLOUD_SHELL_ALTITUDE_METERS);
+
+        assert!(lower.0 < lower.1, "lower layer must fade rather than step");
+        assert!(upper.0 < upper.1, "upper layer must fade rather than step");
+        assert!(
+            lower.0 < upper.1,
+            "upper twilight fade must overlap the lower layer handover"
         );
     }
 
