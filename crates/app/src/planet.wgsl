@@ -61,8 +61,14 @@ struct VertexOutput {
     // budget is full.
     @location(7) outmap_and_macro_height: vec2<f32>,
     @location(8) aerial_transmittance: vec3<f32>,
-    @location(9) terrain_detail_meters: f32,
-    @location(10) surface_height: f32,
+    // Pack the presentation-mist amount into the otherwise scalar detail
+    // location so the final fragment composition can converge to the sky
+    // after biome-specific aerial colour correction.
+    @location(9) terrain_detail_meters_and_fog_amount: vec2<f32>,
+    // The fog endpoint is evaluated per vertex like the existing aerial
+    // approximation, then interpolated without consuming another inter-stage
+    // location (the Quadro path is already at the 16-location limit).
+    @location(10) surface_height_and_fog_color: vec4<f32>,
     // Detail is evaluated anchor-locally for precision, so the pixel needs the
     // same anchor the vertex used. Flat: it is constant across the node, and
     // interpolating it would defeat the exact-integer cell it provides. In
@@ -671,14 +677,15 @@ fn vs_main(input: VertexInput) -> VertexOutput {
             aerial.in_scatter * flat_aerial_weight,
         );
     }
-    if !lake {
-        aerial = terrain_distance_fog_components(
-            aerial,
-            camera_relative_view_position,
-            direction,
-            surface_height,
-        );
-    }
+    // Keep the extra presentation mist separate from physical aerial
+    // in-scatter. It must be composed after biome-specific aerial correction;
+    // folding the sky endpoint into `aerial.in_scatter` here lets vegetation's
+    // 0.42 in-scatter scale darken even fully saturated fog.
+    let fog = terrain_fog(
+        camera_relative_view_position,
+        direction,
+        surface_height,
+    );
     let detail_anchor_or_flat_source_offset = select(
         anchor_direction,
         vec3<f32>(input.source_uv_offset, 0.0),
@@ -695,8 +702,8 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         source_uv,
         vec2<f32>(select(0.0, 1.0, outmap), select(0.0, base_height, outmap)),
         aerial.transmittance,
-        terrain_detail_meters,
-        surface_height,
+        vec2<f32>(terrain_detail_meters, fog.amount),
+        vec4<f32>(surface_height, fog.color),
         detail_anchor_or_flat_source_offset,
         anchor_relative_position,
         select(0.0, vertex_spacing_meters, outmap),
@@ -917,6 +924,17 @@ fn flat_triangle_land_biome(primary: u32, first: u32, second: u32, third: u32) -
     return selected;
 }
 
+fn apply_terrain_distance_fog(
+    aerial_color: vec3<f32>,
+    input: VertexOutput,
+) -> vec3<f32> {
+    return mix(
+        aerial_color,
+        input.surface_height_and_fog_color.yzw,
+        input.terrain_detail_meters_and_fog_amount.y,
+    );
+}
+
 fn flat_triangle_colour(
     input: VertexOutput,
 ) -> vec4<f32> {
@@ -985,7 +1003,7 @@ fn flat_triangle_colour(
         fill,
         normal,
         normalize(input.surface_direction),
-        input.surface_height,
+        input.surface_height_and_fog_color.x,
         input.camera_relative_view_position,
         input.source_uv_scale_and_latitude.w,
         true,
@@ -1010,19 +1028,17 @@ fn flat_triangle_colour(
             normalize(input.surface_direction),
             0.0,
         );
-        // Water replaces the vertex-composed terrain atmosphere above, so add
-        // its mist here. Land keeps the cheaper vertex-composed path.
-        aerial_lit = terrain_distance_fog(
-            aerial_lit,
-            input.camera_relative_view_position,
-            normalize(input.surface_direction),
-            input.surface_height,
-        );
+        // Water replaces the vertex-composed physical terrain atmosphere;
+        // shared presentation mist is applied to both materials below.
     }
     // Outlines are unlit geometry edges, not emissive ink. Darken the
     // physically composed triangle so night-side lines fade with their
-    // surroundings instead of imposing a blue-grey luminance floor.
-    return vec4<f32>(mix(aerial_lit, aerial_lit * 0.08, edge), 1.0);
+    // surroundings instead of imposing a blue-grey luminance floor. Apply
+    // distance mist afterward so a fully obscured triangle cannot survive as
+    // a black wireframe against the matching sky endpoint.
+    let outlined_aerial_lit = mix(aerial_lit, aerial_lit * 0.08, edge);
+    let misted_aerial_lit = apply_terrain_distance_fog(outlined_aerial_lit, input);
+    return vec4<f32>(misted_aerial_lit, 1.0);
 }
 
 fn flat_ocean_colour(input: OceanVertexOutput) -> vec4<f32> {
@@ -1183,7 +1199,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     // built from a positive neighbouring sample; discarding that fragment
     // exposes the later shell as square holes in otherwise solid land.
     if is_open_ocean_surface(outmap, macro_height_meters, biome_id)
-        && input.surface_height <= 0.0
+        && input.surface_height_and_fog_color.x <= 0.0
     {
         discard;
     }
@@ -1230,11 +1246,17 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             direction,
             water_surface_height,
         );
-        if render_debug_mode == RENDER_DEBUG_AERIAL_CONTRIBUTION {
-            return vec4<f32>(max(water_aerial_color - water_surface_color, vec3<f32>(0.0)), 1.0);
-        }
         let lake_land_color = blended_biome_color(sample_biome_blend(input.source_uv));
-        return vec4<f32>(mix(lake_land_color, water_aerial_color, lake_coverage), 1.0);
+        let lake_surface_color = mix(lake_land_color, water_surface_color, lake_coverage);
+        let lake_aerial_color = mix(lake_land_color, water_aerial_color, lake_coverage);
+        let misted_lake_aerial_color = apply_terrain_distance_fog(lake_aerial_color, input);
+        if render_debug_mode == RENDER_DEBUG_AERIAL_CONTRIBUTION {
+            return vec4<f32>(
+                max(misted_lake_aerial_color - lake_surface_color, vec3<f32>(0.0)),
+                1.0,
+            );
+        }
+        return vec4<f32>(misted_lake_aerial_color, 1.0);
     }
     // Preserve the established shallow beach colour on positive terrain.
     // Actual open sea (macro height <= 0) was discarded above and is drawn by
@@ -1246,13 +1268,13 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let terrain_normal = input.world_normal;
     let terrain_sun_transmittance = surface_direct_sun_transmittance(
         direction,
-        input.surface_height,
+        input.surface_height_and_fog_color.x,
         sun_direction,
     );
     let terrain_sky_diffuse = sky_diffuse_irradiance(
         terrain_normal,
         direction,
-        input.surface_height,
+        input.surface_height_and_fog_color.x,
         sun_direction,
     );
     let terrain_direct_light = max(dot(terrain_normal, sun_direction), 0.0);
@@ -1262,7 +1284,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     {
         terrain_cloud_visibility = cloud_shadow_visibility(
             direction,
-            input.surface_height,
+            input.surface_height_and_fog_color.x,
             sun_direction,
         );
     }
@@ -1276,7 +1298,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         moisture,
         base_biome_color,
         macro_height_meters,
-        input.terrain_detail_meters,
+        input.terrain_detail_meters_and_fog_amount.x,
         terrain_normal,
         direction,
     );
@@ -1289,7 +1311,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         direction,
         terrain_normal,
         input.camera_relative_view_position,
-        input.terrain_detail_meters,
+        input.terrain_detail_meters_and_fog_amount.x,
         input.detail_anchor_direction,
         input.detail_local_meters,
         terrain_material_fine_weight(
@@ -1391,17 +1413,21 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let textured_aerial_color = textured_surface_lighting
         * terrain_material_transmittance(input.aerial_transmittance, biome_id)
         + terrain_material_in_scatter(input.aerial_in_scatter, biome_id);
+    let misted_textured_aerial_color = apply_terrain_distance_fog(
+        textured_aerial_color,
+        input,
+    );
     if ocean_coverage <= 0.0 {
         if render_debug_mode == RENDER_DEBUG_SURFACE_LIGHTING {
             return vec4<f32>(textured_surface_lighting, 1.0);
         }
         if render_debug_mode == RENDER_DEBUG_AERIAL_CONTRIBUTION {
             return vec4<f32>(
-                max(textured_aerial_color - textured_surface_lighting, vec3<f32>(0.0)),
+                max(misted_textured_aerial_color - textured_surface_lighting, vec3<f32>(0.0)),
                 1.0,
             );
         }
-        return vec4<f32>(textured_aerial_color, 1.0);
+        return vec4<f32>(misted_textured_aerial_color, 1.0);
     }
     let surface = ocean_surface(direction, camera.projection.z);
     let sun_transmittance = surface_direct_sun_transmittance(
@@ -1429,11 +1455,12 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     );
     let surface_color = mix(textured_surface_lighting, water_surface_color, ocean_coverage);
     let aerial_color = mix(textured_aerial_color, water_aerial_color, ocean_coverage);
+    let misted_aerial_color = apply_terrain_distance_fog(aerial_color, input);
     if render_debug_mode == RENDER_DEBUG_SURFACE_LIGHTING {
         return vec4<f32>(surface_color, 1.0);
     }
     if render_debug_mode == RENDER_DEBUG_AERIAL_CONTRIBUTION {
-        return vec4<f32>(max(aerial_color - surface_color, vec3<f32>(0.0)), 1.0);
+        return vec4<f32>(max(misted_aerial_color - surface_color, vec3<f32>(0.0)), 1.0);
     }
-    return vec4<f32>(aerial_color, 1.0);
+    return vec4<f32>(misted_aerial_color, 1.0);
 }

@@ -3464,3 +3464,21 @@ scenario parsing, flat land/water coverage, and composed planet-WGSL parse/valid
 controlled run's median logged frame time was 16.623ms fixed versus 16.752ms baseline under the
 present capped presentation path, so it shows no detected regression but is not an uncapped GPU
 benchmark.
+
+### Terrain mist final-composition repair
+
+The fog amount and physical-sky endpoint were previously folded into the vertex aerial components
+before fragment material correction. Vegetation subsequently multiplied even a fully saturated fog
+endpoint by its 0.42 aerial in-scatter scale, snow neutralised it, and flat-triangle outlines were
+drawn after the fog mix. Consequently changing the e-fold distance from 500km to 5km reached the
+active shader but still left dark material facets and black wireframe visible through nominally
+opaque mist.
+
+Terrain vertices now carry the fog amount and sky endpoint separately by packing them into existing
+inter-stage locations; the Quadro path remains at locations 0-15 rather than exceeding its limit.
+Fragments apply biome-specific physical aerial correction first, draw flat outlines where enabled,
+then mix the complete surface result toward the interpolated sky endpoint. This adds no fragment LUT
+lookup and keeps cloud-shell rendering independent. With the deliberately extreme local 5km test
+value, `atmospheric_mist_paths/1787429254-64643` passes and the obscured terrain plus outlines visibly
+converge to the sky. The committed production constant remains the prior 500km unless the local
+tuning hunk is explicitly promoted.

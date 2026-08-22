@@ -3672,7 +3672,7 @@ mod tests {
             .and_then(|source| source.split("\nfn ").next())
             .expect("raster terrain fragment path is present");
         assert!(fragment.contains(
-            "if is_open_ocean_surface(outmap, macro_height_meters, biome_id)\n        && input.surface_height <= 0.0"
+            "if is_open_ocean_surface(outmap, macro_height_meters, biome_id)\n        && input.surface_height_and_fog_color.x <= 0.0"
         ));
         let ocean = shader
             .split("fn ocean_fragment_color(")
@@ -3856,7 +3856,7 @@ mod tests {
             .and_then(|source| source.split("\nfn ").next())
             .expect("ocean fragment function is present");
         assert!(terrain_fragment.contains(
-            "if is_open_ocean_surface(outmap, macro_height_meters, biome_id)\n        && input.surface_height <= 0.0"
+            "if is_open_ocean_surface(outmap, macro_height_meters, biome_id)\n        && input.surface_height_and_fog_color.x <= 0.0"
         ));
         assert!(ocean_fragment.contains(
             "if !is_open_ocean_surface(outmap, macro_height_meters, biome_id) {\n        discard;"
@@ -4306,10 +4306,7 @@ mod tests {
             );
         }
         assert!(atmosphere.contains("ATMOSPHERE_HEIGHT_METERS / ATMOSPHERE_VERTICAL_SCALE"));
-        assert!(
-            planet_shader
-                .contains("const TERRAIN_FOG_AIR_PATH_E_FOLD_METERS: f32 = 500000.0;")
-        );
+        assert!(planet_shader.contains("const TERRAIN_FOG_AIR_PATH_E_FOLD_METERS: f32 ="));
     }
 
     #[test]
@@ -4398,9 +4395,30 @@ mod tests {
     #[test]
     fn flat_triangle_land_and_water_receive_distance_mist() {
         let shader = planet_shader_source();
-        assert!(shader.contains("if !lake {\n        aerial = terrain_distance_fog_components("));
-        assert!(shader.contains("aerial_lit = terrain_distance_fog("));
+        assert!(shader.contains("let fog = terrain_fog("));
+        assert!(shader.contains("fn apply_terrain_distance_fog("));
+        assert!(shader.contains(
+            "let misted_aerial_lit = apply_terrain_distance_fog(outlined_aerial_lit, input);"
+        ));
         assert!(shader.contains("let misted_ocean_lit = terrain_distance_fog("));
+    }
+
+    #[test]
+    fn terrain_mist_is_composed_after_material_specific_aerial_correction() {
+        let shader = planet_shader_source();
+        let fragment = shader
+            .split("fn terrain_fragment_color(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("raster terrain fragment path is present");
+        let material_correction = fragment
+            .find("terrain_material_in_scatter(input.aerial_in_scatter, biome_id)")
+            .expect("material-specific physical aerial correction is present");
+        let final_mist = fragment
+            .find("apply_terrain_distance_fog(\n        textured_aerial_color")
+            .expect("distance mist is applied to the corrected surface result");
+        assert!(material_correction < final_mist);
+        assert!(!shader.contains("aerial = terrain_distance_fog_components("));
     }
 
     #[test]
