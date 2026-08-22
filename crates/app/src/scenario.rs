@@ -227,6 +227,9 @@ impl ScenarioRunner {
             }
             "ground_to_orbit" => include_str!("../scenarios/ground_to_orbit.json"),
             "stare_at_sun" => include_str!("../scenarios/stare_at_sun.json"),
+            "orbital_sun_visibility" => {
+                include_str!("../scenarios/orbital_sun_visibility.json")
+            }
             "sun_horizon_visibility" => {
                 include_str!("../scenarios/sun_horizon_visibility.json")
             }

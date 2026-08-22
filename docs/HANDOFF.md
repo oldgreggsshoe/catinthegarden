@@ -3201,3 +3201,19 @@ the extension does not introduce altitude-step darkening. A 1.5x ozone column sc
 physical Chappuis-band absorption on long grazing paths, making the horizon redder without a timed
 sunset colour. Raster sunset/blue-hour, horizon-sun, orbital-continuity, and ground-to-orbit
 scenarios pass; the sunset sequence remains monotonic and the visible sun remains depth-occluded.
+
+## Orbital visual-sun path correction - 22 August 2026
+
+Manual capture `manual/1787401323-20009` placed the camera 14,229km above datum with the sun below
+the camera's planet-relative horizontal plane, but the actual camera-to-sun ray missed the doubled
+atmosphere. The visual-sun shader nevertheless treated that negative local elevation as a surface
+sunset, producing an orange, dim disc in vacuum.
+
+Outside the 2,880km gameplay atmosphere, visual-sun attenuation now begins with a camera-ray/shell
+intersection. A ray that misses the shell receives unit white transmittance and full presentation
+radiance; a ray that enters the shell samples the existing RGB physical transmittance LUT from its
+entry point and may still redden correctly through the atmospheric limb. Cameras inside the shell
+retain the signed-off surface sunrise/sunset path unchanged. New deterministic scenario
+`orbital_sun_visibility` replays the captured geometry and shows the white orbital sun; the focused
+shader tests plus surface horizon-sun, sunset/blue-hour, stare-at-sun, and orbital-atmosphere
+scenarios pass.

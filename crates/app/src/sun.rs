@@ -122,11 +122,36 @@ impl SunRenderer {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn orbital_sun_misses_atmosphere_and_uses_full_brightness() {
+        let camera = glam::DVec3::new(
+            -812_390.069_260_471_5,
+            -10_188_038.341_751_29,
+            -15_094_498.977_686_338,
+        );
+        let sun = glam::DVec3::new(
+            0.508_927_518_800_963_9,
+            0.397_776_994_021_848,
+            0.763_391_278_201_445_7,
+        );
+        let closest_approach = camera.cross(sun).length();
+        let atmosphere_radius = 4_000_000.0 + 2_880_000.0;
+        assert!(
+            closest_approach > atmosphere_radius,
+            "captured orbital sun ray unexpectedly enters the atmosphere"
+        );
+
+        let shader = include_str!("sun.wgsl");
+        assert!(shader.contains("fn sun_disc_atmosphere_sample("));
+        assert!(shader.contains("SunAtmosphereSample(vec3<f32>(1.0), 1.0)"));
+    }
+
+    #[test]
     fn visible_sun_uses_the_surface_transmittance_lut() {
         let shader = include_str!("sun.wgsl");
         assert!(shader.contains("var atmosphere_transmittance_lut: texture_2d<f32>;"));
         assert!(shader.contains("textureSampleLevel("));
-        assert!(shader.contains("sun_disc_atmospheric_transmittance(solar_elevation)"));
+        assert!(shader.contains("sun_disc_atmosphere_sample(solar_elevation)"));
+        assert!(shader.contains("relative_sun_transmittance(camera_altitude, solar_elevation)"));
         assert!(shader.contains("const SUN_HORIZON_LUT_ELEVATION: f32 = 0.05;"));
         assert!(shader.contains("max(solar_elevation, 0.0)"));
         assert!(shader.contains("+ SUN_HORIZON_LUT_ELEVATION"));

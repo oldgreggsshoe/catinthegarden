@@ -1,5 +1,7 @@
 const PHYSICAL_SUN_ANGULAR_RADIUS_RADIANS: f32 = 0.004625;
 const PLANET_RADIUS_METERS: f32 = 4000000.0;
+const ATMOSPHERE_HEIGHT_METERS: f32 = 2880000.0;
+const ATMOSPHERE_RADIUS_METERS: f32 = PLANET_RADIUS_METERS + ATMOSPHERE_HEIGHT_METERS;
 // Use the real solar angular diameter (~0.53 degrees) for near-surface views.
 // The previous 0.159 degree presentation made the sun read like a distant
 // star rather than the disk seen in an Earth-sky photograph.
@@ -58,11 +60,11 @@ fn view_direction(ndc: vec2<f32>) -> vec3<f32> {
     return normalize(vec3<f32>(horizontal, vertical, -1.0));
 }
 
-fn sampled_sun_transmittance(solar_elevation: f32) -> vec3<f32> {
-    let optical_altitude = max(
-        camera.camera_planet_direction_view_altitude.w,
-        0.0,
-    ) / 4.5;
+fn sampled_sun_transmittance(
+    observer_altitude: f32,
+    solar_elevation: f32,
+) -> vec3<f32> {
+    let optical_altitude = max(observer_altitude, 0.0) / 4.5;
     let uv = vec2<f32>(
         clamp(solar_elevation * 0.5 + 0.5, 0.0, 1.0),
         sqrt(clamp(optical_altitude / 640000.0, 0.0, 1.0)),
@@ -75,7 +77,10 @@ fn sampled_sun_transmittance(solar_elevation: f32) -> vec3<f32> {
     ).rgb;
 }
 
-fn sun_disc_atmospheric_transmittance(solar_elevation: f32) -> vec3<f32> {
+fn relative_sun_transmittance(
+    observer_altitude: f32,
+    solar_elevation: f32,
+) -> vec3<f32> {
     // Use the same wavelength-dependent column as direct terrain and ocean
     // light. Dividing by the local zenith result preserves the established
     // midday disc brightness while retaining the LUT's low-sun dimming and
@@ -85,17 +90,61 @@ fn sun_disc_atmospheric_transmittance(solar_elevation: f32) -> vec3<f32> {
     // of the disc disappearing while it was still visibly above the horizon.
     let visible_solar_elevation = max(solar_elevation, 0.0)
         + SUN_HORIZON_LUT_ELEVATION;
-    let transmitted = sampled_sun_transmittance(visible_solar_elevation);
-    let zenith = sampled_sun_transmittance(1.0);
-    let relative_transmittance = clamp(
+    let transmitted = sampled_sun_transmittance(
+        observer_altitude,
+        visible_solar_elevation,
+    );
+    let zenith = sampled_sun_transmittance(observer_altitude, 1.0);
+    return clamp(
         transmitted / max(zenith, vec3<f32>(1.0e-4)),
         vec3<f32>(0.0),
         vec3<f32>(1.0),
     );
-    // Return the physical wavelength-dependent attenuation only. The disc's
-    // angular coverage must remain constant as it approaches the horizon;
-    // camera-only glare can fade separately without shrinking the solar core.
-    return relative_transmittance;
+}
+
+struct SunAtmosphereSample {
+    transmittance: vec3<f32>,
+    presentation_elevation: f32,
+}
+
+fn sun_disc_atmosphere_sample(solar_elevation: f32) -> SunAtmosphereSample {
+    let camera_altitude = max(
+        camera.camera_planet_direction_view_altitude.w,
+        0.0,
+    );
+    if camera_altitude < ATMOSPHERE_HEIGHT_METERS {
+        return SunAtmosphereSample(
+            relative_sun_transmittance(camera_altitude, solar_elevation),
+            solar_elevation,
+        );
+    }
+
+    // Outside the atmosphere, a negative local elevation is not a sunset:
+    // "down" is only the direction toward the planet. Attenuate the visual
+    // sun only when its actual camera ray enters the world-space air shell.
+    let camera_position = normalize(
+        camera.camera_planet_direction_view_altitude.xyz,
+    ) * (PLANET_RADIUS_METERS + camera_altitude);
+    let sun_direction = normalize(camera.sun_direction_view.xyz);
+    let radial_dot_sun = dot(camera_position, sun_direction);
+    let discriminant = radial_dot_sun * radial_dot_sun
+        - dot(camera_position, camera_position)
+        + ATMOSPHERE_RADIUS_METERS * ATMOSPHERE_RADIUS_METERS;
+    if discriminant <= 0.0 {
+        return SunAtmosphereSample(vec3<f32>(1.0), 1.0);
+    }
+    let entry_distance = -radial_dot_sun - sqrt(discriminant);
+    if entry_distance <= 0.0 {
+        return SunAtmosphereSample(vec3<f32>(1.0), 1.0);
+    }
+    let entry_position = camera_position + sun_direction * entry_distance;
+    let entry_radius = length(entry_position);
+    let entry_altitude = max(entry_radius - PLANET_RADIUS_METERS, 0.0);
+    let entry_solar_elevation = dot(entry_position / entry_radius, sun_direction);
+    return SunAtmosphereSample(
+        relative_sun_transmittance(entry_altitude, entry_solar_elevation),
+        entry_solar_elevation,
+    );
 }
 
 fn sun_disc_is_fully_occulted() -> bool {
@@ -158,13 +207,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         normalize(camera.camera_planet_direction_view_altitude.xyz),
         normalize(camera.sun_direction_view.xyz),
     );
-    let tint = sun_disc_atmospheric_transmittance(solar_elevation);
+    let atmosphere_sample = sun_disc_atmosphere_sample(solar_elevation);
+    let tint = atmosphere_sample.transmittance;
+    let presentation_elevation = atmosphere_sample.presentation_elevation;
     // Preserve the real angular diameter while atmospheric distance dims and
     // reddens the core. Only the glare/halo receives the stronger visibility
     // rolloff, so a sunset sun does not appear to contract toward a point.
     // A second bounded camera-only optical column prevents the overbright HDR
     // core from clipping its physical red shift back to white at the limb.
-    let low_sun_amount = 1.0 - smoothstep(0.0, 0.25, solar_elevation);
+    let low_sun_amount = 1.0 - smoothstep(0.0, 0.25, presentation_elevation);
     let limb_tint = mix(
         vec3<f32>(1.0),
         vec3<f32>(1.0, 0.20, 0.03),
@@ -176,7 +227,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let core_radiance_scale = mix(
         SUN_CORE_RADIANCE_FLOOR,
         1.0,
-        smoothstep(0.0, 0.25, solar_elevation),
+        smoothstep(0.0, 0.25, presentation_elevation),
     );
     let strongest_channel = max(
         presentation_tint.r,
