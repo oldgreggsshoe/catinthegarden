@@ -5,8 +5,8 @@ use wgpu::util::DeviceExt;
 
 use crate::{atmosphere::SurfaceLightingResources, planet::PLANET_RADIUS_METERS, weather};
 
-const CLOUD_SHELL_ALTITUDE_METERS: f32 = 14_000.0;
-const UPPER_CLOUD_SHELL_ALTITUDE_METERS: f32 = 90_000.0;
+const CLOUD_SHELL_ALTITUDE_METERS: f32 = 90_000.0;
+const UPPER_CLOUD_SHELL_ALTITUDE_METERS: f32 = 166_000.0;
 const CLOUD_SHELL_LONGITUDE_SEGMENTS: usize = 96;
 const CLOUD_SHELL_LATITUDE_SEGMENTS: usize = 48;
 const TEMPORAL_BLEND_SECONDS: f32 = 1.5;
@@ -575,8 +575,18 @@ mod tests {
                 - crate::planet::PLANET_RADIUS_METERS as f32;
 
         assert!(
-            minimum_clearance_meters >= 9_000.0,
+            minimum_clearance_meters >= 85_000.0,
             "lower cloud triangles sag to {minimum_clearance_meters:.3}m above sea level"
+        );
+    }
+
+    #[test]
+    fn cloud_shells_shift_up_one_existing_altitude_slot() {
+        assert_eq!(super::CLOUD_SHELL_ALTITUDE_METERS, 90_000.0);
+        assert_eq!(super::UPPER_CLOUD_SHELL_ALTITUDE_METERS, 166_000.0);
+        assert_eq!(
+            super::UPPER_CLOUD_SHELL_ALTITUDE_METERS - super::CLOUD_SHELL_ALTITUDE_METERS,
+            76_000.0,
         );
     }
 
@@ -591,11 +601,10 @@ mod tests {
         assert!(early_twilight_sun_cosine < horizon_cosine(0.0));
         assert!(early_twilight_sun_cosine > horizon_cosine(super::CLOUD_SHELL_ALTITUDE_METERS));
 
-        let deeper_twilight_sun_cosine = -0.15_f32;
+        let deeper_twilight_sun_cosine = -0.24_f32;
         assert!(deeper_twilight_sun_cosine < horizon_cosine(super::CLOUD_SHELL_ALTITUDE_METERS));
         assert!(
-            deeper_twilight_sun_cosine
-                > horizon_cosine(super::UPPER_CLOUD_SHELL_ALTITUDE_METERS)
+            deeper_twilight_sun_cosine > horizon_cosine(super::UPPER_CLOUD_SHELL_ALTITUDE_METERS)
         );
     }
 

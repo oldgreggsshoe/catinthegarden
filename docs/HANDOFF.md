@@ -3241,3 +3241,32 @@ and `sunset_blue_hour` pass; all five weather-render tests, all 24 weather-physi
 scenario tests, the focused terrain-shadow test, and `cargo check --workspace` pass. Orbit captures
 confirm clear gaps survive while mature regions become more opaque and include grey structure;
 fresh low-flight human tuning remains the final judgement of the requested rain-threatening feel.
+
+## Experimental weather elevated shells and cloud-occluded sun - 22 August 2026
+
+The replacement weather renderer has two shells, not a longer stack. They move upward by one
+existing altitude slot: the former 14km lower shell now occupies the former upper shell's 90km
+altitude, and the upper shell moves to 166km, preserving the established 76km separation. The
+shared weather uniform carries both new radii to visible clouds and terrain-shadow projection, so
+geometry, altitude-aware sunrise/sunset illumination, and shadow placement remain synchronized.
+The 96x48 shell geometry still keeps the lowest planar face above 85km.
+
+The camera-only sun used to render after the alpha-blended cloud pass with a depth-equal test.
+Clouds correctly left depth writes disabled for transparency, but that also let the additive HDR
+disc and halo shine through dense weather. The sun pipeline now binds the same temporal cubemap and
+weather uniform as visible clouds. For the small set of fragments inside the solar halo it
+intersects the camera ray with each shell, converts the view-space intersection back to planet
+direction, and evaluates the shared cloud density with the same three-octave budget as terrain
+shadows. Thin coverage attenuates the light; coverage at or above 0.60 optical opacity removes the
+complete disc and halo. One centre-ray visibility value applies to the whole solar presentation so
+partial attenuation cannot repeat the rejected apparent-sun-shrinking fault. Cameras outside both
+shells with an outward sun ray sample no cloud and retain the signed-off white orbital sun.
+
+New `weather_sun_occlusion` advances 24 exact weather ticks at a sunlit ocean storm, then compares
+the sun centre against nearby cloud. Raster run `weather_sun_occlusion/1787404679-54029` passes with
+0.008 channel contrast against a maximum 0.030 and visibly contains neither disc nor halo.
+`weather_contrast`, `orbital_sun_visibility`, `sunset_blue_hour`, `sun_horizon_visibility`, and
+`stare_at_sun` also pass. A blue-hour assertion was made robust to effectively-black `[1,0,1]`
+quantisation being mistaken for a second warm peak; the real sky samples and thresholds are
+unchanged. All five sun tests, six weather-render tests, 24 weather-physics tests, 22 scenario tests,
+15 debug tests, and `cargo check --workspace` pass.

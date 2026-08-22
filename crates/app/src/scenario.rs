@@ -31,6 +31,7 @@ pub struct ScenarioAssertions {
     pub max_sky_luminance: Option<f32>,
     pub sun_background_sample_uv: Option<[f32; 2]>,
     pub min_visible_sun_contrast: Option<f32>,
+    pub max_occluded_sun_contrast: Option<f32>,
     pub day_surface_sample_uv: Option<[f32; 2]>,
     pub night_surface_sample_uv: Option<[f32; 2]>,
     pub min_day_night_surface_luminance_ratio: Option<f32>,
@@ -86,6 +87,7 @@ impl Default for ScenarioAssertions {
             max_sky_luminance: None,
             sun_background_sample_uv: None,
             min_visible_sun_contrast: None,
+            max_occluded_sun_contrast: None,
             day_surface_sample_uv: None,
             night_surface_sample_uv: None,
             min_day_night_surface_luminance_ratio: None,
@@ -231,6 +233,9 @@ impl ScenarioRunner {
                 include_str!("../scenarios/orbital_sun_visibility.json")
             }
             "weather_contrast" => include_str!("../scenarios/weather_contrast.json"),
+            "weather_sun_occlusion" => {
+                include_str!("../scenarios/weather_sun_occlusion.json")
+            }
             "sun_horizon_visibility" => {
                 include_str!("../scenarios/sun_horizon_visibility.json")
             }
@@ -692,7 +697,8 @@ fn validate_assertions(
         || assertions.max_adjacent_sky_luminance_delta.is_some()
         || assertions.max_adjacent_sky_luminance_increase.is_some()
         || assertions.max_sky_luminance.is_some()
-        || assertions.min_visible_sun_contrast.is_some();
+        || assertions.min_visible_sun_contrast.is_some()
+        || assertions.max_occluded_sun_contrast.is_some();
     if needs_sky_sample && assertions.sky_sample_uv.is_none() {
         return Err("sky image assertions require sky_sample_uv".to_owned());
     }
@@ -702,7 +708,8 @@ fn validate_assertions(
     }) {
         return Err("sky_sample_uv must be finite normalized coordinates".to_owned());
     }
-    if assertions.min_visible_sun_contrast.is_some()
+    if (assertions.min_visible_sun_contrast.is_some()
+        || assertions.max_occluded_sun_contrast.is_some())
         && assertions.sun_background_sample_uv.is_none()
     {
         return Err("sun contrast assertions require sun_background_sample_uv".to_owned());
@@ -778,6 +785,10 @@ fn validate_assertions(
         (
             "minimum visible sun contrast",
             assertions.min_visible_sun_contrast,
+        ),
+        (
+            "maximum occluded sun contrast",
+            assertions.max_occluded_sun_contrast,
         ),
         (
             "minimum day/night surface luminance ratio",
@@ -1211,6 +1222,13 @@ mod tests {
     #[test]
     fn long_weather_steps_expect_at_most_one_spatial_log_per_frame() {
         let scenario = ScenarioRunner::load("weather_contrast").expect("scenario parses");
+        assert_eq!(scenario.expected_log_samples(), 24);
+    }
+
+    #[test]
+    fn weather_sun_occlusion_replays_a_mature_sunlit_ocean_storm() {
+        let scenario = ScenarioRunner::load("weather_sun_occlusion").expect("scenario parses");
+        assert_eq!(scenario.expected_screenshots(), 1);
         assert_eq!(scenario.expected_log_samples(), 24);
     }
 

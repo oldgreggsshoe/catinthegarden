@@ -44,9 +44,29 @@ struct Camera {
 
 @group(0) @binding(0)
 var<uniform> camera: Camera;
+
+struct WeatherRenderUniform {
+    blend: f32,
+    drift_radians: f32,
+    lower_shell_radius_meters: f32,
+    upper_shell_radius_meters: f32,
+    noise_scale: f32,
+    noise_strength: f32,
+    _padding: vec2<f32>,
+}
+
 @group(1) @binding(0)
-var atmosphere_transmittance_lut: texture_2d<f32>;
+var cloud_field_current: texture_cube<f32>;
 @group(1) @binding(1)
+var cloud_field_previous: texture_cube<f32>;
+@group(1) @binding(2)
+var cloud_field_sampler: sampler;
+@group(1) @binding(3)
+var<uniform> weather: WeatherRenderUniform;
+
+@group(2) @binding(0)
+var atmosphere_transmittance_lut: texture_2d<f32>;
+@group(2) @binding(1)
 var atmosphere_physical_sampler: sampler;
 
 struct VertexOutput {
@@ -58,6 +78,78 @@ fn view_direction(ndc: vec2<f32>) -> vec3<f32> {
     let horizontal = ndc.x * camera.projection.x * camera.projection.y;
     let vertical = ndc.y * camera.projection.y;
     return normalize(vec3<f32>(horizontal, vertical, -1.0));
+}
+
+fn view_to_planet(vector: vec3<f32>) -> vec3<f32> {
+    return camera.camera_right.xyz * vector.x
+        + camera.camera_up.xyz * vector.y
+        - camera.camera_forward.xyz * vector.z;
+}
+
+fn cloud_density_on_camera_ray(
+    ray_view: vec3<f32>,
+    shell_radius: f32,
+    shell_index: f32,
+) -> f32 {
+    let camera_position = normalize(
+        camera.camera_planet_direction_view_altitude.xyz,
+    ) * (
+        PLANET_RADIUS_METERS
+            + max(camera.camera_planet_direction_view_altitude.w, 0.0)
+    );
+    let ray_offset = dot(camera_position, ray_view);
+    let discriminant = ray_offset * ray_offset
+        - dot(camera_position, camera_position)
+        + shell_radius * shell_radius;
+    if discriminant <= 0.0 {
+        return 0.0;
+    }
+    let root = sqrt(discriminant);
+    let near_distance = -ray_offset - root;
+    let far_distance = -ray_offset + root;
+    var distance = near_distance;
+    if distance <= 1.0 {
+        distance = far_distance;
+    }
+    if distance <= 1.0 {
+        return 0.0;
+    }
+    let cloud_position_view = camera_position + ray_view * distance;
+    let cloud_direction = normalize(view_to_planet(cloud_position_view));
+    return cloudDensityWithOctaves(cloud_direction, shell_index, 3u);
+}
+
+fn cloud_sun_visibility(ray_view: vec3<f32>) -> f32 {
+    let lower_density = cloud_density_on_camera_ray(
+        ray_view,
+        weather.lower_shell_radius_meters,
+        0.0,
+    );
+    let upper_density = cloud_density_on_camera_ray(
+        ray_view,
+        weather.upper_shell_radius_meters,
+        1.0,
+    );
+    // Match the visible cloud shell's opacity response. Each layer transmits
+    // the light left by the other, so a genuinely opaque storm can hide both
+    // the physical disc and its camera-only halo while a wisp merely dims it.
+    let lower_alpha = max(
+        lower_density,
+        smoothstep(0.25, 0.85, lower_density),
+    );
+    let upper_alpha = max(
+        upper_density,
+        smoothstep(0.25, 0.85, upper_density),
+    );
+    let geometric_transmission = (1.0 - lower_alpha) * (1.0 - upper_alpha);
+    // Alpha describes camera compositing, not the optical depth through a
+    // many-kilometre cloud. Convert it into a steeper light transmission so
+    // an HDR sun cannot remain white merely because ten percent leaks through.
+    let cloud_opacity = 1.0 - geometric_transmission;
+    if cloud_opacity >= 0.60 {
+        return 0.0;
+    }
+    return pow(geometric_transmission, 4.0);
 }
 
 fn sampled_sun_transmittance(
@@ -252,5 +344,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     );
     let radiance = SUN_VISUAL_RADIANCE_SCALE
         * (atmospheric_core + atmospheric_glare);
-    return vec4<f32>(radiance, 1.0);
+    // One centre-ray value attenuates the complete disc and camera halo. This
+    // avoids making the physical disc appear to shrink as it passes behind a
+    // coarse weather cell; an optically thick cell hides it as one object.
+    let cloud_visibility = cloud_sun_visibility(sun);
+    return vec4<f32>(radiance * cloud_visibility, 1.0);
 }

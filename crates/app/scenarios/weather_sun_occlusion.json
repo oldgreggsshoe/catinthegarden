@@ -1,0 +1,52 @@
+{
+  "name": "weather_sun_occlusion",
+  "fixed_timestep_seconds": 600.0,
+  "duration_seconds": 14400.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0.0,
+  "fixed_exposure": true,
+  "screenshot_times_seconds": [
+    14400.0
+  ],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [
+        2325602.2909114766,
+        2380336.196630834,
+        -2360502.822602918
+      ],
+      "look_at": [
+        3198473.851855446,
+        2598554.0868668268,
+        -1924067.0421309331
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        0.8728715609439696,
+        0.2182178902359924,
+        0.4364357804719848
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 45.0
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 1,
+    "sky_sample_uv": [0.5, 0.5],
+    "sun_background_sample_uv": [0.56, 0.5],
+    "max_occluded_sun_contrast": 0.03
+  }
+}

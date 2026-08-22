@@ -3,11 +3,20 @@ pub struct SunRenderer {
     atmosphere_bind_group: wgpu::BindGroup,
 }
 
+fn sun_shader_source() -> String {
+    format!(
+        "{}\n{}",
+        include_str!("sun.wgsl"),
+        include_str!("weather_cloud_density.wgsl"),
+    )
+}
+
 impl SunRenderer {
     pub fn new(
         device: &wgpu::Device,
         hdr_format: wgpu::TextureFormat,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
+        weather_field_bind_group_layout: &wgpu::BindGroupLayout,
         atmosphere: crate::atmosphere::SurfaceLightingResources<'_>,
     ) -> Self {
         let atmosphere_bind_group_layout =
@@ -50,11 +59,15 @@ impl SunRenderer {
             label: Some("sun disc pipeline layout"),
             bind_group_layouts: &[
                 Some(camera_bind_group_layout),
+                Some(weather_field_bind_group_layout),
                 Some(&atmosphere_bind_group_layout),
             ],
             immediate_size: 0,
         });
-        let shader = device.create_shader_module(wgpu::include_wgsl!("sun.wgsl"));
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("sun disc shader"),
+            source: wgpu::ShaderSource::Wgsl(sun_shader_source().into()),
+        });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("sun disc pipeline"),
             layout: Some(&pipeline_layout),
@@ -111,10 +124,12 @@ impl SunRenderer {
         &'pass self,
         render_pass: &mut wgpu::RenderPass<'pass>,
         camera_bind_group: &'pass wgpu::BindGroup,
+        weather_field_bind_group: &'pass wgpu::BindGroup,
     ) {
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, camera_bind_group, &[]);
-        render_pass.set_bind_group(1, &self.atmosphere_bind_group, &[]);
+        render_pass.set_bind_group(1, weather_field_bind_group, &[]);
+        render_pass.set_bind_group(2, &self.atmosphere_bind_group, &[]);
         render_pass.draw(0..3, 0..1);
     }
 }
@@ -140,7 +155,7 @@ mod tests {
             "captured orbital sun ray unexpectedly enters the atmosphere"
         );
 
-        let shader = include_str!("sun.wgsl");
+        let shader = super::sun_shader_source();
         assert!(shader.contains("fn sun_disc_atmosphere_sample("));
         assert!(shader.contains("SunAtmosphereSample(vec3<f32>(1.0), 1.0)"));
     }
@@ -182,8 +197,8 @@ mod tests {
 
     #[test]
     fn visible_sun_disc_controls_the_halo_after_planet_occultation() {
-        let shader = include_str!("sun.wgsl");
-        let module = wgpu::naga::front::wgsl::parse_str(shader)
+        let shader = super::sun_shader_source();
+        let module = wgpu::naga::front::wgsl::parse_str(&shader)
             .expect("sun shader must parse before WGPU creates the pipeline");
         wgpu::naga::valid::Validator::new(
             wgpu::naga::valid::ValidationFlags::all(),
@@ -197,5 +212,20 @@ mod tests {
         );
         assert!(shader.contains("if sun_disc_is_fully_occulted()"));
         assert!(shader.contains("discard;"));
+    }
+
+    #[test]
+    fn visible_sun_samples_shared_cloud_density_along_the_camera_ray() {
+        let shader = include_str!("sun.wgsl");
+        let renderer = include_str!("sun.rs");
+        assert!(shader.contains("var cloud_field_current: texture_cube<f32>;"));
+        assert!(shader.contains("fn cloud_sun_visibility("));
+        assert!(shader.contains("cloudDensityWithOctaves(cloud_direction, shell_index, 3u)"));
+        assert!(shader.contains("if cloud_opacity >= 0.60"));
+        assert!(shader.contains("pow(geometric_transmission, 4.0)"));
+        assert!(shader.contains("cloud_sun_visibility(sun)"));
+        assert!(shader.contains("radiance * cloud_visibility"));
+        assert!(renderer.contains("weather_field_bind_group_layout"));
+        assert!(renderer.contains("weather_field_bind_group"));
     }
 }

@@ -740,6 +740,31 @@ impl AssertionTracker {
                 ),
             ));
         }
+        if let Some(maximum) = self.config.max_occluded_sun_contrast {
+            let maximum_observed = self
+                .sky_samples
+                .iter()
+                .zip(&self.sun_background_samples)
+                .map(|(sun, background)| {
+                    sun.iter()
+                        .zip(background)
+                        .map(|(sun, background)| sun.abs_diff(*background) as f32 / 255.0)
+                        .fold(0.0_f32, f32::max)
+                })
+                .reduce(f32::max);
+            results.push(assertion_result(
+                "cloud_occludes_sun_disc_and_halo",
+                maximum_observed.is_some_and(|observed| observed <= maximum),
+                format!(
+                    "allowed channel contrast {maximum:.3}, observed {} from {} paired samples",
+                    maximum_observed
+                        .map_or_else(|| "none".to_owned(), |observed| format!("{observed:.3}")),
+                    self.sky_samples
+                        .len()
+                        .min(self.sun_background_samples.len()),
+                ),
+            ));
+        }
         if let Some(maximum_luminance) = self.config.max_sky_luminance {
             let maximum_observed = self
                 .sky_samples
@@ -876,6 +901,9 @@ fn blue_hour_metrics(samples: &[[u8; 3]], minimum_blue_red_ratio: f32) -> Option
     let warmest_index = samples
         .iter()
         .enumerate()
+        // One remaining red/blue code value after the sky is effectively
+        // black is quantisation noise, not a second warm sunset peak.
+        .filter(|(_, sample)| sky_luminance(**sample) > 1.0 / 255.0)
         .max_by(|(_, left), (_, right)| red_blue_ratio(**left).total_cmp(&red_blue_ratio(**right)))
         .map(|(index, _)| index)?;
     let (peak_index, peak_sample) = samples
@@ -1546,6 +1574,7 @@ mod tests {
             max_sky_luminance: None,
             sun_background_sample_uv: None,
             min_visible_sun_contrast: None,
+            max_occluded_sun_contrast: None,
             day_surface_sample_uv: None,
             night_surface_sample_uv: None,
             min_day_night_surface_luminance_ratio: None,
@@ -1835,6 +1864,15 @@ mod tests {
             )
             .passed
         );
+
+        let mut config = ScenarioAssertions::default();
+        config.sky_sample_uv = Some([0.5, 0.5]);
+        config.sun_background_sample_uv = Some([0.56, 0.5]);
+        config.max_occluded_sun_contrast = Some(0.03);
+        let mut occluded = AssertionTracker::new(config);
+        occluded.observe_sky_sample([171, 172, 183]);
+        occluded.observe_sun_background_sample([169, 170, 182]);
+        assert!(result(&occluded.results(1), "cloud_occludes_sun_disc_and_halo").passed);
     }
 
     #[test]
@@ -1873,6 +1911,22 @@ mod tests {
         assert!(!result(&results, "sky_avoids_green_dominant_hues").passed);
         assert!(!result(&results, "post_sunset_sky_turns_blue").passed);
         assert!(!result(&results, "blue_hour_fades_toward_night").passed);
+    }
+
+    #[test]
+    fn blue_hour_ignores_effectively_black_colour_quantisation() {
+        let samples = [
+            [184, 188, 204],
+            [156, 142, 158],
+            [97, 72, 106],
+            [27, 18, 42],
+            [1, 0, 1],
+            [0, 0, 0],
+        ];
+        let metrics = super::blue_hour_metrics(&samples, 1.2)
+            .expect("near-black magenta must not replace the real warm peak");
+        assert_eq!(metrics.peak_index, 3);
+        assert!(metrics.peak_luminance >= 0.03);
     }
 
     #[test]

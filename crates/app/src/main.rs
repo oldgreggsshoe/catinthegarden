@@ -921,6 +921,7 @@ impl State {
             &device,
             hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
+            weather_clouds.field_bind_group_layout(),
             atmosphere.surface_lighting_resources(),
         );
 
@@ -2579,7 +2580,11 @@ impl State {
                     && self.render_debug_mode == planet::RenderDebugMode::Final
                     && self.foveated.warp_debug_visible())
             {
-                self.sun.draw(&mut render_pass, &self.camera_bind_group);
+                self.sun.draw(
+                    &mut render_pass,
+                    &self.camera_bind_group,
+                    self.weather_clouds.field_bind_group(),
+                );
             }
         }
         self.hdr.encode_blur(
