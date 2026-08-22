@@ -3436,3 +3436,31 @@ The exact captured pose and 813,600s weather state now visibly retain broken hig
 `weather_contrast/1787426114-37238` keeps clear holes between broad systems, while low-altitude
 `landing_site_eye_level/1787426132-37442` remains a broken cloud ceiling rather than a uniform film.
 All eight focused weather-render tests, including composed WGSL parse/validation, pass.
+
+## Terrain mist atmospheric-path correction - 22 August 2026
+
+The extra terrain mist added for visual scale was not actually measuring air along the view ray. It
+used a 4-120km camera-to-fragment distance ramp and multiplied that by an explicit camera-clearance
+factor that fell from one to zero over 0-200km. Consequently, otherwise identical terrain rays lost
+all extra mist merely because the camera climbed above 200km. This was the altitude-dependent switch
+seen in `manual/1787424675-25273`; the physical aerial-perspective path remained active underneath,
+but the added presentation mist did not follow the intended rule.
+
+`terrain_fog` now intersects the finite camera-to-surface segment with the existing 2,880km gameplay
+atmosphere shell. It converts that in-atmosphere segment to a sea-level-equivalent air distance using
+the same 72km Rayleigh density scale, endpoint density average, and bounded 1-12x grazing air mass as
+the existing aerial transmittance approximation. Mist amount is `1-exp(-airPath/500km)`. There is no
+camera-altitude fade and no raw 4-120km scene-distance threshold. A vertical ray from space crosses
+one effective 72km air column and receives 13.4% extra mist rather than zero or saturation. At
+1,440km camera altitude, a terrain-horizon ray reaches the 12-air-mass / 864km equivalent column and
+receives 82.2%; the longer atmospheric path itself creates the stronger result.
+
+New deterministic scenario `atmospheric_mist_paths` captures 25km grazing, 1,440km grazing, 1,440km
+radial, and 4,000km radial views with fixed daylight and exposure. Baseline
+`atmospheric_mist_paths/1787427784-51836` demonstrates the old clearance switch; fixed
+`atmospheric_mist_paths/1787427731-51331` retains modest radial haze and strong grazing haze. Both
+land and flat-owned water keep the shared physical-sky fog endpoint. Numeric radial/grazing tests,
+scenario parsing, flat land/water coverage, and composed planet-WGSL parse/validation pass. The
+controlled run's median logged frame time was 16.623ms fixed versus 16.752ms baseline under the
+present capped presentation path, so it shows no detected regression but is not an uncapped GPU
+benchmark.

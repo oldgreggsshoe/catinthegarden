@@ -1,0 +1,63 @@
+{
+  "name": "atmospheric_mist_paths",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 7.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_rotation_time_scale": 0.0,
+  "fixed_exposure": true,
+  "screenshot_times_seconds": [0.5, 2.5, 4.5, 6.5],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [4025000.0, 0.0, 0.0],
+      "look_at": [3975155.2795031057, 0.0, 445129.7606750036]
+    },
+    {
+      "time_s": 1.0,
+      "position": [4025000.0, 0.0, 0.0],
+      "look_at": [3975155.2795031057, 0.0, 445129.7606750036]
+    },
+    {
+      "time_s": 2.0,
+      "position": [5440000.0, 0.0, 0.0],
+      "look_at": [2941176.470588235, 0.0, 2710992.616894803]
+    },
+    {
+      "time_s": 3.0,
+      "position": [5440000.0, 0.0, 0.0],
+      "look_at": [2941176.470588235, 0.0, 2710992.616894803]
+    },
+    {
+      "time_s": 4.0,
+      "position": [5440000.0, 0.0, 0.0],
+      "look_at": [0.0, 0.0, 0.0]
+    },
+    {
+      "time_s": 5.0,
+      "position": [5440000.0, 0.0, 0.0],
+      "look_at": [0.0, 0.0, 0.0]
+    },
+    {
+      "time_s": 6.0,
+      "position": [8000000.0, 0.0, 0.0],
+      "look_at": [0.0, 0.0, 0.0]
+    },
+    {
+      "time_s": 7.0,
+      "position": [8000000.0, 0.0, 0.0],
+      "look_at": [0.0, 0.0, 0.0]
+    }
+  ],
+  "sun_waypoints": [
+    { "time_s": 0.0, "direction": [1.0, 0.2, 0.5] }
+  ],
+  "vertical_fov_waypoints": [
+    { "time_s": 0.0, "vertical_fov_degrees": 45.0 }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 4
+  }
+}

@@ -4306,10 +4306,10 @@ mod tests {
             );
         }
         assert!(atmosphere.contains("ATMOSPHERE_HEIGHT_METERS / ATMOSPHERE_VERTICAL_SCALE"));
-        assert!(planet_shader.contains("const TERRAIN_FOG_START_METERS: f32 = 4000.0;"));
-        assert!(planet_shader.contains("const TERRAIN_FOG_END_METERS: f32 = 120000.0;"));
-        assert!(planet_shader
-            .contains("const TERRAIN_FOG_MAX_CAMERA_CLEARANCE_METERS: f32 = 200000.0;"));
+        assert!(
+            planet_shader
+                .contains("const TERRAIN_FOG_AIR_PATH_E_FOLD_METERS: f32 = 500000.0;")
+        );
     }
 
     #[test]
@@ -4366,10 +4366,33 @@ mod tests {
         let shader = planet_shader_source();
         assert!(shader.contains("let camera_to_surface_ray_view = normalize("));
         assert!(shader.contains("physical_camera_sky_radiance(camera_to_surface_ray_view)"));
-        assert!(shader.contains(
-            "camera.camera_planet_direction_view_altitude.w - surface_altitude_meters"
-        ));
-        assert!(shader.contains("let fog_amount = distance_amount * near_surface_amount;"));
+        assert!(shader.contains("fn terrain_fog_air_path_meters("));
+        assert!(shader.contains("let view_interval = atmosphere_interval("));
+        assert!(shader.contains("let bounded_path_length = min("));
+        assert!(shader.contains("let average_density = 0.5"));
+        assert!(shader.contains("-air_path_meters / TERRAIN_FOG_AIR_PATH_E_FOLD_METERS"));
+        assert!(!shader.contains("near_surface_amount"));
+        assert!(!shader.contains("TERRAIN_FOG_MAX_CAMERA_CLEARANCE_METERS"));
+    }
+
+    #[test]
+    fn terrain_fog_air_path_is_small_radially_and_large_at_a_grazing_angle() {
+        let fog_amount = |equivalent_air_path_meters: f64| {
+            1.0 - (-equivalent_air_path_meters / 500_000.0).exp()
+        };
+        // A space-to-ground radial ray starts at negligible density and ends
+        // at sea-level density. The shader's bounded endpoint average is one
+        // effective 72km scale height.
+        let radial_air_path_meters = 72_000.0;
+        // A long horizon path reaches the 12x air-mass cap, with the same
+        // half-density endpoint average: 0.5 * 2H * 12 = 12H.
+        let grazing_air_path_meters = 12.0 * 72_000.0;
+        let radial_fog = fog_amount(radial_air_path_meters);
+        let grazing_fog = fog_amount(grazing_air_path_meters);
+
+        assert!((0.10..0.20).contains(&radial_fog), "radial fog {radial_fog}");
+        assert!((0.75..0.90).contains(&grazing_fog), "grazing fog {grazing_fog}");
+        assert!(grazing_fog > radial_fog * 5.0);
     }
 
     #[test]

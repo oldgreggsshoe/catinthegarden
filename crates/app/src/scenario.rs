@@ -227,6 +227,9 @@ impl ScenarioRunner {
             "orbital_atmosphere_continuity" => {
                 include_str!("../scenarios/orbital_atmosphere_continuity.json")
             }
+            "atmospheric_mist_paths" => {
+                include_str!("../scenarios/atmospheric_mist_paths.json")
+            }
             "ground_to_orbit" => include_str!("../scenarios/ground_to_orbit.json"),
             "stare_at_sun" => include_str!("../scenarios/stare_at_sun.json"),
             "orbital_sun_visibility" => {
@@ -1223,6 +1226,16 @@ mod tests {
     fn long_weather_steps_expect_at_most_one_spatial_log_per_frame() {
         let scenario = ScenarioRunner::load("weather_contrast").expect("scenario parses");
         assert_eq!(scenario.expected_log_samples(), 24);
+    }
+
+    #[test]
+    fn atmospheric_mist_paths_capture_grazing_and_radial_air_columns() {
+        let scenario = ScenarioRunner::load("atmospheric_mist_paths").expect("scenario parses");
+        assert_eq!(scenario.expected_screenshots(), 4);
+        assert_eq!(scenario.definition.waypoints.len(), 8);
+        assert_eq!(scenario.definition.waypoints[2].position[0], 5_440_000.0);
+        assert_eq!(scenario.definition.waypoints[4].look_at, [0.0; 3]);
+        assert_eq!(scenario.definition.waypoints[6].position[0], 8_000_000.0);
     }
 
     #[test]

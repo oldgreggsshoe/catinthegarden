@@ -167,9 +167,11 @@ const VEGETATION_AERIAL_IN_SCATTER_SCALE: f32 = 0.42;
 const OCEAN_REFLECTION_SCALE: f32 = 0.35;
 const OCEAN_SUN_GLINT_SCALE: f32 = 3.0;
 const TWILIGHT_SHADOW_TRANSITION_METERS: f32 = 72000.0;
-const TERRAIN_FOG_START_METERS: f32 = 4000.0;
-const TERRAIN_FOG_END_METERS: f32 = 120000.0;
-const TERRAIN_FOG_MAX_CAMERA_CLEARANCE_METERS: f32 = 200000.0;
+// Extra distance mist is driven by the sea-level-equivalent air column along
+// the actual camera-to-surface segment. A vertical orbital view therefore
+// crosses roughly one scale height of effective air, while a grazing view can
+// cross many. There is deliberately no authored camera-altitude fade.
+const TERRAIN_FOG_AIR_PATH_E_FOLD_METERS: f32 = 500000.0;
 const TERRAIN_MATERIAL_TILE_METERS: f32 = 2048.0;
 // Close-range material repeat. The 2km tile above covers a whole landscape, so
 // standing on the ground it is one flat colour; this is the tile that actually
@@ -1282,27 +1284,68 @@ struct TerrainFog {
     color: vec3<f32>,
 }
 
+fn terrain_fog_air_path_meters(
+    camera_relative_view_position: vec3<f32>,
+    surface_direction: vec3<f32>,
+    surface_altitude_meters: f32,
+) -> f32 {
+    let distance_meters = length(camera_relative_view_position);
+    if distance_meters <= 1.0e-3 {
+        return 0.0;
+    }
+    let view_direction = camera_relative_view_position / distance_meters;
+    let camera_radius = PLANET_RADIUS_METERS
+        + camera.camera_planet_direction_view_altitude.w;
+    let radial_dot_view = camera_radius * dot(
+        camera.camera_planet_direction_view_altitude.xyz,
+        view_direction,
+    );
+    let view_interval = atmosphere_interval(camera_radius, radial_dot_view);
+    let view_start = max(view_interval.x, 0.0);
+    let view_end = min(view_interval.y, distance_meters);
+    if view_end <= view_start {
+        return 0.0;
+    }
+
+    let atmospheric_view_length = view_end - view_start;
+    let start_altitude = altitude_along_ray(
+        camera_radius,
+        radial_dot_view,
+        view_start,
+    );
+    let end_altitude = max(surface_altitude_meters, 0.0);
+    let surface_to_camera_zenith_cosine = max(
+        dot(planet_to_view(surface_direction), -view_direction),
+        0.0,
+    );
+    let air_mass = min(
+        1.0 / max(surface_to_camera_zenith_cosine, 0.08),
+        12.0,
+    );
+    let bounded_path_length = min(
+        atmospheric_view_length,
+        2.0 * RAYLEIGH_SCALE_HEIGHT_METERS * air_mass,
+    );
+    let average_density = 0.5
+        * (density(start_altitude, RAYLEIGH_SCALE_HEIGHT_METERS)
+            + density(end_altitude, RAYLEIGH_SCALE_HEIGHT_METERS));
+    return average_density * bounded_path_length;
+}
+
 fn terrain_fog(
     camera_relative_view_position: vec3<f32>,
     surface_direction: vec3<f32>,
     surface_altitude_meters: f32,
 ) -> TerrainFog {
-    let distance_amount = smoothstep(
-        TERRAIN_FOG_START_METERS,
-        TERRAIN_FOG_END_METERS,
-        length(camera_relative_view_position),
+    let air_path_meters = terrain_fog_air_path_meters(
+        camera_relative_view_position,
+        surface_direction,
+        surface_altitude_meters,
     );
-    let camera_clearance_meters = max(
-        camera.camera_planet_direction_view_altitude.w - surface_altitude_meters,
-        0.0,
+    let fog_amount = 1.0 - exp(
+        -air_path_meters / TERRAIN_FOG_AIR_PATH_E_FOLD_METERS,
     );
-    let near_surface_amount = 1.0 - smoothstep(
-        0.0,
-        TERRAIN_FOG_MAX_CAMERA_CLEARANCE_METERS,
-        camera_clearance_meters,
-    );
-    let fog_amount = distance_amount * near_surface_amount;
-    if fog_amount <= 0.0 {
+    if fog_amount <= 1.0e-4 {
         return TerrainFog(0.0, vec3<f32>(0.0));
     }
     // Match the fog endpoint to the same camera sky ray used by the
