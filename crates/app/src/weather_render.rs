@@ -67,6 +67,8 @@ pub struct WeatherCloudRenderer {
     atmosphere_bind_group: wgpu::BindGroup,
     field_textures: [wgpu::Texture; 2],
     field_views: [wgpu::TextureView; 2],
+    surface_textures: [wgpu::Texture; 2],
+    surface_views: [wgpu::TextureView; 2],
     sampler: wgpu::Sampler,
     uniform_buffer: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
@@ -106,6 +108,8 @@ impl WeatherCloudRenderer {
                         },
                         count: None,
                     },
+                    texture_array_entry(4),
+                    texture_array_entry(5),
                 ],
             });
         let atmosphere_bind_group_layout =
@@ -214,6 +218,21 @@ impl WeatherCloudRenderer {
                 ..Default::default()
             })
         });
+        let surface_texture_desc = wgpu::TextureDescriptor {
+            label: Some("weather surface coupling field"),
+            ..texture_desc
+        };
+        let surface_textures = [
+            device.create_texture(&surface_texture_desc),
+            device.create_texture(&surface_texture_desc),
+        ];
+        let surface_views = surface_textures.each_ref().map(|texture| {
+            texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("weather surface coupling cube view"),
+                dimension: Some(wgpu::TextureViewDimension::Cube),
+                ..Default::default()
+            })
+        });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("weather cloud field sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -237,6 +256,8 @@ impl WeatherCloudRenderer {
             atmosphere_bind_group,
             field_textures,
             field_views,
+            surface_textures,
+            surface_views,
             sampler,
             uniform_buffer,
             vertex_buffer: device.create_buffer(&wgpu::BufferDescriptor {
@@ -260,6 +281,10 @@ impl WeatherCloudRenderer {
         renderer.vertex_count = vertices.len() as u32;
         renderer.write_uniform(queue);
         let zeroes = vec![0_u8; padded_field_size()];
+        let mut surface_zeroes = vec![0_u8; padded_field_size()];
+        for texel in surface_zeroes.chunks_exact_mut(4) {
+            texel[3] = 255;
+        }
         for texture in &renderer.field_textures {
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
@@ -281,10 +306,37 @@ impl WeatherCloudRenderer {
                 },
             );
         }
+        for texture in &renderer.surface_textures {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &surface_zeroes,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(CLOUD_TEXTURE_BYTES_PER_ROW),
+                    rows_per_image: Some(weather::WEATHER_FIELD_TEXTURE_SIDE),
+                },
+                wgpu::Extent3d {
+                    width: weather::WEATHER_FIELD_TEXTURE_SIDE,
+                    height: weather::WEATHER_FIELD_TEXTURE_SIDE,
+                    depth_or_array_layers: 6,
+                },
+            );
+        }
         renderer
     }
 
-    pub fn replace_field(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, data: &[u8]) {
+    pub fn replace_fields(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        data: &[u8],
+        surface_data: &[u8],
+    ) {
         assert_eq!(
             data.len(),
             weather::WEATHER_FIELD_TEXTURE_SIDE as usize
@@ -292,8 +344,10 @@ impl WeatherCloudRenderer {
                 * 6
                 * 4
         );
+        assert_eq!(surface_data.len(), data.len());
         let next = 1 - self.current_texture;
         let padded = pad_field_rows(data);
+        let padded_surface = pad_field_rows(surface_data);
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.field_textures[next],
@@ -313,6 +367,25 @@ impl WeatherCloudRenderer {
                 depth_or_array_layers: 6,
             },
         );
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.surface_textures[next],
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &padded_surface,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(CLOUD_TEXTURE_BYTES_PER_ROW),
+                rows_per_image: Some(weather::WEATHER_FIELD_TEXTURE_SIDE),
+            },
+            wgpu::Extent3d {
+                width: weather::WEATHER_FIELD_TEXTURE_SIDE,
+                height: weather::WEATHER_FIELD_TEXTURE_SIDE,
+                depth_or_array_layers: 6,
+            },
+        );
         self.current_texture = next;
         self.blend = 0.0;
         self.field_bind_group = Some(self.create_field_bind_group(device));
@@ -321,8 +394,14 @@ impl WeatherCloudRenderer {
 
     /// Installs the first field into both temporal textures so the weather
     /// shell is visible on the first rendered frame. Subsequent updates use
-    /// `replace_field` and retain the normal cross-fade.
-    pub fn initialize_field(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, data: &[u8]) {
+    /// `replace_fields` and retain the normal cross-fade.
+    pub fn initialize_fields(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        data: &[u8],
+        surface_data: &[u8],
+    ) {
         assert_eq!(
             data.len(),
             weather::WEATHER_FIELD_TEXTURE_SIDE as usize
@@ -330,7 +409,9 @@ impl WeatherCloudRenderer {
                 * 6
                 * 4
         );
+        assert_eq!(surface_data.len(), data.len());
         let padded = pad_field_rows(data);
+        let padded_surface = pad_field_rows(surface_data);
         for texture in &self.field_textures {
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
@@ -340,6 +421,27 @@ impl WeatherCloudRenderer {
                     aspect: wgpu::TextureAspect::All,
                 },
                 &padded,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(CLOUD_TEXTURE_BYTES_PER_ROW),
+                    rows_per_image: Some(weather::WEATHER_FIELD_TEXTURE_SIDE),
+                },
+                wgpu::Extent3d {
+                    width: weather::WEATHER_FIELD_TEXTURE_SIDE,
+                    height: weather::WEATHER_FIELD_TEXTURE_SIDE,
+                    depth_or_array_layers: 6,
+                },
+            );
+        }
+        for texture in &self.surface_textures {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &padded_surface,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(CLOUD_TEXTURE_BYTES_PER_ROW),
@@ -423,6 +525,18 @@ impl WeatherCloudRenderer {
                     binding: 3,
                     resource: self.uniform_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(
+                        &self.surface_views[self.current_texture],
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(
+                        &self.surface_views[1 - self.current_texture],
+                    ),
+                },
             ],
         })
     }
@@ -446,10 +560,86 @@ impl WeatherCloudRenderer {
     }
 }
 
+const RAIN_PARTICLE_COUNT: u32 = 384;
+
+/// Lightweight camera-local rain streaks. The precipitation channel remains
+/// sampled from the same interpolated weather cubemap as cloud shadows; the
+/// particles are only a presentation layer and do not own water state.
+pub struct RainRenderer {
+    pipeline: wgpu::RenderPipeline,
+}
+
+impl RainRenderer {
+    pub fn new(
+        device: &wgpu::Device,
+        hdr_format: wgpu::TextureFormat,
+        camera_bind_group_layout: &wgpu::BindGroupLayout,
+        field_bind_group_layout: &wgpu::BindGroupLayout,
+    ) -> Self {
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("weather rain pipeline layout"),
+            bind_group_layouts: &[Some(camera_bind_group_layout), Some(field_bind_group_layout)],
+            immediate_size: 0,
+        });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("weather rain shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("weather_rain.wgsl").into()),
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("weather rain pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: hdr_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Greater),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        Self { pipeline }
+    }
+
+    pub fn draw<'pass>(
+        &'pass self,
+        render_pass: &mut wgpu::RenderPass<'pass>,
+        camera_bind_group: &'pass wgpu::BindGroup,
+        field_bind_group: &'pass wgpu::BindGroup,
+    ) {
+        render_pass.set_pipeline(&self.pipeline);
+        render_pass.set_bind_group(0, camera_bind_group, &[]);
+        render_pass.set_bind_group(1, field_bind_group, &[]);
+        render_pass.draw(0..RAIN_PARTICLE_COUNT * 2, 0..1);
+    }
+}
+
 fn texture_array_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
-        visibility: wgpu::ShaderStages::FRAGMENT,
+        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
         ty: wgpu::BindingType::Texture {
             sample_type: wgpu::TextureSampleType::Float { filterable: true },
             view_dimension: wgpu::TextureViewDimension::Cube,
@@ -541,6 +731,8 @@ mod tests {
         .expect("weather cloud shader must validate");
         assert!(shader.contains("cloud_field_current"));
         assert!(shader.contains("cloud_field_previous"));
+        assert!(shader.contains("weather_surface_current"));
+        assert!(shader.contains("weather_surface_previous"));
         assert!(shader.contains("mix(previous, current, weather.blend)"));
         assert!(shader.contains("@builtin(instance_index) instance_index"));
         assert!(shader.contains("fn flow_warp"));
@@ -569,6 +761,21 @@ mod tests {
         assert!(!shader.contains("let precursor = select(0.08"));
         assert!(shader.contains("texture_cube<f32>"));
         assert!(!shader.contains("fn cube_field_uv"));
+    }
+
+    #[test]
+    fn weather_rain_shader_parses_and_reads_precipitation() {
+        let shader = include_str!("weather_rain.wgsl");
+        let module =
+            wgpu::naga::front::wgsl::parse_str(shader).expect("weather rain shader must parse");
+        wgpu::naga::valid::Validator::new(
+            wgpu::naga::valid::ValidationFlags::all(),
+            wgpu::naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("weather rain shader must validate");
+        assert!(shader.contains("textureSampleLevel(cloud_field_current"));
+        assert!(shader.contains("mix(previous, current, weather.blend)"));
     }
 
     #[test]

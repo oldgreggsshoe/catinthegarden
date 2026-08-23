@@ -77,6 +77,7 @@ fn flow_warp(direction: vec3<f32>, shell_index: u32) -> vec3<f32> {
 struct CloudSample {
     density: f32,
     storm: f32,
+    precipitation: f32,
 }
 
 fn cloudSampleWithOctaves(dir: vec3<f32>, t: f32, octave_count: u32) -> CloudSample {
@@ -128,6 +129,7 @@ fn cloudSampleWithOctaves(dir: vec3<f32>, t: f32, octave_count: u32) -> CloudSam
     return CloudSample(
         clamp(max(condensed, precursor_density), 0.0, 1.0),
         clamp(field.g, 0.0, 1.0),
+        clamp(field.a, 0.0, 1.0),
     );
 }
 

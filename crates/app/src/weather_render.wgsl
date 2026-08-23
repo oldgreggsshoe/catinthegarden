@@ -37,6 +37,11 @@ struct WeatherRenderUniform {
 @group(1) @binding(3)
 var<uniform> weather: WeatherRenderUniform;
 
+@group(1) @binding(4)
+var weather_surface_current: texture_cube<f32>;
+@group(1) @binding(5)
+var weather_surface_previous: texture_cube<f32>;
+
 @group(2) @binding(0)
 var atmosphere_transmittance_lut: texture_2d<f32>;
 @group(2) @binding(1)

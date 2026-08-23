@@ -3498,3 +3498,22 @@ seam-safe procedural relief remains only as a deterministic fallback for placeho
 unit tests. `baked_terrain_samples_override_the_climate_fallback` plus all 31 focused weather tests
 pass; milestone 14 (rain presentation, wet-ground response, and snow) is the next implementation
 slice.
+
+## Experimental weather milestone 14 - 24 August 2026
+
+Precipitation now has visible surface consequences. Cold land routes the bounded liquid-equivalent
+precipitation into `snow_cover`; warm cells melt that cover with a two-hour relaxation and return the
+melt to the coupled ground-moisture reservoir. Ocean and lake cells remain outlets. Diagnostics expose
+snow min/max/mean alongside moisture and precipitation, and the RGBA8 surface cubemap carries ground
+moisture, snow cover, and normalized temperature alongside the cloud cubemap. The existing smooth and
+flat terrain paths consume that shared, temporally interpolated surface field: wet land darkens and
+receives a bounded per-fragment specular response, while snow blends toward a neutral cover tint.
+
+A 384-particle camera-local rain pass reads the same current/future precipitation cubemaps and fades
+with the interpolated field, so rain presentation cannot disagree with terrain wetness or cloud state.
+It is depth-tested against the scene, disabled above 20km camera altitude, and uses alpha-blended line
+streaks rather than a second weather simulation. The shared cloud-density source remains the sole field
+lookup for visible clouds and future consumers. Forty-three focused weather tests (including snow melt,
+texture packing, and rain-shader parsing), seven weather-render tests, and `cargo check -p
+catinthegarden-app` pass. Fresh Quadro visual tuning of rain opacity and snow palette is still required
+before promoting milestone 15 polish.

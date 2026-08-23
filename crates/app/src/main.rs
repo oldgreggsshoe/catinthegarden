@@ -666,6 +666,7 @@ struct State {
     atmosphere: atmosphere::AtmosphereRenderer,
     weather: weather::WeatherState,
     weather_clouds: weather_render::WeatherCloudRenderer,
+    rain: weather_render::RainRenderer,
     sun: sun::SunRenderer,
     foveated: foveated::FoveatedRenderer,
     terrain: terrain::TerrainRenderer,
@@ -897,16 +898,30 @@ impl State {
             &camera_bind_group_layout,
             atmosphere.surface_lighting_resources(),
         );
-        weather_clouds.initialize_field(&device, &queue, &weather.cloud_field_texture_data());
+        weather_clouds.initialize_fields(
+            &device,
+            &queue,
+            &weather.cloud_field_texture_data(),
+            &weather.surface_field_texture_data(),
+        );
         if scenario.is_none() {
-            weather_clouds.replace_field(
+            weather_clouds.replace_fields(
                 &device,
                 &queue,
                 &weather
                     .next_cloud_field_texture_data()
                     .expect("interactive weather target must be prepared before rendering"),
+                &weather
+                    .next_surface_field_texture_data()
+                    .expect("interactive weather surface target must be prepared before rendering"),
             );
         }
+        let rain = weather_render::RainRenderer::new(
+            &device,
+            hdr::HdrRenderer::SCENE_FORMAT,
+            &camera_bind_group_layout,
+            weather_clouds.field_bind_group_layout(),
+        );
         let foveated = foveated::FoveatedRenderer::new(
             &device,
             &queue,
@@ -970,6 +985,7 @@ impl State {
             atmosphere,
             weather,
             weather_clouds,
+            rain,
             sun,
             foveated,
             terrain,
@@ -1505,8 +1521,12 @@ impl State {
         let sun_direction = planet::planet_local_vector(self.sun_direction, planet_rotation);
         self.weather.step_once(sun_direction);
         let weather_field = self.weather.cloud_field_texture_data();
-        self.weather_clouds
-            .replace_field(&self.device, &self.queue, &weather_field);
+        self.weather_clouds.replace_fields(
+            &self.device,
+            &self.queue,
+            &weather_field,
+            &self.weather.surface_field_texture_data(),
+        );
         self.mark_hud_dirty();
     }
 
@@ -1677,8 +1697,15 @@ impl State {
                 .weather
                 .next_cloud_field_texture_data()
                 .expect("prepared weather target");
-            self.weather_clouds
-                .replace_field(&self.device, &self.queue, &weather_target);
+            self.weather_clouds.replace_fields(
+                &self.device,
+                &self.queue,
+                &weather_target,
+                &self
+                    .weather
+                    .next_surface_field_texture_data()
+                    .expect("prepared weather surface target"),
+            );
         }
         // Weather keeps evolving while F10 freezes the scene clock; the
         // planet-local sun direction above remains frozen with the scene.
@@ -1698,11 +1725,19 @@ impl State {
                 .expect("advanced weather target");
             if weather_steps > 1 {
                 let weather_field = self.weather.cloud_field_texture_data();
+                let surface_field = self.weather.surface_field_texture_data();
                 self.weather_clouds
-                    .initialize_field(&self.device, &self.queue, &weather_field);
+                    .initialize_fields(&self.device, &self.queue, &weather_field, &surface_field);
             }
-            self.weather_clouds
-                .replace_field(&self.device, &self.queue, &weather_target);
+            self.weather_clouds.replace_fields(
+                &self.device,
+                &self.queue,
+                &weather_target,
+                &self
+                    .weather
+                    .next_surface_field_texture_data()
+                    .expect("advanced weather surface target"),
+            );
         }
         self.weather_clouds.set_temporal_state(
             &self.queue,
@@ -2561,6 +2596,11 @@ impl State {
             });
             self.weather_clouds
                 .draw(&mut render_pass, &self.camera_bind_group);
+            self.rain.draw(
+                &mut render_pass,
+                &self.camera_bind_group,
+                self.weather_clouds.field_bind_group(),
+            );
         }
         let pending_depth_probe = probe_requested.then(|| {
             probe::schedule_depth_readback(

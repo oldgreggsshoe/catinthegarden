@@ -37,6 +37,9 @@ const WEATHER_MAX_LAPSE_DISPLACEMENT_METERS_PER_STEP: f64 = 750.0;
 const WEATHER_PRECIPITATION_TIME_CONSTANT_SECONDS: f64 = 3_600.0;
 const WEATHER_CLOUD_PRECIPITATION_THRESHOLD: f64 = 0.18;
 const WEATHER_CLOUD_WATER_DEPTH_MILLIMETERS: f64 = 2.0;
+const WEATHER_SNOW_MELT_TIME_CONSTANT_SECONDS: f64 = 7_200.0;
+const WEATHER_SNOW_ACCUMULATION_FRACTION: f64 = 0.45;
+const WEATHER_GPU_PRECIPITATION_SCALE_MILLIMETERS_PER_HOUR: f64 = 20.0;
 const WEATHER_LATENT_HEATING_KELVIN_PER_UNIT: f64 = 2.5;
 const WEATHER_STORM_LATENT_HEAT_SCALE_KELVIN: f64 = 2.5;
 const WEATHER_FACE_COUNT: usize = 6;
@@ -215,6 +218,7 @@ pub struct WeatherCellState {
     pub surface_elevation_meters: f32,
     pub orographic_uplift_meters_per_second: f32,
     pub precipitation_millimeters_per_hour: f32,
+    pub snow_cover: f32,
     pub latent_temperature_tendency_kelvin: f32,
     pub storm_intensity: f32,
 }
@@ -251,6 +255,9 @@ pub struct WeatherFieldDiagnostics {
     pub minimum_ground_moisture: f32,
     pub maximum_ground_moisture: f32,
     pub mean_ground_moisture: f32,
+    pub minimum_snow_cover: f32,
+    pub maximum_snow_cover: f32,
+    pub mean_snow_cover: f32,
     pub maximum_precipitation_millimeters_per_hour: f32,
     pub mean_precipitation_millimeters_per_hour: f32,
     pub maximum_latent_temperature_tendency_kelvin: f32,
@@ -520,11 +527,11 @@ impl WeatherFields {
         }
     }
 
-    /// Removes cloud water above the precipitation threshold and returns the
-    /// land fraction to the ground-moisture reservoir. Ocean precipitation is
-    /// deliberately an outlet at this stage; runoff, rivers, snowpack, and
-    /// terrain-derived water are later couplings. The emitted rate is a
-    /// diagnostic rain-equivalent in millimetres per hour.
+    /// Removes cloud water above the precipitation threshold and routes it to
+    /// liquid ground moisture or a bounded snow reservoir. Snow melts when
+    /// the cell warms, returning water to the same ground reservoir. Ocean
+    /// precipitation remains an outlet. The emitted rate is a diagnostic
+    /// rain-equivalent in millimetres per hour.
     pub fn precipitate_and_update_ground_moisture(&mut self, step_seconds: f64) {
         if step_seconds <= 0.0 {
             return;
@@ -542,7 +549,25 @@ impl WeatherFields {
             state.cloud_water = (cloud_water - removed).clamp(0.0, 1.0) as f32;
             let ocean_fraction = ocean_fraction_from_albedo(f64::from(state.surface_albedo));
             let land_fraction = 1.0 - ocean_fraction;
-            let ground_input = removed * land_fraction * (0.75 + 0.25 * (1.0 - f64::from(state.ground_moisture)));
+            let freezing = ((273.15 - f64::from(state.temperature_kelvin)) / 6.0)
+                .clamp(0.0, 1.0);
+            let snow_input = removed
+                * land_fraction
+                * freezing
+                * WEATHER_SNOW_ACCUMULATION_FRACTION;
+            let melt_relaxation = exponential_relaxation_weight(
+                step_seconds,
+                WEATHER_SNOW_MELT_TIME_CONSTANT_SECONDS,
+            );
+            let melt_fraction = ((f64::from(state.temperature_kelvin) - 268.0) / 12.0)
+                .clamp(0.0, 1.0);
+            let melted = f64::from(state.snow_cover) * melt_fraction * melt_relaxation;
+            state.snow_cover = (f64::from(state.snow_cover) + snow_input - melted)
+                .clamp(0.0, 1.0) as f32;
+            let liquid_input = removed * (1.0 - freezing) + melted;
+            let ground_input = liquid_input
+                * land_fraction
+                * (0.75 + 0.25 * (1.0 - f64::from(state.ground_moisture)));
             state.ground_moisture =
                 (f64::from(state.ground_moisture) + ground_input).clamp(0.0, 1.0) as f32;
             state.precipitation_millimeters_per_hour =
@@ -734,6 +759,8 @@ impl WeatherFields {
         let mut maximum_orographic_uplift = 0.0_f32;
         let mut min_ground_moisture = f32::INFINITY;
         let mut max_ground_moisture = f32::NEG_INFINITY;
+        let mut min_snow_cover = f32::INFINITY;
+        let mut max_snow_cover = f32::NEG_INFINITY;
         let mut maximum_precipitation = 0.0_f32;
         let mut maximum_latent_tendency = 0.0_f32;
         let mut maximum_storm_intensity = 0.0_f32;
@@ -742,6 +769,7 @@ impl WeatherFields {
         let mut mean_humidity = 0.0_f64;
         let mut mean_cloud_water = 0.0_f64;
         let mut mean_ground_moisture = 0.0_f64;
+        let mut mean_snow_cover = 0.0_f64;
         let mut mean_precipitation = 0.0_f64;
         let mut mean_storm_intensity = 0.0_f64;
         let mut maximum_wind = 0.0_f32;
@@ -769,6 +797,8 @@ impl WeatherFields {
                 .max(state.orographic_uplift_meters_per_second.abs());
             min_ground_moisture = min_ground_moisture.min(state.ground_moisture);
             max_ground_moisture = max_ground_moisture.max(state.ground_moisture);
+            min_snow_cover = min_snow_cover.min(state.snow_cover);
+            max_snow_cover = max_snow_cover.max(state.snow_cover);
             maximum_precipitation = maximum_precipitation
                 .max(state.precipitation_millimeters_per_hour);
             maximum_latent_tendency = maximum_latent_tendency
@@ -781,6 +811,7 @@ impl WeatherFields {
             mean_humidity += f64::from(state.specific_humidity) * area;
             mean_cloud_water += f64::from(state.cloud_water) * area;
             mean_ground_moisture += f64::from(state.ground_moisture) * area;
+            mean_snow_cover += f64::from(state.snow_cover) * area;
             mean_precipitation +=
                 f64::from(state.precipitation_millimeters_per_hour) * area;
             mean_storm_intensity += f64::from(state.storm_intensity) * area;
@@ -807,6 +838,9 @@ impl WeatherFields {
             minimum_ground_moisture: min_ground_moisture,
             maximum_ground_moisture: max_ground_moisture,
             mean_ground_moisture: (mean_ground_moisture / total_area) as f32,
+            minimum_snow_cover: min_snow_cover,
+            maximum_snow_cover: max_snow_cover,
+            mean_snow_cover: (mean_snow_cover / total_area) as f32,
             maximum_precipitation_millimeters_per_hour: maximum_precipitation,
             mean_precipitation_millimeters_per_hour: (mean_precipitation / total_area) as f32,
             maximum_latent_temperature_tendency_kelvin: maximum_latent_tendency,
@@ -1070,9 +1104,9 @@ impl WeatherState {
     }
 
     /// Packs the cloud field into six native-resolution RGBA8 cube-face layers.
-    /// The channels are cloud water, storm intensity, humidity, and an opaque
-    /// marker. A renderer can upload this infrequently, after fixed weather
-    /// ticks, without reducing the 64x64 simulation grid to coarse bins.
+    /// The channels are cloud water, storm intensity, humidity, and normalized
+    /// precipitation. A renderer can upload this after fixed weather ticks
+    /// without reducing the 64x64 simulation grid to coarse bins.
     pub fn cloud_field_texture_data(&self) -> Vec<u8> {
         Self::cloud_field_texture_data_for(&self.fields)
     }
@@ -1101,6 +1135,48 @@ impl WeatherState {
                         (f64::from(state.storm_intensity).clamp(0.0, 1.0) * 255.0).round() as u8;
                     bytes[offset + 2] =
                         (f64::from(state.specific_humidity).clamp(0.0, 1.0) * 255.0).round() as u8;
+                    bytes[offset + 3] = ((f64::from(state.precipitation_millimeters_per_hour)
+                        / WEATHER_GPU_PRECIPITATION_SCALE_MILLIMETERS_PER_HOUR)
+                        .clamp(0.0, 1.0)
+                        * 255.0)
+                        .round() as u8;
+                }
+            }
+        }
+        bytes
+    }
+
+    /// Packs surface-coupling values into a second native-resolution cubemap:
+    /// ground moisture, snow cover, normalized temperature, and an opaque
+    /// marker. It follows the same temporal current/previous pairing as clouds.
+    pub fn surface_field_texture_data(&self) -> Vec<u8> {
+        Self::surface_field_texture_data_for(&self.fields)
+    }
+
+    pub fn next_surface_field_texture_data(&self) -> Option<Vec<u8>> {
+        self.next_fields
+            .as_ref()
+            .map(Self::surface_field_texture_data_for)
+    }
+
+    fn surface_field_texture_data_for(fields: &WeatherFields) -> Vec<u8> {
+        let mut bytes =
+            vec![0_u8; WEATHER_FACE_COUNT * WEATHER_GPU_FIELD_SIDE * WEATHER_GPU_FIELD_SIDE * 4];
+        for face in 0..WEATHER_FACE_COUNT {
+            for y in 0..WEATHER_GPU_FIELD_SIDE {
+                for x in 0..WEATHER_GPU_FIELD_SIDE {
+                    let index = cell_index(face as u8, x, y);
+                    let state = fields.cells()[index];
+                    let offset =
+                        ((face * WEATHER_GPU_FIELD_SIDE + y) * WEATHER_GPU_FIELD_SIDE + x) * 4;
+                    bytes[offset] =
+                        (f64::from(state.ground_moisture).clamp(0.0, 1.0) * 255.0).round() as u8;
+                    bytes[offset + 1] =
+                        (f64::from(state.snow_cover).clamp(0.0, 1.0) * 255.0).round() as u8;
+                    bytes[offset + 2] = (((f64::from(state.temperature_kelvin) - 180.0) / 160.0)
+                        .clamp(0.0, 1.0)
+                        * 255.0)
+                        .round() as u8;
                     bytes[offset + 3] = 255;
                 }
             }
@@ -1566,6 +1642,7 @@ fn initial_cell_state(
         surface_elevation_meters: surface_elevation as f32,
         orographic_uplift_meters_per_second: 0.0,
         precipitation_millimeters_per_hour: 0.0,
+        snow_cover: 0.0,
         latent_temperature_tendency_kelvin: 0.0,
         storm_intensity: 0.0,
     }
@@ -2085,6 +2162,7 @@ mod tests {
             fields.cells[land_index].cloud_water = 0.9;
             fields.cells[land_index].ground_moisture = 0.0;
             fields.cells[land_index].surface_albedo = WEATHER_LAND_ALBEDO as f32;
+            fields.cells[land_index].temperature_kelvin = 280.0;
             fields.cells[ocean_index].cloud_water = 0.9;
             fields.cells[ocean_index].ground_moisture = 0.3;
             fields.cells[ocean_index].surface_albedo = WEATHER_OCEAN_ALBEDO as f32;
@@ -2101,9 +2179,11 @@ mod tests {
         assert!(first.cells().iter().all(|state| {
             (0.0..=1.0).contains(&state.cloud_water)
                 && (0.0..=1.0).contains(&state.ground_moisture)
+                && (0.0..=1.0).contains(&state.snow_cover)
                 && state.precipitation_millimeters_per_hour.is_finite()
                 && state.precipitation_millimeters_per_hour >= 0.0
         }));
+        assert!(land.snow_cover <= 1.0);
     }
 
     #[test]
@@ -2326,8 +2406,40 @@ mod tests {
             first.len(),
             WEATHER_FACE_COUNT * WEATHER_GPU_FIELD_SIDE * WEATHER_GPU_FIELD_SIDE * 4
         );
-        assert!(first.chunks_exact(4).all(|texel| texel[3] == 255));
+        assert!(first.chunks_exact(4).all(|texel| texel[3] == 0));
         assert_eq!(first, state.cloud_field_texture_data());
+        let surface = state.surface_field_texture_data();
+        assert!(surface.chunks_exact(4).all(|texel| texel[3] == 255));
+        assert!(surface.chunks_exact(4).all(|texel| texel[1] == 0));
+    }
+
+    #[test]
+    fn cold_precipitation_accumulates_snow_and_warmth_melts_it() {
+        let grid = WeatherGrid::new();
+        let index = grid
+            .cells()
+            .iter()
+            .enumerate()
+            .find(|(index, _)| {
+                1.0 - ocean_fraction_from_albedo(f64::from(
+                    WeatherFields::initial(&grid).cells()[*index].surface_albedo,
+                ))
+                    > 0.9
+            })
+            .map(|(index, _)| index)
+            .expect("fallback should contain land");
+        let mut fields = WeatherFields::initial(&grid);
+        fields.cells[index].surface_albedo = WEATHER_LAND_ALBEDO as f32;
+        fields.cells[index].temperature_kelvin = 260.0;
+        fields.cells[index].cloud_water = 0.95;
+        fields.precipitate_and_update_ground_moisture(WEATHER_TIMESTEP_SECONDS);
+        let snow = fields.cells[index].snow_cover;
+        assert!(snow > 0.0);
+        fields.cells[index].temperature_kelvin = 290.0;
+        fields.cells[index].cloud_water = 0.0;
+        fields.precipitate_and_update_ground_moisture(WEATHER_TIMESTEP_SECONDS);
+        assert!(fields.cells[index].snow_cover < snow);
+        assert!(fields.cells[index].ground_moisture > 0.0);
     }
 
     #[test]

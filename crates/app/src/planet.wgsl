@@ -29,6 +29,11 @@ struct WeatherRenderUniform {
 @group(3) @binding(3)
 var<uniform> weather: WeatherRenderUniform;
 
+@group(3) @binding(4)
+var weather_surface_current: texture_cube<f32>;
+@group(3) @binding(5)
+var weather_surface_previous: texture_cube<f32>;
+
 struct VertexInput {
     @location(0) anchor_relative_position: vec3<f32>,
     @location(1) sphere_direction: vec3<f32>,
@@ -835,6 +840,22 @@ fn cloud_shadow_density_at_shell(
     return cloudDensityWithOctaves(shadow_direction, shell_index, 3u);
 }
 
+fn weather_surface_sample(direction: vec3<f32>) -> vec4<f32> {
+    let current = textureSampleLevel(
+        weather_surface_current,
+        cloud_field_sampler,
+        normalize(direction),
+        0.0,
+    );
+    let previous = textureSampleLevel(
+        weather_surface_previous,
+        cloud_field_sampler,
+        normalize(direction),
+        0.0,
+    );
+    return mix(previous, current, weather.blend);
+}
+
 fn cloud_shadow_visibility(
     surface_direction: vec3<f32>,
     surface_height: f32,
@@ -994,6 +1015,17 @@ fn flat_triangle_colour(
         );
         let high_ice = smoothstep(2200.0, 4200.0, input.outmap_and_macro_height.y);
         fill = mix(biome_color(3u), fill, max(polar_ice, high_ice));
+    }
+    if fill_biome != 0u && fill_biome != 1u {
+        let surface_field = weather_surface_sample(normalize(input.surface_direction));
+        let wetness = smoothstep(0.18, 0.82, surface_field.r);
+        let snow_cover = smoothstep(0.08, 0.70, surface_field.g);
+        fill *= 1.0 - 0.22 * wetness;
+        fill = mix(
+            fill,
+            mix(vec3<f32>(0.70, 0.73, 0.76), vec3<f32>(0.94, 0.96, 1.0), snow_cover),
+            snow_cover,
+        );
     }
     let normal = flat_triangle_outward_normal(
         flat_triangle_normal(input.camera_relative_view_position, input.world_normal),
@@ -1318,7 +1350,19 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             length(input.camera_relative_view_position),
         ),
     );
-    let textured_terrain_albedo = terrain_albedo * detail_tint;
+    var textured_terrain_albedo = terrain_albedo * detail_tint;
+    let weather_surface = weather_surface_sample(direction);
+    let wetness = smoothstep(0.18, 0.82, weather_surface.r);
+    let snow_cover = smoothstep(0.08, 0.70, weather_surface.g);
+    // Rain darkens exposed ground and increases its broad specular response;
+    // accumulated snow replaces the material only where the coupled surface
+    // field says it has persisted. Ocean and lake branches returned above.
+    textured_terrain_albedo *= 1.0 - 0.22 * wetness;
+    textured_terrain_albedo = mix(
+        textured_terrain_albedo,
+        mix(vec3<f32>(0.70, 0.73, 0.76), vec3<f32>(0.94, 0.96, 1.0), snow_cover),
+        snow_cover,
+    );
     if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
         return vec4<f32>(
             mix(textured_terrain_albedo, debug_ocean_albedo(), ocean_coverage),
@@ -1330,6 +1374,19 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     // rounding its gradient through interpolated vertex normals.
     var textured_surface_lighting = textured_terrain_albedo
         * terrain_surface_irradiance;
+    let wet_specular = pow(
+        max(
+            dot(
+                reflect(-sun_direction, terrain_normal),
+                normalize(view_to_planet(-input.camera_relative_view_position)),
+            ),
+            0.0,
+        ),
+        64.0,
+    ) * wetness
+        * dot(terrain_sun_transmittance, vec3<f32>(0.2126, 0.7152, 0.0722))
+        * 0.18;
+    textured_surface_lighting += vec3<f32>(wet_specular);
     // Relief finer than the mesh can hold, shaded per pixel. The vertex ladder
     // stopped at its own spacing, so this picks up exactly the octaves it left.
     // Re-light the triangle normal by the finer-than-mesh detail ratio. The
