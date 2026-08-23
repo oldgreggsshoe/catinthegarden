@@ -9,6 +9,7 @@ use std::{
 use glam::DVec3;
 
 use crate::planet::{PLANET_RADIUS_METERS, cube_face_basis, cube_face_direction};
+use crate::terrain::TerrainClimateSample;
 
 pub const WEATHER_GRID_SIDE: usize = 64;
 pub const WEATHER_TIMESTEP_SECONDS: f64 = 600.0;
@@ -365,10 +366,21 @@ impl Drop for WeatherPredictionWorker {
 
 impl WeatherFields {
     pub fn initial(grid: &WeatherGrid) -> Self {
+        Self::initial_with_terrain(grid, None)
+    }
+
+    pub fn initial_with_terrain(
+        grid: &WeatherGrid,
+        terrain_samples: Option<&[TerrainClimateSample]>,
+    ) -> Self {
+        assert!(terrain_samples.is_none_or(|samples| samples.len() == grid.cells().len()));
         let cells = grid
             .cells()
             .iter()
-            .map(|cell| initial_cell_state(cell.direction))
+            .enumerate()
+            .map(|(index, cell)| {
+                initial_cell_state(cell.direction, terrain_samples.map(|samples| samples[index]))
+            })
             .collect::<Vec<_>>();
         let conservation_baseline = conservation_baseline(grid, &cells);
         Self {
@@ -381,10 +393,9 @@ impl WeatherFields {
         &self.cells
     }
 
-    /// Applies one fixed-step radiative energy balance. The ocean/land split
-    /// is a deterministic proxy until the terrain sampler is wired into the
-    /// weather field; ocean cells deliberately carry five times the thermal
-    /// inertia of land so their temperature responds more slowly.
+    /// Applies one fixed-step radiative energy balance. Baked terrain supplies
+    /// the ocean/land split and thermal inertia; the fallback used by unit
+    /// tests retains the original deterministic proxy.
     pub fn apply_insolation_and_radiative_cooling(
         &mut self,
         grid: &WeatherGrid,
@@ -1032,8 +1043,14 @@ pub struct WeatherState {
 
 impl WeatherState {
     pub fn new() -> Self {
+        Self::new_with_terrain_samples(None)
+    }
+
+    pub fn new_with_terrain_samples(
+        terrain_samples: Option<&[TerrainClimateSample]>,
+    ) -> Self {
         let grid = Arc::new(WeatherGrid::new());
-        let fields = WeatherFields::initial(&grid);
+        let fields = WeatherFields::initial_with_terrain(&grid, terrain_samples);
         Self {
             grid,
             fields,
@@ -1498,7 +1515,10 @@ fn cell_area_square_meters(face: u8, i: usize, j: usize) -> f64 {
         * PLANET_RADIUS_METERS
 }
 
-fn initial_cell_state(direction: DVec3) -> WeatherCellState {
+fn initial_cell_state(
+    direction: DVec3,
+    terrain_sample: Option<TerrainClimateSample>,
+) -> WeatherCellState {
     let latitude = direction.y.clamp(-1.0, 1.0).asin();
     let longitude = direction.z.atan2(direction.x);
     let latitude_sine = latitude.sin().abs();
@@ -1510,15 +1530,29 @@ fn initial_cell_state(direction: DVec3) -> WeatherCellState {
     let east_wind_meters_per_second =
         18.0 * (2.0 * latitude).sin() - 8.0 * (3.0 * latitude).sin() * longitude.cos();
     let north_wind_meters_per_second = 4.0 * latitude.cos() * (2.0 * longitude).sin();
-    let land_fraction = proxy_land_fraction(direction, latitude, longitude);
-    let surface_elevation = proxy_surface_elevation_meters(direction, latitude, longitude);
-    let surface_albedo =
-        WEATHER_OCEAN_ALBEDO + (WEATHER_LAND_ALBEDO - WEATHER_OCEAN_ALBEDO) * land_fraction;
-    let heat_capacity = WEATHER_OCEAN_HEAT_CAPACITY_JOULES_PER_SQUARE_METER_KELVIN
-        + (WEATHER_LAND_HEAT_CAPACITY_JOULES_PER_SQUARE_METER_KELVIN
-            - WEATHER_OCEAN_HEAT_CAPACITY_JOULES_PER_SQUARE_METER_KELVIN)
-            * land_fraction;
-    let ground_moisture = 0.65 * land_fraction;
+    let (surface_elevation, surface_albedo, heat_capacity, ground_moisture) =
+        terrain_sample
+            .map(|sample| {
+                (
+                    sample.surface_elevation_meters,
+                    sample.surface_albedo,
+                    sample.heat_capacity_joules_per_square_meter_kelvin,
+                    sample.ground_moisture,
+                )
+            })
+            .unwrap_or_else(|| {
+                let land_fraction = proxy_land_fraction(direction, latitude, longitude);
+                (
+                    proxy_surface_elevation_meters(direction, latitude, longitude),
+                    WEATHER_OCEAN_ALBEDO
+                        + (WEATHER_LAND_ALBEDO - WEATHER_OCEAN_ALBEDO) * land_fraction,
+                    WEATHER_OCEAN_HEAT_CAPACITY_JOULES_PER_SQUARE_METER_KELVIN
+                        + (WEATHER_LAND_HEAT_CAPACITY_JOULES_PER_SQUARE_METER_KELVIN
+                            - WEATHER_OCEAN_HEAT_CAPACITY_JOULES_PER_SQUARE_METER_KELVIN)
+                            * land_fraction,
+                    0.65 * land_fraction,
+                )
+            });
     WeatherCellState {
         temperature_kelvin: temperature_kelvin as f32,
         surface_pressure_pascals: surface_pressure_pascals as f32,
@@ -1544,9 +1578,8 @@ fn saturation_specific_humidity(temperature_kelvin: f64) -> f64 {
     (0.55 * (0.045 * (temperature_kelvin - 273.15)).exp()).clamp(0.05, 0.98)
 }
 
-/// Seam-safe low-resolution relief proxy used until the renderer's baked
-/// terrain sampler is part of the weather contract. Ocean-like cells remain
-/// near sea level while land carries broad and narrower deterministic ridges.
+/// Seam-safe low-resolution relief fallback used by unit tests and placeholder
+/// launches without an active baked outmap.
 fn proxy_surface_elevation_meters(direction: DVec3, latitude: f64, longitude: f64) -> f64 {
     let land_fraction = proxy_land_fraction(direction, latitude, longitude);
     let broad = (0.5
@@ -1560,10 +1593,8 @@ fn proxy_surface_elevation_meters(direction: DVec3, latitude: f64, longitude: f6
     (land_fraction * (250.0 + 2_000.0 * broad + 1_200.0 * ridge)).clamp(0.0, 4_500.0)
 }
 
-/// Temporary climate-surface proxy. It provides broad land/ocean thermal
-/// inertia without importing renderer tile state into the weather module; the
-/// terrain sampler will replace this with baked ocean coverage in a later
-/// coupling stage.
+/// Deterministic land/ocean fallback for placeholder launches without baked
+/// terrain. Production weather initialization supplies the outmap samples.
 fn proxy_land_fraction(direction: DVec3, latitude: f64, longitude: f64) -> f64 {
     let continental_signal = 0.5
         + 0.22 * (2.0 * longitude + 0.7).sin() * latitude.cos()
@@ -1682,6 +1713,26 @@ mod tests {
                 && (0.0..=1.0).contains(&state.specific_humidity)
                 && state.east_wind_meters_per_second.is_finite()
                 && state.north_wind_meters_per_second.is_finite()
+        }));
+    }
+
+    #[test]
+    fn baked_terrain_samples_override_the_climate_fallback() {
+        let grid = WeatherGrid::new();
+        let sample = TerrainClimateSample {
+            land_fraction: 1.0,
+            surface_elevation_meters: 3_210.0,
+            surface_albedo: 0.42,
+            heat_capacity_joules_per_square_meter_kelvin: 3.4e6,
+            ground_moisture: 0.17,
+        };
+        let samples = vec![sample; grid.cells().len()];
+        let fields = WeatherFields::initial_with_terrain(&grid, Some(&samples));
+        assert!(fields.cells().iter().all(|state| {
+            (f64::from(state.surface_elevation_meters) - sample.surface_elevation_meters).abs()
+                < 1.0e-3
+                && (f64::from(state.surface_albedo) - sample.surface_albedo).abs() < 1.0e-6
+                && (f64::from(state.ground_moisture) - sample.ground_moisture).abs() < 1.0e-6
         }));
     }
 

@@ -3482,3 +3482,19 @@ lookup and keeps cloud-shell rendering independent. With the deliberately extrem
 value, `atmospheric_mist_paths/1787429254-64643` passes and the obscured terrain plus outlines visibly
 converge to the sky. The committed production constant remains the prior 500km unless the local
 tuning hunk is explicitly promoted.
+
+## Experimental weather baked-terrain coupling - 23 August 2026
+
+Weather startup now samples the active outmap at the centres of the existing six-face
+64x64 climate grid. A bounded level-2 tile cache loads at most 96 source tiles (using the
+manifest's ancestor fallback), then bilinearly samples physical exported height and moisture
+and nearest-samples biome ownership. Ocean and lake cells are sea level with ocean thermal
+inertia; land uses baked elevation, land/ice albedo, land heat capacity, and baked moisture.
+The renderer's altitude exaggeration is deliberately not applied to weather, so lapse-rate and
+orographic forcing remain camera-independent and match the source data.
+
+`WeatherState::new_with_terrain_samples` receives those values during normal startup. The old
+seam-safe procedural relief remains only as a deterministic fallback for placeholder launches and
+unit tests. `baked_terrain_samples_override_the_climate_fallback` plus all 31 focused weather tests
+pass; milestone 14 (rain presentation, wet-ground response, and snow) is the next implementation
+slice.

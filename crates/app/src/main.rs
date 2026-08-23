@@ -882,7 +882,11 @@ impl State {
             hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
         );
-        let mut weather = weather::WeatherState::new();
+        let terrain_climate_samples = terrain::terrain_climate_samples(&terrain_source)
+            .expect("active terrain climate samples must load");
+        let mut weather = weather::WeatherState::new_with_terrain_samples(
+            terrain_climate_samples.as_deref(),
+        );
         if scenario.is_none() {
             weather.enable_background_prediction(planet::default_sun_direction());
         }

@@ -9,7 +9,8 @@ use std::{
 };
 
 use catinthegarden_coretypes::{
-    CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey, tile_key_for_direction,
+    BiomeId, CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
+    tile_key_for_direction,
 };
 use glam::DVec3;
 use wgpu::util::DeviceExt;
@@ -274,6 +275,81 @@ pub struct SurfaceHeightBreakdown {
 pub enum TerrainSource {
     Placeholder,
     Outmap(PathBuf),
+}
+
+/// Low-resolution, CPU-only climate inputs sampled from the baked terrain.
+/// Weather uses the physical exported height rather than the renderer's
+/// presentation exaggeration, so lapse rates and land/ocean heat capacity do
+/// not change when the camera moves.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TerrainClimateSample {
+    pub land_fraction: f64,
+    pub surface_elevation_meters: f64,
+    pub surface_albedo: f64,
+    pub heat_capacity_joules_per_square_meter_kelvin: f64,
+    pub ground_moisture: f64,
+}
+
+/// Samples the active outmap at the weather grid's 64x64-per-face centres.
+/// Level 2 is intentionally enough for climate-scale land and relief while
+/// keeping startup bounded (at most 96 source tiles, with ancestor fallback).
+pub fn terrain_climate_samples(
+    source: &TerrainSource,
+) -> Result<Option<Vec<TerrainClimateSample>>, TerrainError> {
+    const WEATHER_GRID_SIDE: usize = 64;
+    const WEATHER_SAMPLE_LEVEL: u8 = 2;
+
+    let TerrainSource::Outmap(root) = source else {
+        return Ok(None);
+    };
+    let outmap = Outmap::open(root)?;
+    let mut tile_cache: HashMap<TileKey, TileData> = HashMap::new();
+    let mut samples = Vec::with_capacity(CubeFace::ALL.len() * WEATHER_GRID_SIDE.pow(2));
+    for face in CubeFace::ALL {
+        for y in 0..WEATHER_GRID_SIDE {
+            for x in 0..WEATHER_GRID_SIDE {
+                let u = 2.0 * (x as f64 + 0.5) / WEATHER_GRID_SIDE as f64 - 1.0;
+                let v = 2.0 * (y as f64 + 0.5) / WEATHER_GRID_SIDE as f64 - 1.0;
+                let direction = cube_face_direction(face.index(), u, v);
+                let requested = tile_key_for_direction(direction, WEATHER_SAMPLE_LEVEL);
+                let source_key = outmap.resolve_tile(requested)?;
+                if !tile_cache.contains_key(&source_key) {
+                    tile_cache.insert(source_key, outmap.load_tile(requested)?);
+                }
+                let tile = tile_cache
+                    .get(&source_key)
+                    .expect("just-loaded climate tile must be cached");
+                let uv = source_tile_uv(source_key, face, [u, v])
+                    .expect("direction must lie in its selected climate tile");
+                let raw_height = f64::from(sample_height_cpu(&tile.heights_meters, uv));
+                let biome = BiomeId::try_from(sample_biome_cpu(&tile.biome_ids, uv))
+                    .unwrap_or(BiomeId::Ocean);
+                let water = matches!(biome, BiomeId::Ocean | BiomeId::Lake);
+                let land_fraction = if water { 0.0 } else { 1.0 };
+                let surface_elevation_meters = if water { 0.0 } else { raw_height.max(0.0) };
+                let surface_albedo = match biome {
+                    BiomeId::Ice | BiomeId::MountainSnow => 0.65,
+                    BiomeId::Ocean | BiomeId::Lake => 0.08,
+                    _ => 0.28,
+                };
+                let heat_capacity =
+                    1.2e7 + (2.4e6 - 1.2e7) * land_fraction;
+                let ground_moisture = if water {
+                    0.0
+                } else {
+                    f64::from(sample_moisture_cpu(&tile.moisture, uv)) / 255.0
+                };
+                samples.push(TerrainClimateSample {
+                    land_fraction,
+                    surface_elevation_meters,
+                    surface_albedo,
+                    heat_capacity_joules_per_square_meter_kelvin: heat_capacity,
+                    ground_moisture,
+                });
+            }
+        }
+    }
+    Ok(Some(samples))
 }
 
 #[derive(Clone, Debug, Default)]
