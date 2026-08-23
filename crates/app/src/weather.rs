@@ -8,11 +8,14 @@ use std::{
 
 use glam::DVec3;
 
-use crate::planet::{PLANET_RADIUS_METERS, cube_face_basis, cube_face_direction};
+use crate::planet::{
+    EARTH_AXIAL_TILT_RADIANS, PLANET_RADIUS_METERS, cube_face_basis, cube_face_direction,
+};
 use crate::terrain::TerrainClimateSample;
 
 pub const WEATHER_GRID_SIDE: usize = 64;
 pub const WEATHER_TIMESTEP_SECONDS: f64 = 600.0;
+pub const WEATHER_ORBITAL_PERIOD_SECONDS: f64 = 365.2422 * 86_400.0;
 pub const INTERACTIVE_WEATHER_TIME_SCALE: f64 = 3_600.0;
 const WEATHER_MAX_STEPS_PER_ADVANCE: u64 = 12;
 const WEATHER_REFERENCE_AIR_DENSITY_KG_PER_CUBIC_METER: f64 = 1.225;
@@ -1690,6 +1693,23 @@ fn weather_sun_direction(scene_time_seconds: f64) -> DVec3 {
     DVec3::new(day_phase.cos(), 0.25, day_phase.sin()).normalize()
 }
 
+/// Applies an Earth-like annual declination cycle to a planet-local sun ray.
+/// The daily azimuth is supplied by the caller; only the orbital tilt changes
+/// over the year. At orbital phase zero this matches the established default
+/// solstice orientation, so existing startup/scenario lighting is unchanged.
+pub fn seasonal_sun_direction(base_direction: DVec3, orbital_time_seconds: f64) -> DVec3 {
+    let base_direction = base_direction.normalize_or_zero();
+    let horizontal = DVec3::new(base_direction.x, 0.0, base_direction.z).normalize_or_zero();
+    if horizontal.length_squared() <= f64::EPSILON {
+        return DVec3::Y;
+    }
+    let phase = orbital_time_seconds.rem_euclid(WEATHER_ORBITAL_PERIOD_SECONDS)
+        / WEATHER_ORBITAL_PERIOD_SECONDS
+        * std::f64::consts::TAU;
+    let declination = EARTH_AXIAL_TILT_RADIANS * phase.cos();
+    (horizontal * declination.cos() + DVec3::Y * declination.sin()).normalize()
+}
+
 fn conservation_baseline(
     grid: &WeatherGrid,
     cells: &[WeatherCellState],
@@ -1791,6 +1811,23 @@ mod tests {
                 && state.east_wind_meters_per_second.is_finite()
                 && state.north_wind_meters_per_second.is_finite()
         }));
+    }
+
+    #[test]
+    fn seasonal_sun_direction_cycles_declination_without_changing_azimuth() {
+        let base = DVec3::new(0.4, EARTH_AXIAL_TILT_RADIANS.sin(), 0.6).normalize();
+        let start = seasonal_sun_direction(base, 0.0);
+        let equinox = seasonal_sun_direction(base, WEATHER_ORBITAL_PERIOD_SECONDS * 0.25);
+        let opposite = seasonal_sun_direction(base, WEATHER_ORBITAL_PERIOD_SECONDS * 0.5);
+        let expected_horizontal = DVec3::new(base.x, 0.0, base.z).normalize();
+        for direction in [start, equinox, opposite] {
+            assert!((direction.length() - 1.0).abs() < 1.0e-12);
+            let horizontal = DVec3::new(direction.x, 0.0, direction.z).normalize();
+            assert!(horizontal.dot(expected_horizontal) > 1.0 - 1.0e-12);
+        }
+        assert!((start.y - EARTH_AXIAL_TILT_RADIANS.sin()).abs() < 1.0e-12);
+        assert!(equinox.y.abs() < 1.0e-12);
+        assert!((opposite.y + EARTH_AXIAL_TILT_RADIANS.sin()).abs() < 1.0e-12);
     }
 
     #[test]

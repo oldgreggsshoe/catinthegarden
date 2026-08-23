@@ -1685,13 +1685,17 @@ impl State {
             self.interactive_planet_rotation_time(sim_time)
         };
         let planet_rotation_radians = planet::planet_rotation_radians(planet_rotation_time);
-        let weather_sun_direction =
-            planet::planet_local_vector(self.sun_direction, planet_rotation_radians);
         let weather_time = if self.scenario.is_some() {
             presentation_time
         } else {
             weather::interactive_weather_time_seconds(presentation_time)
         };
+        let mut weather_sun_direction =
+            planet::planet_local_vector(self.sun_direction, planet_rotation_radians);
+        if self.scenario.is_none() {
+            weather_sun_direction =
+                weather::seasonal_sun_direction(weather_sun_direction, weather_time);
+        }
         if self.scenario.is_some() && self.weather.prepare_next(weather_sun_direction) {
             let weather_target = self
                 .weather

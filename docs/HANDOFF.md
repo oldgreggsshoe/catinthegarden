@@ -3517,3 +3517,13 @@ lookup for visible clouds and future consumers. Forty-three focused weather test
 texture packing, and rain-shader parsing), seven weather-render tests, and `cargo check -p
 catinthegarden-app` pass. Fresh Quadro visual tuning of rain opacity and snow palette is still required
 before promoting milestone 15 polish.
+
+## Experimental weather milestone 15 seasons - 24 August 2026
+
+Interactive weather now has an annual solar-declination cycle: the planet-local daily sun azimuth is
+preserved while a deterministic 23.439-degree tilt follows a 365.2422-day orbital phase. Phase zero is
+the established solstice orientation, so startup and authored scenario lighting are unchanged; scenario
+sun waypoints remain authoritative and do not acquire an unrequested seasonal perturbation. The
+interactive weather clock already runs at 3,600x, so one in-game year advances in roughly 2.43 hours of
+wall time for visual testing. A focused regression pins unit length, constant azimuth, solstice,
+equinox, and opposite-solstice declinations.
