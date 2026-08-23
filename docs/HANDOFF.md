@@ -3527,3 +3527,12 @@ sun waypoints remain authoritative and do not acquire an unrequested seasonal pe
 interactive weather clock already runs at 3,600x, so one in-game year advances in roughly 2.43 hours of
 wall time for visual testing. A focused regression pins unit length, constant azimuth, solstice,
 equinox, and opposite-solstice declinations.
+
+## Experimental weather milestone 15 advection polish - 24 August 2026
+
+Temperature transport now uses a bounded MacCormack predictor/corrector pass. The backward predictor
+and forward correction preserve thermal fronts better than the previous single semi-Lagrangian sample;
+the four-cell bilinear source stencil clamps the corrected value, preventing overshoot at cube-face
+seams and sharp fronts. Humidity and condensed-cloud transport remain on their conservative mass-flux
+path, so this change does not alter the established water-conservation contract. Focused deterministic
+weather tests pass, including an explicit hot-front no-new-extrema regression.

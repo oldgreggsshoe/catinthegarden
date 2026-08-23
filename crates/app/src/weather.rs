@@ -632,9 +632,10 @@ impl WeatherFields {
         }
     }
 
-    /// Semi-Lagrangian temperature advection. Each destination cell traces
-    /// backwards through the updated tangent wind and bilinearly samples the
-    /// previous temperature field, including cross-face neighbours.
+    /// MacCormack temperature advection. A backward predictor and a forward
+    /// correction retain fronts better than one-pass semi-Lagrangian transport;
+    /// the local source stencil bounds the correction so a coarse cube seam or
+    /// sharp thermal front cannot create a new extremum.
     pub fn advect_temperature(&mut self, grid: &WeatherGrid, step_seconds: f64) {
         if step_seconds <= 0.0 {
             return;
@@ -644,14 +645,29 @@ impl WeatherFields {
             .iter()
             .map(|state| f64::from(state.temperature_kelvin))
             .collect::<Vec<_>>();
+        let mut predictor = vec![0.0_f64; self.cells.len()];
+        for (index, cell) in grid.cells().iter().enumerate() {
+            let velocity = cell.east * f64::from(self.cells[index].east_wind_meters_per_second)
+                + cell.north * f64::from(self.cells[index].north_wind_meters_per_second);
+            let source_direction = (cell.direction
+                - velocity * (step_seconds / PLANET_RADIUS_METERS))
+                .normalize();
+            predictor[index] = sample_scalar_bilinear_with_bounds(&old_temperature, source_direction)
+                .0
+                .clamp(180.0, 340.0);
+        }
         let mut next_temperature = vec![0.0_f32; self.cells.len()];
         for (index, cell) in grid.cells().iter().enumerate() {
             let velocity = cell.east * f64::from(self.cells[index].east_wind_meters_per_second)
                 + cell.north * f64::from(self.cells[index].north_wind_meters_per_second);
-            let source_direction =
-                (cell.direction - velocity * (step_seconds / PLANET_RADIUS_METERS)).normalize();
-            next_temperature[index] = sample_scalar_bilinear(&old_temperature, source_direction)
-                .clamp(180.0, 340.0) as f32;
+            let displacement = velocity * (step_seconds / PLANET_RADIUS_METERS);
+            let source_direction = (cell.direction - displacement).normalize();
+            let forward_direction = (cell.direction + displacement).normalize();
+            let predicted_forward = sample_scalar_bilinear(&predictor, forward_direction);
+            let corrected = predictor[index] + 0.5 * (old_temperature[index] - predicted_forward);
+            let (_, minimum, maximum) =
+                sample_scalar_bilinear_with_bounds(&old_temperature, source_direction);
+            next_temperature[index] = corrected.clamp(minimum, maximum).clamp(180.0, 340.0) as f32;
         }
         for (state, temperature) in self.cells.iter_mut().zip(next_temperature) {
             state.temperature_kelvin = temperature;
@@ -1516,6 +1532,10 @@ fn adjacent_cell_index(face: u8, i: isize, j: isize) -> u32 {
 }
 
 fn sample_scalar_bilinear(values: &[f64], direction: DVec3) -> f64 {
+    sample_scalar_bilinear_with_bounds(values, direction).0
+}
+
+fn sample_scalar_bilinear_with_bounds(values: &[f64], direction: DVec3) -> (f64, f64, f64) {
     let (face, fractional_i, fractional_j) = direction_to_fractional_cell(direction);
     let i0 = fractional_i.floor() as isize;
     let j0 = fractional_j.floor() as isize;
@@ -1528,7 +1548,11 @@ fn sample_scalar_bilinear(values: &[f64], direction: DVec3) -> f64 {
     let east_north = sample(i0 + 1, j0 + 1);
     let south = west_south + (east_south - west_south) * tx;
     let north = west_north + (east_north - west_north) * tx;
-    south + (north - south) * ty
+    (
+        south + (north - south) * ty,
+        west_south.min(east_south).min(west_north).min(east_north),
+        west_south.max(east_south).max(west_north).max(east_north),
+    )
 }
 
 fn direction_to_cell(direction: DVec3) -> (u8, usize, usize) {
@@ -2056,6 +2080,24 @@ mod tests {
                 .zip(before)
                 .any(|(after, before)| after.temperature_kelvin != before.temperature_kelvin)
         );
+    }
+
+    #[test]
+    fn maccormack_temperature_advection_does_not_create_new_extrema() {
+        let grid = WeatherGrid::new();
+        let mut fields = WeatherFields::initial(&grid);
+        for state in &mut fields.cells {
+            state.temperature_kelvin = 280.0;
+            state.east_wind_meters_per_second = 60.0;
+            state.north_wind_meters_per_second = 0.0;
+        }
+        fields.cells[cell_index(0, WEATHER_GRID_SIDE / 2, WEATHER_GRID_SIDE / 2)]
+            .temperature_kelvin = 320.0;
+        fields.advect_temperature(&grid, WEATHER_TIMESTEP_SECONDS);
+        assert!(fields
+            .cells()
+            .iter()
+            .all(|state| (280.0..=320.0).contains(&state.temperature_kelvin)));
     }
 
     #[test]
