@@ -3536,3 +3536,17 @@ the four-cell bilinear source stencil clamps the corrected value, preventing ove
 seams and sharp fronts. Humidity and condensed-cloud transport remain on their conservative mass-flux
 path, so this change does not alter the established water-conservation contract. Focused deterministic
 weather tests pass, including an explicit hot-front no-new-extrema regression.
+
+## Experimental weather milestone 15 local impostors - 24 August 2026
+
+The final milestone-15 presentation slice adds 96 camera-local cloud billboards below 22km. Each puff
+uses deterministic hashed offsets and the existing simulated weather drift, samples the current/future
+weather cubemap through the shared `cloudSample`/`cloudDensity` WGSL source, and blends between those
+states with the same fraction as shells, terrain shadows, sun occlusion, and rain. Storm intensity
+controls grey/darker albedo and direct sun controls brightness; reversed-Z depth testing keeps puffs
+behind terrain without writing transparent depth. Above 22km the pass is vertex-suppressed, leaving
+orbital shell rendering unchanged. The cloud-field sampler visibility was widened to vertex+fragment so
+rain and impostor vertex sampling are valid on wgpu. Ten focused weather-render tests, including
+composed shared-density validation, pass; `cargo check -p catinthegarden-app` passes with only the
+existing unused fallback-constructor warning. Fresh Quadro captures are still needed to tune local puff
+opacity/coverage by eye.

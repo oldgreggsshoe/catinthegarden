@@ -66,7 +66,7 @@ const DEFAULT_VIEWPORT_WIDTH: u32 = 1280;
 const DEFAULT_VIEWPORT_HEIGHT: u32 = 720;
 const DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND: f64 = 0.4;
 const DEFAULT_CAMERA_ORBIT_INCLINATION_RADIANS: f64 = 28.5_f64.to_radians();
-const INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 = 0.3;
+const INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 = 0.05;
 const MOUSE_LOOK_RADIANS_PER_PIXEL: f64 = 0.0006;
 /// F4 enters close inspection at roughly 2m above the resident surface so
 /// mountain walls can be judged from the ground rather than from the former
@@ -650,6 +650,58 @@ impl GpuProfiler {
     }
 }
 
+/// Everything a frame needs to know before any simulation runs, resolved from
+/// either the active scenario or interactive state.
+///
+/// This was a fifteen-element tuple destructured at the top of `render`, where
+/// position was the only thing distinguishing `write_log` from `hide_overlay`
+/// -- six consecutive `bool`s that the compiler would happily let you swap.
+struct FrameInputs {
+    sim_time: f64,
+    presentation_time: f64,
+    write_log: bool,
+    scenario_capture: bool,
+    scenario_complete: bool,
+    solid_color_screen: bool,
+    hide_overlay: bool,
+    seam_gap_check: bool,
+    /// Camera world position and look-at target, absent while a scenario is
+    /// rendering a solid colour and when flying interactively.
+    pose: Option<(glam::DVec3, glam::DVec3)>,
+    planet_relative_up: bool,
+    surface_probe_max_distance_meters: f64,
+    vertical_fov_degrees: Option<f64>,
+    sun_direction: Option<glam::DVec3>,
+    planet_rotation_time_scale: f64,
+    forward_flight_held: Option<bool>,
+}
+
+/// Frame-local values the debug overlay displays. Everything else it shows is
+/// read straight off `self`.
+struct HudInputs<'a> {
+    window: &'a Window,
+    now: Instant,
+    camera_world_position: glam::DVec3,
+    camera_altitude: f64,
+    exposure_state: hdr::ExposureState,
+    ocean_wave_range: f32,
+}
+
+/// The per-frame measurements the spatial log records. Everything else on the
+/// sample is read straight off `self`, so only the frame-local values travel.
+struct SpatialLogInputs {
+    sim_time: f64,
+    camera_world_position: glam::DVec3,
+    camera_radius: f64,
+    camera_altitude: f64,
+    velocity_meters_per_second: f64,
+    planet_rotation_radians: f64,
+    frame_time: f32,
+    draw_calls: u32,
+    exposure: f32,
+    ocean_wave_stats: ocean::WaveHeightStats,
+}
+
 struct State {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -667,6 +719,7 @@ struct State {
     weather: weather::WeatherState,
     weather_clouds: weather_render::WeatherCloudRenderer,
     rain: weather_render::RainRenderer,
+    local_cloud_impostors: weather_render::LocalCloudImpostorRenderer,
     sun: sun::SunRenderer,
     foveated: foveated::FoveatedRenderer,
     terrain: terrain::TerrainRenderer,
@@ -922,6 +975,12 @@ impl State {
             &camera_bind_group_layout,
             weather_clouds.field_bind_group_layout(),
         );
+        let local_cloud_impostors = weather_render::LocalCloudImpostorRenderer::new(
+            &device,
+            hdr::HdrRenderer::SCENE_FORMAT,
+            &camera_bind_group_layout,
+            weather_clouds.field_bind_group_layout(),
+        );
         let foveated = foveated::FoveatedRenderer::new(
             &device,
             &queue,
@@ -986,6 +1045,7 @@ impl State {
             weather,
             weather_clouds,
             rain,
+            local_cloud_impostors,
             sun,
             foveated,
             terrain,
@@ -1575,6 +1635,357 @@ impl State {
         }
     }
 
+    /// Resolve this frame's inputs from the active scenario, or from
+    /// interactive state when no scenario is running.
+    ///
+    /// Advances the scenario, so it must be called exactly once per frame.
+    fn frame_inputs(&mut self) -> FrameInputs {
+        let Some(scenario) = self.scenario.as_mut() else {
+            let sim_time = self.interactive_sim_time();
+            let presentation_time = self.started_at.elapsed().as_secs_f64();
+            let write_log = presentation_time >= self.next_spatial_log_presentation_time;
+            if write_log {
+                self.next_spatial_log_presentation_time = presentation_time + 0.5;
+            }
+            return FrameInputs {
+                sim_time,
+                presentation_time,
+                write_log,
+                scenario_capture: false,
+                scenario_complete: false,
+                solid_color_screen: false,
+                hide_overlay: false,
+                seam_gap_check: false,
+                pose: None,
+                planet_relative_up: false,
+                surface_probe_max_distance_meters: probe::MAX_COMPARISON_DISTANCE_METERS,
+                vertical_fov_degrees: None,
+                sun_direction: None,
+                planet_rotation_time_scale: INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
+                forward_flight_held: None,
+            };
+        };
+        let frame = scenario.advance();
+        let solid_color_screen = scenario.renders_solid_color();
+        FrameInputs {
+            // Scenarios are driven by fixed-timestep scene time, so the
+            // presentation clock is the same clock.
+            sim_time: frame.sim_time,
+            presentation_time: frame.sim_time,
+            write_log: frame.write_log,
+            scenario_capture: frame.capture_screenshot,
+            scenario_complete: frame.complete,
+            solid_color_screen,
+            hide_overlay: scenario.hides_overlay(),
+            seam_gap_check: scenario.needs_seam_gap_check(),
+            pose: (!solid_color_screen).then(|| {
+                (
+                    glam::DVec3::from_array(frame.camera_world_position),
+                    glam::DVec3::from_array(frame.camera_look_at),
+                )
+            }),
+            planet_relative_up: scenario.uses_planet_relative_up(),
+            surface_probe_max_distance_meters: scenario.surface_probe_max_distance_meters(),
+            vertical_fov_degrees: frame.vertical_fov_degrees,
+            sun_direction: Some(glam::DVec3::from_array(frame.sun_direction)),
+            planet_rotation_time_scale: frame.planet_rotation_time_scale,
+            forward_flight_held: frame.forward_flight_held,
+        }
+    }
+
+    fn record_spatial_log_sample(&mut self, inputs: SpatialLogInputs) {
+        let SpatialLogInputs {
+            sim_time,
+            camera_world_position,
+            camera_radius,
+            camera_altitude,
+            velocity_meters_per_second,
+            planet_rotation_radians,
+            frame_time,
+            draw_calls,
+            exposure,
+            ocean_wave_stats,
+        } = inputs;
+        let latitude_degrees = (camera_world_position.y / camera_radius)
+            .clamp(-1.0, 1.0)
+            .asin()
+            .to_degrees();
+        let longitude_degrees =
+            planet::geographic_longitude_degrees(camera_world_position.normalize());
+        self.artifacts
+            .record_spatial_sample(debug::SpatialLogSample {
+                sim_time,
+                camera_world_position: camera_world_position.to_array(),
+                latitude_degrees,
+                longitude_degrees,
+                altitude_meters: camera_altitude,
+                velocity_meters_per_second,
+                orientation: if self.scenario.is_some() {
+                    "waypoint".to_owned()
+                } else {
+                    "free_look".to_owned()
+                },
+                orientation_azimuth_radians: self.camera.azimuth_radians,
+                orientation_elevation_radians: self.camera.elevation_radians,
+                vertical_fov_degrees: self.camera.vertical_fov_radians().to_degrees(),
+                sun_direction: self.sun_direction.to_array(),
+                planet_rotation_radians,
+                lod_level_histogram: self.terrain_stats.level_histogram,
+                chunks_loaded: self.terrain_stats.chunks_loaded,
+                chunks_unloaded: self.terrain_stats.chunks_unloaded,
+                frame_time_ms: frame_time * 1000.0,
+                draw_calls,
+                max_seam_delta_m: self.terrain_stats.max_seam_delta_meters,
+                resident_chunks: self.terrain_stats.resident_chunks,
+                drawn_chunks: self.terrain_stats.drawn_chunks,
+                terrain_triangles: self.terrain_stats.terrain_triangles,
+                ocean_chunks: self.terrain_stats.ocean_chunks,
+                ocean_triangles: self.terrain_stats.ocean_triangles,
+                fallback_chunks: self.terrain_stats.fallback_chunks,
+                source_level_delta_histogram: self.terrain_stats.source_level_delta_histogram,
+                resident_tiles: self.terrain_stats.resident_tiles,
+                tiles_loaded: self.terrain_stats.tiles_loaded,
+                tiles_unloaded: self.terrain_stats.tiles_unloaded,
+                lod_thrash_events: self.terrain_stats.lod_thrash_events,
+                budget_limited: self.terrain_stats.budget_limited,
+                exposure,
+                ocean_wave_min_meters: ocean_wave_stats.minimum_meters,
+                ocean_wave_max_meters: ocean_wave_stats.maximum_meters,
+            });
+    }
+
+    /// Rebuild the debug overlay's paint jobs.
+    ///
+    /// Called at most every `HUD_REFRESH_INTERVAL`, not every frame: the
+    /// tessellated output is cached on `self` and reused in between. Returns
+    /// the egui textures the caller must free once the frame is submitted.
+    fn refresh_hud(&mut self, inputs: HudInputs<'_>) -> Vec<egui::TextureId> {
+        let HudInputs {
+            window,
+            now,
+            camera_world_position,
+            camera_altitude,
+            exposure_state,
+            ocean_wave_range,
+        } = inputs;
+        let raw_input = self.egui_state.take_egui_input(window);
+        let show_debug_overlay = self.debug_overlay_visible;
+        let fps = self.fps;
+        let camera_position = camera_world_position;
+        let camera_direction = self.camera.direction();
+        let vertical_fov_degrees = self.camera.vertical_fov_radians().to_degrees();
+        let exposure = exposure_state.exposure;
+        let metered_exposure = exposure_state.metered_exposure;
+        let auto_exposure_enabled = exposure_state.auto_exposure_enabled;
+        let average_luminance = exposure_state.average_luminance;
+        let blur_enabled = self.hdr.blur_enabled();
+        let bloom_enabled = self.hdr.bloom_enabled();
+        let hdr_effect_enabled = self.hdr.hdr_effect_enabled();
+        let render_path = self.render_path;
+        let render_debug_mode = self.render_debug_mode;
+        let flat_triangle_outlines_enabled = self.flat_triangle_outlines_enabled;
+        let warp_size = self.foveated.warp_size();
+        let warp_debug_visible = self.foveated.warp_debug_visible();
+        let fovea_ndc = self.foveated.fovea_ndc();
+        let experiment_states =
+            [1_u8, 2, 3, 4, 5].map(|index| self.foveated.experiment_enabled(index));
+        let animation_frozen = self.animation_frozen;
+        let camera_mode = self.camera_mode;
+        let flight_speed_meters_per_second = self.flight_speed.speed_meters_per_second;
+        let adapter_label = self.adapter_label.clone();
+        let terrain_stats = self.terrain_stats.clone();
+        let weather_snapshot = self.weather.debug_snapshot();
+        let minimum_lod_level = terrain_stats
+            .level_histogram
+            .iter()
+            .position(|count| *count > 0)
+            .unwrap_or(0);
+        let lod_range = if minimum_lod_level == usize::from(terrain_stats.max_level) {
+            format!("L{}", terrain_stats.max_level)
+        } else {
+            format!("L{minimum_lod_level}-L{}", terrain_stats.max_level)
+        };
+        let vertical_fov_label = format_vertical_fov(vertical_fov_degrees);
+        let full_output = self.egui_context.run_ui(raw_input, |ui| {
+            if show_debug_overlay {
+                let context = ui.ctx().clone();
+                egui::Window::new("Cat in the Garden")
+                    .default_pos([12.0, 12.0])
+                    .show(&context, |ui| {
+                        ui.label("Quadtree terrain renderer");
+                        ui.label(format!("GPU: {adapter_label}"));
+                        ui.label(format!("Render FPS: {fps:.0}"));
+                        ui.label(format!(
+                            "Camera: [{:.0}, {:.0}, {:.0}] m",
+                            camera_position.x, camera_position.y, camera_position.z
+                        ));
+                        ui.label(format!(
+                            "Direction: [{:.3}, {:.3}, {:.3}]",
+                            camera_direction.x, camera_direction.y, camera_direction.z
+                        ));
+                        ui.label(format!(
+                            "Altitude: {camera_altitude:.0} m  |  LOD: {lod_range}"
+                        ));
+                        ui.label(format!(
+                            "Terrain: {} active  |  {} drawn  |  {} triangles  |  {} draws",
+                            terrain_stats.resident_chunks,
+                            terrain_stats.drawn_chunks,
+                            terrain_stats.terrain_triangles,
+                            terrain_stats.draw_calls,
+                        ));
+                        ui.label(format!(
+                            "Ocean: {} chunks  |  {} triangles",
+                            terrain_stats.ocean_chunks, terrain_stats.ocean_triangles,
+                        ));
+                        ui.label(format!(
+                            "Weather grid: {} cells  |  area {:.6e} m²  |  cell area {:.3e}-{:.3e} m²  |  t {:.0}s / {} steps",
+                            weather_snapshot.total_cells,
+                            weather_snapshot.total_area_square_meters,
+                            weather_snapshot.minimum_cell_area_square_meters,
+                            weather_snapshot.maximum_cell_area_square_meters,
+                            weather_snapshot.simulation_time_seconds,
+                            weather_snapshot.completed_steps,
+                        ));
+                        ui.label(format!(
+                            "Weather topology tangent error: {:.3e}  |  neighbours {:016x}  |  overlay {} (7)",
+                            weather_snapshot.maximum_tangent_error,
+                            weather_snapshot.neighbour_checksum,
+                            if weather_snapshot.overlay_enabled { "on" } else { "off" },
+                        ));
+                        let field = weather_snapshot.field_diagnostics;
+                        ui.label(format!(
+                            "Weather fields: T {:.1}-{:.1}K (mean {:.1})  |  p {:.0}-{:.0}Pa (mean {:.0})  |  RH {:.2}-{:.2} (mean {:.2})  |  clouds {:.2}-{:.2} (mean {:.2})",
+                            field.minimum_temperature_kelvin,
+                            field.maximum_temperature_kelvin,
+                            field.mean_temperature_kelvin,
+                            field.minimum_pressure_pascals,
+                            field.maximum_pressure_pascals,
+                            field.mean_pressure_pascals,
+                            field.minimum_humidity,
+                            field.maximum_humidity,
+                            field.mean_humidity,
+                            field.minimum_cloud_water,
+                            field.maximum_cloud_water,
+                            field.mean_cloud_water,
+                        ));
+                        ui.label(format!(
+                            "Weather relief: baked max {:.0}m  |  orographic uplift max {:.2}m/s",
+                            field.maximum_surface_elevation_meters,
+                            field.maximum_orographic_uplift_meters_per_second,
+                        ));
+                        ui.label(format!(
+                            "Weather water: ground {:.2}-{:.2} (mean {:.2})  |  precip max {:.2}mm/h (mean {:.2})  |  snow {:.2}-{:.2} (mean {:.2})",
+                            field.minimum_ground_moisture,
+                            field.maximum_ground_moisture,
+                            field.mean_ground_moisture,
+                            field.maximum_precipitation_millimeters_per_hour,
+                            field.mean_precipitation_millimeters_per_hour,
+                            field.minimum_snow_cover,
+                            field.maximum_snow_cover,
+                            field.mean_snow_cover,
+                        ));
+                        ui.label(format!(
+                            "Weather storms: intensity max {:.2} (mean {:.2})  |  latent ΔT max {:.2}K",
+                            field.maximum_storm_intensity,
+                            field.mean_storm_intensity,
+                            field.maximum_latent_temperature_tendency_kelvin,
+                        ));
+                        ui.label(format!(
+                            "Weather wind: max {:.1}m/s  |  CFL@{}s {:.3}  |  relax@1800s {:.3}  |  conservation Δp {:.2e} Δq {:.2e}",
+                            field.maximum_wind_meters_per_second,
+                            weather::WEATHER_TIMESTEP_SECONDS as u32,
+                            field.maximum_cfl,
+                            field.relaxation_weight_at_1800_seconds,
+                            field.pressure_conservation_error,
+                            field.humidity_conservation_error,
+                        ));
+                        weather_snapshot.paint_overlay(ui);
+                        ui.label(format!("Camera mode: {}", camera_mode.label()));
+                        if camera_mode == CameraMode::LowFlight {
+                            ui.label(format!(
+                                "Flight speed: {flight_speed_meters_per_second:.0} m/s"
+                            ));
+                        }
+                        ui.label(format!(
+                            "Optical zoom: {vertical_fov_label}\u{00b0} vertical FOV"
+                        ));
+                        ui.label(format!(
+                            "Tiles: {}  |  Fallback chunks: {}  |  Seam: {:.4} m",
+                            terrain_stats.resident_tiles,
+                            terrain_stats.fallback_chunks,
+                            terrain_stats.max_seam_delta_meters
+                        ));
+                        ui.label(format!(
+                            "LOD work: {} splits  |  {} merges  |  {} culled",
+                            terrain_stats.splits, terrain_stats.merges, terrain_stats.culled_nodes
+                        ));
+                        ui.label(format!(
+                            "Exposure: {exposure:.3} {}  |  Meter: {metered_exposure:.3}  |  Average luminance: {average_luminance:.3}",
+                            if auto_exposure_enabled {
+                                "auto"
+                            } else {
+                                "fixed"
+                            },
+                        ));
+                        ui.label(format!(
+                            "Post: blur {}  |  bloom {}  |  HDR curve {}",
+                            if blur_enabled { "on" } else { "off" },
+                            if bloom_enabled { "on" } else { "off" },
+                            if hdr_effect_enabled { "on" } else { "off" },
+                        ));
+                        ui.label(format!(
+                            "Composition debug: {}",
+                            render_debug_mode.label(),
+                        ));
+                        ui.label(format!(
+                            "Flat triangle outlines: {} (O)",
+                            if flat_triangle_outlines_enabled { "on" } else { "off" },
+                        ));
+                        ui.label(format!("Render path: {} (F5)", render_path.label()));
+                        ui.label(format!(
+                            "Ray warp: {}x{}  |  fovea {:+.2}, {:+.2} NDC  |  debug {} (F11)",
+                            warp_size.width,
+                            warp_size.height,
+                            fovea_ndc[0],
+                            fovea_ndc[1],
+                            if warp_debug_visible { "on" } else { "off" },
+                        ));
+                        ui.label(format!(
+                            "M8: 1 horizon {} | 2 temporal {} | 3 adaptive {} | 4 shading {} | 5 blur {}",
+                            if experiment_states[0] { "on" } else { "off" },
+                            if experiment_states[1] { "on" } else { "off" },
+                            if experiment_states[2] { "on" } else { "off" },
+                            if experiment_states[3] { "on" } else { "off" },
+                            if experiment_states[4] { "on" } else { "off" },
+                        ));
+                        ui.label(format!(
+                            "Animation: {}",
+                            if animation_frozen { "frozen" } else { "running" },
+                        ));
+                        ui.label(format!("Ocean Gerstner range: {ocean_wave_range:.2} m"));
+                        ui.label(
+                            "F: fullscreen  |  F3: overlay  |  F4: camera mode  |  F5: render path  |  WASD: fly  |  O: triangle outlines  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
+                        );
+                        ui.label("Default: fullscreen, HUD hidden, auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc/Q: quit");
+                    });
+            }
+        });
+        self.egui_state
+            .handle_platform_output(window, full_output.platform_output);
+        for (texture_id, image_delta) in &full_output.textures_delta.set {
+            self.egui_renderer
+                .update_texture(&self.device, &self.queue, *texture_id, image_delta);
+        }
+        let textures_to_free = full_output.textures_delta.free;
+        self.cached_paint_jobs = self
+            .egui_context
+            .tessellate(full_output.shapes, self.egui_context.pixels_per_point());
+        self.egui_buffers_dirty = true;
+        self.next_hud_update = now + HUD_REFRESH_INTERVAL;
+        self.hud_dirty = false;
+        textures_to_free
+    }
+
     fn render(&mut self, window: &Window) -> Option<bool> {
         let profile_started = Instant::now();
         let now = Instant::now();
@@ -1592,7 +2003,7 @@ impl State {
             self.fps = 1.0 / frame_time;
         }
 
-        let (
+        let FrameInputs {
             sim_time,
             presentation_time,
             write_log,
@@ -1601,64 +2012,14 @@ impl State {
             solid_color_screen,
             hide_overlay,
             seam_gap_check,
-            scenario_pose,
-            scenario_planet_relative_up,
+            pose: scenario_pose,
+            planet_relative_up: scenario_planet_relative_up,
             surface_probe_max_distance_meters,
-            scenario_vertical_fov_degrees,
-            scenario_sun_direction,
-            scenario_planet_rotation_time_scale,
-            scenario_forward_flight_held,
-        ) = if let Some(scenario) = self.scenario.as_mut() {
-            let frame = scenario.advance();
-            let solid_color_screen = scenario.renders_solid_color();
-            let scenario_pose = (!solid_color_screen).then(|| {
-                (
-                    glam::DVec3::from_array(frame.camera_world_position),
-                    glam::DVec3::from_array(frame.camera_look_at),
-                )
-            });
-            (
-                frame.sim_time,
-                frame.sim_time,
-                frame.write_log,
-                frame.capture_screenshot,
-                frame.complete,
-                solid_color_screen,
-                scenario.hides_overlay(),
-                scenario.needs_seam_gap_check(),
-                scenario_pose,
-                scenario.uses_planet_relative_up(),
-                scenario.surface_probe_max_distance_meters(),
-                frame.vertical_fov_degrees,
-                Some(glam::DVec3::from_array(frame.sun_direction)),
-                frame.planet_rotation_time_scale,
-                frame.forward_flight_held,
-            )
-        } else {
-            let sim_time = self.interactive_sim_time();
-            let presentation_time = self.started_at.elapsed().as_secs_f64();
-            let write_log = presentation_time >= self.next_spatial_log_presentation_time;
-            if write_log {
-                self.next_spatial_log_presentation_time = presentation_time + 0.5;
-            }
-            (
-                sim_time,
-                presentation_time,
-                write_log,
-                false,
-                false,
-                false,
-                false,
-                false,
-                None,
-                false,
-                probe::MAX_COMPARISON_DISTANCE_METERS,
-                None,
-                None,
-                INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
-                None,
-            )
-        };
+            vertical_fov_degrees: scenario_vertical_fov_degrees,
+            sun_direction: scenario_sun_direction,
+            planet_rotation_time_scale: scenario_planet_rotation_time_scale,
+            forward_flight_held: scenario_forward_flight_held,
+        } = self.frame_inputs();
         if let Some((position, look_at)) = scenario_pose {
             // Surface-level scenarios need the horizon level, so their up axis
             // is pinned to the local radial. Orbital scenarios keep the default
@@ -1937,52 +2298,18 @@ impl State {
         let ocean_wave_stats = ocean::wave_height_stats(sim_time);
         let ocean_wave_range = ocean_wave_stats.range_meters();
         if write_log {
-            let latitude_degrees = (camera_world_position.y / camera_radius)
-                .clamp(-1.0, 1.0)
-                .asin()
-                .to_degrees();
-            let longitude_degrees =
-                planet::geographic_longitude_degrees(camera_world_position.normalize());
-            self.artifacts
-                .record_spatial_sample(debug::SpatialLogSample {
-                    sim_time,
-                    camera_world_position: camera_world_position.to_array(),
-                    latitude_degrees,
-                    longitude_degrees,
-                    altitude_meters: camera_altitude,
-                    velocity_meters_per_second,
-                    orientation: if self.scenario.is_some() {
-                        "waypoint".to_owned()
-                    } else {
-                        "free_look".to_owned()
-                    },
-                    orientation_azimuth_radians: self.camera.azimuth_radians,
-                    orientation_elevation_radians: self.camera.elevation_radians,
-                    vertical_fov_degrees: self.camera.vertical_fov_radians().to_degrees(),
-                    sun_direction: self.sun_direction.to_array(),
-                    planet_rotation_radians,
-                    lod_level_histogram: self.terrain_stats.level_histogram,
-                    chunks_loaded: self.terrain_stats.chunks_loaded,
-                    chunks_unloaded: self.terrain_stats.chunks_unloaded,
-                    frame_time_ms: frame_time * 1000.0,
-                    draw_calls,
-                    max_seam_delta_m: self.terrain_stats.max_seam_delta_meters,
-                    resident_chunks: self.terrain_stats.resident_chunks,
-                    drawn_chunks: self.terrain_stats.drawn_chunks,
-                    terrain_triangles: self.terrain_stats.terrain_triangles,
-                    ocean_chunks: self.terrain_stats.ocean_chunks,
-                    ocean_triangles: self.terrain_stats.ocean_triangles,
-                    fallback_chunks: self.terrain_stats.fallback_chunks,
-                    source_level_delta_histogram: self.terrain_stats.source_level_delta_histogram,
-                    resident_tiles: self.terrain_stats.resident_tiles,
-                    tiles_loaded: self.terrain_stats.tiles_loaded,
-                    tiles_unloaded: self.terrain_stats.tiles_unloaded,
-                    lod_thrash_events: self.terrain_stats.lod_thrash_events,
-                    budget_limited: self.terrain_stats.budget_limited,
-                    exposure: exposure_state.exposure,
-                    ocean_wave_min_meters: ocean_wave_stats.minimum_meters,
-                    ocean_wave_max_meters: ocean_wave_stats.maximum_meters,
-                });
+            self.record_spatial_log_sample(SpatialLogInputs {
+                sim_time,
+                camera_world_position,
+                camera_radius,
+                camera_altitude,
+                velocity_meters_per_second,
+                planet_rotation_radians,
+                frame_time,
+                draw_calls,
+                exposure: exposure_state.exposure,
+                ocean_wave_stats,
+            });
         }
         let simulation_ms = profile_started.elapsed().as_secs_f32() * 1_000.0;
 
@@ -1990,223 +2317,14 @@ impl State {
         let render_egui = !solid_color_screen && !hide_overlay && self.debug_overlay_visible;
         let refresh_egui = render_egui && (self.hud_dirty || now >= self.next_hud_update);
         if refresh_egui {
-            let raw_input = self.egui_state.take_egui_input(window);
-            let show_debug_overlay = self.debug_overlay_visible;
-            let fps = self.fps;
-            let camera_position = camera_world_position;
-            let camera_direction = self.camera.direction();
-            let vertical_fov_degrees = self.camera.vertical_fov_radians().to_degrees();
-            let exposure = exposure_state.exposure;
-            let metered_exposure = exposure_state.metered_exposure;
-            let auto_exposure_enabled = exposure_state.auto_exposure_enabled;
-            let average_luminance = exposure_state.average_luminance;
-            let ocean_wave_range = ocean_wave_range;
-            let blur_enabled = self.hdr.blur_enabled();
-            let bloom_enabled = self.hdr.bloom_enabled();
-            let hdr_effect_enabled = self.hdr.hdr_effect_enabled();
-            let render_path = self.render_path;
-            let render_debug_mode = self.render_debug_mode;
-            let flat_triangle_outlines_enabled = self.flat_triangle_outlines_enabled;
-            let warp_size = self.foveated.warp_size();
-            let warp_debug_visible = self.foveated.warp_debug_visible();
-            let fovea_ndc = self.foveated.fovea_ndc();
-            let experiment_states =
-                [1_u8, 2, 3, 4, 5].map(|index| self.foveated.experiment_enabled(index));
-            let animation_frozen = self.animation_frozen;
-            let camera_mode = self.camera_mode;
-            let flight_speed_meters_per_second = self.flight_speed.speed_meters_per_second;
-            let adapter_label = self.adapter_label.clone();
-            let terrain_stats = self.terrain_stats.clone();
-            let weather_snapshot = self.weather.debug_snapshot();
-            let minimum_lod_level = terrain_stats
-                .level_histogram
-                .iter()
-                .position(|count| *count > 0)
-                .unwrap_or(0);
-            let lod_range = if minimum_lod_level == usize::from(terrain_stats.max_level) {
-                format!("L{}", terrain_stats.max_level)
-            } else {
-                format!("L{minimum_lod_level}-L{}", terrain_stats.max_level)
-            };
-            let vertical_fov_label = format_vertical_fov(vertical_fov_degrees);
-            let full_output = self.egui_context.run_ui(raw_input, |ui| {
-                if show_debug_overlay {
-                    let context = ui.ctx().clone();
-                    egui::Window::new("Cat in the Garden")
-                        .default_pos([12.0, 12.0])
-                        .show(&context, |ui| {
-                            ui.label("Quadtree terrain renderer");
-                            ui.label(format!("GPU: {adapter_label}"));
-                            ui.label(format!("Render FPS: {fps:.0}"));
-                            ui.label(format!(
-                                "Camera: [{:.0}, {:.0}, {:.0}] m",
-                                camera_position.x, camera_position.y, camera_position.z
-                            ));
-                            ui.label(format!(
-                                "Direction: [{:.3}, {:.3}, {:.3}]",
-                                camera_direction.x, camera_direction.y, camera_direction.z
-                            ));
-                            ui.label(format!(
-                                "Altitude: {camera_altitude:.0} m  |  LOD: {lod_range}"
-                            ));
-                            ui.label(format!(
-                                "Terrain: {} active  |  {} drawn  |  {} triangles  |  {} draws",
-                                terrain_stats.resident_chunks,
-                                terrain_stats.drawn_chunks,
-                                terrain_stats.terrain_triangles,
-                                terrain_stats.draw_calls,
-                            ));
-                            ui.label(format!(
-                                "Ocean: {} chunks  |  {} triangles",
-                                terrain_stats.ocean_chunks, terrain_stats.ocean_triangles,
-                            ));
-                            ui.label(format!(
-                                "Weather grid: {} cells  |  area {:.6e} m²  |  cell area {:.3e}-{:.3e} m²  |  t {:.0}s / {} steps",
-                                weather_snapshot.total_cells,
-                                weather_snapshot.total_area_square_meters,
-                                weather_snapshot.minimum_cell_area_square_meters,
-                                weather_snapshot.maximum_cell_area_square_meters,
-                                weather_snapshot.simulation_time_seconds,
-                                weather_snapshot.completed_steps,
-                            ));
-                            ui.label(format!(
-                                "Weather topology tangent error: {:.3e}  |  neighbours {:016x}  |  overlay {} (7)",
-                                weather_snapshot.maximum_tangent_error,
-                                weather_snapshot.neighbour_checksum,
-                                if weather_snapshot.overlay_enabled { "on" } else { "off" },
-                            ));
-                            let field = weather_snapshot.field_diagnostics;
-                            ui.label(format!(
-                                "Weather fields: T {:.1}-{:.1}K (mean {:.1})  |  p {:.0}-{:.0}Pa (mean {:.0})  |  RH {:.2}-{:.2} (mean {:.2})  |  clouds {:.2}-{:.2} (mean {:.2})",
-                                field.minimum_temperature_kelvin,
-                                field.maximum_temperature_kelvin,
-                                field.mean_temperature_kelvin,
-                                field.minimum_pressure_pascals,
-                                field.maximum_pressure_pascals,
-                                field.mean_pressure_pascals,
-                                field.minimum_humidity,
-                                field.maximum_humidity,
-                                field.mean_humidity,
-                                field.minimum_cloud_water,
-                                field.maximum_cloud_water,
-                                field.mean_cloud_water,
-                            ));
-                            ui.label(format!(
-                                "Weather relief: proxy max {:.0}m  |  orographic uplift max {:.2}m/s",
-                                field.maximum_surface_elevation_meters,
-                                field.maximum_orographic_uplift_meters_per_second,
-                            ));
-                            ui.label(format!(
-                                "Weather water: ground {:.2}-{:.2} (mean {:.2})  |  precip max {:.2}mm/h (mean {:.2})",
-                                field.minimum_ground_moisture,
-                                field.maximum_ground_moisture,
-                                field.mean_ground_moisture,
-                                field.maximum_precipitation_millimeters_per_hour,
-                                field.mean_precipitation_millimeters_per_hour,
-                            ));
-                            ui.label(format!(
-                                "Weather storms: intensity max {:.2} (mean {:.2})  |  latent ΔT max {:.2}K",
-                                field.maximum_storm_intensity,
-                                field.mean_storm_intensity,
-                                field.maximum_latent_temperature_tendency_kelvin,
-                            ));
-                            ui.label(format!(
-                                "Weather wind: max {:.1}m/s  |  CFL@{}s {:.3}  |  relax@1800s {:.3}  |  conservation Δp {:.2e} Δq {:.2e}",
-                                field.maximum_wind_meters_per_second,
-                                weather::WEATHER_TIMESTEP_SECONDS as u32,
-                                field.maximum_cfl,
-                                field.relaxation_weight_at_1800_seconds,
-                                field.pressure_conservation_error,
-                                field.humidity_conservation_error,
-                            ));
-                            weather_snapshot.paint_overlay(ui);
-                            ui.label(format!("Camera mode: {}", camera_mode.label()));
-                            if camera_mode == CameraMode::LowFlight {
-                                ui.label(format!(
-                                    "Flight speed: {flight_speed_meters_per_second:.0} m/s"
-                                ));
-                            }
-                            ui.label(format!(
-                                "Optical zoom: {vertical_fov_label}\u{00b0} vertical FOV"
-                            ));
-                            ui.label(format!(
-                                "Tiles: {}  |  Fallback chunks: {}  |  Seam: {:.4} m",
-                                terrain_stats.resident_tiles,
-                                terrain_stats.fallback_chunks,
-                                terrain_stats.max_seam_delta_meters
-                            ));
-                            ui.label(format!(
-                                "LOD work: {} splits  |  {} merges  |  {} culled",
-                                terrain_stats.splits, terrain_stats.merges, terrain_stats.culled_nodes
-                            ));
-                            ui.label(format!(
-                                "Exposure: {exposure:.3} {}  |  Meter: {metered_exposure:.3}  |  Average luminance: {average_luminance:.3}",
-                                if auto_exposure_enabled {
-                                    "auto"
-                                } else {
-                                    "fixed"
-                                },
-                            ));
-                            ui.label(format!(
-                                "Post: blur {}  |  bloom {}  |  HDR curve {}",
-                                if blur_enabled { "on" } else { "off" },
-                                if bloom_enabled { "on" } else { "off" },
-                                if hdr_effect_enabled { "on" } else { "off" },
-                            ));
-                            ui.label(format!(
-                                "Composition debug: {}",
-                                render_debug_mode.label(),
-                            ));
-                            ui.label(format!(
-                                "Flat triangle outlines: {} (O)",
-                                if flat_triangle_outlines_enabled { "on" } else { "off" },
-                            ));
-                            ui.label(format!("Render path: {} (F5)", render_path.label()));
-                            ui.label(format!(
-                                "Ray warp: {}x{}  |  fovea {:+.2}, {:+.2} NDC  |  debug {} (F11)",
-                                warp_size.width,
-                                warp_size.height,
-                                fovea_ndc[0],
-                                fovea_ndc[1],
-                                if warp_debug_visible { "on" } else { "off" },
-                            ));
-                            ui.label(format!(
-                                "M8: 1 horizon {} | 2 temporal {} | 3 adaptive {} | 4 shading {} | 5 blur {}",
-                                if experiment_states[0] { "on" } else { "off" },
-                                if experiment_states[1] { "on" } else { "off" },
-                                if experiment_states[2] { "on" } else { "off" },
-                                if experiment_states[3] { "on" } else { "off" },
-                                if experiment_states[4] { "on" } else { "off" },
-                            ));
-                            ui.label(format!(
-                                "Animation: {}",
-                                if animation_frozen { "frozen" } else { "running" },
-                            ));
-                            ui.label(format!("Ocean Gerstner range: {ocean_wave_range:.2} m"));
-                            ui.label(
-                                "F: fullscreen  |  F3: overlay  |  F4: camera mode  |  F5: render path  |  WASD: fly  |  O: triangle outlines  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
-                            );
-                            ui.label("Default: fullscreen, HUD hidden, auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc/Q: quit");
-                        });
-                }
+            textures_to_free = self.refresh_hud(HudInputs {
+                window,
+                now,
+                camera_world_position,
+                camera_altitude,
+                exposure_state,
+                ocean_wave_range,
             });
-            self.egui_state
-                .handle_platform_output(window, full_output.platform_output);
-            for (texture_id, image_delta) in &full_output.textures_delta.set {
-                self.egui_renderer.update_texture(
-                    &self.device,
-                    &self.queue,
-                    *texture_id,
-                    image_delta,
-                );
-            }
-            textures_to_free = full_output.textures_delta.free;
-            self.cached_paint_jobs = self
-                .egui_context
-                .tessellate(full_output.shapes, self.egui_context.pixels_per_point());
-            self.egui_buffers_dirty = true;
-            self.next_hud_update = now + HUD_REFRESH_INTERVAL;
-            self.hud_dirty = false;
         }
         let paint_jobs = render_egui.then_some(&self.cached_paint_jobs);
         if !self.debug_overlay_visible {
@@ -2600,6 +2718,11 @@ impl State {
             });
             self.weather_clouds
                 .draw(&mut render_pass, &self.camera_bind_group);
+            self.local_cloud_impostors.draw(
+                &mut render_pass,
+                &self.camera_bind_group,
+                self.weather_clouds.field_bind_group(),
+            );
             self.rain.draw(
                 &mut render_pass,
                 &self.camera_bind_group,
@@ -3180,6 +3303,20 @@ impl ApplicationHandler for App {
                 }
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::F10) =>
+                {
+                    state.toggle_animation_freeze();
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::F11) =>
+                {
+                    state.toggle_warp_debug();
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
                         && event.physical_key == PhysicalKey::Code(KeyCode::Digit7) =>
                 {
                     state.weather.toggle_overlay();
@@ -3191,20 +3328,6 @@ impl ApplicationHandler for App {
                         && event.physical_key == PhysicalKey::Code(KeyCode::Digit9) =>
                 {
                     state.step_weather_once();
-                    window.request_redraw();
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if event.state.is_pressed()
-                        && event.physical_key == PhysicalKey::Code(KeyCode::F10) =>
-                {
-                    state.toggle_animation_freeze();
-                    window.request_redraw();
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if event.state.is_pressed()
-                        && event.physical_key == PhysicalKey::Code(KeyCode::F11) =>
-                {
-                    state.toggle_warp_debug();
                     window.request_redraw();
                 }
                 WindowEvent::KeyboardInput { event, .. }
@@ -3491,7 +3614,6 @@ mod tests {
             default_sun_direction(),
             0.0,
             0.0,
-            0.0,
             RenderDebugMode::Final,
             true,
             0.0,
@@ -3667,7 +3789,10 @@ mod tests {
 
     #[test]
     fn flight_collision_sweep_catches_ground_between_safe_endpoints() {
-        let radius = crate::planet::PLANET_RADIUS_METERS + 10.0;
+        const FLIGHT_ALTITUDE_METERS: f64 = 10.0;
+        const HIDDEN_PEAK_HEIGHT_METERS: f64 = 20.0;
+
+        let radius = crate::planet::PLANET_RADIUS_METERS + FLIGHT_ALTITUDE_METERS;
         let start = DVec3::X * radius;
         let end = (DVec3::X + DVec3::Z * (4.0 / radius)).normalize() * radius;
         let end_z = end.normalize().z;
@@ -3677,14 +3802,23 @@ mod tests {
             LOW_FLIGHT_MINIMUM_CLEARANCE_METERS,
             |direction, _| {
                 Some(if (0.4 * end_z..0.6 * end_z).contains(&direction.z) {
-                    20.0
+                    HIDDEN_PEAK_HEIGHT_METERS
                 } else {
                     0.0
                 })
             },
         );
 
-        assert!((lift - 12.0).abs() < 1.0e-9);
+        // Derived, not restated: the expected lift is whatever it takes to
+        // clear the midpoint peak, so lowering the clearance floor retunes this
+        // test instead of breaking it. The hardcoded form silently went stale
+        // when the floor dropped from 2m to sub-metre.
+        let expected = HIDDEN_PEAK_HEIGHT_METERS + LOW_FLIGHT_MINIMUM_CLEARANCE_METERS
+            - FLIGHT_ALTITUDE_METERS;
+        assert!(
+            (lift - expected).abs() < 1.0e-9,
+            "swept lift {lift} should clear the midpoint peak at {expected}",
+        );
     }
 
     #[test]
@@ -3702,18 +3836,14 @@ mod tests {
     fn active_peak_measurement_uses_standard_global_summit_prominence() {
         let direction = ACTIVE_HIGHEST_PROMINENCE_DIRECTION;
         assert!((direction.length() - 1.0).abs() < 1.0e-12);
-        assert!((direction.y.asin().to_degrees() - (-28.400_851_919)).abs() < 1.0e-6);
+        assert!((direction.y.asin().to_degrees() - (-20.349_651_274_351)).abs() < 1.0e-6);
         assert!(
-            (crate::planet::geographic_longitude_degrees(direction) + 35.558_843_576).abs()
+            (crate::planet::geographic_longitude_degrees(direction) + 51.995_567_522_201).abs()
                 < 1.0e-6
         );
 
         // A planet's highest summit has no higher parent. As for Everest, its
         // key col is sea level, so prominence equals summit elevation ASL.
-        assert_eq!(
-            ACTIVE_HIGHEST_PROMINENCE_METERS,
-            ACTIVE_HIGHEST_PROMINENCE_METERS - 0.0
-        );
         assert!(
             ACTIVE_HIGHEST_PROMINENCE_METERS
                 > ACTIVE_HIGHEST_RAW_MACRO_ELEVATION_METERS * 4.0

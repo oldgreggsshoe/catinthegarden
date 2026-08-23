@@ -38,6 +38,14 @@ struct CloudVertex {
     normal: [f32; 3],
 }
 
+fn weather_local_impostor_shader_source() -> String {
+    format!(
+        "{}\n{}",
+        include_str!("weather_local_impostor.wgsl"),
+        include_str!("weather_cloud_density.wgsl"),
+    )
+}
+
 fn weather_cloud_shader_source() -> String {
     format!(
         "const CLOUD_LAYER_HALF_DEPTH_METERS: f32 = {:.1};\n{}\n{}",
@@ -94,7 +102,7 @@ impl WeatherCloudRenderer {
                     texture_array_entry(1),
                     wgpu::BindGroupLayoutEntry {
                         binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
@@ -636,6 +644,82 @@ impl RainRenderer {
     }
 }
 
+const LOCAL_IMPOSTOR_COUNT: u32 = 96;
+
+/// Near-surface cloud puffs. These are camera-local billboards driven by the
+/// same interpolated cloud cubemap as the shells, so they add ground-level
+/// parallax without another simulation or a persistent world-space cache.
+pub struct LocalCloudImpostorRenderer {
+    pipeline: wgpu::RenderPipeline,
+}
+
+impl LocalCloudImpostorRenderer {
+    pub fn new(
+        device: &wgpu::Device,
+        hdr_format: wgpu::TextureFormat,
+        camera_bind_group_layout: &wgpu::BindGroupLayout,
+        field_bind_group_layout: &wgpu::BindGroupLayout,
+    ) -> Self {
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("weather local cloud impostor pipeline layout"),
+            bind_group_layouts: &[Some(camera_bind_group_layout), Some(field_bind_group_layout)],
+            immediate_size: 0,
+        });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("weather local cloud impostor shader"),
+            source: wgpu::ShaderSource::Wgsl(weather_local_impostor_shader_source().into()),
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("weather local cloud impostor pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: hdr_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Greater),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        Self { pipeline }
+    }
+
+    pub fn draw<'pass>(
+        &'pass self,
+        render_pass: &mut wgpu::RenderPass<'pass>,
+        camera_bind_group: &'pass wgpu::BindGroup,
+        field_bind_group: &'pass wgpu::BindGroup,
+    ) {
+        render_pass.set_pipeline(&self.pipeline);
+        render_pass.set_bind_group(0, camera_bind_group, &[]);
+        render_pass.set_bind_group(1, field_bind_group, &[]);
+        render_pass.draw(0..6, 0..LOCAL_IMPOSTOR_COUNT);
+    }
+}
+
 fn texture_array_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
@@ -776,6 +860,26 @@ mod tests {
         .expect("weather rain shader must validate");
         assert!(shader.contains("textureSampleLevel(cloud_field_current"));
         assert!(shader.contains("mix(previous, current, weather.blend)"));
+    }
+
+    #[test]
+    fn local_cloud_impostor_shader_parses_and_reads_interpolated_clouds() {
+        let shader = super::weather_local_impostor_shader_source();
+        let module = wgpu::naga::front::wgsl::parse_str(&shader)
+            .expect("local cloud impostor shader must parse");
+        wgpu::naga::valid::Validator::new(
+            wgpu::naga::valid::ValidationFlags::all(),
+            wgpu::naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("local cloud impostor shader must validate");
+        assert!(shader.contains("@builtin(instance_index) instance_index"));
+        assert!(shader.contains("cloud_field_current"));
+        assert!(shader.contains("cloud_field_previous"));
+        assert!(shader.contains("weather.blend"));
+        assert!(shader.contains("fn cloudDensity"));
+        assert!(shader.contains("cloudSample(direction, 0.0)"));
+        assert!(shader.contains("camera_altitude > 22000.0"));
     }
 
     #[test]
