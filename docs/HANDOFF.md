@@ -3568,6 +3568,21 @@ catinthegarden-app`, and deterministic `sunset_blue_hour` plus `sunset_sweep` Qu
 pass. The latest blue-hour capture shows neutral daylight clouds, warm gold/red sunset clouds, and
 dark post-sunset remnants; fresh interactive/manual tuning of cloud coverage remains optional.
 
+## Camera-visible solar veiling glare - 24 August 2026
+
+The physical solar disc was already the correct 0.53-degree angular size, but the orbital
+`stare_at_sun` capture read as a tiny isolated white circle because the existing 6.5-radius corona
+was clipped at its own radius and had no broad camera/eye veiling response. The sun shader now keeps
+the disc geometry and all physical atmosphere/surface lighting unchanged, widens the compact halo,
+and adds a low-intensity 18-radius veiling-glare lobe. The fragment cutoff includes that lobe, so it
+is not silently discarded outside the compact halo. The glow remains additive HDR presentation only,
+uses the existing RGB atmospheric/cloud visibility, and is removed together with the disc when the
+planet fully occults the solar ray.
+
+Focused sun tests (5), app build, `stare_at_sun/1787576771-1001614`, and
+`sunset_blue_hour/1787576831-1002047` pass. The orbital capture now presents a visibly soft,
+camera-like bright source while preserving the fixed physical disc size.
+
 ## Experimental weather shell transport correction - 24 August 2026
 
 The latest manual orbital sequence showed two distinct visual motions: cloud coverage on the

@@ -9,8 +9,13 @@ const VISUAL_SUN_SIZE_SCALE: f32 = 1.0;
 const SUN_ANGULAR_RADIUS_RADIANS: f32 = PHYSICAL_SUN_ANGULAR_RADIUS_RADIANS * VISUAL_SUN_SIZE_SCALE;
 // A compact, soft corona gives the camera-like glow seen around a bright sun
 // without turning the whole sky into a white disk.
-const SUN_HALO_RADIUS_SCALE: f32 = 6.5;
-const SUN_INNER_GLARE_RADIUS_SCALE: f32 = 2.5;
+const SUN_HALO_RADIUS_SCALE: f32 = 9.0;
+const SUN_INNER_GLARE_RADIUS_SCALE: f32 = 3.0;
+// A human eye/camera blooms a bright solar source into a broad veiling glow;
+// this is deliberately separate from the real 0.53-degree disc so it cannot
+// change solar geometry or the sun's physical lighting contribution.
+const SUN_VEILING_GLARE_RADIUS_SCALE: f32 = 18.0;
+const SUN_VEILING_GLARE_RADIANCE: vec3<f32> = vec3<f32>(2.8, 2.2, 1.55);
 // This multiplier belongs only to the camera-facing HDR disc.  Terrain,
 // ocean, and atmosphere lighting use their own physical solar radiance.
 const SUN_VISUAL_RADIANCE_SCALE: f32 = 5.0;
@@ -285,7 +290,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let alignment = clamp(dot(ray, sun), -1.0, 1.0);
     let angular_distance = atan2(length(cross(ray, sun)), alignment);
     let normalized_distance = angular_distance / SUN_ANGULAR_RADIUS_RADIANS;
-    if normalized_distance > SUN_HALO_RADIUS_SCALE {
+    if normalized_distance > SUN_VEILING_GLARE_RADIUS_SCALE {
         discard;
     }
     let disc_coverage = 1.0 - smoothstep(0.92, 1.0, normalized_distance);
@@ -294,6 +299,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let inner_glare = pow(
         max(1.0 - normalized_distance / SUN_INNER_GLARE_RADIUS_SCALE, 0.0),
         2.0,
+    );
+    let veiling_glare = pow(
+        max(1.0 - normalized_distance / SUN_VEILING_GLARE_RADIUS_SCALE, 0.0),
+        1.7,
     );
     let solar_elevation = dot(
         normalize(camera.camera_planet_direction_view_altitude.xyz),
@@ -340,13 +349,17 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         SUN_CORE_RADIANCE * disc_coverage * limb_darkening
     );
     let atmospheric_glare = presentation_tint * glare_visibility * (
-        SUN_HALO_RADIANCE * halo + SUN_GLARE_RADIANCE * inner_glare
+        SUN_HALO_RADIANCE * halo
+            + SUN_GLARE_RADIANCE * inner_glare
+            + SUN_VEILING_GLARE_RADIANCE * veiling_glare
     );
-    let radiance = SUN_VISUAL_RADIANCE_SCALE
-        * (atmospheric_core + atmospheric_glare);
-    // One centre-ray value attenuates the complete disc and camera halo. This
-    // avoids making the physical disc appear to shrink as it passes behind a
-    // coarse weather cell; an optically thick cell hides it as one object.
+    // The broad veiling response is scattered light around the disc, so a
+    // cloud blocks it more strongly than the disc core itself. This keeps a
+    // storm from leaving a bright camera bloom after it has hidden the sun.
     let cloud_visibility = cloud_sun_visibility(sun);
-    return vec4<f32>(radiance * cloud_visibility, 1.0);
+    let glare_cloud_visibility = pow(cloud_visibility, 4.0);
+    let radiance = SUN_VISUAL_RADIANCE_SCALE
+        * (atmospheric_core * cloud_visibility
+            + atmospheric_glare * glare_cloud_visibility);
+    return vec4<f32>(radiance, 1.0);
 }

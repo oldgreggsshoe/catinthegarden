@@ -180,6 +180,9 @@ mod tests {
         assert!(shader.contains("const SUN_CORE_VISIBILITY_FLOOR: f32 = 0.12;"));
         assert!(shader.contains("const SUN_CORE_RADIANCE_FLOOR: f32 = 0.50;"));
         assert!(shader.contains("const SUN_GLARE_VISIBILITY_FLOOR: f32 = 0.18;"));
+        assert!(shader.contains("const SUN_VEILING_GLARE_RADIUS_SCALE: f32 = 18.0;"));
+        assert!(shader.contains("let veiling_glare = pow("));
+        assert!(shader.contains("SUN_VEILING_GLARE_RADIANCE * veiling_glare"));
         assert!(shader.contains("let presentation_tint = tint"));
         assert!(shader.contains("var core_hue = vec3<f32>(1.0, 0.08, 0.01);"));
         assert!(shader.contains("let limb_tint = mix("));
@@ -190,7 +193,7 @@ mod tests {
             shader.contains("let atmospheric_glare = presentation_tint * glare_visibility * (")
         );
         assert!(compact.contains(
-            "letradiance=SUN_VISUAL_RADIANCE_SCALE*(atmospheric_core+atmospheric_glare);"
+            "letradiance=SUN_VISUAL_RADIANCE_SCALE*(atmospheric_core*cloud_visibility+atmospheric_glare*glare_cloud_visibility);"
         ));
         assert!(!compact.contains("letradiance=SUN_VISUAL_RADIANCE_SCALE*tint*(SUN_CORE_RADIANCE"));
     }
@@ -224,7 +227,9 @@ mod tests {
         assert!(shader.contains("if cloud_opacity >= 0.60"));
         assert!(shader.contains("pow(geometric_transmission, 4.0)"));
         assert!(shader.contains("cloud_sun_visibility(sun)"));
-        assert!(shader.contains("radiance * cloud_visibility"));
+        assert!(shader.contains("atmospheric_core * cloud_visibility"));
+        assert!(shader.contains("let glare_cloud_visibility = pow(cloud_visibility, 4.0);"));
+        assert!(shader.contains("atmospheric_glare * glare_cloud_visibility"));
         assert!(renderer.contains("weather_field_bind_group_layout"));
         assert!(renderer.contains("weather_field_bind_group"));
     }
