@@ -1,6 +1,10 @@
 const PLANET_RADIUS_METERS: f32 = 4000000.0;
 const ATMOSPHERE_VERTICAL_SCALE: f32 = 4.5;
 const OPTICAL_ATMOSPHERE_HEIGHT_METERS: f32 = 640000.0;
+const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 8000.0;
+const MIE_SCALE_HEIGHT_METERS: f32 = 1200.0;
+const RAYLEIGH_COEFFICIENT: vec3<f32> = vec3<f32>(5.8e-6, 13.5e-6, 33.1e-6);
+const MIE_COEFFICIENT: vec3<f32> = vec3<f32>(4.4e-6);
 
 struct Camera {
     projection_matrix: mat4x4<f32>,
@@ -92,8 +96,22 @@ fn vs_main(input: VertexInput, @builtin(instance_index) instance_index: u32) -> 
 }
 
 fn direct_atmosphere_uv(altitude: f32, solar_zenith_cosine: f32) -> vec2<f32> {
+    // The LUT stores the compressed optical atmosphere. Preserve its signed
+    // low-sun column so clouds inherit the physical red/orange transmission,
+    // but stay just above the optical horizon to avoid the solid-planet rows.
+    let optical_altitude = max(altitude, 0.0) / ATMOSPHERE_VERTICAL_SCALE;
+    let optical_radius = PLANET_RADIUS_METERS + optical_altitude;
+    let optical_horizon = -sqrt(max(
+        1.0 - (PLANET_RADIUS_METERS / optical_radius)
+            * (PLANET_RADIUS_METERS / optical_radius),
+        0.0,
+    ));
+    let safe_solar_zenith_cosine = max(
+        solar_zenith_cosine,
+        optical_horizon + 0.004625,
+    );
     return vec2<f32>(
-        clamp(max(solar_zenith_cosine, 0.0) * 0.5 + 0.5, 0.0, 1.0),
+        clamp(safe_solar_zenith_cosine * 0.5 + 0.5, 0.0, 1.0),
         sqrt(clamp(max(altitude, 0.0) / ATMOSPHERE_VERTICAL_SCALE / OPTICAL_ATMOSPHERE_HEIGHT_METERS, 0.0, 1.0)),
     );
 }
@@ -130,6 +148,32 @@ fn cloud_layer_sun_visibility(altitude: f32, solar_zenith_cosine: f32) -> f32 {
         fully_lit_horizon + solar_angular_radius_sine,
         solar_zenith_cosine,
     );
+}
+
+fn cloud_view_transmittance(
+    camera_altitude: f32,
+    cloud_altitude: f32,
+    view_length: f32,
+    view_zenith_cosine: f32,
+) -> vec3<f32> {
+    // Shells are composited after the terrain pass, so they must carry the
+    // same scale-height-limited camera column as distant terrain. Otherwise a
+    // white cloud at 90km is pasted over a red sunset with no view extinction.
+    let camera_density_rayleigh = exp(-max(camera_altitude, 0.0) / RAYLEIGH_SCALE_HEIGHT_METERS);
+    let cloud_density_rayleigh = exp(-max(cloud_altitude, 0.0) / RAYLEIGH_SCALE_HEIGHT_METERS);
+    let camera_density_mie = exp(-max(camera_altitude, 0.0) / MIE_SCALE_HEIGHT_METERS);
+    let cloud_density_mie = exp(-max(cloud_altitude, 0.0) / MIE_SCALE_HEIGHT_METERS);
+    let air_mass = min(1.0 / max(view_zenith_cosine, 0.08), 12.0);
+    let rayleigh_path = min(view_length, 2.0 * RAYLEIGH_SCALE_HEIGHT_METERS * air_mass);
+    let mie_path = min(view_length, 2.0 * MIE_SCALE_HEIGHT_METERS * air_mass);
+    return exp(-(
+        RAYLEIGH_COEFFICIENT
+            * 0.5 * (camera_density_rayleigh + cloud_density_rayleigh)
+            * rayleigh_path
+        + MIE_COEFFICIENT
+            * 0.5 * (camera_density_mie + cloud_density_mie)
+            * mie_path
+    ));
 }
 
 // The terrain depth buffer normally rejects clouds behind the ground, but it
@@ -201,9 +245,20 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         irradiance_atmosphere_uv(input.altitude, solar_zenith_cosine),
         0.0,
     ).rgb;
-    let direct = transmittance * (0.20 + 0.80 * max(dot(normal, sun_direction), 0.0));
+    // Match the direct-light scale used by terrain/ocean. Keeping the RGB
+    // transmittance intact is what makes the same physical low-sun column
+    // read warm instead of letting neutral skylight wash the cloud white.
+    let direct = transmittance
+        * (0.20 + 0.80 * max(dot(normal, sun_direction), 0.0))
+        * 2.0;
     let sky = mix(vec3<f32>(dot(irradiance, vec3<f32>(0.2126, 0.7152, 0.0722))), irradiance, 0.55);
-    let lighting = max(direct + sky * (0.55 + 0.45 * max(dot(normal, normalize(input.direction)), 0.0)), vec3<f32>(0.0));
+    // Near the local horizon the direct RGB column is the sunset colour. Do
+    // not let the broad neutral upper-sky fill wash that physical signal out;
+    // overhead clouds retain the full ambient term.
+    let low_sun_amount = 1.0 - smoothstep(0.0, 0.35, solar_zenith_cosine);
+    let sky_fill = mix(0.55, 0.16, low_sun_amount)
+        * (0.55 + 0.45 * max(dot(normal, normalize(input.direction)), 0.0));
+    let base_lighting = max(direct + sky * sky_fill, vec3<f32>(0.0));
     let fair_weather_albedo = mix(
         vec3<f32>(0.42, 0.46, 0.50),
         vec3<f32>(0.94, 0.96, 1.0),
@@ -216,6 +271,16 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         * storm_darkening
         * select(1.0, 0.82, input.shell_index == 1u);
     let camera_to_cloud = normalize(cloud_position_view - camera_position_view);
+    let view_transmittance = cloud_view_transmittance(
+        camera.camera_planet_direction_view_altitude.w,
+        input.altitude,
+        length(cloud_position_view - camera_position_view),
+        dot(
+            normalize(camera.camera_planet_direction_view_altitude.xyz),
+            camera_to_cloud,
+        ),
+    );
+    let lighting = base_lighting * view_transmittance;
     let sun_alignment = clamp(
         dot(camera_to_cloud, normalize(camera.sun_direction_view.xyz)),
         -1.0,
@@ -232,6 +297,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let translucent_edge = smoothstep(0.025, 0.20, alpha)
         * (1.0 - smoothstep(0.38, 0.62, alpha));
     let silver_lining = transmittance
+        * view_transmittance
         * forward_phase
         * translucent_edge
         * 2.5;

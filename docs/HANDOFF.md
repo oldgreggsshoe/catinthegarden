@@ -3550,3 +3550,20 @@ rain and impostor vertex sampling are valid on wgpu. Ten focused weather-render 
 composed shared-density validation, pass; `cargo check -p catinthegarden-app` passes with only the
 existing unused fallback-constructor warning. Fresh Quadro captures are still needed to tune local puff
 opacity/coverage by eye.
+
+## Experimental weather sunset cloud lighting - 24 August 2026
+
+The final cloud-lighting follow-up now uses the same physical atmosphere data for every cloud
+presentation path. The shell shader keeps the signed low-sun transmittance LUT column (clamped only
+above its compressed optical horizon), and its direct RGB sunlight uses the terrain/ocean scale. The
+96 local impostors now bind the transmittance and surface-irradiance LUTs in their vertex stage rather
+than reducing sunlight to a scalar dot product. Both paths also apply a scale-height-limited
+camera-to-cloud transmittance column, so a distant white shell is not composited over a red sunset
+without the intervening air reddening it. This is still physical RGB extinction/irradiance; no
+clock-keyed sunset tint was added. The fullscreen atmosphere already uses the signed LUT source and
+continues to produce the red/orange horizon and blue upper sky as the sun descends.
+
+The composed WGSL parser/validator suite (10 weather-render tests), `cargo build -p
+catinthegarden-app`, and deterministic `sunset_blue_hour` plus `sunset_sweep` Quadro/Vulkan replays
+pass. The latest blue-hour capture shows neutral daylight clouds, warm gold/red sunset clouds, and
+dark post-sunset remnants; fresh interactive/manual tuning of cloud coverage remains optional.

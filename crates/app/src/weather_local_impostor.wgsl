@@ -35,6 +35,16 @@ struct WeatherRenderUniform {
 @group(1) @binding(3)
 var<uniform> weather: WeatherRenderUniform;
 
+const ATMOSPHERE_VERTICAL_SCALE: f32 = 4.5;
+const OPTICAL_ATMOSPHERE_HEIGHT_METERS: f32 = 640000.0;
+
+@group(2) @binding(0)
+var atmosphere_transmittance_lut: texture_2d<f32>;
+@group(2) @binding(1)
+var atmosphere_irradiance_lut: texture_2d<f32>;
+@group(2) @binding(2)
+var atmosphere_sampler: sampler;
+
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) alpha: f32,
@@ -51,6 +61,47 @@ fn planet_to_view(vector: vec3<f32>) -> vec3<f32> {
 
 fn hash(value: f32) -> f32 {
     return fract(sin(value * 91.173 + 17.31) * 43758.5453);
+}
+
+fn cloud_atmosphere_horizon_cosine(altitude: f32) -> f32 {
+    let optical_altitude = max(altitude, 0.0)
+        / ATMOSPHERE_VERTICAL_SCALE;
+    let radius = PLANET_RADIUS_METERS + optical_altitude;
+    return -sqrt(max(
+        1.0 - (PLANET_RADIUS_METERS / radius) * (PLANET_RADIUS_METERS / radius),
+        0.0,
+    ));
+}
+
+fn cloud_sun_visibility(altitude: f32, solar_zenith_cosine: f32) -> f32 {
+    let horizon = cloud_atmosphere_horizon_cosine(altitude);
+    let solar_angular_radius_sine = 0.004625;
+    return smoothstep(
+        horizon - solar_angular_radius_sine,
+        horizon + solar_angular_radius_sine,
+        solar_zenith_cosine,
+    );
+}
+
+fn cloud_atmosphere_uv(altitude: f32, solar_zenith_cosine: f32) -> vec2<f32> {
+    // The optical LUT compresses the deliberately thick game atmosphere.
+    // Keep the signed low-sun column, but clamp below its optical horizon so
+    // elevated puffs retain a warm transmitted edge instead of sampling the
+    // solid-planet rows.
+    let safe_cosine = max(
+        solar_zenith_cosine,
+        cloud_atmosphere_horizon_cosine(altitude) + 0.004625,
+    );
+    return vec2<f32>(
+        clamp(safe_cosine * 0.5 + 0.5, 0.0, 1.0),
+        sqrt(clamp(
+            max(altitude, 0.0)
+                / ATMOSPHERE_VERTICAL_SCALE
+                / OPTICAL_ATMOSPHERE_HEIGHT_METERS,
+            0.0,
+            1.0,
+        )),
+    );
 }
 
 @vertex
@@ -94,10 +145,35 @@ fn vs_main(
     let coverage = cloud.density;
     let storm = smoothstep(0.10, 0.55, cloud.storm);
     let alpha = smoothstep(0.12, 0.38, coverage) * mix(0.06, 0.24, storm);
-    let sunlight = max(dot(direction, normalize(camera.sun_direction.xyz)), 0.0);
-    let brightness = 0.28 + 0.72 * sunlight;
+    let sun_direction = normalize(camera.sun_direction.xyz);
+    let solar_zenith_cosine = dot(direction, sun_direction);
+    let sun_transmittance = textureSampleLevel(
+        atmosphere_transmittance_lut,
+        atmosphere_sampler,
+        cloud_atmosphere_uv(puff_altitude, solar_zenith_cosine),
+        0.0,
+    ).rgb * cloud_sun_visibility(puff_altitude, solar_zenith_cosine);
+    let irradiance = textureSampleLevel(
+        atmosphere_irradiance_lut,
+        atmosphere_sampler,
+        cloud_atmosphere_uv(puff_altitude, solar_zenith_cosine),
+        0.0,
+    ).rgb;
+    let sky = mix(
+        vec3<f32>(dot(irradiance, vec3<f32>(0.2126, 0.7152, 0.0722))),
+        irradiance,
+        0.55,
+    );
+    let direct = sun_transmittance
+        * (0.20 + 0.80 * max(solar_zenith_cosine, 0.0))
+        * 2.0;
+    let low_sun_amount = 1.0 - smoothstep(0.0, 0.35, solar_zenith_cosine);
+    let lighting = max(
+        direct + sky * mix(0.45, 0.16, low_sun_amount),
+        vec3<f32>(0.0),
+    );
     let colour = mix(vec3<f32>(0.86, 0.88, 0.90), vec3<f32>(0.38, 0.42, 0.47), storm)
-        * brightness;
+        * lighting;
     let visible_alpha = select(alpha, 0.0, camera_altitude > 22000.0);
     return VertexOutput(
         camera.projection_matrix * vec4<f32>(view_position, 1.0),

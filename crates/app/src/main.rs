@@ -928,6 +928,7 @@ impl State {
             hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
             weather_clouds.field_bind_group_layout(),
+            atmosphere.surface_lighting_resources(),
         );
         let foveated = foveated::FoveatedRenderer::new(
             &device,

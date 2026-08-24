@@ -651,6 +651,7 @@ const LOCAL_IMPOSTOR_COUNT: u32 = 96;
 /// parallax without another simulation or a persistent world-space cache.
 pub struct LocalCloudImpostorRenderer {
     pipeline: wgpu::RenderPipeline,
+    atmosphere_bind_group: wgpu::BindGroup,
 }
 
 impl LocalCloudImpostorRenderer {
@@ -659,10 +660,47 @@ impl LocalCloudImpostorRenderer {
         hdr_format: wgpu::TextureFormat,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
         field_bind_group_layout: &wgpu::BindGroupLayout,
+        atmosphere: SurfaceLightingResources<'_>,
     ) -> Self {
+        let atmosphere_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("weather local cloud atmosphere layout"),
+                entries: &[
+                    texture_entry(0),
+                    texture_entry(1),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let atmosphere_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("weather local cloud atmosphere bind group"),
+            layout: &atmosphere_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(atmosphere.transmittance),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(atmosphere.irradiance),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(atmosphere.physical_sampler),
+                },
+            ],
+        });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("weather local cloud impostor pipeline layout"),
-            bind_group_layouts: &[Some(camera_bind_group_layout), Some(field_bind_group_layout)],
+            bind_group_layouts: &[
+                Some(camera_bind_group_layout),
+                Some(field_bind_group_layout),
+                Some(&atmosphere_bind_group_layout),
+            ],
             immediate_size: 0,
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -704,7 +742,10 @@ impl LocalCloudImpostorRenderer {
             multiview_mask: None,
             cache: None,
         });
-        Self { pipeline }
+        Self {
+            pipeline,
+            atmosphere_bind_group,
+        }
     }
 
     pub fn draw<'pass>(
@@ -716,6 +757,7 @@ impl LocalCloudImpostorRenderer {
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, camera_bind_group, &[]);
         render_pass.set_bind_group(1, field_bind_group, &[]);
+        render_pass.set_bind_group(2, &self.atmosphere_bind_group, &[]);
         render_pass.draw(0..6, 0..LOCAL_IMPOSTOR_COUNT);
     }
 }
@@ -736,7 +778,10 @@ fn texture_array_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
 fn texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
-        visibility: wgpu::ShaderStages::FRAGMENT,
+        // The shell samples atmosphere in its fragment stage; local cloud
+        // impostor vertices use the same LUT to tint near-field puffs before
+        // rasterisation.
+        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
         ty: wgpu::BindingType::Texture {
             sample_type: wgpu::TextureSampleType::Float { filterable: true },
             view_dimension: wgpu::TextureViewDimension::D2,
@@ -836,7 +881,8 @@ mod tests {
         assert!(shader.contains("CLOUD_LAYER_HALF_DEPTH_METERS: f32 = 38000.0"));
         assert!(shader.contains("fn solid_planet_blocks_cloud"));
         assert!(shader.contains("if solid_planet_blocks_cloud("));
-        assert!(shader.contains("max(solar_zenith_cosine, 0.0)"));
+        assert!(shader.contains("let safe_solar_zenith_cosine = max("));
+        assert!(shader.contains("optical_horizon + 0.004625"));
         assert!(shader.contains("let humidity_precursor"));
         assert!(shader.contains("let lower_precursor"));
         assert!(shader.contains("let upper_precursor = mix("));
@@ -880,6 +926,9 @@ mod tests {
         assert!(shader.contains("fn cloudDensity"));
         assert!(shader.contains("cloudSample(direction, 0.0)"));
         assert!(shader.contains("camera_altitude > 22000.0"));
+        assert!(shader.contains("atmosphere_transmittance_lut"));
+        assert!(shader.contains("cloud_atmosphere_uv(puff_altitude, solar_zenith_cosine)"));
+        assert!(shader.contains("let direct = sun_transmittance"));
     }
 
     #[test]
