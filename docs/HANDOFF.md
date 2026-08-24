@@ -3567,3 +3567,20 @@ The composed WGSL parser/validator suite (10 weather-render tests), `cargo build
 catinthegarden-app`, and deterministic `sunset_blue_hour` plus `sunset_sweep` Quadro/Vulkan replays
 pass. The latest blue-hour capture shows neutral daylight clouds, warm gold/red sunset clouds, and
 dark post-sunset remnants; fresh interactive/manual tuning of cloud coverage remains optional.
+
+## Experimental weather shell transport correction - 24 August 2026
+
+The latest manual orbital sequence showed two distinct visual motions: cloud coverage on the
+near-side shell gradually changed, while a second pattern appeared to rotate around the planet
+independently. The shared density source was applying both the interpolated wind-advected field and
+an extra global longitude rotation (`rotate_drift`) plus a time-varying flow-warp phase. That made
+the renderer transport the same weather twice, so a fixed camera could watch one shell move into a
+clear region even while the CPU field's mean cloud water was stable or increasing.
+
+`weather_cloud_density.wgsl` now samples the planet direction directly. Its flow warp is a fixed
+per-layer spatial breakup, and all shell/shadow consumers therefore see the same wind-advected field
+motion. The low-altitude camera-local impostors keep their separate simulated-time hash drift so
+near-ground puffs still move. The cloud-render source test explicitly rejects the removed global
+rotation/time phase. Focused weather-render (10) and weather-state (34) tests pass, as does a Vulkan
+`weather_contrast` replay (`1787532213-733696`); its fixed-camera captures retain continuous weather
+coverage changes without an independently orbiting shell.

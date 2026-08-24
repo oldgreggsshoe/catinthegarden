@@ -6,16 +6,6 @@
 // Terrain shadows and cloud impostor spawn must include this source rather
 // than reimplementing the field/flow/noise/posterisation path.
 
-fn rotate_drift(direction: vec3<f32>) -> vec3<f32> {
-    let sine = sin(weather.drift_radians);
-    let cosine = cos(weather.drift_radians);
-    return vec3<f32>(
-        direction.x * cosine - direction.z * sine,
-        direction.y,
-        direction.x * sine + direction.z * cosine,
-    );
-}
-
 fn hash_noise(point: vec3<f32>) -> f32 {
     return fract(sin(dot(point, vec3<f32>(12.9898, 78.233, 37.719))) * 43758.5453);
 }
@@ -69,8 +59,12 @@ fn cloud_noise(direction: vec3<f32>, shell_index: u32, octave_count: u32) -> f32
 
 fn flow_warp(direction: vec3<f32>, shell_index: u32) -> vec3<f32> {
     let flow = normalize(vec3<f32>(-direction.z, 0.18, direction.x));
-    let phase = weather.drift_radians * select(0.8, 0.45, shell_index == 1u);
-    let amount = sin(phase + dot(direction, flow) * 18.0) * 0.018;
+    // This is a fixed spatial breakup, not a second transport mechanism.
+    // Cloud motion comes from the interpolated, wind-advected cubemap. A
+    // time-varying phase here (or a global longitude rotation) makes one
+    // rendered shell orbit independently of the simulated weather field.
+    let shell_phase = select(0.0, 1.618, shell_index == 1u);
+    let amount = sin(shell_phase + dot(direction, flow) * 18.0) * 0.018;
     return normalize(direction + flow * amount);
 }
 
@@ -83,7 +77,7 @@ struct CloudSample {
 fn cloudSampleWithOctaves(dir: vec3<f32>, t: f32, octave_count: u32) -> CloudSample {
     let shell_index = select(0u, 1u, t >= 0.5);
     let base_direction = normalize(dir);
-    let field_direction = flow_warp(rotate_drift(base_direction), shell_index);
+    let field_direction = flow_warp(base_direction, shell_index);
     let current = textureSampleLevel(cloud_field_current, cloud_field_sampler, field_direction, 0.0);
     let previous = textureSampleLevel(cloud_field_previous, cloud_field_sampler, field_direction, 0.0);
     let field = mix(previous, current, weather.blend);

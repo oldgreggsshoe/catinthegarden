@@ -865,6 +865,9 @@ mod tests {
         assert!(shader.contains("mix(previous, current, weather.blend)"));
         assert!(shader.contains("@builtin(instance_index) instance_index"));
         assert!(shader.contains("fn flow_warp"));
+        assert!(shader.contains("let field_direction = flow_warp(base_direction, shell_index);"));
+        assert!(!shader.contains("fn rotate_drift"));
+        assert!(!shader.contains("weather.drift_radians * select"));
         assert!(shader.contains("fn cloud_noise"));
         assert!(shader.contains("fn cloudSample("));
         assert!(shader.contains("fn cloudDensity"));
