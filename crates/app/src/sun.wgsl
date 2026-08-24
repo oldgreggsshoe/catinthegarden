@@ -19,6 +19,9 @@ const SUN_VEILING_GLARE_RADIANCE: vec3<f32> = vec3<f32>(0.20, 0.16, 0.11);
 const SUN_STAR_RAY_RADIUS_SCALE: f32 = 42.0;
 const SUN_STAR_RAY_RADIANCE: vec3<f32> = vec3<f32>(0.40, 0.32, 0.23);
 const SUN_LENS_GHOST_RADIANCE: vec3<f32> = vec3<f32>(0.16, 0.12, 0.10);
+// Keep the discard outside every presentation lobe, rather than at the veil
+// radius itself. Otherwise the zero-valued tail still leaves a visible ring.
+const SUN_OVERLAY_CUTOFF_RADIUS_SCALE: f32 = 64.0;
 // This multiplier belongs only to the camera-facing HDR disc.  Terrain,
 // ocean, and atmosphere lighting use their own physical solar radiance.
 const SUN_VISUAL_RADIANCE_SCALE: f32 = 5.0;
@@ -320,7 +323,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let alignment = clamp(dot(ray, sun), -1.0, 1.0);
     let angular_distance = atan2(length(cross(ray, sun)), alignment);
     let normalized_distance = angular_distance / SUN_ANGULAR_RADIUS_RADIANS;
-    if normalized_distance > SUN_VEILING_GLARE_RADIUS_SCALE {
+    if normalized_distance > SUN_OVERLAY_CUTOFF_RADIUS_SCALE {
         discard;
     }
     let disc_coverage = 1.0 - smoothstep(0.92, 1.0, normalized_distance);

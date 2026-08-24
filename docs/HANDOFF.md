@@ -3616,3 +3616,15 @@ Five focused sun tests, ten weather-render tests, release Vulkan `stare_at_sun`,
 `test-runs/stare_at_sun/1787600080-1166721`, `test-runs/sunset_blue_hour/1787600147-1167550`, and
 `test-runs/sun_horizon_visibility/1787600107-1167227`. FIFO presentation was anomalously slow in
 this headless replay; the same release scenarios pass with `CATINGARDEN_PRESENT_MODE=immediate`.
+
+## Solar flare tail boundary repair - 24 August 2026
+
+A manual near-surface capture showed a sharp circular boundary around the new flare. The overlay was
+being discarded at the 30-radius veil even though the star-ray tail extended to 42 radii, so the
+zero-valued tail was clipped into a ring. `SUN_OVERLAY_CUTOFF_RADIUS_SCALE` is now 64 radii, separate
+from the veil and ray falloffs; the lobe contributions still converge smoothly to zero before that
+budgeted discard. Physical disc size, cloud occlusion, atmospheric tint, and lighting are unchanged.
+
+Five focused sun tests, ten weather-render tests, and fresh release Vulkan immediate-present
+`stare_at_sun` and `sun_horizon_visibility` replays pass. The no-ring captures are under
+`test-runs/stare_at_sun/1787601363-1176160` and `test-runs/sun_horizon_visibility/1787601375-1176278`.
