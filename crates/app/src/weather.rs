@@ -17,6 +17,12 @@ pub const WEATHER_GRID_SIDE: usize = 64;
 pub const WEATHER_TIMESTEP_SECONDS: f64 = 600.0;
 pub const WEATHER_ORBITAL_PERIOD_SECONDS: f64 = 365.2422 * 86_400.0;
 pub const INTERACTIVE_WEATHER_TIME_SCALE: f64 = 3_600.0;
+// Keep wind and thermal transport visibly fast without aging cloud phase
+// changes and precipitation by the same hour-per-real-second clock.
+const INTERACTIVE_CLOUD_MICROPHYSICS_TIME_SCALE: f64 = 60.0;
+const WEATHER_MICROPHYSICS_TIMESTEP_SECONDS: f64 = WEATHER_TIMESTEP_SECONDS
+    * INTERACTIVE_CLOUD_MICROPHYSICS_TIME_SCALE
+    / INTERACTIVE_WEATHER_TIME_SCALE;
 const WEATHER_MAX_STEPS_PER_ADVANCE: u64 = 12;
 const WEATHER_REFERENCE_AIR_DENSITY_KG_PER_CUBIC_METER: f64 = 1.225;
 const WEATHER_MOMENTUM_DAMPING_SECONDS: f64 = 7_200.0;
@@ -1411,12 +1417,12 @@ impl WeatherState {
         fields.diagnose_pressure_from_temperature(grid);
         fields.update_wind_from_pressure(grid, WEATHER_TIMESTEP_SECONDS);
         fields.apply_lapse_rate_and_orographic_uplift(grid, WEATHER_TIMESTEP_SECONDS);
-        fields.evaporate_moisture(WEATHER_TIMESTEP_SECONDS);
+        fields.evaporate_moisture(WEATHER_MICROPHYSICS_TIMESTEP_SECONDS);
         fields.advect_temperature(grid, WEATHER_TIMESTEP_SECONDS);
         fields.advect_humidity(grid, WEATHER_TIMESTEP_SECONDS);
         fields.advect_cloud_water(grid, WEATHER_TIMESTEP_SECONDS);
-        fields.condense_cloud_water(WEATHER_TIMESTEP_SECONDS);
-        fields.precipitate_and_update_ground_moisture(WEATHER_TIMESTEP_SECONDS);
+        fields.condense_cloud_water(WEATHER_MICROPHYSICS_TIMESTEP_SECONDS);
+        fields.precipitate_and_update_ground_moisture(WEATHER_MICROPHYSICS_TIMESTEP_SECONDS);
     }
 
     pub fn debug_snapshot(&self) -> WeatherDebugSnapshot {
@@ -2389,6 +2395,33 @@ mod tests {
         assert_eq!(completed, 6);
         assert_eq!(state.debug_snapshot().completed_steps, 6);
         assert!(state.interpolation_fraction() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn interactive_cloud_microphysics_persists_across_fast_transport_steps() {
+        assert_eq!(WEATHER_MICROPHYSICS_TIMESTEP_SECONDS, 10.0);
+        assert_eq!(
+            WEATHER_CONDENSATION_TIME_CONSTANT_SECONDS / INTERACTIVE_CLOUD_MICROPHYSICS_TIME_SCALE,
+            15.0
+        );
+        assert_eq!(
+            WEATHER_PRECIPITATION_TIME_CONSTANT_SECONDS / INTERACTIVE_CLOUD_MICROPHYSICS_TIME_SCALE,
+            60.0
+        );
+
+        let grid = WeatherGrid::new();
+        let mut fields = WeatherFields::initial(&grid);
+        let target = &mut fields.cells[0];
+        target.temperature_kelvin = 273.15;
+        target.specific_humidity = 0.45;
+        target.cloud_water = 0.2;
+        for _ in 0..6 {
+            fields.condense_cloud_water(WEATHER_MICROPHYSICS_TIMESTEP_SECONDS);
+        }
+        assert!(
+            fields.cells[0].cloud_water > 0.19,
+            "one real second of interactive phase change should retain cloud water"
+        );
     }
 
     #[test]

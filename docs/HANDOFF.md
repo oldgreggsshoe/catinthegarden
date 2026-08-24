@@ -3628,3 +3628,28 @@ budgeted discard. Physical disc size, cloud occlusion, atmospheric tint, and lig
 Five focused sun tests, ten weather-render tests, and fresh release Vulkan immediate-present
 `stare_at_sun` and `sun_horizon_visibility` replays pass. The no-ring captures are under
 `test-runs/stare_at_sun/1787601363-1176160` and `test-runs/sun_horizon_visibility/1787601375-1176278`.
+
+## Experimental weather cloud lifetime correction - 24 August 2026
+
+The rapid cloud disappearance was real simulation decay amplified by the density threshold, not a
+second renderer transport bug. Interactive weather advances six 600-second transport states per
+real second, while the former 900-second cloud phase and 3,600-second precipitation constants aged
+on that same 3,600x clock. Their wall-time constants were therefore only 0.25s and 1s, and a dry cell
+could empty a smaller cloud-water reservoir inside one fixed update.
+
+Wind, temperature, humidity, and condensed-water transport retain the established 3,600x clock and
+the same smooth current/future interpolation. Surface evaporation, condensation/re-evaporation,
+precipitation, and snow melt now receive a separate 60x microphysics timestep: each 600-second
+transport state advances those processes by 10 seconds. Cloud phase and precipitation therefore
+have 15s and 60s wall-time constants, with no additional render-thread work or change to transport
+speed. A focused one-real-second regression retains more than 95% of a representative local cloud
+reservoir instead of applying six near-hourly decay steps.
+
+All 35 weather tests and ten weather-render tests pass, including byte-exact synchronous/background
+prediction parity. `cargo check --workspace` passes with the existing unused fallback-constructor
+warning. Deterministic debug replay `weather_contrast/1787602587-1186856` passes finite metrics and
+all three captures; its 1/6/24-state sequence retains and develops coverage rather than wiping the
+viewed field clear. A temporary full-field diagnostic likewise increased area-mean cloud water from
+0.00926 after six states to 0.07208 after 60 and 0.12379 after 120. The complete app unit run remains
+at 266 passed / 3 unrelated dirty-worktree failures / 7 ignored: the two known LOD presentation-time
+assertions and the standalone sun-shader composition test.
