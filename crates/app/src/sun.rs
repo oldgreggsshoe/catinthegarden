@@ -179,9 +179,15 @@ mod tests {
         let compact: String = shader.split_whitespace().collect();
         assert!(shader.contains("const SUN_CORE_VISIBILITY_FLOOR: f32 = 0.12;"));
         assert!(shader.contains("const SUN_CORE_RADIANCE_FLOOR: f32 = 0.50;"));
-        assert!(shader.contains("const SUN_GLARE_VISIBILITY_FLOOR: f32 = 0.18;"));
-        assert!(shader.contains("const SUN_VEILING_GLARE_RADIUS_SCALE: f32 = 18.0;"));
+        assert!(shader.contains("const SUN_GLARE_VISIBILITY_FLOOR: f32 = 0.08;"));
+        assert!(shader.contains("const SUN_VEILING_GLARE_RADIUS_SCALE: f32 = 30.0;"));
+        assert!(shader.contains("const SUN_STAR_RAY_RADIUS_SCALE: f32 = 42.0;"));
+        assert!(shader.contains("const SUN_LENS_GHOST_RADIANCE: vec3<f32>"));
         assert!(shader.contains("let veiling_glare = pow("));
+        assert!(shader.contains("let major_star_rays = pow("));
+        assert!(shader.contains("let minor_star_rays = pow("));
+        assert!(shader.contains("SUN_STAR_RAY_RADIANCE * star_rays"));
+        assert!(shader.contains("let lens_ghosts = optical_axis_gate"));
         assert!(shader.contains("SUN_VEILING_GLARE_RADIANCE * veiling_glare"));
         assert!(shader.contains("let presentation_tint = tint"));
         assert!(shader.contains("var core_hue = vec3<f32>(1.0, 0.08, 0.01);"));

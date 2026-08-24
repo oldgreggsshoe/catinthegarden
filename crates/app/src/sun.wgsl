@@ -9,13 +9,16 @@ const VISUAL_SUN_SIZE_SCALE: f32 = 1.0;
 const SUN_ANGULAR_RADIUS_RADIANS: f32 = PHYSICAL_SUN_ANGULAR_RADIUS_RADIANS * VISUAL_SUN_SIZE_SCALE;
 // A compact, soft corona gives the camera-like glow seen around a bright sun
 // without turning the whole sky into a white disk.
-const SUN_HALO_RADIUS_SCALE: f32 = 9.0;
-const SUN_INNER_GLARE_RADIUS_SCALE: f32 = 3.0;
-// A human eye/camera blooms a bright solar source into a broad veiling glow;
-// this is deliberately separate from the real 0.53-degree disc so it cannot
-// change solar geometry or the sun's physical lighting contribution.
-const SUN_VEILING_GLARE_RADIUS_SCALE: f32 = 18.0;
-const SUN_VEILING_GLARE_RADIANCE: vec3<f32> = vec3<f32>(2.8, 2.2, 1.55);
+const SUN_HALO_RADIUS_SCALE: f32 = 6.5;
+const SUN_INNER_GLARE_RADIUS_SCALE: f32 = 2.5;
+// A camera spreads a bright solar source into a soft veil and a few aperture
+// rays. Keep both deliberately separate from the real 0.53-degree disc so
+// they cannot change solar geometry or the sun's physical lighting.
+const SUN_VEILING_GLARE_RADIUS_SCALE: f32 = 30.0;
+const SUN_VEILING_GLARE_RADIANCE: vec3<f32> = vec3<f32>(0.20, 0.16, 0.11);
+const SUN_STAR_RAY_RADIUS_SCALE: f32 = 42.0;
+const SUN_STAR_RAY_RADIANCE: vec3<f32> = vec3<f32>(0.40, 0.32, 0.23);
+const SUN_LENS_GHOST_RADIANCE: vec3<f32> = vec3<f32>(0.16, 0.12, 0.10);
 // This multiplier belongs only to the camera-facing HDR disc.  Terrain,
 // ocean, and atmosphere lighting use their own physical solar radiance.
 const SUN_VISUAL_RADIANCE_SCALE: f32 = 5.0;
@@ -27,14 +30,14 @@ const SUN_CORE_VISIBILITY_FLOOR: f32 = 0.12;
 // surrounding glare may collapse with transmittance; the disc itself must not
 // disappear before geometric occultation by the planet.
 const SUN_CORE_RADIANCE_FLOOR: f32 = 0.50;
-const SUN_GLARE_VISIBILITY_FLOOR: f32 = 0.18;
+const SUN_GLARE_VISIBILITY_FLOOR: f32 = 0.08;
 // The last useful physical red column sits about 0.05 in solar-direction
 // cosine above the LUT's opaque horizon row. Present that column at the
 // geometric horizon and hold it below, rather than sampling into black.
 const SUN_HORIZON_LUT_ELEVATION: f32 = 0.05;
 const SUN_CORE_RADIANCE: vec3<f32> = vec3<f32>(72.0, 65.0, 52.0);
-const SUN_HALO_RADIANCE: vec3<f32> = vec3<f32>(10.0, 7.0, 3.5);
-const SUN_GLARE_RADIANCE: vec3<f32> = vec3<f32>(8.0, 5.5, 2.5);
+const SUN_HALO_RADIANCE: vec3<f32> = vec3<f32>(4.0, 2.8, 1.3);
+const SUN_GLARE_RADIANCE: vec3<f32> = vec3<f32>(2.5, 1.8, 0.8);
 
 struct Camera {
     projection_matrix: mat4x4<f32>,
@@ -89,6 +92,24 @@ fn view_to_planet(vector: vec3<f32>) -> vec3<f32> {
     return camera.camera_right.xyz * vector.x
         + camera.camera_up.xyz * vector.y
         - camera.camera_forward.xyz * vector.z;
+}
+
+fn sun_screen_position(sun: vec3<f32>) -> vec2<f32> {
+    // The sun direction uses the same camera-view convention as
+    // view_direction: a visible source has negative view-space Z.
+    let depth = max(-sun.z, 1.0e-4);
+    return vec2<f32>(
+        sun.x / (depth * camera.projection.x * camera.projection.y),
+        sun.y / (depth * camera.projection.y),
+    );
+}
+
+fn lens_ghost_lobe(
+    offset: vec2<f32>,
+    radius: vec2<f32>,
+) -> f32 {
+    let ellipse = offset / radius;
+    return pow(max(1.0 - dot(ellipse, ellipse), 0.0), 2.0);
 }
 
 fn cloud_density_on_camera_ray(
@@ -287,6 +308,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
     let ray = view_direction(input.ndc);
     let sun = normalize(camera.sun_direction_view.xyz);
+    let sun_ndc = sun_screen_position(sun);
+    let lens_offset_ndc = input.ndc - sun_ndc;
+    let lens_offset_view = vec2<f32>(
+        lens_offset_ndc.x * camera.projection.x * camera.projection.y,
+        lens_offset_ndc.y * camera.projection.y,
+    );
+    let lens_offset_length = length(lens_offset_view);
+    let lens_distance = lens_offset_length / SUN_ANGULAR_RADIUS_RADIANS;
+    let lens_unit = lens_offset_view / max(lens_offset_length, 1.0e-4);
     let alignment = clamp(dot(ray, sun), -1.0, 1.0);
     let angular_distance = atan2(length(cross(ray, sun)), alignment);
     let normalized_distance = angular_distance / SUN_ANGULAR_RADIUS_RADIANS;
@@ -303,6 +333,43 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let veiling_glare = pow(
         max(1.0 - normalized_distance / SUN_VEILING_GLARE_RADIUS_SCALE, 0.0),
         1.7,
+    );
+    // A small aperture produces the narrow star rays visible in photographs.
+    // They begin outside the disc, taper smoothly, and remain camera-only
+    // presentation so the physical solar lighting is untouched.
+    // Chebyshev angle multiples keep this presentation cheap on the older
+    // mobile GPU: no additional trigonometric calls are needed per pixel.
+    let cos_two = 2.0 * lens_unit.x * lens_unit.x - 1.0;
+    let cos_four = 2.0 * cos_two * cos_two - 1.0;
+    let cos_eight = 2.0 * cos_four * cos_four - 1.0;
+    let major_star_rays = pow(max(abs(cos_four), 0.0), 28.0);
+    let minor_star_rays = pow(max(abs(cos_eight), 0.0), 72.0);
+    let star_ray_profile = smoothstep(1.15, 2.2, lens_distance)
+        * pow(
+            max(1.0 - lens_distance / SUN_STAR_RAY_RADIUS_SCALE, 0.0),
+            2.2,
+        )
+        * step(0.0, -sun.z);
+    let star_rays = star_ray_profile * (
+        0.88 * major_star_rays + 0.12 * minor_star_rays
+    );
+    // A real lens also makes faint coloured internal reflections on the line
+    // through the optical centre and the sun. Keep these broad and dim: they
+    // should read as photographic ghosts, never as extra light sources.
+    let optical_axis_length = length(sun_ndc);
+    let optical_axis_gate = smoothstep(0.04, 0.22, optical_axis_length)
+        * step(0.0, -sun.z);
+    let purple_ghost = lens_ghost_lobe(
+        input.ndc + sun_ndc * 0.55,
+        vec2<f32>(0.10, 0.055),
+    );
+    let cyan_ghost = lens_ghost_lobe(
+        input.ndc - sun_ndc * 0.32,
+        vec2<f32>(0.15, 0.075),
+    );
+    let lens_ghosts = optical_axis_gate * SUN_LENS_GHOST_RADIANCE * (
+        vec3<f32>(0.72, 0.20, 0.92) * purple_ghost
+            + vec3<f32>(0.12, 0.78, 0.82) * cyan_ghost
     );
     let solar_elevation = dot(
         normalize(camera.camera_planet_direction_view_altitude.xyz),
@@ -352,7 +419,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         SUN_HALO_RADIANCE * halo
             + SUN_GLARE_RADIANCE * inner_glare
             + SUN_VEILING_GLARE_RADIANCE * veiling_glare
-    );
+            + SUN_STAR_RAY_RADIANCE * star_rays
+    ) + lens_ghosts * glare_visibility;
     // The broad veiling response is scattered light around the disc, so a
     // cloud blocks it more strongly than the disc core itself. This keeps a
     // storm from leaving a bright camera bloom after it has hidden the sun.

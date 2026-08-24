@@ -3599,3 +3599,20 @@ near-ground puffs still move. The cloud-render source test explicitly rejects th
 rotation/time phase. Focused weather-render (10) and weather-state (34) tests pass, as does a Vulkan
 `weather_contrast` replay (`1787532213-733696`); its fixed-camera captures retain continuous weather
 coverage changes without an independently orbiting shell.
+
+## Photographic solar flare correction - 24 August 2026
+
+The camera-only visual sun now follows the supplied outdoor-camera reference more closely. The
+physical 0.53-degree disc and all atmosphere, terrain, ocean, cloud, exposure, and occultation
+lighting remain unchanged. The presentation overlay uses a compact 6.5-radius corona, a restrained
+30-radius veiling lobe, bounded aperture-like star rays, and faint axis-aligned purple/cyan internal
+lens ghosts when the source is off the optical centre. Low-sun glare visibility was lowered to avoid a
+large red bloom while preserving the physically reddened disc and terrain lighting. Star-ray angle
+multiples use algebraic Chebyshev recurrence rather than extra per-pixel trigonometric calls for the
+Quadro M1000M path.
+
+Five focused sun tests, ten weather-render tests, release Vulkan `stare_at_sun`,
+`sunset_blue_hour`, and `sun_horizon_visibility` replays pass. Fresh captures are under
+`test-runs/stare_at_sun/1787600080-1166721`, `test-runs/sunset_blue_hour/1787600147-1167550`, and
+`test-runs/sun_horizon_visibility/1787600107-1167227`. FIFO presentation was anomalously slow in
+this headless replay; the same release scenarios pass with `CATINGARDEN_PRESENT_MODE=immediate`.
