@@ -83,7 +83,7 @@ fn cloudSampleWithOctaves(dir: vec3<f32>, t: f32, octave_count: u32) -> CloudSam
     let field = mix(previous, current, weather.blend);
     let detail = cloud_noise(field_direction, shell_index, octave_count);
     let noise = detail * weather.noise_strength;
-    let shell_cloud = select(field.r, field.r * 0.72, shell_index == 1u);
+    let shell_cloud = field.r;
     let coverage = clamp(0.82 + noise, 0.0, 1.0);
     let density = shell_cloud * coverage;
     let posterized = smoothstep(0.08, 0.26, density);
@@ -112,16 +112,15 @@ fn cloudSampleWithOctaves(dir: vec3<f32>, t: f32, octave_count: u32) -> CloudSam
     // reach optical thickness there rather than reserving opacity for values
     // the current weather model cannot produce.
     let storm_amount = smoothstep(0.05, 0.32, field.g);
-    let condensed = posterized
-        * mix(0.22, 1.0, storm_amount)
-        * select(1.0, 0.78, shell_index == 1u);
-    let precursor_density = select(
-        lower_precursor * 0.32,
-        upper_precursor,
-        shell_index == 1u,
-    );
+    let lower_condensed = posterized * mix(0.22, 1.0, storm_amount);
+    let lower_density = max(lower_condensed, lower_precursor * 0.32);
+    // The coarse climate owns one condensed-water field. Reusing it on both
+    // shells draws the same weather system twice at different altitudes.
+    // Keep the upper shell as humidity-driven, detail-broken cirrus until the
+    // simulation owns an independent high-altitude water field.
+    let upper_density = upper_precursor;
     return CloudSample(
-        clamp(max(condensed, precursor_density), 0.0, 1.0),
+        clamp(select(lower_density, upper_density, shell_index == 1u), 0.0, 1.0),
         clamp(field.g, 0.0, 1.0),
         clamp(field.a, 0.0, 1.0),
     );

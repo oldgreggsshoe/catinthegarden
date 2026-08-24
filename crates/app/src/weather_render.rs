@@ -873,7 +873,7 @@ mod tests {
         assert!(shader.contains("fn cloudDensity"));
         assert!(shader.contains("let posterized = smoothstep"));
         assert!(shader.contains("smoothstep(0.05, 0.32, field.g)"));
-        assert!(shader.contains("max(density, smoothstep(0.25, 0.85, density))"));
+        assert!(shader.contains("let alpha = density * 0.78;"));
         assert!(shader.contains("smoothstep(0.10, 0.30, cloud.storm)"));
         assert!(shader.contains("let storm_darkening = 1.0 - 0.72 * storm_weight;"));
         assert!(shader.contains("fn henyey_greenstein"));
@@ -890,7 +890,11 @@ mod tests {
         assert!(shader.contains("let lower_precursor"));
         assert!(shader.contains("let upper_precursor = mix("));
         assert!(shader.contains("smoothstep(-0.08, 0.22, detail)"));
-        assert!(shader.contains("upper_precursor,"));
+        assert!(
+            shader.contains("let lower_density = max(lower_condensed, lower_precursor * 0.32);")
+        );
+        assert!(shader.contains("let upper_density = upper_precursor;"));
+        assert!(shader.contains("select(lower_density, upper_density, shell_index == 1u)"));
         assert!(!shader.contains("let precursor = select(0.08"));
         assert!(shader.contains("texture_cube<f32>"));
         assert!(!shader.contains("fn cube_field_uv"));

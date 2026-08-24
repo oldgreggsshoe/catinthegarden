@@ -3653,3 +3653,27 @@ viewed field clear. A temporary full-field diagnostic likewise increased area-me
 0.00926 after six states to 0.07208 after 60 and 0.12379 after 120. The complete app unit run remains
 at 266 passed / 3 unrelated dirty-worktree failures / 7 ignored: the two known LOD presentation-time
 assertions and the standalone sun-shader composition test.
+
+## Experimental weather cloud-layer separation - 24 August 2026
+
+The longer-lived cloud field exposed a presentation defect that the former rapid decay had hidden.
+Both 90km and 166km shells sampled the same condensed-water channel at nearly the same direction;
+different detail noise changed their edges, but the same macro systems appeared twice at visibly
+different altitudes. The shell fragment alpha then promoted mature density toward full opacity, so
+the overlap read as a thick matching double layer.
+
+The lower shell remains authoritative for condensed water and storm structure. The upper shell now
+uses only the existing humidity-driven, independently detailed cirrus component until the climate
+simulation owns a genuinely separate high-altitude water field. Because this choice is inside the
+shared density source, terrain shadows and camera-to-sun cloud attenuation agree with the visible
+layers. Visible shell alpha is now a direct 0.78 density scale instead of the former upper-range
+opacity boost; dense weather remains visibly grey and shadow-casting while retaining transmission.
+Weather physics, the 60x microphysics clock, transport, precipitation, rain, atmospheric lighting,
+and shell geometry are unchanged.
+
+All ten weather-render tests, all five sun tests, the focused shared terrain-density test, and the
+composed planet-WGSL test pass. Standard `weather_contrast/1787604675-1202061` passes at 1/6/24
+states. Temporary extended deterministic replay `weather_contrast/1787604772-1203499` passes 120
+finite states and captures 1/60/120-state coverage; its mature frame shows one broken condensed
+layer plus thin cirrus rather than matching opaque shells. The checked-in scenario was restored
+unchanged.

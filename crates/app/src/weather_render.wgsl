@@ -224,9 +224,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
     let cloud = cloudSample(input.direction, f32(input.shell_index));
     let density = cloud.density;
-    // Dense cloud is optically thicker than a linear alpha ramp implies. Keep
-    // wisps unchanged, then push only the upper density range toward opacity.
-    let alpha = max(density, smoothstep(0.25, 0.85, density));
+    // Density is already posterised by the shared cloud evaluation. Keep a
+    // little transmission through even the densest shell fragments so the
+    // longer-lived field does not turn into an opaque double layer.
+    let alpha = density * 0.78;
     if alpha < 0.002 {
         discard;
     }
