@@ -73,6 +73,37 @@ Validation: 50 focused weather/render/scenario tests pass. Release replay
 Next action after manual isolation review: upload wind and apply endpoint-exact advection-aware
 temporal sampling consistently to clouds, shadows, sun occlusion, and local presentation.
 
+### Orbital atmosphere and flare-bound repair (25 August 2026)
+
+Manual run `manual/1787689212-80805` exposed two independent presentation faults. The cyan oval in
+`capture-001.png` is the intentional camera-only internal lens reflection, not atmosphere or
+weather. It was evaluated after a 64-solar-radius sun-centred discard, so that circle cut through
+the off-axis ellipse. The ghost lobes are now evaluated first and exempt only their occupied
+pixels from that radial discard; the physical sun, corona, clouds, atmosphere, and lighting are
+unchanged.
+
+At the `capture-002.png` pose (2,316,514m altitude), the 90km cloud shell was geometrically inside
+the 640km optical atmosphere but appeared above its visible limb. The orbital world-space
+integrator was applying the 8km/1.2km Earth-like scale heights directly to world altitude, unlike
+the surface path's established 4.5x vertical mapping. Consequently Rayleigh density at the cloud
+shell was only about 0.000013 of sea-level density. Orbital integration now maps both altitude and
+path length through `ATMOSPHERE_VERTICAL_SCALE`, so 90km world altitude evaluates at 20km optical
+altitude (about 0.082 Rayleigh density) without changing the atmosphere below the 200km orbital
+blend threshold. It also intersects the authored 2,880km world shell rather than the compressed
+optical shell.
+
+Focused atmosphere and sun tests pass, as does `cargo check --workspace` with the existing unused
+`WeatherFields::initial` warning. Committed release replays pass at
+`orbital_sun_visibility/1787690278-91635`,
+`orbital_atmosphere_continuity/1787690279-91679`, and
+`atmospheric_mist_paths/1787690286-91630`. Against the previous identical continuity capture
+`1787402122-26465/capture-012.png`, the top-centre visible limb begins 17 pixels farther outward at
+the same low RGB threshold (row 113 to row 96), while the 25km near-surface capture remains on the
+unchanged surface path. The full app test invocation still reports three unrelated working-tree
+failures: two tests retain the committed 0.5s LOD-fade expectations while the unstaged renderer
+sets 1.5s, and one legacy terrain test parses `sun.wgsl` without composing its required shared
+cloud-density source.
+
 ### Experimental branch — fixed-L6 flat triangle wireframe baseline (4 August 2026)
 
 Branch `experiment/flat-triangle-wireframe` is an isolated visual experiment from the current
