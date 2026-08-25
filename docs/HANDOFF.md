@@ -1,8 +1,8 @@
-# Handoff — ground readability / render modernisation
+# Handoff — experimental weather
 
-**Branch:** `experiment/flat-triangle-wireframe`
-**Branch base:** current `diagnose/ocean-terrain-blockiness`; this session's work is isolated on
-the experimental branch and is to be pushed to `origin/experiment/flat-triangle-wireframe`
+**Branch:** `experimental-weather`, tracking `origin/experimental-weather`
+**Branch base:** the current experimental-weather line; preserve all unrelated local renderer,
+terrain, baker, documentation, and response-file changes when staging weather work.
 **Renderer state:** current branch — positive baked macro land uses one fixed 4x presentation scale
 at every camera altitude; sea level and negative bathymetry remain physical. CPU truth, raster, ray,
 LOD/culling bounds, shader normals, and scenario cameras share that transform. The former 8x
@@ -33,9 +33,24 @@ fallbacks and a 2,071.204m warm-up seam. Older renderer-only evidence is retaine
 sections below but uses a previous macro/detail presentation. The later raster low-poly trial passes
 `orbit_once/1785600758-149017`, `landing_site_ground_detail/1785600646-146796`, and
 `highest_prominence_peak/1785600765-149139`; see its section below for the visual findings.
-**Written:** 6 August 2026
+**Written:** 25 August 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
+
+### Experimental weather — pressure diagnostics (25 August 2026)
+
+Key `7` now retains the existing six-face humidity/cloud/wind diagnostic and overlays
+area-weighted surface-pressure samples as fixed 4hPa isobar contours. The strongest resolved local
+and global pressure extrema are labelled `H` and `L`; a dark under-stroke keeps the yellow contours
+readable over both dry and cloudy cells. The overlay is rebuilt only with the cached HUD, not in the
+weather or render hot paths. This change deliberately does not alter pressure, wind, cloud, or
+terrain physics: pressure is still diagnosed afresh from temperature before its momentum update.
+
+Validation: all 38 focused weather tests pass, including fixed isobar spacing, finite/bounded
+area-weighted pressure bins, and deterministic high/low detection; `cargo check --workspace`
+passes with the existing unused `WeatherFields::initial` warning. The next physics milestone is a
+mass-conserving prognostic pressure field, using this overlay to verify persistent highs/lows and
+their wind response before coupling convergence/subsidence into cloud microphysics.
 
 ### Experimental branch — fixed-L6 flat triangle wireframe baseline (4 August 2026)
 

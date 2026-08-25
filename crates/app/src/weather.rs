@@ -53,6 +53,7 @@ const WEATHER_LATENT_HEATING_KELVIN_PER_UNIT: f64 = 2.5;
 const WEATHER_STORM_LATENT_HEAT_SCALE_KELVIN: f64 = 2.5;
 const WEATHER_FACE_COUNT: usize = 6;
 const OVERLAY_BINS: usize = 16;
+const WEATHER_ISOBAR_INTERVAL_PASCALS: f32 = 400.0;
 const NEIGHBOUR_COUNT: usize = 4;
 
 const WEATHER_GPU_FIELD_SIDE: usize = WEATHER_GRID_SIDE;
@@ -991,6 +992,37 @@ impl WeatherFields {
         }
         bins
     }
+
+    pub fn overlay_pressure_bins(
+        &self,
+        grid: &WeatherGrid,
+    ) -> [[f32; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT] {
+        let mut bins = [[0.0; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT];
+        let cells_per_bin = WEATHER_GRID_SIDE / OVERLAY_BINS;
+        for face in 0..WEATHER_FACE_COUNT {
+            for y in 0..OVERLAY_BINS {
+                for x in 0..OVERLAY_BINS {
+                    let mut pressure = 0.0_f64;
+                    let mut area = 0.0_f64;
+                    for local_y in 0..cells_per_bin {
+                        for local_x in 0..cells_per_bin {
+                            let index = cell_index(
+                                face as u8,
+                                x * cells_per_bin + local_x,
+                                y * cells_per_bin + local_y,
+                            );
+                            let cell_area = grid.cells()[index].area_square_meters;
+                            pressure +=
+                                f64::from(self.cells()[index].surface_pressure_pascals) * cell_area;
+                            area += cell_area;
+                        }
+                    }
+                    bins[face][y * OVERLAY_BINS + x] = (pressure / area) as f32;
+                }
+            }
+        }
+        bins
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1007,6 +1039,7 @@ pub struct WeatherDebugSnapshot {
     pub field_diagnostics: WeatherFieldDiagnostics,
     pub humidity_bins: [[f32; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT],
     pub cloud_water_bins: [[f32; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT],
+    pub pressure_bins: [[f32; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT],
     pub wind_bins: [[WeatherOverlayWind; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT],
 }
 
@@ -1017,10 +1050,14 @@ impl WeatherDebugSnapshot {
         }
 
         ui.separator();
-        ui.label("Weather field overlay: humidity tint / cloud water / wind");
+        ui.label("Weather field overlay: humidity / cloud / isobars / wind");
         let panel_size = egui::vec2(256.0, 176.0);
         let (rect, _) = ui.allocate_exact_size(panel_size, egui::Sense::hover());
         let painter = ui.painter_at(rect);
+        let pressure_centres = pressure_centres(
+            &self.pressure_bins,
+            self.field_diagnostics.mean_pressure_pascals,
+        );
         for face in 0..WEATHER_FACE_COUNT {
             let origin = rect.min + egui::vec2((face % 3) as f32 * 86.0, (face / 3) as f32 * 86.0);
             for y in 0..OVERLAY_BINS {
@@ -1046,6 +1083,13 @@ impl WeatherDebugSnapshot {
                     painter.rect_filled(cell, 0.0, colour);
                 }
             }
+            paint_isobars(
+                &painter,
+                origin,
+                &self.pressure_bins[face],
+                self.field_diagnostics.minimum_pressure_pascals,
+                self.field_diagnostics.maximum_pressure_pascals,
+            );
             for y in 0..OVERLAY_BINS {
                 for x in 0..OVERLAY_BINS {
                     let wind = self.wind_bins[face][y * OVERLAY_BINS + x];
@@ -1074,6 +1118,29 @@ impl WeatherDebugSnapshot {
                     }
                 }
             }
+            for centre in pressure_centres.iter().filter(|centre| centre.face == face) {
+                let position =
+                    origin + egui::vec2(centre.x as f32 * 4.0 + 2.0, centre.y as f32 * 4.0 + 2.0);
+                let (label, colour) = if centre.high {
+                    ("H", egui::Color32::from_rgb(255, 100, 100))
+                } else {
+                    ("L", egui::Color32::from_rgb(100, 210, 255))
+                };
+                painter.text(
+                    position + egui::vec2(0.7, 0.7),
+                    egui::Align2::CENTER_CENTER,
+                    label,
+                    egui::FontId::monospace(8.0),
+                    egui::Color32::BLACK,
+                );
+                painter.text(
+                    position,
+                    egui::Align2::CENTER_CENTER,
+                    label,
+                    egui::FontId::monospace(8.0),
+                    colour,
+                );
+            }
             painter.text(
                 origin + egui::vec2(3.0, 3.0),
                 egui::Align2::LEFT_TOP,
@@ -1082,7 +1149,188 @@ impl WeatherDebugSnapshot {
                 egui::Color32::WHITE,
             );
         }
-        ui.label("Colour: humidity (brown -> blue), cloud water whitens | arrows: tangent wind");
+        ui.label(format!(
+            "Isobars: {:.0} hPa spacing, H/L centres | arrows: tangent wind",
+            WEATHER_ISOBAR_INTERVAL_PASCALS / 100.0
+        ));
+        ui.label("Colour: humidity (brown -> blue), cloud water whitens");
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WeatherPressureCentre {
+    face: usize,
+    x: usize,
+    y: usize,
+    high: bool,
+}
+
+fn pressure_centres(
+    pressure_bins: &[[f32; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT],
+    mean_pressure_pascals: f32,
+) -> Vec<WeatherPressureCentre> {
+    let mut candidates = Vec::new();
+    for (face, bins) in pressure_bins.iter().enumerate() {
+        for y in 1..OVERLAY_BINS - 1 {
+            for x in 1..OVERLAY_BINS - 1 {
+                let pressure = bins[y * OVERLAY_BINS + x];
+                if (pressure - mean_pressure_pascals).abs() < WEATHER_ISOBAR_INTERVAL_PASCALS * 0.5
+                {
+                    continue;
+                }
+                let mut higher_than_all = true;
+                let mut lower_than_all = true;
+                for neighbour_y in y - 1..=y + 1 {
+                    for neighbour_x in x - 1..=x + 1 {
+                        if neighbour_x == x && neighbour_y == y {
+                            continue;
+                        }
+                        let neighbour = bins[neighbour_y * OVERLAY_BINS + neighbour_x];
+                        higher_than_all &= pressure > neighbour;
+                        lower_than_all &= pressure < neighbour;
+                    }
+                }
+                if higher_than_all || lower_than_all {
+                    candidates.push((
+                        (pressure - mean_pressure_pascals).abs(),
+                        WeatherPressureCentre {
+                            face,
+                            x,
+                            y,
+                            high: higher_than_all,
+                        },
+                    ));
+                }
+            }
+        }
+    }
+
+    let mut guaranteed = Vec::new();
+    for high in [false, true] {
+        let extremum = pressure_bins
+            .iter()
+            .enumerate()
+            .flat_map(|(face, bins)| {
+                bins.iter()
+                    .copied()
+                    .enumerate()
+                    .map(move |(index, pressure)| {
+                        (
+                            pressure,
+                            WeatherPressureCentre {
+                                face,
+                                x: index % OVERLAY_BINS,
+                                y: index / OVERLAY_BINS,
+                                high,
+                            },
+                        )
+                    })
+            })
+            .reduce(|a, b| {
+                if (high && b.0 > a.0) || (!high && b.0 < a.0) {
+                    b
+                } else {
+                    a
+                }
+            });
+        if let Some((pressure, centre)) = extremum {
+            if (pressure - mean_pressure_pascals).abs() >= WEATHER_ISOBAR_INTERVAL_PASCALS * 0.5 {
+                candidates.push(((pressure - mean_pressure_pascals).abs(), centre));
+                guaranteed.push(centre);
+            }
+        }
+    }
+
+    candidates.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let mut centres = guaranteed;
+    for (_, candidate) in candidates {
+        if centres.iter().any(|existing: &WeatherPressureCentre| {
+            existing.face == candidate.face
+                && existing.high == candidate.high
+                && existing.x.abs_diff(candidate.x).pow(2) + existing.y.abs_diff(candidate.y).pow(2)
+                    < 16
+        }) {
+            continue;
+        }
+        centres.push(candidate);
+        if centres.len() == 12 {
+            break;
+        }
+    }
+    centres
+}
+
+fn paint_isobars(
+    painter: &egui::Painter,
+    origin: egui::Pos2,
+    pressure_bins: &[f32; OVERLAY_BINS * OVERLAY_BINS],
+    minimum_pressure_pascals: f32,
+    maximum_pressure_pascals: f32,
+) {
+    for level in isobar_levels(minimum_pressure_pascals, maximum_pressure_pascals) {
+        for y in 0..OVERLAY_BINS - 1 {
+            for x in 0..OVERLAY_BINS - 1 {
+                let top_left = (
+                    origin + egui::vec2(x as f32 * 4.0 + 2.0, y as f32 * 4.0 + 2.0),
+                    pressure_bins[y * OVERLAY_BINS + x],
+                );
+                let top_right = (
+                    origin + egui::vec2((x + 1) as f32 * 4.0 + 2.0, y as f32 * 4.0 + 2.0),
+                    pressure_bins[y * OVERLAY_BINS + x + 1],
+                );
+                let bottom_right = (
+                    origin + egui::vec2((x + 1) as f32 * 4.0 + 2.0, (y + 1) as f32 * 4.0 + 2.0),
+                    pressure_bins[(y + 1) * OVERLAY_BINS + x + 1],
+                );
+                let bottom_left = (
+                    origin + egui::vec2(x as f32 * 4.0 + 2.0, (y + 1) as f32 * 4.0 + 2.0),
+                    pressure_bins[(y + 1) * OVERLAY_BINS + x],
+                );
+                paint_isobar_triangle(painter, [top_left, top_right, bottom_right], level);
+                paint_isobar_triangle(painter, [top_left, bottom_right, bottom_left], level);
+            }
+        }
+    }
+}
+
+fn isobar_levels(minimum_pressure_pascals: f32, maximum_pressure_pascals: f32) -> Vec<f32> {
+    if !minimum_pressure_pascals.is_finite()
+        || !maximum_pressure_pascals.is_finite()
+        || minimum_pressure_pascals > maximum_pressure_pascals
+    {
+        return Vec::new();
+    }
+    let first_level = (minimum_pressure_pascals / WEATHER_ISOBAR_INTERVAL_PASCALS).ceil()
+        * WEATHER_ISOBAR_INTERVAL_PASCALS;
+    let last_level = (maximum_pressure_pascals / WEATHER_ISOBAR_INTERVAL_PASCALS).floor()
+        * WEATHER_ISOBAR_INTERVAL_PASCALS;
+    let level_count =
+        ((last_level - first_level) / WEATHER_ISOBAR_INTERVAL_PASCALS).floor() as isize + 1;
+    (0..level_count.max(0))
+        .map(|index| first_level + index as f32 * WEATHER_ISOBAR_INTERVAL_PASCALS)
+        .collect()
+}
+
+fn paint_isobar_triangle(painter: &egui::Painter, vertices: [(egui::Pos2, f32); 3], level: f32) {
+    let mut crossings = Vec::with_capacity(2);
+    for edge in 0..3 {
+        let (start_position, start_value) = vertices[edge];
+        let (end_position, end_value) = vertices[(edge + 1) % 3];
+        if (start_value < level) == (end_value < level) {
+            continue;
+        }
+        let fraction = ((level - start_value) / (end_value - start_value)).clamp(0.0, 1.0);
+        crossings.push(start_position.lerp(end_position, fraction));
+    }
+    if let [start, end] = crossings.as_slice() {
+        painter.line_segment(
+            [*start, *end],
+            egui::Stroke::new(1.4, egui::Color32::from_black_alpha(190)),
+        );
+        painter.line_segment(
+            [*start, *end],
+            egui::Stroke::new(0.6, egui::Color32::from_rgb(255, 220, 80)),
+        );
     }
 }
 
@@ -1441,6 +1689,7 @@ impl WeatherState {
             field_diagnostics: self.fields.diagnostics(&self.grid),
             humidity_bins: self.fields.overlay_humidity_bins(&self.grid),
             cloud_water_bins: self.fields.overlay_cloud_water_bins(&self.grid),
+            pressure_bins: self.fields.overlay_pressure_bins(&self.grid),
             wind_bins: self.fields.overlay_wind_bins(&self.grid),
         }
     }
@@ -1915,6 +2164,64 @@ mod tests {
             wind.speed_meters_per_second > 1.0
                 && wind.east_meters_per_second.is_finite()
                 && wind.north_meters_per_second.is_finite()
+        }));
+    }
+
+    #[test]
+    fn pressure_overlay_is_area_weighted_deterministic_and_bounded() {
+        let grid = WeatherGrid::new();
+        let fields = WeatherFields::initial(&grid);
+        let diagnostics = fields.diagnostics(&grid);
+        let first = fields.overlay_pressure_bins(&grid);
+        assert_eq!(first, fields.overlay_pressure_bins(&grid));
+        assert!(first.iter().flatten().all(|pressure| {
+            pressure.is_finite()
+                && *pressure >= diagnostics.minimum_pressure_pascals
+                && *pressure <= diagnostics.maximum_pressure_pascals
+        }));
+        assert!(
+            isobar_levels(
+                diagnostics.minimum_pressure_pascals,
+                diagnostics.maximum_pressure_pascals,
+            )
+            .len()
+                >= 2
+        );
+        let centres = pressure_centres(&first, diagnostics.mean_pressure_pascals);
+        assert!(centres.iter().any(|centre| centre.high));
+        assert!(centres.iter().any(|centre| !centre.high));
+    }
+
+    #[test]
+    fn isobars_use_fixed_four_hectopascal_levels() {
+        assert_eq!(
+            isobar_levels(99_550.0, 101_750.0),
+            vec![
+                99_600.0, 100_000.0, 100_400.0, 100_800.0, 101_200.0, 101_600.0
+            ]
+        );
+        assert!(isobar_levels(f32::NAN, 101_000.0).is_empty());
+        assert!(isobar_levels(102_000.0, 101_000.0).is_empty());
+    }
+
+    #[test]
+    fn pressure_centres_find_distinct_highs_and_lows() {
+        let mean = 101_000.0;
+        let mut bins = [[mean; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT];
+        bins[0][5 * OVERLAY_BINS + 6] = mean + 800.0;
+        bins[4][10 * OVERLAY_BINS + 9] = mean - 800.0;
+        let centres = pressure_centres(&bins, mean);
+        assert!(centres.contains(&WeatherPressureCentre {
+            face: 0,
+            x: 6,
+            y: 5,
+            high: true,
+        }));
+        assert!(centres.contains(&WeatherPressureCentre {
+            face: 4,
+            x: 9,
+            y: 10,
+            high: false,
         }));
     }
 
