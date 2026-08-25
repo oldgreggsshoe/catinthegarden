@@ -155,7 +155,7 @@ fn integrate_world_space_sky(
     let atmosphere_interval = sphere_interval(
         camera_position,
         ray,
-        PLANET_RADIUS_METERS + OPTICAL_ATMOSPHERE_HEIGHT_METERS,
+        PLANET_RADIUS_METERS + ATMOSPHERE_HEIGHT_METERS,
     );
     let start_distance = max(atmosphere_interval.x, 0.0);
     var end_distance = atmosphere_interval.y;
@@ -189,26 +189,33 @@ fn integrate_world_space_sky(
         let sample_radius = length(sample_position);
         let sample_direction = sample_position / sample_radius;
         let sample_altitude = sample_radius - PLANET_RADIUS_METERS;
-        let extinction = medium_extinction(sample_altitude);
-        let scattering = medium_scattering(sample_altitude);
-        let segment_transmittance = exp(-extinction * segment_length);
+        // The world-space atmosphere and cloud altitudes are deliberately 4.5x
+        // taller than the optical Earth-like profile. The surface path already
+        // performs this mapping through optical geometry; keep the orbital
+        // integration on that same profile instead of collapsing visible air
+        // below the 90 km cloud shell.
+        let optical_sample_altitude = sample_altitude / ATMOSPHERE_VERTICAL_SCALE;
+        let optical_segment_length = segment_length / ATMOSPHERE_VERTICAL_SCALE;
+        let extinction = medium_extinction(optical_sample_altitude);
+        let scattering = medium_scattering(optical_sample_altitude);
+        let segment_transmittance = exp(-extinction * optical_segment_length);
         let integrated_segment = (vec3<f32>(1.0) - segment_transmittance)
             / max(extinction, vec3<f32>(1.0e-9));
         let solar_zenith_cosine = dot(sample_direction, sun);
         let direct_sun = sample_transmittance_lut(
             transmittance_lut,
             atmosphere_sampler,
-            sample_altitude,
+            optical_sample_altitude,
             solar_zenith_cosine,
         );
         let multiple_scattering = sample_multiple_scattering_lut(
             multiple_scattering_lut,
             atmosphere_sampler,
-            sample_altitude,
+            optical_sample_altitude,
             solar_zenith_cosine,
         );
         let source = direct_sun
-                * phase_scattering(sample_altitude, dot(ray, sun))
+                * phase_scattering(optical_sample_altitude, dot(ray, sun))
                 * SOLAR_LUMINANCE
             + multiple_scattering * scattering;
         luminance += view_transmittance * source * integrated_segment;

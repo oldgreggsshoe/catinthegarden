@@ -593,6 +593,29 @@ mod tests {
     }
 
     #[test]
+    fn orbital_density_profile_keeps_the_lower_cloud_shell_inside_visible_air() {
+        let sky_view = include_str!("atmosphere_sky_view.wgsl");
+        assert!(sky_view.contains(
+            "let optical_sample_altitude = sample_altitude / ATMOSPHERE_VERTICAL_SCALE;"
+        ));
+        assert!(sky_view.contains(
+            "let optical_segment_length = segment_length / ATMOSPHERE_VERTICAL_SCALE;"
+        ));
+        assert!(sky_view.contains("PLANET_RADIUS_METERS + ATMOSPHERE_HEIGHT_METERS"));
+        assert!(sky_view.contains("medium_extinction(optical_sample_altitude)"));
+        assert!(sky_view.contains("medium_scattering(optical_sample_altitude)"));
+
+        // The game cloud shell is vertically exaggerated with the atmosphere.
+        // In an orbital view its 90 km world altitude therefore maps to the
+        // same 20 km optical column used by the signed-off surface path.
+        let optical_cloud_altitude = 90_000.0_f64 / 4.5;
+        let rayleigh_density = (-optical_cloud_altitude / 8_000.0).exp();
+        let unscaled_density = (-90_000.0_f64 / 8_000.0).exp();
+        assert!(rayleigh_density > 0.08);
+        assert!(rayleigh_density > unscaled_density * 1_000.0);
+    }
+
+    #[test]
     fn doubled_optical_atmosphere_covers_the_presented_mountain_summit() {
         let common = include_str!("atmosphere_lut_common.wgsl");
         let display = include_str!("atmosphere.wgsl");

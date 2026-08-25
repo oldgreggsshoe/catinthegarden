@@ -323,7 +323,26 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let alignment = clamp(dot(ray, sun), -1.0, 1.0);
     let angular_distance = atan2(length(cross(ray, sun)), alignment);
     let normalized_distance = angular_distance / SUN_ANGULAR_RADIUS_RADIANS;
-    if normalized_distance > SUN_OVERLAY_CUTOFF_RADIUS_SCALE {
+
+    // Internal lens reflections are positioned around the optical axis rather
+    // than around the sun. Evaluate them before applying the sun-centred
+    // overlay cutoff so that circle cannot slice through an otherwise valid
+    // off-axis ghost.
+    let optical_axis_length = length(sun_ndc);
+    let optical_axis_gate = smoothstep(0.04, 0.22, optical_axis_length)
+        * step(0.0, -sun.z);
+    let purple_ghost = lens_ghost_lobe(
+        input.ndc + sun_ndc * 0.55,
+        vec2<f32>(0.10, 0.055),
+    );
+    let cyan_ghost = lens_ghost_lobe(
+        input.ndc - sun_ndc * 0.32,
+        vec2<f32>(0.15, 0.075),
+    );
+    let lens_ghost_energy = optical_axis_gate * max(purple_ghost, cyan_ghost);
+    if normalized_distance > SUN_OVERLAY_CUTOFF_RADIUS_SCALE
+        && lens_ghost_energy <= 0.0
+    {
         discard;
     }
     let disc_coverage = 1.0 - smoothstep(0.92, 1.0, normalized_distance);
@@ -359,17 +378,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // A real lens also makes faint coloured internal reflections on the line
     // through the optical centre and the sun. Keep these broad and dim: they
     // should read as photographic ghosts, never as extra light sources.
-    let optical_axis_length = length(sun_ndc);
-    let optical_axis_gate = smoothstep(0.04, 0.22, optical_axis_length)
-        * step(0.0, -sun.z);
-    let purple_ghost = lens_ghost_lobe(
-        input.ndc + sun_ndc * 0.55,
-        vec2<f32>(0.10, 0.055),
-    );
-    let cyan_ghost = lens_ghost_lobe(
-        input.ndc - sun_ndc * 0.32,
-        vec2<f32>(0.15, 0.075),
-    );
     let lens_ghosts = optical_axis_gate * SUN_LENS_GHOST_RADIANCE * (
         vec3<f32>(0.72, 0.20, 0.92) * purple_ghost
             + vec3<f32>(0.12, 0.78, 0.82) * cyan_ghost

@@ -189,7 +189,9 @@ mod tests {
         assert!(shader.contains("let minor_star_rays = pow("));
         assert!(shader.contains("SUN_STAR_RAY_RADIANCE * star_rays"));
         assert!(shader.contains("let lens_ghosts = optical_axis_gate"));
-        assert!(shader.contains("if normalized_distance > SUN_OVERLAY_CUTOFF_RADIUS_SCALE"));
+        assert!(shader.contains(
+            "normalized_distance > SUN_OVERLAY_CUTOFF_RADIUS_SCALE\n        && lens_ghost_energy <= 0.0"
+        ));
         assert!(shader.contains("SUN_VEILING_GLARE_RADIANCE * veiling_glare"));
         assert!(shader.contains("let presentation_tint = tint"));
         assert!(shader.contains("var core_hue = vec3<f32>(1.0, 0.08, 0.01);"));
@@ -204,6 +206,21 @@ mod tests {
             "letradiance=SUN_VISUAL_RADIANCE_SCALE*(atmospheric_core*cloud_visibility+atmospheric_glare*glare_cloud_visibility);"
         ));
         assert!(!compact.contains("letradiance=SUN_VISUAL_RADIANCE_SCALE*tint*(SUN_CORE_RADIANCE"));
+    }
+
+    #[test]
+    fn lens_ghosts_are_not_clipped_by_the_sun_centered_overlay_radius() {
+        let shader = include_str!("sun.wgsl");
+        let ghost_evaluation = shader
+            .find("let purple_ghost = lens_ghost_lobe(")
+            .expect("purple ghost evaluation");
+        let radial_discard = shader
+            .find("normalized_distance > SUN_OVERLAY_CUTOFF_RADIUS_SCALE")
+            .expect("sun-centered radial discard");
+        assert!(
+            ghost_evaluation < radial_discard,
+            "the radial discard must know whether an off-axis ghost occupies the pixel"
+        );
     }
 
     #[test]
