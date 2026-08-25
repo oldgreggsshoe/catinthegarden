@@ -76,6 +76,12 @@ struct CloudSample {
 
 fn cloudSampleWithOctaves(dir: vec3<f32>, t: f32, octave_count: u32) -> CloudSample {
     let shell_index = select(0u, 1u, t >= 0.5);
+    // The experimental high cloud layer is disabled for the next visual
+    // evaluation. Returning before any field/noise work also removes it from
+    // terrain shadows and camera-only sun attenuation, not just shell drawing.
+    if shell_index == 1u {
+        return CloudSample(0.0, 0.0, 0.0);
+    }
     let base_direction = normalize(dir);
     let field_direction = flow_warp(base_direction, shell_index);
     let current = textureSampleLevel(cloud_field_current, cloud_field_sampler, field_direction, 0.0);
@@ -93,18 +99,6 @@ fn cloudSampleWithOctaves(dir: vec3<f32>, t: f32, octave_count: u32) -> CloudSam
     let humidity_precursor = smoothstep(0.54, 0.76, field.b);
     let precursor_breakup = smoothstep(-0.16, 0.18, detail);
     let lower_precursor = humidity_precursor * precursor_breakup * 0.13;
-    // Condensed water can concentrate into narrow weather fronts after many
-    // simulated days, leaving an entire orbital hemisphere visually clear.
-    // Use the upper layer for sparse fair-weather cirrus. A thin presentation
-    // floor prevents hemisphere-scale holes in the coarse one-layer climate,
-    // while local vapour raises its density. Rotated detail retains broad
-    // clear gaps instead of restoring the rejected global veil.
-    let upper_precursor = mix(
-        0.45,
-        1.0,
-        smoothstep(0.06, 0.34, field.b),
-    ) * smoothstep(-0.08, 0.22, detail)
-        * 0.24;
     // Keep weak condensate thinner while driving genuinely stormy cells
     // toward opacity. This widens contrast without filling the clear gaps or
     // changing the sparse startup precursor that appears before condensation.
@@ -114,13 +108,8 @@ fn cloudSampleWithOctaves(dir: vec3<f32>, t: f32, octave_count: u32) -> CloudSam
     let storm_amount = smoothstep(0.05, 0.32, field.g);
     let lower_condensed = posterized * mix(0.22, 1.0, storm_amount);
     let lower_density = max(lower_condensed, lower_precursor * 0.32);
-    // The coarse climate owns one condensed-water field. Reusing it on both
-    // shells draws the same weather system twice at different altitudes.
-    // Keep the upper shell as humidity-driven, detail-broken cirrus until the
-    // simulation owns an independent high-altitude water field.
-    let upper_density = upper_precursor;
     return CloudSample(
-        clamp(select(lower_density, upper_density, shell_index == 1u), 0.0, 1.0),
+        clamp(lower_density, 0.0, 1.0),
         clamp(field.g, 0.0, 1.0),
         clamp(field.a, 0.0, 1.0),
     );

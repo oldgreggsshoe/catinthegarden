@@ -52,6 +52,27 @@ passes with the existing unused `WeatherFields::initial` warning. The next physi
 mass-conserving prognostic pressure field, using this overlay to verify persistent highs/lows and
 their wind response before coupling convergence/subsidence into cloud microphysics.
 
+### Experimental weather — upper-layer isolation (25 August 2026)
+
+The humidity-only 166km cirrus shell is temporarily disabled for the next manual comparison. The
+shell renderer submits one instance rather than two, and the shared density function returns zero
+for the upper layer before any texture/noise work, so it also cannot shadow terrain or attenuate
+the camera-only sun. The 90km condensed-water shell, local low cloud impostors, rain, surface
+weather effects, and underlying CPU humidity field are unchanged.
+
+This isolates a reported apparent weather stop. A temporary release probe replayed the manual
+run's 6.75 simulated days under its fixed planet-relative sun: over the final twelve 600s states,
+12,086 of 24,576 quantized cloud texels still changed and wind remained active at the 60m/s cap.
+Rotating solar forcing produced nearly identical late activity, falsifying both a stopped solver
+and fixed-sun equilibrium as the immediate cause. The remaining presentation limitation is the
+known same-coordinate temporal cross-fade: transported CPU cells morph between locations instead
+of sliding visibly with wind. The temporary probe and tagged diagnostics were removed.
+
+Validation: 50 focused weather/render/scenario tests pass. Release replay
+`weather_contrast/1787689030-78785` passes all three captures with only the lower global shell.
+Next action after manual isolation review: upload wind and apply endpoint-exact advection-aware
+temporal sampling consistently to clouds, shadows, sun occlusion, and local presentation.
+
 ### Experimental branch — fixed-L6 flat triangle wireframe baseline (4 August 2026)
 
 Branch `experiment/flat-triangle-wireframe` is an isolated visual experiment from the current

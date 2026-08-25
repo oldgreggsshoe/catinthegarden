@@ -7,6 +7,7 @@ use crate::{atmosphere::SurfaceLightingResources, planet::PLANET_RADIUS_METERS, 
 
 const CLOUD_SHELL_ALTITUDE_METERS: f32 = 90_000.0;
 const UPPER_CLOUD_SHELL_ALTITUDE_METERS: f32 = 166_000.0;
+const ACTIVE_CLOUD_SHELL_COUNT: u32 = 1;
 const CLOUD_LAYER_HALF_DEPTH_METERS: f32 =
     (UPPER_CLOUD_SHELL_ALTITUDE_METERS - CLOUD_SHELL_ALTITUDE_METERS) * 0.5;
 const CLOUD_SHELL_LONGITUDE_SEGMENTS: usize = 96;
@@ -495,7 +496,7 @@ impl WeatherCloudRenderer {
         );
         render_pass.set_bind_group(2, &self.atmosphere_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        render_pass.draw(0..self.vertex_count, 0..2);
+        render_pass.draw(0..self.vertex_count, 0..ACTIVE_CLOUD_SHELL_COUNT);
     }
 
     pub fn field_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
@@ -888,13 +889,12 @@ mod tests {
         assert!(shader.contains("optical_horizon + 0.004625"));
         assert!(shader.contains("let humidity_precursor"));
         assert!(shader.contains("let lower_precursor"));
-        assert!(shader.contains("let upper_precursor = mix("));
-        assert!(shader.contains("smoothstep(-0.08, 0.22, detail)"));
         assert!(
             shader.contains("let lower_density = max(lower_condensed, lower_precursor * 0.32);")
         );
-        assert!(shader.contains("let upper_density = upper_precursor;"));
-        assert!(shader.contains("select(lower_density, upper_density, shell_index == 1u)"));
+        assert!(shader.contains("if shell_index == 1u"));
+        assert!(shader.contains("return CloudSample(0.0, 0.0, 0.0);"));
+        assert!(!shader.contains("let upper_precursor"));
         assert!(!shader.contains("let precursor = select(0.08"));
         assert!(shader.contains("texture_cube<f32>"));
         assert!(!shader.contains("fn cube_field_uv"));
@@ -941,7 +941,8 @@ mod tests {
     #[test]
     fn shell_mesh_is_non_empty_and_has_expected_density() {
         assert_eq!(super::shell_vertices().len(), 96 * 48 * 6);
-        assert_eq!(super::shell_vertices().len() * 2, 55_296);
+        assert_eq!(super::ACTIVE_CLOUD_SHELL_COUNT, 1);
+        assert_eq!(super::shell_vertices().len(), 27_648);
     }
 
     #[test]
