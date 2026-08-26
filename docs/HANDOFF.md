@@ -146,6 +146,24 @@ a budget-driven coarse ring. The scenario passes; the fixed-policy unit test and
 also pass with only the existing unused `WeatherFields::initial` warning. This is deliberately a
 performance experiment, not a recommendation to retain the 1,536-leaf default.
 
+### Adaptive LOD restored (26 August 2026)
+
+The fixed-L4 performance experiment above is complete and no longer controls the renderer. Terrain
+again uses the normal screen-error-driven adaptive policy from **L2 through L18**, and the near-field
+window can select against the outmap's complete maximum level rather than the temporary L4 cap. The
+default active-leaf budget is back to 256. Flat-triangle materials remain the presentation mode;
+only topology selection changed. Existing transition duration, dither, geomorph, skirts, neighbour
+grading, and source streaming are intentionally untouched so their visual behaviour can be addressed
+separately.
+
+All 50 active planet tests pass (one diagnostic ignored), including the deterministic exact
+L2->L18->L2 optical-zoom ladder, zero-thrash selection, near-surface L18 reach, balanced frontiers,
+and bounded chunk counts. The focused near-field-level test and `cargo check --workspace` also pass
+with only the existing unused `WeatherFields::initial` warning. Committed release orbit
+`1787750941-481007` passes at **16.819ms / 59.46 FPS**, selecting L2-L3 at its 6,000km camera altitude
+without binding the budget. That is the correct adaptive result for the view, not a new global cap;
+closer or more magnified views can traverse the full ladder.
+
 ### Experimental branch — fixed-L6 flat triangle wireframe baseline (4 August 2026)
 
 Branch `experiment/flat-triangle-wireframe` is an isolated visual experiment from the current
