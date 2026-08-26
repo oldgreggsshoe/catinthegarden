@@ -22,7 +22,7 @@ pub const MAX_LOD_LEVEL: u8 = 18;
 /// Hard cap for the rendered terrain frontier. Source/data levels may still
 /// be represented by the outmap, but the raster renderer never selects a
 /// chunk finer than this level.
-pub const RENDER_LOD_LEVEL_CAP: u8 = 1;
+pub const RENDER_LOD_LEVEL_CAP: u8 = 4;
 /// The coarsest rendered quadtree leaf. Screen-space error raises the LOD into
 /// finer levels only when their geometric error can affect visible pixels.
 pub const MINIMUM_LOD_LEVEL: u8 = 2;
@@ -36,10 +36,10 @@ pub const PLANET_ROTATION_PERIOD_SECONDS: f64 = 15.0;
 /// uses the northern-solstice declination so the axial tilt is visible and
 /// stable rather than implying seasons that are not implemented.
 pub const EARTH_AXIAL_TILT_RADIANS: f64 = 23.439_281_f64.to_radians();
-/// Hard leaf budget for the current one-draw-call-per-chunk renderer. At the
-/// 640px reference size this still provides more mesh cells than pixels while
-/// preventing narrow optical zoom from expanding into thousands of draws.
-pub const DEFAULT_MAX_ACTIVE_CHUNKS: usize = 256;
+/// Trial budget large enough for complete fixed-L4 coverage on all six faces.
+/// This intentionally exposes the actual cost of the requested two-level
+/// detail increase instead of silently retaining a mixed L0-L4 frontier.
+pub const DEFAULT_MAX_ACTIVE_CHUNKS: usize = 1_536;
 /// When the leaf budget binds, retain the finest requested patches around the
 /// camera and spend the remaining leaves on the lower-detail horizon. Without
 /// this bounded bias, the level-normalised split priority can spend too much
