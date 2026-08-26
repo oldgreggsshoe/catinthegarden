@@ -82,16 +82,16 @@ const LOW_FLIGHT_ALTITUDE_METERS: f64 = 2.0;
 /// when they drift. The latest mountain-coverage retune moved and lowered the
 /// summit; the ignored calibration instrument keeps this pose in lockstep.
 const ACTIVE_HIGHEST_PROMINENCE_DIRECTION: glam::DVec3 = glam::DVec3::new(
-    0.577_293_926_784_803,
-    -0.347_748_275_323_568,
-    0.738_784_717_699_863,
+    -0.462_957_306_613_887,
+    -0.441_947_898_858_313,
+    0.768_344_055_060_972,
 );
-const ACTIVE_HIGHEST_PROMINENCE_METERS: f64 = 180_943.291_155_986;
+const ACTIVE_HIGHEST_PROMINENCE_METERS: f64 = 186_701.172_076_862;
 #[cfg(test)]
 /// Raw macro elevation *at the summit above*, not the global raw L4 maximum --
 /// since the coverage retune those are different points, and the prominence
 /// relationship this feeds only holds when both describe the same place.
-const ACTIVE_HIGHEST_RAW_MACRO_ELEVATION_METERS: f64 = 45_233.798_980_713;
+const ACTIVE_HIGHEST_RAW_MACRO_ELEVATION_METERS: f64 = 46_735.316_406_250;
 /// How close to the ground flight may descend. CPU clearance evaluates the
 /// same synthesised relief the shader displaces, so a sub-metre floor is safe.
 const LOW_FLIGHT_MINIMUM_CLEARANCE_METERS: f64 = 0.75;
@@ -3786,22 +3786,18 @@ mod tests {
     fn active_peak_measurement_uses_standard_global_summit_prominence() {
         let direction = ACTIVE_HIGHEST_PROMINENCE_DIRECTION;
         assert!((direction.length() - 1.0).abs() < 1.0e-12);
-        assert!((direction.y.asin().to_degrees() - (-28.400_851_919)).abs() < 1.0e-6);
+        assert!((direction.y.asin().to_degrees() - (-26.228_230_938)).abs() < 1.0e-6);
         assert!(
-            (crate::planet::geographic_longitude_degrees(direction) + 35.558_843_576).abs()
+            (crate::planet::geographic_longitude_degrees(direction) + 121.070_605_516).abs()
                 < 1.0e-6
         );
 
         // A planet's highest summit has no higher parent. As for Everest, its
         // key col is sea level, so prominence equals summit elevation ASL.
-        assert_eq!(
-            ACTIVE_HIGHEST_PROMINENCE_METERS,
-            ACTIVE_HIGHEST_PROMINENCE_METERS - 0.0
-        );
         assert!(
             ACTIVE_HIGHEST_PROMINENCE_METERS
                 > ACTIVE_HIGHEST_RAW_MACRO_ELEVATION_METERS * 4.0
-                    - crate::planet::GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS
+                    - crate::planet::TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS
         );
     }
 

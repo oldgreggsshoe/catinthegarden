@@ -179,6 +179,24 @@ Focused tests preserve the original 1x ground/altitude behaviour, immediate rele
 cap while verifying exact 0.5x/2x scaling and both multiplier bounds. `cargo check --workspace`
 passes with only the existing unused `WeatherFields::initial` warning.
 
+### Dense terrain-source rebake (26 August 2026)
+
+The active procedural outmap had been exported with only `dense_level: 1`, `max_level: 1`, so the
+restored adaptive L2-L18 geometry still repeated L1 height, biome, and moisture ownership. The
+current 4096x2048, seed `0xEA272026`, 2,048-erosion procedural/mountain-coverage source was rebaked
+with globally dense L4 data and sparse refinement through L18. It validates all 3,252 manifest
+tiles; manifest SHA-256 is `c97c37a989903c2fa97d1a1460e1c44d6fcbfc26da1bfb2c2b5dcbec4bdf767`.
+The previous L1 active directory is preserved at
+`assets/outmaps/test-planet.pre-dense4-source-repair-backup-20260826-160701`.
+
+The bake reports 0.16% area-weighted mountain coverage (7,483/5,747,838 land positions; 34,928
+qualifying rays). The required post-bake global-summit instrument now passes at 186,701.172077m
+presented elevation, 46,735.316406m raw macro elevation, 26.228230938S, 121.070605516W; F4 and the
+highest-prominence scenario use the recalibrated direction. The calibration guard now allows the
+actual bounded terrain-detail ladder rather than the unrelated retired global-detail amplitude.
+The next separate task is to move adaptive LOD refinement thresholds farther from the camera; it
+was deliberately not mixed into this bake/calibration change.
+
 ### Experimental branch — fixed-L6 flat triangle wireframe baseline (4 August 2026)
 
 Branch `experiment/flat-triangle-wireframe` is an isolated visual experiment from the current
