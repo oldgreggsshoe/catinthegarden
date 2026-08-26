@@ -197,6 +197,22 @@ actual bounded terrain-detail ladder rather than the unrelated retired global-de
 The next separate task is to move adaptive LOD refinement thresholds farther from the camera; it
 was deliberately not mixed into this bake/calibration change.
 
+### Earlier adaptive LOD transitions (26 August 2026)
+
+After the dense-source rebake was completed separately, the adaptive policy's split/merge error
+thresholds changed from 1.5/0.75 pixels to 1.25/0.625 pixels. Projected error is inversely
+proportional to distance, so every transition now occurs 20% farther from the camera. Both values
+moved by the same factor, preserving the established 2:1 hysteresis band rather than increasing
+split/merge churn. LOD range, source limits, 256-leaf budget, topology grading, geomorphing,
+transition duration, and material selection are unchanged.
+
+All 50 active `planet::tests` pass (one diagnostic ignored), including the exact L2-L18 optical
+zoom ladder, monotonic no-thrash descent, near-surface L18 reach, balanced budget frontier, and
+source-limited refinement. `cargo check --workspace` passes with only the existing unused
+`WeatherFields::initial` warning. A release `terrain_detail_altitude_ladder` attempt was stopped
+without visual sign-off because the current desktop presentation throttled the scenario window to
+approximately one frame per second; it produced only two of the required captures.
+
 ### Experimental branch — fixed-L6 flat triangle wireframe baseline (4 August 2026)
 
 Branch `experiment/flat-triangle-wireframe` is an isolated visual experiment from the current

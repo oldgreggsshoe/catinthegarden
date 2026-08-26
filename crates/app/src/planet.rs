@@ -867,12 +867,12 @@ pub struct LodPolicy {
 impl Default for LodPolicy {
     fn default() -> Self {
         Self {
-            // Request the next grid before the current one reaches the former
-            // two-pixel limit.  This gives streamed geometry a wider visual
-            // hand-off zone, favouring stable ground detail over a late sharp
-            // change close to the flight camera.
-            split_pixels: 1.5,
-            merge_pixels: 0.75,
+            // Lowering both pixel thresholds by the same factor moves every
+            // split/merge boundary 20% farther from the camera while retaining
+            // the established 2:1 hysteresis band. This brings the finest
+            // terrain in before the player is almost on top of it.
+            split_pixels: 1.25,
+            merge_pixels: 0.625,
             max_level: MAX_LOD_LEVEL,
         }
     }
@@ -2898,8 +2898,8 @@ mod tests {
             }
         );
         let policy = LodPolicy::default();
-        assert_eq!(policy.split_pixels, 1.5);
-        assert_eq!(policy.merge_pixels, 0.75);
+        assert_eq!(policy.split_pixels, 1.25);
+        assert_eq!(policy.merge_pixels, 0.625);
         assert!(policy.should_split(2.1, 0));
         assert!(!policy.should_merge(1.0, MINIMUM_LOD_LEVEL - 1));
         assert!(policy.should_merge(0.5, MINIMUM_LOD_LEVEL));
