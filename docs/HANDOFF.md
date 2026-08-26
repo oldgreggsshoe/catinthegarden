@@ -33,7 +33,7 @@ fallbacks and a 2,071.204m warm-up seam. Older renderer-only evidence is retaine
 sections below but uses a previous macro/detail presentation. The later raster low-poly trial passes
 `orbit_once/1785600758-149017`, `landing_site_ground_detail/1785600646-146796`, and
 `highest_prominence_peak/1785600765-149139`; see its section below for the visual findings.
-**Written:** 25 August 2026
+**Written:** 26 August 2026
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
 
@@ -103,6 +103,28 @@ unchanged surface path. The full app test invocation still reports three unrelat
 failures: two tests retain the committed 0.5s LOD-fade expectations while the unstaged renderer
 sets 1.5s, and one legacy terrain test parses `sun.wgsl` without composing its required shared
 cloud-density source.
+
+### Visual-sun scale and centred-flare cleanup (26 August 2026)
+
+The camera-only visual disc is now twice the real solar diameter, approximately **1.06 degrees**.
+The halo, inner glare, veil, star-ray, and discard multipliers were halved relative to that larger
+disc, so the central flare keeps its previous angular footprint and fragment budget rather than
+growing to four times the screen area. The off-axis cyan and magenta lens-ghost lobes and their
+shader work are removed completely; the retained optical effect is centred on the sun.
+
+The disc and optical response now use separate pipelines. The disc retains the terrain/planet
+depth test, while the centred halo, veil, and star rays use an always-pass depth comparison because
+they represent camera response rather than geometry around the source. Both still use the same
+cloud and atmospheric attenuation. A shared analytic full-disc planet-occultation test removes the
+complete response only once the enlarged visual disc is fully hidden, so a partially clipped sun
+keeps the complete centred flare without shining after sunset.
+
+Seven focused sun tests, the deterministic scenario-coverage test, and `cargo check --workspace`
+pass with only the existing unused `WeatherFields::initial` warning. Committed release replays pass
+at `partial_sun_occultation/1787710920-226542`, `stare_at_sun/1787710922-226587`, and
+`sun_horizon_visibility/1787710927-226333`. In the partial-occultation replay, `capture-001.png`
+shows the enlarged half-visible disc with the complete centred flare across the terrain silhouette;
+`capture-002.png` verifies that both disc and flare are absent after full planet occultation.
 
 ### Experimental branch — fixed-L6 flat triangle wireframe baseline (4 August 2026)
 
