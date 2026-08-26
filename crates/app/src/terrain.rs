@@ -40,6 +40,13 @@ const MAX_RESIDENT_TERRAIN_TILES: usize = 384;
 /// while rendering was paused or slow.
 const MAX_TILE_UPLOADS_PER_FRAME: usize = 4;
 const FLAT_TRIANGLE_EXPERIMENT_DEFAULT: bool = true;
+/// Smooth shading can stop once unresolved height error is sub-pixel. In the
+/// flat presentation the triangle footprint itself is visible, so retain five
+/// times that topology demand. The 256-leaf cap is unchanged; this redistributes
+/// the fixed geometry budget toward the viewed terrain rather than adding work.
+const FLAT_TRIANGLE_LOD_DETAIL_SCALE: f64 = 5.0;
+const VIEW_FOCUS_SAMPLES: usize = 32;
+const VIEW_FOCUS_MAX_DISTANCE_METERS: f64 = 500_000.0;
 
 fn flat_triangle_experiment_from_env() -> bool {
     match std::env::var("CATINGARDEN_FLAT_TRIANGLES") {
@@ -49,6 +56,63 @@ fn flat_triangle_experiment_from_env() -> bool {
         ),
         Err(_) => FLAT_TRIANGLE_EXPERIMENT_DEFAULT,
     }
+}
+
+fn viewed_surface_direction(
+    camera_world: DVec3,
+    camera_forward: DVec3,
+    mut height_at: impl FnMut(DVec3, f64) -> Option<f64>,
+) -> Option<DVec3> {
+    let forward = camera_forward.normalize_or_zero();
+    if forward.length_squared() <= f64::EPSILON {
+        return None;
+    }
+    let closest_approach = -camera_world.dot(forward);
+    if closest_approach <= 0.0 {
+        return None;
+    }
+    let maximum_distance = closest_approach.min(VIEW_FOCUS_MAX_DISTANCE_METERS);
+    let mut previous: Option<(f64, f64)> = None;
+    let mut closest_clearance = f64::INFINITY;
+    let mut closest_direction = None;
+    for sample in 0..=VIEW_FOCUS_SAMPLES {
+        let distance = maximum_distance * sample as f64 / VIEW_FOCUS_SAMPLES as f64;
+        let point = camera_world + forward * distance;
+        let direction = point.normalize_or_zero();
+        let altitude = point.length() - PLANET_RADIUS_METERS;
+        let Some(height) = height_at(direction, distance) else {
+            continue;
+        };
+        let clearance = altitude - height;
+        if clearance.abs() < closest_clearance {
+            closest_clearance = clearance.abs();
+            closest_direction = Some(direction);
+        }
+        if let Some((previous_distance, previous_clearance)) = previous
+            && previous_clearance > 0.0
+            && clearance <= 0.0
+        {
+            let mut outside = previous_distance;
+            let mut inside = distance;
+            for _ in 0..8 {
+                let midpoint = (outside + inside) * 0.5;
+                let midpoint_point = camera_world + forward * midpoint;
+                let midpoint_direction = midpoint_point.normalize();
+                let midpoint_altitude = midpoint_point.length() - PLANET_RADIUS_METERS;
+                let Some(midpoint_height) = height_at(midpoint_direction, midpoint) else {
+                    break;
+                };
+                if midpoint_altitude - midpoint_height > 0.0 {
+                    outside = midpoint;
+                } else {
+                    inside = midpoint;
+                }
+            }
+            return Some((camera_world + forward * inside).normalize());
+        }
+        previous = Some((distance, clearance));
+    }
+    closest_direction
 }
 
 fn planet_shader_source() -> String {
@@ -1659,6 +1723,21 @@ impl TerrainRenderer {
             };
         self.lod
             .set_distance_reference_height(distance_reference_height_meters);
+        let view_focus_direction = (camera_altitude_meters
+            < LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS)
+            .then(|| {
+                viewed_surface_direction(camera_world, camera_forward, |direction, distance| {
+                    self.raster_surface_height_breakdown_at_distance(
+                        direction,
+                        camera_altitude_meters,
+                        distance,
+                    )
+                    .or_else(|| self.surface_height_breakdown_at(direction, camera_altitude_meters))
+                    .map(|surface| surface.height_meters)
+                })
+            })
+            .flatten();
+        self.lod.set_view_focus_direction(view_focus_direction);
         let aspect_ratio = f64::from(viewport[0].max(1)) / f64::from(viewport[1].max(1));
         let lod_update = match &self.source {
             TerrainDataSource::Placeholder => self.lod.update_for_view_with_up(
@@ -1671,11 +1750,14 @@ impl TerrainRenderer {
             ),
             TerrainDataSource::Outmap(outmap) => {
                 if self.flat_triangle_experiment {
-                    // The flat-triangle experiment intentionally evaluates
-                    // the next fixed topology even though the L4 source tile
-                    // is fully consumed at L6. The extra split does not
-                    // invent height data; it makes the baked mountain facets
-                    // visibly denser for this presentation trial.
+                    // Flat shading exposes the projected footprint of every
+                    // triangle, so its adaptive topology must run ahead of the
+                    // smooth-surface height-error threshold. This does not
+                    // invent source samples or raise the fixed leaf budget.
+                    let flat_geometric_error = GeometricErrorRatio {
+                        baked: OUTMAP_GEOMETRIC_ERROR.baked * FLAT_TRIANGLE_LOD_DETAIL_SCALE,
+                        ladder: OUTMAP_GEOMETRIC_ERROR.ladder * FLAT_TRIANGLE_LOD_DETAIL_SCALE,
+                    };
                     self.lod.update_for_view_with_constraints(
                         camera_world,
                         camera_forward,
@@ -1683,7 +1765,7 @@ impl TerrainRenderer {
                         aspect_ratio,
                         viewport[1].max(1),
                         vertical_fov_radians,
-                        OUTMAP_GEOMETRIC_ERROR,
+                        flat_geometric_error,
                         &|_| MAX_LOD_LEVEL,
                         None,
                     )
@@ -3543,6 +3625,7 @@ mod tests {
         radial_triangle_radius, sample_biome_cpu, sample_height_cpu, sample_moisture_cpu,
         should_animate_lod_transition, source_tile_uv_at_direction, surface_detail_filter_meters,
         terrain_material_layer_texels, terrain_material_texel, tileable_value_noise,
+        viewed_surface_direction,
     };
     use crate::planet::{
         CHUNK_GRID_QUADS, GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, MAX_LOD_LEVEL,
@@ -3553,6 +3636,26 @@ mod tests {
     use catinthegarden_coretypes::{
         CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
     };
+
+    #[test]
+    fn viewed_surface_focus_finds_the_first_terrain_hit() {
+        let camera = DVec3::X * (PLANET_RADIUS_METERS + 10_000.0);
+        let forward = DVec3::new(-1.0, 0.2, 0.0).normalize();
+        let surface_radius = PLANET_RADIUS_METERS + 1_000.0;
+        let projection = camera.dot(forward);
+        let discriminant =
+            projection * projection - (camera.length_squared() - surface_radius * surface_radius);
+        let hit_distance = -projection - discriminant.sqrt();
+        let expected = (camera + forward * hit_distance).normalize();
+
+        let focused = viewed_surface_direction(camera, forward, |_, _| Some(1_000.0))
+            .expect("the centre ray hits the test surface");
+
+        assert!(
+            focused.distance(expected) < 1.0e-5,
+            "focus direction missed the first surface hit",
+        );
+    }
 
     #[test]
     fn cube_face_uv_inverts_cube_face_direction() {

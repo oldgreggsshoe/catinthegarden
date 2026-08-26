@@ -1189,6 +1189,9 @@ fn camera_center_surface_direction(
         return None;
     }
     let radius = terrain_height_range.maximum_radius();
+    if camera_world.length() <= radius {
+        return None;
+    }
     let projection = camera_world.dot(direction);
     let discriminant = projection * projection - (camera_world.length_squared() - radius * radius);
     if discriminant <= 0.0 {
@@ -1281,6 +1284,7 @@ struct SelectionInput {
     vertical_fov_radians: f64,
     geometric_error_ratio: GeometricErrorRatio,
     distance_reference_height_meters: f64,
+    view_focus_direction: Option<DVec3>,
     source_level_limited: bool,
     baked_error_limited: bool,
 }
@@ -1320,6 +1324,7 @@ pub struct PlanetLod {
     recent_lod_transitions: HashMap<QuadtreeNode, RecentLodTransition>,
     terrain_height_range: TerrainHeightRange,
     distance_reference_height_meters: f64,
+    view_focus_direction: Option<DVec3>,
 }
 
 impl Default for PlanetLod {
@@ -1347,6 +1352,7 @@ impl PlanetLod {
             recent_lod_transitions: HashMap::new(),
             terrain_height_range: TerrainHeightRange::default(),
             distance_reference_height_meters: 0.0,
+            view_focus_direction: None,
         }
     }
 
@@ -1365,6 +1371,18 @@ impl PlanetLod {
         assert!(height_meters.is_finite());
         if self.distance_reference_height_meters != height_meters {
             self.distance_reference_height_meters = height_meters;
+            self.last_selection_input = None;
+        }
+    }
+
+    /// Pins the leaf-budget priority to terrain actually reached by the
+    /// centre view ray. This is supplied by the terrain source because a
+    /// conservative global height shell cannot identify the first surface hit
+    /// when a low camera is inside that shell.
+    pub fn set_view_focus_direction(&mut self, direction: Option<DVec3>) {
+        let direction = direction.map(DVec3::normalize);
+        if self.view_focus_direction != direction {
+            self.view_focus_direction = direction;
             self.last_selection_input = None;
         }
     }
@@ -1540,6 +1558,7 @@ impl PlanetLod {
             vertical_fov_radians,
             geometric_error_ratio,
             distance_reference_height_meters: self.distance_reference_height_meters,
+            view_focus_direction: self.view_focus_direction,
             source_level_limited: node_level_limit.is_some(),
             baked_error_limited: baked_error_limit.is_some(),
         };
@@ -1609,6 +1628,7 @@ impl PlanetLod {
                 distance_height_range,
                 geometric_error_ratio,
                 baked_error_limit,
+                self.view_focus_direction,
                 &mut evaluations,
                 &mut culled_nodes,
             ) {
@@ -1708,6 +1728,7 @@ impl PlanetLod {
                     distance_height_range,
                     geometric_error_ratio,
                     baked_error_limit,
+                    self.view_focus_direction,
                     &mut evaluations,
                     &mut culled_nodes,
                 ) {
@@ -1881,6 +1902,7 @@ impl PlanetLod {
         distance_height_range: TerrainHeightRange,
         geometric_error_ratio: GeometricErrorRatio,
         baked_error_limit: Option<&dyn Fn(QuadtreeNode) -> u8>,
+        view_focus_direction: Option<DVec3>,
         evaluations: &mut HashMap<QuadtreeNode, NodeEvaluation>,
         culled_nodes: &mut u32,
     ) -> Option<SplitCandidate> {
@@ -1945,9 +1967,15 @@ impl PlanetLod {
         // screen-centre ray as well; otherwise the level multiplier can spend
         // the leaf budget on off-centre L7 leaves and leave a conspicuous
         // coarse square directly under the crosshair.
-        let screen_centre_boost = camera_basis
-            .and_then(|basis| {
-                camera_center_surface_direction(camera_world, basis.forward, terrain_height_range)
+        let screen_centre_boost = view_focus_direction
+            .or_else(|| {
+                camera_basis.and_then(|basis| {
+                    camera_center_surface_direction(
+                        camera_world,
+                        basis.forward,
+                        terrain_height_range,
+                    )
+                })
             })
             .is_some_and(|direction| node_contains_direction(node, direction))
             .then_some(4.0)
@@ -2874,6 +2902,92 @@ mod tests {
             .find(|node| super::node_contains_direction(**node, centre_direction))
             .expect("camera-facing direction has a selected leaf");
         assert!(centre.level >= FLAT_TRIANGLE_LOD_LEVEL - 1);
+    }
+
+    #[test]
+    fn low_flight_inside_global_height_bound_refines_the_viewed_surface() {
+        // Captures 008, 013 and 018 from manual run 1787775525-639587. The
+        // centre surface moved from 81km to 49km to 8km away, but the old
+        // smooth-surface error stopped at L11/L12 and made its flat triangles
+        // grow visibly larger during the approach.
+        let approach = [
+            (
+                DVec3::new(
+                    -1_610_419.202_839_294_2,
+                    -1_650_753.163_871_058_3,
+                    3_327_481.670_909_104_4,
+                ),
+                DVec3::new(-0.841_825, -0.104_310, -0.529_575).normalize(),
+                35_125.028_049_250_504,
+                81_079.905_653_042_14,
+            ),
+            (
+                DVec3::new(
+                    -1_637_169.606_668_696,
+                    -1_654_029.092_904_106_2,
+                    3_310_537.751_499_275,
+                ),
+                DVec3::new(-0.838_135, -0.100_913, -0.536_047).normalize(),
+                34_857.261_508_259_18,
+                48_641.325_137_953_216,
+            ),
+            (
+                DVec3::new(
+                    -1_670_860.946_859_876_9,
+                    -1_658_026.098_206_200_2,
+                    3_288_811.756_989_73,
+                ),
+                DVec3::new(-0.834_446, -0.097_561, -0.542_386).normalize(),
+                37_933.577_111_662_42,
+                8_042.000_149_606_683,
+            ),
+        ];
+        let global_height_range = TerrainHeightRange::new(-5_000.0, 190_692.0);
+        let mut lod = PlanetLod::default();
+        lod.set_terrain_height_range(global_height_range);
+        let mut viewed_levels = Vec::new();
+        for (camera, forward, local_surface_height_meters, hit_distance) in approach {
+            assert!(
+                super::camera_center_surface_direction(camera, forward, global_height_range)
+                    .is_none(),
+                "a camera inside the outer terrain bound must not select its far-side exit",
+            );
+            let viewed_direction = (camera + forward * hit_distance).normalize();
+            lod.set_distance_reference_height(local_surface_height_meters);
+            lod.set_view_focus_direction(Some(viewed_direction));
+            let update = lod.update_for_view_with_constraints(
+                camera,
+                forward,
+                camera.normalize(),
+                16.0 / 9.0,
+                1_080,
+                75.0_f64.to_radians(),
+                GeometricErrorRatio {
+                    baked: 0.053_6 * 5.0,
+                    ladder: TERRAIN_DETAIL_ROUGHNESS * 2.939_5 * 5.0,
+                },
+                &|_| MAX_LOD_LEVEL,
+                None,
+            );
+            viewed_levels.push(
+                update
+                    .active_nodes
+                    .iter()
+                    .find(|node| super::node_contains_direction(**node, viewed_direction))
+                    .expect("the viewed surface has a selected leaf")
+                    .level,
+            );
+        }
+        assert!(
+            viewed_levels
+                .windows(2)
+                .all(|levels| levels[1] >= levels[0]),
+            "the approached centre terrain became coarser: {viewed_levels:?}",
+        );
+        assert!(
+            viewed_levels[2] >= 14,
+            "final focus levels: {viewed_levels:?}"
+        );
     }
 
     #[test]
