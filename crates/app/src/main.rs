@@ -111,6 +111,9 @@ const LOW_FLIGHT_BASE_SPEED_METERS_PER_SECOND: f64 = 5.0 * 50.0 * 0.44704;
 const LOW_FLIGHT_APPARENT_MOTION_REFERENCE_ALTITUDE_METERS: f64 = 100.0;
 const LOW_FLIGHT_BOOST_SPEED_MULTIPLIER: f64 = 4.0;
 const LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND: f64 = 40_000_000.0;
+const FLIGHT_SPEED_SCALE_STEP: f64 = 2.0;
+const MINIMUM_FLIGHT_SPEED_SCALE: f64 = 1.0 / 32.0;
+const MAXIMUM_FLIGHT_SPEED_SCALE: f64 = 32.0;
 const LOW_FLIGHT_VERTICAL_FOV_DEGREES: f64 = 60.0;
 const PLANET_ROTATION_SCALE_STEP: f64 = 2.0;
 const MINIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 =
@@ -200,6 +203,7 @@ fn advance_flight_speed(
     movement_held: bool,
     boost: bool,
     altitude_meters: f64,
+    speed_scale: f64,
 ) -> FlightSpeedState {
     if !movement_held {
         return FlightSpeedState::default();
@@ -210,13 +214,18 @@ fn advance_flight_speed(
     } else {
         1.0
     };
-    let speed_meters_per_second = (LOW_FLIGHT_BASE_SPEED_METERS_PER_SECOND
+    let altitude_scaled_speed = (LOW_FLIGHT_BASE_SPEED_METERS_PER_SECOND
         * (1.0 + altitude_meters / LOW_FLIGHT_APPARENT_MOTION_REFERENCE_ALTITUDE_METERS)
         * boost_multiplier)
         .min(LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND);
     FlightSpeedState {
-        speed_meters_per_second,
+        speed_meters_per_second: altitude_scaled_speed
+            * speed_scale.clamp(MINIMUM_FLIGHT_SPEED_SCALE, MAXIMUM_FLIGHT_SPEED_SCALE),
     }
+}
+
+fn adjusted_flight_speed_scale(current_scale: f64, scale_factor: f64) -> f64 {
+    (current_scale * scale_factor).clamp(MINIMUM_FLIGHT_SPEED_SCALE, MAXIMUM_FLIGHT_SPEED_SCALE)
 }
 
 fn flight_movement_direction(
@@ -311,7 +320,9 @@ impl CameraMode {
     fn label(self) -> &'static str {
         match self {
             Self::Orbit => "orbit",
-            Self::LowFlight => "fixed-speed WASD flight; speed scales with altitude (Shift: 4x)",
+            Self::LowFlight => {
+                "fixed-speed WASD flight; altitude-scaled ([/]: scale, Shift: 4x)"
+            }
         }
     }
 }
@@ -686,6 +697,7 @@ struct State {
     flight_look_pitch_radians: f64,
     flight_movement: FlightMovementInput,
     flight_speed: FlightSpeedState,
+    flight_speed_scale: f64,
     flight_travel_direction: glam::DVec3,
     saved_orbit_camera_pose: Option<(glam::DVec3, glam::DVec3, f64)>,
     camera_buffer: wgpu::Buffer,
@@ -1014,6 +1026,7 @@ impl State {
             flight_look_pitch_radians: 0.0,
             flight_movement: FlightMovementInput::default(),
             flight_speed: FlightSpeedState::default(),
+            flight_speed_scale: 1.0,
             flight_travel_direction: glam::DVec3::ZERO,
             saved_orbit_camera_pose: None,
             camera_buffer,
@@ -1304,6 +1317,20 @@ impl State {
         true
     }
 
+    fn adjust_flight_speed_scale(&mut self, scale_factor: f64) {
+        if self.scenario.is_some() {
+            return;
+        }
+        self.flight_speed_scale =
+            adjusted_flight_speed_scale(self.flight_speed_scale, scale_factor);
+        tracing::info!(
+            target: "catinthegarden::controls",
+            flight_speed_scale = self.flight_speed_scale,
+            "flight movement speed scale changed"
+        );
+        self.mark_hud_dirty();
+    }
+
     fn advance_low_flight_camera(&mut self, delta_seconds: f64, planet_rotation_radians: f64) {
         let movement_start_position = self.flight_local_position;
         let local_radial = self.flight_local_position.normalize();
@@ -1316,6 +1343,7 @@ impl State {
             movement_direction.is_some(),
             self.flight_movement.boost,
             self.flight_local_position.length() - planet::PLANET_RADIUS_METERS,
+            self.flight_speed_scale,
         );
         if let Some(movement_direction) = movement_direction {
             self.flight_travel_direction = movement_direction;
@@ -2024,6 +2052,7 @@ impl State {
             let animation_frozen = self.animation_frozen;
             let camera_mode = self.camera_mode;
             let flight_speed_meters_per_second = self.flight_speed.speed_meters_per_second;
+            let flight_speed_scale = self.flight_speed_scale;
             let adapter_label = self.adapter_label.clone();
             let terrain_stats = self.terrain_stats.clone();
             let weather_snapshot = self.weather.debug_snapshot();
@@ -2132,7 +2161,7 @@ impl State {
                             ui.label(format!("Camera mode: {}", camera_mode.label()));
                             if camera_mode == CameraMode::LowFlight {
                                 ui.label(format!(
-                                    "Flight speed: {flight_speed_meters_per_second:.0} m/s"
+                                    "Flight speed: {flight_speed_meters_per_second:.0} m/s  |  scale {flight_speed_scale:.5}x  ([ / ])"
                                 ));
                             }
                             ui.label(format!(
@@ -2193,7 +2222,7 @@ impl State {
                             ));
                             ui.label(format!("Ocean Gerstner range: {ocean_wave_range:.2} m"));
                             ui.label(
-                                "F: fullscreen  |  F3: overlay  |  F4: camera mode  |  F5: render path  |  WASD: fly  |  O: triangle outlines  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
+                                "F: fullscreen  |  F3: overlay  |  F4: camera mode  |  F5: render path  |  WASD: fly  |  [ / ]: flight speed  |  O: triangle outlines  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
                             );
                             ui.label("Default: fullscreen, HUD hidden, auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc/Q: quit");
                         });
@@ -3131,6 +3160,20 @@ impl ApplicationHandler for App {
                 }
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::BracketLeft) =>
+                {
+                    state.adjust_flight_speed_scale(1.0 / FLIGHT_SPEED_SCALE_STEP);
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::BracketRight) =>
+                {
+                    state.adjust_flight_speed_scale(FLIGHT_SPEED_SCALE_STEP);
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
                         && event.physical_key == PhysicalKey::Code(KeyCode::F4) =>
                 {
                     state.toggle_camera_mode();
@@ -3452,11 +3495,13 @@ mod tests {
     use super::{
         ACTIVE_HIGHEST_PROMINENCE_DIRECTION, ACTIVE_HIGHEST_PROMINENCE_METERS,
         ACTIVE_HIGHEST_RAW_MACRO_ELEVATION_METERS, CameraMode, DEFAULT_OUTMAP_PATH,
-        FlightMovementInput, FlightSpeedState, INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
-        LOW_FLIGHT_ALTITUDE_METERS, LOW_FLIGHT_INITIAL_PITCH_RADIANS,
-        LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND, LOW_FLIGHT_MINIMUM_CLEARANCE_METERS,
-        MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS, MAXIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
-        MINIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE, PLANET_ROTATION_SCALE_STEP, RenderPath,
+        FLIGHT_SPEED_SCALE_STEP, FlightMovementInput, FlightSpeedState,
+        INTERACTIVE_PLANET_ROTATION_TIME_SCALE, LOW_FLIGHT_ALTITUDE_METERS,
+        LOW_FLIGHT_INITIAL_PITCH_RADIANS, LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND,
+        LOW_FLIGHT_MINIMUM_CLEARANCE_METERS, MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS,
+        MAXIMUM_FLIGHT_SPEED_SCALE, MAXIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
+        MINIMUM_FLIGHT_SPEED_SCALE, MINIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
+        PLANET_ROTATION_SCALE_STEP, RenderPath, adjusted_flight_speed_scale,
         advance_flight_position_on_sphere, advance_flight_speed, device_mouse_look_enabled,
         find_default_outmap, flight_movement_direction, flight_view_direction,
         focus_of_expansion_ndc, initial_flight_tangent, interactive_camera_delta_seconds,
@@ -3607,9 +3652,9 @@ mod tests {
 
     #[test]
     fn held_flight_input_uses_fixed_altitude_scaled_speed() {
-        let ground = advance_flight_speed(FlightSpeedState::default(), true, false, 0.0);
-        let high = advance_flight_speed(FlightSpeedState::default(), true, false, 100_000.0);
-        let repeated = advance_flight_speed(ground, true, false, 0.0);
+        let ground = advance_flight_speed(FlightSpeedState::default(), true, false, 0.0, 1.0);
+        let high = advance_flight_speed(FlightSpeedState::default(), true, false, 100_000.0, 1.0);
+        let repeated = advance_flight_speed(ground, true, false, 0.0, 1.0);
 
         assert!((ground.speed_meters_per_second - 111.76).abs() < 1.0e-12);
         assert!(high.speed_meters_per_second > ground.speed_meters_per_second * 900.0);
@@ -3618,8 +3663,8 @@ mod tests {
 
     #[test]
     fn releasing_flight_input_stops_immediately() {
-        let held = advance_flight_speed(FlightSpeedState::default(), true, false, 500.0);
-        let released = advance_flight_speed(held, false, false, 500.0);
+        let held = advance_flight_speed(FlightSpeedState::default(), true, false, 500.0, 1.0);
+        let released = advance_flight_speed(held, false, false, 500.0, 1.0);
 
         assert!(held.speed_meters_per_second > 0.0);
         assert_eq!(released, FlightSpeedState::default());
@@ -3629,13 +3674,38 @@ mod tests {
     fn altitude_scaled_flight_has_a_finite_interplanetary_speed_cap() {
         let mut state = FlightSpeedState::default();
         for _ in 0..1_800 {
-            state = advance_flight_speed(state, true, true, 1_000_000_000.0);
+            state = advance_flight_speed(state, true, true, 1_000_000_000.0, 1.0);
         }
 
         assert_eq!(
             state.speed_meters_per_second,
             LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND
         );
+    }
+
+    #[test]
+    fn flight_speed_scale_multiplies_the_altitude_curve_and_is_bounded() {
+        let normal = advance_flight_speed(FlightSpeedState::default(), true, false, 500.0, 1.0);
+        let slower = advance_flight_speed(FlightSpeedState::default(), true, false, 500.0, 0.5);
+        let faster = advance_flight_speed(FlightSpeedState::default(), true, false, 500.0, 2.0);
+        assert_eq!(
+            slower.speed_meters_per_second,
+            normal.speed_meters_per_second * 0.5
+        );
+        assert_eq!(
+            faster.speed_meters_per_second,
+            normal.speed_meters_per_second * 2.0
+        );
+
+        let mut scale = 1.0;
+        for _ in 0..16 {
+            scale = adjusted_flight_speed_scale(scale, 1.0 / FLIGHT_SPEED_SCALE_STEP);
+        }
+        assert_eq!(scale, MINIMUM_FLIGHT_SPEED_SCALE);
+        for _ in 0..32 {
+            scale = adjusted_flight_speed_scale(scale, FLIGHT_SPEED_SCALE_STEP);
+        }
+        assert_eq!(scale, MAXIMUM_FLIGHT_SPEED_SCALE);
     }
 
     #[test]

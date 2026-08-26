@@ -164,6 +164,21 @@ with only the existing unused `WeatherFields::initial` warning. Committed releas
 without binding the budget. That is the correct adaptive result for the view, not a new global cap;
 closer or more magnified views can traverse the full ladder.
 
+### Interactive flight-speed scale controls (26 August 2026)
+
+Low-flight movement retains its immediate fixed-speed command and existing altitude curve. A new
+persistent runtime multiplier scales the result uniformly: `[` halves movement speed and `]`
+doubles it. It starts at **1x**, is bounded to **1/32x-32x**, and remains selected when switching
+between orbit and F4 flight. The multiplier is applied after the existing altitude response, Shift
+4x boost, and 40,000km/s base cap; consequently the entire ground-to-space curve, including its
+high-altitude plateau, remains scalable. Releasing WASD still stops immediately.
+
+Authored scenarios ignore the interactive bracket keys and retain the 1x default. The HUD reports
+both current metres per second and the live multiplier, and the control legend lists the new keys.
+Focused tests preserve the original 1x ground/altitude behaviour, immediate release stop, and base
+cap while verifying exact 0.5x/2x scaling and both multiplier bounds. `cargo check --workspace`
+passes with only the existing unused `WeatherFields::initial` warning.
+
 ### Experimental branch — fixed-L6 flat triangle wireframe baseline (4 August 2026)
 
 Branch `experiment/flat-triangle-wireframe` is an isolated visual experiment from the current
