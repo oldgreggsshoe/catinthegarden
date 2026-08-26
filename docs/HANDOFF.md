@@ -126,6 +126,26 @@ at `partial_sun_occultation/1787710920-226542`, `stare_at_sun/1787710922-226587`
 shows the enlarged half-visible disc with the complete centred flare across the terrain silhouette;
 `capture-002.png` verifies that both disc and flare are absent after full planet occultation.
 
+### Fixed-L4 performance trial (26 August 2026)
+
+The global raster frontier is now fixed at **L4**, two levels finer than the working L2 baseline.
+The default active-leaf budget is raised from 256 to 1,536 for this trial: leaving it at 256 reached
+L4 near the camera but forced a visible L0-L4 mixture and therefore did not test the requested
+uniform-detail cost. `CATINGARDEN_MAX_ACTIVE_CHUNKS` can still override the trial budget.
+
+The identical release `orbit_once` measurement changes as follows:
+
+| trial | run | median frame | FPS | drawn chunks | terrain triangles | budget bound |
+|---|---|---:|---:|---:|---:|---|
+| working L2 baseline | `1787748721-462138` | 16.596ms | 60.26 | 41-44 | 94,464-101,376 | no |
+| committed L4 | `1787749737-470700` | 42.707ms | 23.42 | 480-538 | 1,105,920-1,239,552 | no |
+
+L4 therefore costs **26.111ms** more in this orbit sample, or **2.57x** the L2 frame time. The final
+histogram contains 534 L4 leaves and four transient L3 parents at the moving/culling frontier, not
+a budget-driven coarse ring. The scenario passes; the fixed-policy unit test and workspace check
+also pass with only the existing unused `WeatherFields::initial` warning. This is deliberately a
+performance experiment, not a recommendation to retain the 1,536-leaf default.
+
 ### Experimental branch — fixed-L6 flat triangle wireframe baseline (4 August 2026)
 
 Branch `experiment/flat-triangle-wireframe` is an isolated visual experiment from the current
