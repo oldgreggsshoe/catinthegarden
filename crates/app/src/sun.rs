@@ -1,5 +1,6 @@
 pub struct SunRenderer {
-    pipeline: wgpu::RenderPipeline,
+    disc_pipeline: wgpu::RenderPipeline,
+    flare_pipeline: wgpu::RenderPipeline,
     atmosphere_bind_group: wgpu::BindGroup,
 }
 
@@ -68,54 +69,75 @@ impl SunRenderer {
             label: Some("sun disc shader"),
             source: wgpu::ShaderSource::Wgsl(sun_shader_source().into()),
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("sun disc pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: hdr_format,
-                    // Keep the warm disc and halo overbright in the HDR scene,
-                    // instead of replacing the sky color beneath the halo.
-                    blend: Some(wgpu::BlendState {
-                        color: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::One,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                        alpha: wgpu::BlendComponent::REPLACE,
-                    }),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            // Draw after the physical scene and its luminance meter, only
-            // where the depth buffer still contains the reversed-Z far value.
-            // Terrain and the solid planet therefore continue to occlude it.
-            depth_stencil: Some(wgpu::DepthStencilState {
+        let create_pipeline = |label, fragment_entry, depth_stencil| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &[],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(fragment_entry),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: hdr_format,
+                        // Both contributions are camera-only HDR additions;
+                        // neither replaces the physical sky beneath it.
+                        blend: Some(wgpu::BlendState {
+                            color: wgpu::BlendComponent {
+                                src_factor: wgpu::BlendFactor::One,
+                                dst_factor: wgpu::BlendFactor::One,
+                                operation: wgpu::BlendOperation::Add,
+                            },
+                            alpha: wgpu::BlendComponent::REPLACE,
+                        }),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        // The visual disc keeps the original terrain/planet depth test.
+        let disc_pipeline = create_pipeline(
+            "sun disc pipeline",
+            "fs_disc",
+            Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: Some(false),
                 depth_compare: Some(wgpu::CompareFunction::Equal),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        );
+        // Optical flare is a full-frame camera response. Keep the attachment
+        // format compatible with the shared render pass, but always pass its
+        // depth test; the shader's full-disc occultation test is its only
+        // geometric shutoff.
+        let flare_pipeline = create_pipeline(
+            "sun optical flare pipeline",
+            "fs_flare",
+            Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+        );
         Self {
-            pipeline,
+            disc_pipeline,
+            flare_pipeline,
             atmosphere_bind_group,
         }
     }
@@ -126,10 +148,12 @@ impl SunRenderer {
         camera_bind_group: &'pass wgpu::BindGroup,
         weather_field_bind_group: &'pass wgpu::BindGroup,
     ) {
-        render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, camera_bind_group, &[]);
         render_pass.set_bind_group(1, weather_field_bind_group, &[]);
         render_pass.set_bind_group(2, &self.atmosphere_bind_group, &[]);
+        render_pass.set_pipeline(&self.flare_pipeline);
+        render_pass.draw(0..3, 0..1);
+        render_pass.set_pipeline(&self.disc_pipeline);
         render_pass.draw(0..3, 0..1);
     }
 }
@@ -180,18 +204,16 @@ mod tests {
         assert!(shader.contains("const SUN_CORE_VISIBILITY_FLOOR: f32 = 0.12;"));
         assert!(shader.contains("const SUN_CORE_RADIANCE_FLOOR: f32 = 0.50;"));
         assert!(shader.contains("const SUN_GLARE_VISIBILITY_FLOOR: f32 = 0.08;"));
-        assert!(shader.contains("const SUN_VEILING_GLARE_RADIUS_SCALE: f32 = 30.0;"));
-        assert!(shader.contains("const SUN_STAR_RAY_RADIUS_SCALE: f32 = 42.0;"));
-        assert!(shader.contains("const SUN_OVERLAY_CUTOFF_RADIUS_SCALE: f32 = 64.0;"));
-        assert!(shader.contains("const SUN_LENS_GHOST_RADIANCE: vec3<f32>"));
+        assert!(shader.contains("const VISUAL_SUN_SIZE_SCALE: f32 = 2.0;"));
+        assert!(shader.contains("const SUN_HALO_RADIUS_SCALE: f32 = 3.25;"));
+        assert!(shader.contains("const SUN_VEILING_GLARE_RADIUS_SCALE: f32 = 15.0;"));
+        assert!(shader.contains("const SUN_STAR_RAY_RADIUS_SCALE: f32 = 21.0;"));
+        assert!(shader.contains("const SUN_OVERLAY_CUTOFF_RADIUS_SCALE: f32 = 32.0;"));
         assert!(shader.contains("let veiling_glare = pow("));
         assert!(shader.contains("let major_star_rays = pow("));
         assert!(shader.contains("let minor_star_rays = pow("));
         assert!(shader.contains("SUN_STAR_RAY_RADIANCE * star_rays"));
-        assert!(shader.contains("let lens_ghosts = optical_axis_gate"));
-        assert!(shader.contains(
-            "normalized_distance > SUN_OVERLAY_CUTOFF_RADIUS_SCALE\n        && lens_ghost_energy <= 0.0"
-        ));
+        assert!(shader.contains("if normalized_distance > SUN_OVERLAY_CUTOFF_RADIUS_SCALE"));
         assert!(shader.contains("SUN_VEILING_GLARE_RADIANCE * veiling_glare"));
         assert!(shader.contains("let presentation_tint = tint"));
         assert!(shader.contains("var core_hue = vec3<f32>(1.0, 0.08, 0.01);"));
@@ -203,24 +225,19 @@ mod tests {
             shader.contains("let atmospheric_glare = presentation_tint * glare_visibility * (")
         );
         assert!(compact.contains(
-            "letradiance=SUN_VISUAL_RADIANCE_SCALE*(atmospheric_core*cloud_visibility+atmospheric_glare*glare_cloud_visibility);"
+            "letradiance=SUN_VISUAL_RADIANCE_SCALE*select(atmospheric_glare*glare_cloud_visibility,atmospheric_core*cloud_visibility,draw_disc,);"
         ));
         assert!(!compact.contains("letradiance=SUN_VISUAL_RADIANCE_SCALE*tint*(SUN_CORE_RADIANCE"));
     }
 
     #[test]
-    fn lens_ghosts_are_not_clipped_by_the_sun_centered_overlay_radius() {
+    fn camera_flare_is_centered_and_has_no_coloured_axis_ghosts() {
         let shader = include_str!("sun.wgsl");
-        let ghost_evaluation = shader
-            .find("let purple_ghost = lens_ghost_lobe(")
-            .expect("purple ghost evaluation");
-        let radial_discard = shader
-            .find("normalized_distance > SUN_OVERLAY_CUTOFF_RADIUS_SCALE")
-            .expect("sun-centered radial discard");
-        assert!(
-            ghost_evaluation < radial_discard,
-            "the radial discard must know whether an off-axis ghost occupies the pixel"
-        );
+        assert!(!shader.contains("lens_ghost"));
+        assert!(!shader.contains("purple_ghost"));
+        assert!(!shader.contains("cyan_ghost"));
+        assert!(shader.contains("SUN_HALO_RADIANCE * halo"));
+        assert!(shader.contains("SUN_STAR_RAY_RADIANCE * star_rays"));
     }
 
     #[test]
@@ -240,6 +257,20 @@ mod tests {
         );
         assert!(shader.contains("if sun_disc_is_fully_occulted()"));
         assert!(shader.contains("discard;"));
+    }
+
+    #[test]
+    fn partial_occultation_clips_only_the_physical_disc() {
+        let renderer = include_str!("sun.rs");
+        let shader = include_str!("sun.wgsl");
+        assert!(renderer.contains("disc_pipeline: wgpu::RenderPipeline"));
+        assert!(renderer.contains("flare_pipeline: wgpu::RenderPipeline"));
+        assert!(renderer.contains("\"sun disc pipeline\",\n            \"fs_disc\","));
+        assert!(renderer.contains("\"sun optical flare pipeline\",\n            \"fs_flare\","));
+        assert!(renderer.contains("depth_compare: Some(wgpu::CompareFunction::Always)"));
+        assert!(shader.contains("fn sun_radiance(input: VertexOutput, draw_disc: bool)"));
+        assert!(shader.contains("fn fs_disc(input: VertexOutput)"));
+        assert!(shader.contains("fn fs_flare(input: VertexOutput)"));
     }
 
     #[test]

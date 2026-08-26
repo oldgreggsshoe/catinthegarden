@@ -242,6 +242,9 @@ impl ScenarioRunner {
             "sun_horizon_visibility" => {
                 include_str!("../scenarios/sun_horizon_visibility.json")
             }
+            "partial_sun_occultation" => {
+                include_str!("../scenarios/partial_sun_occultation.json")
+            }
             "ocean_flyover" => include_str!("../scenarios/ocean_flyover.json"),
             "ocean_coastline" => include_str!("../scenarios/ocean_coastline.json"),
             "orbital_zoom_lod" => include_str!("../scenarios/orbital_zoom_lod.json"),
@@ -1374,6 +1377,37 @@ mod tests {
         assert_eq!(
             horizon_sun.assertions().min_visible_sun_contrast,
             Some(0.05)
+        );
+
+        let partial_sun = ScenarioRunner::load("partial_sun_occultation")
+            .expect("partial sun scenario parses");
+        assert_eq!(partial_sun.expected_screenshots(), 2);
+        let camera = DVec3::from_array(partial_sun.definition.waypoints[0].position);
+        let sun = DVec3::from_array(partial_sun.definition.sun_waypoints[0].direction).normalize();
+        let planet_direction = -camera.normalize();
+        let center_angle = sun.dot(planet_direction).clamp(-1.0, 1.0).acos();
+        let planet_angle = (crate::planet::PLANET_RADIUS_METERS / camera.length()).asin();
+        let limb_offset = center_angle - planet_angle;
+        assert!(
+            limb_offset.abs() < 0.00925,
+            "scenario must put the horizon through the visual solar disc"
+        );
+        let final_sun = DVec3::from_array(
+            partial_sun
+                .definition
+                .sun_waypoints
+                .last()
+                .expect("final occulted sun")
+                .direction,
+        )
+        .normalize();
+        let final_center_angle = final_sun
+            .dot(planet_direction)
+            .clamp(-1.0, 1.0)
+            .acos();
+        assert!(
+            final_center_angle + 0.00925 < planet_angle,
+            "scenario must finish with the complete visual disc behind the planet"
         );
 
         let stare_at_sun = ScenarioRunner::load("stare_at_sun").expect("sun scenario parses");

@@ -2,26 +2,26 @@ const PHYSICAL_SUN_ANGULAR_RADIUS_RADIANS: f32 = 0.004625;
 const PLANET_RADIUS_METERS: f32 = 4000000.0;
 const ATMOSPHERE_HEIGHT_METERS: f32 = 2880000.0;
 const ATMOSPHERE_RADIUS_METERS: f32 = PLANET_RADIUS_METERS + ATMOSPHERE_HEIGHT_METERS;
-// Use the real solar angular diameter (~0.53 degrees) for near-surface views.
-// The previous 0.159 degree presentation made the sun read like a distant
-// star rather than the disk seen in an Earth-sky photograph.
-const VISUAL_SUN_SIZE_SCALE: f32 = 1.0;
+// The game presentation deliberately uses twice the real solar angular
+// diameter, while retaining the physical radius as the reference value.
+const VISUAL_SUN_SIZE_SCALE: f32 = 2.0;
 const SUN_ANGULAR_RADIUS_RADIANS: f32 = PHYSICAL_SUN_ANGULAR_RADIUS_RADIANS * VISUAL_SUN_SIZE_SCALE;
 // A compact, soft corona gives the camera-like glow seen around a bright sun
 // without turning the whole sky into a white disk.
-const SUN_HALO_RADIUS_SCALE: f32 = 6.5;
-const SUN_INNER_GLARE_RADIUS_SCALE: f32 = 2.5;
+// Halve the radius multipliers when doubling the disc so the requested sun
+// grows without also quadrupling the flare's screen area and fragment cost.
+const SUN_HALO_RADIUS_SCALE: f32 = 3.25;
+const SUN_INNER_GLARE_RADIUS_SCALE: f32 = 1.25;
 // A camera spreads a bright solar source into a soft veil and a few aperture
-// rays. Keep both deliberately separate from the real 0.53-degree disc so
-// they cannot change solar geometry or the sun's physical lighting.
-const SUN_VEILING_GLARE_RADIUS_SCALE: f32 = 30.0;
+// rays. Keep both deliberately separate from the doubled visual disc so they
+// cannot change solar geometry or the sun's physical lighting.
+const SUN_VEILING_GLARE_RADIUS_SCALE: f32 = 15.0;
 const SUN_VEILING_GLARE_RADIANCE: vec3<f32> = vec3<f32>(0.20, 0.16, 0.11);
-const SUN_STAR_RAY_RADIUS_SCALE: f32 = 42.0;
+const SUN_STAR_RAY_RADIUS_SCALE: f32 = 21.0;
 const SUN_STAR_RAY_RADIANCE: vec3<f32> = vec3<f32>(0.40, 0.32, 0.23);
-const SUN_LENS_GHOST_RADIANCE: vec3<f32> = vec3<f32>(0.16, 0.12, 0.10);
 // Keep the discard outside every presentation lobe, rather than at the veil
 // radius itself. Otherwise the zero-valued tail still leaves a visible ring.
-const SUN_OVERLAY_CUTOFF_RADIUS_SCALE: f32 = 64.0;
+const SUN_OVERLAY_CUTOFF_RADIUS_SCALE: f32 = 32.0;
 // This multiplier belongs only to the camera-facing HDR disc.  Terrain,
 // ocean, and atmosphere lighting use their own physical solar radiance.
 const SUN_VISUAL_RADIANCE_SCALE: f32 = 5.0;
@@ -29,7 +29,7 @@ const SUN_VISUAL_RADIANCE_SCALE: f32 = 5.0;
 // presentation floor, not a lighting contribution; the terrain and sky still
 // receive the unmodified atmospheric transmittance.
 const SUN_CORE_VISIBILITY_FLOOR: f32 = 0.12;
-// Keep the physical disc readable at the last above-horizon samples. The
+// Keep the visual disc readable at the last above-horizon samples. The
 // surrounding glare may collapse with transmittance; the disc itself must not
 // disappear before geometric occultation by the planet.
 const SUN_CORE_RADIANCE_FLOOR: f32 = 0.50;
@@ -105,14 +105,6 @@ fn sun_screen_position(sun: vec3<f32>) -> vec2<f32> {
         sun.x / (depth * camera.projection.x * camera.projection.y),
         sun.y / (depth * camera.projection.y),
     );
-}
-
-fn lens_ghost_lobe(
-    offset: vec2<f32>,
-    radius: vec2<f32>,
-) -> f32 {
-    let ellipse = offset / radius;
-    return pow(max(1.0 - dot(ellipse, ellipse), 0.0), 2.0);
 }
 
 fn cloud_density_on_camera_ray(
@@ -304,11 +296,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     return VertexOutput(vec4<f32>(position, 0.0, 1.0), position);
 }
 
-@fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    if sun_disc_is_fully_occulted() {
-        discard;
-    }
+fn sun_radiance(input: VertexOutput, draw_disc: bool) -> vec4<f32> {
     let ray = view_direction(input.ndc);
     let sun = normalize(camera.sun_direction_view.xyz);
     let sun_ndc = sun_screen_position(sun);
@@ -324,26 +312,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let angular_distance = atan2(length(cross(ray, sun)), alignment);
     let normalized_distance = angular_distance / SUN_ANGULAR_RADIUS_RADIANS;
 
-    // Internal lens reflections are positioned around the optical axis rather
-    // than around the sun. Evaluate them before applying the sun-centred
-    // overlay cutoff so that circle cannot slice through an otherwise valid
-    // off-axis ghost.
-    let optical_axis_length = length(sun_ndc);
-    let optical_axis_gate = smoothstep(0.04, 0.22, optical_axis_length)
-        * step(0.0, -sun.z);
-    let purple_ghost = lens_ghost_lobe(
-        input.ndc + sun_ndc * 0.55,
-        vec2<f32>(0.10, 0.055),
-    );
-    let cyan_ghost = lens_ghost_lobe(
-        input.ndc - sun_ndc * 0.32,
-        vec2<f32>(0.15, 0.075),
-    );
-    let lens_ghost_energy = optical_axis_gate * max(purple_ghost, cyan_ghost);
-    if normalized_distance > SUN_OVERLAY_CUTOFF_RADIUS_SCALE
-        && lens_ghost_energy <= 0.0
-    {
-        discard;
+    if normalized_distance > SUN_OVERLAY_CUTOFF_RADIUS_SCALE {
+        return vec4<f32>(0.0);
     }
     let disc_coverage = 1.0 - smoothstep(0.92, 1.0, normalized_distance);
     let limb_darkening = 1.0 - 0.25 * min(normalized_distance, 1.0);
@@ -374,13 +344,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         * step(0.0, -sun.z);
     let star_rays = star_ray_profile * (
         0.88 * major_star_rays + 0.12 * minor_star_rays
-    );
-    // A real lens also makes faint coloured internal reflections on the line
-    // through the optical centre and the sun. Keep these broad and dim: they
-    // should read as photographic ghosts, never as extra light sources.
-    let lens_ghosts = optical_axis_gate * SUN_LENS_GHOST_RADIANCE * (
-        vec3<f32>(0.72, 0.20, 0.92) * purple_ghost
-            + vec3<f32>(0.12, 0.78, 0.82) * cyan_ghost
     );
     let solar_elevation = dot(
         normalize(camera.camera_planet_direction_view_altitude.xyz),
@@ -431,14 +394,38 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             + SUN_GLARE_RADIANCE * inner_glare
             + SUN_VEILING_GLARE_RADIANCE * veiling_glare
             + SUN_STAR_RAY_RADIANCE * star_rays
-    ) + lens_ghosts * glare_visibility;
+    );
     // The broad veiling response is scattered light around the disc, so a
     // cloud blocks it more strongly than the disc core itself. This keeps a
     // storm from leaving a bright camera bloom after it has hidden the sun.
     let cloud_visibility = cloud_sun_visibility(sun);
     let glare_cloud_visibility = pow(cloud_visibility, 4.0);
-    let radiance = SUN_VISUAL_RADIANCE_SCALE
-        * (atmospheric_core * cloud_visibility
-            + atmospheric_glare * glare_cloud_visibility);
+    let radiance = SUN_VISUAL_RADIANCE_SCALE * select(
+        atmospheric_glare * glare_cloud_visibility,
+        atmospheric_core * cloud_visibility,
+        draw_disc,
+    );
     return vec4<f32>(radiance, 1.0);
+}
+
+// The visual solar disc is depth-tested against terrain and the planet.
+// Partial occultation therefore clips only the actual source geometry.
+@fragment
+fn fs_disc(input: VertexOutput) -> @location(0) vec4<f32> {
+    if sun_disc_is_fully_occulted() {
+        discard;
+    }
+    return sun_radiance(input, true);
+}
+
+// Corona, star rays, and veil are camera response, not geometry surrounding
+// the sun. Draw their complete shape while any part of the visual disc remains
+// visible; the analytic full-disc test removes the response as soon as the
+// planet has occulted the complete source.
+@fragment
+fn fs_flare(input: VertexOutput) -> @location(0) vec4<f32> {
+    if sun_disc_is_fully_occulted() {
+        discard;
+    }
+    return sun_radiance(input, false);
 }
