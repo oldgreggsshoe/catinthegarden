@@ -3877,3 +3877,24 @@ are `atmospheric_mist_paths/1787822221-928441/capture-001.png` and
 the already-misted horizon without a local-horizontal edge. All eight atmosphere tests, composed
 fullscreen WGSL parse/validation, and `cargo check -p catinthegarden-app` pass with the pre-existing
 unused weather constructor warning.
+
+## Restrained procedural-terrain smoothing - 27 August 2026
+
+The request was to smooth the terrain only slightly without undoing the broad mountain forms or the
+flat-triangle presentation. The baked macro outmap, erosion, mesh topology, LOD policy, categorical
+materials, per-triangle normals, and outlines are unchanged. Only the runtime detail ladder's
+height/slope roughness moves from 0.060 to 0.058 (3.3%); its derived finite amplitude bound moves
+from 491.5m to 475.1m in both CPU clearance and WGSL displacement/material normalization.
+
+The existing deterministic slope instrument measures the resulting visual-gradient change as
+p50 0.02782->0.02611, p90 0.08066->0.07618, p99 0.14017->0.13314, and maximum
+0.28632->0.27557 in `1-cos(angle)`. This is a roughly 4-6% reduction in apparent local steepness,
+while the authored macro ranges retain their full height and width. The rejected alternative was to
+increase ridge-fold softness: after required mean/RMS recalibration it raised, rather than lowered,
+the measured p90/p99 slopes.
+
+The CPU/GPU constant-parity test, derived amplitude-bound test, ridge calibration, composed planet
+WGSL validation, all planet tests, and app check pass. `terrain_detail_altitude_ladder/1787824754-950077`
+passes all five captures; daylight visual capture
+`highest_prominence_peak/1787824844-950777/capture-001.png` is finite and clean, while that scenario's
+pre-existing stale camera pose still fails its unrelated 150-155m clearance assertion at 7,648.7m.

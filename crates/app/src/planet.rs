@@ -397,7 +397,7 @@ pub fn placeholder_height_meters(direction: DVec3) -> f64 {
 /// four must track the shader's `TERRAIN_DETAIL_*`; `shader_detail_ladder_
 /// matches_the_cpu_clearance_ladder` in terrain.rs reads them back out of the
 /// shader source and fails if they drift.
-pub const TERRAIN_DETAIL_ROUGHNESS: f64 = 0.06;
+pub const TERRAIN_DETAIL_ROUGHNESS: f64 = 0.058;
 /// Starts where the *coarsest* baked pyramid runs out, not the finest. See
 /// shared_planet.wgsl: away from the sparse corridor the baked data is L4 with
 /// 3.9km texels, so it carries nothing below about 7.8km, and the ladder used
@@ -573,9 +573,9 @@ fn lerp(from: f64, to: f64, amount: f64) -> f64 {
 
 /// The most the unboosted ladder can reach, summed over the finite octave set.
 /// Mirrors the shader constant of the same name and is rounded upward from
-/// 491.46m.
+/// 475.078m.
 #[cfg_attr(not(test), allow(dead_code))]
-pub const TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS: f64 = 491.5;
+pub const TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS: f64 = 475.1;
 /// How much elevation an octave needs before it appears at full amplitude,
 /// as a multiple of its own amplitude. Asked per octave rather than per ladder;
 /// see `terrain_detail_octave_headroom` in shared_planet.wgsl for why, and for

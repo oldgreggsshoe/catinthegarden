@@ -25,10 +25,12 @@ const GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS: f32 = 111.5;
 // in terrain.rs) the stepping goes: over the mountain view, p999 of the
 // ground's luminance gradient falls 7.07 to 4.47 while p50 and p90 hold.
 //
-// At the current 4096m start the unboosted finite ladder has a 491.46m absolute
-// amplitude ceiling before the per-octave land headroom gate. The former 8x
-// long-wave boost is disabled below so observed ETOPO shapes dominate.
-const TERRAIN_DETAIL_ROUGHNESS: f32 = 0.06;
+// At the current 4096m start the unboosted finite ladder has a 475.08m absolute
+// amplitude ceiling before the per-octave land headroom gate. A restrained
+// 3.3% reduction from the former 0.06 roughness softens local gradients while
+// leaving baked macro mountains unchanged. The former 8x long-wave boost is
+// disabled below so observed ETOPO shapes dominate.
+const TERRAIN_DETAIL_ROUGHNESS: f32 = 0.058;
 // Floor is 1m. The octave ladder is evaluated from an anchor-local offset, so
 // the in-cell fraction never has to survive an absolute 4e6 domain coordinate
 // where f32 would quantise it to 0.25 -- see terrain_detail_value_noise.
@@ -69,9 +71,9 @@ const TERRAIN_DETAIL_OCTAVES: i32 = 13;
 // the detail field has to use this and not the retired CPU field's 111.5m,
 // which is an order of magnitude larger and silently scales the result away.
 // With the long-wave boost disabled this is the ordinary finite halving sum,
-// 4096 * 0.06 * (1 + 1/2 + ... + 1/4096) = 491.46m, rounded upward. The ray
+// 4096 * 0.058 * (1 + 1/2 + ... + 1/4096) = 475.078m, rounded upward. The ray
 // path and culling shell use it as a conservative bound.
-const TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS: f32 = 491.5;
+const TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS: f32 = 475.1;
 // Erosion-like structure. Two knobs, both mirrored in planet.rs.
 //
 // The fold: `|n|` creases the field at every zero crossing of the noise, and
