@@ -3853,3 +3853,27 @@ states. Temporary extended deterministic replay `weather_contrast/1787604772-120
 finite states and captures 1/60/120-state coverage; its mature frame shows one broken condensed
 layer plus thin cirrus rather than matching opaque shells. The checked-in scenario was restored
 unchanged.
+
+## Sky/terrain distance-mist continuity - 27 August 2026
+
+Manual capture `manual/1787821535-923601/capture-001.png` showed a fogged distant mountain against
+an abruptly clear blue sky. The terrain path already applied the 500km e-fold presentation mist on
+top of physical aerial perspective, but the fullscreen sky stopped after the physical sky-view LUT
+and its 2x visible presentation gain. The silhouette therefore joined two different air-column
+models.
+
+The fullscreen sky now evaluates a sea-level-equivalent Rayleigh column from camera altitude, view
+zenith cosine, and the ray's closest approach to the planet. It uses the terrain mist's same 72km
+world scale height, 12-air-mass grazing cap, and 500km exponential scale, then converges toward the
+physical same-azimuth ground-horizon LUT colour. The closest-density contribution fades in by actual
+vertical descent, preventing a second hard band as a ray crosses the camera's local horizontal. No
+screen-space height ramp, raw scene-distance threshold, or camera-altitude disable was added, so
+overhead naturally remains clearer while grazing rays carry the haze.
+
+At the reported pose's 177,661m datum altitude (144,647m local terrain clearance), the numeric mirror
+measures 1.21% radial sky mist and 82.24% on the ground-horizon ray. Controlled before/after captures
+are `atmospheric_mist_paths/1787822221-928441/capture-001.png` and
+`atmospheric_mist_paths/1787823114-936359/capture-001.png`; the fixed sky grades continuously toward
+the already-misted horizon without a local-horizontal edge. All eight atmosphere tests, composed
+fullscreen WGSL parse/validation, and `cargo check -p catinthegarden-app` pass with the pre-existing
+unused weather constructor warning.

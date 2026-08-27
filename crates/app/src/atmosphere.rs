@@ -541,7 +541,7 @@ mod tests {
         let display = include_str!("atmosphere.wgsl");
         assert!(display.contains("const VISIBLE_SKY_RADIANCE_SCALE: f32 = 2.0;"));
         assert!(display.contains(
-            "VISIBLE_SKY_RADIANCE_SCALE\n            * mix(perceptual_sky_radiance(radiance), radiance, orbital_blend)"
+            "let visible_radiance = VISIBLE_SKY_RADIANCE_SCALE\n        * mix(perceptual_sky_radiance(radiance), radiance, orbital_blend);"
         ));
         for physical_stage in [
             include_str!("atmosphere_lut_common.wgsl"),
@@ -553,6 +553,83 @@ mod tests {
         ] {
             assert!(!physical_stage.contains("VISIBLE_SKY_RADIANCE_SCALE"));
         }
+    }
+
+    #[test]
+    fn visible_sky_mist_uses_the_terrain_air_column_and_physical_horizon_colour() {
+        let display = include_str!("atmosphere.wgsl");
+        let terrain = include_str!("shared_planet.wgsl");
+        for declaration in [
+            "const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 72000.0;",
+            "const TERRAIN_FOG_AIR_PATH_E_FOLD_METERS: f32 = 500000.0;",
+        ] {
+            assert!(display.contains(declaration));
+            assert!(terrain.contains(declaration));
+        }
+        assert!(display.contains("fn sky_fog_air_path_meters(ray: vec3<f32>) -> f32"));
+        assert!(
+            display.contains("let closest_altitude = max(closest_radius - PLANET_RADIUS_METERS")
+        );
+        assert!(display.contains("let descent_amount = 1.0 - exp("));
+        assert!(display.contains("let horizon_radiance = textureSample("));
+        assert!(display.contains("let fog_amount = 1.0 - exp("));
+        assert!(display.contains("mix(visible_radiance, horizon_fog_radiance, fog_amount)"));
+    }
+
+    #[test]
+    fn sky_mist_air_path_is_grazing_weighted_without_an_altitude_switch() {
+        const PLANET_RADIUS_METERS: f64 = 4_000_000.0;
+        const SCALE_HEIGHT_METERS: f64 = 72_000.0;
+        const E_FOLD_METERS: f64 = 500_000.0;
+        // The reported capture was 144.6km clear of its unusually tall local
+        // terrain, but the atmosphere uniform correctly carries 177.7km datum
+        // altitude.
+        let camera_altitude_meters: f64 = 177_661.059_391_079;
+        let camera_radius = PLANET_RADIUS_METERS + camera_altitude_meters;
+        let camera_density = (-camera_altitude_meters / SCALE_HEIGHT_METERS).exp();
+        let fog_amount = |air_path_meters: f64| 1.0 - (-air_path_meters / E_FOLD_METERS).exp();
+
+        // A radial sky ray leaves the atmosphere through the locally thin air.
+        let radial_air_path = camera_density * SCALE_HEIGHT_METERS;
+        // The ground-horizon ray descends through dense air before leaving the
+        // atmosphere, so it reaches the same bounded 12-air-mass column used
+        // by terrain mist. There is no camera-altitude multiplier to disable it.
+        let ground_horizon_cosine = -(1.0 - (PLANET_RADIUS_METERS / camera_radius).powi(2)).sqrt();
+        let closest_radius =
+            camera_radius * (1.0 - ground_horizon_cosine * ground_horizon_cosine).sqrt();
+        let closest_density =
+            (-(closest_radius - PLANET_RADIUS_METERS) / SCALE_HEIGHT_METERS).exp();
+        let descent_amount = 1.0
+            - (-(camera_altitude_meters - (closest_radius - PLANET_RADIUS_METERS))
+                / SCALE_HEIGHT_METERS)
+                .exp();
+        let grazing_density = 0.5 * camera_density * (1.0 - descent_amount)
+            + 0.5 * (camera_density + closest_density) * descent_amount;
+        let grazing_air_path = grazing_density * 2.0 * SCALE_HEIGHT_METERS * 12.0;
+        let radial_fog = fog_amount(radial_air_path);
+        let grazing_fog = fog_amount(grazing_air_path);
+
+        assert!(radial_fog < 0.03, "radial sky fog {radial_fog}");
+        assert!(
+            (0.75..0.90).contains(&grazing_fog),
+            "grazing sky fog {grazing_fog}"
+        );
+        assert!(grazing_fog > radial_fog * 20.0);
+
+        // Crossing the local horizontal must not introduce another visible
+        // atmosphere band. The closest-density contribution fades in with
+        // actual descent rather than switching on for every negative cosine.
+        let horizontal_air_path = camera_density * SCALE_HEIGHT_METERS * 12.0;
+        let just_down_cosine = -1.0e-4_f64;
+        let just_down_radius = camera_radius * (1.0 - just_down_cosine * just_down_cosine).sqrt();
+        let just_down_altitude = just_down_radius - PLANET_RADIUS_METERS;
+        let just_down_density = (-just_down_altitude / SCALE_HEIGHT_METERS).exp();
+        let just_down_amount =
+            1.0 - (-(camera_altitude_meters - just_down_altitude) / SCALE_HEIGHT_METERS).exp();
+        let just_down_average = 0.5 * camera_density * (1.0 - just_down_amount)
+            + 0.5 * (camera_density + just_down_density) * just_down_amount;
+        let just_down_air_path = just_down_average * 2.0 * SCALE_HEIGHT_METERS * 12.0;
+        assert!((just_down_air_path - horizontal_air_path).abs() / horizontal_air_path < 1.0e-5);
     }
 
     #[test]

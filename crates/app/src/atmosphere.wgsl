@@ -5,6 +5,8 @@ const PLANET_RADIUS_METERS: f32 = 4000000.0;
 const OPTICAL_ATMOSPHERE_HEIGHT_METERS: f32 = 640000.0;
 const ORBITAL_ATMOSPHERE_LUT_V: f32 = 0.72;
 const ORBITAL_GROUND_LUT_V: f32 = 0.88;
+const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 72000.0;
+const TERRAIN_FOG_AIR_PATH_E_FOLD_METERS: f32 = 500000.0;
 // Presentation-only gain for the visible sky. Keep this outside the physical
 // LUTs so surface lighting, extinction, and exposure remain unchanged.
 const VISIBLE_SKY_RADIANCE_SCALE: f32 = 2.0;
@@ -142,6 +144,57 @@ fn sky_view_uv(ray: vec3<f32>) -> vec2<f32> {
     );
 }
 
+fn ground_horizon_sky_view_v(camera_radius: f32, camera_altitude: f32) -> f32 {
+    let ground_horizon = sphere_horizon_cosine(camera_radius, PLANET_RADIUS_METERS);
+    let orbital_amount = smoothstep(
+        ORBITAL_GEOMETRY_BLEND_START_METERS,
+        ORBITAL_GEOMETRY_BLEND_END_METERS,
+        camera_altitude,
+    );
+    return mix(
+        (1.0 - ground_horizon) * 0.5,
+        ORBITAL_GROUND_LUT_V,
+        orbital_amount,
+    );
+}
+
+fn sky_fog_air_path_meters(ray: vec3<f32>) -> f32 {
+    let up = normalize(camera.camera_planet_direction_view_altitude.xyz);
+    let camera_altitude = max(
+        camera.camera_planet_direction_view_altitude.w,
+        0.0,
+    );
+    let camera_radius = PLANET_RADIUS_METERS + camera_altitude;
+    let zenith_cosine = clamp(dot(ray, up), -1.0, 1.0);
+    let camera_density = exp(-camera_altitude / RAYLEIGH_SCALE_HEIGHT_METERS);
+    var average_density = 0.5 * camera_density;
+    var air_mass = min(1.0 / max(zenith_cosine, 0.08), 12.0);
+
+    // A downward sky ray can miss the solid planet yet skim much denser air
+    // before leaving the atmosphere. Include that closest approach rather
+    // than treating the thin air at camera altitude as the whole column.
+    if zenith_cosine < 0.0 {
+        let closest_radius = camera_radius
+            * sqrt(max(1.0 - zenith_cosine * zenith_cosine, 0.0));
+        let closest_altitude = max(closest_radius - PLANET_RADIUS_METERS, 0.0);
+        let closest_density = exp(
+            -closest_altitude / RAYLEIGH_SCALE_HEIGHT_METERS,
+        );
+        let descent_amount = 1.0 - exp(
+            -max(camera_altitude - closest_altitude, 0.0)
+                / RAYLEIGH_SCALE_HEIGHT_METERS,
+        );
+        average_density = mix(
+            average_density,
+            0.5 * (camera_density + closest_density),
+            descent_amount,
+        );
+        air_mass = 12.0;
+    }
+
+    return average_density * 2.0 * RAYLEIGH_SCALE_HEIGHT_METERS * air_mass;
+}
+
 fn perceptual_sky_radiance(radiance: vec3<f32>) -> vec3<f32> {
     // A fixed display exposure cannot show both daylight and the physically
     // much dimmer nautical-twilight sky. Compress luminance monotonically while
@@ -160,10 +213,11 @@ fn perceptual_sky_radiance(radiance: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let ray = view_direction(input.ndc);
+    let sky_uv = sky_view_uv(ray);
     let radiance = textureSample(
         sky_view_lut,
         sky_view_sampler,
-        sky_view_uv(ray),
+        sky_uv,
     ).rgb;
     // The perceptual lift is needed to retain dim twilight for a surface
     // observer, but in space it turns extremely thin upper air into an opaque
@@ -174,9 +228,32 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         ORBITAL_GEOMETRY_BLEND_END_METERS,
         camera.camera_planet_direction_view_altitude.w,
     );
+    let visible_radiance = VISIBLE_SKY_RADIANCE_SCALE
+        * mix(perceptual_sky_radiance(radiance), radiance, orbital_blend);
+    let fog_amount = 1.0 - exp(
+        -sky_fog_air_path_meters(ray) / TERRAIN_FOG_AIR_PATH_E_FOLD_METERS,
+    );
+    let camera_altitude = camera.camera_planet_direction_view_altitude.w;
+    let camera_radius = PLANET_RADIUS_METERS + camera_altitude;
+    let horizon_radiance = textureSample(
+        sky_view_lut,
+        sky_view_sampler,
+        vec2<f32>(
+            sky_uv.x,
+            ground_horizon_sky_view_v(camera_radius, camera_altitude),
+        ),
+    ).rgb;
+    // The terrain mist converges on the unboosted physical sky. Use its
+    // longest same-azimuth grazing ray as the background endpoint too: rays
+    // through dense horizon air converge strongly while overhead rays retain
+    // the ordinary visible-sky presentation.
+    let horizon_fog_radiance = mix(
+        perceptual_sky_radiance(horizon_radiance),
+        horizon_radiance,
+        orbital_blend,
+    );
     return vec4<f32>(
-        VISIBLE_SKY_RADIANCE_SCALE
-            * mix(perceptual_sky_radiance(radiance), radiance, orbital_blend),
+        mix(visible_radiance, horizon_fog_radiance, fog_amount),
         1.0,
     );
 }
