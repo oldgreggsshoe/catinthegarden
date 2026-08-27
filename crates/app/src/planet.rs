@@ -41,6 +41,15 @@ pub const DEFAULT_MAX_ACTIVE_CHUNKS: usize = 256;
 /// this bounded bias, the level-normalised split priority can spend too much
 /// of the budget on distant coarse demand, pulling the L6/L7 boundary inward.
 const LOD_NEAR_DETAIL_PRIORITY_FLOOR: f64 = 0.35;
+/// Half-angle of the low-flight view patch that receives the centre-ray
+/// priority. Boosting only the single leaf under the crosshair creates a fine
+/// needle surrounded by coarse neighbours; their edge filters then erase the
+/// very detail the needle was selected to show. A small view-space cone keeps
+/// the centre terrain coherent without raising the global leaf budget.
+const LOD_VIEW_FOCUS_HALF_ANGLE_RADIANS: f64 = 12.0_f64.to_radians();
+/// Strong enough to keep the whole patch ahead of the camera-centred bias;
+/// this redistributes candidates and never changes the leaf count.
+const LOD_VIEW_FOCUS_PRIORITY_BOOST: f64 = 16.0;
 /// Measurement hook for the budget itself. The cap is load-bearing -- it is the
 /// only thing holding the mountains under 40ms -- so the question that keeps
 /// coming up is not "what should it be" but "is it binding, and by how much".
@@ -1206,6 +1215,20 @@ fn camera_center_surface_direction(
     (distance > 0.0).then(|| (camera_world + direction * distance).normalize())
 }
 
+fn node_intersects_view_focus_patch(
+    node: QuadtreeNode,
+    camera_world: DVec3,
+    focus_direction: DVec3,
+    distance_height_range: TerrainHeightRange,
+) -> bool {
+    let focus_radius = distance_height_range.maximum_radius();
+    let focus_distance = camera_world.distance(focus_direction * focus_radius);
+    let patch_radius_radians =
+        (focus_distance * LOD_VIEW_FOCUS_HALF_ANGLE_RADIANS.tan()).atan2(focus_radius);
+    maximum_direction_dot_in_cone(node_directional_bounds(node), focus_direction)
+        >= patch_radius_radians.cos()
+}
+
 #[derive(Clone, Debug)]
 pub struct LodMetrics {
     pub level_histogram: [u32; MAX_LOD_LEVEL as usize + 1],
@@ -1967,19 +1990,21 @@ impl PlanetLod {
         // screen-centre ray as well; otherwise the level multiplier can spend
         // the leaf budget on off-centre L7 leaves and leave a conspicuous
         // coarse square directly under the crosshair.
-        let screen_centre_boost = view_focus_direction
-            .or_else(|| {
-                camera_basis.and_then(|basis| {
+        let screen_centre_boost = if let Some(direction) = view_focus_direction {
+            node_intersects_view_focus_patch(node, camera_world, direction, distance_height_range)
+        } else {
+            camera_basis
+                .and_then(|basis| {
                     camera_center_surface_direction(
                         camera_world,
                         basis.forward,
                         terrain_height_range,
                     )
                 })
-            })
-            .is_some_and(|direction| node_contains_direction(node, direction))
-            .then_some(4.0)
-            .unwrap_or(1.0);
+                .is_some_and(|direction| node_contains_direction(node, direction))
+        }
+        .then_some(LOD_VIEW_FOCUS_PRIORITY_BOOST)
+        .unwrap_or(1.0);
         let priority = evaluation.projected_error_pixels
             * f64::from(1_u32 << node.level)
             * near_camera_lod_priority_weight(node, camera_world, terrain_height_range)
@@ -2987,6 +3012,113 @@ mod tests {
         assert!(
             viewed_levels[2] >= 14,
             "final focus levels: {viewed_levels:?}"
+        );
+    }
+
+    #[test]
+    fn manual_reverse_approach_keeps_the_central_view_patch_detailed() {
+        // The four F12 captures from manual run 1787828575-973578 move
+        // backwards from the same valley. The old single-leaf focus selected
+        // an L13 needle inside an L11 central patch at the closest pose, so
+        // mixed-LOD edge filtering erased visible relief until capture 003.
+        let poses = [
+            (
+                DVec3::new(
+                    -1_665_730.801_731_096_6,
+                    -1_695_300.517_020_673,
+                    3_266_789.230_904_985_7,
+                ),
+                DVec3::new(-0.560, -0.072, -0.826).normalize(),
+                36_369.949_408_103_02,
+                8_704.092_243_409_21,
+            ),
+            (
+                DVec3::new(
+                    -1_656_365.841_478_380_1,
+                    -1_694_075.111_374_183,
+                    3_280_557.206_282_143_5,
+                ),
+                DVec3::new(-0.562, -0.074, -0.824).normalize(),
+                36_716.541_375_728_14,
+                25_520.148_457_686_704,
+            ),
+            (
+                DVec3::new(
+                    -1_647_649.262_732_673_7,
+                    -1_692_912.083_495_574_8,
+                    3_293_285.051_059_488_7,
+                ),
+                DVec3::new(-0.565, -0.076, -0.822).normalize(),
+                37_547.053_910_746_22,
+                41_159.309_864_761_41,
+            ),
+            (
+                DVec3::new(
+                    -1_635_713.682_152_411_2,
+                    -1_691_285.013_613_014_7,
+                    3_310_579.612_690_881,
+                ),
+                DVec3::new(-0.568, -0.078, -0.819).normalize(),
+                37_202.489_330_303_53,
+                62_833.722_559_754_904,
+            ),
+        ];
+        let mut lod = PlanetLod::default();
+        lod.set_terrain_height_range(TerrainHeightRange::new(-5_000.0, 186_702.0));
+        let mut focused_levels = Vec::new();
+        for (camera, forward, local_height, centre_distance) in poses {
+            let focus = (camera + forward * centre_distance).normalize();
+            lod.set_distance_reference_height(local_height);
+            lod.set_view_focus_direction(Some(focus));
+            let update = lod.update_for_view_with_constraints(
+                camera,
+                forward,
+                camera.normalize(),
+                640.0 / 427.0,
+                427,
+                60.0_f64.to_radians(),
+                GeometricErrorRatio {
+                    baked: 0.053_6 * 5.0,
+                    ladder: TERRAIN_DETAIL_ROUGHNESS * 2.939_5 * 5.0,
+                },
+                &|_| MAX_LOD_LEVEL,
+                None,
+            );
+            let level = update
+                .active_nodes
+                .iter()
+                .find(|node| super::node_contains_direction(**node, focus))
+                .unwrap()
+                .level;
+            let tangent_x = focus.cross(DVec3::Y).normalize();
+            let tangent_y = tangent_x.cross(focus).normalize();
+            let focus_radius = centre_distance * 12.0_f64.to_radians().tan();
+            let mut neighborhood = Vec::new();
+            for (x, y) in [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)] {
+                let direction = (focus
+                    + tangent_x * (f64::from(x) * focus_radius / PLANET_RADIUS_METERS)
+                    + tangent_y * (f64::from(y) * focus_radius / PLANET_RADIUS_METERS))
+                    .normalize();
+                neighborhood.push(
+                    update
+                        .active_nodes
+                        .iter()
+                        .find(|node| super::node_contains_direction(**node, direction))
+                        .map_or(0, |node| node.level),
+                );
+            }
+            let lowest_near_focus = neighborhood.into_iter().min().unwrap();
+            assert!(
+                lowest_near_focus + 1 >= level,
+                "centre L{level} was an isolated needle above an L{lowest_near_focus} view patch",
+            );
+            focused_levels.push(level);
+        }
+        assert!(
+            focused_levels
+                .windows(2)
+                .all(|levels| levels[1] <= levels[0]),
+            "moving away increased centre detail: {focused_levels:?}",
         );
     }
 

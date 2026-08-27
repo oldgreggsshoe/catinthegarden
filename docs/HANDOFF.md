@@ -3898,3 +3898,26 @@ WGSL validation, all planet tests, and app check pass. `terrain_detail_altitude_
 passes all five captures; daylight visual capture
 `highest_prominence_peak/1787824844-950777/capture-001.png` is finite and clean, while that scenario's
 pre-existing stale camera pose still fails its unrelated 150-155m clearance assertion at 7,648.7m.
+
+## Low-flight centre-patch LOD priority - 27 August 2026
+
+The four-frame manual retreat in `manual/1787828575-973578` showed more visible relief in capture
+003 than in the two closer captures. The centre leaf itself was monotonic, but the previous
+crosshair priority created one L13 needle inside an L11 neighbourhood at the closest pose. The
+mixed-LOD edge filter then correctly suppressed unresolved detail around that needle, making the
+close terrain look smoother than the farther, more uniform patch.
+
+Low-flight leaf-budget priority now covers a 12-degree half-angle view-space patch around the first
+centre-ray terrain hit rather than only the single containing leaf. Its world-space footprint grows
+with hit distance, so it occupies a stable part of the view while retaining the existing 256-leaf
+budget. The captured four-pose regression now measures centre/lowest-patch levels of L13/L13,
+L13/L12, L12/L11, and L12/L11 respectively; centre detail never increases while retreating and the
+close view is no longer an isolated fine needle.
+
+All 52 active planet tests pass (one diagnostic ignored), and `cargo check --workspace` passes with
+the existing unused weather-constructor warning. Exact-pose release replay
+`lod_focus_patch_probe/1787829763-986057` passes four finite captures and visually shows dense
+triangle coverage in captures 001-002 before the expected reduction in 003-004. The temporary
+scenario source was removed after the replay. The full app suite remains at its same three unrelated
+dirty-worktree failures: two stale 0.5-second transition assertions versus the local 1.5-second
+setting, and the standalone sun-shader composition test.
