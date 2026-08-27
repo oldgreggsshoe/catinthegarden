@@ -3921,3 +3921,42 @@ triangle coverage in captures 001-002 before the expected reduction in 003-004. 
 scenario source was removed after the replay. The full app suite remains at its same three unrelated
 dirty-worktree failures: two stale 0.5-second transition assertions versus the local 1.5-second
 setting, and the standalone sun-shader composition test.
+
+## Distance-bounded flat adaptive LOD - 27 August 2026
+
+The complete twenty-frame manual retreat in `manual/1787830500-992135` disproved the earlier
+four-pose level-only sign-off. Although centre and patch detail filters were already monotonic, the
+flat selector was spending spare budget on mesh levels much finer than its continuous 1%-of-distance
+terrain-detail filter could display. Which over-refined quadtree cells won changed at cell
+boundaries; because the presentation exposes every face normal, a newly selected coarser facet
+could read as detail returning while the camera moved away.
+
+Flat mode now caps each node at the first level whose 32x32 vertex spacing can represent that node's
+minimum camera-distance filter. The ordinary projected-error request, 12-degree focus priority,
+L2-L18 range, source data, and 256-leaf budget remain unchanged; the cap only rejects invisible
+over-tessellation. The exact twenty poses now retreat from 100.9m to 71.0km with centre LOD
+L18,L15,L14,L14,L13,L12,L12,L12,L11,L11,L11,L10,L10,L10,L10,L10,L10,L10,L9,L9. Both patch
+endpoints are non-increasing and its minimum/median/maximum effective filters are non-decreasing at
+every sample. The strict regression, all 52 active planet tests, workspace check, and temporary
+release replay `lod_retreat_probe/1787850894-1125672` pass; the replay source was removed afterward.
+
+## Solid-terrain occlusion for the optical sun flare - 27 August 2026
+
+The pinned report is `manual/1787835489-1024416/capture-001.png`: the physical disc was correctly
+depth-clipped, but the red star/veil remained plainly visible through a solid foreground mountain.
+This was the separate always-depth optical pipeline introduced to preserve the complete camera
+response around a partially visible sun; its analytic occultation test knew only the spherical
+planet and could not know about local relief.
+
+The physical disc remains depth-tested. The optical flare now runs in a following pass without a
+depth attachment and samples the completed reversed-Z solid depth at the disc centre plus sixteen
+points just inside its rim. Any clear point retains the complete flare, preserving the signed-off
+partial-disc behaviour; if all seventeen points contain solid terrain, the whole optical response
+is removed. Pixels outside the bounded flare footprint discard before those depth reads. The depth
+texture is shader-readable and its bind group is rebuilt with render-target resize.
+
+All eight focused sun tests and workspace check pass. Release
+`partial_sun_occultation/1787852028-1137404` preserves the full flare around the half-visible disc
+and removes it after full occultation. The exact camera/rotation/sun ray replay
+`mountain_sun_occlusion_probe/1787851755-1134789` removes the bright through-mountain star; its
+temporary scenario source was removed after capture.

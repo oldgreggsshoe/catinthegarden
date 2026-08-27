@@ -1008,7 +1008,7 @@ fn maximum_direction_dot_in_cone(bounds: NodeDirectionalBounds, direction: DVec3
     }
 }
 
-fn minimum_node_distance_with_height_range(
+pub(crate) fn minimum_node_distance_with_height_range(
     node: QuadtreeNode,
     camera_world: DVec3,
     height_range: TerrainHeightRange,

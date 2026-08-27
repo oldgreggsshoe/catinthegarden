@@ -19,16 +19,16 @@ use crate::{
     outmap::{Outmap, OutmapError, TileData},
     planet::{
         CHUNK_GRID_QUADS, CameraViewBasis, ChunkVertex, GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
-        GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, GeometricErrorRatio, MAX_LOD_LEVEL,
+        GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, GeometricErrorRatio, MAX_LOD_LEVEL, MINIMUM_LOD_LEVEL,
         NEAR_FIELD_GRID_QUADS, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE,
         OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS, OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS,
         OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode,
-        TERRAIN_DETAIL_MIN_FILTER_METERS,
-        TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS, TerrainHeightRange, build_chunk_mesh,
-        build_chunk_mesh_with_quads, continuous_baked_sample_spacing_meters, cube_face_basis,
-        cube_face_direction, max_active_chunks_from_env, outmap_surface_height_meters,
-        outmap_surface_height_meters_with_filter, placeholder_height_meters,
-        scaled_outmap_macro_height_meters,
+        TERRAIN_DETAIL_MIN_FILTER_METERS, TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS,
+        TerrainHeightRange, build_chunk_mesh, build_chunk_mesh_with_quads,
+        continuous_baked_sample_spacing_meters, cube_face_basis, cube_face_direction,
+        max_active_chunks_from_env, minimum_node_distance_with_height_range,
+        outmap_surface_height_meters, outmap_surface_height_meters_with_filter,
+        placeholder_height_meters, scaled_outmap_macro_height_meters,
     },
 };
 
@@ -203,6 +203,32 @@ const LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS: f64 = 250_000.0;
 const TERRAIN_INFO_SOURCE_EDGE_FADE_BIT: u32 = 1 << 14;
 const TERRAIN_INFO_NEAR_FIELD_BIT: u32 = 1 << 15;
 const TERRAIN_DETAIL_FILTER_RATIO: f64 = 0.01;
+
+/// Stop flat topology once its vertex spacing reaches the same continuous
+/// distance filter used by displacement. Finer cells cannot reveal another
+/// height octave; they only make facet size depend on which budget candidate
+/// happened to win at a quadtree boundary.
+fn flat_triangle_level_limit(
+    node: QuadtreeNode,
+    camera_world: DVec3,
+    distance_reference_height_meters: f64,
+) -> u8 {
+    let distance = minimum_node_distance_with_height_range(
+        node,
+        camera_world,
+        TerrainHeightRange::new(
+            distance_reference_height_meters,
+            distance_reference_height_meters,
+        ),
+    );
+    let detail_filter_meters =
+        (distance * TERRAIN_DETAIL_FILTER_RATIO).max(TERRAIN_DETAIL_MIN_FILTER_METERS);
+    let required_level = (2.0 * PLANET_RADIUS_METERS
+        / (CHUNK_GRID_QUADS as f64 * detail_filter_meters))
+        .log2()
+        .ceil() as u8;
+    required_level.clamp(MINIMUM_LOD_LEVEL, MAX_LOD_LEVEL)
+}
 
 fn conservative_outmap_height_bounds(height_min_meters: f64, height_max_meters: f64) -> [f64; 2] {
     // Culling must enclose both displacement fields. The retired global field
@@ -1757,6 +1783,13 @@ impl TerrainRenderer {
                     let flat_geometric_error = GeometricErrorRatio {
                         baked: OUTMAP_GEOMETRIC_ERROR.baked * FLAT_TRIANGLE_LOD_DETAIL_SCALE,
                         ladder: OUTMAP_GEOMETRIC_ERROR.ladder * FLAT_TRIANGLE_LOD_DETAIL_SCALE,
+                    };
+                    let flat_level_limit = |node| {
+                        flat_triangle_level_limit(
+                            node,
+                            camera_world,
+                            distance_reference_height_meters,
+                        )
                     };
                     self.lod.update_for_view_with_constraints(
                         camera_world,
@@ -4932,6 +4965,239 @@ mod tests {
                 .abs()
                 < 1.0e-12
         );
+    }
+
+    #[test]
+    fn manual_twenty_pose_retreat_keeps_flat_detail_monotonic() {
+        // Manual run 1787830500-992135 retreats through twenty captures while
+        // keeping the same small terrain patch near screen centre. The old
+        // priority-only selector spent spare budget on levels much finer than
+        // the distance filter could show. Which over-refined cells won then
+        // changed at quadtree boundaries, so coarser distant facets could read
+        // as detail returning. Pin the complete path, not four isolated poses.
+        let poses = [
+            (
+                DVec3::new(-1522881.2450738617, -1582121.3352802792, 3380595.0930438642),
+                31210.49774494435,
+                100.88674833551747,
+            ),
+            (
+                DVec3::new(-1523439.8311382371, -1582728.9853919316, 3380766.741599429),
+                31208.493964012647,
+                943.5442165450152,
+            ),
+            (
+                DVec3::new(-1524026.7993696064, -1583367.5141187604, 3380946.9762031897),
+                31211.800378019674,
+                1829.5402830778291,
+            ),
+            (
+                DVec3::new(-1524657.8139374426, -1584053.9622431165, 3381140.5816837125),
+                31142.312728590787,
+                2781.53820169045,
+            ),
+            (
+                DVec3::new(-1526148.5218993537, -1585675.6423855785, 3381597.3288360415),
+                31064.2228991449,
+                5030.245881930623,
+            ),
+            (
+                DVec3::new(-1527751.2614035944, -1587419.2226994282, 3382087.3997510672),
+                31222.118940204327,
+                7449.513199657928,
+            ),
+            (
+                DVec3::new(-1529241.090942115, -1589039.9953402453, 3382541.997891965),
+                31177.1776707824,
+                9707.267263670034,
+            ),
+            (
+                DVec3::new(-1531834.820435032, -1591861.7455205226, 3383331.309722786),
+                31116.473998890346,
+                13620.885673517887,
+            ),
+            (
+                DVec3::new(-1533735.2758696673, -1593929.3183461898, 3383907.9275122993),
+                31326.96323687227,
+                16491.274373410797,
+            ),
+            (
+                DVec3::new(-1535547.8614441217, -1595901.3296694825, 3384456.5076677194),
+                31154.13100791542,
+                19208.1069830386,
+            ),
+            (
+                DVec3::new(-1538426.2374580612, -1599032.9426489342, 3385324.9241051963),
+                31319.2055743949,
+                23560.35653755846,
+            ),
+            (
+                DVec3::new(-1541518.7808769564, -1602397.6605357048, 3386254.233179572),
+                31502.449191425916,
+                28241.323426767125,
+            ),
+            (
+                DVec3::new(-1544585.1880652893, -1605734.0395327725, 3387171.87426952),
+                31327.937792902383,
+                32887.24801413971,
+            ),
+            (
+                DVec3::new(-1547957.3069588505, -1609403.1575641606, 3388176.6264844663),
+                32455.17166138403,
+                38000.501849331296,
+            ),
+            (
+                DVec3::new(-1549133.9740868795, -1610683.4870895746, 3388526.149079449),
+                33049.292737222575,
+                39785.746298166334,
+            ),
+            (
+                DVec3::new(-1550336.2682997123, -1611991.7161035088, 3388882.7095161872),
+                33294.28170317167,
+                41512.976308547666,
+            ),
+            (
+                DVec3::new(-1554686.3194424133, -1616725.1785987848, 3390167.866734051),
+                37706.44886039454,
+                48115.75984899715,
+            ),
+            (
+                DVec3::new(-1559372.0802035036, -1621824.1572650657, 3391543.712600151),
+                42568.15042738534,
+                55233.07799842868,
+            ),
+            (
+                DVec3::new(-1564925.752491049, -1627867.8739971318, 3393163.1018674667),
+                41371.786865489346,
+                63677.86458843465,
+            ),
+            (
+                DVec3::new(-1569765.3904157635, -1633134.807451079, 3394564.281912045),
+                36101.87831904414,
+                71038.73515354593,
+            ),
+        ];
+        let mut lod = PlanetLod::default();
+        lod.set_terrain_height_range(crate::planet::TerrainHeightRange::new(-5_000.0, 186_702.0));
+        let mut previous_centre_level = MAX_LOD_LEVEL;
+        let mut previous_patch_min_level = MAX_LOD_LEVEL;
+        let mut previous_patch_max_level = MAX_LOD_LEVEL;
+        let mut previous_centre_filter = 0.0;
+        let mut previous_filters = [0.0; 3];
+        for index in 0..poses.len() {
+            let (camera, local_height, centre_distance) = poses[index];
+            let previous = poses[index.saturating_sub(1)].0;
+            let next = poses[(index + 1).min(poses.len() - 1)].0;
+            let forward = if index == 0 {
+                (camera - next).normalize()
+            } else if index + 1 == poses.len() {
+                (previous - camera).normalize()
+            } else {
+                (previous - next).normalize()
+            };
+            let focus = (camera + forward * centre_distance).normalize();
+            lod.set_distance_reference_height(local_height);
+            lod.set_view_focus_direction(Some(focus));
+            let level_limit = |node| super::flat_triangle_level_limit(node, camera, local_height);
+            let update = lod.update_for_view_with_constraints(
+                camera,
+                forward,
+                camera.normalize(),
+                640.0 / 427.0,
+                427,
+                60.0_f64.to_radians(),
+                crate::planet::GeometricErrorRatio {
+                    baked: super::OUTMAP_GEOMETRIC_ERROR.baked
+                        * super::FLAT_TRIANGLE_LOD_DETAIL_SCALE,
+                    ladder: super::OUTMAP_GEOMETRIC_ERROR.ladder
+                        * super::FLAT_TRIANGLE_LOD_DETAIL_SCALE,
+                },
+                &level_limit,
+                None,
+            );
+            let node = active_node_at_direction(&update.active_nodes, focus).unwrap();
+            let stitch = edge_stitch_info(node, &update.active_nodes);
+            let (_, face_uv) = cube_face_uv(focus).unwrap();
+            let filter = surface_detail_filter_meters(
+                SurfaceDetailNode {
+                    node,
+                    edge_stitch: stitch,
+                    source_key: None,
+                    grid_quads: CHUNK_GRID_QUADS,
+                },
+                face_uv,
+                centre_distance,
+            );
+            let tangent_x = focus.cross(DVec3::Y).normalize();
+            let tangent_y = tangent_x.cross(focus).normalize();
+            let mut patch_filters = Vec::new();
+            let mut patch_levels = Vec::new();
+            for y in [-12.0_f64, -6.0, 0.0, 6.0, 12.0] {
+                for x in [-12.0_f64, -6.0, 0.0, 6.0, 12.0] {
+                    let lateral_x = centre_distance * x.to_radians().tan();
+                    let lateral_y = centre_distance * y.to_radians().tan();
+                    let direction = (focus
+                        + tangent_x * (lateral_x / PLANET_RADIUS_METERS)
+                        + tangent_y * (lateral_y / PLANET_RADIUS_METERS))
+                        .normalize();
+                    let patch_node =
+                        active_node_at_direction(&update.active_nodes, direction).unwrap();
+                    let patch_stitch = edge_stitch_info(patch_node, &update.active_nodes);
+                    let (_, patch_uv) = cube_face_uv(direction).unwrap();
+                    let patch_distance = (centre_distance * centre_distance
+                        + lateral_x * lateral_x
+                        + lateral_y * lateral_y)
+                        .sqrt();
+                    patch_filters.push(surface_detail_filter_meters(
+                        SurfaceDetailNode {
+                            node: patch_node,
+                            edge_stitch: patch_stitch,
+                            source_key: None,
+                            grid_quads: CHUNK_GRID_QUADS,
+                        },
+                        patch_uv,
+                        patch_distance,
+                    ));
+                    patch_levels.push(patch_node.level);
+                }
+            }
+            patch_filters.sort_by(f64::total_cmp);
+            patch_levels.sort_unstable();
+            let filters = [patch_filters[0], patch_filters[12], patch_filters[24]];
+            assert!(
+                node.level <= previous_centre_level,
+                "centre LOD increased while retreating at pose {}: L{} -> L{}",
+                index + 1,
+                previous_centre_level,
+                node.level,
+            );
+            assert!(
+                patch_levels[0] <= previous_patch_min_level
+                    && patch_levels[24] <= previous_patch_max_level,
+                "focus-patch LOD increased while retreating at pose {}: L{}-L{} -> L{}-L{}",
+                index + 1,
+                previous_patch_min_level,
+                previous_patch_max_level,
+                patch_levels[0],
+                patch_levels[24],
+            );
+            assert!(
+                filters
+                    .into_iter()
+                    .zip(previous_filters)
+                    .all(|(current, previous)| current + 1.0e-9 >= previous),
+                "effective detail filter decreased while retreating at pose {}: {:?} -> {:?}",
+                index + 1,
+                previous_filters,
+                filters,
+            );
+            assert!(filter + 1.0e-9 >= previous_centre_filter);
+            previous_centre_level = node.level;
+            previous_patch_min_level = patch_levels[0];
+            previous_patch_max_level = patch_levels[24];
+            previous_centre_filter = filter;
+            previous_filters = filters;
+        }
     }
 
     #[test]

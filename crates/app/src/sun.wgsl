@@ -80,6 +80,13 @@ var atmosphere_transmittance_lut: texture_2d<f32>;
 @group(2) @binding(1)
 var atmosphere_physical_sampler: sampler;
 
+// The optical flare is composited without a depth attachment so it can keep
+// its complete camera-response shape when only part of the source is visible.
+// Sample the already-rendered solid depth here to answer the separate binary
+// question: is any part of the actual solar disc still visible?
+@group(3) @binding(0)
+var scene_depth: texture_depth_2d;
+
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) ndc: vec2<f32>,
@@ -105,6 +112,14 @@ fn sun_screen_position(sun: vec3<f32>) -> vec2<f32> {
         sun.x / (depth * camera.projection.x * camera.projection.y),
         sun.y / (depth * camera.projection.y),
     );
+}
+
+fn sun_normalized_angular_distance(ndc: vec2<f32>) -> f32 {
+    let ray = view_direction(ndc);
+    let sun = normalize(camera.sun_direction_view.xyz);
+    let alignment = clamp(dot(ray, sun), -1.0, 1.0);
+    let angular_distance = atan2(length(cross(ray, sun)), alignment);
+    return angular_distance / SUN_ANGULAR_RADIUS_RADIANS;
 }
 
 fn cloud_density_on_camera_ray(
@@ -285,6 +300,68 @@ fn sun_disc_is_fully_occulted() -> bool {
     return center_angle + SUN_ANGULAR_RADIUS_RADIANS <= planet_angular_radius;
 }
 
+fn sun_depth_sample_is_clear(ndc: vec2<f32>) -> bool {
+    if any(abs(ndc) > vec2<f32>(1.0)) {
+        return false;
+    }
+    let dimensions = vec2<i32>(textureDimensions(scene_depth));
+    let uv = vec2<f32>(
+        ndc.x * 0.5 + 0.5,
+        0.5 - ndc.y * 0.5,
+    );
+    let pixel = clamp(
+        vec2<i32>(uv * vec2<f32>(dimensions)),
+        vec2<i32>(0),
+        dimensions - vec2<i32>(1),
+    );
+    // Reversed-Z clears untouched sky to zero; every solid terrain/planet
+    // fragment writes a positive value.
+    return textureLoad(scene_depth, pixel, 0) <= 1.0e-7;
+}
+
+fn sun_disc_has_visible_depth() -> bool {
+    let sun = normalize(camera.sun_direction_view.xyz);
+    if sun.z >= -1.0e-4 {
+        return false;
+    }
+    let centre = sun_screen_position(sun);
+    if sun_depth_sample_is_clear(centre) {
+        return true;
+    }
+    // Probe just inside the disc rim. If even a narrow crescent clears the
+    // silhouette, retain the complete camera flare; when a mountain covers
+    // the whole source every one of these samples contains solid depth.
+    let ring = array<vec2<f32>, 16>(
+        vec2<f32>(1.0, 0.0),
+        vec2<f32>(0.9238795, 0.3826834),
+        vec2<f32>(0.7071068, 0.7071068),
+        vec2<f32>(0.3826834, 0.9238795),
+        vec2<f32>(0.0, 1.0),
+        vec2<f32>(-0.3826834, 0.9238795),
+        vec2<f32>(-0.7071068, 0.7071068),
+        vec2<f32>(-0.9238795, 0.3826834),
+        vec2<f32>(-1.0, 0.0),
+        vec2<f32>(-0.9238795, -0.3826834),
+        vec2<f32>(-0.7071068, -0.7071068),
+        vec2<f32>(-0.3826834, -0.9238795),
+        vec2<f32>(0.0, -1.0),
+        vec2<f32>(0.3826834, -0.9238795),
+        vec2<f32>(0.7071068, -0.7071068),
+        vec2<f32>(0.9238795, -0.3826834),
+    );
+    let rim_radius = 0.96 * SUN_ANGULAR_RADIUS_RADIANS;
+    let ndc_radius = vec2<f32>(
+        rim_radius / (camera.projection.x * camera.projection.y),
+        rim_radius / camera.projection.y,
+    );
+    for (var sample = 0u; sample < 16u; sample += 1u) {
+        if sun_depth_sample_is_clear(centre + ring[sample] * ndc_radius) {
+            return true;
+        }
+    }
+    return false;
+}
+
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     var positions = array<vec2<f32>, 3>(
@@ -308,9 +385,7 @@ fn sun_radiance(input: VertexOutput, draw_disc: bool) -> vec4<f32> {
     let lens_offset_length = length(lens_offset_view);
     let lens_distance = lens_offset_length / SUN_ANGULAR_RADIUS_RADIANS;
     let lens_unit = lens_offset_view / max(lens_offset_length, 1.0e-4);
-    let alignment = clamp(dot(ray, sun), -1.0, 1.0);
-    let angular_distance = atan2(length(cross(ray, sun)), alignment);
-    let normalized_distance = angular_distance / SUN_ANGULAR_RADIUS_RADIANS;
+    let normalized_distance = sun_normalized_angular_distance(input.ndc);
 
     if normalized_distance > SUN_OVERLAY_CUTOFF_RADIUS_SCALE {
         return vec4<f32>(0.0);
@@ -425,6 +500,15 @@ fn fs_disc(input: VertexOutput) -> @location(0) vec4<f32> {
 @fragment
 fn fs_flare(input: VertexOutput) -> @location(0) vec4<f32> {
     if sun_disc_is_fully_occulted() {
+        discard;
+    }
+    // Reject the rest of the full-screen triangle before the shared visibility
+    // probe performs its depth loads. Only the compact flare footprint pays
+    // for the whole-disc terrain test.
+    if sun_normalized_angular_distance(input.ndc) > SUN_OVERLAY_CUTOFF_RADIUS_SCALE {
+        discard;
+    }
+    if !sun_disc_has_visible_depth() {
         discard;
     }
     return sun_radiance(input, false);

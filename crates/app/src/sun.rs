@@ -2,6 +2,8 @@ pub struct SunRenderer {
     disc_pipeline: wgpu::RenderPipeline,
     flare_pipeline: wgpu::RenderPipeline,
     atmosphere_bind_group: wgpu::BindGroup,
+    depth_bind_group_layout: wgpu::BindGroupLayout,
+    depth_bind_group: wgpu::BindGroup,
 }
 
 fn sun_shader_source() -> String {
@@ -19,6 +21,7 @@ impl SunRenderer {
         camera_bind_group_layout: &wgpu::BindGroupLayout,
         weather_field_bind_group_layout: &wgpu::BindGroupLayout,
         atmosphere: crate::atmosphere::SurfaceLightingResources<'_>,
+        depth_view: &wgpu::TextureView,
     ) -> Self {
         let atmosphere_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -56,7 +59,23 @@ impl SunRenderer {
                 },
             ],
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let depth_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("sun terrain-occlusion depth layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                }],
+            });
+        let depth_bind_group =
+            create_depth_bind_group(device, &depth_bind_group_layout, depth_view);
+        let disc_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("sun disc pipeline layout"),
             bind_group_layouts: &[
                 Some(camera_bind_group_layout),
@@ -65,14 +84,25 @@ impl SunRenderer {
             ],
             immediate_size: 0,
         });
+        let flare_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("sun optical flare pipeline layout"),
+                bind_group_layouts: &[
+                    Some(camera_bind_group_layout),
+                    Some(weather_field_bind_group_layout),
+                    Some(&atmosphere_bind_group_layout),
+                    Some(&depth_bind_group_layout),
+                ],
+                immediate_size: 0,
+            });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("sun disc shader"),
             source: wgpu::ShaderSource::Wgsl(sun_shader_source().into()),
         });
-        let create_pipeline = |label, fragment_entry, depth_stencil| {
+        let create_pipeline = |label, layout, fragment_entry, depth_stencil| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
-                layout: Some(&pipeline_layout),
+                layout: Some(layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some("vs_main"),
@@ -111,6 +141,7 @@ impl SunRenderer {
         // The visual disc keeps the original terrain/planet depth test.
         let disc_pipeline = create_pipeline(
             "sun disc pipeline",
+            &disc_pipeline_layout,
             "fs_disc",
             Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
@@ -120,29 +151,31 @@ impl SunRenderer {
                 bias: wgpu::DepthBiasState::default(),
             }),
         );
-        // Optical flare is a full-frame camera response. Keep the attachment
-        // format compatible with the shared render pass, but always pass its
-        // depth test; the shader's full-disc occultation test is its only
-        // geometric shutoff.
+        // Optical flare is a full-frame camera response and therefore has no
+        // per-fragment depth test. Its shader samples the completed scene depth
+        // to retain the whole flare if any part of the disc is visible, or
+        // remove it when terrain covers the complete source.
         let flare_pipeline = create_pipeline(
             "sun optical flare pipeline",
+            &flare_pipeline_layout,
             "fs_flare",
-            Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Always),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
+            None,
         );
         Self {
             disc_pipeline,
             flare_pipeline,
             atmosphere_bind_group,
+            depth_bind_group_layout,
+            depth_bind_group,
         }
     }
 
-    pub fn draw<'pass>(
+    pub fn resize_depth(&mut self, device: &wgpu::Device, depth_view: &wgpu::TextureView) {
+        self.depth_bind_group =
+            create_depth_bind_group(device, &self.depth_bind_group_layout, depth_view);
+    }
+
+    fn bind_shared<'pass>(
         &'pass self,
         render_pass: &mut wgpu::RenderPass<'pass>,
         camera_bind_group: &'pass wgpu::BindGroup,
@@ -151,11 +184,45 @@ impl SunRenderer {
         render_pass.set_bind_group(0, camera_bind_group, &[]);
         render_pass.set_bind_group(1, weather_field_bind_group, &[]);
         render_pass.set_bind_group(2, &self.atmosphere_bind_group, &[]);
-        render_pass.set_pipeline(&self.flare_pipeline);
-        render_pass.draw(0..3, 0..1);
+    }
+
+    pub fn draw_disc<'pass>(
+        &'pass self,
+        render_pass: &mut wgpu::RenderPass<'pass>,
+        camera_bind_group: &'pass wgpu::BindGroup,
+        weather_field_bind_group: &'pass wgpu::BindGroup,
+    ) {
+        self.bind_shared(render_pass, camera_bind_group, weather_field_bind_group);
         render_pass.set_pipeline(&self.disc_pipeline);
         render_pass.draw(0..3, 0..1);
     }
+
+    pub fn draw_flare<'pass>(
+        &'pass self,
+        render_pass: &mut wgpu::RenderPass<'pass>,
+        camera_bind_group: &'pass wgpu::BindGroup,
+        weather_field_bind_group: &'pass wgpu::BindGroup,
+    ) {
+        self.bind_shared(render_pass, camera_bind_group, weather_field_bind_group);
+        render_pass.set_bind_group(3, &self.depth_bind_group, &[]);
+        render_pass.set_pipeline(&self.flare_pipeline);
+        render_pass.draw(0..3, 0..1);
+    }
+}
+
+fn create_depth_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    depth_view: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("sun terrain-occlusion depth bind group"),
+        layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(depth_view),
+        }],
+    })
 }
 
 #[cfg(test)]
@@ -265,12 +332,36 @@ mod tests {
         let shader = include_str!("sun.wgsl");
         assert!(renderer.contains("disc_pipeline: wgpu::RenderPipeline"));
         assert!(renderer.contains("flare_pipeline: wgpu::RenderPipeline"));
-        assert!(renderer.contains("\"sun disc pipeline\",\n            \"fs_disc\","));
-        assert!(renderer.contains("\"sun optical flare pipeline\",\n            \"fs_flare\","));
-        assert!(renderer.contains("depth_compare: Some(wgpu::CompareFunction::Always)"));
+        assert!(renderer.contains(
+            "\"sun disc pipeline\",\n            &disc_pipeline_layout,\n            \"fs_disc\","
+        ));
+        assert!(renderer.contains(
+            "\"sun optical flare pipeline\",\n            &flare_pipeline_layout,\n            \"fs_flare\",\n            None,"
+        ));
         assert!(shader.contains("fn sun_radiance(input: VertexOutput, draw_disc: bool)"));
         assert!(shader.contains("fn fs_disc(input: VertexOutput)"));
         assert!(shader.contains("fn fs_flare(input: VertexOutput)"));
+    }
+
+    #[test]
+    fn local_terrain_occlusion_gates_the_complete_optical_flare() {
+        let renderer = include_str!("sun.rs");
+        let shader = include_str!("sun.wgsl");
+        assert!(shader.contains("var scene_depth: texture_depth_2d;"));
+        assert!(shader.contains("fn sun_disc_has_visible_depth() -> bool"));
+        assert!(shader.contains("if !sun_disc_has_visible_depth()"));
+        let flare = shader
+            .split("fn fs_flare(input: VertexOutput)")
+            .nth(1)
+            .expect("flare entry exists");
+        assert!(
+            flare.find("SUN_OVERLAY_CUTOFF_RADIUS_SCALE").unwrap()
+                < flare.find("sun_disc_has_visible_depth()").unwrap(),
+            "off-flare pixels must discard before the multi-sample depth probe",
+        );
+        assert!(renderer.contains("pub fn draw_disc<'pass>("));
+        assert!(renderer.contains("pub fn draw_flare<'pass>("));
+        assert!(renderer.contains("depth_stencil: None"));
     }
 
     #[test]

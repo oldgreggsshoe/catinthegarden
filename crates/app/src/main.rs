@@ -974,6 +974,7 @@ impl State {
             &camera_bind_group_layout,
             weather_clouds.field_bind_group_layout(),
             atmosphere.surface_lighting_resources(),
+            &depth_view,
         );
 
         let egui_context = egui::Context::default();
@@ -1165,6 +1166,7 @@ impl State {
         let (depth_texture, depth_view) = create_depth_texture(&self.device, size);
         self.depth_texture = depth_texture;
         self.depth_view = depth_view;
+        self.sun.resize_depth(&self.device, &self.depth_view);
         self.hdr.resize(&self.device, size);
         self.foveated.resize(&self.device, size);
     }
@@ -2678,10 +2680,18 @@ impl State {
         // The disc and corona are a camera-only visual aid. Composite them
         // after the meter has sampled the physical atmosphere and terrain scene so
         // their terrain occlusion cannot drive a false exposure rebound at
-        // sunset. They remain HDR input for bloom and tone mapping below.
+        // sunset. The depth-tested disc is drawn first; the following
+        // attachment-free flare pass can then sample completed solid depth and
+        // keep its whole camera-response shape only while some disc is visible.
+        // Both remain HDR input for bloom and tone mapping below.
+        let draw_visual_sun = !solid_color_screen
+            && self.render_debug_mode != planet::RenderDebugMode::SkyOnly
+            && !(self.render_path == RenderPath::FoveatedRay
+                && self.render_debug_mode == planet::RenderDebugMode::Final
+                && self.foveated.warp_debug_visible());
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("visual sun overlay pass"),
+                label: Some("visual sun disc pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: self.hdr.scene_view(),
                     depth_slice: None,
@@ -2695,7 +2705,7 @@ impl State {
                     view: &self.depth_view,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Discard,
+                        store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,
                 }),
@@ -2704,18 +2714,44 @@ impl State {
                     wgpu::RenderPassTimestampWrites {
                         query_set,
                         beginning_of_pass_write_index: Some(4),
+                        end_of_pass_write_index: None,
+                    }
+                }),
+                multiview_mask: None,
+            });
+            if draw_visual_sun {
+                self.sun.draw_disc(
+                    &mut render_pass,
+                    &self.camera_bind_group,
+                    self.weather_clouds.field_bind_group(),
+                );
+            }
+        }
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("visual sun optical flare pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: self.hdr.scene_view(),
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: timestamp_query_set.map(|query_set| {
+                    wgpu::RenderPassTimestampWrites {
+                        query_set,
+                        beginning_of_pass_write_index: None,
                         end_of_pass_write_index: Some(5),
                     }
                 }),
                 multiview_mask: None,
             });
-            if !solid_color_screen
-                && self.render_debug_mode != planet::RenderDebugMode::SkyOnly
-                && !(self.render_path == RenderPath::FoveatedRay
-                    && self.render_debug_mode == planet::RenderDebugMode::Final
-                    && self.foveated.warp_debug_visible())
-            {
-                self.sun.draw(
+            if draw_visual_sun {
+                self.sun.draw_flare(
                     &mut render_pass,
                     &self.camera_bind_group,
                     self.weather_clouds.field_bind_group(),
@@ -3481,7 +3517,9 @@ fn create_depth_texture(
         // COPY_SRC is for the surface probe, which reads this attachment back
         // to compare the drawn ground against the ground the camera collides
         // with.
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
