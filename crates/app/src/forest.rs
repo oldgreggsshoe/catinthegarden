@@ -1,6 +1,8 @@
 use std::{mem::size_of, time::Instant};
 
-use catinthegarden_coretypes::{TileKey, face_uv_to_direction, tile_key_for_direction};
+use catinthegarden_coretypes::{
+    TileKey, direction_to_face_uv, face_uv_to_direction, tile_key_for_direction,
+};
 use glam::DVec3;
 use wgpu::util::DeviceExt;
 
@@ -118,7 +120,8 @@ impl PendingForestPatch {
                 sample,
                 FOREST_MINIMUM_MOISTURE,
                 FOREST_MAXIMUM_SLOPE_RADIANS,
-            ) && f64::from(layout.seed) <= forest_density_at(direction)
+            ) && f64::from(layout.seed)
+                <= forest_density_at(direction) * forest_cell_edge_falloff(self.key, direction)
             {
                 let centre = direction
                     * (PLANET_RADIUS_METERS + sample.height_meters - TREE_BASE_SINK_METERS);
@@ -600,6 +603,27 @@ fn forest_cell_centre_direction(key: TileKey) -> DVec3 {
     face_uv_to_direction(key.face, u, v)
 }
 
+/// Soft, slightly warped footprint inside a canonical cell. Candidates still
+/// belong to exactly one cell, but the visible stand tapers before the cell
+/// edge so a square ownership boundary cannot become a square forest.
+fn forest_cell_edge_falloff(key: TileKey, direction: DVec3) -> f64 {
+    let (face, u, v) = direction_to_face_uv(direction);
+    if face != key.face {
+        return 0.0;
+    }
+    let cells_per_axis = f64::from(1_u32 << key.level);
+    let cell_span = 2.0 / cells_per_axis;
+    let u_min = -1.0 + f64::from(key.x) * cell_span;
+    let v_min = -1.0 + f64::from(key.y) * cell_span;
+    let local_u = (2.0 * (u - (u_min + cell_span * 0.5)) / cell_span).clamp(-1.0, 1.0);
+    let local_v = (2.0 * (v - (v_min + cell_span * 0.5)) / cell_span).clamp(-1.0, 1.0);
+    let radius = (local_u * local_u + local_v * local_v).sqrt();
+    let warp = forest_noise_at(direction, 768.0) * 0.10;
+    let boundary = (0.88 + warp).clamp(0.74, 0.98);
+    let fade_start = boundary - 0.24;
+    1.0 - smoothstep01((radius - fade_start) / (boundary - fade_start))
+}
+
 fn retain_populated_patch_for_empty_cell(
     current: Option<&ForestPatch>,
     incoming: &ForestPatch,
@@ -690,8 +714,13 @@ fn tree_layout_from_seed(seed: u32) -> TreeLayout {
 /// capable of producing trees; the field only creates natural clearings and
 /// denser stands instead of a hard-edged disk.
 fn forest_density_at(direction: DVec3) -> f64 {
-    let direction = direction.normalize();
-    let position = direction * 192.0;
+    let value = forest_noise_at(direction, 192.0) * 0.5 + 0.5;
+    let cluster = smoothstep01((value - 0.24) / (0.76 - 0.24));
+    0.35 + cluster * 0.65
+}
+
+fn forest_noise_at(direction: DVec3, frequency: f64) -> f64 {
+    let position = direction.normalize() * frequency;
     let cell = [
         position.x.floor() as i32,
         position.y.floor() as i32,
@@ -702,9 +731,7 @@ fn forest_density_at(direction: DVec3) -> f64 {
         position.y - f64::from(cell[1]),
         position.z - f64::from(cell[2]),
     ];
-    let value = forest_value_noise(cell, fraction) * 0.5 + 0.5;
-    let cluster = smoothstep01((value - 0.24) / (0.76 - 0.24));
-    0.35 + cluster * 0.65
+    forest_value_noise(cell, fraction)
 }
 
 fn forest_value_noise(cell: [i32; 3], fraction: [f64; 3]) -> f64 {
@@ -890,6 +917,20 @@ mod tests {
         assert!(trees.iter().any(|(_, layout)| layout.kind == 1.0));
         let density = forest_density_at(FOREST_CENTRE_DIRECTION);
         assert!((0.35..=1.0).contains(&density));
+    }
+
+    #[test]
+    fn forest_cell_footprint_softens_before_the_square_cell_edge() {
+        let key = forest_cell_key(FOREST_CENTRE_DIRECTION);
+        let cells_per_axis = f64::from(1_u32 << key.level);
+        let cell_span = 2.0 / cells_per_axis;
+        let u_min = -1.0 + f64::from(key.x) * cell_span;
+        let v_min = -1.0 + f64::from(key.y) * cell_span;
+        let centre = forest_cell_centre_direction(key);
+        let near_corner =
+            face_uv_to_direction(key.face, u_min + cell_span * 0.99, v_min + cell_span * 0.99);
+        assert!(forest_cell_edge_falloff(key, centre) > 0.99);
+        assert!(forest_cell_edge_falloff(key, near_corner) < 0.1);
     }
 
     #[test]

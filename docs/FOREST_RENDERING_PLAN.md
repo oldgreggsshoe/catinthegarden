@@ -149,3 +149,10 @@ neighbouring results are now remembered and do not replace a populated patch; th
 remains the LOD source and fades out and back in continuously as distance changes. A different
 desired cell clears the remembered empty key, so other forests still build normally. The focused
 test `empty_neighbouring_cell_does_not_replace_a_populated_patch` covers this replacement rule.
+
+## Cell-edge footprint softening - 28 August 2026
+
+The canonical L12 cell remains the deterministic ownership unit, but tree acceptance now applies a
+slightly warped radial falloff inside that cell. Trees taper out before the UV boundary, with a
+low-frequency warp preventing a perfect circle, so the cell cannot read as a square forest from
+above while placement, terrain eligibility, and the one-patch budget remain unchanged.

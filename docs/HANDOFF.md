@@ -4083,3 +4083,10 @@ An empty, fully evaluated neighbouring L12 cell no longer replaces a populated f
 empty key is remembered while the prior patch remains the LOD source, so trees fade out and return
 continuously during retreat/return instead of requiring another cell-boundary crossing. The focused
 forest suite includes `empty_neighbouring_cell_does_not_replace_a_populated_patch`.
+
+## Forest cell-edge footprint - 28 August 2026
+
+Tree candidates still use canonical half-open L12 ownership, but accepted trees now receive a
+slightly warped radial edge falloff inside the cell. The stand tapers before the UV boundary and no
+longer presents a square silhouette; terrain eligibility, deterministic placement, and the bounded
+single-patch renderer are unchanged. Focused forest tests pass.
