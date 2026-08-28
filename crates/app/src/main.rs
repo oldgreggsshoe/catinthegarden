@@ -2108,8 +2108,9 @@ impl State {
                                 terrain_stats.ocean_chunks, terrain_stats.ocean_triangles,
                             ));
                             ui.label(format!(
-                                "Forest: {} trees  |  patch {:?}  |  beams {} (B)",
+                                "Forest: {} trees  |  {} patches  |  nearest {:?}  |  beams {} (B)",
                                 forest_snapshot.instances,
+                                forest_snapshot.patch_count,
                                 forest_snapshot.patch_key,
                                 if forest_snapshot.beams_enabled { "on" } else { "off" },
                             ));

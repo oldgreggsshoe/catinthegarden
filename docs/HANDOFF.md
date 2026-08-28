@@ -4097,3 +4097,22 @@ An opt-in forest beam presentation adds three crossed translucent radial shafts 
 forest centre to the top of the 2,880km gameplay atmosphere. The shafts are depth-tested against
 terrain, rendered before weather shells, and sun-elevation tinted. They are off by default and toggle
 with **B**; no weather state or tree population is added.
+
+## Render-range procedural forests - 28 August 2026
+
+The earlier one-patch working set is superseded. Global placement remains deterministic, but the
+renderer now incrementally retains every populated L12 cell whose footprint intersects the current
+individual-tree range, capped at an 8km camera distance and 128 cells. Selection is nearest-first
+and crosses cube-face seams. The first three startup cells perform 512 resident-cache terrain probes
+per frame and show without an entry fade; later nearest cells use 256 probes and surrounding cells
+retain the 128-probe budget.
+
+All active cells concatenate into the existing single tree draw with a hard 262,144-instance cap.
+Stable projected-size thinning remains in force, and each completed cell enters over 1.5 seconds so
+coverage grows without a whole-cell pop. The **B** diagnostic now emits one atmospheric beam per
+populated render-range cell. Focused forest tests pass; release/GPU visual and performance validation
+uses `forest_startup/1787955024-137828`, which passes both captures and 2.05m clearance with three
+populated cells visible by capture 001. Fully populated render-range performance profiling remains.
+The focused forest filter passes 30 tests and the release app builds. The full app run passes 312,
+fails 1, and ignores 7: the sole failure is the pre-existing dirty-worktree sun-shader unit test,
+whose standalone source cannot resolve `cloudDensityWithOctaves`; it is unrelated to forest code.

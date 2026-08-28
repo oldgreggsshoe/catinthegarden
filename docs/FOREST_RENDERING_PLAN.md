@@ -24,8 +24,8 @@ the Quadro/Vulkan adapter, Immediate present mode, and passed their finite-metri
 
 The median paired cost is **0.201ms**, with a 0.148-0.292ms range. Median run medians are 27.223ms
 (36.73 FPS) with the forest and 27.011ms (37.02 FPS) without it. The present 12,288-tree draw costs
-about 0.79% of the frame at this pose. It is already cheap; the procedural system should remain
-within the same one-patch/tree budget rather than chasing a misleading micro-optimisation now.
+about 0.79% of the frame at this pose. It is already cheap, but that measurement covers one cell;
+the render-range working set must retain explicit patch and instance limits and be re-profiled.
 
 The likely forest cost order is fragment fill/overdraw first, repeated billboard vertex maths
 second. The single draw call, 384KiB immutable instance buffer, lack of texture sampling, and opaque
@@ -35,10 +35,11 @@ Final, alternating-order runs are listed in `test-runs/forest-profile-pairs/fina
 artifacts are under `test-runs/forest_performance/1787914342-49660` through
 `test-runs/forest_performance/1787914475-50017`.
 
-## One camera-local procedural forest
+## Bounded camera-local global forests
 
-There should never be a global tree population. The renderer owns exactly one
-`Option<ForestPatch>` centred near the player:
+There should never be a globally resident tree population. Forest placement is deterministic over
+the whole planet, while the renderer owns only the bounded set of cells whose individual trees are
+resolvable from the current camera:
 
 1. `TerrainRenderer` exposes a resident-cache-only forest sample containing rendered-compatible
    height, categorical biome, moisture, source level, and a small finite-difference slope. It must
@@ -49,14 +50,13 @@ There should never be a global tree population. The renderer owns exactly one
 3. Candidates survive only when their footprint is positive land, forest biome, sufficiently
    moist, and below the shoreline/slope limits. Every accepted base uses the same surface-height
    path as camera clearance.
-4. Keep the old patch until every source needed by the next patch is resident, then replace the one
-   instance buffer atomically. Inner/outer radii, a minimum rebuild interval, and key hysteresis
-   prevent rebuild churn. High-speed flight skips intermediate cells.
-5. If the camera is outside forest ownership, the patch becomes `None`; no distant forest retains
-   geometry.
+4. Build missing cells incrementally from nearest to farthest and retain only cells intersecting the
+   tree render range. All visible cells concatenate into one bounded instance buffer and one draw.
+5. Stable per-tree projected-size thinning and a per-cell entry transition prevent whole-cell pops;
+   beyond tree range the terrain forest-density treatment carries the shape without geometry.
 
-This makes forest location procedural everywhere the baked biome/moisture field permits while
-retaining the current bounded draw cost.
+This makes forest location procedural everywhere the baked biome/moisture field permits without
+ever allocating a planet-wide tree population.
 
 ## Tree LOD
 
@@ -89,20 +89,20 @@ justified if biome-plus-moisture masks lack enough control.
 ## Implementation order and acceptance
 
 1. Add/test the resident forest surface sample.
-2. Replace the fixed centre with one deterministic patch key and rebuild hysteresis.
+2. Replace the fixed centre with deterministic cell keys and a bounded render-range working set.
 3. Add projected-size LOD and bounded tier counts.
 4. Add the forest-only far material breakup.
-5. Add a travelling scenario that asserts active patch count <= 1, bounded rebuild rate, no
+5. Add a travelling scenario that asserts bounded active patch/instance counts, rebuild rate, no
    water/slope trees, finite positions, and stable LOD counts; repeat the paired Quadro benchmark.
 
 The current authored forest remains the visual reference until each step passes independently.
 
 ## Implemented result
 
-The plan is now implemented on `experiment/billboard-forest`. Terrain exposes a resident-cache-only
-height/biome/moisture/slope sample, while the renderer owns one active camera-local patch and one
-non-rendered pending builder. Candidate positions come from deterministic half-open L12 cube-sphere
-cells; water, non-forest biomes, dry ground, and slopes above 32 degrees reject individual trees.
+The first implementation on `experiment/billboard-forest` used one active camera-local patch and
+one non-rendered pending builder. Candidate positions come from deterministic half-open L12
+cube-sphere cells; water, non-forest biomes, dry ground, and slopes above 32 degrees reject
+individual trees.
 Pending grounding is capped at 128 candidates per frame and never replaces the active patch until
 complete. High-speed travel cancels obsolete pending cells rather than building every crossed cell.
 
@@ -164,3 +164,21 @@ shafts start at the closest accepted tree to the deterministic cell centre and e
 the 2,880km gameplay atmosphere. They are depth-tested against terrain, draw before cloud shells so
 clouds can veil them, and use the current sun elevation for a restrained warm-white intensity. The
 effect is disabled by default and toggled with **B**; it adds no weather state or tree instances.
+
+## Render-range forest working set - 28 August 2026
+
+The single active patch has been replaced by a bounded set of deterministic L12 cells around the
+camera. A cell is selected only while its surface footprint intersects the distance at which the
+tallest tree could still be resolved, capped at 8km. Selection crosses cube-face seams, is ordered
+nearest-first, and is capped at 128 resident cells. The first three startup cells ground 512
+candidates per frame and present immediately; later nearest cells use 256 and surrounding cells
+128. This keeps the opening view covered without reintroducing the old synchronous rebuild stall.
+
+All populated cells share one GPU draw and a 262,144-instance ceiling. Projected-size thinning is
+still stable per tree; each newly completed cell enters over 1.5 seconds, and cells leave only after
+their whole footprint is outside tree range. The optional **B** overlay now emits one crossed beam
+at every populated cell rather than marking only the formerly active patch.
+
+Release `forest_startup/1787955024-137828` passes both captures and the 2.05m clearance assertion.
+Its first capture has three completed cells and visible trees on both sides of the opening view;
+paired Quadro profiling of a fully populated render-range set remains outstanding.

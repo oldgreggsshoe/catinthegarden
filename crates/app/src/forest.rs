@@ -1,4 +1,8 @@
-use std::{mem::size_of, time::Instant};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    mem::size_of,
+    time::{Duration, Instant},
+};
 
 use catinthegarden_coretypes::{
     TileKey, direction_to_face_uv, face_uv_to_direction, tile_key_for_direction,
@@ -20,14 +24,17 @@ const TREE_BASE_SINK_METERS: f64 = 0.45;
 const TREE_HEIGHT_MIN_METERS: f32 = 11.0;
 const TREE_HEIGHT_RANGE_METERS: f32 = 13.0;
 const FOREST_DRAW_ALTITUDE_METERS: f64 = 50_000.0;
+const FOREST_TREE_RENDER_DISTANCE_METERS: f64 = 8_000.0;
 const FOREST_CELL_LEVEL: u8 = 12;
 const FOREST_MINIMUM_MOISTURE: f32 = 0.38;
 const FOREST_MAXIMUM_SLOPE_RADIANS: f64 = 32.0_f64.to_radians();
-const FOREST_PATCH_INNER_RADIUS_METERS: f64 = 700.0;
-const FOREST_PATCH_OUTER_RADIUS_METERS: f64 = 1_000.0;
-const FOREST_PATCH_MINIMUM_REBUILD_SECONDS: f64 = 0.5;
 const FOREST_PATCH_TRANSITION_SECONDS: f64 = 1.5;
 const FOREST_PATCH_CANDIDATES_PER_FRAME: usize = 128;
+const FOREST_PRIMARY_PATCH_CANDIDATES_PER_FRAME: usize = 256;
+const FOREST_INITIAL_PATCH_CANDIDATES_PER_FRAME: usize = 512;
+const FOREST_STARTUP_PATCH_COUNT: u64 = 3;
+const FOREST_MAX_RENDERABLE_PATCHES: usize = 128;
+const FOREST_MAX_DRAW_INSTANCES: usize = 262_144;
 const TREE_LOD_FULL_PIXELS: f64 = 12.0;
 const TREE_LOD_MEDIUM_PIXELS: f64 = 3.0;
 const TREE_LOD_SPARSE_PIXELS: f64 = 1.0;
@@ -110,6 +117,7 @@ struct ForestPatch {
     trees: Vec<TreeInstance>,
     minimum_source_level: Option<u8>,
     beam_base_radius_meters: f64,
+    visible_since: Instant,
 }
 
 struct PendingForestPatch {
@@ -137,8 +145,14 @@ impl PendingForestPatch {
         }
     }
 
-    fn advance(&mut self, terrain: &TerrainRenderer, camera_altitude_meters: f64) -> bool {
-        let batch_end = pending_batch_end(self.next_candidate, self.candidates.len());
+    fn advance(
+        &mut self,
+        terrain: &TerrainRenderer,
+        camera_altitude_meters: f64,
+        candidate_budget: usize,
+    ) -> bool {
+        let batch_end =
+            pending_batch_end(self.next_candidate, self.candidates.len(), candidate_budget);
         while self.next_candidate < batch_end {
             let (direction, layout) = self.candidates[self.next_candidate];
             let Some(sample) = terrain.forest_surface_sample_at(direction, camera_altitude_meters)
@@ -193,6 +207,7 @@ impl PendingForestPatch {
             minimum_source_level: (self.minimum_source_level != u8::MAX)
                 .then_some(self.minimum_source_level),
             beam_base_radius_meters: self.beam_base_radius_meters,
+            visible_since: Instant::now(),
         }
     }
 }
@@ -250,14 +265,12 @@ pub struct ForestRenderer {
     beam_vertex_buffer: wgpu::Buffer,
     instance_count: u32,
     beam_vertex_count: u32,
-    patch: Option<ForestPatch>,
+    patches: BTreeMap<TileKey, ForestPatch>,
     pending_patch: Option<PendingForestPatch>,
-    retiring_trees: Vec<TreeInstance>,
-    patch_transition_started: Option<Instant>,
     draw_instances: Vec<TreeInstance>,
     lod_counts: TreeLodCounts,
-    last_patch_rebuild_at: Option<Instant>,
-    last_empty_patch_key: Option<TileKey>,
+    empty_patch_keys: BTreeSet<TileKey>,
+    primary_patch_key: Option<TileKey>,
     rebuild_count: u64,
     enabled: bool,
     beams_enabled: bool,
@@ -271,20 +284,12 @@ impl ForestRenderer {
         _terrain: &mut TerrainRenderer,
     ) -> Self {
         let initial_key = forest_cell_key(FOREST_CENTRE_DIRECTION);
-        let initial_patch = ForestPatch {
-            key: initial_key,
-            centre_direction: forest_cell_centre_direction(initial_key),
-            trees: Vec::new(),
-            minimum_source_level: None,
-            beam_base_radius_meters: PLANET_RADIUS_METERS,
-        };
-        let instances = initial_patch.trees.clone();
-        let initial_instance_count = instances.len() as u32;
         let enabled = forest_rendering_from_env();
         tracing::info!(
             target: "catinthegarden::forest",
             enabled,
-            tree_instances = instances.len(),
+            maximum_renderable_patches = FOREST_MAX_RENDERABLE_PATCHES,
+            maximum_draw_instances = FOREST_MAX_DRAW_INSTANCES,
             "configured billboard forest"
         );
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -402,8 +407,8 @@ impl ForestRenderer {
             multiview_mask: None,
             cache: None,
         });
-        let mut buffer_instances = vec![<TreeInstance as bytemuck::Zeroable>::zeroed(); TREE_COUNT];
-        buffer_instances[..instances.len()].copy_from_slice(&instances);
+        let buffer_instances =
+            vec![<TreeInstance as bytemuck::Zeroable>::zeroed(); FOREST_MAX_DRAW_INSTANCES];
         let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("forest tree instances"),
             contents: bytemuck::cast_slice(&buffer_instances),
@@ -411,7 +416,10 @@ impl ForestRenderer {
         });
         let beam_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("forest light beam vertices"),
-            size: (FOREST_BEAM_COUNT * 6 * size_of::<ForestBeamVertex>()) as u64,
+            size: (FOREST_MAX_RENDERABLE_PATCHES
+                * FOREST_BEAM_COUNT
+                * 6
+                * size_of::<ForestBeamVertex>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -422,19 +430,14 @@ impl ForestRenderer {
             uniform_buffer,
             instance_buffer,
             beam_vertex_buffer,
-            instance_count: initial_instance_count,
+            instance_count: 0,
             beam_vertex_count: 0,
-            patch: Some(initial_patch),
+            patches: BTreeMap::new(),
             pending_patch: Some(PendingForestPatch::new(initial_key)),
-            retiring_trees: Vec::new(),
-            patch_transition_started: None,
-            draw_instances: instances,
-            lod_counts: TreeLodCounts {
-                full: initial_instance_count,
-                ..Default::default()
-            },
-            last_patch_rebuild_at: None,
-            last_empty_patch_key: None,
+            draw_instances: Vec::new(),
+            lod_counts: TreeLodCounts::default(),
+            empty_patch_keys: BTreeSet::new(),
+            primary_patch_key: Some(initial_key),
             rebuild_count: 0,
             enabled,
             beams_enabled: false,
@@ -456,9 +459,9 @@ impl ForestRenderer {
         );
     }
 
-    /// Updates the one camera-local patch after terrain streaming has made
-    /// newly requested source tiles resident. This only probes the resident
-    /// terrain cache; missing samples retain the previous patch.
+    /// Updates the bounded set of camera-local cells whose trees can still be
+    /// resolved. Only the resident terrain cache is probed; one missing source
+    /// stalls the current cell without adding disk I/O to the frame.
     #[allow(clippy::too_many_arguments)]
     pub fn update_patch(
         &mut self,
@@ -481,96 +484,93 @@ impl ForestRenderer {
             self.pending_patch = None;
             return;
         }
-        let desired_key = forest_cell_key(camera_direction);
-        if self
-            .last_empty_patch_key
-            .is_some_and(|key| key != desired_key)
-        {
-            self.last_empty_patch_key = None;
-        }
-        let transition_in_progress = self.patch_transition_progress() < 1.0;
-        let rebuild_due = patch_rebuild_due(
-            self.patch.as_ref(),
-            desired_key,
-            camera_direction,
-            self.last_patch_rebuild_at
-                .map(|last| last.elapsed().as_secs_f64()),
+        let desired_keys = forest_renderable_cell_keys(
+            camera_planet_position,
+            viewport_height,
+            vertical_fov_radians,
         );
-        if self.last_empty_patch_key == Some(desired_key) {
-            // A fully evaluated cell with no eligible trees is a valid empty
-            // result. Keep the last populated patch available while the
-            // camera is in this cell so distance-based LOD can fade it back
-            // in when the player returns, rather than requiring a second
-            // cell-boundary crossing.
+        if desired_keys.is_empty() {
             self.pending_patch = None;
-        } else if self
-            .patch
+            self.update_tree_lod(
+                queue,
+                camera_planet_position,
+                viewport_height,
+                vertical_fov_radians,
+            );
+            return;
+        }
+        self.primary_patch_key = desired_keys.first().copied();
+        let desired_key_set = desired_keys.iter().copied().collect::<BTreeSet<_>>();
+        let previous_patch_count = self.patches.len();
+        self.patches.retain(|key, _| desired_key_set.contains(key));
+        self.empty_patch_keys
+            .retain(|key| desired_key_set.contains(key));
+        if self
+            .pending_patch
             .as_ref()
-            .is_some_and(|patch| patch.key == desired_key && !patch.trees.is_empty())
+            .is_some_and(|pending| !desired_key_set.contains(&pending.key))
         {
             self.pending_patch = None;
-        } else if !transition_in_progress && rebuild_due {
-            if self
-                .pending_patch
-                .as_ref()
-                .is_none_or(|pending| pending.key != desired_key)
+        }
+        if self.pending_patch.is_none() {
+            if let Some(key) = desired_keys
+                .iter()
+                .copied()
+                .find(|key| !self.patches.contains_key(key) && !self.empty_patch_keys.contains(key))
             {
-                self.pending_patch = Some(PendingForestPatch::new(desired_key));
+                self.pending_patch = Some(PendingForestPatch::new(key));
             }
-            let completed = self
+        }
+        let candidate_budget = if self.rebuild_count < FOREST_STARTUP_PATCH_COUNT {
+            FOREST_INITIAL_PATCH_CANDIDATES_PER_FRAME
+        } else if self
+            .pending_patch
+            .as_ref()
+            .is_some_and(|pending| Some(pending.key) == self.primary_patch_key)
+        {
+            FOREST_PRIMARY_PATCH_CANDIDATES_PER_FRAME
+        } else {
+            FOREST_PATCH_CANDIDATES_PER_FRAME
+        };
+        let completed = self.pending_patch.as_mut().is_some_and(|pending| {
+            pending.advance(terrain, camera_altitude_meters, candidate_budget)
+        });
+        let mut patch_set_changed = self.patches.len() != previous_patch_count;
+        if completed {
+            let mut patch = self
                 .pending_patch
-                .as_mut()
-                .is_some_and(|pending| pending.advance(terrain, camera_altitude_meters));
-            if completed {
-                let patch = self
-                    .pending_patch
-                    .take()
-                    .expect("completed forest patch is pending")
-                    .finish();
-                let now = Instant::now();
-                if retain_populated_patch_for_empty_cell(self.patch.as_ref(), &patch) {
-                    // Do not replace a visible forest with an empty
-                    // neighbouring cell. The existing patch remains the
-                    // source for LOD, so it can reappear continuously during
-                    // a retreat/return instead of popping back only after a
-                    // cell boundary is crossed again.
-                    self.last_empty_patch_key = Some(patch.key);
-                    self.last_patch_rebuild_at = Some(now);
-                    self.pending_patch = None;
-                    tracing::info!(
-                        target: "catinthegarden::forest",
-                        face = ?patch.key.face,
-                        level = patch.key.level,
-                        x = patch.key.x,
-                        y = patch.key.y,
-                        "retained procedural forest patch for empty neighbouring cell"
-                    );
-                } else {
-                    self.update_beam_geometry(queue, &patch);
-                    let patch_key = patch.key;
-                    let tree_instances = patch.trees.len();
-                    let minimum_source_level = patch.minimum_source_level;
-                    self.last_empty_patch_key = None;
-                    self.retiring_trees = self
-                        .patch
-                        .replace(patch)
-                        .map(|patch| patch.trees)
-                        .unwrap_or_default();
-                    self.patch_transition_started = Some(now);
-                    self.last_patch_rebuild_at = Some(now);
-                    self.rebuild_count += 1;
-                    tracing::info!(
-                        target: "catinthegarden::forest",
-                        face = ?patch_key.face,
-                        level = patch_key.level,
-                        x = patch_key.x,
-                        y = patch_key.y,
-                        tree_instances,
-                        minimum_source_level = ?minimum_source_level,
-                        "replaced procedural forest patch"
-                    );
+                .take()
+                .expect("completed forest patch is pending")
+                .finish();
+            let patch_key = patch.key;
+            let tree_instances = patch.trees.len();
+            let minimum_source_level = patch.minimum_source_level;
+            if patch.trees.is_empty() {
+                self.empty_patch_keys.insert(patch_key);
+            } else {
+                if self.rebuild_count < FOREST_STARTUP_PATCH_COUNT {
+                    patch.visible_since = Instant::now()
+                        .checked_sub(Duration::from_secs_f64(FOREST_PATCH_TRANSITION_SECONDS))
+                        .unwrap_or_else(Instant::now);
                 }
+                self.patches.insert(patch_key, patch);
+                self.rebuild_count += 1;
+                patch_set_changed = true;
             }
+            tracing::info!(
+                target: "catinthegarden::forest",
+                face = ?patch_key.face,
+                level = patch_key.level,
+                x = patch_key.x,
+                y = patch_key.y,
+                tree_instances,
+                minimum_source_level = ?minimum_source_level,
+                active_patches = self.patches.len(),
+                "completed procedural forest cell"
+            );
+        }
+        if patch_set_changed {
+            self.update_beam_geometry(queue);
         }
         self.update_tree_lod(
             queue,
@@ -581,8 +581,10 @@ impl ForestRenderer {
     }
 
     fn patch_transition_progress(&self) -> f64 {
-        self.patch_transition_started
-            .map(|started| patch_transition_progress(started.elapsed().as_secs_f64()))
+        self.patches
+            .values()
+            .map(|patch| patch_transition_progress(patch.visible_since.elapsed().as_secs_f64()))
+            .reduce(f64::min)
             .unwrap_or(1.0)
     }
 
@@ -593,41 +595,49 @@ impl ForestRenderer {
         viewport_height: u32,
         vertical_fov_radians: f64,
     ) {
-        let transition_progress = self.patch_transition_progress();
-        if transition_progress >= 1.0 {
-            self.retiring_trees.clear();
-            self.patch_transition_started = None;
-        }
-        let Some(patch) = &self.patch else {
-            return;
-        };
-        let candidate_count = patch.trees.len().max(self.retiring_trees.len());
-        let mut draw_instances = Vec::with_capacity(candidate_count);
+        let mut patches = self.patches.values().collect::<Vec<_>>();
+        patches.sort_by(|left, right| {
+            right
+                .centre_direction
+                .dot(camera_planet_position)
+                .total_cmp(&left.centre_direction.dot(camera_planet_position))
+        });
+        let mut draw_instances = Vec::with_capacity(
+            self.draw_instances
+                .len()
+                .max(TREE_COUNT)
+                .min(FOREST_MAX_DRAW_INSTANCES),
+        );
         let mut lod_counts = TreeLodCounts::default();
-        for index in 0..candidate_count {
-            let tree = transition_tree_for_slot(
-                index,
-                &self.retiring_trees,
-                &patch.trees,
-                transition_progress,
-            );
-            let Some(tree) = tree else {
-                continue;
-            };
-            let projected_pixels = projected_tree_height_pixels(
-                tree,
-                camera_planet_position,
-                viewport_height,
-                vertical_fov_radians,
-            );
-            let lod = tree_lod(projected_pixels);
-            lod_counts.add(lod);
-            if let Some(tree) = lodded_tree_instance(tree, projected_pixels) {
-                draw_instances.push(tree);
+        'patches: for patch in patches {
+            let transition_progress =
+                patch_transition_progress(patch.visible_since.elapsed().as_secs_f64()) as f32;
+            for tree in &patch.trees {
+                let distance_meters = tree_distance_meters(*tree, camera_planet_position);
+                let projected_pixels = if distance_meters <= FOREST_TREE_RENDER_DISTANCE_METERS {
+                    projected_tree_height_pixels_at_distance(
+                        *tree,
+                        distance_meters,
+                        viewport_height,
+                        vertical_fov_radians,
+                    )
+                } else {
+                    0.0
+                };
+                let lod = tree_lod(projected_pixels);
+                lod_counts.add(lod);
+                if let Some(tree) =
+                    lodded_tree_instance_with_scale(*tree, projected_pixels, transition_progress)
+                {
+                    draw_instances.push(tree);
+                    if draw_instances.len() == FOREST_MAX_DRAW_INSTANCES {
+                        break 'patches;
+                    }
+                }
             }
         }
         if self.draw_instances != draw_instances {
-            debug_assert!(draw_instances.len() <= TREE_COUNT);
+            debug_assert!(draw_instances.len() <= FOREST_MAX_DRAW_INSTANCES);
             if !draw_instances.is_empty() {
                 queue.write_buffer(
                     &self.instance_buffer,
@@ -643,18 +653,19 @@ impl ForestRenderer {
 
     pub fn stats(&self) -> ForestStats {
         ForestStats {
-            patch_count: u8::from(self.patch.is_some()),
+            patch_count: self.patches.len().min(usize::from(u8::MAX)) as u8,
             instances: self.instance_count,
             full_instances: self.lod_counts.full,
             medium_instances: self.lod_counts.medium,
             sparse_instances: self.lod_counts.sparse,
             zero_instances: self.lod_counts.zero,
             rebuild_count: self.rebuild_count,
-            patch_key: self.patch.as_ref().map(|patch| patch.key),
+            patch_key: self.primary_patch_key,
             minimum_source_level: self
-                .patch
-                .as_ref()
-                .and_then(|patch| patch.minimum_source_level),
+                .patches
+                .values()
+                .filter_map(|patch| patch.minimum_source_level)
+                .min(),
             pending_candidates: self
                 .pending_patch
                 .as_ref()
@@ -679,9 +690,9 @@ impl ForestRenderer {
         );
     }
 
-    fn update_beam_geometry(&mut self, queue: &wgpu::Queue, patch: &ForestPatch) {
-        let vertices = forest_beam_vertices(patch);
-        debug_assert!(vertices.len() <= FOREST_BEAM_COUNT * 6);
+    fn update_beam_geometry(&mut self, queue: &wgpu::Queue) {
+        let vertices = forest_beam_vertices_for_patches(self.patches.values());
+        debug_assert!(vertices.len() <= FOREST_MAX_RENDERABLE_PATCHES * FOREST_BEAM_COUNT * 6);
         if !vertices.is_empty() {
             queue.write_buffer(&self.beam_vertex_buffer, 0, bytemuck::cast_slice(&vertices));
         }
@@ -740,6 +751,120 @@ fn forest_cell_centre_direction(key: TileKey) -> DVec3 {
     face_uv_to_direction(key.face, u, v)
 }
 
+fn forest_renderable_cell_keys(
+    camera_planet_position: DVec3,
+    viewport_height: u32,
+    vertical_fov_radians: f64,
+) -> Vec<TileKey> {
+    let camera_direction = camera_planet_position.normalize_or_zero();
+    let camera_radius = camera_planet_position.length();
+    let visibility_distance =
+        maximum_tree_visibility_distance_meters(viewport_height, vertical_fov_radians);
+    let Some(angular_radius) = forest_surface_angular_radius(camera_radius, visibility_distance)
+    else {
+        return Vec::new();
+    };
+    let cell_radius_bound = std::f64::consts::SQRT_2 / f64::from(1_u32 << FOREST_CELL_LEVEL);
+    let search_radius = angular_radius + cell_radius_bound;
+    let sample_spacing = 0.4 * 2.0 / (f64::from(1_u32 << FOREST_CELL_LEVEL) * 3.0_f64.sqrt());
+    let sample_extent = (search_radius / sample_spacing).ceil() as i32 + 1;
+    let reference = if camera_direction.y.abs() < 0.9 {
+        DVec3::Y
+    } else {
+        DVec3::X
+    };
+    let tangent_u = camera_direction.cross(reference).normalize();
+    let tangent_v = camera_direction.cross(tangent_u).normalize();
+    let mut sampled_keys = BTreeSet::new();
+    sampled_keys.insert(forest_cell_key(camera_direction));
+    for y in -sample_extent..=sample_extent {
+        for x in -sample_extent..=sample_extent {
+            let offset_u = f64::from(x) * sample_spacing;
+            let offset_v = f64::from(y) * sample_spacing;
+            if offset_u.hypot(offset_v) > search_radius + sample_spacing {
+                continue;
+            }
+            sampled_keys.insert(forest_cell_key(
+                (camera_direction + tangent_u * offset_u + tangent_v * offset_v).normalize(),
+            ));
+        }
+    }
+    let mut keys = sampled_keys
+        .into_iter()
+        .filter_map(|key| {
+            let distance = camera_direction
+                .angle_between(forest_cell_centre_direction(key))
+                .abs();
+            (distance <= angular_radius + forest_cell_angular_radius(key))
+                .then_some((distance, key))
+        })
+        .collect::<Vec<_>>();
+    keys.sort_by(|(left_distance, left_key), (right_distance, right_key)| {
+        left_distance
+            .total_cmp(right_distance)
+            .then_with(|| left_key.cmp(right_key))
+    });
+    keys.truncate(FOREST_MAX_RENDERABLE_PATCHES);
+    keys.into_iter().map(|(_, key)| key).collect()
+}
+
+fn maximum_tree_visibility_distance_meters(viewport_height: u32, vertical_fov_radians: f64) -> f64 {
+    if viewport_height == 0
+        || !vertical_fov_radians.is_finite()
+        || vertical_fov_radians <= 0.0
+        || vertical_fov_radians >= std::f64::consts::PI
+    {
+        return 0.0;
+    }
+    let maximum_tree_height = f64::from(TREE_HEIGHT_MIN_METERS + TREE_HEIGHT_RANGE_METERS);
+    (maximum_tree_height * f64::from(viewport_height)
+        / (2.0 * (vertical_fov_radians * 0.5).tan() * TREE_LOD_SPARSE_PIXELS))
+        .clamp(0.0, FOREST_TREE_RENDER_DISTANCE_METERS)
+}
+
+fn forest_surface_angular_radius(
+    camera_radius_meters: f64,
+    visibility_distance_meters: f64,
+) -> Option<f64> {
+    if !camera_radius_meters.is_finite()
+        || !visibility_distance_meters.is_finite()
+        || camera_radius_meters <= 0.0
+        || visibility_distance_meters <= 0.0
+    {
+        return None;
+    }
+    let tree_radius =
+        PLANET_RADIUS_METERS + f64::from(TREE_HEIGHT_MIN_METERS + TREE_HEIGHT_RANGE_METERS);
+    if visibility_distance_meters < (camera_radius_meters - tree_radius).abs() {
+        return None;
+    }
+    let cosine = (camera_radius_meters * camera_radius_meters + tree_radius * tree_radius
+        - visibility_distance_meters * visibility_distance_meters)
+        / (2.0 * camera_radius_meters * tree_radius);
+    Some(cosine.clamp(-1.0, 1.0).acos())
+}
+
+fn forest_cell_angular_radius(key: TileKey) -> f64 {
+    let cells_per_axis = f64::from(1_u32 << key.level);
+    let cell_span = 2.0 / cells_per_axis;
+    let u_min = -1.0 + f64::from(key.x) * cell_span;
+    let v_min = -1.0 + f64::from(key.y) * cell_span;
+    let centre = forest_cell_centre_direction(key);
+    [
+        (u_min, v_min),
+        (u_min + cell_span, v_min),
+        (u_min, v_min + cell_span),
+        (u_min + cell_span, v_min + cell_span),
+    ]
+    .into_iter()
+    .map(|(u, v)| {
+        centre
+            .angle_between(face_uv_to_direction(key.face, u, v))
+            .abs()
+    })
+    .fold(0.0, f64::max)
+}
+
 /// Soft, slightly warped footprint inside a canonical cell. Candidates still
 /// belong to exactly one cell, but the visible stand tapers before the cell
 /// edge so a square ownership boundary cannot become a square forest.
@@ -759,41 +884,6 @@ fn forest_cell_edge_falloff(key: TileKey, direction: DVec3) -> f64 {
     let boundary = (0.88 + warp).clamp(0.74, 0.98);
     let fade_start = boundary - 0.24;
     1.0 - smoothstep01((radius - fade_start) / (boundary - fade_start))
-}
-
-fn retain_populated_patch_for_empty_cell(
-    current: Option<&ForestPatch>,
-    incoming: &ForestPatch,
-) -> bool {
-    incoming.trees.is_empty() && current.is_some_and(|patch| !patch.trees.is_empty())
-}
-
-fn patch_rebuild_due(
-    patch: Option<&ForestPatch>,
-    desired_key: TileKey,
-    camera_direction: DVec3,
-    seconds_since_last_rebuild: Option<f64>,
-) -> bool {
-    let Some(patch) = patch else {
-        return true;
-    };
-    if patch.trees.is_empty() {
-        return true;
-    }
-    if patch.key == desired_key && !patch.trees.is_empty() {
-        return false;
-    }
-    let distance_meters =
-        camera_direction.angle_between(patch.centre_direction).abs() * PLANET_RADIUS_METERS;
-    if distance_meters <= FOREST_PATCH_INNER_RADIUS_METERS {
-        return false;
-    }
-    if distance_meters < FOREST_PATCH_OUTER_RADIUS_METERS {
-        return false;
-    }
-    seconds_since_last_rebuild
-        .map(|elapsed| elapsed >= FOREST_PATCH_MINIMUM_REBUILD_SECONDS)
-        .unwrap_or(true)
 }
 
 fn forest_patch_tree_layouts(key: TileKey) -> Vec<(DVec3, TreeLayout)> {
@@ -922,9 +1012,34 @@ fn detail_avalanche(value: u32) -> u32 {
     value
 }
 
+#[cfg(test)]
 fn projected_tree_height_pixels(
     tree: TreeInstance,
     camera_planet_position: DVec3,
+    viewport_height: u32,
+    vertical_fov_radians: f64,
+) -> f64 {
+    projected_tree_height_pixels_at_distance(
+        tree,
+        tree_distance_meters(tree, camera_planet_position),
+        viewport_height,
+        vertical_fov_radians,
+    )
+}
+
+fn tree_distance_meters(tree: TreeInstance, camera_planet_position: DVec3) -> f64 {
+    camera_planet_position
+        .distance(DVec3::from_array([
+            f64::from(tree.centre_and_height[0]),
+            f64::from(tree.centre_and_height[1]),
+            f64::from(tree.centre_and_height[2]),
+        ]))
+        .max(1.0)
+}
+
+fn projected_tree_height_pixels_at_distance(
+    tree: TreeInstance,
+    distance_meters: f64,
     viewport_height: u32,
     vertical_fov_radians: f64,
 ) -> f64 {
@@ -935,13 +1050,6 @@ fn projected_tree_height_pixels(
     {
         return 0.0;
     }
-    let distance_meters = camera_planet_position
-        .distance(DVec3::from_array([
-            f64::from(tree.centre_and_height[0]),
-            f64::from(tree.centre_and_height[1]),
-            f64::from(tree.centre_and_height[2]),
-        ]))
-        .max(1.0);
     f64::from(tree.centre_and_height[3].max(0.0)) * f64::from(viewport_height)
         / (2.0 * (vertical_fov_radians * 0.5).tan() * distance_meters)
 }
@@ -958,8 +1066,17 @@ fn tree_lod(projected_pixels: f64) -> TreeLod {
     }
 }
 
+#[cfg(test)]
 fn lodded_tree_instance(tree: TreeInstance, projected_pixels: f64) -> Option<TreeInstance> {
-    let density = tree_lod_density(projected_pixels);
+    lodded_tree_instance_with_scale(tree, projected_pixels, 1.0)
+}
+
+fn lodded_tree_instance_with_scale(
+    tree: TreeInstance,
+    projected_pixels: f64,
+    population_scale: f32,
+) -> Option<TreeInstance> {
+    let density = tree_lod_density(projected_pixels) * population_scale.clamp(0.0, 1.0);
     (tree.width_shade_kind_seed[3] < density).then_some(tree)
 }
 
@@ -988,30 +1105,14 @@ fn patch_transition_progress(elapsed_seconds: f64) -> f64 {
     smoothstep01(elapsed_seconds / FOREST_PATCH_TRANSITION_SECONDS)
 }
 
-fn pending_batch_end(next_candidate: usize, candidate_count: usize) -> usize {
+fn pending_batch_end(
+    next_candidate: usize,
+    candidate_count: usize,
+    candidate_budget: usize,
+) -> usize {
     next_candidate
-        .saturating_add(FOREST_PATCH_CANDIDATES_PER_FRAME)
+        .saturating_add(candidate_budget)
         .min(candidate_count)
-}
-
-fn transition_tree_for_slot(
-    index: usize,
-    retiring_trees: &[TreeInstance],
-    incoming_trees: &[TreeInstance],
-    transition_progress: f64,
-) -> Option<TreeInstance> {
-    if transition_progress <= 0.0 && !retiring_trees.is_empty() {
-        return retiring_trees.get(index).copied();
-    }
-    if retiring_trees.is_empty() || transition_progress >= 1.0 {
-        return incoming_trees.get(index).copied();
-    }
-    let threshold = unit_hash((index as u32) ^ 0x3c6e_f372);
-    if transition_progress >= threshold {
-        incoming_trees.get(index).copied()
-    } else {
-        retiring_trees.get(index).copied()
-    }
 }
 
 fn smoothstep01(value: f64) -> f64 {
@@ -1081,6 +1182,12 @@ fn forest_beam_vertices(patch: &ForestPatch) -> Vec<ForestBeamVertex> {
         ]);
     }
     vertices
+}
+
+fn forest_beam_vertices_for_patches<'patch>(
+    patches: impl IntoIterator<Item = &'patch ForestPatch>,
+) -> Vec<ForestBeamVertex> {
+    patches.into_iter().flat_map(forest_beam_vertices).collect()
 }
 
 #[cfg(test)]
@@ -1197,7 +1304,7 @@ mod tests {
         let mut processed = 0;
         let mut frames = 0;
         while processed < TREE_COUNT {
-            let next = pending_batch_end(processed, TREE_COUNT);
+            let next = pending_batch_end(processed, TREE_COUNT, FOREST_PATCH_CANDIDATES_PER_FRAME);
             assert!(next - processed <= FOREST_PATCH_CANDIDATES_PER_FRAME);
             processed = next;
             frames += 1;
@@ -1206,39 +1313,35 @@ mod tests {
             frames,
             TREE_COUNT.div_ceil(FOREST_PATCH_CANDIDATES_PER_FRAME)
         );
+        assert_eq!(
+            pending_batch_end(0, TREE_COUNT, FOREST_PRIMARY_PATCH_CANDIDATES_PER_FRAME),
+            FOREST_PRIMARY_PATCH_CANDIDATES_PER_FRAME
+        );
+        assert_eq!(
+            pending_batch_end(0, TREE_COUNT, FOREST_INITIAL_PATCH_CANDIDATES_PER_FRAME),
+            FOREST_INITIAL_PATCH_CANDIDATES_PER_FRAME
+        );
     }
 
     #[test]
-    fn patch_transition_keeps_one_bounded_population_and_replaces_it_gradually() {
-        let tree = |marker: f32, seed: f32| TreeInstance {
-            centre_and_height: [marker, 0.0, 0.0, 20.0],
-            width_shade_kind_seed: [8.0, 1.0, 0.0, seed],
-        };
-        let retiring = (0..128)
-            .map(|index| tree(-1.0, index as f32 / 128.0))
-            .collect::<Vec<_>>();
-        let incoming = (0..128)
-            .map(|index| tree(1.0, index as f32 / 128.0))
+    fn patch_transition_adds_each_cell_gradually_with_stable_tree_identities() {
+        let trees = (0..128)
+            .map(|index| TreeInstance {
+                centre_and_height: [0.0, 0.0, 0.0, 20.0],
+                width_shade_kind_seed: [8.0, 1.0, 0.0, index as f32 / 128.0],
+            })
             .collect::<Vec<_>>();
         let select = |progress| {
-            (0..retiring.len().max(incoming.len()))
-                .filter_map(|index| transition_tree_for_slot(index, &retiring, &incoming, progress))
+            trees
+                .iter()
+                .copied()
+                .filter(|tree| lodded_tree_instance_with_scale(*tree, 20.0, progress).is_some())
                 .collect::<Vec<_>>()
         };
-        assert!(
-            select(0.0)
-                .iter()
-                .all(|tree| tree.centre_and_height[0] < 0.0)
-        );
+        assert!(select(0.0).is_empty());
         let halfway = select(0.5);
-        assert!(halfway.len() <= TREE_COUNT);
-        assert!(halfway.iter().any(|tree| tree.centre_and_height[0] < 0.0));
-        assert!(halfway.iter().any(|tree| tree.centre_and_height[0] > 0.0));
-        assert!(
-            select(1.0)
-                .iter()
-                .all(|tree| tree.centre_and_height[0] > 0.0)
-        );
+        assert!(!halfway.is_empty() && halfway.len() < trees.len());
+        assert_eq!(select(1.0), trees);
         assert_eq!(patch_transition_progress(0.0), 0.0);
         assert_eq!(
             patch_transition_progress(FOREST_PATCH_TRANSITION_SECONDS),
@@ -1247,72 +1350,77 @@ mod tests {
     }
 
     #[test]
-    fn patch_key_hysteresis_and_rebuild_interval_retain_the_old_patch() {
-        let key = TileKey::root(catinthegarden_coretypes::CubeFace::PositiveX);
-        let patch = ForestPatch {
-            key,
-            centre_direction: DVec3::X,
-            trees: vec![TreeInstance {
-                centre_and_height: [0.0; 4],
-                width_shade_kind_seed: [0.0; 4],
-            }],
-            minimum_source_level: None,
-            beam_base_radius_meters: PLANET_RADIUS_METERS,
-        };
-        let desired_key = TileKey::root(catinthegarden_coretypes::CubeFace::NegativeX);
-        let direction_at_distance = |distance_meters: f64| {
-            let angle = distance_meters / PLANET_RADIUS_METERS;
-            DVec3::new(angle.cos(), angle.sin(), 0.0)
-        };
-        assert!(!patch_rebuild_due(
-            Some(&patch),
-            desired_key,
-            direction_at_distance(FOREST_PATCH_INNER_RADIUS_METERS * 0.9),
-            Some(0.0),
-        ));
-        assert!(!patch_rebuild_due(
-            Some(&patch),
-            desired_key,
-            direction_at_distance(FOREST_PATCH_OUTER_RADIUS_METERS * 1.1),
-            Some(FOREST_PATCH_MINIMUM_REBUILD_SECONDS * 0.4),
-        ));
-        assert!(patch_rebuild_due(
-            Some(&patch),
-            desired_key,
-            direction_at_distance(FOREST_PATCH_OUTER_RADIUS_METERS * 1.1),
-            Some(FOREST_PATCH_MINIMUM_REBUILD_SECONDS),
-        ));
+    fn renderable_range_selects_multiple_nearest_cells_with_a_hard_bound() {
+        let camera_position = FOREST_CENTRE_DIRECTION * (PLANET_RADIUS_METERS + 2.0);
+        let keys = forest_renderable_cell_keys(camera_position, 427, 60.0_f64.to_radians());
+        assert!(keys.len() > 8);
+        assert!(keys.len() <= FOREST_MAX_RENDERABLE_PATCHES);
+        assert_eq!(keys[0], forest_cell_key(FOREST_CENTRE_DIRECTION));
+        let camera_direction = camera_position.normalize();
+        let angular_radius = forest_surface_angular_radius(
+            camera_position.length(),
+            maximum_tree_visibility_distance_meters(427, 60.0_f64.to_radians()),
+        )
+        .expect("ground camera can resolve trees");
+        assert!(keys.iter().all(|key| {
+            camera_direction
+                .angle_between(forest_cell_centre_direction(*key))
+                .abs()
+                <= angular_radius + forest_cell_angular_radius(*key) + 1.0e-12
+        }));
     }
 
     #[test]
-    fn empty_neighbouring_cell_does_not_replace_a_populated_patch() {
-        let key = TileKey::root(catinthegarden_coretypes::CubeFace::PositiveX);
-        let populated = ForestPatch {
-            key,
-            centre_direction: DVec3::X,
-            trees: vec![TreeInstance {
-                centre_and_height: [0.0; 4],
-                width_shade_kind_seed: [0.0; 4],
-            }],
-            minimum_source_level: None,
-            beam_base_radius_meters: PLANET_RADIUS_METERS,
+    fn renderable_cell_selection_crosses_cube_face_seams() {
+        let direction = DVec3::new(1.0, 0.0, 1.0).normalize();
+        let keys = forest_renderable_cell_keys(
+            direction * (PLANET_RADIUS_METERS + 2.0),
+            427,
+            60.0_f64.to_radians(),
+        );
+        let faces = keys.iter().map(|key| key.face).collect::<BTreeSet<_>>();
+        assert!(
+            faces.len() >= 2,
+            "nearby forest cells must cross cube seams"
+        );
+    }
+
+    #[test]
+    fn tree_render_range_is_bounded_and_empty_above_it() {
+        assert_eq!(
+            maximum_tree_visibility_distance_meters(10_000, 10.0_f64.to_radians()),
+            FOREST_TREE_RENDER_DISTANCE_METERS
+        );
+        let camera_position = FOREST_CENTRE_DIRECTION
+            * (PLANET_RADIUS_METERS + FOREST_TREE_RENDER_DISTANCE_METERS * 2.0);
+        assert!(
+            forest_renderable_cell_keys(camera_position, 427, 60.0_f64.to_radians()).is_empty()
+        );
+    }
+
+    #[test]
+    fn draw_instance_budget_is_independent_of_renderable_patch_count() {
+        assert_eq!(FOREST_STARTUP_PATCH_COUNT, 3);
+        assert!(FOREST_MAX_DRAW_INSTANCES > TREE_COUNT);
+        assert!(FOREST_MAX_DRAW_INSTANCES < TREE_COUNT * FOREST_MAX_RENDERABLE_PATCHES);
+    }
+
+    #[test]
+    fn tree_distance_helper_matches_projected_height_path() {
+        let tree = TreeInstance {
+            centre_and_height: [0.0, 0.0, 0.0, 20.0],
+            width_shade_kind_seed: [8.0, 1.0, 0.0, 0.5],
         };
-        let empty = ForestPatch {
-            key: TileKey::root(catinthegarden_coretypes::CubeFace::NegativeX),
-            centre_direction: -DVec3::X,
-            trees: Vec::new(),
-            minimum_source_level: None,
-            beam_base_radius_meters: PLANET_RADIUS_METERS,
-        };
-        assert!(retain_populated_patch_for_empty_cell(
-            Some(&populated),
-            &empty
-        ));
-        assert!(!retain_populated_patch_for_empty_cell(None, &empty));
-        assert!(!retain_populated_patch_for_empty_cell(
-            Some(&populated),
-            &populated
-        ));
+        let camera = DVec3::new(0.0, 0.0, 2_000.0);
+        assert_eq!(
+            projected_tree_height_pixels(tree, camera, 600, 60.0_f64.to_radians()),
+            projected_tree_height_pixels_at_distance(
+                tree,
+                tree_distance_meters(tree, camera),
+                600,
+                60.0_f64.to_radians(),
+            )
+        );
     }
 
     #[test]
@@ -1352,6 +1460,7 @@ mod tests {
             }],
             minimum_source_level: None,
             beam_base_radius_meters: PLANET_RADIUS_METERS + 250.0,
+            visible_since: Instant::now(),
         };
         let vertices = forest_beam_vertices(&patch);
         assert_eq!(vertices.len(), FOREST_BEAM_COUNT * 6);
@@ -1365,6 +1474,36 @@ mod tests {
             .fold(0.0, f64::max);
         assert!(minimum_radius >= patch.beam_base_radius_meters - FOREST_BEAM_TOP_WIDTH_METERS);
         assert!(maximum_radius >= FOREST_BEAM_TOP_RADIUS_METERS - FOREST_BEAM_TOP_WIDTH_METERS);
+    }
+
+    #[test]
+    fn every_populated_renderable_patch_gets_a_beam() {
+        let tree = TreeInstance {
+            centre_and_height: [0.0; 4],
+            width_shade_kind_seed: [0.0; 4],
+        };
+        let patches = [
+            ForestPatch {
+                key: TileKey::root(catinthegarden_coretypes::CubeFace::PositiveX),
+                centre_direction: DVec3::X,
+                trees: vec![tree],
+                minimum_source_level: None,
+                beam_base_radius_meters: PLANET_RADIUS_METERS,
+                visible_since: Instant::now(),
+            },
+            ForestPatch {
+                key: TileKey::root(catinthegarden_coretypes::CubeFace::PositiveZ),
+                centre_direction: DVec3::Z,
+                trees: vec![tree],
+                minimum_source_level: None,
+                beam_base_radius_meters: PLANET_RADIUS_METERS,
+                visible_since: Instant::now(),
+            },
+        ];
+        assert_eq!(
+            forest_beam_vertices_for_patches(&patches).len(),
+            patches.len() * FOREST_BEAM_COUNT * 6
+        );
     }
 
     #[test]
