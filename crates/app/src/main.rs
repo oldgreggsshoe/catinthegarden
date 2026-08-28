@@ -2348,6 +2348,34 @@ impl State {
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
         self.forest
             .update_camera(&self.queue, camera_planet_frame_position);
+        self.forest.update_patch(
+            &self.queue,
+            &self.terrain,
+            camera_planet_frame_position,
+            camera_sea_level_altitude_meters,
+            self.size.height,
+            self.camera.vertical_fov_radians(),
+            presentation_time,
+        );
+        if write_log {
+            let forest = self.forest.stats();
+            tracing::info!(
+                target: "catinthegarden::forest",
+                patch_count = forest.patch_count,
+                instances = forest.instances,
+                full_instances = forest.full_instances,
+                medium_instances = forest.medium_instances,
+                sparse_instances = forest.sparse_instances,
+                zero_instances = forest.zero_instances,
+                rebuild_count = forest.rebuild_count,
+                patch_key = ?forest.patch_key,
+                minimum_source_level = ?forest.minimum_source_level,
+                pending_candidates = forest.pending_candidates,
+                pending_candidates_total = forest.pending_candidates_total,
+                transition_progress = forest.transition_progress,
+                "procedural forest state"
+            );
+        }
         // Probe on the frames that produce a screenshot, so a measured
         // disagreement always has the picture that goes with it.
         let probe_requested =

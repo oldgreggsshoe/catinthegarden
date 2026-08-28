@@ -47,6 +47,10 @@ const FLAT_TRIANGLE_EXPERIMENT_DEFAULT: bool = true;
 const FLAT_TRIANGLE_LOD_DETAIL_SCALE: f64 = 5.0;
 const VIEW_FOCUS_SAMPLES: usize = 32;
 const VIEW_FOCUS_MAX_DISTANCE_METERS: f64 = 500_000.0;
+/// Forest grounding needs a local slope but must not manufacture another
+/// terrain representation. This is deliberately a small fixed footprint;
+/// callers additionally test their canopy footprint before accepting a tree.
+const FOREST_SLOPE_SAMPLE_METERS: f64 = 8.0;
 
 fn flat_triangle_experiment_from_env() -> bool {
     match std::env::var("CATINGARDEN_FLAT_TRIANGLES") {
@@ -359,6 +363,43 @@ pub struct SurfaceHeightBreakdown {
     /// Pyramid level of the tile this came from. A coarse level here is the
     /// usual reason two sides of a comparison disagree about the macro shape.
     pub source_level: u8,
+}
+
+/// A resident-cache-only terrain sample for procedural forest placement.
+///
+/// The height follows the same CPU surface path used by camera clearance. The
+/// categorical biome and bilinear moisture come from the same resolved tile;
+/// no source tile is loaded to answer this query.
+#[derive(Clone, Copy, Debug)]
+pub struct ForestSurfaceSample {
+    pub height_meters: f64,
+    pub macro_height_meters: f64,
+    pub biome: BiomeId,
+    pub moisture: f32,
+    pub slope_radians: f64,
+    pub source_key: TileKey,
+    pub source_level: u8,
+}
+
+/// Forest ownership is categorical: only the two baked forest biomes produce
+/// trees. Moisture and slope remain continuous placement constraints.
+pub fn forest_biome_owns_trees(biome: BiomeId) -> bool {
+    matches!(biome, BiomeId::TemperateForest | BiomeId::TropicalForest)
+}
+
+/// Applies the terrain-side placement constraints without prescribing the
+/// forest renderer's density or species policy.
+pub fn forest_surface_is_eligible(
+    sample: ForestSurfaceSample,
+    minimum_moisture: f32,
+    maximum_slope_radians: f64,
+) -> bool {
+    forest_biome_owns_trees(sample.biome)
+        && sample.macro_height_meters > 0.0
+        && sample.moisture.is_finite()
+        && sample.moisture >= minimum_moisture
+        && sample.slope_radians.is_finite()
+        && sample.slope_radians <= maximum_slope_radians
 }
 
 #[derive(Clone, Debug)]
@@ -1135,29 +1176,95 @@ impl TerrainRenderer {
             .map(|breakdown| breakdown.height_meters)
     }
 
+    /// Samples the currently resident outmap surface for one procedural forest
+    /// candidate. Unlike flight-start preparation and streaming, this never
+    /// performs disk I/O: a patch builder must keep its prior patch while this
+    /// returns `None` during source residency changes.
+    pub fn forest_surface_sample_at(
+        &self,
+        local_surface_direction: DVec3,
+        camera_altitude_meters: f64,
+    ) -> Option<ForestSurfaceSample> {
+        let TerrainDataSource::Outmap(outmap) = &self.source else {
+            return None;
+        };
+        let direction = local_surface_direction.normalize_or_zero();
+        if direction.length_squared() <= f64::EPSILON || !camera_altitude_meters.is_finite() {
+            return None;
+        }
+        let (face, face_uv) = cube_face_uv(direction)?;
+        let (source_key, source_uv) = self.cached_tile_at(direction, face, face_uv)?;
+        let tile = self.tile_cache.get(&source_key)?;
+        let baked_meters = f64::from(sample_height_cpu(&tile.heights_meters, source_uv));
+        let macro_height_meters = if baked_meters <= 0.0 {
+            0.0
+        } else {
+            scaled_outmap_macro_height_meters(baked_meters, camera_altitude_meters)
+        };
+        let height_meters = outmap_surface_height_meters(
+            baked_meters,
+            direction,
+            camera_altitude_meters,
+            continuous_baked_sample_spacing_meters(
+                face_uv,
+                source_key.level,
+                outmap.manifest().dense_level,
+            ),
+        );
+        let biome = BiomeId::try_from(sample_biome_cpu(&tile.biome_ids, source_uv)).ok()?;
+        let moisture = f32::from(sample_moisture_cpu(&tile.moisture, source_uv)) / 255.0;
+        let (tangent_u, tangent_v) = forest_tangent_basis(direction)?;
+        let slope = forest_slope_radians(
+            |offset| {
+                self.surface_height_meters_at(
+                    (direction + offset).normalize_or_zero(),
+                    camera_altitude_meters,
+                )
+            },
+            tangent_u,
+            tangent_v,
+        )?;
+        Some(ForestSurfaceSample {
+            height_meters,
+            macro_height_meters,
+            biome,
+            moisture,
+            slope_radians: slope,
+            source_key,
+            source_level: source_key.level,
+        })
+    }
+
+    fn cached_tile_at(
+        &self,
+        direction: DVec3,
+        face: CubeFace,
+        face_uv: [f64; 2],
+    ) -> Option<(TileKey, [f32; 2])> {
+        // A resident tile pyramid is sparse but dyadic. Probe the one tile at
+        // each level instead of scanning every cached texture; the first hit
+        // is exactly the finest source the previous max-by-level scan chose.
+        for level in (0..=MAX_LOD_LEVEL).rev() {
+            let key = tile_key_for_direction(direction, level);
+            if key.face != face || !self.tile_cache.contains_key(&key) {
+                continue;
+            }
+            if let Some(uv) = source_tile_uv(key, face, face_uv) {
+                return Some((key, uv));
+            }
+        }
+        None
+    }
+
     fn cached_tile_height_at(
         &self,
         direction: DVec3,
         face: CubeFace,
         face_uv: [f64; 2],
     ) -> Option<(u8, f32)> {
-        // A resident tile pyramid is sparse but dyadic. Probe the one tile at
-        // each level instead of scanning every cached texture; the first hit
-        // is exactly the finest source the previous max-by-level scan chose.
-        for level in (0..=MAX_LOD_LEVEL).rev() {
-            let key = tile_key_for_direction(direction, level);
-            if key.face != face {
-                continue;
-            }
-            let Some(tile) = self.tile_cache.get(&key) else {
-                continue;
-            };
-            let Some(uv) = source_tile_uv(key, face, face_uv) else {
-                continue;
-            };
-            return Some((level, sample_height_cpu(&tile.heights_meters, uv)));
-        }
-        None
+        let (key, uv) = self.cached_tile_at(direction, face, face_uv)?;
+        let tile = self.tile_cache.get(&key)?;
+        Some((key.level, sample_height_cpu(&tile.heights_meters, uv)))
     }
 
     /// The same height, split into the part that came from baked data and the
@@ -3602,6 +3709,37 @@ fn sample_moisture_cpu(moisture: &[u8], uv: [f32; 2]) -> u8 {
         .clamp(0.0, 255.0) as u8
 }
 
+fn forest_tangent_basis(direction: DVec3) -> Option<(DVec3, DVec3)> {
+    let reference = if direction.y.abs() < 0.9 {
+        DVec3::Y
+    } else {
+        DVec3::X
+    };
+    let tangent_u = reference.cross(direction).normalize_or_zero();
+    let tangent_v = direction.cross(tangent_u).normalize_or_zero();
+    (tangent_u.length_squared() > f64::EPSILON && tangent_v.length_squared() > f64::EPSILON)
+        .then_some((tangent_u, tangent_v))
+}
+
+fn forest_slope_radians(
+    mut height_at_offset: impl FnMut(DVec3) -> Option<f64>,
+    tangent_u: DVec3,
+    tangent_v: DVec3,
+) -> Option<f64> {
+    let offset_scale = FOREST_SLOPE_SAMPLE_METERS / PLANET_RADIUS_METERS;
+    let left = height_at_offset(-tangent_u * offset_scale)?;
+    let right = height_at_offset(tangent_u * offset_scale)?;
+    let down = height_at_offset(-tangent_v * offset_scale)?;
+    let up = height_at_offset(tangent_v * offset_scale)?;
+    let slope_u = (right - left) / (2.0 * FOREST_SLOPE_SAMPLE_METERS);
+    let slope_v = (up - down) / (2.0 * FOREST_SLOPE_SAMPLE_METERS);
+    slope_u
+        .hypot(slope_v)
+        .atan()
+        .is_finite()
+        .then(|| slope_u.hypot(slope_v).atan())
+}
+
 /// Proves that every height texel which can contribute to bilinear sampling
 /// over a resolved source rectangle lies strictly above sea level.
 ///
@@ -3652,19 +3790,20 @@ mod tests {
     use glam::DVec3;
 
     use super::{
-        ActiveNodeIndex, FadingChunk, LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS,
-        OUTMAP_TILE_GRID_SUBDIVISION_LEVELS, SurfaceDetailNode, TERRAIN_INFO_NEAR_FIELD_BIT,
-        TERRAIN_INFO_SOURCE_EDGE_FADE_BIT, TERRAIN_MATERIAL_LAYER_COUNT,
-        TERRAIN_MATERIAL_TEXTURE_SIZE, TerrainSettings, active_node_at_direction,
-        aligned_texture_row_bytes, conservative_outmap_height_bounds, cube_face_uv,
-        downsample_srgb_rgba8, edge_stitch_info, edge_stitch_level_delta, fallback_uv_transform,
-        height_footprint_is_strictly_land, lod_transition_nodes, lod_transition_progress,
-        node_intersects_source_edge_fade, nodes_share_lod_transition, pack_terrain_info,
-        padded_texture_rows, planet_shader_source, purge_expired_lod_transitions,
-        radial_triangle_radius, sample_biome_cpu, sample_height_cpu, sample_moisture_cpu,
-        should_animate_lod_transition, source_tile_uv_at_direction, surface_detail_filter_meters,
-        terrain_material_layer_texels, terrain_material_texel, tileable_value_noise,
-        viewed_surface_direction,
+        ActiveNodeIndex, FadingChunk, ForestSurfaceSample,
+        LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS, OUTMAP_TILE_GRID_SUBDIVISION_LEVELS,
+        SurfaceDetailNode, TERRAIN_INFO_NEAR_FIELD_BIT, TERRAIN_INFO_SOURCE_EDGE_FADE_BIT,
+        TERRAIN_MATERIAL_LAYER_COUNT, TERRAIN_MATERIAL_TEXTURE_SIZE, TerrainSettings,
+        active_node_at_direction, aligned_texture_row_bytes, conservative_outmap_height_bounds,
+        cube_face_uv, downsample_srgb_rgba8, edge_stitch_info, edge_stitch_level_delta,
+        fallback_uv_transform, forest_biome_owns_trees, forest_slope_radians,
+        forest_surface_is_eligible, height_footprint_is_strictly_land, lod_transition_nodes,
+        lod_transition_progress, node_intersects_source_edge_fade, nodes_share_lod_transition,
+        pack_terrain_info, padded_texture_rows, planet_shader_source,
+        purge_expired_lod_transitions, radial_triangle_radius, sample_biome_cpu, sample_height_cpu,
+        sample_moisture_cpu, should_animate_lod_transition, source_tile_uv_at_direction,
+        surface_detail_filter_meters, terrain_material_layer_texels, terrain_material_texel,
+        tileable_value_noise, viewed_surface_direction,
     };
     use crate::planet::{
         CHUNK_GRID_QUADS, GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, MAX_LOD_LEVEL,
@@ -3673,7 +3812,7 @@ mod tests {
         cube_face_direction,
     };
     use catinthegarden_coretypes::{
-        CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
+        BiomeId, CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
     };
 
     #[test]
@@ -4645,6 +4784,41 @@ mod tests {
     }
 
     #[test]
+    fn far_forest_canopy_breakup_stays_inside_owned_moist_unsnowed_gentle_land() {
+        let shader = planet_shader_source();
+        let canopy = shader
+            .split("fn far_forest_canopy_albedo(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("far forest canopy material is present");
+
+        assert!(canopy.contains("let forest_owned = biome_id == 4u || biome_id == 6u;"));
+        assert!(canopy.contains("if !outmap || !forest_owned"));
+        assert!(canopy.contains("smoothstep(32000.0, 160000.0, camera_distance_meters)"));
+        assert!(canopy.contains("smoothstep(0.38, 0.82, moisture)"));
+        assert!(canopy.contains("select(0.0, 1.0, macro_height_meters > 0.0)"));
+        assert!(canopy.contains("1.0 - smoothstep(0.08, 0.28, slope)"));
+        assert!(canopy.contains("1.0 - max(terrain_snow, clamp(snow_cover, 0.0, 1.0))"));
+        assert!(canopy.contains("terrain_detail_value_noise("));
+        assert!(canopy.contains("let noise_position = direction * 192.0;"));
+        assert!(!canopy.contains("textureSample"));
+        assert_eq!(shader.matches("far_forest_canopy_albedo(").count(), 3);
+
+        let flat = shader
+            .split("fn flat_triangle_colour(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("flat triangle colour path is present");
+        assert!(flat.contains("fill = far_forest_canopy_albedo("));
+        let final_fragment = shader
+            .split("fn terrain_fragment_color(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("final terrain fragment path is present");
+        assert!(final_fragment.contains("textured_terrain_albedo = far_forest_canopy_albedo("));
+    }
+
+    #[test]
     fn raster_aerial_retexturing_uses_continuous_affine_components() {
         let shader = planet_shader_source();
         let normalized_shader = shader.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -4803,6 +4977,75 @@ mod tests {
             ),
             160,
         );
+    }
+
+    #[test]
+    fn forest_biome_ownership_is_categorical() {
+        assert!(forest_biome_owns_trees(BiomeId::TemperateForest));
+        assert!(forest_biome_owns_trees(BiomeId::TropicalForest));
+        for biome in [
+            BiomeId::Ocean,
+            BiomeId::Lake,
+            BiomeId::Ice,
+            BiomeId::Tundra,
+            BiomeId::TemperateGrassland,
+            BiomeId::Desert,
+            BiomeId::MountainRock,
+            BiomeId::MountainSnow,
+        ] {
+            assert!(!forest_biome_owns_trees(biome), "{biome:?} owns no trees");
+        }
+    }
+
+    #[test]
+    fn forest_surface_eligibility_rejects_water_snow_and_steep_sites() {
+        let sample = ForestSurfaceSample {
+            height_meters: 840.0,
+            macro_height_meters: 840.0,
+            biome: BiomeId::TemperateForest,
+            moisture: 0.72,
+            slope_radians: 0.20,
+            source_key: TileKey::root(CubeFace::PositiveX),
+            source_level: 0,
+        };
+        assert!(forest_surface_is_eligible(sample, 0.55, 0.35));
+        assert!(!forest_surface_is_eligible(
+            ForestSurfaceSample {
+                biome: BiomeId::Ocean,
+                macro_height_meters: -4.0,
+                ..sample
+            },
+            0.55,
+            0.35,
+        ));
+        assert!(!forest_surface_is_eligible(
+            ForestSurfaceSample {
+                biome: BiomeId::MountainSnow,
+                ..sample
+            },
+            0.55,
+            0.35,
+        ));
+        assert!(!forest_surface_is_eligible(
+            ForestSurfaceSample {
+                slope_radians: 0.36,
+                ..sample
+            },
+            0.55,
+            0.35,
+        ));
+    }
+
+    #[test]
+    fn forest_slope_uses_a_central_difference_in_metres() {
+        let slope = forest_slope_radians(
+            |offset| Some(offset.x * PLANET_RADIUS_METERS * 0.25),
+            DVec3::X,
+            DVec3::Y,
+        )
+        .expect("finite height samples produce a slope");
+        assert!((slope - 0.25_f64.atan()).abs() < 1.0e-12);
+        assert!(forest_slope_radians(|_| None, DVec3::X, DVec3::Y).is_none());
     }
 
     #[test]

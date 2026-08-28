@@ -96,3 +96,30 @@ justified if biome-plus-moisture masks lack enough control.
    water/slope trees, finite positions, and stable LOD counts; repeat the paired Quadro benchmark.
 
 The current authored forest remains the visual reference until each step passes independently.
+
+## Implemented result
+
+The plan is now implemented on `experiment/billboard-forest`. Terrain exposes a resident-cache-only
+height/biome/moisture/slope sample, while the renderer owns one active camera-local patch and one
+non-rendered pending builder. Candidate positions come from deterministic half-open L12 cube-sphere
+cells; water, non-forest biomes, dry ground, and slopes above 32 degrees reject individual trees.
+Pending grounding is capped at 128 candidates per frame and never replaces the active patch until
+complete. High-speed travel cancels obsolete pending cells rather than building every crossed cell.
+
+Patch replacement uses a 1.5-second stable per-tree population transition in the same bounded
+instance buffer and one draw. Projected-size LOD continuously thins the stable population from full
+above 12 pixels to zero below 1 pixel. The original single camera-sample eligibility gate was
+removed after manual captures showed it clearing and rebuilding all 12,288 trees across a 7m move;
+that synchronous path also produced 226-244ms logged frames. Exact-pose replay
+`forest_boundary_transition/1787931761-65966` now retains one patch and 11,141-11,143 visible
+instances across all four captures, with a 27.549ms median and 29.727ms maximum sampled frame.
+
+The far terrain material now adds seam-safe direction-noise canopy breakup only to moist, gentle,
+unsnowed positive land owned by the temperate/tropical forest biomes. It begins beyond 32km and is
+fully blended by 160km, without a texture, buffer, bake channel, geometry, or draw-call addition.
+
+The final five alternating-order Quadro/Immediate ON/OFF pairs measure a **0.227ms** median paired
+tree-draw cost (0.059-0.316ms), versus the earlier fixed-patch 0.201ms measurement. Median run
+medians are 27.740ms (36.05 FPS) on and 27.513ms (36.35 FPS) off. All ten runs passed with 330
+settled frame intervals each; paths and calculated results are recorded under
+`test-runs/forest-profile-pairs/procedural-final`.

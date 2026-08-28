@@ -4034,3 +4034,29 @@ median 0.201ms forest cost (0.148-0.292ms range): 27.223ms/36.73 FPS on versus
 Timestamp profiling was deliberately not used because it hangs this driver. The complete one-local-
 patch, projected-size tree LOD, and far forest-material design is in
 `docs/FOREST_RENDERING_PLAN.md`.
+
+## Procedural forest completion and pop repair - 28 August 2026
+
+The forest design is implemented without a global tree population. `TerrainRenderer` supplies a
+resident-cache-only rendered height, macro height, biome, moisture, source level, and finite-
+difference slope sample. One active L12 camera-local `ForestPatch` is generated from canonical
+half-open cube-sphere cells; per-tree placement rejects water, non-forest ownership, dry ground, and
+slopes above 32 degrees. A pending CPU builder processes at most 128 candidates per frame, retains
+the old active patch until complete, and abandons obsolete intermediate cells during high-speed
+travel. Finished populations replace over 1.5 seconds through stable per-tree selection in the same
+bounded 12,288-instance buffer and one draw.
+
+Manual pair `manual/1787920912-59912` diagnosed the serious pop: a roughly 7m move changed one
+camera-point eligibility sample, clearing then synchronously recreating the whole forest and
+producing 226-244ms logged frames. That camera-point clear gate is removed. Exact four-capture
+replay `forest_boundary_transition/1787931761-65966` holds one patch and 11,141-11,143 visible
+instances throughout, passing at 27.549ms median / 29.727ms maximum sampled frame. Projected-height
+LOD now continuously hash-thins from full above 12px to zero below 1px rather than revealing a
+quarter population at the threshold. Day `forest_startup/1787931959-66773` and fixed-exposure night
+`forest_night/1787931970-66756` pass; the latter remains fully dark.
+
+Far views use no tree geometry: the existing terrain fragment path adds seam-safe direction-noise
+canopy breakup from 32-160km only on moist, gentle, unsnowed positive forest-biome land. Final five
+alternating-order Quadro/Immediate `forest_performance` pairs measure the tree draw at 0.227ms median
+(0.059-0.316ms), versus the old 0.201ms result; run paths/results are under
+`test-runs/forest-profile-pairs/procedural-final`. Do not enable timestamp profiling on this driver.

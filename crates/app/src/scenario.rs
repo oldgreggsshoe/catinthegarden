@@ -264,6 +264,10 @@ impl ScenarioRunner {
             "forest_startup" => include_str!("../scenarios/forest_startup.json"),
             "forest_performance" => include_str!("../scenarios/forest_performance.json"),
             "forest_night" => include_str!("../scenarios/forest_night.json"),
+            "forest_boundary_transition" => {
+                include_str!("../scenarios/forest_boundary_transition.json")
+            }
+            "forest_travel" => include_str!("../scenarios/forest_travel.json"),
             "highest_prominence_peak" => {
                 include_str!("../scenarios/highest_prominence_peak.json")
             }
@@ -961,6 +965,25 @@ mod tests {
         let scenario = ScenarioRunner::load("forest_night").expect("forest scenario parses");
         assert_eq!(scenario.expected_screenshots(), 1);
         assert!(scenario.uses_fixed_exposure());
+    }
+
+    #[test]
+    fn forest_boundary_transition_replays_the_seven_metre_pop_regression() {
+        let scenario =
+            ScenarioRunner::load("forest_boundary_transition").expect("forest scenario parses");
+        assert_eq!(scenario.expected_screenshots(), 4);
+        assert!(scenario.definition.hide_overlay);
+        assert!(scenario.definition.planet_relative_up);
+    }
+
+    #[test]
+    fn forest_travel_exercises_the_real_low_flight_camera_across_patch_cells() {
+        let scenario = ScenarioRunner::load("forest_travel").expect("forest scenario parses");
+        assert_eq!(scenario.expected_screenshots(), 6);
+        assert_eq!(
+            scenario.definition.forward_flight_start_time_seconds,
+            Some(0.5)
+        );
     }
 
     #[test]

@@ -1,0 +1,64 @@
+{
+  "name": "forest_boundary_transition",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 4.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0.0,
+  "screenshot_times_seconds": [
+    0.5,
+    2.0,
+    3.0,
+    4.0
+  ],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [
+        1499306.152478667,
+        2949648.2073676907,
+        2248760.5787666994
+      ],
+      "look_at": [
+        1499497.902478667,
+        2949488.457367691,
+        2248745.5787666994
+      ]
+    },
+    {
+      "time_s": 4.0,
+      "position": [
+        1499311.741485403,
+        2949643.549493777,
+        2248760.140034692
+      ],
+      "look_at": [
+        1499503.491485403,
+        2949483.799493777,
+        2248745.140034692
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        0.5089275188009639,
+        0.397776994021848,
+        0.7633912782014457
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 60.0
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 4
+  }
+}
