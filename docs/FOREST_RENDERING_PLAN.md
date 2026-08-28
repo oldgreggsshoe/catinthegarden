@@ -130,9 +130,9 @@ The startup-only radial disk has been removed. Every patch, including the startu
 canonical half-open L12 cube-sphere cells, so there is no circular forest boundary or authored
 clearing. Candidate placement remains deterministic from the planet seed and cell/index hashes.
 
-All trees use the evergreen/conifer silhouette. Forest eligibility now includes temperate and
-tropical forest, tundra, ice, and mountain-snow land biomes, while still requiring positive land,
-moisture, and a slope no steeper than 32 degrees. Ocean and lake ownership cannot produce trees.
+Cold forest-capable biomes use the evergreen/conifer silhouette exclusively. Temperate and tropical
+forest biomes use deterministic mixed woodland, while tundra, ice, and mountain-snow land remain
+evergreen-only. All still require positive land, moisture, and a slope no steeper than 32 degrees. Ocean and lake ownership cannot produce trees.
 
 A seam-safe 192-cell-per-direction value-noise field supplies a 35%-100% local density range. It
 creates coherent stands and clearings while guaranteeing that every eligible cell can still contain

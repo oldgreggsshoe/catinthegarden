@@ -4065,8 +4065,9 @@ alternating-order Quadro/Immediate `forest_performance` pairs measure the tree d
 
 The radial 800m startup disk has been removed. Startup and travelling patches now share the same
 canonical half-open L12 cube-sphere cell generator, so forest placement is globally procedural and
-repeatable without a circular authored boundary. All billboard instances use the evergreen/conifer
-silhouette; height, width, shade, and breakup remain deterministic per tree.
+repeatable without a circular authored boundary. Ice, tundra, and mountain-snow biomes force the
+evergreen/conifer silhouette; temperate and tropical forest biomes use deterministic mixed woodland.
+Height, width, shade, and breakup remain deterministic per tree.
 
 Forest eligibility now includes temperate/tropical forest, tundra, ice, and mountain-snow land,
 subject to positive terrain, moisture, and a 32-degree slope limit. Water and lakes remain excluded.

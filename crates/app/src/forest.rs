@@ -6,7 +6,7 @@ use wgpu::util::DeviceExt;
 
 use crate::{
     planet::PLANET_RADIUS_METERS,
-    terrain::{TerrainRenderer, forest_surface_is_eligible},
+    terrain::{TerrainRenderer, forest_biome_requires_evergreen, forest_surface_is_eligible},
 };
 
 pub const FOREST_CENTRE_DIRECTION: DVec3 =
@@ -132,7 +132,11 @@ impl PendingForestPatch {
                     width_shade_kind_seed: [
                         layout.width_meters,
                         layout.shade,
-                        layout.kind,
+                        if forest_biome_requires_evergreen(sample.biome) {
+                            1.0
+                        } else {
+                            layout.kind
+                        },
                         layout.seed,
                     ],
                 });
@@ -623,10 +627,14 @@ fn tree_layout_from_seed(seed: u32) -> TreeLayout {
         height_meters: height,
         width_meters: width,
         shade: 0.82 + hash(seed ^ 0x9e37_79b9) * 0.34,
-        // This experiment uses one evergreen silhouette globally. The seed
-        // still varies height, width, shade, and billboard breakup, but never
-        // selects a broadleaf shape.
-        kind: 1.0,
+        // Temperate/tropical woodland chooses deterministically between
+        // broadleaf and evergreen; cold biomes override this to evergreen when
+        // the sampled terrain biome is known.
+        kind: if hash(seed ^ 0x27d4_eb2f) < 0.28 {
+            1.0
+        } else {
+            0.0
+        },
         seed: hash(seed ^ 0x1656_67b1),
     }
 }
@@ -823,15 +831,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn forest_layout_is_deterministic_cell_owned_and_evergreen() {
+    fn forest_layout_is_deterministic_cell_owned_and_mixed() {
         let key = forest_cell_key(FOREST_CENTRE_DIRECTION);
         let trees = forest_patch_tree_layouts(key);
         assert_eq!(trees.len(), TREE_COUNT);
         assert!(trees.iter().all(|(direction, layout)| {
             forest_cell_key(*direction) == key
-                && layout.kind == 1.0
+                && (layout.kind == 0.0 || layout.kind == 1.0)
                 && layout.height_meters >= TREE_HEIGHT_MIN_METERS
         }));
+        assert!(trees.iter().any(|(_, layout)| layout.kind == 0.0));
+        assert!(trees.iter().any(|(_, layout)| layout.kind == 1.0));
         let density = forest_density_at(FOREST_CENTRE_DIRECTION);
         assert!((0.35..=1.0).contains(&density));
     }

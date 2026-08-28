@@ -396,6 +396,14 @@ pub fn forest_biome_owns_trees(biome: BiomeId) -> bool {
     )
 }
 
+/// Cold forest-capable biomes use the evergreen silhouette exclusively.
+pub fn forest_biome_requires_evergreen(biome: BiomeId) -> bool {
+    matches!(
+        biome,
+        BiomeId::Ice | BiomeId::Tundra | BiomeId::MountainSnow
+    )
+}
+
 /// Applies the terrain-side placement constraints without prescribing the
 /// forest renderer's density or species policy.
 pub fn forest_surface_is_eligible(
@@ -5007,7 +5015,10 @@ mod tests {
                 forest_biome_owns_trees(biome),
                 "{biome:?} supports evergreens"
             );
+            assert!(super::forest_biome_requires_evergreen(biome));
         }
+        assert!(!super::forest_biome_requires_evergreen(BiomeId::TemperateForest));
+        assert!(!super::forest_biome_requires_evergreen(BiomeId::TropicalForest));
     }
 
     #[test]
