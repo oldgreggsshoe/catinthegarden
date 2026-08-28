@@ -213,6 +213,7 @@ pub struct ForestRenderer {
     draw_instances: Vec<TreeInstance>,
     lod_counts: TreeLodCounts,
     last_patch_rebuild_at: Option<Instant>,
+    last_empty_patch_key: Option<TileKey>,
     rebuild_count: u64,
     enabled: bool,
 }
@@ -334,6 +335,7 @@ impl ForestRenderer {
                 ..Default::default()
             },
             last_patch_rebuild_at: None,
+            last_empty_patch_key: None,
             rebuild_count: 0,
             enabled,
         }
@@ -380,6 +382,12 @@ impl ForestRenderer {
             return;
         }
         let desired_key = forest_cell_key(camera_direction);
+        if self
+            .last_empty_patch_key
+            .is_some_and(|key| key != desired_key)
+        {
+            self.last_empty_patch_key = None;
+        }
         let transition_in_progress = self.patch_transition_progress() < 1.0;
         let rebuild_due = patch_rebuild_due(
             self.patch.as_ref(),
@@ -388,7 +396,14 @@ impl ForestRenderer {
             self.last_patch_rebuild_at
                 .map(|last| last.elapsed().as_secs_f64()),
         );
-        if self
+        if self.last_empty_patch_key == Some(desired_key) {
+            // A fully evaluated cell with no eligible trees is a valid empty
+            // result. Keep the last populated patch available while the
+            // camera is in this cell so distance-based LOD can fade it back
+            // in when the player returns, rather than requiring a second
+            // cell-boundary crossing.
+            self.pending_patch = None;
+        } else if self
             .patch
             .as_ref()
             .is_some_and(|patch| patch.key == desired_key && !patch.trees.is_empty())
@@ -412,24 +427,48 @@ impl ForestRenderer {
                     .take()
                     .expect("completed forest patch is pending")
                     .finish();
-                tracing::info!(
-                    target: "catinthegarden::forest",
-                    face = ?patch.key.face,
-                    level = patch.key.level,
-                    x = patch.key.x,
-                    y = patch.key.y,
-                    tree_instances = patch.trees.len(),
-                    minimum_source_level = ?patch.minimum_source_level,
-                    "replaced procedural forest patch"
-                );
-                self.retiring_trees = self
-                    .patch
-                    .replace(patch)
-                    .map(|patch| patch.trees)
-                    .unwrap_or_default();
-                self.patch_transition_started = Some(Instant::now());
-                self.last_patch_rebuild_at = Some(Instant::now());
-                self.rebuild_count += 1;
+                let now = Instant::now();
+                if retain_populated_patch_for_empty_cell(self.patch.as_ref(), &patch) {
+                    // Do not replace a visible forest with an empty
+                    // neighbouring cell. The existing patch remains the
+                    // source for LOD, so it can reappear continuously during
+                    // a retreat/return instead of popping back only after a
+                    // cell boundary is crossed again.
+                    self.last_empty_patch_key = Some(patch.key);
+                    self.last_patch_rebuild_at = Some(now);
+                    self.pending_patch = None;
+                    tracing::info!(
+                        target: "catinthegarden::forest",
+                        face = ?patch.key.face,
+                        level = patch.key.level,
+                        x = patch.key.x,
+                        y = patch.key.y,
+                        "retained procedural forest patch for empty neighbouring cell"
+                    );
+                } else {
+                    let patch_key = patch.key;
+                    let tree_instances = patch.trees.len();
+                    let minimum_source_level = patch.minimum_source_level;
+                    self.last_empty_patch_key = None;
+                    self.retiring_trees = self
+                        .patch
+                        .replace(patch)
+                        .map(|patch| patch.trees)
+                        .unwrap_or_default();
+                    self.patch_transition_started = Some(now);
+                    self.last_patch_rebuild_at = Some(now);
+                    self.rebuild_count += 1;
+                    tracing::info!(
+                        target: "catinthegarden::forest",
+                        face = ?patch_key.face,
+                        level = patch_key.level,
+                        x = patch_key.x,
+                        y = patch_key.y,
+                        tree_instances,
+                        minimum_source_level = ?minimum_source_level,
+                        "replaced procedural forest patch"
+                    );
+                }
             }
         }
         self.update_tree_lod(
@@ -559,6 +598,13 @@ fn forest_cell_centre_direction(key: TileKey) -> DVec3 {
     let u = -1.0 + (f64::from(key.x) + 0.5) * cell_span;
     let v = -1.0 + (f64::from(key.y) + 0.5) * cell_span;
     face_uv_to_direction(key.face, u, v)
+}
+
+fn retain_populated_patch_for_empty_cell(
+    current: Option<&ForestPatch>,
+    incoming: &ForestPatch,
+) -> bool {
+    incoming.trees.is_empty() && current.is_some_and(|patch| !patch.trees.is_empty())
 }
 
 fn patch_rebuild_due(
@@ -1009,6 +1055,35 @@ mod tests {
             desired_key,
             direction_at_distance(FOREST_PATCH_OUTER_RADIUS_METERS * 1.1),
             Some(FOREST_PATCH_MINIMUM_REBUILD_SECONDS),
+        ));
+    }
+
+    #[test]
+    fn empty_neighbouring_cell_does_not_replace_a_populated_patch() {
+        let key = TileKey::root(catinthegarden_coretypes::CubeFace::PositiveX);
+        let populated = ForestPatch {
+            key,
+            centre_direction: DVec3::X,
+            trees: vec![TreeInstance {
+                centre_and_height: [0.0; 4],
+                width_shade_kind_seed: [0.0; 4],
+            }],
+            minimum_source_level: None,
+        };
+        let empty = ForestPatch {
+            key: TileKey::root(catinthegarden_coretypes::CubeFace::NegativeX),
+            centre_direction: -DVec3::X,
+            trees: Vec::new(),
+            minimum_source_level: None,
+        };
+        assert!(retain_populated_patch_for_empty_cell(
+            Some(&populated),
+            &empty
+        ));
+        assert!(!retain_populated_patch_for_empty_cell(None, &empty));
+        assert!(!retain_populated_patch_for_empty_cell(
+            Some(&populated),
+            &populated
         ));
     }
 

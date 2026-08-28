@@ -4076,3 +4076,10 @@ coherent stands and clearings while leaving every eligible location capable of p
 Far terrain canopy shading uses the same broad density field from 32-160km and darkens terrain in
 proportion to tree density, including snowy evergreen regions. Focused forest/terrain shader tests
 pass; fresh GPU visual review of cold-biome coverage remains required.
+
+## Forest retreat/return continuity - 28 August 2026
+
+An empty, fully evaluated neighbouring L12 cell no longer replaces a populated forest patch. The
+empty key is remembered while the prior patch remains the LOD source, so trees fade out and return
+continuously during retreat/return instead of requiring another cell-boundary crossing. The focused
+forest suite includes `empty_neighbouring_cell_does_not_replace_a_populated_patch`.

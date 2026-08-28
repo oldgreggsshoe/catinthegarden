@@ -139,3 +139,13 @@ creates coherent stands and clearings while guaranteeing that every eligible cel
 some trees. The far terrain material uses the same broad density concept from 32-160km and darkens
 forest-owned terrain in proportion to density instead of brightening it, including cold evergreen
 areas under snow.
+
+## Retreat/return empty-cell repair - 28 August 2026
+
+When travelling across L12 cells, a fully evaluated neighbouring cell can legitimately contain no
+eligible trees. Replacing a populated patch with that empty result made a retreat/return sequence
+look as though the forest had vanished until the camera crossed the old cell boundary again. Empty
+neighbouring results are now remembered and do not replace a populated patch; the old population
+remains the LOD source and fades out and back in continuously as distance changes. A different
+desired cell clears the remembered empty key, so other forests still build normally. The focused
+test `empty_neighbouring_cell_does_not_replace_a_populated_patch` covers this replacement rule.
