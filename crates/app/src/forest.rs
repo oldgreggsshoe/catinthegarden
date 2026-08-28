@@ -32,6 +32,12 @@ const TREE_LOD_FULL_PIXELS: f64 = 12.0;
 const TREE_LOD_MEDIUM_PIXELS: f64 = 3.0;
 const TREE_LOD_SPARSE_PIXELS: f64 = 1.0;
 const FOREST_PLANET_SEED: u32 = 0x6d2b_79f5;
+const FOREST_BEAM_ATMOSPHERE_HEIGHT_METERS: f64 = 2_880_000.0;
+const FOREST_BEAM_TOP_RADIUS_METERS: f64 =
+    PLANET_RADIUS_METERS + FOREST_BEAM_ATMOSPHERE_HEIGHT_METERS;
+const FOREST_BEAM_BASE_WIDTH_METERS: f64 = 24.0;
+const FOREST_BEAM_TOP_WIDTH_METERS: f64 = 120.0;
+const FOREST_BEAM_COUNT: usize = 3;
 
 fn forest_rendering_from_env() -> bool {
     match std::env::var("CATINGARDEN_FOREST") {
@@ -48,6 +54,26 @@ fn forest_rendering_from_env() -> bool {
 struct TreeInstance {
     centre_and_height: [f32; 4],
     width_shade_kind_seed: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct ForestBeamVertex {
+    position: [f32; 3],
+    uv: [f32; 2],
+}
+
+impl ForestBeamVertex {
+    const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
+        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2];
+
+    fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &Self::ATTRIBUTES,
+        }
+    }
 }
 
 impl TreeInstance {
@@ -83,6 +109,7 @@ struct ForestPatch {
     centre_direction: DVec3,
     trees: Vec<TreeInstance>,
     minimum_source_level: Option<u8>,
+    beam_base_radius_meters: f64,
 }
 
 struct PendingForestPatch {
@@ -92,6 +119,8 @@ struct PendingForestPatch {
     next_candidate: usize,
     trees: Vec<TreeInstance>,
     minimum_source_level: u8,
+    beam_base_radius_meters: f64,
+    beam_base_centre_dot: f64,
 }
 
 impl PendingForestPatch {
@@ -103,6 +132,8 @@ impl PendingForestPatch {
             next_candidate: 0,
             trees: Vec::with_capacity(TREE_COUNT),
             minimum_source_level: u8::MAX,
+            beam_base_radius_meters: PLANET_RADIUS_METERS,
+            beam_base_centre_dot: -1.0,
         }
     }
 
@@ -123,6 +154,11 @@ impl PendingForestPatch {
             ) && f64::from(layout.seed)
                 <= forest_density_at(direction) * forest_cell_edge_falloff(self.key, direction)
             {
+                let centre_dot = direction.dot(self.centre_direction);
+                if centre_dot > self.beam_base_centre_dot {
+                    self.beam_base_centre_dot = centre_dot;
+                    self.beam_base_radius_meters = PLANET_RADIUS_METERS + sample.height_meters;
+                }
                 let centre = direction
                     * (PLANET_RADIUS_METERS + sample.height_meters - TREE_BASE_SINK_METERS);
                 self.trees.push(TreeInstance {
@@ -156,6 +192,7 @@ impl PendingForestPatch {
             trees: self.trees,
             minimum_source_level: (self.minimum_source_level != u8::MAX)
                 .then_some(self.minimum_source_level),
+            beam_base_radius_meters: self.beam_base_radius_meters,
         }
     }
 }
@@ -201,14 +238,18 @@ pub struct ForestStats {
     pub pending_candidates: u32,
     pub pending_candidates_total: u32,
     pub transition_progress: f32,
+    pub beams_enabled: bool,
 }
 
 pub struct ForestRenderer {
     pipeline: wgpu::RenderPipeline,
+    beam_pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
     uniform_buffer: wgpu::Buffer,
     instance_buffer: wgpu::Buffer,
+    beam_vertex_buffer: wgpu::Buffer,
     instance_count: u32,
+    beam_vertex_count: u32,
     patch: Option<ForestPatch>,
     pending_patch: Option<PendingForestPatch>,
     retiring_trees: Vec<TreeInstance>,
@@ -219,6 +260,7 @@ pub struct ForestRenderer {
     last_empty_patch_key: Option<TileKey>,
     rebuild_count: u64,
     enabled: bool,
+    beams_enabled: bool,
 }
 
 impl ForestRenderer {
@@ -234,6 +276,7 @@ impl ForestRenderer {
             centre_direction: forest_cell_centre_direction(initial_key),
             trees: Vec::new(),
             minimum_source_level: None,
+            beam_base_radius_meters: PLANET_RADIUS_METERS,
         };
         let instances = initial_patch.trees.clone();
         let initial_instance_count = instances.len() as u32;
@@ -315,6 +358,50 @@ impl ForestRenderer {
             multiview_mask: None,
             cache: None,
         });
+        let beam_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("forest light beam shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("forest_beam.wgsl").into()),
+        });
+        let beam_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("forest light beam pipeline layout"),
+            bind_group_layouts: &[Some(camera_bind_group_layout), Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
+        let beam_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("forest light beam pipeline"),
+            layout: Some(&beam_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &beam_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[ForestBeamVertex::layout()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &beam_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: hdr_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Greater),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
         let mut buffer_instances = vec![<TreeInstance as bytemuck::Zeroable>::zeroed(); TREE_COUNT];
         buffer_instances[..instances.len()].copy_from_slice(&instances);
         let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -322,12 +409,21 @@ impl ForestRenderer {
             contents: bytemuck::cast_slice(&buffer_instances),
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
+        let beam_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("forest light beam vertices"),
+            size: (FOREST_BEAM_COUNT * 6 * size_of::<ForestBeamVertex>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         Self {
             pipeline,
+            beam_pipeline,
             bind_group,
             uniform_buffer,
             instance_buffer,
+            beam_vertex_buffer,
             instance_count: initial_instance_count,
+            beam_vertex_count: 0,
             patch: Some(initial_patch),
             pending_patch: Some(PendingForestPatch::new(initial_key)),
             retiring_trees: Vec::new(),
@@ -341,6 +437,7 @@ impl ForestRenderer {
             last_empty_patch_key: None,
             rebuild_count: 0,
             enabled,
+            beams_enabled: false,
         }
     }
 
@@ -449,6 +546,7 @@ impl ForestRenderer {
                         "retained procedural forest patch for empty neighbouring cell"
                     );
                 } else {
+                    self.update_beam_geometry(queue, &patch);
                     let patch_key = patch.key;
                     let tree_instances = patch.trees.len();
                     let minimum_source_level = patch.minimum_source_level;
@@ -568,7 +666,46 @@ impl ForestRenderer {
                 .map(|pending| pending.candidates.len() as u32)
                 .unwrap_or(0),
             transition_progress: self.patch_transition_progress() as f32,
+            beams_enabled: self.beams_enabled,
         }
+    }
+
+    pub fn toggle_beams(&mut self) {
+        self.beams_enabled = !self.beams_enabled;
+        tracing::info!(
+            target: "catinthegarden::forest",
+            enabled = self.beams_enabled,
+            "forest light beams toggled"
+        );
+    }
+
+    fn update_beam_geometry(&mut self, queue: &wgpu::Queue, patch: &ForestPatch) {
+        let vertices = forest_beam_vertices(patch);
+        debug_assert!(vertices.len() <= FOREST_BEAM_COUNT * 6);
+        if !vertices.is_empty() {
+            queue.write_buffer(&self.beam_vertex_buffer, 0, bytemuck::cast_slice(&vertices));
+        }
+        self.beam_vertex_count = vertices.len() as u32;
+    }
+
+    pub fn draw_beams<'pass>(
+        &'pass self,
+        render_pass: &mut wgpu::RenderPass<'pass>,
+        camera_bind_group: &'pass wgpu::BindGroup,
+        camera_altitude_meters: f64,
+    ) {
+        if !self.enabled
+            || !self.beams_enabled
+            || !camera_altitude_meters.is_finite()
+            || self.beam_vertex_count == 0
+        {
+            return;
+        }
+        render_pass.set_pipeline(&self.beam_pipeline);
+        render_pass.set_bind_group(0, camera_bind_group, &[]);
+        render_pass.set_bind_group(1, &self.bind_group, &[]);
+        render_pass.set_vertex_buffer(0, self.beam_vertex_buffer.slice(..));
+        render_pass.draw(0..self.beam_vertex_count, 0..1);
     }
 
     pub fn draw<'pass>(
@@ -899,6 +1036,53 @@ fn unit_hash(value: u32) -> f64 {
     f64::from(hash_u32(value)) / (f64::from(u32::MAX) + 1.0)
 }
 
+fn forest_beam_vertices(patch: &ForestPatch) -> Vec<ForestBeamVertex> {
+    if patch.trees.is_empty() {
+        return Vec::new();
+    }
+    let up = patch.centre_direction.normalize();
+    let reference = if up.y.abs() < 0.9 { DVec3::Y } else { DVec3::X };
+    let tangent_a = up.cross(reference).normalize();
+    let tangent_b = up.cross(tangent_a).normalize();
+    let tangents = [tangent_a, tangent_b, (tangent_a + tangent_b).normalize()];
+    let bottom = up * patch.beam_base_radius_meters;
+    let top = up * FOREST_BEAM_TOP_RADIUS_METERS;
+    let mut vertices = Vec::with_capacity(FOREST_BEAM_COUNT * 6);
+    for tangent in tangents {
+        let bottom_left = bottom - tangent * (FOREST_BEAM_BASE_WIDTH_METERS * 0.5);
+        let bottom_right = bottom + tangent * (FOREST_BEAM_BASE_WIDTH_METERS * 0.5);
+        let top_left = top - tangent * (FOREST_BEAM_TOP_WIDTH_METERS * 0.5);
+        let top_right = top + tangent * (FOREST_BEAM_TOP_WIDTH_METERS * 0.5);
+        vertices.extend([
+            ForestBeamVertex {
+                position: bottom_left.as_vec3().to_array(),
+                uv: [0.0, 0.0],
+            },
+            ForestBeamVertex {
+                position: bottom_right.as_vec3().to_array(),
+                uv: [1.0, 0.0],
+            },
+            ForestBeamVertex {
+                position: top_right.as_vec3().to_array(),
+                uv: [1.0, 1.0],
+            },
+            ForestBeamVertex {
+                position: bottom_left.as_vec3().to_array(),
+                uv: [0.0, 0.0],
+            },
+            ForestBeamVertex {
+                position: top_right.as_vec3().to_array(),
+                uv: [1.0, 1.0],
+            },
+            ForestBeamVertex {
+                position: top_left.as_vec3().to_array(),
+                uv: [0.0, 1.0],
+            },
+        ]);
+    }
+    vertices
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1073,6 +1257,7 @@ mod tests {
                 width_shade_kind_seed: [0.0; 4],
             }],
             minimum_source_level: None,
+            beam_base_radius_meters: PLANET_RADIUS_METERS,
         };
         let desired_key = TileKey::root(catinthegarden_coretypes::CubeFace::NegativeX);
         let direction_at_distance = |distance_meters: f64| {
@@ -1110,12 +1295,14 @@ mod tests {
                 width_shade_kind_seed: [0.0; 4],
             }],
             minimum_source_level: None,
+            beam_base_radius_meters: PLANET_RADIUS_METERS,
         };
         let empty = ForestPatch {
             key: TileKey::root(catinthegarden_coretypes::CubeFace::NegativeX),
             centre_direction: -DVec3::X,
             trees: Vec::new(),
             minimum_source_level: None,
+            beam_base_radius_meters: PLANET_RADIUS_METERS,
         };
         assert!(retain_populated_patch_for_empty_cell(
             Some(&populated),
@@ -1135,6 +1322,49 @@ mod tests {
         assert!(shader.contains("centre_and_height: vec4<f32>"));
         assert!(shader.contains("if !trunk && !canopy"));
         assert!(!shader.contains("textureSample"));
+    }
+
+    #[test]
+    fn forest_beam_shader_parses_and_is_depth_tested() {
+        let shader = include_str!("forest_beam.wgsl");
+        let module =
+            wgpu::naga::front::wgsl::parse_str(shader).expect("forest beam shader must parse");
+        wgpu::naga::valid::Validator::new(
+            wgpu::naga::valid::ValidationFlags::all(),
+            wgpu::naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("forest beam shader must validate");
+        assert!(shader.contains("fn vs_main"));
+        assert!(shader.contains("fn fs_main"));
+        assert!(shader.contains("smoothstep(0.0, 0.24"));
+        assert!(shader.contains("discard;"));
+    }
+
+    #[test]
+    fn forest_beams_span_from_the_forest_surface_to_atmosphere_top() {
+        let patch = ForestPatch {
+            key: TileKey::root(catinthegarden_coretypes::CubeFace::PositiveX),
+            centre_direction: DVec3::X,
+            trees: vec![TreeInstance {
+                centre_and_height: [0.0; 4],
+                width_shade_kind_seed: [0.0; 4],
+            }],
+            minimum_source_level: None,
+            beam_base_radius_meters: PLANET_RADIUS_METERS + 250.0,
+        };
+        let vertices = forest_beam_vertices(&patch);
+        assert_eq!(vertices.len(), FOREST_BEAM_COUNT * 6);
+        let minimum_radius = vertices
+            .iter()
+            .map(|vertex| DVec3::from_array(vertex.position.map(f64::from)).length())
+            .fold(f64::INFINITY, f64::min);
+        let maximum_radius = vertices
+            .iter()
+            .map(|vertex| DVec3::from_array(vertex.position.map(f64::from)).length())
+            .fold(0.0, f64::max);
+        assert!(minimum_radius >= patch.beam_base_radius_meters - FOREST_BEAM_TOP_WIDTH_METERS);
+        assert!(maximum_radius >= FOREST_BEAM_TOP_RADIUS_METERS - FOREST_BEAM_TOP_WIDTH_METERS);
     }
 
     #[test]
@@ -1158,5 +1388,15 @@ mod tests {
         let source = include_str!("forest.rs");
         assert!(source.contains("CATINGARDEN_FOREST"));
         assert!(source.contains("if !self.enabled"));
+    }
+
+    #[test]
+    fn forest_beams_are_off_by_default_and_toggleable_with_b() {
+        let source = include_str!("forest.rs");
+        let main = include_str!("main.rs");
+        assert!(source.contains("beams_enabled: false"));
+        assert!(source.contains("pub fn toggle_beams"));
+        assert!(main.contains("KeyCode::KeyB"));
+        assert!(main.contains("state.forest.toggle_beams()"));
     }
 }

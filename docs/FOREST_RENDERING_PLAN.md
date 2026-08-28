@@ -156,3 +156,11 @@ The canonical L12 cell remains the deterministic ownership unit, but tree accept
 slightly warped radial falloff inside that cell. Trees taper out before the UV boundary, with a
 low-frequency warp preventing a perfect circle, so the cell cannot read as a square forest from
 above while placement, terrain eligibility, and the one-patch budget remain unchanged.
+
+## Forest-centre atmospheric beams - 28 August 2026
+
+The forest renderer now owns an opt-in light-beam presentation. Three crossed, translucent radial
+shafts start at the closest accepted tree to the deterministic cell centre and extend to the top of
+the 2,880km gameplay atmosphere. They are depth-tested against terrain, draw before cloud shells so
+clouds can veil them, and use the current sun elevation for a restrained warm-white intensity. The
+effect is disabled by default and toggled with **B**; it adds no weather state or tree instances.

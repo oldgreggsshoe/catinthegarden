@@ -4090,3 +4090,10 @@ Tree candidates still use canonical half-open L12 ownership, but accepted trees 
 slightly warped radial edge falloff inside the cell. The stand tapers before the UV boundary and no
 longer presents a square silhouette; terrain eligibility, deterministic placement, and the bounded
 single-patch renderer are unchanged. Focused forest tests pass.
+
+## Forest-centre atmospheric beams - 28 August 2026
+
+An opt-in forest beam presentation adds three crossed translucent radial shafts from the accepted
+forest centre to the top of the 2,880km gameplay atmosphere. The shafts are depth-tested against
+terrain, rendered before weather shells, and sun-elevation tinted. They are off by default and toggle
+with **B**; no weather state or tree population is added.

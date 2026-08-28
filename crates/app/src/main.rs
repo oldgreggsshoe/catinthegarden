@@ -2063,6 +2063,7 @@ impl State {
             let flight_speed_scale = self.flight_speed_scale;
             let adapter_label = self.adapter_label.clone();
             let terrain_stats = self.terrain_stats.clone();
+            let forest_snapshot = self.forest.stats();
             let weather_snapshot = self.weather.debug_snapshot();
             let minimum_lod_level = terrain_stats
                 .level_histogram
@@ -2105,6 +2106,12 @@ impl State {
                             ui.label(format!(
                                 "Ocean: {} chunks  |  {} triangles",
                                 terrain_stats.ocean_chunks, terrain_stats.ocean_triangles,
+                            ));
+                            ui.label(format!(
+                                "Forest: {} trees  |  patch {:?}  |  beams {} (B)",
+                                forest_snapshot.instances,
+                                forest_snapshot.patch_key,
+                                if forest_snapshot.beams_enabled { "on" } else { "off" },
                             ));
                             ui.label(format!(
                                 "Weather grid: {} cells  |  area {:.6e} m²  |  cell area {:.3e}-{:.3e} m²  |  t {:.0}s / {} steps",
@@ -2230,7 +2237,7 @@ impl State {
                             ));
                             ui.label(format!("Ocean Gerstner range: {ocean_wave_range:.2} m"));
                             ui.label(
-                                "F: fullscreen  |  F3: overlay  |  F4: camera mode  |  F5: render path  |  WASD: fly  |  [ / ]: flight speed  |  O: triangle outlines  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
+                                "F: fullscreen  |  F3: overlay  |  F4: camera mode  |  F5: render path  |  WASD: fly  |  [ / ]: flight speed  |  O: triangle outlines  |  B: forest beams  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
                             );
                             ui.label("Default: fullscreen, HUD hidden, auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc/Q: quit");
                         });
@@ -2373,6 +2380,7 @@ impl State {
                 pending_candidates = forest.pending_candidates,
                 pending_candidates_total = forest.pending_candidates_total,
                 transition_progress = forest.transition_progress,
+                beams_enabled = forest.beams_enabled,
                 "procedural forest state"
             );
         }
@@ -2674,6 +2682,11 @@ impl State {
                 timestamp_writes: None,
                 multiview_mask: None,
             });
+            self.forest.draw_beams(
+                &mut render_pass,
+                &self.camera_bind_group,
+                camera_sea_level_altitude_meters,
+            );
             self.weather_clouds
                 .draw(&mut render_pass, &self.camera_bind_group);
             self.forest.draw(
@@ -3303,6 +3316,14 @@ impl ApplicationHandler for App {
                         && event.physical_key == PhysicalKey::Code(KeyCode::KeyO) =>
                 {
                     state.toggle_flat_triangle_outlines();
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::KeyB) =>
+                {
+                    state.forest.toggle_beams();
+                    state.mark_hud_dirty();
                     window.request_redraw();
                 }
                 WindowEvent::KeyboardInput { event, .. }
