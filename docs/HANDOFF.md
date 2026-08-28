@@ -4060,3 +4060,18 @@ canopy breakup from 32-160km only on moist, gentle, unsnowed positive forest-bio
 alternating-order Quadro/Immediate `forest_performance` pairs measure the tree draw at 0.227ms median
 (0.059-0.316ms), versus the old 0.201ms result; run paths/results are under
 `test-runs/forest-profile-pairs/procedural-final`. Do not enable timestamp profiling on this driver.
+
+## Global deterministic evergreen forests - 28 August 2026
+
+The radial 800m startup disk has been removed. Startup and travelling patches now share the same
+canonical half-open L12 cube-sphere cell generator, so forest placement is globally procedural and
+repeatable without a circular authored boundary. All billboard instances use the evergreen/conifer
+silhouette; height, width, shade, and breakup remain deterministic per tree.
+
+Forest eligibility now includes temperate/tropical forest, tundra, ice, and mountain-snow land,
+subject to positive terrain, moisture, and a 32-degree slope limit. Water and lakes remain excluded.
+A seam-safe 192-cell directional value-noise field varies candidate density from 35% to 100%, giving
+coherent stands and clearings while leaving every eligible location capable of producing trees.
+Far terrain canopy shading uses the same broad density field from 32-160km and darkens terrain in
+proportion to tree density, including snowy evergreen regions. Focused forest/terrain shader tests
+pass; fresh GPU visual review of cold-biome coverage remains required.

@@ -947,8 +947,9 @@ fn flat_triangle_land_biome(primary: u32, first: u32, second: u32, third: u32) -
 
 // Individual tree geometry is deliberately camera-local. Once those trees
 // are sub-pixel, retain the baked forest ownership with a seam-safe canopy
-// tint made only from planet direction. This never changes biome ownership,
-// terrain height, or water; it only breaks up the far forest albedo.
+// density made only from planet direction. This never changes biome ownership,
+// terrain height, or water; it darkens the far forest albedo in proportion to
+// the same broad density field used by local evergreen placement.
 fn far_forest_canopy_albedo(
     base_albedo: vec3<f32>,
     outmap: bool,
@@ -960,7 +961,11 @@ fn far_forest_canopy_albedo(
     camera_distance_meters: f32,
     snow_cover: f32,
 ) -> vec3<f32> {
-    let forest_owned = biome_id == 4u || biome_id == 6u;
+    let forest_owned = biome_id == 2u
+        || biome_id == 3u
+        || biome_id == 4u
+        || biome_id == 6u
+        || biome_id == 9u;
     if !outmap || !forest_owned {
         return base_albedo;
     }
@@ -977,14 +982,9 @@ fn far_forest_canopy_albedo(
     let slope_weight = 1.0 - smoothstep(0.08, 0.28, slope);
     let moisture_weight = smoothstep(0.38, 0.82, moisture);
     let land_weight = select(0.0, 1.0, macro_height_meters > 0.0);
-    let latitude_amount = abs(direction.y);
-    let snowline_meters = mix(6200.0, 2200.0, latitude_amount);
-    let terrain_snow = smoothstep(
-        snowline_meters,
-        snowline_meters + 900.0,
-        macro_height_meters,
-    );
-    let snow_weight = 1.0 - max(terrain_snow, clamp(snow_cover, 0.0, 1.0));
+    // Snow does not suppress this species: these are evergreen trees, and the
+    // cold biomes intentionally remain eligible where moisture and slope pass.
+    let snow_weight = mix(1.0, 0.76, clamp(snow_cover, 0.0, 1.0));
     let canopy_weight = distance_weight
         * moisture_weight
         * land_weight
@@ -1003,12 +1003,13 @@ fn far_forest_canopy_albedo(
         fract(noise_position),
     ).value * 0.5 + 0.5;
     let canopy_cluster = smoothstep(0.24, 0.76, canopy_noise);
+    let tree_density = mix(0.35, 1.0, canopy_cluster);
     let canopy_tint = mix(
-        vec3<f32>(0.74, 0.88, 0.72),
-        vec3<f32>(0.98, 1.04, 0.90),
+        vec3<f32>(0.58, 0.68, 0.60),
+        vec3<f32>(0.78, 0.86, 0.72),
         canopy_cluster,
     );
-    return mix(base_albedo, base_albedo * canopy_tint, canopy_weight * 0.38);
+    return mix(base_albedo, base_albedo * canopy_tint, canopy_weight * tree_density * 0.62);
 }
 
 fn apply_terrain_distance_fog(

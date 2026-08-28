@@ -80,9 +80,8 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vertex_index: u32) -> Vert
     let view_position = planet_to_view(world_position - forest.camera_planet_position.xyz);
     let solar_elevation_cosine = dot(up, normalize(camera.sun_direction.xyz));
     let lighting = tree_lighting(solar_elevation_cosine) * shade;
-    let broadleaf = srgb_to_linear(vec3<f32>(0.10, 0.34, 0.12));
     let conifer = srgb_to_linear(vec3<f32>(0.07, 0.25, 0.10));
-    let colour = mix(broadleaf, conifer, kind) * lighting;
+    let colour = conifer * lighting;
     return VertexOutput(
         camera.projection_matrix * vec4<f32>(view_position, 1.0),
         vec2<f32>(corner.x * 0.5 + 0.5, corner.y),
@@ -102,16 +101,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let point = vec2<f32>(input.uv.x * 2.0 - 1.0, input.uv.y);
     let trunk_half_width = 0.075 + input.seed * 0.025;
     let trunk = abs(point.x) < trunk_half_width && point.y < 0.38;
-    var canopy = false;
-    if input.colour_and_kind.w < 0.5 {
-        canopy = circle(point, vec2<f32>(-0.20, 0.60), vec2<f32>(0.43, 0.31))
-            || circle(point, vec2<f32>(0.20, 0.61), vec2<f32>(0.45, 0.33))
-            || circle(point, vec2<f32>(0.0, 0.79), vec2<f32>(0.48, 0.30));
-    } else {
-        let crown_width = (1.0 - point.y) * 0.82
-            + 0.08 * sin(point.y * 43.0 + input.seed * 19.0);
-        canopy = point.y > 0.17 && point.y < 0.98 && abs(point.x) < crown_width;
-    }
+    let crown_width = (1.0 - point.y) * 0.82
+        + 0.08 * sin(point.y * 43.0 + input.seed * 19.0);
+    let canopy = point.y > 0.17 && point.y < 0.98 && abs(point.x) < crown_width;
     if !trunk && !canopy {
         discard;
     }

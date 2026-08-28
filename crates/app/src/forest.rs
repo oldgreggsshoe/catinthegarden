@@ -14,13 +14,10 @@ pub const FOREST_CENTRE_DIRECTION: DVec3 =
 pub const FOREST_START_PITCH_RADIANS: f64 = 4.0_f64.to_radians();
 
 const TREE_COUNT: usize = 12_288;
-const FOREST_RADIUS_METERS: f64 = 800.0;
-const CLEARING_RADIUS_METERS: f64 = 14.0;
 const TREE_BASE_SINK_METERS: f64 = 0.45;
 const TREE_HEIGHT_MIN_METERS: f32 = 11.0;
 const TREE_HEIGHT_RANGE_METERS: f32 = 13.0;
 const FOREST_DRAW_ALTITUDE_METERS: f64 = 50_000.0;
-const GOLDEN_ANGLE_RADIANS: f64 = 2.399_963_229_728_653;
 const FOREST_CELL_LEVEL: u8 = 12;
 const FOREST_MINIMUM_MOISTURE: f32 = 0.38;
 const FOREST_MAXIMUM_SLOPE_RADIANS: f64 = 32.0_f64.to_radians();
@@ -72,7 +69,6 @@ struct ForestUniform {
 
 #[derive(Clone, Copy, Debug)]
 struct TreeLayout {
-    tangent_offset_meters: [f64; 2],
     height_meters: f32,
     width_meters: f32,
     shade: f32,
@@ -122,7 +118,8 @@ impl PendingForestPatch {
                 sample,
                 FOREST_MINIMUM_MOISTURE,
                 FOREST_MAXIMUM_SLOPE_RADIANS,
-            ) {
+            ) && f64::from(layout.seed) <= forest_density_at(direction)
+            {
                 let centre = direction
                     * (PLANET_RADIUS_METERS + sample.height_meters - TREE_BASE_SINK_METERS);
                 self.trees.push(TreeInstance {
@@ -221,12 +218,13 @@ impl ForestRenderer {
         device: &wgpu::Device,
         hdr_format: wgpu::TextureFormat,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
-        terrain: &mut TerrainRenderer,
+        _terrain: &mut TerrainRenderer,
     ) -> Self {
+        let initial_key = forest_cell_key(FOREST_CENTRE_DIRECTION);
         let initial_patch = ForestPatch {
-            key: forest_cell_key(FOREST_CENTRE_DIRECTION),
-            centre_direction: FOREST_CENTRE_DIRECTION.normalize(),
-            trees: grounded_tree_instances(terrain),
+            key: initial_key,
+            centre_direction: forest_cell_centre_direction(initial_key),
+            trees: Vec::new(),
             minimum_source_level: None,
         };
         let instances = initial_patch.trees.clone();
@@ -323,7 +321,7 @@ impl ForestRenderer {
             instance_buffer,
             instance_count: initial_instance_count,
             patch: Some(initial_patch),
-            pending_patch: None,
+            pending_patch: Some(PendingForestPatch::new(initial_key)),
             retiring_trees: Vec::new(),
             patch_transition_started: None,
             draw_instances: instances,
@@ -389,7 +387,7 @@ impl ForestRenderer {
         if self
             .patch
             .as_ref()
-            .is_some_and(|patch| patch.key == desired_key)
+            .is_some_and(|patch| patch.key == desired_key && !patch.trees.is_empty())
         {
             self.pending_patch = None;
         } else if !transition_in_progress && rebuild_due {
@@ -568,7 +566,10 @@ fn patch_rebuild_due(
     let Some(patch) = patch else {
         return true;
     };
-    if patch.key == desired_key {
+    if patch.trees.is_empty() {
+        return true;
+    }
+    if patch.key == desired_key && !patch.trees.is_empty() {
         return false;
     }
     let distance_meters =
@@ -619,17 +620,88 @@ fn tree_layout_from_seed(seed: u32) -> TreeLayout {
     let height = TREE_HEIGHT_MIN_METERS + hash(seed ^ 0xa511_e9b3) * TREE_HEIGHT_RANGE_METERS;
     let width = height * (0.32 + hash(seed ^ 0x63d8_3595) * 0.18);
     TreeLayout {
-        tangent_offset_meters: [0.0, 0.0],
         height_meters: height,
         width_meters: width,
         shade: 0.82 + hash(seed ^ 0x9e37_79b9) * 0.34,
-        kind: if hash(seed ^ 0x27d4_eb2f) < 0.28 {
-            1.0
-        } else {
-            0.0
-        },
+        // This experiment uses one evergreen silhouette globally. The seed
+        // still varies height, width, shade, and billboard breakup, but never
+        // selects a broadleaf shape.
+        kind: 1.0,
         seed: hash(seed ^ 0x1656_67b1),
     }
+}
+
+/// Low-frequency, seam-safe density field shared conceptually with the far
+/// terrain canopy material. The floor keeps every eligible cold/forest cell
+/// capable of producing trees; the field only creates natural clearings and
+/// denser stands instead of a hard-edged disk.
+fn forest_density_at(direction: DVec3) -> f64 {
+    let direction = direction.normalize();
+    let position = direction * 192.0;
+    let cell = [
+        position.x.floor() as i32,
+        position.y.floor() as i32,
+        position.z.floor() as i32,
+    ];
+    let fraction = [
+        position.x - f64::from(cell[0]),
+        position.y - f64::from(cell[1]),
+        position.z - f64::from(cell[2]),
+    ];
+    let value = forest_value_noise(cell, fraction) * 0.5 + 0.5;
+    let cluster = smoothstep01((value - 0.24) / (0.76 - 0.24));
+    0.35 + cluster * 0.65
+}
+
+fn forest_value_noise(cell: [i32; 3], fraction: [f64; 3]) -> f64 {
+    let fade = fraction.map(|amount| amount * amount * (3.0 - amount * 2.0));
+    let hash_axis = |coordinate: i32, salt: u32| {
+        (
+            detail_mix((coordinate as u32) ^ salt),
+            detail_mix((coordinate.wrapping_add(1) as u32) ^ salt),
+        )
+    };
+    let x = hash_axis(cell[0], 0x27d4_eb2f);
+    let y = hash_axis(cell[1], 0x9e37_79b9);
+    let z = hash_axis(cell[2], 0x85eb_ca6b);
+    let corner = |x: u32, y: u32, z: u32| {
+        let combined = detail_avalanche(x ^ y.rotate_left(11) ^ z.rotate_left(22));
+        f64::from(combined >> 8) * (2.0 / 16_777_216.0) - 1.0
+    };
+    let a = corner(x.0, y.0, z.0);
+    let b = corner(x.1, y.0, z.0);
+    let c = corner(x.0, y.1, z.0);
+    let d = corner(x.1, y.1, z.0);
+    let e = corner(x.0, y.0, z.1);
+    let f = corner(x.1, y.0, z.1);
+    let g = corner(x.0, y.1, z.1);
+    let h = corner(x.1, y.1, z.1);
+    let k1 = b - a;
+    let k2 = c - a;
+    let k3 = e - a;
+    let k4 = a - b - c + d;
+    let k5 = a - c - e + g;
+    let k6 = a - b - e + f;
+    let k7 = -a + b + c - d + e - f - g + h;
+    a + k1 * fade[0]
+        + k2 * fade[1]
+        + k3 * fade[2]
+        + k4 * fade[0] * fade[1]
+        + k5 * fade[1] * fade[2]
+        + k6 * fade[2] * fade[0]
+        + k7 * fade[0] * fade[1] * fade[2]
+}
+
+fn detail_mix(value: u32) -> u32 {
+    let mut value = value.wrapping_mul(0x9e37_79b1);
+    value ^= value >> 15;
+    value
+}
+
+fn detail_avalanche(value: u32) -> u32 {
+    let mut value = value.wrapping_mul(0x85eb_ca6b);
+    value ^= value >> 16;
+    value
 }
 
 fn projected_tree_height_pixels(
@@ -729,66 +801,6 @@ fn smoothstep01(value: f64) -> f64 {
     value * value * (3.0 - 2.0 * value)
 }
 
-fn grounded_tree_instances(terrain: &mut TerrainRenderer) -> Vec<TreeInstance> {
-    let centre = FOREST_CENTRE_DIRECTION.normalize();
-    terrain.prepare_flight_start_surface_height_meters(centre, 2.0);
-    let tangent_x = centre.cross(DVec3::Y).normalize();
-    let tangent_y = tangent_x.cross(centre).normalize();
-    tree_layouts()
-        .into_iter()
-        .filter_map(|tree| {
-            let direction = (centre
-                + tangent_x * (tree.tangent_offset_meters[0] / PLANET_RADIUS_METERS)
-                + tangent_y * (tree.tangent_offset_meters[1] / PLANET_RADIUS_METERS))
-                .normalize();
-            let surface_height = terrain.surface_height_meters_at(direction, 2.0)?;
-            (surface_height > 0.0).then(|| {
-                let centre =
-                    direction * (PLANET_RADIUS_METERS + surface_height - TREE_BASE_SINK_METERS);
-                TreeInstance {
-                    centre_and_height: [
-                        centre.x as f32,
-                        centre.y as f32,
-                        centre.z as f32,
-                        tree.height_meters,
-                    ],
-                    width_shade_kind_seed: [tree.width_meters, tree.shade, tree.kind, tree.seed],
-                }
-            })
-        })
-        .collect()
-}
-
-fn tree_layouts() -> Vec<TreeLayout> {
-    (0..TREE_COUNT)
-        .map(|index| {
-            let radial_fraction = (index as f64 + 0.5) / TREE_COUNT as f64;
-            let radius = (CLEARING_RADIUS_METERS * CLEARING_RADIUS_METERS
-                + radial_fraction
-                    * (FOREST_RADIUS_METERS * FOREST_RADIUS_METERS
-                        - CLEARING_RADIUS_METERS * CLEARING_RADIUS_METERS))
-                .sqrt();
-            let angle = index as f64 * GOLDEN_ANGLE_RADIANS
-                + (f64::from(hash(index as u32 ^ 0x68bc_21eb)) - 0.5) * 0.55;
-            let height = TREE_HEIGHT_MIN_METERS
-                + hash(index as u32 ^ 0xa511_e9b3) * TREE_HEIGHT_RANGE_METERS;
-            let width = height * (0.32 + hash(index as u32 ^ 0x63d8_3595) * 0.18);
-            TreeLayout {
-                tangent_offset_meters: [radius * angle.cos(), radius * angle.sin()],
-                height_meters: height,
-                width_meters: width,
-                shade: 0.82 + hash(index as u32 ^ 0x9e37_79b9) * 0.34,
-                kind: if hash(index as u32 ^ 0x27d4_eb2f) < 0.28 {
-                    1.0
-                } else {
-                    0.0
-                },
-                seed: hash(index as u32 ^ 0x1656_67b1),
-            }
-        })
-        .collect()
-}
-
 fn hash_u32(mut value: u32) -> u32 {
     value ^= value >> 16;
     value = value.wrapping_mul(0x7feb_352d);
@@ -811,24 +823,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn forest_layout_is_dense_bounded_and_leaves_a_start_clearing() {
-        let trees = tree_layouts();
+    fn forest_layout_is_deterministic_cell_owned_and_evergreen() {
+        let key = forest_cell_key(FOREST_CENTRE_DIRECTION);
+        let trees = forest_patch_tree_layouts(key);
         assert_eq!(trees.len(), TREE_COUNT);
-        let radii = trees.iter().map(|tree| {
-            DVec3::new(
-                tree.tangent_offset_meters[0],
-                tree.tangent_offset_meters[1],
-                0.0,
-            )
-            .length()
-        });
-        let minimum = radii.clone().reduce(f64::min).expect("trees");
-        let maximum = radii.reduce(f64::max).expect("trees");
-        assert!(minimum >= CLEARING_RADIUS_METERS);
-        assert!(maximum <= FOREST_RADIUS_METERS);
-        assert!(trees.iter().all(|tree| tree.height_meters >= 11.0));
-        assert!(trees.iter().any(|tree| tree.kind == 0.0));
-        assert!(trees.iter().any(|tree| tree.kind == 1.0));
+        assert!(trees.iter().all(|(direction, layout)| {
+            forest_cell_key(*direction) == key
+                && layout.kind == 1.0
+                && layout.height_meters >= TREE_HEIGHT_MIN_METERS
+        }));
+        let density = forest_density_at(FOREST_CENTRE_DIRECTION);
+        assert!((0.35..=1.0).contains(&density));
     }
 
     #[test]
@@ -966,7 +971,10 @@ mod tests {
         let patch = ForestPatch {
             key,
             centre_direction: DVec3::X,
-            trees: Vec::new(),
+            trees: vec![TreeInstance {
+                centre_and_height: [0.0; 4],
+                width_shade_kind_seed: [0.0; 4],
+            }],
             minimum_source_level: None,
         };
         let desired_key = TileKey::root(catinthegarden_coretypes::CubeFace::NegativeX);

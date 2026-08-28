@@ -381,10 +381,19 @@ pub struct ForestSurfaceSample {
     pub source_level: u8,
 }
 
-/// Forest ownership is categorical: only the two baked forest biomes produce
-/// trees. Moisture and slope remain continuous placement constraints.
+/// Forest ownership is categorical. Temperate/tropical forest biomes and cold
+/// land biomes can grow the evergreen forest species; moisture and slope remain
+/// continuous placement constraints. Water and negative terrain are rejected
+/// separately by `forest_surface_is_eligible`.
 pub fn forest_biome_owns_trees(biome: BiomeId) -> bool {
-    matches!(biome, BiomeId::TemperateForest | BiomeId::TropicalForest)
+    matches!(
+        biome,
+        BiomeId::Ice
+            | BiomeId::Tundra
+            | BiomeId::TemperateForest
+            | BiomeId::TropicalForest
+            | BiomeId::MountainSnow
+    )
 }
 
 /// Applies the terrain-side placement constraints without prescribing the
@@ -4784,7 +4793,7 @@ mod tests {
     }
 
     #[test]
-    fn far_forest_canopy_breakup_stays_inside_owned_moist_unsnowed_gentle_land() {
+    fn far_forest_canopy_breakup_uses_density_for_moist_gentle_land() {
         let shader = planet_shader_source();
         let canopy = shader
             .split("fn far_forest_canopy_albedo(")
@@ -4792,13 +4801,14 @@ mod tests {
             .and_then(|source| source.split("\nfn ").next())
             .expect("far forest canopy material is present");
 
-        assert!(canopy.contains("let forest_owned = biome_id == 4u || biome_id == 6u;"));
+        assert!(canopy.contains("let forest_owned = biome_id == 2u"));
         assert!(canopy.contains("if !outmap || !forest_owned"));
         assert!(canopy.contains("smoothstep(32000.0, 160000.0, camera_distance_meters)"));
         assert!(canopy.contains("smoothstep(0.38, 0.82, moisture)"));
         assert!(canopy.contains("select(0.0, 1.0, macro_height_meters > 0.0)"));
         assert!(canopy.contains("1.0 - smoothstep(0.08, 0.28, slope)"));
-        assert!(canopy.contains("1.0 - max(terrain_snow, clamp(snow_cover, 0.0, 1.0))"));
+        assert!(canopy.contains("let snow_weight = mix(1.0, 0.76, clamp(snow_cover, 0.0, 1.0));"));
+        assert!(canopy.contains("let tree_density = mix(0.35, 1.0, canopy_cluster);"));
         assert!(canopy.contains("terrain_detail_value_noise("));
         assert!(canopy.contains("let noise_position = direction * 192.0;"));
         assert!(!canopy.contains("textureSample"));
@@ -4986,19 +4996,22 @@ mod tests {
         for biome in [
             BiomeId::Ocean,
             BiomeId::Lake,
-            BiomeId::Ice,
-            BiomeId::Tundra,
             BiomeId::TemperateGrassland,
             BiomeId::Desert,
             BiomeId::MountainRock,
-            BiomeId::MountainSnow,
         ] {
             assert!(!forest_biome_owns_trees(biome), "{biome:?} owns no trees");
+        }
+        for biome in [BiomeId::Ice, BiomeId::Tundra, BiomeId::MountainSnow] {
+            assert!(
+                forest_biome_owns_trees(biome),
+                "{biome:?} supports evergreens"
+            );
         }
     }
 
     #[test]
-    fn forest_surface_eligibility_rejects_water_snow_and_steep_sites() {
+    fn forest_surface_eligibility_rejects_water_and_steep_sites_but_allows_cold_land() {
         let sample = ForestSurfaceSample {
             height_meters: 840.0,
             macro_height_meters: 840.0,
@@ -5018,7 +5031,7 @@ mod tests {
             0.55,
             0.35,
         ));
-        assert!(!forest_surface_is_eligible(
+        assert!(forest_surface_is_eligible(
             ForestSurfaceSample {
                 biome: BiomeId::MountainSnow,
                 ..sample

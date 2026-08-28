@@ -123,3 +123,19 @@ tree-draw cost (0.059-0.316ms), versus the earlier fixed-patch 0.201ms measureme
 medians are 27.740ms (36.05 FPS) on and 27.513ms (36.35 FPS) off. All ten runs passed with 330
 settled frame intervals each; paths and calculated results are recorded under
 `test-runs/forest-profile-pairs/procedural-final`.
+
+## Global evergreen distribution - 28 August 2026
+
+The startup-only radial disk has been removed. Every patch, including the startup patch, now uses
+canonical half-open L12 cube-sphere cells, so there is no circular forest boundary or authored
+clearing. Candidate placement remains deterministic from the planet seed and cell/index hashes.
+
+All trees use the evergreen/conifer silhouette. Forest eligibility now includes temperate and
+tropical forest, tundra, ice, and mountain-snow land biomes, while still requiring positive land,
+moisture, and a slope no steeper than 32 degrees. Ocean and lake ownership cannot produce trees.
+
+A seam-safe 192-cell-per-direction value-noise field supplies a 35%-100% local density range. It
+creates coherent stands and clearings while guaranteeing that every eligible cell can still contain
+some trees. The far terrain material uses the same broad density concept from 32-160km and darkens
+forest-owned terrain in proportion to density instead of brightening it, including cold evergreen
+areas under snow.
