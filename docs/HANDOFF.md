@@ -3996,3 +3996,23 @@ fill, and per-face lighting. Exact release replay
 `manual_lod_approach_replay/1787881651-19747` passes all twelve captures plus the 146-point surface
 regression; captures 001, 005, 009, and 011 show the mesh remaining legible without dominating the
 terrain.
+
+## Experimental billboard forest - 28 August 2026
+
+Branch `experiment/billboard-forest` adds a deliberately isolated low-poly forest presentation.
+The active outmap was searched for a moist, low temperate-forest patch that faces the frozen
+startup sun; its authored centre is `[0.374871986443, 0.737334908710, 0.561968171854]`. Ordinary
+interactive startup still applies F4/F6/F10, but F4 now places the camera two metres above this
+surface, inside a fourteen-metre clearing, looking nearly level through the trees.
+
+The forest is 12,288 deterministic camera-facing billboards distributed over an 800m radius. Each
+tree is grounded independently from the same CPU terrain surface used by flight clearance, rejects
+water, writes the reversed-Z depth buffer, and uses procedural broadleaf/conifer silhouettes and
+flat sun/ambient colour without textures. One immutable instance buffer and one instanced draw keep
+the experiment bounded; it is omitted above 50km altitude.
+
+The deterministic `forest_startup` release run at
+`test-runs/forest_startup/1787883150-32249` passes two captures, finite metrics, and 2.050m measured
+clearance. `capture-001.png` verifies a daylight forest from the authored startup pose. Focused
+forest, startup-camera, scenario-load tests, format checking, and the dedicated release build use
+`CARGO_TARGET_DIR=/home/dad/catingard-forest-target`.

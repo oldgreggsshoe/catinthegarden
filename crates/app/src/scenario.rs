@@ -261,6 +261,7 @@ impl ScenarioRunner {
             "landing_site_eye_level" => {
                 include_str!("../scenarios/landing_site_eye_level.json")
             }
+            "forest_startup" => include_str!("../scenarios/forest_startup.json"),
             "highest_prominence_peak" => {
                 include_str!("../scenarios/highest_prominence_peak.json")
             }
@@ -935,6 +936,14 @@ mod tests {
 
         assert_eq!(captures, 3);
         assert_eq!(completion_time, 5.0);
+    }
+
+    #[test]
+    fn forest_startup_holds_the_authored_interactive_view() {
+        let scenario = ScenarioRunner::load("forest_startup").expect("forest scenario parses");
+        assert_eq!(scenario.expected_screenshots(), 2);
+        assert!(scenario.definition.hide_overlay);
+        assert!(scenario.definition.planet_relative_up);
     }
 
     #[test]

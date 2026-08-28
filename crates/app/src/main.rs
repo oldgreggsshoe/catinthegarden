@@ -1,5 +1,6 @@
 mod atmosphere;
 mod debug;
+mod forest;
 mod foveated;
 mod haze;
 mod hdr;
@@ -679,6 +680,7 @@ struct State {
     weather_clouds: weather_render::WeatherCloudRenderer,
     rain: weather_render::RainRenderer,
     local_cloud_impostors: weather_render::LocalCloudImpostorRenderer,
+    forest: forest::ForestRenderer,
     sun: sun::SunRenderer,
     foveated: foveated::FoveatedRenderer,
     terrain: terrain::TerrainRenderer,
@@ -952,7 +954,7 @@ impl State {
             terrain_source.clone(),
         )
         .expect("foveated renderer must initialize");
-        let terrain = terrain::TerrainRenderer::new(
+        let mut terrain = terrain::TerrainRenderer::new(
             &device,
             &queue,
             hdr::HdrRenderer::SCENE_FORMAT,
@@ -963,6 +965,12 @@ impl State {
             terrain_source,
         )
         .expect("terrain renderer must initialize");
+        let forest = forest::ForestRenderer::new(
+            &device,
+            hdr::HdrRenderer::SCENE_FORMAT,
+            &camera_bind_group_layout,
+            &mut terrain,
+        );
         if let (Some(scenario), Some(landing_direction)) =
             (&mut scenario, terrain.preferred_landing_direction())
         {
@@ -1008,6 +1016,7 @@ impl State {
             weather_clouds,
             rain,
             local_cloud_impostors,
+            forest,
             sun,
             foveated,
             terrain,
@@ -1461,14 +1470,14 @@ impl State {
                     self.camera.direction_dvec3(),
                     self.camera.vertical_fov_radians().to_degrees(),
                 ));
-                // Enter inspection mode over the active planet's highest-
-                // prominence summit. Make its global L4 tile resident
+                // Enter inspection mode inside the experimental billboard
+                // forest. Make its global L4 tile resident
                 // synchronously: resolving through a coarse ancestor here can
                 // differ by hundreds of metres and would move the camera after
                 // F4 while ordinary streaming catches up.
                 let outmap_is_active = self.terrain.preferred_landing_direction().is_some();
                 let local_radial = if outmap_is_active {
-                    ACTIVE_HIGHEST_PROMINENCE_DIRECTION.normalize()
+                    forest::FOREST_CENTRE_DIRECTION.normalize()
                 } else {
                     local_position.normalize()
                 };
@@ -1478,7 +1487,7 @@ impl State {
                             local_radial,
                             LOW_FLIGHT_ALTITUDE_METERS,
                         )
-                        .unwrap_or(ACTIVE_HIGHEST_PROMINENCE_METERS)
+                        .unwrap_or(400.0)
                 } else {
                     self.terrain
                         .surface_height_meters_at(local_radial, LOW_FLIGHT_ALTITUDE_METERS)
@@ -1488,16 +1497,13 @@ impl State {
                     * (planet::PLANET_RADIUS_METERS
                         + self.flight_surface_height_meters
                         + LOW_FLIGHT_ALTITUDE_METERS);
-                // Face back across the summit bowl. The opposite azimuth has
-                // the same pitch and controls but avoids putting the nearby
-                // L4 frontier edge across the foreground.
-                self.flight_local_tangent = if outmap_is_active {
-                    -initial_flight_tangent(local_radial)
-                } else {
-                    initial_flight_tangent(local_radial)
-                };
+                self.flight_local_tangent = initial_flight_tangent(local_radial);
                 self.flight_look_yaw_radians = 0.0;
-                self.flight_look_pitch_radians = LOW_FLIGHT_INITIAL_PITCH_RADIANS;
+                self.flight_look_pitch_radians = if outmap_is_active {
+                    forest::FOREST_START_PITCH_RADIANS
+                } else {
+                    LOW_FLIGHT_INITIAL_PITCH_RADIANS
+                };
                 self.flight_movement = FlightMovementInput::default();
                 self.flight_speed = FlightSpeedState::default();
                 self.flight_travel_direction = glam::DVec3::ZERO;
@@ -2340,6 +2346,8 @@ impl State {
         );
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
+        self.forest
+            .update_camera(&self.queue, camera_planet_frame_position);
         // Probe on the frames that produce a screenshot, so a measured
         // disagreement always has the picture that goes with it.
         let probe_requested =
@@ -2640,6 +2648,11 @@ impl State {
             });
             self.weather_clouds
                 .draw(&mut render_pass, &self.camera_bind_group);
+            self.forest.draw(
+                &mut render_pass,
+                &self.camera_bind_group,
+                camera_sea_level_altitude_meters,
+            );
             self.local_cloud_impostors.draw(
                 &mut render_pass,
                 &self.camera_bind_group,
@@ -3810,14 +3823,18 @@ mod tests {
     }
 
     #[test]
-    fn low_flight_starts_looking_down_from_the_prominent_peak() {
-        let radial = ACTIVE_HIGHEST_PROMINENCE_DIRECTION.normalize();
-        let tangent = -initial_flight_tangent(radial);
-        let direction =
-            flight_view_direction(radial, tangent, 0.0, LOW_FLIGHT_INITIAL_PITCH_RADIANS);
+    fn low_flight_starts_nearly_level_inside_the_forest() {
+        let radial = crate::forest::FOREST_CENTRE_DIRECTION.normalize();
+        let tangent = initial_flight_tangent(radial);
+        let direction = flight_view_direction(
+            radial,
+            tangent,
+            0.0,
+            crate::forest::FOREST_START_PITCH_RADIANS,
+        );
 
-        assert!(direction.dot(radial) < -0.25);
-        assert!(direction.dot(tangent) > 0.9);
+        assert!((0.05..0.10).contains(&direction.dot(radial)));
+        assert!(direction.dot(tangent) > 0.99);
     }
 
     #[test]
