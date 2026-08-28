@@ -18,6 +18,16 @@ const TREE_HEIGHT_RANGE_METERS: f32 = 13.0;
 const FOREST_DRAW_ALTITUDE_METERS: f64 = 50_000.0;
 const GOLDEN_ANGLE_RADIANS: f64 = 2.399_963_229_728_653;
 
+fn forest_rendering_from_env() -> bool {
+    match std::env::var("CATINGARDEN_FOREST") {
+        Ok(value) => !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off"
+        ),
+        Err(_) => true,
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct TreeInstance {
@@ -60,6 +70,7 @@ pub struct ForestRenderer {
     uniform_buffer: wgpu::Buffer,
     instance_buffer: wgpu::Buffer,
     instance_count: u32,
+    enabled: bool,
 }
 
 impl ForestRenderer {
@@ -70,6 +81,13 @@ impl ForestRenderer {
         terrain: &mut TerrainRenderer,
     ) -> Self {
         let instances = grounded_tree_instances(terrain);
+        let enabled = forest_rendering_from_env();
+        tracing::info!(
+            target: "catinthegarden::forest",
+            enabled,
+            tree_instances = instances.len(),
+            "configured billboard forest"
+        );
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("forest camera uniform"),
             size: size_of::<ForestUniform>() as u64,
@@ -152,6 +170,7 @@ impl ForestRenderer {
             uniform_buffer,
             instance_buffer,
             instance_count: instances.len() as u32,
+            enabled,
         }
     }
 
@@ -176,7 +195,10 @@ impl ForestRenderer {
         camera_bind_group: &'pass wgpu::BindGroup,
         camera_altitude_meters: f64,
     ) {
-        if camera_altitude_meters >= FOREST_DRAW_ALTITUDE_METERS || self.instance_count == 0 {
+        if !self.enabled
+            || camera_altitude_meters >= FOREST_DRAW_ALTITUDE_METERS
+            || self.instance_count == 0
+        {
             return;
         }
         render_pass.set_pipeline(&self.pipeline);
@@ -291,8 +313,25 @@ mod tests {
     }
 
     #[test]
+    fn forest_shader_has_no_unconditional_night_light() {
+        let shader = include_str!("forest.wgsl");
+        assert!(shader.contains("fn tree_lighting(solar_elevation_cosine: f32) -> f32"));
+        assert!(shader.contains("smoothstep(-0.18, 0.02, solar_elevation_cosine) * 0.36"));
+        assert!(shader.contains("return direct + sky_ambient;"));
+        assert!(shader.contains("trunk_colour * 0.75 * input.lighting"));
+        assert!(!shader.contains("0.36 + sun_amount"));
+    }
+
+    #[test]
     fn authored_forest_centre_is_normalized() {
         assert!((FOREST_CENTRE_DIRECTION.length() - 1.0).abs() < 1.0e-9);
         assert!(FOREST_CENTRE_DIRECTION.y > 0.6);
+    }
+
+    #[test]
+    fn forest_has_a_render_only_performance_switch() {
+        let source = include_str!("forest.rs");
+        assert!(source.contains("CATINGARDEN_FOREST"));
+        assert!(source.contains("if !self.enabled"));
     }
 }

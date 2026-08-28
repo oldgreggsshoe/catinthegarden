@@ -32,6 +32,7 @@ struct VertexOutput {
     @location(0) uv: vec2<f32>,
     @location(1) @interpolate(flat) colour_and_kind: vec4<f32>,
     @location(2) @interpolate(flat) seed: f32,
+    @location(3) @interpolate(flat) lighting: f32,
 }
 
 fn planet_to_view(vector: vec3<f32>) -> vec3<f32> {
@@ -46,6 +47,12 @@ fn srgb_to_linear(color: vec3<f32>) -> vec3<f32> {
     let low = color / 12.92;
     let high = pow((color + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
     return select(high, low, color <= vec3<f32>(0.04045));
+}
+
+fn tree_lighting(solar_elevation_cosine: f32) -> f32 {
+    let direct = max(solar_elevation_cosine, 0.0) * 1.24;
+    let sky_ambient = smoothstep(-0.18, 0.02, solar_elevation_cosine) * 0.36;
+    return direct + sky_ambient;
 }
 
 @vertex
@@ -71,16 +78,17 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vertex_index: u32) -> Vert
         + right * corner.x * width * 0.5
         + up * corner.y * height;
     let view_position = planet_to_view(world_position - forest.camera_planet_position.xyz);
-    let sun_amount = max(dot(up, normalize(camera.sun_direction.xyz)), 0.0);
-    let lighting = 0.36 + sun_amount * 1.24;
+    let solar_elevation_cosine = dot(up, normalize(camera.sun_direction.xyz));
+    let lighting = tree_lighting(solar_elevation_cosine) * shade;
     let broadleaf = srgb_to_linear(vec3<f32>(0.10, 0.34, 0.12));
     let conifer = srgb_to_linear(vec3<f32>(0.07, 0.25, 0.10));
-    let colour = mix(broadleaf, conifer, kind) * lighting * shade;
+    let colour = mix(broadleaf, conifer, kind) * lighting;
     return VertexOutput(
         camera.projection_matrix * vec4<f32>(view_position, 1.0),
         vec2<f32>(corner.x * 0.5 + 0.5, corner.y),
         vec4<f32>(colour, kind),
         input.width_shade_kind_seed.w,
+        lighting,
     );
 }
 
@@ -108,6 +116,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
     let trunk_colour = srgb_to_linear(vec3<f32>(0.22, 0.12, 0.055));
-    let colour = select(trunk_colour * 0.75, input.colour_and_kind.rgb, canopy);
+    let colour = select(trunk_colour * 0.75 * input.lighting, input.colour_and_kind.rgb, canopy);
     return vec4<f32>(colour, 1.0);
 }

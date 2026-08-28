@@ -4016,3 +4016,21 @@ The deterministic `forest_startup` release run at
 clearance. `capture-001.png` verifies a daylight forest from the authored startup pose. Focused
 forest, startup-camera, scenario-load tests, format checking, and the dedicated release build use
 `CARGO_TARGET_DIR=/home/dad/catingard-forest-target`.
+
+## Forest night lighting and measured procedural direction - 28 August 2026
+
+The first billboard shader added an unconditional 0.36 light term, and the trunk fragment path had
+a second fixed brown output. Together they made trees self-lit after the terrain and sky were dark.
+Canopy and trunk now share one light scalar: direct sun plus a bounded sky-ambient term that fades
+to exactly zero once the sun is sufficiently below the local horizon. Fixed-exposure night replay
+`forest_night/1787914305-49531` passes and is fully dark; the earlier diagnostic
+`forest_night/1787914120-48539` remains useful because it exposed the otherwise missed glowing
+trunks.
+
+`CATINGARDEN_FOREST=0` is a render-only measurement switch, and `forest_performance` is a
+capture-free fixed-pose benchmark. Five alternating-order Quadro/Immediate ON/OFF pairs measure a
+median 0.201ms forest cost (0.148-0.292ms range): 27.223ms/36.73 FPS on versus
+27.011ms/37.02 FPS off.
+Timestamp profiling was deliberately not used because it hangs this driver. The complete one-local-
+patch, projected-size tree LOD, and far forest-material design is in
+`docs/FOREST_RENDERING_PLAN.md`.

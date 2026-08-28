@@ -262,6 +262,8 @@ impl ScenarioRunner {
                 include_str!("../scenarios/landing_site_eye_level.json")
             }
             "forest_startup" => include_str!("../scenarios/forest_startup.json"),
+            "forest_performance" => include_str!("../scenarios/forest_performance.json"),
+            "forest_night" => include_str!("../scenarios/forest_night.json"),
             "highest_prominence_peak" => {
                 include_str!("../scenarios/highest_prominence_peak.json")
             }
@@ -944,6 +946,21 @@ mod tests {
         assert_eq!(scenario.expected_screenshots(), 2);
         assert!(scenario.definition.hide_overlay);
         assert!(scenario.definition.planet_relative_up);
+    }
+
+    #[test]
+    fn forest_performance_is_a_capture_free_fixed_pose() {
+        let scenario = ScenarioRunner::load("forest_performance").expect("forest scenario parses");
+        assert_eq!(scenario.expected_screenshots(), 0);
+        assert!(scenario.definition.hide_overlay);
+        assert_eq!(scenario.definition.duration_seconds, 8.0);
+    }
+
+    #[test]
+    fn forest_night_holds_fixed_exposure_for_the_lighting_regression() {
+        let scenario = ScenarioRunner::load("forest_night").expect("forest scenario parses");
+        assert_eq!(scenario.expected_screenshots(), 1);
+        assert!(scenario.uses_fixed_exposure());
     }
 
     #[test]

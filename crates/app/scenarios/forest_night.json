@@ -1,0 +1,50 @@
+{
+  "name": "forest_night",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 3.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0.0,
+  "fixed_exposure": true,
+  "screenshot_times_seconds": [
+    3.0
+  ],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [
+        1499721.0742071604,
+        2949792.360790637,
+        2248215.765873084
+      ],
+      "look_at": [
+        1499600.5163149717,
+        2949800.075873117,
+        2248304.6830937634
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        -0.374871986443,
+        -0.737334908710,
+        -0.561968171854
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 60.0
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 1,
+    "min_camera_clearance_m": 1.5
+  }
+}
