@@ -273,6 +273,9 @@ impl ScenarioRunner {
             "manual_near_terrain_culling" => {
                 include_str!("../scenarios/manual_near_terrain_culling.json")
             }
+            "manual_lod_approach_replay" => {
+                include_str!("../scenarios/manual_lod_approach_replay.json")
+            }
             "outlined_shadows" => include_str!("../scenarios/outlined_shadows.json"),
             "stand_on_ground" => include_str!("../scenarios/stand_on_ground.json"),
             "terrain_detail_altitude_ladder" => {
@@ -1037,6 +1040,20 @@ mod tests {
     }
 
     #[test]
+    fn manual_lod_approach_replays_the_reported_outline_off_descent() {
+        let scenario = ScenarioRunner::load("manual_lod_approach_replay")
+            .expect("manual LOD approach replay parses");
+
+        assert_eq!(scenario.expected_screenshots(), 12);
+        assert_eq!(scenario.definition.waypoints.len(), 24);
+        assert_eq!(scenario.assertions().min_surface_probe_points, Some(100));
+        assert_eq!(
+            scenario.assertions().max_surface_probe_p90_delta_m,
+            Some(40.0)
+        );
+    }
+
+    #[test]
     fn orbital_zoom_scenario_interpolates_fov_logarithmically_and_returns_wide() {
         let mut scenario = ScenarioRunner::load("orbital_zoom_lod").expect("scenario parses");
         let waypoints = &scenario.definition.vertical_fov_waypoints;
@@ -1379,8 +1396,8 @@ mod tests {
             Some(0.05)
         );
 
-        let partial_sun = ScenarioRunner::load("partial_sun_occultation")
-            .expect("partial sun scenario parses");
+        let partial_sun =
+            ScenarioRunner::load("partial_sun_occultation").expect("partial sun scenario parses");
         assert_eq!(partial_sun.expected_screenshots(), 2);
         let camera = DVec3::from_array(partial_sun.definition.waypoints[0].position);
         let sun = DVec3::from_array(partial_sun.definition.sun_waypoints[0].direction).normalize();
@@ -1401,10 +1418,7 @@ mod tests {
                 .direction,
         )
         .normalize();
-        let final_center_angle = final_sun
-            .dot(planet_direction)
-            .clamp(-1.0, 1.0)
-            .acos();
+        let final_center_angle = final_sun.dot(planet_direction).clamp(-1.0, 1.0).acos();
         assert!(
             final_center_angle + 0.00925 < planet_angle,
             "scenario must finish with the complete visual disc behind the planet"

@@ -1799,7 +1799,7 @@ impl TerrainRenderer {
                         viewport[1].max(1),
                         vertical_fov_radians,
                         flat_geometric_error,
-                        &|_| MAX_LOD_LEVEL,
+                        &flat_level_limit,
                         None,
                     )
                 } else {
@@ -2018,7 +2018,6 @@ impl TerrainRenderer {
                     }
                     if near_field {
                         let bounds = raster_near_field_bounds.expect("near-field bounds");
-                        let window = self.raster_near_field.as_ref().expect("near-field sources");
                         (
                             [
                                 ((u_max - u_min) / bounds.uv_span) as f32,
@@ -2028,7 +2027,14 @@ impl TerrainRenderer {
                                 ((u_min - bounds.uv_min[0]) / bounds.uv_span) as f32,
                                 ((v_min - bounds.uv_min[1]) / bounds.uv_span) as f32,
                             ],
-                            window.key.level,
+                            // The window grid is addressed at `window.key.level`, but its
+                            // samples can still come from a much coarser cached ancestor.
+                            // Detail-band ownership follows the samples, not the address
+                            // grid: claiming the requested window level here suppressed
+                            // every procedural octave as soon as an L4-fed patch entered
+                            // the near-field window, making terrain become smoother while
+                            // the camera approached it.
+                            source_key.level,
                             None,
                             true,
                         )

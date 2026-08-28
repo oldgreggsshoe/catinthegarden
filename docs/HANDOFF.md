@@ -3960,3 +3960,29 @@ All eight focused sun tests and workspace check pass. Release
 and removes it after full occultation. The exact camera/rotation/sun ray replay
 `mountain_sun_occlusion_probe/1787851755-1134789` removes the bright through-mountain star; its
 temporary scenario source was removed after capture.
+
+## Near-field detail-source ownership repair - 28 August 2026
+
+The twelve-frame outline-off approach in `manual/1787854388-1153066` showed relief becoming less
+detailed after capture 005 even though the camera continued toward the same ground. Exact-pose
+instrumentation proved the centre selector itself was monotonic (L10 through L18) and changing the
+local 1.5-second transition experiment back to the committed 0.5 seconds made no visual difference.
+The reproduction also found that the previous distance-cap change had created and unit-tested the
+`flat_level_limit` closure but the production call still passed an always-L18 closure; production
+now passes the intended distance cap as well, so the earlier regression finally covers the path it
+describes.
+The failure began when a patch entered the dense near-field grid: that grid was addressed at its
+fine requested level but was still populated from the resident L4 ancestor. Its instance metadata
+incorrectly advertised the requested level as the sampled source level, so the shader concluded
+that the baked texture already owned the corresponding procedural bands and removed them.
+
+Near-field instances now report the resolved `source_key.level`; addressing remains at the fine
+window level, while procedural-detail ownership follows the data actually sampled. The checked-in
+`manual_lod_approach_replay` scenario preserves all twelve reported camera poses and fails the old
+path with a 298.695m close-frame p90 surface mismatch. Final outline-off release replay
+`manual_lod_approach_replay/1787879458-17274` passes with 146 compared ground points, 32.548m worst
+frame p90, 40m tolerance, and relief that remains present through captures 001-011. The last pose is
+a separate presentation extreme: only 6.11m above the surface and looking 26.2 degrees downward,
+flat per-triangle lighting produces severe bright/dark strips; a normal-shaded control
+`manual_lod_approach_replay/1787879122-16002` proves the surface itself is continuous. That flat-mode
+close-up appearance was documented but deliberately not conflated with this LOD/source fix.
