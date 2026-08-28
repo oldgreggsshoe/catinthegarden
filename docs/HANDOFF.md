@@ -3986,3 +3986,13 @@ a separate presentation extreme: only 6.11m above the surface and looking 26.2 d
 flat per-triangle lighting produces severe bright/dark strips; a normal-shaded control
 `manual_lod_approach_replay/1787879122-16002` proves the surface itself is continuous. That flat-mode
 close-up appearance was documented but deliberately not conflated with this LOD/source fix.
+
+## Subtle flat-triangle outlines - 28 August 2026
+
+Flat land and water outlines now retain 68% of each triangle's fully lit, atmosphere-composed
+colour instead of 8%. They therefore remain a slightly darker version of the local triangle rather
+than near-black wire, while preserving antialiasing, fog convergence, the `O` toggle, categorical
+fill, and per-face lighting. Exact release replay
+`manual_lod_approach_replay/1787881651-19747` passes all twelve captures plus the 146-point surface
+regression; captures 001, 005, 009, and 011 show the mesh remaining legible without dominating the
+terrain.

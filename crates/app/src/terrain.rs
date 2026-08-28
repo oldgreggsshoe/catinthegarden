@@ -3929,8 +3929,8 @@ mod tests {
             .and_then(|source| source.split("\nfn ").next())
             .expect("raster terrain fragment path is present");
         assert!(flat_fragment.contains("return flat_triangle_colour(input);"));
-        assert!(shader.contains("mix(aerial_lit, aerial_lit * 0.08, edge)"));
-        assert!(shader.contains("mix(misted_ocean_lit, misted_ocean_lit * 0.08, edge)"));
+        assert!(shader.contains("mix(aerial_lit, aerial_lit * 0.68, edge)"));
+        assert!(shader.contains("mix(misted_ocean_lit, misted_ocean_lit * 0.68, edge)"));
         assert!(!shader.contains("vec3<f32>(0.015, 0.02, 0.025)"));
         assert!(!flat_fragment.contains("input.skirt_depth_meters > 0.0"));
         assert!(shader.contains("fn terrain_aerial_solar_air_mass("));

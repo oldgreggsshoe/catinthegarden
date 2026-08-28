@@ -1068,7 +1068,7 @@ fn flat_triangle_colour(
     // surroundings instead of imposing a blue-grey luminance floor. Apply
     // distance mist afterward so a fully obscured triangle cannot survive as
     // a black wireframe against the matching sky endpoint.
-    let outlined_aerial_lit = mix(aerial_lit, aerial_lit * 0.08, edge);
+    let outlined_aerial_lit = mix(aerial_lit, aerial_lit * 0.68, edge);
     let misted_aerial_lit = apply_terrain_distance_fog(outlined_aerial_lit, input);
     return vec4<f32>(misted_aerial_lit, 1.0);
 }
@@ -1100,7 +1100,7 @@ fn flat_ocean_colour(input: OceanVertexOutput) -> vec4<f32> {
         surface.vertical_displacement,
     );
     let edge = flat_triangle_edge(input.tile_uv, 0.0);
-    return vec4<f32>(mix(misted_ocean_lit, misted_ocean_lit * 0.08, edge), 1.0);
+    return vec4<f32>(mix(misted_ocean_lit, misted_ocean_lit * 0.68, edge), 1.0);
 }
 
 @fragment
