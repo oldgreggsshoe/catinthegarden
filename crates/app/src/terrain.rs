@@ -4874,39 +4874,40 @@ mod tests {
     }
 
     #[test]
-    fn far_forest_canopy_breakup_uses_density_for_moist_gentle_land() {
+    fn forest_canopy_ground_darkening_uses_density_for_moist_gentle_land() {
         let shader = planet_shader_source();
         let canopy = shader
-            .split("fn far_forest_canopy_albedo(")
+            .split("fn forest_canopy_albedo(")
             .nth(1)
             .and_then(|source| source.split("\nfn ").next())
             .expect("far forest canopy material is present");
 
         assert!(canopy.contains("let forest_owned = biome_id == 2u"));
         assert!(canopy.contains("if !outmap || !forest_owned"));
-        assert!(canopy.contains("smoothstep(32000.0, 160000.0, camera_distance_meters)"));
-        assert!(canopy.contains("smoothstep(0.38, 0.82, moisture)"));
+        assert!(!canopy.contains("camera_distance_meters"));
+        assert!(canopy.contains("smoothstep(0.34, 0.46, moisture)"));
         assert!(canopy.contains("select(0.0, 1.0, macro_height_meters > 0.0)"));
-        assert!(canopy.contains("1.0 - smoothstep(0.08, 0.28, slope)"));
+        assert!(canopy.contains("1.0 - smoothstep(0.10, 0.18, slope)"));
         assert!(canopy.contains("let snow_weight = mix(1.0, 0.76, clamp(snow_cover, 0.0, 1.0));"));
-        assert!(canopy.contains("let tree_density = mix(0.35, 1.0, canopy_cluster);"));
+        assert!(canopy.contains("let forest_density = mix(0.35, 1.0, canopy_cluster);"));
+        assert!(canopy.contains("canopy_weight * forest_density"));
         assert!(canopy.contains("terrain_detail_value_noise("));
         assert!(canopy.contains("let noise_position = direction * 192.0;"));
         assert!(!canopy.contains("textureSample"));
-        assert_eq!(shader.matches("far_forest_canopy_albedo(").count(), 3);
+        assert_eq!(shader.matches("forest_canopy_albedo(").count(), 3);
 
         let flat = shader
             .split("fn flat_triangle_colour(")
             .nth(1)
             .and_then(|source| source.split("\nfn ").next())
             .expect("flat triangle colour path is present");
-        assert!(flat.contains("fill = far_forest_canopy_albedo("));
+        assert!(flat.contains("fill = forest_canopy_albedo("));
         let final_fragment = shader
             .split("fn terrain_fragment_color(")
             .nth(1)
             .and_then(|source| source.split("\nfn ").next())
             .expect("final terrain fragment path is present");
-        assert!(final_fragment.contains("textured_terrain_albedo = far_forest_canopy_albedo("));
+        assert!(final_fragment.contains("textured_terrain_albedo = forest_canopy_albedo("));
     }
 
     #[test]

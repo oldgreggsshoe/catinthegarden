@@ -4182,3 +4182,37 @@ release `forest_startup/1788025163-277316` scenario passes both captures and 2.0
 six populated patches and 12,551 visible instances, and logs a 26.787ms median frame. The full app
 suite passes 316, fails one, and ignores seven; the sole failure is the already documented unrelated
 standalone sun-shader test whose dirty-worktree source lacks `cloudDensityWithOctaves` composition.
+
+## Forest scale, slope grounding, and non-circular footprint - 29 August 2026
+
+Tree candidate directions, hashes, and the 12,288 candidates per L12 cell are unchanged, preserving
+the established spacing and deterministic identities. Billboard height doubles from the 11-24m
+range to 22-48m; width remains derived from height and therefore doubles by the same factor, as do
+the procedural trunk and crown silhouettes inside each billboard.
+
+The old fixed 0.45m base sink could not ground a several-metre-wide billboard on an eligible slope:
+its downhill edge could be metres above the surface. Accepted trees now retain that margin and add
+`0.5 * width * tan(slope)`, bounded by the existing 32-degree placement limit. This is the
+camera-facing worst case, so every orientation's base reaches or enters the local tangent plane.
+
+The explicit radius-from-L12-cell-centre multiplier was the cause of circular stands. It is removed
+entirely; canonical half-open cells still own candidates, but acceptance now depends only on the
+seam-safe global density plus actual biome, moisture, and slope. Adjacent cells therefore form one
+continuous deterministic forest instead of separate round islands.
+
+`forest_canopy_albedo` now applies at ground level as well as at planetary distance. It samples the
+same frequency-192 value-noise mapping and 0.35-1.0 density range as CPU tree acceptance, then
+darkens all eligible terrain consistently with that density. The former 32-160km camera-distance
+handoff and density-dependent tint are gone; an identical density has an identical ground tint
+regardless of camera distance. At the fixed startup pose, matched bottom-frame terrain luminance
+drops from 128.6 to 118.3.
+
+All 37 focused forest tests pass, including pre-fix red regressions for scale, downhill grounding,
+radial masking, and near terrain darkening. Release `forest_startup/1788026781-285186` passes both
+captures and 2.05m clearance with 26,072 visible instances at 28.032ms median. Release
+`forest_travel/1788026471-284130` and `forest_boundary_transition/1788026696-284583` also pass and
+show irregular terrain-owned forest areas. A same-build `forest_performance` ON/OFF pair measures
+28.689/28.195ms median frame intervals, a 0.493ms tree-draw cost after the doubled projected size.
+Workspace check, formatting, and whitespace validation pass. The full app suite passes 319, fails
+one, and ignores seven; the sole failure remains the unrelated standalone sun-shader composition
+test documented above.

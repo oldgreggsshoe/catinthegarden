@@ -207,3 +207,21 @@ instead of approach waiting until the forest is already visible.
 The focused forest filter passes 31 tests, including a strict assertion that the complete draw set is
 a subset of the prefetch set. Release `forest_travel/1787994724-154197` and beam-on orbital replay
 `orbit_once/1787994695-154088` pass; the latter shows the 122 global regional shafts in one view.
+
+## Doubled trees, slope grounding, and shared ground density - 29 August 2026
+
+Tree positions and candidate count remain pinned, but billboard height and width are doubled. Bases
+are sunk by the old 0.45m margin plus the worst-case height change across half the billboard width at
+the sampled terrain slope, preventing downhill trunk edges from hovering without rejecting more
+terrain.
+
+The radial cell-centre falloff introduced during the square-footprint experiment is removed; it was
+directly responsible for the later circular forests. Cell ownership remains half-open and
+deterministic, while global direction noise, biome, moisture, and slope determine the visible shape
+without a per-cell geometric primitive.
+
+The terrain canopy treatment is no longer far-only. The same broad density function used for CPU
+tree acceptance now darkens eligible terrain at every camera distance, so local forest floor and
+distant replacement colour agree. The fixed startup capture measures median sampled ground
+luminance at 118.3 versus 128.6 before this treatment. Release validation and performance evidence
+are recorded in `docs/HANDOFF.md` under "Forest scale, slope grounding, and non-circular footprint".

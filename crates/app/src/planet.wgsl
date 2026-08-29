@@ -949,12 +949,11 @@ fn flat_triangle_land_biome(primary: u32, first: u32, second: u32, third: u32) -
     return selected;
 }
 
-// Individual tree geometry is deliberately camera-local. Once those trees
-// are sub-pixel, retain the baked forest ownership with a seam-safe canopy
-// density made only from planet direction. This never changes biome ownership,
-// terrain height, or water; it darkens the far forest albedo in proportion to
-// the same broad density field used by local evergreen placement.
-fn far_forest_canopy_albedo(
+// Individual tree geometry is deliberately camera-local, but its broad,
+// seam-safe density also darkens the ground beneath the stand. The same field
+// remains after tree geometry becomes sub-pixel, so the forest footprint does
+// not change colour as its representation changes with distance.
+fn forest_canopy_albedo(
     base_albedo: vec3<f32>,
     outmap: bool,
     biome_id: u32,
@@ -962,7 +961,6 @@ fn far_forest_canopy_albedo(
     macro_height_meters: f32,
     surface_normal: vec3<f32>,
     surface_direction: vec3<f32>,
-    camera_distance_meters: f32,
     snow_cover: f32,
 ) -> vec3<f32> {
     let forest_owned = biome_id == 2u
@@ -974,23 +972,15 @@ fn far_forest_canopy_albedo(
         return base_albedo;
     }
 
-    // The close material stack and local billboards own the first 32km. Fade
-    // this macro treatment in only after the repeating ground detail is gone.
-    let distance_weight = smoothstep(32000.0, 160000.0, camera_distance_meters);
-    if distance_weight <= 0.0 {
-        return base_albedo;
-    }
-
     let direction = normalize(surface_direction);
     let slope = 1.0 - clamp(dot(normalize(surface_normal), direction), 0.0, 1.0);
-    let slope_weight = 1.0 - smoothstep(0.08, 0.28, slope);
-    let moisture_weight = smoothstep(0.38, 0.82, moisture);
+    let slope_weight = 1.0 - smoothstep(0.10, 0.18, slope);
+    let moisture_weight = smoothstep(0.34, 0.46, moisture);
     let land_weight = select(0.0, 1.0, macro_height_meters > 0.0);
     // Snow does not suppress this species: these are evergreen trees, and the
     // cold biomes intentionally remain eligible where moisture and slope pass.
     let snow_weight = mix(1.0, 0.76, clamp(snow_cover, 0.0, 1.0));
-    let canopy_weight = distance_weight
-        * moisture_weight
+    let canopy_weight = moisture_weight
         * land_weight
         * slope_weight
         * snow_weight;
@@ -1007,13 +997,13 @@ fn far_forest_canopy_albedo(
         fract(noise_position),
     ).value * 0.5 + 0.5;
     let canopy_cluster = smoothstep(0.24, 0.76, canopy_noise);
-    let tree_density = mix(0.35, 1.0, canopy_cluster);
-    let canopy_tint = mix(
-        vec3<f32>(0.58, 0.68, 0.60),
-        vec3<f32>(0.78, 0.86, 0.72),
-        canopy_cluster,
+    let forest_density = mix(0.35, 1.0, canopy_cluster);
+    let canopy_tint = vec3<f32>(0.52, 0.62, 0.50);
+    return mix(
+        base_albedo,
+        base_albedo * canopy_tint,
+        canopy_weight * forest_density,
     );
-    return mix(base_albedo, base_albedo * canopy_tint, canopy_weight * tree_density * 0.62);
 }
 
 fn apply_terrain_distance_fog(
@@ -1101,7 +1091,7 @@ fn flat_triangle_colour(
             mix(vec3<f32>(0.70, 0.73, 0.76), vec3<f32>(0.94, 0.96, 1.0), snow_cover),
             snow_cover,
         );
-        fill = far_forest_canopy_albedo(
+        fill = forest_canopy_albedo(
             fill,
             input.outmap_and_macro_height.x > 0.5,
             fill_biome,
@@ -1109,7 +1099,6 @@ fn flat_triangle_colour(
             input.outmap_and_macro_height.y,
             normal,
             normalize(input.surface_direction),
-            length(input.camera_relative_view_position),
             snow_cover,
         );
     }
@@ -1451,7 +1440,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         mix(vec3<f32>(0.70, 0.73, 0.76), vec3<f32>(0.94, 0.96, 1.0), snow_cover),
         snow_cover,
     );
-    textured_terrain_albedo = far_forest_canopy_albedo(
+    textured_terrain_albedo = forest_canopy_albedo(
         textured_terrain_albedo,
         outmap,
         biome_id,
@@ -1459,7 +1448,6 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         macro_height_meters,
         terrain_normal,
         direction,
-        length(input.camera_relative_view_position),
         snow_cover,
     );
     if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {

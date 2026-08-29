@@ -4,9 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use catinthegarden_coretypes::{
-    TileKey, direction_to_face_uv, face_uv_to_direction, tile_key_for_direction,
-};
+use catinthegarden_coretypes::{TileKey, face_uv_to_direction, tile_key_for_direction};
 use glam::DVec3;
 use wgpu::util::DeviceExt;
 
@@ -24,8 +22,8 @@ pub const FOREST_START_PITCH_RADIANS: f64 = 4.0_f64.to_radians();
 
 const TREE_COUNT: usize = 12_288;
 const TREE_BASE_SINK_METERS: f64 = 0.45;
-const TREE_HEIGHT_MIN_METERS: f32 = 11.0;
-const TREE_HEIGHT_RANGE_METERS: f32 = 13.0;
+const TREE_HEIGHT_MIN_METERS: f32 = 22.0;
+const TREE_HEIGHT_RANGE_METERS: f32 = 26.0;
 const FOREST_DRAW_ALTITUDE_METERS: f64 = 50_000.0;
 const FOREST_TREE_RENDER_DISTANCE_METERS: f64 = 8_000.0;
 const FOREST_PREFETCH_DISTANCE_METERS: f64 = 12_000.0;
@@ -190,11 +188,11 @@ impl PendingForestPatch {
                 sample,
                 FOREST_MINIMUM_MOISTURE,
                 FOREST_MAXIMUM_SLOPE_RADIANS,
-            ) && f64::from(layout.seed)
-                <= forest_density_at(direction) * forest_cell_edge_falloff(self.key, direction)
+            ) && f64::from(layout.seed) <= forest_placement_density_at(direction)
             {
                 let centre = direction
-                    * (PLANET_RADIUS_METERS + sample.height_meters - TREE_BASE_SINK_METERS);
+                    * (PLANET_RADIUS_METERS + sample.height_meters
+                        - tree_base_sink_meters(layout.width_meters, sample.slope_radians));
                 self.trees.push(TreeInstance {
                     centre_and_height: [
                         centre.x as f32,
@@ -952,25 +950,8 @@ fn forest_cell_angular_radius(key: TileKey) -> f64 {
     .fold(0.0, f64::max)
 }
 
-/// Soft, slightly warped footprint inside a canonical cell. Candidates still
-/// belong to exactly one cell, but the visible stand tapers before the cell
-/// edge so a square ownership boundary cannot become a square forest.
-fn forest_cell_edge_falloff(key: TileKey, direction: DVec3) -> f64 {
-    let (face, u, v) = direction_to_face_uv(direction);
-    if face != key.face {
-        return 0.0;
-    }
-    let cells_per_axis = f64::from(1_u32 << key.level);
-    let cell_span = 2.0 / cells_per_axis;
-    let u_min = -1.0 + f64::from(key.x) * cell_span;
-    let v_min = -1.0 + f64::from(key.y) * cell_span;
-    let local_u = (2.0 * (u - (u_min + cell_span * 0.5)) / cell_span).clamp(-1.0, 1.0);
-    let local_v = (2.0 * (v - (v_min + cell_span * 0.5)) / cell_span).clamp(-1.0, 1.0);
-    let radius = (local_u * local_u + local_v * local_v).sqrt();
-    let warp = forest_noise_at(direction, 768.0) * 0.10;
-    let boundary = (0.88 + warp).clamp(0.74, 0.98);
-    let fade_start = boundary - 0.24;
-    1.0 - smoothstep01((radius - fade_start) / (boundary - fade_start))
+fn forest_placement_density_at(direction: DVec3) -> f64 {
+    forest_density_at(direction)
 }
 
 fn forest_patch_tree_layouts(key: TileKey) -> Vec<(DVec3, TreeLayout)> {
@@ -1023,8 +1004,15 @@ fn tree_layout_from_seed(seed: u32) -> TreeLayout {
     }
 }
 
-/// Low-frequency, seam-safe density field shared conceptually with the far
-/// terrain canopy material. The floor keeps every eligible cold/forest cell
+fn tree_base_sink_meters(width_meters: f32, slope_radians: f64) -> f64 {
+    TREE_BASE_SINK_METERS
+        + f64::from(width_meters)
+            * 0.5
+            * slope_radians.clamp(0.0, FOREST_MAXIMUM_SLOPE_RADIANS).tan()
+}
+
+/// Low-frequency, seam-safe density field mirrored by the terrain canopy
+/// material. The floor keeps every eligible cold/forest cell
 /// capable of producing trees; the field only creates natural clearings and
 /// denser stands instead of a hard-edged disk.
 fn forest_density_at(direction: DVec3) -> f64 {
@@ -1283,8 +1271,7 @@ fn refine_global_forest_beam_anchor(
         .into_iter()
         .take(FOREST_BEAM_REFINEMENT_CANDIDATES)
         .find_map(|(direction, layout)| {
-            let placement_density =
-                forest_density_at(direction) * forest_cell_edge_falloff(key, direction);
+            let placement_density = forest_placement_density_at(direction);
             if f64::from(layout.seed) > placement_density {
                 return None;
             }
@@ -1360,7 +1347,7 @@ mod tests {
     }
 
     #[test]
-    fn forest_cell_footprint_softens_before_the_square_cell_edge() {
+    fn forest_placement_has_no_radial_cell_mask() {
         let key = forest_cell_key(FOREST_CENTRE_DIRECTION);
         let cells_per_axis = f64::from(1_u32 << key.level);
         let cell_span = 2.0 / cells_per_axis;
@@ -1369,8 +1356,57 @@ mod tests {
         let centre = forest_cell_centre_direction(key);
         let near_corner =
             face_uv_to_direction(key.face, u_min + cell_span * 0.99, v_min + cell_span * 0.99);
-        assert!(forest_cell_edge_falloff(key, centre) > 0.99);
-        assert!(forest_cell_edge_falloff(key, near_corner) < 0.1);
+        assert_eq!(
+            forest_placement_density_at(centre),
+            forest_density_at(centre)
+        );
+        assert_eq!(
+            forest_placement_density_at(near_corner),
+            forest_density_at(near_corner)
+        );
+    }
+
+    #[test]
+    fn trees_are_twice_the_original_billboard_size() {
+        let layouts = (0..256).map(tree_layout_from_seed).collect::<Vec<_>>();
+        assert_eq!(TREE_HEIGHT_MIN_METERS, 22.0);
+        assert_eq!(TREE_HEIGHT_MIN_METERS + TREE_HEIGHT_RANGE_METERS, 48.0);
+        assert!(layouts.iter().all(|layout| {
+            layout.height_meters >= 22.0
+                && layout.height_meters < 48.0
+                && layout.width_meters >= layout.height_meters * 0.32
+                && layout.width_meters < layout.height_meters * 0.50
+        }));
+    }
+
+    #[test]
+    fn slope_sink_covers_the_complete_billboard_base() {
+        let width_meters = 24.0;
+        let slope_radians = FOREST_MAXIMUM_SLOPE_RADIANS;
+        let required_sink =
+            TREE_BASE_SINK_METERS + f64::from(width_meters) * 0.5 * slope_radians.tan();
+        assert!(
+            tree_base_sink_meters(width_meters, slope_radians) >= required_sink,
+            "the downhill billboard edge must not hover"
+        );
+        assert_eq!(
+            tree_base_sink_meters(width_meters, 0.0),
+            TREE_BASE_SINK_METERS
+        );
+    }
+
+    #[test]
+    fn terrain_darkening_uses_local_forest_density_at_every_distance() {
+        let shader = include_str!("planet.wgsl");
+        let canopy = shader
+            .split("fn forest_canopy_albedo(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("forest canopy ground treatment is present");
+        assert!(!canopy.contains("camera_distance_meters"));
+        assert!(canopy.contains("let forest_density = mix(0.35, 1.0, canopy_cluster);"));
+        assert!(canopy.contains("canopy_weight * forest_density"));
+        assert!(!canopy.contains("distance_weight"));
     }
 
     #[test]
@@ -1716,8 +1752,7 @@ mod tests {
         let expected_direction = forest_patch_tree_layouts(key)
             .into_iter()
             .filter(|(direction, layout)| {
-                f64::from(layout.seed)
-                    <= forest_density_at(*direction) * forest_cell_edge_falloff(key, *direction)
+                f64::from(layout.seed) <= forest_placement_density_at(*direction)
             })
             .nth(4)
             .expect("the deterministic cell has qualifying density candidates")
