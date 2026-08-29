@@ -1016,9 +1016,9 @@ fn tree_base_sink_meters(width_meters: f32, slope_radians: f64) -> f64 {
 /// capable of producing trees; the field only creates natural clearings and
 /// denser stands instead of a hard-edged disk.
 fn forest_density_at(direction: DVec3) -> f64 {
-    let value = forest_noise_at(direction, 192.0) * 0.5 + 0.5;
-    let cluster = smoothstep01((value - 0.24) / (0.76 - 0.24));
-    0.35 + cluster * 0.65
+    let value = forest_noise_at(direction, 1_024.0) * 0.5 + 0.5;
+    let cluster = smoothstep01((value - 0.28) / (0.72 - 0.28));
+    0.04 + cluster * 0.96
 }
 
 fn forest_noise_at(direction: DVec3, frequency: f64) -> f64 {
@@ -1343,7 +1343,7 @@ mod tests {
         assert!(trees.iter().any(|(_, layout)| layout.kind == 0.0));
         assert!(trees.iter().any(|(_, layout)| layout.kind == 1.0));
         let density = forest_density_at(FOREST_CENTRE_DIRECTION);
-        assert!((0.35..=1.0).contains(&density));
+        assert!((0.0..=1.0).contains(&density));
     }
 
     #[test]
@@ -1404,7 +1404,8 @@ mod tests {
             .and_then(|source| source.split("\nfn ").next())
             .expect("forest canopy ground treatment is present");
         assert!(!canopy.contains("camera_distance_meters"));
-        assert!(canopy.contains("let forest_density = mix(0.35, 1.0, canopy_cluster);"));
+        assert!(canopy.contains("direction * 1024.0"));
+        assert!(canopy.contains("let forest_density = mix(0.04, 1.0, canopy_cluster);"));
         assert!(canopy.contains("canopy_weight * forest_density"));
         assert!(!canopy.contains("distance_weight"));
     }

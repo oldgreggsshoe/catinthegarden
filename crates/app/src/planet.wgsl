@@ -991,13 +991,13 @@ fn forest_canopy_albedo(
     // A modest cell frequency gives orbit-scale clusters rather than a
     // per-pixel sparkle. Sampling normalized 3D direction keeps the field
     // continuous across cube faces, source tiles, and LOD boundaries.
-    let noise_position = direction * 192.0;
+    let noise_position = direction * 1024.0;
     let canopy_noise = terrain_detail_value_noise(
         vec3<i32>(floor(noise_position)),
         fract(noise_position),
     ).value * 0.5 + 0.5;
-    let canopy_cluster = smoothstep(0.24, 0.76, canopy_noise);
-    let forest_density = mix(0.35, 1.0, canopy_cluster);
+    let canopy_cluster = smoothstep(0.28, 0.72, canopy_noise);
+    let forest_density = mix(0.04, 1.0, canopy_cluster);
     let canopy_tint = vec3<f32>(0.52, 0.62, 0.50);
     return mix(
         base_albedo,

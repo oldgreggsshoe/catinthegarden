@@ -4216,3 +4216,7 @@ show irregular terrain-owned forest areas. A same-build `forest_performance` ON/
 Workspace check, formatting, and whitespace validation pass. The full app suite passes 319, fails
 one, and ignores seven; the sole failure remains the unrelated standalone sun-shader composition
 test documented above.
+
+### 2026-08-29 organic forest-density correction
+
+The follow-up correction keeps L12 candidate ownership and its existing spacing/cost, but replaces the broad frequency-192 field's unconditional 35% placement floor with one seam-safe frequency-1024 field and a 4% sparse tail. CPU tree placement and terrain canopy darkening use the identical function. This makes forest density vary within work cells rather than exposing every completed cell as a uniformly filled quadrilateral. All 27 focused forest tests and the planet WGSL validator pass; release `forest_startup/1788028069-288688` passes, with neighbouring eligible cells ranging from zero to 9,489 accepted candidates. The current dirty-worktree run still contains a 124.627ms long frame and the terrain remains capped at 256 leaves with extensive ancestor fallback; neither separate issue is signed off by this forest-shape change.
