@@ -713,7 +713,7 @@ struct State {
     debug_overlay_visible: bool,
     render_path: RenderPath,
     render_debug_mode: planet::RenderDebugMode,
-    flat_triangle_outlines_enabled: bool,
+    flat_triangle_outline_mode: planet::FlatTriangleOutlineMode,
     animation_frozen: bool,
     frozen_sim_time: f64,
     interactive_scene_time_offset_seconds: f64,
@@ -1067,7 +1067,7 @@ impl State {
                 "flat_triangles" => planet::RenderDebugMode::FlatTriangles,
                 _ => planet::RenderDebugMode::FlatTriangles,
             },
-            flat_triangle_outlines_enabled: true,
+            flat_triangle_outline_mode: planet::FlatTriangleOutlineMode::Dark,
             animation_frozen: false,
             frozen_sim_time: 0.0,
             interactive_scene_time_offset_seconds: 0.0,
@@ -1288,8 +1288,8 @@ impl State {
         self.mark_hud_dirty();
     }
 
-    fn toggle_flat_triangle_outlines(&mut self) {
-        self.flat_triangle_outlines_enabled = !self.flat_triangle_outlines_enabled;
+    fn cycle_flat_triangle_outline_mode(&mut self) {
+        self.flat_triangle_outline_mode = self.flat_triangle_outline_mode.next();
         self.mark_hud_dirty();
     }
 
@@ -2057,7 +2057,7 @@ impl State {
             let hdr_effect_enabled = self.hdr.hdr_effect_enabled();
             let render_path = self.render_path;
             let render_debug_mode = self.render_debug_mode;
-            let flat_triangle_outlines_enabled = self.flat_triangle_outlines_enabled;
+            let flat_triangle_outline_mode = self.flat_triangle_outline_mode;
             let warp_size = self.foveated.warp_size();
             let warp_debug_visible = self.foveated.warp_debug_visible();
             let fovea_ndc = self.foveated.fovea_ndc();
@@ -2220,7 +2220,7 @@ impl State {
                             ));
                             ui.label(format!(
                                 "Flat triangle outlines: {} (O)",
-                                if flat_triangle_outlines_enabled { "on" } else { "off" },
+                                flat_triangle_outline_mode.label(),
                             ));
                             ui.label(format!("Render path: {} (F5)", render_path.label()));
                             ui.label(format!(
@@ -2356,7 +2356,7 @@ impl State {
             planet_rotation_radians,
             sim_time,
             self.render_debug_mode,
-            self.flat_triangle_outlines_enabled,
+            self.flat_triangle_outline_mode,
             camera_surface_height_meters,
         );
         self.queue
@@ -3324,7 +3324,7 @@ impl ApplicationHandler for App {
                     if event.state.is_pressed()
                         && event.physical_key == PhysicalKey::Code(KeyCode::KeyO) =>
                 {
-                    state.toggle_flat_triangle_outlines();
+                    state.cycle_flat_triangle_outline_mode();
                     window.request_redraw();
                 }
                 WindowEvent::KeyboardInput { event, .. }
@@ -3619,8 +3619,8 @@ mod tests {
         transport_flight_tangent,
     };
     use crate::planet::{
-        CameraUniform, OrbitCamera, PLANET_ROTATION_PERIOD_SECONDS, RenderDebugMode,
-        default_sun_direction,
+        CameraUniform, FlatTriangleOutlineMode, OrbitCamera, PLANET_ROTATION_PERIOD_SECONDS,
+        RenderDebugMode, default_sun_direction,
     };
 
     #[test]
@@ -3661,7 +3661,7 @@ mod tests {
             0.0,
             0.0,
             RenderDebugMode::Final,
-            true,
+            FlatTriangleOutlineMode::Dark,
             0.0,
         );
         let axis = |values: [f32; 4]| {

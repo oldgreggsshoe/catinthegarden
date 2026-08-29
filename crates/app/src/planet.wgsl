@@ -791,6 +791,10 @@ fn flat_triangle_edge(input_tile_uv: vec2<f32>, skirt: f32) -> f32 {
     );
 }
 
+fn flat_triangle_black_red(edge: f32) -> vec3<f32> {
+    return vec3<f32>(edge, 0.0, 0.0);
+}
+
 fn flat_triangle_normal(
     camera_relative_view_position: vec3<f32>,
     fallback_normal: vec3<f32>,
@@ -1126,6 +1130,9 @@ fn flat_triangle_colour(
         * terrain_material_transmittance(input.aerial_transmittance, fill_biome)
         + terrain_material_in_scatter(input.aerial_in_scatter, fill_biome);
     let edge = flat_triangle_edge(input.tile_uv, input.skirt_depth_meters);
+    if camera.flat_triangle_options.x > 1.5 {
+        return vec4<f32>(flat_triangle_black_red(edge), 1.0);
+    }
     if fill_biome == 0u || fill_biome == 1u {
         // Flat mode's terrain path still owns coarse water triangles because
         // the separate analytic ocean shell is disabled there. Keep those
@@ -1178,6 +1185,9 @@ fn flat_ocean_colour(input: OceanVertexOutput) -> vec4<f32> {
         surface.vertical_displacement,
     );
     let edge = flat_triangle_edge(input.tile_uv, 0.0);
+    if camera.flat_triangle_options.x > 1.5 {
+        return vec4<f32>(flat_triangle_black_red(edge), 1.0);
+    }
     return vec4<f32>(mix(misted_ocean_lit, misted_ocean_lit * 0.68, edge), 1.0);
 }
 

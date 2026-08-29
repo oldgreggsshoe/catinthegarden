@@ -227,9 +227,10 @@ biome outmaps remain CPU/GPU data sources for geometry and ownership; this mode 
 the baked data disappeared.
 
 The branch defaults to `flat L7 triangles` (`RenderDebugMode::FlatTriangles`). Press `O` to
-toggle the dark per-triangle outlines at runtime; they start enabled and the HUD reports the
-current state. This only changes the edge mask; flat fills, geometric normals, lighting, ocean
-shading, and fixed-L7 geometry remain unchanged. Set
+cycle dark per-triangle outlines, outlines off, and a black-fill/bright-red-edge diagnostic; dark
+outlines start enabled and the HUD reports the current state. The first two modes only change the
+edge mask; the third deliberately replaces the presented land/ocean colour for topology inspection.
+Geometric normals and fixed-L7 geometry remain unchanged. Set
 `CATINGARDEN_FLAT_TRIANGLES=0`/`false`/`off` to restore normal LOD selection, or set
 `CATINGARDEN_DEBUG_MODE=final` to inspect the normal material shader while keeping the branch's
 fixed-L7 policy. The ray renderer is not replaced by this raster-only presentation experiment.
@@ -4139,3 +4140,18 @@ All 31 focused forest tests pass. Release `forest_travel/1787994724-154197` pass
 captures, and beam-on `orbit_once/1787994695-154088` passes with all 122 locators submitted and visible
 at orbital scale. The earlier 883-locator diagnostic was rejected as an unreadable starburst before
 commit.
+
+## Black/red flat-triangle topology mode - 29 August 2026
+
+The `O` control is now a three-state cycle: the existing subtle dark outlines, outlines off, then
+pure black triangle interiors with bright-red antialiased edges, returning to dark on the next press.
+`FlatTriangleOutlineMode` is encoded as 1/0/2 in the existing
+`CameraUniform::flat_triangle_options.x`; no resource, bind group, pipeline, or draw call was added.
+The black/red presentation is applied explicitly to both terrain-owned water and the analytic flat
+ocean path and intentionally bypasses material lighting, aerial perspective, and distance mist so it
+remains an unambiguous topology diagnostic. Ordinary dark/off rendering is unchanged.
+
+Three focused flat-triangle tests pass, including the complete host cycle and WGSL land/ocean
+coverage. A temporary black/red-default release replay was restored immediately after capture;
+`forest_startup/1787995360-158939` passes, and `capture-002.png` visually confirms black facets with
+bright-red edges. Production startup remains on the original dark-outline mode.

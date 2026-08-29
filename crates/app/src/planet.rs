@@ -2677,6 +2677,33 @@ pub enum RenderDebugMode {
     FlatTriangles = 6,
 }
 
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum FlatTriangleOutlineMode {
+    Off = 0,
+    #[default]
+    Dark = 1,
+    BlackRed = 2,
+}
+
+impl FlatTriangleOutlineMode {
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Dark => Self::Off,
+            Self::Off => Self::BlackRed,
+            Self::BlackRed => Self::Dark,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Dark => "dark",
+            Self::BlackRed => "black fill / red edges",
+        }
+    }
+}
+
 impl RenderDebugMode {
     pub const fn next(self) -> Self {
         match self {
@@ -2725,7 +2752,7 @@ impl CameraUniform {
         planet_rotation_radians: f64,
         sim_time: f64,
         render_debug_mode: RenderDebugMode,
-        flat_triangle_outlines_enabled: bool,
+        flat_triangle_outline_mode: FlatTriangleOutlineMode,
         // Terrain height under the camera, so the near plane can be set from
         // how far the ground actually is rather than from sea level. Pass 0.0
         // when it is not known; that is the old behaviour.
@@ -2777,16 +2804,7 @@ impl CameraUniform {
                 sim_time as f32,
                 render_debug_mode as u32 as f32,
             ],
-            flat_triangle_options: [
-                if flat_triangle_outlines_enabled {
-                    1.0
-                } else {
-                    0.0
-                },
-                0.0,
-                0.0,
-                0.0,
-            ],
+            flat_triangle_options: [flat_triangle_outline_mode as u32 as f32, 0.0, 0.0, 0.0],
         }
     }
 }
@@ -2812,7 +2830,7 @@ mod tests {
     use super::{
         CHUNK_GRID_QUADS, CHUNK_GRID_VERTICES, CameraUniform, CameraViewBasis, CubeSphereMesh,
         DEFAULT_MAX_ACTIVE_CHUNKS, DEFAULT_VERTICAL_FOV_RADIANS, EARTH_AXIAL_TILT_RADIANS,
-        FLAT_TRIANGLE_LOD_LEVEL, GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
+        FLAT_TRIANGLE_LOD_LEVEL, FlatTriangleOutlineMode, GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
         GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, GeometricErrorRatio, LodPolicy, MAX_LOD_LEVEL,
         MAX_SKIRT_DEPTH_METERS, MAX_VERTICAL_FOV_RADIANS, MIN_VERTICAL_FOV_RADIANS,
         MINIMUM_LOD_LEVEL, NEAR_FIELD_GRID_QUADS, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE,
@@ -4094,7 +4112,7 @@ mod tests {
             0.0,
             0.0,
             RenderDebugMode::Final,
-            true,
+            FlatTriangleOutlineMode::Dark,
             0.0,
         );
 
@@ -4112,9 +4130,9 @@ mod tests {
     }
 
     #[test]
-    fn camera_uniform_carries_flat_triangle_outline_toggle() {
+    fn flat_triangle_outline_mode_cycles_and_is_carried_by_the_camera_uniform() {
         let camera = OrbitCamera::default();
-        let uniform = |enabled| {
+        let uniform = |mode| {
             CameraUniform::from_camera(
                 &camera,
                 1.0,
@@ -4122,13 +4140,35 @@ mod tests {
                 0.0,
                 0.0,
                 RenderDebugMode::FlatTriangles,
-                enabled,
+                mode,
                 0.0,
             )
         };
 
-        assert_eq!(uniform(true).flat_triangle_options[0], 1.0);
-        assert_eq!(uniform(false).flat_triangle_options[0], 0.0);
+        assert_eq!(
+            FlatTriangleOutlineMode::Dark.next(),
+            FlatTriangleOutlineMode::Off
+        );
+        assert_eq!(
+            FlatTriangleOutlineMode::Off.next(),
+            FlatTriangleOutlineMode::BlackRed
+        );
+        assert_eq!(
+            FlatTriangleOutlineMode::BlackRed.next(),
+            FlatTriangleOutlineMode::Dark
+        );
+        assert_eq!(
+            uniform(FlatTriangleOutlineMode::Off).flat_triangle_options[0],
+            0.0
+        );
+        assert_eq!(
+            uniform(FlatTriangleOutlineMode::Dark).flat_triangle_options[0],
+            1.0
+        );
+        assert_eq!(
+            uniform(FlatTriangleOutlineMode::BlackRed).flat_triangle_options[0],
+            2.0
+        );
     }
 
     #[test]

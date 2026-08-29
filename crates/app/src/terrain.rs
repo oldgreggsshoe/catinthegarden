@@ -4083,6 +4083,9 @@ mod tests {
         let shader = planet_shader_source();
         assert!(shader.contains("const RENDER_DEBUG_FLAT_TRIANGLES: u32 = 6u;"));
         assert!(shader.contains("fn flat_triangle_edge("));
+        assert!(shader.contains("fn flat_triangle_black_red(edge: f32) -> vec3<f32>"));
+        assert!(shader.contains("return vec3<f32>(edge, 0.0, 0.0);"));
+        assert_eq!(shader.matches("flat_triangle_black_red(edge)").count(), 2);
         assert!(shader.contains("fn flat_triangle_normal("));
         assert!(shader.contains("fn flat_triangle_outward_normal("));
         assert!(shader.contains("fn flat_triangle_lighting("));
