@@ -4116,3 +4116,26 @@ populated cells visible by capture 001. Fully populated render-range performance
 The focused forest filter passes 30 tests and the release app builds. The full app run passes 312,
 fails 1, and ignores 7: the sole failure is the pre-existing dirty-worktree sun-shader unit test,
 whose standalone source cannot resolve `cloudDensityWithOctaves`; it is unrelated to forest code.
+
+## Global forest locators and symmetric approach cache - 29 August 2026
+
+The forest beam overlay no longer follows `ForestRenderer::patches`, which was both camera-local and
+pruned at the tree draw boundary. The bounded terrain startup scan now returns coarse forest-capable
+outmap samples alongside weather climate data in the same I/O pass. Moist samples are selected into
+1,000km-separated deterministic regional waypoints plus the authored startup forest; the current
+active bake yields 122. Their immutable vertex buffer is created once, and **B** submits all shafts
+at every camera distance. The vertex shader expands each shaft to constant screen width, retaining
+terrain depth testing, weather veiling, and the 2,880km atmosphere-top endpoint. **B** remains off by
+default; `CATINGARDEN_FOREST_BEAMS=1` exists for deterministic captures.
+
+The return-only continuity fault had a separate cause: construction began at the same boundary as
+rendering, while an already-built retreating patch remained resident until it crossed that boundary.
+Actual tree geometry still draws only within 8km/128 cells, but a 12km/256-cell deterministic cache
+now prebuilds and retains surrounding patches. Missing visible cells pre-empt background work and use
+256 probes per frame; prefetch retains the 128-probe budget. A focused regression proves every
+draw-range key is already in the prefetch set.
+
+All 31 focused forest tests pass. Release `forest_travel/1787994724-154197` passes its six moving
+captures, and beam-on `orbit_once/1787994695-154088` passes with all 122 locators submitted and visible
+at orbital scale. The earlier 883-locator diagnostic was rejected as an unreadable starburst before
+commit.

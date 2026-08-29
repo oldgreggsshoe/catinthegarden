@@ -438,12 +438,37 @@ pub struct TerrainClimateSample {
     pub ground_moisture: f64,
 }
 
+/// Coarse global inputs used only to place distance-independent forest debug
+/// locators. Exact tree placement still applies the resident terrain slope and
+/// per-cell density tests when the camera gets close enough to draw trees.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TerrainForestSample {
+    pub direction: DVec3,
+    pub surface_elevation_meters: f64,
+    pub moisture: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TerrainStartupSamples {
+    pub climate: Vec<TerrainClimateSample>,
+    pub forests: Vec<TerrainForestSample>,
+}
+
 /// Samples the active outmap at the weather grid's 64x64-per-face centres.
 /// Level 2 is intentionally enough for climate-scale land and relief while
 /// keeping startup bounded (at most 96 source tiles, with ancestor fallback).
+#[allow(dead_code)]
 pub fn terrain_climate_samples(
     source: &TerrainSource,
 ) -> Result<Option<Vec<TerrainClimateSample>>, TerrainError> {
+    Ok(terrain_startup_samples(source)?.map(|samples| samples.climate))
+}
+
+/// Loads the climate and coarse forest-locator fields in one bounded outmap
+/// pass so enabling global forest debugging does not duplicate startup I/O.
+pub fn terrain_startup_samples(
+    source: &TerrainSource,
+) -> Result<Option<TerrainStartupSamples>, TerrainError> {
     const WEATHER_GRID_SIDE: usize = 64;
     const WEATHER_SAMPLE_LEVEL: u8 = 2;
 
@@ -452,7 +477,8 @@ pub fn terrain_climate_samples(
     };
     let outmap = Outmap::open(root)?;
     let mut tile_cache: HashMap<TileKey, TileData> = HashMap::new();
-    let mut samples = Vec::with_capacity(CubeFace::ALL.len() * WEATHER_GRID_SIDE.pow(2));
+    let mut climate = Vec::with_capacity(CubeFace::ALL.len() * WEATHER_GRID_SIDE.pow(2));
+    let mut forests = Vec::new();
     for face in CubeFace::ALL {
         for y in 0..WEATHER_GRID_SIDE {
             for x in 0..WEATHER_GRID_SIDE {
@@ -480,24 +506,27 @@ pub fn terrain_climate_samples(
                     BiomeId::Ocean | BiomeId::Lake => 0.08,
                     _ => 0.28,
                 };
-                let heat_capacity =
-                    1.2e7 + (2.4e6 - 1.2e7) * land_fraction;
-                let ground_moisture = if water {
-                    0.0
-                } else {
-                    f64::from(sample_moisture_cpu(&tile.moisture, uv)) / 255.0
-                };
-                samples.push(TerrainClimateSample {
+                let heat_capacity = 1.2e7 + (2.4e6 - 1.2e7) * land_fraction;
+                let sampled_moisture = f64::from(sample_moisture_cpu(&tile.moisture, uv)) / 255.0;
+                let ground_moisture = if water { 0.0 } else { sampled_moisture };
+                climate.push(TerrainClimateSample {
                     land_fraction,
                     surface_elevation_meters,
                     surface_albedo,
                     heat_capacity_joules_per_square_meter_kelvin: heat_capacity,
                     ground_moisture,
                 });
+                if forest_biome_owns_trees(biome) && surface_elevation_meters > 0.0 {
+                    forests.push(TerrainForestSample {
+                        direction,
+                        surface_elevation_meters,
+                        moisture: sampled_moisture as f32,
+                    });
+                }
             }
         }
     }
-    Ok(Some(samples))
+    Ok(Some(TerrainStartupSamples { climate, forests }))
 }
 
 #[derive(Clone, Debug, Default)]

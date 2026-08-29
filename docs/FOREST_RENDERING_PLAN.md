@@ -182,3 +182,28 @@ at every populated cell rather than marking only the formerly active patch.
 Release `forest_startup/1787955024-137828` passes both captures and the 2.05m clearance assertion.
 Its first capture has three completed cells and visible trees on both sides of the opening view;
 paired Quadro profiling of a fully populated render-range set remains outstanding.
+
+## Global locators and approach prefetch - 29 August 2026
+
+The **B** diagnostic is no longer derived from the camera-local tree working set. The existing
+64x64-per-face outmap startup pass now also records positive samples owned by forest-capable biomes;
+the forest renderer filters those by the same 0.38 moisture floor and deterministically selects
+suitable regional waypoints at least 1,000km apart. The authored startup forest is always included.
+The active bake produces 122 locators.
+
+All locator geometry is uploaded once into one immutable buffer. Every locator is submitted whenever
+**B** is enabled, regardless of camera distance or which L12 tree cells are cached. Each shaft is one
+camera-facing quad with an approximately constant screen width and still runs from terrain to the
+2,880km atmosphere top, uses terrain depth, and draws before weather. This keeps orbital markers
+legible without making near markers kilometre-wide. The toggle remains off by default;
+`CATINGARDEN_FOREST_BEAMS=1` is the explicit scenario/automation override.
+
+Tree geometry remains capped at 8km and 128 renderable cells. A separate 12km, 256-cell cache now
+builds deterministic patches before they can draw and retains completed patches after they leave the
+visible range. Any missing draw-range cell pre-empts background prefetch and receives the 256-probe
+budget; background cells retain 128 probes. Thus approach and retreat use the same completed patch
+instead of approach waiting until the forest is already visible.
+
+The focused forest filter passes 31 tests, including a strict assertion that the complete draw set is
+a subset of the prefetch set. Release `forest_travel/1787994724-154197` and beam-on orbital replay
+`orbit_once/1787994695-154088` pass; the latter shows the 122 global regional shafts in one view.

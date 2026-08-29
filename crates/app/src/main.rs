@@ -898,10 +898,12 @@ impl State {
             hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
         );
-        let terrain_climate_samples = terrain::terrain_climate_samples(&terrain_source)
-            .expect("active terrain climate samples must load");
+        let terrain_startup_samples = terrain::terrain_startup_samples(&terrain_source)
+            .expect("active terrain startup samples must load");
         let mut weather = weather::WeatherState::new_with_terrain_samples(
-            terrain_climate_samples.as_deref(),
+            terrain_startup_samples
+                .as_ref()
+                .map(|samples| samples.climate.as_slice()),
         );
         if scenario.is_none() {
             weather.enable_background_prediction(planet::default_sun_direction());
@@ -969,6 +971,10 @@ impl State {
             &device,
             hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
+            terrain_startup_samples
+                .as_ref()
+                .map(|samples| samples.forests.as_slice())
+                .unwrap_or_default(),
             &mut terrain,
         );
         if let (Some(scenario), Some(landing_direction)) =
@@ -2108,10 +2114,11 @@ impl State {
                                 terrain_stats.ocean_chunks, terrain_stats.ocean_triangles,
                             ));
                             ui.label(format!(
-                                "Forest: {} trees  |  {} patches  |  nearest {:?}  |  beams {} (B)",
+                                "Forest: {} trees  |  {} patches  |  nearest {:?}  |  {} global beams {} (B)",
                                 forest_snapshot.instances,
                                 forest_snapshot.patch_count,
                                 forest_snapshot.patch_key,
+                                forest_snapshot.beam_count,
                                 if forest_snapshot.beams_enabled { "on" } else { "off" },
                             ));
                             ui.label(format!(
@@ -2370,6 +2377,7 @@ impl State {
             tracing::info!(
                 target: "catinthegarden::forest",
                 patch_count = forest.patch_count,
+                beam_count = forest.beam_count,
                 instances = forest.instances,
                 full_instances = forest.full_instances,
                 medium_instances = forest.medium_instances,
