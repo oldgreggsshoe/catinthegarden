@@ -971,6 +971,7 @@ impl State {
             &device,
             hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
+            weather_clouds.field_bind_group_layout(),
             terrain_startup_samples
                 .as_ref()
                 .map(|samples| samples.forests.as_slice())
@@ -2701,6 +2702,7 @@ impl State {
             self.forest.draw(
                 &mut render_pass,
                 &self.camera_bind_group,
+                self.weather_clouds.field_bind_group(),
                 camera_sea_level_altitude_meters,
             );
             self.local_cloud_impostors.draw(

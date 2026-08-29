@@ -1205,6 +1205,47 @@ impl TerrainRenderer {
         self.surface_height_meters_at(local_surface_direction, camera_altitude_meters)
     }
 
+    /// Resolves one coarse global forest locator against the same dense tile,
+    /// runtime height, biome, moisture, and slope path used by nearby trees.
+    /// This is startup-only: locators must not advertise a forest that the
+    /// resident placement path will reject when the camera arrives.
+    pub fn prepare_global_forest_locator_sample(
+        &mut self,
+        local_surface_direction: DVec3,
+    ) -> Option<ForestSurfaceSample> {
+        let direction = local_surface_direction.normalize_or_zero();
+        if direction.length_squared() <= f64::EPSILON {
+            return None;
+        }
+        let source_key = match &self.source {
+            TerrainDataSource::Placeholder => return None,
+            TerrainDataSource::Outmap(outmap) => {
+                tile_key_for_direction(direction, outmap.manifest().dense_level)
+            }
+        };
+        if !self.tile_cache.contains_key(&source_key) {
+            let TerrainDataSource::Outmap(outmap) = &self.source else {
+                unreachable!("placeholder returned before loading a forest-locator tile");
+            };
+            let tile = outmap.load_tile(source_key).ok()?;
+            let label = format!("global forest locator terrain tile {source_key:?}");
+            self.tile_cache.insert(
+                source_key,
+                create_gpu_tile(
+                    &self.device,
+                    &self.queue,
+                    &self.terrain_tile_bind_group_layout,
+                    &label,
+                    &tile.heights_meters,
+                    &tile.biome_ids,
+                    &tile.moisture,
+                ),
+            );
+        }
+        self.tile_last_used.insert(source_key, self.tile_cache_tick);
+        self.forest_surface_sample_at(direction, 0.0)
+    }
+
     pub fn shared_bind_group(&self) -> &wgpu::BindGroup {
         &self.shared_bind_group
     }

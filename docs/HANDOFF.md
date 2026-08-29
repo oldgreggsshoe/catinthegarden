@@ -4155,3 +4155,30 @@ Three focused flat-triangle tests pass, including the complete host cycle and WG
 coverage. A temporary black/red-default release replay was restored immediately after capture;
 `forest_startup/1787995360-158939` passes, and `capture-002.png` visually confirms black facets with
 bright-red edges. Production startup remains on the original dark-outline mode.
+
+## Forest cloud shadows and truthful global locators - 29 August 2026
+
+Billboard trees now bind the same current/previous temporal weather cubemaps and render uniform as
+terrain. Their direct sunlight is multiplied by a three-octave cloud-density lookup projected from
+the tree toward the sun through both cloud shells, then posterised to the same four shadow bands as
+terrain. Sky ambient remains unshadowed, so overcast trees follow the surrounding ground without
+becoming emissive at night or unnaturally black under every cloud. The forest shader is composed with
+the shared `weather_cloud_density.wgsl` source and fully parsed/validated in its focused test.
+
+The global **B** locators previously advertised coarse L2 biome/moisture samples that could still be
+rejected by actual L12 tree placement. Each coarse anchor is now refined once at startup through its
+real deterministic tree candidates and the dense terrain height/biome/moisture/slope path; anchors
+with no eligible tree are discarded. The active bake therefore yields 109 truthful locators from 122
+coarse candidates.
+
+Manual `1787995768-162111/capture-001.png` exposed a separate high-mountain failure: the camera was
+roughly 1.1km over 42km of presented terrain, but the cell-range intersection used a sea-level tree
+shell. Its 8km search could not reach that shell and returned zero cells, hence the HUD's `0 trees | 0
+patches` beside a valid nearby locator. Render and prefetch ranges now use the terrain height beneath
+the camera, with a regression that reproduces the formerly empty 42km case.
+
+All 34 focused forest tests pass. Workspace check, formatting, and whitespace validation pass. The
+release `forest_startup/1788025163-277316` scenario passes both captures and 2.05m clearance, reaches
+six populated patches and 12,551 visible instances, and logs a 26.787ms median frame. The full app
+suite passes 316, fails one, and ignores seven; the sole failure is the already documented unrelated
+standalone sun-shader test whose dirty-worktree source lacks `cloudDensityWithOctaves` composition.

@@ -22,6 +22,28 @@ struct ForestUniform {
 @group(1) @binding(0)
 var<uniform> forest: ForestUniform;
 
+@group(2) @binding(0)
+var cloud_field_current: texture_cube<f32>;
+
+@group(2) @binding(1)
+var cloud_field_previous: texture_cube<f32>;
+
+@group(2) @binding(2)
+var cloud_field_sampler: sampler;
+
+struct WeatherRenderUniform {
+    blend: f32,
+    drift_radians: f32,
+    lower_shell_radius_meters: f32,
+    upper_shell_radius_meters: f32,
+    noise_scale: f32,
+    noise_strength: f32,
+    _padding: vec2<f32>,
+}
+
+@group(2) @binding(3)
+var<uniform> weather: WeatherRenderUniform;
+
 struct VertexInput {
     @location(0) centre_and_height: vec4<f32>,
     @location(1) width_shade_kind_seed: vec4<f32>,
@@ -49,10 +71,60 @@ fn srgb_to_linear(color: vec3<f32>) -> vec3<f32> {
     return select(high, low, color <= vec3<f32>(0.04045));
 }
 
-fn tree_lighting(solar_elevation_cosine: f32) -> f32 {
+fn cloud_shadow_density_at_shell(
+    surface_position: vec3<f32>,
+    sun_direction: vec3<f32>,
+    shell_radius: f32,
+    shell_index: f32,
+) -> f32 {
+    let surface_radius_squared = dot(surface_position, surface_position);
+    if surface_radius_squared >= shell_radius * shell_radius {
+        return 0.0;
+    }
+    let ray_offset = dot(surface_position, sun_direction);
+    let discriminant = ray_offset * ray_offset
+        - (surface_radius_squared - shell_radius * shell_radius);
+    if discriminant <= 0.0 {
+        return 0.0;
+    }
+    let distance = -ray_offset + sqrt(discriminant);
+    if distance <= 0.0 {
+        return 0.0;
+    }
+    let shadow_position = surface_position + sun_direction * distance;
+    return cloudDensityWithOctaves(normalize(shadow_position), shell_index, 3u);
+}
+
+fn cloud_shadow_visibility(
+    surface_direction: vec3<f32>,
+    surface_height: f32,
+    sun_direction: vec3<f32>,
+) -> f32 {
+    let surface_position = normalize(surface_direction)
+        * (PLANET_RADIUS_METERS + max(surface_height, 0.0));
+    let lower_density = cloud_shadow_density_at_shell(
+        surface_position,
+        sun_direction,
+        weather.lower_shell_radius_meters,
+        0.0,
+    );
+    let upper_density = cloud_shadow_density_at_shell(
+        surface_position,
+        sun_direction,
+        weather.upper_shell_radius_meters,
+        1.0,
+    );
+    let combined_density = 1.0
+        - (1.0 - clamp(lower_density, 0.0, 1.0))
+            * (1.0 - clamp(upper_density, 0.0, 1.0));
+    let posterized_density = floor(combined_density * 4.0 + 0.5) / 4.0;
+    return 1.0 - posterized_density * 0.88;
+}
+
+fn tree_lighting(solar_elevation_cosine: f32, cloud_visibility: f32) -> f32 {
     let direct = max(solar_elevation_cosine, 0.0) * 1.24;
     let sky_ambient = smoothstep(-0.18, 0.02, solar_elevation_cosine) * 0.36;
-    return direct + sky_ambient;
+    return direct * cloud_visibility + sky_ambient;
 }
 
 @vertex
@@ -78,8 +150,17 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vertex_index: u32) -> Vert
         + right * corner.x * width * 0.5
         + up * corner.y * height;
     let view_position = planet_to_view(world_position - forest.camera_planet_position.xyz);
-    let solar_elevation_cosine = dot(up, normalize(camera.sun_direction.xyz));
-    let lighting = tree_lighting(solar_elevation_cosine) * shade;
+    let sun_direction = normalize(camera.sun_direction.xyz);
+    let solar_elevation_cosine = dot(up, sun_direction);
+    var cloud_visibility = 1.0;
+    if solar_elevation_cosine > 0.0 {
+        cloud_visibility = cloud_shadow_visibility(
+            up,
+            length(centre) - PLANET_RADIUS_METERS,
+            sun_direction,
+        );
+    }
+    let lighting = tree_lighting(solar_elevation_cosine, cloud_visibility) * shade;
     let broadleaf = srgb_to_linear(vec3<f32>(0.10, 0.34, 0.12));
     let conifer = srgb_to_linear(vec3<f32>(0.07, 0.25, 0.10));
     let colour = mix(broadleaf, conifer, kind) * lighting;

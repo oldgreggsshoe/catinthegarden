@@ -48,6 +48,7 @@ const FOREST_BEAM_ATMOSPHERE_HEIGHT_METERS: f64 = 2_880_000.0;
 const FOREST_BEAM_TOP_RADIUS_METERS: f64 =
     PLANET_RADIUS_METERS + FOREST_BEAM_ATMOSPHERE_HEIGHT_METERS;
 const FOREST_BEAM_LOCATOR_SPACING_METERS: f64 = 1_000_000.0;
+const FOREST_BEAM_REFINEMENT_CANDIDATES: usize = 512;
 
 fn forest_rendering_from_env() -> bool {
     match std::env::var("CATINGARDEN_FOREST") {
@@ -69,6 +70,14 @@ fn forest_beams_from_env() -> bool {
             .as_deref(),
         Some("1" | "true" | "on")
     )
+}
+
+fn forest_shader_source() -> String {
+    [
+        include_str!("forest.wgsl"),
+        include_str!("weather_cloud_density.wgsl"),
+    ]
+    .join("\n")
 }
 
 #[repr(C)]
@@ -292,13 +301,32 @@ impl ForestRenderer {
         device: &wgpu::Device,
         hdr_format: wgpu::TextureFormat,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
+        weather_field_bind_group_layout: &wgpu::BindGroupLayout,
         global_forest_samples: &[TerrainForestSample],
-        _terrain: &mut TerrainRenderer,
+        terrain: &mut TerrainRenderer,
     ) -> Self {
         let initial_key = forest_cell_key(FOREST_CENTRE_DIRECTION);
         let enabled = forest_rendering_from_env();
         let beams_enabled = forest_beams_from_env();
-        let beam_anchors = global_forest_beam_anchors(global_forest_samples);
+        let coarse_beam_anchors = global_forest_beam_anchors(global_forest_samples);
+        let beam_anchors = coarse_beam_anchors
+            .iter()
+            .copied()
+            .filter_map(|anchor| {
+                refine_global_forest_beam_anchor(anchor, |direction| {
+                    terrain
+                        .prepare_global_forest_locator_sample(direction)
+                        .filter(|sample| {
+                            forest_surface_is_eligible(
+                                *sample,
+                                FOREST_MINIMUM_MOISTURE,
+                                FOREST_MAXIMUM_SLOPE_RADIANS,
+                            )
+                        })
+                        .map(|sample| sample.height_meters)
+                })
+            })
+            .collect::<Vec<_>>();
         let beam_vertices = forest_beam_vertices_for_anchors(&beam_anchors);
         tracing::info!(
             target: "catinthegarden::forest",
@@ -307,6 +335,7 @@ impl ForestRenderer {
             maximum_renderable_patches = FOREST_MAX_RENDERABLE_PATCHES,
             maximum_cached_patches = FOREST_MAX_CACHED_PATCHES,
             maximum_draw_instances = FOREST_MAX_DRAW_INSTANCES,
+            coarse_global_beam_locators = coarse_beam_anchors.len(),
             global_beam_locators = beam_anchors.len(),
             beam_top_radius_meters = FOREST_BEAM_TOP_RADIUS_METERS,
             "configured billboard forest"
@@ -340,12 +369,17 @@ impl ForestRenderer {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("forest pipeline layout"),
-            bind_group_layouts: &[Some(camera_bind_group_layout), Some(&bind_group_layout)],
+            bind_group_layouts: &[
+                Some(camera_bind_group_layout),
+                Some(&bind_group_layout),
+                Some(weather_field_bind_group_layout),
+            ],
             immediate_size: 0,
         });
+        let shader_source = forest_shader_source();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("forest billboard shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("forest.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("forest billboard pipeline"),
@@ -499,15 +533,21 @@ impl ForestRenderer {
             self.pending_patch = None;
             return;
         }
+        let local_surface_height_meters = terrain
+            .surface_height_meters_at(camera_direction, camera_altitude_meters)
+            .unwrap_or(0.0)
+            .max(0.0);
         let renderable_keys = forest_renderable_cell_keys(
             camera_planet_position,
             viewport_height,
             vertical_fov_radians,
+            local_surface_height_meters,
         );
         let cached_keys = forest_cell_keys_within_distance(
             camera_planet_position,
             FOREST_PREFETCH_DISTANCE_METERS,
             FOREST_MAX_CACHED_PATCHES,
+            local_surface_height_meters,
         );
         if cached_keys.is_empty() {
             self.pending_patch = None;
@@ -745,6 +785,7 @@ impl ForestRenderer {
         &'pass self,
         render_pass: &mut wgpu::RenderPass<'pass>,
         camera_bind_group: &'pass wgpu::BindGroup,
+        weather_field_bind_group: &'pass wgpu::BindGroup,
         camera_altitude_meters: f64,
     ) {
         if !self.enabled
@@ -756,6 +797,7 @@ impl ForestRenderer {
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, camera_bind_group, &[]);
         render_pass.set_bind_group(1, &self.bind_group, &[]);
+        render_pass.set_bind_group(2, weather_field_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
         render_pass.draw(0..6, 0..self.instance_count);
     }
@@ -777,6 +819,7 @@ fn forest_renderable_cell_keys(
     camera_planet_position: DVec3,
     viewport_height: u32,
     vertical_fov_radians: f64,
+    local_surface_height_meters: f64,
 ) -> Vec<TileKey> {
     let visibility_distance =
         maximum_tree_visibility_distance_meters(viewport_height, vertical_fov_radians);
@@ -784,6 +827,7 @@ fn forest_renderable_cell_keys(
         camera_planet_position,
         visibility_distance,
         FOREST_MAX_RENDERABLE_PATCHES,
+        local_surface_height_meters,
     )
 }
 
@@ -791,15 +835,18 @@ fn forest_cell_keys_within_distance(
     camera_planet_position: DVec3,
     visibility_distance_meters: f64,
     maximum_keys: usize,
+    local_surface_height_meters: f64,
 ) -> Vec<TileKey> {
     let camera_direction = camera_planet_position.normalize_or_zero();
     let camera_radius = camera_planet_position.length();
     if camera_direction.length_squared() <= f64::EPSILON || maximum_keys == 0 {
         return Vec::new();
     }
-    let Some(angular_radius) =
-        forest_surface_angular_radius(camera_radius, visibility_distance_meters)
-    else {
+    let Some(angular_radius) = forest_surface_angular_radius(
+        camera_radius,
+        visibility_distance_meters,
+        local_surface_height_meters,
+    ) else {
         return Vec::new();
     };
     let cell_radius_bound = std::f64::consts::SQRT_2 / f64::from(1_u32 << FOREST_CELL_LEVEL);
@@ -863,6 +910,7 @@ fn maximum_tree_visibility_distance_meters(viewport_height: u32, vertical_fov_ra
 fn forest_surface_angular_radius(
     camera_radius_meters: f64,
     visibility_distance_meters: f64,
+    local_surface_height_meters: f64,
 ) -> Option<f64> {
     if !camera_radius_meters.is_finite()
         || !visibility_distance_meters.is_finite()
@@ -871,8 +919,9 @@ fn forest_surface_angular_radius(
     {
         return None;
     }
-    let tree_radius =
-        PLANET_RADIUS_METERS + f64::from(TREE_HEIGHT_MIN_METERS + TREE_HEIGHT_RANGE_METERS);
+    let tree_radius = PLANET_RADIUS_METERS
+        + local_surface_height_meters.max(0.0)
+        + f64::from(TREE_HEIGHT_MIN_METERS + TREE_HEIGHT_RANGE_METERS);
     if visibility_distance_meters < (camera_radius_meters - tree_radius).abs() {
         return None;
     }
@@ -1225,6 +1274,27 @@ fn global_forest_beam_anchors(samples: &[TerrainForestSample]) -> Vec<ForestBeam
     anchors
 }
 
+fn refine_global_forest_beam_anchor(
+    coarse_anchor: ForestBeamAnchor,
+    mut eligible_height_at: impl FnMut(DVec3) -> Option<f64>,
+) -> Option<ForestBeamAnchor> {
+    let key = forest_cell_key(coarse_anchor.direction);
+    forest_patch_tree_layouts(key)
+        .into_iter()
+        .take(FOREST_BEAM_REFINEMENT_CANDIDATES)
+        .find_map(|(direction, layout)| {
+            let placement_density =
+                forest_density_at(direction) * forest_cell_edge_falloff(key, direction);
+            if f64::from(layout.seed) > placement_density {
+                return None;
+            }
+            eligible_height_at(direction).map(|height_meters| ForestBeamAnchor {
+                direction,
+                base_radius_meters: PLANET_RADIUS_METERS + height_meters,
+            })
+        })
+}
+
 fn forest_beam_vertices(anchor: ForestBeamAnchor) -> [ForestBeamVertex; 6] {
     let direction = anchor.direction.normalize().as_vec3().to_array();
     let direction_and_base_radius = [
@@ -1431,7 +1501,7 @@ mod tests {
     #[test]
     fn renderable_range_selects_multiple_nearest_cells_with_a_hard_bound() {
         let camera_position = FOREST_CENTRE_DIRECTION * (PLANET_RADIUS_METERS + 2.0);
-        let keys = forest_renderable_cell_keys(camera_position, 427, 60.0_f64.to_radians());
+        let keys = forest_renderable_cell_keys(camera_position, 427, 60.0_f64.to_radians(), 0.0);
         assert!(keys.len() > 8);
         assert!(keys.len() <= FOREST_MAX_RENDERABLE_PATCHES);
         assert_eq!(keys[0], forest_cell_key(FOREST_CENTRE_DIRECTION));
@@ -1439,6 +1509,7 @@ mod tests {
         let angular_radius = forest_surface_angular_radius(
             camera_position.length(),
             maximum_tree_visibility_distance_meters(427, 60.0_f64.to_radians()),
+            0.0,
         )
         .expect("ground camera can resolve trees");
         assert!(keys.iter().all(|key| {
@@ -1452,11 +1523,13 @@ mod tests {
     #[test]
     fn prefetch_range_contains_the_entire_draw_range_before_approach() {
         let camera_position = FOREST_CENTRE_DIRECTION * (PLANET_RADIUS_METERS + 2.0);
-        let renderable = forest_renderable_cell_keys(camera_position, 427, 60.0_f64.to_radians());
+        let renderable =
+            forest_renderable_cell_keys(camera_position, 427, 60.0_f64.to_radians(), 0.0);
         let prefetched = forest_cell_keys_within_distance(
             camera_position,
             FOREST_PREFETCH_DISTANCE_METERS,
             FOREST_MAX_CACHED_PATCHES,
+            0.0,
         );
         let prefetched = prefetched.into_iter().collect::<BTreeSet<_>>();
         assert!(!renderable.is_empty());
@@ -1471,6 +1544,7 @@ mod tests {
             direction * (PLANET_RADIUS_METERS + 2.0),
             427,
             60.0_f64.to_radians(),
+            0.0,
         );
         let faces = keys.iter().map(|key| key.face).collect::<BTreeSet<_>>();
         assert!(
@@ -1488,7 +1562,39 @@ mod tests {
         let camera_position = FOREST_CENTRE_DIRECTION
             * (PLANET_RADIUS_METERS + FOREST_TREE_RENDER_DISTANCE_METERS * 2.0);
         assert!(
-            forest_renderable_cell_keys(camera_position, 427, 60.0_f64.to_radians()).is_empty()
+            forest_renderable_cell_keys(camera_position, 427, 60.0_f64.to_radians(), 0.0)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn forest_search_follows_high_presented_terrain_instead_of_sea_level() {
+        let local_surface_height_meters = 42_000.0;
+        let camera_position =
+            FOREST_CENTRE_DIRECTION * (PLANET_RADIUS_METERS + local_surface_height_meters + 2.0);
+        let visibility_distance =
+            maximum_tree_visibility_distance_meters(427, 60.0_f64.to_radians());
+        assert!(
+            forest_surface_angular_radius(camera_position.length(), visibility_distance, 0.0)
+                .is_none(),
+            "the old sea-level shell cannot reach a camera on 42km terrain"
+        );
+        assert!(
+            forest_surface_angular_radius(
+                camera_position.length(),
+                visibility_distance,
+                local_surface_height_meters,
+            )
+            .is_some()
+        );
+        assert!(
+            !forest_renderable_cell_keys(
+                camera_position,
+                427,
+                60.0_f64.to_radians(),
+                local_surface_height_meters,
+            )
+            .is_empty()
         );
     }
 
@@ -1520,11 +1626,17 @@ mod tests {
 
     #[test]
     fn forest_shader_is_a_depth_writing_procedural_billboard() {
-        let shader = include_str!("forest.wgsl");
-        wgpu::naga::front::wgsl::parse_str(shader).expect("forest shader parses");
+        let shader = forest_shader_source();
+        let module = wgpu::naga::front::wgsl::parse_str(&shader).expect("forest shader parses");
+        wgpu::naga::valid::Validator::new(
+            wgpu::naga::valid::ValidationFlags::all(),
+            wgpu::naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("forest shader validates");
         assert!(shader.contains("centre_and_height: vec4<f32>"));
         assert!(shader.contains("if !trunk && !canopy"));
-        assert!(!shader.contains("textureSample"));
+        assert!(!shader.contains("texture_2d"));
     }
 
     #[test]
@@ -1595,13 +1707,56 @@ mod tests {
     }
 
     #[test]
+    fn global_locator_refinement_requires_a_real_tree_eligible_point() {
+        let coarse = ForestBeamAnchor {
+            direction: DVec3::X,
+            base_radius_meters: PLANET_RADIUS_METERS + 12_000.0,
+        };
+        let key = forest_cell_key(coarse.direction);
+        let expected_direction = forest_patch_tree_layouts(key)
+            .into_iter()
+            .filter(|(direction, layout)| {
+                f64::from(layout.seed)
+                    <= forest_density_at(*direction) * forest_cell_edge_falloff(key, *direction)
+            })
+            .nth(4)
+            .expect("the deterministic cell has qualifying density candidates")
+            .0;
+        let refined = refine_global_forest_beam_anchor(coarse, |direction| {
+            (direction == expected_direction).then_some(630.0)
+        })
+        .expect("an eligible generated tree point becomes the locator");
+        assert_eq!(refined.direction, expected_direction);
+        assert_eq!(refined.base_radius_meters, PLANET_RADIUS_METERS + 630.0);
+        assert!(refine_global_forest_beam_anchor(coarse, |_| None).is_none());
+    }
+
+    #[test]
     fn forest_shader_has_no_unconditional_night_light() {
         let shader = include_str!("forest.wgsl");
-        assert!(shader.contains("fn tree_lighting(solar_elevation_cosine: f32) -> f32"));
+        assert!(shader.contains(
+            "fn tree_lighting(solar_elevation_cosine: f32, cloud_visibility: f32) -> f32"
+        ));
         assert!(shader.contains("smoothstep(-0.18, 0.02, solar_elevation_cosine) * 0.36"));
-        assert!(shader.contains("return direct + sky_ambient;"));
+        assert!(shader.contains("return direct * cloud_visibility + sky_ambient;"));
         assert!(shader.contains("trunk_colour * 0.75 * input.lighting"));
         assert!(!shader.contains("0.36 + sun_amount"));
+    }
+
+    #[test]
+    fn forest_direct_light_receives_the_shared_cloud_shadow() {
+        let shader = forest_shader_source();
+        let renderer = include_str!("forest.rs");
+        assert!(shader.contains("var cloud_field_current: texture_cube<f32>;"));
+        assert!(shader.contains("surface_position + sun_direction * distance"));
+        assert!(
+            shader.contains("cloudDensityWithOctaves(normalize(shadow_position), shell_index, 3u)")
+        );
+        assert!(shader.contains("floor(combined_density * 4.0 + 0.5) / 4.0"));
+        assert!(shader.contains("cloud_shadow_visibility("));
+        assert!(shader.contains("direct * cloud_visibility"));
+        assert!(renderer.contains("weather_field_bind_group_layout"));
+        assert!(renderer.contains("weather_field_bind_group"));
     }
 
     #[test]
