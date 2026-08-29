@@ -470,11 +470,14 @@ fn sun_radiance(input: VertexOutput, draw_disc: bool) -> vec4<f32> {
             + SUN_VEILING_GLARE_RADIANCE * veiling_glare
             + SUN_STAR_RAY_RADIANCE * star_rays
     );
-    // The broad veiling response is scattered light around the disc, so a
-    // cloud blocks it more strongly than the disc core itself. This keeps a
-    // storm from leaving a bright camera bloom after it has hidden the sun.
+    // cloud_sun_visibility already converts composited cloud alpha to a steep
+    // fourth-power optical transmission. Applying that fourth power again
+    // made invisible wisps modulate the red sunset halo as transmission^16
+    // while the saturated core appeared unchanged. Share the already-steep
+    // value so moving beneath thin cloud cannot cyclically erase the halo;
+    // genuinely opaque cloud still returns exactly zero above.
     let cloud_visibility = cloud_sun_visibility(sun);
-    let glare_cloud_visibility = pow(cloud_visibility, 4.0);
+    let glare_cloud_visibility = cloud_visibility;
     let radiance = SUN_VISUAL_RADIANCE_SCALE * select(
         atmospheric_glare * glare_cloud_visibility,
         atmospheric_core * cloud_visibility,

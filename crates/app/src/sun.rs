@@ -375,7 +375,8 @@ mod tests {
         assert!(shader.contains("pow(geometric_transmission, 4.0)"));
         assert!(shader.contains("cloud_sun_visibility(sun)"));
         assert!(shader.contains("atmospheric_core * cloud_visibility"));
-        assert!(shader.contains("let glare_cloud_visibility = pow(cloud_visibility, 4.0);"));
+        assert!(shader.contains("let glare_cloud_visibility = cloud_visibility;"));
+        assert!(!shader.contains("pow(cloud_visibility, 4.0)"));
         assert!(shader.contains("atmospheric_glare * glare_cloud_visibility"));
         assert!(renderer.contains("weather_field_bind_group_layout"));
         assert!(renderer.contains("weather_field_bind_group"));
