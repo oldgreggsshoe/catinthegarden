@@ -759,14 +759,6 @@ fn lod_dither_threshold(fragment_position: vec4<f32>) -> f32 {
 
 const FLAT_TRIANGLE_GRID_QUADS: f32 = 32.0;
 
-fn flat_triangle_cell(input_tile_uv: vec2<f32>) -> vec2<f32> {
-    let local = fract(input_tile_uv * FLAT_TRIANGLE_GRID_QUADS);
-    let cell = floor(input_tile_uv * FLAT_TRIANGLE_GRID_QUADS);
-    let upper = local.x + local.y > 1.0;
-    let centre = select(vec2<f32>(1.0 / 3.0), vec2<f32>(2.0 / 3.0), upper);
-    return (cell + centre) / FLAT_TRIANGLE_GRID_QUADS;
-}
-
 fn flat_triangle_edge(input_tile_uv: vec2<f32>, skirt: f32) -> f32 {
     if camera.flat_triangle_options.x < 0.5 {
         return 0.0;
@@ -1020,10 +1012,13 @@ fn apply_terrain_distance_fog(
 fn flat_triangle_colour(
     input: VertexOutput,
 ) -> vec4<f32> {
-    let centre_tile_uv = flat_triangle_cell(input.tile_uv);
     let source_uv_scale = input.source_uv_scale_and_latitude.xy;
     let source_uv_offset = input.detail_anchor_direction.xy;
-    let centre_source_uv = source_uv_offset + centre_tile_uv * source_uv_scale;
+    // Geometry and lighting remain one flat-shaded 32x32 triangle grid, but
+    // the baked material map is 129x129. Sample categorical land ownership at
+    // the fragment's interpolated source coordinate so forest/grass/snow
+    // boundaries do not inherit the much larger geometry triangles.
+    let material_source_uv = input.source_uv;
     let cell = floor(input.tile_uv * FLAT_TRIANGLE_GRID_QUADS);
     let local = fract(input.tile_uv * FLAT_TRIANGLE_GRID_QUADS);
     let upper = local.x + local.y > 1.0;
@@ -1042,7 +1037,7 @@ fn flat_triangle_colour(
     let second_biome = sample_biome(second_source_uv);
     let third_biome = sample_biome(third_source_uv);
     let biome_id = flat_triangle_land_biome(
-        sample_biome(centre_source_uv),
+        sample_biome(material_source_uv),
         first_biome,
         second_biome,
         third_biome,
@@ -1095,7 +1090,7 @@ fn flat_triangle_colour(
             fill,
             input.outmap_and_macro_height.x > 0.5,
             fill_biome,
-            sample_moisture(centre_source_uv),
+            sample_moisture(material_source_uv),
             input.outmap_and_macro_height.y,
             normal,
             normalize(input.surface_direction),

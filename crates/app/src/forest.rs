@@ -1408,6 +1408,15 @@ mod tests {
         assert!(canopy.contains("let forest_density = mix(0.04, 1.0, canopy_cluster);"));
         assert!(canopy.contains("canopy_weight * forest_density"));
         assert!(!canopy.contains("distance_weight"));
+        let flat = shader
+            .split("fn flat_triangle_colour(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("flat triangle material path is present");
+        assert!(flat.contains("let material_source_uv = input.source_uv;"));
+        assert!(flat.contains("sample_biome(material_source_uv)"));
+        assert!(flat.contains("sample_moisture(material_source_uv)"));
+        assert!(!flat.contains("sample_biome(centre_source_uv)"));
     }
 
     #[test]
