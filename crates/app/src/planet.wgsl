@@ -953,6 +953,7 @@ fn flat_triangle_land_biome(primary: u32, first: u32, second: u32, third: u32) -
 // kilometre-scale source texels or cube-face cells. CPU billboard placement
 // mirrors this frequency; water, desert, and rock never enter this function.
 const FOREST_DENSITY_FREQUENCY: f32 = 8192.0;
+const FOREST_DISTANT_DENSITY_FREQUENCY: f32 = 512.0;
 
 fn forest_density_at_direction(direction: vec3<f32>) -> f32 {
     let position = normalize(direction) * FOREST_DENSITY_FREQUENCY;
@@ -962,6 +963,15 @@ fn forest_density_at_direction(direction: vec3<f32>) -> f32 {
     ).value * 0.5 + 0.5;
     let cluster = smoothstep(0.28, 0.72, noise);
     return mix(0.04, 1.0, cluster);
+}
+
+fn forest_distant_density_at_direction(direction: vec3<f32>) -> f32 {
+    let position = normalize(direction) * FOREST_DISTANT_DENSITY_FREQUENCY;
+    let noise = terrain_detail_value_noise(
+        vec3<i32>(floor(position)),
+        fract(position),
+    ).value * 0.5 + 0.5;
+    return smoothstep(0.30, 0.70, noise);
 }
 
 fn refine_flat_temperate_biome(
@@ -1049,6 +1059,7 @@ fn forest_canopy_albedo(
     surface_normal: vec3<f32>,
     surface_direction: vec3<f32>,
     snow_cover: f32,
+    camera_distance_meters: f32,
 ) -> vec3<f32> {
     let direction = normalize(surface_direction);
     let forest_density = forest_density_at_direction(direction);
@@ -1078,9 +1089,30 @@ fn forest_canopy_albedo(
     }
 
     let density_weight = canopy_weight * forest_density;
-    let ground_darkening = min(
+    // Once individual 38m footprints are smaller than a pixel they alias into
+    // rings and combs. Replace them continuously with the cell's filtered
+    // canopy coverage; this is both more legible from orbit and cheaper than
+    // pretending a sub-pixel point sample remains meaningful.
+    let distant_ground_darkening = min(
+        FOREST_GROUND_DARKENING_MAX,
+        0.52 * canopy_weight * forest_distant_density_at_direction(direction),
+    );
+    if camera_distance_meters >= 9000.0 {
+        return base_albedo * (1.0 - distant_ground_darkening);
+    }
+    let local_ground_darkening = min(
         FOREST_GROUND_DARKENING_MAX,
         forest_ground_darkening(direction, forest_density) * density_weight,
+    );
+    let point_field_weight = 1.0 - smoothstep(
+        1800.0,
+        9000.0,
+        camera_distance_meters,
+    );
+    let ground_darkening = mix(
+        distant_ground_darkening,
+        local_ground_darkening,
+        point_field_weight,
     );
     return base_albedo * (1.0 - ground_darkening);
 }
@@ -1195,6 +1227,7 @@ fn flat_triangle_colour(
             normal,
             normalize(input.surface_direction),
             snow_cover,
+            length(input.camera_relative_view_position),
         );
     }
     let lit = flat_triangle_lighting(
@@ -1544,6 +1577,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         terrain_normal,
         direction,
         snow_cover,
+        length(input.camera_relative_view_position),
     );
     if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
         return vec4<f32>(

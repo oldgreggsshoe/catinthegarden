@@ -55,6 +55,7 @@ struct VertexOutput {
     @location(1) @interpolate(flat) colour_and_kind: vec4<f32>,
     @location(2) @interpolate(flat) seed: f32,
     @location(3) @interpolate(flat) lighting: f32,
+    @location(4) @interpolate(flat) valid: f32,
 }
 
 fn planet_to_view(vector: vec3<f32>) -> vec3<f32> {
@@ -129,13 +130,25 @@ fn tree_lighting(solar_elevation_cosine: f32, cloud_visibility: f32) -> f32 {
 
 @vertex
 fn vs_main(input: VertexInput, @builtin(vertex_index) vertex_index: u32) -> VertexOutput {
-    let corners = array<vec2<f32>, 6>(
-        vec2<f32>(-1.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(1.0, 1.0),
-        vec2<f32>(-1.0, 0.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0),
+    let height = input.centre_and_height.w;
+    if height <= 0.0 {
+        return VertexOutput(
+            vec4<f32>(2.0, 2.0, 0.0, 1.0),
+            vec2<f32>(0.0),
+            vec4<f32>(0.0),
+            0.0,
+            0.0,
+            0.0,
+        );
+    }
+    // One oversized triangle covers the same unit billboard rectangle as two
+    // triangles. The fragment silhouettes already discard outside the tree,
+    // so this halves transform and lighting work without changing its shape.
+    let corners = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, 0.0), vec2<f32>(3.0, 0.0), vec2<f32>(-1.0, 2.0),
     );
     let corner = corners[vertex_index];
     let centre = input.centre_and_height.xyz;
-    let height = input.centre_and_height.w;
     let width = input.width_shade_kind_seed.x;
     let shade = input.width_shade_kind_seed.y;
     let kind = input.width_shade_kind_seed.z;
@@ -171,6 +184,7 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vertex_index: u32) -> Vert
         vec4<f32>(colour, kind),
         input.width_shade_kind_seed.w,
         lighting,
+        1.0,
     );
 }
 
@@ -181,6 +195,9 @@ fn circle(point: vec2<f32>, centre: vec2<f32>, radius: vec2<f32>) -> bool {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    if input.valid < 0.5 {
+        discard;
+    }
     let point = vec2<f32>(input.uv.x * 2.0 - 1.0, input.uv.y);
     let trunk_half_width = 0.075 + input.seed * 0.025;
     let proxy = input.colour_and_kind.w >= 2.0;

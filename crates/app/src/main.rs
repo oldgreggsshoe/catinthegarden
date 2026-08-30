@@ -874,7 +874,9 @@ impl State {
                 label: Some("camera layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX
+                        | wgpu::ShaderStages::FRAGMENT
+                        | wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -2306,6 +2308,10 @@ impl State {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("render encoder"),
             });
+        if !solid_color_screen && self.render_path == RenderPath::Raster {
+            self.forest
+                .encode_gpu_generation(&mut encoder, &self.camera_bind_group, &self.terrain);
+        }
         let gpu_slot_index = if self.profile_render && write_log {
             self.gpu_profiler
                 .as_mut()

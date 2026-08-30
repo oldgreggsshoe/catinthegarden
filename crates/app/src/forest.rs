@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     mem::size_of,
+    num::NonZeroU64,
     time::{Duration, Instant},
 };
 
@@ -42,6 +43,10 @@ const FOREST_STARTUP_PATCH_COUNT: u64 = 3;
 const FOREST_MAX_RENDERABLE_PATCHES: usize = 128;
 const FOREST_MAX_CACHED_PATCHES: usize = 256;
 const FOREST_MAX_DRAW_INSTANCES: usize = 262_144;
+const FOREST_GPU_MEDIUM_CANDIDATES: u32 = 768;
+const FOREST_GPU_SPARSE_CANDIDATES: u32 = 64;
+const FOREST_GPU_FULL_DISTANCE_METERS: f64 = 1_500.0;
+const FOREST_GPU_MEDIUM_DISTANCE_METERS: f64 = 4_000.0;
 // Terrain-grounded canopy cards make a cell read as forest before its complete
 // individual-tree population has finished resolving. They are built and
 // published atomically, never exposed one candidate at a time.
@@ -76,6 +81,16 @@ fn forest_rendering_from_env() -> bool {
     }
 }
 
+fn gpu_resident_forests_from_env() -> bool {
+    match std::env::var("CATINGARDEN_GPU_FOREST") {
+        Ok(value) => !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off"
+        ),
+        Err(_) => true,
+    }
+}
+
 fn forest_beams_from_env() -> bool {
     matches!(
         std::env::var("CATINGARDEN_FOREST_BEAMS")
@@ -92,6 +107,14 @@ fn forest_shader_source() -> String {
     [
         include_str!("forest.wgsl"),
         include_str!("weather_cloud_density.wgsl"),
+    ]
+    .join("\n")
+}
+
+fn gpu_forest_shader_source() -> String {
+    [
+        crate::terrain::planet_shader_source(),
+        include_str!("forest_gpu.wgsl").to_owned(),
     ]
     .join("\n")
 }
@@ -140,6 +163,40 @@ impl TreeInstance {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct ForestUniform {
     camera_planet_position: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuForestCell {
+    cell_uv_origin_span: [f32; 4],
+    source_uv_scale_offset: [f32; 4],
+    anchor_direction_source_level: [f32; 4],
+    key: [u32; 4],
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum GpuForestTier {
+    Full,
+    Medium,
+    Sparse,
+}
+
+impl GpuForestTier {
+    fn candidates_per_cell(self) -> u32 {
+        match self {
+            Self::Full => TREE_COUNT as u32,
+            Self::Medium => FOREST_GPU_MEDIUM_CANDIDATES,
+            Self::Sparse => FOREST_GPU_SPARSE_CANDIDATES,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct GpuForestBatch {
+    tier: GpuForestTier,
+    source_key: TileKey,
+    dynamic_offset: u32,
+    cell_count: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -300,10 +357,14 @@ pub struct ForestStats {
 
 pub struct ForestRenderer {
     pipeline: wgpu::RenderPipeline,
+    gpu_compute_pipelines: [wgpu::ComputePipeline; 3],
     beam_pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
+    gpu_source_bind_group_layout: wgpu::BindGroupLayout,
+    gpu_source_bind_groups: BTreeMap<TileKey, wgpu::BindGroup>,
     uniform_buffer: wgpu::Buffer,
     instance_buffer: wgpu::Buffer,
+    gpu_cell_buffer: wgpu::Buffer,
     beam_vertex_buffer: wgpu::Buffer,
     instance_count: u32,
     proxy_instance_count: u32,
@@ -315,8 +376,15 @@ pub struct ForestRenderer {
     lod_counts: TreeLodCounts,
     empty_patch_keys: BTreeSet<TileKey>,
     primary_patch_key: Option<TileKey>,
+    gpu_batches: Vec<GpuForestBatch>,
+    gpu_cell_count: u32,
+    gpu_candidate_count: u32,
+    gpu_minimum_source_level: Option<u8>,
+    gpu_cell_alignment: usize,
+    gpu_cell_capacity: usize,
     rebuild_count: u64,
     enabled: bool,
+    gpu_resident: bool,
     beams_enabled: bool,
 }
 
@@ -440,6 +508,109 @@ impl ForestRenderer {
             multiview_mask: None,
             cache: None,
         });
+        let gpu_cell_alignment = (device.limits().min_storage_buffer_offset_alignment as usize)
+            .div_ceil(size_of::<GpuForestCell>());
+        let gpu_cell_capacity = FOREST_MAX_RENDERABLE_PATCHES * (gpu_cell_alignment + 2);
+        let gpu_cell_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("immediate GPU forest cells"),
+            size: (gpu_cell_capacity * size_of::<GpuForestCell>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let gpu_source_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("immediate GPU forest source bind group layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Uint,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: NonZeroU64::new(size_of::<ForestUniform>() as u64),
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: true,
+                            min_binding_size: NonZeroU64::new(size_of::<GpuForestCell>() as u64),
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: NonZeroU64::new(size_of::<TreeInstance>() as u64),
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let gpu_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("immediate GPU forest pipeline layout"),
+            bind_group_layouts: &[
+                Some(camera_bind_group_layout),
+                Some(&gpu_source_bind_group_layout),
+                Some(terrain.shared_bind_group_layout()),
+            ],
+            immediate_size: 0,
+        });
+        let gpu_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("immediate GPU forest shader"),
+            source: wgpu::ShaderSource::Wgsl(gpu_forest_shader_source().into()),
+        });
+        let create_compute_pipeline = |entry_point, label| {
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(label),
+                layout: Some(&gpu_pipeline_layout),
+                module: &gpu_shader,
+                entry_point: Some(entry_point),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            })
+        };
+        let gpu_compute_pipelines = [
+            create_compute_pipeline("forest_gpu_compute_full", "GPU forest full compute"),
+            create_compute_pipeline("forest_gpu_compute_medium", "GPU forest medium compute"),
+            create_compute_pipeline("forest_gpu_compute_sparse", "GPU forest sparse compute"),
+        ];
         let beam_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("forest light beam shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("forest_beam.wgsl").into()),
@@ -489,7 +660,9 @@ impl ForestRenderer {
         let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("forest tree instances"),
             contents: bytemuck::cast_slice(&buffer_instances),
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST,
         });
         let beam_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("forest light beam vertices"),
@@ -498,10 +671,14 @@ impl ForestRenderer {
         });
         Self {
             pipeline,
+            gpu_compute_pipelines,
             beam_pipeline,
             bind_group,
+            gpu_source_bind_group_layout,
+            gpu_source_bind_groups: BTreeMap::new(),
             uniform_buffer,
             instance_buffer,
+            gpu_cell_buffer,
             beam_vertex_buffer,
             instance_count: 0,
             proxy_instance_count: 0,
@@ -513,8 +690,15 @@ impl ForestRenderer {
             lod_counts: TreeLodCounts::default(),
             empty_patch_keys: BTreeSet::new(),
             primary_patch_key: Some(initial_key),
+            gpu_batches: Vec::new(),
+            gpu_cell_count: 0,
+            gpu_candidate_count: 0,
+            gpu_minimum_source_level: None,
+            gpu_cell_alignment,
+            gpu_cell_capacity,
             rebuild_count: 0,
             enabled,
+            gpu_resident: gpu_resident_forests_from_env(),
             beams_enabled,
         }
     }
@@ -559,10 +743,16 @@ impl ForestRenderer {
             self.pending_patch = None;
             self.instance_count = 0;
             self.proxy_instance_count = 0;
+            self.gpu_batches.clear();
+            self.gpu_cell_count = 0;
+            self.gpu_candidate_count = 0;
             return;
         }
         if camera_altitude_meters >= FOREST_DRAW_ALTITUDE_METERS {
             self.pending_patch = None;
+            self.gpu_batches.clear();
+            self.gpu_cell_count = 0;
+            self.gpu_candidate_count = 0;
             return;
         }
         let local_surface_height_meters = terrain
@@ -575,6 +765,10 @@ impl ForestRenderer {
             vertical_fov_radians,
             local_surface_height_meters,
         );
+        if self.gpu_resident {
+            self.update_gpu_cells(queue, terrain, camera_planet_position, renderable_keys);
+            return;
+        }
         let cached_keys = forest_cell_keys_within_distance(
             camera_planet_position,
             FOREST_PREFETCH_DISTANCE_METERS,
@@ -705,6 +899,144 @@ impl ForestRenderer {
         );
     }
 
+    fn update_gpu_cells(
+        &mut self,
+        queue: &wgpu::Queue,
+        terrain: &TerrainRenderer,
+        camera_planet_position: DVec3,
+        renderable_keys: Vec<TileKey>,
+    ) {
+        self.pending_patch = None;
+        self.patches.clear();
+        self.proxy_patches.clear();
+        self.empty_patch_keys.clear();
+        self.primary_patch_key = renderable_keys.first().copied();
+
+        let mut grouped = BTreeMap::<(GpuForestTier, TileKey), Vec<GpuForestCell>>::new();
+        for key in renderable_keys {
+            let Some((source_key, source_uv_scale, source_uv_offset)) =
+                terrain.resident_forest_source(key)
+            else {
+                continue;
+            };
+            let centre_direction = forest_cell_centre_direction(key);
+            let centre_distance =
+                (centre_direction * PLANET_RADIUS_METERS - camera_planet_position).length();
+            let tier = if centre_distance <= FOREST_GPU_FULL_DISTANCE_METERS {
+                GpuForestTier::Full
+            } else if centre_distance <= FOREST_GPU_MEDIUM_DISTANCE_METERS {
+                GpuForestTier::Medium
+            } else {
+                GpuForestTier::Sparse
+            };
+            let cells_per_axis = f64::from(1_u32 << key.level);
+            let cell_span = 2.0 / cells_per_axis;
+            let u_min = -1.0 + f64::from(key.x) * cell_span;
+            let v_min = -1.0 + f64::from(key.y) * cell_span;
+            grouped
+                .entry((tier, source_key))
+                .or_default()
+                .push(GpuForestCell {
+                    cell_uv_origin_span: [u_min as f32, v_min as f32, cell_span as f32, 0.0],
+                    source_uv_scale_offset: [
+                        source_uv_scale[0],
+                        source_uv_scale[1],
+                        source_uv_offset[0],
+                        source_uv_offset[1],
+                    ],
+                    anchor_direction_source_level: [
+                        centre_direction.x as f32,
+                        centre_direction.y as f32,
+                        centre_direction.z as f32,
+                        f32::from(source_key.level),
+                    ],
+                    key: [key.face.index() as u32, key.x, key.y, 0],
+                });
+        }
+
+        let mut cells = Vec::<GpuForestCell>::new();
+        let mut batches = Vec::with_capacity(grouped.len());
+        let mut candidate_count = 0_u32;
+        for ((tier, source_key), batch_cells) in grouped {
+            while !cells.len().is_multiple_of(self.gpu_cell_alignment) {
+                cells.push(<GpuForestCell as bytemuck::Zeroable>::zeroed());
+            }
+            let first_cell = cells.len();
+            let cell_count = batch_cells.len() as u32;
+            let candidates_per_cell = tier.candidates_per_cell();
+            cells.extend(
+                batch_cells
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, mut cell)| {
+                        cell.key[3] =
+                            candidate_count.saturating_add(index as u32 * candidates_per_cell);
+                        cell
+                    }),
+            );
+            candidate_count =
+                candidate_count.saturating_add(cell_count.saturating_mul(candidates_per_cell));
+            batches.push(GpuForestBatch {
+                tier,
+                source_key,
+                dynamic_offset: (first_cell * size_of::<GpuForestCell>()) as u32,
+                cell_count,
+            });
+        }
+        debug_assert!(cells.len() <= self.gpu_cell_capacity);
+        if !cells.is_empty() {
+            queue.write_buffer(&self.gpu_cell_buffer, 0, bytemuck::cast_slice(&cells));
+        }
+        self.gpu_minimum_source_level = batches.iter().map(|batch| batch.source_key.level).min();
+        let active_sources = batches
+            .iter()
+            .map(|batch| batch.source_key)
+            .collect::<BTreeSet<_>>();
+        self.gpu_source_bind_groups
+            .retain(|key, _| active_sources.contains(key));
+        let forest_cell_binding_size =
+            NonZeroU64::new((FOREST_MAX_RENDERABLE_PATCHES * size_of::<GpuForestCell>()) as u64)
+                .expect("forest cell binding is non-empty");
+        for source_key in active_sources {
+            if self.gpu_source_bind_groups.contains_key(&source_key) {
+                continue;
+            }
+            if let Some(bind_group) = terrain.create_forest_source_bind_group(
+                &self.gpu_source_bind_group_layout,
+                source_key,
+                &self.uniform_buffer,
+                &self.gpu_cell_buffer,
+                forest_cell_binding_size,
+                &self.instance_buffer,
+            ) {
+                self.gpu_source_bind_groups.insert(source_key, bind_group);
+            }
+        }
+        self.gpu_cell_count = batches.iter().map(|batch| batch.cell_count).sum();
+        self.gpu_candidate_count = candidate_count;
+        self.instance_count = candidate_count;
+        self.proxy_instance_count = 0;
+        self.lod_counts = TreeLodCounts {
+            full: batches
+                .iter()
+                .filter(|batch| batch.tier == GpuForestTier::Full)
+                .map(|batch| batch.cell_count * batch.tier.candidates_per_cell())
+                .sum(),
+            medium: batches
+                .iter()
+                .filter(|batch| batch.tier == GpuForestTier::Medium)
+                .map(|batch| batch.cell_count * batch.tier.candidates_per_cell())
+                .sum(),
+            sparse: batches
+                .iter()
+                .filter(|batch| batch.tier == GpuForestTier::Sparse)
+                .map(|batch| batch.cell_count * batch.tier.candidates_per_cell())
+                .sum(),
+            zero: 0,
+        };
+        self.gpu_batches = batches;
+    }
+
     fn patch_transition_progress(&self) -> f64 {
         self.patches
             .values()
@@ -784,6 +1116,26 @@ impl ForestRenderer {
     }
 
     pub fn stats(&self) -> ForestStats {
+        if self.gpu_resident {
+            return ForestStats {
+                patch_count: self.gpu_cell_count.min(u32::from(u16::MAX)) as u16,
+                proxy_patch_count: 0,
+                beam_count: (self.beam_vertex_count / 6).min(u32::from(u16::MAX)) as u16,
+                instances: self.gpu_candidate_count,
+                proxy_instances: 0,
+                full_instances: self.lod_counts.full,
+                medium_instances: self.lod_counts.medium,
+                sparse_instances: self.lod_counts.sparse,
+                zero_instances: 0,
+                rebuild_count: self.rebuild_count,
+                patch_key: self.primary_patch_key,
+                minimum_source_level: self.gpu_minimum_source_level,
+                pending_candidates: 0,
+                pending_candidates_total: 0,
+                transition_progress: 1.0,
+                beams_enabled: self.beams_enabled,
+            };
+        }
         ForestStats {
             patch_count: self.patches.len().min(usize::from(u16::MAX)) as u16,
             proxy_patch_count: self.proxy_patches.len().min(usize::from(u16::MAX)) as u16,
@@ -845,6 +1197,38 @@ impl ForestRenderer {
         render_pass.draw(0..self.beam_vertex_count, 0..1);
     }
 
+    pub fn encode_gpu_generation(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        camera_bind_group: &wgpu::BindGroup,
+        terrain: &TerrainRenderer,
+    ) {
+        if !self.enabled || !self.gpu_resident || self.gpu_batches.is_empty() {
+            return;
+        }
+        let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("immediate GPU forest generation"),
+            timestamp_writes: None,
+        });
+        compute_pass.set_bind_group(0, camera_bind_group, &[]);
+        compute_pass.set_bind_group(2, terrain.shared_bind_group(), &[]);
+        for batch in &self.gpu_batches {
+            let Some(source_bind_group) = self.gpu_source_bind_groups.get(&batch.source_key) else {
+                continue;
+            };
+            let pipeline_index = match batch.tier {
+                GpuForestTier::Full => 0,
+                GpuForestTier::Medium => 1,
+                GpuForestTier::Sparse => 2,
+            };
+            let invocation_count = batch.cell_count * batch.tier.candidates_per_cell();
+            debug_assert_eq!(invocation_count % 64, 0);
+            compute_pass.set_pipeline(&self.gpu_compute_pipelines[pipeline_index]);
+            compute_pass.set_bind_group(1, source_bind_group, &[batch.dynamic_offset]);
+            compute_pass.dispatch_workgroups(invocation_count / 64, 1, 1);
+        }
+    }
+
     pub fn draw<'pass>(
         &'pass self,
         render_pass: &mut wgpu::RenderPass<'pass>,
@@ -852,10 +1236,19 @@ impl ForestRenderer {
         weather_field_bind_group: &'pass wgpu::BindGroup,
         camera_altitude_meters: f64,
     ) {
-        if !self.enabled
-            || camera_altitude_meters >= FOREST_DRAW_ALTITUDE_METERS
-            || self.instance_count == 0
-        {
+        if !self.enabled || camera_altitude_meters >= FOREST_DRAW_ALTITUDE_METERS {
+            return;
+        }
+        if self.gpu_resident {
+            render_pass.set_pipeline(&self.pipeline);
+            render_pass.set_bind_group(0, camera_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.bind_group, &[]);
+            render_pass.set_bind_group(2, weather_field_bind_group, &[]);
+            render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
+            render_pass.draw(0..3, 0..self.gpu_candidate_count);
+            return;
+        }
+        if self.instance_count == 0 {
             return;
         }
         render_pass.set_pipeline(&self.pipeline);
@@ -863,7 +1256,7 @@ impl ForestRenderer {
         render_pass.set_bind_group(1, &self.bind_group, &[]);
         render_pass.set_bind_group(2, weather_field_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
-        render_pass.draw(0..6, 0..self.instance_count);
+        render_pass.draw(0..3, 0..self.instance_count);
     }
 }
 
@@ -1640,7 +2033,7 @@ mod tests {
     }
 
     #[test]
-    fn terrain_darkening_uses_local_forest_density_at_every_distance() {
+    fn terrain_darkening_filters_subpixel_tree_footprints_at_distance() {
         let shader = include_str!("planet.wgsl");
         assert!(shader.contains("const FOREST_DENSITY_FREQUENCY: f32 = 8192.0;"));
         assert!(shader.contains("fn forest_density_at_direction(direction: vec3<f32>)"));
@@ -1650,11 +2043,12 @@ mod tests {
             .nth(1)
             .and_then(|source| source.split("\nfn ").next())
             .expect("forest canopy ground treatment is present");
-        assert!(!canopy.contains("camera_distance_meters"));
+        assert!(canopy.contains("camera_distance_meters"));
         assert!(canopy.contains("let forest_density = forest_density_at_direction(direction);"));
         assert!(canopy.contains("let density_weight = canopy_weight * forest_density;"));
+        assert!(canopy.contains("let distant_ground_darkening = min("));
+        assert!(canopy.contains("let point_field_weight = 1.0 - smoothstep("));
         assert!(canopy.contains("FOREST_GROUND_DARKENING_MAX"));
-        assert!(!canopy.contains("distance_weight"));
         let flat = shader
             .split("fn flat_triangle_colour(")
             .nth(1)
@@ -1982,6 +2376,24 @@ mod tests {
         assert!(shader.contains("if !trunk && !canopy"));
         assert!(shader.contains("let proxy = input.colour_and_kind.w >= 2.0;"));
         assert!(!shader.contains("texture_2d"));
+    }
+
+    #[test]
+    fn immediate_gpu_forest_shader_validates_and_uses_canonical_cells() {
+        let shader = gpu_forest_shader_source();
+        let module = wgpu::naga::front::wgsl::parse_str(&shader)
+            .expect("immediate GPU forest shader parses");
+        wgpu::naga::valid::Validator::new(
+            wgpu::naga::valid::ValidationFlags::all(),
+            wgpu::naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("immediate GPU forest shader validates");
+        assert!(shader.contains("var<storage, read> gpu_forest_cells"));
+        assert!(shader.contains("forest_gpu_compute_full"));
+        assert!(shader.contains("forest_gpu_compute_medium"));
+        assert!(shader.contains("forest_gpu_compute_sparse"));
+        assert!(shader.contains("candidate_index = candidate_in_cell * candidate_stride"));
     }
 
     #[test]

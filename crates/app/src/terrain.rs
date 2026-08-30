@@ -119,7 +119,7 @@ fn viewed_surface_direction(
     closest_direction
 }
 
-fn planet_shader_source() -> String {
+pub(crate) fn planet_shader_source() -> String {
     [
         include_str!("shared_planet.wgsl"),
         include_str!("planet.wgsl"),
@@ -769,6 +769,7 @@ pub struct TerrainRenderer {
     ocean_transition_pipeline: wgpu::RenderPipeline,
     ocean_stable_pipeline: wgpu::RenderPipeline,
     terrain_tile_bind_group_layout: wgpu::BindGroupLayout,
+    shared_bind_group_layout: wgpu::BindGroupLayout,
     raster_near_field_bind_group: wgpu::BindGroup,
     shared_bind_group: wgpu::BindGroup,
     _terrain_settings_buffer: wgpu::Buffer,
@@ -1112,6 +1113,7 @@ impl TerrainRenderer {
             ocean_transition_pipeline,
             ocean_stable_pipeline,
             terrain_tile_bind_group_layout,
+            shared_bind_group_layout,
             raster_near_field_bind_group,
             shared_bind_group,
             _terrain_settings_buffer: terrain_settings_buffer,
@@ -1250,6 +1252,88 @@ impl TerrainRenderer {
 
     pub fn shared_bind_group(&self) -> &wgpu::BindGroup {
         &self.shared_bind_group
+    }
+
+    pub(crate) fn shared_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.shared_bind_group_layout
+    }
+
+    pub(crate) fn resident_forest_source(
+        &self,
+        requested_key: TileKey,
+    ) -> Option<(TileKey, [f32; 2], [f32; 2])> {
+        // The global L4 source is the stable macro contract for forests. Do
+        // not bind transient sparse L5-L18 tiles here: a tree population must
+        // neither move nor multiply when terrain streaming refines beneath it.
+        for source_level in (0..=requested_key.level.min(4)).rev() {
+            let level_delta = requested_key.level - source_level;
+            let source_key = TileKey {
+                face: requested_key.face,
+                level: source_level,
+                x: requested_key.x >> level_delta,
+                y: requested_key.y >> level_delta,
+            };
+            if self.tile_cache.contains_key(&source_key) {
+                let (scale, offset) = fallback_uv_transform(requested_key, source_key);
+                return Some((source_key, scale, offset));
+            }
+        }
+        None
+    }
+
+    pub(crate) fn create_forest_source_bind_group(
+        &self,
+        layout: &wgpu::BindGroupLayout,
+        source_key: TileKey,
+        forest_uniform: &wgpu::Buffer,
+        forest_cells: &wgpu::Buffer,
+        forest_cell_binding_size: std::num::NonZeroU64,
+        forest_trees: &wgpu::Buffer,
+    ) -> Option<wgpu::BindGroup> {
+        let tile = self.tile_cache.get(&source_key)?;
+        let height_view = tile
+            ._height_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let biome_view = tile
+            ._biome_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let moisture_view = tile
+            ._moisture_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("immediate GPU forest source bind group"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&height_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&biome_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&moisture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: forest_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: forest_cells,
+                        offset: 0,
+                        size: Some(forest_cell_binding_size),
+                    }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: forest_trees.as_entire_binding(),
+                },
+            ],
+        }))
     }
 
     /// Returns the streamed terrain height under a planet-local radial
@@ -2634,7 +2718,7 @@ pub fn create_shared_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroup
                 binding: 5,
                 // Terrain displacement reads these scales in the vertex
                 // stage; raymarching and lake shading use the same values.
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,

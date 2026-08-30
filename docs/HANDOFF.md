@@ -4267,3 +4267,27 @@ instances and visibly distinct forest terrain. Five alternating Immediate-mode `
 ON/OFF pairs measure 34.875ms versus 34.004ms median frame time, a 0.872ms total forest cost inside
 the requested 1ms limit. Focused forest tests and workspace check pass; the full app suite is
 322 passed, one pre-existing standalone sun-shader composition failure, and seven ignored.
+
+### Experimental instant global forests (30 August 2026)
+
+Branch `experiment/instant-global-forests` preserves the prior queued/proxy implementation on
+`experiment/billboard-forest` at `b92f8e9`. The new default removes arrival-time CPU population:
+each visible canonical L12 cell uploads one 64-byte descriptor, then a GPU compute pass evaluates
+the same L4 height/biome/moisture, procedural detail, slope, species and density rules directly
+into the existing tree instance buffer. Stable candidate subsets retain all 12,288 candidates
+inside 1.5km, 768 from 1.5-4km and 64 beyond 4km. `CATINGARDEN_GPU_FOREST=0` retains the old path
+for comparison; `CATINGARDEN_FOREST=0` remains the matched render-cost control.
+
+The first frame of release `forest_startup/1788124782-538155` reports 128 cells, 76,800 bounded
+candidates, L4 sources, zero pending candidates and transition progress 1.0; both captures show the
+complete near forest. Moving `forest_boundary_transition/1788124946-539404` reports the same zero
+pending work across all four captures. Sub-pixel 38m terrain circles now hand over by footprint to
+a broad seam-safe canopy field, rather than aliasing into the former comb/ring pattern;
+`forest_vast_distance/1788125181-540904` passes with zero individual tree geometry.
+
+Three alternating Quadro Immediate `forest_performance` pairs measured forest-on medians
+35.569/36.524/35.456ms and forest-off 34.164/34.038/34.342ms. Median groups are 35.569ms versus
+34.164ms: **+1.405ms**, within the requested 2ms frame budget. Forty-one focused forest tests,
+GPU WGSL validation, release startup, boundary and vast-distance scenarios pass. The unrelated
+manual sunset/ocean/pink-pillar report remains a separate diagnosis; do not tune the signed-off
+near-surface sky while repairing it.
