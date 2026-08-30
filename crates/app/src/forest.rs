@@ -45,6 +45,12 @@ const FOREST_MAX_DRAW_INSTANCES: usize = 262_144;
 const TREE_LOD_FULL_PIXELS: f64 = 12.0;
 const TREE_LOD_MEDIUM_PIXELS: f64 = 3.0;
 const TREE_LOD_SPARSE_PIXELS: f64 = 1.0;
+// Keep a small, deterministic subset of trees alive below the normal sparse
+// threshold.  These are rendered as tiny billboards rather than being removed
+// outright, so entering/leaving a forest does not reveal a hard population
+// cutoff.  The subset remains bounded by the existing draw-instance budget.
+const TREE_LOD_PLACEHOLDER_DENSITY: f32 = 0.12;
+const TREE_LOD_PLACEHOLDER_SCALE: f32 = 0.10;
 const FOREST_PLANET_SEED: u32 = 0x6d2b_79f5;
 const FOREST_BEAM_ATMOSPHERE_HEIGHT_METERS: f64 = 2_880_000.0;
 const FOREST_BEAM_TOP_RADIUS_METERS: f64 =
@@ -684,28 +690,40 @@ impl ForestRenderer {
         'patches: for patch in patches {
             let transition_progress =
                 patch_transition_progress(patch.visible_since.elapsed().as_secs_f64()) as f32;
-            for tree in &patch.trees {
-                let distance_meters = tree_distance_meters(*tree, camera_planet_position);
-                let projected_pixels = if distance_meters <= FOREST_TREE_RENDER_DISTANCE_METERS {
-                    projected_tree_height_pixels_at_distance(
-                        *tree,
-                        distance_meters,
-                        viewport_height,
-                        vertical_fov_radians,
-                    )
+            append_lodded_tree_instances(
+                &mut draw_instances,
+                &mut lod_counts,
+                &patch.trees,
+                camera_planet_position,
+                viewport_height,
+                vertical_fov_radians,
+                transition_progress,
+            );
+            if draw_instances.len() == FOREST_MAX_DRAW_INSTANCES {
+                break 'patches;
+            }
+        }
+        // A patch is built in bounded batches.  Exposing its already-resolved
+        // trees while the remaining candidates are sampled removes the
+        // whole-cell pop when a camera enters a new forest.  The build
+        // fraction is used as a second smooth population ramp; once complete,
+        // the regular patch transition above takes over.
+        if draw_instances.len() < FOREST_MAX_DRAW_INSTANCES {
+            if let Some(pending) = self.pending_patch.as_ref() {
+                let build_progress = if pending.candidates.is_empty() {
+                    1.0
                 } else {
-                    0.0
+                    pending.next_candidate as f64 / pending.candidates.len() as f64
                 };
-                let lod = tree_lod(projected_pixels);
-                lod_counts.add(lod);
-                if let Some(tree) =
-                    lodded_tree_instance_with_scale(*tree, projected_pixels, transition_progress)
-                {
-                    draw_instances.push(tree);
-                    if draw_instances.len() == FOREST_MAX_DRAW_INSTANCES {
-                        break 'patches;
-                    }
-                }
+                append_lodded_tree_instances(
+                    &mut draw_instances,
+                    &mut lod_counts,
+                    &pending.trees,
+                    camera_planet_position,
+                    viewport_height,
+                    vertical_fov_radians,
+                    smoothstep01(build_progress) as f32,
+                );
             }
         }
         if self.draw_instances != draw_instances {
@@ -1155,8 +1173,16 @@ fn lodded_tree_instance_with_scale(
     projected_pixels: f64,
     population_scale: f32,
 ) -> Option<TreeInstance> {
-    let density = tree_lod_density(projected_pixels) * population_scale.clamp(0.0, 1.0);
-    (tree.width_shade_kind_seed[3] < density).then_some(tree)
+    let population_scale = population_scale.clamp(0.0, 1.0);
+    let density = tree_lod_density(projected_pixels) * population_scale;
+    if tree.width_shade_kind_seed[3] >= density {
+        return None;
+    }
+    let scale = tree_lod_scale(projected_pixels);
+    let mut instance = tree;
+    instance.centre_and_height[3] *= scale;
+    instance.width_shade_kind_seed[0] *= scale;
+    Some(instance)
 }
 
 fn tree_lod_density(projected_pixels: f64) -> f32 {
@@ -1174,9 +1200,66 @@ fn tree_lod_density(projected_pixels: f64) -> f32 {
                 (projected_pixels - TREE_LOD_SPARSE_PIXELS)
                     / (TREE_LOD_MEDIUM_PIXELS - TREE_LOD_SPARSE_PIXELS),
             );
-            0.5 * progress as f32
+            TREE_LOD_PLACEHOLDER_DENSITY + (0.5 - TREE_LOD_PLACEHOLDER_DENSITY) * progress as f32
         }
-        TreeLod::Zero => 0.0,
+        // Keep a small deterministic population as tiny placeholders.  The
+        // density meets the sparse branch at one projected pixel, so moving
+        // across the threshold cannot expose a hard edge in the forest.
+        TreeLod::Zero => TREE_LOD_PLACEHOLDER_DENSITY,
+    }
+}
+
+fn tree_lod_scale(projected_pixels: f64) -> f32 {
+    match tree_lod(projected_pixels) {
+        TreeLod::Full => 1.0,
+        TreeLod::Medium => {
+            let progress = smoothstep01(
+                (projected_pixels - TREE_LOD_MEDIUM_PIXELS)
+                    / (TREE_LOD_FULL_PIXELS - TREE_LOD_MEDIUM_PIXELS),
+            );
+            0.35 + 0.65 * progress as f32
+        }
+        TreeLod::Sparse => {
+            let progress = smoothstep01(
+                (projected_pixels - TREE_LOD_SPARSE_PIXELS)
+                    / (TREE_LOD_MEDIUM_PIXELS - TREE_LOD_SPARSE_PIXELS),
+            );
+            TREE_LOD_PLACEHOLDER_SCALE + (0.35 - TREE_LOD_PLACEHOLDER_SCALE) * progress as f32
+        }
+        TreeLod::Zero => TREE_LOD_PLACEHOLDER_SCALE,
+    }
+}
+
+fn append_lodded_tree_instances(
+    draw_instances: &mut Vec<TreeInstance>,
+    lod_counts: &mut TreeLodCounts,
+    trees: &[TreeInstance],
+    camera_planet_position: DVec3,
+    viewport_height: u32,
+    vertical_fov_radians: f64,
+    population_scale: f32,
+) {
+    for tree in trees {
+        if draw_instances.len() == FOREST_MAX_DRAW_INSTANCES {
+            break;
+        }
+        let distance_meters = tree_distance_meters(*tree, camera_planet_position);
+        let projected_pixels = if distance_meters <= FOREST_TREE_RENDER_DISTANCE_METERS {
+            projected_tree_height_pixels_at_distance(
+                *tree,
+                distance_meters,
+                viewport_height,
+                vertical_fov_radians,
+            )
+        } else {
+            0.0
+        };
+        lod_counts.add(tree_lod(projected_pixels));
+        if let Some(tree) =
+            lodded_tree_instance_with_scale(*tree, projected_pixels, population_scale)
+        {
+            draw_instances.push(tree);
+        }
     }
 }
 
@@ -1404,6 +1487,7 @@ mod tests {
         let shader = include_str!("planet.wgsl");
         assert!(shader.contains("const FOREST_DENSITY_FREQUENCY: f32 = 8192.0;"));
         assert!(shader.contains("fn forest_density_at_direction(direction: vec3<f32>)"));
+        assert!(shader.contains("fn forest_ground_darkening(direction: vec3<f32>, density: f32)"));
         let canopy = shader
             .split("fn forest_canopy_albedo(")
             .nth(1)
@@ -1411,7 +1495,8 @@ mod tests {
             .expect("forest canopy ground treatment is present");
         assert!(!canopy.contains("camera_distance_meters"));
         assert!(canopy.contains("let forest_density = forest_density_at_direction(direction);"));
-        assert!(canopy.contains("canopy_weight * forest_density"));
+        assert!(canopy.contains("let density_weight = canopy_weight * forest_density;"));
+        assert!(canopy.contains("FOREST_GROUND_DARKENING_MAX"));
         assert!(!canopy.contains("distance_weight"));
         let flat = shader
             .split("fn flat_triangle_colour(")
@@ -1477,9 +1562,17 @@ mod tests {
         assert_eq!(tree_lod(projected_pixels(1_000.0)), TreeLod::Medium);
         assert_eq!(tree_lod(projected_pixels(4_000.0)), TreeLod::Sparse);
         assert_eq!(tree_lod(projected_pixels(12_000.0)), TreeLod::Zero);
-        assert_eq!(lodded_tree_instance(tree, 5.0), Some(tree));
-        assert_eq!(lodded_tree_instance(tree, 2.0), Some(tree));
-        assert_eq!(lodded_tree_instance(tree, 0.5), None);
+        let medium = lodded_tree_instance(tree, 5.0).expect("medium tree remains represented");
+        assert!(medium.centre_and_height[3] < tree.centre_and_height[3]);
+        assert!(medium.centre_and_height[3] > 0.0);
+        let sparse = lodded_tree_instance(tree, 2.0).expect("sparse tree remains represented");
+        assert!(sparse.centre_and_height[3] < medium.centre_and_height[3]);
+        let placeholder =
+            lodded_tree_instance(tree, 0.5).expect("far tree keeps a tiny placeholder");
+        assert_eq!(
+            placeholder.centre_and_height[3],
+            tree.centre_and_height[3] * TREE_LOD_PLACEHOLDER_SCALE
+        );
 
         let rejected = TreeInstance {
             width_shade_kind_seed: [8.0, 1.0, 0.0, 0.75],
@@ -1487,14 +1580,21 @@ mod tests {
         };
         assert_eq!(lodded_tree_instance(rejected, 5.0), None);
         assert_eq!(lodded_tree_instance(rejected, 2.0), None);
+        assert_eq!(lodded_tree_instance(rejected, 0.5), None);
     }
 
     #[test]
     fn far_tree_density_enters_continuously_instead_of_revealing_a_quarter_patch() {
-        assert_eq!(tree_lod_density(TREE_LOD_SPARSE_PIXELS - 0.01), 0.0);
-        assert_eq!(tree_lod_density(TREE_LOD_SPARSE_PIXELS), 0.0);
+        assert_eq!(
+            tree_lod_density(TREE_LOD_SPARSE_PIXELS - 0.01),
+            TREE_LOD_PLACEHOLDER_DENSITY
+        );
+        assert_eq!(
+            tree_lod_density(TREE_LOD_SPARSE_PIXELS),
+            TREE_LOD_PLACEHOLDER_DENSITY
+        );
         let just_visible = tree_lod_density(TREE_LOD_SPARSE_PIXELS + 0.01);
-        assert!(just_visible > 0.0 && just_visible < 0.001);
+        assert!(just_visible > TREE_LOD_PLACEHOLDER_DENSITY);
         assert!(tree_lod_density(2.0) < tree_lod_density(2.5));
         assert_eq!(tree_lod_density(TREE_LOD_MEDIUM_PIXELS), 0.5);
     }

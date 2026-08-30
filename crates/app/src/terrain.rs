@@ -4880,6 +4880,7 @@ mod tests {
         let shader = planet_shader_source();
         assert!(shader.contains("const FOREST_DENSITY_FREQUENCY: f32 = 8192.0;"));
         assert!(shader.contains("fn forest_density_at_direction(direction: vec3<f32>)"));
+        assert!(shader.contains("fn forest_ground_darkening(direction: vec3<f32>, density: f32)"));
         assert!(shader.contains("terrain_detail_value_noise("));
         let canopy = shader
             .split("fn forest_canopy_albedo(")
@@ -4896,7 +4897,8 @@ mod tests {
         assert!(canopy.contains("1.0 - smoothstep(0.10, 0.18, slope)"));
         assert!(canopy.contains("let snow_weight = mix(1.0, 0.76, clamp(snow_cover, 0.0, 1.0));"));
         assert!(canopy.contains("let forest_density = forest_density_at_direction(direction);"));
-        assert!(canopy.contains("canopy_weight * forest_density"));
+        assert!(canopy.contains("let density_weight = canopy_weight * forest_density;"));
+        assert!(canopy.contains("FOREST_GROUND_DARKENING_MAX"));
         assert!(!canopy.contains("textureSample"));
         assert_eq!(shader.matches("forest_canopy_albedo(").count(), 3);
 

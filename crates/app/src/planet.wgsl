@@ -974,6 +974,61 @@ fn refine_flat_temperate_biome(
     return refined;
 }
 
+// The terrain pass does not iterate the billboard instance buffer. Instead it
+// reconstructs a small deterministic point field from the same forest density
+// value. Each point contributes a radial ground shadow; overlapping points add
+// together and are clamped so a dense stand reaches, but never exceeds, the
+// authored maximum darkening.
+const FOREST_GROUND_CELL_FREQUENCY: f32 = 250000.0;
+const FOREST_GROUND_DARKENING_RADIUS_METERS: f32 = 38.0;
+const FOREST_GROUND_DARKENING_PER_TREE: f32 = 0.42;
+const FOREST_GROUND_DARKENING_MAX: f32 = 0.58;
+
+fn forest_ground_hash(cell: vec3<i32>) -> u32 {
+    return detail_avalanche(
+        bitcast<u32>(cell.x)
+            ^ detail_rotate_left(bitcast<u32>(cell.y), 11u)
+            ^ detail_rotate_left(bitcast<u32>(cell.z), 22u)
+            ^ 0xa511e9b3u,
+    );
+}
+
+fn forest_ground_point(cell: vec3<i32>) -> vec4<f32> {
+    let hash = forest_ground_hash(cell);
+    return vec4<f32>(
+        f32(hash & 0x000fffffu) * (1.0 / 1048576.0),
+        f32((hash >> 10u) & 0x000fffffu) * (1.0 / 1048576.0),
+        f32((hash >> 20u) & 0x00000fffu) * (1.0 / 4096.0),
+        f32((hash >> 12u) & 0x0000ffffu) * (1.0 / 65536.0),
+    );
+}
+
+fn forest_ground_darkening(direction: vec3<f32>, density: f32) -> f32 {
+    let position = normalize(direction) * FOREST_GROUND_CELL_FREQUENCY;
+    let cell = vec3<i32>(floor(position));
+    let fraction = fract(position);
+    var accumulated = 0.0;
+    for (var z: i32 = -1; z <= 1; z = z + 1) {
+        for (var y: i32 = -1; y <= 1; y = y + 1) {
+            for (var x: i32 = -1; x <= 1; x = x + 1) {
+                let offset_cell = cell + vec3<i32>(x, y, z);
+                let point = forest_ground_point(offset_cell);
+                let offset = vec3<f32>(f32(x), f32(y), f32(z)) + point.xyz - fraction;
+                let distance_meters = length(offset)
+                    * (PLANET_RADIUS_METERS / FOREST_GROUND_CELL_FREQUENCY);
+                let falloff = 1.0 - smoothstep(
+                    1.5,
+                    FOREST_GROUND_DARKENING_RADIUS_METERS,
+                    distance_meters,
+                );
+                let occupied = select(0.0, 1.0, point.w < density);
+                accumulated += occupied * falloff * FOREST_GROUND_DARKENING_PER_TREE;
+            }
+        }
+    }
+    return min(accumulated, FOREST_GROUND_DARKENING_MAX);
+}
+
 // Individual tree geometry is deliberately camera-local, but its broad,
 // seam-safe density also darkens the ground beneath the stand. The same field
 // remains after tree geometry becomes sub-pixel, so the forest footprint does
@@ -1015,12 +1070,12 @@ fn forest_canopy_albedo(
         return base_albedo;
     }
 
-    let canopy_tint = vec3<f32>(0.52, 0.62, 0.50);
-    return mix(
-        base_albedo,
-        base_albedo * canopy_tint,
-        canopy_weight * forest_density,
+    let density_weight = canopy_weight * forest_density;
+    let ground_darkening = min(
+        FOREST_GROUND_DARKENING_MAX,
+        forest_ground_darkening(direction, forest_density) * density_weight,
     );
+    return base_albedo * (1.0 - ground_darkening);
 }
 
 fn apply_terrain_distance_fog(

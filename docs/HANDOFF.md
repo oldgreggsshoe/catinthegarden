@@ -4236,3 +4236,11 @@ The coarse L4 biome source made the temperate-forest/grassland transition appear
 ### 2026-08-30 compact high-resolution forest mask
 
 The global L4 climate map remains unchanged, but the forest density/ownership refinement now uses one seam-safe directional 8,192-cell field (roughly 3km scale) in both CPU billboard placement and the flat terrain shader. Moist temperate grassland can become local mixed woodland and low-density temperate forest can open into grassland, breaking source-texel-sized rectangular stands without another baked channel, texture stream, or geometry cost. Water, desert, and rock are not eligible. Focused forest/WGSL tests and a release startup capture pass.
+
+### 2026-08-30 forest placeholder LOD and capped ground darkening
+
+Forest billboards no longer drop the entire below-sparse population. A deterministic 12% subset remains as tiny placeholders (10% width/height), with smooth scale ramps through sparse and medium LODs before reaching full trees. The same stable tree identities are used at every level, so nearby trees grow into full billboards instead of being replaced by a newly sampled population. Pending cells expose their already-resolved candidates during bounded construction under a smooth build-progress ramp; this removes the whole-cell spawn when entering a new area without adding a second forest draw path.
+
+The terrain forest treatment now reconstructs a compact deterministic point field in the shader. Contributions add with a 38m radial fade from each point and clamp at `FOREST_GROUND_DARKENING_MAX = 0.58`; the result is weighted by moisture, slope, snow, land, and local forest density, and applies at all distances in both flat and smooth terrain. No terrain geometry, baked channels, or tree spacing changed.
+
+Focused forest tests (27), the planet WGSL validator, full app tests except the pre-existing standalone sun-shader composition failure, release build, `forest_startup/1788081252-505956`, and `forest_boundary_transition/1788081500-506913` pass. The startup run's median frame time was 34.50ms (11 logged frames), versus 36.23ms in the immediately preceding captured build; boundary captures show small distant trees during patch construction and regular billboards after the transition. Screenshots are under each run's `screenshots/` directory.
