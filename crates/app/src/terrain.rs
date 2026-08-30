@@ -4878,6 +4878,9 @@ mod tests {
     #[test]
     fn forest_canopy_ground_darkening_uses_density_for_moist_gentle_land() {
         let shader = planet_shader_source();
+        assert!(shader.contains("const FOREST_DENSITY_FREQUENCY: f32 = 8192.0;"));
+        assert!(shader.contains("fn forest_density_at_direction(direction: vec3<f32>)"));
+        assert!(shader.contains("terrain_detail_value_noise("));
         let canopy = shader
             .split("fn forest_canopy_albedo(")
             .nth(1)
@@ -4885,17 +4888,15 @@ mod tests {
             .expect("far forest canopy material is present");
 
         assert!(canopy.contains("let forest_owned = biome_id == 2u"));
-        assert!(canopy.contains("biome_id == 5u"));
+        assert!(canopy.contains("biome_id == 5u && forest_density > 0.58"));
         assert!(canopy.contains("if !outmap || !forest_owned"));
         assert!(!canopy.contains("camera_distance_meters"));
         assert!(canopy.contains("smoothstep(0.34, 0.46, moisture)"));
         assert!(canopy.contains("select(0.0, 1.0, macro_height_meters > 0.0)"));
         assert!(canopy.contains("1.0 - smoothstep(0.10, 0.18, slope)"));
         assert!(canopy.contains("let snow_weight = mix(1.0, 0.76, clamp(snow_cover, 0.0, 1.0));"));
-        assert!(canopy.contains("let forest_density = mix(0.04, 1.0, canopy_cluster);"));
+        assert!(canopy.contains("let forest_density = forest_density_at_direction(direction);"));
         assert!(canopy.contains("canopy_weight * forest_density"));
-        assert!(canopy.contains("terrain_detail_value_noise("));
-        assert!(canopy.contains("let noise_position = direction * 1024.0;"));
         assert!(!canopy.contains("textureSample"));
         assert_eq!(shader.matches("forest_canopy_albedo(").count(), 3);
 

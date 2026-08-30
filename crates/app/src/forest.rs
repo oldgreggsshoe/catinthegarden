@@ -30,6 +30,10 @@ const FOREST_PREFETCH_DISTANCE_METERS: f64 = 12_000.0;
 const FOREST_CELL_LEVEL: u8 = 12;
 const FOREST_MINIMUM_MOISTURE: f32 = 0.38;
 const FOREST_MAXIMUM_SLOPE_RADIANS: f64 = 32.0_f64.to_radians();
+// This compact directional mask refines the kilometre-scale L4 biome source
+// without adding another baked channel or tile stream. It is mirrored by the
+// terrain shader so tree placement and far canopy darkening share one field.
+const FOREST_DENSITY_FREQUENCY: f64 = 8_192.0;
 const FOREST_PATCH_TRANSITION_SECONDS: f64 = 1.5;
 const FOREST_PATCH_CANDIDATES_PER_FRAME: usize = 128;
 const FOREST_PRIMARY_PATCH_CANDIDATES_PER_FRAME: usize = 256;
@@ -1011,12 +1015,12 @@ fn tree_base_sink_meters(width_meters: f32, slope_radians: f64) -> f64 {
             * slope_radians.clamp(0.0, FOREST_MAXIMUM_SLOPE_RADIANS).tan()
 }
 
-/// Low-frequency, seam-safe density field mirrored by the terrain canopy
-/// material. The floor keeps every eligible cold/forest cell
-/// capable of producing trees; the field only creates natural clearings and
-/// denser stands instead of a hard-edged disk.
+/// High-resolution, seam-safe density field mirrored by the terrain canopy
+/// material. The floor keeps every eligible cold/forest cell capable of
+/// producing a sparse stand; the field creates local clearings and denser
+/// woodland inside the coarse baked biome footprint.
 fn forest_density_at(direction: DVec3) -> f64 {
-    let value = forest_noise_at(direction, 1_024.0) * 0.5 + 0.5;
+    let value = forest_noise_at(direction, FOREST_DENSITY_FREQUENCY) * 0.5 + 0.5;
     let cluster = smoothstep01((value - 0.28) / (0.72 - 0.28));
     0.04 + cluster * 0.96
 }
@@ -1398,14 +1402,15 @@ mod tests {
     #[test]
     fn terrain_darkening_uses_local_forest_density_at_every_distance() {
         let shader = include_str!("planet.wgsl");
+        assert!(shader.contains("const FOREST_DENSITY_FREQUENCY: f32 = 8192.0;"));
+        assert!(shader.contains("fn forest_density_at_direction(direction: vec3<f32>)"));
         let canopy = shader
             .split("fn forest_canopy_albedo(")
             .nth(1)
             .and_then(|source| source.split("\nfn ").next())
             .expect("forest canopy ground treatment is present");
         assert!(!canopy.contains("camera_distance_meters"));
-        assert!(canopy.contains("direction * 1024.0"));
-        assert!(canopy.contains("let forest_density = mix(0.04, 1.0, canopy_cluster);"));
+        assert!(canopy.contains("let forest_density = forest_density_at_direction(direction);"));
         assert!(canopy.contains("canopy_weight * forest_density"));
         assert!(!canopy.contains("distance_weight"));
         let flat = shader

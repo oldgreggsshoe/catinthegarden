@@ -941,6 +941,39 @@ fn flat_triangle_land_biome(primary: u32, first: u32, second: u32, third: u32) -
     return selected;
 }
 
+// The baked biome map is intentionally global L4. Refine only woodland with a
+// compact, seam-safe directional mask so its visible edge is not locked to
+// kilometre-scale source texels or cube-face cells. CPU billboard placement
+// mirrors this frequency; water, desert, and rock never enter this function.
+const FOREST_DENSITY_FREQUENCY: f32 = 8192.0;
+
+fn forest_density_at_direction(direction: vec3<f32>) -> f32 {
+    let position = normalize(direction) * FOREST_DENSITY_FREQUENCY;
+    let noise = terrain_detail_value_noise(
+        vec3<i32>(floor(position)),
+        fract(position),
+    ).value * 0.5 + 0.5;
+    let cluster = smoothstep(0.28, 0.72, noise);
+    return mix(0.04, 1.0, cluster);
+}
+
+fn refine_flat_temperate_biome(
+    biome_id: u32,
+    moisture: f32,
+    direction: vec3<f32>,
+) -> u32 {
+    let density = forest_density_at_direction(direction);
+    var refined = biome_id;
+    if moisture >= 0.34 {
+        if biome_id == 5u && density > 0.58 {
+            refined = 4u;
+        } else if biome_id == 4u && density < 0.22 {
+            refined = 5u;
+        }
+    }
+    return refined;
+}
+
 // Individual tree geometry is deliberately camera-local, but its broad,
 // seam-safe density also darkens the ground beneath the stand. The same field
 // remains after tree geometry becomes sub-pixel, so the forest footprint does
@@ -955,17 +988,18 @@ fn forest_canopy_albedo(
     surface_direction: vec3<f32>,
     snow_cover: f32,
 ) -> vec3<f32> {
+    let direction = normalize(surface_direction);
+    let forest_density = forest_density_at_direction(direction);
     let forest_owned = biome_id == 2u
         || biome_id == 3u
         || biome_id == 4u
-        || biome_id == 5u
         || biome_id == 6u
-        || biome_id == 9u;
+        || biome_id == 9u
+        || (biome_id == 5u && forest_density > 0.58);
     if !outmap || !forest_owned {
         return base_albedo;
     }
 
-    let direction = normalize(surface_direction);
     let slope = 1.0 - clamp(dot(normalize(surface_normal), direction), 0.0, 1.0);
     let slope_weight = 1.0 - smoothstep(0.10, 0.18, slope);
     let moisture_weight = smoothstep(0.34, 0.46, moisture);
@@ -981,16 +1015,6 @@ fn forest_canopy_albedo(
         return base_albedo;
     }
 
-    // A modest cell frequency gives orbit-scale clusters rather than a
-    // per-pixel sparkle. Sampling normalized 3D direction keeps the field
-    // continuous across cube faces, source tiles, and LOD boundaries.
-    let noise_position = direction * 1024.0;
-    let canopy_noise = terrain_detail_value_noise(
-        vec3<i32>(floor(noise_position)),
-        fract(noise_position),
-    ).value * 0.5 + 0.5;
-    let canopy_cluster = smoothstep(0.28, 0.72, canopy_noise);
-    let forest_density = mix(0.04, 1.0, canopy_cluster);
     let canopy_tint = vec3<f32>(0.52, 0.62, 0.50);
     return mix(
         base_albedo,
@@ -1043,6 +1067,7 @@ fn flat_triangle_colour(
         second_biome,
         third_biome,
     );
+    let material_moisture = sample_moisture(material_source_uv);
     let first_height = macro_terrain_height(
         input.outmap_and_macro_height.x > 0.5,
         first_source_uv,
@@ -1059,7 +1084,14 @@ fn flat_triangle_colour(
         normalize(input.surface_direction),
     );
     let mixed_land_triangle = max(first_height, max(second_height, third_height)) > 0.0;
-    let fill_biome = select(biome_id, 5u, mixed_land_triangle && (biome_id == 0u || biome_id == 1u));
+    var fill_biome = select(biome_id, 5u, mixed_land_triangle && (biome_id == 0u || biome_id == 1u));
+    if fill_biome != 0u && fill_biome != 1u {
+        fill_biome = refine_flat_temperate_biome(
+            fill_biome,
+            material_moisture,
+            normalize(input.surface_direction),
+        );
+    }
     var fill = select(debug_ocean_albedo(), biome_color(fill_biome), fill_biome != 1u);
     if fill_biome == 2u {
         // Keep one final colour per triangle, but avoid making the ice prior
@@ -1091,7 +1123,7 @@ fn flat_triangle_colour(
             fill,
             input.outmap_and_macro_height.x > 0.5,
             fill_biome,
-            sample_moisture(material_source_uv),
+            material_moisture,
             input.outmap_and_macro_height.y,
             normal,
             normalize(input.surface_direction),

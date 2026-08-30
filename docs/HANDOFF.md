@@ -4232,3 +4232,7 @@ Flat mode previously chose biome and moisture once at the centre of each 32x32-g
 ### 2026-08-30 forest-boundary refinement
 
 The coarse L4 biome source made the temperate-forest/grassland transition appear as a large hard-edged stand. Temperate grassland now participates in mixed woodland when its continuous moisture, positive-land, and slope checks pass. CPU billboard placement and flat terrain canopy darkening share that ownership rule, while dry grassland, rock, and water remain excluded. Focused forest and planet-WGSL tests pass; a fresh GPU capture is still recommended to tune the moisture threshold visually.
+
+### 2026-08-30 compact high-resolution forest mask
+
+The global L4 climate map remains unchanged, but the forest density/ownership refinement now uses one seam-safe directional 8,192-cell field (roughly 3km scale) in both CPU billboard placement and the flat terrain shader. Moist temperate grassland can become local mixed woodland and low-density temperate forest can open into grassland, breaking source-texel-sized rectangular stands without another baked channel, texture stream, or geometry cost. Water, desert, and rock are not eligible. Focused forest/WGSL tests and a release startup capture pass.
