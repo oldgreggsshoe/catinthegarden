@@ -42,6 +42,14 @@ const FOREST_STARTUP_PATCH_COUNT: u64 = 3;
 const FOREST_MAX_RENDERABLE_PATCHES: usize = 128;
 const FOREST_MAX_CACHED_PATCHES: usize = 256;
 const FOREST_MAX_DRAW_INSTANCES: usize = 262_144;
+// Terrain-grounded canopy cards make a cell read as forest before its complete
+// individual-tree population has finished resolving. They are built and
+// published atomically, never exposed one candidate at a time.
+const FOREST_PROXY_CANDIDATES_PER_PATCH: usize = 128;
+const FOREST_PROXY_PATCHES_PER_FRAME: usize = 2;
+const FOREST_PROXY_CARDS_PER_SAMPLE: usize = 3;
+const FOREST_PROXY_HEIGHT_SCALE: f32 = 1.25;
+const FOREST_PROXY_WIDTH_SCALE: f32 = 6.0;
 const TREE_LOD_FULL_PIXELS: f64 = 12.0;
 const TREE_LOD_MEDIUM_PIXELS: f64 = 3.0;
 const TREE_LOD_SPARSE_PIXELS: f64 = 1.0;
@@ -157,6 +165,10 @@ struct ForestPatch {
     visible_since: Instant,
 }
 
+struct ForestProxyPatch {
+    trees: Vec<TreeInstance>,
+}
+
 struct PendingForestPatch {
     key: TileKey,
     centre_direction: DVec3,
@@ -269,8 +281,10 @@ impl TreeLodCounts {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ForestStats {
     pub patch_count: u16,
+    pub proxy_patch_count: u16,
     pub beam_count: u16,
     pub instances: u32,
+    pub proxy_instances: u32,
     pub full_instances: u32,
     pub medium_instances: u32,
     pub sparse_instances: u32,
@@ -292,8 +306,10 @@ pub struct ForestRenderer {
     instance_buffer: wgpu::Buffer,
     beam_vertex_buffer: wgpu::Buffer,
     instance_count: u32,
+    proxy_instance_count: u32,
     beam_vertex_count: u32,
     patches: BTreeMap<TileKey, ForestPatch>,
+    proxy_patches: BTreeMap<TileKey, ForestProxyPatch>,
     pending_patch: Option<PendingForestPatch>,
     draw_instances: Vec<TreeInstance>,
     lod_counts: TreeLodCounts,
@@ -488,8 +504,10 @@ impl ForestRenderer {
             instance_buffer,
             beam_vertex_buffer,
             instance_count: 0,
+            proxy_instance_count: 0,
             beam_vertex_count: beam_vertices.len() as u32,
             patches: BTreeMap::new(),
+            proxy_patches: BTreeMap::new(),
             pending_patch: Some(PendingForestPatch::new(initial_key)),
             draw_instances: Vec::new(),
             lod_counts: TreeLodCounts::default(),
@@ -537,6 +555,12 @@ impl ForestRenderer {
         {
             return;
         }
+        if !self.enabled {
+            self.pending_patch = None;
+            self.instance_count = 0;
+            self.proxy_instance_count = 0;
+            return;
+        }
         if camera_altitude_meters >= FOREST_DRAW_ALTITUDE_METERS {
             self.pending_patch = None;
             return;
@@ -574,8 +598,30 @@ impl ForestRenderer {
         let renderable_key_set = renderable_keys.iter().copied().collect::<BTreeSet<_>>();
         let cached_key_set = cached_keys.iter().copied().collect::<BTreeSet<_>>();
         self.patches.retain(|key, _| cached_key_set.contains(key));
+        self.proxy_patches
+            .retain(|key, _| cached_key_set.contains(key));
         self.empty_patch_keys
             .retain(|key| cached_key_set.contains(key));
+
+        // A tiny, complete canopy proxy is much cheaper to resolve than the
+        // 12,288-candidate individual population. Build nearest missing cells
+        // first and publish each proxy only after every sample is available.
+        // The permanent terrain canopy treatment remains underneath it.
+        let missing_proxy_keys = cached_keys
+            .iter()
+            .copied()
+            .filter(|key| {
+                !self.proxy_patches.contains_key(key)
+                    && !self.patches.contains_key(key)
+                    && !self.empty_patch_keys.contains(key)
+            })
+            .take(FOREST_PROXY_PATCHES_PER_FRAME)
+            .collect::<Vec<_>>();
+        for key in missing_proxy_keys {
+            if let Some(proxy) = build_forest_proxy_patch(key, terrain, camera_altitude_meters) {
+                self.proxy_patches.insert(key, proxy);
+            }
+        }
         if self
             .pending_patch
             .as_ref()
@@ -629,6 +675,7 @@ impl ForestRenderer {
             let minimum_source_level = patch.minimum_source_level;
             if patch.trees.is_empty() {
                 self.empty_patch_keys.insert(patch_key);
+                self.proxy_patches.remove(&patch_key);
             } else {
                 if self.rebuild_count < FOREST_STARTUP_PATCH_COUNT {
                     patch.visible_since = Instant::now()
@@ -687,6 +734,23 @@ impl ForestRenderer {
                 .min(FOREST_MAX_DRAW_INSTANCES),
         );
         let mut lod_counts = TreeLodCounts::default();
+        let mut proxy_instance_count = 0_u32;
+        for (key, proxy) in &self.proxy_patches {
+            let finished_population_is_visible = self.patches.get(key).is_some_and(|patch| {
+                patch_transition_progress(patch.visible_since.elapsed().as_secs_f64()) >= 1.0
+            });
+            if finished_population_is_visible {
+                continue;
+            }
+            proxy_instance_count += append_forest_proxy_instances(
+                &mut draw_instances,
+                &proxy.trees,
+                camera_planet_position,
+            );
+            if draw_instances.len() == FOREST_MAX_DRAW_INSTANCES {
+                break;
+            }
+        }
         'patches: for patch in patches {
             let transition_progress =
                 patch_transition_progress(patch.visible_since.elapsed().as_secs_f64()) as f32;
@@ -703,29 +767,6 @@ impl ForestRenderer {
                 break 'patches;
             }
         }
-        // A patch is built in bounded batches.  Exposing its already-resolved
-        // trees while the remaining candidates are sampled removes the
-        // whole-cell pop when a camera enters a new forest.  The build
-        // fraction is used as a second smooth population ramp; once complete,
-        // the regular patch transition above takes over.
-        if draw_instances.len() < FOREST_MAX_DRAW_INSTANCES {
-            if let Some(pending) = self.pending_patch.as_ref() {
-                let build_progress = if pending.candidates.is_empty() {
-                    1.0
-                } else {
-                    pending.next_candidate as f64 / pending.candidates.len() as f64
-                };
-                append_lodded_tree_instances(
-                    &mut draw_instances,
-                    &mut lod_counts,
-                    &pending.trees,
-                    camera_planet_position,
-                    viewport_height,
-                    vertical_fov_radians,
-                    smoothstep01(build_progress) as f32,
-                );
-            }
-        }
         if self.draw_instances != draw_instances {
             debug_assert!(draw_instances.len() <= FOREST_MAX_DRAW_INSTANCES);
             if !draw_instances.is_empty() {
@@ -738,14 +779,17 @@ impl ForestRenderer {
             self.draw_instances = draw_instances;
         }
         self.instance_count = self.draw_instances.len() as u32;
+        self.proxy_instance_count = proxy_instance_count.min(self.instance_count);
         self.lod_counts = lod_counts;
     }
 
     pub fn stats(&self) -> ForestStats {
         ForestStats {
             patch_count: self.patches.len().min(usize::from(u16::MAX)) as u16,
+            proxy_patch_count: self.proxy_patches.len().min(usize::from(u16::MAX)) as u16,
             beam_count: (self.beam_vertex_count / 6).min(u32::from(u16::MAX)) as u16,
             instances: self.instance_count,
+            proxy_instances: self.proxy_instance_count,
             full_instances: self.lod_counts.full,
             medium_instances: self.lod_counts.medium,
             sparse_instances: self.lod_counts.sparse,
@@ -977,24 +1021,88 @@ fn forest_placement_density_at(direction: DVec3) -> f64 {
 }
 
 fn forest_patch_tree_layouts(key: TileKey) -> Vec<(DVec3, TreeLayout)> {
+    (0..TREE_COUNT)
+        .map(|index| forest_patch_tree_layout(key, index))
+        .collect()
+}
+
+fn forest_patch_tree_layout(key: TileKey, index: usize) -> (DVec3, TreeLayout) {
     let cells_per_axis = f64::from(1_u32 << key.level);
     let cell_span = 2.0 / cells_per_axis;
     let u_min = -1.0 + f64::from(key.x) * cell_span;
     let v_min = -1.0 + f64::from(key.y) * cell_span;
     let cell_seed = canonical_cell_seed(key);
-    (0..TREE_COUNT)
-        .map(|index| {
-            let index = index as u32;
-            // unit_hash is half-open, so a candidate belongs to exactly this
-            // cell even at cube-face and cell boundaries.
-            let u = u_min + unit_hash(cell_seed ^ index ^ 0x6a09_e667) * cell_span;
-            let v = v_min + unit_hash(cell_seed ^ index ^ 0xbb67_ae85) * cell_span;
-            (
-                face_uv_to_direction(key.face, u, v),
-                tree_layout_from_seed(cell_seed ^ index),
-            )
-        })
-        .collect()
+    let index = index as u32;
+    // unit_hash is half-open, so a candidate belongs to exactly this cell even
+    // at cube-face and cell boundaries.
+    let u = u_min + unit_hash(cell_seed ^ index ^ 0x6a09_e667) * cell_span;
+    let v = v_min + unit_hash(cell_seed ^ index ^ 0xbb67_ae85) * cell_span;
+    (
+        face_uv_to_direction(key.face, u, v),
+        tree_layout_from_seed(cell_seed ^ index),
+    )
+}
+
+fn build_forest_proxy_patch(
+    key: TileKey,
+    terrain: &TerrainRenderer,
+    camera_altitude_meters: f64,
+) -> Option<ForestProxyPatch> {
+    let mut trees =
+        Vec::with_capacity(FOREST_PROXY_CANDIDATES_PER_PATCH * FOREST_PROXY_CARDS_PER_SAMPLE);
+    for proxy_index in 0..FOREST_PROXY_CANDIDATES_PER_PATCH {
+        // Spread the proxy samples over the complete deterministic population;
+        // taking its first N entries would produce a spatially biased card.
+        let candidate_index = proxy_index * TREE_COUNT / FOREST_PROXY_CANDIDATES_PER_PATCH;
+        let (direction, layout) = forest_patch_tree_layout(key, candidate_index);
+        let sample = terrain.forest_surface_sample_at(direction, camera_altitude_meters)?;
+        let density = forest_placement_density_at(direction);
+        // A single proxy card represents several final trees, so select by
+        // sqrt(density): card count times card footprint then follows the full
+        // population's approximately linear density without leaving holes.
+        if !forest_surface_is_eligible(
+            sample,
+            FOREST_MINIMUM_MOISTURE,
+            FOREST_MAXIMUM_SLOPE_RADIANS,
+        ) || f64::from(layout.seed) > density.sqrt()
+        {
+            continue;
+        }
+        let width_meters = layout.width_meters * FOREST_PROXY_WIDTH_SCALE;
+        let up = direction.normalize();
+        let reference = if up.y.abs() < 0.9 { DVec3::Y } else { DVec3::X };
+        let tangent = up.cross(reference).normalize();
+        let bitangent = up.cross(tangent).normalize();
+        let offsets = [(0.0, 0.0), (-0.42, 0.24), (0.38, -0.30)];
+        for (card_index, (tangent_offset, bitangent_offset)) in offsets.into_iter().enumerate() {
+            let card_direction = (up
+                + tangent * (tangent_offset * f64::from(width_meters) / PLANET_RADIUS_METERS)
+                + bitangent * (bitangent_offset * f64::from(width_meters) / PLANET_RADIUS_METERS))
+                .normalize();
+            let centre = card_direction
+                * (PLANET_RADIUS_METERS + sample.height_meters
+                    - tree_base_sink_meters(width_meters, sample.slope_radians));
+            trees.push(TreeInstance {
+                centre_and_height: [
+                    centre.x as f32,
+                    centre.y as f32,
+                    centre.z as f32,
+                    layout.height_meters * FOREST_PROXY_HEIGHT_SCALE,
+                ],
+                width_shade_kind_seed: [
+                    width_meters,
+                    layout.shade,
+                    2.0 + if forest_biome_requires_evergreen(sample.biome) {
+                        1.0
+                    } else {
+                        layout.kind
+                    },
+                    (layout.seed + card_index as f32 * 0.173).fract(),
+                ],
+            });
+        }
+    }
+    Some(ForestProxyPatch { trees })
 }
 
 fn canonical_cell_seed(key: TileKey) -> u32 {
@@ -1263,6 +1371,24 @@ fn append_lodded_tree_instances(
     }
 }
 
+fn append_forest_proxy_instances(
+    draw_instances: &mut Vec<TreeInstance>,
+    trees: &[TreeInstance],
+    camera_planet_position: DVec3,
+) -> u32 {
+    let start = draw_instances.len();
+    for tree in trees {
+        if draw_instances.len() == FOREST_MAX_DRAW_INSTANCES {
+            break;
+        }
+        if tree_distance_meters(*tree, camera_planet_position) <= FOREST_TREE_RENDER_DISTANCE_METERS
+        {
+            draw_instances.push(*tree);
+        }
+    }
+    (draw_instances.len() - start) as u32
+}
+
 fn patch_transition_progress(elapsed_seconds: f64) -> f64 {
     smoothstep01(elapsed_seconds / FOREST_PATCH_TRANSITION_SECONDS)
 }
@@ -1431,6 +1557,37 @@ mod tests {
         assert!(trees.iter().any(|(_, layout)| layout.kind == 1.0));
         let density = forest_density_at(FOREST_CENTRE_DIRECTION);
         assert!((0.0..=1.0).contains(&density));
+    }
+
+    #[test]
+    fn proxy_samples_are_bounded_spatially_distributed_and_atomic() {
+        assert_eq!(FOREST_PROXY_CANDIDATES_PER_PATCH, 128);
+        assert_eq!(FOREST_PROXY_PATCHES_PER_FRAME, 2);
+        let key = forest_cell_key(FOREST_CENTRE_DIRECTION);
+        let samples = (0..FOREST_PROXY_CANDIDATES_PER_PATCH)
+            .map(|proxy_index| {
+                forest_patch_tree_layout(
+                    key,
+                    proxy_index * TREE_COUNT / FOREST_PROXY_CANDIDATES_PER_PATCH,
+                )
+                .0
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            samples
+                .iter()
+                .all(|direction| forest_cell_key(*direction) == key)
+        );
+        assert!(samples.windows(2).all(|pair| pair[0] != pair[1]));
+
+        let source = include_str!("forest.rs");
+        let update_lod = source
+            .split("fn update_tree_lod(")
+            .nth(1)
+            .and_then(|source| source.split("pub fn stats(").next())
+            .expect("forest LOD update is present");
+        assert!(update_lod.contains("append_forest_proxy_instances"));
+        assert!(!update_lod.contains("pending_patch"));
     }
 
     #[test]
@@ -1823,6 +1980,7 @@ mod tests {
         .expect("forest shader validates");
         assert!(shader.contains("centre_and_height: vec4<f32>"));
         assert!(shader.contains("if !trunk && !canopy"));
+        assert!(shader.contains("let proxy = input.colour_and_kind.w >= 2.0;"));
         assert!(!shader.contains("texture_2d"));
     }
 

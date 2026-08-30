@@ -4250,3 +4250,20 @@ Focused forest tests (27), the planet WGSL validator, full app tests except the 
 The terrain shader now treats all non-ice land as matte. The flat-triangle per-face specular value is computed/used only for biome IDs Ocean, Lake, and Ice; vegetation, soil, rock, tundra, desert, and MountainSnow receive zero. The smooth terrain weather/wet-ground highlight uses the same gate, while the existing analytic ocean/lake Blinn-Phong glints remain unchanged. Diffuse, ambient, aerial perspective, cloud shadows, and forest lighting are unaffected.
 
 A focused material regression confirms the biome gate in both raster paths and that shared water lighting still owns its specular lobe. `cargo fmt --all -- --check`, the focused WGSL/material test, and `cargo check --workspace` pass.
+
+### 2026-08-30 permanent forest hierarchy
+
+The frequency-8,192 procedural forest mask remains the permanent global representation and continues
+to darken eligible terrain with no tree geometry at orbital distances. Inside the 12km cache, each
+L12 cell now resolves 128 spatially distributed terrain samples into complete multi-crown canopy
+cards, publishing at most two whole proxy cells per frame. The proxy remains while the full
+12,288-candidate population is built and transitioned; pending individual candidates are no longer
+submitted, so bounded construction cannot look like isolated trees growing from empty ground.
+
+Release `forest_boundary_transition/1788101492-518818` passes and begins with a dense proxy forest
+before the camera-local individual population is ready. Release
+`forest_vast_distance/1788101903-520046` passes at 100km altitude with zero proxy or individual-tree
+instances and visibly distinct forest terrain. Five alternating Immediate-mode `forest_performance`
+ON/OFF pairs measure 34.875ms versus 34.004ms median frame time, a 0.872ms total forest cost inside
+the requested 1ms limit. Focused forest tests and workspace check pass; the full app suite is
+322 passed, one pre-existing standalone sun-shader composition failure, and seven ignored.

@@ -2378,8 +2378,10 @@ impl State {
             tracing::info!(
                 target: "catinthegarden::forest",
                 patch_count = forest.patch_count,
+                proxy_patch_count = forest.proxy_patch_count,
                 beam_count = forest.beam_count,
                 instances = forest.instances,
+                proxy_instances = forest.proxy_instances,
                 full_instances = forest.full_instances,
                 medium_instances = forest.medium_instances,
                 sparse_instances = forest.sparse_instances,

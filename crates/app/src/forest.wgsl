@@ -139,6 +139,7 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vertex_index: u32) -> Vert
     let width = input.width_shade_kind_seed.x;
     let shade = input.width_shade_kind_seed.y;
     let kind = input.width_shade_kind_seed.z;
+    let species_kind = kind - floor(kind * 0.5) * 2.0;
     let up = normalize(centre);
     let to_camera = forest.camera_planet_position.xyz - centre;
     var right = cross(up, to_camera);
@@ -163,7 +164,7 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vertex_index: u32) -> Vert
     let lighting = tree_lighting(solar_elevation_cosine, cloud_visibility) * shade;
     let broadleaf = srgb_to_linear(vec3<f32>(0.10, 0.34, 0.12));
     let conifer = srgb_to_linear(vec3<f32>(0.07, 0.25, 0.10));
-    let colour = mix(broadleaf, conifer, kind) * lighting;
+    let colour = mix(broadleaf, conifer, species_kind) * lighting;
     return VertexOutput(
         camera.projection_matrix * vec4<f32>(view_position, 1.0),
         vec2<f32>(corner.x * 0.5 + 0.5, corner.y),
@@ -182,9 +183,31 @@ fn circle(point: vec2<f32>, centre: vec2<f32>, radius: vec2<f32>) -> bool {
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let point = vec2<f32>(input.uv.x * 2.0 - 1.0, input.uv.y);
     let trunk_half_width = 0.075 + input.seed * 0.025;
-    let trunk = abs(point.x) < trunk_half_width && point.y < 0.38;
+    let proxy = input.colour_and_kind.w >= 2.0;
+    let species_kind = input.colour_and_kind.w
+        - floor(input.colour_and_kind.w * 0.5) * 2.0;
+    var trunk = abs(point.x) < trunk_half_width && point.y < 0.38;
     var canopy = false;
-    if input.colour_and_kind.w < 0.5 {
+    if proxy {
+        trunk = point.y < 0.34
+            && (abs(point.x + 0.58) < trunk_half_width * 0.7
+                || abs(point.x + 0.18) < trunk_half_width * 0.7
+                || abs(point.x - 0.24) < trunk_half_width * 0.7
+                || abs(point.x - 0.61) < trunk_half_width * 0.7);
+        if species_kind < 0.5 {
+            canopy = circle(point, vec2<f32>(-0.58, 0.50), vec2<f32>(0.34, 0.26))
+                || circle(point, vec2<f32>(-0.18, 0.67), vec2<f32>(0.40, 0.32))
+                || circle(point, vec2<f32>(0.25, 0.57), vec2<f32>(0.38, 0.29))
+                || circle(point, vec2<f32>(0.62, 0.72), vec2<f32>(0.32, 0.27));
+        } else {
+            let left = (1.0 - point.y) * 0.34;
+            canopy = point.y > 0.16 && point.y < 0.96
+                && (abs(point.x + 0.60) < left
+                    || abs(point.x + 0.20) < left * 1.1
+                    || abs(point.x - 0.24) < left
+                    || abs(point.x - 0.62) < left * 0.9);
+        }
+    } else if species_kind < 0.5 {
         canopy = circle(point, vec2<f32>(-0.20, 0.60), vec2<f32>(0.43, 0.31))
             || circle(point, vec2<f32>(0.20, 0.61), vec2<f32>(0.45, 0.33))
             || circle(point, vec2<f32>(0.0, 0.79), vec2<f32>(0.48, 0.30));

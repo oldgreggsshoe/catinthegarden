@@ -263,6 +263,9 @@ impl ScenarioRunner {
             }
             "forest_startup" => include_str!("../scenarios/forest_startup.json"),
             "forest_performance" => include_str!("../scenarios/forest_performance.json"),
+            "forest_vast_distance" => {
+                include_str!("../scenarios/forest_vast_distance.json")
+            }
             "forest_night" => include_str!("../scenarios/forest_night.json"),
             "forest_boundary_transition" => {
                 include_str!("../scenarios/forest_boundary_transition.json")
@@ -958,6 +961,19 @@ mod tests {
         assert_eq!(scenario.expected_screenshots(), 0);
         assert!(scenario.definition.hide_overlay);
         assert_eq!(scenario.definition.duration_seconds, 8.0);
+    }
+
+    #[test]
+    fn forest_vast_distance_has_no_individual_tree_geometry() {
+        let scenario =
+            ScenarioRunner::load("forest_vast_distance").expect("forest scenario parses");
+        assert_eq!(scenario.expected_screenshots(), 1);
+        assert!(scenario.definition.hide_overlay);
+        assert!(
+            DVec3::from_array(scenario.definition.waypoints[0].position).length()
+                - crate::planet::PLANET_RADIUS_METERS
+                > 50_000.0
+        );
     }
 
     #[test]
