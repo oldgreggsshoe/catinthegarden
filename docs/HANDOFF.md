@@ -4244,3 +4244,9 @@ Forest billboards no longer drop the entire below-sparse population. A determini
 The terrain forest treatment now reconstructs a compact deterministic point field in the shader. Contributions add with a 38m radial fade from each point and clamp at `FOREST_GROUND_DARKENING_MAX = 0.58`; the result is weighted by moisture, slope, snow, land, and local forest density, and applies at all distances in both flat and smooth terrain. No terrain geometry, baked channels, or tree spacing changed.
 
 Focused forest tests (27), the planet WGSL validator, full app tests except the pre-existing standalone sun-shader composition failure, release build, `forest_startup/1788081252-505956`, and `forest_boundary_transition/1788081500-506913` pass. The startup run's median frame time was 34.50ms (11 logged frames), versus 36.23ms in the immediately preceding captured build; boundary captures show small distant trees during patch construction and regular billboards after the transition. Screenshots are under each run's `screenshots/` directory.
+
+### 2026-08-30 matte terrain specular gating
+
+The terrain shader now treats all non-ice land as matte. The flat-triangle per-face specular value is computed/used only for biome IDs Ocean, Lake, and Ice; vegetation, soil, rock, tundra, desert, and MountainSnow receive zero. The smooth terrain weather/wet-ground highlight uses the same gate, while the existing analytic ocean/lake Blinn-Phong glints remain unchanged. Diffuse, ambient, aerial perspective, cloud shadows, and forest lighting are unaffected.
+
+A focused material regression confirms the biome gate in both raster paths and that shared water lighting still owns its specular lobe. `cargo fmt --all -- --check`, the focused WGSL/material test, and `cargo check --workspace` pass.

@@ -1510,6 +1510,42 @@ mod tests {
     }
 
     #[test]
+    fn specular_is_reserved_for_ice_and_water_materials() {
+        let shader = include_str!("planet.wgsl");
+        assert!(shader.contains("fn material_allows_specular(biome_id: u32) -> bool"));
+        let helper = shader
+            .split("fn material_allows_specular(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("specular material gate is present");
+        assert!(helper.contains("biome_id == 0u"));
+        assert!(helper.contains("biome_id == 1u"));
+        assert!(helper.contains("biome_id == 2u"));
+        let flat = shader
+            .split("fn flat_triangle_colour(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("flat terrain path is present");
+        assert!(flat.contains("let triangle_specular = select("));
+        assert!(flat.contains("material_allows_specular(fill_biome)"));
+        let terrain = shader
+            .split("fn terrain_fragment_color(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("smooth terrain path is present");
+        assert!(terrain.contains("if material_allows_specular(biome_id)"));
+
+        let shared = include_str!("shared_planet.wgsl");
+        let ocean = shared
+            .split("fn ocean_lighting(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("shared water lighting path is present");
+        assert!(ocean.contains("let specular = pow("));
+        assert!(ocean.contains("OCEAN_SUN_GLINT_SCALE"));
+    }
+
+    #[test]
     fn procedural_patch_cells_have_canonical_half_open_tree_ownership() {
         let key = TileKey {
             face: catinthegarden_coretypes::CubeFace::PositiveX,

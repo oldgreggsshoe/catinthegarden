@@ -483,6 +483,13 @@ fn flat_triangle_vertex_specular(
         * (0.08 * SURFACE_SUNLIGHT_SCALE);
 }
 
+fn material_allows_specular(biome_id: u32) -> bool {
+    // Water owns the ocean/lake glints, and the dedicated ice biome keeps its
+    // hard, cold highlight. Vegetation, soil, rock, snow, and desert remain
+    // matte even when their weather field is wet.
+    return biome_id == 0u || biome_id == 1u || biome_id == 2u;
+}
+
 fn stitched_surface_direction(
     original_direction: vec3<f32>,
     tile_uv: vec2<f32>,
@@ -647,7 +654,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         normal = terrain_detail_perturbed_normal(normal, direction, detail.slope);
     }
     var flat_specular = 0.0;
-    if flat_triangles {
+    if flat_triangles && material_allows_specular(biome_id) {
         flat_specular = flat_triangle_vertex_specular(
             normal,
             direction,
@@ -1164,6 +1171,11 @@ fn flat_triangle_colour(
         flat_triangle_normal(input.camera_relative_view_position, input.world_normal),
         input.surface_direction,
     );
+    let triangle_specular = select(
+        0.0,
+        input.source_uv_scale_and_latitude.w,
+        material_allows_specular(fill_biome),
+    );
     if fill_biome != 0u && fill_biome != 1u {
         let surface_field = weather_surface_sample(normalize(input.surface_direction));
         let wetness = smoothstep(0.18, 0.82, surface_field.r);
@@ -1191,7 +1203,7 @@ fn flat_triangle_colour(
         normalize(input.surface_direction),
         input.surface_height_and_fog_color.x,
         input.camera_relative_view_position,
-        input.source_uv_scale_and_latitude.w,
+        triangle_specular,
         true,
         true,
     );
@@ -1514,9 +1526,9 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let weather_surface = weather_surface_sample(direction);
     let wetness = smoothstep(0.18, 0.82, weather_surface.r);
     let snow_cover = smoothstep(0.08, 0.70, weather_surface.g);
-    // Rain darkens exposed ground and increases its broad specular response;
-    // accumulated snow replaces the material only where the coupled surface
-    // field says it has persisted. Ocean and lake branches returned above.
+    // Rain darkens exposed ground; accumulated snow replaces the material only
+    // where the coupled surface field says it has persisted. Ocean and lake
+    // branches returned above, and non-ice land remains matte.
     textured_terrain_albedo *= 1.0 - 0.22 * wetness;
     textured_terrain_albedo = mix(
         textured_terrain_albedo,
@@ -1544,19 +1556,21 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     // rounding its gradient through interpolated vertex normals.
     var textured_surface_lighting = textured_terrain_albedo
         * terrain_surface_irradiance;
-    let wet_specular = pow(
-        max(
-            dot(
-                reflect(-sun_direction, terrain_normal),
-                normalize(view_to_planet(-input.camera_relative_view_position)),
+    if material_allows_specular(biome_id) {
+        let wet_specular = pow(
+            max(
+                dot(
+                    reflect(-sun_direction, terrain_normal),
+                    normalize(view_to_planet(-input.camera_relative_view_position)),
+                ),
+                0.0,
             ),
-            0.0,
-        ),
-        64.0,
-    ) * wetness
-        * dot(terrain_sun_transmittance, vec3<f32>(0.2126, 0.7152, 0.0722))
-        * 0.18;
-    textured_surface_lighting += vec3<f32>(wet_specular);
+            64.0,
+        ) * wetness
+            * dot(terrain_sun_transmittance, vec3<f32>(0.2126, 0.7152, 0.0722))
+            * 0.18;
+        textured_surface_lighting += vec3<f32>(wet_specular);
+    }
     // Relief finer than the mesh can hold, shaded per pixel. The vertex ladder
     // stopped at its own spacing, so this picks up exactly the octaves it left.
     // Re-light the triangle normal by the finer-than-mesh detail ratio. The
