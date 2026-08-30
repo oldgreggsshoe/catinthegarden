@@ -958,6 +958,7 @@ fn forest_canopy_albedo(
     let forest_owned = biome_id == 2u
         || biome_id == 3u
         || biome_id == 4u
+        || biome_id == 5u
         || biome_id == 6u
         || biome_id == 9u;
     if !outmap || !forest_owned {

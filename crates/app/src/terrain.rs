@@ -381,9 +381,10 @@ pub struct ForestSurfaceSample {
     pub source_level: u8,
 }
 
-/// Forest ownership is categorical. Temperate/tropical forest biomes and cold
-/// land biomes can grow the evergreen forest species; moisture and slope remain
-/// continuous placement constraints. Water and negative terrain are rejected
+/// Forest ownership starts from the baked climate class, but temperate
+/// grassland is also a valid mixed-woodland source. Its continuous moisture
+/// and slope constraints keep trees out of dry plains while avoiding a hard,
+/// low-resolution forest-biome edge. Water and negative terrain are rejected
 /// separately by `forest_surface_is_eligible`.
 pub fn forest_biome_owns_trees(biome: BiomeId) -> bool {
     matches!(
@@ -391,6 +392,7 @@ pub fn forest_biome_owns_trees(biome: BiomeId) -> bool {
         BiomeId::Ice
             | BiomeId::Tundra
             | BiomeId::TemperateForest
+            | BiomeId::TemperateGrassland
             | BiomeId::TropicalForest
             | BiomeId::MountainSnow
     )
@@ -4883,16 +4885,17 @@ mod tests {
             .expect("far forest canopy material is present");
 
         assert!(canopy.contains("let forest_owned = biome_id == 2u"));
+        assert!(canopy.contains("biome_id == 5u"));
         assert!(canopy.contains("if !outmap || !forest_owned"));
         assert!(!canopy.contains("camera_distance_meters"));
         assert!(canopy.contains("smoothstep(0.34, 0.46, moisture)"));
         assert!(canopy.contains("select(0.0, 1.0, macro_height_meters > 0.0)"));
         assert!(canopy.contains("1.0 - smoothstep(0.10, 0.18, slope)"));
         assert!(canopy.contains("let snow_weight = mix(1.0, 0.76, clamp(snow_cover, 0.0, 1.0));"));
-        assert!(canopy.contains("let forest_density = mix(0.35, 1.0, canopy_cluster);"));
+        assert!(canopy.contains("let forest_density = mix(0.04, 1.0, canopy_cluster);"));
         assert!(canopy.contains("canopy_weight * forest_density"));
         assert!(canopy.contains("terrain_detail_value_noise("));
-        assert!(canopy.contains("let noise_position = direction * 192.0;"));
+        assert!(canopy.contains("let noise_position = direction * 1024.0;"));
         assert!(!canopy.contains("textureSample"));
         assert_eq!(shader.matches("forest_canopy_albedo(").count(), 3);
 
@@ -5078,12 +5081,12 @@ mod tests {
         for biome in [
             BiomeId::Ocean,
             BiomeId::Lake,
-            BiomeId::TemperateGrassland,
             BiomeId::Desert,
             BiomeId::MountainRock,
         ] {
             assert!(!forest_biome_owns_trees(biome), "{biome:?} owns no trees");
         }
+        assert!(forest_biome_owns_trees(BiomeId::TemperateGrassland));
         for biome in [BiomeId::Ice, BiomeId::Tundra, BiomeId::MountainSnow] {
             assert!(
                 forest_biome_owns_trees(biome),
