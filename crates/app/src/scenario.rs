@@ -286,6 +286,9 @@ impl ScenarioRunner {
             "manual_lod_approach_replay" => {
                 include_str!("../scenarios/manual_lod_approach_replay.json")
             }
+            "manual_sky_ocean_replay" => {
+                include_str!("../scenarios/manual_sky_ocean_replay.json")
+            }
             "outlined_shadows" => include_str!("../scenarios/outlined_shadows.json"),
             "stand_on_ground" => include_str!("../scenarios/stand_on_ground.json"),
             "terrain_detail_altitude_ladder" => {
@@ -1116,6 +1119,28 @@ mod tests {
             scenario.assertions().max_surface_probe_p90_delta_m,
             Some(40.0)
         );
+    }
+
+    #[test]
+    fn manual_sky_ocean_replay_preserves_the_logged_frozen_sun_flight() {
+        let mut scenario = ScenarioRunner::load("manual_sky_ocean_replay")
+            .expect("manual sky/ocean replay parses");
+        let first = scenario.advance();
+
+        assert_eq!(scenario.expected_screenshots(), 9);
+        assert!(scenario.uses_planet_relative_up());
+        assert!(
+            (DVec3::from_array(first.sun_direction)
+                - DVec3::new(
+                    0.508_927_518_800_963_9,
+                    0.397_776_994_021_848,
+                    0.763_391_278_201_445_7,
+                ))
+            .length()
+                < 1.0e-12
+        );
+        assert_eq!(first.planet_rotation_time_scale, 0.0);
+        assert_eq!(first.vertical_fov_degrees, Some(75.0));
     }
 
     #[test]

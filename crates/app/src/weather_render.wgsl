@@ -224,10 +224,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
     let cloud = cloudSample(input.direction, f32(input.shell_index));
     let density = cloud.density;
-    // Density is already posterised by the shared cloud evaluation. Keep a
-    // little transmission through even the densest shell fragments so the
-    // longer-lived field does not turn into an opaque double layer.
-    let alpha = density * 0.78;
+    // Keep tenuous and mid-density weather from becoming a grey film that
+    // repeatedly desaturates the physical sunset as the camera moves beneath
+    // it. Dense storm cloud still reaches the established 0.78 ceiling, so
+    // overcast regions retain their contrast and shadow strength.
+    let alpha = density * mix(0.50, 0.78, density);
     if alpha < 0.002 {
         discard;
     }

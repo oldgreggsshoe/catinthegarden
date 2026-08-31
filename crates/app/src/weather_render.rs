@@ -10,7 +10,12 @@ const UPPER_CLOUD_SHELL_ALTITUDE_METERS: f32 = 166_000.0;
 const ACTIVE_CLOUD_SHELL_COUNT: u32 = 1;
 const CLOUD_LAYER_HALF_DEPTH_METERS: f32 =
     (UPPER_CLOUD_SHELL_ALTITUDE_METERS - CLOUD_SHELL_ALTITUDE_METERS) * 0.5;
-const CLOUD_SHELL_LONGITUDE_SEGMENTS: usize = 96;
+// The cloud shell is viewed from the inside at low altitude. The former
+// 96x48 sphere exposed individual projected facets as broad triangular colour
+// wedges while flying beneath sunset cloud. Doubling the longitude axis
+// leaves latitude density and fragment workload unchanged while making those
+// narrow meridional facets fine enough not to read as sky-sized pillars.
+const CLOUD_SHELL_LONGITUDE_SEGMENTS: usize = 192;
 const CLOUD_SHELL_LATITUDE_SEGMENTS: usize = 48;
 const CLOUD_TEXTURE_BYTES_PER_ROW: u32 = 256;
 const CLOUD_DRIFT_RADIANS_PER_SIMULATED_SECOND: f64 = 0.000002;
@@ -874,7 +879,7 @@ mod tests {
         assert!(shader.contains("fn cloudDensity"));
         assert!(shader.contains("let posterized = smoothstep"));
         assert!(shader.contains("smoothstep(0.05, 0.32, field.g)"));
-        assert!(shader.contains("let alpha = density * 0.78;"));
+        assert!(shader.contains("let alpha = density * mix(0.50, 0.78, density);"));
         assert!(shader.contains("smoothstep(0.10, 0.30, cloud.storm)"));
         assert!(shader.contains("let storm_darkening = 1.0 - 0.72 * storm_weight;"));
         assert!(shader.contains("fn henyey_greenstein"));
@@ -940,9 +945,9 @@ mod tests {
 
     #[test]
     fn shell_mesh_is_non_empty_and_has_expected_density() {
-        assert_eq!(super::shell_vertices().len(), 96 * 48 * 6);
+        assert_eq!(super::shell_vertices().len(), 192 * 48 * 6);
         assert_eq!(super::ACTIVE_CLOUD_SHELL_COUNT, 1);
-        assert_eq!(super::shell_vertices().len(), 27_648);
+        assert_eq!(super::shell_vertices().len(), 55_296);
     }
 
     #[test]

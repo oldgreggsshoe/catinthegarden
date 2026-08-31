@@ -4291,3 +4291,36 @@ Three alternating Quadro Immediate `forest_performance` pairs measured forest-on
 GPU WGSL validation, release startup, boundary and vast-distance scenarios pass. The unrelated
 manual sunset/ocean/pink-pillar report remains a separate diagnosis; do not tune the signed-off
 near-surface sky while repairing it.
+
+## Frozen-sun pink-cycle and apparent-ocean diagnosis - 31 August 2026
+
+The manual run `test-runs/manual/1788105529-522111` held scene time, planet rotation,
+sun direction, exposure, and FOV fixed while travelling from roughly 22.3km to 12.9km altitude.
+The physical sky nevertheless looked alternately pinker and greyer, and mid-distance water read as
+if it had disappeared. The logged camera positions and inferred travel direction are preserved in
+`manual_sky_ocean_replay`; its matching sky-only control is smooth, while the full composition adds
+the weather shell. This isolates the variation from the atmosphere scattering itself and avoids
+retuning a near-surface sky the user has otherwise signed off.
+
+The weather shell now maps alpha as `density * mix(0.50, 0.78, density)`: thin and medium cloud no
+longer form an opacity film that repeatedly desaturates the sunset or hides the blue water below,
+while density 1 storms retain the previous 0.78 ceiling and therefore their contrast and shadow
+strength. The inside-viewed shell changes from 96x48 to 192x48 vertices, refining only its narrow
+meridional facets so a low-altitude sunset cannot expose one as a sky-height pink wedge. This does
+not change cloud density, drift, lighting, atmosphere LUTs, terrain fog, ocean colour, or fragment
+work.
+
+Validation:
+
+- all 10 focused `weather_render::tests` pass;
+- `scenario::tests::manual_sky_ocean_replay_preserves_the_logged_frozen_sun_flight` passes;
+- release `manual_sky_ocean_replay/1788147856-555226` passes with nine captures and retains a
+  clearly blue ocean beneath the unchanged smooth sunset sky;
+- release `weather_contrast/1788147944-555932` passes; its 24 logged samples have a 56.915ms median,
+  versus 67.270ms in the immediately preceding 96x48 baseline run
+  `weather_contrast/1788126079-546626`. Run-to-run noise prevents claiming a speed-up, but there is
+  no measured regression from the one-axis tessellation increase.
+
+Fresh manual travel through the exact evolved weather state is still the visual acceptance gate,
+because scenarios initialise deterministic weather rather than serialising the old manual run's
+entire weather cubemap.
