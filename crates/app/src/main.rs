@@ -116,6 +116,20 @@ const FLIGHT_SPEED_SCALE_STEP: f64 = 2.0;
 const MINIMUM_FLIGHT_SPEED_SCALE: f64 = 1.0 / 32.0;
 const MAXIMUM_FLIGHT_SPEED_SCALE: f64 = 32.0;
 const LOW_FLIGHT_VERTICAL_FOV_DEGREES: f64 = 60.0;
+/// Authored dry point immediately inside the active bake's ocean boundary.
+/// The tangent points across the adjacent open sea, giving touch-only remote
+/// sessions a useful ocean view without needing mouse-look or WASD input.
+const COASTAL_START_DIRECTION: glam::DVec3 = glam::DVec3::new(
+    0.108_357_441_251_605,
+    -0.530_721_523_749_930,
+    0.840_591_059_406_390,
+);
+const COASTAL_SEAWARD_TANGENT: glam::DVec3 = glam::DVec3::new(
+    0.067_851_902_591_260,
+    0.847_546_260_819_168,
+    0.526_366_274_647_411,
+);
+const COASTAL_START_PITCH_RADIANS: f64 = -2.0_f64.to_radians();
 const PLANET_ROTATION_SCALE_STEP: f64 = 2.0;
 const MINIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 =
     INTERACTIVE_PLANET_ROTATION_TIME_SCALE / 32.0;
@@ -1492,14 +1506,14 @@ impl State {
                     self.camera.direction_dvec3(),
                     self.camera.vertical_fov_radians().to_degrees(),
                 ));
-                // Enter inspection mode inside the experimental billboard
-                // forest. Make its global L4 tile resident
+                // Enter inspection mode on the authored dry side of a coast,
+                // facing across open sea. Make its global L4 tile resident
                 // synchronously: resolving through a coarse ancestor here can
                 // differ by hundreds of metres and would move the camera after
                 // F4 while ordinary streaming catches up.
                 let outmap_is_active = self.terrain.preferred_landing_direction().is_some();
                 let local_radial = if outmap_is_active {
-                    forest::FOREST_CENTRE_DIRECTION.normalize()
+                    COASTAL_START_DIRECTION
                 } else {
                     local_position.normalize()
                 };
@@ -1519,10 +1533,14 @@ impl State {
                     * (planet::PLANET_RADIUS_METERS
                         + self.flight_surface_height_meters
                         + LOW_FLIGHT_ALTITUDE_METERS);
-                self.flight_local_tangent = initial_flight_tangent(local_radial);
+                self.flight_local_tangent = if outmap_is_active {
+                    COASTAL_SEAWARD_TANGENT
+                } else {
+                    initial_flight_tangent(local_radial)
+                };
                 self.flight_look_yaw_radians = 0.0;
                 self.flight_look_pitch_radians = if outmap_is_active {
-                    forest::FOREST_START_PITCH_RADIANS
+                    COASTAL_START_PITCH_RADIANS
                 } else {
                     LOW_FLIGHT_INITIAL_PITCH_RADIANS
                 };
@@ -3908,17 +3926,16 @@ mod tests {
     }
 
     #[test]
-    fn low_flight_starts_nearly_level_inside_the_forest() {
-        let radial = crate::forest::FOREST_CENTRE_DIRECTION.normalize();
-        let tangent = initial_flight_tangent(radial);
-        let direction = flight_view_direction(
-            radial,
-            tangent,
-            0.0,
-            crate::forest::FOREST_START_PITCH_RADIANS,
-        );
+    fn low_flight_starts_on_land_facing_slightly_down_across_the_sea() {
+        let radial = super::COASTAL_START_DIRECTION;
+        let tangent = super::COASTAL_SEAWARD_TANGENT;
+        let direction =
+            flight_view_direction(radial, tangent, 0.0, super::COASTAL_START_PITCH_RADIANS);
 
-        assert!((0.05..0.10).contains(&direction.dot(radial)));
+        assert!((radial.length() - 1.0).abs() < 1.0e-12);
+        assert!((tangent.length() - 1.0).abs() < 1.0e-12);
+        assert!(radial.dot(tangent).abs() < 1.0e-12);
+        assert!((-0.05..-0.02).contains(&direction.dot(radial)));
         assert!(direction.dot(tangent) > 0.99);
     }
 

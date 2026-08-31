@@ -19,7 +19,6 @@ use crate::{
 
 pub const FOREST_CENTRE_DIRECTION: DVec3 =
     DVec3::new(0.374_871_986_443, 0.737_334_908_710, 0.561_968_171_854);
-pub const FOREST_START_PITCH_RADIANS: f64 = 4.0_f64.to_radians();
 
 const TREE_COUNT: usize = 12_288;
 const TREE_BASE_SINK_METERS: f64 = 0.45;

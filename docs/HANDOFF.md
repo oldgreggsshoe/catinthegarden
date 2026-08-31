@@ -4359,3 +4359,17 @@ production pipeline (`sun.wgsl` plus `weather_cloud_density.wgsl`) instead of in
 the dependent sun stage in isolation. Its stale transmittance function/variable assertions were
 also updated to the current LUT-backed names. No production sun rendering changed. The complete
 app suite now passes: 325 passed, zero failed, seven ignored.
+
+## Interactive coastal startup - 31 August 2026
+
+Interactive startup still applies the established F4/F6/F10 state automatically, but F4 now
+places the camera two metres above a dry desert coastline and gives it an authored orthonormal
+tangent facing across the adjacent open sea with a two-degree downward pitch. The dense source
+tile is still loaded synchronously before placement, so the camera cannot jump after startup.
+The old forest centre remains available to forest scenarios and global forest generation; it is
+no longer forced on a player who cannot operate mouse-look controls.
+
+Release interactive capture `test-runs/manual/coastal-startup-check/screenshots/capture-003.png`
+shows the untouched phone-friendly startup view with land in the foreground and open blue water
+ahead. Formatting, the focused pose regression, release build, error-free interactive launch,
+and the complete app suite pass: 325 passed, zero failed, seven ignored.
