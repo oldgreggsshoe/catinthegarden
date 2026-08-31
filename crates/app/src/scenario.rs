@@ -246,6 +246,7 @@ impl ScenarioRunner {
                 include_str!("../scenarios/partial_sun_occultation.json")
             }
             "ocean_flyover" => include_str!("../scenarios/ocean_flyover.json"),
+            "ocean_hybrid_close" => include_str!("../scenarios/ocean_hybrid_close.json"),
             "ocean_coastline" => include_str!("../scenarios/ocean_coastline.json"),
             "orbital_zoom_lod" => include_str!("../scenarios/orbital_zoom_lod.json"),
             "polar_ice_cap" => include_str!("../scenarios/polar_ice_cap.json"),
@@ -269,6 +270,9 @@ impl ScenarioRunner {
             "forest_night" => include_str!("../scenarios/forest_night.json"),
             "forest_boundary_transition" => {
                 include_str!("../scenarios/forest_boundary_transition.json")
+            }
+            "forest_ground_eligibility" => {
+                include_str!("../scenarios/forest_ground_eligibility.json")
             }
             "forest_travel" => include_str!("../scenarios/forest_travel.json"),
             "highest_prominence_peak" => {

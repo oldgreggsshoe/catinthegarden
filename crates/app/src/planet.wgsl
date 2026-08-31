@@ -338,7 +338,12 @@ fn ocean_with_aerial_perspective(
     camera_relative_view_position: vec3<f32>,
     sun_direction: vec3<f32>,
 ) -> vec3<f32> {
-    let surface = ocean_surface(direction, camera.projection.z);
+    let surface = ocean_surface(
+        direction,
+        camera.projection.z,
+        length(camera_relative_view_position),
+        OCEAN_SHORE_FULL_DEPTH_METERS,
+    );
     let sun_transmittance = surface_direct_sun_transmittance(
         direction,
         surface.vertical_displacement,
@@ -735,10 +740,15 @@ fn vs_ocean(input: VertexInput) -> OceanVertexOutput {
         scaled_terrain_macro_height(macro_height_meters),
         outmap,
     );
-    var surface = ocean_surface(projected.direction, camera.projection.z);
-    if u32(camera.projection.w + 0.5) == RENDER_DEBUG_FLAT_TRIANGLES {
-        surface = flat_ocean_surface(projected.direction);
-    }
+    let flat_local_planet_position = projected.anchor_relative_position;
+    let flat_camera_relative_view_position = input.anchor_view_position
+        + planet_to_view(flat_local_planet_position);
+    let surface = ocean_surface(
+        projected.direction,
+        camera.projection.z,
+        length(flat_camera_relative_view_position),
+        max(-macro_height_meters, 0.0),
+    );
     let local_planet_position = projected.anchor_relative_position
         + projected.direction * surface.vertical_displacement
         + surface.horizontal_displacement;
@@ -991,15 +1001,53 @@ fn refine_flat_temperate_biome(
     return refined;
 }
 
+fn forest_biome_owns_trees(biome_id: u32) -> bool {
+    return biome_id == 2u
+        || biome_id == 3u
+        || biome_id == 4u
+        || biome_id == 5u
+        || biome_id == 6u
+        || biome_id == 9u;
+}
+
+// This is the shared placement contract for both the terrain's forest
+// treatment and forest_gpu.wgsl. Keeping moisture and slope thresholds here
+// prevents the ground being painted as forest where the compute pass rejects
+// every tree candidate.
+fn forest_surface_owns_trees(
+    biome_id: u32,
+    moisture: f32,
+    macro_height_meters: f32,
+    surface_normal: vec3<f32>,
+    surface_direction: vec3<f32>,
+) -> bool {
+    let direction = normalize(surface_direction);
+    return forest_biome_owns_trees(biome_id)
+        && moisture >= 0.38
+        && macro_height_meters > 0.0
+        && dot(normalize(surface_normal), direction) >= 0.8480481;
+}
+
 // The terrain pass does not iterate the billboard instance buffer. Instead it
 // reconstructs a small deterministic point field from the same forest density
 // value. Each point contributes a radial ground shadow; overlapping points add
 // together and are clamped so a dense stand reaches, but never exceeds, the
 // authored maximum darkening.
 const FOREST_GROUND_CELL_FREQUENCY: f32 = 250000.0;
-const FOREST_GROUND_DARKENING_RADIUS_METERS: f32 = 38.0;
-const FOREST_GROUND_DARKENING_PER_TREE: f32 = 0.42;
-const FOREST_GROUND_DARKENING_MAX: f32 = 0.58;
+// Follow the billboard canopy footprint rather than painting a 76m-wide disc
+// around every candidate. The old radius overlapped across virtually every
+// eligible cell and turned whole hills black even where the rendered stand was
+// sparse. Overlap still reaches the bounded maximum in genuinely dense woods.
+const FOREST_GROUND_DARKENING_RADIUS_METERS: f32 = 14.0;
+const FOREST_GROUND_DARKENING_PER_TREE: f32 = 0.55;
+const FOREST_GROUND_DARKENING_MAX: f32 = 0.55;
+// Must mirror the GPU forest's 12,288 / 768 / 64 candidate tiers. Ground
+// treatment that assumes the full population while geometry deliberately
+// draws 1/16 or 1/192 of it produces large empty dark fields.
+const FOREST_GROUND_FULL_DISTANCE_METERS: f32 = 1500.0;
+const FOREST_GROUND_MEDIUM_DISTANCE_METERS: f32 = 4000.0;
+const FOREST_GROUND_MEDIUM_POPULATION: f32 = 1.0 / 16.0;
+const FOREST_GROUND_SPARSE_POPULATION: f32 = 1.0 / 192.0;
 
 fn forest_ground_hash(cell: vec3<i32>) -> u32 {
     return detail_avalanche(
@@ -1034,7 +1082,7 @@ fn forest_ground_darkening(direction: vec3<f32>, density: f32) -> f32 {
                 let distance_meters = length(offset)
                     * (PLANET_RADIUS_METERS / FOREST_GROUND_CELL_FREQUENCY);
                 let falloff = 1.0 - smoothstep(
-                    1.5,
+                    0.75,
                     FOREST_GROUND_DARKENING_RADIUS_METERS,
                     distance_meters,
                 );
@@ -1044,6 +1092,27 @@ fn forest_ground_darkening(direction: vec3<f32>, density: f32) -> f32 {
         }
     }
     return min(accumulated, FOREST_GROUND_DARKENING_MAX);
+}
+
+fn forest_visible_population(camera_distance_meters: f32) -> f32 {
+    let medium = mix(
+        1.0,
+        FOREST_GROUND_MEDIUM_POPULATION,
+        smoothstep(
+            FOREST_GROUND_FULL_DISTANCE_METERS - 200.0,
+            FOREST_GROUND_FULL_DISTANCE_METERS + 200.0,
+            camera_distance_meters,
+        ),
+    );
+    return mix(
+        medium,
+        FOREST_GROUND_SPARSE_POPULATION,
+        smoothstep(
+            FOREST_GROUND_MEDIUM_DISTANCE_METERS - 400.0,
+            FOREST_GROUND_MEDIUM_DISTANCE_METERS + 400.0,
+            camera_distance_meters,
+        ),
+    );
 }
 
 // Individual tree geometry is deliberately camera-local, but its broad,
@@ -1063,27 +1132,20 @@ fn forest_canopy_albedo(
 ) -> vec3<f32> {
     let direction = normalize(surface_direction);
     let forest_density = forest_density_at_direction(direction);
-    let forest_owned = biome_id == 2u
-        || biome_id == 3u
-        || biome_id == 4u
-        || biome_id == 6u
-        || biome_id == 9u
-        || (biome_id == 5u && forest_density > 0.58);
-    if !outmap || !forest_owned {
+    if !outmap || !forest_surface_owns_trees(
+        biome_id,
+        moisture,
+        macro_height_meters,
+        surface_normal,
+        direction,
+    ) {
         return base_albedo;
     }
 
-    let slope = 1.0 - clamp(dot(normalize(surface_normal), direction), 0.0, 1.0);
-    let slope_weight = 1.0 - smoothstep(0.10, 0.18, slope);
-    let moisture_weight = smoothstep(0.34, 0.46, moisture);
-    let land_weight = select(0.0, 1.0, macro_height_meters > 0.0);
     // Snow does not suppress this species: these are evergreen trees, and the
     // cold biomes intentionally remain eligible where moisture and slope pass.
     let snow_weight = mix(1.0, 0.76, clamp(snow_cover, 0.0, 1.0));
-    let canopy_weight = moisture_weight
-        * land_weight
-        * slope_weight
-        * snow_weight;
+    let canopy_weight = snow_weight;
     if canopy_weight <= 0.0 {
         return base_albedo;
     }
@@ -1095,17 +1157,20 @@ fn forest_canopy_albedo(
     // pretending a sub-pixel point sample remains meaningful.
     let distant_ground_darkening = min(
         FOREST_GROUND_DARKENING_MAX,
-        0.52 * canopy_weight * forest_distant_density_at_direction(direction),
+        0.24 * canopy_weight * forest_distant_density_at_direction(direction),
     );
     if camera_distance_meters >= 9000.0 {
         return base_albedo * (1.0 - distant_ground_darkening);
     }
+    let visible_population = forest_visible_population(camera_distance_meters);
     let local_ground_darkening = min(
         FOREST_GROUND_DARKENING_MAX,
-        forest_ground_darkening(direction, forest_density) * density_weight,
+        forest_ground_darkening(direction, forest_density * visible_population)
+            * density_weight
+            * visible_population,
     );
     let point_field_weight = 1.0 - smoothstep(
-        1800.0,
+        7000.0,
         9000.0,
         camera_distance_meters,
     );
@@ -1275,16 +1340,31 @@ fn flat_triangle_colour(
     return vec4<f32>(misted_aerial_lit, 1.0);
 }
 
-fn flat_ocean_colour(input: OceanVertexOutput) -> vec4<f32> {
+fn flat_ocean_colour(input: OceanVertexOutput, macro_height_meters: f32) -> vec4<f32> {
     let direction = normalize(input.surface_direction);
-    let surface = flat_ocean_surface(direction);
-    let normal = flat_triangle_outward_normal(
+    let surface = ocean_surface(
+        direction,
+        camera.projection.z,
+        length(input.camera_relative_view_position),
+        max(-macro_height_meters, 0.0),
+    );
+    let geometric_normal = flat_triangle_outward_normal(
         flat_triangle_normal(
             input.camera_relative_view_position,
-            surface.normal,
+            direction,
         ),
         direction,
     );
+    // Keep the low-poly face normal from the displaced geometry, then add only
+    // the sub-mesh ripple component. Reusing surface.normal directly would
+    // smooth the broad wave facets that define this presentation.
+    let ripple_slope = ocean_ripple_slope(
+        direction,
+        camera.projection.z,
+        length(input.camera_relative_view_position),
+        smoothstep(2.0, OCEAN_SHORE_FULL_DEPTH_METERS, max(-macro_height_meters, 0.0)),
+    );
+    let normal = normalize(geometric_normal - ripple_slope);
     let lit = flat_triangle_lighting(
         debug_ocean_albedo(),
         normal,
@@ -1305,7 +1385,19 @@ fn flat_ocean_colour(input: OceanVertexOutput) -> vec4<f32> {
     if camera.flat_triangle_options.x > 1.5 {
         return vec4<f32>(flat_triangle_black_red(edge), 1.0);
     }
-    return vec4<f32>(mix(misted_ocean_lit, misted_ocean_lit * 0.68, edge), 1.0);
+    // A dense local ocean grid needs facets nearby, not a distant moire net.
+    // Retire only its ink with distance; geometric waves and lighting retain
+    // their independent smooth fades.
+    let outline_visibility = 1.0 - smoothstep(
+        600.0,
+        2200.0,
+        length(input.camera_relative_view_position),
+    );
+    return vec4<f32>(mix(
+        misted_ocean_lit,
+        misted_ocean_lit * 0.82,
+        edge * outline_visibility,
+    ), 1.0);
 }
 
 @fragment
@@ -1368,13 +1460,18 @@ fn ocean_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
 
     let render_debug_mode = u32(camera.projection.w + 0.5);
     if render_debug_mode == RENDER_DEBUG_FLAT_TRIANGLES {
-        return flat_ocean_colour(input);
+        return flat_ocean_colour(input, macro_height_meters);
     }
 
     if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
         return vec4<f32>(debug_ocean_albedo(), 1.0);
     }
-    let surface = ocean_surface(direction, camera.projection.z);
+    let surface = ocean_surface(
+        direction,
+        camera.projection.z,
+        length(input.camera_relative_view_position),
+        max(-macro_height_meters, 0.0),
+    );
     let sun_direction = normalize(camera.sun_direction.xyz);
     let sun_transmittance = surface_direct_sun_transmittance(
         direction,
@@ -1420,15 +1517,6 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let biome_id = sample_biome(input.source_uv);
     let ice = outmap && biome_id == 2u;
     let lake = outmap && biome_id == 1u;
-    if render_debug_mode == RENDER_DEBUG_FLAT_TRIANGLES {
-        // Flat mode is intentionally a single categorical terrain pass. Its
-        // fixed L7 mesh can span a mixed L4 land/water source footprint, so
-        // the analytic shell must not be allowed to compete for ownership;
-        // retaining the skirt triangles here closes residual mixed-LOD edge
-        // gaps. flat_triangle_edge() suppresses outlines on skirts, so they
-        // fill cracks without adding a second wireframe band.
-        return flat_triangle_colour(input);
-    }
     // Open sea belongs exclusively to the analytic shell drawn after this
     // pass. Keep bathymetry out of the depth buffer unless this interpolated
     // triangle is visibly above sea level. A fallback source tile can sample
@@ -1440,6 +1528,9 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     {
         discard;
     }
+    if render_debug_mode == RENDER_DEBUG_FLAT_TRIANGLES {
+        return flat_triangle_colour(input);
+    }
     let lake_coverage = lake_coast_coverage(biome_id, macro_height_meters);
     if lake && lake_coverage > 0.0 {
         if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
@@ -1449,7 +1540,9 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
                 lake_coverage,
             ), 1.0);
         }
-        let surface = ocean_surface(direction, camera.projection.z);
+        // Lakes remain terrain-owned and level. The local ocean clipmap is for
+        // open sea only; small enclosed water must not inherit ocean swell.
+        let surface = flat_ocean_surface(direction);
         let water_base_height = terrain_height(
             outmap,
             input.source_uv,
@@ -1704,7 +1797,12 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         }
         return vec4<f32>(misted_textured_aerial_color, 1.0);
     }
-    let surface = ocean_surface(direction, camera.projection.z);
+    let surface = ocean_surface(
+        direction,
+        camera.projection.z,
+        length(input.camera_relative_view_position),
+        OCEAN_SHORE_FULL_DEPTH_METERS,
+    );
     let sun_transmittance = surface_direct_sun_transmittance(
         direction,
         surface.vertical_displacement,

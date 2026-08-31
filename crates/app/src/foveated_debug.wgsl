@@ -1048,7 +1048,12 @@ fn ocean_hit(
             let direction = normalize(view_to_planet(
                 camera_position_view + ray * distance_meters,
             ));
-            let surface = ocean_surface(direction, camera.projection.z);
+            let surface = ocean_surface(
+                direction,
+                camera.projection.z,
+                distance_meters,
+                max(-macro_height, 0.0),
+            );
             distance_meters = sphere_entry_distance(
                 PLANET_RADIUS_METERS + surface.vertical_displacement,
                 radial_dot_ray,
@@ -1352,7 +1357,12 @@ fn shade_ocean(
     if (ray_settings.experiment_flags & EXPERIMENT_FOVEATED_SHADING) == 0u
         || detail >= 0.45
     {
-        surface = ocean_surface(surface_direction, camera.projection.z);
+        surface = ocean_surface(
+            surface_direction,
+            camera.projection.z,
+            length(hit_view_position),
+            select(OCEAN_SHORE_FULL_DEPTH_METERS, 0.0, water_base_height > 0.0),
+        );
     }
     let water_surface_height = water_base_height + surface.vertical_displacement;
     let sun_direction = normalize(camera.sun_direction.xyz);

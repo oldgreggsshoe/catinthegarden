@@ -2045,9 +2045,14 @@ mod tests {
             .expect("forest canopy ground treatment is present");
         assert!(canopy.contains("camera_distance_meters"));
         assert!(canopy.contains("let forest_density = forest_density_at_direction(direction);"));
+        assert!(canopy.contains("if !outmap || !forest_surface_owns_trees("));
         assert!(canopy.contains("let density_weight = canopy_weight * forest_density;"));
         assert!(canopy.contains("let distant_ground_darkening = min("));
+        assert!(canopy.contains("let visible_population = forest_visible_population("));
+        assert!(canopy.contains("forest_density * visible_population"));
+        assert!(canopy.contains("* visible_population,"));
         assert!(canopy.contains("let point_field_weight = 1.0 - smoothstep("));
+        assert!(canopy.contains("7000.0"));
         assert!(canopy.contains("FOREST_GROUND_DARKENING_MAX"));
         let flat = shader
             .split("fn flat_triangle_colour(")
@@ -2058,6 +2063,10 @@ mod tests {
         assert!(flat.contains("sample_biome(material_source_uv)"));
         assert!(flat.contains("sample_moisture(material_source_uv)"));
         assert!(!flat.contains("sample_biome(centre_source_uv)"));
+
+        let gpu = include_str!("forest_gpu.wgsl");
+        assert!(gpu.contains("if !forest_surface_owns_trees("));
+        assert!(!gpu.contains("fn gpu_forest_biome_owns_trees("));
     }
 
     #[test]

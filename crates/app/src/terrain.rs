@@ -1349,6 +1349,24 @@ impl TerrainRenderer {
             .map(|breakdown| breakdown.height_meters)
     }
 
+    /// Resident-data ownership query for flight clearance over the displaced
+    /// local ocean patch. Lakes deliberately remain flat and are excluded.
+    pub fn open_ocean_at(&self, local_surface_direction: DVec3) -> Option<bool> {
+        let TerrainDataSource::Outmap(_) = &self.source else {
+            return Some(false);
+        };
+        let direction = local_surface_direction.normalize_or_zero();
+        if direction.length_squared() <= f64::EPSILON {
+            return None;
+        }
+        let (face, face_uv) = cube_face_uv(direction)?;
+        let (source_key, source_uv) = self.cached_tile_at(direction, face, face_uv)?;
+        let tile = self.tile_cache.get(&source_key)?;
+        let height = sample_height_cpu(&tile.heights_meters, source_uv);
+        let biome = BiomeId::try_from(sample_biome_cpu(&tile.biome_ids, source_uv)).ok()?;
+        Some(height <= 0.0 && biome == BiomeId::Ocean)
+    }
+
     /// Samples the currently resident outmap surface for one procedural forest
     /// candidate. Unlike flight-start preparation and streaming, this never
     /// performs disk I/O: a patch builder must keep its prior patch while this
@@ -2376,10 +2394,13 @@ impl TerrainRenderer {
                 // data.
                 None => true,
             };
+            let ocean_dense_near_field =
+                near_field && render_node.node.level <= NEAR_FIELD_DENSE_MAX_LEVEL;
             prepared_instances.push((
                 if near_field { None } else { tile_key },
                 near_field,
                 dense_near_field,
+                ocean_dense_near_field,
                 TerrainInstance {
                     anchor_view_position: camera_view_basis
                         .world_to_view(anchor_world - camera_world)
@@ -2432,18 +2453,32 @@ impl TerrainRenderer {
         // ranges are then contiguous subsets of the terrain instance stream,
         // so culling does not duplicate instance uploads.
         prepared_instances.sort_unstable_by_key(
-            |(tile_key, near_field, dense_near_field, _, may_contain_ocean)| {
+            |(
+                tile_key,
+                near_field,
+                dense_near_field,
+                ocean_dense_near_field,
+                _,
+                may_contain_ocean,
+            )| {
                 (
                     *near_field,
                     *dense_near_field,
+                    *ocean_dense_near_field,
                     *tile_key,
                     !*may_contain_ocean,
                 )
             },
         );
         let mut instances = Vec::with_capacity(prepared_instances.len());
-        for (tile_key, near_field, dense_near_field, instance, may_contain_ocean) in
-            prepared_instances
+        for (
+            tile_key,
+            near_field,
+            dense_near_field,
+            ocean_dense_near_field,
+            instance,
+            may_contain_ocean,
+        ) in prepared_instances
         {
             let instance_index = instances.len() as u32;
             push_draw_batch_instance(
@@ -2453,18 +2488,17 @@ impl TerrainRenderer {
                 dense_near_field,
                 instance_index,
             );
-            // The flat-triangle experiment owns the whole categorical surface
-            // from this terrain pass. Drawing the analytic sea shell as well
-            // lets a coarse mixed land/water source tile punch through at a
-            // grazing angle (the shell has no matching per-triangle owner),
-            // which shows up as black holes and repeated vertical fins. Keep
-            // the normal shell for every other render mode.
-            if may_contain_ocean && !self.flat_triangle_experiment {
+            // Open sea always belongs to the complementary analytic shell.
+            // Flat mode used to keep it in the terrain pass, but that prevents
+            // any local geometric wave detail and recreates raised mixed
+            // land/water triangles. Per-fragment ownership now clips both
+            // passes to the same source data instead.
+            if may_contain_ocean {
                 push_draw_batch_instance(
                     &mut self.ocean_draw_batches,
                     tile_key,
                     near_field,
-                    false,
+                    ocean_dense_near_field,
                     instance_index,
                 );
             }
@@ -4218,7 +4252,10 @@ mod tests {
         assert!(shader.contains("fn flat_triangle_lighting("));
         assert!(shader.contains("camera.flat_triangle_options.x"));
         assert!(shader.contains("flat_ocean_surface("));
-        assert!(shader.contains("const OCEAN_WAVES_ENABLED: bool = false;"));
+        assert!(shader.contains("const OCEAN_WAVES_ENABLED: bool = true;"));
+        assert!(shader.contains("fn ocean_ripple_slope("));
+        assert!(shader.contains("OCEAN_GEOMETRY_FADE_DISTANCE_METERS"));
+        assert!(shader.contains("OCEAN_RIPPLE_FADE_DISTANCE_METERS"));
         assert!(shader.contains("flat_triangles && water_owned"));
         assert!(shader.contains(
             "let water_owned = (biome_id == 0u || biome_id == 1u) && macro_height <= 0.0;"
@@ -4237,15 +4274,21 @@ mod tests {
         assert!(shader.contains("perceptual_physical_sky_radiance(max(horizontal_diffuse"));
         assert!(shader.contains("fn flat_triangle_colour("));
         assert!(shader.contains("return flat_triangle_colour(input);"));
-        assert!(shader.contains("return flat_ocean_colour(input);"));
+        assert!(shader.contains("return flat_ocean_colour(input, macro_height_meters);"));
         let flat_fragment = shader
             .split("fn terrain_fragment_color(")
             .nth(1)
             .and_then(|source| source.split("\nfn ").next())
             .expect("raster terrain fragment path is present");
-        assert!(flat_fragment.contains("return flat_triangle_colour(input);"));
+        let open_ocean_discard = flat_fragment
+            .find("if is_open_ocean_surface(outmap, macro_height_meters, biome_id)")
+            .expect("flat terrain must leave open sea to the analytic shell");
+        let flat_return = flat_fragment
+            .find("return flat_triangle_colour(input);")
+            .expect("flat land keeps categorical triangle shading");
+        assert!(open_ocean_discard < flat_return);
         assert!(shader.contains("mix(aerial_lit, aerial_lit * 0.68, edge)"));
-        assert!(shader.contains("mix(misted_ocean_lit, misted_ocean_lit * 0.68, edge)"));
+        assert!(shader.contains("edge * outline_visibility"));
         assert!(!shader.contains("vec3<f32>(0.015, 0.02, 0.025)"));
         assert!(!flat_fragment.contains("input.skirt_depth_meters > 0.0"));
         assert!(shader.contains("fn terrain_aerial_solar_air_mass("));
@@ -4972,16 +5015,21 @@ mod tests {
             .and_then(|source| source.split("\nfn ").next())
             .expect("far forest canopy material is present");
 
-        assert!(canopy.contains("let forest_owned = biome_id == 2u"));
-        assert!(canopy.contains("biome_id == 5u && forest_density > 0.58"));
-        assert!(canopy.contains("if !outmap || !forest_owned"));
-        assert!(!canopy.contains("camera_distance_meters"));
-        assert!(canopy.contains("smoothstep(0.34, 0.46, moisture)"));
-        assert!(canopy.contains("select(0.0, 1.0, macro_height_meters > 0.0)"));
-        assert!(canopy.contains("1.0 - smoothstep(0.10, 0.18, slope)"));
+        assert!(shader.contains("fn forest_surface_owns_trees("));
+        assert!(canopy.contains("if !outmap || !forest_surface_owns_trees("));
+        assert!(canopy.contains("camera_distance_meters"));
+        assert!(shader.contains("&& moisture >= 0.38"));
+        assert!(shader.contains("&& macro_height_meters > 0.0"));
+        assert!(shader.contains(">= 0.8480481"));
         assert!(canopy.contains("let snow_weight = mix(1.0, 0.76, clamp(snow_cover, 0.0, 1.0));"));
         assert!(canopy.contains("let forest_density = forest_density_at_direction(direction);"));
         assert!(canopy.contains("let density_weight = canopy_weight * forest_density;"));
+        assert!(canopy.contains("let distant_ground_darkening = min("));
+        assert!(canopy.contains("let visible_population = forest_visible_population("));
+        assert!(canopy.contains("forest_density * visible_population"));
+        assert!(canopy.contains("* visible_population,"));
+        assert!(canopy.contains("let point_field_weight = 1.0 - smoothstep("));
+        assert!(canopy.contains("7000.0"));
         assert!(canopy.contains("FOREST_GROUND_DARKENING_MAX"));
         assert!(!canopy.contains("textureSample"));
         assert_eq!(shader.matches("forest_canopy_albedo(").count(), 3);

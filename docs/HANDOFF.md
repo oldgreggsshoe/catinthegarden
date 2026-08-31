@@ -4324,3 +4324,35 @@ Validation:
 Fresh manual travel through the exact evolved weather state is still the visual acceptance gate,
 because scenarios initialise deterministic weather rather than serialising the old manual run's
 entire weather cubemap.
+
+## Hybrid local ocean and forest-ground repair - 31 August 2026
+
+The ocean keeps one planet-wide sea-level ownership shell, but open ocean within 1.5km of the
+camera now receives six seam-safe broad Gerstner waves and fades geometrically back to that shell
+by 3.5km. Three cheaper normal-only ripple octaves remain strongest inside 250m and fade by 1.2km;
+wave strength also fades through the first 30m of water depth so coastlines do not climb or split.
+Lakes remain exactly flat. Flat-triangle mode now lets the analytic ocean shell own open water,
+uses its denser near-field grid where available, and gently removes ocean outlines with distance
+to avoid a horizon-scale wire moire. CPU clearance conservatively reserves the measured 3.18m
+maximum surface excursion over resident open-ocean tiles.
+
+Release `ocean_hybrid_close/1788190945-582814` passes at 100m altitude with four captures, zero
+seam delta, a measured 5.166m animated wave-height range, and a 19.856ms median frame sample.
+The captures are in that run's `screenshots/` directory. A same-build immediate-mode diagnostic
+at the old invalid `ocean_flyover` location changed 2.100ms to 2.311ms (+0.211ms), which is useful
+only as a draw/shader overhead check because that stale scenario is below the current terrain.
+
+The large dark land patches without corresponding visible trees had two concrete causes: terrain
+darkening and GPU tree placement used different eligibility thresholds, and the ground shader
+always represented the full 12,288-tree population even when the tree renderer had selected its
+768- or 64-candidate distance tiers. Both paths now share the same biome/moisture/land/slope test.
+Ground darkness follows the visible population with smooth tier boundaries, each tree's local
+shadow radius is 14m with a bounded 55% additive maximum, and the broad orbital forest tint starts
+only beyond 7km. Release `forest_ground_eligibility/1788171417-575191` passes; `capture-002.png`
+shows the repaired transition rather than the former broad black field.
+
+Validation: `cargo check -p catinthegarden-app`, 41 focused forest tests, focused ocean/shader
+tests, both release scenarios above, and `git diff --check` pass. The full app suite remains 324
+passed, seven ignored, and one unrelated pre-existing failure:
+`terrain::tests::sun_disc_matches_earth_size_and_has_camera_glare` cannot compose the standalone
+sun shader because its test source omits `cloudDensityWithOctaves`.

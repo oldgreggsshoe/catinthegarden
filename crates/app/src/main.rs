@@ -1402,8 +1402,14 @@ impl State {
                 self.flight_local_position,
                 LOW_FLIGHT_MOVING_CLEARANCE_METERS,
                 |direction, altitude_meters| {
-                    self.terrain
-                        .raster_surface_height_meters_at(direction, altitude_meters)
+                    let terrain_height = self
+                        .terrain
+                        .raster_surface_height_meters_at(direction, altitude_meters)?;
+                    Some(if self.terrain.open_ocean_at(direction) == Some(true) {
+                        terrain_height.max(ocean::MAXIMUM_WAVE_HEIGHT_METERS)
+                    } else {
+                        terrain_height
+                    })
                 },
             );
             if lift_meters > 0.0 {
@@ -1434,6 +1440,13 @@ impl State {
                 .terrain
                 .surface_height_meters_at(local_radial, camera_altitude_meters),
         };
+        let surface_height_meters = surface_height_meters.map(|height| {
+            if self.terrain.open_ocean_at(local_radial) == Some(true) {
+                height.max(ocean::MAXIMUM_WAVE_HEIGHT_METERS)
+            } else {
+                height
+            }
+        });
         if let Some(surface_height_meters) = surface_height_meters {
             self.flight_surface_height_meters = surface_height_meters;
         }
@@ -2344,17 +2357,21 @@ impl State {
         // scale by -- not the above-ground figure the HUD uses.
         let camera_sea_level_altitude_meters =
             camera_planet_frame_position.length() - planet::PLANET_RADIUS_METERS;
-        let camera_surface_height_meters = match self.render_path {
+        let camera_direction = camera_planet_frame_position.normalize();
+        let mut camera_surface_height_meters = match self.render_path {
             RenderPath::Raster => self.terrain.raster_surface_height_meters_at(
-                camera_planet_frame_position.normalize(),
+                camera_direction,
                 camera_sea_level_altitude_meters,
             ),
-            RenderPath::FoveatedRay => self.terrain.surface_height_meters_at(
-                camera_planet_frame_position.normalize(),
-                camera_sea_level_altitude_meters,
-            ),
+            RenderPath::FoveatedRay => self
+                .terrain
+                .surface_height_meters_at(camera_direction, camera_sea_level_altitude_meters),
         }
         .unwrap_or(0.0);
+        if self.terrain.open_ocean_at(camera_direction) == Some(true) {
+            camera_surface_height_meters =
+                camera_surface_height_meters.max(ocean::MAXIMUM_WAVE_HEIGHT_METERS);
+        }
         let aspect_ratio = self.size.width as f32 / self.size.height as f32;
         let camera_uniform = planet::CameraUniform::from_camera(
             &self.camera,

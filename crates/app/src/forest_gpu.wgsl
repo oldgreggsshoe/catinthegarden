@@ -45,11 +45,6 @@ fn gpu_forest_cell_seed(cell: GpuForestCell) -> u32 {
     );
 }
 
-fn gpu_forest_biome_owns_trees(biome: u32) -> bool {
-    return biome == 2u || biome == 3u || biome == 4u
-        || biome == 5u || biome == 6u || biome == 9u;
-}
-
 fn gpu_forest_evergreen(biome: u32) -> bool {
     return biome == 2u || biome == 3u || biome == 9u;
 }
@@ -102,7 +97,7 @@ fn gpu_forest_generate(
     let biome = sample_biome(source_uv);
     let moisture = sample_moisture(source_uv);
     let macro_height = macro_terrain_height(true, source_uv, direction);
-    if !gpu_forest_biome_owns_trees(biome)
+    if !forest_biome_owns_trees(biome)
         || moisture < 0.38
         || macro_height <= 0.0
     {
@@ -147,7 +142,13 @@ fn gpu_forest_generate(
         detail.slope,
     );
     let slope_cosine = clamp(dot(surface_normal, direction), 0.0, 1.0);
-    if slope_cosine < 0.8480481 {
+    if !forest_surface_owns_trees(
+        biome,
+        moisture,
+        macro_height,
+        surface_normal,
+        direction,
+    ) {
         gpu_forest_trees[output_index] = gpu_forest_invalid_tree();
         return;
     }

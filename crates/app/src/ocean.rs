@@ -2,6 +2,9 @@ use glam::DVec3;
 
 use crate::planet::PLANET_RADIUS_METERS;
 
+const OCEAN_GEOMETRY_AMPLITUDE_SCALE: f64 = 4.0;
+pub const MAXIMUM_WAVE_HEIGHT_METERS: f64 = 3.18;
+
 #[derive(Clone, Copy)]
 struct GerstnerWave {
     direction: DVec3,
@@ -87,7 +90,7 @@ fn wave_height_meters(direction: DVec3, sim_time: f64) -> f64 {
             let phase = std::f64::consts::TAU / wave.wavelength_meters
                 * (direction.dot(wave.direction.normalize()) * PLANET_RADIUS_METERS
                     + wave.speed_meters_per_second * sim_time);
-            wave.amplitude_meters * phase.sin()
+            wave.amplitude_meters * OCEAN_GEOMETRY_AMPLITUDE_SCALE * phase.sin()
         })
         .sum()
 }
@@ -100,8 +103,10 @@ mod tests {
     fn gerstner_wave_height_stats_are_non_zero_and_time_varying() {
         let first = wave_height_stats(0.0);
         let later = wave_height_stats(1.0);
-        assert!(first.range_meters() > 0.4);
-        assert!(later.range_meters() > 0.4);
+        assert!(first.range_meters() > 2.0);
+        assert!(later.range_meters() > 2.0);
         assert_ne!(first.minimum_meters, later.minimum_meters);
+        assert!(f64::from(first.maximum_meters) <= super::MAXIMUM_WAVE_HEIGHT_METERS);
+        assert!(f64::from(later.maximum_meters) <= super::MAXIMUM_WAVE_HEIGHT_METERS);
     }
 }
