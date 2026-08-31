@@ -4352,7 +4352,10 @@ only beyond 7km. Release `forest_ground_eligibility/1788171417-575191` passes; `
 shows the repaired transition rather than the former broad black field.
 
 Validation: `cargo check -p catinthegarden-app`, 41 focused forest tests, focused ocean/shader
-tests, both release scenarios above, and `git diff --check` pass. The full app suite remains 324
-passed, seven ignored, and one unrelated pre-existing failure:
-`terrain::tests::sun_disc_matches_earth_size_and_has_camera_glare` cannot compose the standalone
-sun shader because its test source omits `cloudDensityWithOctaves`.
+tests, both release scenarios above, and `git diff --check` pass.
+
+The formerly failing sun regression now validates the same composed WGSL source used by the
+production pipeline (`sun.wgsl` plus `weather_cloud_density.wgsl`) instead of incorrectly parsing
+the dependent sun stage in isolation. Its stale transmittance function/variable assertions were
+also updated to the current LUT-backed names. No production sun rendering changed. The complete
+app suite now passes: 325 passed, zero failed, seven ignored.

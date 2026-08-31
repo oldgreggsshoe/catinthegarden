@@ -6,7 +6,7 @@ pub struct SunRenderer {
     depth_bind_group: wgpu::BindGroup,
 }
 
-fn sun_shader_source() -> String {
+pub(crate) fn sun_shader_source() -> String {
     format!(
         "{}\n{}",
         include_str!("sun.wgsl"),

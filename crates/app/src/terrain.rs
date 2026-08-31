@@ -5151,8 +5151,8 @@ mod tests {
 
     #[test]
     fn sun_disc_matches_earth_size_and_has_camera_glare() {
-        let shader = include_str!("sun.wgsl");
-        let module = wgpu::naga::front::wgsl::parse_str(shader)
+        let shader = crate::sun::sun_shader_source();
+        let module = wgpu::naga::front::wgsl::parse_str(&shader)
             .expect("sun shader must parse before WGPU creates the pipeline");
         wgpu::naga::valid::Validator::new(
             wgpu::naga::valid::ValidationFlags::all(),
@@ -5163,10 +5163,11 @@ mod tests {
         assert!(shader.contains("const VISUAL_SUN_SIZE_SCALE: f32 = 2.0;"));
         assert!(shader.contains("const SUN_HALO_RADIUS_SCALE: f32 = 3.25;"));
         assert!(shader.contains("const SUN_INNER_GLARE_RADIUS_SCALE: f32 = 1.25;"));
-        assert!(shader.contains("fn sun_disc_atmospheric_transmittance(solar_elevation: f32)"));
+        assert!(shader.contains("fn sun_disc_atmosphere_sample(solar_elevation: f32)"));
         assert!(shader.contains("var atmosphere_transmittance_lut: texture_2d<f32>;"));
         assert!(shader.contains("let inner_glare = pow("));
-        assert!(shader.contains("let relative_transmittance = clamp("));
+        assert!(shader.contains("let transmitted = sampled_sun_transmittance("));
+        assert!(shader.contains("return clamp("));
         assert!(shader.contains(
             "let glare_visibility = max(pow(strongest_channel, 4.0), SUN_GLARE_VISIBILITY_FLOOR);"
         ));
