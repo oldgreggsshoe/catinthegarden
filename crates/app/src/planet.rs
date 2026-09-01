@@ -2750,7 +2750,7 @@ impl CameraUniform {
         aspect_ratio: f32,
         sun_direction: DVec3,
         planet_rotation_radians: f64,
-        sim_time: f64,
+        ocean_animation_time_seconds: f64,
         render_debug_mode: RenderDebugMode,
         flat_triangle_outline_mode: FlatTriangleOutlineMode,
         // Terrain height under the camera, so the near plane can be set from
@@ -2801,7 +2801,7 @@ impl CameraUniform {
             projection: [
                 aspect_ratio,
                 (camera.vertical_fov_radians as f32 * 0.5).tan(),
-                sim_time as f32,
+                ocean_animation_time_seconds as f32,
                 render_debug_mode as u32 as f32,
             ],
             flat_triangle_options: [flat_triangle_outline_mode as u32 as f32, 0.0, 0.0, 0.0],

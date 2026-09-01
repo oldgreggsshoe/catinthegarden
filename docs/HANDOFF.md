@@ -4392,3 +4392,18 @@ edge baseline is `weather_contrast/1788245976-617553`. Focused weather-render WG
 all ten weather-render tests pass. Their 24-sample medians are 60.202ms and 57.198ms respectively;
 the unchanged smoothstep cost means the small run-to-run difference is not attributed as a shader
 regression.
+
+## Always-running interactive ocean - 1 September 2026
+
+The hybrid Gerstner surface was stationary during every normal interactive launch because startup
+still deliberately applies F10 and the ocean phase used that frozen scene clock. Ocean phase and
+its CPU diagnostic now use presentation time, matching the already always-running weather clock.
+F10 continues to freeze planet rotation, sun position, and composition; scenarios remain unchanged
+because their authored presentation and simulation clocks are identical.
+
+The focused frozen-scene regression failed with `2.0` seconds retained instead of the expected
+`7.5` presentation seconds before the repair and passes afterward. Release
+`ocean_hybrid_close/1788247401-621889` passes with four captures and the established 5.166m wave
+height range. The exact default F10-frozen coastal startup was then captured 15 seconds apart at
+`test-runs/manual/1788247601-622472/screenshots/`; terrain and camera remain fixed while the ocean
+phase advances.

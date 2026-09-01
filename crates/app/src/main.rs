@@ -385,6 +385,13 @@ fn interactive_camera_delta_seconds(
     }
 }
 
+/// Ocean waves are persistent environmental motion, like interactive weather.
+/// F10 holds the planet/sun composition for inspection, but must not turn the
+/// water at the default coastal start into a static blue sheet.
+fn ocean_animation_time_seconds(_scene_time_seconds: f64, presentation_time_seconds: f64) -> f64 {
+    presentation_time_seconds
+}
+
 fn retimed_planet_rotation(
     sim_time: f64,
     old_scale: f64,
@@ -2025,7 +2032,8 @@ impl State {
             self.terrain_stats.draw_calls = 0;
         }
         let draw_calls = self.terrain_stats.draw_calls;
-        let ocean_wave_stats = ocean::wave_height_stats(sim_time);
+        let ocean_time_seconds = ocean_animation_time_seconds(sim_time, presentation_time);
+        let ocean_wave_stats = ocean::wave_height_stats(ocean_time_seconds);
         let ocean_wave_range = ocean_wave_stats.range_meters();
         if write_log {
             let latitude_degrees = (camera_world_position.y / camera_radius)
@@ -2402,7 +2410,7 @@ impl State {
             aspect_ratio,
             self.sun_direction,
             planet_rotation_radians,
-            sim_time,
+            ocean_time_seconds,
             self.render_debug_mode,
             self.flat_triangle_outline_mode,
             camera_surface_height_meters,
@@ -3702,6 +3710,11 @@ mod tests {
     fn interactive_startup_is_fullscreen_but_scenarios_stay_windowed() {
         assert!(should_start_interactive_fullscreen(false));
         assert!(!should_start_interactive_fullscreen(true));
+    }
+
+    #[test]
+    fn ocean_animation_keeps_advancing_while_scene_time_is_frozen() {
+        assert_eq!(super::ocean_animation_time_seconds(2.0, 7.5), 7.5);
     }
 
     #[test]
