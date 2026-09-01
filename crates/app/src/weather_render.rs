@@ -877,7 +877,7 @@ mod tests {
         assert!(shader.contains("fn cloud_noise"));
         assert!(shader.contains("fn cloudSample("));
         assert!(shader.contains("fn cloudDensity"));
-        assert!(shader.contains("let posterized = smoothstep"));
+        assert!(shader.contains("let edge_faded = smoothstep(0.025, 0.40, density);"));
         assert!(shader.contains("smoothstep(0.05, 0.32, field.g)"));
         assert!(shader.contains("let alpha = density * mix(0.50, 0.78, density);"));
         assert!(shader.contains("smoothstep(0.10, 0.30, cloud.storm)"));

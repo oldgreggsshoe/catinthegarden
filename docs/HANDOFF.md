@@ -4377,3 +4377,18 @@ still releases it. Release interactive capture
 shows land at the bottom with a wide blue sea across the complete view. Formatting, the focused
 pose regression, release build, error-free interactive launch, and the complete app suite pass:
 325 passed, zero failed, seven ignored.
+
+## Broad translucent cloud fringes - 1 September 2026
+
+The shared cloud-density function now maps its raw boundary through a `0.025-0.40` smoothstep
+instead of the former `0.08-0.26` interval. This more than doubles the density range occupied by
+the transparent-to-opaque fringe while preserving density one in mature cores. Because terrain
+shadows, sun attenuation, local impostors, and the shell renderer all consume this one function,
+their cloud ownership cannot drift apart. The fragment alpha ceiling, storm-core darkening, cloud
+lighting, simulation fields, and shader operation count are unchanged.
+
+Release `weather_contrast/1788246157-618266` passes with three captures; its corresponding narrow
+edge baseline is `weather_contrast/1788245976-617553`. Focused weather-render WGSL validation and
+all ten weather-render tests pass. Their 24-sample medians are 60.202ms and 57.198ms respectively;
+the unchanged smoothstep cost means the small run-to-run difference is not attributed as a shader
+regression.

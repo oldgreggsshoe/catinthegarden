@@ -92,7 +92,12 @@ fn cloudSampleWithOctaves(dir: vec3<f32>, t: f32, octave_count: u32) -> CloudSam
     let shell_cloud = field.r;
     let coverage = clamp(0.82 + noise, 0.0, 1.0);
     let density = shell_cloud * coverage;
-    let posterized = smoothstep(0.08, 0.26, density);
+    // Give the cloud boundary a broad optically thin fringe. The former
+    // 0.08-0.26 ramp drove a narrow density interval from clear to solid and
+    // read as a cut-out edge, especially against blue sky. Dense cloud still
+    // reaches one, but low and middle densities now cover much more of the
+    // transparent-to-opaque range.
+    let edge_faded = smoothstep(0.025, 0.40, density);
     // Before condensation has built cloud water, retain sparse humid wisps
     // rather than a planet-wide constant veil. Native field resolution and
     // rotated detail keep this startup signal from reading as fog or a grid.
@@ -106,7 +111,7 @@ fn cloudSampleWithOctaves(dir: vec3<f32>, t: f32, octave_count: u32) -> CloudSam
     // reach optical thickness there rather than reserving opacity for values
     // the current weather model cannot produce.
     let storm_amount = smoothstep(0.05, 0.32, field.g);
-    let lower_condensed = posterized * mix(0.22, 1.0, storm_amount);
+    let lower_condensed = edge_faded * mix(0.22, 1.0, storm_amount);
     let lower_density = max(lower_condensed, lower_precursor * 0.32);
     return CloudSample(
         clamp(lower_density, 0.0, 1.0),
