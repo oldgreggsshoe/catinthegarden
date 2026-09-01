@@ -4363,13 +4363,17 @@ app suite now passes: 325 passed, zero failed, seven ignored.
 ## Interactive coastal startup - 31 August 2026
 
 Interactive startup still applies the established F4/F6/F10 state automatically, but F4 now
-places the camera two metres above a dry desert coastline and gives it an authored orthonormal
-tangent facing across the adjacent open sea with a two-degree downward pitch. The dense source
-tile is still loaded synchronously before placement, so the camera cannot jump after startup.
-The old forest centre remains available to forest scenarios and global forest generation; it is
-no longer forced on a player who cannot operate mouse-look controls.
+places the camera 100m above a low dry headland and gives it an authored orthonormal tangent facing
+across a broad open-sea fan with an eight-degree downward pitch. The dense source tile is still
+loaded synchronously before placement, so the camera cannot jump after startup. The old forest
+centre remains available to forest scenarios and global forest generation.
 
-Release interactive capture `test-runs/manual/coastal-startup-check/screenshots/capture-003.png`
-shows the untouched phone-friendly startup view with land in the foreground and open blue water
-ahead. Formatting, the focused pose regression, release build, error-free interactive launch,
-and the complete app suite pass: 325 passed, zero failed, seven ignored.
+The first coastal attempt was not acceptable: the camera was too low behind a foreground ridge,
+and automatic cursor capture let NoMachine/mobile synthetic relative motion rotate the authored
+view before the first useful frame. Interactive startup now leaves the cursor free and preserves
+the pose; a deliberate left click captures it for ordinary desktop mouse-look, while loss of focus
+still releases it. Release interactive capture
+`test-runs/manual/coastal-startup-check/screenshots/capture-006.png` is the untouched result and
+shows land at the bottom with a wide blue sea across the complete view. Formatting, the focused
+pose regression, release build, error-free interactive launch, and the complete app suite pass:
+325 passed, zero failed, seven ignored.

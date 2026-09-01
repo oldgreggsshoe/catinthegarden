@@ -120,16 +120,17 @@ const LOW_FLIGHT_VERTICAL_FOV_DEGREES: f64 = 60.0;
 /// The tangent points across the adjacent open sea, giving touch-only remote
 /// sessions a useful ocean view without needing mouse-look or WASD input.
 const COASTAL_START_DIRECTION: glam::DVec3 = glam::DVec3::new(
-    0.108_357_441_251_605,
-    -0.530_721_523_749_930,
-    0.840_591_059_406_390,
+    0.843_210_618_038_952,
+    0.494_447_406_479_720,
+    0.210_991_980_539_184,
 );
 const COASTAL_SEAWARD_TANGENT: glam::DVec3 = glam::DVec3::new(
-    0.067_851_902_591_260,
-    0.847_546_260_819_168,
-    0.526_366_274_647_411,
+    -0.536_211_408_972_529,
+    0.745_549_575_617_721,
+    0.395_769_067_997_906,
 );
-const COASTAL_START_PITCH_RADIANS: f64 = -2.0_f64.to_radians();
+const COASTAL_START_ALTITUDE_METERS: f64 = 100.0;
+const COASTAL_START_PITCH_RADIANS: f64 = -8.0_f64.to_radians();
 const PLANET_ROTATION_SCALE_STEP: f64 = 2.0;
 const MINIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 =
     INTERACTIVE_PLANET_ROTATION_TIME_SCALE / 32.0;
@@ -1517,22 +1518,27 @@ impl State {
                 } else {
                     local_position.normalize()
                 };
+                let flight_start_altitude_meters = if outmap_is_active {
+                    COASTAL_START_ALTITUDE_METERS
+                } else {
+                    LOW_FLIGHT_ALTITUDE_METERS
+                };
                 self.flight_surface_height_meters = if outmap_is_active {
                     self.terrain
                         .prepare_flight_start_surface_height_meters(
                             local_radial,
-                            LOW_FLIGHT_ALTITUDE_METERS,
+                            flight_start_altitude_meters,
                         )
                         .unwrap_or(400.0)
                 } else {
                     self.terrain
-                        .surface_height_meters_at(local_radial, LOW_FLIGHT_ALTITUDE_METERS)
+                        .surface_height_meters_at(local_radial, flight_start_altitude_meters)
                         .unwrap_or(0.0)
                 };
                 self.flight_local_position = local_radial
                     * (planet::PLANET_RADIUS_METERS
                         + self.flight_surface_height_meters
-                        + LOW_FLIGHT_ALTITUDE_METERS);
+                        + flight_start_altitude_meters);
                 self.flight_local_tangent = if outmap_is_active {
                     COASTAL_SEAWARD_TANGENT
                 } else {
@@ -3209,7 +3215,12 @@ impl ApplicationHandler for App {
                 "deferring fullscreen until the first surface frame"
             );
         }
-        state.set_mouse_capture(&window, true);
+        // Keep the authored startup view stable. Remote-desktop and touch
+        // clients can emit synthetic relative motion while the new fullscreen
+        // window is settling; capturing here let that motion turn the camera
+        // before the first useful frame. A deliberate left click enables the
+        // existing captured mouse-look path below.
+        state.set_mouse_capture(&window, false);
         self.state = Some(state);
         self.window = Some(window);
         self.window
@@ -3270,7 +3281,12 @@ impl ApplicationHandler for App {
         if !egui_response.consumed {
             match event {
                 WindowEvent::CloseRequested => event_loop.exit(),
-                WindowEvent::Focused(focused) => state.set_mouse_capture(window, focused),
+                WindowEvent::Focused(false) => state.set_mouse_capture(window, false),
+                WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Pressed,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                } => state.set_mouse_capture(window, true),
                 WindowEvent::Resized(size) => state.resize(size),
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state.is_pressed()
@@ -3935,7 +3951,8 @@ mod tests {
         assert!((radial.length() - 1.0).abs() < 1.0e-12);
         assert!((tangent.length() - 1.0).abs() < 1.0e-12);
         assert!(radial.dot(tangent).abs() < 1.0e-12);
-        assert!((-0.05..-0.02).contains(&direction.dot(radial)));
+        assert_eq!(super::COASTAL_START_ALTITUDE_METERS, 100.0);
+        assert!((-0.15..-0.12).contains(&direction.dot(radial)));
         assert!(direction.dot(tangent) > 0.99);
     }
 
