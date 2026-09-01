@@ -1517,6 +1517,25 @@ impl WeatherState {
         (self.accumulator_seconds / WEATHER_TIMESTEP_SECONDS).clamp(0.0, 1.0) as f32
     }
 
+    /// Smooth local storm strength for presentation systems such as ocean
+    /// swell. Spatial bilinear filtering avoids a wave-height jump at weather
+    /// cell boundaries; temporal interpolation matches the cloud renderer.
+    pub fn storm_intensity_at(&self, direction: DVec3) -> f32 {
+        let current = sample_cell_property_bilinear(&self.fields, direction, |cell| {
+            f64::from(cell.storm_intensity)
+        });
+        let next = self
+            .next_fields
+            .as_ref()
+            .map(|fields| {
+                sample_cell_property_bilinear(fields, direction, |cell| {
+                    f64::from(cell.storm_intensity)
+                })
+            })
+            .unwrap_or(current);
+        (current + (next - current) * f64::from(self.interpolation_fraction())) as f32
+    }
+
     pub fn visual_time_seconds(&self) -> f64 {
         self.simulation_time_seconds + self.accumulator_seconds
     }
@@ -1810,6 +1829,27 @@ fn sample_scalar_bilinear_with_bounds(values: &[f64], direction: DVec3) -> (f64,
     )
 }
 
+fn sample_cell_property_bilinear(
+    fields: &WeatherFields,
+    direction: DVec3,
+    property: impl Fn(WeatherCellState) -> f64,
+) -> f64 {
+    let (face, fractional_i, fractional_j) = direction_to_fractional_cell(direction);
+    let i0 = fractional_i.floor() as isize;
+    let j0 = fractional_j.floor() as isize;
+    let tx = fractional_i - i0 as f64;
+    let ty = fractional_j - j0 as f64;
+    let sample =
+        |i: isize, j: isize| property(fields.cells()[adjacent_cell_index(face, i, j) as usize]);
+    let west_south = sample(i0, j0);
+    let east_south = sample(i0 + 1, j0);
+    let west_north = sample(i0, j0 + 1);
+    let east_north = sample(i0 + 1, j0 + 1);
+    let south = west_south + (east_south - west_south) * tx;
+    let north = west_north + (east_north - west_north) * tx;
+    south + (north - south) * ty
+}
+
 fn direction_to_cell(direction: DVec3) -> (u8, usize, usize) {
     let (best_face, fractional_i, fractional_j) = direction_to_fractional_cell(direction);
     (
@@ -2041,6 +2081,23 @@ mod tests {
             grid.cells().len(),
             6 * WEATHER_GRID_SIDE * WEATHER_GRID_SIDE
         );
+    }
+
+    #[test]
+    fn local_storm_presentation_is_spatially_filtered_and_temporally_interpolated() {
+        let mut weather = WeatherState::new();
+        for cell in &mut weather.fields.cells {
+            cell.storm_intensity = 0.2;
+        }
+        let mut next = weather.fields.clone();
+        for cell in &mut next.cells {
+            cell.storm_intensity = 0.8;
+        }
+        weather.next_fields = Some(next);
+        weather.accumulator_seconds = WEATHER_TIMESTEP_SECONDS * 0.5;
+
+        let sampled = weather.storm_intensity_at(DVec3::new(0.3, 0.8, -0.5).normalize());
+        assert!((sampled - 0.5).abs() < 1.0e-6, "sampled {sampled}");
     }
 
     #[test]

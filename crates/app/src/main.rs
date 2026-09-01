@@ -2033,7 +2033,10 @@ impl State {
         }
         let draw_calls = self.terrain_stats.draw_calls;
         let ocean_time_seconds = ocean_animation_time_seconds(sim_time, presentation_time);
-        let ocean_wave_stats = ocean::wave_height_stats(ocean_time_seconds);
+        let local_storm_intensity = self
+            .weather
+            .storm_intensity_at(camera_world_position / camera_radius);
+        let ocean_wave_stats = ocean::wave_height_stats(ocean_time_seconds, local_storm_intensity);
         let ocean_wave_range = ocean_wave_stats.range_meters();
         if write_log {
             let latitude_degrees = (camera_world_position.y / camera_radius)
@@ -2401,11 +2404,11 @@ impl State {
         }
         .unwrap_or(0.0);
         if self.terrain.open_ocean_at(camera_direction) == Some(true) {
-            camera_surface_height_meters =
-                camera_surface_height_meters.max(ocean::MAXIMUM_WAVE_HEIGHT_METERS);
+            camera_surface_height_meters = camera_surface_height_meters
+                .max(ocean::maximum_wave_height_meters(local_storm_intensity));
         }
         let aspect_ratio = self.size.width as f32 / self.size.height as f32;
-        let camera_uniform = planet::CameraUniform::from_camera(
+        let mut camera_uniform = planet::CameraUniform::from_camera(
             &self.camera,
             aspect_ratio,
             self.sun_direction,
@@ -2415,6 +2418,10 @@ impl State {
             self.flat_triangle_outline_mode,
             camera_surface_height_meters,
         );
+        // Spare presentation channel shared by raster and ray paths. Ocean
+        // displacement uses the same temporally interpolated local storm field
+        // as the cloud system, without adding a bind group or texture lookup.
+        camera_uniform.flat_triangle_options[1] = local_storm_intensity;
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
         self.forest

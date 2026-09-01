@@ -302,9 +302,10 @@ struct OceanSurface {
 // survive a little farther as normal-only detail, so the local patch does not
 // end in a visible geometric ring.
 const OCEAN_WAVES_ENABLED: bool = true;
-const OCEAN_GEOMETRY_FULL_DISTANCE_METERS: f32 = 1500.0;
-const OCEAN_GEOMETRY_FADE_DISTANCE_METERS: f32 = 3500.0;
-const OCEAN_GEOMETRY_AMPLITUDE_SCALE: f32 = 4.0;
+const OCEAN_GEOMETRY_FULL_DISTANCE_METERS: f32 = 4000.0;
+const OCEAN_GEOMETRY_FADE_DISTANCE_METERS: f32 = 10000.0;
+const OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE: f32 = 4.0;
+const OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE: f32 = 25.0;
 const OCEAN_RIPPLE_FULL_DISTANCE_METERS: f32 = 2000.0;
 const OCEAN_RIPPLE_FADE_DISTANCE_METERS: f32 = 8000.0;
 const OCEAN_RIPPLE_FIRST_AMPLITUDE: f32 = 1.8;
@@ -810,8 +811,11 @@ fn ocean_surface(
     if geometry_weight <= 0.0 && camera_distance_meters >= OCEAN_RIPPLE_FADE_DISTANCE_METERS {
         return flat_ocean_surface(direction);
     }
-    let first = gerstner_wave(direction, vec3<f32>(0.9, 0.1, 0.4), 900.0, 0.375, 4.0, 0.45, time_seconds);
-    let second = gerstner_wave(direction, vec3<f32>(-0.3, 0.4, 0.85), 420.0, 0.2125, 5.0, 0.40, time_seconds);
+    // The two dominant equal-amplitude swells are only 6.88 degrees apart.
+    // Their slightly different phase speeds make the broad constructive and
+    // destructive interference pattern evolve rather than lock in place.
+    let first = gerstner_wave(direction, vec3<f32>(0.9, 0.1, 0.4), 1400.0, 0.375, 10.0, 0.45, time_seconds);
+    let second = gerstner_wave(direction, vec3<f32>(0.86, 0.18, 0.48), 1400.0, 0.375, 9.2, 0.40, time_seconds);
     let third = gerstner_wave(direction, vec3<f32>(0.55, -0.75, 0.35), 160.0, 0.1125, 6.5, 0.34, time_seconds);
     let fourth = gerstner_wave(direction, vec3<f32>(-0.75, -0.2, 0.63), 65.0, 0.055, 8.0, 0.28, time_seconds);
     let fifth = gerstner_wave(direction, vec3<f32>(0.2, 0.95, -0.24), 24.0, 0.0275, 10.0, 0.20, time_seconds);
@@ -829,12 +833,19 @@ fn ocean_surface(
         camera_distance_meters,
         shore_weight,
     );
+    let storm_intensity = clamp(camera.flat_triangle_options.y, 0.0, 1.0);
+    let storm_blend = smoothstep(0.15, 0.85, storm_intensity);
+    let geometry_amplitude_scale = mix(
+        OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE,
+        OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE,
+        storm_blend,
+    );
     return OceanSurface(
-        horizontal * geometry_weight * OCEAN_GEOMETRY_AMPLITUDE_SCALE,
-        vertical * geometry_weight * OCEAN_GEOMETRY_AMPLITUDE_SCALE,
+        horizontal * geometry_weight * geometry_amplitude_scale,
+        vertical * geometry_weight * geometry_amplitude_scale,
         normalize(
             direction
-                - slope * geometry_weight * OCEAN_GEOMETRY_AMPLITUDE_SCALE
+                - slope * geometry_weight * geometry_amplitude_scale
                 - ripple.slope,
         ),
         ripple.vertical_displacement,

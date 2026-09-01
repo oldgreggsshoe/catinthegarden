@@ -4448,3 +4448,25 @@ mean absolute RGB `4.475/7.228/10.313`, up from `3.359/5.913/7.871` before expli
 lighting and far above the visually static manual sequence. Median logged frame time is 19.689ms;
 the prior run was 19.929ms. Full raster and raymarch WGSL validation covers the expanded local
 `OceanSurface` data.
+
+## Weather-driven giant ocean swell - 1 September 2026
+
+Broad geometric waves now sample the weather simulation's local storm intensity at the camera.
+The value is bilinearly filtered across cube-face weather cells and interpolated between the same
+600-second states used by cloud presentation, then carried to both raster and ray ocean paths in a
+spare camera-uniform channel. The CPU diagnostic and collision model use the identical curve: 4x
+amplitude below storm intensity 0.15, smoothly rising to 25x by 0.85. The six authored amplitudes
+therefore have a conservative 23.938m maximum crest, covered by the 24m bound, without forcing the
+calm camera to hover at the storm clearance.
+
+The dominant pair now shares a 1,400m wavelength and 0.375m source amplitude. Its global axes are
+6.88 degrees apart, while 10.0m/s and 9.2m/s phase speeds evolve the constructive/destructive
+interference rather than freezing one beat pattern. Giant geometry remains full through 4km and
+fades by 10km so a storm swell cannot expose the former 3.5km flattening ring. The uncommitted GPU
+40x trial was not retained as a permanent mismatch: CPU clearance had still assumed 4x.
+
+Release calm-coast `ocean_hybrid_close/1788265977-645407` passes all assertions with a 6.296m
+observed range, 3.83m calm conservative crest, and 18.376ms median versus the preceding 19.689ms
+run. This capture verifies calm behaviour and the enlarged local patch; the 23.938m storm endpoint
+is pinned by CPU/GPU-mirrored constants and focused tests rather than claimed from this calm view.
+The complete app suite passes 329 tests with seven diagnostic instruments ignored.
