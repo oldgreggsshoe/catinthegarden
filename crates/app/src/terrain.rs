@@ -4253,7 +4253,7 @@ mod tests {
         assert!(shader.contains("camera.flat_triangle_options.x"));
         assert!(shader.contains("flat_ocean_surface("));
         assert!(shader.contains("const OCEAN_WAVES_ENABLED: bool = true;"));
-        assert!(shader.contains("fn ocean_ripple_slope("));
+        assert!(shader.contains("fn ocean_ripple("));
         assert!(shader.contains("OCEAN_GEOMETRY_FADE_DISTANCE_METERS"));
         assert!(shader.contains("OCEAN_RIPPLE_FADE_DISTANCE_METERS"));
         assert!(shader.contains("const OCEAN_RIPPLE_FULL_DISTANCE_METERS: f32 = 2000.0;"));
@@ -4261,7 +4261,15 @@ mod tests {
         assert!(shader.contains("const OCEAN_RIPPLE_FIRST_AMPLITUDE: f32 = 1.8;"));
         assert!(shader.contains("const OCEAN_RIPPLE_SECOND_AMPLITUDE: f32 = 0.64;"));
         assert!(shader.contains("const OCEAN_RIPPLE_THIRD_AMPLITUDE: f32 = 0.20;"));
-        assert!(shader.contains("180.0, OCEAN_RIPPLE_FIRST_AMPLITUDE, 14.0"));
+        assert!(shader.contains("const OCEAN_RIPPLE_FIRST_AXIS: vec3<f32>"));
+        assert!(shader.contains("const OCEAN_RIPPLE_SECOND_AXIS: vec3<f32>"));
+        assert!(shader.contains("const OCEAN_RIPPLE_THIRD_AXIS: vec3<f32>"));
+        assert!(
+            shader.contains("OCEAN_RIPPLE_FIRST_AXIS, 180.0, OCEAN_RIPPLE_FIRST_AMPLITUDE, 14.0")
+        );
+        assert!(shader.contains("ripple_height: f32"));
+        assert!(shader.contains("fn ocean_interference_albedo("));
+        assert!(shader.contains("surface.ripple_height"));
         assert!(shader.contains("flat_triangles && water_owned"));
         assert!(shader.contains(
             "let water_owned = (biome_id == 0u || biome_id == 1u) && macro_height <= 0.0;"

@@ -1353,7 +1353,13 @@ fn shade_ocean(
     if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
         return debug_ocean_albedo();
     }
-    var surface = OceanSurface(vec3<f32>(0.0), 0.0, surface_direction);
+    var surface = OceanSurface(
+        vec3<f32>(0.0),
+        0.0,
+        surface_direction,
+        0.0,
+        vec3<f32>(0.0),
+    );
     if (ray_settings.experiment_flags & EXPERIMENT_FOVEATED_SHADING) == 0u
         || detail >= 0.45
     {

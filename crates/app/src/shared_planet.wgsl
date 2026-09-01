@@ -293,6 +293,8 @@ struct OceanSurface {
     horizontal_displacement: vec3<f32>,
     vertical_displacement: f32,
     normal: vec3<f32>,
+    ripple_height: f32,
+    ripple_slope: vec3<f32>,
 }
 
 // Broad displacement is only evaluated in the camera-local ocean patch. The
@@ -308,6 +310,9 @@ const OCEAN_RIPPLE_FADE_DISTANCE_METERS: f32 = 8000.0;
 const OCEAN_RIPPLE_FIRST_AMPLITUDE: f32 = 1.8;
 const OCEAN_RIPPLE_SECOND_AMPLITUDE: f32 = 0.64;
 const OCEAN_RIPPLE_THIRD_AMPLITUDE: f32 = 0.20;
+const OCEAN_RIPPLE_FIRST_AXIS: vec3<f32> = vec3<f32>(0.72, 0.18, -0.67);
+const OCEAN_RIPPLE_SECOND_AXIS: vec3<f32> = vec3<f32>(-0.31, 0.91, 0.28);
+const OCEAN_RIPPLE_THIRD_AXIS: vec3<f32> = vec3<f32>(0.15, -0.58, 0.80);
 const OCEAN_SHORE_FULL_DEPTH_METERS: f32 = 30.0;
 
 fn planet_to_view(vector: vec3<f32>) -> vec3<f32> {
@@ -757,29 +762,34 @@ fn gerstner_wave(
     );
 }
 
-fn ocean_ripple_slope(
+fn ocean_ripple(
     direction: vec3<f32>,
     time_seconds: f32,
     camera_distance_meters: f32,
     shore_weight: f32,
-) -> vec3<f32> {
+) -> OceanWaveContribution {
     let distance_weight = 1.0 - smoothstep(
         OCEAN_RIPPLE_FULL_DISTANCE_METERS,
         OCEAN_RIPPLE_FADE_DISTANCE_METERS,
         camera_distance_meters,
     );
     if distance_weight <= 0.0 || shore_weight <= 0.0 {
-        return vec3<f32>(0.0);
+        return OceanWaveContribution(vec3<f32>(0.0), 0.0, vec3<f32>(0.0));
     }
     // These wavelengths are deliberately normal-only. The former metre-scale
     // ripples became sub-pixel from the 100m coastal start, so the animated
     // surface was numerically changing but read as a flat blue sheet. Broad
     // lighting waves remain resolvable across the visible bay without raising
     // geometry or changing the conservative collision-height bound.
-    let first = gerstner_wave(direction, vec3<f32>(0.72, 0.18, -0.67), 180.0, OCEAN_RIPPLE_FIRST_AMPLITUDE, 14.0, 0.0, time_seconds);
-    let second = gerstner_wave(direction, vec3<f32>(-0.31, 0.91, 0.28), 70.0, OCEAN_RIPPLE_SECOND_AMPLITUDE, 11.0, 0.0, time_seconds);
-    let third = gerstner_wave(direction, vec3<f32>(0.15, -0.58, 0.80), 28.0, OCEAN_RIPPLE_THIRD_AMPLITUDE, 8.0, 0.0, time_seconds);
-    return (first.slope + second.slope + third.slope) * distance_weight * shore_weight;
+    let first = gerstner_wave(direction, OCEAN_RIPPLE_FIRST_AXIS, 180.0, OCEAN_RIPPLE_FIRST_AMPLITUDE, 14.0, 0.0, time_seconds);
+    let second = gerstner_wave(direction, OCEAN_RIPPLE_SECOND_AXIS, 70.0, OCEAN_RIPPLE_SECOND_AMPLITUDE, 11.0, 0.0, time_seconds);
+    let third = gerstner_wave(direction, OCEAN_RIPPLE_THIRD_AXIS, 28.0, OCEAN_RIPPLE_THIRD_AMPLITUDE, 8.0, 0.0, time_seconds);
+    let weight = distance_weight * shore_weight;
+    return OceanWaveContribution(
+        vec3<f32>(0.0),
+        (first.vertical_displacement + second.vertical_displacement + third.vertical_displacement) * weight,
+        (first.slope + second.slope + third.slope) * weight,
+    );
 }
 
 fn ocean_surface(
@@ -813,7 +823,7 @@ fn ocean_surface(
         + third.vertical_displacement + fourth.vertical_displacement
         + fifth.vertical_displacement + sixth.vertical_displacement;
     let slope = first.slope + second.slope + third.slope + fourth.slope + fifth.slope + sixth.slope;
-    let ripple_slope = ocean_ripple_slope(
+    let ripple = ocean_ripple(
         direction,
         time_seconds,
         camera_distance_meters,
@@ -825,13 +835,21 @@ fn ocean_surface(
         normalize(
             direction
                 - slope * geometry_weight * OCEAN_GEOMETRY_AMPLITUDE_SCALE
-                - ripple_slope,
+                - ripple.slope,
         ),
+        ripple.vertical_displacement,
+        ripple.slope,
     );
 }
 
 fn flat_ocean_surface(direction: vec3<f32>) -> OceanSurface {
-    return OceanSurface(vec3<f32>(0.0), 0.0, normalize(direction));
+    return OceanSurface(
+        vec3<f32>(0.0),
+        0.0,
+        normalize(direction),
+        0.0,
+        vec3<f32>(0.0),
+    );
 }
 
 fn density(altitude_meters: f32, scale_height_meters: f32) -> f32 {

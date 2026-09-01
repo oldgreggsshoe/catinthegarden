@@ -4427,3 +4427,24 @@ geometric range. Over the first 1.5 seconds, mean absolute near-water RGB moveme
 `1.845/3.018/4.319` in clock-only run `1788247401-621889` to `3.359/5.913/7.871`; median frame time
 is 19.929ms versus 19.790ms. The shader operation count is unchanged, so the 0.139ms difference is
 within run noise rather than attributed cost.
+
+## Crossing-wave interference presentation - 1 September 2026
+
+Manual sequence `test-runs/manual/1788262996-632698` proved that advancing the clock and enlarging
+the normal bands was still not enough: the ocean changed only about 1-1.5 display-code RGB values
+between its roughly 0.4-second captures, underneath much stronger static low-poly facets. The three
+wave axes were already genuinely distinct; projected into the tangent plane at that exact coastal
+camera, their pairwise separations are approximately 111, 118, and 130 degrees.
+
+The three signed ripple heights are now summed alongside their slopes. This is linear wave
+superposition: constructive crossings produce a positive combined crest and destructive crossings
+cancel toward a trough. Flat-ocean lighting exposes that existing result through restrained crest
+scatter and trough darkening; it does not add a travelling texture, raise geometry, change the
+5.166m broad-wave range, or change collision. The three directions are now named
+`OCEAN_RIPPLE_FIRST_AXIS`, `SECOND_AXIS`, and `THIRD_AXIS` beside their amplitude constants.
+
+Release `ocean_hybrid_close/1788263590-635146` passes. Its first two near-water frames differ by
+mean absolute RGB `4.475/7.228/10.313`, up from `3.359/5.913/7.871` before explicit interference
+lighting and far above the visually static manual sequence. Median logged frame time is 19.689ms;
+the prior run was 19.929ms. Full raster and raymarch WGSL validation covers the expanded local
+`OceanSurface` data.

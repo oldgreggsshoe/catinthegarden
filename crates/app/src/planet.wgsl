@@ -1358,15 +1358,9 @@ fn flat_ocean_colour(input: OceanVertexOutput, macro_height_meters: f32) -> vec4
     // Keep the low-poly face normal from the displaced geometry, then add only
     // the sub-mesh ripple component. Reusing surface.normal directly would
     // smooth the broad wave facets that define this presentation.
-    let ripple_slope = ocean_ripple_slope(
-        direction,
-        camera.projection.z,
-        length(input.camera_relative_view_position),
-        smoothstep(2.0, OCEAN_SHORE_FULL_DEPTH_METERS, max(-macro_height_meters, 0.0)),
-    );
-    let normal = normalize(geometric_normal - ripple_slope);
+    let normal = normalize(geometric_normal - surface.ripple_slope);
     let lit = flat_triangle_lighting(
-        debug_ocean_albedo(),
+        ocean_interference_albedo(surface.ripple_height),
         normal,
         direction,
         surface.vertical_displacement,
@@ -1398,6 +1392,19 @@ fn flat_ocean_colour(input: OceanVertexOutput, macro_height_meters: f32) -> vec4
         misted_ocean_lit * 0.82,
         edge * outline_visibility,
     ), 1.0);
+}
+
+fn ocean_interference_albedo(ripple_height: f32) -> vec3<f32> {
+    let maximum_height = OCEAN_RIPPLE_FIRST_AMPLITUDE
+        + OCEAN_RIPPLE_SECOND_AMPLITUDE
+        + OCEAN_RIPPLE_THIRD_AMPLITUDE;
+    let signed_interference = clamp(ripple_height / maximum_height, -1.0, 1.0);
+    let constructive_crest = smoothstep(0.35, 0.85, signed_interference);
+    // The three directional sine waves already superpose in ripple_height.
+    // Make that constructive/destructive result legible as restrained crest
+    // scatter and trough darkening instead of an artificial travelling texture.
+    return debug_ocean_albedo() * (1.0 + 0.24 * signed_interference)
+        + vec3<f32>(0.025, 0.040, 0.070) * constructive_crest;
 }
 
 @fragment
