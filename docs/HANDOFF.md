@@ -4407,3 +4407,23 @@ The focused frozen-scene regression failed with `2.0` seconds retained instead o
 height range. The exact default F10-frozen coastal startup was then captured 15 seconds apart at
 `test-runs/manual/1788247601-622472/screenshots/`; terrain and camera remain fixed while the ocean
 phase advances.
+
+## Readable ocean motion and amplitude controls - 1 September 2026
+
+The original normal-only octaves were 4.5m, 2.1m, and 0.9m wavelengths and faded out by 1.2km.
+From the 100m coastal start they were mostly sub-pixel or absent, so even the repaired clock looked
+static. The normal bands are now 180m, 70m, and 28m, remain full strength through 2km, and fade by
+8km. Actual Gerstner geometry, the 3.18m collision reserve, coast attenuation, and lakes are
+unchanged.
+
+The three independent shading amplitudes are named next to the ocean distance controls in
+`shared_planet.wgsl`: `OCEAN_RIPPLE_FIRST_AMPLITUDE` (1.8),
+`OCEAN_RIPPLE_SECOND_AMPLITUDE` (0.64), and `OCEAN_RIPPLE_THIRD_AMPLITUDE` (0.20). These can be
+tuned without changing water height. `OCEAN_GEOMETRY_AMPLITUDE_SCALE` controls actual geometry and
+must remain synchronized with the CPU constant in `ocean.rs`.
+
+Release `ocean_hybrid_close/1788250019-628073` passes with four captures and the same 5.166m
+geometric range. Over the first 1.5 seconds, mean absolute near-water RGB movement rises from
+`1.845/3.018/4.319` in clock-only run `1788247401-621889` to `3.359/5.913/7.871`; median frame time
+is 19.929ms versus 19.790ms. The shader operation count is unchanged, so the 0.139ms difference is
+within run noise rather than attributed cost.

@@ -303,8 +303,11 @@ const OCEAN_WAVES_ENABLED: bool = true;
 const OCEAN_GEOMETRY_FULL_DISTANCE_METERS: f32 = 1500.0;
 const OCEAN_GEOMETRY_FADE_DISTANCE_METERS: f32 = 3500.0;
 const OCEAN_GEOMETRY_AMPLITUDE_SCALE: f32 = 4.0;
-const OCEAN_RIPPLE_FULL_DISTANCE_METERS: f32 = 250.0;
-const OCEAN_RIPPLE_FADE_DISTANCE_METERS: f32 = 1200.0;
+const OCEAN_RIPPLE_FULL_DISTANCE_METERS: f32 = 2000.0;
+const OCEAN_RIPPLE_FADE_DISTANCE_METERS: f32 = 8000.0;
+const OCEAN_RIPPLE_FIRST_AMPLITUDE: f32 = 1.8;
+const OCEAN_RIPPLE_SECOND_AMPLITUDE: f32 = 0.64;
+const OCEAN_RIPPLE_THIRD_AMPLITUDE: f32 = 0.20;
 const OCEAN_SHORE_FULL_DEPTH_METERS: f32 = 30.0;
 
 fn planet_to_view(vector: vec3<f32>) -> vec3<f32> {
@@ -768,13 +771,14 @@ fn ocean_ripple_slope(
     if distance_weight <= 0.0 || shore_weight <= 0.0 {
         return vec3<f32>(0.0);
     }
-    // These wavelengths are deliberately normal-only. Putting metre-scale
-    // ripples into the planet mesh would either alias or require a needlessly
-    // dense global ocean; their bounded slopes still give close water the
-    // moving highlights a person expects.
-    let first = gerstner_wave(direction, vec3<f32>(0.72, 0.18, -0.67), 4.5, 0.012, 13.0, 0.0, time_seconds);
-    let second = gerstner_wave(direction, vec3<f32>(-0.31, 0.91, 0.28), 2.1, 0.005, 16.0, 0.0, time_seconds);
-    let third = gerstner_wave(direction, vec3<f32>(0.15, -0.58, 0.80), 0.9, 0.002, 19.0, 0.0, time_seconds);
+    // These wavelengths are deliberately normal-only. The former metre-scale
+    // ripples became sub-pixel from the 100m coastal start, so the animated
+    // surface was numerically changing but read as a flat blue sheet. Broad
+    // lighting waves remain resolvable across the visible bay without raising
+    // geometry or changing the conservative collision-height bound.
+    let first = gerstner_wave(direction, vec3<f32>(0.72, 0.18, -0.67), 180.0, OCEAN_RIPPLE_FIRST_AMPLITUDE, 14.0, 0.0, time_seconds);
+    let second = gerstner_wave(direction, vec3<f32>(-0.31, 0.91, 0.28), 70.0, OCEAN_RIPPLE_SECOND_AMPLITUDE, 11.0, 0.0, time_seconds);
+    let third = gerstner_wave(direction, vec3<f32>(0.15, -0.58, 0.80), 28.0, OCEAN_RIPPLE_THIRD_AMPLITUDE, 8.0, 0.0, time_seconds);
     return (first.slope + second.slope + third.slope) * distance_weight * shore_weight;
 }
 
