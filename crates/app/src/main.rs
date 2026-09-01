@@ -96,6 +96,27 @@ const ACTIVE_HIGHEST_RAW_MACRO_ELEVATION_METERS: f64 = 46_735.316_406_250;
 /// How close to the ground flight may descend. CPU clearance evaluates the
 /// same synthesised relief the shader displaces, so a sub-metre floor is safe.
 const LOW_FLIGHT_MINIMUM_CLEARANCE_METERS: f64 = 0.75;
+/// Once the player has descended onto the moving ocean surface, keep the eye
+/// attached to it instead of ratcheting upward on every successive crest.
+const LOW_FLIGHT_OCEAN_FOLLOW_TOLERANCE_METERS: f64 = 0.25;
+
+fn low_flight_clearance_radius(
+    current_radius_meters: f64,
+    previous_surface_height_meters: f64,
+    resolved_surface_height_meters: Option<f64>,
+    minimum_clearance_meters: f64,
+    follow_resolved_surface: bool,
+) -> f64 {
+    let surface_height_meters =
+        resolved_surface_height_meters.unwrap_or(previous_surface_height_meters);
+    let minimum_radius =
+        planet::PLANET_RADIUS_METERS + surface_height_meters + minimum_clearance_meters;
+    if follow_resolved_surface && resolved_surface_height_meters.is_some() {
+        minimum_radius
+    } else {
+        current_radius_meters.max(minimum_radius)
+    }
+}
 /// Sweep the camera point through the rendered terrain instead of checking
 /// only the end of a frame. L18 patch boundaries are roughly a metre apart;
 /// sub-metre samples prevent a downward W flight from tunnelling through a
@@ -1373,7 +1394,12 @@ impl State {
         self.mark_hud_dirty();
     }
 
-    fn advance_low_flight_camera(&mut self, delta_seconds: f64, planet_rotation_radians: f64) {
+    fn advance_low_flight_camera(
+        &mut self,
+        delta_seconds: f64,
+        planet_rotation_radians: f64,
+        ocean_time_seconds: f64,
+    ) {
         let movement_start_position = self.flight_local_position;
         let local_radial = self.flight_local_position.normalize();
         let local_forward = self.low_flight_view_direction(local_radial);
@@ -1407,13 +1433,18 @@ impl State {
                 moved_radial,
             );
         }
-        self.update_low_flight_camera(Some(movement_start_position), planet_rotation_radians);
+        self.update_low_flight_camera(
+            Some(movement_start_position),
+            planet_rotation_radians,
+            ocean_time_seconds,
+        );
     }
 
     fn update_low_flight_camera(
         &mut self,
         movement_start_position: Option<glam::DVec3>,
         planet_rotation_radians: f64,
+        ocean_time_seconds: f64,
     ) {
         if self.render_path == RenderPath::Raster
             && let Some(start) = movement_start_position
@@ -1428,7 +1459,11 @@ impl State {
                         .terrain
                         .raster_surface_height_meters_at(direction, altitude_meters)?;
                     Some(if self.terrain.open_ocean_at(direction) == Some(true) {
-                        terrain_height.max(ocean::MAXIMUM_WAVE_HEIGHT_METERS)
+                        terrain_height.max(ocean::wave_height_meters(
+                            direction,
+                            ocean_time_seconds,
+                            self.weather.storm_intensity_at(direction),
+                        ))
                     } else {
                         terrain_height
                     })
@@ -1442,6 +1477,7 @@ impl State {
         self.enforce_low_flight_clearance(
             LOW_FLIGHT_MINIMUM_CLEARANCE_METERS,
             planet_rotation_radians,
+            ocean_time_seconds,
         );
     }
 
@@ -1449,6 +1485,7 @@ impl State {
         &mut self,
         minimum_clearance_meters: f64,
         planet_rotation_radians: f64,
+        ocean_time_seconds: f64,
     ) -> bool {
         let previous_local_position = self.flight_local_position;
         let local_radial = self.flight_local_position.normalize();
@@ -1462,24 +1499,36 @@ impl State {
                 .terrain
                 .surface_height_meters_at(local_radial, camera_altitude_meters),
         };
+        let open_ocean = self.terrain.open_ocean_at(local_radial) == Some(true);
+        let was_following_ocean = open_ocean
+            && camera_altitude_meters - self.flight_surface_height_meters
+                <= minimum_clearance_meters + LOW_FLIGHT_OCEAN_FOLLOW_TOLERANCE_METERS;
         let surface_height_meters = surface_height_meters.map(|height| {
-            if self.terrain.open_ocean_at(local_radial) == Some(true) {
-                height.max(ocean::MAXIMUM_WAVE_HEIGHT_METERS)
+            if open_ocean {
+                height.max(ocean::wave_height_meters(
+                    local_radial,
+                    ocean_time_seconds,
+                    self.weather.storm_intensity_at(local_radial),
+                ))
             } else {
                 height
             }
         });
-        if let Some(surface_height_meters) = surface_height_meters {
-            self.flight_surface_height_meters = surface_height_meters;
-        }
         // Terrain tiles can become resident while the camera is idle. Enforce
         // clearance every frame so a newly resolved higher surface cannot
         // leave the camera underground until the next movement key is pressed.
-        let minimum_radius = planet::PLANET_RADIUS_METERS
-            + self.flight_surface_height_meters
-            + minimum_clearance_meters;
-        if self.flight_local_position.length() < minimum_radius {
-            self.flight_local_position = local_radial * minimum_radius;
+        let clearance_radius = low_flight_clearance_radius(
+            self.flight_local_position.length(),
+            self.flight_surface_height_meters,
+            surface_height_meters,
+            minimum_clearance_meters,
+            was_following_ocean,
+        );
+        if let Some(surface_height_meters) = surface_height_meters {
+            self.flight_surface_height_meters = surface_height_meters;
+        }
+        if (self.flight_local_position.length() - clearance_radius).abs() > f64::EPSILON {
+            self.flight_local_position = local_radial * clearance_radius;
         }
         let local_view_direction = self.low_flight_view_direction(local_radial);
         let planet_to_world = glam::DQuat::from_rotation_y(planet_rotation_radians);
@@ -1565,7 +1614,11 @@ impl State {
                     LOW_FLIGHT_VERTICAL_FOV_DEGREES,
                     self.size.height,
                 );
-                self.update_low_flight_camera(None, planet_rotation_radians);
+                self.update_low_flight_camera(
+                    None,
+                    planet_rotation_radians,
+                    self.started_at.elapsed().as_secs_f64(),
+                );
             }
             CameraMode::LowFlight => {
                 if let Some((position, direction, vertical_fov_degrees)) =
@@ -1846,6 +1899,7 @@ impl State {
             self.weather.interpolation_fraction(),
             self.weather.visual_time_seconds(),
         );
+        let ocean_time_seconds = ocean_animation_time_seconds(sim_time, presentation_time);
         let scene_delta_seconds = (sim_time - self.last_auto_orbit_sim_time).max(0.0);
         if let Some(forward_held) = scenario_forward_flight_held {
             if !self.scenario_flight_initialized {
@@ -1887,7 +1941,11 @@ impl State {
                 forward: forward_held,
                 ..FlightMovementInput::default()
             };
-            self.advance_low_flight_camera(scene_delta_seconds, planet_rotation_radians);
+            self.advance_low_flight_camera(
+                scene_delta_seconds,
+                planet_rotation_radians,
+                ocean_time_seconds,
+            );
         } else if self.scenario.is_none() {
             let camera_delta_seconds = interactive_camera_delta_seconds(
                 self.camera_mode,
@@ -1899,9 +1957,11 @@ impl State {
                     DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND * camera_delta_seconds,
                     DEFAULT_CAMERA_ORBIT_INCLINATION_RADIANS,
                 ),
-                CameraMode::LowFlight => {
-                    self.advance_low_flight_camera(camera_delta_seconds, planet_rotation_radians)
-                }
+                CameraMode::LowFlight => self.advance_low_flight_camera(
+                    camera_delta_seconds,
+                    planet_rotation_radians,
+                    ocean_time_seconds,
+                ),
             }
         }
         self.last_auto_orbit_sim_time = sim_time;
@@ -1957,8 +2017,11 @@ impl State {
             } else {
                 LOW_FLIGHT_MINIMUM_CLEARANCE_METERS
             };
-            if self.enforce_low_flight_clearance(minimum_clearance_meters, planet_rotation_radians)
-            {
+            if self.enforce_low_flight_clearance(
+                minimum_clearance_meters,
+                planet_rotation_radians,
+                ocean_time_seconds,
+            ) {
                 camera_world_position = self.camera.world_position();
                 camera_planet_frame_position = self
                     .camera
@@ -2032,10 +2095,14 @@ impl State {
             self.terrain_stats.draw_calls = 0;
         }
         let draw_calls = self.terrain_stats.draw_calls;
-        let ocean_time_seconds = ocean_animation_time_seconds(sim_time, presentation_time);
         let local_storm_intensity = self
-            .weather
-            .storm_intensity_at(camera_world_position / camera_radius);
+            .scenario
+            .as_ref()
+            .and_then(scenario::ScenarioRunner::ocean_storm_intensity_override)
+            .unwrap_or_else(|| {
+                self.weather
+                    .storm_intensity_at(camera_world_position / camera_radius)
+            });
         let ocean_wave_stats = ocean::wave_height_stats(ocean_time_seconds, local_storm_intensity);
         let ocean_wave_range = ocean_wave_stats.range_meters();
         if write_log {
@@ -2404,8 +2471,12 @@ impl State {
         }
         .unwrap_or(0.0);
         if self.terrain.open_ocean_at(camera_direction) == Some(true) {
-            camera_surface_height_meters = camera_surface_height_meters
-                .max(ocean::maximum_wave_height_meters(local_storm_intensity));
+            camera_surface_height_meters =
+                camera_surface_height_meters.max(ocean::wave_height_meters(
+                    camera_direction,
+                    ocean_time_seconds,
+                    local_storm_intensity,
+                ));
         }
         let aspect_ratio = self.size.width as f32 / self.size.height as f32;
         let mut camera_uniform = planet::CameraUniform::from_camera(
@@ -3690,7 +3761,8 @@ mod tests {
         advance_flight_position_on_sphere, advance_flight_speed, device_mouse_look_enabled,
         find_default_outmap, flight_movement_direction, flight_view_direction,
         focus_of_expansion_ndc, initial_flight_tangent, interactive_camera_delta_seconds,
-        projected_planet_coverage, render_size_for_surface_resize, retimed_planet_rotation,
+        low_flight_clearance_radius, projected_planet_coverage, render_size_for_surface_resize,
+        retimed_planet_rotation,
         should_enter_fullscreen, should_start_interactive_fullscreen, swept_flight_clearance_lift,
         transport_flight_tangent,
     };
@@ -3722,6 +3794,37 @@ mod tests {
     #[test]
     fn ocean_animation_keeps_advancing_while_scene_time_is_frozen() {
         assert_eq!(super::ocean_animation_time_seconds(2.0, 7.5), 7.5);
+    }
+
+    #[test]
+    fn camera_in_contact_with_ocean_follows_troughs_instead_of_ratcheting_upward() {
+        let prior_surface = 12.0;
+        let current_radius = crate::planet::PLANET_RADIUS_METERS
+            + prior_surface
+            + LOW_FLIGHT_MINIMUM_CLEARANCE_METERS;
+        let falling_surface = -4.0;
+        let followed = low_flight_clearance_radius(
+            current_radius,
+            prior_surface,
+            Some(falling_surface),
+            LOW_FLIGHT_MINIMUM_CLEARANCE_METERS,
+            true,
+        );
+        assert_eq!(
+            followed,
+            crate::planet::PLANET_RADIUS_METERS
+                + falling_surface
+                + LOW_FLIGHT_MINIMUM_CLEARANCE_METERS
+        );
+
+        let flying = low_flight_clearance_radius(
+            current_radius + 100.0,
+            prior_surface,
+            Some(falling_surface),
+            LOW_FLIGHT_MINIMUM_CLEARANCE_METERS,
+            false,
+        );
+        assert_eq!(flying, current_radius + 100.0);
     }
 
     #[test]

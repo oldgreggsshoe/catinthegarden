@@ -103,7 +103,7 @@ pub fn maximum_wave_height_meters(storm_intensity: f32) -> f64 {
         * geometry_amplitude_scale(storm_intensity)
 }
 
-fn wave_height_meters(direction: DVec3, sim_time: f64, storm_intensity: f32) -> f64 {
+pub fn wave_height_meters(direction: DVec3, sim_time: f64, storm_intensity: f32) -> f64 {
     let amplitude_scale = geometry_amplitude_scale(storm_intensity);
     WAVES
         .iter()

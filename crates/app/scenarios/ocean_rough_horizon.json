@@ -1,0 +1,31 @@
+{
+  "name": "ocean_rough_horizon",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 4.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0.0,
+  "fixed_exposure": true,
+  "ocean_storm_intensity_override": 1.0,
+  "screenshot_times_seconds": [0.5, 2.0, 3.5, 4.0],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [3354072.0199947827, 2006922.3243811773, 850002.158005245],
+      "look_at": [3354317.6781478836, 2006922.3243811773, 849032.8014806294]
+    }
+  ],
+  "sun_waypoints": [
+    { "time_s": 0.0, "direction": [0.5089275188, 0.3977769940, 0.7633912782] }
+  ],
+  "vertical_fov_waypoints": [
+    { "time_s": 0.0, "vertical_fov_degrees": 35.0 }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 4,
+    "min_ocean_wave_height_range_meters": 30.0
+  }
+}

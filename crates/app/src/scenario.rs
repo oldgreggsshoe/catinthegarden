@@ -144,6 +144,10 @@ pub struct ScenarioDefinition {
     /// exposure response to a frame becoming dark.
     #[serde(default)]
     pub fixed_exposure: bool,
+    /// Deterministic visual endpoint for ocean regression captures. Ordinary
+    /// gameplay always uses the live, spatially varying weather field.
+    #[serde(default)]
+    pub ocean_storm_intensity_override: Option<f32>,
     /// Enables the real low-flight camera at the first waypoint and holds W
     /// from this simulation time onward. This is deliberately not waypoint
     /// interpolation: terrain-follow regressions must exercise the same
@@ -247,6 +251,7 @@ impl ScenarioRunner {
             }
             "ocean_flyover" => include_str!("../scenarios/ocean_flyover.json"),
             "ocean_hybrid_close" => include_str!("../scenarios/ocean_hybrid_close.json"),
+            "ocean_rough_horizon" => include_str!("../scenarios/ocean_rough_horizon.json"),
             "ocean_coastline" => include_str!("../scenarios/ocean_coastline.json"),
             "orbital_zoom_lod" => include_str!("../scenarios/orbital_zoom_lod.json"),
             "polar_ice_cap" => include_str!("../scenarios/polar_ice_cap.json"),
@@ -539,6 +544,10 @@ impl ScenarioRunner {
                     | "landing_site_eye_level"
                     | "terrain_detail_altitude_ladder"
             )
+    }
+
+    pub fn ocean_storm_intensity_override(&self) -> Option<f32> {
+        self.definition.ocean_storm_intensity_override
     }
 
     pub fn surface_probe_max_distance_meters(&self) -> f64 {
@@ -1357,6 +1366,23 @@ mod tests {
         let scenario = ScenarioRunner::load("weather_sun_occlusion").expect("scenario parses");
         assert_eq!(scenario.expected_screenshots(), 1);
         assert_eq!(scenario.expected_log_samples(), 24);
+    }
+
+    #[test]
+    fn rough_ocean_horizon_holds_a_five_meter_level_view() {
+        let scenario = ScenarioRunner::load("ocean_rough_horizon").expect("scenario parses");
+        assert_eq!(scenario.expected_screenshots(), 4);
+        assert_eq!(scenario.ocean_storm_intensity_override(), Some(1.0));
+        assert_eq!(
+            scenario
+                .definition
+                .assertions
+                .min_ocean_wave_height_range_meters,
+            Some(30.0)
+        );
+        assert_eq!(scenario.definition.waypoints.len(), 1);
+        let position = DVec3::from_array(scenario.definition.waypoints[0].position);
+        assert!(((position.length() - crate::planet::PLANET_RADIUS_METERS) - 5.0).abs() < 1.0e-6);
     }
 
     #[test]

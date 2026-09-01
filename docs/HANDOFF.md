@@ -4470,3 +4470,18 @@ observed range, 3.83m calm conservative crest, and 18.376ms median versus the pr
 run. This capture verifies calm behaviour and the enlarged local patch; the 23.938m storm endpoint
 is pinned by CPU/GPU-mirrored constants and focused tests rather than claimed from this calm view.
 The complete app suite passes 329 tests with seven diagnostic instruments ignored.
+
+## Phase-matched low-flight ocean clearance - 1 September 2026
+
+The low-flight clearance path now samples the same time-, direction-, and local-storm-dependent
+Gerstner height as the rendered ocean instead of reserving the global 24m worst-case crest at
+every location. A camera already at minimum ocean clearance follows both rising crests and falling
+troughs within a 0.25m contact tolerance, preventing the old one-way correction from ratcheting the
+view upward. Movement sweeps and the camera near-plane surface estimate use the same instantaneous
+surface; land collision is unchanged.
+
+`ocean_rough_horizon` is a deterministic 5m-ASL level-view storm endpoint with four captures and a
+30m minimum wave-range assertion. Release run `1788287715-677897` passes at 39.352m and visibly
+shows foreground crests occluding waves behind them. The calm control
+`ocean_hybrid_close/1788287739-678029` remains at 6.296m. The complete app suite passes 331 tests
+with seven diagnostic instruments ignored.
