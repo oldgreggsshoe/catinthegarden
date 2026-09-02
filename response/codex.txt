@@ -6,4 +6,4 @@ I made a small observability fix only: surface HUD now displays both `Clearance`
 
 Seabed question: yes, the baked outmap already contains the needed data. Its raw R32F height tiles preserve negative bathymetry, and `bathymetry_height_meters_at` already reads those values for water depth/buoyancy. Rendering currently clamps the visible ocean to the sea-level shell and deliberately does not draw underwater; later we can reuse the same streamed bathymetry for a seabed pass.
 
-Validation: formatting, 7 focused surface tests, all 345 non-ignored app tests, and workspace check passed. Committed/pushed as `COMMIT_HASH`.
+Validation: formatting, 7 focused surface tests, all 345 non-ignored app tests, and workspace check passed. Committed/pushed as `0525b11`.
