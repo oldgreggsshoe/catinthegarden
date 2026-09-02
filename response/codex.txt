@@ -1,12 +1,8 @@
-The fixed-water diagnostic was still being corrected only during movement. A streaming/terrain refresh could leave the camera at the previous wave radius, while the HUD had already updated to a new wave height. I now resolve the fixed water radius after streaming as well as during movement, and use the fixed 1.0 m eye margin from the sampled wave.
+The “largest octave” is the two 1,400 m swells (the first and second waves). The current fixed diagnostic already disables the 180/70/28 m local ripples, but the 160/65/24/9 m global waves are still active.
 
-To remove the remaining coarse-triangle mismatch, fixed mode now disables the short 180/70/28 m ripple geometry (and horizontal Gerstner transport) in both CPU and WGSL. The broad vertical swell remains animated and is sampled identically by camera and mesh. Buoyancy mode is unchanged and can be restored with WATER_BOBBING_ENABLED = true.
+For a quick manual test, set the amplitudes of global waves 3–6 to zero in both places:
 
-Validation:
-- surface_camera tests: 9 passed
-- ocean/terrain/atmosphere focused tests: 23 passed
-- cargo check --workspace: passed (7 existing dead-code warnings)
-- release build: passed; startup shader validation now succeeds
-- previous fixed-mode capture: test-runs/manual/1788374983-918394/screenshots/capture-001.png, HUD showed 1.00 m clearance; the newest launch reached shader startup but the automated capture did not produce a PNG.
+- `crates/app/src/ocean.rs`, `WAVES`: entries with wavelengths 160, 65, 24 and 9 m: change `amplitude_meters` to `0.0`.
+- `crates/app/src/shared_planet.wgsl`, `ocean_surface`: change the amplitudes in the `third`, `fourth`, `fifth` and `sixth` `gerstner_wave` calls to `0.0`.
 
-The changes are ready to commit and push.
+Leave the first two 1,400 m waves unchanged. Keep the CPU and WGSL edits paired or the camera collision height will diverge from the rendered water. The fixed diagnostic (`WATER_BOBBING_ENABLED = false`) will also keep the short local ripple layer off. For a cleaner long-term option, add a named `OCEAN_LARGE_SWELL_ONLY` toggle and branch both implementations rather than editing amplitudes manually.
