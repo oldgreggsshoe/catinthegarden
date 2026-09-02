@@ -203,6 +203,36 @@ mod tests {
     }
 
     #[test]
+    fn buoyancy_moves_the_camera_with_a_rising_and_falling_wave() {
+        let mut state = SurfacePhysicsState::default();
+        state.settle_in_water();
+        let equilibrium = equilibrium_eye_height_above_water_meters();
+        let mut eye = equilibrium;
+        let mut minimum = eye;
+        let mut maximum = eye;
+        for index in 0..(20 * 120) {
+            let time = f64::from(index) / 120.0;
+            let phase = std::f64::consts::TAU * time / 20.0;
+            let water_height = 8.0 * phase.sin();
+            let water_velocity = 8.0 * std::f64::consts::TAU / 20.0 * phase.cos();
+            eye = state.advance_vertical(
+                eye,
+                -100.0,
+                Some((water_height, water_velocity)),
+                false,
+                1.0 / 120.0,
+            );
+            minimum = minimum.min(eye);
+            maximum = maximum.max(eye);
+        }
+        assert!(
+            maximum - minimum > 1.0,
+            "camera range={}",
+            maximum - minimum
+        );
+    }
+
+    #[test]
     fn water_jump_is_one_upward_impulse_then_physics_resumes() {
         let mut state = SurfacePhysicsState::default();
         state.settle_in_water();

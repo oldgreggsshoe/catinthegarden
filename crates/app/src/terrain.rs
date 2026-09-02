@@ -1367,6 +1367,27 @@ impl TerrainRenderer {
         Some(is_open_ocean_sample(height, biome))
     }
 
+    /// Returns the resident, unmodified baked height at a direction. Unlike
+    /// `surface_height_meters_at`, this deliberately keeps negative ocean-floor
+    /// values instead of resolving them to the visible sea-level shell. The
+    /// surface camera uses this only to derive water depth and wave energy.
+    pub fn bathymetry_height_meters_at(&self, local_surface_direction: DVec3) -> Option<f64> {
+        let TerrainDataSource::Outmap(_) = &self.source else {
+            return None;
+        };
+        let direction = local_surface_direction.normalize_or_zero();
+        if direction.length_squared() <= f64::EPSILON {
+            return None;
+        }
+        let (face, face_uv) = cube_face_uv(direction)?;
+        let (source_key, source_uv) = self.cached_tile_at(direction, face, face_uv)?;
+        let tile = self.tile_cache.get(&source_key)?;
+        Some(f64::from(sample_height_cpu(
+            &tile.heights_meters,
+            source_uv,
+        )))
+    }
+
     /// Samples the currently resident outmap surface for one procedural forest
     /// candidate. Unlike flight-start preparation and streaming, this never
     /// performs disk I/O: a patch builder must keep its prior patch while this

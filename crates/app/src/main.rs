@@ -1542,7 +1542,7 @@ impl State {
     fn open_ocean_environment_at(
         &self,
         local_radial: glam::DVec3,
-        camera_altitude_meters: f64,
+        _camera_altitude_meters: f64,
         ocean_time_seconds: f64,
         fallback_terrain_height_meters: f64,
     ) -> Option<(f64, f64, f64)> {
@@ -1554,7 +1554,7 @@ impl State {
         // so use the unclamped source height for depth, buoyancy and collision.
         let bathymetry_meters = self
             .terrain
-            .surface_height_meters_at(local_radial, camera_altitude_meters)
+            .bathymetry_height_meters_at(local_radial)
             .unwrap_or(fallback_terrain_height_meters.min(0.0));
         let depth_meters = (-bathymetry_meters).max(0.0);
         let wave_height =

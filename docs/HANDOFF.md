@@ -4528,6 +4528,11 @@ buoyancy use unclamped bathymetry even in flat-triangle mode, whose hidden terra
 to sea level. The analytic CPU wave-height derivative supplies vertical water velocity and is
 regression-checked against a centred finite difference.
 
+The surface-camera depth query reads the resident raw baked bathymetry rather than the
+sea-level-resolved visible surface. This keeps open-ocean depth non-zero, so Gerstner
+height/velocity drive buoyant bobbing instead of a fixed 0.255m equilibrium above a flat
+zero-depth shell. A dynamic rising/falling-wave unit test guards the behaviour.
+
 Manual ground and jump captures are in `manual/1788349152-867669`: capture 001 is grounded at
 human-eye height, capture 002 is airborne at +1.36m/s after Space, and capture 003 returns under
 gravity. The forest renderer was disabled only for these diagnostic captures to isolate camera
