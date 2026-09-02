@@ -4542,3 +4542,8 @@ human-eye height, capture 002 is airborne at +1.36m/s after Space, and capture 0
 gravity. The forest renderer was disabled only for these diagnostic captures to isolate camera
 motion on the Quadro; normal runtime defaults are unchanged. All 344 non-ignored app tests pass,
 with seven diagnostic instruments ignored.
+
+Open-water visual verification is in `manual/1788361902-880886`. After movement stopped, eight
+successive captures measured 0.07-0.52m of camera clearance above the changing Gerstner surface,
+with vertical velocity changing sign; the HUD now shows surface-mode clearance to centimetre
+precision instead of rounding it to zero.

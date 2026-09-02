@@ -2273,6 +2273,11 @@ impl State {
             format!("L{minimum_lod_level}-L{}", terrain_stats.max_level)
         };
         let vertical_fov_label = format_vertical_fov(vertical_fov_degrees);
+        let camera_altitude_label = if camera_mode == CameraMode::Surface {
+            format!("{camera_altitude:.2}")
+        } else {
+            format!("{camera_altitude:.0}")
+        };
         let full_output = self.egui_context.run_ui(raw_input, |ui| {
             if show_debug_overlay {
                 let context = ui.ctx().clone();
@@ -2291,7 +2296,7 @@ impl State {
                             camera_direction.x, camera_direction.y, camera_direction.z
                         ));
                         ui.label(format!(
-                            "Altitude: {camera_altitude:.0} m  |  LOD: {lod_range}"
+                            "Altitude: {camera_altitude_label} m  |  LOD: {lod_range}"
                         ));
                         ui.label(format!(
                             "Terrain: {} active  |  {} drawn  |  {} triangles  |  {} draws",
