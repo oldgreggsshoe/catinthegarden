@@ -1,17 +1,11 @@
-Surface-camera clearance diagnosis and fix
+The latest screenshot exposed a second, separate bug. The camera was being pinned at the old `PLANET_CORE_CLEARANCE_METERS = +0.02m` sea-level floor. When a wave fell to about -28m, the camera stayed at +0.02m, so the HUD correctly calculated roughly 28m of clearance—but that was artificial clearance, not buoyant following.
 
-The screenshot was a real CPU/GPU disagreement, not a HUD formatting problem. The WGSL ocean was rendering the 44x calm / 55x storm Gerstner displacement, while the CPU collision/buoyancy query still used 4x / 25x. Therefore the HUD could report positive clearance above the CPU wave while the rendered crest was already above the camera.
-
-Fixes:
-- synchronized `crates/app/src/ocean.rs` with the WGSL displacement scales;
-- updated the conservative storm crest bound to 53m (the six-wave sum is 52.6625m);
-- added a regression that checks the CPU constants against the shader constants;
-- retained the bounded submerged restoring buoyancy term so the camera recovers toward the 0.255m still-water eye equilibrium without snapping to each wave.
+I changed the safety floor to -100m (below the 53m maximum storm trough), and widened the LOD radius assertions to accept that bounded underwater position while still preventing entry into the solid planet. The camera can now descend with a trough instead of sticking at sea level. Underwater rendering remains deferred.
 
 Validation:
-- focused surface-camera tests: 7 passed;
-- focused ocean tests: 23 passed;
-- `cargo check --workspace`: passed (only existing dead-code warnings);
-- release Quadro startup capture after the fix: `test-runs/manual/1788370547-906836/screenshots/capture-001.png`. It reports `Clearance: 3.52 m | wave surface: +22.59 m` while viewing the rendered storm sea from above it.
+- surface-camera tests: 7 passed;
+- planet LOD tests: 52 passed, 1 ignored;
+- release Quadro capture after the change: `test-runs/manual/1788371830-910283/screenshots/capture-001.png`;
+- the HUD now reports a normal ~3m clearance above a +23m crest, rather than a fixed sea-level position with a large trough clearance.
 
-The earlier capture `manual/1788369179-891808` is the reproduced mismatch. Future undersea rendering can reuse the existing negative R32F bathymetry in the active outmap tiles; the current renderer deliberately clamps the visible ocean to its sea-level shell, so no separate seabed bake is needed.
+Committed and pushed as the follow-up fix.

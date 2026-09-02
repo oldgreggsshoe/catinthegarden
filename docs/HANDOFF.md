@@ -4533,9 +4533,10 @@ sea-level-resolved visible surface. This keeps open-ocean depth non-zero, so Ger
 height/velocity drive buoyant bobbing instead of a fixed 0.255m equilibrium above a flat
 zero-depth shell. A dynamic rising/falling-wave unit test guards the behaviour.
 
-Surface vertical integration and the post-streaming correction also enforce a 0.02m
-above-sea-level core floor. The camera may remain below the water surface, but it cannot
-fall through the solid planet and trip the LOD selector's camera-radius assertion.
+Surface vertical integration and the post-streaming correction enforce a bounded -100m
+underwater safety floor. This is below the maximum storm trough but well above the solid
+planet; the LOD selector accepts that bounded radius, so a falling trough no longer pins the
+camera at sea level and reports a false multi-dozen-metre clearance.
 
 Interactive startup now moves to the deterministic deep open-ocean direction at 30.246944N,
 14.474559W (approximately 50km seaward of the authored coast), enters surface swimming mode,

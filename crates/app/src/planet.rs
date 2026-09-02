@@ -10,6 +10,10 @@ use glam::{DQuat, DVec3, IVec3, Mat4, Vec3, Vec4};
 /// coretypes radius, so a second literal here could silently place the runtime
 /// surface on a different sphere than the data it streams.
 pub use catinthegarden_coretypes::PLANET_RADIUS_METERS;
+/// Surface swimming may enter the water below sea level while remaining well
+/// outside the solid planet. This covers the maximum storm-wave trough and
+/// keeps LOD distance math defined until an underwater renderer exists.
+pub const MINIMUM_CAMERA_RADIUS_METERS: f64 = PLANET_RADIUS_METERS - 100.0;
 /// Full-screen post-processing switches. Keeping these beside the planet's
 /// other visual constants makes expensive presentation stages easy to bisect.
 pub const BLUR_ENABLED: bool = false;
@@ -1467,7 +1471,7 @@ impl PlanetLod {
         vertical_fov_radians: f64,
     ) -> LodUpdate {
         assert!(camera_world.is_finite());
-        assert!(camera_world.length() > PLANET_RADIUS_METERS);
+        assert!(camera_world.length() > MINIMUM_CAMERA_RADIUS_METERS);
         assert!(camera_forward.is_finite() && camera_forward.length_squared() > 0.0);
         assert!(camera_up.is_finite() && camera_up.length_squared() > 0.0);
         assert!(aspect_ratio.is_finite() && aspect_ratio > 0.0);
@@ -1530,7 +1534,7 @@ impl PlanetLod {
         baked_error_limit: Option<&dyn Fn(QuadtreeNode) -> u8>,
     ) -> LodUpdate {
         assert!(camera_world.is_finite());
-        assert!(camera_world.length() > PLANET_RADIUS_METERS);
+        assert!(camera_world.length() > MINIMUM_CAMERA_RADIUS_METERS);
         assert!(camera_forward.is_finite() && camera_forward.length_squared() > 0.0);
         assert!(camera_up.is_finite() && camera_up.length_squared() > 0.0);
         assert!(aspect_ratio.is_finite() && aspect_ratio > 0.0);
@@ -1561,7 +1565,7 @@ impl PlanetLod {
         baked_error_limit: Option<&dyn Fn(QuadtreeNode) -> u8>,
     ) -> LodUpdate {
         assert!(camera_world.is_finite());
-        assert!(camera_world.length() > PLANET_RADIUS_METERS);
+        assert!(camera_world.length() > MINIMUM_CAMERA_RADIUS_METERS);
         assert!(aspect_ratio.is_finite() && aspect_ratio > 0.0);
         assert!(vertical_fov_radians.is_finite() && vertical_fov_radians > 0.0);
         assert!(geometric_error_ratio.total().is_finite() && geometric_error_ratio.total() > 0.0);

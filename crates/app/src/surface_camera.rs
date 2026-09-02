@@ -11,8 +11,10 @@ pub const MAXIMUM_WALKABLE_SLOPE_DEGREES: f64 = 42.0;
 pub const GRAVITY_METERS_PER_SECOND_SQUARED: f64 = 9.806_65;
 pub const LAND_JUMP_SPEED_METERS_PER_SECOND: f64 = 5.2;
 pub const WATER_UPWARD_IMPULSE_METERS_PER_SECOND: f64 = 2.5;
-/// The camera may enter the water below sea level, but never the solid planet.
-pub const PLANET_CORE_CLEARANCE_METERS: f64 = 0.02;
+/// Lowest supported eye altitude relative to sea level. Storm troughs can be
+/// tens of metres below sea level; using a sea-level floor pins the camera
+/// there and falsely reports enormous water clearance.
+pub const PLANET_CORE_CLEARANCE_METERS: f64 = -100.0;
 
 const EFFECTIVE_BODY_HEIGHT_METERS: f64 = HUMAN_EYE_HEIGHT_METERS;
 const EFFECTIVE_BODY_DENSITY_RELATIVE_TO_WATER: f64 = 0.85;
@@ -274,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn swimming_cannot_fall_inside_the_planet_core() {
+    fn swimming_cannot_fall_below_the_underwater_safety_floor() {
         let mut state = SurfacePhysicsState {
             vertical_velocity_meters_per_second: -100.0,
             grounded: false,
