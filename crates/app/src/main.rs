@@ -1731,13 +1731,28 @@ impl State {
             let moved_radial = self.flight_local_position.normalize();
             let moved_eye_altitude =
                 self.flight_local_position.length() - planet::PLANET_RADIUS_METERS;
-            let resolved_eye_altitude = self.surface_physics.advance_vertical(
-                moved_eye_altitude,
-                environment.terrain_height_meters,
-                environment.water_surface,
-                jump_requested,
-                step_seconds,
-            );
+            let resolved_eye_altitude = if !surface_camera::WATER_BOBBING_ENABLED {
+                if let Some((water_height, _)) = environment.water_surface {
+                    self.surface_physics.settle_in_water();
+                    surface_camera::fixed_water_eye_altitude_meters(water_height)
+                } else {
+                    self.surface_physics.advance_vertical(
+                        moved_eye_altitude,
+                        environment.terrain_height_meters,
+                        environment.water_surface,
+                        jump_requested,
+                        step_seconds,
+                    )
+                }
+            } else {
+                self.surface_physics.advance_vertical(
+                    moved_eye_altitude,
+                    environment.terrain_height_meters,
+                    environment.water_surface,
+                    jump_requested,
+                    step_seconds,
+                )
+            };
             jump_requested = false;
             self.flight_local_position =
                 moved_radial * (planet::PLANET_RADIUS_METERS + resolved_eye_altitude);

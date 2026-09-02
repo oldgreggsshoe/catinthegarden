@@ -11,6 +11,11 @@ pub const MAXIMUM_WALKABLE_SLOPE_DEGREES: f64 = 42.0;
 pub const GRAVITY_METERS_PER_SECOND_SQUARED: f64 = 9.806_65;
 pub const LAND_JUMP_SPEED_METERS_PER_SECOND: f64 = 5.2;
 pub const WATER_UPWARD_IMPULSE_METERS_PER_SECOND: f64 = 2.5;
+/// Diagnostic mode: follow the rendered water surface exactly, without
+/// vertical inertia, buoyancy, gravity or jump impulses. Re-enable this when
+/// returning to the physical swimming model.
+pub const WATER_BOBBING_ENABLED: bool = false;
+pub const FIXED_WATER_EYE_CLEARANCE_METERS: f64 = 0.25;
 /// Lowest supported eye altitude relative to sea level. Storm troughs can be
 /// tens of metres below sea level; using a sea-level floor pins the camera
 /// there and falsely reports enormous water clearance.
@@ -41,6 +46,10 @@ pub fn movement_speed_meters_per_second(in_open_ocean: bool, speed_scale: f64) -
         WALK_SPEED_METERS_PER_SECOND
     };
     base * speed_scale
+}
+
+pub fn fixed_water_eye_altitude_meters(water_height_meters: f64) -> f64 {
+    water_height_meters + FIXED_WATER_EYE_CLEARANCE_METERS
 }
 
 pub fn walkable_step(
@@ -290,6 +299,11 @@ mod tests {
         assert!(!state.grounded);
         assert!(state.in_water);
         assert!(eye >= -0.5);
+    }
+
+    #[test]
+    fn fixed_water_test_height_is_a_small_offset_above_the_surface() {
+        assert_eq!(fixed_water_eye_altitude_meters(-28.0), -27.75);
     }
 
     #[test]

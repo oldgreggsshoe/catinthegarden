@@ -1,12 +1,11 @@
-The screenshot/behaviour had two causes:
+Temporary fixed-water diagnostic is enabled.
 
-1. Near shallow coasts, ground contact was winning even though a water surface existed. A jump could therefore become `grounded` and use land gravity. Water surfaces now remain swimming mode; the seabed is not treated as a land landing while water is present, so buoyancy handles the return.
-2. The renderer adds three camera-local vertical ripple waves (180m/70m/28m), but CPU collision only sampled the broad six-wave swell. The visual surface could therefore move up/down while the camera followed a different surface. CPU height and analytic velocity now include the same local ripples, with the same depth weighting.
+In water, `WATER_BOBBING_ENABLED = false` now bypasses gravity, buoyancy, jump impulse and vertical inertia. Each fixed substep places the camera at exactly `0.25m` above the CPU-sampled animated wave, so the camera should follow every crest and trough directly.
 
 Validation:
-- surface-camera tests: 8 passed;
-- ocean-focused tests: 23 passed;
-- release Quadro capture: `test-runs/manual/1788372972-912142/screenshots/capture-001.png`;
-- the follow-up spatial log shows signed clearance changing around the moving surface rather than staying pinned at sea level.
+- surface-camera tests: 9 passed;
+- workspace `cargo check`: passed (existing dead-code warnings only);
+- release Quadro capture: `test-runs/manual/1788373292-913273/screenshots/capture-001.png`;
+- its spatial log reports clearance values from `0.249999999` to `0.250000002m` across successive frames while the wave surface changes, with vertical velocity `+0.00m/s`.
 
-Committed and pushed with the water-surface synchronization fix.
+This is deliberately temporary. Set `WATER_BOBBING_ENABLED` back to `true` when you want to resume buoyancy/jump testing.

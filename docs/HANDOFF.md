@@ -4571,3 +4571,8 @@ surface query now mirrors their vertical height and analytic velocity at the cam
 not just the broad swell, so the camera follows the rendered near waves. Ground contact is
 disabled while a water surface exists; even very shallow coastal water remains swimming mode
 and a jump receives water buoyancy rather than silently becoming a land jump.
+
+For the current visual comparison, `WATER_BOBBING_ENABLED` is temporarily `false`: in water the
+camera is placed at a fixed 0.25m above the sampled wave every substep, with vertical velocity
+held at zero. This isolates whether the camera follows the animated rendered surface; restore it
+to `true` when evaluating buoyancy, jumps, and bobbing again.
