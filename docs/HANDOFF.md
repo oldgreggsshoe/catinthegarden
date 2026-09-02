@@ -4504,3 +4504,32 @@ Deterministic replay `ocean_low_sun_stability/1788289693-702643` reduces the rep
 move from 19.3% to 0.52% top-quarter luminance change, with the lateral control at 0.37%. Maximum
 storm replay `ocean_rough_horizon/1788289734-703019` passes its 30m gate at 39.352m and visibly
 self-occludes across successive crests.
+
+## Planet-surface walking and swimming camera - 2 September 2026
+
+Key `G` toggles a third interactive camera mode from the existing F4 low-flight camera. Entering
+surface mode resolves the resident terrain directly below the current camera and places a 1.70m
+human-eye camera on land, or at the buoyant equilibrium height in open ocean. Pressing `G` again
+returns to low flight at the same position; F4 still returns either interactive close mode to the
+saved orbit pose. Mouse look and WASD remain planet-relative, while `[` and `]` scale the 4.4704m/s
+walking and 2.0m/s swimming speeds through the existing bounded speed scale.
+
+Surface vertical motion is a fixed-substep gravity simulation rather than a surface clamp. Space
+applies one 5.2m/s land jump when grounded or one 2.5m/s upward impulse while submerged. Ocean
+buoyancy is derived from the submerged fraction of a simple 1.70m body, with vertical drag against
+the analytic Gerstner surface velocity; wave motion therefore lifts and releases the camera with
+inertia rather than copying wave height. Land contact has a 2cm tolerance for streamed-height
+jitter. Uphill movement is rejected above 42 degrees, while descent and entry into water remain
+allowed. Underwater rendering is intentionally not implemented yet.
+
+CPU ocean ownership now mirrors the shader's actual non-ice/non-lake, non-positive-height rule,
+including coastline samples whose categorical biome remains land. Wave depth, collision and
+buoyancy use unclamped bathymetry even in flat-triangle mode, whose hidden terrain mesh is clamped
+to sea level. The analytic CPU wave-height derivative supplies vertical water velocity and is
+regression-checked against a centred finite difference.
+
+Manual ground and jump captures are in `manual/1788349152-867669`: capture 001 is grounded at
+human-eye height, capture 002 is airborne at +1.36m/s after Space, and capture 003 returns under
+gravity. The forest renderer was disabled only for these diagnostic captures to isolate camera
+motion on the Quadro; normal runtime defaults are unchanged. All 342 non-ignored app tests pass,
+with seven diagnostic instruments ignored.

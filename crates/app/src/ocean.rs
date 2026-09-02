@@ -131,6 +131,29 @@ pub fn global_wave_height_meters(direction: DVec3, sim_time: f64, water_depth_me
         * shore_wave_weight(water_depth_meters)
 }
 
+pub fn global_wave_vertical_velocity_meters_per_second(
+    direction: DVec3,
+    sim_time: f64,
+    water_depth_meters: f64,
+) -> f64 {
+    let amplitude_scale = geometry_amplitude_scale(GLOBAL_OCEAN_STORM_INTENSITY);
+    let vertical_velocity = WAVES
+        .iter()
+        .map(|wave| {
+            let wave_number = std::f64::consts::TAU / wave.wavelength_meters;
+            let phase = wave_number
+                * (direction.dot(wave.direction.normalize()) * PLANET_RADIUS_METERS
+                    + wave.speed_meters_per_second * sim_time);
+            wave.amplitude_meters
+                * amplitude_scale
+                * wave_number
+                * wave.speed_meters_per_second
+                * phase.cos()
+        })
+        .sum::<f64>();
+    vertical_velocity * shore_wave_weight(water_depth_meters)
+}
+
 #[cfg(test)]
 mod tests {
     use glam::DVec3;
@@ -138,7 +161,8 @@ mod tests {
     use super::{
         GLOBAL_OCEAN_STORM_INTENSITY, MAXIMUM_WAVE_HEIGHT_METERS,
         OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE, OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE, WAVES,
-        geometry_amplitude_scale, global_wave_height_meters, maximum_wave_height_meters,
+        geometry_amplitude_scale, global_wave_height_meters,
+        global_wave_vertical_velocity_meters_per_second, maximum_wave_height_meters,
         shore_wave_weight, wave_height_stats,
     };
 
@@ -200,5 +224,21 @@ mod tests {
         assert!(shader.contains(
             "let shore_weight = smoothstep(2.0, OCEAN_SHORE_FULL_DEPTH_METERS, water_depth_meters);"
         ));
+    }
+
+    #[test]
+    fn analytic_wave_velocity_matches_a_small_time_difference() {
+        let direction = DVec3::new(0.3, 0.8, -0.5).normalize();
+        let time = 7.0;
+        let epsilon = 1.0e-4;
+        let finite_difference = (global_wave_height_meters(direction, time + epsilon, 1000.0)
+            - global_wave_height_meters(direction, time - epsilon, 1000.0))
+            / (2.0 * epsilon);
+        let analytic = global_wave_vertical_velocity_meters_per_second(direction, time, 1000.0);
+        assert!((analytic - finite_difference).abs() < 1.0e-5);
+        assert_eq!(
+            global_wave_vertical_velocity_meters_per_second(direction, time, 0.0),
+            0.0
+        );
     }
 }

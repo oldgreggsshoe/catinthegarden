@@ -1364,7 +1364,7 @@ impl TerrainRenderer {
         let tile = self.tile_cache.get(&source_key)?;
         let height = sample_height_cpu(&tile.heights_meters, source_uv);
         let biome = BiomeId::try_from(sample_biome_cpu(&tile.biome_ids, source_uv)).ok()?;
-        Some(height <= 0.0 && biome == BiomeId::Ocean)
+        Some(is_open_ocean_sample(height, biome))
     }
 
     /// Samples the currently resident outmap surface for one procedural forest
@@ -3944,6 +3944,16 @@ fn forest_slope_radians(
         .then(|| slope_u.hypot(slope_v).atan())
 }
 
+/// CPU mirror of `is_open_ocean_surface` in `shared_planet.wgsl`.
+///
+/// Some negative coastline samples retain a land biome after categorical
+/// material filtering, but the rendered analytic ocean owns every non-ice,
+/// non-lake sample at or below sea level. Camera collision and buoyancy must
+/// use that same ownership rule rather than requiring the Ocean biome id.
+fn is_open_ocean_sample(height_meters: f32, biome: BiomeId) -> bool {
+    height_meters <= 0.0 && !matches!(biome, BiomeId::Ice | BiomeId::Lake)
+}
+
 /// Proves that every height texel which can contribute to bilinear sampling
 /// over a resolved source rectangle lies strictly above sea level.
 ///
@@ -4001,9 +4011,9 @@ mod tests {
         active_node_at_direction, aligned_texture_row_bytes, conservative_outmap_height_bounds,
         cube_face_uv, downsample_srgb_rgba8, edge_stitch_info, edge_stitch_level_delta,
         fallback_uv_transform, forest_biome_owns_trees, forest_slope_radians,
-        forest_surface_is_eligible, height_footprint_is_strictly_land, lod_transition_nodes,
-        lod_transition_progress, node_intersects_source_edge_fade, nodes_share_lod_transition,
-        pack_terrain_info, padded_texture_rows, planet_shader_source,
+        forest_surface_is_eligible, height_footprint_is_strictly_land, is_open_ocean_sample,
+        lod_transition_nodes, lod_transition_progress, node_intersects_source_edge_fade,
+        nodes_share_lod_transition, pack_terrain_info, padded_texture_rows, planet_shader_source,
         purge_expired_lod_transitions, radial_triangle_radius, sample_biome_cpu, sample_height_cpu,
         sample_moisture_cpu, should_animate_lod_transition, source_tile_uv_at_direction,
         surface_detail_filter_meters, terrain_material_layer_texels, terrain_material_texel,
@@ -4037,6 +4047,15 @@ mod tests {
             focused.distance(expected) < 1.0e-5,
             "focus direction missed the first surface hit",
         );
+    }
+
+    #[test]
+    fn cpu_ocean_ownership_matches_the_rendered_non_ice_non_lake_shell() {
+        assert!(is_open_ocean_sample(-1.0, BiomeId::Ocean));
+        assert!(is_open_ocean_sample(-1.0, BiomeId::TemperateGrassland));
+        assert!(!is_open_ocean_sample(0.1, BiomeId::Ocean));
+        assert!(!is_open_ocean_sample(-1.0, BiomeId::Lake));
+        assert!(!is_open_ocean_sample(-1.0, BiomeId::Ice));
     }
 
     #[test]
@@ -4256,8 +4275,8 @@ mod tests {
         assert!(shader.contains("const OCEAN_RIPPLE_FULL_DISTANCE_METERS: f32 = 2000.0;"));
         assert!(shader.contains("const OCEAN_RIPPLE_FADE_DISTANCE_METERS: f32 = 8000.0;"));
         assert!(shader.contains("const OCEAN_RIPPLE_FIRST_AMPLITUDE: f32 = 1.8;"));
-        assert!(shader.contains("const OCEAN_RIPPLE_SECOND_AMPLITUDE: f32 = 0.64;"));
-        assert!(shader.contains("const OCEAN_RIPPLE_THIRD_AMPLITUDE: f32 = 0.20;"));
+        assert!(shader.contains("const OCEAN_RIPPLE_SECOND_AMPLITUDE: f32 = 1.64;"));
+        assert!(shader.contains("const OCEAN_RIPPLE_THIRD_AMPLITUDE: f32 = 1.20;"));
         assert!(shader.contains("const OCEAN_RIPPLE_FIRST_AXIS: vec3<f32>"));
         assert!(shader.contains("const OCEAN_RIPPLE_SECOND_AXIS: vec3<f32>"));
         assert!(shader.contains("const OCEAN_RIPPLE_THIRD_AXIS: vec3<f32>"));
