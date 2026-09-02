@@ -1604,13 +1604,28 @@ impl State {
             .bathymetry_height_meters_at(local_radial)
             .unwrap_or(fallback_terrain_height_meters.min(0.0));
         let depth_meters = (-bathymetry_meters).max(0.0);
-        let wave_height =
-            ocean::local_wave_height_meters(local_radial, ocean_time_seconds, depth_meters);
-        let wave_velocity = ocean::local_wave_vertical_velocity_meters_per_second(
-            local_radial,
-            ocean_time_seconds,
-            depth_meters,
-        );
+        let wave_height = if surface_camera::WATER_BOBBING_ENABLED {
+            ocean::local_wave_height_meters(local_radial, ocean_time_seconds, depth_meters)
+        } else {
+            // The fixed diagnostic uses the broad, mesh-resolvable swell only;
+            // the short ripples are intentionally omitted so a coarse raster
+            // triangle cannot put the camera visibly above/below its analytic
+            // centre sample.
+            ocean::global_wave_height_meters(local_radial, ocean_time_seconds, depth_meters)
+        };
+        let wave_velocity = if surface_camera::WATER_BOBBING_ENABLED {
+            ocean::local_wave_vertical_velocity_meters_per_second(
+                local_radial,
+                ocean_time_seconds,
+                depth_meters,
+            )
+        } else {
+            ocean::global_wave_vertical_velocity_meters_per_second(
+                local_radial,
+                ocean_time_seconds,
+                depth_meters,
+            )
+        };
         if bathymetry_meters >= wave_height {
             Some((bathymetry_meters, bathymetry_meters, 0.0))
         } else {
@@ -1784,6 +1799,21 @@ impl State {
         else {
             return false;
         };
+        if !surface_camera::WATER_BOBBING_ENABLED {
+            // The fixed diagnostic must be resolved after streaming as well as
+            // during movement. Otherwise a refreshed terrain/ocean sample can
+            // leave the eye at the old wave height for a frame, which is
+            // exactly the apparent above/below-surface drift this mode is meant
+            // to expose.
+            if let Some((water_height, _)) = environment.water_surface {
+                let fixed_eye_altitude =
+                    surface_camera::fixed_water_eye_altitude_meters(water_height);
+                self.flight_local_position =
+                    local_radial * (planet::PLANET_RADIUS_METERS + fixed_eye_altitude);
+                self.surface_physics.settle_in_water();
+                eye_altitude = fixed_eye_altitude;
+            }
+        }
         let minimum_eye_altitude =
             environment.terrain_height_meters + surface_camera::HUMAN_EYE_HEIGHT_METERS;
         if environment.water_surface.is_none()
@@ -1941,7 +1971,11 @@ impl State {
                 };
                 let eye_altitude = if let Some((water_height, _)) = environment.water_surface {
                     self.surface_physics.settle_in_water();
-                    water_height + surface_camera::equilibrium_eye_height_above_water_meters()
+                    if surface_camera::WATER_BOBBING_ENABLED {
+                        water_height + surface_camera::equilibrium_eye_height_above_water_meters()
+                    } else {
+                        surface_camera::fixed_water_eye_altitude_meters(water_height)
+                    }
                 } else {
                     self.surface_physics.settle_on_land();
                     environment.terrain_height_meters + surface_camera::HUMAN_EYE_HEIGHT_METERS

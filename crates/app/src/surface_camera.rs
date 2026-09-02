@@ -15,7 +15,10 @@ pub const WATER_UPWARD_IMPULSE_METERS_PER_SECOND: f64 = 2.5;
 /// vertical inertia, buoyancy, gravity or jump impulses. Re-enable this when
 /// returning to the physical swimming model.
 pub const WATER_BOBBING_ENABLED: bool = false;
-pub const FIXED_WATER_EYE_CLEARANCE_METERS: f64 = 0.25;
+// A one-metre diagnostic margin leaves room for f32 phase quantisation and
+// interpolation across the nearest rendered triangle while remaining close to
+// the water surface.
+pub const FIXED_WATER_EYE_CLEARANCE_METERS: f64 = 1.0;
 /// Lowest supported eye altitude relative to sea level. Storm troughs can be
 /// tens of metres below sea level; using a sea-level floor pins the camera
 /// there and falsely reports enormous water clearance.
@@ -303,7 +306,7 @@ mod tests {
 
     #[test]
     fn fixed_water_test_height_is_a_small_offset_above_the_surface() {
-        assert_eq!(fixed_water_eye_altitude_meters(-28.0), -27.75);
+        assert_eq!(fixed_water_eye_altitude_meters(-28.0), -27.0);
     }
 
     #[test]

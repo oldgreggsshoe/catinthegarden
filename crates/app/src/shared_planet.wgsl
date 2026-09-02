@@ -826,12 +826,19 @@ fn ocean_surface(
         + third.vertical_displacement + fourth.vertical_displacement
         + fifth.vertical_displacement + sixth.vertical_displacement;
     let slope = first.slope + second.slope + third.slope + fourth.slope + fifth.slope + sixth.slope;
-    let ripple = ocean_ripple(
+    var ripple = ocean_ripple(
         direction,
         time_seconds,
         camera_distance_meters,
         shore_weight,
     );
+    if camera.flat_triangle_options.z > 0.5 {
+        // Fixed water-following diagnostics compare against the broad CPU
+        // sample. Remove sub-mesh ripples whose wavelengths are below the
+        // coarse triangle spacing; otherwise interpolation can visibly put
+        // the eye above one vertex and below its neighbouring crest.
+        ripple = OceanWaveContribution(vec3<f32>(0.0), 0.0, vec3<f32>(0.0));
+    }
     let storm_intensity = clamp(camera.flat_triangle_options.y, 0.0, 1.0);
     let horizontal_transport = select(1.0, 0.0, camera.flat_triangle_options.z > 0.5);
     let storm_blend = smoothstep(0.15, 0.85, storm_intensity);

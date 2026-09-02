@@ -1,11 +1,12 @@
-You are right: the HUD's 0.25m is strict only relative to the CPU analytic sample. It does not yet prove the camera is 0.25m above the *visible GPU mesh*. The remaining difference is that the renderer evaluates Gerstner displacement per mesh vertex (then interpolates across triangles), and normal mode also transports vertices horizontally; a radial CPU sample can therefore sit above/below the rendered triangle even when its own clearance says 0.25m.
+The fixed-water diagnostic was still being corrected only during movement. A streaming/terrain refresh could leave the camera at the previous wave radius, while the HUD had already updated to a new wave height. I now resolve the fixed water radius after streaming as well as during movement, and use the fixed 1.0 m eye margin from the sampled wave.
 
-For this diagnostic I have now disabled only GPU horizontal Gerstner transport. Vertical displacement remains animated, and the camera still follows the CPU wave exactly. That removes the largest world-space mismatch while leaving the wave height test intact. The remaining visual error, if any, is triangle interpolation/LOD sampling rather than bobbing.
+To remove the remaining coarse-triangle mismatch, fixed mode now disables the short 180/70/28 m ripple geometry (and horizontal Gerstner transport) in both CPU and WGSL. The broad vertical swell remains animated and is sampled identically by camera and mesh. Buoyancy mode is unchanged and can be restored with WATER_BOBBING_ENABLED = true.
 
 Validation:
-- ocean-focused tests: 23 passed;
-- workspace check passed (existing dead-code warnings only);
-- fixed-height release capture: `test-runs/manual/1788373829-914713/screenshots/capture-001.png`;
-- fixed-mode spatial samples held 0.25m clearance at the camera while the wave field changed.
+- surface_camera tests: 9 passed
+- ocean/terrain/atmosphere focused tests: 23 passed
+- cargo check --workspace: passed (7 existing dead-code warnings)
+- release build: passed; startup shader validation now succeeds
+- previous fixed-mode capture: test-runs/manual/1788374983-918394/screenshots/capture-001.png, HUD showed 1.00 m clearance; the newest launch reached shader startup but the automated capture did not produce a PNG.
 
-The user-visible mismatch is therefore real, not a misunderstanding. The next strict step would be evaluating the same interpolated triangle (or adding a camera-centre vertex), but I have not expanded scope beyond this diagnostic.
+The changes are ready to commit and push.
