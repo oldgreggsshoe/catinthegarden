@@ -1,11 +1,12 @@
-The latest screenshot exposed a second, separate bug. The camera was being pinned at the old `PLANET_CORE_CLEARANCE_METERS = +0.02m` sea-level floor. When a wave fell to about -28m, the camera stayed at +0.02m, so the HUD correctly calculated roughly 28m of clearance—but that was artificial clearance, not buoyant following.
+The screenshot/behaviour had two causes:
 
-I changed the safety floor to -100m (below the 53m maximum storm trough), and widened the LOD radius assertions to accept that bounded underwater position while still preventing entry into the solid planet. The camera can now descend with a trough instead of sticking at sea level. Underwater rendering remains deferred.
+1. Near shallow coasts, ground contact was winning even though a water surface existed. A jump could therefore become `grounded` and use land gravity. Water surfaces now remain swimming mode; the seabed is not treated as a land landing while water is present, so buoyancy handles the return.
+2. The renderer adds three camera-local vertical ripple waves (180m/70m/28m), but CPU collision only sampled the broad six-wave swell. The visual surface could therefore move up/down while the camera followed a different surface. CPU height and analytic velocity now include the same local ripples, with the same depth weighting.
 
 Validation:
-- surface-camera tests: 7 passed;
-- planet LOD tests: 52 passed, 1 ignored;
-- release Quadro capture after the change: `test-runs/manual/1788371830-910283/screenshots/capture-001.png`;
-- the HUD now reports a normal ~3m clearance above a +23m crest, rather than a fixed sea-level position with a large trough clearance.
+- surface-camera tests: 8 passed;
+- ocean-focused tests: 23 passed;
+- release Quadro capture: `test-runs/manual/1788372972-912142/screenshots/capture-001.png`;
+- the follow-up spatial log shows signed clearance changing around the moving surface rather than staying pinned at sea level.
 
-Committed and pushed as the follow-up fix.
+Committed and pushed with the water-surface synchronization fix.

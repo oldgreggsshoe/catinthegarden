@@ -12,7 +12,6 @@ pub const MAXIMUM_WAVE_HEIGHT_METERS: f64 = 53.0;
 pub const GLOBAL_OCEAN_STORM_INTENSITY: f32 = 1.0;
 const OCEAN_SHORE_WAVE_START_DEPTH_METERS: f64 = 2.0;
 const OCEAN_SHORE_FULL_WAVE_DEPTH_METERS: f64 = 30.0;
-
 #[derive(Clone, Copy)]
 struct GerstnerWave {
     direction: DVec3,
@@ -20,6 +19,27 @@ struct GerstnerWave {
     amplitude_meters: f64,
     speed_meters_per_second: f64,
 }
+
+const OCEAN_RIPPLE_WAVES: [GerstnerWave; 3] = [
+    GerstnerWave {
+        direction: DVec3::new(0.72, 0.18, -0.67),
+        wavelength_meters: 180.0,
+        amplitude_meters: 1.8,
+        speed_meters_per_second: 14.0,
+    },
+    GerstnerWave {
+        direction: DVec3::new(-0.31, 0.91, 0.28),
+        wavelength_meters: 70.0,
+        amplitude_meters: 1.64,
+        speed_meters_per_second: 11.0,
+    },
+    GerstnerWave {
+        direction: DVec3::new(0.15, -0.58, 0.80),
+        wavelength_meters: 28.0,
+        amplitude_meters: 1.20,
+        speed_meters_per_second: 8.0,
+    },
+];
 
 const WAVES: [GerstnerWave; 6] = [
     GerstnerWave {
@@ -135,6 +155,25 @@ pub fn global_wave_height_meters(direction: DVec3, sim_time: f64, water_depth_me
         * shore_wave_weight(water_depth_meters)
 }
 
+/// Height at the camera-local ocean patch centre. The renderer adds these
+/// three shorter ripples inside its local geometry radius; collision must use
+/// the same vertical displacement or the camera will appear to ignore nearby
+/// crests while only following the broad swell.
+pub fn local_wave_height_meters(direction: DVec3, sim_time: f64, water_depth_meters: f64) -> f64 {
+    let shore_weight = shore_wave_weight(water_depth_meters);
+    let ripple_height = OCEAN_RIPPLE_WAVES
+        .iter()
+        .map(|wave| {
+            let phase = std::f64::consts::TAU / wave.wavelength_meters
+                * (direction.dot(wave.direction.normalize()) * PLANET_RADIUS_METERS
+                    + wave.speed_meters_per_second * sim_time);
+            wave.amplitude_meters * phase.sin()
+        })
+        .sum::<f64>();
+    global_wave_height_meters(direction, sim_time, water_depth_meters)
+        + ripple_height * shore_weight
+}
+
 pub fn global_wave_vertical_velocity_meters_per_second(
     direction: DVec3,
     sim_time: f64,
@@ -156,6 +195,26 @@ pub fn global_wave_vertical_velocity_meters_per_second(
         })
         .sum::<f64>();
     vertical_velocity * shore_wave_weight(water_depth_meters)
+}
+
+pub fn local_wave_vertical_velocity_meters_per_second(
+    direction: DVec3,
+    sim_time: f64,
+    water_depth_meters: f64,
+) -> f64 {
+    let shore_weight = shore_wave_weight(water_depth_meters);
+    let ripple_velocity = OCEAN_RIPPLE_WAVES
+        .iter()
+        .map(|wave| {
+            let wave_number = std::f64::consts::TAU / wave.wavelength_meters;
+            let phase = wave_number
+                * (direction.dot(wave.direction.normalize()) * PLANET_RADIUS_METERS
+                    + wave.speed_meters_per_second * sim_time);
+            wave.amplitude_meters * wave_number * wave.speed_meters_per_second * phase.cos()
+        })
+        .sum::<f64>();
+    global_wave_vertical_velocity_meters_per_second(direction, sim_time, water_depth_meters)
+        + ripple_velocity * shore_weight
 }
 
 #[cfg(test)]

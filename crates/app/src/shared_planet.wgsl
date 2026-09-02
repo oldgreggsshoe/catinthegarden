@@ -778,11 +778,9 @@ fn ocean_ripple(
     if distance_weight <= 0.0 || shore_weight <= 0.0 {
         return OceanWaveContribution(vec3<f32>(0.0), 0.0, vec3<f32>(0.0));
     }
-    // These wavelengths are deliberately normal-only. The former metre-scale
-    // ripples became sub-pixel from the 100m coastal start, so the animated
-    // surface was numerically changing but read as a flat blue sheet. Broad
-    // lighting waves remain resolvable across the visible bay without raising
-    // geometry or changing the conservative collision-height bound.
+    // These shorter waves are part of the local geometry as well as its normal:
+    // the CPU surface query mirrors their vertical displacement at the patch
+    // centre, so nearby camera buoyancy cannot drift from the visible water.
     let first = gerstner_wave(direction, OCEAN_RIPPLE_FIRST_AXIS, 180.0, OCEAN_RIPPLE_FIRST_AMPLITUDE, 14.0, 0.0, time_seconds);
     let second = gerstner_wave(direction, OCEAN_RIPPLE_SECOND_AXIS, 70.0, OCEAN_RIPPLE_SECOND_AMPLITUDE, 11.0, 0.0, time_seconds);
     let third = gerstner_wave(direction, OCEAN_RIPPLE_THIRD_AXIS, 28.0, OCEAN_RIPPLE_THIRD_AMPLITUDE, 8.0, 0.0, time_seconds);

@@ -1605,8 +1605,8 @@ impl State {
             .unwrap_or(fallback_terrain_height_meters.min(0.0));
         let depth_meters = (-bathymetry_meters).max(0.0);
         let wave_height =
-            ocean::global_wave_height_meters(local_radial, ocean_time_seconds, depth_meters);
-        let wave_velocity = ocean::global_wave_vertical_velocity_meters_per_second(
+            ocean::local_wave_height_meters(local_radial, ocean_time_seconds, depth_meters);
+        let wave_velocity = ocean::local_wave_vertical_velocity_meters_per_second(
             local_radial,
             ocean_time_seconds,
             depth_meters,

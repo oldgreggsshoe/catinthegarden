@@ -4565,3 +4565,9 @@ surface (the six-wave storm bound is 52.6625m, conservatively rounded to 53m), w
 shader-scale regression. While submerged, a bounded restoring buoyancy term supplements
 Archimedes and water-relative drag; it draws the eye toward the same 0.255m still-water
 equilibrium without pinning it to the animated wave.
+
+The local ocean patch also carries three shorter geometric ripples (180m/70m/28m). The CPU
+surface query now mirrors their vertical height and analytic velocity at the camera-centre,
+not just the broad swell, so the camera follows the rendered near waves. Ground contact is
+disabled while a water surface exists; even very shallow coastal water remains swimming mode
+and a jump receives water buoyancy rather than silently becoming a land jump.

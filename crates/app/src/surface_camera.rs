@@ -128,6 +128,7 @@ impl SurfacePhysicsState {
 
             if eye_altitude_meters <= ground_eye_height + GROUND_CONTACT_EPSILON_METERS
                 && self.vertical_velocity_meters_per_second <= 0.0
+                && water_surface.is_none()
             {
                 eye_altitude_meters = ground_eye_height;
                 self.vertical_velocity_meters_per_second = 0.0;
@@ -145,7 +146,7 @@ impl SurfacePhysicsState {
             remaining -= step;
         }
 
-        if eye_altitude_meters < ground_eye_height {
+        if eye_altitude_meters < ground_eye_height && water_surface.is_none() {
             eye_altitude_meters = ground_eye_height;
             self.vertical_velocity_meters_per_second =
                 self.vertical_velocity_meters_per_second.max(0.0);
@@ -273,6 +274,22 @@ mod tests {
         );
         state.advance_vertical(after_impulse, -100.0, Some((0.0, 0.0)), false, 0.25);
         assert!(state.vertical_velocity_meters_per_second < WATER_UPWARD_IMPULSE_METERS_PER_SECOND);
+    }
+
+    #[test]
+    fn shallow_water_stays_swimming_instead_of_becoming_grounded() {
+        let mut state = SurfacePhysicsState::default();
+        state.settle_in_water();
+        let eye = state.advance_vertical(
+            equilibrium_eye_height_above_water_meters(),
+            -0.5,
+            Some((0.0, 0.0)),
+            false,
+            1.0 / 60.0,
+        );
+        assert!(!state.grounded);
+        assert!(state.in_water);
+        assert!(eye >= -0.5);
     }
 
     #[test]
