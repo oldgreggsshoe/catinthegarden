@@ -5,4 +5,4 @@ The stationary-water log shows the camera in `swimming` mode with surface cleara
 
 I changed only the surface-mode HUD formatting: it now reports clearance to two decimals; flight/orbit altitude remains rounded to whole metres. No buoyancy tuning was needed based on the measured behaviour.
 
-Validation: `cargo fmt --all -- --check`, 7 focused surface-camera tests, all 344 non-ignored app tests, and `cargo check --workspace` passed. The change is committed and pushed as `COMMIT_HASH`.
+Validation: `cargo fmt --all -- --check`, 7 focused surface-camera tests, all 344 non-ignored app tests, and `cargo check --workspace` passed. The change is committed and pushed as `2f35d97`.
