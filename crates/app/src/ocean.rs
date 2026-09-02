@@ -2,9 +2,13 @@ use glam::DVec3;
 
 use crate::planet::PLANET_RADIUS_METERS;
 
-const OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE: f64 = 4.0;
-const OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE: f64 = 25.0;
-pub const MAXIMUM_WAVE_HEIGHT_METERS: f64 = 24.0;
+// Keep these values byte-for-byte aligned with the raster/ray WGSL ocean
+// surface. Collision and buoyancy must sample the same displaced water that
+// the player sees; a stale CPU scale leaves a camera apparently above water
+// while the rendered crest has already passed over it.
+pub const OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE: f64 = 44.0;
+pub const OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE: f64 = 55.0;
+pub const MAXIMUM_WAVE_HEIGHT_METERS: f64 = 53.0;
 pub const GLOBAL_OCEAN_STORM_INTENSITY: f32 = 1.0;
 const OCEAN_SHORE_WAVE_START_DEPTH_METERS: f64 = 2.0;
 const OCEAN_SHORE_FULL_WAVE_DEPTH_METERS: f64 = 30.0;
@@ -224,6 +228,14 @@ mod tests {
         assert!(shader.contains(
             "let shore_weight = smoothstep(2.0, OCEAN_SHORE_FULL_DEPTH_METERS, water_depth_meters);"
         ));
+    }
+
+    #[test]
+    fn cpu_wave_scale_matches_the_rendered_ocean_scale() {
+        let shader = include_str!("shared_planet.wgsl");
+        assert!(shader.contains("const OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE: f32 = 44.0;"));
+        assert!(shader.contains("const OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE: f32 = 55.0;"));
+        assert!((maximum_wave_height_meters(1.0) - 52.6625).abs() < 1.0e-9);
     }
 
     #[test]

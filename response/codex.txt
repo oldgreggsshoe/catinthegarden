@@ -1,9 +1,17 @@
-I checked the newest manual screenshots (`test-runs/manual/1788367332-888340/screenshots/`). The apparent mismatch is mostly a label problem: in surface mode the displayed “Altitude” is **camera clearance above the currently sampled wave surface**, not the wave's absolute elevation. The screenshots show 0.23-0.43m clearance and signed vertical velocity, which is the expected bobbing behaviour; it does not show the several-metre wave elevation itself.
+Surface-camera clearance diagnosis and fix
 
-The physics already follows the requested fake model: a 1.70m body, gravity, submerged-fraction buoyancy toward the still-water equilibrium, water-relative drag, independent vertical velocity, and jump/thrust impulses. Existing tests cover rising/falling waves, equilibrium, gravity return, and water thrust.
+The screenshot was a real CPU/GPU disagreement, not a HUD formatting problem. The WGSL ocean was rendering the 44x calm / 55x storm Gerstner displacement, while the CPU collision/buoyancy query still used 4x / 25x. Therefore the HUD could report positive clearance above the CPU wave while the rendered crest was already above the camera.
 
-I made a small observability fix only: surface HUD now displays both `Clearance` and `wave surface` separately. No risky physics rewrite was started under the weekly usage limit.
+Fixes:
+- synchronized `crates/app/src/ocean.rs` with the WGSL displacement scales;
+- updated the conservative storm crest bound to 53m (the six-wave sum is 52.6625m);
+- added a regression that checks the CPU constants against the shader constants;
+- retained the bounded submerged restoring buoyancy term so the camera recovers toward the 0.255m still-water eye equilibrium without snapping to each wave.
 
-Seabed question: yes, the baked outmap already contains the needed data. Its raw R32F height tiles preserve negative bathymetry, and `bathymetry_height_meters_at` already reads those values for water depth/buoyancy. Rendering currently clamps the visible ocean to the sea-level shell and deliberately does not draw underwater; later we can reuse the same streamed bathymetry for a seabed pass.
+Validation:
+- focused surface-camera tests: 7 passed;
+- focused ocean tests: 23 passed;
+- `cargo check --workspace`: passed (only existing dead-code warnings);
+- release Quadro startup capture after the fix: `test-runs/manual/1788370547-906836/screenshots/capture-001.png`. It reports `Clearance: 3.52 m | wave surface: +22.59 m` while viewing the rendered storm sea from above it.
 
-Validation: formatting, 7 focused surface tests, all 345 non-ignored app tests, and workspace check passed. Committed/pushed as `0525b11`.
+The earlier capture `manual/1788369179-891808` is the reproduced mismatch. Future undersea rendering can reuse the existing negative R32F bathymetry in the active outmap tiles; the current renderer deliberately clamps the visible ocean to its sea-level shell, so no separate seabed bake is needed.

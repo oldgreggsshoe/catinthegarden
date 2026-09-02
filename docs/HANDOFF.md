@@ -4537,8 +4537,9 @@ Surface vertical integration and the post-streaming correction also enforce a 0.
 above-sea-level core floor. The camera may remain below the water surface, but it cannot
 fall through the solid planet and trip the LOD selector's camera-radius assertion.
 
-Interactive startup now moves to the deterministic open-ocean direction at 29.676510N,
-14.077810W, enters surface swimming mode, and uses the existing global maximum storm-wave scale.
+Interactive startup now moves to the deterministic deep open-ocean direction at 30.246944N,
+14.474559W (approximately 50km seaward of the authored coast), enters surface swimming mode,
+and uses the existing global maximum storm-wave scale.
 The camera begins at the buoyant equilibrium height with a four-degree downward pitch across the
 water; scenario launches and the manual `G` toggle retain their authored/current-location paths.
 
@@ -4553,3 +4554,13 @@ successive captures measured 0.07-0.52m of camera clearance above the changing G
 with vertical velocity changing sign; the HUD now shows surface-mode clearance to centimetre
 precision instead of rounding it to zero. In surface mode the HUD also reports the sampled wave
 surface elevation separately, so clearance is not confused with the wave's absolute height.
+
+## Storm-water CPU/GPU scale and buoyancy correction - 2 September 2026
+
+The rendered ocean's calm/storm displacement scales are 44x/55x, while the CPU collision
+path had retained the older 4x/25x values. That mismatch allowed a visible crest to pass over
+the camera while the HUD still reported positive clearance. CPU constants now match the WGSL
+surface (the six-wave storm bound is 52.6625m, conservatively rounded to 53m), with a focused
+shader-scale regression. While submerged, a bounded restoring buoyancy term supplements
+Archimedes and water-relative drag; it draws the eye toward the same 0.255m still-water
+equilibrium without pinning it to the animated wave.

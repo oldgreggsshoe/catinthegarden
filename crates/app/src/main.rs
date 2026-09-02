@@ -157,9 +157,9 @@ const COASTAL_START_PITCH_RADIANS: f64 = -8.0_f64.to_radians();
 /// It is a known deep-ocean point a few kilometres seaward of the authored
 /// coast start, so surface mode can resolve buoyancy immediately.
 const STORM_OCEAN_START_DIRECTION: glam::DVec3 = glam::DVec3::new(
-    0.842_740_245_302_453,
-    0.495_102_503_355_887,
-    0.211_334_782_083_537,
+    0.836_442_275_001_636,
+    0.503_727_905_284_262,
+    0.215_922_481_525_239,
 );
 const STORM_OCEAN_START_PITCH_RADIANS: f64 = -4.0_f64.to_radians();
 const PLANET_ROTATION_SCALE_STEP: f64 = 2.0;
@@ -4652,8 +4652,8 @@ mod tests {
         assert!(radial.dot(tangent).abs() < 1.0e-12);
         assert!(direction.dot(radial) < 0.0);
         assert!(direction.dot(tangent) > 0.99);
-        assert!((radial.y.asin().to_degrees() - 29.676_509_751).abs() < 1.0e-6);
-        assert!((geographic_longitude_degrees(radial) + 14.077_810_388).abs() < 1.0e-6);
+        assert!((radial.y.asin().to_degrees() - 30.246_944_237).abs() < 1.0e-6);
+        assert!((geographic_longitude_degrees(radial) + 14.474_559_060).abs() < 1.0e-6);
     }
 
     #[test]

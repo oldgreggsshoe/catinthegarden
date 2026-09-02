@@ -17,6 +17,11 @@ pub const PLANET_CORE_CLEARANCE_METERS: f64 = 0.02;
 const EFFECTIVE_BODY_HEIGHT_METERS: f64 = HUMAN_EYE_HEIGHT_METERS;
 const EFFECTIVE_BODY_DENSITY_RELATIVE_TO_WATER: f64 = 0.85;
 const WATER_VERTICAL_DRAG_PER_SECOND: f64 = 3.0;
+// Archimedes alone is too weak to keep a human-scale eye above a rapidly
+// rising storm crest. This bounded spring draws the submerged body toward the
+// same still-water equilibrium without pinning it to the animated surface.
+const WATER_BUOYANCY_RESTORING_ACCELERATION_PER_METER: f64 = 6.0;
+const WATER_BUOYANCY_MAX_RESTORING_ACCELERATION: f64 = 24.0;
 const MAXIMUM_PHYSICS_STEP_SECONDS: f64 = 1.0 / 120.0;
 pub const GROUND_CONTACT_EPSILON_METERS: f64 = 0.02;
 
@@ -107,6 +112,13 @@ impl SurfacePhysicsState {
                     acceleration += WATER_VERTICAL_DRAG_PER_SECOND
                         * submerged_fraction
                         * (water_vertical_velocity - self.vertical_velocity_meters_per_second);
+                    let resting_error = water_height + equilibrium_eye_height_above_water_meters()
+                        - eye_altitude_meters;
+                    acceleration +=
+                        (resting_error * WATER_BUOYANCY_RESTORING_ACCELERATION_PER_METER).clamp(
+                            -WATER_BUOYANCY_MAX_RESTORING_ACCELERATION,
+                            WATER_BUOYANCY_MAX_RESTORING_ACCELERATION,
+                        ) * submerged_fraction;
                 }
             }
             self.vertical_velocity_meters_per_second += acceleration * step;
