@@ -4533,8 +4533,12 @@ sea-level-resolved visible surface. This keeps open-ocean depth non-zero, so Ger
 height/velocity drive buoyant bobbing instead of a fixed 0.255m equilibrium above a flat
 zero-depth shell. A dynamic rising/falling-wave unit test guards the behaviour.
 
+Surface vertical integration and the post-streaming correction also enforce a 0.02m
+above-sea-level core floor. The camera may remain below the water surface, but it cannot
+fall through the solid planet and trip the LOD selector's camera-radius assertion.
+
 Manual ground and jump captures are in `manual/1788349152-867669`: capture 001 is grounded at
 human-eye height, capture 002 is airborne at +1.36m/s after Space, and capture 003 returns under
 gravity. The forest renderer was disabled only for these diagnostic captures to isolate camera
-motion on the Quadro; normal runtime defaults are unchanged. All 342 non-ignored app tests pass,
+motion on the Quadro; normal runtime defaults are unchanged. All 344 non-ignored app tests pass,
 with seven diagnostic instruments ignored.

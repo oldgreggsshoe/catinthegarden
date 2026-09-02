@@ -1707,7 +1707,16 @@ impl State {
     ) -> bool {
         let previous_position = self.flight_local_position;
         let local_radial = previous_position.normalize();
-        let eye_altitude = previous_position.length() - planet::PLANET_RADIUS_METERS;
+        let mut eye_altitude = previous_position.length() - planet::PLANET_RADIUS_METERS;
+        if eye_altitude <= surface_camera::PLANET_CORE_CLEARANCE_METERS {
+            eye_altitude = surface_camera::PLANET_CORE_CLEARANCE_METERS;
+            self.flight_local_position =
+                local_radial * (planet::PLANET_RADIUS_METERS + eye_altitude);
+            self.surface_physics.vertical_velocity_meters_per_second = self
+                .surface_physics
+                .vertical_velocity_meters_per_second
+                .max(0.0);
+        }
         let Some(environment) =
             self.surface_environment_at(local_radial, eye_altitude, ocean_time_seconds)
         else {

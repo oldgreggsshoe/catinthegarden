@@ -1,16 +1,13 @@
-Fixed the buoyancy bug and pushed it.
+Fixed the rare inside-planet panic and pushed it.
 
-Root cause: the surface camera was asking the rendered-surface sampler for ocean depth. That sampler intentionally resolves all ocean-floor heights to sea level, so depth was always zero and the wave amplitude/velocity were effectively disabled. The camera therefore remained at the static 0.255m equilibrium height.
+Cause: the new raw bathymetry correctly enabled ocean buoyancy, but the swimming collision floor was still the negative ocean-floor height. In a deep fall/jump state the camera could pass below sea-level radius, then the LOD selector rejected it.
 
-Changes:
-- Added a resident raw-bathymetry query for ocean depth.
-- Buoyancy now receives real depth, wave height and wave vertical velocity.
-- Added a rising/falling-wave regression proving the camera actually bobs.
-- Land walking, gravity, slopes and jumping are unchanged.
+Fix:
+- Added a hard 0.02m-above-sea-level planet-core floor to surface vertical integration.
+- Applied the same guard after streamed-terrain correction.
+- Added a regression test for a fast downward underwater state.
 
 Validation:
-- 343 app tests passed.
+- 344 app tests passed.
 - `cargo check --workspace` passed.
-- Commit `b8c74b3` pushed to `origin/experiment/instant-global-forests`.
-
-Pronunciation note: Americans generally say “buoyant” as **BOY-ant**, not “boo-ee-ant”. “Buoy” is usually **BOO-ee**, because English enjoys inconsistency.
+- Current change is committed and will be pushed with the final commit.

@@ -11,6 +11,8 @@ pub const MAXIMUM_WALKABLE_SLOPE_DEGREES: f64 = 42.0;
 pub const GRAVITY_METERS_PER_SECOND_SQUARED: f64 = 9.806_65;
 pub const LAND_JUMP_SPEED_METERS_PER_SECOND: f64 = 5.2;
 pub const WATER_UPWARD_IMPULSE_METERS_PER_SECOND: f64 = 2.5;
+/// The camera may enter the water below sea level, but never the solid planet.
+pub const PLANET_CORE_CLEARANCE_METERS: f64 = 0.02;
 
 const EFFECTIVE_BODY_HEIGHT_METERS: f64 = HUMAN_EYE_HEIGHT_METERS;
 const EFFECTIVE_BODY_DENSITY_RELATIVE_TO_WATER: f64 = 0.85;
@@ -119,6 +121,12 @@ impl SurfacePhysicsState {
             } else {
                 self.grounded = false;
             }
+            if eye_altitude_meters <= PLANET_CORE_CLEARANCE_METERS {
+                eye_altitude_meters = PLANET_CORE_CLEARANCE_METERS;
+                self.vertical_velocity_meters_per_second =
+                    self.vertical_velocity_meters_per_second.max(0.0);
+                self.grounded = false;
+            }
             self.update_medium(eye_altitude_meters, water_surface);
             remaining -= step;
         }
@@ -128,6 +136,12 @@ impl SurfacePhysicsState {
             self.vertical_velocity_meters_per_second =
                 self.vertical_velocity_meters_per_second.max(0.0);
             self.grounded = true;
+        }
+        if eye_altitude_meters <= PLANET_CORE_CLEARANCE_METERS {
+            eye_altitude_meters = PLANET_CORE_CLEARANCE_METERS;
+            self.vertical_velocity_meters_per_second =
+                self.vertical_velocity_meters_per_second.max(0.0);
+            self.grounded = false;
         }
         eye_altitude_meters
     }
@@ -245,5 +259,17 @@ mod tests {
         );
         state.advance_vertical(after_impulse, -100.0, Some((0.0, 0.0)), false, 0.25);
         assert!(state.vertical_velocity_meters_per_second < WATER_UPWARD_IMPULSE_METERS_PER_SECOND);
+    }
+
+    #[test]
+    fn swimming_cannot_fall_inside_the_planet_core() {
+        let mut state = SurfacePhysicsState {
+            vertical_velocity_meters_per_second: -100.0,
+            grounded: false,
+            in_water: true,
+        };
+        let eye = state.advance_vertical(0.1, -1_000.0, Some((-100.0, 0.0)), false, 1.0);
+        assert!(eye >= PLANET_CORE_CLEARANCE_METERS);
+        assert!(state.vertical_velocity_meters_per_second >= 0.0);
     }
 }
