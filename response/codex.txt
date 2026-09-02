@@ -14,4 +14,4 @@ The startup log confirms `camera_mode: surface walking/swimming`; the first fram
 moving water.
 
 Validation: `cargo fmt --all -- --check`, the full app suite (345 passed, 7 ignored), and
-`cargo check --workspace` passed. Pushed on `experiment/instant-global-forests` as `COMMIT_HASH`.
+`cargo check --workspace` passed. Pushed on `experiment/instant-global-forests` as `36418be`.
