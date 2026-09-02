@@ -2,6 +2,16 @@
 # will have compiled files and executables
 debug
 target
+# AGENTS.md requires every staged checkout to get its own CARGO_TARGET_DIR, so
+# sibling build trees are the norm rather than the exception. The bare `target`
+# rule above never covered them, leaving several GB a stray `git add -A` would
+# sweep in -- the same accident the test-runs/ note below records at 46 MB.
+target-*/
+.target-*/
+# Scratch space for staged checkouts, bake experiments, and captured replies.
+tmp/
+tmp-*/
+response/
 # Any depth: crates/app/test-runs/ was not covered by a root-anchored rule, and
 # 46 MB of run artifacts got committed from a stray `git add -A`.
 test-runs/

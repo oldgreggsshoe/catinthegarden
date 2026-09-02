@@ -687,9 +687,11 @@ mod tests {
         assert!(sky_view.contains(
             "let optical_sample_altitude = sample_altitude / ATMOSPHERE_VERTICAL_SCALE;"
         ));
-        assert!(sky_view.contains(
-            "let optical_segment_length = segment_length / ATMOSPHERE_VERTICAL_SCALE;"
-        ));
+        assert!(
+            sky_view.contains(
+                "let optical_segment_length = segment_length / ATMOSPHERE_VERTICAL_SCALE;"
+            )
+        );
         assert!(sky_view.contains("PLANET_RADIUS_METERS + ATMOSPHERE_HEIGHT_METERS"));
         assert!(sky_view.contains("medium_extinction(optical_sample_altitude)"));
         assert!(sky_view.contains("medium_scattering(optical_sample_altitude)"));

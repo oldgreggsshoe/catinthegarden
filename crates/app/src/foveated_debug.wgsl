@@ -21,7 +21,6 @@ const RAY_DETAIL_HIT_REACH_FACTOR: f32 = 3.0;
 /// Relief below which the macro hit is already the answer.
 const RAY_DETAIL_HIT_MIN_RELIEF_METERS: f32 = 0.05;
 const RAY_SKY_SAMPLE_COUNT: u32 = 16u;
-const RAY_SKY_DENSITY_SAMPLE_EXPONENT: f32 = 3.0;
 const RAY_ANTISOLAR_TWILIGHT_MIN_SCATTER: f32 = 0.48;
 const RAY_SKY_ATMOSPHERE_SATURATION: f32 = 1.3;
 const RAY_OCEAN_SHELL_RADIUS_METERS: f32 = PLANET_RADIUS_METERS + 1.0;
@@ -1104,24 +1103,6 @@ fn ray_twilight_directional_weight(
     );
 }
 
-fn ray_density_sample_fraction(fraction: f32, closest_fraction: f32) -> f32 {
-    if closest_fraction <= 0.05 {
-        return pow(fraction, RAY_SKY_DENSITY_SAMPLE_EXPONENT);
-    }
-    if closest_fraction >= 0.95 {
-        return 1.0 - pow(1.0 - fraction, RAY_SKY_DENSITY_SAMPLE_EXPONENT);
-    }
-    if fraction <= 0.5 {
-        let local_fraction = fraction * 2.0;
-        return closest_fraction
-            * (1.0 - pow(1.0 - local_fraction, RAY_SKY_DENSITY_SAMPLE_EXPONENT));
-    }
-    let local_fraction = (fraction - 0.5) * 2.0;
-    return closest_fraction
-        + (1.0 - closest_fraction)
-            * pow(local_fraction, RAY_SKY_DENSITY_SAMPLE_EXPONENT);
-}
-
 fn ray_local_solar_transmittance(
     sample_altitude: f32,
     sample_radius: f32,
@@ -1181,8 +1162,8 @@ fn ray_atmosphere_radiance(ray: vec3<f32>, radial_dot_ray: f32, detail: f32) -> 
         }
         let fraction_start = f32(index) / f32(sample_count);
         let fraction_end = f32(index + 1u) / f32(sample_count);
-        let sample_start = ray_density_sample_fraction(fraction_start, closest_fraction);
-        let sample_end = ray_density_sample_fraction(fraction_end, closest_fraction);
+        let sample_start = aerial_density_sample_fraction(fraction_start, closest_fraction);
+        let sample_end = aerial_density_sample_fraction(fraction_end, closest_fraction);
         let sample_length = (sample_end - sample_start) * path_length;
         let distance_meters = start_distance
             + 0.5 * (sample_start + sample_end) * path_length;

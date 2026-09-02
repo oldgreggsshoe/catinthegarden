@@ -592,7 +592,10 @@ impl RainRenderer {
     ) -> Self {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("weather rain pipeline layout"),
-            bind_group_layouts: &[Some(camera_bind_group_layout), Some(field_bind_group_layout)],
+            bind_group_layouts: &[
+                Some(camera_bind_group_layout),
+                Some(field_bind_group_layout),
+            ],
             immediate_size: 0,
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -818,9 +821,8 @@ fn pad_field_rows(data: &[u8]) -> Vec<u8> {
 }
 
 fn shell_vertices() -> Vec<CloudVertex> {
-    let mut vertices = Vec::with_capacity(
-        CLOUD_SHELL_LONGITUDE_SEGMENTS * CLOUD_SHELL_LATITUDE_SEGMENTS * 6,
-    );
+    let mut vertices =
+        Vec::with_capacity(CLOUD_SHELL_LONGITUDE_SEGMENTS * CLOUD_SHELL_LATITUDE_SEGMENTS * 6);
     for y in 0..CLOUD_SHELL_LATITUDE_SEGMENTS {
         let v0 = y as f32 / CLOUD_SHELL_LATITUDE_SEGMENTS as f32;
         let v1 = (y + 1) as f32 / CLOUD_SHELL_LATITUDE_SEGMENTS as f32;
@@ -952,9 +954,8 @@ mod tests {
 
     #[test]
     fn cloud_detail_drift_uses_simulated_weather_time() {
-        let one_real_second_of_weather = super::cloud_drift_radians(
-            crate::weather::INTERACTIVE_WEATHER_TIME_SCALE,
-        );
+        let one_real_second_of_weather =
+            super::cloud_drift_radians(crate::weather::INTERACTIVE_WEATHER_TIME_SCALE);
         assert!((one_real_second_of_weather - 0.0072).abs() < 1.0e-6);
     }
 
@@ -967,14 +968,13 @@ mod tests {
                 let b = glam::Vec3::from_array(triangle[1].position);
                 let c = glam::Vec3::from_array(triangle[2].position);
                 let normal = (b - a).cross(c - a);
-                (normal.length_squared() > 1.0e-12)
-                    .then(|| normal.normalize().dot(a).abs())
+                (normal.length_squared() > 1.0e-12).then(|| normal.normalize().dot(a).abs())
             })
             .fold(f32::INFINITY, f32::min);
-        let minimum_clearance_meters =
-            (crate::planet::PLANET_RADIUS_METERS as f32 + super::CLOUD_SHELL_ALTITUDE_METERS)
-                * minimum_unit_face_radius
-                - crate::planet::PLANET_RADIUS_METERS as f32;
+        let minimum_clearance_meters = (crate::planet::PLANET_RADIUS_METERS as f32
+            + super::CLOUD_SHELL_ALTITUDE_METERS)
+            * minimum_unit_face_radius
+            - crate::planet::PLANET_RADIUS_METERS as f32;
 
         assert!(
             minimum_clearance_meters >= 85_000.0,

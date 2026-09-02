@@ -396,7 +396,10 @@ impl WeatherFields {
             .iter()
             .enumerate()
             .map(|(index, cell)| {
-                initial_cell_state(cell.direction, terrain_samples.map(|samples| samples[index]))
+                initial_cell_state(
+                    cell.direction,
+                    terrain_samples.map(|samples| samples[index]),
+                )
             })
             .collect::<Vec<_>>();
         let conservation_baseline = conservation_baseline(grid, &cells);
@@ -522,18 +525,17 @@ impl WeatherFields {
                 state.cloud_water = (cloud_water - evaporated).clamp(0.0, 1.0) as f32;
                 latent_tendency = -evaporated * WEATHER_LATENT_HEATING_KELVIN_PER_UNIT;
             }
-            state.temperature_kelvin = (f64::from(state.temperature_kelvin) + latent_tendency)
-                .clamp(180.0, 340.0) as f32;
+            state.temperature_kelvin =
+                (f64::from(state.temperature_kelvin) + latent_tendency).clamp(180.0, 340.0) as f32;
             state.latent_temperature_tendency_kelvin = latent_tendency as f32;
             let uplift_factor = (f64::from(state.orographic_uplift_meters_per_second).max(0.0)
                 / WEATHER_MAX_OROGRAPHIC_UPLIFT_METERS_PER_SECOND)
                 .clamp(0.0, 1.0);
             let latent_factor =
                 (latent_tendency.abs() / WEATHER_STORM_LATENT_HEAT_SCALE_KELVIN).clamp(0.0, 1.0);
-            state.storm_intensity = (0.55 * f64::from(state.cloud_water)
-                + 0.30 * uplift_factor
-                + 0.15 * latent_factor)
-                .clamp(0.0, 1.0) as f32;
+            state.storm_intensity =
+                (0.55 * f64::from(state.cloud_water) + 0.30 * uplift_factor + 0.15 * latent_factor)
+                    .clamp(0.0, 1.0) as f32;
         }
     }
 
@@ -559,21 +561,18 @@ impl WeatherFields {
             state.cloud_water = (cloud_water - removed).clamp(0.0, 1.0) as f32;
             let ocean_fraction = ocean_fraction_from_albedo(f64::from(state.surface_albedo));
             let land_fraction = 1.0 - ocean_fraction;
-            let freezing = ((273.15 - f64::from(state.temperature_kelvin)) / 6.0)
-                .clamp(0.0, 1.0);
-            let snow_input = removed
-                * land_fraction
-                * freezing
-                * WEATHER_SNOW_ACCUMULATION_FRACTION;
+            let freezing = ((273.15 - f64::from(state.temperature_kelvin)) / 6.0).clamp(0.0, 1.0);
+            let snow_input =
+                removed * land_fraction * freezing * WEATHER_SNOW_ACCUMULATION_FRACTION;
             let melt_relaxation = exponential_relaxation_weight(
                 step_seconds,
                 WEATHER_SNOW_MELT_TIME_CONSTANT_SECONDS,
             );
-            let melt_fraction = ((f64::from(state.temperature_kelvin) - 268.0) / 12.0)
-                .clamp(0.0, 1.0);
+            let melt_fraction =
+                ((f64::from(state.temperature_kelvin) - 268.0) / 12.0).clamp(0.0, 1.0);
             let melted = f64::from(state.snow_cover) * melt_fraction * melt_relaxation;
-            state.snow_cover = (f64::from(state.snow_cover) + snow_input - melted)
-                .clamp(0.0, 1.0) as f32;
+            state.snow_cover =
+                (f64::from(state.snow_cover) + snow_input - melted).clamp(0.0, 1.0) as f32;
             let liquid_input = removed * (1.0 - freezing) + melted;
             let ground_input = liquid_input
                 * land_fraction
@@ -581,8 +580,7 @@ impl WeatherFields {
             state.ground_moisture =
                 (f64::from(state.ground_moisture) + ground_input).clamp(0.0, 1.0) as f32;
             state.precipitation_millimeters_per_hour =
-                (removed * WEATHER_CLOUD_WATER_DEPTH_MILLIMETERS * 3_600.0 / step_seconds)
-                    as f32;
+                (removed * WEATHER_CLOUD_WATER_DEPTH_MILLIMETERS * 3_600.0 / step_seconds) as f32;
         }
     }
 
@@ -613,16 +611,13 @@ impl WeatherFields {
             let north_gradient = (f64::from(self.cells[north_index].surface_elevation_meters)
                 - f64::from(self.cells[south_index].surface_elevation_meters))
                 / (2.0 * width);
-            let uplift = (f64::from(self.cells[index].east_wind_meters_per_second)
-                * east_gradient
+            let uplift = (f64::from(self.cells[index].east_wind_meters_per_second) * east_gradient
                 + f64::from(self.cells[index].north_wind_meters_per_second) * north_gradient)
                 .clamp(
                     -WEATHER_MAX_OROGRAPHIC_UPLIFT_METERS_PER_SECOND,
                     WEATHER_MAX_OROGRAPHIC_UPLIFT_METERS_PER_SECOND,
                 );
-            let displacement = (uplift
-                * step_seconds
-                * WEATHER_OROGRAPHIC_RESPONSE_FRACTION)
+            let displacement = (uplift * step_seconds * WEATHER_OROGRAPHIC_RESPONSE_FRACTION)
                 .clamp(
                     -WEATHER_MAX_LAPSE_DISPLACEMENT_METERS_PER_STEP,
                     WEATHER_MAX_LAPSE_DISPLACEMENT_METERS_PER_STEP,
@@ -656,12 +651,12 @@ impl WeatherFields {
         for (index, cell) in grid.cells().iter().enumerate() {
             let velocity = cell.east * f64::from(self.cells[index].east_wind_meters_per_second)
                 + cell.north * f64::from(self.cells[index].north_wind_meters_per_second);
-            let source_direction = (cell.direction
-                - velocity * (step_seconds / PLANET_RADIUS_METERS))
-                .normalize();
-            predictor[index] = sample_scalar_bilinear_with_bounds(&old_temperature, source_direction)
-                .0
-                .clamp(180.0, 340.0);
+            let source_direction =
+                (cell.direction - velocity * (step_seconds / PLANET_RADIUS_METERS)).normalize();
+            predictor[index] =
+                sample_scalar_bilinear_with_bounds(&old_temperature, source_direction)
+                    .0
+                    .clamp(180.0, 340.0);
         }
         let mut next_temperature = vec![0.0_f32; self.cells.len()];
         for (index, cell) in grid.cells().iter().enumerate() {
@@ -819,16 +814,16 @@ impl WeatherFields {
             max_cloud_water = max_cloud_water.max(state.cloud_water);
             maximum_surface_elevation =
                 maximum_surface_elevation.max(state.surface_elevation_meters);
-            maximum_orographic_uplift = maximum_orographic_uplift
-                .max(state.orographic_uplift_meters_per_second.abs());
+            maximum_orographic_uplift =
+                maximum_orographic_uplift.max(state.orographic_uplift_meters_per_second.abs());
             min_ground_moisture = min_ground_moisture.min(state.ground_moisture);
             max_ground_moisture = max_ground_moisture.max(state.ground_moisture);
             min_snow_cover = min_snow_cover.min(state.snow_cover);
             max_snow_cover = max_snow_cover.max(state.snow_cover);
-            maximum_precipitation = maximum_precipitation
-                .max(state.precipitation_millimeters_per_hour);
-            maximum_latent_tendency = maximum_latent_tendency
-                .max(state.latent_temperature_tendency_kelvin.abs());
+            maximum_precipitation =
+                maximum_precipitation.max(state.precipitation_millimeters_per_hour);
+            maximum_latent_tendency =
+                maximum_latent_tendency.max(state.latent_temperature_tendency_kelvin.abs());
             maximum_storm_intensity = maximum_storm_intensity.max(state.storm_intensity);
             maximum_wind = maximum_wind.max(wind_speed);
             maximum_cfl = maximum_cfl.max(cfl);
@@ -838,8 +833,7 @@ impl WeatherFields {
             mean_cloud_water += f64::from(state.cloud_water) * area;
             mean_ground_moisture += f64::from(state.ground_moisture) * area;
             mean_snow_cover += f64::from(state.snow_cover) * area;
-            mean_precipitation +=
-                f64::from(state.precipitation_millimeters_per_hour) * area;
+            mean_precipitation += f64::from(state.precipitation_millimeters_per_hour) * area;
             mean_storm_intensity += f64::from(state.storm_intensity) * area;
             pressure_integral += f64::from(state.surface_pressure_pascals) * area;
             humidity_integral += f64::from(state.specific_humidity) * area;
@@ -1353,9 +1347,7 @@ impl WeatherState {
         Self::new_with_terrain_samples(None)
     }
 
-    pub fn new_with_terrain_samples(
-        terrain_samples: Option<&[TerrainClimateSample]>,
-    ) -> Self {
+    pub fn new_with_terrain_samples(terrain_samples: Option<&[TerrainClimateSample]>) -> Self {
         let grid = Arc::new(WeatherGrid::new());
         let fields = WeatherFields::initial_with_terrain(&grid, terrain_samples);
         Self {
@@ -1671,11 +1663,7 @@ impl WeatherState {
         self.prepare_next(sun_direction);
     }
 
-    fn simulate_fields_step(
-        grid: &WeatherGrid,
-        fields: &mut WeatherFields,
-        sun_direction: DVec3,
-    ) {
+    fn simulate_fields_step(grid: &WeatherGrid, fields: &mut WeatherFields, sun_direction: DVec3) {
         fields.apply_insolation_and_radiative_cooling(
             grid,
             sun_direction,
@@ -1761,8 +1749,7 @@ fn advect_scalar_mass(
         if transfer == 0.0 {
             continue;
         }
-        let target_capacity =
-            grid.cells()[target].area_square_meters * (1.0 - old_values[target]);
+        let target_capacity = grid.cells()[target].area_square_meters * (1.0 - old_values[target]);
         let target_scale = if incoming[target] > target_capacity {
             (target_capacity / incoming[target]).clamp(0.0, 1.0)
         } else {
@@ -1928,29 +1915,27 @@ fn initial_cell_state(
     let east_wind_meters_per_second =
         18.0 * (2.0 * latitude).sin() - 8.0 * (3.0 * latitude).sin() * longitude.cos();
     let north_wind_meters_per_second = 4.0 * latitude.cos() * (2.0 * longitude).sin();
-    let (surface_elevation, surface_albedo, heat_capacity, ground_moisture) =
-        terrain_sample
-            .map(|sample| {
-                (
-                    sample.surface_elevation_meters,
-                    sample.surface_albedo,
-                    sample.heat_capacity_joules_per_square_meter_kelvin,
-                    sample.ground_moisture,
-                )
-            })
-            .unwrap_or_else(|| {
-                let land_fraction = proxy_land_fraction(direction, latitude, longitude);
-                (
-                    proxy_surface_elevation_meters(direction, latitude, longitude),
-                    WEATHER_OCEAN_ALBEDO
-                        + (WEATHER_LAND_ALBEDO - WEATHER_OCEAN_ALBEDO) * land_fraction,
-                    WEATHER_OCEAN_HEAT_CAPACITY_JOULES_PER_SQUARE_METER_KELVIN
-                        + (WEATHER_LAND_HEAT_CAPACITY_JOULES_PER_SQUARE_METER_KELVIN
-                            - WEATHER_OCEAN_HEAT_CAPACITY_JOULES_PER_SQUARE_METER_KELVIN)
-                            * land_fraction,
-                    0.65 * land_fraction,
-                )
-            });
+    let (surface_elevation, surface_albedo, heat_capacity, ground_moisture) = terrain_sample
+        .map(|sample| {
+            (
+                sample.surface_elevation_meters,
+                sample.surface_albedo,
+                sample.heat_capacity_joules_per_square_meter_kelvin,
+                sample.ground_moisture,
+            )
+        })
+        .unwrap_or_else(|| {
+            let land_fraction = proxy_land_fraction(direction, latitude, longitude);
+            (
+                proxy_surface_elevation_meters(direction, latitude, longitude),
+                WEATHER_OCEAN_ALBEDO + (WEATHER_LAND_ALBEDO - WEATHER_OCEAN_ALBEDO) * land_fraction,
+                WEATHER_OCEAN_HEAT_CAPACITY_JOULES_PER_SQUARE_METER_KELVIN
+                    + (WEATHER_LAND_HEAT_CAPACITY_JOULES_PER_SQUARE_METER_KELVIN
+                        - WEATHER_OCEAN_HEAT_CAPACITY_JOULES_PER_SQUARE_METER_KELVIN)
+                        * land_fraction,
+                0.65 * land_fraction,
+            )
+        });
     WeatherCellState {
         temperature_kelvin: temperature_kelvin as f32,
         surface_pressure_pascals: surface_pressure_pascals as f32,
@@ -2353,10 +2338,12 @@ mod tests {
             .map(|(cell, state)| f64::from(state.cloud_water) * cell.area_square_meters)
             .sum::<f64>();
         assert!((before_mass - after_mass).abs() / before_mass < 1.0e-6);
-        assert!(fields
-            .cells
-            .iter()
-            .all(|state| (0.0..=1.0).contains(&state.cloud_water)));
+        assert!(
+            fields
+                .cells
+                .iter()
+                .all(|state| (0.0..=1.0).contains(&state.cloud_water))
+        );
     }
 
     #[test]
@@ -2464,10 +2451,12 @@ mod tests {
         fields.cells[cell_index(0, WEATHER_GRID_SIDE / 2, WEATHER_GRID_SIDE / 2)]
             .temperature_kelvin = 320.0;
         fields.advect_temperature(&grid, WEATHER_TIMESTEP_SECONDS);
-        assert!(fields
-            .cells()
-            .iter()
-            .all(|state| (280.0..=320.0).contains(&state.temperature_kelvin)));
+        assert!(
+            fields
+                .cells()
+                .iter()
+                .all(|state| (280.0..=320.0).contains(&state.temperature_kelvin))
+        );
     }
 
     #[test]
@@ -2552,10 +2541,12 @@ mod tests {
                     <= WEATHER_MAX_OROGRAPHIC_UPLIFT_METERS_PER_SECOND as f32
                 && (180.0..=340.0).contains(&state.temperature_kelvin)
         }));
-        assert!(first
-            .cells()
-            .iter()
-            .any(|state| state.orographic_uplift_meters_per_second.abs() > 0.01));
+        assert!(
+            first
+                .cells()
+                .iter()
+                .any(|state| state.orographic_uplift_meters_per_second.abs() > 0.01)
+        );
 
         let target_index = cell_index(0, WEATHER_GRID_SIDE / 2, WEATHER_GRID_SIDE / 2);
         let target = grid.cell(target_index as u32);
@@ -2899,8 +2890,7 @@ mod tests {
             .find(|(index, _)| {
                 1.0 - ocean_fraction_from_albedo(f64::from(
                     WeatherFields::initial(&grid).cells()[*index].surface_albedo,
-                ))
-                    > 0.9
+                )) > 0.9
             })
             .map(|(index, _)| index)
             .expect("fallback should contain land");

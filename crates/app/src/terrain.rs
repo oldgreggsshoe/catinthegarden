@@ -1743,11 +1743,8 @@ impl TerrainRenderer {
             return None;
         };
         let manifest = outmap.manifest();
-        let level = near_field_window_level(
-            clearance_meters,
-            manifest.dense_level,
-            manifest.max_level,
-        )?;
+        let level =
+            near_field_window_level(clearance_meters, manifest.dense_level, manifest.max_level)?;
         let (face, face_uv) = cube_face_uv(camera_local_direction)?;
         let tiles_per_side = 1_u32 << level;
         // Centre the window on the camera, then pull it inside the face. A
@@ -4692,6 +4689,18 @@ mod tests {
                 "TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS",
                 crate::planet::TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS,
             ),
+            // The runtime microrelief budget and the distance filter that
+            // bounds it were restated on both sides without an assertion. They
+            // shape the same surface as the ladder above, so they belong under
+            // the same guard.
+            (
+                "GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS",
+                crate::planet::GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS,
+            ),
+            (
+                "TERRAIN_DETAIL_FILTER_RATIO",
+                super::TERRAIN_DETAIL_FILTER_RATIO,
+            ),
         ] {
             assert_eq!(declared(name), value as f32, "{name} drifted");
         }
@@ -4727,6 +4736,55 @@ mod tests {
                 "the per-axis salt {salt} must match planet.rs"
             );
         }
+    }
+
+    /// The radius is the one number every stage agrees on: the baker writes
+    /// outmap tiles against it, the clearance ladder measures altitude from it,
+    /// and the raster, atmosphere-model, and sun shaders restate it. A drift in any
+    /// one copy puts that stage's surface on a different sphere than the data
+    /// it streams -- and because each stage stays internally consistent, the
+    /// symptom is a rendering fault rather than an error.
+    #[test]
+    fn every_shader_places_the_surface_on_the_coretypes_sphere() {
+        let planet = planet_shader_source();
+        let sources = [
+            ("planet (raster)", planet.as_str()),
+            (
+                "atmosphere model",
+                include_str!("atmosphere_lut_common.wgsl"),
+            ),
+            ("sun", include_str!("sun.wgsl")),
+        ];
+        let mut declarations = 0;
+        for (label, shader) in sources {
+            let Some(text) = shader
+                .split("const PLANET_RADIUS_METERS: f32 = ")
+                .nth(1)
+                .and_then(|source| source.split(';').next())
+            else {
+                continue;
+            };
+            let declared = text
+                .trim()
+                .parse::<f32>()
+                .expect("the radius is declared as a plain literal");
+            assert_eq!(
+                declared,
+                catinthegarden_coretypes::PLANET_RADIUS_METERS as f32,
+                "the {label} shader disagrees with coretypes about the radius",
+            );
+            declarations += 1;
+        }
+        assert!(
+            declarations >= 2,
+            "expected the raster and atmosphere shaders to declare the radius; \
+             found {declarations} -- has the constant been renamed?",
+        );
+        assert_eq!(
+            crate::planet::PLANET_RADIUS_METERS,
+            catinthegarden_coretypes::PLANET_RADIUS_METERS,
+            "planet.rs must re-export the radius rather than restate it",
+        );
     }
 
     /// The close-range material tile is the only thing that gives the ground
@@ -4957,9 +5015,8 @@ mod tests {
 
     #[test]
     fn terrain_fog_air_path_is_small_radially_and_large_at_a_grazing_angle() {
-        let fog_amount = |equivalent_air_path_meters: f64| {
-            1.0 - (-equivalent_air_path_meters / 500_000.0).exp()
-        };
+        let fog_amount =
+            |equivalent_air_path_meters: f64| 1.0 - (-equivalent_air_path_meters / 500_000.0).exp();
         // A space-to-ground radial ray starts at negligible density and ends
         // at sea-level density. The shader's bounded endpoint average is one
         // effective 72km scale height.
@@ -4970,8 +5027,14 @@ mod tests {
         let radial_fog = fog_amount(radial_air_path_meters);
         let grazing_fog = fog_amount(grazing_air_path_meters);
 
-        assert!((0.10..0.20).contains(&radial_fog), "radial fog {radial_fog}");
-        assert!((0.75..0.90).contains(&grazing_fog), "grazing fog {grazing_fog}");
+        assert!(
+            (0.10..0.20).contains(&radial_fog),
+            "radial fog {radial_fog}"
+        );
+        assert!(
+            (0.75..0.90).contains(&grazing_fog),
+            "grazing fog {grazing_fog}"
+        );
         assert!(grazing_fog > radial_fog * 5.0);
     }
 
@@ -5244,8 +5307,12 @@ mod tests {
             );
             assert!(super::forest_biome_requires_evergreen(biome));
         }
-        assert!(!super::forest_biome_requires_evergreen(BiomeId::TemperateForest));
-        assert!(!super::forest_biome_requires_evergreen(BiomeId::TropicalForest));
+        assert!(!super::forest_biome_requires_evergreen(
+            BiomeId::TemperateForest
+        ));
+        assert!(!super::forest_biome_requires_evergreen(
+            BiomeId::TropicalForest
+        ));
     }
 
     #[test]

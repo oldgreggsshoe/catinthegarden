@@ -175,8 +175,8 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vertex_index: u32) -> Vert
         );
     }
     let lighting = tree_lighting(solar_elevation_cosine, cloud_visibility) * shade;
-    let broadleaf = srgb_to_linear(vec3<f32>(0.10, 0.34, 0.12));
-    let conifer = srgb_to_linear(vec3<f32>(0.07, 0.25, 0.10));
+    let broadleaf = srgb_to_linear(vec3<f32>(0.05, 0.17, 0.06));
+    let conifer = srgb_to_linear(vec3<f32>(0.035, 0.125, 0.05));
     let colour = mix(broadleaf, conifer, species_kind) * lighting;
     return VertexOutput(
         camera.projection_matrix * vec4<f32>(view_position, 1.0),

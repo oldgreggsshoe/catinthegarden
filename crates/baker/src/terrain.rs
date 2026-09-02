@@ -927,10 +927,10 @@ fn generate_procedural_game_shape(grid: &SphericalGrid, seed: u32) -> Vec<f64> {
             // Keep every relief octave resolved by the 4096x2048 source grid;
             // the lower base frequencies widen both the major ranges and the
             // smaller valleys between them.
-            let local_ridge = ridged_fbm(&narrow_ridges, warped, 300.0, 2);
+            let local_ridge = ridged_fbm(&narrow_ridges, warped, 40.0, 2);
             let local_peak = smoother_step(((local_ridge - 0.42) / 0.50).clamp(0.0, 1.0));
-            let coverage_ridge = ridged_fbm(&coverage_ridges, warped, 125.0, 3);
-            let coverage_peak = smoother_step(((coverage_ridge - 0.30) / 0.50).clamp(0.0, 1.0));
+            let coverage_ridge = ridged_fbm(&coverage_ridges, warped, 5.0, 2);
+            let coverage_peak = smoother_step(((coverage_ridge - 0.50) / 0.50).clamp(0.0, 1.0));
             // Concentrate relief in broad mountain belts, while retaining a
             // modest foothill floor across other positive land. This removes
             // the all-land speckle that made isolated spikes read as teeth.

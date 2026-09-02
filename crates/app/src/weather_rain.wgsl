@@ -90,7 +90,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     if camera.camera_planet_direction_view_altitude.w > 20000.0 {
         discard;
     }
-    let alpha = smoothstep(0.02, 0.20, input.precipitation) * 0.32;
+    let alpha = smoothstep(0.02, 0.10, input.precipitation) * 0.32;
     if alpha < 0.002 {
         discard;
     }

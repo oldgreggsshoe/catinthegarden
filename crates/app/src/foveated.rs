@@ -15,8 +15,13 @@ const FACE_COUNT: u32 = 6;
 const WARP_SCALE_NUMERATOR: u32 = 3;
 const WARP_SCALE_DENOMINATOR: u32 = 4;
 const FOVEA_FOLLOW_RATE_PER_SECOND: f32 = 5.0;
+// Host-side bits for the M8 experiment toggles. Every bit here must match the
+// `const EXPERIMENT_*` declaration in the shader that reads it, which
+// `shader_experiment_bits_match_the_host_bits` enforces.
 const EXPERIMENT_HORIZON_DENSITY: u32 = 1 << 0;
 const EXPERIMENT_TEMPORAL_REUSE: u32 = 1 << 1;
+/// Reserved by the index scheme but not implemented: no shader reads this bit,
+/// so toggling experiment 3 is currently a no-op.
 const EXPERIMENT_CONTENT_ADAPTIVE: u32 = 1 << 2;
 const EXPERIMENT_FOVEATED_SHADING: u32 = 1 << 3;
 const EXPERIMENT_RADIAL_BLUR: u32 = 1 << 4;
@@ -1425,9 +1430,7 @@ mod tests {
         eased_fovea_ndc, experiment_flag, face_sample_source, max_height_mips,
         raymarch_shader_source, warp_size_for,
     };
-    use catinthegarden_coretypes::{TILE_LOGICAL_SIZE, TILE_STORED_SIZE};
-
-    const PLANET_RADIUS_METERS: f64 = 4_000_000.0;
+    use catinthegarden_coretypes::{PLANET_RADIUS_METERS, TILE_LOGICAL_SIZE, TILE_STORED_SIZE};
 
     fn warp_axis(value: f32) -> f32 {
         let core = 0.5_f32;
@@ -1644,6 +1647,65 @@ mod tests {
                 .fold(0, |flags, flag| flags | flag),
             0b1_1111
         );
+    }
+
+    /// The host picks the bit, the shader tests it, and nothing has ever made
+    /// the two agree. A renumber on either side would leave every toggle
+    /// silently driving a different experiment than the one it names -- no
+    /// compile error, no failing test, just a confusing screenshot.
+    #[test]
+    fn shader_experiment_bits_match_the_host_bits() {
+        fn declared_in(shader: &str, name: &str) -> u32 {
+            let shift = shader
+                .split(&format!("const {name}: u32 = 1u << "))
+                .nth(1)
+                .and_then(|source| source.split('u').next())
+                .unwrap_or_else(|| panic!("{name} is declared in the shader"))
+                .trim()
+                .parse::<u32>()
+                .expect("the shader declares the flag as a literal bit shift");
+            1 << shift
+        }
+
+        let raymarch = raymarch_shader_source();
+        let unwarp = include_str!("foveated_unwarp.wgsl");
+        for (shader, name, host_flag) in [
+            (
+                raymarch.as_str(),
+                "EXPERIMENT_HORIZON_DENSITY",
+                EXPERIMENT_HORIZON_DENSITY,
+            ),
+            (
+                raymarch.as_str(),
+                "EXPERIMENT_TEMPORAL_REUSE",
+                EXPERIMENT_TEMPORAL_REUSE,
+            ),
+            (
+                raymarch.as_str(),
+                "EXPERIMENT_FOVEATED_SHADING",
+                EXPERIMENT_FOVEATED_SHADING,
+            ),
+            (unwarp, "EXPERIMENT_RADIAL_BLUR", EXPERIMENT_RADIAL_BLUR),
+        ] {
+            assert_eq!(
+                declared_in(shader, name),
+                host_flag,
+                "{name} must select the same bit on both sides",
+            );
+        }
+
+        // Bit 2 is reserved by the M8 index scheme but no shader consumes it,
+        // so toggling experiment 3 currently changes nothing. Asserting the
+        // absence turns "silently dead" into a failing test the moment someone
+        // implements it, which is when this list needs the new entry.
+        assert_eq!(EXPERIMENT_CONTENT_ADAPTIVE, 1 << 2);
+        for shader in [raymarch.as_str(), unwarp] {
+            assert!(
+                !shader.contains("EXPERIMENT_CONTENT_ADAPTIVE"),
+                "a shader now reads the content-adaptive bit -- add it to the \
+                 parity list above and drop this assertion",
+            );
+        }
     }
 
     #[test]

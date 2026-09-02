@@ -1,11 +1,5 @@
-Fixed the weather startup regression.
+No—not everything in the working tree.
 
-Cause: the initial `replace_field` upload only populated one of the two temporal textures and left blend at 0, so the first frames sampled an all-zero previous field. The new `initialize_field` seeds both textures and starts at blend=1; later weather ticks still cross-fade over 1.5s.
+My latest change is committed and pushed: `20556e5`, and the branch is exactly synchronized with `origin/experiment/instant-global-forests` (0 ahead, 0 behind).
 
-Validation:
-- `cargo test -p catinthegarden-app weather -- --nocapture`: 26 passed
-- `cargo check --workspace`: passed
-- release `orbit_once`: passed, manifest git commit `afaa044`
-- latest capture: `test-runs/orbit_once/1787304223-107886/screenshots/capture-001.png`, weather visible immediately
-
-Unrelated dirty worktree files were left untouched.
+However, there are still numerous unstaged modified/deleted and untracked files, including `.gitignore`, `PLANET_SIM_HANDOFF.md`, several renderer/weather source files, `README.md`, scripts, screenshots, and the PDF. I deliberately did not include those because they predated this task and were unrelated. `response/codex.txt` is also modified because your AGENTS.md requires every response to be written there.

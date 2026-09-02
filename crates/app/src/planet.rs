@@ -6,7 +6,10 @@ use std::{
 use catinthegarden_coretypes::TILE_LOGICAL_SIZE;
 use glam::{DQuat, DVec3, IVec3, Mat4, Vec3, Vec4};
 
-pub const PLANET_RADIUS_METERS: f64 = 4_000_000.0;
+/// Re-exported rather than restated. The baker writes outmap tiles against the
+/// coretypes radius, so a second literal here could silently place the runtime
+/// surface on a different sphere than the data it streams.
+pub use catinthegarden_coretypes::PLANET_RADIUS_METERS;
 /// Full-screen post-processing switches. Keeping these beside the planet's
 /// other visual constants makes expensive presentation stages easy to bisect.
 pub const BLUR_ENABLED: bool = false;

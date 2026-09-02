@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: fmt, test, clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # winit and the wgpu backends need these to build on Linux even though
+      # the test suite itself never opens a window or touches a GPU.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libxkbcommon-dev libwayland-dev libx11-dev \
+            libxrandr-dev libxi-dev libxcursor-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all --check
+
+      # The suite is CPU-side invariants plus WGSL parse/validation, so it runs
+      # headless. It includes the Rust<->WGSL constant parity tests, which are
+      # the reason this workflow exists: they are the only thing standing
+      # between a one-character constant edit and a CPU/GPU surface mismatch.
+      - name: Tests
+        run: cargo test --workspace
+
+      # Advisory for now: the tree carries pre-existing lints (mostly
+      # too_many_arguments on render entry points and assertions_on_constants
+      # from deliberate constant guards). Drop `continue-on-error` once those
+      # are triaged, so clippy becomes a real gate.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets
+        continue-on-error: true
