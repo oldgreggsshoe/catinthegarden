@@ -2300,6 +2300,7 @@ impl State {
             [1_u8, 2, 3, 4, 5].map(|index| self.foveated.experiment_enabled(index));
         let animation_frozen = self.animation_frozen;
         let camera_mode = self.camera_mode;
+        let surface_height_meters = self.flight_surface_height_meters;
         let flight_speed_meters_per_second = self.flight_speed.speed_meters_per_second;
         let flight_speed_scale = self.flight_speed_scale;
         let surface_vertical_speed = self.surface_physics.vertical_velocity_meters_per_second;
@@ -2342,9 +2343,15 @@ impl State {
                             "Direction: [{:.3}, {:.3}, {:.3}]",
                             camera_direction.x, camera_direction.y, camera_direction.z
                         ));
-                        ui.label(format!(
-                            "Altitude: {camera_altitude_label} m  |  LOD: {lod_range}"
-                        ));
+                        if camera_mode == CameraMode::Surface {
+                            ui.label(format!(
+                                "Clearance: {camera_altitude_label} m  |  wave surface: {surface_height_meters:+.2} m  |  LOD: {lod_range}"
+                            ));
+                        } else {
+                            ui.label(format!(
+                                "Altitude: {camera_altitude_label} m  |  LOD: {lod_range}"
+                            ));
+                        }
                         ui.label(format!(
                             "Terrain: {} active  |  {} drawn  |  {} triangles  |  {} draws",
                             terrain_stats.resident_chunks,

@@ -4551,4 +4551,5 @@ with seven diagnostic instruments ignored.
 Open-water visual verification is in `manual/1788361902-880886`. After movement stopped, eight
 successive captures measured 0.07-0.52m of camera clearance above the changing Gerstner surface,
 with vertical velocity changing sign; the HUD now shows surface-mode clearance to centimetre
-precision instead of rounding it to zero.
+precision instead of rounding it to zero. In surface mode the HUD also reports the sampled wave
+surface elevation separately, so clearance is not confused with the wave's absolute height.

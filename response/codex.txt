@@ -1,17 +1,9 @@
-Implemented and visually checked.
+I checked the newest manual screenshots (`test-runs/manual/1788367332-888340/screenshots/`). The apparent mismatch is mostly a label problem: in surface mode the displayed “Altitude” is **camera clearance above the currently sampled wave surface**, not the wave's absolute elevation. The screenshots show 0.23-0.43m clearance and signed vertical velocity, which is the expected bobbing behaviour; it does not show the several-metre wave elevation itself.
 
-- Interactive startup now places the player at deterministic open ocean (29.676510N,
-  14.077810W), enters surface swimming mode, and starts on the existing maximum global
-  Gerstner storm-wave scale.
-- The dense startup terrain tile is resolved before the surface/ocean query, so buoyancy starts
-  immediately instead of waiting for streaming.
-- Startup view uses a four-degree downward pitch across the water. Scenarios and manual `G`
-  behaviour are unchanged.
+The physics already follows the requested fake model: a 1.70m body, gravity, submerged-fraction buoyancy toward the still-water equilibrium, water-relative drag, independent vertical velocity, and jump/thrust impulses. Existing tests cover rising/falling waves, equilibrium, gravity return, and water thrust.
 
-Visual capture: `test-runs/manual/1788362886-885206/screenshots/capture-001.png`.
-The startup log confirms `camera_mode: surface walking/swimming`; the first frames show roughly
-0.16-0.71m surface clearance while vertical velocity settles, with the camera bobbing above the
-moving water.
+I made a small observability fix only: surface HUD now displays both `Clearance` and `wave surface` separately. No risky physics rewrite was started under the weekly usage limit.
 
-Validation: `cargo fmt --all -- --check`, the full app suite (345 passed, 7 ignored), and
-`cargo check --workspace` passed. Pushed on `experiment/instant-global-forests` as `36418be`.
+Seabed question: yes, the baked outmap already contains the needed data. Its raw R32F height tiles preserve negative bathymetry, and `bathymetry_height_meters_at` already reads those values for water depth/buoyancy. Rendering currently clamps the visible ocean to the sea-level shell and deliberately does not draw underwater; later we can reuse the same streamed bathymetry for a seabed pass.
+
+Validation: formatting, 7 focused surface tests, all 345 non-ignored app tests, and workspace check passed. Committed/pushed as `COMMIT_HASH`.
