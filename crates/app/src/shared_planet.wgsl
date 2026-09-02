@@ -833,6 +833,7 @@ fn ocean_surface(
         shore_weight,
     );
     let storm_intensity = clamp(camera.flat_triangle_options.y, 0.0, 1.0);
+    let horizontal_transport = select(1.0, 0.0, camera.flat_triangle_options.z > 0.5);
     let storm_blend = smoothstep(0.15, 0.85, storm_intensity);
     let geometry_amplitude_scale = mix(
         OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE,
@@ -840,7 +841,7 @@ fn ocean_surface(
         storm_blend,
     );
     return OceanSurface(
-        horizontal * geometry_weight * geometry_amplitude_scale,
+        horizontal * geometry_weight * geometry_amplitude_scale * horizontal_transport,
         vertical * geometry_weight * geometry_amplitude_scale,
         normalize(
             direction

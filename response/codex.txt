@@ -1,11 +1,11 @@
-Temporary fixed-water diagnostic is enabled.
+You are right: the HUD's 0.25m is strict only relative to the CPU analytic sample. It does not yet prove the camera is 0.25m above the *visible GPU mesh*. The remaining difference is that the renderer evaluates Gerstner displacement per mesh vertex (then interpolates across triangles), and normal mode also transports vertices horizontally; a radial CPU sample can therefore sit above/below the rendered triangle even when its own clearance says 0.25m.
 
-In water, `WATER_BOBBING_ENABLED = false` now bypasses gravity, buoyancy, jump impulse and vertical inertia. Each fixed substep places the camera at exactly `0.25m` above the CPU-sampled animated wave, so the camera should follow every crest and trough directly.
+For this diagnostic I have now disabled only GPU horizontal Gerstner transport. Vertical displacement remains animated, and the camera still follows the CPU wave exactly. That removes the largest world-space mismatch while leaving the wave height test intact. The remaining visual error, if any, is triangle interpolation/LOD sampling rather than bobbing.
 
 Validation:
-- surface-camera tests: 9 passed;
-- workspace `cargo check`: passed (existing dead-code warnings only);
-- release Quadro capture: `test-runs/manual/1788373292-913273/screenshots/capture-001.png`;
-- its spatial log reports clearance values from `0.249999999` to `0.250000002m` across successive frames while the wave surface changes, with vertical velocity `+0.00m/s`.
+- ocean-focused tests: 23 passed;
+- workspace check passed (existing dead-code warnings only);
+- fixed-height release capture: `test-runs/manual/1788373829-914713/screenshots/capture-001.png`;
+- fixed-mode spatial samples held 0.25m clearance at the camera while the wave field changed.
 
-This is deliberately temporary. Set `WATER_BOBBING_ENABLED` back to `true` when you want to resume buoyancy/jump testing.
+The user-visible mismatch is therefore real, not a misunderstanding. The next strict step would be evaluating the same interpolated triangle (or adding a camera-centre vertex), but I have not expanded scope beyond this diagnostic.

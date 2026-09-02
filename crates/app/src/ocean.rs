@@ -294,6 +294,7 @@ mod tests {
         let shader = include_str!("shared_planet.wgsl");
         assert!(shader.contains("const OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE: f32 = 44.0;"));
         assert!(shader.contains("const OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE: f32 = 55.0;"));
+        assert!(shader.contains("let horizontal_transport = select(1.0, 0.0"));
         assert!((maximum_wave_height_meters(1.0) - 52.6625).abs() < 1.0e-9);
     }
 

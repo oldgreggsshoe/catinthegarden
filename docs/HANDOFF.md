@@ -4576,3 +4576,7 @@ For the current visual comparison, `WATER_BOBBING_ENABLED` is temporarily `false
 camera is placed at a fixed 0.25m above the sampled wave every substep, with vertical velocity
 held at zero. This isolates whether the camera follows the animated rendered surface; restore it
 to `true` when evaluating buoyancy, jumps, and bobbing again.
+
+The diagnostic also disables only Gerstner horizontal transport in the ocean shader. The vertical
+wave and its lighting remain active, but both camera and mesh then sample the same world-space
+height instead of comparing a radial CPU sample with a horizontally displaced parametric vertex.

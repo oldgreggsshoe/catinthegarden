@@ -3023,6 +3023,11 @@ impl State {
         // displacement uses the same temporally interpolated local storm field
         // as the cloud system, without adding a bind group or texture lookup.
         camera_uniform.flat_triangle_options[1] = local_storm_intensity;
+        // The fixed-height water diagnostic compares vertical wave-following
+        // directly. Disable Gerstner horizontal transport there so the camera
+        // and rendered surface use the same world-space sample; the normal
+        // vertical displacement remains animated.
+        camera_uniform.flat_triangle_options[2] = f32::from(!surface_camera::WATER_BOBBING_ENABLED);
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
         self.forest
