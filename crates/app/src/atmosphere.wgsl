@@ -10,6 +10,11 @@ const TERRAIN_FOG_AIR_PATH_E_FOLD_METERS: f32 = 500000.0;
 // Presentation-only gain for the visible sky. Keep this outside the physical
 // LUTs so surface lighting, extinction, and exposure remain unchanged.
 const VISIBLE_SKY_RADIANCE_SCALE: f32 = 2.0;
+// Sub-hill-scale changes in eye altitude are optically negligible, but moving
+// the LUT's geometric horizon by individual metres remaps its steep low-sun
+// rows enough to pulse the whole sky. Evaluate the near-surface LUT from one
+// stable 200m reference; genuinely elevated and orbital cameras remain live.
+const SKY_VIEW_MINIMUM_CAMERA_ALTITUDE_METERS: f32 = 200.0;
 
 struct Camera {
     projection_matrix: mat4x4<f32>,
@@ -119,7 +124,10 @@ fn sky_view_uv(ray: vec3<f32>) -> vec2<f32> {
     }
     let side = normalize(cross(up, toward_sun));
     let view_zenith_cosine = clamp(dot(ray, up), -1.0, 1.0);
-    let camera_altitude = camera.camera_planet_direction_view_altitude.w;
+    let camera_altitude = max(
+        camera.camera_planet_direction_view_altitude.w,
+        SKY_VIEW_MINIMUM_CAMERA_ALTITUDE_METERS,
+    );
     let camera_radius = PLANET_RADIUS_METERS + camera_altitude;
     let horizontal = ray - up * view_zenith_cosine;
     var azimuth = 0.0;
@@ -233,7 +241,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let fog_amount = 1.0 - exp(
         -sky_fog_air_path_meters(ray) / TERRAIN_FOG_AIR_PATH_E_FOLD_METERS,
     );
-    let camera_altitude = camera.camera_planet_direction_view_altitude.w;
+    let camera_altitude = max(
+        camera.camera_planet_direction_view_altitude.w,
+        SKY_VIEW_MINIMUM_CAMERA_ALTITUDE_METERS,
+    );
     let camera_radius = PLANET_RADIUS_METERS + camera_altitude;
     let horizon_radiance = textureSample(
         sky_view_lut,

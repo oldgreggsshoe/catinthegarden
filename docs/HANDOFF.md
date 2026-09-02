@@ -4485,3 +4485,22 @@ surface; land collision is unchanged.
 shows foreground crests occluding waves behind them. The calm control
 `ocean_hybrid_close/1788287739-678029` remains at 6.296m. The complete app suite passes 331 tests
 with seven diagnostic instruments ignored.
+
+## Global storm sea and near-surface sky stability - 1 September 2026
+
+Open sea now always uses the established maximum storm endpoint (25x authored Gerstner
+amplitude) in raster, ray, CPU clearance, near-plane truth, and diagnostics. The existing
+2-30m bathymetric smoothstep still shoals the rendered waves at coasts; CPU collision now mirrors
+that depth attenuation instead of reserving an offshore crest over shallow water.
+
+Manual captures `manual/1788288158-684939` also exposed an independent sky pulse: descending only
+75.6m at the same location, view, sun, fixed exposure, and planet rotation reduced top-quarter sky
+luminance by 19.3%, while a subsequent 2km lateral move at fixed altitude changed almost nothing.
+The sky-view LUT's geometric-horizon remap was overreacting to optically negligible eye-altitude
+changes. Generation, display, terrain fog, and surface sky sampling now share a stable 200m
+near-surface reference; genuinely elevated cameras remain altitude-dependent.
+
+Deterministic replay `ocean_low_sun_stability/1788289693-702643` reduces the reproduced vertical
+move from 19.3% to 0.52% top-quarter luminance change, with the lateral control at 0.37%. Maximum
+storm replay `ocean_rough_horizon/1788289734-703019` passes its 30m gate at 39.352m and visibly
+self-occludes across successive crests.

@@ -537,6 +537,18 @@ mod tests {
     }
 
     #[test]
+    fn near_surface_sky_view_uses_one_stable_reference_altitude() {
+        let display = include_str!("atmosphere.wgsl");
+        let generation = include_str!("atmosphere_sky_view.wgsl");
+        let common = include_str!("atmosphere_lut_common.wgsl");
+        let surface = include_str!("shared_planet.wgsl");
+        assert!(display.contains("SKY_VIEW_MINIMUM_CAMERA_ALTITUDE_METERS: f32 = 200.0"));
+        assert!(common.contains("SKY_VIEW_MINIMUM_CAMERA_ALTITUDE_METERS: f32 = 200.0"));
+        assert!(generation.contains("let world_camera_altitude = max("));
+        assert!(surface.contains("SKY_VIEW_MINIMUM_CAMERA_ALTITUDE_METERS: f32 = 200.0"));
+    }
+
+    #[test]
     fn visible_sky_gain_is_presentation_only() {
         let display = include_str!("atmosphere.wgsl");
         assert!(display.contains("const VISIBLE_SKY_RADIANCE_SCALE: f32 = 2.0;"));

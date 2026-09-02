@@ -1459,10 +1459,10 @@ impl State {
                         .terrain
                         .raster_surface_height_meters_at(direction, altitude_meters)?;
                     Some(if self.terrain.open_ocean_at(direction) == Some(true) {
-                        terrain_height.max(ocean::wave_height_meters(
+                        terrain_height.max(ocean::global_wave_height_meters(
                             direction,
                             ocean_time_seconds,
-                            self.weather.storm_intensity_at(direction),
+                            (-terrain_height).max(0.0),
                         ))
                     } else {
                         terrain_height
@@ -1505,10 +1505,10 @@ impl State {
                 <= minimum_clearance_meters + LOW_FLIGHT_OCEAN_FOLLOW_TOLERANCE_METERS;
         let surface_height_meters = surface_height_meters.map(|height| {
             if open_ocean {
-                height.max(ocean::wave_height_meters(
+                height.max(ocean::global_wave_height_meters(
                     local_radial,
                     ocean_time_seconds,
-                    self.weather.storm_intensity_at(local_radial),
+                    (-height).max(0.0),
                 ))
             } else {
                 height
@@ -2095,14 +2095,7 @@ impl State {
             self.terrain_stats.draw_calls = 0;
         }
         let draw_calls = self.terrain_stats.draw_calls;
-        let local_storm_intensity = self
-            .scenario
-            .as_ref()
-            .and_then(scenario::ScenarioRunner::ocean_storm_intensity_override)
-            .unwrap_or_else(|| {
-                self.weather
-                    .storm_intensity_at(camera_world_position / camera_radius)
-            });
+        let local_storm_intensity = ocean::GLOBAL_OCEAN_STORM_INTENSITY;
         let ocean_wave_stats = ocean::wave_height_stats(ocean_time_seconds, local_storm_intensity);
         let ocean_wave_range = ocean_wave_stats.range_meters();
         if write_log {
@@ -2472,10 +2465,10 @@ impl State {
         .unwrap_or(0.0);
         if self.terrain.open_ocean_at(camera_direction) == Some(true) {
             camera_surface_height_meters =
-                camera_surface_height_meters.max(ocean::wave_height_meters(
+                camera_surface_height_meters.max(ocean::global_wave_height_meters(
                     camera_direction,
                     ocean_time_seconds,
-                    local_storm_intensity,
+                    (-camera_surface_height_meters).max(0.0),
                 ));
         }
         let aspect_ratio = self.size.width as f32 / self.size.height as f32;

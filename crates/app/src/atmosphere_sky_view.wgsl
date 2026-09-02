@@ -228,10 +228,12 @@ fn integrate_world_space_sky(
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let up = normalize(camera.camera_planet_direction_view_altitude.xyz);
     let sun = normalize(camera.sun_direction_view.xyz);
-    let world_camera_radius = PLANET_RADIUS_METERS
-        + camera.camera_planet_direction_view_altitude.w;
-    let optical_camera_altitude =
-        camera.camera_planet_direction_view_altitude.w / ATMOSPHERE_VERTICAL_SCALE;
+    let world_camera_altitude = max(
+        camera.camera_planet_direction_view_altitude.w,
+        SKY_VIEW_MINIMUM_CAMERA_ALTITUDE_METERS,
+    );
+    let world_camera_radius = PLANET_RADIUS_METERS + world_camera_altitude;
+    let optical_camera_altitude = world_camera_altitude / ATMOSPHERE_VERTICAL_SCALE;
     let camera_radius = OPTICAL_PLANET_RADIUS_METERS + optical_camera_altitude;
     let optical_sun = direction_with_zenith_cosine(
         sun,
@@ -243,7 +245,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let world_view_zenith_cosine = sky_view_zenith_cosine_from_v(
         input.uv.y,
         world_camera_radius,
-        camera.camera_planet_direction_view_altitude.w,
+        world_camera_altitude,
     );
     let optical_view_zenith_cosine = optical_zenith_cosine(
         world_view_zenith_cosine,

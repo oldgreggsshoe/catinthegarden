@@ -162,6 +162,7 @@ const AERIAL_IN_SCATTER_GAIN: f32 = 3.0;
 // high-altitude contribution can wash a blue ocean toward green/grey from
 // orbit. The ocean shell and atmosphere limb still provide the distant haze.
 const OCEAN_AERIAL_PERSPECTIVE_WEIGHT: f32 = 0.18;
+const SKY_VIEW_MINIMUM_CAMERA_ALTITUDE_METERS: f32 = 200.0;
 // Vegetation should keep its reflected green body colour in orbital views.
 // A full atmospheric in-scatter term is correct for bare distant haze, but it
 // overwhelms grass/forest albedo long before the land should read as blue.
@@ -1125,7 +1126,10 @@ fn physical_sky_view_uv(ray_view: vec3<f32>) -> vec2<f32> {
             dot(horizontal_direction, toward_sun),
         );
     }
-    let camera_altitude = camera.camera_planet_direction_view_altitude.w;
+    let camera_altitude = max(
+        camera.camera_planet_direction_view_altitude.w,
+        SKY_VIEW_MINIMUM_CAMERA_ALTITUDE_METERS,
+    );
     let camera_radius = PLANET_RADIUS_METERS + camera_altitude;
     return vec2<f32>(
         fract(azimuth / (2.0 * PHYSICAL_ATMOSPHERE_PI) + 0.5),

@@ -251,6 +251,9 @@ impl ScenarioRunner {
             }
             "ocean_flyover" => include_str!("../scenarios/ocean_flyover.json"),
             "ocean_hybrid_close" => include_str!("../scenarios/ocean_hybrid_close.json"),
+            "ocean_low_sun_stability" => {
+                include_str!("../scenarios/ocean_low_sun_stability.json")
+            }
             "ocean_rough_horizon" => include_str!("../scenarios/ocean_rough_horizon.json"),
             "ocean_coastline" => include_str!("../scenarios/ocean_coastline.json"),
             "orbital_zoom_lod" => include_str!("../scenarios/orbital_zoom_lod.json"),
@@ -1383,6 +1386,17 @@ mod tests {
         assert_eq!(scenario.definition.waypoints.len(), 1);
         let position = DVec3::from_array(scenario.definition.waypoints[0].position);
         assert!(((position.length() - crate::planet::PLANET_RADIUS_METERS) - 5.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn low_sun_ocean_stability_replays_the_reported_nearby_poses() {
+        let scenario = ScenarioRunner::load("ocean_low_sun_stability").expect("scenario parses");
+        assert_eq!(scenario.expected_screenshots(), 3);
+        assert_eq!(scenario.definition.waypoints.len(), 6);
+        let first = DVec3::from_array(scenario.definition.waypoints[0].position);
+        let last = DVec3::from_array(scenario.definition.waypoints[5].position);
+        assert!(first.distance(last) < 2_100.0);
+        assert!((first.length() - last.length()).abs() < 100.0);
     }
 
     #[test]

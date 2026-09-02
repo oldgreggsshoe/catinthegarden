@@ -5,6 +5,9 @@ use crate::planet::PLANET_RADIUS_METERS;
 const OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE: f64 = 4.0;
 const OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE: f64 = 25.0;
 pub const MAXIMUM_WAVE_HEIGHT_METERS: f64 = 24.0;
+pub const GLOBAL_OCEAN_STORM_INTENSITY: f32 = 1.0;
+const OCEAN_SHORE_WAVE_START_DEPTH_METERS: f64 = 2.0;
+const OCEAN_SHORE_FULL_WAVE_DEPTH_METERS: f64 = 30.0;
 
 #[derive(Clone, Copy)]
 struct GerstnerWave {
@@ -116,12 +119,27 @@ pub fn wave_height_meters(direction: DVec3, sim_time: f64, storm_intensity: f32)
         .sum()
 }
 
+pub fn shore_wave_weight(water_depth_meters: f64) -> f64 {
+    let t = ((water_depth_meters - OCEAN_SHORE_WAVE_START_DEPTH_METERS)
+        / (OCEAN_SHORE_FULL_WAVE_DEPTH_METERS - OCEAN_SHORE_WAVE_START_DEPTH_METERS))
+        .clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+pub fn global_wave_height_meters(direction: DVec3, sim_time: f64, water_depth_meters: f64) -> f64 {
+    wave_height_meters(direction, sim_time, GLOBAL_OCEAN_STORM_INTENSITY)
+        * shore_wave_weight(water_depth_meters)
+}
+
 #[cfg(test)]
 mod tests {
+    use glam::DVec3;
+
     use super::{
-        MAXIMUM_WAVE_HEIGHT_METERS, OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE,
-        OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE, WAVES, geometry_amplitude_scale,
-        maximum_wave_height_meters, wave_height_stats,
+        GLOBAL_OCEAN_STORM_INTENSITY, MAXIMUM_WAVE_HEIGHT_METERS,
+        OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE, OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE, WAVES,
+        geometry_amplitude_scale, global_wave_height_meters, maximum_wave_height_meters,
+        shore_wave_weight, wave_height_stats,
     };
 
     #[test]
@@ -163,5 +181,24 @@ mod tests {
             (5.0..10.0).contains(&angle_degrees),
             "angle was {angle_degrees}"
         );
+    }
+
+    #[test]
+    fn global_sea_is_maximum_storm_but_waves_shoal_at_the_coast() {
+        assert_eq!(GLOBAL_OCEAN_STORM_INTENSITY, 1.0);
+        assert_eq!(shore_wave_weight(0.0), 0.0);
+        assert_eq!(shore_wave_weight(2.0), 0.0);
+        assert_eq!(shore_wave_weight(30.0), 1.0);
+        assert_eq!(shore_wave_weight(1000.0), 1.0);
+        let direction = DVec3::new(0.3, 0.8, -0.5).normalize();
+        assert_eq!(global_wave_height_meters(direction, 3.0, 0.0), 0.0);
+        assert_eq!(
+            global_wave_height_meters(direction, 3.0, 1000.0),
+            super::wave_height_meters(direction, 3.0, 1.0)
+        );
+        let shader = include_str!("shared_planet.wgsl");
+        assert!(shader.contains(
+            "let shore_weight = smoothstep(2.0, OCEAN_SHORE_FULL_DEPTH_METERS, water_depth_meters);"
+        ));
     }
 }
