@@ -1,8 +1,17 @@
-Visual check completed. I drove the built release on the Quadro into open water, stopped, and captured eight frames:
-`test-runs/manual/1788361902-880886/screenshots/`.
+Implemented and visually checked.
 
-The stationary-water log shows the camera in `swimming` mode with surface clearance oscillating roughly **0.07–0.52m above the wave surface** over the captured interval. Its vertical velocity changes sign, so it is bobbing rather than being altitude-pinned. The HUD had been rounding that clearance to `0m`, obscuring the motion.
+- Interactive startup now places the player at deterministic open ocean (29.676510N,
+  14.077810W), enters surface swimming mode, and starts on the existing maximum global
+  Gerstner storm-wave scale.
+- The dense startup terrain tile is resolved before the surface/ocean query, so buoyancy starts
+  immediately instead of waiting for streaming.
+- Startup view uses a four-degree downward pitch across the water. Scenarios and manual `G`
+  behaviour are unchanged.
 
-I changed only the surface-mode HUD formatting: it now reports clearance to two decimals; flight/orbit altitude remains rounded to whole metres. No buoyancy tuning was needed based on the measured behaviour.
+Visual capture: `test-runs/manual/1788362886-885206/screenshots/capture-001.png`.
+The startup log confirms `camera_mode: surface walking/swimming`; the first frames show roughly
+0.16-0.71m surface clearance while vertical velocity settles, with the camera bobbing above the
+moving water.
 
-Validation: `cargo fmt --all -- --check`, 7 focused surface-camera tests, all 344 non-ignored app tests, and `cargo check --workspace` passed. The change is committed and pushed as `2f35d97`.
+Validation: `cargo fmt --all -- --check`, the full app suite (345 passed, 7 ignored), and
+`cargo check --workspace` passed. Pushed on `experiment/instant-global-forests` as `COMMIT_HASH`.

@@ -153,6 +153,15 @@ const COASTAL_SEAWARD_TANGENT: glam::DVec3 = glam::DVec3::new(
 );
 const COASTAL_START_ALTITUDE_METERS: f64 = 100.0;
 const COASTAL_START_PITCH_RADIANS: f64 = -8.0_f64.to_radians();
+/// Open-water direction used only for the interactive storm-at-sea startup.
+/// It is a known deep-ocean point a few kilometres seaward of the authored
+/// coast start, so surface mode can resolve buoyancy immediately.
+const STORM_OCEAN_START_DIRECTION: glam::DVec3 = glam::DVec3::new(
+    0.842_740_245_302_453,
+    0.495_102_503_355_887,
+    0.211_334_782_083_537,
+);
+const STORM_OCEAN_START_PITCH_RADIANS: f64 = -4.0_f64.to_radians();
 const PLANET_ROTATION_SCALE_STEP: f64 = 2.0;
 const MINIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 =
     INTERACTIVE_PLANET_ROTATION_TIME_SCALE / 32.0;
@@ -1243,7 +1252,8 @@ impl State {
         state
     }
 
-    /// Match pressing F4, F6, then F10 once after an interactive launch.
+    /// Start interactive launches floating in the maximum-intensity ocean
+    /// storm, then apply the existing F6/F10 presentation defaults.
     /// Scenarios retain their authored camera, post-processing, and clock.
     fn apply_interactive_startup_controls(&mut self) {
         if self.scenario.is_some() {
@@ -1251,6 +1261,9 @@ impl State {
         }
 
         self.toggle_camera_mode();
+        if self.position_storm_ocean_start() {
+            self.toggle_surface_camera_mode();
+        }
         self.toggle_blur();
         self.toggle_animation_freeze();
         tracing::info!(
@@ -1260,6 +1273,40 @@ impl State {
             animation_frozen = self.animation_frozen,
             "interactive startup controls applied"
         );
+    }
+
+    /// Move the freshly-created low-flight pose to a known open-ocean point
+    /// before entering surface mode. The dense startup tile is loaded once so
+    /// the ocean ownership/depth query cannot fall back to an ancestor tile.
+    fn position_storm_ocean_start(&mut self) -> bool {
+        let local_radial = STORM_OCEAN_START_DIRECTION.normalize();
+        let altitude_meters = LOW_FLIGHT_ALTITUDE_METERS;
+        let Some(surface_height_meters) = self
+            .terrain
+            .prepare_flight_start_surface_height_meters(local_radial, altitude_meters)
+        else {
+            tracing::warn!(
+                target: "catinthegarden::startup",
+                "storm-ocean startup terrain sample unavailable; retaining coastal pose"
+            );
+            return false;
+        };
+        if self.terrain.open_ocean_at(local_radial) != Some(true) {
+            tracing::warn!(
+                target: "catinthegarden::startup",
+                "storm-ocean startup direction is not open ocean; retaining coastal pose"
+            );
+            return false;
+        }
+        self.flight_local_position =
+            local_radial * (planet::PLANET_RADIUS_METERS + surface_height_meters + altitude_meters);
+        self.flight_surface_height_meters = surface_height_meters;
+        self.flight_local_tangent = initial_flight_tangent(local_radial);
+        self.flight_look_yaw_radians = 0.0;
+        self.flight_look_pitch_radians = STORM_OCEAN_START_PITCH_RADIANS;
+        self.flight_movement = FlightMovementInput::default();
+        self.flight_travel_direction = glam::DVec3::ZERO;
+        true
     }
 
     /// Applies the render path and ray-experiment toggles requested through the
@@ -4237,17 +4284,17 @@ mod tests {
         MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS, MAXIMUM_FLIGHT_SPEED_SCALE,
         MAXIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE, MINIMUM_FLIGHT_SPEED_SCALE,
         MINIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE, PLANET_ROTATION_SCALE_STEP, RenderPath,
-        adjusted_flight_speed_scale, advance_flight_position_on_sphere, advance_flight_speed,
-        device_mouse_look_enabled, find_default_outmap, flight_movement_direction,
-        flight_view_direction, focus_of_expansion_ndc, initial_flight_tangent,
-        interactive_camera_delta_seconds, low_flight_clearance_radius, projected_planet_coverage,
-        render_size_for_surface_resize, retimed_planet_rotation, should_enter_fullscreen,
-        should_start_interactive_fullscreen, surface_movement_direction,
-        swept_flight_clearance_lift, transport_flight_tangent,
+        STORM_OCEAN_START_DIRECTION, STORM_OCEAN_START_PITCH_RADIANS, adjusted_flight_speed_scale,
+        advance_flight_position_on_sphere, advance_flight_speed, device_mouse_look_enabled,
+        find_default_outmap, flight_movement_direction, flight_view_direction,
+        focus_of_expansion_ndc, initial_flight_tangent, interactive_camera_delta_seconds,
+        low_flight_clearance_radius, projected_planet_coverage, render_size_for_surface_resize,
+        retimed_planet_rotation, should_enter_fullscreen, should_start_interactive_fullscreen,
+        surface_movement_direction, swept_flight_clearance_lift, transport_flight_tangent,
     };
     use crate::planet::{
         CameraUniform, FlatTriangleOutlineMode, OrbitCamera, PLANET_ROTATION_PERIOD_SECONDS,
-        RenderDebugMode, default_sun_direction,
+        RenderDebugMode, default_sun_direction, geographic_longitude_degrees,
     };
 
     #[test]
@@ -4585,6 +4632,21 @@ mod tests {
         assert_eq!(super::COASTAL_START_ALTITUDE_METERS, 100.0);
         assert!((-0.15..-0.12).contains(&direction.dot(radial)));
         assert!(direction.dot(tangent) > 0.99);
+    }
+
+    #[test]
+    fn interactive_startup_storm_pose_is_a_surface_facing_ocean_view() {
+        let radial = STORM_OCEAN_START_DIRECTION;
+        let tangent = initial_flight_tangent(radial);
+        let direction =
+            flight_view_direction(radial, tangent, 0.0, STORM_OCEAN_START_PITCH_RADIANS);
+
+        assert!((radial.length() - 1.0).abs() < 1.0e-12);
+        assert!(radial.dot(tangent).abs() < 1.0e-12);
+        assert!(direction.dot(radial) < 0.0);
+        assert!(direction.dot(tangent) > 0.99);
+        assert!((radial.y.asin().to_degrees() - 29.676_509_751).abs() < 1.0e-6);
+        assert!((geographic_longitude_degrees(radial) + 14.077_810_388).abs() < 1.0e-6);
     }
 
     #[test]

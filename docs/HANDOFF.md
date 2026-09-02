@@ -4537,6 +4537,11 @@ Surface vertical integration and the post-streaming correction also enforce a 0.
 above-sea-level core floor. The camera may remain below the water surface, but it cannot
 fall through the solid planet and trip the LOD selector's camera-radius assertion.
 
+Interactive startup now moves to the deterministic open-ocean direction at 29.676510N,
+14.077810W, enters surface swimming mode, and uses the existing global maximum storm-wave scale.
+The camera begins at the buoyant equilibrium height with a four-degree downward pitch across the
+water; scenario launches and the manual `G` toggle retain their authored/current-location paths.
+
 Manual ground and jump captures are in `manual/1788349152-867669`: capture 001 is grounded at
 human-eye height, capture 002 is airborne at +1.36m/s after Space, and capture 003 returns under
 gravity. The forest renderer was disabled only for these diagnostic captures to isolate camera
