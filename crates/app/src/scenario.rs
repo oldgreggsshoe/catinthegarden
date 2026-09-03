@@ -267,6 +267,7 @@ impl ScenarioRunner {
             "ocean_ship_float" => include_str!("../scenarios/ocean_ship_float.json"),
             "land_chunk_seams" => include_str!("../scenarios/land_chunk_seams.json"),
             "coast_waters_edge" => include_str!("../scenarios/coast_waters_edge.json"),
+            "coastal_spawn_view" => include_str!("../scenarios/coastal_spawn_view.json"),
             "shallow_water_shelf" => include_str!("../scenarios/shallow_water_shelf.json"),
             "ocean_coastline" => include_str!("../scenarios/ocean_coastline.json"),
             "orbital_zoom_lod" => include_str!("../scenarios/orbital_zoom_lod.json"),
@@ -1379,6 +1380,29 @@ mod tests {
         assert_eq!(scenario.definition.waypoints[2].position[0], 5_440_000.0);
         assert_eq!(scenario.definition.waypoints[4].look_at, [0.0; 3]);
         assert_eq!(scenario.definition.waypoints[6].position[0], 8_000_000.0);
+    }
+
+    #[test]
+    fn coastal_spawn_view_watches_the_surf_from_the_land_spawn() {
+        let scenario = ScenarioRunner::load("coastal_spawn_view").expect("scenario parses");
+        assert_eq!(scenario.expected_screenshots(), 2);
+        assert_eq!(scenario.ocean_storm_intensity_override(), Some(1.0));
+        // This is meant to be what F4 actually shows. Its waypoint is authored
+        // from the spawn constants, so if the coast is re-measured and the
+        // spawn moves, this fails rather than quietly framing somewhere else.
+        let waypoint = &scenario.definition.waypoints[0];
+        let position = DVec3::from_array(waypoint.position);
+        let offset_meters = (position.normalize() - crate::COASTAL_START_DIRECTION.normalize())
+            .length()
+            * crate::planet::PLANET_RADIUS_METERS;
+        assert!(
+            offset_meters < 5.0,
+            "scenario stands {offset_meters} m from the land spawn"
+        );
+        // Looking seaward and slightly down, or there is no surf in shot.
+        let view = (DVec3::from_array(waypoint.look_at) - position).normalize();
+        assert!(view.dot(position.normalize()) < 0.0);
+        assert!(view.dot(crate::COASTAL_SEAWARD_TANGENT) > 0.9);
     }
 
     #[test]

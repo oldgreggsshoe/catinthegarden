@@ -375,6 +375,8 @@ const OCEAN_SHALLOW_COLOUR: vec3<f32> = vec3<f32>(0.16, 0.52, 0.55);
 // How far past the depth limit a crest must be before it whitens, and where it
 // is fully white. Both are ratios of crest height to holdable height.
 const OCEAN_BREAKING_KNEE: f32 = 4.0;
+// Below this there is not enough water for foam to be made of.
+const OCEAN_FOAM_MINIMUM_DEPTH_METERS: f32 = 1.1;
 const OCEAN_BREAKING_FOAM_ONSET: f32 = 1.8;
 const OCEAN_BREAKING_FOAM_FULL: f32 = 3.6;
 // Foam is spray over water, not paint: even a fully broken crest keeps some of
@@ -903,7 +905,14 @@ fn shoreline_water_albedo(
     // And the wash right at the edge, where there is barely any water left.
     let column_meters = still_depth_meters + surface_height_meters;
     let wash = 1.0 - smoothstep(0.0, OCEAN_SURF_COLUMN_METERS, max(column_meters, 0.0));
-    return mix(albedo, OCEAN_SURF_COLOUR, max(crest_foam, wash * wash * OCEAN_BREAKING_FOAM_MAX));
+    // Foam has to be made of water. Without this the wash keys off a depth of
+    // zero and whitens ground the sea is barely covering.
+    let has_water = smoothstep(0.0, OCEAN_FOAM_MINIMUM_DEPTH_METERS, still_depth_meters);
+    return mix(
+        albedo,
+        OCEAN_SURF_COLOUR,
+        max(crest_foam, wash * wash * OCEAN_BREAKING_FOAM_MAX) * has_water,
+    );
 }
 
 fn ocean_surface(
@@ -1007,11 +1016,12 @@ fn ocean_surface(
         breaking_weight = pow(1.0 + ratio, -1.0 / OCEAN_BREAKING_KNEE);
     }
     let limited = geometry_weight * geometry_amplitude_scale * breaking_weight;
+    // Zero depth is no water at all, not an infinitely broken wave. Calling it
+    // the latter painted every flat where the bake carries no bathymetry as
+    // solid foam, which is most of a gently shelving coast.
     var breaking_ratio = 0.0;
     if breaking_limit_meters > 0.0 {
         breaking_ratio = max(raw_vertical, 0.0) / breaking_limit_meters;
-    } else {
-        breaking_ratio = 999.0;
     }
     return OceanSurface(
         breaking_ratio,

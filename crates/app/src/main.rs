@@ -143,17 +143,25 @@ const LOW_FLIGHT_VERTICAL_FOV_DEGREES: f64 = 60.0;
 /// Authored dry point immediately inside the active bake's ocean boundary.
 /// The tangent points across the adjacent open sea, giving touch-only remote
 /// sessions a useful ocean view without needing mouse-look or WASD input.
+///
+/// Measured along that tangent, the ground falls from 22.5m here to sea level
+/// about 950m out. This sits 800m along it, on a 2.5m shore roughly 150m from
+/// the water, so the surf is close enough to watch rather than a band on the
+/// horizon. Re-measure after a rebake: a coast that moves leaves this either
+/// inland or underwater.
 const COASTAL_START_DIRECTION: glam::DVec3 = glam::DVec3::new(
-    0.843_210_618_038_952,
-    0.494_447_406_479_720,
-    0.210_991_980_539_184,
+    0.843_103_358_895_090,
+    0.494_596_506_502_913,
+    0.211_071_130_131_361,
 );
 const COASTAL_SEAWARD_TANGENT: glam::DVec3 = glam::DVec3::new(
-    -0.536_211_408_972_529,
-    0.745_549_575_617_721,
-    0.395_769_067_997_906,
+    -0.536_380_040_368_536,
+    0.745_450_671_227_412,
+    0.395_726_861_687_261,
 );
-const COASTAL_START_ALTITUDE_METERS: f64 = 100.0;
+/// Low enough that the authored 8-degree downward pitch lands the view centre
+/// in the surf zone about 300m out, rather than past it in open water.
+const COASTAL_START_ALTITUDE_METERS: f64 = 45.0;
 const COASTAL_START_PITCH_RADIANS: f64 = -8.0_f64.to_radians();
 /// Open-water direction used only for the interactive storm-at-sea startup.
 /// It is a known deep-ocean point a few kilometres seaward of the authored
@@ -4953,7 +4961,18 @@ mod tests {
         assert!((radial.length() - 1.0).abs() < 1.0e-12);
         assert!((tangent.length() - 1.0).abs() < 1.0e-12);
         assert!(radial.dot(tangent).abs() < 1.0e-12);
-        assert_eq!(super::COASTAL_START_ALTITUDE_METERS, 100.0);
+        // The spawn sits about 150m from the water on a 2.5m shore. At the
+        // authored downward pitch the view centre has to land in the surf, not
+        // inland behind it and not out in open water past it. Asserting the
+        // geometry rather than the altitude means a change to either the pitch
+        // or the height is checked against what it is for.
+        let view_centre_distance_meters =
+            super::COASTAL_START_ALTITUDE_METERS / (-super::COASTAL_START_PITCH_RADIANS).tan();
+        assert!(
+            (200.0..600.0).contains(&view_centre_distance_meters),
+            "view centre lands {view_centre_distance_meters} m out, \
+             which is not the surf zone"
+        );
         assert!((-0.15..-0.12).contains(&direction.dot(radial)));
         assert!(direction.dot(tangent) > 0.99);
     }

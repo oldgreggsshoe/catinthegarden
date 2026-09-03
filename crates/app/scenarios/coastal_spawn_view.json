@@ -1,0 +1,51 @@
+{
+  "name": "coastal_spawn_view",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 3.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0.0,
+  "fixed_exposure": true,
+  "ocean_storm_intensity_override": 1.0,
+  "screenshot_times_seconds": [
+    1.0,
+    3.0
+  ],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [
+        3372453.475,
+        1978409.514,
+        844294.544
+      ],
+      "look_at": [
+        3371934.677,
+        1978945.004,
+        844584.544
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        0.5089275188,
+        0.397776994,
+        0.7633912782
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 60.0
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 2
+  }
+}
