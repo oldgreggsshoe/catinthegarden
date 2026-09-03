@@ -137,7 +137,7 @@ pub const OCEAN_RIPPLES_ARE_GEOMETRIC: bool = false;
 /// those runs onshore at any given coast is an accident of how that coast
 /// faces; this is the switch for testing whether the table was authored for the
 /// opposite convention.
-pub const OCEAN_WAVE_PHASE_SPEED_SIGN: f64 = -1.0;
+pub const OCEAN_WAVE_PHASE_SPEED_SIGN: f64 = 1.0;
 
 /// Depth at which a wave starts to feel the bottom and refract. Deeper than
 /// this it runs wherever its axis points.
@@ -947,9 +947,16 @@ mod tests {
         let depth_at = |onshore_meters: f64| (200.0 - onshore_meters * 0.25).max(0.0);
         // Phase of one component at a point, with the shoaling lag included.
         let phase_at = |onshore_meters: f64, alongshore_meters: f64| {
-            // 35 degrees off square, so there is a real angle to close.
-            let heading = onshore * 35_f64.to_radians().cos()
-                + alongshore * 35_f64.to_radians().sin();
+            // 35 degrees off square, so there is a real angle to close, and
+            // aimed so the swell arrives shoreward whichever way the travel
+            // convention points. That matters: the lag uses local depth as a
+            // stand-in for lag accumulated along the ray, which is only a fair
+            // proxy for a wave coming in. A wave leaving the beach accumulated
+            // its lag in the shallows it has already crossed, and this model
+            // does not know that.
+            let heading = -super::OCEAN_WAVE_PHASE_SPEED_SIGN
+                * (onshore * 35_f64.to_radians().cos()
+                    + alongshore * 35_f64.to_radians().sin());
             let along_axis = onshore_meters * heading.x + alongshore_meters * heading.y;
             let lag = super::refraction_lag_meters(wavelength, depth_at(onshore_meters));
             wave_number
@@ -963,7 +970,13 @@ mod tests {
             let d_alongshore = (phase_at(onshore_meters, step)
                 - phase_at(onshore_meters, -step))
                 / (2.0 * step);
-            d_alongshore.atan2(d_onshore).abs().to_degrees()
+            // Folded onto 0-90: crest alignment is an axis, not a heading.
+            // The travel sign decides whether this swell runs onshore or back
+            // out, and refraction turns the crest onto the depth contours
+            // either way -- a metric that cared about the heading would call
+            // an outgoing wave 145 degrees and read the same turn as a failure.
+            let degrees = d_alongshore.atan2(d_onshore).abs().to_degrees();
+            degrees.min(180.0 - degrees)
         };
 
         // 200m down to 12m of water.
