@@ -4749,3 +4749,23 @@ switched the camera to the local query and exposed it.
 follows it. A test reads `vs_ocean` and fails if the flag and the shader disagree, so making the
 ripples geometric later means flipping one constant and being told immediately if the displacement
 was not added with it.
+
+## Wave refraction at the shore - 3 September 2026
+
+Surf ran whichever way the wave table happened to point, so whether it arrived onshore was an
+accident of how a coast faced. `OCEAN_WAVE_PHASE_SPEED_SIGN` makes the travel convention explicit
+and flippable -- phase is `wave_number * (dot(direction, axis) * R + sign * speed * time)`, so a
+crest travels against the sign -- but reversing it only trades which coasts are lucky.
+
+Refraction is the actual fix and needs no per-coast authoring. Waves slow as they shoal, so the part
+of a crest in shallower water lags; on an oblique approach that lag varies along the crest and it
+turns until it lies along the depth contours. `refraction_lag_meters` subtracts that lag distance
+from the travel term, which reproduces the turn from the depth field alone with no ray tracing.
+Deep water returns exactly zero, so nothing offshore is disturbed. Measured on a straight coast, a
+swell arriving 35 degrees off square holds 35 to 100m of depth, then closes to 19.9 at 75m, 15.0 at
+25m and 6.5 at 2.5m.
+
+The lag is a function of depth only, so a query given a constant depth sees no extra spatial
+gradient and the analytic slope stays exact for it. Over a real varying bed the true slope carries a
+depth-gradient term this omits; that matters for the hull's yaw forcing only where bathymetry
+changes appreciably across 42m of ship, which it does not offshore.

@@ -821,6 +821,15 @@ fn scaled_terrain_macro_height(macro_height_meters: f32) -> f32 {
     );
 }
 
+/// How far behind its deep-water position a crest has fallen at this depth.
+/// Paired with `refraction_lag_meters` in ocean.rs; see it for why a lag turns
+/// crests onto the beach.
+fn refraction_lag_meters(wavelength_meters: f32, water_depth_meters: f32) -> f32 {
+    let depth = min(max(water_depth_meters, 0.0), OCEAN_REFRACTION_REFERENCE_DEPTH_METERS);
+    let shoaling = 1.0 - sqrt(depth / OCEAN_REFRACTION_REFERENCE_DEPTH_METERS);
+    return OCEAN_REFRACTION_LAG_WAVELENGTHS * wavelength_meters * shoaling;
+}
+
 fn gerstner_wave(
     direction: vec3<f32>,
     wave_axis: vec3<f32>,
@@ -829,6 +838,7 @@ fn gerstner_wave(
     speed_meters_per_second: f32,
     steepness: f32,
     time_seconds: f32,
+    water_depth_meters: f32,
 ) -> OceanWaveContribution {
     let axis = normalize(wave_axis);
     let tangent_unnormalized = axis - direction * dot(axis, direction);
@@ -840,7 +850,9 @@ fn gerstner_wave(
     let wave_number = 6.2831853 / wavelength_meters;
     let phase = wave_number
         * (dot(direction, axis) * PLANET_RADIUS_METERS
-            + OCEAN_WAVE_PHASE_SPEED_SIGN * speed_meters_per_second * time_seconds);
+            + OCEAN_WAVE_PHASE_SPEED_SIGN
+                * (speed_meters_per_second * time_seconds
+                    - refraction_lag_meters(wavelength_meters, water_depth_meters)));
     return OceanWaveContribution(
         tangent * (steepness * OCEAN_STEEPNESS_SCALE * amplitude_meters * cos(phase)),
         amplitude_meters * sin(phase),
@@ -853,6 +865,7 @@ fn ocean_ripple(
     time_seconds: f32,
     camera_distance_meters: f32,
     shore_weight: f32,
+    water_depth_meters: f32,
 ) -> OceanWaveContribution {
     let distance_weight = 1.0 - smoothstep(
         OCEAN_RIPPLE_FULL_DISTANCE_METERS,
@@ -865,9 +878,9 @@ fn ocean_ripple(
     // These shorter waves are part of the local geometry as well as its normal:
     // the CPU surface query mirrors their vertical displacement at the patch
     // centre, so nearby camera buoyancy cannot drift from the visible water.
-    let first = gerstner_wave(direction, OCEAN_RIPPLE_FIRST_AXIS, 180.0, OCEAN_RIPPLE_FIRST_AMPLITUDE, 14.0, 0.0, time_seconds);
-    let second = gerstner_wave(direction, OCEAN_RIPPLE_SECOND_AXIS, 70.0, OCEAN_RIPPLE_SECOND_AMPLITUDE, 11.0, 0.0, time_seconds);
-    let third = gerstner_wave(direction, OCEAN_RIPPLE_THIRD_AXIS, 28.0, OCEAN_RIPPLE_THIRD_AMPLITUDE, 8.0, 0.0, time_seconds);
+    let first = gerstner_wave(direction, OCEAN_RIPPLE_FIRST_AXIS, 180.0, OCEAN_RIPPLE_FIRST_AMPLITUDE, 14.0, 0.0, time_seconds, water_depth_meters);
+    let second = gerstner_wave(direction, OCEAN_RIPPLE_SECOND_AXIS, 70.0, OCEAN_RIPPLE_SECOND_AMPLITUDE, 11.0, 0.0, time_seconds, water_depth_meters);
+    let third = gerstner_wave(direction, OCEAN_RIPPLE_THIRD_AXIS, 28.0, OCEAN_RIPPLE_THIRD_AMPLITUDE, 8.0, 0.0, time_seconds, water_depth_meters);
     let weight = distance_weight * shore_weight;
     return OceanWaveContribution(
         vec3<f32>(0.0),
@@ -969,6 +982,7 @@ fn ocean_surface(
             spec.speed_meters_per_second,
             spec.steepness,
             time_seconds,
+            water_depth_meters,
         );
         horizontal += contribution.horizontal_displacement;
         vertical += contribution.vertical_displacement;
@@ -979,6 +993,7 @@ fn ocean_surface(
         time_seconds,
         camera_distance_meters,
         shore_weight,
+        water_depth_meters,
     );
     if camera.flat_triangle_options.z > 0.5 {
         // Fixed water-following diagnostics compare against the broad CPU
