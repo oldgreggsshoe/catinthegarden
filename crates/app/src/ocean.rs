@@ -54,13 +54,15 @@ pub(crate) fn wgsl_constants() -> String {
          const OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE: f32 = {};\n\
          const OCEAN_STEEPNESS_SCALE: f32 = {};\n\
          const OCEAN_MAXIMUM_WAVE_HEIGHT_METERS: f32 = {};\n\
-         const OCEAN_BREAKING_HEIGHT_TO_DEPTH_RATIO: f32 = {};\n",
+         const OCEAN_BREAKING_HEIGHT_TO_DEPTH_RATIO: f32 = {};\n\
+         const OCEAN_WAVE_PHASE_SPEED_SIGN: f32 = {};\n",
         wgsl_number(OCEAN_WAVE_SCALE),
         wgsl_number(OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE),
         wgsl_number(OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE),
         wgsl_number(OCEAN_STEEPNESS_SCALE),
         wgsl_number(MAXIMUM_WAVE_HEIGHT_METERS),
         wgsl_number(BREAKING_HEIGHT_TO_DEPTH_RATIO),
+        wgsl_number(OCEAN_WAVE_PHASE_SPEED_SIGN),
     )
 }
 
@@ -121,6 +123,17 @@ pub const OCEAN_HORIZONTAL_TRANSPORT_ENABLED: bool = false;
 /// cannot see -- the fixed-height diagnostic hid this by querying the global
 /// swell, so it only appeared when buoyant bobbing was restored.
 pub const OCEAN_RIPPLES_ARE_GEOMETRIC: bool = false;
+
+/// Which way crests travel along each wave's axis.
+///
+/// Phase is `wave_number * (dot(direction, axis) * R + sign * speed * time)`.
+/// Holding a crest's phase constant as time grows requires the along-axis
+/// coordinate to move against `sign`, so `+1.0` sends crests along `-axis` and
+/// `-1.0` sends them along `+axis`. Nothing in the model refracts, so which of
+/// those runs onshore at any given coast is an accident of how that coast
+/// faces; this is the switch for testing whether the table was authored for the
+/// opposite convention.
+pub const OCEAN_WAVE_PHASE_SPEED_SIGN: f64 = -1.0;
 /// Diagnostic: collide and render against only the two 1,400 m swells at the
 /// head of `WAVES`, dropping the 160/65/24/9 m global waves and the whole
 /// ripple layer. Must match `OCEAN_LARGE_SWELL_ONLY` in `shared_planet.wgsl`,
@@ -410,7 +423,7 @@ pub fn wave_height_meters(direction: DVec3, sim_time: f64, storm_intensity: f32)
         .map(|wave| {
             let phase = std::f64::consts::TAU / wave.wavelength_meters
                 * (direction.dot(wave.direction.normalize()) * PLANET_RADIUS_METERS
-                    + wave.speed_meters_per_second * sim_time);
+                    + OCEAN_WAVE_PHASE_SPEED_SIGN * wave.speed_meters_per_second * sim_time);
             wave.amplitude(blend) * amplitude_scale * phase.sin()
         })
         .sum()
@@ -508,7 +521,7 @@ pub fn local_wave_height_meters(direction: DVec3, sim_time: f64, water_depth_met
         .map(|wave| {
             let phase = std::f64::consts::TAU / wave.wavelength_meters
                 * (direction.dot(wave.direction.normalize()) * PLANET_RADIUS_METERS
-                    + wave.speed_meters_per_second * sim_time);
+                    + OCEAN_WAVE_PHASE_SPEED_SIGN * wave.speed_meters_per_second * sim_time);
             wave.amplitude_meters * phase.sin()
         })
         .sum::<f64>();
@@ -542,7 +555,7 @@ pub fn global_wave_slope(direction: DVec3, sim_time: f64, water_depth_meters: f6
             let wave_number = std::f64::consts::TAU / wave.wavelength_meters;
             let phase = wave_number
                 * (radial.dot(axis) * PLANET_RADIUS_METERS
-                    + wave.speed_meters_per_second * sim_time);
+                    + OCEAN_WAVE_PHASE_SPEED_SIGN * wave.speed_meters_per_second * sim_time);
             axis * (wave.amplitude(blend) * amplitude_scale * wave_number * phase.cos())
         })
         .sum::<DVec3>()
@@ -566,8 +579,9 @@ pub fn global_wave_vertical_velocity_meters_per_second(
             let wave_number = std::f64::consts::TAU / wave.wavelength_meters;
             let phase = wave_number
                 * (direction.dot(wave.direction.normalize()) * PLANET_RADIUS_METERS
-                    + wave.speed_meters_per_second * sim_time);
-            wave.amplitude(blend)
+                    + OCEAN_WAVE_PHASE_SPEED_SIGN * wave.speed_meters_per_second * sim_time);
+            OCEAN_WAVE_PHASE_SPEED_SIGN
+                * wave.amplitude(blend)
                 * amplitude_scale
                 * wave_number
                 * wave.speed_meters_per_second
@@ -599,8 +613,12 @@ pub fn local_wave_vertical_velocity_meters_per_second(
             let wave_number = std::f64::consts::TAU / wave.wavelength_meters;
             let phase = wave_number
                 * (direction.dot(wave.direction.normalize()) * PLANET_RADIUS_METERS
-                    + wave.speed_meters_per_second * sim_time);
-            wave.amplitude_meters * wave_number * wave.speed_meters_per_second * phase.cos()
+                    + OCEAN_WAVE_PHASE_SPEED_SIGN * wave.speed_meters_per_second * sim_time);
+            OCEAN_WAVE_PHASE_SPEED_SIGN
+                * wave.amplitude_meters
+                * wave_number
+                * wave.speed_meters_per_second
+                * phase.cos()
         })
         .sum::<f64>();
     global_wave_vertical_velocity_meters_per_second(direction, sim_time, water_depth_meters)

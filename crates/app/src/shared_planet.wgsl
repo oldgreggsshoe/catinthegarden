@@ -839,7 +839,8 @@ fn gerstner_wave(
     let tangent = tangent_unnormalized / tangent_length;
     let wave_number = 6.2831853 / wavelength_meters;
     let phase = wave_number
-        * (dot(direction, axis) * PLANET_RADIUS_METERS + speed_meters_per_second * time_seconds);
+        * (dot(direction, axis) * PLANET_RADIUS_METERS
+            + OCEAN_WAVE_PHASE_SPEED_SIGN * speed_meters_per_second * time_seconds);
     return OceanWaveContribution(
         tangent * (steepness * OCEAN_STEEPNESS_SCALE * amplitude_meters * cos(phase)),
         amplitude_meters * sin(phase),

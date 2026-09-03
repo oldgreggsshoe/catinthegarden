@@ -4612,8 +4612,11 @@ mod tests {
         let wave_height_meters =
             crate::ocean::global_wave_height_meters(radial, ocean_time_seconds, 4000.0);
         let eye_altitude_meters = eye.length() - crate::planet::PLANET_RADIUS_METERS;
+        // Nanometre tolerance: the altitude comes from a length() of a vector
+        // 4,000km long, so f64 leaves a few tenths of a nanometre behind and a
+        // tighter bound tests the arithmetic rather than the placement.
         assert!(
-            (eye_altitude_meters - (wave_height_meters + eye_height_meters)).abs() < 1.0e-9,
+            (eye_altitude_meters - (wave_height_meters + eye_height_meters)).abs() < 1.0e-6,
             "eye at {eye_altitude_meters}m over a {wave_height_meters}m surface"
         );
 
