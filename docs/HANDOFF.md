@@ -4640,3 +4640,91 @@ staying one pixel away from where the old projection put it.
 The ocean has no seam instrument of its own. `max_seam_delta_m` compares baked outmap tile heights
 across chunk boundaries and cannot see a gap in analytically displaced ocean vertices, so this
 class of defect is only visible in a magnified waterline capture.
+
+## Floating ship, breaking shore waves, and one knob for the sea - 3 September 2026
+
+The flat presentation quilted the ground along every chunk boundary. It was not the source tiles or
+the LOD streamer: rendering the same view with ordinary shading shows no grid at all. The terrain
+flat path took its normal from `cross(dpdx, dpdy)` of a camera-relative position, the same construct
+that made the sea render as fixed tents, and it fails the same way once the difference is lost to f32
+cancellation. It now shades from a flat-interpolated face normal instead. That normal is packed into
+the spare components of `@location(13)`, already the only `@interpolate(flat)` scalar slot, because
+the terrain output sits exactly on the Quadro's sixteen-location limit. The squares were always
+there; removing the corrugation is what promoted them to being the most visible thing in frame.
+
+`OCEAN_WAVE_SCALE` in `ocean.rs` is now the only place the sea's size is written down. The calm and
+storm amplitude scales, `MAXIMUM_WAVE_HEIGHT_METERS` and the steepness that keeps waves from folding
+through themselves all derive from it, and `ocean::wgsl_constants` generates the shader's copies.
+`planet::shared_planet_shader_source` prepends them to `shared_planet.wgsl`, and both real
+assemblers -- the raster `planet_shader_source` and the raymarch `raymarch_shader_source` -- go
+through it, so the two render paths cannot disagree. A test asserts the raw file does not declare
+those constants again, since a second copy would put the drift straight back.
+
+Steepness is derived as `1 / OCEAN_WAVE_SCALE`, which holds the Gerstner self-intersection budget
+`sum(steepness * amplitude * wave_number)` invariant: a taller sea is no longer automatically a
+steeper one. That budget stands at 1.17 against a physical limit of 1.0, so the sea already folds;
+the knob now holds it there rather than letting it grow, and lowering it remains a deliberate visual
+change. Two guards run before the shader mirroring, so an out-of-range knob is reported before
+anything is edited: the budget must not move with the scale, and the camera's underwater floor must
+stay below the deepest trough. That floor is the knob's real ceiling, around 1.8 at -100m.
+
+Waves no longer fade out at the coast. `shore_wave_weight` used to taper them away between 30m and
+2m of depth, which deleted the sea exactly where it should be liveliest and left the shallows
+reading as static geometry. `breaking_weight` limits instead: the summed crest is squeezed toward
+`0.39 * depth` by a soft-max knee, so it flattens off as it shoals, which is what breaking is.
+Because the result can never exceed the limit, the surface cannot cut through the sea bed either --
+the limit reaches zero exactly where the water does. Rates of change of a limited height take the
+knee's own derivative, not the height's factor; using the wrong one leaves the analytic velocity
+disagreeing with a finite difference of the height, which the existing derivative regression caught.
+
+The knee was a `tanh` first, and a `tanh` bites everywhere: it took 15% off a 52m crest in 200m of
+water, where a wave that size is nowhere near breaking. The camera and the renderer both use the
+real bathymetry, so both were on that shortened sea, while the hull had a hard-coded 4000m and was
+on an unlimited one -- the hull floated correctly on water the eye had already sunk through. The
+hull now reads the same bathymetry, and the soft-max leaves anything well under the limit alone.
+The swimming regression only ran at 4000m, where the limiter is inert and could not have seen this;
+it now sweeps the couple of hundred metres an actual coast has.
+
+A first attempt scaled amplitude in proportion to depth. It kept waves off the bed but made shoaling
+impossible: crest and limit shrank together, so their ratio was identical at 1m and at 120m and
+nothing ever broke. Foam then has to key off the raw crest rather than the limited one, which by
+construction can never exceed the limit; `OceanSurface` carries `breaking_ratio` out for exactly
+that reason. Shoreline shading keys everything off depth -- a shallow colour ramp, foam on crests
+past what the depth holds, and a wash where there is barely any water left -- so every coast gets
+the same treatment with nothing authored per location.
+
+A low-poly ship floats on that sea. `ship.rs` owns the hull form, an eighty-column buoyancy
+discretisation and the rigid body, GPU-free and tested like `surface_camera`; `ship_render.rs` owns
+the pass. Mass comes from the same columns that provide buoyancy, so the design waterline is an
+exact equilibrium rather than a tuned guess. Two failures were worth the tests that caught them:
+immersion measured as a world-vertical depth while the prism stayed in the hull frame cost a heeled
+hull `cos(phi)` of its displacement, so it sank and rolled to 179 degrees; and the centre of
+buoyancy sits aft of the origin on this form, so weight acting at the origin trimmed the hull 3.5
+degrees and settled it 3cm low from a balanced start. Real hulls are ballasted so weight sits over
+buoyancy, and that offset is now explicit.
+
+The hull rolls, pitches and yaws because buoyancy acts normal to the sloped water surface rather
+than along the radial. `ocean::global_wave_slope` supplies that tilt analytically, checked against a
+centred finite difference. A radial force has no moment about the vertical axis, so before this
+nothing in the model could yaw the hull at all. Metacentric height is set directly at 0.9m rather
+than falling out of where the mass happened to sit: at the centre of buoyancy GM is the whole
+metacentric radius, 2.8m here, and the hull is far too stiff to roll. Roll also needed eddy damping,
+which a vertical-prism model has none of and which is why real hulls carry bilge keels.
+
+`WATER_BOBBING_ENABLED` is `true` again. Restoring it re-enabled Gerstner horizontal transport as a
+side effect, because `flat_triangle_options[2]` was derived from it -- one flag doing two unrelated
+jobs. Transport slides the rendered mesh up to 54m sideways while the CPU height query is purely
+radial, so the camera followed a surface the GPU had moved. `OCEAN_HORIZONTAL_TRANSPORT_ENABLED` is
+now its own constant, with a test that fails if it is ever enabled while the CPU query has no
+horizontal term.
+
+Buoyancy alone still could not keep the eye up: this sea's crests accelerate downward at close to g
+and overtake a floating body, leaving it submerged 41% of a storm, and twenty times the restoring
+force only reached 23%. Bobbing therefore has a floor rather than a stiffer spring. Buoyancy still
+drives the motion, but the eye cannot end a substep below the water, and a crest that overtakes it
+carries it up at the surface's own speed. This is a camera concession, not physics; true immersion
+would want the underwater rendering that is still unimplemented.
+
+`descent_to_10m` fails on the terrain streamer, and did so before any of this: LOD peaks at 14
+against a required 18, with 256 fallback chunks against an allowance of 128, and `tiles_loaded` stays
+at zero across twenty seconds. Not investigated.
