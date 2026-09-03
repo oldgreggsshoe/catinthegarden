@@ -455,6 +455,35 @@ fn ocean_animation_time_seconds(_scene_time_seconds: f64, presentation_time_seco
     presentation_time_seconds
 }
 
+/// Resolves a scenario waypoint onto the ocean surface: the waypoint supplies
+/// the ground track and the view direction, and the eye rides `eye_height`
+/// above the water there.
+///
+/// Depth is taken as open ocean rather than sampled from the terrain streamer,
+/// so the framing is identical whatever has managed to stream in by the capture
+/// time. This mirrors the `WATER_BOBBING_ENABLED == false` camera, which also
+/// follows the broad swell only; while horizontal Gerstner transport is
+/// disabled the CPU radial sample is the height the shader draws.
+fn waterline_scenario_pose(
+    position: glam::DVec3,
+    look_at: glam::DVec3,
+    eye_height_meters: f64,
+    ocean_time_seconds: f64,
+    planet_rotation_radians: f64,
+) -> (glam::DVec3, glam::DVec3) {
+    // Past OCEAN_SHORE_FULL_WAVE_DEPTH_METERS the shore taper is saturated, so
+    // any deep value gives the full open-ocean swell these scenarios frame.
+    const OPEN_OCEAN_DEPTH_METERS: f64 = 4000.0;
+    let radial = position.normalize();
+    let local_radial = planet::planet_local_vector(radial, planet_rotation_radians);
+    let wave_height_meters =
+        ocean::global_wave_height_meters(local_radial, ocean_time_seconds, OPEN_OCEAN_DEPTH_METERS);
+    let view = look_at - position;
+    let eye = radial
+        * (planet::PLANET_RADIUS_METERS + wave_height_meters + eye_height_meters);
+    (eye, eye + view)
+}
+
 fn retimed_planet_rotation(
     sim_time: f64,
     old_scale: f64,
@@ -771,6 +800,9 @@ struct FrameInputs {
     sun_direction: Option<glam::DVec3>,
     planet_rotation_time_scale: f64,
     forward_flight_held: Option<bool>,
+    /// When set, `pose` supplies only the ground track and view direction; the
+    /// eye rides this far above the ocean surface there.
+    waterline_eye_height_meters: Option<f64>,
 }
 
 /// Frame-local values the debug overlay displays. Everything else it shows is
@@ -2221,6 +2253,7 @@ impl State {
                 sun_direction: None,
                 planet_rotation_time_scale: INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
                 forward_flight_held: None,
+                waterline_eye_height_meters: None,
             };
         };
         let frame = scenario.advance();
@@ -2248,6 +2281,7 @@ impl State {
             sun_direction: Some(glam::DVec3::from_array(frame.sun_direction)),
             planet_rotation_time_scale: frame.planet_rotation_time_scale,
             forward_flight_held: frame.forward_flight_held,
+            waterline_eye_height_meters: scenario.waterline_eye_height_meters(),
         }
     }
 
@@ -2613,8 +2647,27 @@ impl State {
             sun_direction: scenario_sun_direction,
             planet_rotation_time_scale: scenario_planet_rotation_time_scale,
             forward_flight_held: scenario_forward_flight_held,
+            waterline_eye_height_meters: scenario_waterline_eye_height_meters,
         } = self.frame_inputs();
+        let planet_rotation_time = if self.scenario.is_some() {
+            sim_time * scenario_planet_rotation_time_scale
+        } else {
+            self.interactive_planet_rotation_time(sim_time)
+        };
+        let planet_rotation_radians = planet::planet_rotation_radians(planet_rotation_time);
         if let Some((position, look_at)) = scenario_pose {
+            // A waterline scenario authors where to stand and which way to
+            // look; how high the water is there is the spectrum's business.
+            let (position, look_at) = match scenario_waterline_eye_height_meters {
+                Some(eye_height_meters) => waterline_scenario_pose(
+                    position,
+                    look_at,
+                    eye_height_meters,
+                    ocean_animation_time_seconds(sim_time, presentation_time),
+                    planet_rotation_radians,
+                ),
+                None => (position, look_at),
+            };
             // Surface-level scenarios need the horizon level, so their up axis
             // is pinned to the local radial. Orbital scenarios keep the default
             // basis, where a radial up is degenerate when looking straight down.
@@ -2634,12 +2687,6 @@ impl State {
         if let Some(sun_direction) = scenario_sun_direction {
             self.sun_direction = sun_direction.normalize();
         }
-        let planet_rotation_time = if self.scenario.is_some() {
-            sim_time * scenario_planet_rotation_time_scale
-        } else {
-            self.interactive_planet_rotation_time(sim_time)
-        };
-        let planet_rotation_radians = planet::planet_rotation_radians(planet_rotation_time);
         let weather_time = if self.scenario.is_some() {
             presentation_time
         } else {
@@ -4352,11 +4399,55 @@ mod tests {
         low_flight_clearance_radius, projected_planet_coverage, render_size_for_surface_resize,
         retimed_planet_rotation, should_enter_fullscreen, should_start_interactive_fullscreen,
         surface_movement_direction, swept_flight_clearance_lift, transport_flight_tangent,
+        waterline_scenario_pose,
     };
     use crate::planet::{
         CameraUniform, FlatTriangleOutlineMode, OrbitCamera, PLANET_ROTATION_PERIOD_SECONDS,
         RenderDebugMode, default_sun_direction, geographic_longitude_degrees,
     };
+
+    #[test]
+    fn waterline_pose_puts_the_eye_a_fixed_height_above_the_wave_surface() {
+        // The authored ocean_waterline_flat waypoint and its first capture time.
+        let position = DVec3::new(3_354_068.665927, 2_006_920.317461, 850_001.308004);
+        let look_at = DVec3::new(3_354_559.982233, 2_006_920.317461, 848_062.594955);
+        let eye_height_meters = 40.0;
+        let ocean_time_seconds = 0.5;
+        let (eye, target) = waterline_scenario_pose(
+            position,
+            look_at,
+            eye_height_meters,
+            ocean_time_seconds,
+            0.0,
+        );
+
+        // The eye stays on the waypoint's ground track and keeps its view
+        // direction; only the radius is the ocean's to decide.
+        let radial = position.normalize();
+        assert!(eye.normalize().distance(radial) < 1.0e-12);
+        let authored_view = (look_at - position).normalize();
+        assert!((target - eye).normalize().distance(authored_view) < 1.0e-12);
+
+        // And it lands exactly `eye_height` above the water the CPU reports.
+        let wave_height_meters =
+            crate::ocean::global_wave_height_meters(radial, ocean_time_seconds, 4000.0);
+        let eye_altitude_meters = eye.length() - crate::planet::PLANET_RADIUS_METERS;
+        assert!(
+            (eye_altitude_meters - (wave_height_meters + eye_height_meters)).abs() < 1.0e-9,
+            "eye at {eye_altitude_meters}m over a {wave_height_meters}m surface"
+        );
+
+        // The correction has to be large, or the fixed radius was fine and this
+        // mode buys nothing. At full storm the authored 1m radius was metres
+        // under the surface, which is why its captures framed the water's
+        // underside instead of the horizon.
+        let authored_altitude_meters = position.length() - crate::planet::PLANET_RADIUS_METERS;
+        assert!(
+            authored_altitude_meters - wave_height_meters < -5.0,
+            "authored eye was {}m above the wave, so it was never submerged",
+            authored_altitude_meters - wave_height_meters
+        );
+    }
 
     #[test]
     fn idle_flight_has_no_movement_direction() {

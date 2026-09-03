@@ -148,6 +148,14 @@ pub struct ScenarioDefinition {
     /// gameplay always uses the live, spatially varying weather field.
     #[serde(default)]
     pub ocean_storm_intensity_override: Option<f32>,
+    /// Rides the eye this far above the ocean surface at the waypoint's own
+    /// ground track, instead of using the waypoint's radius. A waterline
+    /// diagnostic authored as a fixed radius stops framing the waterline the
+    /// moment the wave spectrum changes: the `ocean_waterline_flat` waypoint
+    /// had silently become a camera 24m below a storm crest, so its captures
+    /// showed the underside of the water shell rather than the horizon.
+    #[serde(default)]
+    pub waterline_eye_height_meters: Option<f64>,
     /// Enables the real low-flight camera at the first waypoint and holds W
     /// from this simulation time onward. This is deliberately not waypoint
     /// interpolation: terrain-follow regressions must exercise the same
@@ -255,6 +263,7 @@ impl ScenarioRunner {
                 include_str!("../scenarios/ocean_low_sun_stability.json")
             }
             "ocean_rough_horizon" => include_str!("../scenarios/ocean_rough_horizon.json"),
+            "ocean_waterline_flat" => include_str!("../scenarios/ocean_waterline_flat.json"),
             "ocean_coastline" => include_str!("../scenarios/ocean_coastline.json"),
             "orbital_zoom_lod" => include_str!("../scenarios/orbital_zoom_lod.json"),
             "polar_ice_cap" => include_str!("../scenarios/polar_ice_cap.json"),
@@ -551,6 +560,10 @@ impl ScenarioRunner {
 
     pub fn ocean_storm_intensity_override(&self) -> Option<f32> {
         self.definition.ocean_storm_intensity_override
+    }
+
+    pub fn waterline_eye_height_meters(&self) -> Option<f64> {
+        self.definition.waterline_eye_height_meters
     }
 
     pub fn surface_probe_max_distance_meters(&self) -> f64 {
@@ -1362,6 +1375,29 @@ mod tests {
         assert_eq!(scenario.definition.waypoints[2].position[0], 5_440_000.0);
         assert_eq!(scenario.definition.waypoints[4].look_at, [0.0; 3]);
         assert_eq!(scenario.definition.waypoints[6].position[0], 8_000_000.0);
+    }
+
+    #[test]
+    fn waterline_flat_rides_the_wave_surface_rather_than_a_fixed_radius() {
+        let scenario = ScenarioRunner::load("ocean_waterline_flat").expect("scenario parses");
+        assert_eq!(scenario.expected_screenshots(), 2);
+        assert_eq!(scenario.ocean_storm_intensity_override(), Some(1.0));
+        // Without this the waypoint radius is absolute, and a storm crest walks
+        // straight over the eye: the authored radius sat 24m under the surface.
+        // The height has to clear the crests as well: at eye level in a storm
+        // the nearest crest is 13m away and fills a 1.1-degree frame on its own,
+        // so the horizon this scenario exists to magnify is never in shot.
+        assert_eq!(scenario.waterline_eye_height_meters(), Some(40.0));
+        assert!(scenario.uses_planet_relative_up());
+        assert_eq!(scenario.definition.waypoints.len(), 1);
+        // A level view: the framing is only meaningful if the horizon is in it.
+        let waypoint = &scenario.definition.waypoints[0];
+        let position = DVec3::from_array(waypoint.position);
+        let view = (DVec3::from_array(waypoint.look_at) - position).normalize();
+        assert!(
+            view.dot(position.normalize()).abs() < 1.0e-3,
+            "view is not level: {view:?}"
+        );
     }
 
     #[test]
