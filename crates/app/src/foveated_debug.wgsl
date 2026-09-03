@@ -1335,6 +1335,7 @@ fn shade_ocean(
         return debug_ocean_albedo();
     }
     var surface = OceanSurface(
+        0.0,
         vec3<f32>(0.0),
         0.0,
         surface_direction,

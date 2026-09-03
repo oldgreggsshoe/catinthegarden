@@ -306,6 +306,11 @@ struct OceanWaveContribution {
 }
 
 struct OceanSurface {
+    /// Raw crest height over what this depth can hold. Above 1 the wave is
+    /// breaking. Carried out because the displacement below is already limited
+    /// and so can never exceed 1 by construction -- shading off that tells you
+    /// only that a crest exists, never how hard it is breaking.
+    breaking_ratio: f32,
     horizontal_displacement: vec3<f32>,
     vertical_displacement: f32,
     normal: vec3<f32>,
@@ -352,8 +357,38 @@ var<private> OCEAN_WAVE_TABLE: array<OceanWaveSpec, 17> = array<OceanWaveSpec, 1
 );
 const OCEAN_GEOMETRY_FULL_DISTANCE_METERS: f32 = 4000.0;
 const OCEAN_GEOMETRY_FADE_DISTANCE_METERS: f32 = 10000.0;
-const OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE: f32 = 44.0;
-const OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE: f32 = 55.0;
+// OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE, OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE and
+// OCEAN_STEEPNESS_SCALE are generated from `OCEAN_WAVE_SCALE` in ocean.rs and
+// prepended to this file. Declaring them here as well would reintroduce exactly
+// the copy that used to drift.
+// Shoreline treatment. Everything at the water's edge keys off one quantity --
+// how deep the water is under the fragment -- so every coast on the planet gets
+// the same behaviour with nothing authored per location.
+//
+// Depth over which water reads as shallow. Less column means less of the light
+// entering it is absorbed before it comes back out, so it lightens and takes
+// the bottom's colour.
+const OCEAN_SHALLOW_DEPTH_METERS: f32 = 6.0;
+const OCEAN_SHALLOW_COLOUR: vec3<f32> = vec3<f32>(0.16, 0.52, 0.55);
+// How far into breaking a crest must be before it starts going white. Below
+// this the wave is merely feeling the bottom, not yet breaking on it.
+// How far past the depth limit a crest must be before it whitens, and where it
+// is fully white. Both are ratios of crest height to holdable height.
+const OCEAN_BREAKING_KNEE: f32 = 4.0;
+const OCEAN_BREAKING_FOAM_ONSET: f32 = 1.8;
+const OCEAN_BREAKING_FOAM_FULL: f32 = 3.6;
+// Foam is spray over water, not paint: even a fully broken crest keeps some of
+// the sea's colour, which stops the surf zone reading as a white sheet.
+const OCEAN_BREAKING_FOAM_MAX: f32 = 0.82;
+// The instantaneous column -- still depth plus the wave's own displacement --
+// below which the swell is breaking and going white. Because it uses the live
+// surface height rather than the sea bed alone, the surf line runs up and back
+// down the beach with the water instead of sitting there as a painted ring.
+const OCEAN_SURF_COLUMN_METERS: f32 = 0.25;
+const OCEAN_SURF_COLOUR: vec3<f32> = vec3<f32>(0.92, 0.95, 0.96);
+// Still used by the ripple layer and the raymarch path for how far a shore
+// effect reaches; it no longer gates the swell, which is depth-limited instead.
+const OCEAN_SHORE_FULL_DEPTH_METERS: f32 = 30.0;
 const OCEAN_RIPPLE_FULL_DISTANCE_METERS: f32 = 2000.0;
 const OCEAN_RIPPLE_FADE_DISTANCE_METERS: f32 = 8000.0;
 const OCEAN_RIPPLE_FIRST_AMPLITUDE: f32 = 1.8;
@@ -362,7 +397,6 @@ const OCEAN_RIPPLE_THIRD_AMPLITUDE: f32 = 1.20;
 const OCEAN_RIPPLE_FIRST_AXIS: vec3<f32> = vec3<f32>(0.72, 0.18, -0.67);
 const OCEAN_RIPPLE_SECOND_AXIS: vec3<f32> = vec3<f32>(-0.31, 0.91, 0.28);
 const OCEAN_RIPPLE_THIRD_AXIS: vec3<f32> = vec3<f32>(0.15, -0.58, 0.80);
-const OCEAN_SHORE_FULL_DEPTH_METERS: f32 = 30.0;
 
 fn planet_to_view(vector: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(
@@ -805,7 +839,7 @@ fn gerstner_wave(
     let phase = wave_number
         * (dot(direction, axis) * PLANET_RADIUS_METERS + speed_meters_per_second * time_seconds);
     return OceanWaveContribution(
-        tangent * (steepness * amplitude_meters * cos(phase)),
+        tangent * (steepness * OCEAN_STEEPNESS_SCALE * amplitude_meters * cos(phase)),
         amplitude_meters * sin(phase),
         tangent * (amplitude_meters * wave_number * cos(phase)),
     );
@@ -839,6 +873,39 @@ fn ocean_ripple(
     );
 }
 
+/// Water colour at the shore, from the depth beneath it.
+///
+/// `still_depth_meters` is the sea bed below mean sea level; `surface_height_meters`
+/// is the wave's displacement at this point. Their sum is the water actually
+/// standing here at this instant, which is what decides both how shallow it
+/// reads and whether it is breaking.
+fn shoreline_water_albedo(
+    open_water: vec3<f32>,
+    still_depth_meters: f32,
+    surface_height_meters: f32,
+    breaking_ratio: f32,
+) -> vec3<f32> {
+    let shallow = 1.0 - smoothstep(0.0, OCEAN_SHALLOW_DEPTH_METERS, still_depth_meters);
+    // Squared so the shallows stay tight to the beach rather than washing the
+    // whole bay out.
+    var albedo = mix(open_water, OCEAN_SHALLOW_COLOUR, shallow * shallow);
+    // A crest that has used up what the depth can hold is breaking, and goes
+    // white. Paired with `breaking_fraction` in ocean.rs. This is the shore
+    // surf: it follows the wave, so the white travels in with each crest
+    // instead of sitting on the beach as a painted ring.
+    // How far past what the depth holds this crest would have stood if the
+    // water let it. Unclamped, so it separates crests that are genuinely
+    // tumbling from ones merely feeling the bottom -- which is what leaves the
+    // foam in bands rather than as one sheet across the whole surf zone.
+    let crest_foam =
+        smoothstep(OCEAN_BREAKING_FOAM_ONSET, OCEAN_BREAKING_FOAM_FULL, breaking_ratio)
+            * OCEAN_BREAKING_FOAM_MAX;
+    // And the wash right at the edge, where there is barely any water left.
+    let column_meters = still_depth_meters + surface_height_meters;
+    let wash = 1.0 - smoothstep(0.0, OCEAN_SURF_COLUMN_METERS, max(column_meters, 0.0));
+    return mix(albedo, OCEAN_SURF_COLOUR, max(crest_foam, wash * wash * OCEAN_BREAKING_FOAM_MAX));
+}
+
 fn ocean_surface(
     direction: vec3<f32>,
     time_seconds: f32,
@@ -848,7 +915,10 @@ fn ocean_surface(
     if !OCEAN_WAVES_ENABLED {
         return flat_ocean_surface(direction);
     }
-    let shore_weight = smoothstep(2.0, OCEAN_SHORE_FULL_DEPTH_METERS, water_depth_meters);
+    // Applied to the summed height further down, not here: the limit depends on
+    // how tall this crest actually is, which is not known until the waves are
+    // summed. See `breaking_weight` in ocean.rs.
+    let shore_weight = 1.0;
     let geometry_weight = (1.0 - smoothstep(
         OCEAN_GEOMETRY_FULL_DISTANCE_METERS,
         OCEAN_GEOMETRY_FADE_DISTANCE_METERS,
@@ -918,14 +988,36 @@ fn ocean_surface(
         OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE,
         storm_blend,
     );
+    // A wave cannot stand taller than the water it is in. Squeeze the summed
+    // crest toward what this depth can hold, so it flattens off as it shoals
+    // instead of either cutting through the sea bed or being faded out before
+    // it gets there. tanh rather than a clamp keeps the surface smooth and
+    // differentiable through the break. Paired with `breaking_weight` in
+    // ocean.rs, which the CPU collision query uses.
+    let raw_vertical = vertical * geometry_weight * geometry_amplitude_scale;
+    let breaking_limit_meters =
+        0.5 * OCEAN_BREAKING_HEIGHT_TO_DEPTH_RATIO * max(water_depth_meters, 0.0);
+    var breaking_weight = 0.0;
+    if breaking_limit_meters > 0.0 {
+        // Soft-max knee, paired with `breaking_weight` in ocean.rs: a crest
+        // well under what the depth holds is left alone, and only bends as it
+        // approaches. A tanh here bit everywhere and put the camera on a
+        // shorter sea than the one being drawn.
+        let ratio = pow(abs(raw_vertical) / breaking_limit_meters, OCEAN_BREAKING_KNEE);
+        breaking_weight = pow(1.0 + ratio, -1.0 / OCEAN_BREAKING_KNEE);
+    }
+    let limited = geometry_weight * geometry_amplitude_scale * breaking_weight;
+    var breaking_ratio = 0.0;
+    if breaking_limit_meters > 0.0 {
+        breaking_ratio = max(raw_vertical, 0.0) / breaking_limit_meters;
+    } else {
+        breaking_ratio = 999.0;
+    }
     return OceanSurface(
-        horizontal * geometry_weight * geometry_amplitude_scale * horizontal_transport,
-        vertical * geometry_weight * geometry_amplitude_scale,
-        normalize(
-            direction
-                - slope * geometry_weight * geometry_amplitude_scale
-                - ripple.slope,
-        ),
+        breaking_ratio,
+        horizontal * limited * horizontal_transport,
+        vertical * limited,
+        normalize(direction - slope * limited - ripple.slope),
         ripple.vertical_displacement,
         ripple.slope,
     );
@@ -933,6 +1025,7 @@ fn ocean_surface(
 
 fn flat_ocean_surface(direction: vec3<f32>) -> OceanSurface {
     return OceanSurface(
+        0.0,
         vec3<f32>(0.0),
         0.0,
         normalize(direction),

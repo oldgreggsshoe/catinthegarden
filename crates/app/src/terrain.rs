@@ -121,9 +121,9 @@ fn viewed_surface_direction(
 
 pub(crate) fn planet_shader_source() -> String {
     [
-        include_str!("shared_planet.wgsl"),
-        include_str!("planet.wgsl"),
-        include_str!("weather_cloud_density.wgsl"),
+        crate::planet::shared_planet_shader_source(),
+        include_str!("planet.wgsl").to_string(),
+        include_str!("weather_cloud_density.wgsl").to_string(),
     ]
     .join("\n")
 }

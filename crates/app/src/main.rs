@@ -11,6 +11,8 @@ mod probe;
 #[cfg(test)]
 mod relief_survey;
 mod scenario;
+mod ship;
+mod ship_render;
 mod sun;
 mod surface_camera;
 mod terrain;
@@ -162,6 +164,19 @@ const STORM_OCEAN_START_DIRECTION: glam::DVec3 = glam::DVec3::new(
     0.215_922_481_525_239,
 );
 const STORM_OCEAN_START_PITCH_RADIANS: f64 = -4.0_f64.to_radians();
+/// The floating ship rides at anchor a short way off the storm-ocean start, so
+/// it is in shot from the interactive spawn without sitting on top of it.
+const SHIP_START_OFFSET_METERS: f64 = 140.0;
+/// Fallback depth for the hull's wave queries before the sea bed under it has
+/// streamed in. The real bathymetry is used whenever it is resident: assuming
+/// open ocean floated the hull on an unlimited sea while the camera and the
+/// renderer were both on the depth-limited one, and the two drifted apart by
+/// metres at the crests.
+const SHIP_FALLBACK_DEPTH_METERS: f64 = 4000.0;
+/// A long stall must not let the hull integrate one enormous step.
+const MAXIMUM_SHIP_FRAME_DELTA_SECONDS: f64 = 0.25;
+/// Beyond this the hull is smaller than a pixel and not worth a draw call.
+const SHIP_VISIBLE_DISTANCE_METERS: f64 = 30_000.0;
 const PLANET_ROTATION_SCALE_STEP: f64 = 2.0;
 const MINIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 =
     INTERACTIVE_PLANET_ROTATION_TIME_SCALE / 32.0;
@@ -850,6 +865,10 @@ struct State {
     rain: weather_render::RainRenderer,
     local_cloud_impostors: weather_render::LocalCloudImpostorRenderer,
     forest: forest::ForestRenderer,
+    ship_hull: ship::ShipHull,
+    ship_body: ship::ShipBody,
+    ship_renderer: ship_render::ShipRenderer,
+    ship_sim_time_seconds: f64,
     sun: sun::SunRenderer,
     foveated: foveated::FoveatedRenderer,
     terrain: terrain::TerrainRenderer,
@@ -1151,6 +1170,27 @@ impl State {
                 .unwrap_or_default(),
             &mut terrain,
         );
+        let ship_hull = ship::ShipHull::new();
+        // Offset along a tangent so the hull sits beside the spawn rather than
+        // under it. The ocean is deep here, so it starts on its waterline.
+        let ship_direction = {
+            let radial = STORM_OCEAN_START_DIRECTION.normalize();
+            let tangent = radial.cross(glam::DVec3::Y).normalize();
+            (radial + tangent * (SHIP_START_OFFSET_METERS / planet::PLANET_RADIUS_METERS))
+                .normalize()
+        };
+        let ship_body = ship::ShipBody::afloat_at(
+            &ship_hull,
+            ship_direction,
+            STORM_OCEAN_START_DIRECTION.normalize().cross(glam::DVec3::Y),
+            ocean::global_wave_height_meters(ship_direction, 0.0, SHIP_FALLBACK_DEPTH_METERS),
+        );
+        let ship_renderer = ship_render::ShipRenderer::new(
+            &device,
+            &queue,
+            hdr::HdrRenderer::SCENE_FORMAT,
+            &camera_bind_group_layout,
+        );
         if let (Some(scenario), Some(landing_direction)) =
             (&mut scenario, terrain.preferred_landing_direction())
         {
@@ -1197,6 +1237,10 @@ impl State {
             rain,
             local_cloud_impostors,
             forest,
+            ship_hull,
+            ship_body,
+            ship_renderer,
+            ship_sim_time_seconds: 0.0,
             sun,
             foveated,
             terrain,
@@ -1241,6 +1285,10 @@ impl State {
                 "sky" => planet::RenderDebugMode::SkyOnly,
                 "ray_hit" => planet::RenderDebugMode::RayHitStatus,
                 "flat_triangles" => planet::RenderDebugMode::FlatTriangles,
+                // Reachable only by keyboard before this: diagnosing whether an
+                // artifact belongs to the flat presentation or to the terrain
+                // under it needs both modes from a scenario.
+                "final" => planet::RenderDebugMode::Final,
                 _ => planet::RenderDebugMode::FlatTriangles,
             },
             flat_triangle_outline_mode: planet::FlatTriangleOutlineMode::Dark,
@@ -1807,6 +1855,74 @@ impl State {
             remaining -= step_seconds;
         }
         self.sync_surface_camera_pose(planet_rotation_radians);
+    }
+
+    /// Floats the ship on the same analytic swell the ocean mesh is displaced
+    /// by, then hands its pose to the renderer camera-relative.
+    ///
+    /// The hull follows the global swell rather than the local ripple octave,
+    /// matching what the surface camera does: the ripples fade out with camera
+    /// distance, so a hull that rode them would drift away from the water it is
+    /// drawn against as soon as you moved away from it.
+    fn advance_ship(&mut self, ocean_time_seconds: f64, planet_rotation_radians: f64) {
+        // Step on the ocean's own clock, not the scene clock. They are the same
+        // in a scenario, but interactively `interactive_sim_time` can be frozen
+        // or offset while the water keeps animating on the presentation clock,
+        // which leaves the hull integrating against a sea it is not on.
+        // One sample for the whole hull: 42m of ship spans no meaningful
+        // bathymetry change, and the depth must match what the renderer uses.
+        let ship_depth_meters = self
+            .terrain
+            .bathymetry_height_meters_at(self.ship_body.position.normalize())
+            .map(|height| (-height).max(0.0))
+            .unwrap_or(SHIP_FALLBACK_DEPTH_METERS);
+        let delta_seconds = (ocean_time_seconds - self.ship_sim_time_seconds)
+            .clamp(0.0, MAXIMUM_SHIP_FRAME_DELTA_SECONDS);
+        self.ship_sim_time_seconds = ocean_time_seconds;
+        if delta_seconds > 0.0 {
+            self.ship_body
+                .advance(&self.ship_hull, delta_seconds, |direction| {
+                    ship::WaterSample {
+                        height_meters: ocean::global_wave_height_meters(
+                            direction,
+                            ocean_time_seconds,
+                            ship_depth_meters,
+                        ),
+                        vertical_velocity_meters_per_second:
+                            ocean::global_wave_vertical_velocity_meters_per_second(
+                                direction,
+                                ocean_time_seconds,
+                                SHIP_FALLBACK_DEPTH_METERS,
+                            ),
+                        slope: ocean::global_wave_slope(
+                            direction,
+                            ocean_time_seconds,
+                            SHIP_FALLBACK_DEPTH_METERS,
+                        ),
+                    }
+                });
+        }
+
+        let basis = planet::CameraViewBasis::from_forward_and_up(
+            self.camera
+                .planet_frame_direction_dvec3(planet_rotation_radians),
+            self.camera.planet_frame_view_up(planet_rotation_radians),
+        );
+        let camera_local = self
+            .camera
+            .planet_frame_world_position(planet_rotation_radians);
+        // The hull mesh is modelled about the waterline origin, but the body
+        // tracks its centre of mass, so step back along the hull's own axes.
+        let hull_origin_local = self.ship_body.position
+            + self.ship_body.orientation * -self.ship_hull.centre_of_mass_local();
+        let camera_offset = hull_origin_local - camera_local;
+        self.ship_renderer.update(
+            &self.queue,
+            basis.world_to_view(camera_offset),
+            glam::DMat3::from_quat(self.ship_body.orientation),
+            self.ship_body.position.normalize(),
+            camera_offset.length() < SHIP_VISIBLE_DISTANCE_METERS,
+        );
     }
 
     fn resolve_surface_camera_after_streaming(
@@ -2755,6 +2871,7 @@ impl State {
             self.weather.visual_time_seconds(),
         );
         let ocean_time_seconds = ocean_animation_time_seconds(sim_time, presentation_time);
+        self.advance_ship(ocean_time_seconds, planet_rotation_radians);
         let scene_delta_seconds = (sim_time - self.last_auto_orbit_sim_time).max(0.0);
         if let Some(forward_held) = scenario_forward_flight_held {
             if !self.scenario_flight_initialized {
@@ -3104,11 +3221,13 @@ impl State {
         // displacement uses the same temporally interpolated local storm field
         // as the cloud system, without adding a bind group or texture lookup.
         camera_uniform.flat_triangle_options[1] = local_storm_intensity;
-        // The fixed-height water diagnostic compares vertical wave-following
-        // directly. Disable Gerstner horizontal transport there so the camera
-        // and rendered surface use the same world-space sample; the normal
-        // vertical displacement remains animated.
-        camera_uniform.flat_triangle_options[2] = f32::from(!surface_camera::WATER_BOBBING_ENABLED);
+        // Gerstner horizontal transport is off while the CPU wave query is
+        // radial, so the camera and the rendered surface sample the same
+        // world-space point. This is deliberately independent of
+        // WATER_BOBBING_ENABLED: they were once the same flag, and restoring
+        // bobbing then re-enabled transport as a side effect and sank the eye.
+        camera_uniform.flat_triangle_options[2] =
+            f32::from(!ocean::OCEAN_HORIZONTAL_TRANSPORT_ENABLED);
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
         self.forest
@@ -3123,6 +3242,51 @@ impl State {
             presentation_time,
         );
         if write_log {
+            // The float's own instrument. Judging a hull by eye from a
+            // screenshot cannot tell a wave-following ship from one welded to
+            // sea level; these numbers can.
+            tracing::info!(
+                target: "catinthegarden::ship",
+                message = "ship float",
+                sim_time,
+                waterline_altitude_meters =
+                    self.ship_body.waterline_altitude_meters(&self.ship_hull),
+                wave_height_meters = ocean::global_wave_height_meters(
+                    self.ship_body.position.normalize(),
+                    ocean_time_seconds,
+                    SHIP_FALLBACK_DEPTH_METERS,
+                ),
+                tilt_degrees = self.ship_body.tilt_radians().to_degrees(),
+                // Yaw has no buoyant restoring moment, so a hull that slowly
+                // spins on the spot shows up here and nowhere else.
+                heading_degrees = {
+                    let radial = self.ship_body.position.normalize();
+                    let north = glam::DVec3::Y - radial * radial.dot(glam::DVec3::Y);
+                    let forward = self.ship_body.forward();
+                    forward
+                        .dot(radial.cross(north.normalize()))
+                        .atan2(forward.dot(north.normalize()))
+                        .to_degrees()
+                },
+                heave_meters_per_second = self
+                    .ship_body
+                    .linear_velocity
+                    .dot(self.ship_body.position.normalize()),
+                hull_triangles = self.ship_renderer.triangle_count(),
+                mass_tonnes = self.ship_hull.mass_kg() / 1000.0,
+                // The depth the hull is floating in. It has to be the depth
+                // the renderer uses, or the two are on different seas.
+                water_depth_meters = self
+                    .terrain
+                    .bathymetry_height_meters_at(self.ship_body.position.normalize())
+                    .map(|height| (-height).max(0.0))
+                    .unwrap_or(f64::NAN),
+                // GM: the number that decides whether the hull rolls like a
+                // ship or like a raft welded to the water.
+                metacentric_height_meters = self.ship_hull.metacentric_height_meters(),
+                displaced_cubic_meters = self.ship_hull.displaced_volume_cubic_meters(),
+                waterplane_square_meters = self.ship_hull.waterplane_area_square_meters(),
+            );
             let forest = self.forest.stats();
             tracing::info!(
                 target: "catinthegarden::forest",
@@ -3446,6 +3610,8 @@ impl State {
                 timestamp_writes: None,
                 multiview_mask: None,
             });
+            self.ship_renderer
+                .draw(&mut render_pass, &self.camera_bind_group);
             self.forest.draw_beams(
                 &mut render_pass,
                 &self.camera_bind_group,

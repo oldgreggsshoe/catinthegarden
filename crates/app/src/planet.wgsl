@@ -87,7 +87,11 @@ struct VertexOutput {
     // handover cutoff is recomputed per pixel from camera distance: passing that
     // flat instead made every triangle take its provoking vertex's distance, so
     // the band boundary stepped per triangle and shaded as hard facets.
-    @location(13) @interpolate(flat) detail_vertex_spacing_meters: f32,
+    // x is the detail vertex spacing; yzw is the flat presentation's face
+    // normal, taken from the provoking vertex. Packed here because this is
+    // already the only @interpolate(flat) scalar slot and the Quadro path has
+    // no sixteenth location to spare.
+    @location(13) @interpolate(flat) detail_spacing_and_face_normal: vec4<f32>,
     @location(14) tile_uv: vec2<f32>,
     // Source scale remains flat for exact tile ownership. The z component
     // carries the provoking vertex latitude for flat-triangle palette fades;
@@ -749,7 +753,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         vec4<f32>(surface_height, fog.color),
         detail_anchor_or_flat_source_offset,
         anchor_relative_position,
-        select(0.0, vertex_spacing_meters, outmap),
+        vec4<f32>(select(0.0, vertex_spacing_meters, outmap), normal),
         tile_uv,
         vec4<f32>(input.source_uv_scale, direction.y, flat_specular),
     );
@@ -1291,8 +1295,13 @@ fn flat_triangle_colour(
         let high_ice = smoothstep(2200.0, 4200.0, input.outmap_and_macro_height.y);
         fill = mix(biome_color(3u), fill, max(polar_ice, high_ice));
     }
+    // One constant normal per triangle, from the terrain field at the
+    // provoking vertex. cross(dpdx, dpdy) of a camera-relative position gives
+    // the same faceting until the difference is lost to f32 cancellation, and
+    // then it quilts the ground along every chunk boundary -- the same failure
+    // the ocean had, for the same reason.
     let normal = flat_triangle_outward_normal(
-        flat_triangle_normal(input.camera_relative_view_position, input.world_normal),
+        input.detail_spacing_and_face_normal.yzw,
         input.surface_direction,
     );
     let triangle_specular = select(
@@ -1385,7 +1394,12 @@ fn flat_ocean_colour(input: OceanVertexOutput, macro_height_meters: f32) -> vec4
     );
     let normal = normalize(geometric_normal - surface.ripple_slope);
     let lit = flat_triangle_lighting(
-        ocean_interference_albedo(surface.ripple_height),
+        shoreline_water_albedo(
+            ocean_interference_albedo(surface.ripple_height),
+            max(-macro_height_meters, 0.0),
+            surface.vertical_displacement,
+            surface.breaking_ratio,
+        ),
         normal,
         direction,
         surface.vertical_displacement,
@@ -1735,7 +1749,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     // Re-light the triangle normal by the finer-than-mesh detail ratio. The
     // offset keeps the divisor away from zero at the terminator and stops
     // grazing light exploding into white speckle.
-    if input.detail_vertex_spacing_meters > 0.0 {
+    if input.detail_spacing_and_face_normal.x > 0.0 {
         // Rebuild the vertex's cutoff from this pixel's own camera distance,
         // using the same expression vs_main used. Both are continuous in
         // distance, so the handover slides smoothly instead of stepping.
@@ -1744,7 +1758,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         );
         let vertex_filter_meters = max(
             pixel_filter_meters,
-            input.detail_vertex_spacing_meters,
+            input.detail_spacing_and_face_normal.x,
         );
         if pixel_filter_meters < vertex_filter_meters {
             let fine_detail = terrain_detail_band(

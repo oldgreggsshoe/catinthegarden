@@ -378,6 +378,18 @@ pub fn cube_face_direction(face: u8, u: f64, v: f64) -> DVec3 {
     (normal + tangent_u * u + tangent_v * v).normalize()
 }
 
+/// `shared_planet.wgsl` with the generated ocean constants in front of it.
+///
+/// Every shader that pulls in the shared prelude goes through here, so the sea
+/// the GPU draws is always the sea `OCEAN_WAVE_SCALE` describes.
+pub(crate) fn shared_planet_shader_source() -> String {
+    format!(
+        "{}\n{}",
+        crate::ocean::wgsl_constants(),
+        include_str!("shared_planet.wgsl")
+    )
+}
+
 pub fn planet_rotation_radians(sim_time_seconds: f64) -> f64 {
     (sim_time_seconds * std::f64::consts::TAU / PLANET_ROTATION_PERIOD_SECONDS)
         .rem_euclid(std::f64::consts::TAU)

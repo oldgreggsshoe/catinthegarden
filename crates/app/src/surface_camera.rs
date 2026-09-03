@@ -14,7 +14,7 @@ pub const WATER_UPWARD_IMPULSE_METERS_PER_SECOND: f64 = 2.5;
 /// Diagnostic mode: follow the rendered water surface exactly, without
 /// vertical inertia, buoyancy, gravity or jump impulses. Re-enable this when
 /// returning to the physical swimming model.
-pub const WATER_BOBBING_ENABLED: bool = false;
+pub const WATER_BOBBING_ENABLED: bool = true;
 // A one-metre diagnostic margin leaves room for f32 phase quantisation and
 // interpolation across the nearest rendered triangle while remaining close to
 // the water surface.
@@ -32,6 +32,15 @@ const WATER_VERTICAL_DRAG_PER_SECOND: f64 = 3.0;
 // same still-water equilibrium without pinning it to the animated surface.
 const WATER_BUOYANCY_RESTORING_ACCELERATION_PER_METER: f64 = 6.0;
 const WATER_BUOYANCY_MAX_RESTORING_ACCELERATION: f64 = 24.0;
+/// The eye may ride down into a crest, but never through it.
+///
+/// This ocean's crests accelerate downward at close to g, so a genuinely
+/// buoyant swimmer is overtaken by them: even a restoring term twenty times
+/// stronger leaves the eye submerged a quarter of the time. Bobbing therefore
+/// needs a floor rather than a stiffer spring. Buoyancy still drives the
+/// motion, so the eye rises, falls and lags with the sea; it just cannot end a
+/// substep below the water it is swimming on.
+pub const MINIMUM_SWIMMING_EYE_CLEARANCE_METERS: f64 = 0.06;
 const MAXIMUM_PHYSICS_STEP_SECONDS: f64 = 1.0 / 120.0;
 pub const GROUND_CONTACT_EPSILON_METERS: f64 = 0.02;
 
@@ -153,6 +162,19 @@ impl SurfacePhysicsState {
                 self.vertical_velocity_meters_per_second =
                     self.vertical_velocity_meters_per_second.max(0.0);
                 self.grounded = false;
+            }
+            if let Some((water_height, water_vertical_velocity)) = water_surface {
+                // The floor described on MINIMUM_SWIMMING_EYE_CLEARANCE_METERS.
+                // A crest that overtakes the eye carries it up rather than
+                // closing over it, so the eye keeps the surface's own upward
+                // speed instead of being left behind by it.
+                let floor = water_height + MINIMUM_SWIMMING_EYE_CLEARANCE_METERS;
+                if eye_altitude_meters < floor {
+                    eye_altitude_meters = floor;
+                    self.vertical_velocity_meters_per_second = self
+                        .vertical_velocity_meters_per_second
+                        .max(water_vertical_velocity);
+                }
             }
             self.update_medium(eye_altitude_meters, water_surface);
             remaining -= step;
@@ -286,6 +308,67 @@ mod tests {
         );
         state.advance_vertical(after_impulse, -100.0, Some((0.0, 0.0)), false, 0.25);
         assert!(state.vertical_velocity_meters_per_second < WATER_UPWARD_IMPULSE_METERS_PER_SECOND);
+    }
+
+    #[test]
+    fn a_swimmer_bobs_without_being_swallowed_by_a_storm_crest() {
+        // The regression this exists for: with buoyancy alone the eye spent
+        // 41% of a storm underwater, because crests here accelerate down at
+        // close to g and simply overtake a floating body. Twenty times the
+        // restoring force only got that to 23%, so the floor is the fix.
+        use crate::ocean;
+        let direction = glam::DVec3::new(0.836442275001636, 0.503727905284262, 0.215922481525239)
+            .normalize();
+        // Swept over real sea beds, not just abyssal depth. The bug this
+        // caught: at 4000m the depth limiter is inert, so a test that only ran
+        // there could not see the eye and the rendered surface drifting apart
+        // in the couple of hundred metres of water an actual coast has.
+        for depth in [80.0, 200.0, 1000.0, 4000.0] {
+            swim_at_depth(direction, depth);
+        }
+    }
+
+    fn swim_at_depth(direction: glam::DVec3, depth: f64) {
+        use crate::ocean;
+        let mut physics = SurfacePhysicsState::default();
+        physics.settle_in_water();
+        let mut eye = ocean::global_wave_height_meters(direction, 0.0, depth) + 0.255;
+        let mut submerged = 0usize;
+        let mut clearances = Vec::new();
+        let mut time_seconds = 0.0;
+        for _ in 0..3600 {
+            let height = ocean::local_wave_height_meters(direction, time_seconds, depth);
+            let velocity =
+                ocean::local_wave_vertical_velocity_meters_per_second(direction, time_seconds, depth);
+            eye = physics.advance_vertical(eye, -depth, Some((height, velocity)), false, 1.0 / 60.0);
+            time_seconds += 1.0 / 60.0;
+            let clearance = eye - height;
+            if clearance < 0.0 {
+                submerged += 1;
+            }
+            clearances.push(clearance);
+            assert!(eye.is_finite());
+        }
+        assert_eq!(
+            submerged, 0,
+            "eye went under on {submerged} frames in {depth} m of water"
+        );
+
+        // It still has to be a float, not a rail: the eye must ride above the
+        // surface some of the time rather than being pinned to the floor.
+        let highest = clearances.iter().cloned().fold(f64::MIN, f64::max);
+        assert!(
+            highest > 0.3,
+            "in {depth} m of water the eye never rose past {highest:.3} m of \
+             clearance, so it is welded to the surface"
+        );
+        // And it must actually move with the sea rather than holding one height.
+        let lowest = clearances.iter().cloned().fold(f64::MAX, f64::min);
+        assert!(
+            highest - lowest > 0.2,
+            "clearance only varied {:.3} m; that is not bobbing",
+            highest - lowest
+        );
     }
 
     #[test]
