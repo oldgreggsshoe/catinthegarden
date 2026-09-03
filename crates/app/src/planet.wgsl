@@ -108,6 +108,13 @@ struct OceanVertexOutput {
     // actually displaced by the terrain pass.
     @location(5) terrain_height_hint: f32,
     @location(6) tile_uv: vec2<f32>,
+    // Flat-interpolated so every fragment of a triangle shades from one
+    // constant normal, which is what the low-poly presentation wants. Deriving
+    // it in the fragment via cross(dpdx, dpdy) of a camera-relative position
+    // instead loses the difference to f32 cancellation on the stretched
+    // triangles the LOD morph produces, and renders a flat sea as a field of
+    // tents locked to the tessellation.
+    @location(7) @interpolate(flat) face_normal: vec3<f32>,
 }
 
 fn uses_outmap(terrain_info: u32) -> bool {
@@ -535,8 +542,18 @@ fn project_patch_vertex(input: VertexInput) -> PatchVertex {
             * (tile_uv.y - 0.5)
             * input.node_uv_origin_span.w;
     let surface_cube = anchor_cube + cube_offset;
-    let parallel = dot(surface_cube, anchor_direction);
-    let tangent = surface_cube - anchor_direction * parallel;
+    // anchor_cube is anchor_direction * cube_length, so the tangential part of
+    // surface_cube is exactly the tangential part of cube_offset. Forming it as
+    // surface_cube - anchor_direction * parallel instead subtracts two O(1)
+    // vectors to produce an O(1e-5) one and then scales the result by the
+    // planet radius, which costs about 0.2 m of vertex position -- one f32 ULP
+    // at 4000 km. That is enough to tilt a 1 m L18 triangle by degrees, and it
+    // is what made a waveless sea render as a field of fixed tents. These two
+    // forms are algebraically identical; this one differences only quantities
+    // of the same small magnitude.
+    let offset_parallel = dot(cube_offset, anchor_direction);
+    let parallel = dot(anchor_cube, anchor_direction) + offset_parallel;
+    let tangent = cube_offset - anchor_direction * offset_parallel;
     let tangent_length_squared = dot(tangent, tangent);
     let surface_cube_length = sqrt(
         parallel * parallel + tangent_length_squared,
@@ -564,6 +581,15 @@ fn project_patch_vertex(input: VertexInput) -> PatchVertex {
                 + face_tangent_u(face) * node_uv.x
                 + face_tangent_v(face) * node_uv.y,
         );
+        // Deliberately NOT the stable anchor-local decomposition used in the
+        // interior. That form is more accurate but is evaluated relative to
+        // this chunk's own anchor, so two neighbours round a shared edge
+        // vertex differently and the seam splits: it opened a one-pixel gap
+        // right through the ocean at 11.3km, which `ocean_waterline_flat`
+        // catches. Here the anchor term cancels exactly against the anchor
+        // world position the renderer adds back, so both neighbours land on
+        // the same `direction * PLANET_RADIUS_METERS`. On a shared boundary
+        // agreement beats accuracy.
         anchor_relative_position =
             (direction - anchor_direction) * PLANET_RADIUS_METERS;
     }
@@ -763,6 +789,7 @@ fn vs_ocean(input: VertexInput) -> OceanVertexOutput {
         select(0.0, 1.0, outmap),
         terrain_height_hint,
         projected.tile_uv,
+        surface.normal,
     );
 }
 
@@ -1348,16 +1375,14 @@ fn flat_ocean_colour(input: OceanVertexOutput, macro_height_meters: f32) -> vec4
         length(input.camera_relative_view_position),
         max(-macro_height_meters, 0.0),
     );
+    // One constant normal per triangle, taken from the wave field at the
+    // provoking vertex. Still a face normal, so the broad wave facets this
+    // presentation depends on survive; it just no longer depends on a
+    // screen-space derivative that collapses at grazing angles.
     let geometric_normal = flat_triangle_outward_normal(
-        flat_triangle_normal(
-            input.camera_relative_view_position,
-            direction,
-        ),
+        input.face_normal,
         direction,
     );
-    // Keep the low-poly face normal from the displaced geometry, then add only
-    // the sub-mesh ripple component. Reusing surface.normal directly would
-    // smooth the broad wave facets that define this presentation.
     let normal = normalize(geometric_normal - surface.ripple_slope);
     let lit = flat_triangle_lighting(
         ocean_interference_albedo(surface.ripple_height),
