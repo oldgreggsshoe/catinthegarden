@@ -264,6 +264,10 @@ impl ScenarioRunner {
             }
             "ocean_rough_horizon" => include_str!("../scenarios/ocean_rough_horizon.json"),
             "ocean_waterline_flat" => include_str!("../scenarios/ocean_waterline_flat.json"),
+            "ocean_ship_float" => include_str!("../scenarios/ocean_ship_float.json"),
+            "land_chunk_seams" => include_str!("../scenarios/land_chunk_seams.json"),
+            "coast_waters_edge" => include_str!("../scenarios/coast_waters_edge.json"),
+            "shallow_water_shelf" => include_str!("../scenarios/shallow_water_shelf.json"),
             "ocean_coastline" => include_str!("../scenarios/ocean_coastline.json"),
             "orbital_zoom_lod" => include_str!("../scenarios/orbital_zoom_lod.json"),
             "polar_ice_cap" => include_str!("../scenarios/polar_ice_cap.json"),
@@ -1375,6 +1379,21 @@ mod tests {
         assert_eq!(scenario.definition.waypoints[2].position[0], 5_440_000.0);
         assert_eq!(scenario.definition.waypoints[4].look_at, [0.0; 3]);
         assert_eq!(scenario.definition.waypoints[6].position[0], 8_000_000.0);
+    }
+
+    #[test]
+    fn ship_float_frames_the_hull_from_above_the_storm_surface() {
+        let scenario = ScenarioRunner::load("ocean_ship_float").expect("scenario parses");
+        assert_eq!(scenario.expected_screenshots(), 3);
+        assert_eq!(scenario.ocean_storm_intensity_override(), Some(1.0));
+        // The hull is the subject, so the camera has to stay out of the water:
+        // at a fixed radius a storm crest closes over it and the capture is a
+        // grey frame of unrendered underwater.
+        assert!(scenario.waterline_eye_height_meters().is_some());
+        // Long enough to see the hull heave and pitch through a swell, not just
+        // sit at one instant of it.
+        assert!(scenario.definition.duration_seconds >= 6.0);
+        assert!(scenario.uses_planet_relative_up());
     }
 
     #[test]

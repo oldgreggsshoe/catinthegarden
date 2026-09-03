@@ -1,0 +1,51 @@
+{
+  "name": "shallow_water_shelf",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 2.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": false,
+  "planet_rotation_time_scale": 0.0,
+  "fixed_exposure": true,
+  "surface_probe_max_distance_meters": 20000.0,
+  "screenshot_times_seconds": [
+    1.0,
+    2.0
+  ],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [
+        3388508.641,
+        1927870.668,
+        896952.64
+      ],
+      "look_at": [
+        3388085.12,
+        1927629.708,
+        896840.532
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        0.5089275188,
+        0.397776994,
+        0.7633912782
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 50.0
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 2
+  }
+}
