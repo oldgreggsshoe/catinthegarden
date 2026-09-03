@@ -220,6 +220,13 @@ fn perceptual_sky_radiance(radiance: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    // A submerged eye has water in every direction, so the sky behind the
+    // geometry is water too. Without this the frame below the surface fills
+    // with the sky the camera can no longer see. Placeholder until there is a
+    // real underwater pass.
+    if camera.flat_triangle_options.w > 0.5 {
+        return vec4<f32>(0.012, 0.055, 0.13, 1.0);
+    }
     let ray = view_direction(input.ndc);
     let sky_uv = sky_view_uv(ray);
     let radiance = textureSample(

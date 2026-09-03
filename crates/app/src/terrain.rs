@@ -940,7 +940,8 @@ impl TerrainRenderer {
             label: Some("planet raster shader"),
             source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
-        let create_pipeline = |label, vertex_entry_point, fragment_entry_point| {
+        let create_pipeline_with_culling =
+            |label, vertex_entry_point, fragment_entry_point, cull_mode| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&pipeline_layout),
@@ -961,7 +962,7 @@ impl TerrainRenderer {
                     })],
                 }),
                 primitive: wgpu::PrimitiveState {
-                    cull_mode: Some(wgpu::Face::Back),
+                    cull_mode,
                     ..Default::default()
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
@@ -976,14 +977,34 @@ impl TerrainRenderer {
                 cache: None,
             })
         };
+        let create_pipeline = |label, vertex_entry_point, fragment_entry_point| {
+            create_pipeline_with_culling(
+                label,
+                vertex_entry_point,
+                fragment_entry_point,
+                Some(wgpu::Face::Back),
+            )
+        };
         let transition_pipeline =
             create_pipeline("LOD terrain transition pipeline", "vs_main", "fs_main");
         let stable_pipeline =
             create_pipeline("LOD terrain stable pipeline", "vs_main", "fs_main_stable");
-        let ocean_transition_pipeline =
-            create_pipeline("LOD ocean transition pipeline", "vs_ocean", "fs_ocean");
-        let ocean_stable_pipeline =
-            create_pipeline("LOD ocean stable pipeline", "vs_ocean", "fs_ocean_stable");
+        // The sea keeps its back faces so a submerged eye sees the underside of
+        // the water rather than the sky behind it. Culling them left the lower
+        // half of the frame showing background whenever a crest closed over the
+        // camera.
+        let ocean_transition_pipeline = create_pipeline_with_culling(
+            "LOD ocean transition pipeline",
+            "vs_ocean",
+            "fs_ocean",
+            None,
+        );
+        let ocean_stable_pipeline = create_pipeline_with_culling(
+            "LOD ocean stable pipeline",
+            "vs_ocean",
+            "fs_ocean_stable",
+            None,
+        );
 
         let topology = build_chunk_mesh(QuadtreeNode::root(0));
         // Every quadtree leaf has the same 33x33 topology. Node bounds now

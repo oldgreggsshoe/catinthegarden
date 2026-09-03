@@ -3228,6 +3228,12 @@ impl State {
         // bobbing then re-enabled transport as a side effect and sank the eye.
         camera_uniform.flat_triangle_options[2] =
             f32::from(!ocean::OCEAN_HORIZONTAL_TRANSPORT_ENABLED);
+        // Submerged: the sky pass paints water instead of sky. Measured against
+        // the same surface the collision query uses, so the tint appears at the
+        // instant the eye actually goes under rather than at sea level.
+        camera_uniform.flat_triangle_options[3] = f32::from(
+            camera_sea_level_altitude_meters < camera_surface_height_meters,
+        );
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
         self.forest

@@ -1470,7 +1470,13 @@ fn fs_main_stable(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 
 @fragment
-fn fs_ocean(input: OceanVertexOutput) -> @location(0) vec4<f32> {
+fn fs_ocean(
+    input: OceanVertexOutput,
+    @builtin(front_facing) front_facing: bool,
+) -> @location(0) vec4<f32> {
+    if !front_facing {
+        return underwater_colour();
+    }
     if u32(camera.projection.w + 0.5) == RENDER_DEBUG_FLAT_TRIANGLES {
         return ocean_fragment_color(input);
     }
@@ -1485,8 +1491,21 @@ fn fs_ocean(input: OceanVertexOutput) -> @location(0) vec4<f32> {
 }
 
 @fragment
-fn fs_ocean_stable(input: OceanVertexOutput) -> @location(0) vec4<f32> {
+fn fs_ocean_stable(
+    input: OceanVertexOutput,
+    @builtin(front_facing) front_facing: bool,
+) -> @location(0) vec4<f32> {
+    if !front_facing {
+        return underwater_colour();
+    }
     return ocean_fragment_color(input);
+}
+
+// Seen from below, the water is a flat dark blue. A placeholder until there is
+// a real underwater pass: the point is that a submerged eye sees water rather
+// than the sky showing through a culled surface.
+fn underwater_colour() -> vec4<f32> {
+    return vec4<f32>(0.012, 0.055, 0.13, 1.0);
 }
 
 fn ocean_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
