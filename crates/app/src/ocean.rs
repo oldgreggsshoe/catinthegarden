@@ -108,6 +108,19 @@ pub const GLOBAL_OCEAN_STORM_INTENSITY: f32 = 1.0;
 /// setting to a renderer one: turning bobbing back on silently turned transport
 /// on with it. Give the CPU query a horizontal term and this can go true.
 pub const OCEAN_HORIZONTAL_TRANSPORT_ENABLED: bool = false;
+
+/// Whether the renderer displaces geometry by the short ripple octave.
+///
+/// It does not: `ocean_surface` hands `ripple_height` out for colour and
+/// `ripple_slope` for the normal, and `vs_ocean` adds neither to
+/// `local_planet_position`. The ripples are a shading detail, not a surface.
+///
+/// Collision must follow the water that is actually drawn, so while this is
+/// false the camera's surface query leaves them out. Including them adds up to
+/// 4.6m of height the renderer never draws, which puts the eye under a crest it
+/// cannot see -- the fixed-height diagnostic hid this by querying the global
+/// swell, so it only appeared when buoyant bobbing was restored.
+pub const OCEAN_RIPPLES_ARE_GEOMETRIC: bool = false;
 /// Diagnostic: collide and render against only the two 1,400 m swells at the
 /// head of `WAVES`, dropping the 160/65/24/9 m global waves and the whole
 /// ripple layer. Must match `OCEAN_LARGE_SWELL_ONLY` in `shared_planet.wgsl`,
@@ -500,7 +513,11 @@ pub fn local_wave_height_meters(direction: DVec3, sim_time: f64, water_depth_met
         })
         .sum::<f64>();
     global_wave_height_meters(direction, sim_time, water_depth_meters)
-        + ripple_height * shore_weight
+        + if OCEAN_RIPPLES_ARE_GEOMETRIC {
+            ripple_height * shore_weight
+        } else {
+            0.0
+        }
 }
 
 /// Tangential gradient of the global wave surface: metres of rise per metre of
@@ -587,7 +604,11 @@ pub fn local_wave_vertical_velocity_meters_per_second(
         })
         .sum::<f64>();
     global_wave_vertical_velocity_meters_per_second(direction, sim_time, water_depth_meters)
-        + ripple_velocity * shore_weight
+        + if OCEAN_RIPPLES_ARE_GEOMETRIC {
+            ripple_velocity * shore_weight
+        } else {
+            0.0
+        }
 }
 
 #[cfg(test)]
@@ -785,6 +806,41 @@ mod tests {
             format!("{value:.1}")
         } else {
             format!("{value}")
+        }
+    }
+
+    #[test]
+    fn the_camera_only_follows_water_the_renderer_actually_displaces() {
+        // The ripple octave is shading detail: ocean_surface hands it out for
+        // colour and normal, and vs_ocean displaces by neither. A camera that
+        // adds it to its collision surface floats on 4.6m of water nobody drew,
+        // and goes under a crest it cannot see.
+        let shader = crate::planet::shared_planet_shader_source()
+            + include_str!("planet.wgsl");
+        let displaces_ripple = shader.contains(
+            "+ projected.direction * surface.vertical_displacement\n        + surface.ripple_height",
+        );
+        assert_eq!(
+            displaces_ripple,
+            super::OCEAN_RIPPLES_ARE_GEOMETRIC,
+            "OCEAN_RIPPLES_ARE_GEOMETRIC says {} but vs_ocean {} the ripple \
+             height into the surface position",
+            super::OCEAN_RIPPLES_ARE_GEOMETRIC,
+            if displaces_ripple { "does add" } else { "does not add" }
+        );
+        // Whichever way that goes, the two local queries must agree with the
+        // global one about whether ripples exist at all.
+        let direction = DVec3::new(0.836, 0.504, 0.216).normalize();
+        let global = global_wave_height_meters(direction, 7.0, 4000.0);
+        let local = super::local_wave_height_meters(direction, 7.0, 4000.0);
+        if super::OCEAN_RIPPLES_ARE_GEOMETRIC {
+            assert!((local - global).abs() > 1.0e-6);
+        } else {
+            assert!(
+                (local - global).abs() < 1.0e-9,
+                "local query is {} m off the drawn surface",
+                local - global
+            );
         }
     }
 

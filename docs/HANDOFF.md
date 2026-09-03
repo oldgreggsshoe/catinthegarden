@@ -4728,3 +4728,24 @@ would want the underwater rendering that is still unimplemented.
 `descent_to_10m` fails on the terrain streamer, and did so before any of this: LOD peaks at 14
 against a required 18, with 256 fallback chunks against an allowance of 128, and `tiles_loaded` stays
 at zero across twenty seconds. Not investigated.
+
+## The camera followed water nobody drew - 3 September 2026
+
+The eye kept going under near the ship. Its surface probe reported positive clearance the whole
+time -- 0.31m, 0.43m, 0.67m -- while the rendered surface 13m away stood 2.2m above the camera. The
+CPU and the renderer were describing different seas.
+
+`ocean_surface` hands the short ripple octave out as `ripple_height` for colour and `ripple_slope`
+for the normal, and `vs_ocean` adds neither to `local_planet_position`. The ripples are a shading
+detail, not a surface. The CPU's `local_wave_height_meters` added them anyway, so the camera floated
+on up to 4.6m of water that was never drawn and dropped under crests it could not see.
+
+This is as old as both files; it is not new work. What is new is which query the camera asks.
+`WATER_BOBBING_ENABLED = false` placed the eye above `global_wave_height_meters`, which is exactly
+what the renderer displaces, so the fixed diagnostic never touched the mismatch. Restoring bobbing
+switched the camera to the local query and exposed it.
+
+`OCEAN_RIPPLES_ARE_GEOMETRIC` now states which of the two is true, and the camera's surface query
+follows it. A test reads `vs_ocean` and fails if the flag and the shader disagree, so making the
+ripples geometric later means flipping one constant and being told immediately if the displacement
+was not added with it.
