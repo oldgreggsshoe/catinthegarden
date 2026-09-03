@@ -4581,3 +4581,62 @@ The diagnostic also disables Gerstner horizontal transport and the sub-mesh ripp
 ocean shader. Broad vertical swell and its lighting remain active, but both camera and mesh then
 sample the same world-space height instead of comparing a radial CPU sample with horizontally
 displaced or under-resolved parametric vertices.
+
+## Ocean wind sea and a wave-following waterline diagnostic - 3 September 2026
+
+The six-component ocean carried one Gerstner wave per wavelength band, so each band rendered as a
+single perfect plane wave and the sea read as one big regular wave plus one small regular wave.
+`WAVES` and its `OCEAN_WAVE_TABLE` mirror in `shared_planet.wgsl` now hold seventeen components:
+the two 1,400m swells, a 280-430m storm sea, and a twelve-component wind-sea tail spread widely in
+azimuth, which is what actually breaks the crests up. Each entry carries a calm and a full-storm
+amplitude, so a storm moves the dominant band down from the 1,400m swell rather than scaling the
+calm sea up; both columns sum to the same total, and the 53m height cap therefore holds at either
+end and everywhere between. One test asserts that equality and another mirrors every axis,
+wavelength, amplitude and speed literal between the CPU table and the shader, because a GPU-only
+amplitude edit would leave collision following water the renderer had stopped drawing.
+
+`OCEAN_LARGE_SWELL_ONLY` keeps only the leading swell pair and silences both the wind sea and the
+whole local ripple layer. It is paired across `ocean.rs` and `shared_planet.wgsl` and the pairing
+is enforced by a test, so collision loses exactly the waves the render loses.
+
+A flat sea rendered as a field of fixed tents locked to the tessellation. `project_patch_vertex`
+formed the tangential part of a patch vertex as `surface_cube - anchor_direction * parallel`,
+differencing two O(1) vectors to produce an O(1e-5) one and then scaling the result by the planet
+radius: about 0.2m, one f32 ULP at 4,000km, which is enough to tilt a 1m L18 triangle by degrees.
+It now differences only quantities of the same small magnitude. The ocean fragment path compounded
+this by deriving its face normal from `cross(dpdx, dpdy)` of a camera-relative position, which
+loses the same difference to cancellation on the stretched triangles the LOD morph produces. That
+normal is now a flat-interpolated vertex attribute taken from the wave field at the provoking
+vertex: still a face normal, so the broad wave facets this presentation depends on survive, but no
+longer dependent on a screen-space derivative that collapses at grazing angles.
+
+The same stable decomposition must not be applied to the shared-boundary branch of that function,
+and a comment there now says so. That branch exists so both neighbours of an edge vertex evaluate
+it identically. `(direction - anchor_direction) * PLANET_RADIUS_METERS` is the less accurate form,
+but its anchor term cancels exactly against the anchor world position the renderer adds back, so
+both chunks land on the same `direction * PLANET_RADIUS_METERS`. The anchor-local form is
+evaluated relative to each chunk's own anchor, so two neighbours round a shared vertex differently
+and the seam splits; it opened a one-pixel gap straight through the ocean at 11.3km. On a shared
+boundary, agreement beats accuracy.
+
+`ocean_waterline_flat` found that gap, but only after being repaired itself. It authored the eye
+as an absolute waypoint radius, which at storm intensity 1.0 sat 24.4m below the surface, so its
+captures framed the underside of the water shell and nine of eighty-one probe rays hit anything at
+all. Scenarios can now set `waterline_eye_height_meters`: the waypoint supplies the ground track
+and the view direction, and `waterline_scenario_pose` rides the eye that far above the CPU wave
+surface there, sampling open-ocean depth rather than streamed bathymetry so the framing does not
+depend on what happens to have loaded by the capture time. The height is 40m rather than eye
+level, because at 1.5m in a storm the nearest crest is 13m away and fills the 1.1-degree frame on
+its own, and the horizon this scenario exists to magnify is then never in shot.
+
+The gap read as a single row of pure sky spanning all 1,280 pixels, 54 rows below the horizon. It
+held a fixed 11.32km from the camera across both captures, moving eight pixels as the eye dropped
+2.54m while the horizon moved four, which is the ratio a fixed-distance ring must show and a wave
+feature cannot. It survived `OCEAN_WAVES_ENABLED = false`, which exposed a second gap at 8.0km,
+and it disappeared entirely under the previous `planet.wgsl`. Reverting only the boundary hunk
+closes both while leaving the interior precision fix active, which the horizon row confirms by
+staying one pixel away from where the old projection put it.
+
+The ocean has no seam instrument of its own. `max_seam_delta_m` compares baked outmap tile heights
+across chunk boundaries and cannot see a gap in analytically displaced ocean vertices, so this
+class of defect is only visible in a magnified waterline capture.
