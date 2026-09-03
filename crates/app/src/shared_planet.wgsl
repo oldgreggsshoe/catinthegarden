@@ -284,6 +284,21 @@ var atmosphere_sky_view_sampler: sampler;
 @group(2) @binding(12)
 var atmosphere_transmittance_lut: texture_2d<f32>;
 
+struct OceanWaveSpec {
+    axis: vec3<f32>,
+    wavelength_meters: f32,
+    // Calm and full-storm amplitudes. A storm is not a calm sea scaled up: it
+    // moves the dominant band from the 1400 m swell down to a 280-430 m storm
+    // sea. Same energy over a quarter of the wavelength is what makes a crest
+    // tower over an eye-level camera instead of passing under it as a long
+    // gentle rise. Both columns sum to the same total, so the height cap holds
+    // at either end and everywhere between.
+    amplitude_meters: f32,
+    storm_amplitude_meters: f32,
+    speed_meters_per_second: f32,
+    steepness: f32,
+}
+
 struct OceanWaveContribution {
     horizontal_displacement: vec3<f32>,
     vertical_displacement: f32,
@@ -303,6 +318,38 @@ struct OceanSurface {
 // survive a little farther as normal-only detail, so the local patch does not
 // end in a visible geometric ring.
 const OCEAN_WAVES_ENABLED: bool = true;
+// Diagnostic: keep only the two 1,400 m swells so the sea carries a single
+// dominant octave. The 160/65/24/9 m global waves and the whole local ripple
+// layer are silenced. Paired with `OCEAN_LARGE_SWELL_ONLY` in ocean.rs;
+// collision must lose exactly the waves the render loses or the camera floats
+// against water it cannot see.
+const OCEAN_LARGE_SWELL_ONLY: bool = false;
+const OCEAN_WAVE_COUNT: u32 = 17u;
+// Leading entries of OCEAN_WAVE_TABLE that form the dominant swell.
+const OCEAN_LARGE_SWELL_WAVE_COUNT: u32 = 2u;
+// Mirrored byte-for-byte by `WAVES` in ocean.rs; the axis literals must match
+// exactly, not merely to within rounding, because phase is
+// wave_number * dot(direction, axis) * PLANET_RADIUS_METERS and a planet radius
+// turns a 4th-decimal axis difference into tens of radians of phase.
+var<private> OCEAN_WAVE_TABLE: array<OceanWaveSpec, 17> = array<OceanWaveSpec, 17>(
+    OceanWaveSpec(vec3<f32>(0.9, 0.1, 0.4), 1400.0, 0.375, 0.09, 10.0, 0.45),
+    OceanWaveSpec(vec3<f32>(0.86, 0.18, 0.48), 1400.0, 0.375, 0.09, 9.2, 0.4),
+    OceanWaveSpec(vec3<f32>(0.1596, -0.599, 0.7847), 430.0, 0.0, 0.185, 24.0, 1.5),
+    OceanWaveSpec(vec3<f32>(0.297, -0.7478, 0.5938), 350.0, 0.0, 0.205, 21.5, 1.5),
+    OceanWaveSpec(vec3<f32>(0.3987, -0.8308, 0.3884), 280.0, 0.0, 0.18, 19.0, 1.5),
+    OceanWaveSpec(vec3<f32>(0.576, -0.8032, 0.1519), 200.0, 0.0495, 0.0495, 6.0, 0.34),
+    OceanWaveSpec(vec3<f32>(0.4646, -0.1875, 0.8654), 147.5, 0.0383, 0.0383, 6.59, 0.32),
+    OceanWaveSpec(vec3<f32>(0.5761, -0.8032, 0.1515), 108.7, 0.0295, 0.0295, 7.18, 0.3),
+    OceanWaveSpec(vec3<f32>(0.2007, 0.0492, 0.9784), 80.2, 0.0228, 0.0228, 7.77, 0.28),
+    OceanWaveSpec(vec3<f32>(0.49, -0.8612, -0.1353), 59.1, 0.0176, 0.0176, 8.36, 0.26),
+    OceanWaveSpec(vec3<f32>(0.1087, 0.131, 0.9854), 43.6, 0.0136, 0.0136, 8.95, 0.24),
+    OceanWaveSpec(vec3<f32>(0.5241, -0.8493, -0.063), 32.1, 0.0105, 0.0105, 9.55, 0.22),
+    OceanWaveSpec(vec3<f32>(-0.0574, 0.252, 0.966), 23.7, 0.0081, 0.0081, 10.14, 0.2),
+    OceanWaveSpec(vec3<f32>(0.3157, -0.8148, -0.4862), 17.5, 0.0062, 0.0062, 10.73, 0.18),
+    OceanWaveSpec(vec3<f32>(0.1407, 0.1008, 0.9849), 12.9, 0.0048, 0.0048, 11.32, 0.16),
+    OceanWaveSpec(vec3<f32>(0.3542, -0.8289, -0.4329), 9.5, 0.0037, 0.0037, 11.91, 0.14),
+    OceanWaveSpec(vec3<f32>(-0.2008, 0.3721, 0.9062), 7.0, 0.0029, 0.0029, 12.5, 0.12),
+);
 const OCEAN_GEOMETRY_FULL_DISTANCE_METERS: f32 = 4000.0;
 const OCEAN_GEOMETRY_FADE_DISTANCE_METERS: f32 = 10000.0;
 const OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE: f32 = 44.0;
@@ -813,19 +860,40 @@ fn ocean_surface(
     // The two dominant equal-amplitude swells are only 6.88 degrees apart.
     // Their slightly different phase speeds make the broad constructive and
     // destructive interference pattern evolve rather than lock in place.
-    let first = gerstner_wave(direction, vec3<f32>(0.9, 0.1, 0.4), 1400.0, 0.375, 10.0, 0.45, time_seconds);
-    let second = gerstner_wave(direction, vec3<f32>(0.86, 0.18, 0.48), 1400.0, 0.375, 9.2, 0.40, time_seconds);
-    let third = gerstner_wave(direction, vec3<f32>(0.55, -0.75, 0.35), 160.0, 0.1125, 6.5, 0.34, time_seconds);
-    let fourth = gerstner_wave(direction, vec3<f32>(-0.75, -0.2, 0.63), 65.0, 0.055, 8.0, 0.28, time_seconds);
-    let fifth = gerstner_wave(direction, vec3<f32>(0.2, 0.95, -0.24), 24.0, 0.0275, 10.0, 0.20, time_seconds);
-    let sixth = gerstner_wave(direction, vec3<f32>(-0.5, 0.7, -0.5), 9.0, 0.0125, 12.0, 0.14, time_seconds);
-    let horizontal = first.horizontal_displacement + second.horizontal_displacement
-        + third.horizontal_displacement + fourth.horizontal_displacement
-        + fifth.horizontal_displacement + sixth.horizontal_displacement;
-    let vertical = first.vertical_displacement + second.vertical_displacement
-        + third.vertical_displacement + fourth.vertical_displacement
-        + fifth.vertical_displacement + sixth.vertical_displacement;
-    let slope = first.slope + second.slope + third.slope + fourth.slope + fifth.slope + sixth.slope;
+    //
+    // Crests here are small circles about each axis, not straight lines, so an
+    // axis near its own pole gives curved long-period rollers while one on its
+    // great circle gives dead-straight parallel bands. The swell pair is aimed
+    // deliberately close to its poles at the ocean scenarios; re-aiming it onto
+    // the great circles renders the sea as corduroy. The three shortest octaves
+    // instead spread widely in azimuth, which is what breaks the crests up, and
+    // are held at least 35 degrees off their poles at every ocean scenario so a
+    // 24 m wave still renders near 24 m instead of collapsing into the 65 m
+    // band.
+    let storm_intensity = clamp(camera.flat_triangle_options.y, 0.0, 1.0);
+    let storm_blend = smoothstep(0.15, 0.85, storm_intensity);
+    var horizontal = vec3<f32>(0.0);
+    var vertical = 0.0;
+    var slope = vec3<f32>(0.0);
+    for (var i = 0u; i < OCEAN_WAVE_COUNT; i = i + 1u) {
+        let spec = OCEAN_WAVE_TABLE[i];
+        var amplitude = mix(spec.amplitude_meters, spec.storm_amplitude_meters, storm_blend);
+        if OCEAN_LARGE_SWELL_ONLY && i >= OCEAN_LARGE_SWELL_WAVE_COUNT {
+            amplitude = 0.0;
+        }
+        let contribution = gerstner_wave(
+            direction,
+            spec.axis,
+            spec.wavelength_meters,
+            amplitude,
+            spec.speed_meters_per_second,
+            spec.steepness,
+            time_seconds,
+        );
+        horizontal += contribution.horizontal_displacement;
+        vertical += contribution.vertical_displacement;
+        slope += contribution.slope;
+    }
     var ripple = ocean_ripple(
         direction,
         time_seconds,
@@ -839,9 +907,12 @@ fn ocean_surface(
         // the eye above one vertex and below its neighbouring crest.
         ripple = OceanWaveContribution(vec3<f32>(0.0), 0.0, vec3<f32>(0.0));
     }
-    let storm_intensity = clamp(camera.flat_triangle_options.y, 0.0, 1.0);
+    if OCEAN_LARGE_SWELL_ONLY {
+        // The ripple layer is a shorter octave by definition, so the large
+        // swell diagnostic drops it whatever the camera is doing.
+        ripple = OceanWaveContribution(vec3<f32>(0.0), 0.0, vec3<f32>(0.0));
+    }
     let horizontal_transport = select(1.0, 0.0, camera.flat_triangle_options.z > 0.5);
-    let storm_blend = smoothstep(0.15, 0.85, storm_intensity);
     let geometry_amplitude_scale = mix(
         OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE,
         OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE,
