@@ -489,8 +489,8 @@ pub fn terrain_startup_samples(
                 let direction = cube_face_direction(face.index(), u, v);
                 let requested = tile_key_for_direction(direction, WEATHER_SAMPLE_LEVEL);
                 let source_key = outmap.resolve_tile(requested)?;
-                if !tile_cache.contains_key(&source_key) {
-                    tile_cache.insert(source_key, outmap.load_tile(requested)?);
+                if let std::collections::hash_map::Entry::Vacant(e) = tile_cache.entry(source_key) {
+                    e.insert(outmap.load_tile(requested)?);
                 }
                 let tile = tile_cache
                     .get(&source_key)
@@ -1943,7 +1943,7 @@ impl TerrainRenderer {
         }
         let total_blocks = NEAR_FIELD_WINDOW_TILES * NEAR_FIELD_WINDOW_TILES;
         Some(NearFieldCoverage {
-            requested_face: key.face.index() as u8,
+            requested_face: key.face.index(),
             requested_level: key.level,
             total_blocks,
             resident_blocks,
@@ -2047,7 +2047,7 @@ impl TerrainRenderer {
         let key = sources.key;
         let tiles_per_side = f64::from(1_u32 << key.level);
         Some(RasterNearFieldBounds {
-            face: key.face.index() as u8,
+            face: key.face.index(),
             uv_min: [
                 f64::from(key.tile_x) / tiles_per_side * 2.0 - 1.0,
                 f64::from(key.tile_y) / tiles_per_side * 2.0 - 1.0,
@@ -3827,8 +3827,8 @@ fn pack_terrain_info(
         | (u32::from(face) << 1)
         | (u32::from(requested_level) << 4)
         | (u32::from(source_level) << 9)
-        | u32::from(source_edge_fade) * TERRAIN_INFO_SOURCE_EDGE_FADE_BIT
-        | u32::from(near_field) * TERRAIN_INFO_NEAR_FIELD_BIT
+        | (u32::from(source_edge_fade) * TERRAIN_INFO_SOURCE_EDGE_FADE_BIT)
+        | (u32::from(near_field) * TERRAIN_INFO_NEAR_FIELD_BIT)
 }
 
 fn max_outmap_seam_delta(
@@ -4562,7 +4562,9 @@ mod tests {
         // The ladder alone must still drive refinement, because past the baked
         // limit it is the entire budget. A zero there stops the mesh dead at
         // the source level and gives back the facets the ladder exists to hide.
-        assert!(super::OUTMAP_GEOMETRIC_ERROR.ladder > 0.0);
+        const {
+            assert!(super::OUTMAP_GEOMETRIC_ERROR.ladder > 0.0);
+        }
     }
 
     /// The baked term is charged only where a split can still read a source
@@ -5630,7 +5632,11 @@ mod tests {
                 5030.245881930623,
             ),
             (
-                DVec3::new(-1527751.2614035944, -1587419.2226994282, 3382087.3997510672),
+                DVec3::new(
+                    -1527751.2614035944,
+                    -1587419.2226994282,
+                    3_382_087.399_751_067,
+                ),
                 31222.118940204327,
                 7449.513199657928,
             ),
@@ -5672,7 +5678,7 @@ mod tests {
             (
                 DVec3::new(-1547957.3069588505, -1609403.1575641606, 3388176.6264844663),
                 32455.17166138403,
-                38000.501849331296,
+                38_000.501_849_331_3,
             ),
             (
                 DVec3::new(-1549133.9740868795, -1610683.4870895746, 3388526.149079449),
@@ -5680,7 +5686,11 @@ mod tests {
                 39785.746298166334,
             ),
             (
-                DVec3::new(-1550336.2682997123, -1611991.7161035088, 3388882.7095161872),
+                DVec3::new(
+                    -1550336.2682997123,
+                    -1611991.7161035088,
+                    3_388_882.709_516_187,
+                ),
                 33294.28170317167,
                 41512.976308547666,
             ),
@@ -5696,7 +5706,7 @@ mod tests {
             ),
             (
                 DVec3::new(-1564925.752491049, -1627867.8739971318, 3393163.1018674667),
-                41371.786865489346,
+                41_371.786_865_489_35,
                 63677.86458843465,
             ),
             (
@@ -5871,7 +5881,9 @@ mod tests {
             None,
         );
 
-        assert!(16_000.0 < LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS);
+        const {
+            assert!(16_000.0 < LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS);
+        }
         assert!(
             update.metrics.max_level > 6,
             "low flight must refine geometry beyond sparse L6 source tiles"

@@ -398,6 +398,9 @@ impl Drop for WeatherPredictionWorker {
 }
 
 impl WeatherFields {
+    /// The bare initial field, without baked terrain. The app always has an
+    /// outmap and takes `initial_with_terrain`; this is what the tests build.
+    #[allow(dead_code)]
     pub fn initial(grid: &WeatherGrid) -> Self {
         Self::initial_with_terrain(grid, None)
     }
@@ -928,7 +931,7 @@ impl WeatherFields {
             speed_meters_per_second: 0.0,
         }; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT];
         let cells_per_bin = WEATHER_GRID_SIDE / OVERLAY_BINS;
-        for face in 0..WEATHER_FACE_COUNT {
+        for (face, face_bins) in bins.iter_mut().enumerate() {
             for y in 0..OVERLAY_BINS {
                 for x in 0..OVERLAY_BINS {
                     let mut east = 0.0_f64;
@@ -950,7 +953,7 @@ impl WeatherFields {
                     }
                     let east = (east / area) as f32;
                     let north = (north / area) as f32;
-                    bins[face][y * OVERLAY_BINS + x] = WeatherOverlayWind {
+                    face_bins[y * OVERLAY_BINS + x] = WeatherOverlayWind {
                         east_meters_per_second: east,
                         north_meters_per_second: north,
                         speed_meters_per_second: east.hypot(north),
@@ -967,7 +970,7 @@ impl WeatherFields {
     ) -> [[f32; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT] {
         let mut bins = [[0.0; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT];
         let cells_per_bin = WEATHER_GRID_SIDE / OVERLAY_BINS;
-        for face in 0..WEATHER_FACE_COUNT {
+        for (face, face_bins) in bins.iter_mut().enumerate() {
             for y in 0..OVERLAY_BINS {
                 for x in 0..OVERLAY_BINS {
                     let mut humidity = 0.0_f64;
@@ -985,7 +988,7 @@ impl WeatherFields {
                             area += cell_area;
                         }
                     }
-                    bins[face][y * OVERLAY_BINS + x] = (humidity / area) as f32;
+                    face_bins[y * OVERLAY_BINS + x] = (humidity / area) as f32;
                 }
             }
         }
@@ -998,7 +1001,7 @@ impl WeatherFields {
     ) -> [[f32; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT] {
         let mut bins = [[0.0; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT];
         let cells_per_bin = WEATHER_GRID_SIDE / OVERLAY_BINS;
-        for face in 0..WEATHER_FACE_COUNT {
+        for (face, face_bins) in bins.iter_mut().enumerate() {
             for y in 0..OVERLAY_BINS {
                 for x in 0..OVERLAY_BINS {
                     let mut cloud_water = 0.0_f64;
@@ -1015,7 +1018,7 @@ impl WeatherFields {
                             area += cell_area;
                         }
                     }
-                    bins[face][y * OVERLAY_BINS + x] = (cloud_water / area) as f32;
+                    face_bins[y * OVERLAY_BINS + x] = (cloud_water / area) as f32;
                 }
             }
         }
@@ -1028,7 +1031,7 @@ impl WeatherFields {
     ) -> [[f32; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT] {
         let mut bins = [[0.0; OVERLAY_BINS * OVERLAY_BINS]; WEATHER_FACE_COUNT];
         let cells_per_bin = WEATHER_GRID_SIDE / OVERLAY_BINS;
-        for face in 0..WEATHER_FACE_COUNT {
+        for (face, face_bins) in bins.iter_mut().enumerate() {
             for y in 0..OVERLAY_BINS {
                 for x in 0..OVERLAY_BINS {
                     let mut pressure = 0.0_f64;
@@ -1046,7 +1049,7 @@ impl WeatherFields {
                             area += cell_area;
                         }
                     }
-                    bins[face][y * OVERLAY_BINS + x] = (pressure / area) as f32;
+                    face_bins[y * OVERLAY_BINS + x] = (pressure / area) as f32;
                 }
             }
         }
@@ -1262,11 +1265,11 @@ fn pressure_centres(
                     a
                 }
             });
-        if let Some((pressure, centre)) = extremum {
-            if (pressure - mean_pressure_pascals).abs() >= WEATHER_ISOBAR_INTERVAL_PASCALS * 0.5 {
-                candidates.push(((pressure - mean_pressure_pascals).abs(), centre));
-                guaranteed.push(centre);
-            }
+        if let Some((pressure, centre)) = extremum
+            && (pressure - mean_pressure_pascals).abs() >= WEATHER_ISOBAR_INTERVAL_PASCALS * 0.5
+        {
+            candidates.push(((pressure - mean_pressure_pascals).abs(), centre));
+            guaranteed.push(centre);
         }
     }
 
@@ -1547,6 +1550,7 @@ impl WeatherState {
     /// Smooth local storm strength for presentation systems such as ocean
     /// swell. Spatial bilinear filtering avoids a wave-height jump at weather
     /// cell boundaries; temporal interpolation matches the cloud renderer.
+    #[allow(dead_code)] // the app-facing storm query, exercised by tests
     pub fn storm_intensity_at(&self, direction: DVec3) -> f32 {
         let current = sample_cell_property_bilinear(&self.fields, direction, |cell| {
             f64::from(cell.storm_intensity)
@@ -1846,30 +1850,9 @@ fn adjacent_cell_index(face: u8, i: isize, j: isize) -> u32 {
     cell_index(mapped_face, mapped_i, mapped_j) as u32
 }
 
-fn sample_scalar_bilinear(values: &[f64], direction: DVec3) -> f64 {
-    sample_scalar_bilinear_with_bounds(values, direction).0
-}
-
-fn sample_scalar_bilinear_with_bounds(values: &[f64], direction: DVec3) -> (f64, f64, f64) {
-    let (face, fractional_i, fractional_j) = direction_to_fractional_cell(direction);
-    let i0 = fractional_i.floor() as isize;
-    let j0 = fractional_j.floor() as isize;
-    let tx = fractional_i - i0 as f64;
-    let ty = fractional_j - j0 as f64;
-    let sample = |i: isize, j: isize| values[adjacent_cell_index(face, i, j) as usize];
-    let west_south = sample(i0, j0);
-    let east_south = sample(i0 + 1, j0);
-    let west_north = sample(i0, j0 + 1);
-    let east_north = sample(i0 + 1, j0 + 1);
-    let south = west_south + (east_south - west_south) * tx;
-    let north = west_north + (east_north - west_north) * tx;
-    (
-        south + (north - south) * ty,
-        west_south.min(east_south).min(west_north).min(east_north),
-        west_south.max(east_south).max(west_north).max(east_north),
-    )
-}
-
+/// Only the storm-intensity query needs this; it is kept because that query is
+/// the app-facing one even while nothing in the render loop calls it yet.
+#[allow(dead_code)]
 fn sample_cell_property_bilinear(
     fields: &WeatherFields,
     direction: DVec3,
@@ -3129,12 +3112,12 @@ mod rundown_probe {
             let angle =
                 std::f64::consts::TAU * (step as f64 * WEATHER_TIMESTEP_SECONDS / day_seconds);
             let sun = DVec3::new(angle.cos(), 0.2, angle.sin()).normalize();
-            let mut record = |label: &'static str,
-                              fields: &WeatherFields,
-                              before: (f64, f64, f64),
-                              names: &mut Vec<&'static str>,
-                              dt: &mut Vec<f64>,
-                              dm: &mut Vec<f64>| {
+            let record = |label: &'static str,
+                          fields: &WeatherFields,
+                          before: (f64, f64, f64),
+                          names: &mut Vec<&'static str>,
+                          dt: &mut Vec<f64>,
+                          dm: &mut Vec<f64>| {
                 let after = totals(&grid, fields);
                 if let Some(i) = names.iter().position(|n| *n == label) {
                     dt[i] += after.0 - before.0;

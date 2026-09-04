@@ -719,8 +719,12 @@ mod tests {
             surface.contains("const SKY_VIEW_OPTICAL_ATMOSPHERE_HEIGHT_METERS: f32 = 640000.0;")
         );
         assert!(sun.contains("/ 4.5;"));
+        // 640000 is the shader's optical-altitude ceiling, and it has to stay
+        // above the 180943.3 m scale height it divides. Both are literals, so
+        // there is nothing to assert at runtime that the compiler does not
+        // already know; the check that earns its keep is that the shader still
+        // says 640000 at all.
         assert!(sun.contains("optical_altitude / 640000.0"));
-        assert!(640_000.0_f32 > 180_943.3_f32);
         for (stage, sample_count) in [
             (include_str!("atmosphere_transmittance.wgsl"), "80u"),
             (include_str!("atmosphere_multiscattering.wgsl"), "40u"),

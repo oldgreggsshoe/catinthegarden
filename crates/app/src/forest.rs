@@ -834,14 +834,14 @@ impl ForestRenderer {
         {
             self.pending_patch = None;
         }
-        if self.pending_patch.is_none() {
-            if let Some(key) = missing_renderable_key.or_else(|| {
+        if self.pending_patch.is_none()
+            && let Some(key) = missing_renderable_key.or_else(|| {
                 cached_keys.iter().copied().find(|key| {
                     !self.patches.contains_key(key) && !self.empty_patch_keys.contains(key)
                 })
-            }) {
-                self.pending_patch = Some(PendingForestPatch::new(key));
-            }
+            })
+        {
+            self.pending_patch = Some(PendingForestPatch::new(key));
         }
         let candidate_budget = if self.rebuild_count < FOREST_STARTUP_PATCH_COUNT {
             FOREST_INITIAL_PATCH_CANDIDATES_PER_FRAME
@@ -1059,10 +1059,11 @@ impl ForestRenderer {
                 .total_cmp(&left.centre_direction.dot(camera_planet_position))
         });
         let mut draw_instances = Vec::with_capacity(
+            // TREE_COUNT < FOREST_MAX_DRAW_INSTANCES, asserted by
+            // forest_capacities_admit_a_full_patch_ring, so this cannot invert.
             self.draw_instances
                 .len()
-                .max(TREE_COUNT)
-                .min(FOREST_MAX_DRAW_INSTANCES),
+                .clamp(TREE_COUNT, FOREST_MAX_DRAW_INSTANCES),
         );
         let mut lod_counts = TreeLodCounts::default();
         let mut proxy_instance_count = 0_u32;
@@ -2347,9 +2348,15 @@ mod tests {
     #[test]
     fn draw_instance_budget_is_independent_of_renderable_patch_count() {
         assert_eq!(FOREST_STARTUP_PATCH_COUNT, 3);
-        assert!(FOREST_MAX_CACHED_PATCHES > FOREST_MAX_RENDERABLE_PATCHES);
-        assert!(FOREST_MAX_DRAW_INSTANCES > TREE_COUNT);
-        assert!(FOREST_MAX_DRAW_INSTANCES < TREE_COUNT * FOREST_MAX_RENDERABLE_PATCHES);
+        const {
+            assert!(FOREST_MAX_CACHED_PATCHES > FOREST_MAX_RENDERABLE_PATCHES);
+        }
+        const {
+            assert!(FOREST_MAX_DRAW_INSTANCES > TREE_COUNT);
+        }
+        const {
+            assert!(FOREST_MAX_DRAW_INSTANCES < TREE_COUNT * FOREST_MAX_RENDERABLE_PATCHES);
+        }
     }
 
     #[test]
@@ -2526,7 +2533,9 @@ mod tests {
     #[test]
     fn authored_forest_centre_is_normalized() {
         assert!((FOREST_CENTRE_DIRECTION.length() - 1.0).abs() < 1.0e-9);
-        assert!(FOREST_CENTRE_DIRECTION.y > 0.6);
+        const {
+            assert!(FOREST_CENTRE_DIRECTION.y > 0.6);
+        }
     }
 
     #[test]

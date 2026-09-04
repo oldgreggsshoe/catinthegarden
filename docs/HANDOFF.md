@@ -4895,3 +4895,30 @@ eight calls of one.
 
 At the top rung and 30fps the weather owes 384 weather-seconds a frame against a cap of 7200, so the
 cap is a stall valve rather than a speed limit. A test asserts that headroom alongside the ladder.
+
+## A twenty-minute day, and CI back to green - 4 September 2026
+
+The planet turned once per 300 real seconds, so the sun crossed the sky faster than the sea it was
+lighting. `INTERACTIVE_DAY_REAL_SECONDS` is 1200 now and the rotation scale derives from it, which
+reads as what it is instead of a bare 0.05. Weather takes its own clock from the rotation, so it
+followed automatically: one rotation is still one weather day, now at 72x rather than 288x real
+time. At the top of the time-speed ladder a day passes in 30 real seconds.
+
+CI had been failing since before this branch, and nobody was pushing so nobody was told. Two
+separate causes, and they needed separating before either could be fixed:
+
+The formatting failures were this session's -- none of these edits had been through `cargo fmt`,
+which is the first thing the workflow runs. It was clean at ffed751.
+
+The clippy failures were not. The lint list is identical at ffed751 and at HEAD: 70 in the app
+crate either way, older code meeting newer lints. They had also been invisible, because clippy stops
+at the first crate that fails and the baker failed with three, so the app was never linted at all.
+
+All 73 are cleared. Most were mechanical, but three decisions are worth recording. Eighteen
+assertions comparing constants are now `const` blocks, so they are checked at compile time rather
+than asserted against something the optimiser already knows -- two lost their formatted messages,
+which const cannot do, and say the same thing in a comment. Eleven `too_many_arguments` are allowed
+at the crate root: pipeline and pass plumbing carries many genuinely distinct values, and bundling
+them into structs to satisfy an arity count would hide what each call site passes. One assertion
+compared two literals and is gone entirely; the check that earns its keep is the one above it, that
+the shader still contains the number.

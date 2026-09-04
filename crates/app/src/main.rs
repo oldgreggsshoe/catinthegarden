@@ -1,3 +1,8 @@
+// Pipeline and pass plumbing carries many genuinely distinct values -- camera,
+// format, layouts, resources -- and bundling them into structs to satisfy an
+// arity count would hide what each call site actually passes.
+#![allow(clippy::too_many_arguments)]
+
 mod atmosphere;
 mod debug;
 mod forest;
@@ -70,7 +75,14 @@ const DEFAULT_VIEWPORT_WIDTH: u32 = 1280;
 const DEFAULT_VIEWPORT_HEIGHT: u32 = 720;
 const DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND: f64 = 0.4;
 const DEFAULT_CAMERA_ORBIT_INCLINATION_RADIANS: f64 = 28.5_f64.to_radians();
-const INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 = 0.05;
+/// Real seconds for one full planet rotation at 100% time speed.
+///
+/// This was a bare 0.05 scale, which came to a five-minute day: the sun crossed
+/// the sky faster than the sea it was lighting. Weather derives its own clock
+/// from this, so one rotation stays one weather day whatever it is set to.
+const INTERACTIVE_DAY_REAL_SECONDS: f64 = 1_200.0;
+const INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 =
+    planet::PLANET_ROTATION_PERIOD_SECONDS / INTERACTIVE_DAY_REAL_SECONDS;
 /// Time-speed ladder, as multiples of real time. Comma and period step it.
 ///
 /// Everything scene-side runs off one scaled clock, so the planet's rotation,
@@ -93,11 +105,13 @@ const LOW_FLIGHT_ALTITUDE_METERS: f64 = 2.0;
 /// these three values against the outmap it scans and prints the replacements
 /// when they drift. The latest mountain-coverage retune moved and lowered the
 /// summit; the ignored calibration instrument keeps this pose in lockstep.
+#[allow(dead_code)] // the calibration instrument's expected value
 const ACTIVE_HIGHEST_PROMINENCE_DIRECTION: glam::DVec3 = glam::DVec3::new(
     -0.462_957_306_613_887,
     -0.441_947_898_858_313,
     0.768_344_055_060_972,
 );
+#[allow(dead_code)] // the calibration instrument's expected value
 const ACTIVE_HIGHEST_PROMINENCE_METERS: f64 = 186_701.172_076_862;
 #[cfg(test)]
 /// Raw macro elevation *at the summit above*, not the global raw L4 maximum --
@@ -3567,14 +3581,15 @@ impl State {
                         self.weather_clouds.field_bind_group(),
                     );
                 }
-            } else if !solid_color_screen && self.render_path == RenderPath::FoveatedRay {
-                if self.render_debug_mode != planet::RenderDebugMode::Final || !use_foveated_warp {
-                    self.foveated.draw_direct(
-                        &mut render_pass,
-                        &self.camera_bind_group,
-                        self.terrain.shared_bind_group(),
-                    );
-                }
+            } else if !solid_color_screen
+                && self.render_path == RenderPath::FoveatedRay
+                && (self.render_debug_mode != planet::RenderDebugMode::Final || !use_foveated_warp)
+            {
+                self.foveated.draw_direct(
+                    &mut render_pass,
+                    &self.camera_bind_group,
+                    self.terrain.shared_bind_group(),
+                );
             }
         }
         if !solid_color_screen && use_foveated_warp {
@@ -4503,17 +4518,18 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if self.startup_fullscreen_pending && self.startup_redraw_seen {
-            if let (Some(window), Some(state)) = (self.window.as_ref(), self.state.as_mut()) {
-                self.startup_fullscreen_pending = false;
-                self.startup_redraw_seen = false;
-                state.toggle_fullscreen(window);
-                tracing::info!(
-                    target: "catinthegarden::startup",
-                    "entered fullscreen after the first surface frame"
-                );
-                window.request_redraw();
-            }
+        if self.startup_fullscreen_pending
+            && self.startup_redraw_seen
+            && let (Some(window), Some(state)) = (self.window.as_ref(), self.state.as_mut())
+        {
+            self.startup_fullscreen_pending = false;
+            self.startup_redraw_seen = false;
+            state.toggle_fullscreen(window);
+            tracing::info!(
+                target: "catinthegarden::startup",
+                "entered fullscreen after the first surface frame"
+            );
+            window.request_redraw();
         }
         if let Some(window) = self.window.as_ref() {
             event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
@@ -5119,11 +5135,13 @@ mod tests {
 
         // A planet's highest summit has no higher parent. As for Everest, its
         // key col is sea level, so prominence equals summit elevation ASL.
-        assert!(
-            ACTIVE_HIGHEST_PROMINENCE_METERS
-                > ACTIVE_HIGHEST_RAW_MACRO_ELEVATION_METERS * 4.0
-                    - crate::planet::TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS
-        );
+        const {
+            assert!(
+                ACTIVE_HIGHEST_PROMINENCE_METERS
+                    > ACTIVE_HIGHEST_RAW_MACRO_ELEVATION_METERS * 4.0
+                        - crate::planet::TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS
+            );
+        }
     }
 
     /// Entry altitude and minimum clearance are separate concerns. While they
@@ -5150,13 +5168,21 @@ mod tests {
 
     #[test]
     fn flight_may_descend_to_eye_level_but_not_into_the_ground() {
-        assert!(LOW_FLIGHT_MINIMUM_CLEARANCE_METERS > 0.0);
-        assert!(
-            LOW_FLIGHT_MINIMUM_CLEARANCE_METERS < 3.0,
-            "a {LOW_FLIGHT_MINIMUM_CLEARANCE_METERS}m floor is too high to stand on the ground"
-        );
-        assert!(LOW_FLIGHT_MINIMUM_CLEARANCE_METERS < LOW_FLIGHT_ALTITUDE_METERS);
-        assert!(LOW_FLIGHT_ALTITUDE_METERS <= 10.0);
+        const {
+            assert!(LOW_FLIGHT_MINIMUM_CLEARANCE_METERS > 0.0);
+        }
+        const {
+            assert!(
+                LOW_FLIGHT_MINIMUM_CLEARANCE_METERS < 3.0,
+                "LOW_FLIGHT_MINIMUM_CLEARANCE_METERS is too high to stand on the ground"
+            );
+        }
+        const {
+            assert!(LOW_FLIGHT_MINIMUM_CLEARANCE_METERS < LOW_FLIGHT_ALTITUDE_METERS);
+        }
+        const {
+            assert!(LOW_FLIGHT_ALTITUDE_METERS <= 10.0);
+        }
         // The floor is only safe because clearance sees the synthesised relief.
         // If that ever regresses to baked heights alone, the ladder can put
         // ground up to its full amplitude above where the CPU thinks it is.

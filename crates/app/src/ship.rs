@@ -801,7 +801,9 @@ mod tests {
         // loses to a wave the ocean cannot make.
         const WAVELENGTH_METERS: f64 = 90.0;
         const AMPLITUDE_METERS: f64 = 6.0;
-        assert!(2.0 * AMPLITUDE_METERS / WAVELENGTH_METERS < 1.0 / 7.0);
+        const {
+            assert!(2.0 * AMPLITUDE_METERS / WAVELENGTH_METERS < 1.0 / 7.0);
+        }
         let wave_number = std::f64::consts::TAU / WAVELENGTH_METERS;
         // A surface of this steepness reaches `amplitude * wave_number` of
         // slope, and a hull follows the surface it floats on, so this is the
@@ -1021,6 +1023,8 @@ mod tests {
         // The forefoot rises toward the stem, so the bow can lift over a wave.
         assert!(keel_depth_meters(1.0) < 0.5 * keel_depth_meters(0.0));
         assert!((keel_depth_meters(0.0) - HULL_DRAFT_METERS).abs() < 1.0e-9);
-        assert!(HULL_FREEBOARD_METERS > 0.0);
+        const {
+            assert!(HULL_FREEBOARD_METERS > 0.0);
+        }
     }
 }

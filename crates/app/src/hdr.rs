@@ -1000,8 +1000,12 @@ mod tests {
 
     #[test]
     fn interactive_hdr_and_auto_exposure_defaults_are_off() {
-        assert!(!HDR_EFFECT_ENABLED);
-        assert!(!AUTO_EXPOSURE_ENABLED);
+        const {
+            assert!(!HDR_EFFECT_ENABLED);
+        }
+        const {
+            assert!(!AUTO_EXPOSURE_ENABLED);
+        }
     }
 
     #[test]

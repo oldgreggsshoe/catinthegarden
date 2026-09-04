@@ -399,25 +399,21 @@ mod tests {
                         x: x.min(tiles_per_side - 1),
                         y: y.min(tiles_per_side - 1),
                     };
-                    if let Ok(resolved) = outmap.resolve_tile(key) {
-                        if resolved.level == level {
-                            if let Ok(data) = outmap.load_tile(key) {
-                                source_level = level;
-                                let tiles_per_side = f64::from(1_u32 << key.level);
-                                let u =
-                                    (face_uv[0] * 0.5 + 0.5) * tiles_per_side - f64::from(key.x);
-                                let v =
-                                    (face_uv[1] * 0.5 + 0.5) * tiles_per_side - f64::from(key.y);
-                                let logical =
-                                    catinthegarden_coretypes::TILE_LOGICAL_SIZE as f64 - 1.0;
-                                let sx = (u.clamp(0.0, 1.0) * logical).round() as usize;
-                                let sy = (v.clamp(0.0, 1.0) * logical).round() as usize;
-                                let stored = catinthegarden_coretypes::TILE_STORED_SIZE as usize;
-                                let gutter = catinthegarden_coretypes::TILE_GUTTER as usize;
-                                biomes.push(data.biome_ids[(sy + gutter) * stored + sx + gutter]);
-                                break sample_tile_height(&data, key, face_uv);
-                            }
-                        }
+                    if let Ok(resolved) = outmap.resolve_tile(key)
+                        && resolved.level == level
+                        && let Ok(data) = outmap.load_tile(key)
+                    {
+                        source_level = level;
+                        let tiles_per_side = f64::from(1_u32 << key.level);
+                        let u = (face_uv[0] * 0.5 + 0.5) * tiles_per_side - f64::from(key.x);
+                        let v = (face_uv[1] * 0.5 + 0.5) * tiles_per_side - f64::from(key.y);
+                        let logical = catinthegarden_coretypes::TILE_LOGICAL_SIZE as f64 - 1.0;
+                        let sx = (u.clamp(0.0, 1.0) * logical).round() as usize;
+                        let sy = (v.clamp(0.0, 1.0) * logical).round() as usize;
+                        let stored = catinthegarden_coretypes::TILE_STORED_SIZE as usize;
+                        let gutter = catinthegarden_coretypes::TILE_GUTTER as usize;
+                        biomes.push(data.biome_ids[(sy + gutter) * stored + sx + gutter]);
+                        break sample_tile_height(&data, key, face_uv);
                     }
                     if level == 0 {
                         break 0.0;

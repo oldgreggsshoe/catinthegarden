@@ -2009,7 +2009,7 @@ impl PlanetLod {
         // screen-centre ray as well; otherwise the level multiplier can spend
         // the leaf budget on off-centre L7 leaves and leave a conspicuous
         // coarse square directly under the crosshair.
-        let screen_centre_boost = if let Some(direction) = view_focus_direction {
+        let screen_centre_boost = if if let Some(direction) = view_focus_direction {
             node_intersects_view_focus_patch(node, camera_world, direction, distance_height_range)
         } else {
             camera_basis
@@ -2021,9 +2021,11 @@ impl PlanetLod {
                     )
                 })
                 .is_some_and(|direction| node_contains_direction(node, direction))
-        }
-        .then_some(LOD_VIEW_FOCUS_PRIORITY_BOOST)
-        .unwrap_or(1.0);
+        } {
+            LOD_VIEW_FOCUS_PRIORITY_BOOST
+        } else {
+            1.0
+        };
         let priority = evaluation.projected_error_pixels
             * f64::from(1_u32 << node.level)
             * near_camera_lod_priority_weight(node, camera_world, terrain_height_range)
@@ -2054,7 +2056,7 @@ impl PlanetLod {
         }
         let visible =
             node_is_above_horizon_with_height_range(node, camera_world, terrain_height_range)
-                && camera_basis.map_or(true, |camera_basis| {
+                && camera_basis.is_none_or(|camera_basis| {
                     node_is_in_view_frustum(
                         node,
                         camera_world,
@@ -2071,7 +2073,7 @@ impl PlanetLod {
         // has unread source texels; past that limit the baked term is a debt
         // that refinement cannot pay off, so it must not drive refinement.
         let baked_is_resolvable =
-            baked_error_limit.map_or(true, |limit| node.level < limit(node).min(MAX_LOD_LEVEL));
+            baked_error_limit.is_none_or(|limit| node.level < limit(node).min(MAX_LOD_LEVEL));
         let evaluation = NodeEvaluation {
             visible,
             projected_error_pixels: projected_error_pixels_with_height_range_and_ratio(
@@ -2935,9 +2937,9 @@ mod tests {
     #[test]
     fn camera_center_leaf_receives_detail_priority() {
         let camera = DVec3::new(
-            3_844_538.706_859_7367,
-            -1_062_789.178_810_5723,
-            -414_352.755_166_1257,
+            3_844_538.706_859_736_7,
+            -1_062_789.178_810_572_3,
+            -414_352.755_166_125_7,
         );
         let forward = super::planet_local_vector(
             DVec3::new(0.113, 0.546, 0.830).normalize(),
@@ -3550,7 +3552,9 @@ mod tests {
     #[test]
     fn placeholder_height_and_cube_face_edges_are_seam_continuous() {
         assert!(placeholder_height_meters(DVec3::X).abs() < 1.0e-12);
-        assert!(super::PLACEHOLDER_HEIGHT_AMPLITUDE_METERS < 4_000.0);
+        const {
+            assert!(super::PLACEHOLDER_HEIGHT_AMPLITUDE_METERS < 4_000.0);
+        }
         for face in 0..6 {
             for y in 0..=8 {
                 for x in 0..=8 {

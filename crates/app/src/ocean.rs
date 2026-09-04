@@ -83,12 +83,14 @@ const fn storm_amplitude_sum() -> f64 {
 
 /// The self-intersection budget described on `OCEAN_STEEPNESS_SCALE`. At or
 /// above 1.0 the surface folds through itself.
+#[allow(dead_code)] // the self-intersection budget, held invariant by a test
 pub fn fold_budget() -> f64 {
     fold_budget_at(OCEAN_WAVE_SCALE)
 }
 
 /// `fold_budget` for a hypothetical knob setting, so a test can show the budget
 /// really is invariant rather than merely correct at today's value.
+#[allow(dead_code)] // as `fold_budget`, for a hypothetical knob setting
 pub fn fold_budget_at(wave_scale: f64) -> f64 {
     let scale = BASE_STORM_GEOMETRY_AMPLITUDE_SCALE * wave_scale;
     let steepness_scale = 1.0 / wave_scale;
@@ -197,6 +199,7 @@ struct GerstnerWave {
     /// Gerstner horizontal-displacement factor. Unused by the CPU height
     /// query, which only needs the vertical term, but carried here so the
     /// self-intersection budget can be computed and held from one place.
+    #[allow(dead_code)]
     steepness: f64,
 }
 
@@ -447,6 +450,7 @@ fn geometry_amplitude_scale(storm_intensity: f32) -> f64 {
         + (OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE - OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE) * blend
 }
 
+#[allow(dead_code)] // the height cap, asserted against the table by tests
 pub fn maximum_wave_height_meters(storm_intensity: f32) -> f64 {
     let blend = storm_blend(storm_intensity);
     active_waves()
@@ -540,6 +544,7 @@ pub fn breaking_amplitude_limit_meters(water_depth_meters: f64) -> f64 {
 /// How far past breaking the water here is: 0 in open sea, 1 where a crest has
 /// reached everything the depth can hold, and pinned at 1 beyond that. This is
 /// what turns crests white in the shallows.
+#[allow(dead_code)] // how far past breaking a crest is; the shader computes its own
 pub fn breaking_fraction(water_depth_meters: f64, raw_height_meters: f64) -> f64 {
     let limit = breaking_amplitude_limit_meters(water_depth_meters);
     if limit <= 0.0 {
@@ -1050,12 +1055,14 @@ mod tests {
         // radial. It has no horizontal term, so it can only describe the
         // rendered surface while the renderer has none either. Enabling
         // transport without adding one puts the camera under the water.
-        assert!(
-            !super::OCEAN_HORIZONTAL_TRANSPORT_ENABLED,
-            "give wave_height_meters a horizontal displacement term before \
-             enabling transport; the radial query cannot follow a surface that \
-             slides up to 54m sideways"
-        );
+        const {
+            assert!(
+                !super::OCEAN_HORIZONTAL_TRANSPORT_ENABLED,
+                "give wave_height_meters a horizontal displacement term before \
+                 enabling transport; the radial query cannot follow a surface that \
+                 slides up to 54m sideways"
+            );
+        }
         let shader = crate::planet::shared_planet_shader_source();
         assert!(shader.contains("let horizontal_transport = select(1.0, 0.0,"));
     }
@@ -1089,12 +1096,17 @@ mod tests {
         // or a falling trough pins the eye there and it reports clearance it
         // does not have. This is the knob's real ceiling: about
         // OCEAN_WAVE_SCALE 1.8 at today's floor.
-        assert!(
-            crate::surface_camera::PLANET_CORE_CLEARANCE_METERS < -MAXIMUM_WAVE_HEIGHT_METERS,
-            "a {MAXIMUM_WAVE_HEIGHT_METERS} m trough reaches past the {} m safety floor; \
-             lower PLANET_CORE_CLEARANCE_METERS before raising OCEAN_WAVE_SCALE further",
-            crate::surface_camera::PLANET_CORE_CLEARANCE_METERS
-        );
+        // Checked at compile time, so the message cannot interpolate the two
+        // figures: they are MAXIMUM_WAVE_HEIGHT_METERS and
+        // PLANET_CORE_CLEARANCE_METERS, and the fix is to lower the floor
+        // before raising OCEAN_WAVE_SCALE further.
+        const {
+            assert!(
+                crate::surface_camera::PLANET_CORE_CLEARANCE_METERS < -MAXIMUM_WAVE_HEIGHT_METERS,
+                "the deepest trough reaches past the underwater safety floor; lower \
+                 PLANET_CORE_CLEARANCE_METERS before raising OCEAN_WAVE_SCALE further"
+            );
+        }
 
         // The assembled source, not the raw file: these constants only exist
         // once the generator has put them there.

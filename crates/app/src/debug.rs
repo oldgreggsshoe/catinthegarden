@@ -331,10 +331,9 @@ impl AssertionTracker {
             .iter()
             .rposition(|count| *count > 0)
             .map(|level| level as u8)
+            && self.observed_lod_level_sequence.last() != Some(&level)
         {
-            if self.observed_lod_level_sequence.last() != Some(&level) {
-                self.observed_lod_level_sequence.push(level);
-            }
+            self.observed_lod_level_sequence.push(level);
         }
         self.per_frame_maximum_resident_chunks =
             self.per_frame_maximum_resident_chunks.max(resident_chunks);
@@ -1504,7 +1503,7 @@ fn no_background_gaps(pixels: &[u8], width: u32, height: u32) -> bool {
         .chunks_exact((width * 4) as usize)
         .take(height as usize)
     {
-        let non_background = row
+        let mut non_background = row
             .chunks_exact(4)
             .enumerate()
             .filter_map(|(index, pixel)| (pixel != background).then_some(index));
@@ -1512,7 +1511,7 @@ fn no_background_gaps(pixels: &[u8], width: u32, height: u32) -> bool {
             continue;
         };
         let last = non_background
-            .last()
+            .next_back()
             .expect("first non-background pixel exists");
         rows_with_planet += 1;
         if row
@@ -1683,10 +1682,12 @@ mod tests {
 
     #[test]
     fn per_frame_lod_assertions_require_the_full_round_trip_without_budget_pressure() {
-        let mut config = ScenarioAssertions::default();
-        config.required_lod_level_sequence = Some(vec![2, 3, 4, 3, 2]);
-        config.require_unlimited_lod_budget = true;
-        config.max_resident_chunks = Some(1);
+        let config = ScenarioAssertions {
+            required_lod_level_sequence: Some(vec![2, 3, 4, 3, 2]),
+            require_unlimited_lod_budget: true,
+            max_resident_chunks: Some(1),
+            ..Default::default()
+        };
         let mut tracker = AssertionTracker::new(config);
 
         for level in [2_usize, 3, 4, 3, 2] {
@@ -1738,9 +1739,11 @@ mod tests {
 
     #[test]
     fn surface_probe_assertions_catch_a_camera_that_sinks_or_floats() {
-        let mut config = ScenarioAssertions::default();
-        config.min_camera_clearance_m = Some(1.5);
-        config.max_camera_clearance_m = Some(2.5);
+        let config = ScenarioAssertions {
+            min_camera_clearance_m: Some(1.5),
+            max_camera_clearance_m: Some(2.5),
+            ..Default::default()
+        };
         let mut tracker = AssertionTracker::new(config.clone());
 
         tracker.observe_surface_probe(&probe_report(2.0, 0.1, 40));
@@ -1759,9 +1762,11 @@ mod tests {
 
     #[test]
     fn a_probe_that_saw_no_ground_is_not_evidence_of_agreement() {
-        let mut config = ScenarioAssertions::default();
-        config.max_surface_probe_delta_m = Some(5.0);
-        config.min_surface_probe_points = Some(10);
+        let config = ScenarioAssertions {
+            max_surface_probe_delta_m: Some(5.0),
+            min_surface_probe_points: Some(10),
+            ..Default::default()
+        };
         let mut tracker = AssertionTracker::new(config.clone());
 
         // Every frame looked at sky. A zero maximum delta must not read as a
@@ -1780,9 +1785,11 @@ mod tests {
 
     #[test]
     fn a_surface_probe_delta_beyond_tolerance_fails() {
-        let mut config = ScenarioAssertions::default();
-        config.max_surface_probe_delta_m = Some(5.0);
-        config.min_surface_probe_points = Some(10);
+        let config = ScenarioAssertions {
+            max_surface_probe_delta_m: Some(5.0),
+            min_surface_probe_points: Some(10),
+            ..Default::default()
+        };
         let mut tracker = AssertionTracker::new(config);
         tracker.observe_surface_probe(&probe_report(2.0, 5.5, 40));
         assert!(
@@ -1796,11 +1803,13 @@ mod tests {
 
     #[test]
     fn exposure_assertions_reject_snaps_and_oscillation() {
-        let mut config = ScenarioAssertions::default();
-        config.min_exposure = Some(0.05);
-        config.max_exposure = Some(2.0);
-        config.max_exposure_delta_per_frame = Some(0.2);
-        config.max_exposure_oscillation_events = Some(0);
+        let config = ScenarioAssertions {
+            min_exposure: Some(0.05),
+            max_exposure: Some(2.0),
+            max_exposure_delta_per_frame: Some(0.2),
+            max_exposure_oscillation_events: Some(0),
+            ..Default::default()
+        };
         let mut tracker = AssertionTracker::new(config);
 
         tracker.observe_exposure(1.0, 1.0, 0.18);
@@ -1838,10 +1847,12 @@ mod tests {
 
     #[test]
     fn sun_visibility_assertion_requires_local_disc_contrast() {
-        let mut config = ScenarioAssertions::default();
-        config.sky_sample_uv = Some([0.5, 0.5]);
-        config.sun_background_sample_uv = Some([0.56, 0.5]);
-        config.min_visible_sun_contrast = Some(0.1);
+        let config = ScenarioAssertions {
+            sky_sample_uv: Some([0.5, 0.5]),
+            sun_background_sample_uv: Some([0.56, 0.5]),
+            min_visible_sun_contrast: Some(0.1),
+            ..Default::default()
+        };
 
         let mut visible = AssertionTracker::new(config.clone());
         visible.observe_sky_sample([255, 120, 24]);
@@ -1865,10 +1876,12 @@ mod tests {
             .passed
         );
 
-        let mut config = ScenarioAssertions::default();
-        config.sky_sample_uv = Some([0.5, 0.5]);
-        config.sun_background_sample_uv = Some([0.56, 0.5]);
-        config.max_occluded_sun_contrast = Some(0.03);
+        let config = ScenarioAssertions {
+            sky_sample_uv: Some([0.5, 0.5]),
+            sun_background_sample_uv: Some([0.56, 0.5]),
+            max_occluded_sun_contrast: Some(0.03),
+            ..Default::default()
+        };
         let mut occluded = AssertionTracker::new(config);
         occluded.observe_sky_sample([171, 172, 183]);
         occluded.observe_sun_background_sample([169, 170, 182]);
