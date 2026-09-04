@@ -371,8 +371,6 @@ const WAVES: [GerstnerWave; 17] = [
     },
 ];
 
-
-
 /// The global waves the surface actually carries under the current toggle.
 fn active_waves() -> &'static [GerstnerWave] {
     if OCEAN_LARGE_SWELL_ONLY {
@@ -550,7 +548,6 @@ pub fn breaking_fraction(water_depth_meters: f64, raw_height_meters: f64) -> f64
     (raw_height_meters.max(0.0) / limit).min(1.0)
 }
 
-
 pub fn global_wave_height_meters(direction: DVec3, sim_time: f64, water_depth_meters: f64) -> f64 {
     let raw = wave_height_meters(
         direction,
@@ -621,7 +618,12 @@ pub fn global_wave_slope(direction: DVec3, sim_time: f64, water_depth_meters: f6
         })
         .sum::<DVec3>()
         * breaking_rate_weight(
-            wave_height_meters(radial, sim_time, GLOBAL_OCEAN_STORM_INTENSITY, water_depth_meters),
+            wave_height_meters(
+                radial,
+                sim_time,
+                GLOBAL_OCEAN_STORM_INTENSITY,
+                water_depth_meters,
+            ),
             water_depth_meters,
         );
     gradient - radial * gradient.dot(radial)
@@ -656,11 +658,11 @@ pub fn global_wave_vertical_velocity_meters_per_second(
     vertical_velocity
         * breaking_rate_weight(
             wave_height_meters(
-            direction,
-            sim_time,
-            GLOBAL_OCEAN_STORM_INTENSITY,
-            water_depth_meters,
-        ),
+                direction,
+                sim_time,
+                GLOBAL_OCEAN_STORM_INTENSITY,
+                water_depth_meters,
+            ),
             water_depth_meters,
         )
 }
@@ -708,12 +710,11 @@ mod tests {
 
     use super::{
         GLOBAL_OCEAN_STORM_INTENSITY, LARGE_SWELL_WAVE_COUNT, MAXIMUM_WAVE_HEIGHT_METERS,
-        OCEAN_STEEPNESS_SCALE, OCEAN_WAVE_SCALE,
         OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE, OCEAN_LARGE_SWELL_ONLY, OCEAN_RIPPLE_WAVES,
-        OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE, WAVES, active_ripple_waves, active_waves,
-        geometry_amplitude_scale, global_wave_height_meters,
-        global_wave_vertical_velocity_meters_per_second, maximum_wave_height_meters,
-        breaking_weight, wave_height_stats,
+        OCEAN_STEEPNESS_SCALE, OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE, OCEAN_WAVE_SCALE, WAVES,
+        active_ripple_waves, active_waves, breaking_weight, geometry_amplitude_scale,
+        global_wave_height_meters, global_wave_vertical_velocity_meters_per_second,
+        maximum_wave_height_meters, wave_height_stats,
     };
 
     /// Every wave in the table, at storm scale. Independent of the diagnostic
@@ -822,9 +823,11 @@ mod tests {
             "deep water gave {deep} m against an unlimited {unlimited} m"
         );
         let shader = include_str!("shared_planet.wgsl");
-        assert!(shader.contains(
-            "0.5 * OCEAN_BREAKING_HEIGHT_TO_DEPTH_RATIO * max(water_depth_meters, 0.0)"
-        ));
+        assert!(
+            shader.contains(
+                "0.5 * OCEAN_BREAKING_HEIGHT_TO_DEPTH_RATIO * max(water_depth_meters, 0.0)"
+            )
+        );
     }
 
     #[test]
@@ -846,7 +849,10 @@ mod tests {
             .sum::<f64>();
         // A storm redistributes the spectrum, it does not add energy: if these
         // two drift apart the height cap silently stops holding mid-blend.
-        assert!((calm_sum - storm_sum).abs() < 1.0e-9, "{calm_sum} vs {storm_sum}");
+        assert!(
+            (calm_sum - storm_sum).abs() < 1.0e-9,
+            "{calm_sum} vs {storm_sum}"
+        );
         let full_table_maximum = storm_sum * OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE;
         assert!((full_table_maximum - FULL_TABLE_MAXIMUM_METERS).abs() < 1.0e-9);
         for intensity in [0.0, 0.25, 0.5, 0.75, 1.0] {
@@ -906,8 +912,7 @@ mod tests {
         // colour and normal, and vs_ocean displaces by neither. A camera that
         // adds it to its collision surface floats on 4.6m of water nobody drew,
         // and goes under a crest it cannot see.
-        let shader = crate::planet::shared_planet_shader_source()
-            + include_str!("planet.wgsl");
+        let shader = crate::planet::shared_planet_shader_source() + include_str!("planet.wgsl");
         let displaces_ripple = shader.contains(
             "+ projected.direction * surface.vertical_displacement\n        + surface.ripple_height",
         );
@@ -917,7 +922,11 @@ mod tests {
             "OCEAN_RIPPLES_ARE_GEOMETRIC says {} but vs_ocean {} the ripple \
              height into the surface position",
             super::OCEAN_RIPPLES_ARE_GEOMETRIC,
-            if displaces_ripple { "does add" } else { "does not add" }
+            if displaces_ripple {
+                "does add"
+            } else {
+                "does not add"
+            }
         );
         // Whichever way that goes, the two local queries must agree with the
         // global one about whether ripples exist at all.
@@ -998,8 +1007,7 @@ mod tests {
             let gradient = DVec3::new(
                 (phase_at(onshore_meters + step, 0.0) - phase_at(onshore_meters - step, 0.0))
                     / (2.0 * step),
-                (phase_at(onshore_meters, step) - phase_at(onshore_meters, -step))
-                    / (2.0 * step),
+                (phase_at(onshore_meters, step) - phase_at(onshore_meters, -step)) / (2.0 * step),
                 0.0,
             );
             let travel = -super::OCEAN_WAVE_PHASE_SPEED_SIGN * gradient.normalize();
@@ -1024,8 +1032,7 @@ mod tests {
         // A wave travels against its axis, so deep-water travel is minus the
         // authored heading, times the convention.
         let deep = travel_onshore_component(135.0, 20.0);
-        let undisturbed =
-            -super::OCEAN_WAVE_PHASE_SPEED_SIGN * 135_f64.to_radians().cos();
+        let undisturbed = -super::OCEAN_WAVE_PHASE_SPEED_SIGN * 135_f64.to_radians().cos();
         assert!(
             (deep - undisturbed).abs() < 0.05,
             "deep water bent the swell to {deep}, expected {undisturbed}"
@@ -1139,7 +1146,9 @@ mod tests {
             "const OCEAN_LARGE_SWELL_WAVE_COUNT: u32 = {LARGE_SWELL_WAVE_COUNT}u;"
         )));
         assert!(shader.contains(&format!("const OCEAN_WAVE_COUNT: u32 = {}u;", WAVES.len())));
-        assert!(shader.contains("if OCEAN_LARGE_SWELL_ONLY && i >= OCEAN_LARGE_SWELL_WAVE_COUNT {"));
+        assert!(
+            shader.contains("if OCEAN_LARGE_SWELL_ONLY && i >= OCEAN_LARGE_SWELL_WAVE_COUNT {")
+        );
         assert!(shader.contains("if OCEAN_LARGE_SWELL_ONLY {"));
         let (expected_waves, expected_ripples) = if OCEAN_LARGE_SWELL_ONLY {
             (LARGE_SWELL_WAVE_COUNT, 0)
@@ -1186,7 +1195,10 @@ mod tests {
         }
         for wave in OCEAN_RIPPLE_WAVES.iter() {
             let needle = format!("{}", wave.amplitude_meters);
-            assert!(shader.contains(&needle), "shader is missing ripple `{needle}`");
+            assert!(
+                shader.contains(&needle),
+                "shader is missing ripple `{needle}`"
+            );
         }
     }
 
@@ -1217,8 +1229,8 @@ mod breaking_probe {
     #[test]
     #[ignore = "instrument, not an assertion"]
     fn crest_to_limit_ratio_in_the_shallows() {
-        let direction = DVec3::new(0.836442275001636, 0.503727905284262, 0.215922481525239)
-            .normalize();
+        let direction =
+            DVec3::new(0.836442275001636, 0.503727905284262, 0.215922481525239).normalize();
         for depth in [1.0, 2.0, 4.0, 8.0, 16.0, 40.0, 120.0] {
             let mut peak: f64 = 0.0;
             let mut sum = 0.0;

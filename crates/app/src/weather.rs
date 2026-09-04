@@ -25,8 +25,8 @@ pub const WEATHER_ORBITAL_PERIOD_SECONDS: f64 = 365.2422 * 86_400.0;
 /// with the advection leak fixed it only skewed the day.
 pub const WEATHER_DAYS_PER_PLANET_ROTATION: f64 = 1.0;
 /// Real seconds for one rotation, at the default rotation speed.
-const PLANET_ROTATION_REAL_SECONDS: f64 = crate::planet::PLANET_ROTATION_PERIOD_SECONDS
-    / crate::INTERACTIVE_PLANET_ROTATION_TIME_SCALE;
+const PLANET_ROTATION_REAL_SECONDS: f64 =
+    crate::planet::PLANET_ROTATION_PERIOD_SECONDS / crate::INTERACTIVE_PLANET_ROTATION_TIME_SCALE;
 /// Derived, so the day cannot drift away from the rotation again.
 pub const INTERACTIVE_WEATHER_TIME_SCALE: f64 =
     86_400.0 * WEATHER_DAYS_PER_PLANET_ROTATION / PLANET_ROTATION_REAL_SECONDS;
@@ -706,8 +706,7 @@ impl WeatherFields {
             heat_delta[target] += exchange;
         }
         for (index, cell) in grid.cells().iter().enumerate() {
-            let temperature =
-                old_temperature[index] + heat_delta[index] / cell.area_square_meters;
+            let temperature = old_temperature[index] + heat_delta[index] / cell.area_square_meters;
             self.cells[index].temperature_kelvin = temperature.clamp(180.0, 340.0) as f32;
         }
     }
@@ -2527,7 +2526,10 @@ mod tests {
         }
         for state in fields.cells() {
             let t = f64::from(state.temperature_kelvin);
-            assert!(t >= low - 1.0e-3 && t <= high + 1.0e-3, "cell reached {t} K");
+            assert!(
+                t >= low - 1.0e-3 && t <= high + 1.0e-3,
+                "cell reached {t} K"
+            );
         }
     }
 
@@ -2860,8 +2862,7 @@ mod tests {
         assert_eq!(interactive_weather_time_seconds(0.0), 0.0);
         // Linear, so the sun and the sim cannot drift apart over a session.
         assert!(
-            (interactive_weather_time_seconds(2.0)
-                - 2.0 * interactive_weather_time_seconds(1.0))
+            (interactive_weather_time_seconds(2.0) - 2.0 * interactive_weather_time_seconds(1.0))
                 .abs()
                 < 1.0e-9
         );
@@ -3125,8 +3126,8 @@ mod rundown_probe {
         let mut d_moist: Vec<f64> = Vec::new();
         let steps = 600;
         for step in 0..steps {
-            let angle = std::f64::consts::TAU
-                * (step as f64 * WEATHER_TIMESTEP_SECONDS / day_seconds);
+            let angle =
+                std::f64::consts::TAU * (step as f64 * WEATHER_TIMESTEP_SECONDS / day_seconds);
             let sun = DVec3::new(angle.cos(), 0.2, angle.sin()).normalize();
             let mut record = |label: &'static str,
                               fields: &WeatherFields,
@@ -3147,34 +3148,95 @@ mod rundown_probe {
             };
             let mut b = totals(&grid, &fields);
             fields.apply_insolation_and_radiative_cooling(&grid, sun, WEATHER_TIMESTEP_SECONDS);
-            b = record("radiation", &fields, b, &mut names, &mut d_temp, &mut d_moist);
+            b = record(
+                "radiation",
+                &fields,
+                b,
+                &mut names,
+                &mut d_temp,
+                &mut d_moist,
+            );
             fields.diagnose_pressure_from_temperature(&grid);
             fields.update_wind_from_pressure(&grid, WEATHER_TIMESTEP_SECONDS);
             fields.apply_lapse_rate_and_orographic_uplift(&grid, WEATHER_TIMESTEP_SECONDS);
-            b = record("lapse/uplift", &fields, b, &mut names, &mut d_temp, &mut d_moist);
+            b = record(
+                "lapse/uplift",
+                &fields,
+                b,
+                &mut names,
+                &mut d_temp,
+                &mut d_moist,
+            );
             fields.evaporate_moisture(WEATHER_MICROPHYSICS_TIMESTEP_SECONDS);
-            b = record("evaporation", &fields, b, &mut names, &mut d_temp, &mut d_moist);
+            b = record(
+                "evaporation",
+                &fields,
+                b,
+                &mut names,
+                &mut d_temp,
+                &mut d_moist,
+            );
             fields.advect_temperature(&grid, WEATHER_TIMESTEP_SECONDS);
-            b = record("advect T", &fields, b, &mut names, &mut d_temp, &mut d_moist);
+            b = record(
+                "advect T",
+                &fields,
+                b,
+                &mut names,
+                &mut d_temp,
+                &mut d_moist,
+            );
             fields.advect_humidity(&grid, WEATHER_TIMESTEP_SECONDS);
-            b = record("advect q", &fields, b, &mut names, &mut d_temp, &mut d_moist);
+            b = record(
+                "advect q",
+                &fields,
+                b,
+                &mut names,
+                &mut d_temp,
+                &mut d_moist,
+            );
             fields.advect_cloud_water(&grid, WEATHER_TIMESTEP_SECONDS);
-            b = record("advect cloud", &fields, b, &mut names, &mut d_temp, &mut d_moist);
+            b = record(
+                "advect cloud",
+                &fields,
+                b,
+                &mut names,
+                &mut d_temp,
+                &mut d_moist,
+            );
             fields.condense_cloud_water(WEATHER_MICROPHYSICS_TIMESTEP_SECONDS);
-            b = record("condense", &fields, b, &mut names, &mut d_temp, &mut d_moist);
+            b = record(
+                "condense",
+                &fields,
+                b,
+                &mut names,
+                &mut d_temp,
+                &mut d_moist,
+            );
             fields.precipitate_and_update_ground_moisture(WEATHER_MICROPHYSICS_TIMESTEP_SECONDS);
-            let _ = record("precipitate", &fields, b, &mut names, &mut d_temp, &mut d_moist);
+            let _ = record(
+                "precipitate",
+                &fields,
+                b,
+                &mut names,
+                &mut d_temp,
+                &mut d_moist,
+            );
 
             if step % 400 == 0 || step == steps - 1 {
                 let (t, m, _) = totals(&grid, &fields);
                 println!("step {step:5}  mean T {t:7.2} K   total moisture {m:.4}");
             }
         }
-        println!("\ncumulative over {steps} steps ({:.1} weather-days):",
-            steps as f64 * WEATHER_TIMESTEP_SECONDS / 86400.0);
+        println!(
+            "\ncumulative over {steps} steps ({:.1} weather-days):",
+            steps as f64 * WEATHER_TIMESTEP_SECONDS / 86400.0
+        );
         println!("  {:<14} {:>12} {:>12}", "stage", "dT (K)", "dq");
         for i in 0..names.len() {
-            println!("  {:<14} {:>12.2} {:>12.4}", names[i], d_temp[i], d_moist[i]);
+            println!(
+                "  {:<14} {:>12.2} {:>12.4}",
+                names[i], d_temp[i], d_moist[i]
+            );
         }
     }
 }

@@ -516,8 +516,7 @@ fn waterline_scenario_pose(
     let wave_height_meters =
         ocean::global_wave_height_meters(local_radial, ocean_time_seconds, OPEN_OCEAN_DEPTH_METERS);
     let view = look_at - position;
-    let eye = radial
-        * (planet::PLANET_RADIUS_METERS + wave_height_meters + eye_height_meters);
+    let eye = radial * (planet::PLANET_RADIUS_METERS + wave_height_meters + eye_height_meters);
     (eye, eye + view)
 }
 
@@ -1212,7 +1211,9 @@ impl State {
         let ship_body = ship::ShipBody::afloat_at(
             &ship_hull,
             ship_direction,
-            STORM_OCEAN_START_DIRECTION.normalize().cross(glam::DVec3::Y),
+            STORM_OCEAN_START_DIRECTION
+                .normalize()
+                .cross(glam::DVec3::Y),
             ocean::global_wave_height_meters(ship_direction, 0.0, SHIP_FALLBACK_DEPTH_METERS),
         );
         let ship_renderer = ship_render::ShipRenderer::new(
@@ -1632,8 +1633,7 @@ impl State {
 
     fn adjust_time_speed(&mut self, steps: i32) {
         let last = TIME_SPEED_LADDER.len() as i32 - 1;
-        self.time_speed_index =
-            (self.time_speed_index as i32 + steps).clamp(0, last) as usize;
+        self.time_speed_index = (self.time_speed_index as i32 + steps).clamp(0, last) as usize;
         self.mark_hud_dirty();
     }
 
@@ -3310,9 +3310,8 @@ impl State {
         // Submerged: the sky pass paints water instead of sky. Measured against
         // the same surface the collision query uses, so the tint appears at the
         // instant the eye actually goes under rather than at sea level.
-        camera_uniform.flat_triangle_options[3] = f32::from(
-            camera_sea_level_altitude_meters < camera_surface_height_meters,
-        );
+        camera_uniform.flat_triangle_options[3] =
+            f32::from(camera_sea_level_altitude_meters < camera_surface_height_meters);
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
         self.forest
@@ -4730,14 +4729,15 @@ mod tests {
         let percentages: Vec<f64> = TIME_SPEED_LADDER.iter().map(|s| s * 100.0).collect();
         assert_eq!(
             percentages,
-            vec![10.0, 25.0, 50.0, 100.0, 200.0, 400.0, 1000.0, 2000.0, 4000.0]
+            vec![
+                10.0, 25.0, 50.0, 100.0, 200.0, 400.0, 1000.0, 2000.0, 4000.0
+            ]
         );
         // Even the top rung leaves the weather's per-frame step cap alone at a
         // sane frame rate: twelve steps of 600s is 7200 weather-seconds, and
         // the fastest rung needs a small fraction of that per frame.
         let top = TIME_SPEED_LADDER[TIME_SPEED_LADDER.len() - 1];
-        let weather_seconds_per_frame =
-            crate::weather::INTERACTIVE_WEATHER_TIME_SCALE * top / 30.0;
+        let weather_seconds_per_frame = crate::weather::INTERACTIVE_WEATHER_TIME_SCALE * top / 30.0;
         assert!(
             weather_seconds_per_frame < crate::weather::WEATHER_TIMESTEP_SECONDS * 12.0,
             "at {top}x and 30fps the weather owes {weather_seconds_per_frame} s a frame"

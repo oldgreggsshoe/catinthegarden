@@ -531,7 +531,7 @@ fn load_tile_cached<'a>(
     key: TileKey,
     cache: &'a mut BTreeMap<TileKey, TileData>,
 ) -> BakeResult<&'a TileData> {
-    if !cache.contains_key(&key) {
+    if let std::collections::btree_map::Entry::Vacant(entry) = cache.entry(key) {
         let directory = output.join(key.relative_path());
         let height_bytes = fs::read(directory.join(HEIGHT_FILE))?;
         let biome = fs::read(directory.join(BIOME_FILE))?;
@@ -549,16 +549,13 @@ fn load_tile_cached<'a>(
                 f32::from_le_bytes(bytes.try_into().expect("height sample has four bytes"))
             })
             .collect();
-        cache.insert(
-            key,
-            TileData {
-                height,
-                biome,
-                moisture,
-            },
-        );
+        entry.insert(TileData {
+            height,
+            biome,
+            moisture,
+        });
     }
-    Ok(cache.get(&key).expect("tile was inserted into cache"))
+    Ok(cache.get(&key).expect("tile is in the cache"))
 }
 
 fn sample_refined_tile_from_dense(
@@ -949,7 +946,11 @@ mod tests {
             sparse_surface_detail(node(18), landing, landing, &noise),
             0.0
         );
-        assert!(LANDING_DETAIL_PROTECTION_METERS < 50.0);
+        // Both sides are constants, so check it at compile time rather than
+        // asserting something the optimiser already knows.
+        const {
+            assert!(LANDING_DETAIL_PROTECTION_METERS < 50.0);
+        }
     }
 
     /// The protected disc must be a level pad, not a pit. Ramping the absolute

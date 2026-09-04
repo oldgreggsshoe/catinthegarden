@@ -173,7 +173,11 @@ impl ShipRenderer {
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 
-    pub fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>, camera_bind_group: &wgpu::BindGroup) {
+    pub fn draw(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        camera_bind_group: &wgpu::BindGroup,
+    ) {
         if !self.visible || self.vertex_count == 0 {
             return;
         }
@@ -192,8 +196,7 @@ mod tests {
     #[test]
     fn ship_shader_parses_and_renders_camera_relative_flat_facets() {
         let shader = ship_shader_source();
-        let module =
-            wgpu::naga::front::wgsl::parse_str(&shader).expect("ship shader must parse");
+        let module = wgpu::naga::front::wgsl::parse_str(&shader).expect("ship shader must parse");
         wgpu::naga::valid::Validator::new(
             wgpu::naga::valid::ValidationFlags::all(),
             wgpu::naga::valid::Capabilities::all(),

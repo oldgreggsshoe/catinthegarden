@@ -317,8 +317,8 @@ mod tests {
         // close to g and simply overtake a floating body. Twenty times the
         // restoring force only got that to 23%, so the floor is the fix.
         use crate::ocean;
-        let direction = glam::DVec3::new(0.836442275001636, 0.503727905284262, 0.215922481525239)
-            .normalize();
+        let direction =
+            glam::DVec3::new(0.836442275001636, 0.503727905284262, 0.215922481525239).normalize();
         // Swept over real sea beds, not just abyssal depth. The bug this
         // caught: at 4000m the depth limiter is inert, so a test that only ran
         // there could not see the eye and the rendered surface drifting apart
@@ -338,9 +338,13 @@ mod tests {
         let mut time_seconds = 0.0;
         for _ in 0..3600 {
             let height = ocean::local_wave_height_meters(direction, time_seconds, depth);
-            let velocity =
-                ocean::local_wave_vertical_velocity_meters_per_second(direction, time_seconds, depth);
-            eye = physics.advance_vertical(eye, -depth, Some((height, velocity)), false, 1.0 / 60.0);
+            let velocity = ocean::local_wave_vertical_velocity_meters_per_second(
+                direction,
+                time_seconds,
+                depth,
+            );
+            eye =
+                physics.advance_vertical(eye, -depth, Some((height, velocity)), false, 1.0 / 60.0);
             time_seconds += 1.0 / 60.0;
             let clearance = eye - height;
             if clearance < 0.0 {

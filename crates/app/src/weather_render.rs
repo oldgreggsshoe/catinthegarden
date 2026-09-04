@@ -965,8 +965,7 @@ mod tests {
         // the absolute figure moved when the weather clock was tied to the
         // planet's rotation, and pinning it would only pin the old scale.
         let one = super::cloud_drift_radians(crate::weather::INTERACTIVE_WEATHER_TIME_SCALE);
-        let two =
-            super::cloud_drift_radians(2.0 * crate::weather::INTERACTIVE_WEATHER_TIME_SCALE);
+        let two = super::cloud_drift_radians(2.0 * crate::weather::INTERACTIVE_WEATHER_TIME_SCALE);
         assert!(one > 0.0);
         assert!((two - 2.0 * one).abs() < 1.0e-6);
         // And a whole weather day turns the detail field a good way round
@@ -977,9 +976,7 @@ mod tests {
             "a day drifts {day} rad, which is either invisible or a full wrap"
         );
         // And the rate a viewer sees is unchanged by the weather clock.
-        assert!(
-            (f64::from(one) - super::CLOUD_DRIFT_RADIANS_PER_REAL_SECOND).abs() < 1.0e-9
-        );
+        assert!((f64::from(one) - super::CLOUD_DRIFT_RADIANS_PER_REAL_SECOND).abs() < 1.0e-9);
     }
 
     #[test]

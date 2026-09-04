@@ -132,14 +132,14 @@ fn bake_internal(
     progress.stage("terrain generation");
     let terrain = Terrain::try_generate_with_progress(config, progress)?;
     progress.done();
-    let mountain_coverage = report_mountain_coverage
-        .then(|| {
-            progress.stage("mountain coverage survey");
-            let report = terrain.mountain_visibility_coverage();
-            progress.done();
-            report
-        })
-        .unwrap_or_default();
+    let mountain_coverage = if report_mountain_coverage {
+        progress.stage("mountain coverage survey");
+        let report = terrain.mountain_visibility_coverage();
+        progress.done();
+        report
+    } else {
+        Default::default()
+    };
     let manifest = export::export_outmap_with_progress(config, &terrain, progress)?;
     progress.stage("validating output");
     validate_output_with_progress(&config.output, progress)?;

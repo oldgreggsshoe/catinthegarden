@@ -150,8 +150,7 @@ impl ShipHull {
         for station in 0..BUOYANCY_STATIONS {
             // Sample the station at its centre so the integral is a midpoint
             // rule rather than a systematic under- or over-estimate.
-            let t = station_parameter(station, BUOYANCY_STATIONS)
-                + 1.0 / BUOYANCY_STATIONS as f64;
+            let t = station_parameter(station, BUOYANCY_STATIONS) + 1.0 / BUOYANCY_STATIONS as f64;
             let x = 0.5 * HULL_LENGTH_METERS * t;
             let half_beam = half_beam_meters(t);
             if half_beam <= 0.0 {
@@ -214,7 +213,8 @@ impl ShipHull {
         let inertia_local = DVec3::new(
             mass_kg * (HULL_BEAM_METERS * HULL_BEAM_METERS + depth * depth) / 12.0,
             mass_kg * (HULL_LENGTH_METERS * HULL_LENGTH_METERS + depth * depth) / 12.0,
-            mass_kg * (HULL_LENGTH_METERS * HULL_LENGTH_METERS + HULL_BEAM_METERS * HULL_BEAM_METERS)
+            mass_kg
+                * (HULL_LENGTH_METERS * HULL_LENGTH_METERS + HULL_BEAM_METERS * HULL_BEAM_METERS)
                 / 12.0,
         );
 
@@ -307,7 +307,10 @@ impl ShipBody {
     /// Angle between the hull's mast and the local vertical. Covers heel and
     /// trim together, which is what a capsize test actually cares about.
     pub fn tilt_radians(&self) -> f64 {
-        self.up().dot(self.position.normalize()).clamp(-1.0, 1.0).acos()
+        self.up()
+            .dot(self.position.normalize())
+            .clamp(-1.0, 1.0)
+            .acos()
     }
 
     /// Advances the float. `water` receives a planet-local unit direction and
@@ -359,7 +362,9 @@ impl ShipBody {
             // displacement, sinks, heels further, and capsizes. The floor
             // bounds the prism model where it stops being meaningful, near
             // beam-on.
-            let axis_tilt_cosine = ship_up.dot(column_direction).max(MINIMUM_COLUMN_TILT_COSINE);
+            let axis_tilt_cosine = ship_up
+                .dot(column_direction)
+                .max(MINIMUM_COLUMN_TILT_COSINE);
             let immersion = (vertical_depth / axis_tilt_cosine).min(column.height_meters);
 
             // Archimedes on the submerged part of this column, acting at the
@@ -378,9 +383,10 @@ impl ShipBody {
             let surface_normal = (column_direction - sample.slope).normalize();
             let mut column_force = surface_normal * buoyant_newtons;
 
-            let column_velocity = self.linear_velocity + self.angular_velocity.cross(centroid_offset);
-            let relative_vertical = column_velocity.dot(column_direction)
-                - sample.vertical_velocity_meters_per_second;
+            let column_velocity =
+                self.linear_velocity + self.angular_velocity.cross(centroid_offset);
+            let relative_vertical =
+                column_velocity.dot(column_direction) - sample.vertical_velocity_meters_per_second;
             let drag_fade = (immersion / DRAG_IMMERSION_FADE_METERS).min(1.0);
             column_force -= column_direction
                 * (HEAVE_DRAG_KG_PER_SQUARE_METER_SECOND
@@ -402,22 +408,18 @@ impl ShipBody {
             + horizontal_velocity * (1.0 - SURGE_DAMPING_PER_SECOND * step_seconds).max(0.0);
         self.position += self.linear_velocity * step_seconds;
 
-        let inverse_inertia = rotation
-            * DMat3::from_diagonal(DVec3::ONE / hull.inertia_local)
-            * rotation.transpose();
+        let inverse_inertia =
+            rotation * DMat3::from_diagonal(DVec3::ONE / hull.inertia_local) * rotation.transpose();
         self.angular_velocity += inverse_inertia * torque * step_seconds;
         let yaw_velocity = radial * self.angular_velocity.dot(radial);
-        self.angular_velocity -=
-            yaw_velocity * (YAW_DAMPING_PER_SECOND * step_seconds).min(1.0);
+        self.angular_velocity -= yaw_velocity * (YAW_DAMPING_PER_SECOND * step_seconds).min(1.0);
         let ship_forward = rotation * DVec3::X;
         let roll_velocity = ship_forward * self.angular_velocity.dot(ship_forward);
-        self.angular_velocity -=
-            roll_velocity * (ROLL_DAMPING_PER_SECOND * step_seconds).min(1.0);
+        self.angular_velocity -= roll_velocity * (ROLL_DAMPING_PER_SECOND * step_seconds).min(1.0);
 
         if self.angular_velocity.length_squared() > 0.0 {
-            let spin = DQuat::from_vec4(
-                (self.angular_velocity * 0.5 * step_seconds).extend(0.0),
-            ) * self.orientation;
+            let spin = DQuat::from_vec4((self.angular_velocity * 0.5 * step_seconds).extend(0.0))
+                * self.orientation;
             self.orientation = (self.orientation + spin).normalize();
         }
     }
@@ -458,26 +460,70 @@ fn push_triangle(vertices: &mut Vec<ShipVertex>, a: DVec3, b: DVec3, c: DVec3, c
     }
 }
 
-fn push_quad(vertices: &mut Vec<ShipVertex>, a: DVec3, b: DVec3, c: DVec3, d: DVec3, colour: [f32; 3]) {
+fn push_quad(
+    vertices: &mut Vec<ShipVertex>,
+    a: DVec3,
+    b: DVec3,
+    c: DVec3,
+    d: DVec3,
+    colour: [f32; 3],
+) {
     push_triangle(vertices, a, b, c, colour);
     push_triangle(vertices, a, c, d, colour);
 }
 
-fn push_box(
-    vertices: &mut Vec<ShipVertex>,
-    centre: DVec3,
-    half_extents: DVec3,
-    colour: [f32; 3],
-) {
+fn push_box(vertices: &mut Vec<ShipVertex>, centre: DVec3, half_extents: DVec3, colour: [f32; 3]) {
     let (x, y, z) = (half_extents.x, half_extents.y, half_extents.z);
     let corner = |sx: f64, sy: f64, sz: f64| centre + DVec3::new(sx * x, sy * y, sz * z);
     // Wound counter-clockwise seen from outside, so the face normals point out.
-    push_quad(vertices, corner(1.0, -1.0, -1.0), corner(1.0, 1.0, -1.0), corner(1.0, 1.0, 1.0), corner(1.0, -1.0, 1.0), colour);
-    push_quad(vertices, corner(-1.0, 1.0, -1.0), corner(-1.0, -1.0, -1.0), corner(-1.0, -1.0, 1.0), corner(-1.0, 1.0, 1.0), colour);
-    push_quad(vertices, corner(-1.0, 1.0, -1.0), corner(-1.0, 1.0, 1.0), corner(1.0, 1.0, 1.0), corner(1.0, 1.0, -1.0), colour);
-    push_quad(vertices, corner(-1.0, -1.0, 1.0), corner(-1.0, -1.0, -1.0), corner(1.0, -1.0, -1.0), corner(1.0, -1.0, 1.0), colour);
-    push_quad(vertices, corner(-1.0, -1.0, 1.0), corner(1.0, -1.0, 1.0), corner(1.0, 1.0, 1.0), corner(-1.0, 1.0, 1.0), colour);
-    push_quad(vertices, corner(-1.0, 1.0, -1.0), corner(1.0, 1.0, -1.0), corner(1.0, -1.0, -1.0), corner(-1.0, -1.0, -1.0), colour);
+    push_quad(
+        vertices,
+        corner(1.0, -1.0, -1.0),
+        corner(1.0, 1.0, -1.0),
+        corner(1.0, 1.0, 1.0),
+        corner(1.0, -1.0, 1.0),
+        colour,
+    );
+    push_quad(
+        vertices,
+        corner(-1.0, 1.0, -1.0),
+        corner(-1.0, -1.0, -1.0),
+        corner(-1.0, -1.0, 1.0),
+        corner(-1.0, 1.0, 1.0),
+        colour,
+    );
+    push_quad(
+        vertices,
+        corner(-1.0, 1.0, -1.0),
+        corner(-1.0, 1.0, 1.0),
+        corner(1.0, 1.0, 1.0),
+        corner(1.0, 1.0, -1.0),
+        colour,
+    );
+    push_quad(
+        vertices,
+        corner(-1.0, -1.0, 1.0),
+        corner(-1.0, -1.0, -1.0),
+        corner(1.0, -1.0, -1.0),
+        corner(1.0, -1.0, 1.0),
+        colour,
+    );
+    push_quad(
+        vertices,
+        corner(-1.0, -1.0, 1.0),
+        corner(1.0, -1.0, 1.0),
+        corner(1.0, 1.0, 1.0),
+        corner(-1.0, 1.0, 1.0),
+        colour,
+    );
+    push_quad(
+        vertices,
+        corner(-1.0, 1.0, -1.0),
+        corner(1.0, 1.0, -1.0),
+        corner(1.0, -1.0, -1.0),
+        corner(-1.0, -1.0, -1.0),
+        colour,
+    );
 }
 
 /// Builds the hull, deck, cabin and funnel as a flat-shaded triangle list in
@@ -489,7 +535,12 @@ pub fn build_mesh() -> Vec<ShipVertex> {
         let t = station_parameter(index, MESH_STATIONS - 1) + 1.0 / (MESH_STATIONS - 1) as f64;
         let t = t.clamp(-1.0, 1.0);
         let x = 0.5 * HULL_LENGTH_METERS * t;
-        (x, half_beam_meters(t), keel_depth_meters(t), sheer_height_meters(t))
+        (
+            x,
+            half_beam_meters(t),
+            keel_depth_meters(t),
+            sheer_height_meters(t),
+        )
     };
 
     for index in 0..MESH_STATIONS - 1 {
@@ -505,11 +556,39 @@ pub fn build_mesh() -> Vec<ShipVertex> {
             let sheer_aft = DVec3::new(x0, side * beam0, sheer0);
             let sheer_fwd = DVec3::new(x1, side * beam1, sheer1);
             if side > 0.0 {
-                push_quad(&mut vertices, keel_aft, chine_aft, chine_fwd, keel_fwd, HULL_BELOW_WATERLINE_COLOUR);
-                push_quad(&mut vertices, chine_aft, sheer_aft, sheer_fwd, chine_fwd, HULL_TOPSIDE_COLOUR);
+                push_quad(
+                    &mut vertices,
+                    keel_aft,
+                    chine_aft,
+                    chine_fwd,
+                    keel_fwd,
+                    HULL_BELOW_WATERLINE_COLOUR,
+                );
+                push_quad(
+                    &mut vertices,
+                    chine_aft,
+                    sheer_aft,
+                    sheer_fwd,
+                    chine_fwd,
+                    HULL_TOPSIDE_COLOUR,
+                );
             } else {
-                push_quad(&mut vertices, keel_aft, keel_fwd, chine_fwd, chine_aft, HULL_BELOW_WATERLINE_COLOUR);
-                push_quad(&mut vertices, chine_aft, chine_fwd, sheer_fwd, sheer_aft, HULL_TOPSIDE_COLOUR);
+                push_quad(
+                    &mut vertices,
+                    keel_aft,
+                    keel_fwd,
+                    chine_fwd,
+                    chine_aft,
+                    HULL_BELOW_WATERLINE_COLOUR,
+                );
+                push_quad(
+                    &mut vertices,
+                    chine_aft,
+                    chine_fwd,
+                    sheer_fwd,
+                    sheer_aft,
+                    HULL_TOPSIDE_COLOUR,
+                );
             }
         }
 
@@ -733,8 +812,8 @@ mod tests {
         for _ in 0..3600 {
             body.advance(&hull, 1.0 / 60.0, move |direction| {
                 // A steep short swell crossing the hull diagonally.
-                let phase = direction.dot(DVec3::new(0.6, 0.5, 0.62).normalize())
-                    * PLANET_RADIUS_METERS;
+                let phase =
+                    direction.dot(DVec3::new(0.6, 0.5, 0.62).normalize()) * PLANET_RADIUS_METERS;
                 WaterSample {
                     height_meters: AMPLITUDE_METERS * (wave_number * phase + 1.6 * elapsed).sin(),
                     vertical_velocity_meters_per_second: AMPLITUDE_METERS
@@ -855,8 +934,16 @@ mod tests {
             }
             count
         };
-        assert!(reversals(&roll) > 8, "roll reversed {} times", reversals(&roll));
-        assert!(reversals(&pitch) > 8, "pitch reversed {} times", reversals(&pitch));
+        assert!(
+            reversals(&roll) > 8,
+            "roll reversed {} times",
+            reversals(&roll)
+        );
+        assert!(
+            reversals(&pitch) > 8,
+            "pitch reversed {} times",
+            reversals(&pitch)
+        );
 
         // And the wave-slope forcing that drives yaw must not walk the hull
         // out of the scene while it does so.
