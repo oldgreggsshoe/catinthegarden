@@ -268,6 +268,7 @@ impl ScenarioRunner {
             "land_chunk_seams" => include_str!("../scenarios/land_chunk_seams.json"),
             "coast_waters_edge" => include_str!("../scenarios/coast_waters_edge.json"),
             "coastal_spawn_view" => include_str!("../scenarios/coastal_spawn_view.json"),
+            "mountain_ground" => include_str!("../scenarios/mountain_ground.json"),
             "wavedir_spawn" => include_str!("../scenarios/wavedir_spawn.json"),
             "wavedir_0" => include_str!("../scenarios/wavedir_0.json"),
             "wavedir_1" => include_str!("../scenarios/wavedir_1.json"),
@@ -1385,6 +1386,26 @@ mod tests {
         assert_eq!(scenario.definition.waypoints[2].position[0], 5_440_000.0);
         assert_eq!(scenario.definition.waypoints[4].look_at, [0.0; 3]);
         assert_eq!(scenario.definition.waypoints[6].position[0], 8_000_000.0);
+    }
+
+    #[test]
+    fn mountain_ground_stands_on_high_terrain() {
+        let scenario = ScenarioRunner::load("mountain_ground").expect("scenario parses");
+        assert_eq!(scenario.expected_screenshots(), 1);
+        // Straight down from just above the ground on a 20km mountain. The
+        // camera used to float 11.7m over the drawn surface there, because the
+        // mesh-height query failed on near-field patches and collision fell
+        // back to the continuous field. The probe in the run manifest is the
+        // check: camera_surface_height_meters against the rendered heights.
+        let waypoint = &scenario.definition.waypoints[0];
+        let position = DVec3::from_array(waypoint.position);
+        let altitude = position.length() - crate::planet::PLANET_RADIUS_METERS;
+        assert!(
+            (20_000.0..21_000.0).contains(&altitude),
+            "scenario sits at {altitude} m, not on the mountain it was aimed at"
+        );
+        let view = (DVec3::from_array(waypoint.look_at) - position).normalize();
+        assert!(view.dot(position.normalize()) < -0.99, "not looking down");
     }
 
     #[test]

@@ -1683,10 +1683,15 @@ impl TerrainRenderer {
             .map(|surface| surface.height_meters);
         let mesh_height = self
             .raster_mesh_surface_height_meters_at(local_surface_direction, camera_altitude_meters);
-        match (sampled_height, mesh_height) {
-            (Some(sampled), Some(mesh)) => Some(sampled.max(mesh)),
-            (sampled, mesh) => sampled.or(mesh),
-        }
+        // The mesh height is the triangle actually drawn, so it wins outright
+        // where it is available. This used to take the greater of the two,
+        // which was compensating for the mesh query failing on every near-field
+        // patch -- the ones under the camera. With that fixed, taking the max
+        // instead stands the camera on the continuous field wherever that field
+        // sits above the drawn mesh, which on steep ground is metres of thin
+        // air. The sampled field remains the fallback for directions the drawn
+        // mesh does not cover.
+        mesh_height.or(sampled_height)
     }
 
     /// Intersects the camera's radial with the actual piecewise-planar raster
@@ -2372,7 +2377,16 @@ impl TerrainRenderer {
                             // the near-field window, making terrain become smoother while
                             // the camera approached it.
                             source_key.level,
-                            None,
+                            // The instance stream nulls this again for
+                            // near-field patches below, where it only groups
+                            // draws. Dropping it here as well left
+                            // SurfaceDetailNode without a source key, so the
+                            // mesh-height query -- the one that reports the
+                            // height of the triangle actually drawn -- failed
+                            // on exactly the chunks under the camera, and
+                            // collision fell back to a sampled field that sits
+                            // above the drawn near-field mesh.
+                            Some(source_key),
                             true,
                         )
                     } else {

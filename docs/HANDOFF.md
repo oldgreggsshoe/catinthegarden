@@ -4922,3 +4922,32 @@ at the crate root: pipeline and pass plumbing carries many genuinely distinct va
 them into structs to satisfy an arity count would hide what each call site passes. One assertion
 compared two literals and is gone entirely; the check that earns its keep is the one above it, that
 the shader still contains the number.
+
+## Walking on ground that was not there - 4 September 2026
+
+On a 20km mountain the camera stood 11.7m above the surface being drawn. It reported
+`Clearance: 1.70 m` and `grounded` the whole time, and moved when walked, so nothing in the HUD
+said anything was wrong -- it was walking on air a dozen metres up.
+
+Two hypotheses went first, both wrong and both worth ruling out by measurement rather than reading:
+the ground query returns the same height at every camera altitude from 2m to 60km, so it is not
+limited by height; and the slopes there are 13.8 degrees at worst with all sixteen sampled
+directions inside the 42-degree walk limit, so the slope rule was not blocking anything either.
+
+`raster_surface_height_meters_at` returns the greater of two figures: a continuous sampled height
+field, and the height of the triangle the renderer actually drew. The second is the authoritative
+one, and it was returning nothing at all -- on every chunk under the camera. Near-field patches are
+addressed through a window grid rather than one source tile, and the branch that builds them dropped
+the tile key. The instance stream nulls that key again a few lines later for its own draw grouping,
+so the only consumer of the earlier `None` was `SurfaceDetailNode`, whose key the mesh query needs.
+With the key kept, the mesh query resolves and reports 20525.03m against a drawn 20525.68m.
+
+The `max` was then compensating for that failure. With the mesh query working it stands the camera
+on the continuous field wherever that field sits above the drawn mesh, which on steep ground is
+metres of thin air, so the drawn mesh now wins outright where it is available and the sampled field
+is the fallback for directions the mesh does not cover. The gap at that spot went from 11.74m to
+-0.65m: standing on the ground rather than over it.
+
+The surface probe still reports about 11m between the rendered mesh and the sampled field, because
+that is what it compares and the two genuinely differ that much on steep near-field terrain. It is a
+separate observation from what the camera stands on, and it is worth its own look.

@@ -1,0 +1,50 @@
+{
+  "name": "mountain_ground",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 1.5,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": false,
+  "planet_rotation_time_scale": 0.0,
+  "fixed_exposure": true,
+  "surface_probe_max_distance_meters": 5000.0,
+  "screenshot_times_seconds": [
+    1.5
+  ],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [
+        2266145.974,
+        935864.609,
+        3186451.737
+      ],
+      "look_at": [
+        2265694.102,
+        935677.997,
+        3185816.355
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        0.507278083,
+        0.609493832,
+        0.713289058
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 60.0
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 1
+  }
+}
