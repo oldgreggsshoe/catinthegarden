@@ -4769,3 +4769,31 @@ The lag is a function of depth only, so a query given a constant depth sees no e
 gradient and the analytic slope stays exact for it. Over a real varying bed the true slope carries a
 depth-gradient term this omits; that matters for the hull's yaw forcing only where bathymetry
 changes appreciably across 42m of ship, which it does not offshore.
+
+## The bottom steers the swell ashore - 4 September 2026
+
+Refraction bent crests onto the depth contours but could not turn a swell around, so coasts facing
+away from the wave table's directions still got surf running out to sea. Measured on four coasts by
+cross-correlating nadir frame sequences and dotting the pattern's displacement with the onshore
+direction from the bathymetry: +1.00, +0.70, +0.44 and -0.85. The last is a coast whose swell
+arrives 170 degrees off square, and it was unambiguous at 0.91 correlation.
+
+Re-aiming the wave table cannot fix it. Over 897 coasts of this bake the current axis serves 51.8%
+of them and the best fixed axis on the whole sphere serves 52.7% -- which is what a sphere gives
+for free. The steering has to come from the local bed.
+
+`shoaling_phase_offset_meters` replaces the refraction lag. Its gradient runs along the depth
+gradient with magnitude `1 / REFRACTION_NOMINAL_SHELF_SLOPE`, so once that outweighs the wave's own
+unit heading the propagation follows the bottom rather than the axis: crests still turn onto the
+contours, and the swell now arrives from seaward whichever way a coast faces. The offset is bounded
+and its slope reaches zero exactly at the reference depth, so the open sea is untouched. Same four
+coasts after: +0.91, +1.00, +0.95, +0.97.
+
+The nominal slope is 0.010, deliberately gentler than a real shelf so the steering dominates. At
+0.020 it only bends: the 170-degree coast went back to -0.44.
+
+Aligning every component onto the contours makes them superpose coherently, so the shallows break
+much harder and the surf zone whitened to 14.4% of the frame. Raising the foam onset did nothing,
+because past the shore the raw crest is many times what the depth holds and the ratio saturates
+across the whole shelf. Surf is a band: the foam now fades out again once a crest is far past
+breaking, on the grounds that the water behind a broken wave is spent. 2.7% after.

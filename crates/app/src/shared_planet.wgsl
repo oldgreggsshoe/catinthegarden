@@ -379,6 +379,9 @@ const OCEAN_BREAKING_KNEE: f32 = 4.0;
 const OCEAN_FOAM_MINIMUM_DEPTH_METERS: f32 = 1.1;
 const OCEAN_BREAKING_FOAM_ONSET: f32 = 1.8;
 const OCEAN_BREAKING_FOAM_FULL: f32 = 3.6;
+// Where the wave has long since broken and the foam has dispersed.
+const OCEAN_BREAKING_FOAM_SPENT: f32 = 6.0;
+const OCEAN_BREAKING_FOAM_GONE: f32 = 16.0;
 // Foam is spray over water, not paint: even a fully broken crest keeps some of
 // the sea's colour, which stops the surf zone reading as a white sheet.
 const OCEAN_BREAKING_FOAM_MAX: f32 = 0.82;
@@ -821,13 +824,18 @@ fn scaled_terrain_macro_height(macro_height_meters: f32) -> f32 {
     );
 }
 
-/// How far behind its deep-water position a crest has fallen at this depth.
-/// Paired with `refraction_lag_meters` in ocean.rs; see it for why a lag turns
-/// crests onto the beach.
-fn refraction_lag_meters(wavelength_meters: f32, water_depth_meters: f32) -> f32 {
-    let depth = min(max(water_depth_meters, 0.0), OCEAN_REFRACTION_REFERENCE_DEPTH_METERS);
-    let shoaling = 1.0 - sqrt(depth / OCEAN_REFRACTION_REFERENCE_DEPTH_METERS);
-    return OCEAN_REFRACTION_LAG_WAVELENGTHS * wavelength_meters * shoaling;
+/// Phase distance added by the shoaling bottom. Paired with
+/// `shoaling_phase_offset_meters` in ocean.rs; see it for why this both turns
+/// crests onto the contours and makes the swell arrive from seaward.
+fn shoaling_phase_offset_meters(water_depth_meters: f32) -> f32 {
+    let depth = max(water_depth_meters, 0.0);
+    if depth >= OCEAN_REFRACTION_REFERENCE_DEPTH_METERS {
+        return 0.0;
+    }
+    let remaining = OCEAN_REFRACTION_REFERENCE_DEPTH_METERS - depth;
+    return -OCEAN_WAVE_PHASE_SPEED_SIGN * remaining * remaining
+        / (2.0 * OCEAN_REFRACTION_REFERENCE_DEPTH_METERS
+            * OCEAN_REFRACTION_NOMINAL_SHELF_SLOPE);
 }
 
 fn gerstner_wave(
@@ -850,9 +858,8 @@ fn gerstner_wave(
     let wave_number = 6.2831853 / wavelength_meters;
     let phase = wave_number
         * (dot(direction, axis) * PLANET_RADIUS_METERS
-            + OCEAN_WAVE_PHASE_SPEED_SIGN
-                * (speed_meters_per_second * time_seconds
-                    - refraction_lag_meters(wavelength_meters, water_depth_meters)));
+            + OCEAN_WAVE_PHASE_SPEED_SIGN * speed_meters_per_second * time_seconds
+            + shoaling_phase_offset_meters(water_depth_meters));
     return OceanWaveContribution(
         tangent * (steepness * OCEAN_STEEPNESS_SCALE * amplitude_meters * cos(phase)),
         amplitude_meters * sin(phase),
@@ -913,8 +920,14 @@ fn shoreline_water_albedo(
     // water let it. Unclamped, so it separates crests that are genuinely
     // tumbling from ones merely feeling the bottom -- which is what leaves the
     // foam in bands rather than as one sheet across the whole surf zone.
+    // Surf is a band, not a field. Once a crest is many times what the depth
+    // can hold it broke a long way back and the water behind it is spent, so
+    // the foam has to fade out again -- otherwise the whole shelf whitens,
+    // which is what raising the onset alone could never fix because the ratio
+    // saturates across all of it.
     let crest_foam =
         smoothstep(OCEAN_BREAKING_FOAM_ONSET, OCEAN_BREAKING_FOAM_FULL, breaking_ratio)
+            * (1.0 - smoothstep(OCEAN_BREAKING_FOAM_SPENT, OCEAN_BREAKING_FOAM_GONE, breaking_ratio))
             * OCEAN_BREAKING_FOAM_MAX;
     // And the wash right at the edge, where there is barely any water left.
     let column_meters = still_depth_meters + surface_height_meters;

@@ -1,0 +1,57 @@
+{
+  "name": "wavedir_0",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 3.6,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": false,
+  "planet_rotation_time_scale": 0.0,
+  "fixed_exposure": true,
+  "ocean_storm_intensity_override": 1.0,
+  "screenshot_times_seconds": [
+    0.4,
+    0.8,
+    1.2,
+    1.6,
+    2.0,
+    2.4,
+    2.8,
+    3.2
+  ],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [
+        465507.358,
+        2725267.888,
+        -2891680.883
+      ],
+      "look_at": [
+        465309.552,
+        2724109.852,
+        -2890452.134
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        0.399614596,
+        0.743944208,
+        -0.535588639
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 60.0
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 8
+  }
+}

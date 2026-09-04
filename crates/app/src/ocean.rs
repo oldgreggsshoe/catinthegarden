@@ -57,7 +57,7 @@ pub(crate) fn wgsl_constants() -> String {
          const OCEAN_BREAKING_HEIGHT_TO_DEPTH_RATIO: f32 = {};\n\
          const OCEAN_WAVE_PHASE_SPEED_SIGN: f32 = {};\n\
          const OCEAN_REFRACTION_REFERENCE_DEPTH_METERS: f32 = {};\n\
-         const OCEAN_REFRACTION_LAG_WAVELENGTHS: f32 = {};\n",
+         const OCEAN_REFRACTION_NOMINAL_SHELF_SLOPE: f32 = {};\n",
         wgsl_number(OCEAN_WAVE_SCALE),
         wgsl_number(OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE),
         wgsl_number(OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE),
@@ -66,7 +66,7 @@ pub(crate) fn wgsl_constants() -> String {
         wgsl_number(BREAKING_HEIGHT_TO_DEPTH_RATIO),
         wgsl_number(OCEAN_WAVE_PHASE_SPEED_SIGN),
         wgsl_number(REFRACTION_REFERENCE_DEPTH_METERS),
-        wgsl_number(REFRACTION_LAG_WAVELENGTHS),
+        wgsl_number(REFRACTION_NOMINAL_SHELF_SLOPE),
     )
 }
 
@@ -145,25 +145,37 @@ pub const OCEAN_WAVE_PHASE_SPEED_SIGN: f64 = 1.0;
 /// height sweep. Past the reference depth refraction is inert anyway.
 const OPEN_SEA_DEPTH_METERS: f64 = 4000.0;
 pub const REFRACTION_REFERENCE_DEPTH_METERS: f64 = 90.0;
-/// How far a crest is held back, in wavelengths, by the time the water has
-/// shoaled to nothing. Larger turns waves onto the beach more sharply.
-pub const REFRACTION_LAG_WAVELENGTHS: f64 = 1.8;
+/// Nominal shelf slope, in metres of depth per metre of ground.
+///
+/// The shoaling term's gradient is `1 / slope`, so this sets how hard the
+/// bottom steers a wave against its own heading. Deliberately shallower than a
+/// typical shelf here, so it dominates rather than merely nudges: a wave that
+/// only bends still arrives from wherever its axis points, and measured across
+/// 897 coasts that is onshore on 52% of them -- which is what a sphere gives
+/// for free. No fixed wave direction can beat it; the best axis on this planet
+/// manages 52.7%.
+pub const REFRACTION_NOMINAL_SHELF_SLOPE: f64 = 0.010;
 
-/// How far behind its deep-water position a crest has fallen at this depth.
+/// Phase distance added by the shoaling bottom, in metres.
 ///
-/// Waves slow as they shoal, so the part of a crest in shallower water lags.
-/// On an oblique approach that lag varies along the crest, and the crest turns
-/// until it lies along the depth contours -- which is refraction, and why real
-/// surf arrives very nearly parallel to the beach whichever way the swell came
-/// from. Subtracting a lag distance from the travel term reproduces that from
-/// the depth field alone, with no ray tracing and no per-coast authoring.
+/// Waves slow as they shoal, so a crest is held back where the water is thin.
+/// The gradient of that offset runs along the depth gradient, which turns
+/// crests onto the depth contours -- refraction -- and, once it outweighs the
+/// wave's own axis, also makes the swell arrive from seaward whichever way a
+/// coast faces.
 ///
-/// Deep water returns zero, so nothing offshore is disturbed.
-pub fn refraction_lag_meters(wavelength_meters: f64, water_depth_meters: f64) -> f64 {
-    let depth = water_depth_meters.max(0.0).min(REFRACTION_REFERENCE_DEPTH_METERS);
-    let shoaling = 1.0 - (depth / REFRACTION_REFERENCE_DEPTH_METERS).sqrt();
-    REFRACTION_LAG_WAVELENGTHS * wavelength_meters * shoaling
+/// Bounded, and its slope reaches zero exactly at the reference depth, so the
+/// open sea is untouched rather than merely nearly so.
+pub fn shoaling_phase_offset_meters(water_depth_meters: f64) -> f64 {
+    let depth = water_depth_meters.max(0.0);
+    if depth >= REFRACTION_REFERENCE_DEPTH_METERS {
+        return 0.0;
+    }
+    let remaining = REFRACTION_REFERENCE_DEPTH_METERS - depth;
+    -OCEAN_WAVE_PHASE_SPEED_SIGN * remaining * remaining
+        / (2.0 * REFRACTION_REFERENCE_DEPTH_METERS * REFRACTION_NOMINAL_SHELF_SLOPE)
 }
+
 /// Diagnostic: collide and render against only the two 1,400 m swells at the
 /// head of `WAVES`, dropping the 160/65/24/9 m global waves and the whole
 /// ripple layer. Must match `OCEAN_LARGE_SWELL_ONLY` in `shared_planet.wgsl`,
@@ -459,9 +471,8 @@ pub fn wave_height_meters(
         .map(|wave| {
             let phase = std::f64::consts::TAU / wave.wavelength_meters
                 * (direction.dot(wave.direction.normalize()) * PLANET_RADIUS_METERS
-                    + OCEAN_WAVE_PHASE_SPEED_SIGN
-                        * (wave.speed_meters_per_second * sim_time
-                            - refraction_lag_meters(wave.wavelength_meters, water_depth_meters)));
+                    + OCEAN_WAVE_PHASE_SPEED_SIGN * wave.speed_meters_per_second * sim_time
+                    + shoaling_phase_offset_meters(water_depth_meters));
             wave.amplitude(blend) * amplitude_scale * phase.sin()
         })
         .sum()
@@ -569,9 +580,8 @@ pub fn local_wave_height_meters(direction: DVec3, sim_time: f64, water_depth_met
         .map(|wave| {
             let phase = std::f64::consts::TAU / wave.wavelength_meters
                 * (direction.dot(wave.direction.normalize()) * PLANET_RADIUS_METERS
-                    + OCEAN_WAVE_PHASE_SPEED_SIGN
-                        * (wave.speed_meters_per_second * sim_time
-                            - refraction_lag_meters(wave.wavelength_meters, water_depth_meters)));
+                    + OCEAN_WAVE_PHASE_SPEED_SIGN * wave.speed_meters_per_second * sim_time
+                    + shoaling_phase_offset_meters(water_depth_meters));
             wave.amplitude_meters * phase.sin()
         })
         .sum::<f64>();
@@ -605,9 +615,8 @@ pub fn global_wave_slope(direction: DVec3, sim_time: f64, water_depth_meters: f6
             let wave_number = std::f64::consts::TAU / wave.wavelength_meters;
             let phase = wave_number
                 * (radial.dot(axis) * PLANET_RADIUS_METERS
-                    + OCEAN_WAVE_PHASE_SPEED_SIGN
-                        * (wave.speed_meters_per_second * sim_time
-                            - refraction_lag_meters(wave.wavelength_meters, water_depth_meters)));
+                    + OCEAN_WAVE_PHASE_SPEED_SIGN * wave.speed_meters_per_second * sim_time
+                    + shoaling_phase_offset_meters(water_depth_meters));
             axis * (wave.amplitude(blend) * amplitude_scale * wave_number * phase.cos())
         })
         .sum::<DVec3>()
@@ -631,9 +640,8 @@ pub fn global_wave_vertical_velocity_meters_per_second(
             let wave_number = std::f64::consts::TAU / wave.wavelength_meters;
             let phase = wave_number
                 * (direction.dot(wave.direction.normalize()) * PLANET_RADIUS_METERS
-                    + OCEAN_WAVE_PHASE_SPEED_SIGN
-                        * (wave.speed_meters_per_second * sim_time
-                            - refraction_lag_meters(wave.wavelength_meters, water_depth_meters)));
+                    + OCEAN_WAVE_PHASE_SPEED_SIGN * wave.speed_meters_per_second * sim_time
+                    + shoaling_phase_offset_meters(water_depth_meters));
             OCEAN_WAVE_PHASE_SPEED_SIGN
                 * wave.amplitude(blend)
                 * amplitude_scale
@@ -677,9 +685,8 @@ pub fn local_wave_vertical_velocity_meters_per_second(
             let wave_number = std::f64::consts::TAU / wave.wavelength_meters;
             let phase = wave_number
                 * (direction.dot(wave.direction.normalize()) * PLANET_RADIUS_METERS
-                    + OCEAN_WAVE_PHASE_SPEED_SIGN
-                        * (wave.speed_meters_per_second * sim_time
-                            - refraction_lag_meters(wave.wavelength_meters, water_depth_meters)));
+                    + OCEAN_WAVE_PHASE_SPEED_SIGN * wave.speed_meters_per_second * sim_time
+                    + shoaling_phase_offset_meters(water_depth_meters));
             OCEAN_WAVE_PHASE_SPEED_SIGN
                 * wave.amplitude_meters
                 * wave_number
@@ -929,78 +936,69 @@ mod tests {
     }
 
     #[test]
-    fn shoaling_turns_crests_toward_the_beach() {
-        // Refraction, measured rather than asserted by construction. A straight
-        // coast with the bed shoaling landward, a swell arriving well off
-        // square to it, and the question is whether the crest swings round to
-        // meet the beach as the water thins.
+    fn the_bottom_steers_swell_ashore_whatever_its_heading() {
+        // The acceptance test for direction sourcing, measured the way the
+        // rendered planet was: propagation is `-sign * grad(phase)`, so take
+        // the gradient and dot it with onshore.
         //
-        // The wave vector is the gradient of the phase, so its angle to the
-        // shore normal is the approach angle. Deep water must keep the swell's
-        // authored heading; shallow water must bend it toward square-on.
-        let wavelength = 280.0;
-        let wave_number = std::f64::consts::TAU / wavelength;
-        let speed = 19.0;
-        // Local frame: `onshore` points at the beach, depth falls along it.
+        // A wave that only refracts still arrives from wherever its axis
+        // points, and on a sphere that is onshore about half the time -- 51.8%
+        // measured over 897 coasts of this bake, against 52.7% for the best
+        // fixed axis there is. So the bottom has to outweigh the heading, not
+        // merely bend it, and that has to hold even for a swell authored
+        // pointing straight back out to sea.
         let onshore = DVec3::X;
         let alongshore = DVec3::Y;
         let depth_at = |onshore_meters: f64| (200.0 - onshore_meters * 0.25).max(0.0);
-        // Phase of one component at a point, with the shoaling lag included.
-        let phase_at = |onshore_meters: f64, alongshore_meters: f64| {
-            // 35 degrees off square, so there is a real angle to close, and
-            // aimed so the swell arrives shoreward whichever way the travel
-            // convention points. That matters: the lag uses local depth as a
-            // stand-in for lag accumulated along the ray, which is only a fair
-            // proxy for a wave coming in. A wave leaving the beach accumulated
-            // its lag in the shallows it has already crossed, and this model
-            // does not know that.
-            let heading = -super::OCEAN_WAVE_PHASE_SPEED_SIGN
-                * (onshore * 35_f64.to_radians().cos()
-                    + alongshore * 35_f64.to_radians().sin());
-            let along_axis = onshore_meters * heading.x + alongshore_meters * heading.y;
-            let lag = super::refraction_lag_meters(wavelength, depth_at(onshore_meters));
-            wave_number
-                * (along_axis + super::OCEAN_WAVE_PHASE_SPEED_SIGN * (speed * 0.0 - lag))
-        };
-        let approach_angle_degrees = |onshore_meters: f64| {
+        let travel_onshore_component = |heading_degrees: f64, onshore_meters: f64| {
+            let heading = onshore * heading_degrees.to_radians().cos()
+                + alongshore * heading_degrees.to_radians().sin();
+            let phase_at = |on: f64, along: f64| {
+                on * heading.x
+                    + along * heading.y
+                    + super::shoaling_phase_offset_meters(depth_at(on))
+            };
             let step = 0.5;
-            let d_onshore = (phase_at(onshore_meters + step, 0.0)
-                - phase_at(onshore_meters - step, 0.0))
-                / (2.0 * step);
-            let d_alongshore = (phase_at(onshore_meters, step)
-                - phase_at(onshore_meters, -step))
-                / (2.0 * step);
-            // Folded onto 0-90: crest alignment is an axis, not a heading.
-            // The travel sign decides whether this swell runs onshore or back
-            // out, and refraction turns the crest onto the depth contours
-            // either way -- a metric that cared about the heading would call
-            // an outgoing wave 145 degrees and read the same turn as a failure.
-            let degrees = d_alongshore.atan2(d_onshore).abs().to_degrees();
-            degrees.min(180.0 - degrees)
+            let gradient = DVec3::new(
+                (phase_at(onshore_meters + step, 0.0) - phase_at(onshore_meters - step, 0.0))
+                    / (2.0 * step),
+                (phase_at(onshore_meters, step) - phase_at(onshore_meters, -step))
+                    / (2.0 * step),
+                0.0,
+            );
+            let travel = -super::OCEAN_WAVE_PHASE_SPEED_SIGN * gradient.normalize();
+            travel.dot(onshore)
         };
 
-        // 200m down to 12m of water.
-        let deep = approach_angle_degrees(20.0);
-        let shallow = approach_angle_degrees(750.0);
+        // 500m along this bed is 75m of water; 750m is 12m.
+        for heading_degrees in [0.0, 45.0, 90.0, 135.0, 179.0] {
+            let shallow = travel_onshore_component(heading_degrees, 750.0);
+            assert!(
+                shallow > 0.4,
+                "a swell authored {heading_degrees} degrees off onshore still \
+                 arrives with only {shallow} of onshore travel in 12m of water"
+            );
+        }
+        // Including the case that beat plain refraction: authored pointing out
+        // to sea, it must come back in.
+        assert!(travel_onshore_component(179.0, 750.0) > 0.4);
+
+        // And the open sea is left alone: past the reference depth the offset
+        // is flat, so a deep swell runs exactly where its axis points.
+        // A wave travels against its axis, so deep-water travel is minus the
+        // authored heading, times the convention.
+        let deep = travel_onshore_component(135.0, 20.0);
+        let undisturbed =
+            -super::OCEAN_WAVE_PHASE_SPEED_SIGN * 135_f64.to_radians().cos();
         assert!(
-            (30.0..40.0).contains(&deep),
-            "deep water should keep the authored 35 degree approach, got {deep}"
+            (deep - undisturbed).abs() < 0.05,
+            "deep water bent the swell to {deep}, expected {undisturbed}"
         );
-        assert!(
-            shallow < 0.5 * deep,
-            "crest still arrives at {shallow} degrees off square after shoaling \
-             from {deep}; it is not refracting"
-        );
-        // And nothing offshore is disturbed: past the reference depth the lag
-        // is exactly zero, so a deep swell runs where its axis points.
         assert_eq!(
-            super::refraction_lag_meters(
-                wavelength,
-                super::REFRACTION_REFERENCE_DEPTH_METERS + 1.0
-            ),
+            super::shoaling_phase_offset_meters(super::REFRACTION_REFERENCE_DEPTH_METERS),
             0.0
         );
-        assert!(super::refraction_lag_meters(wavelength, 0.0) > 0.0);
+        assert_eq!(super::shoaling_phase_offset_meters(1.0e6), 0.0);
     }
 
     #[test]
