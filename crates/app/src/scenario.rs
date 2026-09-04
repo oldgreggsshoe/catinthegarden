@@ -268,6 +268,7 @@ impl ScenarioRunner {
             "land_chunk_seams" => include_str!("../scenarios/land_chunk_seams.json"),
             "coast_waters_edge" => include_str!("../scenarios/coast_waters_edge.json"),
             "coastal_spawn_view" => include_str!("../scenarios/coastal_spawn_view.json"),
+            "wavedir_spawn" => include_str!("../scenarios/wavedir_spawn.json"),
             "wavedir_0" => include_str!("../scenarios/wavedir_0.json"),
             "wavedir_1" => include_str!("../scenarios/wavedir_1.json"),
             "wavedir_2" => include_str!("../scenarios/wavedir_2.json"),

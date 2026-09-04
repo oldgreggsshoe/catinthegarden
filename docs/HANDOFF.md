@@ -4797,3 +4797,21 @@ much harder and the surf zone whitened to 14.4% of the frame. Raising the foam o
 because past the shore the raw crest is many times what the depth holds and the ratio saturates
 across the whole shelf. Surf is a band: the foam now fades out again once a crest is far past
 breaking, on the grounds that the water behind a broken wave is spent. 2.7% after.
+
+## The spawn coast was the gentlest shelf - 4 September 2026
+
+Surf still ran seaward at the F4 spawn after the bed steering went in, and measuring there rather
+than arguing from the four coasts already in the table found why. Steering strength is the phase
+offset's derivative times the bed slope, and it has to exceed the wave's own unit heading. That coast
+falls 38m in 5km, a slope of 0.0076, gentler than any of the four the constant had been tuned
+against; the steering came to 0.68 and the swell kept its authored heading. Measured -0.93 at 0.87
+correlation.
+
+`REFRACTION_NOMINAL_SHELF_SLOPE` is 0.0045 rather than 0.010, which carries the gentlest shelf with
+headroom. All five coasts now run ashore: spawn +0.99, and +0.63, +1.00, +0.66, +0.37 for the
+original four.
+
+The guard is the lesson rather than the number: steering has to dominate on the *gentlest* shelf on
+the planet, not a typical one, so a test asserts it through the surf zone against a 0.0076 slope.
+Only through the surf zone -- the steering fades with depth deliberately, which is what leaves the
+open sea running where its axis points, so demanding it dominate at 50m would demand the wrong thing.

@@ -154,7 +154,7 @@ pub const REFRACTION_REFERENCE_DEPTH_METERS: f64 = 90.0;
 /// 897 coasts that is onshore on 52% of them -- which is what a sphere gives
 /// for free. No fixed wave direction can beat it; the best axis on this planet
 /// manages 52.7%.
-pub const REFRACTION_NOMINAL_SHELF_SLOPE: f64 = 0.010;
+pub const REFRACTION_NOMINAL_SHELF_SLOPE: f64 = 0.0045;
 
 /// Phase distance added by the shoaling bottom, in metres.
 ///
@@ -933,6 +933,42 @@ mod tests {
                 local - global
             );
         }
+    }
+
+    #[test]
+    fn the_steering_beats_a_wave_heading_even_on_the_gentlest_shelf() {
+        // The steering gradient is the offset's derivative times the bed slope,
+        // and it has to exceed the wave's own unit heading or the swell keeps
+        // running wherever its axis points. That makes it a property of the
+        // gentlest shelf on the planet, not of a typical one.
+        //
+        // The coast F4 spawns on falls 38m in 5km. Tuned for the steeper coasts
+        // the direction table was first measured on, the steering came to 0.68
+        // there and the spawn still had surf heading out to sea, measured at
+        // -0.93 with 0.87 correlation.
+        const GENTLEST_SHELF_SLOPE: f64 = 0.0076;
+        const HEADROOM: f64 = 1.25;
+        // Only through the surf zone. The steering fades with depth on purpose
+        // -- that is what leaves the open sea running where its axis points --
+        // so demanding it dominate at 50m would be demanding the wrong thing.
+        for depth_meters in [1.0, 5.0, 10.0, 20.0] {
+            let step = 0.01;
+            let derivative = (super::shoaling_phase_offset_meters(depth_meters + step)
+                - super::shoaling_phase_offset_meters(depth_meters - step))
+                / (2.0 * step);
+            let steering = derivative.abs() * GENTLEST_SHELF_SLOPE;
+            assert!(
+                steering > HEADROOM,
+                "in {depth_meters} m over a {GENTLEST_SHELF_SLOPE} shelf the bottom \
+                 steers at {steering}, which a unit wave heading beats"
+            );
+        }
+        // And it still lets go completely offshore, rather than steering the
+        // whole ocean.
+        assert_eq!(
+            super::shoaling_phase_offset_meters(super::REFRACTION_REFERENCE_DEPTH_METERS),
+            0.0
+        );
     }
 
     #[test]
