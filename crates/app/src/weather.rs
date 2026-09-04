@@ -1605,11 +1605,13 @@ impl WeatherState {
             completed += 1;
             self.prepare_next(sun_direction);
         }
-        if self.accumulator_seconds >= WEATHER_TIMESTEP_SECONDS {
-            self.accumulator_seconds = self
-                .accumulator_seconds
-                .rem_euclid(WEATHER_TIMESTEP_SECONDS);
-        }
+        // Carry what did not fit instead of discarding it, so the field
+        // advances by the same weather time whatever the frame rate: dropping
+        // the surplus made the state depend on how many frames you happened to
+        // get. Still bounded, to one advance's worth of backlog -- past that a
+        // stall has been long enough that catching up is not worth the cost.
+        let backlog_ceiling = WEATHER_TIMESTEP_SECONDS * WEATHER_MAX_STEPS_PER_ADVANCE as f64;
+        self.accumulator_seconds = self.accumulator_seconds.min(backlog_ceiling);
         completed
     }
 
@@ -2972,9 +2974,17 @@ mod tests {
     #[test]
     fn a_long_frame_cannot_trigger_an_unbounded_weather_catch_up() {
         let mut state = WeatherState::new();
-        let completed = state.advance_to_with_sun(WEATHER_TIMESTEP_SECONDS * 100.0, DVec3::X);
-        assert_eq!(completed, 12);
-        assert!(state.interpolation_fraction() < 1.0);
+        let target = WEATHER_TIMESTEP_SECONDS * 100.0;
+        // A hundred steps arrive at once. At most twelve run now, so one frame
+        // cannot stall on a hundred simulations.
+        assert_eq!(state.advance_to_with_sun(target, DVec3::X), 12);
+        // The rest is carried, not dropped -- dropping it made the state depend
+        // on how many frames you happened to get -- so the next ordinary frame
+        // works the backlog off rather than only its own second of time.
+        assert_eq!(state.advance_to_with_sun(target + 1.0, DVec3::X), 12);
+        // And the backlog is itself bounded: two advances clear it, not
+        // eighty-eight.
+        assert_eq!(state.advance_to_with_sun(target + 2.0, DVec3::X), 0);
     }
 
     #[test]

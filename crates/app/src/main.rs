@@ -71,6 +71,14 @@ const DEFAULT_VIEWPORT_HEIGHT: u32 = 720;
 const DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND: f64 = 0.4;
 const DEFAULT_CAMERA_ORBIT_INCLINATION_RADIANS: f64 = 28.5_f64.to_radians();
 const INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 = 0.05;
+/// Time-speed ladder, as multiples of real time. Comma and period step it.
+///
+/// Everything scene-side runs off one scaled clock, so the planet's rotation,
+/// the ocean, the weather and the hull all speed up together and the derived
+/// relationships between them -- a weather day per rotation, most of all --
+/// hold at every rung.
+const TIME_SPEED_LADDER: [f64; 9] = [0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 10.0, 20.0, 40.0];
+const DEFAULT_TIME_SPEED_INDEX: usize = 3;
 const MOUSE_LOOK_RADIANS_PER_PIXEL: f64 = 0.0006;
 /// F4 enters close inspection at roughly 2m above the resident surface so
 /// mountain walls can be judged from the ground rather than from the former
@@ -181,8 +189,14 @@ const SHIP_START_OFFSET_METERS: f64 = 140.0;
 /// renderer were both on the depth-limited one, and the two drifted apart by
 /// metres at the crests.
 const SHIP_FALLBACK_DEPTH_METERS: f64 = 4000.0;
-/// A long stall must not let the hull integrate one enormous step.
-const MAXIMUM_SHIP_FRAME_DELTA_SECONDS: f64 = 0.25;
+/// Most simulated time the hull will catch up in one frame. Beyond this a
+/// stall has been long enough that the backlog is dropped rather than worked
+/// off; inside it the hull integrates every step it owes, so the float does not
+/// depend on the frame rate.
+const MAXIMUM_SHIP_BACKLOG_SECONDS: f64 = 0.25;
+/// The surface camera's own fixed step, and the most it will catch up at once.
+const SURFACE_CAMERA_STEP_SECONDS: f64 = 1.0 / 120.0;
+const SURFACE_CAMERA_MAX_BACKLOG_SECONDS: f64 = 0.25;
 /// Beyond this the hull is smaller than a pixel and not worth a draw call.
 const SHIP_VISIBLE_DISTANCE_METERS: f64 = 30_000.0;
 const PLANET_ROTATION_SCALE_STEP: f64 = 2.0;
@@ -899,6 +913,9 @@ struct State {
     flight_travel_direction: glam::DVec3,
     surface_physics: surface_camera::SurfacePhysicsState,
     surface_jump_requested: bool,
+    /// Simulated time the surface camera still owes, kept so it integrates
+    /// whole steps and does not depend on where frame boundaries fell.
+    surface_pending_seconds: f64,
     saved_orbit_camera_pose: Option<(glam::DVec3, glam::DVec3, f64)>,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
@@ -914,6 +931,11 @@ struct State {
     flat_triangle_outline_mode: planet::FlatTriangleOutlineMode,
     animation_frozen: bool,
     frozen_sim_time: f64,
+    /// Scene clock in scaled seconds. Accumulated rather than derived from
+    /// elapsed real time, so changing speed never makes the scene jump.
+    scaled_clock_seconds: f64,
+    last_real_clock_seconds: f64,
+    time_speed_index: usize,
     interactive_scene_time_offset_seconds: f64,
     interactive_planet_rotation_time_scale: f64,
     interactive_planet_rotation_time_offset_seconds: f64,
@@ -1272,6 +1294,7 @@ impl State {
             flight_travel_direction: glam::DVec3::ZERO,
             surface_physics: surface_camera::SurfacePhysicsState::default(),
             surface_jump_requested: false,
+            surface_pending_seconds: 0.0,
             saved_orbit_camera_pose: None,
             camera_buffer,
             camera_bind_group,
@@ -1302,6 +1325,9 @@ impl State {
             flat_triangle_outline_mode: planet::FlatTriangleOutlineMode::Dark,
             animation_frozen: false,
             frozen_sim_time: 0.0,
+            scaled_clock_seconds: 0.0,
+            last_real_clock_seconds: 0.0,
+            time_speed_index: DEFAULT_TIME_SPEED_INDEX,
             interactive_scene_time_offset_seconds: 0.0,
             interactive_planet_rotation_time_scale: INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
             interactive_planet_rotation_time_offset_seconds: 0.0,
@@ -1577,13 +1603,38 @@ impl State {
         self.mark_hud_dirty();
     }
 
+    fn time_speed(&self) -> f64 {
+        TIME_SPEED_LADDER[self.time_speed_index]
+    }
+
+    /// Advances the scaled scene clock by one frame of real time.
+    ///
+    /// Called once per frame before anything reads the clock. Accumulating the
+    /// scaled delta rather than scaling elapsed real time means a speed change
+    /// takes effect from now on instead of retroactively rewriting the whole
+    /// session, so the scene never jumps when the ladder moves.
+    fn advance_scaled_clock(&mut self) {
+        let real_seconds = self.started_at.elapsed().as_secs_f64();
+        let real_delta = (real_seconds - self.last_real_clock_seconds).max(0.0);
+        self.last_real_clock_seconds = real_seconds;
+        if !self.animation_frozen {
+            self.scaled_clock_seconds += real_delta * self.time_speed();
+        }
+    }
+
     fn interactive_sim_time(&self) -> f64 {
-        let elapsed_sim_time = self.started_at.elapsed().as_secs_f64();
         if self.animation_frozen {
             self.frozen_sim_time
         } else {
-            elapsed_sim_time - self.interactive_scene_time_offset_seconds
+            self.scaled_clock_seconds - self.interactive_scene_time_offset_seconds
         }
+    }
+
+    fn adjust_time_speed(&mut self, steps: i32) {
+        let last = TIME_SPEED_LADDER.len() as i32 - 1;
+        self.time_speed_index =
+            (self.time_speed_index as i32 + steps).clamp(0, last) as usize;
+        self.mark_hud_dirty();
     }
 
     fn low_flight_view_direction(&self, local_radial: glam::DVec3) -> glam::DVec3 {
@@ -1774,13 +1825,19 @@ impl State {
         planet_rotation_radians: f64,
         ocean_time_seconds: f64,
     ) {
-        let mut remaining = delta_seconds.max(0.0);
+        // Whole steps only, with the remainder carried: a partial final step
+        // made the walk depend on the frame rate, which time acceleration then
+        // magnifies. The backlog is bounded so a stall cannot be worked off in
+        // one enormous catch-up.
+        self.surface_pending_seconds = (self.surface_pending_seconds + delta_seconds.max(0.0))
+            .min(SURFACE_CAMERA_MAX_BACKLOG_SECONDS);
         let mut jump_requested = std::mem::take(&mut self.surface_jump_requested);
         self.flight_travel_direction = glam::DVec3::ZERO;
         self.flight_speed = FlightSpeedState::default();
 
-        while remaining > 0.0 {
-            let step_seconds = remaining.min(1.0 / 120.0);
+        while self.surface_pending_seconds >= SURFACE_CAMERA_STEP_SECONDS {
+            let step_seconds = SURFACE_CAMERA_STEP_SECONDS;
+            self.surface_pending_seconds -= step_seconds;
             let local_radial = self.flight_local_position.normalize();
             let eye_altitude_meters =
                 self.flight_local_position.length() - planet::PLANET_RADIUS_METERS;
@@ -1860,7 +1917,7 @@ impl State {
             self.flight_local_position =
                 moved_radial * (planet::PLANET_RADIUS_METERS + resolved_eye_altitude);
             self.flight_surface_height_meters = environment.visible_surface_height_meters();
-            remaining -= step_seconds;
+            // The step is already deducted from the pending backlog above.
         }
         self.sync_surface_camera_pose(planet_rotation_radians);
     }
@@ -1884,12 +1941,19 @@ impl State {
             .bathymetry_height_meters_at(self.ship_body.position.normalize())
             .map(|height| (-height).max(0.0))
             .unwrap_or(SHIP_FALLBACK_DEPTH_METERS);
-        let delta_seconds = (ocean_time_seconds - self.ship_sim_time_seconds)
-            .clamp(0.0, MAXIMUM_SHIP_FRAME_DELTA_SECONDS);
-        self.ship_sim_time_seconds = ocean_time_seconds;
-        if delta_seconds > 0.0 {
+        // Whole fixed steps only, each sampling the water at its own time, with
+        // the remainder left on the clock for next frame. A partial final
+        // substep made the trajectory depend on where the frame boundaries
+        // fell, which is the thing time acceleration makes worst.
+        if ocean_time_seconds - self.ship_sim_time_seconds > MAXIMUM_SHIP_BACKLOG_SECONDS {
+            self.ship_sim_time_seconds = ocean_time_seconds - MAXIMUM_SHIP_BACKLOG_SECONDS;
+        }
+        while self.ship_sim_time_seconds + ship::FIXED_STEP_SECONDS <= ocean_time_seconds {
+            let step_time_seconds = self.ship_sim_time_seconds + ship::FIXED_STEP_SECONDS;
+            self.ship_sim_time_seconds = step_time_seconds;
+            let ocean_time_seconds = step_time_seconds;
             self.ship_body
-                .advance(&self.ship_hull, delta_seconds, |direction| {
+                .advance(&self.ship_hull, ship::FIXED_STEP_SECONDS, |direction| {
                     ship::WaterSample {
                         height_meters: ocean::global_wave_height_meters(
                             direction,
@@ -2113,7 +2177,7 @@ impl State {
                 let planet_rotation_radians = planet::planet_rotation_radians(
                     self.interactive_planet_rotation_time(sim_time),
                 );
-                let ocean_time_seconds = self.started_at.elapsed().as_secs_f64();
+                let ocean_time_seconds = self.scaled_clock_seconds;
                 let local_radial = self.flight_local_position.normalize();
                 let prior_altitude =
                     self.flight_local_position.length() - planet::PLANET_RADIUS_METERS;
@@ -2238,7 +2302,7 @@ impl State {
                 self.update_low_flight_camera(
                     None,
                     planet_rotation_radians,
-                    self.started_at.elapsed().as_secs_f64(),
+                    self.scaled_clock_seconds,
                 );
             }
             CameraMode::LowFlight | CameraMode::Surface => {
@@ -2270,7 +2334,7 @@ impl State {
         }
 
         if self.animation_frozen {
-            let elapsed_sim_time = self.started_at.elapsed().as_secs_f64();
+            let elapsed_sim_time = self.scaled_clock_seconds;
             self.animation_frozen = false;
             // Keep all scene-time users continuous after a diagnostic pause.
             // In particular, neither the orbit nor planet rotation should jump
@@ -2278,8 +2342,8 @@ impl State {
             self.interactive_scene_time_offset_seconds = elapsed_sim_time - self.frozen_sim_time;
             self.last_auto_orbit_sim_time = self.frozen_sim_time;
         } else {
-            self.frozen_sim_time = self.started_at.elapsed().as_secs_f64()
-                - self.interactive_scene_time_offset_seconds;
+            self.frozen_sim_time =
+                self.scaled_clock_seconds - self.interactive_scene_time_offset_seconds;
             self.animation_frozen = true;
         }
         self.mark_hud_dirty();
@@ -2354,9 +2418,12 @@ impl State {
     ///
     /// Advances the scenario, so it must be called exactly once per frame.
     fn frame_inputs(&mut self) -> FrameInputs {
+        self.advance_scaled_clock();
         let Some(scenario) = self.scenario.as_mut() else {
             let sim_time = self.interactive_sim_time();
-            let presentation_time = self.started_at.elapsed().as_secs_f64();
+            // The same scaled clock, so the ocean, the weather and the hull
+            // accelerate with the planet rather than against it.
+            let presentation_time = self.scaled_clock_seconds;
             let write_log = presentation_time >= self.next_spatial_log_presentation_time;
             if write_log {
                 self.next_spatial_log_presentation_time = presentation_time + 0.5;
@@ -2641,6 +2708,10 @@ impl State {
                             field.humidity_conservation_error,
                         ));
                         weather_snapshot.paint_overlay(ui);
+                        ui.label(format!(
+                            "Time speed: {:.0}%  (, / .)",
+                            self.time_speed() * 100.0
+                        ));
                         ui.label(format!("Camera mode: {}", camera_mode.label()));
                         if camera_mode == CameraMode::LowFlight {
                             ui.label(format!(
@@ -2716,7 +2787,7 @@ impl State {
                         ));
                         ui.label(format!("Ocean Gerstner range: {ocean_wave_range:.2} m"));
                         ui.label(
-                            "F: fullscreen  |  F3: overlay  |  F4: orbit/flight  |  G: surface camera  |  WASD: move  |  Space: jump/swim thrust  |  [ / ]: speed  |  F5: render path  |  O: triangle outlines  |  B: forest beams  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
+                            "F: fullscreen  |  F3: overlay  |  , / .: time speed  |  F4: orbit/flight  |  G: surface camera  |  WASD: move  |  Space: jump/swim thrust  |  [ / ]: speed  |  F5: render path  |  O: triangle outlines  |  B: forest beams  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
                         );
                         ui.label("Default: fullscreen, HUD hidden, auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc/Q: quit");
                     });
@@ -4213,6 +4284,20 @@ impl ApplicationHandler for App {
                 }
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::Comma) =>
+                {
+                    state.adjust_time_speed(-1);
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::Period) =>
+                {
+                    state.adjust_time_speed(1);
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
                         && event.physical_key == PhysicalKey::Code(KeyCode::BracketLeft) =>
                 {
                     state.adjust_flight_speed_scale(1.0 / FLIGHT_SPEED_SCALE_STEP);
@@ -4629,6 +4714,33 @@ mod tests {
             authored_altitude_meters - wave_height_meters < -5.0,
             "authored eye was {}m above the wave, so it was never submerged",
             authored_altitude_meters - wave_height_meters
+        );
+    }
+
+    #[test]
+    fn the_time_speed_ladder_covers_the_intended_range_around_real_time() {
+        use super::{DEFAULT_TIME_SPEED_INDEX, TIME_SPEED_LADDER};
+        assert_eq!(TIME_SPEED_LADDER[DEFAULT_TIME_SPEED_INDEX], 1.0);
+        // Strictly increasing, so a key press always changes the speed and
+        // always in the direction pressed.
+        for pair in TIME_SPEED_LADDER.windows(2) {
+            assert!(pair[1] > pair[0], "ladder is not increasing at {pair:?}");
+        }
+        // The rungs as asked for, as fractions of real time.
+        let percentages: Vec<f64> = TIME_SPEED_LADDER.iter().map(|s| s * 100.0).collect();
+        assert_eq!(
+            percentages,
+            vec![10.0, 25.0, 50.0, 100.0, 200.0, 400.0, 1000.0, 2000.0, 4000.0]
+        );
+        // Even the top rung leaves the weather's per-frame step cap alone at a
+        // sane frame rate: twelve steps of 600s is 7200 weather-seconds, and
+        // the fastest rung needs a small fraction of that per frame.
+        let top = TIME_SPEED_LADDER[TIME_SPEED_LADDER.len() - 1];
+        let weather_seconds_per_frame =
+            crate::weather::INTERACTIVE_WEATHER_TIME_SCALE * top / 30.0;
+        assert!(
+            weather_seconds_per_frame < crate::weather::WEATHER_TIMESTEP_SECONDS * 12.0,
+            "at {top}x and 30fps the weather owes {weather_seconds_per_frame} s a frame"
         );
     }
 

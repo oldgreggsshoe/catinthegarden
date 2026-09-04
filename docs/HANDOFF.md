@@ -4867,3 +4867,31 @@ weather scale, so tying the clocks did not silently slow the drift by the same 1
 The corrected microphysics step also made evaporation far more active within each transport step:
 moisture now oscillates 0.59-0.69 with no trend across 20.8 weather-days, where before it fell away.
 Mean temperature holds 264.8-267.5K over the same span.
+
+## A time-speed ladder, and making it safe to use - 4 September 2026
+
+Comma and period step a nine-rung ladder from 10% to 4000% of real time. Everything scene-side reads
+one scaled clock -- `scaled_clock_seconds`, accumulated per frame rather than derived from elapsed
+real time -- so the planet's rotation, the ocean, the weather and the hull all speed up together and
+the derived relationships between them hold at every rung. Accumulating rather than scaling elapsed
+time is what stops a speed change rewriting the session retroactively and jumping the scene.
+
+Acceleration only made sense once the accumulating simulations stopped depending on the frame rate,
+which they all did:
+
+The weather kept a bounded number of steps per advance but *discarded* the surplus, so the state
+depended on how many frames you happened to get. It now carries the remainder, with the backlog
+itself bounded to one advance's worth so a stall cannot trigger an enormous catch-up. Its test
+asserts both halves: twelve steps now, the rest worked off by the next ordinary frame, and cleared
+in two rather than eighty-eight.
+
+The hull and the surface camera both sub-stepped with a *partial final step*, so the same span of
+time integrated differently depending on where frame boundaries fell -- and acceleration widens
+exactly those frames. Both now integrate whole fixed steps and carry the remainder on their own
+clocks, and the hull samples the water at each step's own time rather than the frame's end. The
+hull's step count is computed rather than subtracted down: `remaining -= step` leaves a femtosecond
+that runs as an extra micro-step, which was enough to make one call of eight steps disagree with
+eight calls of one.
+
+At the top rung and 30fps the weather owes 384 weather-seconds a frame against a cap of 7200, so the
+cap is a stall valve rather than a speed limit. A test asserts that headroom alongside the ladder.

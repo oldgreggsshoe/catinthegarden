@@ -74,7 +74,9 @@ const METACENTRIC_HEIGHT_METERS: f64 = 0.9;
 /// Below this the prism model of a buoyancy column stops describing anything,
 /// so its displacement is bounded rather than allowed to run away.
 const MINIMUM_COLUMN_TILT_COSINE: f64 = 0.2;
-const MAXIMUM_PHYSICS_STEP_SECONDS: f64 = 1.0 / 120.0;
+/// The float integrates only whole steps of this length, so the trajectory
+/// does not depend on how a frame happened to be chopped up.
+pub const FIXED_STEP_SECONDS: f64 = 1.0 / 120.0;
 
 /// Water at one sample point: surface altitude relative to sea level, and how
 /// fast that surface is itself rising.
@@ -316,11 +318,15 @@ impl ShipBody {
         delta_seconds: f64,
         water: impl Fn(DVec3) -> WaterSample,
     ) {
-        let mut remaining = delta_seconds.max(0.0);
-        while remaining > 0.0 {
-            let step = remaining.min(MAXIMUM_PHYSICS_STEP_SECONDS);
-            self.advance_step(hull, step, &water);
-            remaining -= step;
+        // Whole steps, counted rather than subtracted down: `remaining -= step`
+        // leaves a femtosecond behind that runs as a ninth micro-step, so the
+        // same span integrated in one call and in eight did not quite agree.
+        // Any sub-step remainder is the caller's to carry -- it keeps the
+        // clock, and handing over whole steps is what makes the float
+        // independent of where frame boundaries fall.
+        let steps = (delta_seconds.max(0.0) / FIXED_STEP_SECONDS + 1.0e-9).floor() as u64;
+        for _ in 0..steps {
+            self.advance_step(hull, FIXED_STEP_SECONDS, &water);
         }
     }
 
@@ -857,6 +863,29 @@ mod tests {
         let drift_meters = (body.position.normalize() - START_DIRECTION.normalize()).length()
             * PLANET_RADIUS_METERS;
         assert!(drift_meters < 25.0, "hull drifted {drift_meters} m in 50s");
+    }
+
+    #[test]
+    fn the_float_does_not_depend_on_how_time_is_chopped_up() {
+        // The caller hands the hull whole fixed steps and keeps the remainder,
+        // so eight steps in one call and eight calls of one must land in the
+        // same place. A partial final substep broke that, which is what made
+        // the float frame-rate dependent -- and time acceleration only widens
+        // the frames it was depending on.
+        let (hull, mut single) = afloat();
+        let (_, mut chunked) = afloat();
+        let water = |direction: DVec3| WaterSample {
+            height_meters: 3.0 * (direction.x * 4.0e5).sin(),
+            vertical_velocity_meters_per_second: 0.4,
+            slope: DVec3::ZERO,
+        };
+        single.advance(&hull, super::FIXED_STEP_SECONDS * 8.0, water);
+        for _ in 0..8 {
+            chunked.advance(&hull, super::FIXED_STEP_SECONDS, water);
+        }
+        assert_eq!(single.position, chunked.position);
+        assert_eq!(single.orientation, chunked.orientation);
+        assert_eq!(single.linear_velocity, chunked.linear_velocity);
     }
 
     #[test]
