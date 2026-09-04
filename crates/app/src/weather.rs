@@ -35,6 +35,9 @@ const WEATHER_OCEAN_HEAT_CAPACITY_JOULES_PER_SQUARE_METER_KELVIN: f64 = 1.2e7;
 const WEATHER_LAND_ALBEDO: f64 = 0.28;
 const WEATHER_OCEAN_ALBEDO: f64 = 0.08;
 const WEATHER_GREENHOUSE_FACTOR: f64 = 0.12;
+/// Largest share of its difference from the downwind cell that one cell trades
+/// per step. Under a half so several donors cannot overshoot between them.
+const WEATHER_ADVECTION_MAX_FRACTION: f64 = 0.3;
 const WEATHER_PRESSURE_PER_KELVIN_PASCALS: f64 = 75.0;
 const WEATHER_EVAPORATION_TIME_CONSTANT_SECONDS: f64 = 1_800.0;
 const WEATHER_LATENT_COOLING_KELVIN_PER_UNIT: f64 = 2.5;
@@ -638,6 +641,23 @@ impl WeatherFields {
     /// correction retain fronts better than one-pass semi-Lagrangian transport;
     /// the local source stencil bounds the correction so a coarse cube seam or
     /// sharp thermal front cannot create a new extremum.
+    /// Moves temperature downwind as a paired exchange, so the area-weighted
+    /// mean is unchanged by construction.
+    ///
+    /// Temperature is intensive, so it cannot ride the donor-cell mass
+    /// transport humidity uses: that moves absolute `T * area`, and a cell
+    /// which happens to receive from no upwind neighbour sheds a twentieth of
+    /// 250K every step until the clamp catches it -- and the clamp is where
+    /// conservation dies. Measured that way it bled 105K in four weather-days.
+    /// Each cell instead trades a fraction of its *difference* from the cell
+    /// downwind of it, and what leaves one enters the other exactly.
+    ///
+    /// The scheme before both of those was a semi-Lagrangian upstream sample
+    /// with a clamped corrector, which conserves nothing: it bled 24K in four
+    /// weather-days while radiation put back less than one. The field then fell
+    /// past the 245K evaporation needs, moisture stopped being replenished, and
+    /// the weather ran down to a cold, cloudless, motionless state with no way
+    /// back.
     pub fn advect_temperature(&mut self, grid: &WeatherGrid, step_seconds: f64) {
         if step_seconds <= 0.0 {
             return;
@@ -647,32 +667,35 @@ impl WeatherFields {
             .iter()
             .map(|state| f64::from(state.temperature_kelvin))
             .collect::<Vec<_>>();
-        let mut predictor = vec![0.0_f64; self.cells.len()];
+        // In kelvin-square-metres, so a transfer out of one cell is exactly the
+        // transfer into the other whatever their areas.
+        let mut heat_delta = vec![0.0_f64; old_temperature.len()];
         for (index, cell) in grid.cells().iter().enumerate() {
-            let velocity = cell.east * f64::from(self.cells[index].east_wind_meters_per_second)
-                + cell.north * f64::from(self.cells[index].north_wind_meters_per_second);
-            let source_direction =
-                (cell.direction - velocity * (step_seconds / PLANET_RADIUS_METERS)).normalize();
-            predictor[index] =
-                sample_scalar_bilinear_with_bounds(&old_temperature, source_direction)
-                    .0
-                    .clamp(180.0, 340.0);
+            let state = self.cells[index];
+            let wind = cell.east * f64::from(state.east_wind_meters_per_second)
+                + cell.north * f64::from(state.north_wind_meters_per_second);
+            let speed = wind.length();
+            if speed <= f64::EPSILON {
+                continue;
+            }
+            let width = cell.area_square_meters.sqrt();
+            // Bounded well under a half so several upwind donors cannot
+            // between them push a cell past the values they came from.
+            let fraction = (step_seconds * speed / width).min(WEATHER_ADVECTION_MAX_FRACTION);
+            let target = grid.directional_neighbour_index(index, wind / speed) as usize;
+            if target == index {
+                continue;
+            }
+            let exchange = fraction
+                * cell.area_square_meters
+                * (old_temperature[index] - old_temperature[target]);
+            heat_delta[index] -= exchange;
+            heat_delta[target] += exchange;
         }
-        let mut next_temperature = vec![0.0_f32; self.cells.len()];
         for (index, cell) in grid.cells().iter().enumerate() {
-            let velocity = cell.east * f64::from(self.cells[index].east_wind_meters_per_second)
-                + cell.north * f64::from(self.cells[index].north_wind_meters_per_second);
-            let displacement = velocity * (step_seconds / PLANET_RADIUS_METERS);
-            let source_direction = (cell.direction - displacement).normalize();
-            let forward_direction = (cell.direction + displacement).normalize();
-            let predicted_forward = sample_scalar_bilinear(&predictor, forward_direction);
-            let corrected = predictor[index] + 0.5 * (old_temperature[index] - predicted_forward);
-            let (_, minimum, maximum) =
-                sample_scalar_bilinear_with_bounds(&old_temperature, source_direction);
-            next_temperature[index] = corrected.clamp(minimum, maximum).clamp(180.0, 340.0) as f32;
-        }
-        for (state, temperature) in self.cells.iter_mut().zip(next_temperature) {
-            state.temperature_kelvin = temperature;
+            let temperature =
+                old_temperature[index] + heat_delta[index] / cell.area_square_meters;
+            self.cells[index].temperature_kelvin = temperature.clamp(180.0, 340.0) as f32;
         }
     }
 
@@ -1724,6 +1747,22 @@ fn advect_scalar_mass(
     states: &[WeatherCellState],
     step_seconds: f64,
 ) -> Vec<f64> {
+    // Humidity and cloud water are fractions, so a receiving cell can only
+    // hold up to 1.
+    advect_scalar_mass_bounded(grid, old_values, states, step_seconds, 1.0)
+}
+
+/// The same donor-cell transport with an explicit ceiling on what a receiving
+/// cell can hold. Temperature has no such ceiling in transport -- it is bounded
+/// afterwards by its own clamp -- and passing one meant for a 0-to-1 fraction
+/// would throttle nearly every transfer.
+fn advect_scalar_mass_bounded(
+    grid: &WeatherGrid,
+    old_values: &[f64],
+    states: &[WeatherCellState],
+    step_seconds: f64,
+    maximum_value: f64,
+) -> Vec<f64> {
     debug_assert_eq!(old_values.len(), grid.cells().len());
     debug_assert_eq!(states.len(), grid.cells().len());
     let mut transfers = vec![(0_usize, 0.0_f64); old_values.len()];
@@ -1749,7 +1788,8 @@ fn advect_scalar_mass(
         if transfer == 0.0 {
             continue;
         }
-        let target_capacity = grid.cells()[target].area_square_meters * (1.0 - old_values[target]);
+        let target_capacity =
+            grid.cells()[target].area_square_meters * (maximum_value - old_values[target]);
         let target_scale = if incoming[target] > target_capacity {
             (target_capacity / incoming[target]).clamp(0.0, 1.0)
         } else {
@@ -2416,6 +2456,67 @@ mod tests {
     }
 
     #[test]
+    fn temperature_advection_conserves_the_planet_it_is_stirring() {
+        // The one that let the weather die. Advection only moves heat about,
+        // so the area-weighted mean must come out where it went in. The old
+        // semi-Lagrangian scheme bled 24K of it in four weather-days, and
+        // rewriting it as donor-cell mass transport bled 105K; both left the
+        // field under the 245K that evaporation needs, and with evaporation the
+        // only source of moisture in the model there is no way back from that.
+        let grid = WeatherGrid::new();
+        let mut fields = WeatherFields::initial(&grid);
+        let mean = |fields: &WeatherFields| {
+            let mut area = 0.0;
+            let mut total = 0.0;
+            for (cell, state) in grid.cells().iter().zip(fields.cells()) {
+                area += cell.area_square_meters;
+                total += f64::from(state.temperature_kelvin) * cell.area_square_meters;
+            }
+            total / area
+        };
+        // Stir it first, so the field has gradients and a wind to move them.
+        fields.apply_insolation_and_radiative_cooling(&grid, DVec3::X, WEATHER_TIMESTEP_SECONDS);
+        fields.diagnose_pressure_from_temperature(&grid);
+        fields.update_wind_from_pressure(&grid, WEATHER_TIMESTEP_SECONDS);
+        let before = mean(&fields);
+        let before_cells = fields.cells().to_vec();
+        for _ in 0..50 {
+            fields.advect_temperature(&grid, WEATHER_TIMESTEP_SECONDS);
+        }
+        let after = mean(&fields);
+        // Cell temperatures are stored as f32, whose ULP at 267K is about
+        // 3e-5, so fifty steps cannot land closer than storage rounding. Still
+        // four orders of magnitude tighter than the 24K this is guarding.
+        assert!(
+            (after - before).abs() < 1.0e-3,
+            "fifty steps of advection moved the mean from {before} K to {after} K"
+        );
+        // And it has to actually stir: a no-op conserves perfectly too.
+        let moved = fields
+            .cells()
+            .iter()
+            .zip(&before_cells)
+            .filter(|(now, was)| {
+                (f64::from(now.temperature_kelvin) - f64::from(was.temperature_kelvin)).abs() > 0.05
+            })
+            .count();
+        assert!(
+            moved > grid.cells().len() / 20,
+            "only {moved} cells changed, so nothing was advected"
+        );
+        // Bounded: no cell may be pushed outside the range it started in.
+        let (mut low, mut high) = (f64::INFINITY, f64::NEG_INFINITY);
+        for state in &before_cells {
+            low = low.min(f64::from(state.temperature_kelvin));
+            high = high.max(f64::from(state.temperature_kelvin));
+        }
+        for state in fields.cells() {
+            let t = f64::from(state.temperature_kelvin);
+            assert!(t >= low - 1.0e-3 && t <= high + 1.0e-3, "cell reached {t} K");
+        }
+    }
+
+    #[test]
     fn temperature_advection_is_deterministic_bounded_and_changes_the_field() {
         let grid = WeatherGrid::new();
         let mut first = WeatherFields::initial(&grid);
@@ -2935,5 +3036,92 @@ mod tests {
         assert!(fields.cells[source_index].specific_humidity < 0.8);
         assert!(fields.cells[target_index].specific_humidity > 0.2);
         assert!((before.mean_humidity - after.mean_humidity).abs() < 1.0e-6);
+    }
+}
+
+#[cfg(test)]
+mod rundown_probe {
+    use super::*;
+    use glam::DVec3;
+
+    fn totals(grid: &WeatherGrid, fields: &WeatherFields) -> (f64, f64, f64) {
+        let mut area = 0.0;
+        let mut temperature = 0.0;
+        let mut moisture = 0.0;
+        for (cell, state) in grid.cells().iter().zip(fields.cells()) {
+            let a = cell.area_square_meters;
+            area += a;
+            temperature += f64::from(state.temperature_kelvin) * a;
+            moisture += (f64::from(state.specific_humidity) + f64::from(state.cloud_water)) * a;
+        }
+        (temperature / area, moisture / area, area)
+    }
+
+    /// Instrument, not an assertion. Attributes the run-down to a stage.
+    /// `cargo test -p catinthegarden-app -- --ignored --nocapture weather_rundown`
+    #[test]
+    #[ignore = "instrument, not an assertion"]
+    fn weather_rundown_by_stage() {
+        let grid = WeatherGrid::new();
+        let mut fields = WeatherFields::initial(&grid);
+        // One rotation of this planet is 12.5 weather-days, so the sun barely
+        // moves per step: 600s of weather against a 1_080_000s day.
+        let day_seconds = 1_080_000.0;
+        let mut names: Vec<&str> = Vec::new();
+        let mut d_temp: Vec<f64> = Vec::new();
+        let mut d_moist: Vec<f64> = Vec::new();
+        let steps = 600;
+        for step in 0..steps {
+            let angle = std::f64::consts::TAU
+                * (step as f64 * WEATHER_TIMESTEP_SECONDS / day_seconds);
+            let sun = DVec3::new(angle.cos(), 0.2, angle.sin()).normalize();
+            let mut record = |label: &'static str,
+                              fields: &WeatherFields,
+                              before: (f64, f64, f64),
+                              names: &mut Vec<&'static str>,
+                              dt: &mut Vec<f64>,
+                              dm: &mut Vec<f64>| {
+                let after = totals(&grid, fields);
+                if let Some(i) = names.iter().position(|n| *n == label) {
+                    dt[i] += after.0 - before.0;
+                    dm[i] += after.1 - before.1;
+                } else {
+                    names.push(label);
+                    dt.push(after.0 - before.0);
+                    dm.push(after.1 - before.1);
+                }
+                after
+            };
+            let mut b = totals(&grid, &fields);
+            fields.apply_insolation_and_radiative_cooling(&grid, sun, WEATHER_TIMESTEP_SECONDS);
+            b = record("radiation", &fields, b, &mut names, &mut d_temp, &mut d_moist);
+            fields.diagnose_pressure_from_temperature(&grid);
+            fields.update_wind_from_pressure(&grid, WEATHER_TIMESTEP_SECONDS);
+            fields.apply_lapse_rate_and_orographic_uplift(&grid, WEATHER_TIMESTEP_SECONDS);
+            b = record("lapse/uplift", &fields, b, &mut names, &mut d_temp, &mut d_moist);
+            fields.evaporate_moisture(WEATHER_MICROPHYSICS_TIMESTEP_SECONDS);
+            b = record("evaporation", &fields, b, &mut names, &mut d_temp, &mut d_moist);
+            fields.advect_temperature(&grid, WEATHER_TIMESTEP_SECONDS);
+            b = record("advect T", &fields, b, &mut names, &mut d_temp, &mut d_moist);
+            fields.advect_humidity(&grid, WEATHER_TIMESTEP_SECONDS);
+            b = record("advect q", &fields, b, &mut names, &mut d_temp, &mut d_moist);
+            fields.advect_cloud_water(&grid, WEATHER_TIMESTEP_SECONDS);
+            b = record("advect cloud", &fields, b, &mut names, &mut d_temp, &mut d_moist);
+            fields.condense_cloud_water(WEATHER_MICROPHYSICS_TIMESTEP_SECONDS);
+            b = record("condense", &fields, b, &mut names, &mut d_temp, &mut d_moist);
+            fields.precipitate_and_update_ground_moisture(WEATHER_MICROPHYSICS_TIMESTEP_SECONDS);
+            let _ = record("precipitate", &fields, b, &mut names, &mut d_temp, &mut d_moist);
+
+            if step % 400 == 0 || step == steps - 1 {
+                let (t, m, _) = totals(&grid, &fields);
+                println!("step {step:5}  mean T {t:7.2} K   total moisture {m:.4}");
+            }
+        }
+        println!("\ncumulative over {steps} steps ({:.1} weather-days):",
+            steps as f64 * WEATHER_TIMESTEP_SECONDS / 86400.0);
+        println!("  {:<14} {:>12} {:>12}", "stage", "dT (K)", "dq");
+        for i in 0..names.len() {
+            println!("  {:<14} {:>12.2} {:>12.4}", names[i], d_temp[i], d_moist[i]);
+        }
     }
 }

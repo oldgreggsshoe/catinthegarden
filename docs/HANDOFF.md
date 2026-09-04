@@ -4815,3 +4815,33 @@ The guard is the lesson rather than the number: steering has to dominate on the 
 the planet, not a typical one, so a test asserts it through the surf zone against a 0.0076 slope.
 Only through the surf zone -- the steering fades with depth deliberately, which is what leaves the
 open sea running where its axis points, so demanding it dominate at 50m would demand the wrong thing.
+
+## Why the weather stopped changing - 4 September 2026
+
+Clouds thinned to nothing after a while and the field went static. It was not an equilibrium; the
+simulation was running down and could not come back.
+
+Evaporation is gated on temperature -- `((T - 245) / 35).clamp(0, 1)` -- and it is the only source
+of moisture in the model. Everything else moves, condenses or rains it out. So once the field falls
+below 245K the moisture can only decrease, and the weather is a one-way ratchet from there. The
+reported field was `T 180.0-340.0K (mean 185.2)` against a clamp floor of 180, meaning nearly every
+cell was pinned at the bottom, with cloud cover falling 0.13 to 0.05 across sessions.
+
+Instrumenting each stage of the step for what it does to the area-weighted mean found the leak at
+once. Over four weather-days radiation added 0.85K, lapse 0.28, condensation 1.26, evaporation
+-0.38, and temperature advection took away 24.00. Advection only stirs; it has no business changing
+the mean at all. The scheme was a semi-Lagrangian upstream sample with a clamped MacCormack
+corrector, which conserves nothing.
+
+Reusing the conservative donor-cell transport humidity already uses made it far worse -- 105K in the
+same four days -- because that moves absolute `value * area`, which suits a mass fraction and ruins
+an intensive quantity: a cell receiving from no upwind neighbour sheds a twentieth of 250K per step
+until the clamp catches it, and the clamp is where conservation dies. Temperature now trades a
+bounded share of its *difference* from the cell downwind, so what leaves one enters the other
+exactly. Advection contributes 0.00K over 3000 steps, and the field holds 264.8-267.6K across 20.8
+weather-days instead of collapsing.
+
+The day/night cycle is still lopsided: the planet turns once per 300 real seconds while weather runs
+at 3600x, so one rotation is 12.5 weather-days and every cell sits in darkness for over six. That
+was a suspect before the measurement and is not the cause, but it is why the temperature range
+spans the whole clamp.
