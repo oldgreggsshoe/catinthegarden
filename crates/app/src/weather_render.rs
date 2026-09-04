@@ -18,7 +18,13 @@ const CLOUD_LAYER_HALF_DEPTH_METERS: f32 =
 const CLOUD_SHELL_LONGITUDE_SEGMENTS: usize = 192;
 const CLOUD_SHELL_LATITUDE_SEGMENTS: usize = 48;
 const CLOUD_TEXTURE_BYTES_PER_ROW: u32 = 256;
-const CLOUD_DRIFT_RADIANS_PER_SIMULATED_SECOND: f64 = 0.000002;
+/// Cloud detail drift, tuned in real seconds because that is what a viewer
+/// sees, and applied through the weather clock so the detail still follows the
+/// simulation rather than the frame rate. Derived, so tying the weather clock
+/// to the planet's rotation did not silently slow the drift by the same 12.5x.
+const CLOUD_DRIFT_RADIANS_PER_REAL_SECOND: f64 = 0.0072;
+const CLOUD_DRIFT_RADIANS_PER_SIMULATED_SECOND: f64 =
+    CLOUD_DRIFT_RADIANS_PER_REAL_SECOND / weather::INTERACTIVE_WEATHER_TIME_SCALE;
 
 fn cloud_drift_radians(weather_time_seconds: f64) -> f32 {
     (weather_time_seconds.max(0.0) * CLOUD_DRIFT_RADIANS_PER_SIMULATED_SECOND)
@@ -954,9 +960,26 @@ mod tests {
 
     #[test]
     fn cloud_detail_drift_uses_simulated_weather_time() {
-        let one_real_second_of_weather =
-            super::cloud_drift_radians(crate::weather::INTERACTIVE_WEATHER_TIME_SCALE);
-        assert!((one_real_second_of_weather - 0.0072).abs() < 1.0e-6);
+        // Drift is keyed to simulated weather time, so it follows the weather
+        // clock rather than the frame clock. Asserted as that proportionality:
+        // the absolute figure moved when the weather clock was tied to the
+        // planet's rotation, and pinning it would only pin the old scale.
+        let one = super::cloud_drift_radians(crate::weather::INTERACTIVE_WEATHER_TIME_SCALE);
+        let two =
+            super::cloud_drift_radians(2.0 * crate::weather::INTERACTIVE_WEATHER_TIME_SCALE);
+        assert!(one > 0.0);
+        assert!((two - 2.0 * one).abs() < 1.0e-6);
+        // And a whole weather day turns the detail field a good way round
+        // without wrapping, so cloud detail visibly evolves over a day.
+        let day = super::cloud_drift_radians(86_400.0);
+        assert!(
+            (0.5..std::f64::consts::TAU as f32).contains(&day),
+            "a day drifts {day} rad, which is either invisible or a full wrap"
+        );
+        // And the rate a viewer sees is unchanged by the weather clock.
+        assert!(
+            (f64::from(one) - super::CLOUD_DRIFT_RADIANS_PER_REAL_SECOND).abs() < 1.0e-9
+        );
     }
 
     #[test]

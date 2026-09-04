@@ -4845,3 +4845,25 @@ The day/night cycle is still lopsided: the planet turns once per 300 real second
 at 3600x, so one rotation is 12.5 weather-days and every cell sits in darkness for over six. That
 was a suspect before the measurement and is not the cause, but it is why the temperature range
 spans the whole clamp.
+
+## One rotation, one weather day - 4 September 2026
+
+The two clocks were tuned independently: weather ran at 3600x real time while the planet turned once
+per 300 real seconds, so a rotation took 12.5 weather days and every cell sat in darkness for over
+six of them. That had been set to make the weather visibly move while it was quietly running down;
+with the advection leak fixed it only skewed the day.
+
+`INTERACTIVE_WEATHER_TIME_SCALE` is derived now, from `WEATHER_DAYS_PER_PLANET_ROTATION` and the
+rotation itself, and comes out at 288. A test asserts one rotation advances the weather exactly one
+day, and another that a day divides into whole steps -- otherwise the sun and the field drift apart
+by a fraction of a step every rotation.
+
+Two constants had been tuned against the old scale and had to move with it, both now expressed as
+the rate they were really about rather than as a step length. Cloud microphysics ages sixty
+weather-seconds per real second regardless of the transport clock, so its test asserts that rate
+instead of a 10-second step. Cloud detail drift is tuned per real second and divided through the
+weather scale, so tying the clocks did not silently slow the drift by the same 12.5x.
+
+The corrected microphysics step also made evaporation far more active within each transport step:
+moisture now oscillates 0.59-0.69 with no trend across 20.8 weather-days, where before it fell away.
+Mean temperature holds 264.8-267.5K over the same span.

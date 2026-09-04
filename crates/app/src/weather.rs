@@ -16,7 +16,20 @@ use crate::terrain::TerrainClimateSample;
 pub const WEATHER_GRID_SIDE: usize = 64;
 pub const WEATHER_TIMESTEP_SECONDS: f64 = 600.0;
 pub const WEATHER_ORBITAL_PERIOD_SECONDS: f64 = 365.2422 * 86_400.0;
-pub const INTERACTIVE_WEATHER_TIME_SCALE: f64 = 3_600.0;
+/// Weather days per planet rotation. One, because a day is a rotation.
+///
+/// The two clocks used to be tuned apart: weather ran at 3600x real time while
+/// the planet turned once per 300 real seconds, so a rotation took 12.5 weather
+/// days and every cell sat in darkness for over six of them. That was set to
+/// make the weather visibly move back when it was running down to a dead state;
+/// with the advection leak fixed it only skewed the day.
+pub const WEATHER_DAYS_PER_PLANET_ROTATION: f64 = 1.0;
+/// Real seconds for one rotation, at the default rotation speed.
+const PLANET_ROTATION_REAL_SECONDS: f64 = crate::planet::PLANET_ROTATION_PERIOD_SECONDS
+    / crate::INTERACTIVE_PLANET_ROTATION_TIME_SCALE;
+/// Derived, so the day cannot drift away from the rotation again.
+pub const INTERACTIVE_WEATHER_TIME_SCALE: f64 =
+    86_400.0 * WEATHER_DAYS_PER_PLANET_ROTATION / PLANET_ROTATION_REAL_SECONDS;
 // Keep wind and thermal transport visibly fast without aging cloud phase
 // changes and precipitation by the same hour-per-real-second clock.
 const INTERACTIVE_CLOUD_MICROPHYSICS_TIME_SCALE: f64 = 60.0;
@@ -2831,31 +2844,60 @@ mod tests {
     }
 
     #[test]
-    fn interactive_weather_uses_the_planned_hour_per_real_second_scale() {
+    fn one_planet_rotation_is_one_weather_day() {
+        // A day is a rotation. These were tuned apart once -- weather at 3600x
+        // against a 300 real-second rotation -- which made a day 12.5 weather
+        // days and left every cell in darkness for over six of them.
+        let rotation_real_seconds = crate::planet::PLANET_ROTATION_PERIOD_SECONDS
+            / crate::INTERACTIVE_PLANET_ROTATION_TIME_SCALE;
+        let weather_seconds = interactive_weather_time_seconds(rotation_real_seconds);
+        assert!(
+            (weather_seconds - 86_400.0 * WEATHER_DAYS_PER_PLANET_ROTATION).abs() < 1.0e-6,
+            "one rotation advances the weather {weather_seconds} s, not a day"
+        );
         assert_eq!(interactive_weather_time_seconds(0.0), 0.0);
-        assert_eq!(interactive_weather_time_seconds(1.0), 3_600.0);
-        assert_eq!(interactive_weather_time_seconds(2.5), 9_000.0);
+        // Linear, so the sun and the sim cannot drift apart over a session.
+        assert!(
+            (interactive_weather_time_seconds(2.0)
+                - 2.0 * interactive_weather_time_seconds(1.0))
+                .abs()
+                < 1.0e-9
+        );
     }
 
     #[test]
-    fn one_interactive_second_advances_six_smooth_weather_intervals() {
+    fn a_weather_day_is_a_whole_number_of_steps_and_they_all_run() {
+        // 86_400 / 600: the day has to divide into steps exactly, or the sun
+        // and the field drift apart by a fraction of a step every rotation.
+        let steps_per_day = 86_400.0 / WEATHER_TIMESTEP_SECONDS;
+        assert_eq!(steps_per_day, steps_per_day.round());
         let mut state = WeatherState::new();
         let mut completed = 0;
-        for frame in 1..=60 {
-            let presentation_time = f64::from(frame) / 60.0;
+        let day_real_seconds = crate::planet::PLANET_ROTATION_PERIOD_SECONDS
+            / crate::INTERACTIVE_PLANET_ROTATION_TIME_SCALE;
+        for frame in 1..=120 {
+            let presentation_time = day_real_seconds * f64::from(frame) / 120.0;
             completed += state.advance_to_with_sun(
                 interactive_weather_time_seconds(presentation_time),
                 DVec3::X,
             );
         }
-        assert_eq!(completed, 6);
-        assert_eq!(state.debug_snapshot().completed_steps, 6);
+        assert_eq!(completed as f64, steps_per_day);
         assert!(state.interpolation_fraction() <= f32::EPSILON);
     }
 
     #[test]
     fn interactive_cloud_microphysics_persists_across_fast_transport_steps() {
-        assert_eq!(WEATHER_MICROPHYSICS_TIMESTEP_SECONDS, 10.0);
+        // Microphysics ages on its own clock, not the transport one, so cloud
+        // phase changes do not race when transport is fast. Asserted as that
+        // rate rather than as a step length, which moves with the weather
+        // scale: sixty weather-seconds of ageing per real second.
+        let microphysics_per_real_second = WEATHER_MICROPHYSICS_TIMESTEP_SECONDS
+            / (WEATHER_TIMESTEP_SECONDS / INTERACTIVE_WEATHER_TIME_SCALE);
+        assert!(
+            (microphysics_per_real_second - INTERACTIVE_CLOUD_MICROPHYSICS_TIME_SCALE).abs()
+                < 1.0e-9
+        );
         assert_eq!(
             WEATHER_CONDENSATION_TIME_CONSTANT_SECONDS / INTERACTIVE_CLOUD_MICROPHYSICS_TIME_SCALE,
             15.0
@@ -2871,9 +2913,10 @@ mod tests {
         target.temperature_kelvin = 273.15;
         target.specific_humidity = 0.45;
         target.cloud_water = 0.2;
-        for _ in 0..6 {
-            fields.condense_cloud_water(WEATHER_MICROPHYSICS_TIMESTEP_SECONDS);
-        }
+        // One real second of ageing, expressed as the rate rather than as a
+        // count of transport steps: how many of those fit in a second moves
+        // with the weather scale, and this is about the microphysics clock.
+        fields.condense_cloud_water(INTERACTIVE_CLOUD_MICROPHYSICS_TIME_SCALE);
         assert!(
             fields.cells[0].cloud_water > 0.19,
             "one real second of interactive phase change should retain cloud water"
