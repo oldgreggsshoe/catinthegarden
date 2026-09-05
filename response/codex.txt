@@ -1,0 +1,17 @@
+I’m familiar with the key docs and code layout, including the latest handoff and the ocean, weather, camera, forest, and raster/ray architecture.
+
+We’re on `experiment/ocean-wind-sea-spectrum`. The handoff’s leading open issue is the roughly 11m discrepancy between the drawn terrain mesh and sampled height field; the camera-grounding fix is already implemented.
+
+I’ll treat older plans as historical where newer notes supersede them. No source changes or tests run; `crates.tar.gz` remains untouched. The response file is committed and pushed.
+
+Ready for the first task.
+
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:64-65|note=[prioritized canonical handoff and checkout state]
+rollout_summaries/2026-07-28T09-47-40-ZsyN-ocean_terrain_repair_and_raster_ray_parity_handoff.md:9-9|note=[kept historical branch context separate from current checkout]
+</citation_entries>
+<rollout_ids>
+019fa81f-71cc-7c12-9279-8318fbe22bc5
+</rollout_ids>
+</oai-mem-citation>
