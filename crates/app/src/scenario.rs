@@ -267,6 +267,15 @@ impl ScenarioRunner {
             "ocean_ship_float" => include_str!("../scenarios/ocean_ship_float.json"),
             "land_chunk_seams" => include_str!("../scenarios/land_chunk_seams.json"),
             "coast_waters_edge" => include_str!("../scenarios/coast_waters_edge.json"),
+            // The player's own pose from manual run 1788617902-64447, where the
+            // near ocean rendered as flat constant-colour slabs. It draws
+            // correctly here at the default budget; starve it with
+            // CATINGARDEN_MAX_ACTIVE_CHUNKS=24 and the slabs appear, which is
+            // what identified them as giant flat-shaded ocean triangles rather
+            // than fog or missing geometry.
+            "ocean_grey_foreground" => {
+                include_str!("../scenarios/ocean_grey_foreground.json")
+            }
             "coastal_spawn_view" => include_str!("../scenarios/coastal_spawn_view.json"),
             "mountain_ground" => include_str!("../scenarios/mountain_ground.json"),
             "wavedir_spawn" => include_str!("../scenarios/wavedir_spawn.json"),

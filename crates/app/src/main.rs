@@ -73,6 +73,26 @@ fn render_size_for_surface_resize(
 }
 const DEFAULT_VIEWPORT_WIDTH: u32 = 1280;
 const DEFAULT_VIEWPORT_HEIGHT: u32 = 720;
+
+/// Scenario viewport override, as `WIDTHxHEIGHT`.
+///
+/// LOD demand is screen-space error in *pixels*, so a scenario at 1280x720
+/// asks for far less geometry than an interactive session at 1920x1080 and
+/// cannot reproduce what the player is looking at. Without this, a defect that
+/// only appears at the player's resolution has no deterministic repro.
+fn viewport_from_env() -> (u32, u32) {
+    let Ok(value) = std::env::var("CATINGARDEN_VIEWPORT") else {
+        return (DEFAULT_VIEWPORT_WIDTH, DEFAULT_VIEWPORT_HEIGHT);
+    };
+    let parsed = value
+        .trim()
+        .split_once(['x', 'X'])
+        .and_then(|(w, h)| Some((w.trim().parse::<u32>().ok()?, h.trim().parse::<u32>().ok()?)));
+    match parsed {
+        Some((width, height)) if width >= 64 && height >= 64 => (width, height),
+        _ => (DEFAULT_VIEWPORT_WIDTH, DEFAULT_VIEWPORT_HEIGHT),
+    }
+}
 const DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND: f64 = 0.4;
 const DEFAULT_CAMERA_ORBIT_INCLINATION_RADIANS: f64 = 28.5_f64.to_radians();
 /// Real seconds for one full planet rotation at 100% time speed.
@@ -4249,10 +4269,10 @@ impl ApplicationHandler for App {
                 .create_window(
                     WindowAttributes::default()
                         .with_title("Cat in the Garden")
-                        .with_inner_size(winit::dpi::PhysicalSize::new(
-                            DEFAULT_VIEWPORT_WIDTH,
-                            DEFAULT_VIEWPORT_HEIGHT,
-                        )),
+                        .with_inner_size({
+                            let (width, height) = viewport_from_env();
+                            winit::dpi::PhysicalSize::new(width, height)
+                        }),
                 )
                 .expect("failed to create window"),
         );

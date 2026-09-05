@@ -1,7 +1,7 @@
 # Handoff — ocean wind sea spectrum
 
 **Branch:** `experiment/ocean-wind-sea-spectrum`, tracking
-`origin/experiment/ocean-wind-sea-spectrum`, at `5744db2`.
+`origin/experiment/ocean-wind-sea-spectrum`, at `127d190`.
 
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
@@ -5339,3 +5339,50 @@ and the known-failing `low_flight_performance`. None of them asserts clearance, 
 claiming a camera is on the ground. They are left alone deliberately.
 
 All 428 workspace tests pass, `global_highest_summit` passes, fmt and clippy clean.
+
+## The grey slab over the ocean is giant flat-shaded triangles - 5 September 2026
+
+Reported from manual run `1788617902-64447`, an ascent from 130m to 1,673m over coastal water: the
+near ocean renders as a flat, featureless grey slab filling the lower half of the frame, with correct
+blue wavy ocean beyond it and the ship floating on the slab.
+
+**It is not fog, not a shading failure, and not missing geometry.** Measured down one column of
+`capture-001`, the frame has two mathematically constant bands -- `(29, 66, 101)` for 175 rows and
+`(99, 112, 121)` for 600 rows -- with zero variation and hard boundaries. Shading varies; fog
+gradates; a cleared buffer does not change colour with camera altitude, and this does. What produces
+exactly this is a **single flat-shaded ocean triangle covering hundreds of pixels**, which is what
+the ocean looks like when its LOD is starved and the composition mode is the default flat-triangle
+one. Setting `CATINGARDEN_MAX_ACTIVE_CHUNKS=24` on the repro scenario reproduces it outright: the
+ocean becomes a handful of enormous constant-colour facets with straight polygon edges, constant runs
+of 164 and 319 rows down the centre column.
+
+**It is not caused by the probe or scenario work committed today.** The same slab is in manual
+captures from 2 and 3 September, confirmed by eye on `1788457699-317114/capture-002.png` and by patch
+flatness (standard deviation under 2.0 where a rendered sea measures 10-16) across seven runs on four
+different commits before this branch's current work.
+
+**A new scenario, `ocean_grey_foreground`, replays the player's exact pose** -- position
+`[3432984, 2014754, 395512]`, view direction `[-0.813, 0.555, 0.177]`, 130.3m altitude, his sun. At
+the default budget it draws the ocean correctly, with full wave detail and foam. That is the useful
+part: it says what the trigger is *not*.
+
+**Ruled out, each by a run that failed to reproduce it:**
+
+- the pose and view direction themselves;
+- weather maturity -- matured to `t 1800s / 3 steps` with 600s timesteps, matching his HUD exactly;
+- viewport -- `CATINGARDEN_VIEWPORT=1920x1080` (added this session, since LOD demand is screen-space
+  error in *pixels* and a 1280x720 scenario cannot reproduce what the player sees at 1920x1080);
+- fast flight -- 6km at 2,000 m/s into the pose, then holding, to provoke a streaming shortfall.
+
+**The trigger in his session is still unidentified.** The strongest remaining clue is his own HUD:
+`Terrain: 256 active | 256 drawn`, `Tiles: 169`, **`Fallback chunks: 246`**. So 246 of the 256 drawn
+chunks were on a coarser ancestor tile than they asked for -- a *tile streaming* shortfall rather
+than a chunk-budget one, which is the same shape as open thread 5, where `descent_to_10m` holds
+`tiles_loaded` at zero across twenty seconds. **These may be one defect**; nothing has shown they
+are.
+
+Worth noting for whoever picks this up: the default composition mode is `FlatTriangles`
+(`main.rs`, the `_ =>` arm of the `CATINGARDEN_DEBUG_MODE` match), so every interactive launch runs
+the flat-shaded presentation. That is what turns a coarse ocean patch into a featureless slab instead
+of a merely low-poly sea, and it is why this reads as a catastrophic artefact rather than a
+resolution drop.
