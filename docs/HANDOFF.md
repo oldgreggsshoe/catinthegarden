@@ -5706,3 +5706,50 @@ so it is dry and airless, rotation period taken from the body rather than
 `planet::PLANET_ROTATION_PERIOD_SECONDS` (which several `const` expressions still derive from), and
 starting the game on its surface. Those three accessors are `#[allow(dead_code)]` until then, marked
 with what consumes them.
+
+## The moon: craters, ice, no air - 5 September 2026
+
+`--body moon` now draws a second world. Grey-white regolith, impact craters, ice sheets in the crater
+floors, black vacuum with stars, and **the planet is byte-identical**: `coast_waters_edge`,
+`stand_on_ground` and `ocean_ship_float` all return max pixel difference 0 against baselines captured
+before any of this.
+
+**The macro surface is a crater catalogue, not a bake.** The planet's geography needs a pipeline —
+erosion, hydrology, climate — because it is a weathered world. An airless body's large-scale shape is
+overwhelmingly its impact history, so `moon.rs` synthesises it: 48 impacts on a golden-angle spiral,
+sizes cubed so most are small and a few are basins, depth sub-linear in radius because large basins
+relax. Each is a bowl inside a rim crest with an ejecta blanket that reaches exactly zero at twice the
+rim radius, so influence is local and the datum does not drift with the catalogue's size.
+
+**The catalogue is generated into the shader, not mirrored into it.** `OCEAN_WAVE_TABLE` is
+hand-copied between `ocean.rs` and `shared_planet.wgsl` with a test asserting every literal matches;
+forty-eight craters would make that a divergence waiting to happen. `moon::wgsl_constants()` emits the
+table the CPU itself uses, so the ground query and the GPU displacement are built from identical
+numbers by construction. The profile is smooth trigonometry and polynomials throughout — no hashing
+and no `fract`, because this field is evaluated in f64 on one side and f32 on the other.
+
+**Ice is terrain, and that is the whole trick.** Everything the impacts dug below the datum is filled
+level with it, and shaded as `BiomeId::Ice` where the *unfilled* floor is negative. Because the fill
+belongs to the terrain pass rather than the ocean, **walking on it needed no code at all** — the
+ground query, the collision surface and the LOD already describe it. The moon carries
+`has_ocean: false`, so `water_owned` is gated off before the biome is even consulted and no ocean
+chunks are submitted.
+
+**Vacuum still draws.** The first attempt skipped the atmosphere passes on an airless body and left
+space showing the cleared buffer as flat grey daylight — the same cleared-background trap as the near
+plane clipping months ago. The pass runs; `BODY_HAS_ATMOSPHERE` makes `displayed_sky_radiance` return
+black. That keeps the background painted and lets the stars stand against it.
+
+**Known and not yet addressed.** The lit side is under-exposed: removing the sky removed the ambient
+term with it, and an airless surface in full sun should be bright against black shadow, not dim grey.
+That is a lighting question, not a geometry one.
+
+**48 craters is a bring-up, not a design.** Every one is evaluated per vertex, so the count is a
+frame-time cost; thousands — which is what a real cratered body needs — cannot go through this path.
+The right home for thousands is the baker: a moon outmap streamed exactly like the planet's, at which
+point the moon stops being a special case in the renderer entirely and `TerrainSource::Placeholder`
+goes back to being a placeholder. The crater profile in `moon.rs` is the part worth keeping when that
+happens; the per-vertex loop is not.
+
+Still to do: rotation from the body rather than `planet::PLANET_ROTATION_PERIOD_SECONDS`, and
+spawning on the surface rather than in orbit.

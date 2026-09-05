@@ -424,10 +424,60 @@ fn placeholder_octave(direction: vec3<f32>, frequency: f32, amplitude: f32) -> f
 }
 
 fn placeholder_height(direction: vec3<f32>) -> f32 {
+    if BODY_IS_MOON {
+        return moon_height(direction);
+    }
     return placeholder_octave(direction, 8.0, 2800.0)
         + placeholder_octave(direction, 512.0, 600.0)
         + placeholder_octave(direction, 32768.0, 100.0)
         + placeholder_octave(direction, 2097152.0, 3.0);
+}
+
+/// One impact structure, mirrored from `moon.rs::profile`. `t` is angular
+/// distance over rim radius: a bowl inside the crest, an ejecta blanket out to
+/// twice that, and exactly zero beyond, so each crater stays local and the
+/// datum does not drift with the catalogue's size.
+fn moon_crater_profile(t: f32, depth_meters: f32, rim_meters: f32) -> f32 {
+    if t >= 2.0 {
+        return 0.0;
+    }
+    if t <= 1.0 {
+        let bowl = depth_meters * (t * t - 1.0);
+        let rim = rim_meters * t * t * t;
+        return bowl + rim;
+    }
+    let outer = clamp(t - 1.0, 0.0, 1.0);
+    let fade = 1.0 - outer * outer * (3.0 - 2.0 * outer);
+    return rim_meters * fade;
+}
+
+/// The moon's macro surface: its impact history rather than eroded geography.
+/// The planet reads this shape from baked tiles; an airless body synthesises it,
+/// which is why the moon needs no outmap.
+fn moon_height(direction: vec3<f32>) -> f32 {
+    // Ice ponds flat: everything the impacts dug below the datum is filled
+    // level with it. The fill is terrain, so it is walked on like any ground.
+    return max(moon_raw_height(direction), 0.0);
+}
+
+/// True where the impact floor lies below the datum, and so where the flat fill
+/// is ice rather than regolith. The material follows the unfilled shape.
+fn moon_is_ice(direction: vec3<f32>) -> bool {
+    return moon_raw_height(direction) < 0.0;
+}
+
+/// The impact field before the ice fills it. Mirrored from `moon.rs`.
+fn moon_raw_height(direction: vec3<f32>) -> f32 {
+    let unit = normalize(direction);
+    var total = 0.0;
+    for (var index = 0u; index < MOON_CRATER_COUNT; index = index + 1u) {
+        let crater = MOON_CRATERS[index];
+        let depths = MOON_CRATER_DEPTHS[index];
+        let cosine = clamp(dot(crater.xyz, unit), -1.0, 1.0);
+        let t = acos(cosine) / crater.w;
+        total = total + moon_crater_profile(t, depths.x, depths.y);
+    }
+    return total;
 }
 
 // Fractal relief continuing below whatever the baked outmap can store. The
@@ -1834,7 +1884,9 @@ fn height_blend_material_weights(
 }
 
 fn debug_ocean_albedo() -> vec3<f32> {
-    return vec3<f32>(0.008, 0.055, 0.28);
+    // Every water surface in both passes reads its colour here, so the body's
+    // tint belongs at this one point rather than at each call site.
+    return BODY_WATER_TINT * vec3<f32>(0.008, 0.055, 0.28);
 }
 
 fn is_open_ocean_surface(outmap: bool, macro_height_meters: f32, biome_id: u32) -> bool {

@@ -220,6 +220,11 @@ fn perceptual_sky_radiance(radiance: vec3<f32>) -> vec3<f32> {
 // Also used by stellar photometry: visibility depends on the actual sky
 // brightness in this direction, not a clock-based night/day switch.
 fn displayed_sky_radiance(ray: vec3<f32>) -> vec3<f32> {
+    // Vacuum scatters nothing. Returning black here rather than skipping the
+    // pass keeps the background painted and lets the stars stand against it.
+    if !BODY_HAS_ATMOSPHERE {
+        return vec3<f32>(0.0);
+    }
     let sky_uv = sky_view_uv(ray);
     let radiance = textureSampleLevel(
         sky_view_lut,

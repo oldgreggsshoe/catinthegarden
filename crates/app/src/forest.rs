@@ -2063,7 +2063,7 @@ mod tests {
             .and_then(|source| source.split("\nfn ").next())
             .expect("flat triangle material path is present");
         assert!(flat.contains("let material_source_uv = input.source_uv;"));
-        assert!(flat.contains("sample_biome(material_source_uv)"));
+        assert!(flat.contains("sample_biome(material_source_uv, direction)"));
         assert!(flat.contains("sample_moisture(material_source_uv)"));
         assert!(!flat.contains("sample_biome(centre_source_uv)"));
 

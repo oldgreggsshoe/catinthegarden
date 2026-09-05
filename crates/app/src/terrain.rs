@@ -2692,7 +2692,7 @@ impl TerrainRenderer {
             // any local geometric wave detail and recreates raised mixed
             // land/water triangles. Per-fragment ownership now clips both
             // passes to the same source data instead.
-            if may_contain_ocean {
+            if may_contain_ocean && crate::body::has_ocean() {
                 push_draw_batch_instance(
                     &mut self.ocean_draw_batches,
                     tile_key,
@@ -4495,9 +4495,11 @@ mod tests {
         assert!(shader.contains("fn ocean_interference_albedo("));
         assert!(shader.contains("surface.ripple_height"));
         assert!(shader.contains("flat_triangles && water_owned"));
-        assert!(shader.contains(
-            "let water_owned = (biome_id == 0u || biome_id == 1u) && macro_height <= 0.0;"
-        ));
+        // A dry body has no sea level, so ownership is gated on the body
+        // before the biome is consulted at all.
+        assert!(shader.contains("let water_owned = BODY_HAS_OCEAN"));
+        assert!(shader.contains("&& (biome_id == 0u || biome_id == 1u)"));
+        assert!(shader.contains("&& macro_height <= 0.0;"));
         assert!(shader.contains("fn flat_triangle_land_biome("));
         assert!(shader.contains("source_uv_scale_and_latitude"));
         assert!(shader.contains("vec3<f32>(input.source_uv_offset, 0.0)"));

@@ -10,6 +10,7 @@ mod forest;
 mod foveated;
 mod haze;
 mod hdr;
+mod moon;
 mod ocean;
 mod outmap;
 mod planet;
@@ -3673,6 +3674,10 @@ impl State {
                 multiview_mask: None,
             });
             if !solid_color_screen && self.render_path == RenderPath::Raster {
+                // The pass still runs on an airless body: it paints the
+                // background, and skipping it leaves the cleared buffer showing
+                // as grey daylight where space should be. What changes is what
+                // it computes -- `BODY_HAS_ATMOSPHERE` makes it vacuum.
                 self.atmosphere
                     .draw(&mut render_pass, &self.camera_bind_group);
                 if self.render_debug_mode != planet::RenderDebugMode::SkyOnly {
@@ -4756,6 +4761,14 @@ fn launch_options() -> Result<LaunchOptions, String> {
                 };
                 if !body::set_active(selected) {
                     return Err("--body must be given before the world is used".to_owned());
+                }
+                // The moon's macro surface is synthesised from its crater
+                // catalogue, so it takes the procedural path rather than the
+                // planet's baked tiles. Streaming an outmap made for a
+                // 4,000km sphere onto a 1,080km one would drape the planet's
+                // geography over the moon at four times the relief.
+                if selected == body::MOON {
+                    options.terrain_source = terrain::TerrainSource::Placeholder;
                 }
             }
             "--scenario" => {

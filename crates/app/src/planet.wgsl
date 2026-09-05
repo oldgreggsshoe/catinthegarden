@@ -205,7 +205,20 @@ fn terrain_height(
     return scaled_terrain_macro_height(macro_height);
 }
 
-fn sample_biome(source_uv: vec2<f32>) -> u32 {
+/// Bare rock, the material an airless body's dry ground is made of.
+/// `BiomeId::MountainRock`.
+const AIRLESS_BODY_BIOME: u32 = 8u;
+/// The ice filling its basins. `BiomeId::Ice`, which already has the hard,
+/// cold highlight this wants.
+const AIRLESS_BODY_ICE_BIOME: u32 = 2u;
+
+fn sample_biome(source_uv: vec2<f32>, direction: vec3<f32>) -> u32 {
+    // An airless body has no vegetation and no baked biome map: it is regolith
+    // above the datum and ice in the basins the impacts dug below it. Both are
+    // terrain, so the difference is material only.
+    if !BODY_HAS_ATMOSPHERE {
+        return select(AIRLESS_BODY_BIOME, AIRLESS_BODY_ICE_BIOME, moon_is_ice(direction));
+    }
     let coordinate = vec2<i32>(round(source_coordinate(source_uv)));
     let last_coordinate = select(
         MATERIAL_TILE_LAST_STORED_COORD,
@@ -651,7 +664,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let height = base_height + terrain_detail_meters;
     // Polar ice overrides ocean in the baked biome contract. Lift it just
     // above sea level so the cap remains visible rather than becoming water.
-    let biome_id = sample_biome(source_uv);
+    let biome_id = sample_biome(source_uv, direction);
     let ice = outmap && biome_id == 2u;
     let lake = outmap && biome_id == 1u;
     let land_height = select(height, max(height, 5.0), ice);
@@ -660,7 +673,11 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     // Only a non-positive sample is actually water geometry.  Flattening a
     // positive sample solely because its categorical owner says water creates
     // kilometre-scale vertical walls through otherwise continuous land.
-    let water_owned = (biome_id == 0u || biome_id == 1u) && macro_height <= 0.0;
+    // A body with no ocean has no sea level: a crater floor below the datum is
+    // ground, not water, and must not be flattened or shaded as sea.
+    let water_owned = BODY_HAS_OCEAN
+        && (biome_id == 0u || biome_id == 1u)
+        && macro_height <= 0.0;
     let surface_height = select(land_height, 0.0, flat_triangles && water_owned);
     let skirt_depth_meters = select(
         0.0,
@@ -1227,6 +1244,7 @@ fn apply_terrain_distance_fog(
 fn flat_triangle_colour(
     input: VertexOutput,
 ) -> vec4<f32> {
+    let direction = normalize(input.surface_direction);
     let source_uv_scale = input.source_uv_scale_and_latitude.xy;
     let source_uv_offset = input.detail_anchor_direction.xy;
     // Geometry and lighting remain one flat-shaded 32x32 triangle grid, but
@@ -1248,11 +1266,11 @@ fn flat_triangle_colour(
     let first_source_uv = source_uv_offset + first_tile_uv * source_uv_scale;
     let second_source_uv = source_uv_offset + second_tile_uv * source_uv_scale;
     let third_source_uv = source_uv_offset + third_tile_uv * source_uv_scale;
-    let first_biome = sample_biome(first_source_uv);
-    let second_biome = sample_biome(second_source_uv);
-    let third_biome = sample_biome(third_source_uv);
+    let first_biome = sample_biome(first_source_uv, direction);
+    let second_biome = sample_biome(second_source_uv, direction);
+    let third_biome = sample_biome(third_source_uv, direction);
     let biome_id = flat_triangle_land_biome(
-        sample_biome(material_source_uv),
+        sample_biome(material_source_uv, direction),
         first_biome,
         second_biome,
         third_biome,
@@ -1282,7 +1300,11 @@ fn flat_triangle_colour(
             normalize(input.surface_direction),
         );
     }
-    var fill = select(debug_ocean_albedo(), biome_color(fill_biome), fill_biome != 1u);
+    // The body tint recolours the shared material chain rather than
+    // duplicating it: the planet's tint is white, so its materials are exactly
+    // the colours its biomes describe.
+    var fill = BODY_TERRAIN_TINT
+        * select(debug_ocean_albedo(), biome_color(fill_biome), fill_biome != 1u);
     if fill_biome == 2u {
         // Keep one final colour per triangle, but avoid making the ice prior
         // read as a mathematically perfect latitude circle. Low-latitude ice
@@ -1512,7 +1534,7 @@ fn ocean_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
     let direction = normalize(input.surface_direction);
     let outmap = input.outmap > 0.5;
     let macro_height_meters = macro_terrain_height(outmap, input.source_uv, direction);
-    let biome_id = sample_biome(input.source_uv);
+    let biome_id = sample_biome(input.source_uv, direction);
     // This draw is a geometric sea shell, not another material arm on the
     // terrain mesh. Sample ownership per fragment so a coastline triangle
     // cannot lift water between a sea-level and a raised land vertex.
@@ -1579,7 +1601,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let render_debug_mode = u32(camera.projection.w + 0.5);
     let outmap = input.outmap_and_macro_height.x > 0.5;
     let macro_height_meters = macro_terrain_height(outmap, input.source_uv, direction);
-    let biome_id = sample_biome(input.source_uv);
+    let biome_id = sample_biome(input.source_uv, direction);
     let ice = outmap && biome_id == 2u;
     let lake = outmap && biome_id == 1u;
     // Open sea belongs exclusively to the analytic shell drawn after this

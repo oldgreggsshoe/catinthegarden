@@ -418,6 +418,12 @@ pub fn geographic_longitude_degrees(direction: DVec3) -> f64 {
 }
 
 pub fn placeholder_height_meters(direction: DVec3) -> f64 {
+    // An airless body's large-scale shape is its impact history, so the moon
+    // takes a crater field where the placeholder planet takes sine octaves.
+    // Both are the *macro* surface; the detail ladder runs on top of either.
+    if crate::body::active().name == crate::body::MOON.name {
+        return crate::moon::height_meters(direction);
+    }
     PLACEHOLDER_HEIGHT_OCTAVES
         .iter()
         .map(|(frequency, amplitude_meters)| {

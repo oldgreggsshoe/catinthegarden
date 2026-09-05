@@ -28,6 +28,12 @@ pub struct Body {
     /// Whether the atmosphere, weather, and aerial perspective run. An airless
     /// body draws stars at noon, which is correct rather than a defect.
     pub has_atmosphere: bool,
+    /// Multiplies the surface albedo. The planet's materials are already the
+    /// colours its biomes describe, so it uses white; the moon recolours the
+    /// same shading chain rather than duplicating it.
+    pub terrain_tint: [f32; 3],
+    /// Multiplies the water albedo, on the same principle.
+    pub water_tint: [f32; 3],
 }
 
 /// The baked planet. Its radius is the one the outmap under
@@ -40,6 +46,8 @@ pub const PLANET: Body = Body {
     rotation_period_seconds: 15.0,
     has_ocean: true,
     has_atmosphere: true,
+    terrain_tint: [1.0, 1.0, 1.0],
+    water_tint: [1.0, 1.0, 1.0],
 };
 
 /// A moon at roughly a quarter of the planet's radius, which is the Earth/Luna
@@ -51,8 +59,14 @@ pub const MOON: Body = Body {
     // Tidally locked bodies turn once per orbit. Until an orbit exists this is
     // simply slower than the planet, so a standing observer sees the sky move.
     rotation_period_seconds: 60.0,
+    // No liquid at all. What fills the crater floors is ice, and ice is
+    // terrain: it is drawn by the terrain pass, collided with by the ground
+    // query, and walked on with no special case anywhere.
     has_ocean: false,
     has_atmosphere: false,
+    // Grey-white regolith. The ice takes its own biome material.
+    terrain_tint: [0.86, 0.86, 0.88],
+    water_tint: [1.0, 1.0, 1.0],
 };
 
 static ACTIVE: OnceLock<Body> = OnceLock::new();
@@ -84,16 +98,8 @@ pub fn rotation_period_seconds() -> f64 {
     active().rotation_period_seconds
 }
 
-/// Not yet consumed: sea level is still unconditional. The moon's dry, airless
-/// behaviour lands with its terrain.
-#[allow(dead_code)]
 pub fn has_ocean() -> bool {
     active().has_ocean
-}
-
-#[allow(dead_code)]
-pub fn has_atmosphere() -> bool {
-    active().has_atmosphere
 }
 
 /// The generated WGSL every shader that needs the body's scale prepends.
@@ -104,10 +110,21 @@ pub fn has_atmosphere() -> bool {
 /// allows the value to differ per world at all.
 pub fn wgsl_constants() -> String {
     let radius = radius_meters();
+    let is_moon = active().name == MOON.name;
+    let has_ocean = active().has_ocean;
+    let has_atmosphere = active().has_atmosphere;
+    let [tt0, tt1, tt2] = active().terrain_tint;
+    let [wt0, wt1, wt2] = active().water_tint;
     format!(
         "// Generated from body.rs for `{}`. Do not edit here.\n\
-         const PLANET_RADIUS_METERS: f32 = {radius:.1};\n",
+         const PLANET_RADIUS_METERS: f32 = {radius:.1};\n\
+         const BODY_IS_MOON: bool = {is_moon};\n\
+         const BODY_HAS_OCEAN: bool = {has_ocean};\n\
+         const BODY_HAS_ATMOSPHERE: bool = {has_atmosphere};\n\
+         const BODY_TERRAIN_TINT: vec3<f32> = vec3<f32>({tt0}, {tt1}, {tt2});\n\
+         const BODY_WATER_TINT: vec3<f32> = vec3<f32>({wt0}, {wt1}, {wt2});\n{}",
         active().name,
+        crate::moon::wgsl_constants(),
     )
 }
 
