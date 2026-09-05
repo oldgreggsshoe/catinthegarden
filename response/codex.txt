@@ -1,17 +1,7 @@
-I’m familiar with the key docs and code layout, including the latest handoff and the ocean, weather, camera, forest, and raster/ray architecture.
+Read `c0dfca1` and the final handoff section. No more broad survey.
 
-We’re on `experiment/ocean-wind-sea-spectrum`. The handoff’s leading open issue is the roughly 11m discrepancy between the drawn terrain mesh and sampled height field; the camera-grounding fix is already implemented.
+- The streamer is working: the reported location has no baked tiles beyond L4.
+- The actual defect is missing ocean geometry: 31 ocean chunks interactively versus 255 at the same scenario pose.
+- The near-field window-UV versus tile-UV mismatch is a specific, still-unconfirmed lead.
 
-I’ll treat older plans as historical where newer notes supersede them. No source changes or tests run; `crates.tar.gz` remains untouched. The response file is committed and pushed.
-
-Ready for the first task.
-
-<oai-mem-citation>
-<citation_entries>
-MEMORY.md:64-65|note=[prioritized canonical handoff and checkout state]
-rollout_summaries/2026-07-28T09-47-40-ZsyN-ocean_terrain_repair_and_raster_ray_parity_handoff.md:9-9|note=[kept historical branch context separate from current checkout]
-</citation_entries>
-<rollout_ids>
-019fa81f-71cc-7c12-9279-8318fbe22bc5
-</rollout_ids>
-</oai-mem-citation>
+That is the next narrow target: reproduce the incorrect ocean culling and test that mismatch. No rebake, speculative LOD tuning, or reuse of the old FPS baseline. No renderer changes made this turn.
