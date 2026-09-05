@@ -133,11 +133,13 @@ last two sections.
 
 **Known failures and open threads,** in the order worth picking up:
 
-1. **The tile streamer loads nothing while the chunk budget is saturated.** Measured in manual run
-   `1788619495-74706` with a stationary camera: 247 of 255 drawn chunks on coarse ancestors,
-   `resident_tiles` pinned at 144, `tiles_loaded` at 0 for 5.6 seconds, `budget_limited` true
-   throughout. This is what the player sees as flat grey slabs over the ocean, and it is probably the
-   same defect as `descent_to_10m` below. Start here.
+1. **The sea is barely drawn in interactive play: `ocean_chunks` is 31 where a scenario at the same
+   pose draws 255.** That is what the player sees as flat grey slabs -- with the ocean missing, the
+   flat-triangle mode's sea-level-flattened terrain fills the frame. Camera height is not the
+   trigger. The untested lead is `may_contain_ocean` testing a near-field chunk's water content with
+   window-relative UVs against a single tile's heights. See the last section. Start here.
+   *(The earlier "the streamer loads nothing" thread is closed: only the `pz` face is baked past L4,
+   so there is genuinely nothing to load anywhere else.)*
 2. **`mountain_ground` disagrees by 11.4m and nothing explains it.** Median 11.433m, p90 12.236m,
    max 12.660m over 81 points, bit-identical before and after the tree fix, so trees are not in it.
    The distribution is tight and near-uniform with none of the bimodal, one-signed spread an
@@ -5525,3 +5527,56 @@ interactive play differ structurally**, and a defect that lives in the differenc
 whole scenario suite. The rotation misdiagnosis two sections up was the same trap from the other
 side -- a scenario camera does not co-rotate where an interactive one does. When a report comes from
 play and a scenario cannot reproduce it, that gap is the first thing to suspect, not the last.
+
+## Why nothing streams, and why the sea is missing - 5 September 2026
+
+Two findings, one solid and one a lead. The first corrects open thread 1, which I wrote two sections
+ago.
+
+**The streamer is not broken. There is nothing to stream.** Only the `pz` face is baked beyond L4:
+
+| face | levels present |
+|---|---|
+| px, py, nx, ny, nz | l00-l04 |
+| **pz** | **l00-l18** |
+
+`sparse_landing_direction` in the manifest is `[0.5489, 0.1475, 0.8228]`, which is +Z dominant, and
+the bake refines a cone around it. The reported session sits at `[0.8364, 0.5037, 0.2159]` on the
+`px` face -- **44.7 degrees outside that cone** -- so the deepest tile that exists under the camera is
+L4, at 3.85km per texel. `outmap.resolve_tile` returns that L4 ancestor, it is already resident, so no
+load candidate is ever generated and `tiles_loaded` sits at zero forever while 247 of 255 chunks
+report as "fallback". Every one of those numbers is the streamer behaving correctly over a planet that
+has no finer data there. Open thread 1 as written -- "the tile streamer loads nothing while the chunk
+budget is saturated" -- is answered: it loads nothing because there is nothing to load.
+
+Worth knowing separately: **the landing-site scenarios are 56.7 degrees outside the refined cone
+too.** `stand_on_ground`, `landing_site_eye_level` and `landing_site_ground_detail` all sit at
+direction `(1, 0, 0)` on `px`, so their 0.317-1.285m probe agreement is agreement about L4 macro plus
+the synthesised detail ladder, not about baked fine terrain. They are still valid CPU-versus-GPU
+parity tests. They are not tests of anything the baker produced below 3.85km.
+
+**The sea itself: `ocean_chunks` collapses in interactive play and I have not found why.** At the
+identical pose, with identical fallback counts and both budgets saturated:
+
+| | ocean_chunks | drawn_chunks | fallback | ocean_triangles |
+|---|---|---|---|---|
+| reported session | **31** | 255 | 247 | 71,424 |
+| scenario, same pose | **255** | 256 | 247 | 587,520 |
+
+That is the grey slab, directly: with the ocean drawn on 31 chunks instead of 255, the flat-triangle
+composition mode's water-owned terrain -- flattened to sea level by `planet.wgsl:664` and shaded as
+terrain -- is what fills the frame. His other captures agree, at 24, 31 and 37 ocean chunks.
+
+Camera height is **not** the trigger: sweeping the scenario camera down 130m, 40m, 12m, 3m holds
+`ocean_chunks` at 255 and `ocean_triangles` at 587,520 throughout.
+
+**The strongest untested lead** is in `terrain.rs`, where `may_contain_ocean` is decided. Its
+`height_footprint_is_strictly_land` branch is taken whenever `source_uv_scale`/`source_uv_offset` are
+not the identity -- which for a **near-field** chunk they never are, because those fields carry the
+*window* transform, addressing the 8x8-tile near-field window rather than the single source tile whose
+`heights_meters` the function then samples. A near-field chunk therefore tests the wrong region of the
+wrong texture for whether it contains water, and a wrong "strictly land" answer culls it from the
+ocean pass entirely. That would remove exactly the near chunks, leave the far ones, and produce a low
+ocean-chunk count with correct distant sea -- which is what the screenshots show. **This is a code
+reading, not a measurement. Nothing has confirmed it**, and the difference between interactive and
+scenario runs is still unexplained under it.
