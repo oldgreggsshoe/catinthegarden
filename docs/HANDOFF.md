@@ -5127,3 +5127,55 @@ path, and the two are meant to be at parity.
 observed 7,659.857m over two frames. Its probe reports `compared 0`, which is consistent with being
 7.6km above the terrain rather than a second fault. It is a stale authored waypoint or a placement
 failure, and it is not caused by the recent ground work.
+
+## Chasing the detail mismatch: what it is not - 5 September 2026
+
+`ProbeComparison` now records the planet-frame `direction` of each point. It carried `ndc`, which
+identifies a pixel in one capture rather than a place on the planet, so a failing point could not be
+re-evaluated without re-running and hoping the same pixel landed on the same ground. A fresh
+`coast_waters_edge/1788607228-73179` at `509f1b0` carries the directions.
+
+The useful number from that run: the CPU's own detail contribution, `cpu_height - cpu_macro`, is
+1.0-3.9m at *every* point -- agreeing and failing alike. It is not that the CPU's detail vanishes
+where the two disagree. The renderer is putting 45m of relief on ground where the CPU's model puts
+four, so the question is why the CPU's ladder is so much smaller there, not why it is absent.
+
+Checked and found to agree, so not the cause:
+
+- `GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE` is 0.0 on the CPU and is uploaded in
+  `outmap_height_scale.z`, which no shader reads; no shader implements the global direction-noise
+  field at all. Off on both sides.
+- `TERRAIN_DETAIL_FILTER_RATIO` is 0.01 on both. `TERRAIN_DETAIL_MIN_FILTER_METERS` is 0.5 on both
+  (the shader reaches it through `TERRAIN_NORMAL_MIN_SAMPLE_METERS`).
+- Both filters are `max(distance term, edge term)` with the same edge-stitch fade.
+- `terrain_detail_octave_headroom` is the same smoothstep against the same
+  `TERRAIN_DETAIL_HEADROOM_FACTOR` on both.
+- The shader's `blend_source_edges` early return looks like an asymmetry -- the CPU has no such
+  parameter and always runs the fade loop -- but it is an optimisation: the bit is set exactly when
+  `node_intersects_source_edge_fade`, and where it is clear every point is far enough from a tile
+  edge that the CPU's loop drives `effective_level` to `source_level` anyway. Both branches agree.
+- The shader's anchor/local split reconstructs the CPU's domain exactly, because
+  `terrain_detail_domain` is three dot products and therefore linear:
+  `domain(anchor + local/R) * R/wavelength` is `anchor_cells + local_domain/wavelength`, which is
+  the expression the shader evaluates. `terrain_detail_value_noise` carries a fraction past 1 into
+  the integer cell, so a large local offset is handled. The f32 quantisation of `anchor_cells` at
+  1e6 magnitude does shift fine octaves by a fraction of a cell per chunk, but fine octaves carry
+  metres, not tens of metres, so it cannot account for 43m.
+- The shader's `active_octaves` loop bound only skips octaves whose in-loop fade is already zero,
+  so it cannot drop an octave the CPU includes.
+
+**The strongest remaining hypothesis, and the instrumentation it needs.** The CPU picks its
+`SurfaceDetailNode` through `surface_node_index.for_each_at_direction` and takes the highest
+filtered surface among coexisting transition patches. That node's `level` sets `node_spacing`, which
+floors `surface_detail_filter_meters`. If the CPU resolves a coarser node than the chunk the GPU
+actually drew, its filter is larger, its low cut retires octaves the shader kept, and its ladder
+comes out at a few metres against the renderer's forty -- with no constant ratio between them, which
+is what a 0.3222 correlation at slope 1.5162 looks like. The bimodality fits too: agreement would
+then depend on which patch the CPU resolved, and the probe's agreeing and failing points interleave
+across the screen rather than forming a region.
+
+The probe records `cpu_source_level`, which is the baked *tile* pyramid level and is 4 everywhere
+here because `dense_level` is 4. It does not record the CPU's chosen node level or the
+`filter_meters` it used, which are the two numbers that would settle this. Recording them on
+`ProbeComparison` is the next step; the GPU's `requested_level` is already in `terrain_info` and can
+be reconstructed for the same point.
