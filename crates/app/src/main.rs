@@ -3677,6 +3677,27 @@ impl State {
                 self.foveated.copy_to_history(&mut encoder);
             }
         }
+        // Snapshot the depth before the pass that draws ships, trees, clouds
+        // and rain. The surface probe's question is where the *ground* is:
+        // whether what the camera would stand on is what the renderer drew.
+        // Everything in that pass loads and stores this same depth buffer, so
+        // reading it afterwards measured the nearest object instead -- and
+        // trees are 22 to 48m tall, so every probe point behind a canopy
+        // reported the renderer drawing tens of metres above the CPU's terrain.
+        // That was the whole of the disagreement: with the forest off, the
+        // nineteen probe directions common to both runs return identical
+        // rendered heights to the last recorded digit, near-field median
+        // |delta| falls 9.540m to 0.428m, max 43.578m to 1.418m, and detail
+        // correlation rises 0.322 to 0.959.
+        let pending_surface_depth = probe_requested.then(|| {
+            probe::schedule_depth_readback(
+                &self.device,
+                &mut encoder,
+                &self.depth_texture,
+                self.size.width,
+                self.size.height,
+            )
+        });
         if !solid_color_screen
             && matches!(
                 self.render_debug_mode,
@@ -3735,7 +3756,12 @@ impl State {
                 self.weather_clouds.field_bind_group(),
             );
         }
-        let pending_depth_probe = probe_requested.then(|| {
+        // The haze probe asks the opposite question -- whether distance reads on
+        // whatever is actually in front of the camera -- and bins each pixel's
+        // colour by its own depth. That pairing only holds against the finished
+        // frame, so it keeps the post-pass depth the surface probe had to stop
+        // using.
+        let pending_scene_depth = probe_requested.then(|| {
             probe::schedule_depth_readback(
                 &self.device,
                 &mut encoder,
@@ -3965,7 +3991,7 @@ impl State {
             let _ = self.log_writer.flush();
         }
         let capture_readback_ms = capture_started.elapsed().as_secs_f32() * 1_000.0;
-        if let (Some(pending), Some(geometry)) = (pending_depth_probe, probe_geometry) {
+        if let (Some(pending), Some(geometry)) = (pending_surface_depth, probe_geometry) {
             match probe::finish_depth_readback(&self.device, pending) {
                 Ok(depth) => {
                     let terrain = &self.terrain;
@@ -3990,18 +4016,47 @@ impl State {
                                 camera_sea_level_altitude_meters,
                             ),
                         },
+                        |direction, camera_distance_meters| probe::ProbeContext {
+                            filter_sweep: terrain.detail_filter_sweep_at(
+                                direction,
+                                camera_sea_level_altitude_meters,
+                                camera_distance_meters,
+                            ),
+                            near_field: terrain.near_field_window_sample_at(direction).map(
+                                |(source_level, baked_height_meters)| probe::NearFieldSample {
+                                    source_level,
+                                    baked_height_meters,
+                                    macro_height_meters: if baked_height_meters <= 0.0 {
+                                        0.0
+                                    } else {
+                                        planet::scaled_outmap_macro_height_meters(
+                                            baked_height_meters,
+                                            camera_sea_level_altitude_meters,
+                                        )
+                                    },
+                                },
+                            ),
+                        },
                     );
                     report.render_debug_mode = self.render_debug_mode.label().to_owned();
                     report.ray_near_field = ray_near_field_coverage;
-                    // Same depth image, different question: the probe asks
-                    // whether the surface is where it should be, this asks
-                    // whether distance reads on it.
-                    if let Some(frame) = &captured_frame {
+                    // A different question needs a different depth: the surface
+                    // probe asks where the ground is and reads the depth before
+                    // trees and clouds; this asks whether distance reads on the
+                    // frame that was captured, so it reads the finished one.
+                    if let (Some(frame), Some(scene_depth)) = (
+                        &captured_frame,
+                        pending_scene_depth
+                            .and_then(|pending| {
+                                probe::finish_depth_readback(&self.device, pending).ok()
+                            })
+                            .as_ref(),
+                    ) {
                         let haze = haze::measure(
                             sim_time,
                             self.render_path.label(),
                             &geometry,
-                            &depth,
+                            scene_depth,
                             &frame.pixels,
                             frame.width,
                             frame.height,

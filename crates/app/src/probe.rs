@@ -22,7 +22,7 @@ use std::time::Duration;
 use glam::{DVec2, DVec3};
 
 use crate::planet::{CameraViewBasis, PLANET_RADIUS_METERS};
-use crate::terrain::{NearFieldCoverage, SurfaceHeightBreakdown};
+use crate::terrain::{DetailFilterRung, NearFieldCoverage, SurfaceHeightBreakdown};
 
 /// Grid resolution of the screen-space sample pattern, per axis.
 pub const PROBE_GRID: u32 = 9;
@@ -107,8 +107,27 @@ pub struct ProbeHit {
     pub height_meters: f64,
 }
 
-/// One drawn point set against what the CPU believes is there.
+/// What the near-field window holds at a probe point, resolved through the
+/// window's own per-block source tile rather than the single ancestor tile the
+/// drawn patch names.
 #[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct NearFieldSample {
+    pub source_level: u8,
+    pub baked_height_meters: f64,
+    pub macro_height_meters: f64,
+}
+
+/// CPU-side context gathered per probe point for attribution only. It is
+/// collected through its own closure so the per-frame clearance query, which
+/// shares the surface path, carries none of this cost.
+#[derive(Clone, Debug, Default)]
+pub struct ProbeContext {
+    pub filter_sweep: Vec<DetailFilterRung>,
+    pub near_field: Option<NearFieldSample>,
+}
+
+/// One drawn point set against what the CPU believes is there.
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct ProbeComparison {
     pub ndc: [f64; 2],
     /// The planet-frame direction this point was sampled at. Without it a
@@ -122,6 +141,12 @@ pub struct ProbeComparison {
     /// The CPU's baked-data-only height at the same point.
     pub cpu_macro_height_meters: f64,
     pub cpu_source_level: u8,
+    /// Quadtree level of the drawn patch the CPU resolved this point through,
+    /// and the detail filter that choice implied. The shader's counterpart is
+    /// `requested_level`; when the two sides pick different patches they hold
+    /// different filters and synthesise different amounts of relief.
+    pub cpu_node_level: Option<u8>,
+    pub cpu_detail_filter_meters: f64,
     /// Positive means the renderer drew the ground *above* where the CPU
     /// thinks it is, which is the direction that buries a camera.
     pub delta_meters: f64,
@@ -130,9 +155,40 @@ pub struct ProbeComparison {
     /// none of the synthesised detail -- a different fault from drawing the
     /// detail wrongly, and one that looks identical in a screenshot.
     pub delta_from_macro_meters: f64,
+    /// The CPU height under every drawn-patch level, so a gap can be attributed
+    /// to filter width rather than only observed. Empty over water and wherever
+    /// no baked land sample answered.
+    pub filter_sweep: Vec<DetailFilterRung>,
+    /// The rung whose height lands nearest `rendered_height_meters`, and how
+    /// far it still misses by. When the nearest rung is a finer level than
+    /// `cpu_node_level` and its residual is small, the CPU resolved a coarser
+    /// patch than the renderer drew.
+    pub nearest_rung_node_level: Option<u8>,
+    pub nearest_rung_residual_meters: Option<f64>,
+    /// The baked terrain the near-field window carries here. When its
+    /// `source_level` is finer than `cpu_source_level`, the two sides are not
+    /// reading the same ground.
+    pub near_field: Option<NearFieldSample>,
+    /// The gap left once the window's macro surface is used instead of the
+    /// CPU's. A near-zero value here beside a large `delta_meters` says the
+    /// disagreement is entirely in which baked tile was read.
+    pub delta_from_near_field_macro_meters: Option<f64>,
 }
 
-fn comparison(hit: &ProbeHit, cpu: SurfaceHeightBreakdown) -> ProbeComparison {
+fn comparison(
+    hit: &ProbeHit,
+    cpu: SurfaceHeightBreakdown,
+    context: ProbeContext,
+) -> ProbeComparison {
+    let ProbeContext {
+        filter_sweep,
+        near_field,
+    } = context;
+    let nearest_rung = filter_sweep.iter().min_by(|left, right| {
+        (left.height_meters - hit.height_meters)
+            .abs()
+            .total_cmp(&(right.height_meters - hit.height_meters).abs())
+    });
     ProbeComparison {
         ndc: hit.ndc,
         direction: hit.direction.to_array(),
@@ -141,8 +197,17 @@ fn comparison(hit: &ProbeHit, cpu: SurfaceHeightBreakdown) -> ProbeComparison {
         cpu_height_meters: cpu.height_meters,
         cpu_macro_height_meters: cpu.macro_height_meters,
         cpu_source_level: cpu.source_level,
+        cpu_node_level: cpu.node_level,
+        cpu_detail_filter_meters: cpu.detail_filter_meters,
         delta_meters: hit.height_meters - cpu.height_meters,
         delta_from_macro_meters: hit.height_meters - cpu.macro_height_meters,
+        nearest_rung_node_level: nearest_rung.map(|rung| rung.node_level),
+        nearest_rung_residual_meters: nearest_rung
+            .map(|rung| rung.height_meters - hit.height_meters),
+        delta_from_near_field_macro_meters: near_field
+            .map(|sample| hit.height_meters - sample.macro_height_meters),
+        near_field,
+        filter_sweep,
     }
 }
 
@@ -269,6 +334,7 @@ pub fn compare_surface(
         camera_surface_height_meters,
         MAX_COMPARISON_DISTANCE_METERS,
         cpu_height,
+        |_, _| ProbeContext::default(),
     )
 }
 
@@ -281,6 +347,7 @@ pub fn compare_surface_with_limit(
     camera_surface_height_meters: f64,
     maximum_comparison_distance_meters: f64,
     cpu_height: impl Fn(DVec3, f64) -> Option<SurfaceHeightBreakdown>,
+    context: impl Fn(DVec3, f64) -> ProbeContext,
 ) -> SurfaceProbeReport {
     assert!(
         maximum_comparison_distance_meters.is_finite() && maximum_comparison_distance_meters > 0.0
@@ -304,14 +371,19 @@ pub fn compare_surface_with_limit(
         let Some(cpu) = cpu_height(hit.direction, hit.distance_meters) else {
             continue;
         };
-        comparisons.push(comparison(&hit, cpu));
+        comparisons.push(comparison(
+            &hit,
+            cpu,
+            context(hit.direction, hit.distance_meters),
+        ));
     }
 
     let center = depth
         .sample(DVec2::ZERO)
         .and_then(|sample| geometry.hit(DVec2::ZERO, sample))
         .and_then(|hit| {
-            cpu_height(hit.direction, hit.distance_meters).map(|cpu| comparison(&hit, cpu))
+            cpu_height(hit.direction, hit.distance_meters)
+                .map(|cpu| comparison(&hit, cpu, context(hit.direction, hit.distance_meters)))
         });
 
     let mut absolute: Vec<f64> = comparisons
@@ -506,8 +578,8 @@ mod tests {
     use glam::{DVec2, DVec3};
 
     use super::{
-        DepthImage, MAX_COMPARISON_DISTANCE_METERS, PROBE_GRID, ProbeGeometry, compare_surface,
-        compare_surface_with_limit, probe_ndc_grid,
+        DepthImage, MAX_COMPARISON_DISTANCE_METERS, PROBE_GRID, ProbeContext, ProbeGeometry,
+        compare_surface, compare_surface_with_limit, probe_ndc_grid,
     };
     use crate::planet::PLANET_RADIUS_METERS;
     use crate::terrain::SurfaceHeightBreakdown;
@@ -520,6 +592,8 @@ mod tests {
                 height_meters,
                 macro_height_meters: height_meters,
                 source_level: 18,
+                node_level: None,
+                detail_filter_meters: 0.5,
             })
         }
     }
@@ -676,6 +750,8 @@ mod tests {
                 height_meters: 603.3,
                 macro_height_meters: 600.0,
                 source_level: 18,
+                node_level: None,
+                detail_filter_meters: 0.5,
             })
         });
         assert!((report.mean_delta_meters + 3.3).abs() < 0.5, "{report:?}");
@@ -717,6 +793,8 @@ mod tests {
                     height_meters: 600.0 + relief,
                     macro_height_meters: 600.0,
                     source_level: 18,
+                    node_level: None,
+                    detail_filter_meters: 0.5,
                 })
             },
         );
@@ -737,6 +815,8 @@ mod tests {
                     height_meters: 600.0 + relief,
                     macro_height_meters: 600.0,
                     source_level: 18,
+                    node_level: None,
+                    detail_filter_meters: 0.5,
                 })
             },
         );
@@ -746,6 +826,33 @@ mod tests {
         assert!(
             correlation.abs() < 0.6,
             "independent noise should not correlate: {correlation}"
+        );
+    }
+
+    /// The whole of a 43m "renderer draws terrain above the CPU" disagreement
+    /// was tree canopies: the readback ran after the pass that draws ships,
+    /// trees, clouds and rain into the same depth buffer, so a probe point
+    /// behind a 22-48m tree measured the tree. The two readbacks answer
+    /// different questions and must stay on their own sides of that pass.
+    #[test]
+    fn the_surface_probe_reads_depth_before_trees_are_drawn() {
+        let main = include_str!("main.rs");
+        let surface = main
+            .find("let pending_surface_depth")
+            .expect("surface probe schedules a depth readback");
+        let trees = main
+            .find("self.forest.draw(")
+            .expect("the forest draws into the scene");
+        let scene = main
+            .find("let pending_scene_depth")
+            .expect("haze schedules its own depth readback");
+        assert!(
+            surface < trees,
+            "the surface probe must read depth before the forest writes to it",
+        );
+        assert!(
+            trees < scene,
+            "haze bins colour by depth, so it must read the finished frame's depth",
         );
     }
 
@@ -796,6 +903,7 @@ mod tests {
             0.0,
             far_meters * 2.0,
             flat_truth(0.0),
+            |_, _| ProbeContext::default(),
         );
         assert_eq!(extended.compared_points, extended.surface_hits);
         assert_eq!(extended.comparison_distance_limit_meters, far_meters * 2.0);

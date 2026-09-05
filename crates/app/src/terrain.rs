@@ -363,6 +363,35 @@ pub struct SurfaceHeightBreakdown {
     /// Pyramid level of the tile this came from. A coarse level here is the
     /// usual reason two sides of a comparison disagree about the macro shape.
     pub source_level: u8,
+    /// Quadtree level of the drawn patch this height was resolved through, or
+    /// `None` when no drawn patch covered the direction and the continuous
+    /// field answered instead. This is the CPU's counterpart to the shader's
+    /// `requested_level`, and it -- not `source_level` -- sets the floor under
+    /// the detail filter.
+    pub node_level: Option<u8>,
+    /// The detail filter width this height was evaluated at. The ladder
+    /// retires octaves below it, so two sides of a comparison holding
+    /// different filters synthesise different amounts of relief from the same
+    /// baked macro surface.
+    pub detail_filter_meters: f64,
+}
+
+/// One hypothetical drawn-patch level evaluated at a single direction: the
+/// detail filter that level implies, and the height the CPU's ladder produces
+/// under it.
+///
+/// The point of sweeping these is attribution. A CPU that resolves a coarser
+/// patch than the renderer drew holds a wider filter, retires octaves the
+/// shader kept, and reports a few metres of relief where the renderer drew
+/// tens -- with no fixed ratio between them. If some rung reaches the drawn
+/// height, the filter width accounts for the gap and the question becomes
+/// which patch each side picked. If no rung reaches it, the two ladders differ
+/// by something the filter cannot explain, and the filter is exonerated.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct DetailFilterRung {
+    pub node_level: u8,
+    pub detail_filter_meters: f64,
+    pub height_meters: f64,
 }
 
 /// A resident-cache-only terrain sample for procedural forest placement.
@@ -1515,6 +1544,8 @@ impl TerrainRenderer {
                 height_meters: placeholder_height_meters(local_surface_direction),
                 macro_height_meters: placeholder_height_meters(local_surface_direction),
                 source_level: 0,
+                node_level: None,
+                detail_filter_meters: TERRAIN_DETAIL_MIN_FILTER_METERS,
             }),
             TerrainDataSource::Outmap(outmap) => {
                 let (face, face_uv) = cube_face_uv(local_surface_direction)?;
@@ -1538,6 +1569,8 @@ impl TerrainRenderer {
                                 )
                             },
                             source_level: level,
+                            node_level: None,
+                            detail_filter_meters: TERRAIN_DETAIL_MIN_FILTER_METERS,
                         }
                     })
             }
@@ -1558,13 +1591,15 @@ impl TerrainRenderer {
         let tile = self.tile_cache.get(&key)?;
         let uv = source_tile_uv(key, face, face_uv)?;
         let baked_meters = f64::from(sample_height_cpu(&tile.heights_meters, uv));
+        let detail_filter_meters =
+            surface_detail_filter_meters(surface, face_uv, camera_distance_meters);
         Some(SurfaceHeightBreakdown {
             height_meters: outmap_surface_height_meters_with_filter(
                 baked_meters,
                 direction,
                 camera_altitude_meters,
                 continuous_baked_sample_spacing_meters(face_uv, key.level, dense_level),
-                surface_detail_filter_meters(surface, face_uv, camera_distance_meters),
+                detail_filter_meters,
             ),
             macro_height_meters: if baked_meters <= 0.0 {
                 0.0
@@ -1572,6 +1607,8 @@ impl TerrainRenderer {
                 scaled_outmap_macro_height_meters(baked_meters, camera_altitude_meters)
             },
             source_level: key.level,
+            node_level: Some(surface.node.level),
+            detail_filter_meters,
         })
     }
 
@@ -1591,6 +1628,8 @@ impl TerrainRenderer {
                 height_meters: placeholder_height_meters(local_surface_direction),
                 macro_height_meters: placeholder_height_meters(local_surface_direction),
                 source_level: 0,
+                node_level: None,
+                detail_filter_meters: TERRAIN_DETAIL_MIN_FILTER_METERS,
             }),
             TerrainDataSource::Outmap(outmap) => {
                 let (face, face_uv) = cube_face_uv(local_surface_direction)?;
@@ -1662,11 +1701,105 @@ impl TerrainRenderer {
                                     )
                                 },
                                 source_level: level,
+                                node_level: None,
+                                detail_filter_meters: TERRAIN_DETAIL_MIN_FILTER_METERS,
                             }
                         })
                 })
             }
         }
+    }
+
+    /// The baked sample the raster near-field window holds at this direction.
+    ///
+    /// Near-field patches are drawn from a stitched window whose blocks each
+    /// resolve their own source tile, so the window can carry data finer than
+    /// the single ancestor tile a `SurfaceDetailNode` names. The CPU surface
+    /// query reads that one ancestor. Where the two levels differ, the two
+    /// sides are reading different baked terrain, and no amount of agreement
+    /// in the detail ladder can bring them together.
+    ///
+    /// Returns the window block's source level and its baked metres.
+    pub fn near_field_window_sample_at(&self, direction: DVec3) -> Option<(u8, f64)> {
+        let sources = self.raster_near_field.as_ref()?;
+        let key = sources.key;
+        let (face, face_uv) = cube_face_uv(direction)?;
+        (face == key.face).then_some(())?;
+        let tiles_per_side = f64::from(1_u32 << key.level);
+        let tile_x = (face_uv[0] + 1.0) * 0.5 * tiles_per_side;
+        let tile_y = (face_uv[1] + 1.0) * 0.5 * tiles_per_side;
+        let block_x = (tile_x.floor() as i64) - i64::from(key.tile_x);
+        let block_y = (tile_y.floor() as i64) - i64::from(key.tile_y);
+        let window_tiles = i64::from(NEAR_FIELD_WINDOW_TILES);
+        if !(0..window_tiles).contains(&block_x) || !(0..window_tiles).contains(&block_y) {
+            return None;
+        }
+        let source_key = *sources
+            .source_keys
+            .get((block_y * window_tiles + block_x) as usize)?;
+        let tile = self.tile_cache.get(&source_key)?;
+        let uv = source_tile_local_uv(source_key, face_uv);
+        Some((
+            source_key.level,
+            f64::from(sample_height_cpu(&tile.heights_meters, uv)),
+        ))
+    }
+
+    /// Re-evaluates this direction under every drawn-patch level the quadtree
+    /// can select, holding everything else fixed.
+    ///
+    /// Only the node-spacing floor under the filter moves between rungs. The
+    /// edge-stitch term is left out: it can only raise the filter toward a
+    /// coarser neighbour's spacing, so including it would blur the one
+    /// variable this sweep exists to isolate. The baked source tile is the one
+    /// the CPU would have used anyway, so a rung differs from the recorded
+    /// height by filter width alone.
+    pub fn detail_filter_sweep_at(
+        &self,
+        local_surface_direction: DVec3,
+        camera_altitude_meters: f64,
+        camera_distance_meters: f64,
+    ) -> Vec<DetailFilterRung> {
+        let TerrainDataSource::Outmap(outmap) = &self.source else {
+            return Vec::new();
+        };
+        let Some((face, face_uv)) = cube_face_uv(local_surface_direction) else {
+            return Vec::new();
+        };
+        let dense_level = outmap.manifest().dense_level;
+        let Some((source_key, uv)) = self.cached_tile_at(local_surface_direction, face, face_uv)
+        else {
+            return Vec::new();
+        };
+        let Some(tile) = self.tile_cache.get(&source_key) else {
+            return Vec::new();
+        };
+        let baked_meters = f64::from(sample_height_cpu(&tile.heights_meters, uv));
+        if baked_meters <= 0.0 {
+            return Vec::new();
+        }
+        let baked_spacing_meters =
+            continuous_baked_sample_spacing_meters(face_uv, source_key.level, dense_level);
+        let distance_floor_meters = (camera_distance_meters * TERRAIN_DETAIL_FILTER_RATIO)
+            .max(TERRAIN_DETAIL_MIN_FILTER_METERS);
+        (MINIMUM_LOD_LEVEL..=MAX_LOD_LEVEL)
+            .map(|node_level| {
+                let node_spacing_meters = 2.0 * PLANET_RADIUS_METERS
+                    / (f64::from(1_u32 << node_level) * f64::from(CHUNK_GRID_QUADS as u32));
+                let detail_filter_meters = node_spacing_meters.max(distance_floor_meters);
+                DetailFilterRung {
+                    node_level,
+                    detail_filter_meters,
+                    height_meters: outmap_surface_height_meters_with_filter(
+                        baked_meters,
+                        local_surface_direction,
+                        camera_altitude_meters,
+                        baked_spacing_meters,
+                        detail_filter_meters,
+                    ),
+                }
+            })
+            .collect()
     }
 
     pub fn raster_surface_height_meters_at(

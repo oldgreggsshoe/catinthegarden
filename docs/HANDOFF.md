@@ -1,7 +1,7 @@
 # Handoff — ocean wind sea spectrum
 
 **Branch:** `experiment/ocean-wind-sea-spectrum`, tracking
-`origin/experiment/ocean-wind-sea-spectrum`, at `1187993`.
+`origin/experiment/ocean-wind-sea-spectrum`, at `d943881`.
 
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
@@ -5179,3 +5179,74 @@ here because `dense_level` is 4. It does not record the CPU's chosen node level 
 `filter_meters` it used, which are the two numbers that would settle this. Recording them on
 `ProbeComparison` is the next step; the GPU's `requested_level` is already in `terrain_info` and can
 be reconstructed for the same point.
+
+## The surface probe was measuring trees - 5 September 2026
+
+The detail mismatch is not a terrain disagreement. It was tree canopies in the depth buffer.
+
+`probe::schedule_depth_readback` ran after the pass that draws ships, forest, weather clouds and
+rain. All of them load and store the same depth attachment the terrain wrote, so the probe read the
+nearest *object*, not the ground. Trees are 22-48m tall (`TREE_HEIGHT_MIN_METERS`,
+`TREE_HEIGHT_RANGE_METERS` in `forest.rs`), which is the whole observed range of the disagreement,
+and a canopy is always above the ground it stands on, which is why every near-field delta was
+positive and there was never a large negative.
+
+Measured on `coast_waters_edge`, raster, at three configurations of the same frame:
+
+| run | compared | median | p90 | max | `detail_correlation` | `detail_slope` |
+|---|---|---|---|---|---|---|
+| before, forest on | 36 | 2.255 | 35.092 | 43.578 | 0.3222 | 1.5162 |
+| before, `CATINGARDEN_FOREST=0` | 36 | 0.560 | 1.835 | 2.277 | 0.9586 | 0.9255 |
+| after the fix, forest on | 36 | 0.560 | 1.835 | 2.277 | 0.9586 | 0.9255 |
+
+The middle row is the control and the third is the fix reproducing it exactly. Between the first two
+runs, nineteen probe directions are common to both and every one returns an identical rendered
+height to the last recorded digit; the seventeen that differ are the ones with a tree in front.
+After the fix all 36 directions match the forest-disabled run to 0.000000m. Near-field (inside 2km)
+median |delta| falls 9.540m to 0.428m and max 43.578m to 1.418m.
+
+The 0.3222 `detail_correlation` recorded as "the signature of two unrelated fields" was that: a
+canopy height set against a ground height. With trees out of the depth the two ladders correlate at
+0.9586 with slope 0.9255. They were never the two unrelated fields.
+
+The raymarch path had the same defect and the same fix: `coast_waters_edge` under
+`CATINGARDEN_RENDER_PATH=ray` now returns identical numbers with the forest on and off, 70 and 71
+directions shared and 0.000000m apart (median 1.293m/1.172m, p90 3.880m/4.308m). Its CPU truth is
+`surface_height_breakdown_at`, the continuous field with no node, so its residual is not comparable
+with raster's.
+
+**What the fix is.** Two depth readbacks instead of one. The surface probe asks where the *ground*
+is and now snapshots the depth before the ship/forest/cloud/rain pass. The haze probe asks whether
+distance reads on the frame that was captured, and bins each pixel's colour by that pixel's own
+depth, so it keeps the post-pass depth -- taking the earlier one would have paired canopy colour
+with the distance of the ground behind it. Its convergence is 0.414 before and after, against 0.3362
+with the forest disabled, so it is measuring the finished frame either way. A test in `probe.rs`
+pins the two readbacks to their own sides of that pass.
+
+**Ruled out along the way, by measurement.** Two hypotheses from the previous section, both wrong:
+
+- *The CPU resolves a coarser patch, so its filter retires octaves the shader kept.*
+  `ProbeComparison` now carries `cpu_node_level`, `cpu_detail_filter_meters` and a `filter_sweep`:
+  the CPU height re-evaluated at every drawn-patch level L2-L18, holding the source tile fixed.
+  At the first failing point the entire sweep spans 2.79m to 3.15m across filters from 62.5km down
+  to 3.37m, against a rendered 25.53m. Across the sixteen failing points the best rung closes a
+  median 0.5% of the gap and 38% at its very best. Filter width cannot produce tens of metres.
+- *The near-field window reads finer tiles than the single ancestor the CPU samples.* It can in
+  principle -- the window resolves a source per block and `near_field_coverage` counts blocks finer
+  than dense. `near_field_window_sample_at` reports what it actually holds, and at every one of the
+  36 points its source level is 4, the same as `cpu_source_level`, and its macro height equals
+  `cpu_macro_height_meters` to the recorded digit. Both sides were always reading the same L4 data.
+
+The instrumentation is kept. It is what makes the next disagreement attributable instead of
+observed, and it is gathered through its own closure so the per-frame clearance query carries none
+of it.
+
+**Unchanged by this, and still open.** `mountain_ground` is bit-identical before and after at median
+11.433m, p90 12.236m, max 12.660m over 81 points -- a tight, near-uniform offset with none of the
+bimodal spread trees produce. That is the real mesh-versus-field gap on steep near-field terrain and
+it still wants its own look. `highest_prominence_peak` still fails `camera_stands_on_the_ground` at
+7,659.857m over the same 150-155m bounds, and `landing_site_eye_level` still fails it at -753.0m;
+both read `camera_surface_height_meters`, a CPU query that never touches the depth readback, so
+neither is affected by this change. `stand_on_ground` still compares 0 points, as it has since
+`1787411515`. All 428 workspace tests pass; `cargo fmt --check` and `cargo clippy --workspace
+--all-targets` are clean.
