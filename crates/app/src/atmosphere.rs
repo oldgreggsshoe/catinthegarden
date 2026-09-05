@@ -583,7 +583,7 @@ mod tests {
             display.contains("let closest_altitude = max(closest_radius - PLANET_RADIUS_METERS")
         );
         assert!(display.contains("let descent_amount = 1.0 - exp("));
-        assert!(display.contains("let horizon_radiance = textureSample("));
+        assert!(display.contains("let horizon_radiance = textureSampleLevel("));
         assert!(display.contains("let fog_amount = 1.0 - exp("));
         assert!(display.contains("mix(visible_radiance, horizon_fog_radiance, fog_amount)"));
     }

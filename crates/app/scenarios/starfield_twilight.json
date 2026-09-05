@@ -1,0 +1,76 @@
+{
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 8.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0.0,
+  "fixed_exposure": true,
+  "screenshot_times_seconds": [
+    1.0,
+    4.0,
+    7.0,
+    8.0
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 4
+  },
+  "name": "starfield_twilight",
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [
+        3345865.225033206,
+        2014959.7248316905,
+        863668.4625593844
+      ],
+      "look_at": [
+        3346269.587145161,
+        2015213.524695743,
+        862789.7834874691
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        0.8364453951234234,
+        0.503727338024472,
+        0.21591171784689994
+      ]
+    },
+    {
+      "time_s": 1.0,
+      "direction": [
+        0.8364453951234234,
+        0.503727338024472,
+        0.21591171784689994
+      ]
+    },
+    {
+      "time_s": 4.0,
+      "direction": [
+        0.06251246045222926,
+        0.048243228138708585,
+        -0.9968775166623856
+      ]
+    },
+    {
+      "time_s": 7.0,
+      "direction": [
+        -0.8364453951234234,
+        -0.503727338024472,
+        -0.21591171784689994
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 70.0
+    }
+  ]
+}

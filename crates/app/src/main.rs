@@ -18,6 +18,7 @@ mod relief_survey;
 mod scenario;
 mod ship;
 mod ship_render;
+mod stars;
 mod sun;
 mod surface_camera;
 mod terrain;
@@ -945,6 +946,7 @@ struct State {
     depth_view: wgpu::TextureView,
     hdr: hdr::HdrRenderer,
     atmosphere: atmosphere::AtmosphereRenderer,
+    stars: stars::StarRenderer,
     weather: weather::WeatherState,
     weather_clouds: weather_render::WeatherCloudRenderer,
     rain: weather_render::RainRenderer,
@@ -1305,6 +1307,13 @@ impl State {
             atmosphere.surface_lighting_resources(),
             &depth_view,
         );
+        let stars = stars::StarRenderer::new(
+            &device,
+            hdr::HdrRenderer::SCENE_FORMAT,
+            &camera_bind_group_layout,
+            weather_clouds.field_bind_group_layout(),
+            atmosphere.surface_lighting_resources(),
+        );
 
         let egui_context = egui::Context::default();
         let egui_state = egui_winit::State::new(
@@ -1333,6 +1342,7 @@ impl State {
             depth_view,
             hdr,
             atmosphere,
+            stars,
             weather,
             weather_clouds,
             rain,
@@ -3413,6 +3423,11 @@ impl State {
             f32::from(camera_sea_level_altitude_meters < camera_surface_height_meters);
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
+        self.stars.update(
+            &self.queue,
+            [self.size.width, self.size.height],
+            planet_rotation_radians,
+        );
         self.forest
             .update_camera(&self.queue, camera_planet_frame_position);
         self.forest.update_patch(
@@ -3815,6 +3830,13 @@ impl State {
                 timestamp_writes: None,
                 multiview_mask: None,
             });
+            // Sky objects use empty reversed-Z depth after either terrain
+            // path, before clouds/ships/trees and before exposure metering.
+            self.stars.draw(
+                &mut render_pass,
+                &self.camera_bind_group,
+                self.weather_clouds.field_bind_group(),
+            );
             self.ship_renderer
                 .draw(&mut render_pass, &self.camera_bind_group);
             self.forest.draw_beams(

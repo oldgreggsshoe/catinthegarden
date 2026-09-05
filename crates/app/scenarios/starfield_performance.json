@@ -1,0 +1,47 @@
+{
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 8.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0.0,
+  "fixed_exposure": true,
+  "screenshot_times_seconds": [],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 0
+  },
+  "name": "starfield_performance",
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [
+        20000000.0,
+        0,
+        0
+      ],
+      "look_at": [
+        20000648.38106847,
+        399.0037344430532,
+        -648.3810684699615
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        -1.0,
+        0,
+        0
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 70.0
+    }
+  ]
+}

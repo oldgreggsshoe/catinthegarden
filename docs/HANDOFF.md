@@ -5622,3 +5622,40 @@ GPU `ocean_grey_foreground/1788622881-96337` and land control
 `highest_prominence_peak/1788622894-96436` pass; the latter still culls ocean over land.
 Fresh interactive travel remains the human acceptance check. This restores missing rendering;
 it is not an FPS improvement claim.
+
+## Stars, verified and committed on Codex's behalf - 5 September 2026
+
+Codex added the star field in one pass and ran out of usage mid-verification, leaving the work
+uncommitted in the tree. Verified and committed here rather than lost: `stars.rs` (408 lines),
+`stars.wgsl` (160), three scenarios, and small edits to `atmosphere.rs`/`atmosphere.wgsl`/`main.rs`/
+`scenario.rs`.
+
+**The frame is right, which was the thing worth checking.** `stars.wgsl:37` states it -- *"Catalogues
+are inertial. Counter-rotate with the planet"* -- and `StarRenderer::update` takes
+`planet_rotation_radians` and uploads its sine and cosine, so the catalogue sits in world space and
+the sky turns over a ground observer rather than riding with them. Everything ground-attached lives in
+the planet frame; the stars deliberately do not. Given how much of today went on frame mix-ups, that
+is the detail that would have been expensive to get wrong.
+
+Visibility is physical rather than gated: a ray whose closest approach falls inside
+`PLANET_RADIUS_METERS` returns black, so the limb occludes; `stellar_column` applies atmospheric
+extinction so daylight drowns faint stars before bright ones; `stellar_cloud_transmission` obscures
+through cloud density. No altitude rule and no separate space skybox -- the same pass answers both
+"night from the ground" and "in orbit", which is the property the project is built around.
+
+**What I verified:** `cargo fmt --check`, `cargo clippy --workspace --all-targets` and
+`cargo check --all-targets` clean; 434 workspace tests pass, up from 430, so four new tests came with
+it. `starfield_space`, `starfield_twilight` and `starfield_performance` all pass. The twilight capture
+shows stars above a black occluding ground with a thin horizon band; the space capture shows a Milky
+Way band across a dark sky.
+
+**One defect, measured not eyeballed.** The nebula/galactic glow carries a visible diamond-lattice
+hatching. Fourier analysis of a 180x180 patch of `starfield_twilight/1788626704-108380/capture-004.png`
+inside the glow gives a dominant periodic component at **45.0 pixels** horizontally with a
+peak-to-median spectral power ratio of **53.4**, where a smooth field sits at 1-3. So it is a real
+repeating structure in the field, not display dithering or an artefact of my eyes. It is most visible
+where the glow is brightest and against black elsewhere. Unattributed -- likely the unresolved-star
+noise field being sampled on a regular lattice, but nothing has been traced.
+
+Not verified by anyone yet: the interactive night sky from the ground, and matched star-on/off
+performance runs, which is where Codex ran out.

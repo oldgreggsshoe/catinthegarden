@@ -218,21 +218,15 @@ fn perceptual_sky_radiance(radiance: vec3<f32>) -> vec3<f32> {
     return radiance * gain;
 }
 
-@fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    // A submerged eye has water in every direction, so the sky behind the
-    // geometry is water too. Without this the frame below the surface fills
-    // with the sky the camera can no longer see. Placeholder until there is a
-    // real underwater pass.
-    if camera.flat_triangle_options.w > 0.5 {
-        return vec4<f32>(0.012, 0.055, 0.13, 1.0);
-    }
-    let ray = view_direction(input.ndc);
+// Also used by stellar photometry: visibility depends on the actual sky
+// brightness in this direction, not a clock-based night/day switch.
+fn displayed_sky_radiance(ray: vec3<f32>) -> vec3<f32> {
     let sky_uv = sky_view_uv(ray);
-    let radiance = textureSample(
+    let radiance = textureSampleLevel(
         sky_view_lut,
         sky_view_sampler,
         sky_uv,
+        0.0,
     ).rgb;
     // The perceptual lift is needed to retain dim twilight for a surface
     // observer, but in space it turns extremely thin upper air into an opaque
@@ -253,13 +247,14 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         SKY_VIEW_MINIMUM_CAMERA_ALTITUDE_METERS,
     );
     let camera_radius = PLANET_RADIUS_METERS + camera_altitude;
-    let horizon_radiance = textureSample(
+    let horizon_radiance = textureSampleLevel(
         sky_view_lut,
         sky_view_sampler,
         vec2<f32>(
             sky_uv.x,
             ground_horizon_sky_view_v(camera_radius, camera_altitude),
         ),
+        0.0,
     ).rgb;
     // The terrain mist converges on the unboosted physical sky. Use its
     // longest same-azimuth grazing ray as the background endpoint too: rays
@@ -270,8 +265,17 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         horizon_radiance,
         orbital_blend,
     );
-    return vec4<f32>(
-        mix(visible_radiance, horizon_fog_radiance, fog_amount),
-        1.0,
-    );
+    return mix(visible_radiance, horizon_fog_radiance, fog_amount);
+}
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    // A submerged eye has water in every direction, so the sky behind the
+    // geometry is water too. Without this the frame below the surface fills
+    // with the sky the camera can no longer see. Placeholder until there is a
+    // real underwater pass.
+    if camera.flat_triangle_options.w > 0.5 {
+        return vec4<f32>(0.012, 0.055, 0.13, 1.0);
+    }
+    return vec4<f32>(displayed_sky_radiance(view_direction(input.ndc)), 1.0);
 }
