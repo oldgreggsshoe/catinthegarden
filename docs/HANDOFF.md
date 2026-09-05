@@ -1,7 +1,8 @@
 # Handoff — ocean wind sea spectrum
 
 **Branch:** `experiment/ocean-wind-sea-spectrum`, tracking
-`origin/experiment/ocean-wind-sea-spectrum`; ocean-culling repair based on `13cb2d1`.
+`origin/experiment/ocean-wind-sea-spectrum`, at `a82c7ee`. The name is historical: the ocean work it
+was opened for is done, and the active subject is now **a second body**.
 
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
@@ -15,7 +16,22 @@ not the first.** Read `AGENTS.md` for the architecture, and this for where the w
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
 state and is now history.
 
-**Sea state.** The ocean is the active subject of this branch. `WAVES` (`ocean.rs:238`) and its
+**Two bodies.** `body.rs` holds what distinguishes a world — radius, rotation, whether it has an
+ocean or an atmosphere, its material tints, and how much its baked height is exaggerated. One is
+active per process, chosen by `--body planet|moon` before any pipeline exists, because the radius
+reaches the shaders as a *generated constant* rather than a uniform. That is what makes CPU/GPU
+divergence impossible by construction, and it is also the reason both cannot be drawn at once yet:
+rendering them together needs the radius to become a uniform, and that is the next step, not this
+one. Every branch that distinguishes the two is a generated `const bool`, so the planet's compiled
+shader is unchanged — asserted by rendering, not by argument, at max pixel difference 0.
+
+The moon is baked like the planet, into `assets/outmaps/test-moon`, from a 120,176-crater catalogue
+in `coretypes::moon`. It has no ocean, no air, no weather and no vegetation, and its two materials
+are regolith and polar ice. Ice is *terrain*, which is the whole trick: it is drawn by the terrain
+pass and walked on with no special case anywhere. See the last two sections for the four planet-only
+rules that had to be gated off it, and for why baking was the right call after synthesising first.
+
+**Sea state.** The ocean is what this branch was opened for. `WAVES` (`ocean.rs:238`) and its
 `OCEAN_WAVE_TABLE` mirror in `shared_planet.wgsl` hold seventeen components: two 1,400m swells, a
 280-430m storm sea, and a twelve-component wind-sea tail spread widely in azimuth, which is what
 breaks the crests up. Each entry carries a calm and a full-storm amplitude, and both columns sum to
@@ -118,8 +134,8 @@ a magnified waterline capture. Scenarios initialise deterministic weather rather
 evolved manual state, so fresh manual travel through the real weather remains the visual acceptance
 gate for anything weather-composed.
 
-**CI.** Green at HEAD; `cargo fmt --all --check` is clean. All 73 clippy lints are cleared, 70 in
-the app crate and 3 in the baker. Clippy stops at the first crate that fails, so the baker's three
+**CI.** Green at HEAD: **460 workspace tests**, `cargo fmt --all --check` clean, clippy clean across
+all three crates. Note that `coretypes` now carries tests of its own — it used to be types only. Clippy stops at the first crate that fails, so the baker's three
 had been hiding the app's seventy entirely — the app was never being linted. Check both.
 
 **Recently closed, so they are not re-opened:** the "renderer draws near-field land up to 43.58m
@@ -131,7 +147,13 @@ at correlation 0.9586. `highest_prominence_peak`, `stand_on_ground`, `landing_si
 wrong mountain, on poses authored before a rebake; all four pass and compare points again. See the
 last two sections.
 
-**Also closed today.** The near-field ocean-culling defect is fixed at `4f2da78`: `may_contain_ocean`
+**Also closed.** The moon rendered black across most of its sunlit side, which was neither lighting
+nor exposure: `is_open_ocean_surface` was discarding every fragment at or below the datum for an
+ocean shell that does not run on that body. And the moon was synthesised per sample rather than
+baked, which capped it at a few hundred craters; it is baked now, at 120,176. Both in the last two
+sections.
+
+The near-field ocean-culling defect is fixed at `4f2da78`: `may_contain_ocean`
 tested a near-field chunk's water content with *window* UVs against a single guttered source tile, so
 it could prove an unrelated patch was land and cull the ocean covering the real one. It now tests the
 uploaded window's own unguttered grid. Verified independently on this branch, not taken on trust:
@@ -194,6 +216,17 @@ anywhere else.
     starts the game standing on the moon, and no scenario reaches that path; scenario replay and
     interactive play differ structurally, and this branch has already lost three defects into that
     gap (ship lag, grey ocean, surface spawn). Needs `--body moon` run by hand.
+12. **The moon has never been looked at from the ground.** Every capture of it so far is
+    `orbit_once`, from 10,000km, where the disc is under 200 pixels across. Nothing has tested what
+    the 2.4km bake floor looks like where the renderer's detail ladder takes over, whether the ice
+    reads as a flat pond at eye level, or whether the Lommel-Seeliger lighting still holds when a
+    crater wall fills the frame. There are no moon scenarios at all — the four ground scenarios are
+    the planet's, on the planet's poses.
+13. **The scenario suite is not I/O-independent.** A `stand_on_ground` run taken while a 378MB bake
+    was writing came back with a max pixel difference of 12 against a clean run of the same binary:
+    tile streaming missed its budget and an ancestor fallback was drawn. Two clean runs since are 0.
+    Nothing is wrong with the renderer, but a pixel comparison taken under disk load is not
+    evidence, and nothing in the harness says so.
 
 **Build convention.** Benchmarks and parity runs build to `CARGO_TARGET_DIR=/home/dad/catingard-target`,
 not the in-repo `target/`. Give every temporary or staged checkout its own `CARGO_TARGET_DIR`
