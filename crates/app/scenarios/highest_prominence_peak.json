@@ -7,25 +7,48 @@
   "seam_gap_check": false,
   "planet_relative_up": true,
   "planet_rotation_time_scale": 0.0,
-  "screenshot_times_seconds": [4.0, 8.0],
+  "surface_probe_max_distance_meters": 20000.0,
+  "screenshot_times_seconds": [
+    4.0,
+    8.0
+  ],
   "waypoints": [
     {
       "time_s": 0.0,
-      "position": [2413716.19884531, -1453965.83321741, 3088923.26393076],
-      "look_at": [2419426.23712999, -1452891.23194901, 3080784.42526044]
+      "position": [
+        -1938443.3971957173,
+        -1850475.1393002854,
+        3217124.8601757083
+      ],
+      "look_at": [
+        -1939171.7592895993,
+        -1856516.3273208032,
+        3209189.2734953836
+      ]
     }
   ],
   "sun_waypoints": [
-    { "time_s": 0.0, "direction": [0.425110143507339, 0.396515464790478, 0.813668760657038] }
+    {
+      "time_s": 0.0,
+      "direction": [
+        0.425110143507339,
+        0.396515464790478,
+        0.813668760657038
+      ]
+    }
   ],
   "vertical_fov_waypoints": [
-    { "time_s": 0.0, "vertical_fov_degrees": 60.0 }
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 60.0
+    }
   ],
   "assertions": {
     "require_finite_metrics": true,
     "max_lod_thrash_events": 0,
     "min_camera_clearance_m": 150.0,
     "max_camera_clearance_m": 155.0,
-    "expected_screenshots": 2
+    "expected_screenshots": 2,
+    "min_surface_probe_points": 8
   }
 }

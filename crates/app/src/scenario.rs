@@ -1087,23 +1087,60 @@ mod tests {
         );
     }
 
+    /// The pose is *derived* from the measured summit, never restated.
+    ///
+    /// This test used to assert the scenario file's own latitude, longitude and
+    /// radius back at itself, which is a tautology: it went on passing through
+    /// every rebake while the summit moved out from under the pose. By the time
+    /// it was noticed the camera sat 7,659m above ground 69 degrees of longitude
+    /// from the peak, `camera_stands_on_the_ground` had been failing for at
+    /// least four commits, and the surface probe was comparing zero points
+    /// because the nearest drawn surface was 48km away, past its 4km limit.
+    ///
+    /// Deriving it means the next bake that moves the summit fails here, next
+    /// to `global_highest_summit` which prints the replacement constants.
     #[test]
     fn highest_prominence_scenario_replays_the_f4_start_pose() {
         let scenario =
             ScenarioRunner::load("highest_prominence_peak").expect("peak scenario parses");
         let waypoint = &scenario.definition.waypoints[0];
         let position = glam::DVec3::from_array(waypoint.position);
-        let direction = position.normalize();
 
-        assert!((direction.y.asin().to_degrees() - (-20.349_651_274_351)).abs() < 1.0e-6);
+        // Derived from the *drawn* surface, not the survey's summit: the
+        // assertion this pose has to satisfy measures what the renderer draws,
+        // and the two differ by 227m here for reasons still open.
+        let expected_radius = crate::planet::PLANET_RADIUS_METERS
+            + crate::ACTIVE_HIGHEST_PROMINENCE_DRAWN_SURFACE_METERS
+            + crate::PROMINENCE_PEAK_CAMERA_CLEARANCE_METERS;
+        let expected = crate::ACTIVE_HIGHEST_PROMINENCE_DIRECTION * expected_radius;
         assert!(
-            (crate::planet::geographic_longitude_degrees(direction) + 51.995_567_522_201).abs()
-                < 1.0e-6
+            (position - expected).length() < 1.0e-6,
+            "the peak pose must stand {}m above the drawn surface at \
+             ACTIVE_HIGHEST_PROMINENCE_DIRECTION; re-run \
+             `cargo test -- --ignored --nocapture global_highest_summit` after a rebake, \
+             and re-measure ACTIVE_HIGHEST_PROMINENCE_DRAWN_SURFACE_METERS with it",
+            crate::PROMINENCE_PEAK_CAMERA_CLEARANCE_METERS,
         );
-        assert!((position.length() - 4_181_087.114_995_877).abs() < 1.0e-6);
+
+        // The camera looks 18 degrees below the local horizon, so the summit it
+        // is standing on fills the lower frame rather than the sky.
+        let up = position.normalize();
+        let forward = (glam::DVec3::from_array(waypoint.look_at) - position).normalize();
+        assert!((forward.dot(up).asin().to_degrees() + 18.0).abs() < 1.0e-6);
+
+        // The clearance band must bracket the height the pose is derived at, or
+        // a correct pose would fail the scenario it was authored for.
+        let min = scenario
+            .assertions()
+            .min_camera_clearance_m
+            .expect("the peak scenario asserts a clearance floor");
+        let max = scenario
+            .assertions()
+            .max_camera_clearance_m
+            .expect("the peak scenario asserts a clearance ceiling");
+        assert!(min < crate::PROMINENCE_PEAK_CAMERA_CLEARANCE_METERS);
+        assert!(crate::PROMINENCE_PEAK_CAMERA_CLEARANCE_METERS < max);
         assert_eq!(scenario.expected_screenshots(), 2);
-        assert_eq!(scenario.assertions().min_camera_clearance_m, Some(150.0));
-        assert_eq!(scenario.assertions().max_camera_clearance_m, Some(155.0));
     }
 
     #[test]

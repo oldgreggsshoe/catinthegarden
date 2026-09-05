@@ -112,7 +112,37 @@ const ACTIVE_HIGHEST_PROMINENCE_DIRECTION: glam::DVec3 = glam::DVec3::new(
     0.768_344_055_060_972,
 );
 #[allow(dead_code)] // the calibration instrument's expected value
-const ACTIVE_HIGHEST_PROMINENCE_METERS: f64 = 186_701.172_076_862;
+const ACTIVE_HIGHEST_PROMINENCE_METERS: f64 = 186_709.141_680_765;
+/// What the *renderer draws* at `ACTIVE_HIGHEST_PROMINENCE_DIRECTION`, which is
+/// the height the camera stands on and the one `camera_stands_on_the_ground`
+/// measures. Re-measure it after a rebake alongside the summit above.
+///
+/// It sits 227.353m **above** `ACTIVE_HIGHEST_PROMINENCE_METERS`, and that gap
+/// is not explained yet. The survey instrument evaluates the detail ladder on
+/// L4 data at the 0.5m minimum filter and gets -232.1m of detail at this point;
+/// the app converges to exactly `raw_macro * 4` (186,941.266m) by 36km of
+/// altitude and reads 186,936.5m near the ground, so it applies almost none.
+/// The likely cause is the ladder's *high* cut, `baked_spacing_meters`, which
+/// retires octaves longer than the source spacing: the survey scans L4 only,
+/// while the app resolves whatever finer tile is resident there, so the two
+/// hold different high cuts. That is a hypothesis, not a measurement -- the
+/// probe compares zero points at this pose, so nothing has confirmed it.
+/// Deriving the pose from this constant rather than the summit is what keeps
+/// the camera on the peak instead of 75m inside it while that stays open.
+#[allow(dead_code)] // read by the scenario pose test
+const ACTIVE_HIGHEST_PROMINENCE_DRAWN_SURFACE_METERS: f64 = 186_936.494_597_373_06;
+/// Height the `highest_prominence_peak` scenario stands its camera at above the
+/// drawn summit, and the centre of that scenario's 150-155m clearance band.
+/// 500 ft.
+///
+/// The scenario's pose is *derived* from this and the two constants above --
+/// `highest_prominence_scenario_replays_the_f4_start_pose` recomputes it rather
+/// than restating the numbers in the JSON. That test used to assert the file's
+/// own coordinates back at itself, so it went on passing while the summit moved
+/// out from under the pose and left the camera 7,659m up over ground 69 degrees
+/// of longitude away, comparing zero probe points.
+#[allow(dead_code)] // read by the scenario pose test
+const PROMINENCE_PEAK_CAMERA_CLEARANCE_METERS: f64 = 152.4;
 #[cfg(test)]
 /// Raw macro elevation *at the summit above*, not the global raw L4 maximum --
 /// since the coverage retune those are different points, and the prominence

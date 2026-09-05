@@ -1,7 +1,7 @@
 # Handoff — ocean wind sea spectrum
 
 **Branch:** `experiment/ocean-wind-sea-spectrum`, tracking
-`origin/experiment/ocean-wind-sea-spectrum`, at `d943881`.
+`origin/experiment/ocean-wind-sea-spectrum`, at `510779d`.
 
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
@@ -5250,3 +5250,71 @@ both read `camera_surface_height_meters`, a CPU query that never touches the dep
 neither is affected by this change. `stand_on_ground` still compares 0 points, as it has since
 `1787411515`. All 428 workspace tests pass; `cargo fmt --check` and `cargo clippy --workspace
 --all-targets` are clean.
+
+## Four ground scenarios were measuring nothing - 5 September 2026
+
+`stand_on_ground` compared 74 points at median 0.104m as recently as run `1785674116`. It then
+compared **zero**, and had since `1787411515`. Its failure line said so plainly and nobody read it:
+`maximum observed 0m over 0 points in 5 frames, violations 0`. An assertion reporting no violations
+over no points is not passing, it is asserting nothing.
+
+The cause is the same in all four cases and it is not subtle. The landing site at direction
+`(1, 0, 0)` now has ground at **4,391.075m**. The poses were authored when it was around 3,635m, and
+never moved when the outmap was rebaked. So the cameras were 687-753m *underground*, every drawn
+surface they could see was 2.4-34.8km away, and the probe's 4km comparison limit discarded all of it.
+`highest_prominence_peak` was the same failure at the other end of the planet: authored at a summit
+the bake has since moved away from, leaving the camera 7,659m above ground 69 degrees of longitude
+from the actual peak.
+
+| scenario | before | after |
+|---|---|---|
+| `stand_on_ground` | clearance -753.319m, 0 compared, FAIL | clearance 2.000m, 400 compared over 5 frames, median 0.317m, p90 0.592m |
+| `landing_site_eye_level` | clearance -753.019m, 0-2 compared, FAIL | clearance 2.000-62.586m, 274 compared, median 0.389-1.395m |
+| `landing_site_ground_detail` | clearance -687.129m, 0 compared, **passing** | clearance 68.190m, 152 compared, median 1.285m, p90 2.736m |
+| `highest_prominence_peak` | clearance 7,659.857m, 0 compared, FAIL | clearance 152.402m, 10 compared |
+
+`landing_site_ground_detail` is the one worth dwelling on: it had no clearance assertion at all, so it
+sat 687m inside a mountain and reported success for months. It has a 60-75m band now. That band is
+authored around the 68.190m the restored pose measures, not derived from anything.
+
+**The lockstep test was a tautology.** `highest_prominence_scenario_replays_the_f4_start_pose`
+asserted the scenario file's own latitude, longitude and radius back at itself, so it passed happily
+through every rebake while the pose drifted off the summit. It now *derives* the expected position
+from `ACTIVE_HIGHEST_PROMINENCE_DIRECTION` and the drawn-surface constant, so the next bake that
+moves the summit fails there, beside `global_highest_summit` which prints the replacement constants.
+That instrument also wanted `ACTIVE_HIGHEST_PROMINENCE_METERS` moved 186,701.172 to 186,709.142; it
+passes now.
+
+**An open discrepancy this turned up, recorded rather than resolved.** At the summit direction the
+survey instrument reports 186,709.142m and the app's own surface query reports **186,936.495m**, a
+gap of 227.353m with the app higher. The app's reading is stable across altitude -- 186,936.5m near
+the ground converging to exactly `raw_macro * 4` = 186,941.266m by 36km up -- so it applies almost no
+detail, while the survey computes -232.1m of it at the 0.5m minimum filter on L4 data. The likely
+cause is the ladder's high cut, `baked_spacing_meters`, which retires octaves longer than the source
+spacing: the survey scans L4 only, the app resolves whatever finer tile is resident. **That is a
+hypothesis and nothing has measured it** -- the probe compares zero points at that pose. The scenario
+pose is derived from the drawn surface, `ACTIVE_HIGHEST_PROMINENCE_DRAWN_SURFACE_METERS`, because
+that is what `camera_stands_on_the_ground` measures; deriving it from the summit put the camera 75m
+inside the mountain.
+
+**Guards added.** `min_surface_probe_points` on the three scenarios that lacked it: 200 for
+`landing_site_eye_level`, 120 for `landing_site_ground_detail`, 8 for `highest_prominence_peak`.
+`stand_on_ground` already had 300, which is exactly why its blindness was visible in the first place
+-- the harness already refuses a delta tolerance without a point floor (`scenario.rs:740`). The gap
+it does not cover is a scenario asserting *clearance* without a point floor, which is how
+`landing_site_ground_detail` stayed buried and green.
+
+`highest_prominence_peak` needed a scenario-local `surface_probe_max_distance_meters` of 20,000m to
+compare anything at all, and still only reaches 5 points per frame: it stands on a 186km peak looking
+18 degrees down, so almost everything in frame is tens of kilometres away. Its floor of 8 is there to
+catch the probe going blind again, not to be a rich sample.
+
+**Survey of the rest.** 24 of the 69 scenarios with probe data have surface hits and zero compared
+points in their latest run. Nineteen are orbital, atmosphere or flyover scenarios where that is
+correct -- everything in frame is past the comparison limit and ground truth is not their subject.
+Five are near the ground: `sunrise_midday_surface` and `sunset_blue_hour` at 100m, `ocean_waterline_flat`
+at 1m over water where the CPU height is zero by definition, `ground_to_orbit` at 10m and climbing,
+and the known-failing `low_flight_performance`. None of them asserts clearance, so none is silently
+claiming a camera is on the ground. They are left alone deliberately.
+
+All 428 workspace tests pass, `global_highest_summit` passes, fmt and clippy clean.

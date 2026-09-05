@@ -17,12 +17,12 @@
     {
       "time_s": 0.0,
       "position": [
-        4003713.8247169653,
+        4004468.964666367,
         0.0,
         0.0
       ],
       "look_at": [
-        4003698.8247169653,
+        4004453.964666367,
         0.0,
         150.0
       ]
@@ -30,12 +30,12 @@
     {
       "time_s": 10.0,
       "position": [
-        4003637.9347169653,
+        4004393.0746663674,
         0.0,
         0.0
       ],
       "look_at": [
-        4003636.9347169653,
+        4004392.0746663674,
         0.0,
         150.0
       ]
@@ -61,6 +61,7 @@
     "require_finite_metrics": true,
     "max_lod_thrash_events": 0,
     "expected_screenshots": 5,
-    "min_camera_clearance_m": 1.9
+    "min_camera_clearance_m": 1.9,
+    "min_surface_probe_points": 200
   }
 }
