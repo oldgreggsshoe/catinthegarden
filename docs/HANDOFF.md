@@ -1,41 +1,150 @@
-# Handoff — experimental weather
+# Handoff — ocean wind sea spectrum
 
-**Branch:** `experimental-weather`, tracking `origin/experimental-weather`
-**Branch base:** the current experimental-weather line; preserve all unrelated local renderer,
-terrain, baker, documentation, and response-file changes when staging weather work.
-**Renderer state:** current branch — positive baked macro land uses one fixed 4x presentation scale
-at every camera altitude; sea level and negative bathymetry remain physical. CPU truth, raster, ray,
-LOD/culling bounds, shader normals, and scenario cameras share that transform. The former 8x
-long-wave procedural-detail gain is disabled (1x) so the observed ETOPO shape can be evaluated
-without a dominant pattern of random basins; the finer detail system remains intact. F4 starts over the measured
-highest-prominence summit. Moving raster flight sweeps the camera through every concurrently drawn
-active/transition patch, rechecks the newly selected destination frontier before presentation, and
-retains a 5m moving collision envelope; F4 entry is 2m and idle inspection can settle to 0.75m. The raster culling shell includes
-the complete live detail ladder, so elevated near-camera vertices cannot disappear outside a
-macro-only bound. Key 6 switches between auto exposure and fixed 1.0.
-The fullscreen sky removes the direct-scattering model's green-dominant colour crossover and adds
-a bounded indirect Rayleigh approximation for a blue hour that fades into night.
-Raster terrain now carries aerial transmittance and in-scatter independently from vertex to
-fragment, so low-sun shadows cannot cross a per-channel reconstruction threshold and become bright
-islands with dark outlines. Terrain ambient remains the local overhead sky radiance scaled by 0.18.
-Raster land currently uses the displaced smoothed vertex normal for close-snow lighting. The prior
-flat geometric-normal trial is retired because fallback facets became repeated black strips at
-122m altitude; height, LOD, source sampling and the ray path are unchanged.
-**Latest evidence:** the orientation-corrected, fixed-4x ETOPO terrain passes raster
-`orbit_once/1785599097-127619`, ray `orbit_once/1785599236-129103`, raster
-`stand_on_ground/1785599119-127881`, raster `landing_site_ground_detail/1785599181-128543`, raster
-`landing_site_eye_level/1785599299-129789`, raster
-`highest_prominence_peak/1785599150-128156`, and ray
-`highest_prominence_peak/1785599507-134390`. A cold raster orbit first exposed the known fallback
-warm-up seam at 0.5-1.0s, then the immediate repeat passed with zero seam. The lifted-budget raster
-`low_flight_performance/1785599348-130207` remains a known failure: 420 resident chunks, 334
-fallbacks and a 2,071.204m warm-up seam. Older renderer-only evidence is retained in the relevant
-sections below but uses a previous macro/detail presentation. The later raster low-poly trial passes
-`orbit_once/1785600758-149017`, `landing_site_ground_detail/1785600646-146796`, and
-`highest_prominence_peak/1785600765-149139`; see its section below for the visual findings.
-**Written:** 26 August 2026
+**Branch:** `experiment/ocean-wind-sea-spectrum`, tracking
+`origin/experiment/ocean-wind-sea-spectrum`, at `1187993`.
+
+**Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
+documentation, and response-file changes when staging work.
+
+**Written:** 5 September 2026.
+
+**How to read this file:** everything below this header is an append-only log of dated sections,
+oldest first. This header is the current state; **the newest work is the last section in the file,
+not the first.** Read `AGENTS.md` for the architecture, and this for where the work is.
+
 **Supersedes:** `PLANET_SIM_HANDOFF.md` at the repo root, which describes the 19 July low-flight
-state and is now history. Read `AGENTS.md` for the architecture; read this for where the work is.
+state and is now history.
+
+**Sea state.** The ocean is the active subject of this branch. `WAVES` (`ocean.rs:238`) and its
+`OCEAN_WAVE_TABLE` mirror in `shared_planet.wgsl` hold seventeen components: two 1,400m swells, a
+280-430m storm sea, and a twelve-component wind-sea tail spread widely in azimuth, which is what
+breaks the crests up. Each entry carries a calm and a full-storm amplitude, and both columns sum to
+the same 0.9575m, so a storm moves the dominant band down from the 1,400m swell rather than scaling
+the calm sea up. That gives a 42.130m calm cap (x44) and a 52.663m storm cap (x55), so the 53m bound
+holds at either end and everywhere between. A test mirrors every axis, wavelength, amplitude and
+speed literal between the CPU table and the shader, because a GPU-only edit would leave collision
+following water the renderer had stopped drawing.
+
+`OCEAN_WAVE_SCALE` (`ocean.rs:15`, currently 1.0) is the only place the sea's size is written down.
+The calm and storm amplitude scales, `MAXIMUM_WAVE_HEIGHT_METERS` and the steepness all derive from
+it; `ocean::wgsl_constants` generates the shader's copies and `planet::shared_planet_shader_source`
+prepends them, which both the raster and raymarch assemblers go through, so the two render paths
+cannot disagree. Steepness is `1 / OCEAN_WAVE_SCALE`, holding the Gerstner self-intersection budget
+invariant at 1.17 against a physical limit of 1.0 — the sea already folds; the knob holds it there
+rather than letting it grow. Its real ceiling is the camera's -100m underwater floor, around 1.8.
+Two guards run before the shader mirroring, so an out-of-range knob is reported before anything is
+edited.
+
+**Shore.** Waves shoal rather than fade out. `breaking_weight` squeezes the summed crest toward the
+depth limit with a soft-max knee, so it flattens off as it shallows and can never cut through the
+bed — the limit reaches zero exactly where the water does. `BREAKING_HEIGHT_TO_DEPTH_RATIO` is 0.78
+(`ocean.rs:485`); it is a wave *height* to depth ratio, so the crest amplitude limit is half that,
+0.39 · depth. `shoaling_phase_offset_meters` steers propagation along the depth gradient, so swell
+arrives from seaward whichever way a coast faces; re-aiming the wave table cannot do this, because
+the best fixed axis on the whole sphere serves only 52.7% of 897 coasts. Measured by
+cross-correlating nadir frame sequences and dotting the pattern displacement with the onshore direction:
+spawn +0.99, then +0.63, +1.00, +0.66, +0.37. `REFRACTION_NOMINAL_SHELF_SLOPE` is 0.0045
+(`ocean.rs:159`), set to carry the *gentlest* shelf on the planet (0.0076, at the spawn coast)
+rather than a typical one; a test asserts the steering dominates through the surf zone against that
+slope, and only there, since the steering fades with depth by design. Foam keys off
+`breaking_ratio`, the raw crest against the limit, and fades again once a crest is well past
+breaking.
+
+**Camera.** Three interactive modes. `G` toggles a 1.70m human-eye surface camera out of the F4 low
+flight camera and back; F4 returns either close mode to the saved orbit pose. Surface vertical
+motion is a fixed-substep gravity simulation rather than a surface clamp: `Space` jumps 5.2m/s on
+land or 2.5m/s submerged, uphill movement is rejected above 42 degrees, and descent and water entry
+stay allowed. In water, buoyancy drives the motion but the eye cannot end a substep below the
+surface — this sea's crests accelerate downward at close to g and overtake a floating body, leaving
+it submerged 41% of a storm, and twenty times the restoring force only reached 23%. So bobbing has a
+floor rather than a stiffer spring. That is a camera concession, not physics; true immersion wants
+the underwater rendering that is still unimplemented. Interactive startup enters swimming mode at
+30.246944N, 14.474559W, roughly 50km seaward of the authored coast.
+
+**Clocks.** `INTERACTIVE_DAY_REAL_SECONDS` is 1200 (`main.rs:83`) and the rotation scale derives
+from it. Weather takes its clock from the rotation — `WEATHER_DAYS_PER_PLANET_ROTATION` is 1.0
+(`weather.rs:26`), giving 72x real time — with tests asserting one rotation advances the weather
+exactly one day and that a day divides into whole steps. Comma and period step a nine-rung time
+ladder from 10% to 4000% of real time; everything scene-side reads one accumulated
+`scaled_clock_seconds`, so rotation, ocean, weather and hull speed up together and the derived
+relationships hold at every rung. Weather, hull and surface camera all integrate whole fixed steps
+and carry their remainders, so none of them depends on frame rate any more.
+
+**Weather.** Temperature advection was draining the planet: 24.00K lost over four weather-days by a
+semi-Lagrangian scheme with a clamped MacCormack corrector, which conserves nothing, while advection
+should not change the mean at all. Donor-cell transport made it far worse (105K) because it moves
+`value * area`, which suits a mass fraction and ruins an intensive quantity. Temperature now trades
+a bounded share of its *difference* with the cell downwind, so what leaves one enters the other
+exactly: 0.00K over 3000 steps, and the field holds 264.8-267.6K across 20.8 weather-days instead of
+collapsing onto the 180K clamp floor. Moisture oscillates 0.59-0.69 with no trend.
+
+**Ship.** `ship.rs` owns the hull form, an eighty-column buoyancy discretisation and the rigid body,
+GPU-free and tested like `surface_camera`; `ship_render.rs` owns the pass. Mass comes from the same
+columns that provide buoyancy, so the design waterline is an exact equilibrium rather than a tuned
+guess. Buoyancy acts normal to the sloped water surface via `ocean::global_wave_slope`, checked
+against a centred finite difference — a radial force has no moment about the vertical axis, so
+before this nothing in the model could yaw the hull. Metacentric height is set directly at 0.9m
+rather than falling out of where the mass sits, with eddy damping a vertical-prism model otherwise
+has none of.
+
+**Flags that decide what the camera stands on.** All are paired CPU/GPU and enforced by tests.
+Flipping one half silently is the recurring failure mode on this branch.
+
+- `WATER_BOBBING_ENABLED` (`surface_camera.rs:17`) — `true`.
+- `OCEAN_HORIZONTAL_TRANSPORT_ENABLED` (`ocean.rs:118`) — `false`, and must stay false while the CPU
+  height query has no horizontal term. Transport slides the rendered mesh up to 54m sideways.
+- `OCEAN_RIPPLES_ARE_GEOMETRIC` (`ocean.rs:131`) — `false`. The 180/70/28m ripples are a shading
+  detail; `vs_ocean` does not displace by them. A test reads `vs_ocean` and fails if the flag and
+  the shader disagree. The CPU query once added them anyway, floating the camera on up to 4.6m of
+  water nobody drew.
+- `OCEAN_LARGE_SWELL_ONLY` (`ocean.rs:185`) — `false`. Keeps only the leading swell pair and
+  silences the wind sea and the whole ripple layer when true.
+- `OCEAN_WAVE_PHASE_SPEED_SIGN` (`ocean.rs:142`) — `1.0`. Phase is `wave_number * (dot(direction, axis) * R + sign * speed * time)`, so a crest travels against it.
+
+**Controls** (the sections below carry the rest): F4 low flight and saved orbit pose; F6; F10
+freezes planet rotation, sun and composition but *not* the ocean or weather clocks, which run on
+presentation time; `G` surface mode; `WASD` and mouse look, planet-relative; `[` and `]` scale the
+4.4704m/s walk and 2.0m/s swim; `Space` jump; `6` auto exposure versus fixed 1.0; `7` weather
+diagnostics with 4hPa isobar contours and labelled H/L extrema; comma and period for the time
+ladder.
+
+**Latest evidence.** `ocean_hybrid_close` is the calm control; `ocean_rough_horizon` the storm
+endpoint, passing its 30m gate at 39.352m with foreground crests occluding waves behind them;
+`ocean_low_sun_stability` holds top-quarter sky luminance to 0.52% on a vertical move and 0.37%
+lateral; `ocean_waterline_flat` is the magnified waterline instrument. The ocean has **no seam
+instrument**: `max_seam_delta_m` compares baked outmap tile heights across chunk boundaries and
+cannot see a gap in analytically displaced ocean vertices, so that class of defect only shows up in
+a magnified waterline capture. Scenarios initialise deterministic weather rather than serialising an
+evolved manual state, so fresh manual travel through the real weather remains the visual acceptance
+gate for anything weather-composed.
+
+**CI.** Green at HEAD; `cargo fmt --all --check` is clean. All 73 clippy lints are cleared, 70 in
+the app crate and 3 in the baker. Clippy stops at the first crate that fails, so the baker's three
+had been hiding the app's seventy entirely — the app was never being linted. Check both.
+
+**Known failures and open threads,** in the order worth picking up:
+
+1. **The surface probe still reports about 11m between the rendered mesh and the sampled height
+   field** on steep near-field terrain. The camera now stands on the drawn mesh wherever it exists,
+   so this no longer puts the eye in the air, but the two fields genuinely differ that much and it
+   has not been explained. The last section of this file flags it as wanting its own look; it is the
+   natural next task.
+2. **`descent_to_10m` fails on the terrain streamer**, and did so before any of this branch's work:
+   LOD peaks at 14 against a required 18, 256 fallback chunks against an allowance of 128, and
+   `tiles_loaded` stays at zero across twenty seconds. Not investigated.
+3. **`low_flight_performance`** was a known failure in the terrain era — 420 resident chunks, 334
+   fallbacks, a 2,071.204m warm-up seam — and has not been re-measured since the ocean work began.
+   Treat those numbers as unverified rather than current.
+4. The Gerstner fold budget stands at 1.17 against a physical limit of 1.0. Accepted and held
+   invariant by `OCEAN_WAVE_SCALE`, not fixed; lowering it is a deliberate visual change.
+5. Underwater rendering is unimplemented, which is what the bobbing floor stands in for.
+
+**Build convention.** Benchmarks and parity runs build to `CARGO_TARGET_DIR=/home/dad/catingard-target`,
+not the in-repo `target/`. Give every temporary or staged checkout its own `CARGO_TARGET_DIR`
+(`AGENTS.md`); never share the worktree's. Note that
+`catingard/.git` is a 46-byte pointer file — the real object database lives at
+`/home/dad/catingard-tmp/catingard-git`, so `catingard-tmp` is **not** scratch and must never be
+swept by a disk cleanup.
 
 ### Experimental weather — pressure diagnostics (25 August 2026)
 

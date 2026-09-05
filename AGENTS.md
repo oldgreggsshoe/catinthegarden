@@ -215,6 +215,12 @@ If a `cargo add` resolves something newer, that's fine — these are floors, not
 /docs/HANDOFF.md  canonical current-state and next-session handoff
 ```
 
+**The repository is a worktree.** `catingard/.git` is a 46-byte pointer file; the real object
+database lives at `/home/dad/catingard-tmp/catingard-git`. Despite the name,
+`/home/dad/catingard-tmp` is **not** scratch and must never be swept by a disk cleanup —
+deleting it destroys all history. Stale build output is safe to remove; that directory is not
+build output. `git worktree list` shows the live checkouts before you delete anything.
+
 ## Terrain gen pipeline (baker crate only)
 
 Order matters, each step consumes the previous:
@@ -243,7 +249,7 @@ Test the baker standalone with the PNG preview before ever wiring it into the re
 - One phase per session (see phase list below). Don't scope-creep into the next one.
 - Run `cargo check` after meaningful changes, not just at the end.
 - Update "What exists now" at the top of this file before ending the session.
-- Read `docs/HANDOFF.md` before changing code. **Keep this document up to date at all times!** Update it in the same change whenever behavior, architecture, controls, commands, verification, risks, or the next action changes.
+- Read `docs/HANDOFF.md` before changing code. Its header is the current state; the dated sections below it are an append-only log, so **the newest work is the last section in the file.** **Keep this document up to date at all times!** Update it in the same change whenever behavior, architecture, controls, commands, verification, risks, or the next action changes — the header too, not just a new section, whenever the branch or state moves on.
 - If you hit a design question not answered here, make the smallest reasonable call, note it under "What exists now", don't block waiting for input.
 
 ## Phase list
