@@ -5386,3 +5386,56 @@ Worth noting for whoever picks this up: the default composition mode is `FlatTri
 the flat-shaded presentation. That is what turns a coarse ocean patch into a featureless slab instead
 of a merely low-poly sea, and it is why this reads as a catastrophic artefact rather than a
 resolution drop.
+
+## The planet turns 18km/s under a standing camera - 5 September 2026
+
+The grey slab and the vanishing boat are one defect, and it is not the ocean, the streamer or the
+detail ladder. **A surface camera does not turn with the planet. The ground slides under it at
+18.4km/s.**
+
+Measured from manual run `1788619495-74706`, a swimming camera at the spawn coast. Between logged
+frames the camera's world position moves 9,123-9,539m, a speed of **18,093 m/s**, while the HUD
+reports `Surface speed: 0.00 m/s`. Latitude is constant to nine decimal places at 30.246944237; the
+longitude advances 1.6823 degrees over the run, which is 0.029361 radians against a logged
+`planet_rotation_radians` of 0.02936. The camera's ground track is the planet's rotation exactly,
+and nothing else.
+
+The arithmetic: `INTERACTIVE_DAY_REAL_SECONDS` is 1,200, so the planet turns at 0.005325 rad/s -- a
+19.7-minute day. At the 4,000km radius that is 18,402 m/s of ground speed at his latitude, or **307
+metres per frame at 60fps**. This was worse before 4 September: `83ef427` *slowed* the day from five
+minutes to twenty, which was a fourfold improvement on a figure that is still 40 times Earth's
+equatorial 465 m/s.
+
+Both reported symptoms follow directly:
+
+- **The boat vanishes the moment time starts.** He pressed F10 with the world frozen -- the first
+  capture logs `planet_rotation_radians` 0.0 and a camera velocity of 0.07 m/s -- and from the next
+  logged frame the camera is doing 18km/s. The ship is swept out of frame inside a second. Nothing
+  else visibly changes because open sea looks the same everywhere.
+- **The grey slab is coarse fallback geometry.** Tile streaming cannot serve 307m per frame, so
+  `Fallback chunks: 247` of 255 drawn: the ocean is drawn from coarse ancestors as single flat-shaded
+  triangles hundreds of pixels across, which is the constant-colour slab measured in the previous
+  section.
+
+**Reproduced by one field.** `ocean_grey_foreground` at his pose with
+`planet_rotation_time_scale: 0.0` draws a correct, fully detailed sea. Set it to `1.0` and the slab
+appears within half a second -- 597 to 668 constant-colour rows out of 720 down the centre column --
+and by two seconds the terrain is torn ribbons over flat void. That one field is the whole
+difference, which is why the previous section could rule out pose, weather, viewport and 2,000 m/s
+flight and still not find it.
+
+**Why no scenario has ever caught this: 60 of the 69 scenarios set
+`planet_rotation_time_scale: 0.0`,** six omit it, and only `ground_to_orbit` and `sunset_sweep` run
+with it at 1.0. `ground_to_orbit` starts at 10m altitude, is one of the known failures, and is one of
+the near-ground scenarios comparing zero probe points -- consistent with being swept off its ground
+before it can measure anything, though that has not been confirmed.
+
+**This is a design question, not a bug to patch quietly.** The options are different in kind: give
+the planet a realistic day (Earth-like 465 m/s ground speed needs about a 13-hour day at this
+radius); freeze or heavily slow rotation whenever a surface camera is active; or make the surface
+camera and everything attached to the ground co-rotate, so a standing player is stationary with
+respect to the terrain and the streamer never sees the motion at all. The third is the only one that
+keeps both a fast visible day and a usable surface, and it is the largest change. Ian's call.
+
+The HUD is also misleading here and should say so: `Surface speed: 0.00 m/s` is true in the frame the
+camera controls and says nothing about the 18km/s the ground is doing underneath it.
