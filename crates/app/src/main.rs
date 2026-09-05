@@ -4149,12 +4149,12 @@ impl State {
                         camera_sea_level_altitude_meters,
                         camera_surface_height_meters,
                         surface_probe_max_distance_meters,
-                        |direction, camera_distance_meters| match render_path {
+                        |direction, _camera_distance_meters| match render_path {
                             RenderPath::Raster => terrain
                                 .raster_surface_height_breakdown_at_distance(
                                     direction,
                                     camera_sea_level_altitude_meters,
-                                    camera_distance_meters,
+                                    geometry.raster_detail_distance_meters(direction),
                                 ),
                             RenderPath::FoveatedRay => terrain.surface_height_breakdown_at(
                                 direction,
@@ -4165,7 +4165,12 @@ impl State {
                             filter_sweep: terrain.detail_filter_sweep_at(
                                 direction,
                                 camera_sea_level_altitude_meters,
-                                camera_distance_meters,
+                                match render_path {
+                                    RenderPath::Raster => {
+                                        geometry.raster_detail_distance_meters(direction)
+                                    }
+                                    RenderPath::FoveatedRay => camera_distance_meters,
+                                },
                             ),
                             near_field: terrain.near_field_window_sample_at(direction).map(
                                 |(source_level, baked_height_meters)| probe::NearFieldSample {

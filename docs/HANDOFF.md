@@ -1,7 +1,7 @@
 # Handoff — ocean wind sea spectrum
 
 **Branch:** `experiment/ocean-wind-sea-spectrum`, tracking
-`origin/experiment/ocean-wind-sea-spectrum`, at `a82c7ee`. The name is historical: the ocean work it
+`origin/experiment/ocean-wind-sea-spectrum`; latest probe repair is based on `4655625`. The name is historical: the ocean work it
 was opened for is done, and the active subject is now **a second body**.
 
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
@@ -134,7 +134,7 @@ a magnified waterline capture. Scenarios initialise deterministic weather rather
 evolved manual state, so fresh manual travel through the real weather remains the visual acceptance
 gate for anything weather-composed.
 
-**CI.** Green at HEAD: **460 workspace tests**, `cargo fmt --all --check` clean, clippy clean across
+**CI.** Green after the probe repair: **461 workspace tests** (12 ignored), `cargo fmt --all --check` clean, clippy clean across
 all three crates. Note that `coretypes` now carries tests of its own — it used to be types only. Clippy stops at the first crate that fails, so the baker's three
 had been hiding the app's seventy entirely — the app was never being linted. Check both.
 
@@ -165,16 +165,15 @@ zero in the lower half, and the top 200 sky rows are byte-identical. Land cullin
 nothing" thread is closed too**: only the `pz` face is baked past L4, so there is nothing to load
 anywhere else.
 
+**Also closed: `mountain_ground`'s 11.4m discrepancy.** The raster probe passed surface-hit
+distance into a detail filter whose shader measures distance to the undisplaced sphere. Correcting
+the comparison reduces median error from 11.433m to 0.052m (maximum 12.660m to 0.312m), with a
+byte-identical screenshot. The scenario now requires 81 comparisons and a 2m maximum error.
+See the latest section for the failing-before/passing-after evidence. No terrain or collision changed.
+
 **Known failures and open threads,** in the order worth picking up:
 
-1. **`mountain_ground` disagrees by 11.4m and nothing explains it.** Median 11.433m, p90 12.236m,
-   max 12.660m over 81 points, bit-identical before and after the tree fix, so trees are not in it.
-   The distribution is tight and near-uniform with none of the bimodal, one-signed spread an
-   occluder produces, which makes it the genuine mesh-versus-field gap on steep near-field terrain.
-   This is the one to pick up first. Note the instrumentation now on `ProbeComparison` --
-   `cpu_node_level`, `cpu_detail_filter_meters`, `filter_sweep`, `near_field` -- which says whether
-   a gap is filter width, source data, or neither, without another instrumentation pass.
-2. **The survey and the app disagree by 227.353m about the summit's height.** `global_highest_summit`
+1. **The survey and the app disagree by 227.353m about the summit's height.** `global_highest_summit`
    reports 186,709.142m at `ACTIVE_HIGHEST_PROMINENCE_DIRECTION`; the app's surface query reports
    186,936.495m there, stable across altitude and converging to exactly `raw_macro * 4` =
    186,941.266m by 36km up. So the app applies almost no detail where the survey applies -232.1m.
@@ -183,46 +182,46 @@ anywhere else.
    settled, `highest_prominence_peak`'s pose is derived from
    `ACTIVE_HIGHEST_PROMINENCE_DRAWN_SURFACE_METERS`, because that is what the clearance assertion
    measures; deriving it from the summit puts the camera 75m inside the mountain.
-3. **The probe is meaningless over water and nothing says so.** All 45 points in
+2. **The probe is meaningless over water and nothing says so.** All 45 points in
    `ocean_hybrid_close` and all 9 in `ocean_rough_horizon` have `cpu_height_meters` of exactly 0.0,
    so their reported deltas are rendered wave height, not a surface disagreement. No scenario arms
    `max_surface_probe_delta_m`; if one were armed on a water scenario it would fail on wave height
    alone.
-4. **A scenario can assert clearance with no probe-point floor, and be buried and green.** The
+3. **A scenario can assert clearance with no probe-point floor, and be buried and green.** The
    harness refuses a delta tolerance without `min_surface_probe_points` (`scenario.rs:740`) but has
    no such rule for a clearance assertion, which is how `landing_site_ground_detail` sat 687m inside
    a mountain and passed. Floors are now set on the four ground scenarios by hand. Whether to make
    that structural is a judgement call: several clearance scenarios are legitimately too far from
    ground to compare anything.
-5. **`descent_to_10m` fails on the terrain streamer**, and did so before any of this branch's work:
+4. **`descent_to_10m` fails on the terrain streamer**, and did so before any of this branch's work:
    LOD peaks at 14 against a required 18, 256 fallback chunks against an allowance of 128, and
    `tiles_loaded` stays at zero across twenty seconds. Not investigated.
-6. **`low_flight_performance`** was a known failure in the terrain era — 420 resident chunks, 334
+5. **`low_flight_performance`** was a known failure in the terrain era — 420 resident chunks, 334
    fallbacks, a 2,071.204m warm-up seam — and has not been re-measured since the ocean work began.
    Treat those numbers as unverified rather than current.
-7. **Thin raymarch probe coverage.** `coast_waters_edge` now has ray baselines (median 1.293m/1.172m,
+6. **Thin raymarch probe coverage.** `coast_waters_edge` now has ray baselines (median 1.293m/1.172m,
    p90 3.880m/4.308m at 70 and 71 points, against `surface_height_breakdown_at` rather than the
    raster node path, so not directly comparable with raster's figures). Every other baseline in this
    file is `render_path: raster`, and the two paths are meant to be at parity.
-8. The Gerstner fold budget stands at 1.17 against a physical limit of 1.0. Accepted and held
+7. The Gerstner fold budget stands at 1.17 against a physical limit of 1.0. Accepted and held
    invariant by `OCEAN_WAVE_SCALE`, not fixed; lowering it is a deliberate visual change.
-9. Underwater rendering is unimplemented, which is what the bobbing floor stands in for.
-10. **The moon's bake resolves craters to 2.4km and no finer**, because the working grid is 828m a
+8. Underwater rendering is unimplemented, which is what the bobbing floor stands in for.
+9. **The moon's bake resolves craters to 2.4km and no finer**, because the working grid is 828m a
     cell. Going finer means a bigger grid, and the grid is held in memory as `Vec<DVec3>` — 8,192 x
     4,096 is already 805MB of directions, and doubling it is 3.2GB. Anything below that floor is the
     renderer's detail ladder's job, exactly as it is on the planet. The per-sample catalogue is now
     only the placeholder shown when there is no bake.
-11. **The moon surface spawn has never been verified interactively.** `body::spawns_on_surface`
+10. **The moon surface spawn has never been verified interactively.** `body::spawns_on_surface`
     starts the game standing on the moon, and no scenario reaches that path; scenario replay and
     interactive play differ structurally, and this branch has already lost three defects into that
     gap (ship lag, grey ocean, surface spawn). Needs `--body moon` run by hand.
-12. **The moon has never been looked at from the ground.** Every capture of it so far is
+11. **The moon has never been looked at from the ground.** Every capture of it so far is
     `orbit_once`, from 10,000km, where the disc is under 200 pixels across. Nothing has tested what
     the 2.4km bake floor looks like where the renderer's detail ladder takes over, whether the ice
     reads as a flat pond at eye level, or whether the Lommel-Seeliger lighting still holds when a
     crater wall fills the frame. There are no moon scenarios at all — the four ground scenarios are
     the planet's, on the planet's poses.
-13. **The scenario suite is not I/O-independent.** A `stand_on_ground` run taken while a 378MB bake
+12. **The scenario suite is not I/O-independent.** A `stand_on_ground` run taken while a 378MB bake
     was writing came back with a max pixel difference of 12 against a clean run of the same binary:
     tile streaming missed its budget and an ancestor fallback was drawn. Two clean runs since are 0.
     Nothing is wrong with the renderer, but a pixel comparison taken under disk load is not
@@ -6096,3 +6095,37 @@ one the even-spacing inversion predicts — widens every window by that much.
 difference of 12 on `stand_on_ground`; it was the background bake saturating disk I/O and starving
 tile streaming into an ancestor fallback, and two clean runs since are 0. Worth knowing that the
 scenario suite is not I/O-independent.
+
+---
+
+## 5 September 2026 — mountain-ground discrepancy was the probe's filter distance
+
+Based on `4655625`. Reproduced the header's exact 11.433m median / 12.660m maximum in
+`mountain_ground/1788648026-171067`. Source-tile and near-field macro samples agreed, so resampling
+was not the lead. The raster vertex shader computes `camera_distance_meters` from its
+**undisplaced reference-sphere position**, before adding macro height. The depth probe instead
+passed the **displaced hit distance** into the CPU detail ladder: approximately 14m versus 20,539m.
+That selected a 0.954m filter instead of 205.391m, comparing two different continuous fields.
+The tight offset was not proof of a terrain defect; the header's earlier interpretation was wrong.
+
+`ProbeGeometry::raster_detail_distance_meters` now reconstructs the reference-sphere distance
+in f64 from the captured camera and recovered radial direction. The raster height comparison and
+its diagnostic filter sweep both use it; distance limits and logged hit distances still refer to
+the actual hit. Ray queries, shaders, terrain, and collision remain unchanged.
+
+**Regression:** `mountain_ground` now requires all 81 comparisons and at most 2m absolute error.
+With only that assertion added, `1788648145-171521` fails at 12.660m. With the correction,
+`1788648226-172500` passes: median **0.052282m**, p90 **0.110161m**, maximum **0.312269m**.
+Its capture is byte-identical to the original baseline (maximum channel difference **0**).
+A unit test distinguishes a 14m elevated-ground hit from its 20,539m datum distance and checks
+an oblique direction. This is corrected measurement, not a visual change or FPS improvement.
+
+Workspace tests: **461 passed, 12 ignored**. Clippy with `-D warnings`, formatting, and diff checks
+pass. Existing control assertions pass in `stand_on_ground/1788648328-174762`,
+`coast_waters_edge/1788648340-174869`, `highest_prominence_peak/1788648351-174917`, and
+`ocean_ship_float/1788648363-174937`. These are not blanket parity sign-off: their maximum measured
+deltas are respectively 3.431m, 8.490m, 15.162m, and 28.947m; water still compares against sea level,
+and the other views still include mesh/source/continuous-field differences. No control tolerances
+were relaxed. Logs and implementation patch are under `test-runs/mountain-probe-fix/`; run manifests name
+the base commit because verification preceded the repair commit. The unrelated `crates.tar.gz`
+is untouched. The next open terrain issue is the summit survey/app disagreement, not this one.

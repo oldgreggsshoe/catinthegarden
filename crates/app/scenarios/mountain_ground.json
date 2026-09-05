@@ -45,6 +45,8 @@
   ],
   "assertions": {
     "require_finite_metrics": true,
+    "min_surface_probe_points": 81,
+    "max_surface_probe_delta_m": 2.0,
     "expected_screenshots": 1
   }
 }

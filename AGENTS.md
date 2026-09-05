@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Raster surface-probe repair: detail filtering now uses camera distance to the undisplaced sphere, matching raster vertices; `mountain_ground` median/max discrepancy falls from 11.433/12.660m to 0.052/0.312m with byte-identical pixels. Its 81-point, 2m regression fails before and passes after; terrain, collision, and ray queries are unchanged.
+
 - Ocean near-field culling repair: water ownership now tests the exact uploaded window heights with unguttered window UVs rather than a source tile with unrelated UVs. The matched Quadro `ocean_ship_float` replay restores 40 to 255 ocean chunks and replaces the grey foreground with waves while retaining all-land culling; footprint regressions, 430 workspace tests, workspace check, and three GPU scenarios pass. Fresh interactive travel remains the visual acceptance check; no FPS improvement is claimed.
 
 - Phase 0 complete: workspace app opens a wgpu/winit window with an egui FPS overlay, dark-grey clear, and rotating salmon-pink triangle.

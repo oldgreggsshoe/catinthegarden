@@ -49,6 +49,13 @@ pub struct ProbeGeometry {
 }
 
 impl ProbeGeometry {
+    /// Raster displacement filters detail before adding height: its distance
+    /// is to the reference sphere, not to the depth hit on an elevated mountain.
+    pub fn raster_detail_distance_meters(&self, direction: DVec3) -> f64 {
+        self.camera_world_position
+            .distance(direction * planet_radius_meters())
+    }
+
     pub fn new(
         near_meters: f64,
         vertical_fov_radians: f64,
@@ -616,6 +623,16 @@ mod tests {
             height,
             depths: vec![depth; (width * height) as usize],
         }
+    }
+
+    #[test]
+    fn raster_detail_distance_is_to_the_undisplaced_sphere() {
+        let geometry = nadir_geometry(20_539.0, 0.5);
+        let hit = geometry.hit(DVec2::ZERO, (0.5 / 14.0) as f32).unwrap();
+        assert!((hit.distance_meters - 14.0).abs() < 1.0e-5);
+        assert!((geometry.raster_detail_distance_meters(hit.direction) - 20_539.0).abs() < 1.0e-6);
+        let oblique = DVec3::new(0.001, 0.0, 1.0).normalize();
+        assert!(geometry.raster_detail_distance_meters(oblique) > 20_539.0);
     }
 
     #[test]

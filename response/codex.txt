@@ -1,7 +1,7 @@
-Fixed and verified: near-field ocean culling now samples the actual window, not the wrong source tile.
+Fixed the mountain-ground measurement bug: the probe used surface-hit distance where raster uses distance to the undisplaced sphere.
 
-- Matched replay: **40 → 255 ocean chunks**; grey foreground replaced by waves.
-- Land culling remains enabled. No wave or LOD changes.
-- **430 tests and three GPU scenarios pass.**
+- Median discrepancy: 11.433m → 0.052m; maximum: 12.660m → 0.312m.
+- Rendered pixels are byte-identical; terrain and collision are unchanged.
+- New regression fails before and passes after. All 461 tests and four control scenarios pass; clippy/fmt clean.
 
-Committed and pushed. Please check normal interactive play using `/home/dad/catingard-target/release/catinthegarden-app`.
+Handoff updated. Other terrain parity issues remain explicitly open.
