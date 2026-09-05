@@ -2001,7 +2001,7 @@ impl State {
     /// matching what the surface camera does: the ripples fade out with camera
     /// distance, so a hull that rode them would drift away from the water it is
     /// drawn against as soon as you moved away from it.
-    fn advance_ship(&mut self, ocean_time_seconds: f64, planet_rotation_radians: f64) {
+    fn advance_ship(&mut self, ocean_time_seconds: f64) {
         // Step on the ocean's own clock, not the scene clock. They are the same
         // in a scenario, but interactively `interactive_sim_time` can be frozen
         // or offset while the water keeps animating on the presentation clock,
@@ -2046,7 +2046,17 @@ impl State {
                     }
                 });
         }
+    }
 
+    /// Uploads the hull's view-relative transform.
+    ///
+    /// Split from the physics above and called *after* the camera has been
+    /// advanced for this frame. While it ran inside `advance_ship` it baked
+    /// the previous frame's camera basis into the hull's view-space offset, so
+    /// the ship lagged the scene by a frame whenever the camera turned and
+    /// visibly snapped back once it stopped. The hull's own motion is
+    /// camera-independent; only this upload is not.
+    fn upload_ship_transform(&mut self, planet_rotation_radians: f64) {
         let basis = planet::CameraViewBasis::from_forward_and_up(
             self.camera
                 .planet_frame_direction_dvec3(planet_rotation_radians),
@@ -3024,7 +3034,7 @@ impl State {
             self.weather.visual_time_seconds(),
         );
         let ocean_time_seconds = ocean_animation_time_seconds(sim_time, presentation_time);
-        self.advance_ship(ocean_time_seconds, planet_rotation_radians);
+        self.advance_ship(ocean_time_seconds);
         let scene_delta_seconds = (sim_time - self.last_auto_orbit_sim_time).max(0.0);
         if let Some(forward_held) = scenario_forward_flight_held {
             if !self.scenario_flight_initialized {
@@ -3096,6 +3106,9 @@ impl State {
             }
         }
         self.last_auto_orbit_sim_time = sim_time;
+        // The camera is settled for this frame from here on, so anything that
+        // bakes the camera basis into an upload belongs below this line.
+        self.upload_ship_transform(planet_rotation_radians);
         let mut camera_world_position = self.camera.world_position();
         let mut camera_planet_frame_position = self
             .camera
@@ -4941,6 +4954,37 @@ mod tests {
             false,
         );
         assert_eq!(flying, current_radius + 100.0);
+    }
+
+    /// The ship bakes the camera basis into its view-space upload, so it must
+    /// be uploaded after the camera is settled for the frame.
+    ///
+    /// It used to run inside `advance_ship`, above the interactive camera
+    /// advance, and lagged the scene by a frame whenever the camera turned --
+    /// visible as the hull sliding late and snapping back. No scenario catches
+    /// this: scenario replay sets the pose from its waypoint earlier in the
+    /// same function, so the camera is already current by then and only
+    /// interactive mouse-look exposes the ordering.
+    #[test]
+    fn the_ship_transform_is_uploaded_after_the_camera_is_advanced() {
+        let source = include_str!("main.rs");
+        let physics = source
+            .find("self.advance_ship(ocean_time_seconds);")
+            .expect("the ship is stepped each frame");
+        let camera = source
+            .find("CameraMode::Surface => self.advance_surface_camera(")
+            .expect("the surface camera is advanced each frame");
+        let upload = source
+            .find("self.upload_ship_transform(planet_rotation_radians);")
+            .expect("the ship transform is uploaded each frame");
+        assert!(
+            physics < camera,
+            "hull physics is camera-independent and stays above the camera advance",
+        );
+        assert!(
+            camera < upload,
+            "the ship transform must be uploaded after the camera is advanced",
+        );
     }
 
     #[test]

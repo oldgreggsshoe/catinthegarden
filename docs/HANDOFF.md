@@ -5492,3 +5492,36 @@ This is open thread 5 -- `descent_to_10m` failing with `tiles_loaded` at zero ac
 seen from the player's chair. **They are very likely one defect**, and the next question is why a
 saturated chunk budget coincides with a streamer that never requests anything. Nothing has confirmed
 the link yet.
+
+## The ship lagged the camera by a frame - 5 September 2026
+
+Reported from play: turning the camera makes the boat's movement lag and then correct itself once the
+scene settles.
+
+`advance_ship` did two unrelated things. It integrated the hull against the ocean, which is
+camera-independent, and it uploaded the hull's **view-space** offset via
+`basis.world_to_view(camera_offset)`, which is not. It ran at `main.rs:3027`, while the interactive
+camera is advanced at `main.rs:3091` in the `CameraMode::Surface` arm. So the hull's screen position
+was computed from the *previous* frame's camera basis and corrected a frame later -- exactly the
+described lag-and-snap, and only while the camera is turning, since a still camera makes last frame's
+basis and this frame's identical.
+
+The upload is now `upload_ship_transform`, called immediately after the camera is settled and before
+anything else consumes the camera. The physics stays where it was.
+
+**Not visually verified, and it cannot be by a scenario.** Captured the same 25-degree camera sweep
+over the ship with and without the change: the hull's pixel centroid is identical to a tenth of a
+pixel in both frames, 13,594 and 15,980 hull pixels either way. That is not the fix failing -- it is
+scenario replay never having the bug. A scenario sets its pose from the waypoint at `main.rs:2947`,
+above `advance_ship`, so the camera is already current by the time the ship updates and only live
+mouse-look exposes the ordering. **Confirmation has to come from playing it.**
+
+A source-order test pins the invariant: physics above the camera advance, upload below it. It is the
+same shape as the surface-probe depth-readback test, and for the same reason -- an ordering that no
+scenario can catch needs something that reads the order directly.
+
+Worth noting as a pattern, since it has now cost this session twice: **scenario replay and
+interactive play differ structurally**, and a defect that lives in the difference is invisible to the
+whole scenario suite. The rotation misdiagnosis two sections up was the same trap from the other
+side -- a scenario camera does not co-rotate where an interactive one does. When a report comes from
+play and a scenario cannot reproduce it, that gap is the first thing to suspect, not the last.
