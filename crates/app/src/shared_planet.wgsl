@@ -463,7 +463,10 @@ fn moon_height(direction: vec3<f32>) -> f32 {
     let ice = moon_ice_surface(direction);
     // Away from the poles there is no ice and the bowl stays as the impact dug
     // it; filling to the datum would flatten every crater into a disc.
-    return select(raw, max(raw, ice), ice < 0.0);
+    let filled = select(raw, max(raw, ice), ice < 0.0);
+    // The datum lifts the whole body above zero, matching what the bake
+    // stores, so the placeholder moon and the baked moon are the same radius.
+    return MOON_DATUM_METERS + filled;
 }
 
 /// Latitude weight for a polar cold trap. The rotation axis is Y, so this is
@@ -2116,10 +2119,13 @@ fn terrain_material_color(
     surface_normal: vec3<f32>,
     surface_direction: vec3<f32>,
 ) -> vec3<f32> {
-    // An airless body has two materials, regolith and basin ice, and neither
-    // comes from a baked tile. Take them from the biome palette directly
-    // rather than falling through to the placeholder's blue-grey, which is a
-    // stand-in for missing planet data and not a material in its own right.
+    // An airless body has exactly two materials, regolith and basin ice, and
+    // its biome map says which. Take the colour straight from the palette:
+    // everything below this line is a planet's material chain -- a beach
+    // blend, a moisture wash, vegetation -- and none of it describes rock in
+    // vacuum. Without this the moon falls through to the placeholder's
+    // blue-grey, which is a stand-in for missing planet data rather than a
+    // material in its own right.
     if !BODY_HAS_ATMOSPHERE {
         return BODY_TERRAIN_TINT * biome_color(biome);
     }
@@ -2224,6 +2230,15 @@ fn terrain_material_tint(
     fine_local_meters: vec3<f32>,
     fine_weight: f32,
 ) -> vec3<f32> {
+    // Vegetation, earth, rock and snow: the planet's four material layers,
+    // blended by moisture and slope. There is no vegetation on an airless
+    // body, no soil, and no snow that is not the ice already in its biome map
+    // -- and now that the moon streams tiles like any other world, `outmap` no
+    // longer keeps it out of here. Its two materials are the palette colours
+    // `terrain_material_color` returns, unmodulated.
+    if !BODY_HAS_ATMOSPHERE {
+        return vec3<f32>(1.0);
+    }
     if !outmap {
         return vec3<f32>(1.0);
     }

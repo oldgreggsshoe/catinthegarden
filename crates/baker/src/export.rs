@@ -102,6 +102,10 @@ pub fn refine_existing_outmap_with_progress(
         game_terrain: false,
         zoomed_terrain: false,
         procedural_terrain: false,
+        // A refine reads its shape back from the outmap it is refining, so
+        // the body it describes comes from the manifest rather than a flag.
+        moon: false,
+        radius_meters: existing.planet_radius_meters,
         seed: existing.seed,
         width: existing.working_width as usize,
         height: existing.working_height as usize,
@@ -390,7 +394,7 @@ fn build_manifest(
             )
         },
         seed: config.seed,
-        planet_radius_meters: PLANET_RADIUS_METERS,
+        planet_radius_meters: config.radius_meters,
         working_width: config.width as u32,
         working_height: config.height as u32,
         dense_level: config.dense_level,
@@ -644,6 +648,21 @@ fn sample_tile(
             let direction = face_uv_to_direction(key.face, u, v);
             let sampled_moisture = terrain.grid.sample_u8_linear(&terrain.moisture, direction);
             let macro_height = terrain.grid.sample_f64(&terrain.height_meters, direction);
+            let sampled_biome = terrain.grid.sample_u8_nearest(&biome_ids, direction);
+            if terrain.moon {
+                // Both refinements below are climate. The relief is the
+                // planet's game-terrain profile, keyed to a coastline this
+                // body does not have; the biome detail is a snowline and a
+                // latitude rule, which on a surface sitting 16km above its own
+                // datum turns the entire moon to ice -- it did, and the bake
+                // failed its own landing-site check because of it. An airless
+                // body's two materials come from the catalogue and nothing
+                // else refines them.
+                height.push(macro_height.clamp(MIN_HEIGHT_METERS, MAX_HEIGHT_METERS) as f32);
+                biome.push(sampled_biome);
+                moisture.push(sampled_moisture);
+                continue;
+            }
             let detail = baked_surface_detail(key, direction, landing_direction, microrelief)
                 + sparse_surface_detail(key, direction, landing_direction, microrelief);
             // Do not move the coastline: introduce relief only after the base
@@ -653,7 +672,6 @@ fn sample_tile(
             let sampled_height = macro_height + detail * land_weight;
             let sampled_height = sampled_height.clamp(MIN_HEIGHT_METERS, MAX_HEIGHT_METERS) as f32;
             height.push(sampled_height);
-            let sampled_biome = terrain.grid.sample_u8_nearest(&biome_ids, direction);
             biome.push(baked_biome_detail(
                 key,
                 direction,

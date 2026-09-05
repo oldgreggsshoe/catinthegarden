@@ -18,11 +18,19 @@ pub const NEIGHBOR_OFFSETS: [(isize, isize); 8] = [
 pub struct SphericalGrid {
     width: usize,
     height: usize,
+    /// Radius of the body this grid covers. Distances between cells are the
+    /// one place the grid's scale is observable, and a moon's are a quarter of
+    /// a planet's.
+    radius_meters: f64,
     directions: Vec<DVec3>,
 }
 
 impl SphericalGrid {
     pub fn new(width: usize, height: usize) -> Self {
+        Self::with_radius(width, height, PLANET_RADIUS_METERS)
+    }
+
+    pub fn with_radius(width: usize, height: usize, radius_meters: f64) -> Self {
         let mut directions = Vec::with_capacity(width * height);
         for y in 0..height {
             let latitude = ((y as f64 + 0.5) / height as f64) * PI - FRAC_PI_2;
@@ -38,6 +46,7 @@ impl SphericalGrid {
         Self {
             width,
             height,
+            radius_meters,
             directions,
         }
     }
@@ -87,7 +96,7 @@ impl SphericalGrid {
 
     pub fn distance_meters(&self, a: usize, b: usize) -> f64 {
         let cosine = self.direction(a).dot(self.direction(b)).clamp(-1.0, 1.0);
-        cosine.acos().max(1.0e-12) * PLANET_RADIUS_METERS
+        cosine.acos().max(1.0e-12) * self.radius_meters
     }
 
     fn sample_coordinates(&self, direction: DVec3) -> (usize, usize, usize, usize, f64, f64) {

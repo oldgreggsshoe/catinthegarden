@@ -271,6 +271,19 @@ impl Error for OutmapError {
 }
 
 fn validate_reader_manifest(manifest: &OutmapManifest) -> Result<(), String> {
+    // The tiles describe one body, and the renderer is drawing one body. Until
+    // there were two worlds nothing could disagree; now the planet's outmap on
+    // the moon would drape 4,000km of geography over a 1,080km sphere at four
+    // times the relief, and every height would be plausible enough to look
+    // like a terrain bug rather than the wrong world.
+    let active = crate::body::radius_meters();
+    if (manifest.planet_radius_meters - active).abs() > 1.0 {
+        return Err(format!(
+            "this outmap was baked for a body of radius {}m, but {} has radius {active}m",
+            manifest.planet_radius_meters,
+            crate::body::active().name,
+        ));
+    }
     for (name, format) in [
         ("height", "r32float_le"),
         ("biome", "r8uint"),

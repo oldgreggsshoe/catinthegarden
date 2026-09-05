@@ -185,12 +185,11 @@ anywhere else.
 8. The Gerstner fold budget stands at 1.17 against a physical limit of 1.0. Accepted and held
    invariant by `OCEAN_WAVE_SCALE`, not fixed; lowering it is a deliberate visual change.
 9. Underwater rendering is unimplemented, which is what the bobbing floor stands in for.
-10. **The moon's terrain is synthesised per sample, so its crater count is a frame-time number.**
-    360 craters cost 17.1ms a frame on `orbit_once` only because of the cosine cutoff and the
-    latitude window; without them the same catalogue is 104ms. Thousands means baking the moon into
-    an outmap the way the planet is baked, after which the count is free at render time. Until then,
-    raising `FIELD_COUNT` or `FIELD_MAX_ANGULAR_RADIUS` costs measurable frames -- the latter more
-    than the former, because it widens the window for every sample.
+10. **The moon's bake resolves craters to 2.4km and no finer**, because the working grid is 828m a
+    cell. Going finer means a bigger grid, and the grid is held in memory as `Vec<DVec3>` — 8,192 x
+    4,096 is already 805MB of directions, and doubling it is 3.2GB. Anything below that floor is the
+    renderer's detail ladder's job, exactly as it is on the planet. The per-sample catalogue is now
+    only the placeholder shown when there is no bake.
 11. **The moon surface spawn has never been verified interactively.** `body::spawns_on_surface`
     starts the game standing on the moon, and no scenario reaches that path; scenario replay and
     interactive play differ structurally, and this branch has already lost three defects into that
@@ -5978,3 +5977,89 @@ difference 0 across 10 frames**. All the new branches are on generated `const bo
 **Still open.** The catalogue is per-sample synthesis, which is why it is 360 and not thousands. The
 stated direction remains a baked moon outmap, where the count stops being a frame-time number at all.
 And the moon surface spawn is still unverified interactively — no scenario reaches it.
+
+---
+
+## 5 September 2026 — the moon is baked, like the planet
+
+Asked why the moon was not baked the way the planet is, and when that was decided. It was decided in
+`cedd1fa`, by me, and the user's own words had pointed the other way twice — *"craters should be used
+in the heightmap generation for the larger scale"* and *"the baked terrain will need thousands of
+craters"*. The reasoning I gave — an airless body needs no erosion or hydrology — is true but does not
+imply what I used it for: **not needing the baker's simulation is not the same as not being baked.**
+It was flagged only at the bottom of that commit message, where nobody would read it.
+
+The moon now streams tiles like any other world. `--body moon` opens `assets/outmaps/test-moon`, and
+falls back to the per-sample catalogue as placeholder terrain when there is no bake.
+
+### What moved, and why
+
+The catalogue is now in **`coretypes::moon`**, because the baker needs the same one and a second copy
+of the profile would be a divergence waiting to happen. Two specs, one generator:
+
+| | craters | range | evaluated |
+| --- | --- | --- | --- |
+| `RUNTIME_SPEC` | 360 | 324km – 4.8km | per sample, emitted into the shader |
+| `BAKED_SPEC` | **120,176** | 324km – 2.4km | once, offline, into tiles |
+
+The bake's count is set by what the working grid resolves, not by a frame budget. At 8,192x4,096 over
+a 1,080km body that is 828m a cell, so the floor is 2.4km — about six cells across, asserted by
+`the_smallest_crater_spans_several_working_cells`. The power law `N(>R) ∝ R^-2` runs from 324km to
+that floor in about 18,000 craters; the rest of the count goes into more craters *at* the floor, which
+is what a saturated regolith surface is. Rim coverage is 35.7% of the sphere.
+
+**The evaluation is inverted for the bake.** Asking each cell which craters reach it is 176 basins plus
+a ~3,750-crater window at each of 33.5M cells — about 17 billion tests. Asking each *crater* which
+cells it covers is the total blanket area instead: **2.3 seconds** for the whole body.
+`splatting_matches_evaluating_every_cell` holds the fast path to the per-sample definition, and a
+second test does the same for which floors come out as ice.
+
+### Four things that were the planet leaking onto the moon
+
+1. **A ×4 height exaggeration.** `OUTMAP_TERRAIN_*_HEIGHT_SCALE` multiplies baked positive height,
+   because the planet's Earth-like relief is very flat at 4,000km. Applied to the moon it would have
+   quadrupled every crater and taken its datum to 88km. Now `Body::outmap_height_scale`, 4.0 and 1.0.
+2. **Climate rules icing the entire moon.** `baked_biome_detail` returns `Ice` above the snowline; the
+   moon's surface sits 22km above its own zero, so *every* texel qualified. The first bake failed its
+   own landing-site check because of it — which is the check earning its keep.
+3. **The planet's material chain.** `terrain_material_tint` was gated on `!outmap`, which had kept it
+   off the moon by accident. With a bake the moon has an outmap, and the vegetation/earth/rock/snow
+   triplanar blend started running on regolith. Gated on `BODY_HAS_ATMOSPHERE` instead — which also
+   took the frame from 24ms to **16.5ms**.
+4. **A coastal landing-site rule.** `sparse_landing_direction` wants dry land beside water. The moon
+   has none, so it fell through to the first non-ice cell in index order, at a pole, next to ice — and
+   the tile resample rounded onto the ice. It has its own rule now: equatorial, bare regolith, no ice
+   among its neighbours, flattest available.
+
+**`Outmap::open` now refuses a manifest whose radius is not the active body's.** Nothing checked
+before, because there was only ever one world; the planet's tiles on the moon would have draped
+4,000km of geography over a 1,080km sphere at four times the relief, and every height would have
+looked like a terrain bug rather than the wrong world.
+
+### The datum
+
+A baked height channel bottoms out at -5,000m and treats 0 as sea level, but the crater field is
+centred on zero with every floor below it. `MOON_DATUM_METERS` lifts the whole body. It is a property
+of the **catalogue**, not of any one crater: 120,176 overlapping bowls stack to 17,519m below zero
+where the single largest basin reaches 10,125m. At 22,000m the body spans 4,500m to 26,700m.
+Re-run `report_the_baked_height_extremes` after changing the count.
+
+### Craters were arranged in a grid
+
+Reported from a screenshot: the golden-angle spiral is *too* even, and at these counts its
+phyllotactic arms read as a lattice. Impacts are independent events, so positions are now displaced by
+up to a full neighbour spacing in a uniformly random tangential direction. An integer hash is safe
+here where it would not be in a shared field, because the catalogue reaches the GPU as literals and
+the bake as tiles — nothing re-evaluates it on the other side.
+
+Jitter breaks the two things the latitude window relied on. The field is **re-sorted** by latitude
+afterwards, and `field_index_slack` — the largest measured gap between a crater's real index and the
+one the even-spacing inversion predicts — widens every window by that much.
+`the_windowed_height_matches_testing_every_crater` is what proves the pair is still exact, and
+`the_field_is_scattered_rather_than_a_lattice` asserts the spacing actually varies.
+
+**Planet verified unchanged throughout**: max pixel difference 0 across 10 frames on
+`coast_waters_edge`, `stand_on_ground` and `ocean_ship_float`. One intermediate run showed a
+difference of 12 on `stand_on_ground`; it was the background bake saturating disk I/O and starving
+tile streaming into an ancestor fallback, and two clean runs since are 0. Worth knowing that the
+scenario suite is not I/O-independent.

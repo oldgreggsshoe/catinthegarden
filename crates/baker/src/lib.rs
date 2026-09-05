@@ -2,6 +2,7 @@ pub mod config;
 mod etopo;
 mod export;
 mod grid;
+pub mod moon;
 pub mod terrain;
 
 use std::{io::Write, time::Instant};

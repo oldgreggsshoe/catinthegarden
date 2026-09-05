@@ -22,11 +22,10 @@ use crate::{
         GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, GeometricErrorRatio, MAX_LOD_LEVEL, MINIMUM_LOD_LEVEL,
         NEAR_FIELD_GRID_QUADS, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE,
         OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS, OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS,
-        OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, PlanetLod, QuadtreeNode,
-        TERRAIN_DETAIL_MIN_FILTER_METERS, TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS,
-        TerrainHeightRange, build_chunk_mesh, build_chunk_mesh_with_quads,
-        continuous_baked_sample_spacing_meters, cube_face_basis, cube_face_direction,
-        max_active_chunks_from_env, minimum_node_distance_with_height_range,
+        PlanetLod, QuadtreeNode, TERRAIN_DETAIL_MIN_FILTER_METERS,
+        TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS, TerrainHeightRange, build_chunk_mesh,
+        build_chunk_mesh_with_quads, continuous_baked_sample_spacing_meters, cube_face_basis,
+        cube_face_direction, max_active_chunks_from_env, minimum_node_distance_with_height_range,
         outmap_surface_height_meters, outmap_surface_height_meters_with_filter,
         placeholder_height_meters, planet_radius_meters, scaled_outmap_macro_height_meters,
     },
@@ -612,8 +611,8 @@ impl TerrainSettings {
     fn from_planet_constants(dense_level: u8) -> Self {
         Self {
             outmap_height_scale: [
-                OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE as f32,
-                OUTMAP_TERRAIN_FAR_HEIGHT_SCALE as f32,
+                crate::body::outmap_height_scale() as f32,
+                crate::body::outmap_height_scale() as f32,
                 GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE as f32,
                 0.0,
             ],

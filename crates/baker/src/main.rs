@@ -4,7 +4,7 @@ use catinthegarden_baker::{
     BakeConfig, BakeProgress, bake_with_progress, refine_existing_outmap_with_progress,
     sparse_radius_for_level, validate_output_with_progress,
 };
-use catinthegarden_coretypes::{PLANET_RADIUS_METERS, TILE_LOGICAL_SIZE};
+use catinthegarden_coretypes::TILE_LOGICAL_SIZE;
 
 fn main() -> ExitCode {
     match run() {
@@ -93,6 +93,13 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if config.procedural_terrain {
         println!("macro source: procedural continents + mountain regions + erosion");
     }
+    if config.moon {
+        let catalogue = catinthegarden_coretypes::moon::baked();
+        println!(
+            "macro source: {} impact craters, no erosion or hydrology",
+            catalogue.len()
+        );
+    }
     print_sparse_coverage(&config);
     let mut progress = BakeProgress::new();
     let (manifest, mountain_coverage) =
@@ -121,7 +128,7 @@ fn print_sparse_coverage(config: &BakeConfig) {
     for level in config.dense_level.saturating_add(1)..=config.max_level {
         let radius = sparse_radius_for_level(config, level);
         let tile_width_meters =
-            PLANET_RADIUS_METERS * std::f64::consts::FRAC_PI_2 / f64::from(1_u32 << level);
+            config.radius_meters * std::f64::consts::FRAC_PI_2 / f64::from(1_u32 << level);
         let coverage_width_meters = tile_width_meters * f64::from(radius * 2 + 1);
         let sample_spacing_meters =
             tile_width_meters / f64::from(TILE_LOGICAL_SIZE.saturating_sub(1));
@@ -167,6 +174,16 @@ fn parse_config(arguments: &[String]) -> Result<BakeConfig, String> {
             "--zoomed-terrain" => {
                 config.zoomed_terrain = true;
                 config.game_terrain = true;
+                index += 1;
+            }
+            "--moon" => {
+                let output = config.output.clone();
+                let output = if output == BakeConfig::default().output {
+                    std::path::PathBuf::from("assets/outmaps/test-moon")
+                } else {
+                    output
+                };
+                config = BakeConfig::moon(output);
                 index += 1;
             }
             "--procedural-terrain" => {
@@ -242,6 +259,7 @@ fn print_help() {
            --etopo PATH               NOAA ETOPO 2022 Ice Surface GeoTIFF macro source\n\
            --game-terrain              Amplify land and add dense baked mountain ridges\n\
            --zoomed-terrain             Repeat a compact mountain-rich source window globally\n\
+           --moon                       Bake an airless cratered body (no erosion)\n\
            --procedural-terrain         Generate continents/mountains then erode them\n\
            --mountain-coverage          Report area-weighted 8-direction mountain coverage\n\
            --seed N                   Decimal or 0x-prefixed deterministic seed\n\
@@ -289,6 +307,47 @@ mod tests {
         let arguments = ["--game-terrain".to_owned()];
         let config = parse_config(&arguments).unwrap();
         assert!(config.game_terrain);
+    }
+
+    /// Also proves the arm advances the argument index. It did not, and a
+    /// `--moon` bake spun in the parser instead of baking anything.
+    #[test]
+    fn parses_the_moon_profile_and_gives_it_its_own_body_and_output() {
+        let arguments = ["--moon".to_owned()];
+        let config = parse_config(&arguments).unwrap();
+        assert!(config.moon);
+        assert_eq!(
+            config.erosion_iterations, 0,
+            "there is no water to erode with"
+        );
+        assert_eq!(
+            config.radius_meters,
+            catinthegarden_coretypes::moon::MOON_RADIUS_METERS
+        );
+        assert_eq!(config.output, PathBuf::from("assets/outmaps/test-moon"));
+        assert!(config.validate().is_ok());
+    }
+
+    /// An explicit output survives the profile, which shares its default with
+    /// `--quick` and the positional form.
+    #[test]
+    fn the_moon_profile_keeps_an_explicit_output() {
+        let arguments = [
+            "--output".to_owned(),
+            "/tmp/luna".to_owned(),
+            "--moon".to_owned(),
+        ];
+        let config = parse_config(&arguments).unwrap();
+        assert_eq!(config.output, PathBuf::from("/tmp/luna"));
+        assert!(config.moon);
+    }
+
+    /// A moon has no Earth source to import, and saying so is better than
+    /// silently ignoring one of the two.
+    #[test]
+    fn a_moon_bake_refuses_an_earth_source() {
+        let arguments = ["--moon".to_owned(), "--game-terrain".to_owned()];
+        assert!(parse_config(&arguments).is_err());
     }
 
     #[test]

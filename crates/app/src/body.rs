@@ -34,6 +34,14 @@ pub struct Body {
     pub terrain_tint: [f32; 3],
     /// Multiplies the water albedo, on the same principle.
     pub water_tint: [f32; 3],
+    /// Multiplies baked positive terrain height.
+    ///
+    /// The planet's geography is deliberately exaggerated four times for play:
+    /// its baked relief is Earth-like and Earth is very flat at this radius.
+    /// The moon's craters are already the size an impact of that diameter
+    /// digs, so exaggerating them would be inventing terrain rather than
+    /// showing it -- and would take its 16km datum to 64km.
+    pub outmap_height_scale: f64,
 }
 
 /// The baked planet. Its radius is the one the outmap under
@@ -48,6 +56,7 @@ pub const PLANET: Body = Body {
     has_atmosphere: true,
     terrain_tint: [1.0, 1.0, 1.0],
     water_tint: [1.0, 1.0, 1.0],
+    outmap_height_scale: 4.0,
 };
 
 /// A moon at roughly a quarter of the planet's radius, which is the Earth/Luna
@@ -55,7 +64,7 @@ pub const PLANET: Body = Body {
 /// it needs no outmap of its own.
 pub const MOON: Body = Body {
     name: "moon",
-    radius_meters: 1_080_000.0,
+    radius_meters: catinthegarden_coretypes::moon::MOON_RADIUS_METERS,
     // Tidally locked bodies turn once per orbit. Until an orbit exists this is
     // simply slower than the planet, so a standing observer sees the sky move.
     rotation_period_seconds: 60.0,
@@ -67,6 +76,7 @@ pub const MOON: Body = Body {
     // Grey-white regolith. The ice takes its own biome material.
     terrain_tint: [0.86, 0.86, 0.88],
     water_tint: [1.0, 1.0, 1.0],
+    outmap_height_scale: 1.0,
 };
 
 static ACTIVE: OnceLock<Body> = OnceLock::new();
@@ -92,6 +102,11 @@ pub fn radius_meters() -> f64 {
 
 pub fn rotation_period_seconds() -> f64 {
     active().rotation_period_seconds
+}
+
+/// How much the baked height is exaggerated on this body.
+pub fn outmap_height_scale() -> f64 {
+    active().outmap_height_scale
 }
 
 pub fn has_ocean() -> bool {

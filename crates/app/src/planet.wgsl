@@ -212,11 +212,16 @@ const AIRLESS_BODY_BIOME: u32 = 8u;
 /// cold highlight this wants.
 const AIRLESS_BODY_ICE_BIOME: u32 = 2u;
 
-fn sample_biome(source_uv: vec2<f32>, direction: vec3<f32>) -> u32 {
-    // An airless body has no vegetation and no baked biome map: it is regolith
-    // above the datum and ice in the basins the impacts dug below it. Both are
-    // terrain, so the difference is material only.
-    if !BODY_HAS_ATMOSPHERE {
+fn sample_biome(outmap: bool, source_uv: vec2<f32>, direction: vec3<f32>) -> u32 {
+    // An airless body has no vegetation, and only two materials: regolith, and
+    // the ice in the basins the impacts dug below the level it ponds at. Both
+    // are terrain, so the difference is material only.
+    //
+    // A baked airless body carries that distinction in its biome map like any
+    // other world, and reading it is both cheaper and finer than re-deriving
+    // it -- the bake knows about eleven thousand craters and this evaluation
+    // knows about 360. Only the unbaked placeholder synthesises it.
+    if !BODY_HAS_ATMOSPHERE && !outmap {
         return select(AIRLESS_BODY_BIOME, AIRLESS_BODY_ICE_BIOME, moon_is_ice(direction));
     }
     let coordinate = vec2<i32>(round(source_coordinate(source_uv)));
@@ -688,7 +693,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let height = base_height + terrain_detail_meters;
     // Polar ice overrides ocean in the baked biome contract. Lift it just
     // above sea level so the cap remains visible rather than becoming water.
-    let biome_id = sample_biome(source_uv, direction);
+    let biome_id = sample_biome(outmap, source_uv, direction);
     let ice = outmap && biome_id == 2u;
     let lake = outmap && biome_id == 1u;
     let land_height = select(height, max(height, 5.0), ice);
@@ -1319,11 +1324,12 @@ fn flat_triangle_colour(
     let first_source_uv = source_uv_offset + first_tile_uv * source_uv_scale;
     let second_source_uv = source_uv_offset + second_tile_uv * source_uv_scale;
     let third_source_uv = source_uv_offset + third_tile_uv * source_uv_scale;
-    let first_biome = sample_biome(first_source_uv, direction);
-    let second_biome = sample_biome(second_source_uv, direction);
-    let third_biome = sample_biome(third_source_uv, direction);
+    let flat_outmap = input.outmap_and_macro_height.x > 0.5;
+    let first_biome = sample_biome(flat_outmap, first_source_uv, direction);
+    let second_biome = sample_biome(flat_outmap, second_source_uv, direction);
+    let third_biome = sample_biome(flat_outmap, third_source_uv, direction);
     let biome_id = flat_triangle_land_biome(
-        sample_biome(material_source_uv, direction),
+        sample_biome(flat_outmap, material_source_uv, direction),
         first_biome,
         second_biome,
         third_biome,
@@ -1346,7 +1352,9 @@ fn flat_triangle_colour(
     );
     let mixed_land_triangle = max(first_height, max(second_height, third_height)) > 0.0;
     var fill_biome = select(biome_id, 5u, mixed_land_triangle && (biome_id == 0u || biome_id == 1u));
-    if fill_biome != 0u && fill_biome != 1u {
+    // A climate rule, keyed to moisture and latitude. An airless body has
+    // neither, and its biome map holds only regolith and ice.
+    if BODY_HAS_ATMOSPHERE && fill_biome != 0u && fill_biome != 1u {
         fill_biome = refine_flat_temperate_biome(
             fill_biome,
             material_moisture,
@@ -1358,7 +1366,11 @@ fn flat_triangle_colour(
     // the colours its biomes describe.
     var fill = BODY_TERRAIN_TINT
         * select(debug_ocean_albedo(), biome_color(fill_biome), fill_biome != 1u);
-    if fill_biome == 2u {
+    // Also climate: it softens the planet's ice toward tundra away from the
+    // poles and the peaks. The moon's ice is in permanently shadowed crater
+    // floors and is ice wherever the bake put it -- and `biome_color(3u)` is
+    // a drab olive that has no business anywhere on an airless body.
+    if BODY_HAS_ATMOSPHERE && fill_biome == 2u {
         // Keep one final colour per triangle, but avoid making the ice prior
         // read as a mathematically perfect latitude circle. Low-latitude ice
         // from mountain height remains fully icy through the second term.
@@ -1592,7 +1604,7 @@ fn ocean_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
     let direction = normalize(input.surface_direction);
     let outmap = input.outmap > 0.5;
     let macro_height_meters = macro_terrain_height(outmap, input.source_uv, direction);
-    let biome_id = sample_biome(input.source_uv, direction);
+    let biome_id = sample_biome(outmap, input.source_uv, direction);
     // This draw is a geometric sea shell, not another material arm on the
     // terrain mesh. Sample ownership per fragment so a coastline triangle
     // cannot lift water between a sea-level and a raised land vertex.
@@ -1659,7 +1671,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let render_debug_mode = u32(camera.projection.w + 0.5);
     let outmap = input.outmap_and_macro_height.x > 0.5;
     let macro_height_meters = macro_terrain_height(outmap, input.source_uv, direction);
-    let biome_id = sample_biome(input.source_uv, direction);
+    let biome_id = sample_biome(outmap, input.source_uv, direction);
     let ice = outmap && biome_id == 2u;
     let lake = outmap && biome_id == 1u;
     // Open sea belongs exclusively to the analytic shell drawn after this

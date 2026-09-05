@@ -1,8 +1,18 @@
 use std::path::PathBuf;
 
-use catinthegarden_coretypes::{MAX_DENSE_LEVEL, QUADTREE_MAX_LEVEL};
+use catinthegarden_coretypes::{
+    MAX_DENSE_LEVEL, PLANET_RADIUS_METERS, QUADTREE_MAX_LEVEL, moon::MOON_RADIUS_METERS,
+};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Working grid width for a moon bake.
+///
+/// Wider than the planet's 4,096 despite the smaller body: at 1,080km radius
+/// this is 828m a cell, which is what lets the catalogue's 3km craters be
+/// several cells across instead of spikes. A test in `moon.rs` holds that.
+pub const MOON_WORKING_WIDTH: usize = 8_192;
+pub const MOON_WORKING_HEIGHT: usize = 4_096;
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct BakeConfig {
     pub output: PathBuf,
     /// Optional NOAA ETOPO 2022 Ice Surface GeoTIFF. When present, its real
@@ -22,6 +32,15 @@ pub struct BakeConfig {
     /// continuous noise field is followed by the normal erosion, drainage,
     /// river, lake, and biome stages.
     pub procedural_terrain: bool,
+    /// Bake an airless, dry body from the shared crater catalogue instead of
+    /// running continents, erosion and hydrology. Sets `radius_meters` to the
+    /// moon's, and skips every stage that needs water or air.
+    pub moon: bool,
+    /// Radius of the body being baked. Written into the manifest, and the
+    /// renderer refuses an outmap whose radius is not the body it is drawing —
+    /// streaming a 4,000km world's tiles onto a 1,080km one would drape the
+    /// planet's geography over the moon at four times the relief.
+    pub radius_meters: f64,
     pub seed: u32,
     pub width: usize,
     pub height: usize,
@@ -41,6 +60,8 @@ impl Default for BakeConfig {
             game_terrain: false,
             zoomed_terrain: false,
             procedural_terrain: false,
+            moon: false,
+            radius_meters: PLANET_RADIUS_METERS,
             // Coastline and regional-detail seed for the Earth-like macro
             // layout in terrain.rs. The large continent and mountain-belt
             // placement is authored; this keeps its smaller shapes
@@ -74,7 +95,30 @@ impl BakeConfig {
         }
     }
 
+    /// An airless, dry body from the crater catalogue. Wider working grid and
+    /// no erosion, because there is no water to do any.
+    pub fn moon(output: PathBuf) -> Self {
+        Self {
+            output,
+            moon: true,
+            radius_meters: MOON_RADIUS_METERS,
+            width: MOON_WORKING_WIDTH,
+            height: MOON_WORKING_HEIGHT,
+            erosion_iterations: 0,
+            ..Self::default()
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
+        if self.radius_meters <= 0.0 || !self.radius_meters.is_finite() {
+            return Err("body radius must be finite and positive".to_owned());
+        }
+        if self.moon && (self.etopo.is_some() || self.game_terrain || self.zoomed_terrain) {
+            return Err(
+                "a moon bake takes its shape from the crater catalogue, not an Earth source"
+                    .to_owned(),
+            );
+        }
         if self.width < 16 || self.height < 8 {
             return Err("working grid must be at least 16x8".to_owned());
         }
@@ -94,8 +138,13 @@ impl BakeConfig {
         if self.sparse_radius.is_some_and(|radius| radius > 8) {
             return Err("sparse radius above 8 is intentionally unsupported".to_owned());
         }
-        if self.erosion_iterations == 0 {
+        // An airless, dry body runs no erosion at all, so zero is the only
+        // correct value there rather than a misconfiguration.
+        if self.erosion_iterations == 0 && !self.moon {
             return Err("erosion iterations must be positive".to_owned());
+        }
+        if self.erosion_iterations != 0 && self.moon {
+            return Err("a moon has no water to erode with".to_owned());
         }
         if self
             .etopo

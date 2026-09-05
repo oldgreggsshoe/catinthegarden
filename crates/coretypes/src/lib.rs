@@ -1,3 +1,5 @@
+pub mod moon;
+
 use std::path::PathBuf;
 
 use glam::DVec3;

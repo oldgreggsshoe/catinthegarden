@@ -119,6 +119,7 @@ pub const GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE: f64 = 0.0;
 /// bathymetry unchanged. Keeping near and far equal makes the CPU clearance,
 /// raster displacement/normals, ray hits/normals, and culling shell share one
 /// height gradient at every camera altitude.
+#[allow(dead_code)]
 pub const OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE: f64 = 4.0;
 pub const OUTMAP_TERRAIN_FAR_HEIGHT_SCALE: f64 = 4.0;
 pub const OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS: f64 = 100_000.0;
@@ -428,7 +429,7 @@ pub fn placeholder_height_meters(direction: DVec3) -> f64 {
     // takes a crater field where the placeholder planet takes sine octaves.
     // Both are the *macro* surface; the detail ladder runs on top of either.
     if crate::body::active().name == crate::body::MOON.name {
-        return crate::moon::height_meters(direction);
+        return catinthegarden_coretypes::moon::runtime().surface_height_meters(direction);
     }
     PLACEHOLDER_HEIGHT_OCTAVES
         .iter()
@@ -799,14 +800,17 @@ fn terrain_detail_value_noise(position: Vec3) -> f32 {
     lower + (upper - lower) * fade.z
 }
 
-pub fn outmap_terrain_height_scale(camera_altitude_meters: f64) -> f64 {
-    let blend = smoothstep(
-        OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS,
-        OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS,
-        camera_altitude_meters,
-    );
-    OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE
-        + (OUTMAP_TERRAIN_FAR_HEIGHT_SCALE - OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE) * blend
+/// How much this body's baked positive height is exaggerated.
+///
+/// The altitude argument is what the near/far blend in `TerrainSettings` and
+/// `terrain_macro_height_scale` exists for. Both endpoints have been the same
+/// number since the planet settled on a single scale, and a body now supplies
+/// its own, so the answer does not currently depend on altitude. The shape is
+/// kept on both sides because easing an exaggeration with distance is a real
+/// thing a world might want, and unpicking the uniform to prove it is unused
+/// today would be work to undo later.
+pub fn outmap_terrain_height_scale(_camera_altitude_meters: f64) -> f64 {
+    crate::body::outmap_height_scale()
 }
 
 pub fn scaled_outmap_macro_height_meters(

@@ -3,7 +3,7 @@ use std::{
     collections::{BinaryHeap, VecDeque},
 };
 
-use catinthegarden_coretypes::{BiomeId, direction_to_face_uv};
+use catinthegarden_coretypes::{BiomeId, direction_to_face_uv, moon::MOON_DATUM_METERS};
 use noise::{NoiseFn, Perlin};
 use rayon::prelude::*;
 
@@ -59,6 +59,9 @@ pub struct Terrain {
     pub glacial_valley: Vec<bool>,
     pub moisture: Vec<u8>,
     pub biome: Vec<BiomeId>,
+    /// An airless, dry body. Every stage that needs water or air is skipped,
+    /// and the rules that assume a coastline have to be told there is not one.
+    pub moon: bool,
 }
 
 /// Area-weighted result of the deterministic mountain visibility survey.
@@ -100,8 +103,28 @@ impl Terrain {
         config: &BakeConfig,
         progress: &mut BakeProgress,
     ) -> BakeResult<Self> {
-        let grid = SphericalGrid::new(config.width, config.height);
+        let grid = SphericalGrid::with_radius(config.width, config.height, config.radius_meters);
         progress.stage("terrain source");
+        // An airless, dry body skips every stage below this one. There is no
+        // water to erode with, no rivers, no lakes, no climate and so no
+        // biome rules -- the catalogue decides the shape and the two materials
+        // outright, which is the whole reason a moon needs no pipeline.
+        if config.moon {
+            let surface = crate::moon::generate(&grid, catinthegarden_coretypes::moon::baked());
+            let len = grid.len();
+            return Ok(Self {
+                grid,
+                height_meters: surface.height_meters,
+                flow_to: vec![None; len],
+                flow_accumulation: vec![1.0; len],
+                river: vec![false; len],
+                lake: vec![false; len],
+                glacial_valley: vec![false; len],
+                moisture: vec![0; len],
+                biome: surface.biome,
+                moon: true,
+            });
+        }
         let imported = config.etopo.is_some() && !config.procedural_terrain;
         let mut height_meters = if config.procedural_terrain {
             generate_procedural_game_shape(&grid, config.seed)
@@ -135,6 +158,7 @@ impl Terrain {
             glacial_valley: vec![false; len],
             moisture: vec![0; len],
             biome: vec![BiomeId::Ocean; len],
+            moon: false,
         };
         if imported {
             // ETOPO is observed, naturally eroded terrain. Reapplying the
@@ -180,6 +204,7 @@ impl Terrain {
             glacial_valley: vec![false; len],
             moisture: vec![0; len],
             biome: vec![BiomeId::Ocean; len],
+            moon: false,
         }
     }
 
@@ -543,6 +568,13 @@ impl Terrain {
     /// face, while the minimum elevation leaves room for baked relief without
     /// allowing the inspection point to become water.
     pub fn sparse_landing_direction(&self) -> glam::DVec3 {
+        // The rule below wants dry land beside water, which is the right shape
+        // for the planet and impossible on a body that has none. A moon wants
+        // the opposite: open regolith, as far from the polar ice as the search
+        // can get, and flat enough to be somewhere to stand.
+        if self.moon {
+            return self.moon_landing_direction();
+        }
         for minimum_height in [450.0, 100.0, 0.0] {
             let mut best: Option<(f64, usize)> = None;
             for index in 0..self.grid.len() {
@@ -621,6 +653,54 @@ impl Terrain {
     /// has smaller cells near the poles. It is the fast generation-time gate;
     /// a 400m exhaustive scan would repeatedly interpolate the same source
     /// cells because the current source grid is much coarser than 400m.
+    /// Somewhere to stand on an airless body: bare regolith, well away from
+    /// the poles, with no ice among its neighbours and as little local relief
+    /// as the body offers.
+    ///
+    /// The neighbour test is not fussiness. The exported tile is resampled at
+    /// this direction with a rounded texel index, so a site one cell from ice
+    /// can validate *as* ice — which is exactly how the first moon bake failed.
+    fn moon_landing_direction(&self) -> glam::DVec3 {
+        let mut best: Option<(f64, usize)> = None;
+        for index in 0..self.grid.len() {
+            if self.biome[index] != BiomeId::MountainRock {
+                continue;
+            }
+            let direction = self.grid.direction(index);
+            // Equatorial, so the polar cold traps are nowhere near.
+            if direction.y.abs() > 0.5 {
+                continue;
+            }
+            let (_, u, v) = direction_to_face_uv(direction);
+            if u.abs() > 0.6 || v.abs() > 0.6 {
+                continue;
+            }
+            let height = self.height_meters[index];
+            let mut lowest = height;
+            let mut highest = height;
+            let mut clean = true;
+            for neighbor in (0..8).filter_map(|slot| self.grid.neighbor(index, slot)) {
+                if self.biome[neighbor] != BiomeId::MountainRock {
+                    clean = false;
+                    break;
+                }
+                lowest = lowest.min(self.height_meters[neighbor]);
+                highest = highest.max(self.height_meters[neighbor]);
+            }
+            if !clean {
+                continue;
+            }
+            // Flat ground first, then near the pristine datum rather than deep
+            // in a bowl or up on a rim.
+            let score = -(highest - lowest) - 0.01 * (height - MOON_DATUM_METERS).abs();
+            if !matches!(best, Some((best_score, _)) if score <= best_score) {
+                best = Some((score, index));
+            }
+        }
+        best.map(|(_, index)| self.grid.direction(index))
+            .unwrap_or(glam::DVec3::X)
+    }
+
     pub fn mountain_visibility_coverage(&self) -> MountainVisibilityReport {
         const DIRECTIONS: usize = 8;
         const MIN_ELEVATION_DEGREES: f64 = 30.0;

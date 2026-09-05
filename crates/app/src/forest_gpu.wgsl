@@ -94,7 +94,7 @@ fn gpu_forest_generate(
 
     let source_uv = cell.source_uv_scale_offset.zw
         + local_uv * cell.source_uv_scale_offset.xy;
-    let biome = sample_biome(source_uv, direction);
+    let biome = sample_biome(true, source_uv, direction);
     let moisture = sample_moisture(source_uv);
     let macro_height = macro_terrain_height(true, source_uv, direction);
     if !forest_biome_owns_trees(biome)

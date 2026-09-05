@@ -55,6 +55,10 @@ const HIDDEN_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 const GPU_PROFILE_RING_SIZE: usize = 3;
 const GPU_TIMESTAMP_COUNT: u32 = 14;
 const DEFAULT_OUTMAP_PATH: &str = "assets/outmaps/test-planet";
+/// The moon's own bake. A second world means a second outmap: the tiles carry
+/// the body's radius in their manifest, and one world's cannot describe
+/// another's.
+const MOON_OUTMAP_PATH: &str = "assets/outmaps/test-moon";
 
 fn should_enter_fullscreen(currently_fullscreen: bool) -> bool {
     !currently_fullscreen
@@ -4749,9 +4753,15 @@ struct LaunchOptions {
 /// switched off together, because every one of them is gated on `outmap`. It
 /// looks like a different program and says nothing about why.
 fn find_default_outmap() -> Option<PathBuf> {
+    find_outmap(DEFAULT_OUTMAP_PATH)
+}
+
+/// Walks up from the working directory looking for a baked world, so the app
+/// can be run from anywhere under the repository.
+fn find_outmap(relative: &str) -> Option<PathBuf> {
     let mut directory = std::env::current_dir().ok()?;
     loop {
-        let candidate = directory.join(DEFAULT_OUTMAP_PATH);
+        let candidate = directory.join(relative);
         if candidate.join("manifest.json").is_file() {
             return Some(candidate);
         }
@@ -4790,13 +4800,22 @@ fn launch_options() -> Result<LaunchOptions, String> {
                 if !body::set_active(selected) {
                     return Err("--body must be given before the world is used".to_owned());
                 }
-                // The moon's macro surface is synthesised from its crater
-                // catalogue, so it takes the procedural path rather than the
-                // planet's baked tiles. Streaming an outmap made for a
-                // 4,000km sphere onto a 1,080km one would drape the planet's
-                // geography over the moon at four times the relief.
+                // Each body streams its own tiles. The planet's outmap must
+                // never be handed to the moon: it was baked against a 4,000km
+                // sphere, and draping it over a 1,080km one would put the
+                // planet's geography on the moon at four times the relief.
+                // `Outmap::open` now refuses that outright by comparing the
+                // manifest's radius, but choosing the right one here is what
+                // makes the refusal unnecessary.
                 if selected == body::MOON {
-                    options.terrain_source = terrain::TerrainSource::Placeholder;
+                    options.terrain_source = match find_outmap(MOON_OUTMAP_PATH) {
+                        Some(path) => terrain::TerrainSource::Outmap(path),
+                        // The crater catalogue is still evaluated per sample as
+                        // the placeholder, so an unbaked moon draws rather than
+                        // failing -- with a few hundred craters instead of the
+                        // bake's eleven thousand.
+                        None => terrain::TerrainSource::Placeholder,
+                    };
                 }
             }
             "--scenario" => {
