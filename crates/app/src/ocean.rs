@@ -1,6 +1,6 @@
 use glam::DVec3;
 
-use crate::planet::PLANET_RADIUS_METERS;
+use crate::planet::planet_radius_meters;
 
 // Keep these values byte-for-byte aligned with the raster/ray WGSL ocean
 // surface. Collision and buoyancy must sample the same displaced water that
@@ -472,7 +472,7 @@ pub fn wave_height_meters(
         .iter()
         .map(|wave| {
             let phase = std::f64::consts::TAU / wave.wavelength_meters
-                * (direction.dot(wave.direction.normalize()) * PLANET_RADIUS_METERS
+                * (direction.dot(wave.direction.normalize()) * planet_radius_meters()
                     + OCEAN_WAVE_PHASE_SPEED_SIGN * wave.speed_meters_per_second * sim_time
                     + shoaling_phase_offset_meters(water_depth_meters));
             wave.amplitude(blend) * amplitude_scale * phase.sin()
@@ -581,7 +581,7 @@ pub fn local_wave_height_meters(direction: DVec3, sim_time: f64, water_depth_met
         .iter()
         .map(|wave| {
             let phase = std::f64::consts::TAU / wave.wavelength_meters
-                * (direction.dot(wave.direction.normalize()) * PLANET_RADIUS_METERS
+                * (direction.dot(wave.direction.normalize()) * planet_radius_meters()
                     + OCEAN_WAVE_PHASE_SPEED_SIGN * wave.speed_meters_per_second * sim_time
                     + shoaling_phase_offset_meters(water_depth_meters));
             wave.amplitude_meters * phase.sin()
@@ -616,7 +616,7 @@ pub fn global_wave_slope(direction: DVec3, sim_time: f64, water_depth_meters: f6
             let axis = wave.direction.normalize();
             let wave_number = std::f64::consts::TAU / wave.wavelength_meters;
             let phase = wave_number
-                * (radial.dot(axis) * PLANET_RADIUS_METERS
+                * (radial.dot(axis) * planet_radius_meters()
                     + OCEAN_WAVE_PHASE_SPEED_SIGN * wave.speed_meters_per_second * sim_time
                     + shoaling_phase_offset_meters(water_depth_meters));
             axis * (wave.amplitude(blend) * amplitude_scale * wave_number * phase.cos())
@@ -646,7 +646,7 @@ pub fn global_wave_vertical_velocity_meters_per_second(
         .map(|wave| {
             let wave_number = std::f64::consts::TAU / wave.wavelength_meters;
             let phase = wave_number
-                * (direction.dot(wave.direction.normalize()) * PLANET_RADIUS_METERS
+                * (direction.dot(wave.direction.normalize()) * planet_radius_meters()
                     + OCEAN_WAVE_PHASE_SPEED_SIGN * wave.speed_meters_per_second * sim_time
                     + shoaling_phase_offset_meters(water_depth_meters));
             OCEAN_WAVE_PHASE_SPEED_SIGN
@@ -691,7 +691,7 @@ pub fn local_wave_vertical_velocity_meters_per_second(
         .map(|wave| {
             let wave_number = std::f64::consts::TAU / wave.wavelength_meters;
             let phase = wave_number
-                * (direction.dot(wave.direction.normalize()) * PLANET_RADIUS_METERS
+                * (direction.dot(wave.direction.normalize()) * planet_radius_meters()
                     + OCEAN_WAVE_PHASE_SPEED_SIGN * wave.speed_meters_per_second * sim_time
                     + shoaling_phase_offset_meters(water_depth_meters));
             OCEAN_WAVE_PHASE_SPEED_SIGN
@@ -873,7 +873,7 @@ mod tests {
 
     #[test]
     fn the_analytic_wave_slope_matches_a_centred_finite_difference() {
-        use super::PLANET_RADIUS_METERS;
+        use super::planet_radius_meters;
         let direction = DVec3::new(0.836, 0.504, 0.216).normalize();
         let sim_time = 41.5;
         let depth = 4000.0;
@@ -886,7 +886,7 @@ mod tests {
             // the difference's own truncation error rather than the gradient.
             let step_meters = 0.02;
             let offset = |sign: f64| {
-                (direction * PLANET_RADIUS_METERS + tangent * (sign * step_meters)).normalize()
+                (direction * planet_radius_meters() + tangent * (sign * step_meters)).normalize()
             };
             let numeric = (global_wave_height_meters(offset(1.0), sim_time, depth)
                 - global_wave_height_meters(offset(-1.0), sim_time, depth))

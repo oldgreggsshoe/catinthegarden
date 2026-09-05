@@ -1026,7 +1026,7 @@ mod tests {
         assert!(scenario.definition.hide_overlay);
         assert!(
             DVec3::from_array(scenario.definition.waypoints[0].position).length()
-                - crate::planet::PLANET_RADIUS_METERS
+                - crate::planet::planet_radius_meters()
                 > 50_000.0
         );
     }
@@ -1121,7 +1121,7 @@ mod tests {
         // Derived from the *drawn* surface, not the survey's summit: the
         // assertion this pose has to satisfy measures what the renderer draws,
         // and the two differ by 227m here for reasons still open.
-        let expected_radius = crate::planet::PLANET_RADIUS_METERS
+        let expected_radius = crate::planet::planet_radius_meters()
             + crate::ACTIVE_HIGHEST_PROMINENCE_DRAWN_SURFACE_METERS
             + crate::PROMINENCE_PEAK_CAMERA_CLEARANCE_METERS;
         let expected = crate::ACTIVE_HIGHEST_PROMINENCE_DIRECTION * expected_radius;
@@ -1290,7 +1290,7 @@ mod tests {
             if frame.capture_screenshot {
                 capture_altitudes.push(
                     DVec3::from_array(frame.camera_world_position).length()
-                        - crate::planet::PLANET_RADIUS_METERS,
+                        - crate::planet::planet_radius_meters(),
                 );
             }
             if frame.complete {
@@ -1448,7 +1448,7 @@ mod tests {
         // check: camera_surface_height_meters against the rendered heights.
         let waypoint = &scenario.definition.waypoints[0];
         let position = DVec3::from_array(waypoint.position);
-        let altitude = position.length() - crate::planet::PLANET_RADIUS_METERS;
+        let altitude = position.length() - crate::planet::planet_radius_meters();
         assert!(
             (20_000.0..21_000.0).contains(&altitude),
             "scenario sits at {altitude} m, not on the mountain it was aimed at"
@@ -1469,7 +1469,7 @@ mod tests {
         let position = DVec3::from_array(waypoint.position);
         let offset_meters = (position.normalize() - crate::COASTAL_START_DIRECTION.normalize())
             .length()
-            * crate::planet::PLANET_RADIUS_METERS;
+            * crate::planet::planet_radius_meters();
         assert!(
             offset_meters < 5.0,
             "scenario stands {offset_meters} m from the land spawn"
@@ -1539,7 +1539,7 @@ mod tests {
         );
         assert_eq!(scenario.definition.waypoints.len(), 1);
         let position = DVec3::from_array(scenario.definition.waypoints[0].position);
-        assert!(((position.length() - crate::planet::PLANET_RADIUS_METERS) - 5.0).abs() < 1.0e-6);
+        assert!(((position.length() - crate::planet::planet_radius_meters()) - 5.0).abs() < 1.0e-6);
     }
 
     #[test]
@@ -1691,7 +1691,7 @@ mod tests {
         let sun = DVec3::from_array(partial_sun.definition.sun_waypoints[0].direction).normalize();
         let planet_direction = -camera.normalize();
         let center_angle = sun.dot(planet_direction).clamp(-1.0, 1.0).acos();
-        let planet_angle = (crate::planet::PLANET_RADIUS_METERS / camera.length()).asin();
+        let planet_angle = (crate::planet::planet_radius_meters() / camera.length()).asin();
         let limb_offset = center_angle - planet_angle;
         assert!(
             limb_offset.abs() < 0.00925,

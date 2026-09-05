@@ -109,7 +109,8 @@ fn catalogue() -> Vec<SkyObject> {
 
 fn shader_source() -> String {
     format!(
-        "{}\n{}\n{}",
+        "{}\n{}\n{}\n{}",
+        crate::body::wgsl_constants(),
         include_str!("atmosphere.wgsl"),
         include_str!("stars.wgsl"),
         include_str!("weather_cloud_density.wgsl"),

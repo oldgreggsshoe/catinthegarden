@@ -14,7 +14,7 @@
 
 use glam::{DMat3, DQuat, DVec3};
 
-use crate::planet::PLANET_RADIUS_METERS;
+use crate::planet::planet_radius_meters;
 use crate::surface_camera::GRAVITY_METERS_PER_SECOND_SQUARED;
 
 pub const HULL_LENGTH_METERS: f64 = 42.0;
@@ -282,7 +282,7 @@ impl ShipBody {
         let port = up.cross(forward);
         Self {
             position: up
-                * (PLANET_RADIUS_METERS + water_height_meters + hull.centre_of_mass_local.z),
+                * (planet_radius_meters() + water_height_meters + hull.centre_of_mass_local.z),
             orientation: DQuat::from_mat3(&DMat3::from_cols(forward, port, up)),
             linear_velocity: DVec3::ZERO,
             angular_velocity: DVec3::ZERO,
@@ -293,7 +293,7 @@ impl ShipBody {
     /// level with the water when it floats at its design draft.
     pub fn waterline_altitude_meters(&self, hull: &ShipHull) -> f64 {
         (self.position + self.orientation * -hull.centre_of_mass_local).length()
-            - PLANET_RADIUS_METERS
+            - planet_radius_meters()
     }
 
     pub fn up(&self) -> DVec3 {
@@ -349,7 +349,7 @@ impl ShipBody {
             let keel_offset = rotation * (column.keel_local - hull.centre_of_mass_local);
             let keel_world = self.position + keel_offset;
             let column_direction = keel_world.normalize();
-            let keel_altitude = keel_world.length() - PLANET_RADIUS_METERS;
+            let keel_altitude = keel_world.length() - planet_radius_meters();
             let sample = water(column_direction);
             let vertical_depth = sample.height_meters - keel_altitude;
             if vertical_depth <= 0.0 {
@@ -654,7 +654,7 @@ mod tests {
         HULL_BEAM_METERS, HULL_DRAFT_METERS, HULL_FREEBOARD_METERS, HULL_LENGTH_METERS, ShipBody,
         ShipHull, WaterSample, build_mesh, half_beam_meters, keel_depth_meters,
     };
-    use crate::planet::PLANET_RADIUS_METERS;
+    use crate::planet::planet_radius_meters;
 
     const START_DIRECTION: DVec3 = DVec3::new(0.838, 0.502, 0.2125);
 
@@ -708,7 +708,7 @@ mod tests {
     fn a_hull_dropped_above_the_water_settles_rather_than_ringing() {
         let (hull, mut body) = afloat();
         body.position = START_DIRECTION.normalize()
-            * (PLANET_RADIUS_METERS + 6.0 + hull.centre_of_mass_local().z);
+            * (planet_radius_meters() + 6.0 + hull.centre_of_mass_local().z);
         let mut extremes = 0;
         let mut previous_altitude = body.waterline_altitude_meters(&hull);
         let mut rising = false;
@@ -776,7 +776,7 @@ mod tests {
         // A surface tilted along the hull's length: bow-up water forward.
         let slope = 0.06;
         body.advance(&hull, 40.0, |direction| {
-            let along = direction.dot(forward) * PLANET_RADIUS_METERS;
+            let along = direction.dot(forward) * planet_radius_meters();
             WaterSample {
                 height_meters: slope * along,
                 vertical_velocity_meters_per_second: 0.0,
@@ -815,7 +815,7 @@ mod tests {
             body.advance(&hull, 1.0 / 60.0, move |direction| {
                 // A steep short swell crossing the hull diagonally.
                 let phase =
-                    direction.dot(DVec3::new(0.6, 0.5, 0.62).normalize()) * PLANET_RADIUS_METERS;
+                    direction.dot(DVec3::new(0.6, 0.5, 0.62).normalize()) * planet_radius_meters();
                 WaterSample {
                     height_meters: AMPLITUDE_METERS * (wave_number * phase + 1.6 * elapsed).sin(),
                     vertical_velocity_meters_per_second: AMPLITUDE_METERS
@@ -950,7 +950,7 @@ mod tests {
         // And the wave-slope forcing that drives yaw must not walk the hull
         // out of the scene while it does so.
         let drift_meters = (body.position.normalize() - START_DIRECTION.normalize()).length()
-            * PLANET_RADIUS_METERS;
+            * planet_radius_meters();
         assert!(drift_meters < 25.0, "hull drifted {drift_meters} m in 50s");
     }
 

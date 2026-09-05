@@ -6,7 +6,6 @@
 // the requested shell extent without changing the established Earth-like
 // extinction or relying on a timed twilight palette.
 const PI: f32 = 3.141592653589793;
-const PLANET_RADIUS_METERS: f32 = 4000000.0;
 const ATMOSPHERE_VERTICAL_SCALE: f32 = 4.5;
 const SKY_VIEW_MINIMUM_CAMERA_ALTITUDE_METERS: f32 = 200.0;
 const ATMOSPHERE_HEIGHT_METERS: f32 = 2880000.0;

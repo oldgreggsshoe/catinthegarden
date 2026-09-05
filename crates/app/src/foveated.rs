@@ -6,7 +6,7 @@ use catinthegarden_coretypes::{
 
 use crate::{
     outmap::{Outmap, OutmapError, TileData},
-    planet::PLANET_RADIUS_METERS,
+    planet::planet_radius_meters,
     terrain::{NEAR_FIELD_WINDOW_SAMPLES, NearFieldSources, NearFieldWindow, TerrainSource},
 };
 
@@ -898,7 +898,7 @@ impl RayUniform {
         max_height_mip_count: u32,
         camera_altitude_meters: f64,
     ) -> Self {
-        let camera_radius_meters = PLANET_RADIUS_METERS + camera_altitude_meters;
+        let camera_radius_meters = planet_radius_meters() + camera_altitude_meters;
         Self {
             height_min_meters,
             height_max_meters,
@@ -906,15 +906,16 @@ impl RayUniform {
             march_steps: Self::MARCH_STEPS,
             camera_radius_meters: camera_radius_meters as f32,
             camera_radius_squared: camera_radius_meters.powi(2) as f32,
-            minimum_shell_radius_meters: (PLANET_RADIUS_METERS + f64::from(height_min_meters))
+            minimum_shell_radius_meters: (planet_radius_meters() + f64::from(height_min_meters))
                 as f32,
-            maximum_shell_radius_meters: (PLANET_RADIUS_METERS
+            maximum_shell_radius_meters: (planet_radius_meters()
                 + crate::planet::scaled_outmap_macro_height_meters(
                     f64::from(height_max_meters),
                     camera_altitude_meters,
                 )) as f32,
             max_height_mip_count,
-            minimum_step_meters: (PLANET_RADIUS_METERS * 2.0 / f64::from(face_quads)) as f32 * 0.5,
+            minimum_step_meters: (planet_radius_meters() * 2.0 / f64::from(face_quads)) as f32
+                * 0.5,
             fovea_ndc: [0.0; 2],
             experiment_flags: 0,
             frame_index: 0,
@@ -1430,7 +1431,8 @@ mod tests {
         eased_fovea_ndc, experiment_flag, face_sample_source, max_height_mips,
         raymarch_shader_source, warp_size_for,
     };
-    use catinthegarden_coretypes::{PLANET_RADIUS_METERS, TILE_LOGICAL_SIZE, TILE_STORED_SIZE};
+    use crate::planet::planet_radius_meters;
+    use catinthegarden_coretypes::{TILE_LOGICAL_SIZE, TILE_STORED_SIZE};
 
     fn warp_axis(value: f32) -> f32 {
         let core = 0.5_f32;
@@ -1466,7 +1468,7 @@ mod tests {
     fn sphere_entry_distance_f64(camera_radius: f64, ray_inward_cosine: f64) -> Option<f64> {
         let radial_dot_ray = -camera_radius * ray_inward_cosine;
         let discriminant = radial_dot_ray * radial_dot_ray
-            - (camera_radius * camera_radius - PLANET_RADIUS_METERS * PLANET_RADIUS_METERS);
+            - (camera_radius * camera_radius - planet_radius_meters() * planet_radius_meters());
         (discriminant >= 0.0).then(|| -radial_dot_ray - discriminant.sqrt())
     }
 
@@ -1767,13 +1769,13 @@ mod tests {
         assert_eq!(near.minimum_shell_radius_meters, 3_995_000.0);
         assert_eq!(
             near.maximum_shell_radius_meters,
-            (PLANET_RADIUS_METERS + 9_000.0 * crate::planet::OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE)
+            (planet_radius_meters() + 9_000.0 * crate::planet::OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE)
                 as f32
         );
         assert_eq!(far.minimum_shell_radius_meters, 3_995_000.0);
         assert_eq!(
             far.maximum_shell_radius_meters,
-            (PLANET_RADIUS_METERS + 9_000.0 * crate::planet::OUTMAP_TERRAIN_FAR_HEIGHT_SCALE)
+            (planet_radius_meters() + 9_000.0 * crate::planet::OUTMAP_TERRAIN_FAR_HEIGHT_SCALE)
                 as f32
         );
         assert_eq!(near.camera_radius_meters, 4_010_000.0);
@@ -1783,7 +1785,7 @@ mod tests {
     #[test]
     fn quadratic_radius_stays_sub_meter_at_low_altitude() {
         for altitude_meters in [0.1, 1.0, 10.0, 1_700.0, 10_000.0] {
-            let camera_radius = PLANET_RADIUS_METERS + altitude_meters;
+            let camera_radius = planet_radius_meters() + altitude_meters;
             for angle_degrees in [0.0_f64, 30.0, 60.0, 80.0, 88.0, 89.0] {
                 let ray_inward_cosine = angle_degrees.to_radians().cos();
                 let Some(distance_meters) =
@@ -1793,7 +1795,7 @@ mod tests {
                 };
                 let radius =
                     shader_radius_at_surface(camera_radius, ray_inward_cosine, distance_meters);
-                let error_meters = (f64::from(radius) - PLANET_RADIUS_METERS).abs();
+                let error_meters = (f64::from(radius) - planet_radius_meters()).abs();
                 assert!(
                     error_meters <= 0.5,
                     "altitude={altitude_meters}m angle={angle_degrees}deg error={error_meters}m"
@@ -1805,7 +1807,7 @@ mod tests {
     #[test]
     fn camera_radius_squared_is_rounded_only_after_f64_multiplication() {
         let uniform = RayUniform::for_camera(-5_000.0, 9_000.0, 2_048, 12, 0.1);
-        let camera_radius = PLANET_RADIUS_METERS + 0.1;
+        let camera_radius = planet_radius_meters() + 0.1;
         assert_eq!(uniform.camera_radius_squared, camera_radius.powi(2) as f32);
         assert_ne!(
             uniform.camera_radius_squared,

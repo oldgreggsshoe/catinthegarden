@@ -4,6 +4,7 @@
 #![allow(clippy::too_many_arguments)]
 
 mod atmosphere;
+mod body;
 mod debug;
 mod forest;
 mod foveated;
@@ -186,7 +187,7 @@ fn low_flight_clearance_radius(
     let surface_height_meters =
         resolved_surface_height_meters.unwrap_or(previous_surface_height_meters);
     let minimum_radius =
-        planet::PLANET_RADIUS_METERS + surface_height_meters + minimum_clearance_meters;
+        planet::planet_radius_meters() + surface_height_meters + minimum_clearance_meters;
     if follow_resolved_surface && resolved_surface_height_meters.is_some() {
         minimum_radius
     } else {
@@ -581,7 +582,7 @@ fn waterline_scenario_pose(
     let wave_height_meters =
         ocean::global_wave_height_meters(local_radial, ocean_time_seconds, OPEN_OCEAN_DEPTH_METERS);
     let view = look_at - position;
-    let eye = radial * (planet::PLANET_RADIUS_METERS + wave_height_meters + eye_height_meters);
+    let eye = radial * (planet::planet_radius_meters() + wave_height_meters + eye_height_meters);
     (eye, eye + view)
 }
 
@@ -646,10 +647,10 @@ fn projected_planet_coverage(
     vertical_fov_radians: f64,
     aspect_ratio: f64,
 ) -> f64 {
-    if camera_radius_meters <= planet::PLANET_RADIUS_METERS {
+    if camera_radius_meters <= planet::planet_radius_meters() {
         return 1.0;
     }
-    let sine_radius = (planet::PLANET_RADIUS_METERS / camera_radius_meters).clamp(0.0, 1.0);
+    let sine_radius = (planet::planet_radius_meters() / camera_radius_meters).clamp(0.0, 1.0);
     let tangent_radius = sine_radius / (1.0 - sine_radius * sine_radius).max(1.0e-12).sqrt();
     let vertical_radius = tangent_radius / (vertical_fov_radians * 0.5).tan();
     let horizontal_radius = vertical_radius / aspect_ratio;
@@ -664,7 +665,7 @@ fn advance_flight_position_on_sphere(
     let radial = position.normalize();
     let radial_distance = movement_direction.dot(radial) * distance_meters;
     let tangent = movement_direction - radial * movement_direction.dot(radial);
-    let next_radius = (position.length() + radial_distance).max(planet::PLANET_RADIUS_METERS);
+    let next_radius = (position.length() + radial_distance).max(planet::planet_radius_meters());
     if tangent.length_squared() <= f64::EPSILON || distance_meters <= 0.0 {
         return radial * next_radius;
     }
@@ -694,10 +695,10 @@ fn swept_flight_clearance_lift(
         let amount = step as f64 / steps as f64;
         let direction = start_direction.lerp(end_direction, amount).normalize();
         let radius = start_radius + (end_radius - start_radius) * amount;
-        let altitude_meters = (radius - planet::PLANET_RADIUS_METERS).max(0.0);
+        let altitude_meters = (radius - planet::planet_radius_meters()).max(0.0);
         if let Some(height_meters) = surface_height_meters(direction, altitude_meters) {
             lift_meters = lift_meters
-                .max(planet::PLANET_RADIUS_METERS + height_meters + clearance_meters - radius);
+                .max(planet::planet_radius_meters() + height_meters + clearance_meters - radius);
         }
     }
     lift_meters.max(0.0)
@@ -1277,7 +1278,7 @@ impl State {
         let ship_direction = {
             let radial = STORM_OCEAN_START_DIRECTION.normalize();
             let tangent = radial.cross(glam::DVec3::Y).normalize();
-            (radial + tangent * (SHIP_START_OFFSET_METERS / planet::PLANET_RADIUS_METERS))
+            (radial + tangent * (SHIP_START_OFFSET_METERS / planet::planet_radius_meters()))
                 .normalize()
         };
         let ship_body = ship::ShipBody::afloat_at(
@@ -1366,7 +1367,7 @@ impl State {
             last_auto_orbit_sim_time: 0.0,
             camera_mode: CameraMode::Orbit,
             flight_local_position: glam::DVec3::X
-                * (planet::PLANET_RADIUS_METERS + LOW_FLIGHT_ALTITUDE_METERS),
+                * (planet::planet_radius_meters() + LOW_FLIGHT_ALTITUDE_METERS),
             flight_local_tangent: glam::DVec3::Z,
             flight_surface_height_meters: 0.0,
             flight_look_yaw_radians: 0.0,
@@ -1495,8 +1496,8 @@ impl State {
             );
             return false;
         }
-        self.flight_local_position =
-            local_radial * (planet::PLANET_RADIUS_METERS + surface_height_meters + altitude_meters);
+        self.flight_local_position = local_radial
+            * (planet::planet_radius_meters() + surface_height_meters + altitude_meters);
         self.flight_surface_height_meters = surface_height_meters;
         self.flight_local_tangent = initial_flight_tangent(local_radial);
         self.flight_look_yaw_radians = 0.0;
@@ -1777,7 +1778,7 @@ impl State {
             self.flight_speed,
             movement_direction.is_some(),
             self.flight_movement.boost,
-            self.flight_local_position.length() - planet::PLANET_RADIUS_METERS,
+            self.flight_local_position.length() - planet::planet_radius_meters(),
             self.flight_speed_scale,
         );
         if let Some(movement_direction) = movement_direction {
@@ -1922,7 +1923,7 @@ impl State {
             self.surface_pending_seconds -= step_seconds;
             let local_radial = self.flight_local_position.normalize();
             let eye_altitude_meters =
-                self.flight_local_position.length() - planet::PLANET_RADIUS_METERS;
+                self.flight_local_position.length() - planet::planet_radius_meters();
             let Some(mut environment) =
                 self.surface_environment_at(local_radial, eye_altitude_meters, ocean_time_seconds)
             else {
@@ -1972,7 +1973,7 @@ impl State {
 
             let moved_radial = self.flight_local_position.normalize();
             let moved_eye_altitude =
-                self.flight_local_position.length() - planet::PLANET_RADIUS_METERS;
+                self.flight_local_position.length() - planet::planet_radius_meters();
             let resolved_eye_altitude = if !surface_camera::WATER_BOBBING_ENABLED {
                 if let Some((water_height, _)) = environment.water_surface {
                     self.surface_physics.settle_in_water();
@@ -1997,7 +1998,7 @@ impl State {
             };
             jump_requested = false;
             self.flight_local_position =
-                moved_radial * (planet::PLANET_RADIUS_METERS + resolved_eye_altitude);
+                moved_radial * (planet::planet_radius_meters() + resolved_eye_altitude);
             self.flight_surface_height_meters = environment.visible_surface_height_meters();
             // The step is already deducted from the pending backlog above.
         }
@@ -2096,11 +2097,11 @@ impl State {
     ) -> bool {
         let previous_position = self.flight_local_position;
         let local_radial = previous_position.normalize();
-        let mut eye_altitude = previous_position.length() - planet::PLANET_RADIUS_METERS;
+        let mut eye_altitude = previous_position.length() - planet::planet_radius_meters();
         if eye_altitude <= surface_camera::PLANET_CORE_CLEARANCE_METERS {
             eye_altitude = surface_camera::PLANET_CORE_CLEARANCE_METERS;
             self.flight_local_position =
-                local_radial * (planet::PLANET_RADIUS_METERS + eye_altitude);
+                local_radial * (planet::planet_radius_meters() + eye_altitude);
             self.surface_physics.vertical_velocity_meters_per_second = self
                 .surface_physics
                 .vertical_velocity_meters_per_second
@@ -2121,7 +2122,7 @@ impl State {
                 let fixed_eye_altitude =
                     surface_camera::fixed_water_eye_altitude_meters(water_height);
                 self.flight_local_position =
-                    local_radial * (planet::PLANET_RADIUS_METERS + fixed_eye_altitude);
+                    local_radial * (planet::planet_radius_meters() + fixed_eye_altitude);
                 self.surface_physics.settle_in_water();
                 eye_altitude = fixed_eye_altitude;
             }
@@ -2132,11 +2133,11 @@ impl State {
             && eye_altitude <= minimum_eye_altitude + surface_camera::GROUND_CONTACT_EPSILON_METERS
         {
             self.flight_local_position =
-                local_radial * (planet::PLANET_RADIUS_METERS + minimum_eye_altitude);
+                local_radial * (planet::planet_radius_meters() + minimum_eye_altitude);
             self.surface_physics.settle_on_land();
         } else if eye_altitude < minimum_eye_altitude {
             self.flight_local_position =
-                local_radial * (planet::PLANET_RADIUS_METERS + minimum_eye_altitude);
+                local_radial * (planet::planet_radius_meters() + minimum_eye_altitude);
             self.surface_physics.vertical_velocity_meters_per_second = self
                 .surface_physics
                 .vertical_velocity_meters_per_second
@@ -2200,7 +2201,7 @@ impl State {
         let previous_local_position = self.flight_local_position;
         let local_radial = self.flight_local_position.normalize();
         let camera_altitude_meters =
-            (self.flight_local_position.length() - planet::PLANET_RADIUS_METERS).max(0.0);
+            (self.flight_local_position.length() - planet::planet_radius_meters()).max(0.0);
         let surface_height_meters = match self.render_path {
             RenderPath::Raster => self
                 .terrain
@@ -2272,7 +2273,7 @@ impl State {
                 let ocean_time_seconds = self.scaled_clock_seconds;
                 let local_radial = self.flight_local_position.normalize();
                 let prior_altitude =
-                    self.flight_local_position.length() - planet::PLANET_RADIUS_METERS;
+                    self.flight_local_position.length() - planet::planet_radius_meters();
                 let _ = self
                     .terrain
                     .prepare_flight_start_surface_height_meters(local_radial, prior_altitude);
@@ -2293,7 +2294,7 @@ impl State {
                     environment.terrain_height_meters + surface_camera::HUMAN_EYE_HEIGHT_METERS
                 };
                 self.flight_local_position =
-                    local_radial * (planet::PLANET_RADIUS_METERS + eye_altitude);
+                    local_radial * (planet::planet_radius_meters() + eye_altitude);
                 self.flight_surface_height_meters = environment.visible_surface_height_meters();
                 self.flight_speed = FlightSpeedState::default();
                 self.flight_travel_direction = glam::DVec3::ZERO;
@@ -2368,7 +2369,7 @@ impl State {
                         .unwrap_or(0.0)
                 };
                 self.flight_local_position = local_radial
-                    * (planet::PLANET_RADIUS_METERS
+                    * (planet::planet_radius_meters()
                         + self.flight_surface_height_meters
                         + flight_start_altitude_meters);
                 self.flight_local_tangent = if outmap_is_active {
@@ -3071,7 +3072,7 @@ impl State {
                     .dot(local_radial)
                     .clamp(-1.0, 1.0)
                     .asin();
-                let sea_level_altitude = local_position.length() - planet::PLANET_RADIUS_METERS;
+                let sea_level_altitude = local_position.length() - planet::planet_radius_meters();
                 self.flight_surface_height_meters = self
                     .terrain
                     .prepare_flight_start_surface_height_meters(local_radial, sea_level_altitude)
@@ -3211,9 +3212,9 @@ impl State {
                 self.camera_mode,
                 CameraMode::LowFlight | CameraMode::Surface
             ) {
-            camera_radius - planet::PLANET_RADIUS_METERS - self.flight_surface_height_meters
+            camera_radius - planet::planet_radius_meters() - self.flight_surface_height_meters
         } else {
-            camera_radius - planet::PLANET_RADIUS_METERS
+            camera_radius - planet::planet_radius_meters()
         };
         let delta_sim_time = (sim_time - self.previous_sim_time).max(f64::EPSILON);
         let delta_camera_motion_seconds = if self.scenario.is_none() {
@@ -3374,7 +3375,7 @@ impl State {
         // Sea-level altitude, which is what this argument selects the height
         // scale by -- not the above-ground figure the HUD uses.
         let camera_sea_level_altitude_meters =
-            camera_planet_frame_position.length() - planet::PLANET_RADIUS_METERS;
+            camera_planet_frame_position.length() - planet::planet_radius_meters();
         let camera_direction = camera_planet_frame_position.normalize();
         let mut camera_surface_height_meters = match self.render_path {
             RenderPath::Raster => self.terrain.raster_surface_height_meters_at(
@@ -3601,7 +3602,7 @@ impl State {
             );
             self.foveated.update(
                 &self.queue,
-                camera_radius - planet::PLANET_RADIUS_METERS,
+                camera_radius - planet::planet_radius_meters(),
                 target_fovea_ndc,
                 frame_time,
                 camera_uniform.camera_forward[..3]
@@ -4741,6 +4742,22 @@ fn launch_options() -> Result<LaunchOptions, String> {
     let mut arguments = std::env::args().skip(1);
     while let Some(flag) = arguments.next() {
         match flag.as_str() {
+            // Selected once, before any pipeline is built: the body's radius is
+            // baked into generated shader source, so it cannot change later
+            // without the GPU and CPU describing different worlds.
+            "--body" => {
+                let name = arguments
+                    .next()
+                    .ok_or_else(|| "--body requires planet or moon".to_owned())?;
+                let selected = match name.as_str() {
+                    "planet" => body::PLANET,
+                    "moon" => body::MOON,
+                    other => return Err(format!("unknown body {other}; expected planet or moon")),
+                };
+                if !body::set_active(selected) {
+                    return Err("--body must be given before the world is used".to_owned());
+                }
+            }
             "--scenario" => {
                 options.scenario_name = Some(
                     arguments
@@ -4873,7 +4890,7 @@ mod tests {
         // And it lands exactly `eye_height` above the water the CPU reports.
         let wave_height_meters =
             crate::ocean::global_wave_height_meters(radial, ocean_time_seconds, 4000.0);
-        let eye_altitude_meters = eye.length() - crate::planet::PLANET_RADIUS_METERS;
+        let eye_altitude_meters = eye.length() - crate::planet::planet_radius_meters();
         // Nanometre tolerance: the altitude comes from a length() of a vector
         // 4,000km long, so f64 leaves a few tenths of a nanometre behind and a
         // tighter bound tests the arithmetic rather than the placement.
@@ -4886,7 +4903,7 @@ mod tests {
         // mode buys nothing. At full storm the authored 1m radius was metres
         // under the surface, which is why its captures framed the water's
         // underside instead of the horizon.
-        let authored_altitude_meters = position.length() - crate::planet::PLANET_RADIUS_METERS;
+        let authored_altitude_meters = position.length() - crate::planet::planet_radius_meters();
         assert!(
             authored_altitude_meters - wave_height_meters < -5.0,
             "authored eye was {}m above the wave, so it was never submerged",
@@ -4950,7 +4967,7 @@ mod tests {
     #[test]
     fn camera_in_contact_with_ocean_follows_troughs_instead_of_ratcheting_upward() {
         let prior_surface = 12.0;
-        let current_radius = crate::planet::PLANET_RADIUS_METERS
+        let current_radius = crate::planet::planet_radius_meters()
             + prior_surface
             + LOW_FLIGHT_MINIMUM_CLEARANCE_METERS;
         let falling_surface = -4.0;
@@ -4963,7 +4980,7 @@ mod tests {
         );
         assert_eq!(
             followed,
-            crate::planet::PLANET_RADIUS_METERS
+            crate::planet::planet_radius_meters()
                 + falling_surface
                 + LOW_FLIGHT_MINIMUM_CLEARANCE_METERS
         );
@@ -5234,7 +5251,7 @@ mod tests {
     #[test]
     fn tangent_flight_follows_the_sphere_without_gaining_altitude() {
         let altitude = 1_524.0;
-        let position = DVec3::X * (crate::planet::PLANET_RADIUS_METERS + altitude);
+        let position = DVec3::X * (crate::planet::planet_radius_meters() + altitude);
         let moved = advance_flight_position_on_sphere(position, DVec3::Z, 25_000.0);
 
         assert!((moved.length() - position.length()).abs() < 1.0e-9);
@@ -5246,7 +5263,7 @@ mod tests {
         const FLIGHT_ALTITUDE_METERS: f64 = 10.0;
         const HIDDEN_PEAK_HEIGHT_METERS: f64 = 20.0;
 
-        let radius = crate::planet::PLANET_RADIUS_METERS + FLIGHT_ALTITUDE_METERS;
+        let radius = crate::planet::planet_radius_meters() + FLIGHT_ALTITUDE_METERS;
         let start = DVec3::X * radius;
         let end = (DVec3::X + DVec3::Z * (4.0 / radius)).normalize() * radius;
         let end_z = end.normalize().z;

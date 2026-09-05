@@ -8,7 +8,8 @@ pub struct SunRenderer {
 
 pub(crate) fn sun_shader_source() -> String {
     format!(
-        "{}\n{}",
+        "{}\n{}\n{}",
+        crate::body::wgsl_constants(),
         include_str!("sun.wgsl"),
         include_str!("weather_cloud_density.wgsl"),
     )

@@ -9,11 +9,18 @@ use glam::{DQuat, DVec3, IVec3, Mat4, Vec3, Vec4};
 /// Re-exported rather than restated. The baker writes outmap tiles against the
 /// coretypes radius, so a second literal here could silently place the runtime
 /// surface on a different sphere than the data it streams.
-pub use catinthegarden_coretypes::PLANET_RADIUS_METERS;
+/// Radius of the body being drawn, replacing the former crate-wide constant.
+/// The baker's copy stays in `coretypes`; this follows whichever world is
+/// active. See `body.rs`.
+pub fn planet_radius_meters() -> f64 {
+    crate::body::radius_meters()
+}
 /// Surface swimming may enter the water below sea level while remaining well
 /// outside the solid planet. This covers the maximum storm-wave trough and
 /// keeps LOD distance math defined until an underwater renderer exists.
-pub const MINIMUM_CAMERA_RADIUS_METERS: f64 = PLANET_RADIUS_METERS - 100.0;
+pub fn minimum_camera_radius_meters() -> f64 {
+    planet_radius_meters() - 100.0
+}
 /// Full-screen post-processing switches. Keeping these beside the planet's
 /// other visual constants makes expensive presentation stages easy to bisect.
 pub const BLUR_ENABLED: bool = false;
@@ -358,7 +365,7 @@ impl QuadtreeNode {
 
     fn geometric_error_meters_with_ratio(self, geometric_error_ratio: f64) -> f64 {
         let root_triangle_spacing =
-            PLANET_RADIUS_METERS * std::f64::consts::FRAC_PI_2 / CHUNK_GRID_QUADS as f64;
+            planet_radius_meters() * std::f64::consts::FRAC_PI_2 / CHUNK_GRID_QUADS as f64;
         // Triangle spacing is resolution, not approximation error. For the smooth analytic
         // placeholder, 2% of the edge is a conservative combined curvature and unresolved-sine
         // bound. Phase 4 replaces this with the baker's per-tile measured geometric error.
@@ -384,7 +391,8 @@ pub fn cube_face_direction(face: u8, u: f64, v: f64) -> DVec3 {
 /// the GPU draws is always the sea `OCEAN_WAVE_SCALE` describes.
 pub(crate) fn shared_planet_shader_source() -> String {
     format!(
-        "{}\n{}",
+        "{}\n{}\n{}",
+        crate::body::wgsl_constants(),
         crate::ocean::wgsl_constants(),
         include_str!("shared_planet.wgsl")
     )
@@ -477,7 +485,7 @@ pub fn baked_sample_spacing_meters(source_level: u8) -> f64 {
 }
 
 fn baked_sample_spacing_meters_at_level(source_level: f64) -> f64 {
-    2.0 * PLANET_RADIUS_METERS / (2.0_f64.powf(source_level) * f64::from(TILE_LOGICAL_SIZE - 1))
+    2.0 * planet_radius_meters() / (2.0_f64.powf(source_level) * f64::from(TILE_LOGICAL_SIZE - 1))
 }
 
 pub fn continuous_baked_sample_spacing_meters(
@@ -538,7 +546,7 @@ pub fn terrain_detail_meters_with_filter(
                 ));
         if fade > 0.0 {
             let inverse_wavelength = 1.0 / wavelength;
-            let cells = domain * (PLANET_RADIUS_METERS * inverse_wavelength);
+            let cells = domain * (planet_radius_meters() * inverse_wavelength);
             let cell_floor = cells.floor();
             let cell_index = IVec3::new(
                 cell_floor.x as i32,
@@ -951,11 +959,11 @@ impl TerrainHeightRange {
     }
 
     fn minimum_radius(self) -> f64 {
-        PLANET_RADIUS_METERS + self.minimum_meters
+        planet_radius_meters() + self.minimum_meters
     }
 
     fn maximum_radius(self) -> f64 {
-        PLANET_RADIUS_METERS + self.maximum_meters
+        planet_radius_meters() + self.maximum_meters
     }
 }
 
@@ -1056,7 +1064,7 @@ fn node_is_above_horizon_with_height_range(
         DVec3::ZERO,
         camera_world,
         height_range,
-    ) >= PLANET_RADIUS_METERS * PLANET_RADIUS_METERS
+    ) >= planet_radius_meters() * planet_radius_meters()
 }
 
 fn node_is_in_view_frustum(
@@ -1199,7 +1207,7 @@ fn near_camera_lod_priority_weight(
     camera_world: DVec3,
     terrain_height_range: TerrainHeightRange,
 ) -> f64 {
-    let camera_altitude = (camera_world.length() - PLANET_RADIUS_METERS).max(1.0);
+    let camera_altitude = (camera_world.length() - planet_radius_meters()).max(1.0);
     let node_distance =
         minimum_node_distance_with_height_range(node, camera_world, terrain_height_range).max(1.0);
     ((camera_altitude + 1.0) / (camera_altitude + node_distance + 1.0))
@@ -1483,7 +1491,7 @@ impl PlanetLod {
         vertical_fov_radians: f64,
     ) -> LodUpdate {
         assert!(camera_world.is_finite());
-        assert!(camera_world.length() > MINIMUM_CAMERA_RADIUS_METERS);
+        assert!(camera_world.length() > minimum_camera_radius_meters());
         assert!(camera_forward.is_finite() && camera_forward.length_squared() > 0.0);
         assert!(camera_up.is_finite() && camera_up.length_squared() > 0.0);
         assert!(aspect_ratio.is_finite() && aspect_ratio > 0.0);
@@ -1546,7 +1554,7 @@ impl PlanetLod {
         baked_error_limit: Option<&dyn Fn(QuadtreeNode) -> u8>,
     ) -> LodUpdate {
         assert!(camera_world.is_finite());
-        assert!(camera_world.length() > MINIMUM_CAMERA_RADIUS_METERS);
+        assert!(camera_world.length() > minimum_camera_radius_meters());
         assert!(camera_forward.is_finite() && camera_forward.length_squared() > 0.0);
         assert!(camera_up.is_finite() && camera_up.length_squared() > 0.0);
         assert!(aspect_ratio.is_finite() && aspect_ratio > 0.0);
@@ -1577,7 +1585,7 @@ impl PlanetLod {
         baked_error_limit: Option<&dyn Fn(QuadtreeNode) -> u8>,
     ) -> LodUpdate {
         assert!(camera_world.is_finite());
-        assert!(camera_world.length() > MINIMUM_CAMERA_RADIUS_METERS);
+        assert!(camera_world.length() > minimum_camera_radius_meters());
         assert!(aspect_ratio.is_finite() && aspect_ratio > 0.0);
         assert!(vertical_fov_radians.is_finite() && vertical_fov_radians > 0.0);
         assert!(geometric_error_ratio.total().is_finite() && geometric_error_ratio.total() > 0.0);
@@ -2167,7 +2175,7 @@ fn node_boundary_samples(node: QuadtreeNode) -> Vec<([i64; 3], DVec3)> {
     let mut samples = Vec::with_capacity(4 * CHUNK_GRID_QUADS);
     let mut push_sample = |u: f64, v: f64| {
         let direction = cube_face_direction(node.face, u, v);
-        let position = direction * (PLANET_RADIUS_METERS + placeholder_height_meters(direction));
+        let position = direction * (planet_radius_meters() + placeholder_height_meters(direction));
         let key = [
             (direction.x * 1.0e10).round() as i64,
             (direction.y * 1.0e10).round() as i64,
@@ -2258,12 +2266,12 @@ pub fn build_chunk_mesh_with_quads(node: QuadtreeNode, grid_quads: usize) -> Chu
     assert!(node.is_valid(), "invalid quadtree node {node:?}");
     assert!(grid_quads > 0, "chunk grid must contain at least one quad");
     let [u_min, v_min, u_max, v_max] = node.uv_bounds();
-    let anchor_world = node.center_direction() * PLANET_RADIUS_METERS;
+    let anchor_world = node.center_direction() * planet_radius_meters();
     let corners = [
-        cube_face_direction(node.face, u_min, v_min) * PLANET_RADIUS_METERS,
-        cube_face_direction(node.face, u_max, v_min) * PLANET_RADIUS_METERS,
-        cube_face_direction(node.face, u_max, v_max) * PLANET_RADIUS_METERS,
-        cube_face_direction(node.face, u_min, v_max) * PLANET_RADIUS_METERS,
+        cube_face_direction(node.face, u_min, v_min) * planet_radius_meters(),
+        cube_face_direction(node.face, u_max, v_min) * planet_radius_meters(),
+        cube_face_direction(node.face, u_max, v_max) * planet_radius_meters(),
+        cube_face_direction(node.face, u_min, v_max) * planet_radius_meters(),
     ];
     let edge_length_meters = corners[0]
         .distance(corners[1])
@@ -2284,7 +2292,7 @@ pub fn build_chunk_mesh_with_quads(node: QuadtreeNode, grid_quads: usize) -> Chu
             let u_fraction = x as f64 / grid_quads as f64;
             let u = u_min + (u_max - u_min) * u_fraction;
             let direction = cube_face_direction(node.face, u, v);
-            let world = direction * PLANET_RADIUS_METERS;
+            let world = direction * planet_radius_meters();
             vertices.push(ChunkVertex {
                 anchor_relative_position: (world - anchor_world).as_vec3().to_array(),
                 sphere_direction: direction.as_vec3().to_array(),
@@ -2388,7 +2396,8 @@ impl CubeSphereMesh {
                 for x in 0..CHUNK_GRID_VERTICES {
                     let u = x as f64 / CHUNK_GRID_QUADS as f64 * 2.0 - 1.0;
                     world_positions.push(
-                        (normal + tangent_u * u + tangent_v * v).normalize() * PLANET_RADIUS_METERS,
+                        (normal + tangent_u * u + tangent_v * v).normalize()
+                            * planet_radius_meters(),
                     );
                 }
             }
@@ -2484,7 +2493,7 @@ impl OrbitCamera {
         view_projection_for(
             self.direction_dvec3(),
             self.view_up_hint,
-            self.orbit_radius_meters - PLANET_RADIUS_METERS,
+            self.orbit_radius_meters - planet_radius_meters(),
             self.vertical_fov_radians,
             aspect_ratio,
         )
@@ -2498,7 +2507,7 @@ impl OrbitCamera {
         view_projection_for(
             self.planet_frame_direction_dvec3(planet_rotation_radians),
             self.planet_frame_view_up(planet_rotation_radians),
-            self.orbit_radius_meters - PLANET_RADIUS_METERS,
+            self.orbit_radius_meters - planet_radius_meters(),
             self.vertical_fov_radians,
             aspect_ratio,
         )
@@ -2785,7 +2794,7 @@ impl CameraUniform {
         );
         let camera_world_position = camera.planet_frame_world_position(planet_rotation_radians);
         let camera_radius = camera_world_position.length();
-        let camera_altitude = camera_radius - PLANET_RADIUS_METERS;
+        let camera_altitude = camera_radius - planet_radius_meters();
         let planet_direction_view = basis
             .world_to_view(camera_world_position / camera_radius)
             .as_vec3();
@@ -2857,8 +2866,8 @@ mod tests {
         MINIMUM_LOD_LEVEL, NEAR_FIELD_GRID_QUADS, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE,
         OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS, OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS,
         OUTMAP_TERRAIN_HEIGHT_SCALE, OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, OrbitCamera,
-        PLANET_RADIUS_METERS, PLANET_ROTATION_PERIOD_SECONDS, PlanetLod, QuadtreeNode,
-        RenderDebugMode, SKIRT_DEPTH_RATIO, TERRAIN_DETAIL_OCTAVES, TERRAIN_DETAIL_RIDGE_CENTRE,
+        PLANET_ROTATION_PERIOD_SECONDS, PlanetLod, QuadtreeNode, RenderDebugMode,
+        SKIRT_DEPTH_RATIO, TERRAIN_DETAIL_OCTAVES, TERRAIN_DETAIL_RIDGE_CENTRE,
         TERRAIN_DETAIL_RIDGE_NORMALISATION, TERRAIN_DETAIL_RIDGE_SCALE,
         TERRAIN_DETAIL_RIDGE_SOFTNESS, TERRAIN_DETAIL_RIDGE_STRENGTH, TERRAIN_DETAIL_ROUGHNESS,
         TERRAIN_DETAIL_START_WAVELENGTH_METERS, TerrainHeightRange, build_chunk_mesh,
@@ -2867,7 +2876,7 @@ mod tests {
         global_terrain_detail_meters, minimum_vertical_fov_radians_for_viewport,
         near_camera_lod_priority_weight, near_plane_meters, outmap_surface_height_meters,
         outmap_terrain_height_scale, placeholder_height_meters, planet_local_vector,
-        planet_rotation_radians, projected_error_pixels_with_height_range,
+        planet_radius_meters, planet_rotation_radians, projected_error_pixels_with_height_range,
         scaled_outmap_macro_height_meters, terrain_detail_meters, terrain_detail_value_noise,
         unbalanced_coarse_neighbors,
     };
@@ -2914,7 +2923,7 @@ mod tests {
 
     #[test]
     fn near_camera_priority_favours_detail_over_horizon_demand() {
-        let camera = DVec3::X * (PLANET_RADIUS_METERS + 1_000.0);
+        let camera = DVec3::X * (planet_radius_meters() + 1_000.0);
         let terrain_range = TerrainHeightRange::default();
         let near = QuadtreeNode {
             face: 0,
@@ -3135,9 +3144,9 @@ mod tests {
             let mut neighborhood = Vec::new();
             for (x, y) in [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)] {
                 let direction = (focus
-                    + tangent_x * (f64::from(x) * focus_radius / PLANET_RADIUS_METERS)
-                    + tangent_y * (f64::from(y) * focus_radius / PLANET_RADIUS_METERS))
-                    .normalize();
+                    + tangent_x * (f64::from(x) * focus_radius / planet_radius_meters())
+                    + tangent_y * (f64::from(y) * focus_radius / planet_radius_meters()))
+                .normalize();
                 neighborhood.push(
                     update
                         .active_nodes
@@ -3196,8 +3205,8 @@ mod tests {
     #[test]
     fn projected_error_decreases_with_distance_and_level() {
         let node = QuadtreeNode::root(0);
-        let near = DVec3::X * (PLANET_RADIUS_METERS * 3.0);
-        let far = DVec3::X * (PLANET_RADIUS_METERS * 30.0);
+        let near = DVec3::X * (planet_radius_meters() * 3.0);
+        let far = DVec3::X * (planet_radius_meters() * 30.0);
         let near_error = projected_error_pixels(node, near, 1_080, 45.0_f64.to_radians());
         let far_error = projected_error_pixels(node, far, 1_080, 45.0_f64.to_radians());
         assert!(near_error > far_error);
@@ -3408,7 +3417,7 @@ mod tests {
     #[test]
     fn two_kilometer_selection_uses_screen_distance_without_exhausting_budget() {
         let mut lod = PlanetLod::default();
-        let camera = DVec3::X * (PLANET_RADIUS_METERS + 2_000.0);
+        let camera = DVec3::X * (planet_radius_meters() + 2_000.0);
         let update = lod.update(camera, 1_080, 45.0_f64.to_radians());
         assert!(update.metrics.max_level > MINIMUM_LOD_LEVEL);
         assert!(update.metrics.max_level < MAX_LOD_LEVEL);
@@ -3419,7 +3428,7 @@ mod tests {
     #[test]
     fn terrain_source_level_limit_prevents_empty_refinement() {
         let mut lod = PlanetLod::default();
-        let camera = DVec3::X * (PLANET_RADIUS_METERS + 2_000.0);
+        let camera = DVec3::X * (planet_radius_meters() + 2_000.0);
         let maximum_useful_level = 6;
         let update = lod.update_for_view_with_up_and_level_limit(
             camera,
@@ -3445,7 +3454,7 @@ mod tests {
     #[test]
     fn near_surface_selection_reaches_level_eighteen_without_dense_refinement() {
         let mut lod = PlanetLod::default();
-        let camera = DVec3::X * (PLANET_RADIUS_METERS + 10.0);
+        let camera = DVec3::X * (planet_radius_meters() + 10.0);
         let update = lod.update(camera, 1_080, 45.0_f64.to_radians());
         assert_eq!(update.metrics.max_level, MAX_LOD_LEVEL);
         assert!(update.active_nodes.len() <= super::DEFAULT_MAX_ACTIVE_CHUNKS);
@@ -3611,7 +3620,7 @@ mod tests {
         assert!(
             mesh.world_positions()
                 .iter()
-                .all(|position| (position.length() - PLANET_RADIUS_METERS).abs() < 0.001)
+                .all(|position| (position.length() - planet_radius_meters()).abs() < 0.001)
         );
     }
 
@@ -3685,7 +3694,7 @@ mod tests {
     fn one_pixel_mouse_look_remains_smooth_at_maximum_optical_zoom() {
         let mut camera = OrbitCamera::default();
         let position = DVec3::new(9_000_000.0, 3_000_000.0, 3_162_277.660_168_379_5);
-        let look_at = DVec3::X * PLANET_RADIUS_METERS;
+        let look_at = DVec3::X * planet_radius_meters();
         camera.set_world_pose(position, look_at);
         camera.set_vertical_fov_degrees(super::MIN_VERTICAL_FOV_DEGREES);
 
@@ -3941,11 +3950,11 @@ mod tests {
         for i in 0..300 {
             for j in 0..300 {
                 let offset = east * (f64::from(i) * 7.0) + north * (f64::from(j) * 7.0);
-                let here = (base * PLANET_RADIUS_METERS + offset).normalize();
+                let here = (base * planet_radius_meters() + offset).normalize();
                 let along_east =
-                    (base * PLANET_RADIUS_METERS + offset + east * step_meters).normalize();
+                    (base * planet_radius_meters() + offset + east * step_meters).normalize();
                 let along_north =
-                    (base * PLANET_RADIUS_METERS + offset + north * step_meters).normalize();
+                    (base * planet_radius_meters() + offset + north * step_meters).normalize();
                 let spacing = super::baked_sample_spacing_meters(4);
                 // A mountain, so every octave has its headroom.
                 let macro_height = 3_000.0;
@@ -4125,7 +4134,7 @@ mod tests {
 
     #[test]
     fn terrain_up_keeps_a_tangent_flight_horizon_horizontal() {
-        let position = DVec3::X * (PLANET_RADIUS_METERS + 1_524.0);
+        let position = DVec3::X * (planet_radius_meters() + 1_524.0);
         let mut camera = OrbitCamera::default();
         camera.set_world_pose_with_up(position, position + DVec3::Z, DVec3::X);
         let uniform = CameraUniform::from_camera(
@@ -4196,7 +4205,7 @@ mod tests {
 
     #[test]
     fn low_flight_lod_covers_every_sampled_ground_ray() {
-        let camera_position = DVec3::X * (PLANET_RADIUS_METERS + 1_524.0);
+        let camera_position = DVec3::X * (planet_radius_meters() + 1_524.0);
         let forward = DVec3::Z;
         let up = DVec3::X;
         let basis = CameraViewBasis::from_forward_and_up(forward, up);
@@ -4228,7 +4237,7 @@ mod tests {
                 .normalize();
                 let closest_distance = -camera_position.dot(ray);
                 let discriminant = closest_distance * closest_distance
-                    - (camera_position.length_squared() - PLANET_RADIUS_METERS.powi(2));
+                    - (camera_position.length_squared() - planet_radius_meters().powi(2));
                 if discriminant < 0.0 {
                     continue;
                 }
@@ -4254,7 +4263,7 @@ mod tests {
 
     #[test]
     fn downward_low_flight_sse_has_no_multi_level_topology_cliffs() {
-        let camera_position = DVec3::X * (PLANET_RADIUS_METERS + 2_198.0);
+        let camera_position = DVec3::X * (planet_radius_meters() + 2_198.0);
         let forward = -DVec3::X;
         let up = DVec3::Z;
         let mut lod = PlanetLod::default();
@@ -4463,10 +4472,10 @@ mod tests {
     #[test]
     fn outmap_detail_preserves_ocean_and_coastline() {
         // Most of the planet draws from the dense L4 pyramid.
-        const L4_SPACING: f64 = 2.0 * PLANET_RADIUS_METERS / (16.0 * 128.0);
+        let l4_spacing: f64 = 2.0 * planet_radius_meters() / (16.0 * 128.0);
         let direction = DVec3::new(0.27, -0.61, 0.74).normalize();
         assert_eq!(
-            outmap_surface_height_meters(-800.0, direction, 1_524.0, L4_SPACING),
+            outmap_surface_height_meters(-800.0, direction, 1_524.0, l4_spacing),
             0.0
         );
         // Headroom is asked per octave, and what has to hold is that the whole
@@ -4501,10 +4510,10 @@ mod tests {
         // Above the weighting it is applied whole.
         let scaled_macro_height = scaled_outmap_macro_height_meters(400.0, 1_524.0);
         assert_eq!(
-            detailed_outmap_land_height_meters(400.0, direction, 1_524.0, L4_SPACING),
+            detailed_outmap_land_height_meters(400.0, direction, 1_524.0, l4_spacing),
             scaled_macro_height
                 + GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE * global_terrain_detail_meters(direction)
-                + terrain_detail_meters(direction, L4_SPACING, scaled_macro_height)
+                + terrain_detail_meters(direction, l4_spacing, scaled_macro_height)
         );
     }
 
@@ -4632,7 +4641,7 @@ mod tests {
     #[test]
     fn projected_error_uses_the_exaggerated_land_shell() {
         let node = QuadtreeNode::root(0);
-        let camera = DVec3::X * (PLANET_RADIUS_METERS + 12_000.0);
+        let camera = DVec3::X * (planet_radius_meters() + 12_000.0);
         let baseline_error = projected_error_pixels_with_height_range(
             node,
             camera,
@@ -4745,7 +4754,7 @@ mod tests {
     fn waypoint_pose_preserves_f64_position_and_arbitrary_look_direction() {
         let mut camera = OrbitCamera::default();
         let position =
-            DVec3::new(1.0, 2.0, -3.0).normalize() * (PLANET_RADIUS_METERS + 1_234.567_890_123);
+            DVec3::new(1.0, 2.0, -3.0).normalize() * (planet_radius_meters() + 1_234.567_890_123);
         let look_at = DVec3::new(-81_234.5, 456_789.25, 12_345.75);
         camera.set_world_pose(position, look_at);
 
@@ -4756,8 +4765,8 @@ mod tests {
     }
 
     fn camera_for_error(node: QuadtreeNode, target_error_pixels: f64) -> DVec3 {
-        let mut near_radius = PLANET_RADIUS_METERS + 10.0;
-        let mut far_radius = PLANET_RADIUS_METERS * 10_000.0;
+        let mut near_radius = planet_radius_meters() + 10.0;
+        let mut far_radius = planet_radius_meters() * 10_000.0;
         for _ in 0..100 {
             let radius = (near_radius + far_radius) * 0.5;
             let error =

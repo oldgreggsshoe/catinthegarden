@@ -183,7 +183,11 @@ impl AtmosphereRenderer {
             ],
         });
 
-        let common = include_str!("atmosphere_lut_common.wgsl");
+        let common = &format!(
+            "{}\n{}",
+            crate::body::wgsl_constants(),
+            include_str!("atmosphere_lut_common.wgsl")
+        );
         let transmittance_shader = shader_module(
             device,
             "physical atmosphere transmittance shader",
@@ -210,7 +214,11 @@ impl AtmosphereRenderer {
         );
         let display_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("physical atmosphere display shader"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("atmosphere.wgsl"))),
+            source: wgpu::ShaderSource::Wgsl(Cow::Owned(format!(
+                "{}\n{}",
+                crate::body::wgsl_constants(),
+                include_str!("atmosphere.wgsl")
+            ))),
         });
 
         let transmittance_pipeline_layout =

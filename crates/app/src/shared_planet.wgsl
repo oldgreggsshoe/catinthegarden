@@ -1,4 +1,3 @@
-const PLANET_RADIUS_METERS: f32 = 4000000.0;
 const TERRAIN_AERIAL_UPPER_HORIZON_AIR_MASS_SCALE: f32 = 0.42;
 // Material/height tiles are intentionally denser than the fixed 32x32 chunk
 // grid, so material detail and coastline transitions do not inherit mesh size.

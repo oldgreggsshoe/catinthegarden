@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use glam::{DVec2, DVec3};
 
-use crate::planet::{CameraViewBasis, PLANET_RADIUS_METERS};
+use crate::planet::{CameraViewBasis, planet_radius_meters};
 use crate::terrain::{DetailFilterRung, NearFieldCoverage, SurfaceHeightBreakdown};
 
 /// Grid resolution of the screen-space sample pattern, per axis.
@@ -93,7 +93,7 @@ impl ProbeGeometry {
             ndc: ndc.to_array(),
             distance_meters: offset.length(),
             direction: world_position / radius_meters,
-            height_meters: radius_meters - PLANET_RADIUS_METERS,
+            height_meters: radius_meters - planet_radius_meters(),
         })
     }
 }
@@ -581,7 +581,7 @@ mod tests {
         DepthImage, MAX_COMPARISON_DISTANCE_METERS, PROBE_GRID, ProbeContext, ProbeGeometry,
         compare_surface, compare_surface_with_limit, probe_ndc_grid,
     };
-    use crate::planet::PLANET_RADIUS_METERS;
+    use crate::planet::planet_radius_meters;
     use crate::terrain::SurfaceHeightBreakdown;
 
     /// A terrain that is entirely baked macro shape, with no synthesised
@@ -599,7 +599,7 @@ mod tests {
     }
 
     fn nadir_geometry(altitude_meters: f64, near_meters: f64) -> ProbeGeometry {
-        let camera = DVec3::new(0.0, 0.0, PLANET_RADIUS_METERS + altitude_meters);
+        let camera = DVec3::new(0.0, 0.0, planet_radius_meters() + altitude_meters);
         ProbeGeometry::new(
             near_meters,
             60_f64.to_radians(),

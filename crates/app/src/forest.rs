@@ -10,7 +10,7 @@ use glam::DVec3;
 use wgpu::util::DeviceExt;
 
 use crate::{
-    planet::PLANET_RADIUS_METERS,
+    planet::planet_radius_meters,
     terrain::{
         TerrainForestSample, TerrainRenderer, forest_biome_requires_evergreen,
         forest_surface_is_eligible,
@@ -65,8 +65,9 @@ const TREE_LOD_PLACEHOLDER_DENSITY: f32 = 0.12;
 const TREE_LOD_PLACEHOLDER_SCALE: f32 = 0.10;
 const FOREST_PLANET_SEED: u32 = 0x6d2b_79f5;
 const FOREST_BEAM_ATMOSPHERE_HEIGHT_METERS: f64 = 2_880_000.0;
-const FOREST_BEAM_TOP_RADIUS_METERS: f64 =
-    PLANET_RADIUS_METERS + FOREST_BEAM_ATMOSPHERE_HEIGHT_METERS;
+fn forest_beam_top_radius_meters() -> f64 {
+    planet_radius_meters() + FOREST_BEAM_ATMOSPHERE_HEIGHT_METERS
+}
 const FOREST_BEAM_LOCATOR_SPACING_METERS: f64 = 1_000_000.0;
 const FOREST_BEAM_REFINEMENT_CANDIDATES: usize = 512;
 
@@ -104,6 +105,7 @@ fn forest_beams_from_env() -> bool {
 
 fn forest_shader_source() -> String {
     [
+        crate::body::wgsl_constants().as_str(),
         include_str!("forest.wgsl"),
         include_str!("weather_cloud_density.wgsl"),
     ]
@@ -269,7 +271,7 @@ impl PendingForestPatch {
             ) && f64::from(layout.seed) <= forest_placement_density_at(direction)
             {
                 let centre = direction
-                    * (PLANET_RADIUS_METERS + sample.height_meters
+                    * (planet_radius_meters() + sample.height_meters
                         - tree_base_sink_meters(layout.width_meters, sample.slope_radians));
                 self.trees.push(TreeInstance {
                     centre_and_height: [
@@ -428,7 +430,7 @@ impl ForestRenderer {
             maximum_draw_instances = FOREST_MAX_DRAW_INSTANCES,
             coarse_global_beam_locators = coarse_beam_anchors.len(),
             global_beam_locators = beam_anchors.len(),
-            beam_top_radius_meters = FOREST_BEAM_TOP_RADIUS_METERS,
+            beam_top_radius_meters = forest_beam_top_radius_meters(),
             "configured billboard forest"
         );
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -920,7 +922,7 @@ impl ForestRenderer {
             };
             let centre_direction = forest_cell_centre_direction(key);
             let centre_distance =
-                (centre_direction * PLANET_RADIUS_METERS - camera_planet_position).length();
+                (centre_direction * planet_radius_meters() - camera_planet_position).length();
             let tier = if centre_distance <= FOREST_GPU_FULL_DISTANCE_METERS {
                 GpuForestTier::Full
             } else if centre_distance <= FOREST_GPU_MEDIUM_DISTANCE_METERS {
@@ -1376,7 +1378,7 @@ fn forest_surface_angular_radius(
     {
         return None;
     }
-    let tree_radius = PLANET_RADIUS_METERS
+    let tree_radius = planet_radius_meters()
         + local_surface_height_meters.max(0.0)
         + f64::from(TREE_HEIGHT_MIN_METERS + TREE_HEIGHT_RANGE_METERS);
     if visibility_distance_meters < (camera_radius_meters - tree_radius).abs() {
@@ -1469,11 +1471,12 @@ fn build_forest_proxy_patch(
         let offsets = [(0.0, 0.0), (-0.42, 0.24), (0.38, -0.30)];
         for (card_index, (tangent_offset, bitangent_offset)) in offsets.into_iter().enumerate() {
             let card_direction = (up
-                + tangent * (tangent_offset * f64::from(width_meters) / PLANET_RADIUS_METERS)
-                + bitangent * (bitangent_offset * f64::from(width_meters) / PLANET_RADIUS_METERS))
-                .normalize();
+                + tangent * (tangent_offset * f64::from(width_meters) / planet_radius_meters())
+                + bitangent
+                    * (bitangent_offset * f64::from(width_meters) / planet_radius_meters()))
+            .normalize();
             let centre = card_direction
-                * (PLANET_RADIUS_METERS + sample.height_meters
+                * (planet_radius_meters() + sample.height_meters
                     - tree_base_sink_meters(width_meters, sample.slope_radians));
             trees.push(TreeInstance {
                 centre_and_height: [
@@ -1827,8 +1830,8 @@ fn global_forest_beam_anchors(samples: &[TerrainForestSample]) -> Vec<ForestBeam
                 .dot(FOREST_CENTRE_DIRECTION)
                 .total_cmp(&right.direction.dot(FOREST_CENTRE_DIRECTION))
         })
-        .map(|sample| PLANET_RADIUS_METERS + sample.surface_elevation_meters.max(0.0))
-        .unwrap_or(PLANET_RADIUS_METERS);
+        .map(|sample| planet_radius_meters() + sample.surface_elevation_meters.max(0.0))
+        .unwrap_or(planet_radius_meters());
     let mut anchors = vec![ForestBeamAnchor {
         direction: FOREST_CENTRE_DIRECTION,
         base_radius_meters: start_base_radius,
@@ -1851,7 +1854,7 @@ fn global_forest_beam_anchors(samples: &[TerrainForestSample]) -> Vec<ForestBeam
             .then_with(|| left.direction.y.total_cmp(&right.direction.y))
             .then_with(|| left.direction.z.total_cmp(&right.direction.z))
     });
-    let minimum_angular_spacing = FOREST_BEAM_LOCATOR_SPACING_METERS / PLANET_RADIUS_METERS;
+    let minimum_angular_spacing = FOREST_BEAM_LOCATOR_SPACING_METERS / planet_radius_meters();
     for sample in candidates {
         let direction = sample.direction.normalize();
         if anchors
@@ -1862,7 +1865,7 @@ fn global_forest_beam_anchors(samples: &[TerrainForestSample]) -> Vec<ForestBeam
         }
         anchors.push(ForestBeamAnchor {
             direction,
-            base_radius_meters: PLANET_RADIUS_METERS + sample.surface_elevation_meters,
+            base_radius_meters: planet_radius_meters() + sample.surface_elevation_meters,
         });
     }
     anchors
@@ -1883,7 +1886,7 @@ fn refine_global_forest_beam_anchor(
             }
             eligible_height_at(direction).map(|height_meters| ForestBeamAnchor {
                 direction,
-                base_radius_meters: PLANET_RADIUS_METERS + height_meters,
+                base_radius_meters: planet_radius_meters() + height_meters,
             })
         })
 }
@@ -2247,7 +2250,7 @@ mod tests {
 
     #[test]
     fn renderable_range_selects_multiple_nearest_cells_with_a_hard_bound() {
-        let camera_position = FOREST_CENTRE_DIRECTION * (PLANET_RADIUS_METERS + 2.0);
+        let camera_position = FOREST_CENTRE_DIRECTION * (planet_radius_meters() + 2.0);
         let keys = forest_renderable_cell_keys(camera_position, 427, 60.0_f64.to_radians(), 0.0);
         assert!(keys.len() > 8);
         assert!(keys.len() <= FOREST_MAX_RENDERABLE_PATCHES);
@@ -2269,7 +2272,7 @@ mod tests {
 
     #[test]
     fn prefetch_range_contains_the_entire_draw_range_before_approach() {
-        let camera_position = FOREST_CENTRE_DIRECTION * (PLANET_RADIUS_METERS + 2.0);
+        let camera_position = FOREST_CENTRE_DIRECTION * (planet_radius_meters() + 2.0);
         let renderable =
             forest_renderable_cell_keys(camera_position, 427, 60.0_f64.to_radians(), 0.0);
         let prefetched = forest_cell_keys_within_distance(
@@ -2288,7 +2291,7 @@ mod tests {
     fn renderable_cell_selection_crosses_cube_face_seams() {
         let direction = DVec3::new(1.0, 0.0, 1.0).normalize();
         let keys = forest_renderable_cell_keys(
-            direction * (PLANET_RADIUS_METERS + 2.0),
+            direction * (planet_radius_meters() + 2.0),
             427,
             60.0_f64.to_radians(),
             0.0,
@@ -2307,7 +2310,7 @@ mod tests {
             FOREST_TREE_RENDER_DISTANCE_METERS
         );
         let camera_position = FOREST_CENTRE_DIRECTION
-            * (PLANET_RADIUS_METERS + FOREST_TREE_RENDER_DISTANCE_METERS * 2.0);
+            * (planet_radius_meters() + FOREST_TREE_RENDER_DISTANCE_METERS * 2.0);
         assert!(
             forest_renderable_cell_keys(camera_position, 427, 60.0_f64.to_radians(), 0.0)
                 .is_empty()
@@ -2318,7 +2321,7 @@ mod tests {
     fn forest_search_follows_high_presented_terrain_instead_of_sea_level() {
         let local_surface_height_meters = 42_000.0;
         let camera_position =
-            FOREST_CENTRE_DIRECTION * (PLANET_RADIUS_METERS + local_surface_height_meters + 2.0);
+            FOREST_CENTRE_DIRECTION * (planet_radius_meters() + local_surface_height_meters + 2.0);
         let visibility_distance =
             maximum_tree_visibility_distance_meters(427, 60.0_f64.to_radians());
         assert!(
@@ -2433,7 +2436,7 @@ mod tests {
     fn forest_beams_span_from_the_forest_surface_to_atmosphere_top() {
         let anchor = ForestBeamAnchor {
             direction: DVec3::X,
-            base_radius_meters: PLANET_RADIUS_METERS + 250.0,
+            base_radius_meters: planet_radius_meters() + 250.0,
         };
         let vertices = forest_beam_vertices(anchor);
         assert_eq!(vertices.len(), 6);
@@ -2441,7 +2444,7 @@ mod tests {
             (f64::from(vertex.direction_and_base_radius[3]) - anchor.base_radius_meters).abs() < 0.5
         }));
         assert!(include_str!("forest_beam.wgsl").contains("let top = up * 6880000.0"));
-        assert_eq!(FOREST_BEAM_TOP_RADIUS_METERS, 6_880_000.0);
+        assert_eq!(forest_beam_top_radius_meters(), 6_880_000.0);
     }
 
     #[test]
@@ -2470,7 +2473,7 @@ mod tests {
             forest_beam_vertices_for_anchors(&anchors).len(),
             anchors.len() * 6
         );
-        let minimum_angle = FOREST_BEAM_LOCATOR_SPACING_METERS / PLANET_RADIUS_METERS;
+        let minimum_angle = FOREST_BEAM_LOCATOR_SPACING_METERS / planet_radius_meters();
         for (index, anchor) in anchors.iter().enumerate() {
             assert!(anchors[index + 1..].iter().all(|other| {
                 anchor.direction.angle_between(other.direction).abs() >= minimum_angle
@@ -2482,7 +2485,7 @@ mod tests {
     fn global_locator_refinement_requires_a_real_tree_eligible_point() {
         let coarse = ForestBeamAnchor {
             direction: DVec3::X,
-            base_radius_meters: PLANET_RADIUS_METERS + 12_000.0,
+            base_radius_meters: planet_radius_meters() + 12_000.0,
         };
         let key = forest_cell_key(coarse.direction);
         let expected_direction = forest_patch_tree_layouts(key)
@@ -2498,7 +2501,7 @@ mod tests {
         })
         .expect("an eligible generated tree point becomes the locator");
         assert_eq!(refined.direction, expected_direction);
-        assert_eq!(refined.base_radius_meters, PLANET_RADIUS_METERS + 630.0);
+        assert_eq!(refined.base_radius_meters, planet_radius_meters() + 630.0);
         assert!(refine_global_forest_beam_anchor(coarse, |_| None).is_none());
     }
 

@@ -9,7 +9,7 @@ use std::{
 use glam::DVec3;
 
 use crate::planet::{
-    EARTH_AXIAL_TILT_RADIANS, PLANET_RADIUS_METERS, cube_face_basis, cube_face_direction,
+    EARTH_AXIAL_TILT_RADIANS, cube_face_basis, cube_face_direction, planet_radius_meters,
 };
 use crate::terrain::TerrainClimateSample;
 
@@ -1933,8 +1933,8 @@ fn cell_area_square_meters(face: u8, i: usize, j: usize) -> f64 {
     let c = cube_face_direction(face, u1, v1);
     let d = cube_face_direction(face, u0, v1);
     (spherical_triangle_area(a, b, c) + spherical_triangle_area(a, c, d))
-        * PLANET_RADIUS_METERS
-        * PLANET_RADIUS_METERS
+        * planet_radius_meters()
+        * planet_radius_meters()
 }
 
 fn initial_cell_state(
@@ -2125,7 +2125,7 @@ mod tests {
     #[test]
     fn cell_areas_cover_the_planet_without_a_face_seam_gap() {
         let grid = WeatherGrid::new();
-        let expected = 4.0 * std::f64::consts::PI * PLANET_RADIUS_METERS.powi(2);
+        let expected = 4.0 * std::f64::consts::PI * planet_radius_meters().powi(2);
         assert!((grid.total_area_square_meters() - expected).abs() / expected < 1.0e-12);
     }
 

@@ -1,4 +1,3 @@
-const PLANET_RADIUS_METERS: f32 = 4000000.0;
 
 struct Camera {
     projection_matrix: mat4x4<f32>,

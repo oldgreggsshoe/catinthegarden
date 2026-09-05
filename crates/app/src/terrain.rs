@@ -22,13 +22,13 @@ use crate::{
         GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, GeometricErrorRatio, MAX_LOD_LEVEL, MINIMUM_LOD_LEVEL,
         NEAR_FIELD_GRID_QUADS, OUTMAP_TERRAIN_FAR_HEIGHT_SCALE,
         OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS, OUTMAP_TERRAIN_HEIGHT_BLEND_START_METERS,
-        OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, PLANET_RADIUS_METERS, PlanetLod, QuadtreeNode,
+        OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, PlanetLod, QuadtreeNode,
         TERRAIN_DETAIL_MIN_FILTER_METERS, TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS,
         TerrainHeightRange, build_chunk_mesh, build_chunk_mesh_with_quads,
         continuous_baked_sample_spacing_meters, cube_face_basis, cube_face_direction,
         max_active_chunks_from_env, minimum_node_distance_with_height_range,
         outmap_surface_height_meters, outmap_surface_height_meters_with_filter,
-        placeholder_height_meters, scaled_outmap_macro_height_meters,
+        placeholder_height_meters, planet_radius_meters, scaled_outmap_macro_height_meters,
     },
 };
 
@@ -83,7 +83,7 @@ fn viewed_surface_direction(
         let distance = maximum_distance * sample as f64 / VIEW_FOCUS_SAMPLES as f64;
         let point = camera_world + forward * distance;
         let direction = point.normalize_or_zero();
-        let altitude = point.length() - PLANET_RADIUS_METERS;
+        let altitude = point.length() - planet_radius_meters();
         let Some(height) = height_at(direction, distance) else {
             continue;
         };
@@ -102,7 +102,7 @@ fn viewed_surface_direction(
                 let midpoint = (outside + inside) * 0.5;
                 let midpoint_point = camera_world + forward * midpoint;
                 let midpoint_direction = midpoint_point.normalize();
-                let midpoint_altitude = midpoint_point.length() - PLANET_RADIUS_METERS;
+                let midpoint_altitude = midpoint_point.length() - planet_radius_meters();
                 let Some(midpoint_height) = height_at(midpoint_direction, midpoint) else {
                     break;
                 };
@@ -227,7 +227,7 @@ fn flat_triangle_level_limit(
     );
     let detail_filter_meters =
         (distance * TERRAIN_DETAIL_FILTER_RATIO).max(TERRAIN_DETAIL_MIN_FILTER_METERS);
-    let required_level = (2.0 * PLANET_RADIUS_METERS
+    let required_level = (2.0 * planet_radius_meters()
         / (CHUNK_GRID_QUADS as f64 * detail_filter_meters))
         .log2()
         .ceil() as u8;
@@ -265,7 +265,9 @@ fn conservative_outmap_height_bounds(height_min_meters: f64, height_max_meters: 
 pub const NEAR_FIELD_WINDOW_TILES: u32 = 8;
 pub const NEAR_FIELD_WINDOW_SAMPLES: u32 = NEAR_FIELD_WINDOW_TILES * (TILE_LOGICAL_SIZE - 1) + 1;
 /// Metres of face arc, i.e. a quarter of the great circle.
-const CUBE_FACE_ARC_METERS: f64 = std::f64::consts::PI * PLANET_RADIUS_METERS / 2.0;
+fn cube_face_arc_meters() -> f64 {
+    std::f64::consts::PI * planet_radius_meters() / 2.0
+}
 /// The window never shrinks below this, so a camera on the ground always has
 /// fine data out past its own horizon (4km at 2m of eye height).
 const NEAR_FIELD_MIN_EXTENT_METERS: f64 = 12_000.0;
@@ -339,7 +341,7 @@ pub fn near_field_window_level(
     let required_extent_meters = NEAR_FIELD_MIN_EXTENT_METERS
         .max(clearance_meters.max(0.0) * NEAR_FIELD_EXTENT_PER_CLEARANCE);
     let tiles_per_side =
-        f64::from(NEAR_FIELD_WINDOW_TILES) * CUBE_FACE_ARC_METERS / required_extent_meters;
+        f64::from(NEAR_FIELD_WINDOW_TILES) * cube_face_arc_meters() / required_extent_meters;
     if !tiles_per_side.is_finite() || tiles_per_side < 1.0 {
         return None;
     }
@@ -1788,7 +1790,7 @@ impl TerrainRenderer {
             .max(TERRAIN_DETAIL_MIN_FILTER_METERS);
         (MINIMUM_LOD_LEVEL..=MAX_LOD_LEVEL)
             .map(|node_level| {
-                let node_spacing_meters = 2.0 * PLANET_RADIUS_METERS
+                let node_spacing_meters = 2.0 * planet_radius_meters()
                     / (f64::from(1_u32 << node_level) * f64::from(CHUNK_GRID_QUADS as u32));
                 let detail_filter_meters = node_spacing_meters.max(distance_floor_meters);
                 DetailFilterRung {
@@ -1858,8 +1860,8 @@ impl TerrainRenderer {
                 let v = v_min + (v_max - v_min) * y as f64 / grid_quads as f64;
                 let direction = cube_face_direction(surface.node.face, u, v);
                 let camera_position =
-                    local_surface_direction * (PLANET_RADIUS_METERS + camera_altitude_meters);
-                let camera_distance = camera_position.distance(direction * PLANET_RADIUS_METERS);
+                    local_surface_direction * (planet_radius_meters() + camera_altitude_meters);
+                let camera_distance = camera_position.distance(direction * planet_radius_meters());
                 let breakdown = self.surface_detail_height_breakdown(
                     surface,
                     direction,
@@ -1878,7 +1880,7 @@ impl TerrainRenderer {
                     } else {
                         breakdown.height_meters
                     };
-                Some(direction * (PLANET_RADIUS_METERS + height))
+                Some(direction * (planet_radius_meters() + height))
             };
             let lower_left = vertex_position(cell_x, cell_y)?;
             let lower_right = vertex_position(cell_x + 1, cell_y)?;
@@ -1890,7 +1892,7 @@ impl TerrainRenderer {
             ]
             .into_iter()
             .filter_map(|triangle| radial_triangle_radius(local_surface_direction, triangle))
-            .map(|radius| radius - PLANET_RADIUS_METERS)
+            .map(|radius| radius - planet_radius_meters())
             .max_by(f64::total_cmp)
         };
 
@@ -2212,7 +2214,7 @@ impl TerrainRenderer {
         assert!(presentation_time.is_finite() && presentation_time >= 0.0);
         self.tile_cache_tick = self.tile_cache_tick.wrapping_add(1);
         self.purge_expired_lod_transitions(presentation_time);
-        let camera_altitude_meters = camera_world.length() - PLANET_RADIUS_METERS;
+        let camera_altitude_meters = camera_world.length() - planet_radius_meters();
         let distance_reference_height_meters = self
             .surface_height_meters_at(camera_world.normalize(), camera_altitude_meters)
             .unwrap_or(0.0);
@@ -2399,7 +2401,7 @@ impl TerrainRenderer {
                     && !self.pending_tile_loads.contains(&preferred_source_key)
                 {
                     load_candidates.push((
-                        (render_node.node.center_direction() * PLANET_RADIUS_METERS)
+                        (render_node.node.center_direction() * planet_radius_meters())
                             .distance(camera_world),
                         preferred_source_key,
                     ));
@@ -2539,7 +2541,7 @@ impl TerrainRenderer {
                 f64::from(anchor_direction.x),
                 f64::from(anchor_direction.y),
                 f64::from(anchor_direction.z),
-            ) * PLANET_RADIUS_METERS;
+            ) * planet_radius_meters();
             let anchor_u = (u_min + u_max) * 0.5;
             let anchor_v = (v_min + v_max) * 0.5;
             let edge_stitch = if render_node.active {
@@ -3102,7 +3104,7 @@ fn surface_detail_filter_meters(
     face_uv: [f64; 2],
     camera_distance_meters: f64,
 ) -> f64 {
-    let node_spacing = 2.0 * PLANET_RADIUS_METERS
+    let node_spacing = 2.0 * planet_radius_meters()
         / (f64::from(1_u32 << surface.node.level) * f64::from(CHUNK_GRID_QUADS as u32));
     let [u_min, v_min, u_max, v_max] = surface.node.uv_bounds();
     let tile_uv = [
@@ -3117,7 +3119,7 @@ fn surface_detail_filter_meters(
             continue;
         }
         let neighbor_level = surface.node.level.saturating_sub(level_delta);
-        let neighbor_spacing = 2.0 * PLANET_RADIUS_METERS
+        let neighbor_spacing = 2.0 * planet_radius_meters()
             / (f64::from(1_u32 << neighbor_level) * f64::from(CHUNK_GRID_QUADS as u32));
         let fade_width =
             (f64::from(1_u32 << level_delta) / f64::from(CHUNK_GRID_QUADS as u32)).min(1.0);
@@ -4130,7 +4132,7 @@ fn forest_slope_radians(
     tangent_u: DVec3,
     tangent_v: DVec3,
 ) -> Option<f64> {
-    let offset_scale = FOREST_SLOPE_SAMPLE_METERS / PLANET_RADIUS_METERS;
+    let offset_scale = FOREST_SLOPE_SAMPLE_METERS / planet_radius_meters();
     let left = height_at_offset(-tangent_u * offset_scale)?;
     let right = height_at_offset(tangent_u * offset_scale)?;
     let down = height_at_offset(-tangent_v * offset_scale)?;
@@ -4227,9 +4229,9 @@ mod tests {
     };
     use crate::planet::{
         CHUNK_GRID_QUADS, GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, MAX_LOD_LEVEL,
-        OUTMAP_TERRAIN_FAR_HEIGHT_SCALE, OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, PLANET_RADIUS_METERS,
-        PlanetLod, QuadtreeNode, TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS, build_chunk_mesh,
-        cube_face_direction,
+        OUTMAP_TERRAIN_FAR_HEIGHT_SCALE, OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, PlanetLod, QuadtreeNode,
+        TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS, build_chunk_mesh, cube_face_direction,
+        planet_radius_meters,
     };
     use catinthegarden_coretypes::{
         BiomeId, CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
@@ -4237,9 +4239,9 @@ mod tests {
 
     #[test]
     fn viewed_surface_focus_finds_the_first_terrain_hit() {
-        let camera = DVec3::X * (PLANET_RADIUS_METERS + 10_000.0);
+        let camera = DVec3::X * (planet_radius_meters() + 10_000.0);
         let forward = DVec3::new(-1.0, 0.2, 0.0).normalize();
-        let surface_radius = PLANET_RADIUS_METERS + 1_000.0;
+        let surface_radius = planet_radius_meters() + 1_000.0;
         let projection = camera.dot(forward);
         let discriminant =
             projection * projection - (camera.length_squared() - surface_radius * surface_radius);
@@ -4768,11 +4770,11 @@ mod tests {
     #[test]
     fn near_field_window_level_tracks_what_the_camera_can_see() {
         use super::{
-            CUBE_FACE_ARC_METERS, NEAR_FIELD_MIN_EXTENT_METERS, NEAR_FIELD_WINDOW_TILES,
+            NEAR_FIELD_MIN_EXTENT_METERS, NEAR_FIELD_WINDOW_TILES, cube_face_arc_meters,
             near_field_window_level,
         };
         let extent = |level: u8| {
-            f64::from(NEAR_FIELD_WINDOW_TILES) / f64::from(1_u32 << level) * CUBE_FACE_ARC_METERS
+            f64::from(NEAR_FIELD_WINDOW_TILES) / f64::from(1_u32 << level) * cube_face_arc_meters()
         };
 
         // Standing on the ground, the window must still reach past the horizon,
@@ -4967,50 +4969,63 @@ mod tests {
 
     /// The radius is the one number every stage agrees on: the baker writes
     /// outmap tiles against it, the clearance ladder measures altitude from it,
-    /// and the raster, atmosphere-model, and sun shaders restate it. A drift in any
-    /// one copy puts that stage's surface on a different sphere than the data
-    /// it streams -- and because each stage stays internally consistent, the
-    /// symptom is a rendering fault rather than an error.
+    /// and the raster, atmosphere-model, and sun shaders restate it. A drift in
+    /// any one copy puts that stage's surface on a different sphere than the
+    /// data it streams -- and because each stage stays internally consistent,
+    /// the symptom is a rendering fault rather than an error.
+    ///
+    /// It used to be written out by hand as `4000000.0` in eight shaders, with
+    /// this test policing that they matched. They are generated from `body.rs`
+    /// now, so the invariant is stronger and stated differently: no shader may
+    /// declare the radius itself, every assembled shader that uses it must
+    /// receive exactly one generated declaration, and that declaration must
+    /// carry the active body's radius.
     #[test]
     fn every_shader_places_the_surface_on_the_coretypes_sphere() {
-        let planet = planet_shader_source();
-        let sources = [
-            ("planet (raster)", planet.as_str()),
-            (
-                "atmosphere model",
-                include_str!("atmosphere_lut_common.wgsl"),
-            ),
-            ("sun", include_str!("sun.wgsl")),
+        for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))
+            .expect("the shader directory is readable")
+        {
+            let path = entry.expect("a readable directory entry").path();
+            if path.extension().is_none_or(|extension| extension != "wgsl") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("the shader is readable");
+            assert!(
+                !source.contains("const PLANET_RADIUS_METERS: f32 = "),
+                "{} declares the radius itself; it must come from body::wgsl_constants",
+                path.display(),
+            );
+        }
+
+        let assembled = [
+            ("planet (raster)", planet_shader_source()),
+            ("sun", crate::sun::sun_shader_source()),
         ];
-        let mut declarations = 0;
-        for (label, shader) in sources {
-            let Some(text) = shader
+        for (label, shader) in assembled {
+            let declarations = shader.matches("const PLANET_RADIUS_METERS: f32 = ").count();
+            assert_eq!(
+                declarations, 1,
+                "the {label} shader must receive exactly one generated radius",
+            );
+            let declared = shader
                 .split("const PLANET_RADIUS_METERS: f32 = ")
                 .nth(1)
-                .and_then(|source| source.split(';').next())
-            else {
-                continue;
-            };
-            let declared = text
+                .and_then(|rest| rest.split(';').next())
+                .expect("the generated source declares the radius")
                 .trim()
                 .parse::<f32>()
-                .expect("the radius is declared as a plain literal");
+                .expect("the radius is generated as a plain literal");
             assert_eq!(
                 declared,
-                catinthegarden_coretypes::PLANET_RADIUS_METERS as f32,
-                "the {label} shader disagrees with coretypes about the radius",
+                crate::planet::planet_radius_meters() as f32,
+                "the {label} shader disagrees with the active body about the radius",
             );
-            declarations += 1;
         }
-        assert!(
-            declarations >= 2,
-            "expected the raster and atmosphere shaders to declare the radius; \
-             found {declarations} -- has the constant been renamed?",
-        );
+
         assert_eq!(
-            crate::planet::PLANET_RADIUS_METERS,
+            crate::planet::planet_radius_meters(),
             catinthegarden_coretypes::PLANET_RADIUS_METERS,
-            "planet.rs must re-export the radius rather than restate it",
+            "the default body is the planet the outmap was baked against",
         );
     }
 
@@ -5367,7 +5382,14 @@ mod tests {
 
     #[test]
     fn fullscreen_sky_uses_physical_atmosphere_luts() {
-        let common = include_str!("atmosphere_lut_common.wgsl");
+        // The radius reaches these stages as generated source, so parse what
+        // the pipeline is actually given rather than the file on disk.
+        let common = format!(
+            "{}\n{}",
+            crate::body::wgsl_constants(),
+            include_str!("atmosphere_lut_common.wgsl")
+        );
+        let common = common.as_str();
         let stages = [
             (
                 "transmittance",
@@ -5395,7 +5417,12 @@ mod tests {
             .unwrap_or_else(|error| panic!("{label} shader must validate: {error}"));
         }
 
-        let display = include_str!("atmosphere.wgsl");
+        let display = &format!(
+            "{}
+{}",
+            crate::body::wgsl_constants(),
+            include_str!("atmosphere.wgsl")
+        );
         let module = wgpu::naga::front::wgsl::parse_str(display)
             .expect("atmosphere display shader must parse");
         wgpu::naga::valid::Validator::new(
@@ -5584,7 +5611,7 @@ mod tests {
     #[test]
     fn forest_slope_uses_a_central_difference_in_metres() {
         let slope = forest_slope_radians(
-            |offset| Some(offset.x * PLANET_RADIUS_METERS * 0.25),
+            |offset| Some(offset.x * planet_radius_meters() * 0.25),
             DVec3::X,
             DVec3::Y,
         )
@@ -5755,7 +5782,7 @@ mod tests {
             y: 120_000,
         };
         let [u_min, v_min, u_max, v_max] = node.uv_bounds();
-        let node_spacing = 2.0 * PLANET_RADIUS_METERS
+        let node_spacing = 2.0 * planet_radius_meters()
             / (f64::from(1_u32 << node.level) * crate::planet::CHUNK_GRID_QUADS as f64);
         let surface = SurfaceDetailNode {
             node,
@@ -5974,9 +6001,9 @@ mod tests {
                     let lateral_x = centre_distance * x.to_radians().tan();
                     let lateral_y = centre_distance * y.to_radians().tan();
                     let direction = (focus
-                        + tangent_x * (lateral_x / PLANET_RADIUS_METERS)
-                        + tangent_y * (lateral_y / PLANET_RADIUS_METERS))
-                        .normalize();
+                        + tangent_x * (lateral_x / planet_radius_meters())
+                        + tangent_y * (lateral_y / planet_radius_meters()))
+                    .normalize();
                     let patch_node =
                         active_node_at_direction(&update.active_nodes, direction).unwrap();
                     let patch_stitch = edge_stitch_info(patch_node, &update.active_nodes);
@@ -6067,7 +6094,7 @@ mod tests {
     #[test]
     fn low_flight_lod_is_not_capped_by_sparse_source_tiles() {
         let mut lod = PlanetLod::default();
-        let camera = DVec3::X * (PLANET_RADIUS_METERS + 16_000.0);
+        let camera = DVec3::X * (planet_radius_meters() + 16_000.0);
         let update = lod.update_for_view_with_constraints(
             camera,
             -DVec3::X,

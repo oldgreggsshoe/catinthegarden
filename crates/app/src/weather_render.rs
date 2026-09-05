@@ -3,7 +3,7 @@ use std::mem::size_of;
 use glam::Vec3;
 use wgpu::util::DeviceExt;
 
-use crate::{atmosphere::SurfaceLightingResources, planet::PLANET_RADIUS_METERS, weather};
+use crate::{atmosphere::SurfaceLightingResources, planet::planet_radius_meters, weather};
 
 const CLOUD_SHELL_ALTITUDE_METERS: f32 = 90_000.0;
 const UPPER_CLOUD_SHELL_ALTITUDE_METERS: f32 = 166_000.0;
@@ -52,7 +52,8 @@ struct CloudVertex {
 
 fn weather_local_impostor_shader_source() -> String {
     format!(
-        "{}\n{}",
+        "{}\n{}\n{}",
+        crate::body::wgsl_constants(),
         include_str!("weather_local_impostor.wgsl"),
         include_str!("weather_cloud_density.wgsl"),
     )
@@ -60,7 +61,8 @@ fn weather_local_impostor_shader_source() -> String {
 
 fn weather_cloud_shader_source() -> String {
     format!(
-        "const CLOUD_LAYER_HALF_DEPTH_METERS: f32 = {:.1};\n{}\n{}",
+        "{}\nconst CLOUD_LAYER_HALF_DEPTH_METERS: f32 = {:.1};\n{}\n{}",
+        crate::body::wgsl_constants(),
         CLOUD_LAYER_HALF_DEPTH_METERS,
         include_str!("weather_render.wgsl"),
         include_str!("weather_cloud_density.wgsl"),
@@ -568,9 +570,9 @@ impl WeatherCloudRenderer {
             bytemuck::bytes_of(&WeatherRenderUniform {
                 blend: self.blend,
                 drift_radians: self.drift_radians,
-                lower_shell_radius_meters: PLANET_RADIUS_METERS as f32
+                lower_shell_radius_meters: planet_radius_meters() as f32
                     + CLOUD_SHELL_ALTITUDE_METERS,
-                upper_shell_radius_meters: PLANET_RADIUS_METERS as f32
+                upper_shell_radius_meters: planet_radius_meters() as f32
                     + UPPER_CLOUD_SHELL_ALTITUDE_METERS,
                 noise_scale: 32.0,
                 noise_strength: 0.18,
@@ -606,7 +608,14 @@ impl RainRenderer {
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("weather rain shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("weather_rain.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                format!(
+                    "{}\n{}",
+                    crate::body::wgsl_constants(),
+                    include_str!("weather_rain.wgsl")
+                )
+                .into(),
+            ),
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("weather rain pipeline"),
@@ -915,7 +924,11 @@ mod tests {
 
     #[test]
     fn weather_rain_shader_parses_and_reads_precipitation() {
-        let shader = include_str!("weather_rain.wgsl");
+        let shader = &format!(
+            "{}\n{}",
+            crate::body::wgsl_constants(),
+            include_str!("weather_rain.wgsl")
+        );
         let module =
             wgpu::naga::front::wgsl::parse_str(shader).expect("weather rain shader must parse");
         wgpu::naga::valid::Validator::new(
@@ -991,10 +1004,10 @@ mod tests {
                 (normal.length_squared() > 1.0e-12).then(|| normal.normalize().dot(a).abs())
             })
             .fold(f32::INFINITY, f32::min);
-        let minimum_clearance_meters = (crate::planet::PLANET_RADIUS_METERS as f32
+        let minimum_clearance_meters = (crate::planet::planet_radius_meters() as f32
             + super::CLOUD_SHELL_ALTITUDE_METERS)
             * minimum_unit_face_radius
-            - crate::planet::PLANET_RADIUS_METERS as f32;
+            - crate::planet::planet_radius_meters() as f32;
 
         assert!(
             minimum_clearance_meters >= 85_000.0,
@@ -1015,8 +1028,8 @@ mod tests {
     #[test]
     fn elevated_cloud_shells_keep_sun_after_ground_sunset() {
         let horizon_cosine = |altitude_meters: f32| {
-            let radius = crate::planet::PLANET_RADIUS_METERS as f32 + altitude_meters;
-            -(1.0 - (crate::planet::PLANET_RADIUS_METERS as f32 / radius).powi(2)).sqrt()
+            let radius = crate::planet::planet_radius_meters() as f32 + altitude_meters;
+            -(1.0 - (crate::planet::planet_radius_meters() as f32 / radius).powi(2)).sqrt()
         };
 
         let early_twilight_sun_cosine = -0.06_f32;
@@ -1033,8 +1046,8 @@ mod tests {
     #[test]
     fn cloud_layer_depths_overlap_at_the_twilight_handover() {
         let horizon_cosine = |altitude_meters: f32| {
-            let radius = crate::planet::PLANET_RADIUS_METERS as f32 + altitude_meters;
-            -(1.0 - (crate::planet::PLANET_RADIUS_METERS as f32 / radius).powi(2)).sqrt()
+            let radius = crate::planet::planet_radius_meters() as f32 + altitude_meters;
+            -(1.0 - (crate::planet::planet_radius_meters() as f32 / radius).powi(2)).sqrt()
         };
         let solar_angular_radius_sine = 0.004625_f32;
         let transition = |altitude_meters: f32| {

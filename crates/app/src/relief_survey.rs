@@ -4,9 +4,9 @@
 #[cfg(test)]
 mod tests {
     use crate::planet::{
-        PLANET_RADIUS_METERS, TERRAIN_DETAIL_START_WAVELENGTH_METERS,
-        TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS, baked_sample_spacing_meters,
-        scaled_outmap_macro_height_meters, terrain_detail_meters,
+        TERRAIN_DETAIL_START_WAVELENGTH_METERS, TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS,
+        baked_sample_spacing_meters, planet_radius_meters, scaled_outmap_macro_height_meters,
+        terrain_detail_meters,
     };
     use glam::DVec3;
 
@@ -84,9 +84,9 @@ mod tests {
         for ix in -4..=4 {
             for iy in -4..=4 {
                 let camera_direction = (centre
-                    + east * (ix as f64 * 5_000.0 / PLANET_RADIUS_METERS)
-                    + north * (iy as f64 * 5_000.0 / PLANET_RADIUS_METERS))
-                    .normalize();
+                    + east * (ix as f64 * 5_000.0 / planet_radius_meters())
+                    + north * (iy as f64 * 5_000.0 / planet_radius_meters()))
+                .normalize();
                 let Some(camera_height) = sample_active_macro(&outmap, camera_direction) else {
                     continue;
                 };
@@ -104,8 +104,8 @@ mod tests {
                         MAX_DISTANCE_METERS,
                     ] {
                         let target_direction = (camera_direction
-                            + tangent * (distance_meters / PLANET_RADIUS_METERS))
-                            .normalize();
+                            + tangent * (distance_meters / planet_radius_meters()))
+                        .normalize();
                         let Some(target_height) = sample_active_macro(&outmap, target_direction)
                         else {
                             continue;
@@ -156,7 +156,7 @@ mod tests {
         let heights: Vec<f64> = (0..samples)
             .map(|index| {
                 let offset = index as f64 * spacing_meters;
-                let direction = (centre + east * (offset / PLANET_RADIUS_METERS)).normalize();
+                let direction = (centre + east * (offset / planet_radius_meters())).normalize();
                 terrain_detail_meters(direction, baked_spacing, macro_height)
             })
             .collect();
@@ -254,8 +254,8 @@ mod tests {
             for iy in 0..200 {
                 for ix in 0..200 {
                     let at = |dx: f64, dy: f64| {
-                        let offset = east * ((ix as f64 * step + dx) / PLANET_RADIUS_METERS)
-                            + north * ((iy as f64 * step + dy) / PLANET_RADIUS_METERS);
+                        let offset = east * ((ix as f64 * step + dx) / planet_radius_meters())
+                            + north * ((iy as f64 * step + dy) / planet_radius_meters());
                         terrain_detail_meters(
                             (centre + offset).normalize(),
                             baked_spacing,
@@ -325,7 +325,7 @@ mod tests {
                     .map(|index| {
                         let offset = index as f64 * fine;
                         let direction =
-                            (centre + east * (offset / PLANET_RADIUS_METERS)).normalize();
+                            (centre + east * (offset / planet_radius_meters())).normalize();
                         terrain_detail_meters(direction, baked_spacing, macro_height)
                     })
                     .collect();
@@ -382,7 +382,7 @@ mod tests {
             let mut source_level = 0_u8;
             for index in 0..samples {
                 let offset = (index as f64 - samples as f64 * 0.5) * spacing;
-                let direction = (centre + east * (offset / PLANET_RADIUS_METERS)).normalize();
+                let direction = (centre + east * (offset / planet_radius_meters())).normalize();
                 let Some((face, face_uv)) = crate::terrain::cube_face_uv_for_survey(direction)
                 else {
                     continue;
