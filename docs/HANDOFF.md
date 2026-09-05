@@ -141,8 +141,14 @@ had been hiding the app's seventy entirely — the app was never being linted. C
 **Recently closed, so they are not re-opened:** the "renderer draws near-field land up to 43.58m
 above the CPU's height field" thread was the surface probe reading tree canopies, and
 `detail_correlation` 0.3222 was a canopy height set against a ground height; with the probe reading
-depth before the forest pass, `coast_waters_edge` raster is median 0.560m / p90 1.835m / max 2.277m
-at correlation 0.9586. `highest_prominence_peak`, `stand_on_ground`, `landing_site_eye_level` and
+depth before the forest pass, `coast_waters_edge` raster is median 0.971m / p90 3.6m / max 8.490m at
+correlation 0.72 over 70 points a frame. **Those are not the numbers this paragraph used to quote**,
+and the difference is not a regression: the 0.560m / 1.835m / 2.277m / 0.9586 figures further down
+this file were measured over **36** compared points, and the scenario now compares 70. Every run on
+disk back to `e6c21eb` reports the 70-point figures, so whatever admitted the extra points predates
+all of them and was never recorded. Treat the 36-point table as the evidence for the *canopy* fix it
+was taken for, and not as this scenario's current state. What is still true is the thing that fix
+established: the CPU and GPU detail fields correlate rather than being unrelated. `highest_prominence_peak`, `stand_on_ground`, `landing_site_eye_level` and
 `landing_site_ground_detail` were four cameras standing 687-753m underground or 7,659m over the
 wrong mountain, on poses authored before a rebake; all four pass and compare points again. See the
 last two sections.
