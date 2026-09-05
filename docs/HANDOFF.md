@@ -124,20 +124,34 @@ had been hiding the app's seventy entirely — the app was never being linted. C
 
 **Known failures and open threads,** in the order worth picking up:
 
-1. **The surface probe still reports about 11m between the rendered mesh and the sampled height
-   field** on steep near-field terrain. The camera now stands on the drawn mesh wherever it exists,
-   so this no longer puts the eye in the air, but the two fields genuinely differ that much and it
-   has not been explained. The last section of this file flags it as wanting its own look; it is the
-   natural next task.
-2. **`descent_to_10m` fails on the terrain streamer**, and did so before any of this branch's work:
+1. **The renderer draws near-field land up to 43.58m above the CPU's sampled height field.**
+   Measured on `coast_waters_edge` at `342c3b5`: median 2.27m, p90 35.09m, max 43.58m over 36 land
+   points. Bimodal, not a uniform offset — fourteen of 31 near-field points agree to under 1.3m
+   while seventeen are off by 9.5 to 43.6m, interleaved across the screen. `|delta|` correlates
+   **+0.714** with the height the renderer draws and only -0.220 with the CPU's, and
+   `detail_correlation` is 0.3222, which is the signature of two unrelated fields rather than one
+   field at the wrong gain. The lead is that the CPU and GPU detail functions are fed different
+   inputs. See the last section of this file; the earlier "about 11m" figure understated it.
+2. **The probe is meaningless over water and nothing says so.** All 45 points in
+   `ocean_hybrid_close` and all 9 in `ocean_rough_horizon` have `cpu_height_meters` of exactly 0.0,
+   so their reported deltas are rendered wave height, not a surface disagreement. No scenario arms
+   `max_surface_probe_delta_m`; if one were armed on a water scenario it would fail on wave height
+   alone.
+3. **`highest_prominence_peak` fails `camera_stands_on_the_ground`** — bounds 150.0..=155.0m,
+   observed 7,659.857m — and has done for at least four commits (`342c3b5`, `ffed7512`, `95e58cfd`,
+   `cfbee5a2`). Its probe reports `compared 0`, consistent with the altitude rather than a second
+   fault. Stale authored waypoint or a placement failure; not caused by the recent ground work.
+4. **`descent_to_10m` fails on the terrain streamer**, and did so before any of this branch's work:
    LOD peaks at 14 against a required 18, 256 fallback chunks against an allowance of 128, and
    `tiles_loaded` stays at zero across twenty seconds. Not investigated.
-3. **`low_flight_performance`** was a known failure in the terrain era — 420 resident chunks, 334
+5. **`low_flight_performance`** was a known failure in the terrain era — 420 resident chunks, 334
    fallbacks, a 2,071.204m warm-up seam — and has not been re-measured since the ocean work began.
    Treat those numbers as unverified rather than current.
-4. The Gerstner fold budget stands at 1.17 against a physical limit of 1.0. Accepted and held
+6. **No raymarch probe coverage.** Every surface probe in the current baselines is
+   `render_path: raster`, and the two paths are meant to be at parity.
+7. The Gerstner fold budget stands at 1.17 against a physical limit of 1.0. Accepted and held
    invariant by `OCEAN_WAVE_SCALE`, not fixed; lowering it is a deliberate visual change.
-5. Underwater rendering is unimplemented, which is what the bobbing floor stands in for.
+8. Underwater rendering is unimplemented, which is what the bobbing floor stands in for.
 
 **Build convention.** Benchmarks and parity runs build to `CARGO_TARGET_DIR=/home/dad/catingard-target`,
 not the in-repo `target/`. Give every temporary or staged checkout its own `CARGO_TARGET_DIR`
@@ -5060,3 +5074,56 @@ is the fallback for directions the mesh does not cover. The gap at that spot wen
 The surface probe still reports about 11m between the rendered mesh and the sampled field, because
 that is what it compares and the two genuinely differ that much on steep near-field terrain. It is a
 separate observation from what the camera stands on, and it is worth its own look.
+
+## What the surface probe is actually measuring - 5 September 2026
+
+Four baseline scenario runs at `342c3b5` were captured but not analysed. Their manifests carry the
+full per-point `surface_probes` data, and reading it changes what open thread 1 says.
+
+**Two of the three ocean runs measure nothing about terrain.** Every probe point in
+`ocean_hybrid_close` (45 of 45) and `ocean_rough_horizon` (9 of 9) has `cpu_height_meters` of exactly
+0.0. The probe differences the drawn surface against the CPU's sea-level-resolved height, which over
+open water is zero, so the "delta" it reports there is just the rendered wave height: -26.5m to
++33.1m in the calm run, +5.1 to +6.9 in the storm one. Those figures should not be quoted as a
+mesh-versus-field disagreement. Nothing arms `max_surface_probe_delta_m` on any of these scenarios,
+so the number is recorded and asserted by nothing; if it ever were armed on a water scenario it would
+fail on wave height alone.
+
+**`coast_waters_edge` is the one that measures land**, all 36 points, and it disagrees far more than
+the 11m previously recorded: median 2.27m, p90 35.09m, max 43.58m, from a camera 308.5m up.
+
+The distribution is bimodal rather than a uniform offset. Of 31 near-field points inside 2,000m,
+fourteen agree to better than 1.3m and seventeen are off by 9.5 to 43.6m, and the two groups
+interleave across the screen grid -- adjacent samples at the same `ndc_y` land on +0.43m and +43.58m.
+So it is not a chunk, a region, or a constant bias.
+
+What separates them is the height the *renderer* draws, not where the CPU thinks the ground is:
+
+- `|delta|` against `rendered_height_meters`: **+0.714**
+- `|delta|` against `cpu_height_meters`: -0.220
+- `rendered_height_meters` against `cpu_height_meters`: +0.526
+- failing points draw a median 45.18m where the CPU has 16.59m; agreeing points draw 26.77m
+
+Every near-field disagreement has the renderer *above* the CPU; there is no large negative. Past
+2,000m the sign flips and settles at a uniform -1.84 to -2.28m across all five far points, which is a
+separate regime and probably the macro-only LOD.
+
+`delta_meters` and `delta_from_macro_meters` track each other closely (+41.26/+43.18, +43.58/+47.19,
++22.74/+22.56), so the CPU's detail term contributes almost nothing here -- the CPU is effectively
+returning macro while the renderer draws tens of metres of detail on top of it.
+
+`detail_correlation` is 0.3222 with `detail_slope` 1.5162. A correlation that low is the signature of
+two *unrelated* fields, not one field at the wrong gain; a gain error would hold correlation near 1
+and put the error in the slope. That points at the CPU and GPU detail functions being fed different
+inputs rather than scaled differently, which is the same failure mode recorded for `fract`-folded
+fields elsewhere in this document. It is a lead, not a diagnosis: nothing here has yet been traced to
+a specific input.
+
+Every probe in all four runs is `render_path: raster`. None of this says anything about the raymarch
+path, and the two are meant to be at parity.
+
+`highest_prominence_peak` also fails, and has been failing for at least four commits -- `342c3b5`,
+`ffed7512`, `95e58cfd`, `cfbee5a2` -- on `camera_stands_on_the_ground`: bounds 150.0..=155.0m,
+observed 7,659.857m over two frames. Its probe reports `compared 0`, which is consistent with being
+7.6km above the terrain rather than a second fault. It is a stale authored waypoint or a placement
+failure, and it is not caused by the recent ground work.
