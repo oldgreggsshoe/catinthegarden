@@ -962,6 +962,12 @@ struct State {
     camera: planet::OrbitCamera,
     sun_direction: glam::DVec3,
     previous_camera_world_position: glam::DVec3,
+    /// Companion to the above in the planet's own frame, which is the one a
+    /// player's motion is actually measured in.
+    previous_camera_planet_frame_position: glam::DVec3,
+    /// Set when a camera-mode switch teleports the eye, so the next frame
+    /// reports no motion rather than the jump divided by a frame time.
+    camera_velocity_baseline_stale: bool,
     previous_sim_time: f64,
     last_auto_orbit_sim_time: f64,
     camera_mode: CameraMode,
@@ -1344,6 +1350,8 @@ impl State {
             camera,
             sun_direction: planet::default_sun_direction(),
             previous_camera_world_position: initial_camera_world_position,
+            previous_camera_planet_frame_position: initial_camera_world_position,
+            camera_velocity_baseline_stale: true,
             previous_sim_time: 0.0,
             last_auto_orbit_sim_time: 0.0,
             camera_mode: CameraMode::Orbit,
@@ -2287,6 +2295,7 @@ impl State {
             CameraMode::Orbit => unreachable!("orbit enters low flight before surface mode"),
         }
         self.previous_camera_world_position = self.camera.world_position();
+        self.camera_velocity_baseline_stale = true;
         self.mark_hud_dirty();
     }
 
@@ -2388,6 +2397,7 @@ impl State {
             }
         }
         self.previous_camera_world_position = self.camera.world_position();
+        self.camera_velocity_baseline_stale = true;
         self.last_auto_orbit_sim_time = sim_time;
         self.mark_hud_dirty();
     }
@@ -3050,6 +3060,7 @@ impl State {
                 self.flight_travel_direction = glam::DVec3::ZERO;
                 self.camera_mode = CameraMode::LowFlight;
                 self.previous_camera_world_position = self.camera.world_position();
+                self.camera_velocity_baseline_stale = true;
                 self.scenario_flight_initialized = true;
             }
             self.flight_movement = FlightMovementInput {
@@ -3187,9 +3198,20 @@ impl State {
         } else {
             delta_sim_time
         };
-        let camera_velocity_world = (camera_world_position - self.previous_camera_world_position)
-            / delta_camera_motion_seconds;
-        let velocity_meters_per_second = camera_velocity_world.length();
+        // Measured in the planet frame, not the world frame. The camera turns
+        // with the planet, so a *world*-frame difference is dominated by the
+        // rotation carrying it: a player standing still on the ground logged
+        // 18,093 m/s while the HUD correctly read 0.00 m/s, which is exactly
+        // the wrong number to hand someone diagnosing a streaming stall.
+        let velocity_meters_per_second = if self.camera_velocity_baseline_stale {
+            self.camera_velocity_baseline_stale = false;
+            0.0
+        } else {
+            ((camera_planet_frame_position - self.previous_camera_planet_frame_position)
+                / delta_camera_motion_seconds)
+                .length()
+        };
+        self.previous_camera_planet_frame_position = camera_planet_frame_position;
         self.previous_camera_world_position = camera_world_position;
         self.previous_sim_time = sim_time;
         let auto_exposure_enabled = self.hdr.auto_exposure_enabled();

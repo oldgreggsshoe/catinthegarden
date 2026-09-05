@@ -133,14 +133,19 @@ last two sections.
 
 **Known failures and open threads,** in the order worth picking up:
 
-1. **`mountain_ground` disagrees by 11.4m and nothing explains it.** Median 11.433m, p90 12.236m,
+1. **The tile streamer loads nothing while the chunk budget is saturated.** Measured in manual run
+   `1788619495-74706` with a stationary camera: 247 of 255 drawn chunks on coarse ancestors,
+   `resident_tiles` pinned at 144, `tiles_loaded` at 0 for 5.6 seconds, `budget_limited` true
+   throughout. This is what the player sees as flat grey slabs over the ocean, and it is probably the
+   same defect as `descent_to_10m` below. Start here.
+2. **`mountain_ground` disagrees by 11.4m and nothing explains it.** Median 11.433m, p90 12.236m,
    max 12.660m over 81 points, bit-identical before and after the tree fix, so trees are not in it.
    The distribution is tight and near-uniform with none of the bimodal, one-signed spread an
    occluder produces, which makes it the genuine mesh-versus-field gap on steep near-field terrain.
    This is the one to pick up first. Note the instrumentation now on `ProbeComparison` --
    `cpu_node_level`, `cpu_detail_filter_meters`, `filter_sweep`, `near_field` -- which says whether
    a gap is filter width, source data, or neither, without another instrumentation pass.
-2. **The survey and the app disagree by 227.353m about the summit's height.** `global_highest_summit`
+3. **The survey and the app disagree by 227.353m about the summit's height.** `global_highest_summit`
    reports 186,709.142m at `ACTIVE_HIGHEST_PROMINENCE_DIRECTION`; the app's surface query reports
    186,936.495m there, stable across altitude and converging to exactly `raw_macro * 4` =
    186,941.266m by 36km up. So the app applies almost no detail where the survey applies -232.1m.
@@ -149,30 +154,30 @@ last two sections.
    settled, `highest_prominence_peak`'s pose is derived from
    `ACTIVE_HIGHEST_PROMINENCE_DRAWN_SURFACE_METERS`, because that is what the clearance assertion
    measures; deriving it from the summit puts the camera 75m inside the mountain.
-3. **The probe is meaningless over water and nothing says so.** All 45 points in
+4. **The probe is meaningless over water and nothing says so.** All 45 points in
    `ocean_hybrid_close` and all 9 in `ocean_rough_horizon` have `cpu_height_meters` of exactly 0.0,
    so their reported deltas are rendered wave height, not a surface disagreement. No scenario arms
    `max_surface_probe_delta_m`; if one were armed on a water scenario it would fail on wave height
    alone.
-4. **A scenario can assert clearance with no probe-point floor, and be buried and green.** The
+5. **A scenario can assert clearance with no probe-point floor, and be buried and green.** The
    harness refuses a delta tolerance without `min_surface_probe_points` (`scenario.rs:740`) but has
    no such rule for a clearance assertion, which is how `landing_site_ground_detail` sat 687m inside
    a mountain and passed. Floors are now set on the four ground scenarios by hand. Whether to make
    that structural is a judgement call: several clearance scenarios are legitimately too far from
    ground to compare anything.
-5. **`descent_to_10m` fails on the terrain streamer**, and did so before any of this branch's work:
+6. **`descent_to_10m` fails on the terrain streamer**, and did so before any of this branch's work:
    LOD peaks at 14 against a required 18, 256 fallback chunks against an allowance of 128, and
    `tiles_loaded` stays at zero across twenty seconds. Not investigated.
-6. **`low_flight_performance`** was a known failure in the terrain era — 420 resident chunks, 334
+7. **`low_flight_performance`** was a known failure in the terrain era — 420 resident chunks, 334
    fallbacks, a 2,071.204m warm-up seam — and has not been re-measured since the ocean work began.
    Treat those numbers as unverified rather than current.
-7. **Thin raymarch probe coverage.** `coast_waters_edge` now has ray baselines (median 1.293m/1.172m,
+8. **Thin raymarch probe coverage.** `coast_waters_edge` now has ray baselines (median 1.293m/1.172m,
    p90 3.880m/4.308m at 70 and 71 points, against `surface_height_breakdown_at` rather than the
    raster node path, so not directly comparable with raster's figures). Every other baseline in this
    file is `render_path: raster`, and the two paths are meant to be at parity.
-8. The Gerstner fold budget stands at 1.17 against a physical limit of 1.0. Accepted and held
+9. The Gerstner fold budget stands at 1.17 against a physical limit of 1.0. Accepted and held
    invariant by `OCEAN_WAVE_SCALE`, not fixed; lowering it is a deliberate visual change.
-9. Underwater rendering is unimplemented, which is what the bobbing floor stands in for.
+10. Underwater rendering is unimplemented, which is what the bobbing floor stands in for.
 
 **Build convention.** Benchmarks and parity runs build to `CARGO_TARGET_DIR=/home/dad/catingard-target`,
 not the in-repo `target/`. Give every temporary or staged checkout its own `CARGO_TARGET_DIR`
@@ -5387,7 +5392,7 @@ the flat-shaded presentation. That is what turns a coarse ocean patch into a fea
 of a merely low-poly sea, and it is why this reads as a catastrophic artefact rather than a
 resolution drop.
 
-## The planet turns 18km/s under a standing camera - 5 September 2026
+## The planet turns 18km/s under a standing camera - 5 September 2026 [WRONG, see next section]
 
 The grey slab and the vanishing boat are one defect, and it is not the ocean, the streamer or the
 detail ladder. **A surface camera does not turn with the planet. The ground slides under it at
@@ -5439,3 +5444,51 @@ keeps both a fast visible day and a usable surface, and it is the largest change
 
 The HUD is also misleading here and should say so: `Surface speed: 0.00 m/s` is true in the frame the
 camera controls and says nothing about the 18km/s the ground is doing underneath it.
+
+## Correction: the camera does turn with the planet - 5 September 2026
+
+**The previous section is wrong and its commit `7c362d0` should not be trusted.** There is no 18km/s
+ground slide under an interactive camera. Ian said the planet did not used to spin -- that the sun
+went round it, for reasons of scale and precision -- and checking that is what found the error.
+
+De-rotating the logged camera track into the planet frame, which the previous section did not do, the
+camera moves **at most 2.8m per logged frame** across the whole run, and most steps are under 1m.
+That is a swimmer bobbing on waves, not a body crossing 9km. The camera turns with the planet exactly
+as designed: `04eab2f` ("analytic atmosphere and **rotating camera frame**") introduced
+`planet_local_vector` and `planet_frame_world_position`, and `TerrainRenderer::update` is handed
+`camera_planet_frame_position`, so every terrain lookup already happens in the planet's own frame with
+the rotation undone. The sun direction is fixed in world space and the planet turns beneath it, which
+is why from the ground the sun appears to go round -- the same thing Ian remembered, still in place.
+
+**What misled me was a log field.** `velocity_meters_per_second` was differencing the *world*-frame
+position, so it counted the rotation carrying the camera and read 18,093 m/s for a player standing
+still, while the HUD's own `Surface speed: 0.00 m/s` was right all along. Believing the log over the
+HUD, and never de-rotating, produced a confident wrong diagnosis with arithmetic that agreed with
+itself. It is now measured in the planet frame, with a stale-baseline flag so a camera-mode teleport
+reports no motion instead of a jump divided by a frame time.
+
+The reproduction in the previous section was real but measured something else. A *scenario* camera is
+authored at fixed world coordinates and does not co-rotate, so setting
+`planet_rotation_time_scale: 1.0` genuinely does drag it over the ground at 18km/s. That is a
+property of scenario replay, not of interactive play, and it produced the same symptom by a mechanism
+that does not apply. `ocean_grey_foreground` is kept, with rotation back at 0.0.
+
+**What the same log actually shows, and it is the real lead.** With the camera stationary in the
+planet frame for 5.6 seconds:
+
+| sim_time | fallback_chunks | resident_chunks | resident_tiles | tiles_loaded | budget_limited |
+|---|---|---|---|---|---|
+| 0.00 | 255 | 255 | 135 | 0 | true |
+| 0.52 | 247 | 255 | 144 | 0 | true |
+| ... | 247 | 255 | 144 | 0 | true |
+| 5.61 | 247 | 255 | 144 | 0 | true |
+
+**247 of 255 drawn chunks sit on coarse ancestor tiles and `tiles_loaded` never leaves zero.** The
+streamer loads nothing at all, for a camera that is not moving, while `budget_limited` stays true and
+resident chunks sit exactly on the 256 cap. That is the grey slab: coarse fallback geometry, drawn in
+the default flat-triangle composition mode as single constant-colour facets hundreds of pixels across.
+
+This is open thread 5 -- `descent_to_10m` failing with `tiles_loaded` at zero across twenty seconds --
+seen from the player's chair. **They are very likely one defect**, and the next question is why a
+saturated chunk budget coincides with a streamer that never requests anything. Nothing has confirmed
+the link yet.

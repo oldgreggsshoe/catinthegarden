@@ -6,7 +6,7 @@
   "hide_overlay": true,
   "seam_gap_check": false,
   "planet_relative_up": true,
-  "planet_rotation_time_scale": 1.0,
+  "planet_rotation_time_scale": 0.0,
   "fixed_exposure": true,
   "screenshot_times_seconds": [
     0.5,
