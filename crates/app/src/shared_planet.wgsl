@@ -438,7 +438,7 @@ fn placeholder_height(direction: vec3<f32>) -> f32 {
 /// twice that, and exactly zero beyond, so each crater stays local and the
 /// datum does not drift with the catalogue's size.
 fn moon_crater_profile(t: f32, depth_meters: f32, rim_meters: f32) -> f32 {
-    if t >= 2.0 {
+    if t >= MOON_EJECTA_EXTENT {
         return 0.0;
     }
     if t <= 1.0 {
@@ -446,24 +446,67 @@ fn moon_crater_profile(t: f32, depth_meters: f32, rim_meters: f32) -> f32 {
         let rim = rim_meters * t * t * t;
         return bowl + rim;
     }
-    let outer = clamp(t - 1.0, 0.0, 1.0);
-    let fade = 1.0 - outer * outer * (3.0 - 2.0 * outer);
-    return rim_meters * fade;
+    // Thins as roughly an inverse cube, the way a real blanket does.
+    let outer = clamp((t - 1.0) / (MOON_EJECTA_EXTENT - 1.0), 0.0, 1.0);
+    let remaining = 1.0 - outer;
+    return rim_meters * remaining * remaining * remaining;
 }
 
 /// The moon's macro surface: its impact history rather than eroded geography.
 /// The planet reads this shape from baked tiles; an airless body synthesises it,
 /// which is why the moon needs no outmap.
 fn moon_height(direction: vec3<f32>) -> f32 {
-    // Ice ponds flat: everything the impacts dug below the datum is filled
-    // level with it. The fill is terrain, so it is walked on like any ground.
-    return max(moon_raw_height(direction), 0.0);
+    // Craters are empty except at the poles, where permanently shadowed floors
+    // hold ice. The ice ponds flat and is terrain, so it is walked on like any
+    // other ground.
+    let raw = moon_raw_height(direction);
+    let ice = moon_ice_surface(direction);
+    // Away from the poles there is no ice and the bowl stays as the impact dug
+    // it; filling to the datum would flatten every crater into a disc.
+    return select(raw, max(raw, ice), ice < 0.0);
 }
 
-/// True where the impact floor lies below the datum, and so where the flat fill
-/// is ice rather than regolith. The material follows the unfilled shape.
+/// Latitude weight for a polar cold trap. The rotation axis is Y, so this is
+/// the sine of the latitude. Mirrored from `moon.rs`.
+fn moon_polar_weight(direction: vec3<f32>) -> f32 {
+    return smoothstep(
+        MOON_POLAR_ICE_LATITUDE_SINE_START,
+        MOON_POLAR_ICE_LATITUDE_SINE_FULL,
+        abs(normalize(direction).y),
+    );
+}
+
+/// The level an ice sheet ponds at, zero away from the poles. Constant within
+/// one crater, because it is half the depth of the crater that dominates the
+/// point, so the surface is flat rather than following the bowl down.
+fn moon_ice_surface(direction: vec3<f32>) -> f32 {
+    let polar = moon_polar_weight(direction);
+    if polar <= 0.0 {
+        return 0.0;
+    }
+    let unit = normalize(direction);
+    var dominant_depth = 0.0;
+    var deepest = 0.0;
+    for (var index = 0u; index < MOON_CRATER_COUNT; index = index + 1u) {
+        let crater = MOON_CRATERS[index];
+        let depths = MOON_CRATER_DEPTHS[index];
+        let cosine = clamp(dot(crater.xyz, unit), -1.0, 1.0);
+        let t = acos(cosine) / crater.w;
+        let contribution = moon_crater_profile(t, depths.x, depths.y);
+        if contribution < deepest {
+            deepest = contribution;
+            dominant_depth = depths.x;
+        }
+    }
+    return -MOON_POLAR_ICE_DEPTH_FRACTION * dominant_depth * polar;
+}
+
+/// True where ice actually covers the floor: the impact dug below the level the
+/// ice ponds at. Away from the poles that level is the datum and no crater
+/// reaches it, so the craters read as bare rock.
 fn moon_is_ice(direction: vec3<f32>) -> bool {
-    return moon_raw_height(direction) < 0.0;
+    let surface = moon_ice_surface(direction);
+    return surface < 0.0 && moon_raw_height(direction) < surface;
 }
 
 /// The impact field before the ice fills it. Mirrored from `moon.rs`.

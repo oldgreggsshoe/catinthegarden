@@ -512,7 +512,31 @@ fn flat_triangle_vertex_specular(
         * (0.08 * SURFACE_SUNLIGHT_SCALE);
 }
 
+/// How much specular a material returns, against the water/ice glint at 1.0.
+///
+/// Regolith is not glossy, but an airless surface is not perfectly matte
+/// either: with no air to scatter light, what the eye gets from a dusty slope
+/// is direct reflection, and a faint sheen is what stops moon rock reading as
+/// flat paper. Deliberately small — this is a highlight you notice only when
+/// the sun is behind you.
+const AIRLESS_REGOLITH_SPECULAR: f32 = 0.16;
+/// How much light a shadowed regolith facet receives from the sunlit ground
+/// around it. Small: the Moon's albedo is about 0.12, so a bounce is dim, but
+/// it is the difference between a crater interior and a hole.
+const AIRLESS_BOUNCE_FRACTION: f32 = 0.09;
+
+fn airless_regolith(biome_id: u32) -> bool {
+    return !BODY_HAS_ATMOSPHERE && biome_id == AIRLESS_BODY_BIOME;
+}
+
+fn material_specular_scale(biome_id: u32) -> f32 {
+    return select(1.0, AIRLESS_REGOLITH_SPECULAR, airless_regolith(biome_id));
+}
+
 fn material_allows_specular(biome_id: u32) -> bool {
+    if airless_regolith(biome_id) {
+        return true;
+    }
     // Water owns the ocean/lake glints, and the dedicated ice biome keeps its
     // hard, cold highlight. Vegetation, soil, rock, snow, and desert remain
     // matte even when their weather field is wet.
@@ -707,12 +731,13 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     }
     var flat_specular = 0.0;
     if flat_triangles && material_allows_specular(biome_id) {
-        flat_specular = flat_triangle_vertex_specular(
-            normal,
-            direction,
-            surface_height,
-            camera_relative_view_position,
-        );
+        flat_specular = material_specular_scale(biome_id)
+            * flat_triangle_vertex_specular(
+                normal,
+                direction,
+                surface_height,
+                camera_relative_view_position,
+            );
     }
     // Flat-triangle mode keeps the categorical material and face lighting, but
     // still needs the ordinary aerial path so distant facets fade toward the
@@ -947,6 +972,7 @@ fn cloud_shadow_visibility(
 
 fn flat_triangle_lighting(
     albedo: vec3<f32>,
+    biome_id: u32,
     normal: vec3<f32>,
     surface_direction: vec3<f32>,
     surface_height: f32,
@@ -968,7 +994,12 @@ fn flat_triangle_lighting(
         sun_direction,
     );
     var cloud_visibility = 1.0;
-    if receive_cloud_shadow
+    // Direct sunlight does not care whether there is an atmosphere; what it
+    // cares about is whether anything is in the way. On an airless body nothing
+    // is, so the beam arrives at full strength. This was still sampling the
+    // weather field and shadowing the moon with the planet's clouds.
+    if BODY_HAS_ATMOSPHERE
+        && receive_cloud_shadow
         && dot(sun_transmittance, vec3<f32>(0.2126, 0.7152, 0.0722)) > 0.001
     {
         cloud_visibility = cloud_shadow_visibility(
@@ -977,17 +1008,39 @@ fn flat_triangle_lighting(
             sun_direction,
         );
     }
+    // Lambert fades as the cosine of the incidence angle, which gives a soft
+    // shaded ball. Regolith does not behave that way: with no atmosphere and a
+    // deeply porous dusty surface it backscatters, staying nearly as bright
+    // near the terminator as at the sub-solar point and then falling off hard.
+    // That is why a full moon reads as a flat disc rather than a lit sphere.
+    // Lommel-Seeliger, mu0 / (mu0 + mu), is the standard cheap model of it.
+    let incidence = max(dot(normal, sun_direction), 0.0);
+    var response = incidence;
+    if airless_regolith(biome_id) {
+        let towards_viewer = normalize(view_to_planet(-camera_relative_view_position));
+        let emission = max(dot(normal, towards_viewer), 1.0e-3);
+        response = 2.0 * incidence / (incidence + emission);
+        // The law alone does not vanish at the terminator; the geometric
+        // cosine still has to close it, or the night side would stay lit.
+        response = response * smoothstep(0.0, 0.06, incidence);
+        // A crater floor turned away from the sun is not truly black: it is lit
+        // by sunlight bouncing off its own sunlit far wall. That is
+        // inter-reflection, not skylight, so it survives having no atmosphere.
+        // Without it the interiors read as holes punched through the body.
+        // Scaled by how lit the neighbourhood is, so the night side stays dark.
+        let neighbourhood_sun = max(dot(surface_direction, sun_direction), 0.0);
+        response = response + AIRLESS_BOUNCE_FRACTION * neighbourhood_sun;
+    }
     let diffuse = sky_diffuse
-        + sun_transmittance * cloud_visibility
-            * max(dot(normal, sun_direction), 0.0)
-            * SURFACE_SUNLIGHT_SCALE;
+        + sun_transmittance * cloud_visibility * response * SURFACE_SUNLIGHT_SCALE;
     var specular = triangle_specular;
     if !use_triangle_specular {
         let view_direction = normalize(view_to_planet(-camera_relative_view_position));
         let half_vector = normalize(sun_direction + view_direction);
         specular = pow(max(dot(normal, half_vector), 0.0), 64.0)
             * dot(sun_transmittance, vec3<f32>(0.2126, 0.7152, 0.0722))
-            * (0.08 * SURFACE_SUNLIGHT_SCALE);
+            * (0.08 * SURFACE_SUNLIGHT_SCALE)
+            * material_specular_scale(biome_id);
     }
     return albedo * diffuse + vec3<f32>(specular * cloud_visibility);
 }
@@ -1331,7 +1384,9 @@ fn flat_triangle_colour(
         input.source_uv_scale_and_latitude.w,
         material_allows_specular(fill_biome),
     );
-    if fill_biome != 0u && fill_biome != 1u {
+    // Weather wets and snows the planet's materials. There is no weather on an
+    // airless body, so regolith stays dry regolith.
+    if BODY_HAS_ATMOSPHERE && fill_biome != 0u && fill_biome != 1u {
         let surface_field = weather_surface_sample(normalize(input.surface_direction));
         let wetness = smoothstep(0.18, 0.82, surface_field.r);
         let snow_cover = smoothstep(0.08, 0.70, surface_field.g);
@@ -1355,6 +1410,7 @@ fn flat_triangle_colour(
     }
     let lit = flat_triangle_lighting(
         fill,
+        fill_biome,
         normal,
         normalize(input.surface_direction),
         input.surface_height_and_fog_color.x,
@@ -1422,6 +1478,8 @@ fn flat_ocean_colour(input: OceanVertexOutput, macro_height_meters: f32) -> vec4
             surface.vertical_displacement,
             surface.breaking_ratio,
         ),
+        // This draw is water by construction, so it is never regolith.
+        0u,
         normal,
         direction,
         surface.vertical_displacement,
@@ -1696,7 +1754,8 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     );
     let terrain_direct_light = max(dot(terrain_normal, sun_direction), 0.0);
     var terrain_cloud_visibility = 1.0;
-    if terrain_direct_light > 0.0
+    if BODY_HAS_ATMOSPHERE
+        && terrain_direct_light > 0.0
         && dot(terrain_sun_transmittance, vec3<f32>(0.2126, 0.7152, 0.0722)) > 0.001
     {
         terrain_cloud_visibility = cloud_shadow_visibility(

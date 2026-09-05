@@ -5842,3 +5842,44 @@ sat near the limb; `orbit_once` does not put the terminator across the disc the 
 colour spread it does measure now separates ice from regolith rather than sun angle, so that metric no
 longer answers the question. The argument for the fix is the construction above, not a matching
 screenshot. Worth re-checking from the pose that showed it.
+
+## Regolith reflectance, tighter ejecta, polar ice - 5 September 2026
+
+Four moon changes; the planet is at max pixel difference 0 on `coast_waters_edge`, `stand_on_ground`
+and `ocean_ship_float` throughout.
+
+**The terminator was a soft fade because the surface was Lambertian.** The horizon ramp was already
+sharp — `flat_horizon_sun_visibility` uses the sun's real angular radius, 0.004625. What softened it
+was `max(dot(normal, sun))`, which shades a sphere like a ball. Regolith does not behave that way: it
+is porous and backscatters, staying nearly as bright near the terminator as at the sub-solar point and
+then falling off hard, which is why a full moon reads as a flat disc rather than a lit sphere.
+Airless bodies now use **Lommel-Seeliger**, `2·μ₀/(μ₀+μ)`, closed at the terminator by the geometric
+cosine so the night side still goes dark.
+
+**Craters are empty except at the poles.** Ice survives on an airless body only where the sun never
+reaches, so `moon_ice_surface` is zero away from the poles and the bowl is left as the impact dug it.
+Near the poles it fills to half the depth of the crater that dominates the point — which is constant
+within one crater, so the pond is *flat* rather than following the bowl down. The first attempt filled
+every crater to the datum, flattening the whole body into discs; two tests now hold the distinction,
+one for empty-versus-flooded and one for the pond being level.
+
+**The ejecta was a plateau, not a blanket.** It faded smoothly to twice the rim radius, so a 0.30 rad
+basin wore a 324km raised ring — reported as "huge rings around them with black between". Real ejecta
+thins roughly as an inverse cube and stays close: the extent is now 1.35 rim radii with a cubic
+falloff.
+
+**Two things were still attenuating direct sunlight in vacuum.** Cloud shadows were being sampled from
+the weather field and cast onto the moon, and the wetness/snow material terms were reading the same
+field. Direct sunlight does not care whether there is an atmosphere, only whether something is in the
+way, and on an airless body nothing is. Both are gated. A small **inter-reflection** term was added
+for regolith — a shadowed crater floor is lit by sunlight bouncing off its own sunlit wall, which is
+not skylight and so survives having no air; without it the interiors read as holes punched through
+the body.
+
+Regolith also gets a small specular, at 0.16 of the water/ice glint.
+
+**Brightness barely moved** — `orbit_once` lit mean 35.7 to 36.0 — so the cloud-shadow gate was
+correct in principle but is not what was darkening this frame. p90 is 118 and max 202 of 255, so the
+fully lit regolith is not actually dim; my current read is that the dark impression is largely the
+lunar phase in that particular frame rather than a lighting fault, but that is a reading and not a
+measurement of the thing itself. Worth checking from the surface, where phase does not confound it.
