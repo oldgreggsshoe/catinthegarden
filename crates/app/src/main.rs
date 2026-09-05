@@ -972,6 +972,12 @@ struct State {
     /// Set when a camera-mode switch teleports the eye, so the next frame
     /// reports no motion rather than the jump divided by a frame time.
     camera_velocity_baseline_stale: bool,
+    /// Set at startup on a body the game begins standing on. Consumed once the
+    /// terrain under the spawn point is resident: entering surface mode needs a
+    /// ground height, and at frame zero the tile cache is empty, so doing it
+    /// immediately would stand the camera on whatever the fallback happened to
+    /// be.
+    pending_surface_spawn: bool,
     previous_sim_time: f64,
     last_auto_orbit_sim_time: f64,
     camera_mode: CameraMode,
@@ -1364,6 +1370,9 @@ impl State {
             previous_camera_world_position: initial_camera_world_position,
             previous_camera_planet_frame_position: initial_camera_world_position,
             camera_velocity_baseline_stale: true,
+            // The moon is a place you start standing on; the planet still
+            // opens on the orbital view.
+            pending_surface_spawn: body::spawns_on_surface(body::active()),
             previous_sim_time: 0.0,
             last_auto_orbit_sim_time: 0.0,
             camera_mode: CameraMode::Orbit,
@@ -3100,6 +3109,18 @@ impl State {
                 scene_delta_seconds,
                 f64::from(frame_time),
             );
+            if self.pending_surface_spawn && self.scenario.is_none() {
+                let direction = self.camera.world_position().normalize();
+                let altitude =
+                    self.camera.world_position().length() - planet::planet_radius_meters();
+                let ground = self
+                    .terrain
+                    .raster_surface_height_meters_at(direction, altitude);
+                if ground.is_some() {
+                    self.pending_surface_spawn = false;
+                    self.toggle_surface_camera_mode();
+                }
+            }
             match self.camera_mode {
                 CameraMode::Orbit => self.camera.advance_inclined_orbit(
                     DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND * camera_delta_seconds,

@@ -5753,3 +5753,35 @@ happens; the per-vertex loop is not.
 
 Still to do: rotation from the body rather than `planet::PLANET_ROTATION_PERIOD_SECONDS`, and
 spawning on the surface rather than in orbit.
+
+## The moon turns on its own clock, and you start on it - 5 September 2026
+
+The last two items from the moon's bring-up.
+
+**Rotation follows the body.** `planet_rotation_radians` divides by
+`body::rotation_period_seconds()` rather than the planet's constant, so the ground turns at the rate
+the world it belongs to specifies. `planet::PLANET_ROTATION_PERIOD_SECONDS` stays a constant on
+purpose: the weather clock derives a chain of `const` expressions from it across 33 sites, and weather
+only runs on a body with an atmosphere. On the moon the interactive time scale still comes from that
+planet ratio, which turns its 60s period into an 80-minute real day — slow, which is what a tidally
+locked body should look like, so it is left as a feature rather than churned into a runtime chain for
+no behavioural gain.
+
+**The moon is spawned onto, not orbited.** `body::spawns_on_surface` says which worlds the game begins
+standing on; the moon does, the planet keeps the orbital opening it was built around. It is a property
+of the world rather than a branch in the camera code, which is what makes it testable at all.
+
+The spawn is **deferred, not immediate**. Entering surface mode needs a ground height, and at frame
+zero the tile cache is empty, so spawning straight away would stand the camera on whatever the
+fallback happened to be — the same class of mistake as the four scenario poses that spent months
+underground. `pending_surface_spawn` is consumed on the first frame where
+`raster_surface_height_meters_at` actually answers.
+
+**Not verified interactively, and a scenario cannot verify it.** `toggle_surface_camera_mode` returns
+early when a scenario is running, by design, so the whole path is unreachable from the deterministic
+suite. A headless run logged no spatial frames, so there is no evidence from this session that the
+camera lands on the ground rather than under it. What is verified: the predicate has its own test, the
+planet still opens in orbit, and `coast_waters_edge` and `stand_on_ground` remain at max pixel
+difference 0. **`--body moon` needs flying to confirm the landing.** That is the third time this
+session an interactive-only path could not be reached from scenarios; it is worth treating that gap as
+a standing weakness of the suite rather than a surprise each time.

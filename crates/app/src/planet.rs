@@ -41,6 +41,12 @@ pub const MINIMUM_LOD_LEVEL: u8 = 2;
 #[cfg(test)]
 pub const FLAT_TRIANGLE_LOD_LEVEL: u8 = MINIMUM_LOD_LEVEL + 5;
 /// Deliberately game-time-scaled so axial rotation is visible during normal play.
+/// The *planet's* rotation period. The active body's own period drives
+/// `planet_rotation_radians`; this stays a constant because the weather clock
+/// derives a chain of `const` expressions from it, and weather only runs on a
+/// body with an atmosphere. On the moon the interactive time scale still comes
+/// from this ratio, which gives its 60s period an 80-minute real day -- slow,
+/// which is what a tidally locked body should look like.
 pub const PLANET_ROTATION_PERIOD_SECONDS: f64 = 15.0;
 /// Earth's mean obliquity. With no simulated annual orbit yet, the default sun
 /// uses the northern-solstice declination so the axial tilt is visible and
@@ -399,7 +405,7 @@ pub(crate) fn shared_planet_shader_source() -> String {
 }
 
 pub fn planet_rotation_radians(sim_time_seconds: f64) -> f64 {
-    (sim_time_seconds * std::f64::consts::TAU / PLANET_ROTATION_PERIOD_SECONDS)
+    (sim_time_seconds * std::f64::consts::TAU / crate::body::rotation_period_seconds())
         .rem_euclid(std::f64::consts::TAU)
 }
 

@@ -90,16 +90,21 @@ pub fn radius_meters() -> f64 {
     active().radius_meters
 }
 
-/// Not yet consumed: rotation is still driven by
-/// `planet::PLANET_ROTATION_PERIOD_SECONDS`, which several `const` expressions
-/// derive from. Moving those to the active body is the next stage.
-#[allow(dead_code)]
 pub fn rotation_period_seconds() -> f64 {
     active().rotation_period_seconds
 }
 
 pub fn has_ocean() -> bool {
     active().has_ocean
+}
+
+/// Whether the game begins standing on this body rather than in orbit.
+///
+/// The moon is somewhere you arrive on foot; the planet still opens on the
+/// orbital view it was built around. Kept here as a property of the world
+/// rather than a branch in the camera code, so it is testable without a window.
+pub fn spawns_on_surface(body: Body) -> bool {
+    body == MOON
 }
 
 /// The generated WGSL every shader that needs the body's scale prepends.
@@ -152,6 +157,12 @@ mod tests {
             assert!(!MOON.has_atmosphere);
             assert!(PLANET.has_ocean && PLANET.has_atmosphere);
         }
+    }
+
+    #[test]
+    fn the_moon_is_stood_on_and_the_planet_is_orbited() {
+        assert!(spawns_on_surface(MOON));
+        assert!(!spawns_on_surface(PLANET));
     }
 
     #[test]
