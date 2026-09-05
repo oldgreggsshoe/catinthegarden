@@ -111,6 +111,11 @@ pub struct ProbeHit {
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 pub struct ProbeComparison {
     pub ndc: [f64; 2],
+    /// The planet-frame direction this point was sampled at. Without it a
+    /// failing point cannot be re-evaluated offline: `ndc` identifies a pixel
+    /// in one capture, not a place on the planet, so the CPU side of a
+    /// disagreement could not be recomputed from a recorded run.
+    pub direction: [f64; 3],
     pub distance_meters: f64,
     pub rendered_height_meters: f64,
     pub cpu_height_meters: f64,
@@ -130,6 +135,7 @@ pub struct ProbeComparison {
 fn comparison(hit: &ProbeHit, cpu: SurfaceHeightBreakdown) -> ProbeComparison {
     ProbeComparison {
         ndc: hit.ndc,
+        direction: hit.direction.to_array(),
         distance_meters: hit.distance_meters,
         rendered_height_meters: hit.height_meters,
         cpu_height_meters: cpu.height_meters,
