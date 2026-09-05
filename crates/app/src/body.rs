@@ -98,6 +98,12 @@ pub fn has_ocean() -> bool {
     active().has_ocean
 }
 
+/// Whether weather exists at all. On a body without air there is nothing to
+/// hold cloud, rain, light shafts, or aerial perspective.
+pub fn has_atmosphere() -> bool {
+    active().has_atmosphere
+}
+
 /// Whether the game begins standing on this body rather than in orbit.
 ///
 /// The moon is somewhere you arrive on foot; the planet still opens on the

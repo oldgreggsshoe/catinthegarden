@@ -5785,3 +5785,27 @@ planet still opens in orbit, and `coast_waters_edge` and `stand_on_ground` remai
 difference 0. **`--body moon` needs flying to confirm the landing.** That is the third time this
 session an interactive-only path could not be reached from scenarios; it is worth treating that gap as
 a standing weakness of the suite rather than a surprise each time.
+
+## No weather in vacuum - 5 September 2026
+
+Fog and clouds are gone on the moon and untouched on the planet.
+
+Three things were still running on an airless body. The **weather passes** — cloud shell, local cloud
+impostors, rain, and the forest's light shafts — are now drawn only when the body has an atmosphere;
+vacuum holds none of them. **Aerial perspective** is gated inside the shared shader rather than at a
+call site: `terrain_material_transmittance` returns unity and `terrain_material_in_scatter` returns
+zero when `BODY_HAS_ATMOSPHERE` is false, so ground reaches the eye undimmed at any range with no
+horizon haze. That is why distances on an airless body are famously hard to judge, and it now falls
+out of the same code the planet uses rather than a separate path.
+
+The atmosphere pass itself still runs — it is what paints space black behind the stars, and skipping
+it is what put flat grey daylight where vacuum should be earlier today.
+
+**Planet unchanged**: `coast_waters_edge` and `stand_on_ground` both at max pixel difference 0.
+
+Measured on the moon's lit surface in `orbit_once`, excluding space and stars: mean luminance 33.6 to
+**39.5**, p90 76 to **97**, max 202 to **218**. Removing the in-scatter removed some light with it,
+but the net is brighter because the haze it was adding was also veiling the surface. The lit side is
+still under-exposed against what an airless surface in full sun should look like — that open item from
+the previous section stands, and removing the fog has if anything made it easier to see that the
+problem is the lighting rather than the air.

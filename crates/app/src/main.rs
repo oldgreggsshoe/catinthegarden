@@ -3866,29 +3866,36 @@ impl State {
             );
             self.ship_renderer
                 .draw(&mut render_pass, &self.camera_bind_group);
-            self.forest.draw_beams(
-                &mut render_pass,
-                &self.camera_bind_group,
-                camera_sea_level_altitude_meters,
-            );
-            self.weather_clouds
-                .draw(&mut render_pass, &self.camera_bind_group);
+            // Vacuum holds no cloud, no rain and no shafts of light. These are
+            // the weather passes; the atmosphere pass itself still runs, since
+            // it is what paints space black behind the stars.
+            if body::has_atmosphere() {
+                self.forest.draw_beams(
+                    &mut render_pass,
+                    &self.camera_bind_group,
+                    camera_sea_level_altitude_meters,
+                );
+                self.weather_clouds
+                    .draw(&mut render_pass, &self.camera_bind_group);
+            }
             self.forest.draw(
                 &mut render_pass,
                 &self.camera_bind_group,
                 self.weather_clouds.field_bind_group(),
                 camera_sea_level_altitude_meters,
             );
-            self.local_cloud_impostors.draw(
-                &mut render_pass,
-                &self.camera_bind_group,
-                self.weather_clouds.field_bind_group(),
-            );
-            self.rain.draw(
-                &mut render_pass,
-                &self.camera_bind_group,
-                self.weather_clouds.field_bind_group(),
-            );
+            if body::has_atmosphere() {
+                self.local_cloud_impostors.draw(
+                    &mut render_pass,
+                    &self.camera_bind_group,
+                    self.weather_clouds.field_bind_group(),
+                );
+                self.rain.draw(
+                    &mut render_pass,
+                    &self.camera_bind_group,
+                    self.weather_clouds.field_bind_group(),
+                );
+            }
         }
         // The haze probe asks the opposite question -- whether distance reads on
         // whatever is actually in front of the camera -- and bins each pixel's

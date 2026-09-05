@@ -1928,6 +1928,11 @@ fn terrain_material_transmittance(
     transmittance: vec3<f32>,
     biome_id: u32,
 ) -> vec3<f32> {
+    // Vacuum neither absorbs nor scatters: ground reaches the eye undimmed at
+    // any range, which is why an airless body's distances are so hard to judge.
+    if !BODY_HAS_ATMOSPHERE {
+        return vec3<f32>(1.0);
+    }
     var neutrality = 0.0;
     if terrain_material_is_vegetation(biome_id) {
         neutrality = 0.82;
@@ -1942,6 +1947,11 @@ fn terrain_material_in_scatter(
     in_scatter: vec3<f32>,
     biome_id: u32,
 ) -> vec3<f32> {
+    // Nothing between the surface and the eye to scatter light into the path,
+    // so there is no aerial perspective and no horizon haze at all.
+    if !BODY_HAS_ATMOSPHERE {
+        return vec3<f32>(0.0);
+    }
     var neutrality = 0.0;
     if terrain_material_is_vegetation(biome_id) {
         neutrality = 0.82;
