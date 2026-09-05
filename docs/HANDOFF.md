@@ -1,7 +1,7 @@
 # Handoff — ocean wind sea spectrum
 
 **Branch:** `experiment/ocean-wind-sea-spectrum`, tracking
-`origin/experiment/ocean-wind-sea-spectrum`, at `510779d`.
+`origin/experiment/ocean-wind-sea-spectrum`, at `5744db2`.
 
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
@@ -122,36 +122,57 @@ gate for anything weather-composed.
 the app crate and 3 in the baker. Clippy stops at the first crate that fails, so the baker's three
 had been hiding the app's seventy entirely — the app was never being linted. Check both.
 
+**Recently closed, so they are not re-opened:** the "renderer draws near-field land up to 43.58m
+above the CPU's height field" thread was the surface probe reading tree canopies, and
+`detail_correlation` 0.3222 was a canopy height set against a ground height; with the probe reading
+depth before the forest pass, `coast_waters_edge` raster is median 0.560m / p90 1.835m / max 2.277m
+at correlation 0.9586. `highest_prominence_peak`, `stand_on_ground`, `landing_site_eye_level` and
+`landing_site_ground_detail` were four cameras standing 687-753m underground or 7,659m over the
+wrong mountain, on poses authored before a rebake; all four pass and compare points again. See the
+last two sections.
+
 **Known failures and open threads,** in the order worth picking up:
 
-1. **The renderer draws near-field land up to 43.58m above the CPU's sampled height field.**
-   Measured on `coast_waters_edge` at `342c3b5`: median 2.27m, p90 35.09m, max 43.58m over 36 land
-   points. Bimodal, not a uniform offset — fourteen of 31 near-field points agree to under 1.3m
-   while seventeen are off by 9.5 to 43.6m, interleaved across the screen. `|delta|` correlates
-   **+0.714** with the height the renderer draws and only -0.220 with the CPU's, and
-   `detail_correlation` is 0.3222, which is the signature of two unrelated fields rather than one
-   field at the wrong gain. The lead is that the CPU and GPU detail functions are fed different
-   inputs. See the last section of this file; the earlier "about 11m" figure understated it.
-2. **The probe is meaningless over water and nothing says so.** All 45 points in
+1. **`mountain_ground` disagrees by 11.4m and nothing explains it.** Median 11.433m, p90 12.236m,
+   max 12.660m over 81 points, bit-identical before and after the tree fix, so trees are not in it.
+   The distribution is tight and near-uniform with none of the bimodal, one-signed spread an
+   occluder produces, which makes it the genuine mesh-versus-field gap on steep near-field terrain.
+   This is the one to pick up first. Note the instrumentation now on `ProbeComparison` --
+   `cpu_node_level`, `cpu_detail_filter_meters`, `filter_sweep`, `near_field` -- which says whether
+   a gap is filter width, source data, or neither, without another instrumentation pass.
+2. **The survey and the app disagree by 227.353m about the summit's height.** `global_highest_summit`
+   reports 186,709.142m at `ACTIVE_HIGHEST_PROMINENCE_DIRECTION`; the app's surface query reports
+   186,936.495m there, stable across altitude and converging to exactly `raw_macro * 4` =
+   186,941.266m by 36km up. So the app applies almost no detail where the survey applies -232.1m.
+   Suspect the ladder's high cut, `baked_spacing_meters`, against different resolved source levels --
+   the survey scans L4 only. **Unmeasured**: the probe compares zero points at that pose. Until it is
+   settled, `highest_prominence_peak`'s pose is derived from
+   `ACTIVE_HIGHEST_PROMINENCE_DRAWN_SURFACE_METERS`, because that is what the clearance assertion
+   measures; deriving it from the summit puts the camera 75m inside the mountain.
+3. **The probe is meaningless over water and nothing says so.** All 45 points in
    `ocean_hybrid_close` and all 9 in `ocean_rough_horizon` have `cpu_height_meters` of exactly 0.0,
    so their reported deltas are rendered wave height, not a surface disagreement. No scenario arms
    `max_surface_probe_delta_m`; if one were armed on a water scenario it would fail on wave height
    alone.
-3. **`highest_prominence_peak` fails `camera_stands_on_the_ground`** — bounds 150.0..=155.0m,
-   observed 7,659.857m — and has done for at least four commits (`342c3b5`, `ffed7512`, `95e58cfd`,
-   `cfbee5a2`). Its probe reports `compared 0`, consistent with the altitude rather than a second
-   fault. Stale authored waypoint or a placement failure; not caused by the recent ground work.
-4. **`descent_to_10m` fails on the terrain streamer**, and did so before any of this branch's work:
+4. **A scenario can assert clearance with no probe-point floor, and be buried and green.** The
+   harness refuses a delta tolerance without `min_surface_probe_points` (`scenario.rs:740`) but has
+   no such rule for a clearance assertion, which is how `landing_site_ground_detail` sat 687m inside
+   a mountain and passed. Floors are now set on the four ground scenarios by hand. Whether to make
+   that structural is a judgement call: several clearance scenarios are legitimately too far from
+   ground to compare anything.
+5. **`descent_to_10m` fails on the terrain streamer**, and did so before any of this branch's work:
    LOD peaks at 14 against a required 18, 256 fallback chunks against an allowance of 128, and
    `tiles_loaded` stays at zero across twenty seconds. Not investigated.
-5. **`low_flight_performance`** was a known failure in the terrain era — 420 resident chunks, 334
+6. **`low_flight_performance`** was a known failure in the terrain era — 420 resident chunks, 334
    fallbacks, a 2,071.204m warm-up seam — and has not been re-measured since the ocean work began.
    Treat those numbers as unverified rather than current.
-6. **No raymarch probe coverage.** Every surface probe in the current baselines is
-   `render_path: raster`, and the two paths are meant to be at parity.
-7. The Gerstner fold budget stands at 1.17 against a physical limit of 1.0. Accepted and held
+7. **Thin raymarch probe coverage.** `coast_waters_edge` now has ray baselines (median 1.293m/1.172m,
+   p90 3.880m/4.308m at 70 and 71 points, against `surface_height_breakdown_at` rather than the
+   raster node path, so not directly comparable with raster's figures). Every other baseline in this
+   file is `render_path: raster`, and the two paths are meant to be at parity.
+8. The Gerstner fold budget stands at 1.17 against a physical limit of 1.0. Accepted and held
    invariant by `OCEAN_WAVE_SCALE`, not fixed; lowering it is a deliberate visual change.
-8. Underwater rendering is unimplemented, which is what the bobbing floor stands in for.
+9. Underwater rendering is unimplemented, which is what the bobbing floor stands in for.
 
 **Build convention.** Benchmarks and parity runs build to `CARGO_TARGET_DIR=/home/dad/catingard-target`,
 not the in-repo `target/`. Give every temporary or staged checkout its own `CARGO_TARGET_DIR`
