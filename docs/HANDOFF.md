@@ -131,23 +131,28 @@ at correlation 0.9586. `highest_prominence_peak`, `stand_on_ground`, `landing_si
 wrong mountain, on poses authored before a rebake; all four pass and compare points again. See the
 last two sections.
 
+**Also closed today.** The near-field ocean-culling defect is fixed at `4f2da78`: `may_contain_ocean`
+tested a near-field chunk's water content with *window* UVs against a single guttered source tile, so
+it could prove an unrelated patch was land and cull the ocean covering the real one. It now tests the
+uploaded window's own unguttered grid. Verified independently on this branch, not taken on trust:
+`ocean_ship_float` draws **40 ocean chunks before and 255 after** (92,160 to 587,520 triangles) with
+`drawn_chunks` unchanged at 256, the constant slab colour `(15, 64, 117)` falls from 150,901 pixels to
+zero in the lower half, and the top 200 sky rows are byte-identical. Land culling still works --
+`mountain_ground` 1 ocean chunk, `stand_on_ground` 11, `highest_prominence_peak` 15, `coast_waters_edge`
+157, open sea 255. 430 workspace tests, clippy and fmt clean. **The earlier "the streamer loads
+nothing" thread is closed too**: only the `pz` face is baked past L4, so there is nothing to load
+anywhere else.
+
 **Known failures and open threads,** in the order worth picking up:
 
-1. **The near-field ocean-culling defect is fixed and GPU-reproduced.** The existing
-   `ocean_ship_float` replay drew only 40 ocean chunks before the repair and 255 afterward;
-   matched captures replace the grey foreground with waves. Window UVs now test the actual uploaded
-   window heights, not a single source tile. All-land culling remains enabled. Fresh interactive
-   travel is the remaining human acceptance check; see the final section for evidence.
-   *(The earlier "the streamer loads nothing" thread is closed: only the `pz` face is baked past L4,
-   so there is genuinely nothing to load anywhere else.)*
-2. **`mountain_ground` disagrees by 11.4m and nothing explains it.** Median 11.433m, p90 12.236m,
+1. **`mountain_ground` disagrees by 11.4m and nothing explains it.** Median 11.433m, p90 12.236m,
    max 12.660m over 81 points, bit-identical before and after the tree fix, so trees are not in it.
    The distribution is tight and near-uniform with none of the bimodal, one-signed spread an
    occluder produces, which makes it the genuine mesh-versus-field gap on steep near-field terrain.
    This is the one to pick up first. Note the instrumentation now on `ProbeComparison` --
    `cpu_node_level`, `cpu_detail_filter_meters`, `filter_sweep`, `near_field` -- which says whether
    a gap is filter width, source data, or neither, without another instrumentation pass.
-3. **The survey and the app disagree by 227.353m about the summit's height.** `global_highest_summit`
+2. **The survey and the app disagree by 227.353m about the summit's height.** `global_highest_summit`
    reports 186,709.142m at `ACTIVE_HIGHEST_PROMINENCE_DIRECTION`; the app's surface query reports
    186,936.495m there, stable across altitude and converging to exactly `raw_macro * 4` =
    186,941.266m by 36km up. So the app applies almost no detail where the survey applies -232.1m.
@@ -156,30 +161,30 @@ last two sections.
    settled, `highest_prominence_peak`'s pose is derived from
    `ACTIVE_HIGHEST_PROMINENCE_DRAWN_SURFACE_METERS`, because that is what the clearance assertion
    measures; deriving it from the summit puts the camera 75m inside the mountain.
-4. **The probe is meaningless over water and nothing says so.** All 45 points in
+3. **The probe is meaningless over water and nothing says so.** All 45 points in
    `ocean_hybrid_close` and all 9 in `ocean_rough_horizon` have `cpu_height_meters` of exactly 0.0,
    so their reported deltas are rendered wave height, not a surface disagreement. No scenario arms
    `max_surface_probe_delta_m`; if one were armed on a water scenario it would fail on wave height
    alone.
-5. **A scenario can assert clearance with no probe-point floor, and be buried and green.** The
+4. **A scenario can assert clearance with no probe-point floor, and be buried and green.** The
    harness refuses a delta tolerance without `min_surface_probe_points` (`scenario.rs:740`) but has
    no such rule for a clearance assertion, which is how `landing_site_ground_detail` sat 687m inside
    a mountain and passed. Floors are now set on the four ground scenarios by hand. Whether to make
    that structural is a judgement call: several clearance scenarios are legitimately too far from
    ground to compare anything.
-6. **`descent_to_10m` fails on the terrain streamer**, and did so before any of this branch's work:
+5. **`descent_to_10m` fails on the terrain streamer**, and did so before any of this branch's work:
    LOD peaks at 14 against a required 18, 256 fallback chunks against an allowance of 128, and
    `tiles_loaded` stays at zero across twenty seconds. Not investigated.
-7. **`low_flight_performance`** was a known failure in the terrain era — 420 resident chunks, 334
+6. **`low_flight_performance`** was a known failure in the terrain era — 420 resident chunks, 334
    fallbacks, a 2,071.204m warm-up seam — and has not been re-measured since the ocean work began.
    Treat those numbers as unverified rather than current.
-8. **Thin raymarch probe coverage.** `coast_waters_edge` now has ray baselines (median 1.293m/1.172m,
+7. **Thin raymarch probe coverage.** `coast_waters_edge` now has ray baselines (median 1.293m/1.172m,
    p90 3.880m/4.308m at 70 and 71 points, against `surface_height_breakdown_at` rather than the
    raster node path, so not directly comparable with raster's figures). Every other baseline in this
    file is `render_path: raster`, and the two paths are meant to be at parity.
-9. The Gerstner fold budget stands at 1.17 against a physical limit of 1.0. Accepted and held
+8. The Gerstner fold budget stands at 1.17 against a physical limit of 1.0. Accepted and held
    invariant by `OCEAN_WAVE_SCALE`, not fixed; lowering it is a deliberate visual change.
-10. Underwater rendering is unimplemented, which is what the bobbing floor stands in for.
+9. Underwater rendering is unimplemented, which is what the bobbing floor stands in for.
 
 **Build convention.** Benchmarks and parity runs build to `CARGO_TARGET_DIR=/home/dad/catingard-target`,
 not the in-repo `target/`. Give every temporary or staged checkout its own `CARGO_TARGET_DIR`
