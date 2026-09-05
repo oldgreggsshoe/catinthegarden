@@ -1264,6 +1264,12 @@ fn surface_direct_sun_transmittance(
         clamp(max(solar_zenith_cosine, 0.0) * 0.5 + 0.5, 0.0, 1.0),
         sqrt(clamp(optical_altitude / 640000.0, 0.0, 1.0)),
     );
+    // Vacuum has no optical column: sunlight arrives the same colour at every
+    // angle, so an airless body has no warm terminator. The geometric horizon
+    // still occludes it, which is what keeps the day/night line sharp.
+    if !BODY_HAS_ATMOSPHERE {
+        return vec3<f32>(1.0) * visibility;
+    }
     // This is the same wavelength-dependent optical column used while
     // generating the physical sky. The LUT's below-horizon samples include
     // solid-planet occlusion, so visibility is instead evaluated against the
@@ -1283,6 +1289,11 @@ fn sky_diffuse_irradiance(
     surface_altitude_meters: f32,
     sun_direction: vec3<f32>,
 ) -> vec3<f32> {
+    // No sky, no skylight. Shadows on an airless body are lit by nothing at
+    // all, which is why their contrast is so violent.
+    if !BODY_HAS_ATMOSPHERE {
+        return vec3<f32>(0.0);
+    }
     let optical_altitude = max(surface_altitude_meters, 0.0) / 4.5;
     let uv = vec2<f32>(
         clamp(dot(surface_direction, sun_direction) * 0.5 + 0.5, 0.0, 1.0),

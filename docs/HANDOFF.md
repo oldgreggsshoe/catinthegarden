@@ -5809,3 +5809,36 @@ but the net is brighter because the haze it was adding was also veiling the surf
 still under-exposed against what an airless surface in full sun should look like — that open item from
 the previous section stands, and removing the fog has if anything made it easier to see that the
 problem is the lighting rather than the air.
+
+## Sunlight has one colour in vacuum - 5 September 2026
+
+The moon still had a warm terminator: measured on the reported capture, R/B rose from **0.815** under
+high sun to **1.010** at grazing incidence. That is atmospheric reddening — the low-sun colour shift
+the planet's sky earns through a long air column — applied to a body with no air.
+
+**Conditional in the shared shader, not a second shader.** A separate moon shader would mean two
+copies of the displacement, the detail ladder and the material chain, which is the divergence this
+codebase spends most of its tests preventing; and the branch is on `BODY_HAS_ATMOSPHERE`, a
+*generated compile-time* `bool`, so it constant-folds and a separate pipeline would buy no speed. What
+it does need is a separate *lighting path*, and that turned out to be two functions, each already the
+single source for its quantity:
+
+- `surface_direct_sun_transmittance` returns `vec3(1.0) * visibility` in vacuum instead of sampling
+  the wavelength-dependent transmittance LUT. Sunlight arrives the same colour at every angle, so a
+  warm terminator is now impossible **by construction** rather than by tuning — the function has no
+  wavelength dependence left to produce one. The geometric horizon still occludes, which keeps the
+  day/night line sharp.
+- `sky_diffuse_irradiance` returns zero. No sky, no skylight: shadows on an airless body are lit by
+  nothing at all, which is where their violent contrast comes from.
+
+Removing the atmospheric attenuation also brightened the lit side, which was the open under-exposure
+item pulling in the right direction: `orbit_once` lit-surface mean luminance 39.5 to **42.7**.
+
+**Planet unchanged**: `coast_waters_edge`, `stand_on_ground` and `ocean_ship_float` all at max pixel
+difference 0. 431 workspace tests, fmt and clippy clean.
+
+**Not confirmed against the reported view.** The warm rim was visible in a manual capture whose sun
+sat near the limb; `orbit_once` does not put the terminator across the disc the same way, and the
+colour spread it does measure now separates ice from regolith rather than sun angle, so that metric no
+longer answers the question. The argument for the fix is the construction above, not a matching
+screenshot. Worth re-checking from the pose that showed it.
