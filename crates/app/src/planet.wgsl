@@ -1795,29 +1795,36 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         ),
     );
     var textured_terrain_albedo = terrain_albedo * detail_tint;
-    let weather_surface = weather_surface_sample(direction);
-    let wetness = smoothstep(0.18, 0.82, weather_surface.r);
-    let snow_cover = smoothstep(0.08, 0.70, weather_surface.g);
     // Rain darkens exposed ground; accumulated snow replaces the material only
     // where the coupled surface field says it has persisted. Ocean and lake
     // branches returned above, and non-ice land remains matte.
-    textured_terrain_albedo *= 1.0 - 0.22 * wetness;
-    textured_terrain_albedo = mix(
-        textured_terrain_albedo,
-        mix(vec3<f32>(0.70, 0.73, 0.76), vec3<f32>(0.94, 0.96, 1.0), snow_cover),
-        snow_cover,
-    );
-    textured_terrain_albedo = forest_canopy_albedo(
-        textured_terrain_albedo,
-        outmap,
-        biome_id,
-        moisture,
-        macro_height_meters,
-        terrain_normal,
-        direction,
-        snow_cover,
-        length(input.camera_relative_view_position),
-    );
+    //
+    // None of it exists without air. The flat path already skips this; the
+    // smooth path did not, which left an airless body reading a weather field
+    // nothing updates. `wetness` stays in scope for the wet specular below.
+    var wetness = 0.0;
+    if BODY_HAS_ATMOSPHERE {
+        let weather_surface = weather_surface_sample(direction);
+        wetness = smoothstep(0.18, 0.82, weather_surface.r);
+        let snow_cover = smoothstep(0.08, 0.70, weather_surface.g);
+        textured_terrain_albedo *= 1.0 - 0.22 * wetness;
+        textured_terrain_albedo = mix(
+            textured_terrain_albedo,
+            mix(vec3<f32>(0.70, 0.73, 0.76), vec3<f32>(0.94, 0.96, 1.0), snow_cover),
+            snow_cover,
+        );
+        textured_terrain_albedo = forest_canopy_albedo(
+            textured_terrain_albedo,
+            outmap,
+            biome_id,
+            moisture,
+            macro_height_meters,
+            terrain_normal,
+            direction,
+            snow_cover,
+            length(input.camera_relative_view_position),
+        );
+    }
     if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
         return vec4<f32>(
             mix(textured_terrain_albedo, debug_ocean_albedo(), ocean_coverage),

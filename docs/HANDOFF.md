@@ -185,6 +185,16 @@ anywhere else.
 8. The Gerstner fold budget stands at 1.17 against a physical limit of 1.0. Accepted and held
    invariant by `OCEAN_WAVE_SCALE`, not fixed; lowering it is a deliberate visual change.
 9. Underwater rendering is unimplemented, which is what the bobbing floor stands in for.
+10. **The moon's terrain is synthesised per sample, so its crater count is a frame-time number.**
+    360 craters cost 17.1ms a frame on `orbit_once` only because of the cosine cutoff and the
+    latitude window; without them the same catalogue is 104ms. Thousands means baking the moon into
+    an outmap the way the planet is baked, after which the count is free at render time. Until then,
+    raising `FIELD_COUNT` or `FIELD_MAX_ANGULAR_RADIUS` costs measurable frames -- the latter more
+    than the former, because it widens the window for every sample.
+11. **The moon surface spawn has never been verified interactively.** `body::spawns_on_surface`
+    starts the game standing on the moon, and no scenario reaches that path; scenario replay and
+    interactive play differ structurally, and this branch has already lost three defects into that
+    gap (ship lag, grey ocean, surface spawn). Needs `--body moon` run by hand.
 
 **Build convention.** Benchmarks and parity runs build to `CARGO_TARGET_DIR=/home/dad/catingard-target`,
 not the in-repo `target/`. Give every temporary or staged checkout its own `CARGO_TARGET_DIR`
@@ -5883,3 +5893,88 @@ correct in principle but is not what was darkening this frame. p90 is 118 and ma
 fully lit regolith is not actually dim; my current read is that the dark impression is largely the
 lunar phase in that particular frame rather than a lighting fault, but that is a reading and not a
 measurement of the thing itself. Worth checking from the surface, where phase does not confound it.
+
+---
+
+## 5 September 2026 — the moon was not dark, it was not being drawn
+
+**The previous section's reading was wrong.** It closed by guessing that the dark half of the moon
+was "largely the lunar phase in that particular frame". It was not. `CATINGARDEN_DEBUG_MODE=albedo`
+on `--body moon --scenario orbit_once` showed the disc black except for thin rings, and counting
+pixels settled it: 5,392 non-black inside a 189x188 bounding box, a fill fraction of **0.15** against
+the **0.785** (pi/4) a solid disc gives. The rings were crater rims. Everything else was the clear
+colour showing through, because those fragments were **discarded**.
+
+`is_open_ocean_surface` returns true for any fragment at or below the datum that is not baked ice or
+lake, and the terrain pass discards those on the understanding that the analytic ocean shell will
+draw them. On the moon `has_ocean` is false, so that shell never runs; and `moon.rs::raw_height_meters`
+is *only* the sum of crater profiles, so pristine moon is at exactly 0.0 and every crater floor is
+below it. The predicate therefore claimed the entire body except the raised rims. Both it and
+`outmap_ocean_coverage` are now gated on `BODY_HAS_OCEAN`.
+
+A third defect sat behind it: `terrain_material_color` returns a fixed blue-grey `(0.32, 0.58, 0.74)`
+when there is no outmap, which is a stand-in for missing planet tiles, not a material. The moon has no
+outmap by design, so its regolith would have rendered blue once it was drawn at all — `biome_color`
+and `BODY_TERRAIN_TINT` never reached the smooth path. Airless bodies now take their material from the
+biome palette directly. The smooth path was also reading the weather field, which nothing updates on
+an airless body; the flat path already skipped it, and now both do.
+
+After the fix the disc fills **0.7873** against pi/4 = 0.7854, dominant albedo `(113, 106, 100)` grey
+with `(214, 222, 227)` ice, and the lit render shows an ordinary gibbous terminator.
+
+**On the exposure theory.** Before measuring I offered "physically correct 0.12 albedo shown at planet
+exposure" as the explanation. That was wrong and should not have been offered: 0.12 linear is sRGB ~98,
+a mid grey, and two stops down is still ~40 — dark, but nothing like black. The user's question, about
+whether the moon in front of the Earth would look black, is what made the arithmetic impossible to keep
+believing. **A raw-albedo view reading zero is a claim about the albedo, not about exposure**, and it
+was already on screen.
+
+### Craters: 48 to 360, and cheaper than before
+
+Asked for "a few hundred craters, mostly smaller ones". The count is a frame-time number, because this
+body has no baked height: a crater is a formula, not a stored shape, so every height query re-evaluates
+the catalogue — per terrain vertex, per fragment, and again for the probes that build normals.
+
+Measured on `orbit_once`, median steady-state frame time:
+
+| catalogue | per-sample work | frame time |
+| --- | --- | --- |
+| 48, exhaustive | 48 `acos` | 44 ms |
+| 48, cosine cutoff | 48 dot products, few `acos` | 16.7 ms |
+| 360, cosine cutoff | 360 dot products | 104.1 ms |
+| **360, latitude window** | **~37 dot products** | **17.1 ms** |
+
+Two independent optimisations, both exact rather than approximate:
+
+1. **A cosine cutoff per crater.** `cos(EJECTA_EXTENT * angular_radius)` is precomputed, so a crater
+   that cannot reach the sample is rejected by a comparison instead of an `acos`. Beyond the blanket
+   the profile is *exactly* zero, so nothing is lost. Worth 2.6x on its own.
+2. **A latitude window.** Latitude is 1-Lipschitz on the sphere, so two directions are at least as far
+   apart as their latitudes are; a crater whose latitude differs by more than its reach cannot touch
+   the sample. The golden-angle spiral already walks pole to pole in index order, so the catalogue is
+   sorted by latitude and what survives is one contiguous index run, found in closed form by inverting
+   `z = 1 - 2(i + 0.5)/count`. No `asin` is needed — the angle-sum identities give `sin(lat +- window)`
+   from `sin(lat)` and `cos(lat)` directly, and the sign of `cos(lat +- window)` detects the window
+   wrapping over a pole.
+
+The window is only narrow if everything in it is small, which is why the catalogue is now **two**
+arrays: `MOON_BASINS` (8, up to 0.30 rad, always tested in full) and `MOON_FIELD` (352, up to 0.062 rad,
+windowed). Each is its own golden-angle spiral, so removing the basins does not break the field's even
+latitude spacing — which the index inversion depends on. Sizes follow `max * rank^-exponent` with the
+rank taken through a stride coprime to the count, so every rank is used exactly once and size is
+decorrelated from position; without that the field would grade from large at one pole to small at the
+other, since index order *is* latitude order.
+
+**The load-bearing test is `the_windowed_height_matches_testing_every_crater`**: 2,000 directions,
+windowed path against an exhaustive sum over all 360 with no window and no cutoff, agreeing to under
+1e-6 m. Anything that breaks the sort order, widens a field crater past the window, or mis-derives the
+index range fails there rather than as a subtle terrain artefact. `the_field_is_sorted_by_latitude` and
+`the_field_stays_inside_the_window_it_assumes` guard the two premises directly.
+
+**Planet unchanged**, verified rather than assumed: `coast_waters_edge`, `stand_on_ground` and
+`ocean_ship_float` re-rendered from a stashed build of the parent commit and diffed, **max pixel
+difference 0 across 10 frames**. All the new branches are on generated `const bool`s, so they fold away.
+
+**Still open.** The catalogue is per-sample synthesis, which is why it is 360 and not thousands. The
+stated direction remains a baked moon outmap, where the count stops being a frame-time number at all.
+And the moon surface spawn is still unverified interactively — no scenario reaches it.

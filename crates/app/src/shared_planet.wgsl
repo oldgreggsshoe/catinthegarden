@@ -487,14 +487,20 @@ fn moon_ice_surface(direction: vec3<f32>) -> f32 {
     let unit = normalize(direction);
     var dominant_depth = 0.0;
     var deepest = 0.0;
-    for (var index = 0u; index < MOON_CRATER_COUNT; index = index + 1u) {
-        let crater = MOON_CRATERS[index];
-        let depths = MOON_CRATER_DEPTHS[index];
-        let cosine = clamp(dot(crater.xyz, unit), -1.0, 1.0);
-        let t = acos(cosine) / crater.w;
-        let contribution = moon_crater_profile(t, depths.x, depths.y);
-        if contribution < deepest {
-            deepest = contribution;
+    for (var index = 0u; index < MOON_BASIN_COUNT; index = index + 1u) {
+        let depths = MOON_BASINS_DEPTHS[index];
+        let here = moon_contribution(MOON_BASINS[index], depths, unit);
+        if here < deepest {
+            deepest = here;
+            dominant_depth = depths.x;
+        }
+    }
+    let range = moon_field_index_range(unit.y);
+    for (var index = range.x; index <= range.y; index = index + 1u) {
+        let depths = MOON_FIELD_DEPTHS[index];
+        let here = moon_contribution(MOON_FIELD[index], depths, unit);
+        if here < deepest {
+            deepest = here;
             dominant_depth = depths.x;
         }
     }
@@ -510,15 +516,58 @@ fn moon_is_ice(direction: vec3<f32>) -> bool {
 }
 
 /// The impact field before the ice fills it. Mirrored from `moon.rs`.
+/// The slice of `MOON_FIELD` that can reach a sample at this latitude sine.
+///
+/// Latitude is 1-Lipschitz on the sphere, so a crater whose latitude differs by
+/// more than its reach cannot touch the sample; the field is sorted by
+/// latitude, so what survives is one contiguous run. This is the whole reason
+/// a catalogue of hundreds is affordable: without it every sample pays for
+/// every crater. Mirrors `moon.rs::field_index_range`.
+fn moon_field_index_range(latitude_sine: f32) -> vec2<u32> {
+    let sine = clamp(latitude_sine, -1.0, 1.0);
+    let cosine = sqrt(max(1.0 - sine * sine, 0.0));
+    // sin and cos of (latitude +- window) by the angle-sum identities, so no
+    // `asin`. Past a pole the window wraps over it and the bound becomes the
+    // pole, which the sign of cos(latitude +- window) detects.
+    var upper = clamp(sine * MOON_FIELD_WINDOW_COS + cosine * MOON_FIELD_WINDOW_SIN, -1.0, 1.0);
+    if cosine * MOON_FIELD_WINDOW_COS - sine * MOON_FIELD_WINDOW_SIN < 0.0 {
+        upper = 1.0;
+    }
+    var lower = clamp(sine * MOON_FIELD_WINDOW_COS - cosine * MOON_FIELD_WINDOW_SIN, -1.0, 1.0);
+    if cosine * MOON_FIELD_WINDOW_COS + sine * MOON_FIELD_WINDOW_SIN < 0.0 {
+        lower = -1.0;
+    }
+    // Invert `z = 1 - 2 * (index + 0.5) / count`, which falls with the index.
+    let count = f32(MOON_FIELD_COUNT);
+    let first = max(floor((1.0 - upper) * count * 0.5 - 0.5), 0.0);
+    let last = max(ceil((1.0 - lower) * count * 0.5 - 0.5), 0.0);
+    return vec2<u32>(
+        u32(min(first, count - 1.0)),
+        u32(min(last, count - 1.0)),
+    );
+}
+
+/// One crater's height at a direction, or zero if it does not reach.
+fn moon_contribution(crater: vec4<f32>, depths: vec3<f32>, unit: vec3<f32>) -> f32 {
+    let cosine = clamp(dot(crater.xyz, unit), -1.0, 1.0);
+    // Beyond the blanket the profile is exactly zero, so this is an
+    // optimisation and not an approximation. It catches what survives the
+    // latitude window but is far away in longitude.
+    if cosine <= depths.z {
+        return 0.0;
+    }
+    return moon_crater_profile(acos(cosine) / crater.w, depths.x, depths.y);
+}
+
 fn moon_raw_height(direction: vec3<f32>) -> f32 {
     let unit = normalize(direction);
     var total = 0.0;
-    for (var index = 0u; index < MOON_CRATER_COUNT; index = index + 1u) {
-        let crater = MOON_CRATERS[index];
-        let depths = MOON_CRATER_DEPTHS[index];
-        let cosine = clamp(dot(crater.xyz, unit), -1.0, 1.0);
-        let t = acos(cosine) / crater.w;
-        total = total + moon_crater_profile(t, depths.x, depths.y);
+    for (var index = 0u; index < MOON_BASIN_COUNT; index = index + 1u) {
+        total = total + moon_contribution(MOON_BASINS[index], MOON_BASINS_DEPTHS[index], unit);
+    }
+    let range = moon_field_index_range(unit.y);
+    for (var index = range.x; index <= range.y; index = index + 1u) {
+        total = total + moon_contribution(MOON_FIELD[index], MOON_FIELD_DEPTHS[index], unit);
     }
     return total;
 }
@@ -1944,12 +1993,25 @@ fn debug_ocean_albedo() -> vec3<f32> {
 }
 
 fn is_open_ocean_surface(outmap: bool, macro_height_meters: f32, biome_id: u32) -> bool {
+    // A body with no sea has nothing to hand these fragments to. The terrain
+    // pass discards what it believes the analytic shell owns, so without this
+    // an airless body loses every fragment at or below its datum -- which on a
+    // cratered moon is all of it except the raised rims -- to a draw that is
+    // switched off, and the clear colour shows through.
+    if !BODY_HAS_OCEAN {
+        return false;
+    }
     let ice = outmap && biome_id == 2u;
     let lake = outmap && biome_id == 1u;
     return macro_height_meters <= 0.0 && !ice && !lake;
 }
 
 fn outmap_ocean_coverage(outmap: bool, height_meters: f32) -> f32 {
+    // Same ownership rule as `is_open_ocean_surface`: with no sea to blend
+    // toward, sub-datum ground is ordinary ground.
+    if !BODY_HAS_OCEAN {
+        return 0.0;
+    }
     if !outmap {
         return select(0.0, 1.0, height_meters <= 0.0);
     }
@@ -2054,6 +2116,13 @@ fn terrain_material_color(
     surface_normal: vec3<f32>,
     surface_direction: vec3<f32>,
 ) -> vec3<f32> {
+    // An airless body has two materials, regolith and basin ice, and neither
+    // comes from a baked tile. Take them from the biome palette directly
+    // rather than falling through to the placeholder's blue-grey, which is a
+    // stand-in for missing planet data and not a material in its own right.
+    if !BODY_HAS_ATMOSPHERE {
+        return BODY_TERRAIN_TINT * biome_color(biome);
+    }
     var color = vec3<f32>(0.32, 0.58, 0.74);
     if !outmap {
         return color;
