@@ -1,7 +1,7 @@
 # Handoff — ocean wind sea spectrum
 
 **Branch:** `experiment/ocean-wind-sea-spectrum`, tracking
-`origin/experiment/ocean-wind-sea-spectrum`, at `127d190`.
+`origin/experiment/ocean-wind-sea-spectrum`; ocean-culling repair based on `13cb2d1`.
 
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
@@ -133,11 +133,11 @@ last two sections.
 
 **Known failures and open threads,** in the order worth picking up:
 
-1. **The sea is barely drawn in interactive play: `ocean_chunks` is 31 where a scenario at the same
-   pose draws 255.** That is what the player sees as flat grey slabs -- with the ocean missing, the
-   flat-triangle mode's sea-level-flattened terrain fills the frame. Camera height is not the
-   trigger. The untested lead is `may_contain_ocean` testing a near-field chunk's water content with
-   window-relative UVs against a single tile's heights. See the last section. Start here.
+1. **The near-field ocean-culling defect is fixed and GPU-reproduced.** The existing
+   `ocean_ship_float` replay drew only 40 ocean chunks before the repair and 255 afterward;
+   matched captures replace the grey foreground with waves. Window UVs now test the actual uploaded
+   window heights, not a single source tile. All-land culling remains enabled. Fresh interactive
+   travel is the remaining human acceptance check; see the final section for evidence.
    *(The earlier "the streamer loads nothing" thread is closed: only the `pz` face is baked past L4,
    so there is genuinely nothing to load anywhere else.)*
 2. **`mountain_ground` disagrees by 11.4m and nothing explains it.** Median 11.433m, p90 12.236m,
@@ -5580,3 +5580,40 @@ ocean pass entirely. That would remove exactly the near chunks, leave the far on
 ocean-chunk count with correct distant sea -- which is what the screenshots show. **This is a code
 reading, not a measurement. Nothing has confirmed it**, and the difference between interactive and
 scenario runs is still unexplained under it.
+
+## Near-field ocean culling repaired - 5 September 2026
+
+The UV-space lead is confirmed. `may_contain_ocean` used a near-field window transform against
+the resolved source tile's heights. It could therefore prove an unrelated patch was land and omit
+the ocean covering the actual patch. This is not exclusive to interactive play: the existing
+`ocean_ship_float` scenario reproduces the missing foreground without new camera or weather controls.
+
+`TerrainRenderer` now retains the exact height vector it already builds and uploads for the
+near-field window (about 4MiB, moved rather than cloned). Near-field culling tests that vector with
+the same unguttered 1025-square coordinates as the shader; ordinary tiles retain their existing
+guttered 131-square test and cached whole-tile result. Window metadata and CPU heights advance
+together only after upload, and clear together when the window is disabled. This does not disable
+land culling, change LOD, rebake terrain, or alter wave geometry/shading/collision.
+
+**Matched Quadro/Vulkan evidence**, same source data, 1280x720, Immediate, fixed scenario:
+
+| `ocean_ship_float` | Before | After |
+|---|---|---|
+| Run | `1788622679-93328` | `1788622852-96276` |
+| Settled ocean chunks | 40 | 255 |
+| Total drawn chunks | 256 | 256 |
+
+At 4 seconds (`screenshots/capture-002.png`), the grey foreground is replaced by drawn waves around
+the ship. The top 200 sky rows are byte-identical. The old constant dark-blue lower-half region
+occupied 150,901 pixels; that colour occupies zero afterward. Both runs satisfy the old scenario
+assertions, which alone did not guard ocean draw coverage. The before/after binaries and check logs
+are preserved under `test-runs/ocean-culling-fix/` (before code `13cb2d1`, after code plus this patch).
+
+**Validation:** the new footprint regression failed before the fix and passes afterward. It covers
+all-land rejection, unrelated source-tile coordinates, zero/negative/NaN water retention, unrelated
+water outside the footprint, and the outer bilinear tap. Existing tile-culling tests still pass.
+Workspace tests pass (430 tests, 11 ignored), as do workspace check, clippy, and formatting.
+GPU `ocean_grey_foreground/1788622881-96337` and land control
+`highest_prominence_peak/1788622894-96436` pass; the latter still culls ocean over land.
+Fresh interactive travel remains the human acceptance check. This restores missing rendering;
+it is not an FPS improvement claim.

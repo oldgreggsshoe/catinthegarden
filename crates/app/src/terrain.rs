@@ -833,6 +833,9 @@ pub struct TerrainRenderer {
     ocean_draw_batches: Vec<DrawBatch>,
     max_outmap_seam_delta_meters: f64,
     raster_near_field: Option<NearFieldSources>,
+    // The exact unguttered height grid uploaded to the near-field texture.
+    // Its UVs cannot be used to test a single guttered source tile.
+    raster_near_field_heights: Vec<f32>,
     flat_triangle_experiment: bool,
 }
 
@@ -1198,6 +1201,7 @@ impl TerrainRenderer {
             ocean_draw_batches: Vec::new(),
             max_outmap_seam_delta_meters: 0.0,
             raster_near_field: None,
+            raster_near_field_heights: Vec::new(),
             flat_triangle_experiment,
         };
         Ok(renderer)
@@ -2148,6 +2152,7 @@ impl TerrainRenderer {
     fn update_raster_near_field(&mut self, key: Option<NearFieldKey>) {
         let Some(key) = key else {
             self.raster_near_field = None;
+            self.raster_near_field_heights.clear();
             return;
         };
         let Some(sources) = self.near_field_sources(key) else {
@@ -2177,6 +2182,7 @@ impl TerrainRenderer {
             &window.moisture,
             size_of::<u8>() as u32,
         );
+        self.raster_near_field_heights = window.heights_meters;
         self.raster_near_field = Some(sources);
     }
 
@@ -2558,6 +2564,11 @@ impl TerrainRenderer {
             self.surface_node_index
                 .insert(render_node.node, surface_index);
             let may_contain_ocean = match tile_key {
+                Some(_) if near_field => !height_footprint_is_strictly_land(
+                    &self.raster_near_field_heights,
+                    source_uv_scale,
+                    source_uv_offset,
+                ),
                 Some(key) => {
                     let tile = self
                         .tile_cache
@@ -4154,9 +4165,15 @@ fn height_footprint_is_strictly_land(
     source_uv_scale: [f32; 2],
     source_uv_offset: [f32; 2],
 ) -> bool {
-    if heights.len() != tile_sample_count() {
+    // Match planet.wgsl::source_coordinate: tiles have a one-texel gutter,
+    // whereas the assembled window addresses its complete 1025-square grid.
+    let (width, logical_quads, gutter) = if heights.len() == tile_sample_count() {
+        (TILE_STORED_SIZE, TILE_LOGICAL_SIZE - 1, TILE_GUTTER)
+    } else if heights.len() == (NEAR_FIELD_WINDOW_SAMPLES * NEAR_FIELD_WINDOW_SAMPLES) as usize {
+        (NEAR_FIELD_WINDOW_SAMPLES, NEAR_FIELD_WINDOW_SAMPLES - 1, 0)
+    } else {
         return false;
-    }
+    };
     let mut bounds = [[0_usize; 2]; 2];
     for axis in 0..2 {
         let minimum_uv = source_uv_offset[axis];
@@ -4169,14 +4186,14 @@ fn height_footprint_is_strictly_land(
         {
             return false;
         }
-        let minimum_coordinate = TILE_GUTTER as f32 + minimum_uv * (TILE_LOGICAL_SIZE - 1) as f32;
-        let maximum_coordinate = TILE_GUTTER as f32 + maximum_uv * (TILE_LOGICAL_SIZE - 1) as f32;
+        let minimum_coordinate = gutter as f32 + minimum_uv * logical_quads as f32;
+        let maximum_coordinate = gutter as f32 + maximum_uv * logical_quads as f32;
         bounds[axis] = [
             minimum_coordinate.floor() as usize,
             maximum_coordinate.ceil() as usize,
         ];
     }
-    let width = TILE_STORED_SIZE as usize;
+    let width = width as usize;
     (bounds[1][0]..=bounds[1][1]).all(|y| {
         (bounds[0][0]..=bounds[0][1]).all(|x| {
             heights
@@ -5601,6 +5618,41 @@ mod tests {
                 [0.25, 0.25],
             ));
         }
+    }
+
+    #[test]
+    fn ocean_culling_uses_the_uploaded_window_footprint() {
+        let width = super::NEAR_FIELD_WINDOW_SAMPLES as usize;
+        let mut window = vec![100.0; width * width];
+        let scale = [0.125, 0.125];
+        let offset = [0.5, 0.5];
+        // An all-land window must still be culled, not merely submit every
+        // near-field patch as a workaround for the wrong UV space.
+        assert!(height_footprint_is_strictly_land(&window, scale, offset));
+        // Window UV 0.5 addresses sample 512, not sample 65 in a guttered
+        // source tile. Water (or unknown data) here must retain the ocean.
+        let wrong_source_tile = vec![100.0; (TILE_STORED_SIZE * TILE_STORED_SIZE) as usize];
+        assert!(height_footprint_is_strictly_land(
+            &wrong_source_tile,
+            scale,
+            offset,
+        ));
+        let touched = (width / 2) * width + width / 2;
+        for height in [0.0, -20.0, f32::NAN] {
+            window[touched] = height;
+            assert!(!height_footprint_is_strictly_land(&window, scale, offset));
+        }
+        window[touched] = 100.0;
+        window[0] = -20.0;
+        assert!(height_footprint_is_strictly_land(&window, scale, offset));
+        // Include the upper bilinear tap even for a sub-texel footprint.
+        window[513 * width + 513] = -20.0;
+        assert!(!height_footprint_is_strictly_land(
+            &window,
+            [0.0001, 0.0001],
+            offset,
+        ));
+        assert!(!height_footprint_is_strictly_land(&[], scale, offset));
     }
 
     #[test]

@@ -1,7 +1,7 @@
-Read `c0dfca1` and the final handoff section. No more broad survey.
+Fixed and verified: near-field ocean culling now samples the actual window, not the wrong source tile.
 
-- The streamer is working: the reported location has no baked tiles beyond L4.
-- The actual defect is missing ocean geometry: 31 ocean chunks interactively versus 255 at the same scenario pose.
-- The near-field window-UV versus tile-UV mismatch is a specific, still-unconfirmed lead.
+- Matched replay: **40 → 255 ocean chunks**; grey foreground replaced by waves.
+- Land culling remains enabled. No wave or LOD changes.
+- **430 tests and three GPU scenarios pass.**
 
-That is the next narrow target: reproduce the incorrect ocean culling and test that mismatch. No rebake, speculative LOD tuning, or reuse of the old FPS baseline. No renderer changes made this turn.
+Committed and pushed. Please check normal interactive play using `/home/dad/catingard-target/release/catinthegarden-app`.
