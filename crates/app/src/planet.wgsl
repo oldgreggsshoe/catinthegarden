@@ -222,7 +222,13 @@ fn sample_biome(outmap: bool, source_uv: vec2<f32>, direction: vec3<f32>) -> u32
     // it -- the bake knows about eleven thousand craters and this evaluation
     // knows about 360. Only the unbaked placeholder synthesises it.
     if !BODY_HAS_ATMOSPHERE && !outmap {
-        return select(AIRLESS_BODY_BIOME, AIRLESS_BODY_ICE_BIOME, moon_is_ice(direction));
+        // Bare regolith. Where the ice is on an airless body is a question
+        // about shadow -- which crater floors and walls the sun never reaches
+        // over a whole rotation -- and answering it needs the surrounding
+        // terrain, not one direction. The bake answers it and writes the result
+        // into the biome map, so the placeholder has no ice rather than ice in
+        // a place chosen by a latitude formula.
+        return AIRLESS_BODY_BIOME;
     }
     let coordinate = vec2<i32>(round(source_coordinate(source_uv)));
     let last_coordinate = select(

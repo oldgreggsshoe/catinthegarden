@@ -95,12 +95,13 @@ const RIM_TO_DEPTH: f64 = 0.28;
 /// radius. A real blanket is thin and close; 2.0 made a plateau, not a skirt.
 pub const EJECTA_EXTENT: f64 = 1.35;
 
-/// How far up a polar crater the ice reaches, as a fraction of its depth.
-pub const POLAR_ICE_DEPTH_FRACTION: f64 = 0.5;
-/// Sine of the latitude where polar ice starts appearing and where it is fully
-/// established. 0.80 is about 53 degrees, 0.94 about 70.
-pub const POLAR_ICE_LATITUDE_SINE_START: f64 = 0.80;
-pub const POLAR_ICE_LATITUDE_SINE_FULL: f64 = 0.94;
+// Ice used to be a *fill*: crater floors near the poles ponded flat to half
+// their depth, gated on latitude alone. That is not where ice is. It survives
+// where sunlight never reaches -- the floors and the poleward walls of craters
+// near the poles, permanently shadowed because the sun never climbs above the
+// rim. Which places those are is a question about shadow, so it is answered by
+// `baker::moon::permanently_shadowed`, from the terrain and the sun's actual
+// track. Nothing here fills anything, and the surface is just the craters.
 
 /// Prime, so it is coprime with any catalogue size that is not a multiple of
 /// it. `index * STRIDE % count` then visits every size rank exactly once.
@@ -350,57 +351,12 @@ impl Catalogue {
 
     /// The surface that is drawn and stood on, in metres from the body's
     /// radius. This is what the bake stores and the shader displaces by.
+    ///
+    /// Just the craters. Ice is a material laid on this surface where the sun
+    /// never reaches, not a level that fills it in -- so a shadowed slope is
+    /// icy at whatever angle it happens to lie at.
     pub fn surface_height_meters(&self, direction: DVec3) -> f64 {
-        MOON_DATUM_METERS + self.filled_height_meters(direction)
-    }
-
-    /// The macro height with the ice sheets in place, about the crater field's
-    /// own zero rather than the body's surface.
-    ///
-    /// Everything the impacts dug below the datum near a pole is filled level:
-    /// there is no liquid on this body, only ice, and ice ponds flat. Because
-    /// the fill is part of the *terrain* rather than an ocean surface, walking
-    /// on it needs no special case anywhere.
-    pub fn filled_height_meters(&self, direction: DVec3) -> f64 {
-        let raw = self.raw_height_meters(direction);
-        let ice = self.ice_surface_meters(direction);
-        // Away from the poles there is no ice, and the bowl is left as the
-        // impact dug it. Filling to the datum there would flatten every crater
-        // on the body into a disc.
-        if ice < 0.0 { raw.max(ice) } else { raw }
-    }
-
-    /// The level an ice sheet ponds at, in metres about the datum. Zero away
-    /// from the poles, so a crater there is simply empty.
-    ///
-    /// Within one crater this is constant, because it is half the depth of the
-    /// crater that dominates the point — so the ice surface is flat, as a
-    /// frozen pond should be, rather than following the bowl down.
-    pub fn ice_surface_meters(&self, direction: DVec3) -> f64 {
-        let polar = polar_weight(direction);
-        if polar <= 0.0 {
-            return 0.0;
-        }
-        let direction = direction.normalize();
-        let (first, last) = self.field_index_range(direction.y);
-        let mut dominant_depth = 0.0_f64;
-        let mut deepest = 0.0_f64;
-        for crater in self.basins.iter().chain(&self.field[first..=last]) {
-            let here = crater.contribution_meters(direction);
-            if here < deepest {
-                deepest = here;
-                dominant_depth = crater.depth_meters;
-            }
-        }
-        -POLAR_ICE_DEPTH_FRACTION * dominant_depth * polar
-    }
-
-    /// True where ice actually covers the floor: the impact dug below the
-    /// level the ice ponds at. Away from the poles that level is the datum and
-    /// nothing reaches it, so those craters read as bare rock.
-    pub fn is_ice_at(&self, direction: DVec3) -> bool {
-        let surface = self.ice_surface_meters(direction);
-        surface < 0.0 && self.raw_height_meters(direction) < surface
+        MOON_DATUM_METERS + self.raw_height_meters(direction)
     }
 }
 
@@ -516,21 +472,6 @@ pub fn profile(t: f64, depth_meters: f64, rim_meters: f64) -> f64 {
     rim_meters * remaining * remaining * remaining
 }
 
-/// Latitude weight for a polar cold trap, 0 at the equator and 1 at the poles.
-///
-/// The rotation axis is Y, so this is the sine of the latitude. Ice survives
-/// on an airless body only where the sun never reaches: crater floors near the
-/// poles, permanently shadowed. Everywhere else it sublimes away, which is why
-/// the rest of the craters are dry.
-pub fn polar_weight(direction: DVec3) -> f64 {
-    let latitude_sine = direction.normalize().y.abs();
-    smoothstep(
-        POLAR_ICE_LATITUDE_SINE_START,
-        POLAR_ICE_LATITUDE_SINE_FULL,
-        latitude_sine,
-    )
-}
-
 /// Any two unit vectors perpendicular to `axis` and to each other.
 fn tangent_basis(axis: DVec3) -> (DVec3, DVec3) {
     // Pick the world axis the direction leans on least, so the cross product
@@ -542,11 +483,6 @@ fn tangent_basis(axis: DVec3) -> (DVec3, DVec3) {
     };
     let tangent = axis.cross(reference).normalize();
     (tangent, axis.cross(tangent))
-}
-
-fn smoothstep(edge0: f64, edge1: f64, value: f64) -> f64 {
-    let t = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
 }
 
 #[cfg(test)]
@@ -754,57 +690,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    /// Ice survives only where the sun never reaches. Away from the poles a
-    /// crater is an empty bowl; near them its floor is flooded to half depth.
-    #[test]
-    fn only_polar_craters_hold_ice() {
-        let catalogue = runtime();
-        let mut equatorial_bowls = 0;
-        let mut polar_bowls = 0;
-        for crater in catalogue.iter() {
-            let raw = catalogue.raw_height_meters(crater.axis);
-            if raw >= -1.0 {
-                continue;
-            }
-            let filled = catalogue.filled_height_meters(crater.axis);
-            if crater.axis.y.abs() < 0.5 {
-                equatorial_bowls += 1;
-                assert_eq!(filled, raw, "an equatorial crater is empty, not flooded");
-            } else if crater.axis.y.abs() > POLAR_ICE_LATITUDE_SINE_FULL {
-                polar_bowls += 1;
-                assert!(filled > raw, "a polar crater floor is under ice");
-                assert!(
-                    filled < 0.0,
-                    "the ice sits below the datum, not level with it"
-                );
-                assert!(catalogue.is_ice_at(crater.axis), "and reads as ice");
-            }
-        }
-        assert!(
-            equatorial_bowls > 0 && polar_bowls > 0,
-            "both cases sampled"
-        );
-    }
-
-    /// The ice surface must be flat across a crater rather than following the
-    /// bowl, or it is a coat of paint on the floor instead of a frozen pond.
-    #[test]
-    fn polar_ice_ponds_level() {
-        let catalogue = runtime();
-        let polar = catalogue
-            .iter()
-            .filter(|crater| crater.axis.y.abs() > POLAR_ICE_LATITUDE_SINE_FULL)
-            .max_by(|a, b| a.depth_meters.total_cmp(&b.depth_meters))
-            .expect("the catalogue has a polar crater");
-        let centre = catalogue.ice_surface_meters(polar.axis);
-        let offset = (polar.axis + DVec3::new(0.0, 0.0, polar.angular_radius * 0.25)).normalize();
-        assert!(centre < 0.0);
-        assert!(
-            (catalogue.ice_surface_meters(offset) - centre).abs() < 1.0,
-            "the pond is level across the floor",
-        );
     }
 
     /// Most impacts are small, or a catalogue of thousands merges into noise

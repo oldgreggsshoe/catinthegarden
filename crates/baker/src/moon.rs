@@ -15,8 +15,10 @@
 
 use catinthegarden_coretypes::{
     BiomeId,
-    moon::{Catalogue, Crater, MOON_DATUM_METERS, POLAR_ICE_DEPTH_FRACTION, polar_weight, profile},
+    moon::{Catalogue, Crater, MOON_DATUM_METERS, MOON_RADIUS_METERS, profile},
 };
+use glam::DVec3;
+use rayon::prelude::*;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use crate::grid::SphericalGrid;
@@ -31,49 +33,154 @@ pub struct MoonSurface {
 /// Renders the catalogue into the grid by splatting each crater over the cells
 /// it covers.
 ///
-/// Alongside the summed height it tracks, per cell, the single deepest crater
-/// contribution and that crater's depth. That is what the polar ice needs: the
-/// pond level is half the depth of the crater that *dominates* the point, which
-/// is constant within one crater and so gives a flat pond rather than a coat of
-/// paint following the bowl down.
+/// The height is the craters and nothing else. Where the ice goes is a separate
+/// question, answered by `classify_ice` from shadow rather than from depth.
 pub fn generate(grid: &SphericalGrid, catalogue: &Catalogue) -> MoonSurface {
     let cells = grid.len();
     let mut raw = vec![0.0_f64; cells];
-    let mut deepest = vec![0.0_f64; cells];
-    let mut dominant_depth = vec![0.0_f64; cells];
 
     for crater in catalogue.iter() {
-        splat(grid, crater, &mut raw, &mut deepest, &mut dominant_depth);
+        splat(grid, crater, &mut raw);
     }
 
-    let mut height_meters = Vec::with_capacity(cells);
-    let mut biome = Vec::with_capacity(cells);
-    for index in 0..cells {
-        let direction = grid.direction(index);
-        let polar = polar_weight(direction);
-        let ice_surface = -POLAR_ICE_DEPTH_FRACTION * dominant_depth[index] * polar;
-        // Away from the poles there is no ice and the bowl is left as the
-        // impact dug it; filling to the datum there would flatten every crater
-        // on the body into a disc.
-        let filled = if ice_surface < 0.0 {
-            raw[index].max(ice_surface)
-        } else {
-            raw[index]
-        };
-        // Ice only where the impact actually dug below the level it ponds at.
-        let icy = ice_surface < 0.0 && raw[index] < ice_surface;
-        height_meters.push(MOON_DATUM_METERS + filled);
-        biome.push(if icy {
-            BiomeId::Ice
-        } else {
-            BiomeId::MountainRock
-        });
-    }
+    let height_meters: Vec<f64> = raw.iter().map(|h| MOON_DATUM_METERS + h).collect();
+    let biome = classify_ice(grid, &height_meters);
 
     MoonSurface {
         height_meters,
         biome,
     }
+}
+
+/// How many positions of the sun to test over one rotation.
+///
+/// The moon's axis is Y and its tilt is taken as zero, so the sun stays in the
+/// equatorial plane and traces the same arc every rotation. Testing that arc is
+/// therefore testing every moment there has ever been, which is what makes
+/// "permanently shadowed" a computable property rather than a guess.
+const SUN_SAMPLES: usize = 32;
+
+/// Below this latitude sine the sun climbs too high for terrain to hide from.
+///
+/// At latitude phi the sun reaches `90 - phi` degrees at its highest. Crater
+/// walls run to roughly 30 degrees, so below about 55 degrees of latitude there
+/// is nothing a rim can do: the sun clears it every rotation. 0.80 is 53
+/// degrees, which leaves margin, and it keeps the horizon march off 80% of the
+/// body.
+const SHADOW_LATITUDE_SINE: f64 = 0.80;
+
+/// How far to look for something blocking the sun, and in how many steps.
+///
+/// A crater 30km across can shadow its own floor from its far rim, so the reach
+/// has to be a rim radius or two. Geometric spacing puts most of the samples
+/// close, where the horizon is steepest and a near wall does the work.
+const HORIZON_REACH_METERS: f64 = 40_000.0;
+const HORIZON_STEPS: usize = 14;
+
+/// Ice where the sun never reaches, regolith everywhere else.
+///
+/// This replaced a rule that filled polar crater floors to half their depth,
+/// level, gated on latitude alone. That put ice in flat ponds in places chosen
+/// by a formula rather than by the light. Real ice on an airless body survives
+/// exactly where it is never heated: the floors and poleward walls of craters
+/// near the poles, where the rim hides the sun through the whole rotation. It
+/// does not have to be flat, and it is not level -- a shadowed wall is icy at
+/// whatever angle the wall happens to lie at.
+fn classify_ice(grid: &SphericalGrid, height_meters: &[f64]) -> Vec<BiomeId> {
+    let suns: Vec<DVec3> = (0..SUN_SAMPLES)
+        .map(|index| {
+            let angle = TAU * index as f64 / SUN_SAMPLES as f64;
+            // In the equatorial plane: zero tilt, so the sun never leaves it.
+            DVec3::new(angle.cos(), 0.0, angle.sin())
+        })
+        .collect();
+
+    (0..grid.len())
+        .into_par_iter()
+        .map(|index| {
+            let direction = grid.direction(index);
+            if direction.y.abs() < SHADOW_LATITUDE_SINE {
+                return BiomeId::MountainRock;
+            }
+            let normal = surface_normal(grid, height_meters, index);
+            let height = height_meters[index];
+            for sun in &suns {
+                // Its own slope can hide it before any terrain does.
+                if normal.dot(*sun) <= 0.0 {
+                    continue;
+                }
+                let sun_elevation = direction.dot(*sun).clamp(-1.0, 1.0).asin();
+                if sun_elevation <= 0.0 {
+                    continue;
+                }
+                if !horizon_blocks(grid, height_meters, index, height, *sun, sun_elevation) {
+                    // Lit at least once, so nothing survives here.
+                    return BiomeId::MountainRock;
+                }
+            }
+            BiomeId::Ice
+        })
+        .collect()
+}
+
+/// Whether terrain between here and the horizon stands above the sun.
+///
+/// Marches along the great circle toward the sun's azimuth and compares each
+/// sample's elevation angle, seen from this point, against the sun's own. The
+/// curvature term matters: over tens of kilometres on a 1,080km body the ground
+/// falls away, and ignoring it would invent blockers that are actually below
+/// the horizon.
+fn horizon_blocks(
+    grid: &SphericalGrid,
+    height_meters: &[f64],
+    index: usize,
+    height: f64,
+    sun: DVec3,
+    sun_elevation: f64,
+) -> bool {
+    let direction = grid.direction(index);
+    // The sun's azimuth as a tangent vector: the part of the sun direction that
+    // is not straight up.
+    let along = (sun - direction * direction.dot(sun)).normalize_or_zero();
+    if along.length_squared() < 0.5 {
+        return false;
+    }
+    let observer_radius = MOON_RADIUS_METERS + height;
+    for step in 1..=HORIZON_STEPS {
+        let fraction = step as f64 / HORIZON_STEPS as f64;
+        // Geometric spacing: dense near the observer, sparse far away.
+        let distance = HORIZON_REACH_METERS * fraction * fraction;
+        let angle = distance / MOON_RADIUS_METERS;
+        let sample_direction = (direction * angle.cos() + along * angle.sin()).normalize();
+        let sample_height = grid.sample_f64(height_meters, sample_direction);
+        let sample_radius = MOON_RADIUS_METERS + sample_height;
+        let rise = sample_radius * angle.cos() - observer_radius;
+        let run = sample_radius * angle.sin();
+        if run > 1.0 && (rise / run).atan() > sun_elevation {
+            return true;
+        }
+    }
+    false
+}
+
+/// Outward normal of the height field at one cell, from its neighbours.
+fn surface_normal(grid: &SphericalGrid, height_meters: &[f64], index: usize) -> DVec3 {
+    let direction = grid.direction(index);
+    let mut gradient = DVec3::ZERO;
+    for (dx, dy) in [(1_isize, 0_isize), (-1, 0), (0, 1), (0, -1)] {
+        let Some(neighbor) = grid.offset_index(index, dx, dy) else {
+            continue;
+        };
+        let separation = grid.distance_meters(index, neighbor);
+        if separation <= 1.0 {
+            continue;
+        }
+        let neighbor_direction = grid.direction(neighbor);
+        let tangent = (neighbor_direction - direction * direction.dot(neighbor_direction))
+            .normalize_or_zero();
+        gradient += tangent * ((height_meters[neighbor] - height_meters[index]) / separation);
+    }
+    (direction - gradient).normalize()
 }
 
 /// Adds one crater to every grid cell inside its blanket.
@@ -83,13 +190,7 @@ pub fn generate(grid: &SphericalGrid, catalogue: &Catalogue) -> MoonSurface {
 /// cells visited are the cap and not its bounding box. The contribution itself
 /// is still the exact `profile` of the exact angular distance — this only
 /// decides *which* cells to ask about.
-fn splat(
-    grid: &SphericalGrid,
-    crater: &Crater,
-    raw: &mut [f64],
-    deepest: &mut [f64],
-    dominant_depth: &mut [f64],
-) {
+fn splat(grid: &SphericalGrid, crater: &Crater, raw: &mut [f64]) {
     let reach = crater.reach_radians();
     let axis = crater.axis;
     let centre_latitude = axis.y.clamp(-1.0, 1.0).asin();
@@ -143,10 +244,6 @@ fn splat(
                 crater.rim_meters,
             );
             raw[index] += contribution;
-            if contribution < deepest[index] {
-                deepest[index] = contribution;
-                dominant_depth[index] = crater.depth_meters;
-            }
         }
     }
 }
@@ -191,22 +288,64 @@ mod tests {
         );
     }
 
-    /// And the biome has to agree too, since the ice depends on which single
-    /// crater dominates rather than on the summed height.
+    /// Ice is a shadow question now, so the test is about shadow: a deep pit at
+    /// the pole keeps its floor dark through every sun position, and the same
+    /// pit at the equator does not, because there the sun climbs overhead.
+    ///
+    /// Constructed rather than taken from the catalogue, so it fails for the
+    /// reason it names instead of tracking whatever the crater field happens to
+    /// look like this week.
     #[test]
-    fn splatting_agrees_about_which_floors_are_ice() {
-        let grid = SphericalGrid::new(128, 64);
-        let catalogue = small_catalogue();
-        let surface = generate(&grid, &catalogue);
-        for index in 0..grid.len() {
-            let direction = grid.direction(index);
-            let expected = if catalogue.is_ice_at(direction) {
-                BiomeId::Ice
+    fn ice_survives_only_where_the_sun_never_reaches() {
+        let grid = SphericalGrid::with_radius(512, 256, MOON_RADIUS_METERS);
+        let pit = |centre: DVec3, index: usize| {
+            let angle = centre.dot(grid.direction(index)).clamp(-1.0, 1.0).acos();
+            let radius = 0.02_f64;
+            if angle >= radius {
+                MOON_DATUM_METERS
             } else {
-                BiomeId::MountainRock
-            };
-            assert_eq!(surface.biome[index], expected, "at cell {index}");
-        }
+                // A bowl 6km deep and 21km across: steep enough that a rim
+                // hides its floor from a sun that never rises far.
+                MOON_DATUM_METERS - 6_000.0 * (1.0 - (angle / radius).powi(2))
+            }
+        };
+        let polar = DVec3::Y;
+        let polar_field: Vec<f64> = (0..grid.len()).map(|i| pit(polar, i)).collect();
+        let polar_biomes = classify_ice(&grid, &polar_field);
+        let polar_floor = (0..grid.len())
+            .min_by(|a, b| polar_field[*a].total_cmp(&polar_field[*b]))
+            .expect("the grid is not empty");
+        assert_eq!(
+            polar_biomes[polar_floor],
+            BiomeId::Ice,
+            "a deep polar pit floor is never lit",
+        );
+
+        let equatorial = DVec3::X;
+        let equatorial_field: Vec<f64> = (0..grid.len()).map(|i| pit(equatorial, i)).collect();
+        let equatorial_biomes = classify_ice(&grid, &equatorial_field);
+        let equatorial_floor = (0..grid.len())
+            .min_by(|a, b| equatorial_field[*a].total_cmp(&equatorial_field[*b]))
+            .expect("the grid is not empty");
+        assert_eq!(
+            equatorial_biomes[equatorial_floor],
+            BiomeId::MountainRock,
+            "the same pit at the equator gets the sun straight down it",
+        );
+    }
+
+    /// Flat ground at the pole is lit: the sun grazes it, but grazing is not
+    /// shadow. Only terrain makes shadow, which is the whole point of the
+    /// change -- a latitude rule alone would ice this.
+    #[test]
+    fn a_flat_pole_is_not_ice() {
+        let grid = SphericalGrid::with_radius(256, 128, MOON_RADIUS_METERS);
+        let flat = vec![MOON_DATUM_METERS; grid.len()];
+        let biomes = classify_ice(&grid, &flat);
+        let pole = (0..grid.len())
+            .max_by(|a, b| grid.direction(*a).y.total_cmp(&grid.direction(*b).y))
+            .expect("the grid is not empty");
+        assert_eq!(biomes[pole], BiomeId::MountainRock);
     }
 
     /// The datum has to keep the whole body inside what the height channel can

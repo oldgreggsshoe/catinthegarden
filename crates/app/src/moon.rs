@@ -15,10 +15,7 @@
 //! craters, which is not a shader constant — it is tiles. The shader's copy is
 //! the placeholder terrain shown when the moon has no bake.
 
-use catinthegarden_coretypes::moon::{
-    Crater, EJECTA_EXTENT, MOON_DATUM_METERS, POLAR_ICE_DEPTH_FRACTION,
-    POLAR_ICE_LATITUDE_SINE_FULL, POLAR_ICE_LATITUDE_SINE_START, runtime,
-};
+use catinthegarden_coretypes::moon::{Crater, EJECTA_EXTENT, MOON_DATUM_METERS, runtime};
 
 pub fn wgsl_constants() -> String {
     let catalogue = runtime();
@@ -39,10 +36,7 @@ pub fn wgsl_constants() -> String {
     source.push_str(&format!(
         "const MOON_FIELD_WINDOW_SIN: f32 = {window_sin:.9};\n\
          const MOON_FIELD_WINDOW_COS: f32 = {window_cos:.9};\n\
-         const MOON_EJECTA_EXTENT: f32 = {EJECTA_EXTENT:.4};\n\
-         const MOON_POLAR_ICE_DEPTH_FRACTION: f32 = {POLAR_ICE_DEPTH_FRACTION:.4};\n\
-         const MOON_POLAR_ICE_LATITUDE_SINE_START: f32 = {POLAR_ICE_LATITUDE_SINE_START:.4};\n\
-         const MOON_POLAR_ICE_LATITUDE_SINE_FULL: f32 = {POLAR_ICE_LATITUDE_SINE_FULL:.4};\n"
+         const MOON_EJECTA_EXTENT: f32 = {EJECTA_EXTENT:.4};\n"
     ));
     source
 }

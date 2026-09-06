@@ -6424,3 +6424,64 @@ to correct.
 `moon_ground_detail`'s pose had to be lifted 4.263m — the roughness moved the surface under a
 hard-coded waypoint, the same failure as the four ground scenarios in the earlier section. It is
 derived from a measured clearance rather than from a principle, which is worth doing properly.
+
+---
+
+## 6 September 2026 — ice by shadow, not by latitude
+
+Ice used to be a **fill**: crater floors above 53 degrees ponded flat to half their depth, gated on
+latitude alone, and the surface height was raised to meet it. That is not where ice is, and it is not
+what ice looks like.
+
+Ice on an airless body survives exactly where it is never heated — the floors and poleward walls of
+craters near the poles, permanently shadowed because the rim hides the sun through the whole
+rotation. So the question is about **shadow**, and it is now answered as one.
+
+### The model
+
+`baker::moon::classify_ice`. The moon's axis is Y and its tilt is taken as zero, so the sun stays in
+the equatorial plane and traces the same arc every rotation — which is what makes "permanently
+shadowed" computable rather than a guess. For each cell, 32 sun positions over a rotation, and a cell
+is ice only if **none** of them lights it. Two ways to be dark:
+
+* **its own slope**, `dot(normal, sun) <= 0`, which is what puts ice on a wall rather than only a
+  floor;
+* **the horizon**, marched 40km toward the sun's azimuth in 14 geometrically spaced steps, comparing
+  each sample's elevation angle against the sun's own. The curvature term matters: over tens of
+  kilometres on a 1,080km body the ground falls away, and ignoring it invents blockers that are
+  actually below the horizon.
+
+Only latitudes above `|sin| = 0.80` are marched. At latitude phi the sun reaches `90 - phi` degrees,
+and crater walls run to roughly 30, so below about 55 degrees there is nothing a rim can do. That
+keeps the march off 80% of the body.
+
+**The height field no longer knows about ice at all.** `surface_height_meters` is the craters and the
+datum, nothing else, and `ice_surface_meters` / `is_ice_at` / the `POLAR_ICE_*` constants are gone
+along with `moon_ice_surface`, `moon_polar_weight` and `moon_is_ice` in the shader. The unbaked
+placeholder is bare regolith, which is honest: no ice rather than ice in a place a latitude formula
+chose.
+
+### What came out
+
+Ice is **4.32%** of the surface, and its distribution is the right shape without being asked for:
+93,250 cells between 85 and 90 degrees, falling monotonically to 236 between 50 and 55. A handful of
+deep craters catch shadow at 50 degrees; almost everything does at 89.
+
+**Permanently shadowed ice is, by construction, never directly lit.** That is not a defect, it is the
+definition — but it means you cannot see it as ice. `moon_polar_ice`, re-aimed at the densest real
+shadowed patch (lat -86.42), has 15.3% of its frame lit at all. What little shows comes from the
+regolith bounce term. If this ice is ever meant to *read* as ice, earthshine is the term that would
+do it, and it is still deliberately unimplemented.
+
+### The scenarios all had to move
+
+Removing the fill dropped crater floors by up to **1,157m**, so two of the three moon ground
+scenarios had their cameras underground. `moon_polar_ice` was re-aimed entirely, because under the
+old model every polar floor was iced and under this one only genuinely shadowed ones are — it was
+pointing at a crater that is no longer icy, and would have passed while testing nothing.
+
+That is three scenario poses fixed by measurement in two days. Open thread 19 stands and is getting
+more expensive: derive these from the bake.
+
+**Planet unchanged**: max pixel difference 0 on all three controls against a baseline rebuilt at
+`e5b5e25`. 463 tests, clippy and fmt clean.
