@@ -233,6 +233,15 @@ See the latest section for the failing-before/passing-after evidence. No terrain
     Nothing is wrong with the renderer, but a pixel comparison taken under disk load is not
     evidence, and nothing in the harness says so.
 
+14. **The moon's baked landing site is the flattest cell on the body, which makes it the emptiest.**
+    `moon_landing_direction` scores `-(highest - lowest)`. It should prefer somewhere with relief in
+    view — near a rim rather than on a pristine plain — and the fix needs a re-bake, because the
+    landing direction lives in the manifest.
+15. **The detail ladder adds 0.158m on the moon against 22.7m on the planet.** Measure it once the
+    landing site is off pristine ground; until then the two are confounded.
+16. **`moon_crater_wall` passes while rendering entirely black.** Either aim it somewhere lit or say
+    in the scenario that it is a night-side capture and assert something that would notice.
+
 **Build convention.** Benchmarks and parity runs build to `CARGO_TARGET_DIR=/home/dad/catingard-target`,
 not the in-repo `target/`. Give every temporary or staged checkout its own `CARGO_TARGET_DIR`
 (`AGENTS.md`); never share the worktree's. Note that
@@ -6135,3 +6144,69 @@ and the other views still include mesh/source/continuous-field differences. No c
 were relaxed. Logs and implementation patch are under `test-runs/mountain-probe-fix/`; run manifests name
 the base commit because verification preceded the repair commit. The unrelated `crates.tar.gz`
 is untouched. The next open terrain issue is the summit survey/app disagreement, not this one.
+
+---
+
+## 6 September 2026 — the moon from the ground, and two things that were hiding
+
+### Flat shading was the default, and nothing said so
+
+`RenderDebugMode`'s fallback arm was `FlatTriangles` with `FlatTriangleOutlineMode::Dark`. Not an
+opt-in: **every capture in this repo was one flat colour per triangle with a dark outline drawn round
+it**, unless `CATINGARDEN_DEBUG_MODE=final` was set explicitly. That includes every moon screenshot in
+the previous two sections, and everything I said about them. The default is now `Final` on
+interpolated vertex normals (`world_normal`, a `@location(1)` vertex output), outlines off. Both modes
+stay reachable, because telling a presentation artifact from a terrain one needs to switch between
+them. It changes **99.1%** of `stand_on_ground`'s pixels and 72.3% of `coast_waters_edge`'s, so every
+pixel baseline in this file that predates it was captured faceted.
+
+The colour findings survived the switch — moon regolith is `(107,103,106)` in Final as in flat — but
+they were reported without knowing which presentation produced them, which is the part worth not
+repeating.
+
+### The interactive moon start was the planet's
+
+Found by Codex, by running the game rather than a scenario. `--body moon` spawned at
+`COASTAL_START_DIRECTION` — the planet's coastal pose, about **168 degrees** from the moon's own baked
+landing site — and then attempted storm-ocean swimming startup on a body with no ocean. Camera
+clearance was a correct 1.70m throughout, so nothing asserted anything was wrong. Fixed at `66141e9`:
+`inspection_start_direction` takes the baked landing on a body that spawns on its surface, and the
+swim start is gated on `has_ocean`.
+
+That is the fourth defect this branch has lost into the gap between scenario replay and interactive
+play, after the ship lag, the grey ocean and the surface spawn. Three moon ground scenarios now
+exist — `moon_ground_detail`, `moon_polar_ice`, `moon_crater_wall` — and the gap is narrower, but
+these were authored *after* the bug and would not have caught it.
+
+### The moon's ground is perfectly flat, and I chose that
+
+Measured, not impressions. On `moon_ground_detail`, the rendered ground is **stdev 0.000 over 115,200
+pixels** — one exact luminance. Not low contrast; no variation at all. In `lighting` debug mode it is
+still 0.000 against the planet's 18.99, so the normals do not vary either: it is geometry, not
+material.
+
+The cause is `moon_landing_direction` in `baker/src/terrain.rs`, which I wrote. It scores candidate
+sites by `-(highest - lowest)` — **the flattest cell on the body wins**. All 54 probe points report a
+CPU height of exactly `22000.000m`, the datum, with zero spread: the bake put the landing site on
+pristine, uncratered regolith, which on a body whose only relief is impacts means the one place with
+nothing to look at. "Somewhere to stand" was the intent and "nothing nearby" was the result.
+
+A second, smaller thing sits behind it: the detail ladder adds **0.158m** of relief across that patch,
+against 22.7m on the planet's. Some of that is correct — the moon's macro height is not exaggerated
+(`outmap_height_scale` 1.0 against the planet's 4.0), and `terrain_detail_octave_headroom` admits
+octaves in proportion to the height beneath them, which at a 22km datum should admit everything. It
+wants its own measurement rather than a guess, and the flat landing site has to be fixed first or the
+two are confounded.
+
+Neither is fixed here. Both are open threads below.
+
+**`moon_crater_wall` renders entirely black** in Final mode — all 230,400 sampled pixels — while
+passing every assertion with 81 compared points at 0.09m median. On an airless body an unlit face is
+genuinely black, so this may only be a badly aimed camera, but a scenario that passes while showing
+nothing is the same failure as a clearance assertion with no probe floor.
+
+### Also
+
+Two more transient pixel differences on control scenarios, both under machine load: 12 on
+`stand_on_ground` while a bake was writing, 72 on `ocean_ship_float` while clippy was compiling. Both
+0 on clean re-runs. Open thread 13 said disk; it is CPU too.
