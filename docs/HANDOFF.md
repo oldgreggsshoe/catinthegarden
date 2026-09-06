@@ -248,6 +248,13 @@ See the latest section for the failing-before/passing-after evidence. No terrain
 17. **Frame-time measurement is silently invalid while the display is DPMS-blanked**, and the
     harness does not check. See the last section: ~1000ms frames with an idle GPU.
 
+18. **The planet's near ground gained detail as a side effect of the moon fix**, moving 76.1% of
+    `stand_on_ground`'s pixels. Measured as slightly more relief, not less, and from the same root
+    cause — but nobody has looked at the planet since, and every planet baseline older than this is
+    stale.
+19. **`moon_ground_detail`'s camera pose is a measured lift, not a derivation.** Re-deriving it from
+    the baked landing site and eye height would survive the next rebake; this will not.
+
 **Build convention.** Benchmarks and parity runs build to `CARGO_TARGET_DIR=/home/dad/catingard-target`,
 not the in-repo `target/`. Give every temporary or staged checkout its own `CARGO_TARGET_DIR`
 (`AGENTS.md`); never share the worktree's. Note that
@@ -6363,3 +6370,57 @@ Builds/tests/baking were complete before these sequential runs; no concurrent wo
 launched. `xset -q` reported Monitor On; no FPS improvement is claimed. Binaries, bake/test logs,
 site profile, and pixel-comparison report are under `test-runs/moon-landing/`. Scenario manifests
 name the base commit because verification preceded commit. `crates.tar.gz` remains untouched.
+
+---
+
+## 6 September 2026 — filling the empty detail band
+
+Codex's finding stood: the runtime detail ladder contributes **exactly zero** on the moon. It admits
+octaves between the camera filter and the spacing the baked data is assumed to carry, and on the moon
+that interval was *finer than 6.4cm and coarser than 189m*, which is empty. Two separate causes, and
+both had to go.
+
+### The moon's tiles carried no detail, because the export refused to write any
+
+The planet does not have an empty band, because its export writes real relief into tiles —
+`baked_surface_detail` plus `sparse_surface_detail`, level-gated. The moon's export skipped that on
+purpose, because what was there is the planet's game-terrain profile keyed to a coastline. Skipping
+it left the ground between craters a geometrically exact sphere section.
+
+`MOON_DETAIL_BANDS` is the moon's own: five level-gated bands from 540m at 11m amplitude down to 0.9m
+at 7cm, isotropic, no landing protection. After it the height field has **9cm of relief across a
+metre of ground** where it had none.
+
+### And the shading could not see it, because the filter measured to the wrong place
+
+That relief rendered at luminance stdev **0.00** regardless. `displaced_surface_normal` and the detail
+filter were both handed `camera_distance_meters`, measured from the camera to the **undisplaced
+sphere**. Those agree until terrain height matters next to viewing distance — and standing on the
+moon, whose ground sits 19km above its own datum, the sphere distance says 19km. The normal probes
+spread ~189m apart and returned the normal of a 189m-smoothed surface.
+
+The vertex now measures to the **macro-displaced** ground. Macro rather than fully displaced because
+detail cannot be added before the distance that decides how much detail to add; the difference between
+them is the detail itself, small next to the macro height by construction.
+
+`ProbeGeometry::raster_detail_distance_meters` had to move with it or `mountain_ground` re-opens — it
+did, to 12.267m, which is the mirror doing its job. The probe now takes two passes: macro height does
+not depend on the distance, so the first pass' answer is exact and the second is the real query.
+`mountain_ground` is back at median 0.056m / max 0.303m against Codex's 0.052 / 0.312.
+
+### What it cost, and what it bought
+
+The moon's near ground goes from stdev **0.00 to 1.4–2.1** across every row of the lower frame. Not
+dramatic; it is the difference between ground and a sphere.
+
+**The planet changed too, and that was not asked for.** `stand_on_ground` moves 76.1% of its pixels,
+max difference 32. It is not a regression — ground-relief stdev goes 18.99 to 20.01, slightly *more*
+detail — and the cause is the same bug: standing on 4.4km of terrain gave a 43.9m detail filter, so
+the planet's near ground was being denied detail for the same reason at a quarter the severity. But
+it is a visible change to the planet from a change requested for the moon, and it wants an eye on it.
+`coast_waters_edge` moves 0.1% of pixels, which is the expected shape: at sea level there is nothing
+to correct.
+
+`moon_ground_detail`'s pose had to be lifted 4.263m — the roughness moved the surface under a
+hard-coded waypoint, the same failure as the four ground scenarios in the earlier section. It is
+derived from a measured clearance rather than from a principle, which is worth doing properly.

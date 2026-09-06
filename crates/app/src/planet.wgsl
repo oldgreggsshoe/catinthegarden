@@ -672,6 +672,23 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         scaled_terrain_macro_height(macro_height),
         outmap,
     );
+    // How far the eye is from *this ground*, not from the sphere the ground
+    // sits on. Those are the same number until terrain height is large next to
+    // viewing distance, and then they are not: standing on the moon, whose
+    // surface is 19km above its own datum, the undisplaced distance says 19km
+    // and the detail filter and normal probes act as though the ground under
+    // your boots were nineteen kilometres away. Measured: the height field had
+    // 9cm of relief across a metre, and the shading of it was constant to the
+    // last bit over 115,200 pixels.
+    //
+    // Macro-displaced rather than fully displaced, because detail cannot be
+    // added before the distance that decides how much detail to add. The
+    // difference between the two is the detail itself, which is small next to
+    // the macro height by construction.
+    let detail_distance_meters = length(
+        input.anchor_view_position
+            + planet_to_view(anchor_relative_position + direction * base_height),
+    );
     // Anchor-local metres, not an absolute direction: this is what carries the
     // in-cell fraction for metre-scale octaves without losing it to f32.
     // The mesh cannot represent relief finer than its own vertex spacing, so it
@@ -680,7 +697,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         requested_level(input.terrain_info),
     );
     let vertex_filter_meters = max(
-        terrain_detail_filter_meters(camera_distance_meters),
+        terrain_detail_filter_meters(detail_distance_meters),
         edge_detail_filter_meters(
             tile_uv,
             input.edge_stitch,
@@ -738,7 +755,9 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         source_uv,
         input.source_uv_scale,
         input.terrain_info,
-        camera_distance_meters,
+        // Same distance the displacement filtered by, so shading and geometry
+        // never disagree about which octaves exist here.
+        detail_distance_meters,
     );
     if outmap {
         // The slope already carries each octave's own headroom, so there is no

@@ -4178,12 +4178,29 @@ impl State {
                         camera_surface_height_meters,
                         surface_probe_max_distance_meters,
                         |direction, _camera_distance_meters| match render_path {
-                            RenderPath::Raster => terrain
-                                .raster_surface_height_breakdown_at_distance(
+                            // Two passes, because the distance the raster
+                            // vertex filters detail by is the distance to the
+                            // macro-displaced ground, and that height is only
+                            // known from the query itself. Macro height does
+                            // not depend on the distance, so the first pass'
+                            // answer is exact and the second is the real one.
+                            RenderPath::Raster => {
+                                let macro_height_meters = terrain
+                                    .raster_surface_height_breakdown_at_distance(
+                                        direction,
+                                        camera_sea_level_altitude_meters,
+                                        geometry.raster_detail_distance_meters(direction, 0.0),
+                                    )
+                                    .map_or(0.0, |breakdown| breakdown.macro_height_meters);
+                                terrain.raster_surface_height_breakdown_at_distance(
                                     direction,
                                     camera_sea_level_altitude_meters,
-                                    geometry.raster_detail_distance_meters(direction),
-                                ),
+                                    geometry.raster_detail_distance_meters(
+                                        direction,
+                                        macro_height_meters,
+                                    ),
+                                )
+                            }
                             RenderPath::FoveatedRay => terrain.surface_height_breakdown_at(
                                 direction,
                                 camera_sea_level_altitude_meters,
@@ -4194,9 +4211,17 @@ impl State {
                                 direction,
                                 camera_sea_level_altitude_meters,
                                 match render_path {
-                                    RenderPath::Raster => {
-                                        geometry.raster_detail_distance_meters(direction)
-                                    }
+                                    RenderPath::Raster => geometry.raster_detail_distance_meters(
+                                        direction,
+                                        terrain
+                                            .raster_surface_height_breakdown_at_distance(
+                                                direction,
+                                                camera_sea_level_altitude_meters,
+                                                geometry
+                                                    .raster_detail_distance_meters(direction, 0.0),
+                                            )
+                                            .map_or(0.0, |b| b.macro_height_meters),
+                                    ),
                                     RenderPath::FoveatedRay => camera_distance_meters,
                                 },
                             ),

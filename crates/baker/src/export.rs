@@ -40,6 +40,34 @@ const SPARSE_DETAIL_BANDS: [(u8, f64, f64); 7] = [
     (18, 2_097_152.0, 0.06),
 ];
 const BAKED_BIOME_DETAIL_START_LEVEL: u8 = 3;
+
+/// Regolith roughness, as `(minimum tile level, angular frequency, amplitude)`.
+///
+/// The moon's macro shape is its craters and nothing else, so between them the
+/// baked surface is a geometrically perfect sphere section. Standing on it, the
+/// ground rendered at a luminance standard deviation of 0.00 across 115,200
+/// pixels: not low contrast, no variation at all.
+///
+/// The runtime detail ladder cannot fill that in. It only adds octaves finer
+/// than the spacing the baked data is assumed to carry, and a deeply refined
+/// tile claims to carry everything down to 5cm, so the band it would add is
+/// empty. The planet does not have this problem because its export writes real
+/// detail into those tiles; the moon's export deliberately skipped it, because
+/// what was there is the planet's game-terrain relief keyed to a coastline.
+/// This is the moon's own: isotropic, small, and about rock rather than
+/// erosion.
+///
+/// Each band waits for a tile fine enough to hold it: a level's sample spacing
+/// is `radius * (PI/2) / 2^level / 128`, and a feature needs at least two
+/// samples across. Frequencies are per unit direction, so a feature is roughly
+/// `MOON_RADIUS / frequency` metres -- 2,000 is 540m, 300,000 is 3.6m.
+const MOON_DETAIL_BANDS: [(u8, f64, f64); 5] = [
+    (6, 2_000.0, 11.0),
+    (9, 10_000.0, 2.8),
+    (12, 60_000.0, 0.75),
+    (15, 300_000.0, 0.22),
+    (17, 1_200_000.0, 0.07),
+];
 const BAKED_BIOME_DETAIL_FREQUENCY: f64 = 280.0;
 
 pub(crate) fn export_outmap_with_progress(
@@ -650,15 +678,23 @@ fn sample_tile(
             let macro_height = terrain.grid.sample_f64(&terrain.height_meters, direction);
             let sampled_biome = terrain.grid.sample_u8_nearest(&biome_ids, direction);
             if terrain.moon {
-                // Both refinements below are climate. The relief is the
-                // planet's game-terrain profile, keyed to a coastline this
-                // body does not have; the biome detail is a snowline and a
-                // latitude rule, which on a surface sitting 16km above its own
-                // datum turns the entire moon to ice -- it did, and the bake
+                // The biome refinement below is climate -- a snowline and a
+                // latitude rule, which on a surface sitting 22km above its own
+                // datum turns the entire moon to ice. It did, and the bake
                 // failed its own landing-site check because of it. An airless
                 // body's two materials come from the catalogue and nothing
                 // else refines them.
-                height.push(macro_height.clamp(MIN_HEIGHT_METERS, MAX_HEIGHT_METERS) as f32);
+                //
+                // The relief below is climate too: the planet's game-terrain
+                // profile, keyed to a coastline this body does not have. But
+                // skipping it outright left the ground between craters a
+                // geometrically perfect sphere, and the runtime ladder cannot
+                // fill that in -- see MOON_DETAIL_BANDS. This is the moon's own
+                // roughness in its place.
+                let regolith = moon_surface_detail(key, direction, microrelief);
+                height.push(
+                    (macro_height + regolith).clamp(MIN_HEIGHT_METERS, MAX_HEIGHT_METERS) as f32,
+                );
                 biome.push(sampled_biome);
                 moisture.push(sampled_moisture);
                 continue;
@@ -741,6 +777,24 @@ fn baked_biome_detail(
         BiomeId::TemperateGrassland
     };
     biome as u8
+}
+
+/// Roughness for an airless body, added into the tile the way the planet's
+/// detail is. No landing protection: the moon's site is chosen for a gentle
+/// slope rather than flattened into a pad, and a metre of regolith texture is
+/// what makes it ground rather than a sphere.
+fn moon_surface_detail(key: TileKey, direction: DVec3, noise: &Perlin) -> f64 {
+    MOON_DETAIL_BANDS
+        .iter()
+        .filter(|(minimum_level, _, _)| key.level >= *minimum_level)
+        .map(|(_, frequency, amplitude_meters)| {
+            noise.get([
+                direction.x * frequency,
+                direction.y * frequency,
+                direction.z * frequency,
+            ]) * amplitude_meters
+        })
+        .sum()
 }
 
 fn baked_surface_detail(

@@ -49,11 +49,18 @@ pub struct ProbeGeometry {
 }
 
 impl ProbeGeometry {
-    /// Raster displacement filters detail before adding height: its distance
-    /// is to the reference sphere, not to the depth hit on an elevated mountain.
-    pub fn raster_detail_distance_meters(&self, direction: DVec3) -> f64 {
+    /// How far the eye is from the ground at `direction`, measured the way the
+    /// raster vertex measures it: to the *macro-displaced* surface.
+    ///
+    /// Not the depth hit, because displacement filters detail before adding it
+    /// and so cannot know the final height. Not the reference sphere either,
+    /// which is what this used to be: those agree until terrain height matters
+    /// next to viewing distance, and on the moon -- whose ground sits 19km
+    /// above its own datum -- the sphere distance says 19km while standing on
+    /// it, which filtered every octave out of the normal probes.
+    pub fn raster_detail_distance_meters(&self, direction: DVec3, macro_height_meters: f64) -> f64 {
         self.camera_world_position
-            .distance(direction * planet_radius_meters())
+            .distance(direction * (planet_radius_meters() + macro_height_meters))
     }
 
     pub fn new(
@@ -626,13 +633,23 @@ mod tests {
     }
 
     #[test]
-    fn raster_detail_distance_is_to_the_undisplaced_sphere() {
+    fn raster_detail_distance_is_to_the_macro_displaced_ground() {
         let geometry = nadir_geometry(20_539.0, 0.5);
         let hit = geometry.hit(DVec2::ZERO, (0.5 / 14.0) as f32).unwrap();
         assert!((hit.distance_meters - 14.0).abs() < 1.0e-5);
-        assert!((geometry.raster_detail_distance_meters(hit.direction) - 20_539.0).abs() < 1.0e-6);
+        // Flat ground: the reference sphere and the surface are the same, and
+        // the answer is the camera's altitude.
+        assert!(
+            (geometry.raster_detail_distance_meters(hit.direction, 0.0) - 20_539.0).abs() < 1.0e-6
+        );
+        // Raised ground is nearer, by its height, and that is the whole point:
+        // standing on it, the distance is metres rather than kilometres.
+        assert!(
+            (geometry.raster_detail_distance_meters(hit.direction, 20_000.0) - 539.0).abs()
+                < 1.0e-6
+        );
         let oblique = DVec3::new(0.001, 0.0, 1.0).normalize();
-        assert!(geometry.raster_detail_distance_meters(oblique) > 20_539.0);
+        assert!(geometry.raster_detail_distance_meters(oblique, 0.0) > 20_539.0);
     }
 
     #[test]
