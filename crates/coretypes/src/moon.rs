@@ -116,7 +116,11 @@ impl Crater {
 /// Fresh craters run about a fifth as deep as they are wide; large basins
 /// relax much shallower than that, which is why depth is not simply
 /// proportional to radius.
-const DEPTH_TO_RADIUS: f64 = 0.20;
+///
+/// 0.25 rather than the 0.20 a fresh terrestrial crater gives, a quarter deeper
+/// by choice: on a body whose only relief is impacts, shallow craters read as
+/// dimples and the shadows they cast are what make the surface legible at all.
+const DEPTH_TO_RADIUS: f64 = 0.25;
 const RIM_TO_DEPTH: f64 = 0.28;
 
 /// How far the ejecta reaches past the rim crest, as a multiple of the rim

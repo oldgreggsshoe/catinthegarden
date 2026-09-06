@@ -6614,3 +6614,14 @@ Every one of these rebakes moves the baked landing site, and every moon scenario
 five times now. **Open thread 19 is the most expensive thing on this list.**
 
 Planet unchanged throughout: max pixel difference 0 on three controls. 464 tests, clippy and fmt clean.
+
+### Craters a quarter deeper
+
+`DEPTH_TO_RADIUS` 0.20 to 0.25. A fresh terrestrial crater is about a fifth as deep as it is wide;
+this is deliberately deeper, because on a body whose only relief is impacts the shadows craters cast
+are what make the surface legible, and at 0.20 they read as dimples.
+
+Height range 6,067m to 29,347m, still inside the stored channel with the datum unchanged at 22,000m.
+Ice rises 0.41% to 0.57%, which follows: deeper craters hold more permanent shadow.
+
+Poses lifted again — 1.09m and 61.78m. Sixth time.
