@@ -2068,6 +2068,44 @@ fn blended_biome_color(blend: BiomeBlendSample) -> vec3<f32> {
         + biome_color(blend.ids.w) * blend.weights.w;
 }
 
+/// How shadow-prone a region has to be before ice can hold there. Deliberately
+/// a wide band: the baked fraction is one value per 828m cell, and a narrow
+/// threshold across it is a staircase however it is filtered.
+const AIRLESS_ICE_REGION_LOW: f32 = 0.25;
+const AIRLESS_ICE_REGION_HIGH: f32 = 0.85;
+/// How far a facet has to turn away from the sun's plane to be in permanent
+/// shadow, as the cosine between its horizontal normal and its horizontal
+/// position. -1 is facing straight poleward.
+const AIRLESS_ICE_FACING_LIT: f32 = -0.12;
+const AIRLESS_ICE_FACING_DARK: f32 = -0.55;
+
+/// How permanently the sun misses this facet, from its own orientation.
+///
+/// With zero obliquity the sun stays in the equatorial plane, so it only ever
+/// reaches directions `s` with no vertical component. A facet is lit at some
+/// point in the rotation unless `dot(n, s) <= 0` for every such `s` that is also
+/// above its horizon -- and because both tests depend only on the horizontal
+/// parts of `n` and the position, that reduces to one dot product: the facet is
+/// never lit exactly when its horizontal normal points *opposite* its horizontal
+/// position. Which is to say, when it faces poleward.
+///
+/// Exact for self-shadowing, and it costs nothing, but its real value is that
+/// it works at fragment resolution. The baked shadow field is computed on the
+/// 828m working grid, which does not contain the relief that casts the shadows
+/// you can actually see -- so ice placed from it alone lands beside the shadows
+/// rather than in them, in hard 828m blocks. This follows the drawn surface.
+fn airless_permanent_shadow(surface_normal: vec3<f32>, surface_direction: vec3<f32>) -> f32 {
+    let position = vec2<f32>(surface_direction.x, surface_direction.z);
+    let normal = vec2<f32>(surface_normal.x, surface_normal.z);
+    // At the poles both go to zero and the question stops meaning anything;
+    // there the regional term is already saturated.
+    if length(position) < 1.0e-4 || length(normal) < 1.0e-5 {
+        return 1.0;
+    }
+    let facing = dot(normalize(normal), normalize(position));
+    return smoothstep(AIRLESS_ICE_FACING_LIT, AIRLESS_ICE_FACING_DARK, facing);
+}
+
 fn terrain_material_color(
     outmap: bool,
     biome: u32,
@@ -2078,15 +2116,27 @@ fn terrain_material_color(
     surface_normal: vec3<f32>,
     surface_direction: vec3<f32>,
 ) -> vec3<f32> {
-    // An airless body has exactly two materials, regolith and basin ice, and
-    // its biome map says which. Take the colour straight from the palette:
-    // everything below this line is a planet's material chain -- a beach
-    // blend, a moisture wash, vegetation -- and none of it describes rock in
-    // vacuum. Without this the moon falls through to the placeholder's
-    // blue-grey, which is a stand-in for missing planet data rather than a
-    // material in its own right.
+    // An airless body has exactly two materials, regolith and basin ice.
+    // Everything below this line is a planet's material chain -- a beach blend,
+    // a moisture wash, vegetation -- and none of it describes rock in vacuum.
+    //
+    // The mix between them is the *shadow fraction*, carried in the moisture
+    // channel and sampled bilinearly, rather than the categorical biome. The
+    // biome is one value per texel and sampled nearest, so using it drew the ice
+    // as hard axis-aligned cells and plus-shapes -- reported, and visible from
+    // orbit. A bilinear fraction with a soft threshold gives an edge that
+    // follows the ground at any distance, because it is a field rather than a
+    // stencil. The biome still decides identity; this decides the look.
     if !BODY_HAS_ATMOSPHERE {
-        return BODY_TERRAIN_TINT * biome_color(biome);
+        // Two terms with different jobs. The baked fraction knows about crater
+        // rims, which a fragment cannot see, but only at 828m. The facing term
+        // knows nothing about rims but resolves every pixel. Multiplied, the
+        // first says *where* ice is possible and the second says exactly which
+        // ground it lies on -- so a crater's poleward wall ices and its sunward
+        // wall does not, at the resolution the surface is drawn.
+        let region = smoothstep(AIRLESS_ICE_REGION_LOW, AIRLESS_ICE_REGION_HIGH, moisture);
+        let ice = region * airless_permanent_shadow(surface_normal, surface_direction);
+        return BODY_TERRAIN_TINT * mix(biome_color(8u), biome_color(2u), ice);
     }
     var color = vec3<f32>(0.32, 0.58, 0.74);
     if !outmap {

@@ -247,10 +247,16 @@ pub const BAKED_SPEC: CatalogueSpec = CatalogueSpec {
     field_max_angular_radius: 0.30,
     basin_rank_exponent: 0.5,
     field_rank_exponent: 0.5,
-    // 2.4km, which is about six working cells across.
-    min_angular_radius: 0.002_2,
-    // Up to 5.8km, so the saturated tail is a range of sizes rather than one.
-    small_size_spread: 1.4,
+    // No floor. Any floor piles every crater below it into one size, and that
+    // is what a size-frequency law is *for*: at 2.4km, 598,536 of the 600,176
+    // ended up between 2 and 8km across, and the surface read as one grade of
+    // crater everywhere. Spreading the pile only widened the band it bunched
+    // in. Craters below the working cell are not resolved as craters, but they
+    // are not spikes either -- they are the fine dimpling the ground should
+    // have, and letting them through is what keeps the distribution honest:
+    // 573,933 under 2km, 24,603 between 2 and 8, 1,640 above.
+    min_angular_radius: 0.0,
+    small_size_spread: 0.0,
     position_jitter: 1.6,
     // One continuous law across both tiers: the field picks up at rank 177,
     // exactly where the basins stop.

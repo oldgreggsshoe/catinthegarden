@@ -120,7 +120,11 @@ impl Terrain {
                 river: vec![false; len],
                 lake: vec![false; len],
                 glacial_valley: vec![false; len],
-                moisture: vec![0; len],
+                // An airless body has no moisture, so the channel carries the
+                // shadow fraction instead: the renderer needs it sampled
+                // bilinearly, and this is the only per-texel channel that is
+                // free.
+                moisture: surface.shadow_fraction,
                 biome: surface.biome,
                 moon: true,
             });

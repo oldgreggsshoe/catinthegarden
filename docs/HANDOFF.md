@@ -6553,3 +6553,64 @@ fmt clean.
 
 The app panicked reading a half-written outmap because the rebake was `rm -rf` followed by baking in
 place. Bake to a new directory and swap it in.
+
+---
+
+## 6 September 2026 — ice that follows the ground, and a size law with no floor
+
+Two reports, both from screenshots, both right, and both about the same mistake: **a field computed on
+the 828m working grid cannot place anything the eye resolves at close range.**
+
+### Ice was in blocks, and beside the shadows rather than in them
+
+The biome map is one categorical value per texel, sampled nearest, so ice edges were 828m cells —
+squares and plus-shapes, unrelated to the ground under them. Worse, the shadow was computed on the
+crater field alone, which is the terrain *before* `MOON_DETAIL_BANDS` is added at export. So the
+relief casting the shadows you can see was never in the calculation, and ice landed on flat lit ground
+while genuinely shadowed floors stayed bare.
+
+Three changes:
+
+* **The shadow is a fraction, not a verdict.** Near a pole "is this facet lit" is a knife-edge that
+  flips between neighbouring cells, so the boolean speckled. Stored 0-255 in the moisture channel,
+  which an airless body has no other use for, and box-blurred three passes — it is a *regional* term,
+  "can ice hold near here", and wants to be smooth.
+* **A per-fragment test does the placing.** With zero obliquity the sun stays in the equatorial plane,
+  and both "is the sun above this facet's horizon" and "does the sun face it" depend only on the
+  horizontal parts of the normal and the position. So permanent self-shadow reduces to one dot
+  product: a facet is never lit exactly when its horizontal normal points opposite its horizontal
+  position — when it faces poleward. Exact, free, and it resolves every pixel.
+* Multiplied. The baked term knows about crater rims and cannot resolve them; the fragment term
+  resolves everything and knows nothing about rims. Together: a crater's poleward wall ices and its
+  sunward wall does not, at the resolution the surface is drawn.
+
+Ice is now 0.41% of the surface, which is close to the real figure, and it sits inside the shadows.
+
+### The arctic circle
+
+`SHADOW_LATITUDE_SINE` was 0.80 — 53 degrees — on the argument that crater walls run to 30 degrees so
+the sun clears any rim below that. Wrong in the direction that matters: overlapping rims and ejecta
+are far steeper than one wall, and a deep basin shadows its own floor well outside the polar circle.
+Now 0.20, which only skips the deep tropics. Ice reaches 20-30 degrees and rises smoothly to the pole.
+
+### Every floor bunches the sizes
+
+Reported as the medium craters taking over, and the numbers were stark: **598,536 of 600,176 craters
+were between 2 and 8km across**. A floor does that by construction — everything below it becomes one
+size — and the previous fix, spreading the pile over a band, only widened the band it bunched in.
+
+There is no floor now. The law runs to its end: 573,933 craters under 2km, 24,603 between 2 and 8,
+1,640 above. Craters finer than the working cell are not resolved *as craters*, but they are not
+spikes either — they are the fine dimpling the ground should have. Coverage drops 227% to 35%, which
+is the honest number for a real size-frequency law at this resolution; the previous 227% was an
+artefact of counting the same crater size 600,000 times.
+
+Splat 14.5s to 167s, because the loop is now dominated by hundreds of thousands of tiny craters rather
+than a few large ones.
+
+### Cost
+
+Every one of these rebakes moves the baked landing site, and every moon scenario pose with it. That is
+five times now. **Open thread 19 is the most expensive thing on this list.**
+
+Planet unchanged throughout: max pixel difference 0 on three controls. 464 tests, clippy and fmt clean.

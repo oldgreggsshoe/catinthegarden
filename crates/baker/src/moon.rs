@@ -28,6 +28,10 @@ pub struct MoonSurface {
     /// Metres from the body's radius, already lifted by `MOON_DATUM_METERS`.
     pub height_meters: Vec<f64>,
     pub biome: Vec<BiomeId>,
+    /// How much of a rotation each place spends in shadow, 0-255. Carried in
+    /// the moisture channel, which an airless body has no other use for, and
+    /// sampled bilinearly so the ice edge is a shape rather than a staircase.
+    pub shadow_fraction: Vec<u8>,
 }
 
 /// Renders the catalogue into the grid by splatting each crater over the cells
@@ -44,11 +48,12 @@ pub fn generate(grid: &SphericalGrid, catalogue: &Catalogue) -> MoonSurface {
     }
 
     let height_meters: Vec<f64> = raw.iter().map(|h| MOON_DATUM_METERS + h).collect();
-    let biome = classify_ice(grid, &height_meters);
+    let (biome, shadow_fraction) = classify_ice(grid, &height_meters);
 
     MoonSurface {
         height_meters,
         biome,
+        shadow_fraction,
     }
 }
 
@@ -60,14 +65,19 @@ pub fn generate(grid: &SphericalGrid, catalogue: &Catalogue) -> MoonSurface {
 /// "permanently shadowed" a computable property rather than a guess.
 const SUN_SAMPLES: usize = 32;
 
-/// Below this latitude sine the sun climbs too high for terrain to hide from.
+/// Below this latitude sine, skip the march.
 ///
-/// At latitude phi the sun reaches `90 - phi` degrees at its highest. Crater
-/// walls run to roughly 30 degrees, so below about 55 degrees of latitude there
-/// is nothing a rim can do: the sun clears it every rotation. 0.80 is 53
-/// degrees, which leaves margin, and it keeps the horizon march off 80% of the
-/// body.
-const SHADOW_LATITUDE_SINE: f64 = 0.80;
+/// This was 0.80 -- 53 degrees -- justified by crater walls running to about 30
+/// degrees, so that the sun would clear any rim below that. It drew a hard
+/// arctic circle, which was reported, and the justification was wrong in the
+/// direction that matters: overlapping rims and ejecta make slopes far steeper
+/// than one crater's wall, and a deep basin's own rim is high enough to shadow
+/// its floor well outside the polar circle.
+///
+/// 0.20 is 11.5 degrees, and only skips the deep tropics where the sun passes
+/// within 11 degrees of vertical and nothing on this body can hide from it.
+/// Where shadow is possible, the march decides -- which is the whole point.
+const SHADOW_LATITUDE_SINE: f64 = 0.20;
 
 /// How far to look for something blocking the sun, and in how many steps.
 ///
@@ -86,7 +96,7 @@ const HORIZON_STEPS: usize = 14;
 /// near the poles, where the rim hides the sun through the whole rotation. It
 /// does not have to be flat, and it is not level -- a shadowed wall is icy at
 /// whatever angle the wall happens to lie at.
-fn classify_ice(grid: &SphericalGrid, height_meters: &[f64]) -> Vec<BiomeId> {
+fn classify_ice(grid: &SphericalGrid, height_meters: &[f64]) -> (Vec<BiomeId>, Vec<u8>) {
     let suns: Vec<DVec3> = (0..SUN_SAMPLES)
         .map(|index| {
             let angle = TAU * index as f64 / SUN_SAMPLES as f64;
@@ -95,33 +105,108 @@ fn classify_ice(grid: &SphericalGrid, height_meters: &[f64]) -> Vec<BiomeId> {
         })
         .collect();
 
-    (0..grid.len())
+    let shadow: Vec<f64> = (0..grid.len())
         .into_par_iter()
         .map(|index| {
             let direction = grid.direction(index);
             if direction.y.abs() < SHADOW_LATITUDE_SINE {
-                return BiomeId::MountainRock;
+                return 0.0;
             }
             let normal = surface_normal(grid, height_meters, index);
             let height = height_meters[index];
+            let mut dark = 0usize;
+            let mut daylight = 0usize;
             for sun in &suns {
-                // Its own slope can hide it before any terrain does.
-                if normal.dot(*sun) <= 0.0 {
-                    continue;
-                }
                 let sun_elevation = direction.dot(*sun).clamp(-1.0, 1.0).asin();
                 if sun_elevation <= 0.0 {
+                    // Night everywhere on the body at this moment, which says
+                    // nothing about whether this place is ever lit.
                     continue;
                 }
-                if !horizon_blocks(grid, height_meters, index, height, *sun, sun_elevation) {
-                    // Lit at least once, so nothing survives here.
-                    return BiomeId::MountainRock;
+                daylight += 1;
+                // Its own slope can hide it before any terrain does.
+                if normal.dot(*sun) <= 0.0
+                    || horizon_blocks(grid, height_meters, index, height, *sun, sun_elevation)
+                {
+                    dark += 1;
                 }
             }
-            BiomeId::Ice
+            if daylight == 0 {
+                0.0
+            } else {
+                dark as f64 / daylight as f64
+            }
         })
-        .collect()
+        .collect();
+
+    // Stored as a continuous field, not a yes/no. Two reasons, both reported
+    // from screenshots. The renderer samples it bilinearly, so an ice edge
+    // follows the ground instead of the 828m grid -- the old boolean came back
+    // as hard axis-aligned cells and plus-shapes. And near a pole the sun grazes,
+    // so "is this facet lit" is a knife-edge that flips between neighbouring
+    // cells: the boolean speckled, scattering ice across flat lit ground while
+    // leaving genuinely shadowed crater floors bare. A fraction varies smoothly
+    // across a crater and says how *nearly* permanent the shadow is.
+    // Blurred before storing. The per-cell verdict is a knife-edge near a pole
+    // -- neighbouring cells flip -- and a speckled field stays speckled under
+    // bilinear sampling, which is what put ice in hard 828m blocks beside the
+    // shadows instead of in them. The renderer uses this as a *regional* term,
+    // "can ice hold anywhere near here", and pairs it with a per-fragment test
+    // that resolves the actual ground. So it wants to be smooth.
+    let smoothed = blur(grid, &shadow, SHADOW_BLUR_PASSES);
+    let fraction: Vec<u8> = smoothed
+        .iter()
+        .map(|value| (value * 255.0).round().clamp(0.0, 255.0) as u8)
+        .collect();
+    let biome = smoothed
+        .iter()
+        .map(|value| {
+            if *value >= ICE_SHADOW_THRESHOLD {
+                BiomeId::Ice
+            } else {
+                BiomeId::MountainRock
+            }
+        })
+        .collect();
+    (biome, fraction)
 }
+
+/// How many box passes smooth the shadow field. Three is enough to turn
+/// per-cell speckle into a region without erasing a crater-sized feature.
+const SHADOW_BLUR_PASSES: usize = 3;
+
+/// Separable box blur over the grid, wrapping in longitude and clamping in
+/// latitude, which is how the grid itself is addressed.
+fn blur(grid: &SphericalGrid, values: &[f64], passes: usize) -> Vec<f64> {
+    let mut current = values.to_vec();
+    for _ in 0..passes {
+        let next: Vec<f64> = (0..grid.len())
+            .into_par_iter()
+            .map(|index| {
+                let mut total = current[index];
+                let mut count = 1.0;
+                for (dx, dy) in [(1_isize, 0_isize), (-1, 0), (0, 1), (0, -1)] {
+                    if let Some(neighbor) = grid.offset_index(index, dx, dy) {
+                        total += current[neighbor];
+                        count += 1.0;
+                    }
+                }
+                total / count
+            })
+            .collect();
+        current = next;
+    }
+    current
+}
+
+/// How much of the rotation a place must spend in shadow to hold ice.
+///
+/// Not 1.0. A cell that catches the sun for one of thirty-two samples is a
+/// cell the march resolved coarsely, not a place with a summer -- and the
+/// renderer blends across this rather than cutting at it, so the threshold
+/// decides identity for collision and material, while the look comes from the
+/// stored fraction.
+const ICE_SHADOW_THRESHOLD: f64 = 0.97;
 
 /// Whether terrain between here and the horizon stands above the sun.
 ///
@@ -312,7 +397,7 @@ mod tests {
         };
         let polar = DVec3::Y;
         let polar_field: Vec<f64> = (0..grid.len()).map(|i| pit(polar, i)).collect();
-        let polar_biomes = classify_ice(&grid, &polar_field);
+        let (polar_biomes, _) = classify_ice(&grid, &polar_field);
         let polar_floor = (0..grid.len())
             .min_by(|a, b| polar_field[*a].total_cmp(&polar_field[*b]))
             .expect("the grid is not empty");
@@ -324,7 +409,7 @@ mod tests {
 
         let equatorial = DVec3::X;
         let equatorial_field: Vec<f64> = (0..grid.len()).map(|i| pit(equatorial, i)).collect();
-        let equatorial_biomes = classify_ice(&grid, &equatorial_field);
+        let (equatorial_biomes, _) = classify_ice(&grid, &equatorial_field);
         let equatorial_floor = (0..grid.len())
             .min_by(|a, b| equatorial_field[*a].total_cmp(&equatorial_field[*b]))
             .expect("the grid is not empty");
@@ -342,7 +427,7 @@ mod tests {
     fn a_flat_pole_is_not_ice() {
         let grid = SphericalGrid::with_radius(256, 128, MOON_RADIUS_METERS);
         let flat = vec![MOON_DATUM_METERS; grid.len()];
-        let biomes = classify_ice(&grid, &flat);
+        let (biomes, _) = classify_ice(&grid, &flat);
         let pole = (0..grid.len())
             .max_by(|a, b| grid.direction(*a).y.total_cmp(&grid.direction(*b).y))
             .expect("the grid is not empty");
@@ -421,20 +506,32 @@ mod tests {
         catinthegarden_coretypes::moon::baked()
     }
 
-    /// The moon's craters have to be big enough for the grid to hold. A crater
-    /// only a cell or two across is a spike, not a bowl.
+    /// A size-frequency law is only doing its job if most craters are small.
+    /// A floor breaks that -- everything below it becomes one size, and the
+    /// surface reads as one grade of crater. This asserts the shape survives.
     #[test]
-    fn the_smallest_crater_spans_several_working_cells() {
+    fn most_craters_are_below_the_grid_and_a_few_are_basins() {
         let catalogue = catalogue_for_test();
-        let smallest = catalogue
-            .iter()
-            .map(|crater| crater.angular_radius)
-            .fold(f64::INFINITY, f64::min);
         let cell_meters = TAU * MOON_RADIUS_METERS / crate::config::MOON_WORKING_WIDTH as f64;
-        let cells_across = 2.0 * smallest * MOON_RADIUS_METERS / cell_meters;
+        let mut below = 0usize;
+        let mut basins = 0usize;
+        for crater in catalogue.iter() {
+            let across = 2.0 * crater.angular_radius * MOON_RADIUS_METERS;
+            if across < cell_meters * 2.0 {
+                below += 1;
+            }
+            if across > 100_000.0 {
+                basins += 1;
+            }
+        }
         assert!(
-            cells_across >= 4.0,
-            "the smallest crater is {cells_across:.1} cells across",
+            below > catalogue.len() / 2,
+            "only {below} of {} craters are finer than the grid; the law has a floor in it",
+            catalogue.len(),
+        );
+        assert!(
+            (1..=60).contains(&basins),
+            "{basins} craters over 100km across is not a handful of basins",
         );
     }
 }
