@@ -6951,3 +6951,56 @@ are open. `planet_to_moon` asserts only that seven screenshots exist — the cle
 frame times all come from `scripts/report-system-flight.py`, which nothing runs automatically. A
 scenario that asserts almost nothing is the same shape as `moon_crater_wall` passing while rendering
 black.
+
+---
+
+## 6 September 2026 — the moon's surface markings
+
+A whole-body texture from the processes that make one, driven by the craters rather than laid over
+them. Three, in the order they read at a distance.
+
+**Maria.** The Moon's two terrains differ by nearly a factor of two — anorthositic highlands around
+0.13, mare basalt around 0.07. The maria *are* the basins: impacts deep enough to crack the crust,
+later flooded by basalt that welled up through it. So on this body low ground is mare ground, and the
+depth already in the height field says where. Free: the shader has the macro height.
+
+**Ejecta haloes.** Freshly excavated material is bright, and solar wind and micrometeorite gardening
+darken and redden it over hundreds of millions of years. So a halo's strength is the crater's *age*,
+not its size — `Crater::freshness`, cubed from a deterministic draw, so roughly one in eight is
+meaningfully bright and one in a thousand is a Tycho. The halo's edge is pushed in and out with
+azimuth, because an ejecta blanket is not a circle.
+
+**Rays.** The finest ejecta, thrown furthest, from young craters only — rays are the first thing
+weathering erases. This is what makes Tycho visible from a garden on Earth.
+
+### Getting the rays to look like rays
+
+Two harmonics and a power gave evenly spaced spokes of constant width — a wheel, not a splash. Four
+incommensurate harmonics with per-crater phases gave irregular spacing and one-sidedness, which is
+what an oblique impact does, but raising an *unnormalised* sum to the fifth power crushed them to
+nothing: four terms rarely align, so the peaks were around 0.6 and 0.6^5 is 0.08. Normalising to the
+amplitude sum and thresholding with a `smoothstep` instead of a power sets where a ray starts and how
+hard its edge is without dimming the peaks. A second modulation *along* the ray makes it a chain of
+bright clumps rather than a painted line, which is what ballistic ejecta landing in secondary craters
+actually leaves.
+
+### The count is a cliff, not a budget
+
+`ALBEDO_CRATER_COUNT` is 96 and the ceiling is measured: 128 markings cost nothing at all — 16.8ms
+against a 16.6ms baseline — and 160 cost **130.7ms**. That is not a slope. It is the dynamically
+indexed `const` arrays falling out of whatever the driver holds them in, so the number to respect is
+the edge, not the average. 96 leaves room under it, and the real Moon has perhaps a dozen ray systems
+worth the name.
+
+Before that there was a worse one, and it is the reason `MAX_MARKING_REACH_RADIANS` exists. Fourteen
+rim radii of a 0.30 rad basin is **4.2 radians, more than pi**, so `cos(min(reach, pi))` saturated at
+-1 and its cutoff rejected nothing: every pixel ran an `acos`, an `atan2` and a `pow` for every large
+marking, and a 54-second replay had not finished after fifty minutes. A test now asserts every
+marking's reach can actually reject something.
+
+Markings come from the **baked** catalogue's largest 96, not the runtime one — a halo has to sit on
+the crater that threw it, and the two catalogues are different bodies' worth of impacts. A test pins
+that too.
+
+Planet unchanged: max pixel difference 0 on three controls. Moon scenarios all pass. Moon orbit holds
+16.7ms against 16.6ms without markings.

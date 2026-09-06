@@ -2106,6 +2106,127 @@ fn airless_permanent_shadow(surface_normal: vec3<f32>, surface_direction: vec3<f
     return smoothstep(AIRLESS_ICE_FACING_LIT, AIRLESS_ICE_FACING_DARK, facing);
 }
 
+/// How dark the deepest basin floor goes, against unmarked regolith.
+///
+/// The Moon's two terrains differ by nearly a factor of two: anorthositic
+/// highlands sit around 0.13 and mare basalt around 0.07. The maria are exactly
+/// the basins -- impacts deep enough to crack the crust, later flooded by
+/// basalt that welled up through it -- so on this body low ground *is* mare
+/// ground, and the depth already in the height field says where.
+const MOON_MARE_DARKEST: f32 = 0.62;
+/// Depth below the datum at which that is reached, in metres.
+const MOON_MARE_DEPTH_METERS: f32 = 6000.0;
+
+/// How much brighter fresh ejecta is than the ground it fell on.
+const MOON_HALO_STRENGTH: f32 = 0.55;
+/// And the rays, which are brighter still but cover far less.
+const MOON_RAY_STRENGTH: f32 = 0.75;
+/// Freshness below which a crater has no rays at all. Rays are the first thing
+/// space weathering erases -- they are thin and bright and made of the finest
+/// material -- so only genuinely young craters keep them.
+const MOON_RAY_FRESHNESS_FLOOR: f32 = 0.45;
+
+/// Where the surface is bright and where it is dark, as a multiplier on the
+/// regolith albedo.
+///
+/// The Moon is not a uniform grey ball, and none of what breaks it up is
+/// texture in the wallpaper sense -- every marking is a *record of an impact*,
+/// which is why this is driven by the same catalogue that dug the holes rather
+/// than by a noise field laid over the top.
+///
+/// Three processes, in the order they matter at a distance:
+///
+/// * **Maria.** Basins flooded with dark basalt. Keyed to depth, because on
+///   this body the deep places are the ones that cracked the crust.
+/// * **Ejecta haloes.** Freshly excavated material is bright. Solar wind and
+///   micrometeorite gardening darken and redden it over hundreds of millions of
+///   years, so the halo fades with the crater's age rather than its size.
+/// * **Rays.** The finest ejecta, thrown furthest, from the youngest craters
+///   only. This is what makes Tycho visible from a garden on Earth.
+fn moon_surface_albedo_scale(direction: vec3<f32>, macro_height_meters: f32) -> f32 {
+    let unit = normalize(direction);
+    // Mare first, so a bright halo laid on a dark floor stays darker than the
+    // same halo on highland -- which is how a real one behaves.
+    let depth = max(MOON_DATUM_METERS - macro_height_meters, 0.0);
+    var scale = mix(
+        1.0,
+        MOON_MARE_DARKEST,
+        smoothstep(0.0, MOON_MARE_DEPTH_METERS, depth),
+    );
+
+    var brightening = 0.0;
+    for (var index = 0u; index < MOON_MARKING_COUNT; index = index + 1u) {
+        let marking = MOON_MARKINGS[index];
+        let traits = MOON_MARKING_TRAITS[index];
+        let cosine = clamp(dot(marking.xyz, unit), -1.0, 1.0);
+        // Rays reach furthest, so their cutoff rejects everything.
+        if cosine <= traits.w {
+            continue;
+        }
+        // Past this point the marking genuinely reaches, so the transcendentals
+        // are paid for rather than spent on a rejected crater.
+        let freshness = traits.x;
+        let t = acos(cosine) / marking.w;
+
+        // Azimuth around the crater, from a stable basis: the component of the
+        // sample direction perpendicular to the crater's axis.
+        let tangent = normalize(unit - marking.xyz * cosine);
+        let reference = normalize(cross(marking.xyz, vec3<f32>(0.0, 1.0, 0.0))
+            + vec3<f32>(1.0e-5, 0.0, 0.0));
+        let across = cross(marking.xyz, reference);
+        let azimuth = atan2(dot(tangent, across), dot(tangent, reference)) + traits.y;
+
+        // The halo: strongest at the rim, gone by MOON_HALO_EXTENT. Squared so
+        // it concentrates near the crater rather than washing the whole area.
+        // Its edge is pushed in and out with azimuth, because an ejecta blanket
+        // is not a circle -- the impact came in at an angle and the ground it
+        // landed on was not flat.
+        if cosine > traits.z {
+            let ragged = 1.0 + 0.35 * cos(3.0 * azimuth + traits.y)
+                + 0.18 * cos(5.0 * azimuth - traits.y);
+            let fade = clamp(
+                1.0 - (t - 1.0) / max((MOON_HALO_EXTENT - 1.0) * ragged, 0.25),
+                0.0,
+                1.0,
+            );
+            brightening = brightening + MOON_HALO_STRENGTH * freshness * fade * fade;
+        }
+
+        if freshness <= MOON_RAY_FRESHNESS_FLOOR || t <= 1.0 {
+            continue;
+        }
+        // Four incommensurate harmonics rather than two. With two the rays came
+        // out as evenly spaced spokes of constant width -- a wheel, not a
+        // splash. Real ray systems are uneven in spacing, unequal in strength,
+        // and often heavily one-sided, which is what an oblique impact does.
+        // Normalised by the sum of the amplitudes, so the peak is 1 whatever
+        // the harmonics are. Raising an unnormalised sum to a power crushed the
+        // rays to nothing, because four terms rarely align.
+        let lobes = (0.46 * cos(6.0 * azimuth)
+            + 0.28 * cos(11.0 * azimuth + traits.y)
+            + 0.17 * cos(17.0 * azimuth - 2.0 * traits.y)
+            + 0.22 * cos(2.0 * azimuth + 0.7 * traits.y))
+            / 1.13;
+        // A threshold rather than a power: it sets where a ray starts and how
+        // hard its edge is, instead of dimming everything including the peaks.
+        let streak = smoothstep(0.30, 0.78, lobes);
+        // Patchy along their length as well as around: a ray is a chain of
+        // bright clumps, not a painted line, because it is ballistic ejecta
+        // landing in secondary craters rather than a continuous stream.
+        let clumping = 0.62 + 0.38 * cos(4.0 * t + traits.y * 3.0)
+            * cos(2.3 * t - traits.y);
+        // Cubed, so a ray thins out with distance instead of stopping at a
+        // circle.
+        let reach = clamp(1.0 - (t - 1.0) / (MOON_RAY_EXTENT - 1.0), 0.0, 1.0);
+        let age = smoothstep(MOON_RAY_FRESHNESS_FLOOR, 1.0, freshness);
+        brightening = brightening
+            + MOON_RAY_STRENGTH * age * streak * max(clumping, 0.0) * reach * reach;
+    }
+    // Saturating rather than additive: overlapping haloes brighten toward a
+    // limit instead of running away where young craters cluster.
+    return scale * (1.0 + 1.6 * (1.0 - exp(-brightening)));
+}
+
 /// How much of this ground is ice, 0 to 1.
 ///
 /// Two terms with different jobs. The baked fraction knows about crater rims,
@@ -2152,9 +2273,14 @@ fn terrain_material_color(
     // stencil. The biome still decides identity; this decides the look.
     if !BODY_HAS_ATMOSPHERE {
         let ice = airless_ice_mix(moisture, surface_normal, surface_direction);
+        // Markings apply to the rock, not to the ice: a permanently shadowed
+        // floor is not weathered by the sun and holds no ejecta from craters
+        // that post-date it being ice.
+        let regolith =
+            biome_color(8u) * moon_surface_albedo_scale(surface_direction, macro_height_meters);
         // The ice takes the body's own tint rather than a separate palette
         // entry, so the planet's glaciers keep reading the shared colour.
-        return BODY_TERRAIN_TINT * mix(biome_color(8u), BODY_ICE_TINT * biome_color(2u), ice);
+        return BODY_TERRAIN_TINT * mix(regolith, BODY_ICE_TINT * biome_color(2u), ice);
     }
     var color = vec3<f32>(0.32, 0.58, 0.74);
     if !outmap {
