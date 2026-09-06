@@ -1,7 +1,7 @@
 # Handoff — ocean wind sea spectrum
 
 **Branch:** `experiment/ocean-wind-sea-spectrum`, tracking
-`origin/experiment/ocean-wind-sea-spectrum`; latest probe repair is based on `4655625`. The name is historical: the ocean work it
+`origin/experiment/ocean-wind-sea-spectrum`, at `8f09be5`. The name is historical: the ocean work it
 was opened for is done, and the active subject is now **a second body**.
 
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
@@ -25,7 +25,7 @@ rendering them together needs the radius to become a uniform, and that is the ne
 one. Every branch that distinguishes the two is a generated `const bool`, so the planet's compiled
 shader is unchanged — asserted by rendering, not by argument, at max pixel difference 0.
 
-The moon is baked like the planet, into `assets/outmaps/test-moon`, from a 120,176-crater catalogue
+The moon is baked like the planet, into `assets/outmaps/test-moon`, from a 600,176-crater catalogue
 in `coretypes::moon`. It has no ocean, no air, no weather and no vegetation, and its two materials
 are regolith and polar ice. Ice is *terrain*, which is the whole trick: it is drawn by the terrain
 pass and walked on with no special case anywhere. See the last two sections for the four planet-only
@@ -156,7 +156,7 @@ last two sections.
 **Also closed.** The moon rendered black across most of its sunlit side, which was neither lighting
 nor exposure: `is_open_ocean_surface` was discarding every fragment at or below the datum for an
 ocean shell that does not run on that body. And the moon was synthesised per sample rather than
-baked, which capped it at a few hundred craters; it is baked now, at 120,176. Both in the last two
+baked, which capped it at a few hundred craters; it is baked now, at 600,176. Both in the last two
 sections.
 
 The near-field ocean-culling defect is fixed at `4f2da78`: `may_contain_ocean`
@@ -241,6 +241,9 @@ See the latest section for the failing-before/passing-after evidence. No terrain
     landing site is off pristine ground; until then the two are confounded.
 16. **`moon_crater_wall` passes while rendering entirely black.** Either aim it somewhere lit or say
     in the scenario that it is a night-side capture and assert something that would notice.
+
+17. **Frame-time measurement is silently invalid while the display is DPMS-blanked**, and the
+    harness does not check. See the last section: ~1000ms frames with an idle GPU.
 
 **Build convention.** Benchmarks and parity runs build to `CARGO_TARGET_DIR=/home/dad/catingard-target`,
 not the in-repo `target/`. Give every temporary or staged checkout its own `CARGO_TARGET_DIR`
@@ -6047,7 +6050,7 @@ of the profile would be a divergence waiting to happen. Two specs, one generator
 | | craters | range | evaluated |
 | --- | --- | --- | --- |
 | `RUNTIME_SPEC` | 360 | 324km – 4.8km | per sample, emitted into the shader |
-| `BAKED_SPEC` | **120,176** | 324km – 2.4km | once, offline, into tiles |
+| `BAKED_SPEC` | **600,176** | 324km – 2.4km | once, offline, into tiles |
 
 The bake's count is set by what the working grid resolves, not by a frame budget. At 8,192x4,096 over
 a 1,080km body that is 828m a cell, so the floor is 2.4km — about six cells across, asserted by
@@ -6087,8 +6090,8 @@ looked like a terrain bug rather than the wrong world.
 
 A baked height channel bottoms out at -5,000m and treats 0 as sea level, but the crater field is
 centred on zero with every floor below it. `MOON_DATUM_METERS` lifts the whole body. It is a property
-of the **catalogue**, not of any one crater: 120,176 overlapping bowls stack to 17,519m below zero
-where the single largest basin reaches 10,125m. At 22,000m the body spans 4,500m to 26,700m.
+of the **catalogue**, not of any one crater: 600,176 overlapping bowls stack to 19,256m below zero
+where the single largest basin reaches 10,125m. At 22,000m the body spans 2,744m to 26,993m.
 Re-run `report_the_baked_height_extremes` after changing the count.
 
 ### Craters were arranged in a grid
@@ -6210,3 +6213,57 @@ nothing is the same failure as a clearance assertion with no probe floor.
 Two more transient pixel differences on control scenarios, both under machine load: 12 on
 `stand_on_ground` while a bake was writing, 72 on `ocean_ship_float` while clippy was compiling. Both
 0 on clean re-runs. Open thread 13 said disk; it is CPU too.
+
+---
+
+## 6 September 2026 — five times the craters, and a terminator that goes to black
+
+### 600,176 craters
+
+`BAKED_SPEC.field_count` 120,000 -> 600,000. Rim coverage goes **35.7% to 93.8%** of the sphere,
+which is a saturated regolith surface rather than a scattering of impacts.
+
+The size range does not move — still 324km to 2.38km — because the floor is set by the working grid
+at 828m a cell, not by the count. The law reaches that floor around rank 18,000, so **about 97% of
+the new craters are floor-sized**. The count buys density, not new sizes. Going finer needs a bigger
+grid, and at 8,192 x 4,096 the direction array is already 805MB.
+
+The datum holds at 22,000m. Five times the craters stack deeper — 19,256m below the crater field's
+zero against 17,519m — but the body still spans 2,744m to 26,993m. That measurement is exact rather
+than sampled, because it is taken on the grid the bake writes. Splat 4.3s against 2.3s.
+
+### The terminator, and a fourth planet rule on an airless body
+
+Reported as the moon not going straight to black at the edge of the light. Three things were
+softening it and **only one was the lighting**, which is why measuring first mattered: in `lighting`
+debug mode the night side already computed to exactly 0, and in `albedo` mode the geometry was
+plainly there at `(113,106,100)`. The final frame showed `(4,6,15)` — blue, B three to four times R.
+So something was added after lighting, and no amount of tuning the lighting would have found it.
+
+1. **`terrain_fog`.** It computes an air path through an atmosphere the moon does not have and mixes
+   toward `physical_camera_sky_radiance`, which is Rayleigh blue. The aerial-perspective terms beside
+   it were gated when the moon was built; this one was missed because it is composed later, as
+   presentation rather than as physics. **That is the fourth planet-only rule found on this body**,
+   after the x4 height exaggeration, the snowline and the triplanar material chain — all four found
+   the same way, by something looking wrong rather than by a test.
+2. **The terminator ramp** was `smoothstep(0.0, 0.06, incidence)`, about 3.4 degrees. With no air the
+   only thing entitled to blur an airless terminator is the sun being a disc rather than a point,
+   which is half a degree. `AIRLESS_TERMINATOR_COSINE_WIDTH` is 0.012, about 0.7.
+3. **The regolith bounce** was linear in the globe-scale day factor and added *after* the terminator
+   closure, so nothing shut it off until the geometric terminator. Squared now and closed by the same
+   penumbra.
+
+Night side is exactly `(0,0,0)` to the terminator, which resolves in about five pixels at orbital
+scale. **Earthshine is deliberately not added**: it was allowed rather than asked for, and what was
+there was not earthshine but blue haze leaking. It would be a separate dim, roughly uniform,
+night-side-only term.
+
+### Frame times are meaningless while the monitor is off
+
+`orbit_once` reported ~1000ms frames, reproducibly, on both bodies and in both render modes, with the
+GPU at 0% and 38C and load average 0.05. `xset -q` says **Monitor is Off**: DPMS had blanked the
+display and the compositor throttles the window to about 1Hz. Nothing to do with the renderer.
+
+Pixel comparisons are unaffected — fixed timestep, deterministic — which is why every scenario still
+passed throughout. But **any frame-time figure taken in that state is worthless**, and nothing in the
+harness notices. Check `xset -q` before believing a performance number.
