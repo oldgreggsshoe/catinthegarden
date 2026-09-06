@@ -848,6 +848,11 @@ struct RasterNearFieldBounds {
 }
 
 impl TerrainRenderer {
+    /// Opt-in system rendering only; the single-body default remains L18.
+    pub(crate) fn set_distant_level_limit(&mut self, level: Option<u8>) {
+        self.lod.set_maximum_level(level.unwrap_or(MAX_LOD_LEVEL));
+    }
+
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,

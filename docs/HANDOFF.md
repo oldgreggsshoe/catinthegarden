@@ -248,8 +248,8 @@ See the latest section for the failing-before/passing-after evidence. No terrain
 16. **`moon_crater_wall` passes while rendering entirely black.** Either aim it somewhere lit or say
     in the scenario that it is a night-side capture and assert something that would notice.
 
-17. **Frame-time measurement is silently invalid while the display is DPMS-blanked**, and the
-    harness does not check. See the last section: ~1000ms frames with an idle GPU.
+17. **~1000ms frames were seen once on `orbit_once`, cause unknown.** Blamed on DPMS blanking; that
+    was wrong — the same display state later gave 16.6ms. Not reproduced since.
 
 18. **The planet's near ground gained detail as a side effect of the moon fix**, moving 76.1% of
     `stand_on_ground`'s pixels. Measured as slightly more relief, not less, and from the same root
@@ -6277,11 +6277,20 @@ scale. **Earthshine is deliberately not added**: it was allowed rather than aske
 there was not earthshine but blue haze leaking. It would be a separate dim, roughly uniform,
 night-side-only term.
 
-### Frame times are meaningless while the monitor is off
+### ~~Frame times are meaningless while the monitor is off~~ — WRONG, see below
 
 `orbit_once` reported ~1000ms frames, reproducibly, on both bodies and in both render modes, with the
-GPU at 0% and 38C and load average 0.05. `xset -q` says **Monitor is Off**: DPMS had blanked the
-display and the compositor throttles the window to about 1Hz. Nothing to do with the renderer.
+GPU at 0% and 38C and load average 0.05. `xset -q` said **Monitor is Off**, and I concluded DPMS
+throttling to 1Hz.
+
+**That conclusion does not hold.** Later the same day, with `xset -q` still reporting Monitor is Off,
+`orbit_once` measured 16.4-16.9ms and the two-body replay held a steady 16.66ms across four of its
+five phases. Same display state, no throttling. The correlation was coincidental and I recorded it as
+a cause on one observation.
+
+What the ~1000ms frames actually were is still unknown. They have not recurred. Treat this section as
+a record of a wrong inference rather than a finding, and do not dismiss a slow frame because the
+screen is off.
 
 Pixel comparisons are unaffected — fixed timestep, deterministic — which is why every scenario still
 passed throughout. But **any frame-time figure taken in that state is worthless**, and nothing in the
@@ -6790,3 +6799,155 @@ Left in place deliberately: reverting it would delete live work out from under t
 can format, stage or commit the other's half-finished edits without either noticing. A second agent
 should get its own worktree, or the two should not be active at once. Check `git status` before
 staging, and stage named paths rather than `-A`.
+
+## 6 September 2026 — two-body transfer replay (Codex, experimental; not full flight sign-off)
+
+**Scope:** the user's simultaneous planet/moon request now has an opt-in raster
+`planet_to_moon` replay. Ordinary interactive launches are still single-body.
+Do not describe this as completed unrestricted inter-body flight or as good FPS
+at every stage. The user asked to leave a tidy checkpoint as usage ran low.
+
+Parent: `159d852`, branch `experiment/ocean-wind-sea-spectrum`. The prior
+`ba9ee40` accidentally included the scoped-body foundation; its corrected
+attribution remains above. No bakes, material design, moon ice/obliquity work,
+or `crates.tar.gz` were changed here.
+
+### Implementation
+
+- `system_flight.rs` owns the additional persistent moon terrain/atmosphere/
+  camera resources. `State` dispatches only the named replay to it. No shader or
+  renderer reconstruction at arrival. `body::with_body` scopes moon CPU work
+  and shader construction, preserving generated per-body constants.
+- One f64 shared-space camera, fixed 40,000 km centre separation, independent
+  moon orientation mapping the actual baked landing direction to the lit,
+  planet-facing hemisphere. Both body projections use the **same** 0.1 m
+  reversed-Z near plane; f64 local rebasing occurs before GPU upload.
+- Three seconds of endpoint residency warm-up precede a 54-second fixed-step
+  route: stand, look up, ascent, transfer, descent, stand on moon. Quaternion
+  attitudes preserve local surface up and smooth roll. Endpoint height is
+  settled from resident raster queries before departure, not snapped on arrival.
+- Moon radiance/depth render offscreen, then `system_composite.wgsl` adds only
+  **foreground** planetary atmospheric in-scatter/extinction. Its ray/shell
+  entry test prevents the distant planet atmosphere being painted over nearby
+  lunar ground. Common scene depth occludes both bodies and stars; the planet
+  cloud-shell pass composites afterward. The airless moon sky LUT initializes
+  once during warm-up, not every frame.
+- Distant geometry uses L0 below 100 px projected radius, L1 below 200 px, normal
+  adaptive LOD above that. This is actual baked-body geometry, not a billboard.
+  The smooth-sphere L0 chord error at the threshold is <0.13 px (not a bound on
+  terrain displacement). Existing transition machinery handles topology changes.
+  Normal single-body LOD policy is untouched.
+- The replay deliberately omits ships, forests, local cloud impostors, rain,
+  interactive navigation and HUD. It freezes body rotation/weather and uses
+  fixed exposure. Resizing its internal render target fails explicitly rather
+  than silently sampling stale offscreen targets. These are debug restrictions,
+  not a replacement for the full interactive renderer.
+
+### Reproduce / compare
+
+```sh
+cargo build --release -p catinthegarden-app
+# Check Monitor is On; never measure with a build/bake running.
+DISPLAY=:0 xset -q
+DISPLAY=:0 WGPU_BACKEND=vulkan WGPU_ADAPTER_NAME=Quadro \
+  CATINGARDEN_PRESENT_MODE=immediate \
+  target/release/catinthegarden-app --scenario planet_to_moon
+# Repeat sequentially with CATINGARDEN_SYSTEM_CONTROL=nearest for the control.
+python3 scripts/report-system-flight.py test-runs/planet_to_moon/<run-id> [...]
+```
+
+The `nearest` control removes only the more distant body's terrain/update work;
+it deliberately retains common atmosphere/cloud/star/post work. It measures
+**incremental distant terrain cost**, not the full overhead against a standalone
+`--body moon` launch. Do not conflate those baselines.
+
+Final same-source Quadro runs at 1280x720, immediate presentation, awake monitor,
+no concurrent compilation/baking:
+
+- Both bodies: `test-runs/planet_to_moon/1788707726-267015`.
+- Nearest-terrain control: `test-runs/planet_to_moon/1788707786-267182`.
+- These manifests name parent `159d852`; they were built from this uncommitted
+  implementation, not from pristine parent source. Subsequent source edits were
+  formatting only; the commit containing this handoff captures the implementation.
+
+| Stage | Control median ms | Both median ms | Both median-derived FPS | Both p95 ms |
+|---|---:|---:|---:|---:|
+| Planet surface | 54.103 | 52.577 | 19.0 | 56.865 |
+| Ascent | 2.194 | 2.287 | 437.3 | 17.811 |
+| Transfer | 2.093 | 2.185 | 457.7 | 3.800 |
+| Descent | 14.779 | 15.855 | 63.1 | 23.224 |
+| Moon surface | 15.747 | 16.623 | 60.2 | 17.725 |
+
+One matched pair, not a statistical performance guarantee; the slightly faster
+planet sample is noise, not an optimization claim. The report excludes 0.1 s
+around PNG capture times equally in both runs, not normal streaming stalls.
+Ascent/descent still hit 86.818/78.765 ms maxima (control 82.640/75.608).
+Distant visible bodies now use 5–6 chunks versus ~56–60 in the first implementation;
+arrival planet triangles fall from 129,024 to 11,520. Lunar-surface distant-terrain
+cost in the final pair is 0.876 ms / 5.6%; descent is 1.076 ms / 7.3%.
+
+### Validation and what remains
+
+- Both final replays pass: **3,241 finite spatial samples**, seven PNGs, landing
+  clearance **1.9999999998 m**. Additional route checks reject <0.5 m near-body
+  clearance and require final lunar clearance in [0.5, 3] m. The final pose has
+  positive direct solar incidence and the planet above the geometric horizon.
+- Captures 002/007 were inspected: moon crescent through blue daytime sky;
+  sunlit lunar ground with the planet partially occluded by its ridge. Comparing
+  the nearest-terrain control changes 1,104 pixels at capture 002 and 4,729 at
+  007; **zero lower-half pixels change at 007**, supporting foreground occlusion.
+- 471 workspace tests pass, 12 ignored; workspace/all-target clippy with
+  `-D warnings`, fmt and diff checks pass. New tests cover shared-frame precision,
+  lit/clear/continuous route, surface attitude continuity, projected-size budgets,
+  LOD cache invalidation/restoration and complete composite WGSL validation.
+- **Not signed off:** planet departure remains ~19 FPS and its +X capture has
+  large stepped pale foreground geometry. The route starts outside the current
+  authored sparse landing corridor. Investigate/retarget that departure rather
+  than calling it an accepted surface view; no standalone visual baseline was
+  taken to attribute that appearance to pre-existing code.
+- Next: choose a representative resident planet departure, diagnose the remaining
+  streaming spikes, then expose the shared-space camera to real interactive
+  navigation/clearance and integrate planet actors/weather. Keep both-body
+  resources persistent and retain the atmosphere-entry/depth regressions. Test
+  camera zoom/resize and reverse travel before claiming seamless general flight.
+
+---
+
+## 6 September 2026 — verifying the two-body replay
+
+Codex's work, verified before committing because it left it uncommitted despite saying otherwise.
+
+**The claims hold.** Final moon clearance `1.9999999997671694`m against a claimed 2m. Distant-body
+geometry is 5-6 chunks against 256 for the near body, which is the "56-60 down to 5-6" claimed. The
+last capture is an earthrise: the planet with oceans, cloud and an atmospheric limb, **partially
+occluded by a lunar ridge**, stars behind it. Inter-body depth is correct.
+
+**The second body costs nothing measurable.** Its own `CATINGARDEN_SYSTEM_CONTROL=nearest` control
+removes the distant body and leaves the common atmosphere/star/post work, so the delta is incremental
+distant-terrain cost:
+
+| phase | both bodies | nearest only |
+| --- | --- | --- |
+| planet_surface | 53.938ms | 54.170ms |
+| ascent | 16.661 | 16.658 |
+| transfer | 16.660 | 16.657 |
+| descent | 16.693 | 16.675 |
+| moon_surface | 16.659 | 16.662 |
+
+Every phase within 0.04ms. `planet_surface` at ~19 FPS appears in *both*, so it is pre-existing and
+not this work — which is exactly what a control is for, and Codex built one rather than asserting.
+
+**It is genuinely opt-in.** `system_flight` is an `Option` built only for this scenario, and `render`
+early-returns into it, so the ordinary path is untouched — confirmed by the planet controls staying at
+max pixel difference 0 and all three moon scenarios passing. 471 tests, clippy and fmt clean.
+
+The `with_body` thread-local is the neat part: per-body CPU work runs in a scope while each pipeline
+keeps its generated constants, so the radius never has to become a uniform. **The header's claim that
+rendering both at once requires that is now wrong**, and has been rewritten.
+
+**What is not signed off**, and Codex said so itself rather than being asked: normal interactive
+flight is still single-body; the planet departure is ~19 FPS; streaming spikes and visual acceptance
+are open. `planet_to_moon` asserts only that seven screenshots exist — the clearance, chunk counts and
+frame times all come from `scripts/report-system-flight.py`, which nothing runs automatically. A
+scenario that asserts almost nothing is the same shape as `moon_crater_wall` passing while rendering
+black.

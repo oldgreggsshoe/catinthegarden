@@ -23,6 +23,7 @@ mod ship_render;
 mod stars;
 mod sun;
 mod surface_camera;
+mod system_flight;
 mod terrain;
 mod weather;
 mod weather_render;
@@ -952,6 +953,7 @@ struct SpatialLogInputs {
 }
 
 struct State {
+    system_flight: Option<system_flight::SystemFlight>,
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -1356,6 +1358,7 @@ impl State {
         );
 
         let mut state = Self {
+            system_flight: None,
             surface,
             device,
             queue,
@@ -1482,6 +1485,12 @@ impl State {
         }
         state.apply_startup_experiment_overrides();
         state.apply_interactive_startup_controls();
+        if scenario_name.as_deref() == Some("planet_to_moon") {
+            state.system_flight = Some(system_flight::SystemFlight::new(
+                &mut state,
+                &camera_bind_group_layout,
+            ));
+        }
         state
     }
 
@@ -2947,6 +2956,11 @@ impl State {
     }
 
     fn render(&mut self, window: &Window) -> Option<bool> {
+        if let Some(mut flight) = self.system_flight.take() {
+            let result = flight.render(self);
+            self.system_flight = Some(flight);
+            return result;
+        }
         let profile_started = Instant::now();
         let now = Instant::now();
         let completed_gpu_samples = self

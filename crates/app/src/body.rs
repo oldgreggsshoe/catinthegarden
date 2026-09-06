@@ -5,16 +5,13 @@
 //! quantities that describe *which* world are gathered here and the rest of the
 //! crate asks for them rather than assuming them.
 //!
-//! **One body is active at a time.** That is a deliberate simplification while
-//! the second world is being brought up: the planet is switched off while you
-//! stand on the moon. It is what lets the radius reach the shaders as a
-//! generated constant rather than a per-draw uniform, which in turn means the
-//! CPU and GPU cannot disagree about it — the failure mode this codebase spends
-//! most of its tests guarding against. Rendering both at once needs the radius
-//! to become a uniform, and that is the next step, not this one.
+//! The normal renderer selects its default body once. Multi-body rendering
+//! constructs persistent resources inside `with_body` scopes: each pipeline
+//! retains its generated constants, while CPU updates use the matching scope.
+//! This preserves CPU/GPU agreement without rebuilding shaders during travel.
 
-use std::sync::OnceLock;
 use std::cell::Cell;
+use std::sync::OnceLock;
 
 /// A world the renderer can draw.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -124,12 +121,14 @@ pub fn set_active(body: Body) -> bool {
 }
 
 pub fn active() -> Body {
-    RENDER_BODY.get().unwrap_or_else(|| *ACTIVE.get_or_init(|| PLANET))
+    RENDER_BODY
+        .get()
+        .unwrap_or_else(|| *ACTIVE.get_or_init(|| PLANET))
 }
 
 /// Radius of the body being drawn. This is the accessor that replaced a
 /// crate-wide constant; it is read on hot paths, so it stays a plain copy out
-/// of a `OnceLock` rather than anything that allocates or locks.
+/// of the scoped body (or process default), without allocation or locking.
 pub fn radius_meters() -> f64 {
     active().radius_meters
 }

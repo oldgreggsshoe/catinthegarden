@@ -1422,6 +1422,17 @@ impl PlanetLod {
         }
     }
 
+    /// A distant-body presentation may use a sub-L2 ceiling. Invalidate the
+    /// cached selection, but retain the tree so ordinary geomorphing still
+    /// handles the transition back to surface detail.
+    pub(crate) fn set_maximum_level(&mut self, level: u8) {
+        let level = level.min(MAX_LOD_LEVEL);
+        if self.policy.max_level != level {
+            self.policy.max_level = level;
+            self.last_selection_input = None;
+        }
+    }
+
     pub fn set_terrain_height_range(&mut self, terrain_height_range: TerrainHeightRange) {
         if self.terrain_height_range != terrain_height_range {
             self.terrain_height_range = terrain_height_range;
@@ -3230,6 +3241,26 @@ mod tests {
             node.children()[0].geometric_error_meters(),
             node.geometric_error_meters() * 0.5
         );
+    }
+
+    #[test]
+    fn distant_ceiling_invalidates_selection_and_restores_detail() {
+        let camera = OrbitCamera::default();
+        let mut lod = PlanetLod::default();
+        let update = |lod: &mut PlanetLod| {
+            lod.update_for_view(
+                camera.world_position(),
+                camera.direction_dvec3(),
+                1.5,
+                1080,
+                45_f64.to_radians(),
+            )
+        };
+        assert!(update(&mut lod).metrics.max_level >= MINIMUM_LOD_LEVEL);
+        lod.set_maximum_level(0);
+        assert_eq!(update(&mut lod).metrics.max_level, 0);
+        lod.set_maximum_level(MAX_LOD_LEVEL);
+        assert!(update(&mut lod).metrics.max_level >= MINIMUM_LOD_LEVEL);
     }
 
     #[test]
