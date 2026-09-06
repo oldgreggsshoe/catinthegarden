@@ -6640,3 +6640,31 @@ of red over green, which is not pink. Set from the rendered result instead: `(24
 
 **Still there**: one white patch on a sunlit rim in the survey capture, which is not ice — most likely
 the regolith specular. Small, and not chased.
+
+### The white patch was not ice, and the ice cannot be seen
+
+Chased the white blob reported on top of the pink. It is **brightly lit regolith**: albedo at those
+pixels is `(113, 106, 100)`, the plain rock colour, rendering at `(199, 200, 201)`. Blocky because the
+normals are, which is the texel-facet problem already open — not a material fault. Two wrong guesses
+on the way, both disproved by measurement rather than argument: the categorical-biome specular (the
+smooth path's only specular is multiplied by `wetness`, which is zero on an airless body) and
+planetshine (disabling it changed the patch by nothing at all, 744 pixels either way).
+
+`material_specular_scale` was keyed to the biome anyway, so ice took a full-strength highlight where
+regolith took 0.16. On a body whose every material is rock or the ice lying on it, one dim scale is
+right; changed, though it was not the artefact.
+
+**And the survey scenario's sun was unphysical.** I had set it 18 degrees above the *local* horizontal,
+while the whole ice model assumes zero obliquity — the sun never leaving the equatorial plane. Which
+is how ice ended up sunlit in a capture: the test violated the premise the feature is built on. Fixed
+to local noon in the equatorial plane. **A scenario that contradicts the model is not evidence.**
+
+With the sun where it belongs, the real finding: one survey frame holds **671 ice pixels and thirteen
+of them are visible**. That is not a bug — ice sits where the sun never reaches, so nothing the sun
+does can show it. Planetshine is the only light a permanently shadowed floor gets, in the renderer as
+in life, so it is the term that has to carry them. Raised 0.0012 to 0.022, which puts shadowed ground
+around 17/255 and the ice near 130: a dark body with faintly lit shadows rather than a black one with
+an invisible feature in it.
+
+That is a large fudge over the literal 1.2e-4 and it is written down as one. The alternative is
+placing ice where the sun reaches, which would undo the point of the change that put it in shadow.

@@ -586,11 +586,25 @@ fn airless_regolith(biome_id: u32) -> bool {
     return !BODY_HAS_ATMOSPHERE && biome_id == AIRLESS_BODY_BIOME;
 }
 
+/// How strong this material's highlight is, against water's.
+///
+/// On an airless body every material is regolith or the ice lying on it, and
+/// both are dim -- so the scale is the same for the whole body rather than
+/// chosen by biome. It used to be chosen by biome, and because the biome map is
+/// categorical at 828m, ice texels took a full-strength highlight and drew hard
+/// white blocks across the smoothly mixed ice underneath.
 fn material_specular_scale(biome_id: u32) -> f32 {
+    if !BODY_HAS_ATMOSPHERE {
+        return AIRLESS_REGOLITH_SPECULAR;
+    }
     return select(1.0, AIRLESS_REGOLITH_SPECULAR, airless_regolith(biome_id));
 }
 
 fn material_allows_specular(biome_id: u32) -> bool {
+    if !BODY_HAS_ATMOSPHERE {
+        // Rock and ice alike, at the one dim scale above.
+        return true;
+    }
     if airless_regolith(biome_id) {
         return true;
     }

@@ -2106,6 +2106,29 @@ fn airless_permanent_shadow(surface_normal: vec3<f32>, surface_direction: vec3<f
     return smoothstep(AIRLESS_ICE_FACING_LIT, AIRLESS_ICE_FACING_DARK, facing);
 }
 
+/// How much of this ground is ice, 0 to 1.
+///
+/// Two terms with different jobs. The baked fraction knows about crater rims,
+/// which a fragment cannot see, but only at 828m. The facing term knows nothing
+/// about rims and resolves every pixel. Multiplied, the first says *where* ice
+/// is possible and the second says exactly which ground it lies on -- so a
+/// crater's poleward wall ices and its sunward wall does not, at the resolution
+/// the surface is drawn.
+///
+/// Shared with the specular, which is the point. The highlight used to key off
+/// the *categorical* biome instead: ice biome fell through
+/// `material_specular_scale` to full strength while regolith got 0.16, so a
+/// bright white glint appeared in hard 828m blocks on top of the smoothly mixed
+/// pink underneath it. One mix, both uses, no disagreement.
+fn airless_ice_mix(
+    moisture: f32,
+    surface_normal: vec3<f32>,
+    surface_direction: vec3<f32>,
+) -> f32 {
+    let region = smoothstep(AIRLESS_ICE_REGION_LOW, AIRLESS_ICE_REGION_HIGH, moisture);
+    return region * airless_permanent_shadow(surface_normal, surface_direction);
+}
+
 fn terrain_material_color(
     outmap: bool,
     biome: u32,
@@ -2128,14 +2151,7 @@ fn terrain_material_color(
     // follows the ground at any distance, because it is a field rather than a
     // stencil. The biome still decides identity; this decides the look.
     if !BODY_HAS_ATMOSPHERE {
-        // Two terms with different jobs. The baked fraction knows about crater
-        // rims, which a fragment cannot see, but only at 828m. The facing term
-        // knows nothing about rims but resolves every pixel. Multiplied, the
-        // first says *where* ice is possible and the second says exactly which
-        // ground it lies on -- so a crater's poleward wall ices and its sunward
-        // wall does not, at the resolution the surface is drawn.
-        let region = smoothstep(AIRLESS_ICE_REGION_LOW, AIRLESS_ICE_REGION_HIGH, moisture);
-        let ice = region * airless_permanent_shadow(surface_normal, surface_direction);
+        let ice = airless_ice_mix(moisture, surface_normal, surface_direction);
         // The ice takes the body's own tint rather than a separate palette
         // entry, so the planet's glaciers keep reading the shared colour.
         return BODY_TERRAIN_TINT * mix(biome_color(8u), BODY_ICE_TINT * biome_color(2u), ice);

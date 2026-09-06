@@ -68,10 +68,17 @@ pub const MOON_PLANET_SKY_DIRECTION: [f64; 3] = [-0.254_534_6, 0.0, -0.967_063_4
 /// ten magnitudes fainter than the sun. At that value it is invisible here —
 /// the night side quantises to zero, because this renderer has a fixed exposure
 /// and no eye adaptation, and a real observer's night vision is most of why
-/// earthshine looks as bright as it does. So this is about ten times the
-/// literal ratio, which is an exposure decision written down rather than a
+/// earthshine looks as bright as it does. So this is far above the literal
+/// ratio, and deliberately: an exposure decision written down rather than a
 /// claim about photometry.
-pub const MOON_PLANETSHINE_FRACTION: f64 = 0.001_2;
+///
+/// The size of the fudge is set by what the term is *for*. Ice on this body
+/// sits where the sun never reaches -- that is what makes it ice -- so nothing
+/// the sun does can ever show it. At 0.0012 one survey frame held 671 ice
+/// pixels and thirteen of them were visible. Planetshine is the only light a
+/// permanently shadowed floor gets, in the renderer exactly as in life, so it
+/// is the term that has to carry them.
+pub const MOON_PLANETSHINE_FRACTION: f64 = 0.022;
 
 /// Planetshine is the colour of the planet: ocean and Rayleigh sky, so blue.
 pub const MOON_PLANETSHINE_COLOUR: [f64; 3] = [0.55, 0.70, 1.0];
