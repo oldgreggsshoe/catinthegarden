@@ -264,6 +264,12 @@ See the latest section for the failing-before/passing-after evidence. No terrain
     this before touching any ice threshold; they are compensating for a premise that does not hold.
 22. **`Crater::freshness` is carried and unused**, the first piece of the surface texture.
 
+23. **`planet_to_moon` starts the camera inside the drawn ground**, and its `planet_clearance` is
+    2.0 by construction rather than measurement, so it cannot report this. Measure from the depth
+    buffer. The visible symptom is a one-pixel terrain hairline sweeping the frame during the pitch-up.
+24. **`planet_to_moon` pins exposure at 1.0 with auto-exposure off.** Correct for comparing phases,
+    but its captures are not the game's lighting and should not be judged as such.
+
 **Build convention.** Benchmarks and parity runs build to `CARGO_TARGET_DIR=/home/dad/catingard-target`,
 not the in-repo `target/`. Give every temporary or staged checkout its own `CARGO_TARGET_DIR`
 (`AGENTS.md`); never share the worktree's. Note that
@@ -7028,3 +7034,56 @@ It compiled, and I "verified" it by running the same regex against `HEAD` and co
 circular, and reported "identical sets" on two equally incomplete lists. What caught it was the test
 suite; what should have caught it is the check I did second: compare against `ls crates/app/scenarios`,
 a source the regex has no part in. **Verify against something the method under test did not produce.**
+
+---
+
+## 6 September 2026 — three things from a video, all reproduced
+
+### The white line is the ground seen edge-on, and the underground start is why
+
+Reported as a horizontal white line appearing as the camera pitches to vertical. Caught by capturing
+**every** frame from 330 to 419 rather than the scenario's seven: six frames carry it, at rows 110,
+132, 197, 228, 249, 253 — descending as the camera turns, which is the horizon sweeping down the view.
+
+It is **exactly one pixel tall**, full width, and `(191,191,191)` light grey with sky both sides —
+terrain, not sky, not a shader artefact. That is the ground plane seen precisely edge-on: from a point
+*on* a surface, the surface subtends no thickness and draws as a hairline where it crosses the frame.
+
+Confirmed by removing the cause rather than by argument: raising the departure clearance from 2m to
+12m gives **0 frames with a line, against 6**. Ian's guess, and it was right.
+
+### Why nobody noticed the camera was underground
+
+`planet_clearance` in the two-body log is **2.0 exactly, every frame**. It is not a measurement. The
+route sets `departure = radius + planet_height + 2.0`, and the log then computes
+`planet_altitude - raster_surface_height_meters_at(...)` from the same query. The answer is 2.0 by
+algebra whatever the ground does — an assertion that cannot fail, the same shape as `moon_crater_wall`
+passing while rendering black.
+
+What it is 2m above is the **CPU height field**, not the drawn surface, and those differ — that gap is
+what `mountain_ground` exists to measure (median 0.056m, max 0.303m there, more on rough ground). The
+start height is also taken with `prepare_flight_start_surface_height_meters(DVec3::X, 0.0)` — camera
+altitude *zero*, before anything has streamed — while how much detail the surface carries depends on
+camera distance.
+
+Two fixes, and they are different sizes. Raising the constant clears the symptom. The real one is to
+measure clearance from the **depth buffer**, as the surface probe already does, so the number can
+disagree with the pose that produced it.
+
+### The mystery object is the sun, and the reason it looks wrong is the exposure
+
+Proven by removal, twice: with `sun.draw_disc` commented out, the pure-white pixels in the transfer
+frame go 191 to **0** and the exact pixel turns black; in the *blue sky* frames the dot's pixels turn
+plain sky `(123,157,201)`. Its 13-16px size matches the drawn sun's 12.7px.
+
+Ian was right that it does not look like the game's sun, and the reason is not atmosphere — my first
+answer. `system_flight` calls `set_auto_exposure_enabled(false)` and pins exposure to **1.0**. In play
+the eye adapts, so in daylight the sun stops down to soft glare; here it cannot, so it reads as the
+same hard little disc in blue sky and in vacuum alike. That is deliberate — frames across five phases
+are not comparable under a moving exposure — but it does mean **`planet_to_moon` is not showing you
+the game's lighting**, and no capture from it should be judged as if it were.
+
+Along the way I claimed, wrongly and twice, that the sun disc was old and just newly *visible*: first
+from "you have never been in deep space before", then from older captures having zero saturated
+pixels. The second was framing, not absence — `stare_at_sun` renders it on the ordinary path at 52
+saturated samples. Only the removal test settled it.
