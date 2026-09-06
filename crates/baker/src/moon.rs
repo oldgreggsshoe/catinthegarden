@@ -262,6 +262,7 @@ mod tests {
             basin_rank_exponent: 0.5,
             field_rank_exponent: 0.5,
             min_angular_radius: 0.01,
+            small_size_spread: 0.0,
             position_jitter: 1.0,
             field_rank_offset: 5,
         })

@@ -48,6 +48,34 @@ pub const MOON_RADIUS_METERS: f64 = 1_080_000.0;
 /// same grid the bake writes: what it reports is what gets stored.
 pub const MOON_DATUM_METERS: f64 = 22_000.0;
 
+/// Where the planet sits in the moon's sky, as a body-fixed unit direction.
+///
+/// A tidally locked moon keeps one face toward what it orbits, so the planet
+/// does not rise or set: it hangs motionless overhead at the sub-planet point
+/// while the sun goes round. That is why this is a constant and not an orbit —
+/// no orbit exists yet, and for the near side's lighting none is needed.
+///
+/// Chosen on the equator at the baked landing site's longitude, so the planet
+/// is high in the sky from the place the game starts. On the far side it never
+/// rises at all, and `earthshine_irradiance` returns nothing there, which is
+/// correct rather than a limitation.
+pub const MOON_PLANET_SKY_DIRECTION: [f64; 3] = [-0.254_534_6, 0.0, -0.967_063_4];
+
+/// How much of direct sunlight reaches the surface as planetshine, at full
+/// phase and with the planet overhead.
+///
+/// The literal figure is about 1.2e-4: seen from the moon the planet is roughly
+/// ten magnitudes fainter than the sun. At that value it is invisible here —
+/// the night side quantises to zero, because this renderer has a fixed exposure
+/// and no eye adaptation, and a real observer's night vision is most of why
+/// earthshine looks as bright as it does. So this is about ten times the
+/// literal ratio, which is an exposure decision written down rather than a
+/// claim about photometry.
+pub const MOON_PLANETSHINE_FRACTION: f64 = 0.001_2;
+
+/// Planetshine is the colour of the planet: ocean and Rayleigh sky, so blue.
+pub const MOON_PLANETSHINE_COLOUR: [f64; 3] = [0.55, 0.70, 1.0];
+
 /// One impact structure, as a cap on the unit sphere.
 #[derive(Clone, Copy, Debug)]
 pub struct Crater {
@@ -103,12 +131,20 @@ pub const EJECTA_EXTENT: f64 = 1.35;
 // `baker::moon::permanently_shadowed`, from the terrain and the sun's actual
 // track. Nothing here fills anything, and the surface is just the craters.
 
-/// Prime, so it is coprime with any catalogue size that is not a multiple of
-/// it. `index * STRIDE % count` then visits every size rank exactly once.
-/// Without it a catalogue would grade smoothly from large craters at one pole
-/// to small at the other, because index order is latitude order.
-const SIZE_RANK_STRIDE: usize = 197;
-const SIZE_RANK_OFFSET: usize = 89;
+/// Seeds the shuffle that assigns sizes to positions.
+///
+/// This was a modular stride: `index * 197 + 89 % count`, which visits every
+/// rank exactly once and looks like decorrelation. It is not. For any narrow
+/// band of ranks -- which is to say any one size of crater -- the indices
+/// carrying it form an *arithmetic progression*, and an arithmetic progression
+/// on a golden-angle spiral is exactly what draws phyllotactic arms. So every
+/// size class sat on its own regular lattice, and the medium craters were
+/// visibly in rows on the finished body.
+///
+/// Position jitter did not save it. That displaces by one neighbour spacing,
+/// and a size class is spaced tens of spacings apart, so its lattice survived
+/// intact underneath. A shuffle has no such structure to survive.
+const SIZE_RANK_SEED: u64 = 0x5EED_C0FF_EE15_600D;
 
 /// How a catalogue is shaped: two tiers, because the renderer's latitude
 /// window is only narrow if everything inside it is small.
@@ -131,12 +167,21 @@ pub struct CatalogueSpec {
     pub basin_rank_exponent: f64,
     pub field_rank_exponent: f64,
     /// Smallest crater the catalogue will produce, in radians. The power law
-    /// runs past it into sizes too small for the grid to hold, so it is
-    /// clamped: what would have been a spike becomes another crater at the
-    /// resolvable floor. A real regolith surface is saturated with craters at
-    /// the smallest size you can see, so this reads correctly rather than as a
-    /// compromise.
+    /// runs past it into sizes too small for the grid to hold, so the tail is
+    /// resized rather than dropped.
     pub min_angular_radius: f64,
+    /// How much larger than the floor a resized tail crater may be.
+    ///
+    /// The tail used to be *clamped*, so every one of the 582,000 craters past
+    /// the law's reach came out at exactly the floor. Identical discs, on a
+    /// spiral whose spacing is 4.94km, at 4.8km across: they tiled the surface,
+    /// and a saturated tiling of identical circles reads as woven fabric. One
+    /// spacing of position jitter cannot hide that, because the regularity is
+    /// in the *sizes*, not the places.
+    ///
+    /// Spreading them over floor..floor*(1 + this) breaks the tiling, at the
+    /// cost of a size-frequency law that is already fiction below the floor.
+    pub small_size_spread: f64,
     /// How far a crater is displaced from its lattice position, as a fraction
     /// of the spacing between neighbours.
     ///
@@ -171,7 +216,8 @@ pub const RUNTIME_SPEC: CatalogueSpec = CatalogueSpec {
     basin_rank_exponent: 0.72,
     field_rank_exponent: 0.45,
     min_angular_radius: 0.0,
-    position_jitter: 1.0,
+    small_size_spread: 0.0,
+    position_jitter: 1.6,
     field_rank_offset: 0,
 };
 
@@ -203,7 +249,9 @@ pub const BAKED_SPEC: CatalogueSpec = CatalogueSpec {
     field_rank_exponent: 0.5,
     // 2.4km, which is about six working cells across.
     min_angular_radius: 0.002_2,
-    position_jitter: 1.0,
+    // Up to 5.8km, so the saturated tail is a range of sizes rather than one.
+    small_size_spread: 1.4,
+    position_jitter: 1.6,
     // One continuous law across both tiers: the field picks up at rank 177,
     // exactly where the basins stop.
     field_rank_offset: 176,
@@ -398,10 +446,15 @@ fn build_tier(
     rank_exponent: f64,
     rank_offset: usize,
 ) -> Vec<Crater> {
-    assert!(
-        !count.is_multiple_of(SIZE_RANK_STRIDE),
-        "the size-rank stride must be coprime with the count, or ranks repeat",
-    );
+    // Every rank used exactly once, in an order with no arithmetic structure.
+    // Fisher-Yates, seeded rather than random, so the catalogue is still the
+    // same on every run and on both sides of the bake.
+    let mut ranks: Vec<usize> = (0..count).collect();
+    for position in (1..count).rev() {
+        let draw = mix64(SIZE_RANK_SEED ^ (position as u64).wrapping_mul(0x9E37_79B9))
+            % (position as u64 + 1);
+        ranks.swap(position, draw as usize);
+    }
     let golden_angle = std::f64::consts::PI * (3.0 - 5.0_f64.sqrt());
     (0..count)
         .map(|index| {
@@ -426,9 +479,17 @@ fn build_tier(
             // Size by rank, not by a smooth function of the index: this gives
             // an exact size-frequency law with each rank used once, rather
             // than whatever histogram a sine mix happens to have.
-            let rank = rank_offset + (index * SIZE_RANK_STRIDE + SIZE_RANK_OFFSET) % count + 1;
-            let angular_radius = (max_angular_radius * (rank as f64).powf(-rank_exponent))
-                .max(spec.min_angular_radius);
+            let rank = rank_offset + ranks[index] + 1;
+            let law = max_angular_radius * (rank as f64).powf(-rank_exponent);
+            // Past the floor the law is asking for craters the grid cannot
+            // hold. Resize rather than clamp: clamping made them all identical,
+            // and identical craters at the spiral's own spacing tile.
+            let angular_radius = if law >= spec.min_angular_radius {
+                law
+            } else {
+                let draw = unit_from_hash(mix64(SIZE_RANK_SEED ^ (index as u64) << 17));
+                spec.min_angular_radius * (1.0 + spec.small_size_spread * draw)
+            };
 
             // Big basins relax: depth grows with radius but sub-linearly.
             let radius_meters = angular_radius * MOON_RADIUS_METERS;
@@ -551,6 +612,30 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Size must be scattered across position, not strided through it.
+    ///
+    /// The stride this replaced gave every size class its own arithmetic
+    /// progression of indices, and on a golden-angle spiral that is a lattice
+    /// -- the medium craters came out in visible rows. A step histogram catches
+    /// it: a stride has exactly one step value, a shuffle has hundreds.
+    #[test]
+    fn size_is_shuffled_across_position_rather_than_strided() {
+        let field = runtime().field();
+        let ranks: Vec<f64> = field.iter().map(|c| c.angular_radius).collect();
+        let mut steps = std::collections::HashSet::new();
+        for pair in ranks.windows(2) {
+            // Quantised, so floating-point noise cannot manufacture variety.
+            steps.insert(((pair[1] - pair[0]) * 1.0e6).round() as i64);
+        }
+        assert!(
+            steps.len() > ranks.len() / 4,
+            "only {} distinct size steps across {} craters, which is a stride \
+             rather than a shuffle",
+            steps.len(),
+            ranks.len(),
+        );
     }
 
     /// Jitter must break the lattice, or the spiral's arms read as a grid.

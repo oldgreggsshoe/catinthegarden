@@ -4440,7 +4440,10 @@ mod tests {
             .expect("raster terrain fragment path is present");
         assert!(fragment.contains("let terrain_normal = input.world_normal;"));
         assert!(fragment.contains("terrain_normal,\n        direction,"));
-        assert!(fragment.contains("let terrain_surface_irradiance = terrain_sky_diffuse"));
+        // The sky is the planet's ambient; an airless body's is the planet in
+        // its sky. Both go into the same irradiance, which is what this pins.
+        assert!(fragment.contains("var terrain_ambient = terrain_sky_diffuse;"));
+        assert!(fragment.contains("let terrain_surface_irradiance = terrain_ambient"));
     }
 
     #[test]

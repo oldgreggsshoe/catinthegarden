@@ -547,6 +547,41 @@ const AIRLESS_BOUNCE_FRACTION: f32 = 0.09;
 /// as a body with a thin atmosphere.
 const AIRLESS_TERMINATOR_COSINE_WIDTH: f32 = 0.012;
 
+/// Sunlight that reached this ground by way of the planet.
+///
+/// The only light an airless night side gets. There is no air to scatter, so a
+/// shadowed facet is lit by exactly two things: what bounces off the sunlit
+/// ground beside it, and what bounces off the planet hanging in its sky. This
+/// is the second, and unlike the first it works right through the night.
+///
+/// Three terms, all geometry:
+///
+/// * whether the planet is up at all. Tidally locked, so it never rises on the
+///   far side and there this returns nothing;
+/// * whether this facet faces it, which is what lets a slope be lit while the
+///   ground beside it is not;
+/// * the planet's phase, which is the opposite of the moon's. Full planet when
+///   the sun is behind the moon -- the old moon in the new moon's arms, and the
+///   reason earthshine is brightest on a thin crescent.
+fn planetshine_irradiance(
+    normal: vec3<f32>,
+    surface_direction: vec3<f32>,
+    sun_direction: vec3<f32>,
+) -> vec3<f32> {
+    let planet = normalize(MOON_PLANET_SKY_DIRECTION);
+    // Softened across the horizon rather than switched: at the limb of the near
+    // side the planet is half risen, and a hard edge there would draw a line
+    // around the body that nothing physical puts there.
+    let risen = smoothstep(-0.05, 0.10, dot(normalize(surface_direction), planet));
+    if risen <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let facing = max(dot(normal, planet), 0.0);
+    let lit_fraction = clamp(0.5 * (1.0 - dot(planet, sun_direction)), 0.0, 1.0);
+    return MOON_PLANETSHINE_COLOUR
+        * (MOON_PLANETSHINE_FRACTION * risen * facing * lit_fraction);
+}
+
 fn airless_regolith(biome_id: u32) -> bool {
     return !BODY_HAS_ATMOSPHERE && biome_id == AIRLESS_BODY_BIOME;
 }
@@ -1011,6 +1046,56 @@ fn cloud_shadow_visibility(
     return 1.0 - posterized_density * 0.88;
 }
 
+/// How much of the incident sun a regolith facet sends back, per unit
+/// irradiance. Lambert's cosine for ordinary ground; something quite different
+/// for an airless, dusty one.
+///
+/// Shared, because there are two lighting paths and they were not agreeing: all
+/// of this lived in `flat_triangle_lighting` alone, so the smooth path -- which
+/// became the default when flat-triangle mode stopped being it -- was lighting
+/// the moon with a plain cosine and none of the model below.
+fn airless_surface_response(
+    normal: vec3<f32>,
+    surface_direction: vec3<f32>,
+    sun_direction: vec3<f32>,
+    camera_relative_view_position: vec3<f32>,
+) -> f32 {
+    let incidence = max(dot(normal, sun_direction), 0.0);
+    var response = incidence;
+    {
+        let towards_viewer = normalize(view_to_planet(-camera_relative_view_position));
+        let emission = max(dot(normal, towards_viewer), 1.0e-3);
+        response = 2.0 * incidence / (incidence + emission);
+        // The law alone does not vanish at the terminator; the geometric
+        // cosine still has to close it, or the night side would stay lit.
+        response = response * smoothstep(0.0, AIRLESS_TERMINATOR_COSINE_WIDTH, incidence);
+        // A crater floor turned away from the sun is not truly black: it is lit
+        // by sunlight bouncing off its own sunlit far wall. That is
+        // inter-reflection, not skylight, so it survives having no atmosphere.
+        // Without it the interiors read as holes punched through the body.
+        //
+        // It is gated on the *neighbourhood* rather than on this facet, which
+        // is the whole point -- the facet it lights is the one turned away. But
+        // the neighbourhood's own light falls off with its own cosine, and a
+        // term linear in that keeps lifting ground well inside the terminator
+        // that should already be black: it was added after the closure above,
+        // so nothing shut it off until the geometric terminator itself. Reported
+        // as the moon not going straight to black at the edge of the light.
+        //
+        // Squared, and closed by the same penumbra. Not derived -- the honest
+        // model would integrate the sunlit ground each facet can actually see --
+        // but it has the right shape: near the sub-solar point the ground around
+        // a crater is fully lit and the interior glows, and approaching the
+        // terminator that ground is grazing-lit and has nothing to give.
+        let neighbourhood_sun = max(dot(surface_direction, sun_direction), 0.0);
+        let bounce = neighbourhood_sun
+            * neighbourhood_sun
+            * smoothstep(0.0, AIRLESS_TERMINATOR_COSINE_WIDTH, neighbourhood_sun);
+        response = response + AIRLESS_BOUNCE_FRACTION * bounce;
+    }
+    return response;
+}
+
 fn flat_triangle_lighting(
     albedo: vec3<f32>,
     biome_id: u32,
@@ -1058,37 +1143,21 @@ fn flat_triangle_lighting(
     let incidence = max(dot(normal, sun_direction), 0.0);
     var response = incidence;
     if airless_regolith(biome_id) {
-        let towards_viewer = normalize(view_to_planet(-camera_relative_view_position));
-        let emission = max(dot(normal, towards_viewer), 1.0e-3);
-        response = 2.0 * incidence / (incidence + emission);
-        // The law alone does not vanish at the terminator; the geometric
-        // cosine still has to close it, or the night side would stay lit.
-        response = response * smoothstep(0.0, AIRLESS_TERMINATOR_COSINE_WIDTH, incidence);
-        // A crater floor turned away from the sun is not truly black: it is lit
-        // by sunlight bouncing off its own sunlit far wall. That is
-        // inter-reflection, not skylight, so it survives having no atmosphere.
-        // Without it the interiors read as holes punched through the body.
-        //
-        // It is gated on the *neighbourhood* rather than on this facet, which
-        // is the whole point -- the facet it lights is the one turned away. But
-        // the neighbourhood's own light falls off with its own cosine, and a
-        // term linear in that keeps lifting ground well inside the terminator
-        // that should already be black: it was added after the closure above,
-        // so nothing shut it off until the geometric terminator itself. Reported
-        // as the moon not going straight to black at the edge of the light.
-        //
-        // Squared, and closed by the same penumbra. Not derived -- the honest
-        // model would integrate the sunlit ground each facet can actually see --
-        // but it has the right shape: near the sub-solar point the ground around
-        // a crater is fully lit and the interior glows, and approaching the
-        // terminator that ground is grazing-lit and has nothing to give.
-        let neighbourhood_sun = max(dot(surface_direction, sun_direction), 0.0);
-        let bounce = neighbourhood_sun
-            * neighbourhood_sun
-            * smoothstep(0.0, AIRLESS_TERMINATOR_COSINE_WIDTH, neighbourhood_sun);
-        response = response + AIRLESS_BOUNCE_FRACTION * bounce;
+        response = airless_surface_response(
+            normal,
+            surface_direction,
+            sun_direction,
+            camera_relative_view_position,
+        );
     }
-    let diffuse = sky_diffuse
+    var ambient = sky_diffuse;
+    if !BODY_HAS_ATMOSPHERE {
+        // Zero on this body, because there is no sky to be diffuse. What there
+        // is instead is the planet.
+        ambient += planetshine_irradiance(normal, surface_direction, sun_direction)
+            * SURFACE_SUNLIGHT_SCALE;
+    }
+    let diffuse = ambient
         + sun_transmittance * cloud_visibility * response * SURFACE_SUNLIGHT_SCALE;
     var specular = triangle_specular;
     if !use_triangle_specular {
@@ -1816,7 +1885,15 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         input.surface_height_and_fog_color.x,
         sun_direction,
     );
-    let terrain_direct_light = max(dot(terrain_normal, sun_direction), 0.0);
+    var terrain_direct_light = max(dot(terrain_normal, sun_direction), 0.0);
+    if airless_regolith(biome_id) {
+        terrain_direct_light = airless_surface_response(
+            terrain_normal,
+            direction,
+            sun_direction,
+            input.camera_relative_view_position,
+        );
+    }
     var terrain_cloud_visibility = 1.0;
     if BODY_HAS_ATMOSPHERE
         && terrain_direct_light > 0.0
@@ -1828,7 +1905,12 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             sun_direction,
         );
     }
-    let terrain_surface_irradiance = terrain_sky_diffuse
+    var terrain_ambient = terrain_sky_diffuse;
+    if !BODY_HAS_ATMOSPHERE {
+        terrain_ambient += planetshine_irradiance(terrain_normal, direction, sun_direction)
+            * SURFACE_SUNLIGHT_SCALE;
+    }
+    let terrain_surface_irradiance = terrain_ambient
         + terrain_sun_transmittance * terrain_cloud_visibility
             * terrain_direct_light
             * SURFACE_SUNLIGHT_SCALE;

@@ -6485,3 +6485,71 @@ more expensive: derive these from the bake.
 
 **Planet unchanged**: max pixel difference 0 on all three controls against a baseline rebuilt at
 `e5b5e25`. 463 tests, clippy and fmt clean.
+
+---
+
+## 6 September 2026 — planetshine, and a grid that was not the stride
+
+### The smooth path had none of the airless lighting
+
+`flat_triangle_lighting` held the whole regolith model — Lommel-Seeliger, the opposition surge, the
+terminator closure, the inter-reflection bounce. The smooth path lit the moon with `max(dot(n, s), 0)`
+and nothing else. That did not matter while flat-triangle mode was the default; it mattered the moment
+it stopped being. **Everything reported about the moon's lighting between those two points was
+measured on a path most of it was not in.**
+
+`airless_surface_response` is now shared and both paths call it. The day side is visibly brighter for
+it — 107 against 78 at the same pixel — which is the backscatter finally arriving.
+
+### Planetshine
+
+Requested. `planetshine_irradiance`, gated on `!BODY_HAS_ATMOSPHERE`, three geometric terms: whether
+the planet is up at all, whether the facet faces it, and the planet's phase — which is the opposite of
+the moon's, so full planet at new moon. **Tidally locked, so it is a body-fixed direction rather than
+an orbit**: the planet hangs motionless while the sun goes round, and on the far side it never rises
+and this returns nothing.
+
+`MOON_PLANETSHINE_FRACTION` is 0.0012. The literal figure is about 1.2e-4 — ten magnitudes fainter
+than the sun. At that value it is invisible here, because this renderer has a fixed exposure and no
+eye adaptation, and a real observer's night vision is most of why earthshine looks as bright as it
+does. Ten times the literal ratio, written down as an exposure decision rather than dressed as
+photometry.
+
+### The grid was the sizes, and my first answer was wrong
+
+Reported as medium craters in rows. My first explanation was the size-rank *stride*: `index * 197 + 89
+% count` makes any narrow rank band an arithmetic progression of indices, and arithmetic progressions
+on a golden-angle spiral draw phyllotactic arms. It is a good story and **it is not what was
+happening** — measured, the strided catalogue's nearest-neighbour spread within a size class is 0.485
+against a shuffle's 0.531. Both scattered. The stride was innocent.
+
+The real cause was visible once the screenshot was cropped: it is the *small* craters, not the medium
+ones. **97% of the catalogue sat at exactly the 2.4km floor**, because the tail was clamped there, and
+600,000 spiral points are spaced 4.94km apart while a 2.4km crater is 4.8km across. Identical discs at
+their own diameter tile the surface, and a saturated tiling of identical circles reads as woven
+fabric. Position jitter could never fix it: the regularity was in the sizes.
+
+The tail is now *resized* rather than clamped — spread over `floor..floor * 2.4` — which puts 3.4% at
+the floor instead of 97%. Jitter went 1.0 to 1.6 spacings as well. Coverage rises to 238%, which
+sounds alarming and is not: with varied sizes the bowls stack *less* coherently, and the deepest point
+came up from 19,256m below the crater datum to 15,141m. Splat 4.3s to 14.5s.
+
+The shuffle replacing the stride stays, because a bijection with no arithmetic structure is easier to
+reason about than one whose safety depends on a coprimality argument — but **it is not the fix and
+should not be credited as one**.
+
+### Scenario poses, again
+
+All three moon scenarios moved, twice: the shadow-ice change dropped crater floors, and each rebake
+moves the baked landing site. They are now derived from the manifest's landing direction and the
+height preview rather than hand-lifted — better, but the derivation lives in a throwaway script and
+not in the harness. Open thread 19, now four rebakes old. `moon_crater_wall` became a 120km survey
+view, which is what actually shows whether the surface tiles.
+
+**Planet unchanged** across all of it: max pixel difference 0 on three controls. 464 tests, clippy and
+fmt clean.
+
+### A note on process
+
+The app panicked reading a half-written outmap because the rebake was `rm -rf` followed by baking in
+place. Bake to a new directory and swap it in.

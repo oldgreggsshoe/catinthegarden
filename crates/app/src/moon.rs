@@ -15,7 +15,10 @@
 //! craters, which is not a shader constant — it is tiles. The shader's copy is
 //! the placeholder terrain shown when the moon has no bake.
 
-use catinthegarden_coretypes::moon::{Crater, EJECTA_EXTENT, MOON_DATUM_METERS, runtime};
+use catinthegarden_coretypes::moon::{
+    Crater, EJECTA_EXTENT, MOON_DATUM_METERS, MOON_PLANET_SKY_DIRECTION, MOON_PLANETSHINE_COLOUR,
+    MOON_PLANETSHINE_FRACTION, runtime,
+};
 
 pub fn wgsl_constants() -> String {
     let catalogue = runtime();
@@ -33,10 +36,17 @@ pub fn wgsl_constants() -> String {
     emit_catalogue(&mut source, "MOON_BASINS", catalogue.basins());
     emit_catalogue(&mut source, "MOON_FIELD", catalogue.field());
     let (window_sin, window_cos) = catalogue.field_window_radians().sin_cos();
+    let [sky0, sky1, sky2] = MOON_PLANET_SKY_DIRECTION;
+    let [tint0, tint1, tint2] = MOON_PLANETSHINE_COLOUR;
     source.push_str(&format!(
         "const MOON_FIELD_WINDOW_SIN: f32 = {window_sin:.9};\n\
          const MOON_FIELD_WINDOW_COS: f32 = {window_cos:.9};\n\
-         const MOON_EJECTA_EXTENT: f32 = {EJECTA_EXTENT:.4};\n"
+         const MOON_EJECTA_EXTENT: f32 = {EJECTA_EXTENT:.4};\n\
+         const MOON_PLANET_SKY_DIRECTION: vec3<f32> = \
+         vec3<f32>({sky0:.9}, {sky1:.9}, {sky2:.9});\n\
+         const MOON_PLANETSHINE_FRACTION: f32 = {MOON_PLANETSHINE_FRACTION:.9};\n\
+         const MOON_PLANETSHINE_COLOUR: vec3<f32> = \
+         vec3<f32>({tint0:.4}, {tint1:.4}, {tint2:.4});\n"
     ));
     source
 }
