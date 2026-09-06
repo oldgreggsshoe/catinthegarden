@@ -98,6 +98,15 @@ pub struct Crater {
     /// crater cannot reach a sample. Precomputed so a loop can reject a
     /// distant crater with a comparison instead of an `acos`.
     pub cosine_cutoff: f64,
+    /// How recent this impact is, 0 (ancient) to 1 (fresh).
+    ///
+    /// Not a shape property — an *optical* one, and the main thing that makes a
+    /// real moon's surface anything other than uniform grey. Freshly excavated
+    /// regolith is bright; the solar wind and micrometeorites darken and redden
+    /// it over hundreds of millions of years, which is why Tycho and Copernicus
+    /// stand out as bright splashes on an otherwise even surface while older
+    /// craters of the same size have faded into it entirely.
+    pub freshness: f64,
 }
 
 impl Crater {
@@ -520,6 +529,14 @@ fn build_tier(
                 cosine_cutoff: (EJECTA_EXTENT * angular_radius)
                     .min(std::f64::consts::PI)
                     .cos(),
+                // Skewed toward old: on a surface four billion years in the
+                // making, a bright crater is the exception. Cubing a uniform
+                // draw leaves roughly one in eight above 0.5 and one in a
+                // thousand near 1.
+                freshness: {
+                    let draw = unit_from_hash(mix64(0xF9E5_4E55 ^ (index as u64) << 23));
+                    draw * draw * draw
+                },
             }
         })
         .collect()

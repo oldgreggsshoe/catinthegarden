@@ -1,7 +1,7 @@
 # Handoff — ocean wind sea spectrum
 
 **Branch:** `experiment/ocean-wind-sea-spectrum`, tracking
-`origin/experiment/ocean-wind-sea-spectrum`; the rim-landing work is based on `4726502`. The name is historical: the ocean work it
+`origin/experiment/ocean-wind-sea-spectrum`, at `19826f7`. The name is historical: the ocean work it
 was opened for is done, and the active subject is now **a second body**.
 
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
@@ -26,6 +26,9 @@ one. Every branch that distinguishes the two is a generated `const bool`, so the
 shader is unchanged — asserted by rendering, not by argument, at max pixel difference 0.
 
 The moon is baked like the planet, into `assets/outmaps/test-moon`, from a 600,176-crater catalogue
+with no size floor (324km down to sub-cell), ice placed by permanent shadow rather than latitude, and
+pink ice lit by planetshine. Six rebakes so far; each one moves the baked landing site and every moon
+scenario pose with it. That is the moon's state as of this header; the sections below are its history.
 in `coretypes::moon`. It has no ocean, no air, no weather and no vegetation, and its two materials
 are regolith and polar ice. Ice is *terrain*, which is the whole trick: it is drawn by the terrain
 pass and walked on with no special case anywhere. See the last two sections for the four planet-only
@@ -254,6 +257,12 @@ See the latest section for the failing-before/passing-after evidence. No terrain
     stale.
 19. **`moon_ground_detail`'s camera pose is a measured lift, not a derivation.** Re-deriving it from
     the baked landing site and eye height would survive the next rebake; this will not.
+
+20. **The near-field window boundary is visible on the moon** as a rectangular island of
+    differently-detailed ground. `NEAR_FIELD_MIN_EXTENT_METERS` is 12km, sized for a 4,000km body.
+21. **The app's sun is 23 degrees out of the equatorial plane and the ice model assumes zero.** Settle
+    this before touching any ice threshold; they are compensating for a premise that does not hold.
+22. **`Crater::freshness` is carried and unused**, the first piece of the surface texture.
 
 **Build convention.** Benchmarks and parity runs build to `CARGO_TARGET_DIR=/home/dad/catingard-target`,
 not the in-repo `target/`. Give every temporary or staged checkout its own `CARGO_TARGET_DIR`
@@ -6668,3 +6677,79 @@ an invisible feature in it.
 
 That is a large fudge over the literal 1.2e-4 and it is written down as one. The alternative is
 placing ice where the sun reaches, which would undo the point of the change that put it in shadow.
+
+---
+
+## 6 September 2026 — two open faults, and where the surface texture was going
+
+Handing over. Everything below is unfinished or unresolved, stated plainly so it is not re-derived.
+
+### The blocky white patch is the near-field window boundary
+
+Reported three times, and my first two explanations were wrong — both disproved by measurement, both
+recorded above so they are not tried again. It is **not** ice, **not** the categorical-biome specular,
+**not** planetshine.
+
+The last screenshot settled it: the patch is a rectangle with a *staircase* edge at tile granularity,
+containing terrain at a **different level of detail** from the ground around it. That is the near-field
+window: 8x8 tiles, chosen to span at least `NEAR_FIELD_MIN_EXTENT_METERS` = 12,000m. That constant was
+sized for the planet, whose face arc is 6,283km. The moon's is 1,696km, so the same 12km asks for a
+much coarser level relative to the body, and the window ends up at a different level from the tiles
+around it. Inside and outside then carry different amounts of `MOON_DETAIL_BANDS`, which is a
+discontinuity in both relief and shading, with a hard edge.
+
+Two things to weigh: whether the extent should scale with the body, and whether the window edge should
+blend at all. Nothing in the near-field path was written with a second body in mind.
+
+### The sun is 23 degrees out of the plane the ice model assumes
+
+The interactive sun in the capture is `(0.509, 0.398, 0.763)` — 23.4 degrees of declination. **The ice
+model assumes zero obliquity**, the sun never leaving the equatorial plane, and that assumption is
+what makes "permanently shadowed" computable at all: it is why the arc of 32 sun positions is every
+moment there has ever been, and why the per-fragment test reduces to one dot product.
+
+At 23 degrees almost nothing is permanently shadowed, and poleward-facing slopes are lit — which is
+why pink ice shows in *sunlight* at 16 degrees latitude in the last screenshot. The model and the app
+disagree about where the sun goes, and the model is the one making the stronger claim.
+
+Three ways out, and this is a design decision rather than a bug fix: give the moon its own sun path at
+its real obliquity (about 1.5 degrees, which would keep the model almost exactly as it stands); widen
+`classify_ice` and `airless_permanent_shadow` to sample the declination range the app actually uses,
+which would shrink the ice drastically and honestly; or accept that this moon has a 23-degree tilt and
+rewrite the ice around it. **Do not tune the ice thresholds without settling this first** — they are
+currently compensating for a premise that does not hold.
+
+### The surface texture, started
+
+Asked for: a whole-moon texture from the real processes, lining up with the craters. Only the first
+piece is in — `Crater::freshness`, 0 ancient to 1 fresh, cubed from a deterministic draw so roughly
+one crater in eight is meaningfully bright and one in a thousand is a Tycho. It is **carried but not
+yet used**.
+
+It is an optical property rather than a shape one, and it is the main reason a real lunar surface is
+anything but uniform grey: freshly excavated regolith is bright, and solar wind and micrometeorite
+gardening darken and redden it over hundreds of millions of years. That is why Tycho and Copernicus
+read as bright splashes while equally large older craters have faded into the background.
+
+The design that was going in:
+
+* **Ejecta haloes.** Brightness around each crater scaled by freshness and decaying over the blanket,
+  so a young crater sits in a bright apron and an old one does not.
+* **Ray systems.** For the freshest large craters only, bright streaks radiating far beyond the
+  blanket — the thing that makes Tycho visible from Earth.
+* **Maria.** Large low regions darker, because basalt flood fill is much darker than anorthositic
+  highlands. Free in the shader: it already has the macro height.
+
+**The hard constraint is that it must line up with the craters**, which rules out an unrelated noise
+field. The tiles have no free channel — height, biome and moisture are all taken, moisture by the
+shadow fraction — so the intended route was to emit the *baked* catalogue's largest few hundred
+craters into the shader as a second constant array, with freshness, and evaluate haloes and rays per
+fragment against the same impacts that dug the holes. Adding a fourth outmap channel is the
+alternative, and it is a schema-version change.
+
+### Disk
+
+Five stale build trees removed, 12.6GB: `catingard-target`, `target-forest`, `catingard-target-hash`,
+`-base`, `-flat`. 34G free to 46G. **`assets/outmaps` is a further 12G in 34 entries**, mostly
+`test-planet.*-backup-*` from early August — history rather than build output, and deliberately not
+touched.
