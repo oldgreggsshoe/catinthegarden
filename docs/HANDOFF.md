@@ -6753,3 +6753,22 @@ Five stale build trees removed, 12.6GB: `catingard-target`, `target-forest`, `ca
 `-base`, `-flat`. 34G free to 46G. **`assets/outmaps` is a further 12G in 34 entries**, mostly
 `test-planet.*-backup-*` from early August — history rather than build output, and deliberately not
 touched.
+
+### The baker's tests were filling /tmp
+
+`tests/bake.rs` built its output paths with `std::env::temp_dir().join(..)` and returned a bare
+`PathBuf`. Six of the seven were never removed; the seventh called `remove_dir_all` after its
+assertions, which is exactly where a failing test does not reach. A full run leaves about 90MB behind.
+
+Found at 67 orphaned directories and 933MB, with `/tmp` — a 1.8GB partition of its own — at **99%
+full, 33MB free**. That is not a tidiness problem: a full `/tmp` fails later builds and bakes for
+reasons that look nothing like a disk problem, and this session ran the suite dozens of times.
+
+`TemporaryOutput` is an RAII guard now: `Drop` removes the tree, so it cleans up on unwind as well as
+on success, and `Deref<Target = Path>` keeps every call site reading as it did. Verified by counting
+orphans across two full runs — zero before, zero after.
+
+Also cleared, and worth knowing they accumulate: five stale build trees at 12.6GB
+(`catingard-target`, `target-forest`, `catingard-target-hash`, `-base`, `-flat`). `assets/outmaps` is
+a further 12G of `test-planet.*-backup-*` from early August, deliberately left alone — history, not
+build output.

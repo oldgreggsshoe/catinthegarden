@@ -13,12 +13,57 @@ use tiff::encoder::{TiffEncoder, colortype::GrayI16};
 
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
-fn temporary_output(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "catinthegarden-baker-{name}-{}-{}",
-        std::process::id(),
-        NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed)
-    ))
+/// A bake destination under the system temp directory that removes itself.
+///
+/// It used to be a bare `PathBuf` that nothing deleted. A full run of this file
+/// leaves about 90MB behind, and after a few dozen runs there were 67 orphaned
+/// directories filling a 1.8GB `/tmp` to 99% -- which fails later builds and
+/// bakes for reasons that look nothing like a disk problem.
+///
+/// A guard rather than a `remove_dir_all` at the end of each test, because the
+/// end of a test is exactly where an assertion failure does not reach: the runs
+/// that leak are the ones that were already going wrong. `Drop` runs on unwind.
+struct TemporaryOutput {
+    path: PathBuf,
+}
+
+impl TemporaryOutput {
+    fn new(name: &str) -> Self {
+        Self {
+            path: std::env::temp_dir().join(format!(
+                "catinthegarden-baker-{name}-{}-{}",
+                std::process::id(),
+                NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed)
+            )),
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// For the config types that want to own their output path.
+    fn to_path_buf(&self) -> PathBuf {
+        self.path.clone()
+    }
+}
+
+/// So a guard reads as the path it guards: `&output` and `output.join(..)` work
+/// exactly as they did when this was a bare `PathBuf`.
+impl std::ops::Deref for TemporaryOutput {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TemporaryOutput {
+    fn drop(&mut self) {
+        // Best effort: a test that never created it, or a directory already
+        // removed, is not a failure worth turning a passing run red for.
+        let _ = fs::remove_dir_all(&self.path);
+    }
 }
 
 fn small_config(output: PathBuf) -> BakeConfig {
@@ -56,22 +101,22 @@ fn write_test_etopo(path: &Path, width: u32, height: u32) {
 
 #[test]
 fn complete_bake_validates_and_is_byte_deterministic() {
-    let first_output = temporary_output("first");
-    let second_output = temporary_output("second");
-    let first = bake(&small_config(first_output.clone())).unwrap();
-    let second = bake(&small_config(second_output.clone())).unwrap();
+    let first_output = TemporaryOutput::new("first");
+    let second_output = TemporaryOutput::new("second");
+    let first = bake(&small_config(first_output.to_path_buf())).unwrap();
+    let second = bake(&small_config(second_output.to_path_buf())).unwrap();
     assert_eq!(first, second);
-    validate_output(&first_output).unwrap();
-    validate_output(&second_output).unwrap();
-    assert_trees_equal(&first_output, &second_output, Path::new(""));
+    validate_output(first_output.path()).unwrap();
+    validate_output(second_output.path()).unwrap();
+    assert_trees_equal(first_output.path(), second_output.path(), Path::new(""));
 }
 
 #[test]
 fn etopo_bake_preserves_observed_relief_and_attributes_the_source() {
-    let root = temporary_output("etopo");
-    fs::create_dir_all(&root).unwrap();
-    let source = root.join("etopo.tif");
-    let output = root.join("outmap");
+    let root = TemporaryOutput::new("etopo");
+    fs::create_dir_all(root.path()).unwrap();
+    let source = root.path().join("etopo.tif");
+    let output = root.path().join("outmap");
     write_test_etopo(&source, 32, 16);
     let config = BakeConfig {
         output: output.clone(),
@@ -109,14 +154,13 @@ fn etopo_bake_preserves_observed_relief_and_attributes_the_source() {
     let refined = refine_existing_outmap(&output).unwrap();
     assert_eq!(refined.generator, manifest.generator);
     validate_output(&output).unwrap();
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn existing_dense_macro_tiles_can_expand_into_an_adaptive_sparse_corridor() {
-    let output = temporary_output("incremental-refine");
-    let original = bake(&small_config(output.clone())).unwrap();
-    let refined = refine_existing_outmap(&output).unwrap();
+    let output = TemporaryOutput::new("incremental-refine");
+    let original = bake(&small_config(output.to_path_buf())).unwrap();
+    let refined = refine_existing_outmap(output.path()).unwrap();
 
     assert!(refined.available_tiles.len() > original.available_tiles.len());
     assert!(
@@ -129,9 +173,9 @@ fn existing_dense_macro_tiles_can_expand_into_an_adaptive_sparse_corridor() {
 
 #[test]
 fn tiles_have_gutters_expected_channel_sizes_and_level_eighteen_refinement() {
-    let output = temporary_output("formats");
+    let output = TemporaryOutput::new("formats");
     let config = BakeConfig {
-        output: output.clone(),
+        output: output.to_path_buf(),
         width: 32,
         height: 16,
         dense_level: 0,
@@ -176,9 +220,9 @@ fn tiles_have_gutters_expected_channel_sizes_and_level_eighteen_refinement() {
 
 #[test]
 fn tile_edges_gutters_parent_samples_and_previews_are_consistent() {
-    let output = temporary_output("seams");
+    let output = TemporaryOutput::new("seams");
     let config = BakeConfig {
-        output: output.clone(),
+        output: output.to_path_buf(),
         width: 32,
         height: 16,
         dense_level: 2,
@@ -310,9 +354,9 @@ fn tile_edges_gutters_parent_samples_and_previews_are_consistent() {
 
 #[test]
 fn deep_sparse_edge_matches_root_fallback_interpolation() {
-    let output = temporary_output("ancestor-seam");
+    let output = TemporaryOutput::new("ancestor-seam");
     let config = BakeConfig {
-        output: output.clone(),
+        output: output.to_path_buf(),
         width: 32,
         height: 16,
         dense_level: 0,

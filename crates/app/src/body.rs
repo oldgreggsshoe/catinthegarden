@@ -14,6 +14,7 @@
 //! to become a uniform, and that is the next step, not this one.
 
 use std::sync::OnceLock;
+use std::cell::Cell;
 
 /// A world the renderer can draw.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -96,6 +97,24 @@ pub const MOON: Body = Body {
 
 static ACTIVE: OnceLock<Body> = OnceLock::new();
 
+thread_local! {
+    static RENDER_BODY: Cell<Option<Body>> = const { Cell::new(None) };
+}
+
+/// Evaluate one persistent body's CPU work and shader construction without
+/// changing the process default or another thread's body. GPU pipelines keep
+/// their generated constants; there is no shader compilation during travel.
+pub(crate) fn with_body<T>(body: Body, work: impl FnOnce() -> T) -> T {
+    struct Restore(Option<Body>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            RENDER_BODY.set(self.0);
+        }
+    }
+    let _restore = Restore(RENDER_BODY.replace(Some(body)));
+    work()
+}
+
 /// Selects the world for this process. Only the first call takes effect, and
 /// the returned bool says whether it did: the radius is baked into generated
 /// shader source at pipeline construction, so a later change would leave the
@@ -105,7 +124,7 @@ pub fn set_active(body: Body) -> bool {
 }
 
 pub fn active() -> Body {
-    *ACTIVE.get_or_init(|| PLANET)
+    RENDER_BODY.get().unwrap_or_else(|| *ACTIVE.get_or_init(|| PLANET))
 }
 
 /// Radius of the body being drawn. This is the accessor that replaced a
@@ -174,6 +193,19 @@ pub fn wgsl_constants() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn body_scopes_nest_and_restore_after_panics() {
+        let original = active();
+        with_body(MOON, || {
+            assert_eq!(active(), MOON);
+            with_body(PLANET, || assert_eq!(active(), PLANET));
+            assert_eq!(active(), MOON);
+        });
+        assert_eq!(active(), original);
+        let _ = std::panic::catch_unwind(|| with_body(MOON, || panic!("scope test")));
+        assert_eq!(active(), original);
+    }
 
     /// Checked at compile time: these compare constants, so the optimiser
     /// already knows the answer and a runtime assertion proves nothing.
