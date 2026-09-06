@@ -1,7 +1,9 @@
-Fixed the mountain-ground measurement bug: the probe used surface-hit distance where raster uses distance to the undisplaced sphere.
+Implemented the rim-site selection and rebake; measured the unchanged detail ladder.
 
-- Median discrepancy: 11.433m → 0.052m; maximum: 12.660m → 0.312m.
-- Rendered pixels are byte-identical; terrain and collision are unchanged.
-- New regression fails before and passes after. All 461 tests and four control scenarios pass; clippy/fmt clean.
+- Daylight ground view: 27.48° rim at 4km, 1.689m clearance.
+- Runtime height detail: exactly zero across 74 samples. Fine tile spacing falsely implies fine source detail; amplitude tuning would not fix that.
+- Planet: all 10 comparison captures byte-identical. 464 tests pass; clippy/fmt clean.
 
-Handoff updated. Other terrain parity issues remain explicitly open.
+Important: real frozen startup is NOT signed off. It starts in darkness and floats 82.95m above streamed ground. That separate arrival/streaming problem is documented, not hidden by the passing daylight scenario.
+
+Changes committed and pushed; evidence and next steps are in the handoff.

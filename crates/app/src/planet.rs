@@ -4533,6 +4533,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn fine_source_spacing_and_datum_filter_leave_no_detail_band() {
+        let direction = DVec3::new(-0.2520598634446597, 0.1379999577298627, -0.9578214013618696);
+        let moon_l18_spacing = 2.0 * 1_080_000.0 / (262_144.0 * 128.0);
+        // A fine tile is assumed to contain all coarser detail. At the moon
+        // landing, this high cut is below even the one-metre ladder floor,
+        // and far below the ~189m datum-distance geometry filter. Raising
+        // macro height (headroom) cannot reopen an empty frequency interval.
+        for filter in [1.0, 189.0] {
+            for macro_height in [18_916.0, 18_916.0 * 4.0] {
+                assert_eq!(
+                    super::terrain_detail_meters_with_filter(
+                        direction,
+                        moon_l18_spacing,
+                        macro_height,
+                        filter
+                    ),
+                    0.0
+                );
+            }
+        }
+    }
+
     /// The whole point of the CPU ladder: it has to see the relief the shader
     /// displaces with. A camera placed from a surface height that ignores it
     /// ends up inside the ground.

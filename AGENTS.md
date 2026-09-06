@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Moon rim-landing survey: the baker now selects clean, locally gentle ground near elevated relief, with a failing-before regression and a validated 600,176-crater rebake. Daylight eye-level capture has 1.689m clearance and a 27.48-degree rim at 4km; runtime height detail is exactly zero across 74 samples because sparse-tile high cut and datum-distance filtering leave no band. Planet controls are byte-identical to rebuilt `4726502`; real frozen arrival remains unaccepted (night side, 82.949m clearance after streaming).
+
 - Raster surface-probe repair: detail filtering now uses camera distance to the undisplaced sphere, matching raster vertices; `mountain_ground` median/max discrepancy falls from 11.433/12.660m to 0.052/0.312m with byte-identical pixels. Its 81-point, 2m regression fails before and passes after; terrain, collision, and ray queries are unchanged.
 
 - Ocean near-field culling repair: water ownership now tests the exact uploaded window heights with unguttered window UVs rather than a source tile with unrelated UVs. The matched Quadro `ocean_ship_float` replay restores 40 to 255 ocean chunks and replaces the grey foreground with waves while retaining all-land culling; footprint regressions, 430 workspace tests, workspace check, and three GPU scenarios pass. Fresh interactive travel remains the visual acceptance check; no FPS improvement is claimed.

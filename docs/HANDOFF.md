@@ -1,13 +1,13 @@
 # Handoff — ocean wind sea spectrum
 
 **Branch:** `experiment/ocean-wind-sea-spectrum`, tracking
-`origin/experiment/ocean-wind-sea-spectrum`, at `8f09be5`. The name is historical: the ocean work it
+`origin/experiment/ocean-wind-sea-spectrum`; the rim-landing work is based on `4726502`. The name is historical: the ocean work it
 was opened for is done, and the active subject is now **a second body**.
 
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Written:** 5 September 2026.
+**Written:** 6 September 2026.
 
 **How to read this file:** everything below this header is an append-only log of dated sections,
 oldest first. This header is the current state; **the newest work is the last section in the file,
@@ -134,7 +134,7 @@ a magnified waterline capture. Scenarios initialise deterministic weather rather
 evolved manual state, so fresh manual travel through the real weather remains the visual acceptance
 gate for anything weather-composed.
 
-**CI.** Green after the probe repair: **461 workspace tests** (12 ignored), `cargo fmt --all --check` clean, clippy clean across
+**CI.** Green after the rim-landing work: **464 workspace tests** (12 ignored), `cargo fmt --all --check` clean, clippy clean across
 all three crates. Note that `coretypes` now carries tests of its own — it used to be types only. Clippy stops at the first crate that fails, so the baker's three
 had been hiding the app's seventy entirely — the app was never being linted. Check both.
 
@@ -233,12 +233,15 @@ See the latest section for the failing-before/passing-after evidence. No terrain
     Nothing is wrong with the renderer, but a pixel comparison taken under disk load is not
     evidence, and nothing in the harness says so.
 
-14. **The moon's baked landing site is the flattest cell on the body, which makes it the emptiest.**
-    `moon_landing_direction` scores `-(highest - lowest)`. It should prefer somewhere with relief in
-    view — near a rim rather than on a pristine plain — and the fix needs a re-bake, because the
-    landing direction lives in the manifest.
-15. **The detail ladder adds 0.158m on the moon against 22.7m on the planet.** Measure it once the
-    landing site is off pristine ground; until then the two are confounded.
+14. **Rim-site selection and measurement are complete; interactive arrival is NOT signed off.**
+    The rebaked site has a 27.48-degree rim at 4km and the daylight ground scenario has 1.689m
+    clearance. The real frozen startup is on the night side and remains 82.949m above streamed
+    ground. Follow up the frozen startup/streaming interaction before calling arrival complete.
+15. **The moon's detail-source bandwidth is wrong for resampled sparse tiles.** At the new site,
+    runtime height contribution is exactly zero at all 74 compared points, not 0.158m. The high
+    cut treats fine tile spacing as real detail, although moon export only resamples the 828m
+    working grid; the datum-distance geometry filter also removes shorter wavelengths. Measured,
+    not tuned; see the latest section. Correct source-bandwidth metadata is the next design issue.
 16. **`moon_crater_wall` passes while rendering entirely black.** Either aim it somewhere lit or say
     in the scenario that it is a night-side capture and assert something that would notice.
 
@@ -6267,3 +6270,96 @@ display and the compositor throttles the window to about 1Hz. Nothing to do with
 Pixel comparisons are unaffected — fixed timestep, deterministic — which is why every scenario still
 passed throughout. But **any frame-time figure taken in that state is worthless**, and nothing in the
 harness notices. Check `xset -q` before believing a performance number.
+
+---
+
+## 6 September 2026 — select a rim site, then measure the detail band
+
+Based on `4726502`, rebuilt rather than reusing pre-Final-mode captures. **This is a landing-site
+selection and diagnostic result, not interactive arrival sign-off.** No shader, detail amplitude,
+lighting, exposure, or camera physics changed.
+
+### Site and bake
+
+`moon_landing_direction` retains equatorial, cube-face-interior, clean-regolith eligibility. It
+now rejects immediate-neighbour slopes above 0.15 (~8.53 degrees), surveys candidates every four
+source cells, and scores the highest curvature-corrected apparent elevation in eight directions
+at 2/4/8-cell distances, with a small local-slope penalty. Flatness is a footing constraint, not
+the entire objective. The synthetic rim-versus-empty-hemisphere regression fails with the old
+score and passes with the new one; selection is deterministic.
+
+Command: `CARGO_TARGET_DIR=/home/dad/catingard-target cargo build --release -p catinthegarden-baker`,
+then `/home/dad/catingard-target/release/catinthegarden-baker --moon --output assets/outmaps/test-moon-rim-landing`.
+The completed, validated 8192x4096 / 3,252-tile / 600,176-crater output was promoted to
+`assets/outmaps/test-moon`. Previous data is preserved at
+`assets/outmaps/test-moon.pre-rim-landing-20260906` (manifest SHA-256
+`025ad4a77eb2603b0118f45f1a5a938aec1c96ec63c7f58ac469c4fc7b1ed97d`). New manifest SHA-256:
+`efd7973a6ce2ff481840659cb1558b8c0dc53181cf56e2272774b9918b2aab86`.
+All **6,138 global L0-L4 payload files are byte-identical**: this relocates the sparse corridor,
+not the crater geography.
+
+New direction: `[-0.2520598634446597, 0.1379999577298627, -0.9578214013618696]`.
+The exported L18 height at the site is 18,916.088m; a 16-azimuth, 2/4/8km exported-height survey
+finds a **27.478-degree rim at 4km**. `moon_ground_detail` is re-authored at eye level, looking
+toward that rim with an explicitly daylight sun. Run `moon_ground_detail/1788686212-209946`
+passes at **1.689m clearance**, 74 comparisons per capture, 0.716m median / 5.924m maximum
+surface discrepancy across its near/horizon samples. Visible recovered heights span **1,583.189m**.
+The central `[x480:800,y180:540]` 115,200-pixel luminance patch has stdev **7.278** on the 0-255
+scale. The image still has a smooth foreground: no detail was invented to hide that.
+
+### What the ladder actually contributes
+
+Measure CPU total minus CPU macro at each compared direction, not GPU recovered height minus
+macro (which also includes raster interpolation and depth/coordinate precision):
+
+| Fresh run / last capture | Points | Source levels | Runtime height min..max / range |
+| --- | ---: | --- | --- |
+| New moon rim scenario `1788686212-209946` | 74 | L9-L18 | **0..0 / 0m** |
+| Original scenario, rebuilt baseline plus previous 600k bake `1788686370-212086` | 58 | L9,L11 | **0..29.148 / 29.148m** |
+| Planet `coast_waters_edge/1788686408-212192` | 70 | L4 | **-12.615..8.540 / 21.156m** |
+| Planet `stand_on_ground/1788686443-212284` | 80 | L16,L18 | **0..0 / 0m** |
+
+The historical 0.158m/22.7m claim is not a current body-wide amplitude comparison. In particular,
+the original scenario was not retargeted when the 600k bake moved its sparse landing centre:
+it no longer reproduces the older pristine-plane capture. Its fresh central-patch stdev is 22.233,
+not zero. Do not present the historical zero as the before image of this rebake.
+
+The new rim samples all have an empty displacement frequency band. At L18, nominal source
+spacing is **0.06437m**, so the high cut rejects wavelengths at/above **0.2575m**, below even the
+one-metre ladder floor. At L9 the upper cutoff is ~131.84m, still below the ~380m lower cutoff
+of the ~190m datum-distance geometry filter. `fine_source_spacing_and_datum_filter_leave_no_detail_band`
+pins zero output for both 1x and 4x macro headroom; multiplying macro height cannot reopen a
+frequency interval. The ladder's amplitude is not multiplied by `outmap_height_scale`.
+
+**Source-data issue, deliberately not tuned:** moon export's `if terrain.moon` branch only
+resamples the original 828m working-grid heights, skipping baked procedural detail. The renderer
+nevertheless treats sparse texel spacing as evidence of fine source detail. That is not true on
+this body. The next fix should distinguish source information bandwidth from tile spacing,
+with CPU/GPU agreement; increasing noise amplitude is not the answer. These measurements concern
+height displacement, not a complete audit of the separate per-fragment normal-detail path.
+
+### Real startup caught another problem
+
+Automated key input into the real `--body moon` window (matched by PID, no scenario) captured
+`manual/1788686509-212422`. The site is on the **night side at the default frozen clock**, so
+the terrain is black. More importantly, clearance is **82.949m**, not eye level. Inspection shows
+startup resolves a dense L4 surface, later streaming replaces it, and the frozen world's gravity
+does not settle downward; `resolve_surface_camera_after_streaming` only raises the camera on
+penetration. This needs a focused arrival/streaming fix. The daylight scenario is not proof that
+interactive arrival works, and no claim of a playable or visually accepted startup is made here.
+The pre-existing all-black `moon_crater_wall` assertion hole also remains open.
+
+### Validation and planet isolation
+
+**464 workspace tests pass, 12 ignored**; clippy `--workspace --all-targets -- -D warnings`, fmt,
+and diff checks pass. Fresh `4726502` versus after comparisons, all assertions passing and all
+**10 captures byte-identical (maximum channel difference 0)**:
+
+- `coast_waters_edge`: `1788686386-212146` / `1788686408-212192` (2 frames).
+- `stand_on_ground`: `1788686430-212238` / `1788686443-212284` (5 frames).
+- `ocean_ship_float`: `1788686455-212330` / `1788686471-212384` (3 frames).
+
+Builds/tests/baking were complete before these sequential runs; no concurrent workload was
+launched. `xset -q` reported Monitor On; no FPS improvement is claimed. Binaries, bake/test logs,
+site profile, and pixel-comparison report are under `test-runs/moon-landing/`. Scenario manifests
+name the base commit because verification preceded commit. `crates.tar.gz` remains untouched.

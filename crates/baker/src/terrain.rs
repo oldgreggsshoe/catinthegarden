@@ -3,7 +3,7 @@ use std::{
     collections::{BinaryHeap, VecDeque},
 };
 
-use catinthegarden_coretypes::{BiomeId, direction_to_face_uv, moon::MOON_DATUM_METERS};
+use catinthegarden_coretypes::{BiomeId, direction_to_face_uv};
 use noise::{NoiseFn, Perlin};
 use rayon::prelude::*;
 
@@ -654,8 +654,8 @@ impl Terrain {
     /// a 400m exhaustive scan would repeatedly interpolate the same source
     /// cells because the current source grid is much coarser than 400m.
     /// Somewhere to stand on an airless body: bare regolith, well away from
-    /// the poles, with no ice among its neighbours and as little local relief
-    /// as the body offers.
+    /// the poles, with no ice among its neighbours, a gentle local slope, and
+    /// a raised rim in view rather than the emptiest patch on the body.
     ///
     /// The neighbour test is not fussiness. The exported tile is resampled at
     /// this direction with a rounded texel index, so a site one cell from ice
@@ -663,6 +663,12 @@ impl Terrain {
     fn moon_landing_direction(&self) -> glam::DVec3 {
         let mut best: Option<(f64, usize)> = None;
         for index in 0..self.grid.len() {
+            // Survey at four-cell intervals; still test all immediate neighbours
+            // for footing. The production grid resolves these candidates ~3km apart.
+            let (x, y) = self.grid.coordinates(index);
+            if x % 4 != 0 || y % 4 != 0 {
+                continue;
+            }
             if self.biome[index] != BiomeId::MountainRock {
                 continue;
             }
@@ -676,23 +682,49 @@ impl Terrain {
                 continue;
             }
             let height = self.height_meters[index];
-            let mut lowest = height;
-            let mut highest = height;
+            let mut local_slope: f64 = 0.0;
             let mut clean = true;
             for neighbor in (0..8).filter_map(|slot| self.grid.neighbor(index, slot)) {
                 if self.biome[neighbor] != BiomeId::MountainRock {
                     clean = false;
                     break;
                 }
-                lowest = lowest.min(self.height_meters[neighbor]);
-                highest = highest.max(self.height_meters[neighbor]);
+                local_slope = local_slope.max(
+                    (self.height_meters[neighbor] - height).abs()
+                        / self.grid.distance_meters(index, neighbor),
+                );
             }
-            if !clean {
+            if !clean || local_slope > 0.15 {
                 continue;
             }
-            // Flat ground first, then near the pristine datum rather than deep
-            // in a bowl or up on a rim.
-            let score = -(highest - lowest) - 0.01 * (height - MOON_DATUM_METERS).abs();
+            // Highest visible elevation in eight directions, at 2/4/8 source
+            // cells (~1.6-9km at production resolution). Project onto the local
+            // tangent so curvature cannot promote a distant below-horizon hill.
+            let radius = catinthegarden_coretypes::moon::MOON_RADIUS_METERS;
+            let mut visible_slope: f64 = 0.0;
+            for step in [2, 4, 8] {
+                for (dx, dy) in [
+                    (1, 0),
+                    (1, 1),
+                    (0, 1),
+                    (-1, 1),
+                    (-1, 0),
+                    (-1, -1),
+                    (0, -1),
+                    (1, -1),
+                ] {
+                    let Some(target) = self.grid.offset_index(index, dx * step, dy * step) else {
+                        continue;
+                    };
+                    let target_direction = self.grid.direction(target);
+                    let cosine = direction.dot(target_direction).clamp(-1.0, 1.0);
+                    let target_radius = radius + self.height_meters[target];
+                    let rise = target_radius * cosine - (radius + height);
+                    let run = target_radius * direction.cross(target_direction).length();
+                    visible_slope = visible_slope.max(rise / run.max(1.0));
+                }
+            }
+            let score = visible_slope - 0.05 * local_slope;
             if !matches!(best, Some((best_score, _)) if score <= best_score) {
                 best = Some((score, index));
             }
@@ -1320,6 +1352,37 @@ impl PartialOrd for FloodCell {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use catinthegarden_coretypes::moon::MOON_DATUM_METERS;
+
+    #[test]
+    fn moon_landing_prefers_walkable_ground_near_relief_over_pristine_plain() {
+        let grid = SphericalGrid::with_radius(256, 128, 1_080_000.0);
+        let len = grid.len();
+        let heights = (0..len)
+            .map(|i| {
+                let distance = grid.direction(i).x.clamp(-1.0, 1.0).acos() * 1_080_000.0;
+                MOON_DATUM_METERS + 6_000.0 * (-((distance - 100_000.0) / 30_000.0).powi(2)).exp()
+            })
+            .collect();
+        let terrain = Terrain {
+            grid,
+            height_meters: heights,
+            flow_to: vec![None; len],
+            flow_accumulation: vec![0.0; len],
+            river: vec![false; len],
+            lake: vec![false; len],
+            glacial_valley: vec![false; len],
+            moisture: vec![0; len],
+            biome: vec![BiomeId::MountainRock; len],
+            moon: true,
+        };
+        let landing = terrain.moon_landing_direction();
+        assert!(
+            landing.x > 0.97,
+            "landing should see the authored rim, not choose the empty hemisphere: {landing:?}"
+        );
+        assert_eq!(landing, terrain.moon_landing_direction());
+    }
 
     #[test]
     #[ignore = "instrument: cargo test -p catinthegarden-baker --lib terrain::tests::mountain_visibility_throughput -- --ignored --nocapture"]
