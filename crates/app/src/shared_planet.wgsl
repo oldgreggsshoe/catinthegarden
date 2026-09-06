@@ -2136,7 +2136,9 @@ fn terrain_material_color(
         // wall does not, at the resolution the surface is drawn.
         let region = smoothstep(AIRLESS_ICE_REGION_LOW, AIRLESS_ICE_REGION_HIGH, moisture);
         let ice = region * airless_permanent_shadow(surface_normal, surface_direction);
-        return BODY_TERRAIN_TINT * mix(biome_color(8u), biome_color(2u), ice);
+        // The ice takes the body's own tint rather than a separate palette
+        // entry, so the planet's glaciers keep reading the shared colour.
+        return BODY_TERRAIN_TINT * mix(biome_color(8u), BODY_ICE_TINT * biome_color(2u), ice);
     }
     var color = vec3<f32>(0.32, 0.58, 0.74);
     if !outmap {

@@ -34,6 +34,11 @@ pub struct Body {
     pub terrain_tint: [f32; 3],
     /// Multiplies the water albedo, on the same principle.
     pub water_tint: [f32; 3],
+    /// Multiplies the ice albedo, so a body can have ice of its own colour
+    /// without touching the shared biome palette the planet's glaciers read
+    /// from. The planet uses white and its ice is exactly what `biome_color`
+    /// says.
+    pub ice_tint: [f32; 3],
     /// Multiplies baked positive terrain height.
     ///
     /// The planet's geography is deliberately exaggerated four times for play:
@@ -56,6 +61,7 @@ pub const PLANET: Body = Body {
     has_atmosphere: true,
     terrain_tint: [1.0, 1.0, 1.0],
     water_tint: [1.0, 1.0, 1.0],
+    ice_tint: [1.0, 1.0, 1.0],
     outmap_height_scale: 4.0,
 };
 
@@ -76,6 +82,15 @@ pub const MOON: Body = Body {
     // Grey-white regolith. The ice takes its own biome material.
     terrain_tint: [0.86, 0.86, 0.88],
     water_tint: [1.0, 1.0, 1.0],
+    // Pink. Not a colour ice comes in, and asked for anyway -- it is the one
+    // thing on this body that is a choice rather than a consequence.
+    //
+    // Stronger than the ratio that would turn the palette's pale blue pink on
+    // its own, because almost no pixel is pure ice: the shader mixes ice into
+    // regolith by how permanently shadowed the ground is, and a half-mixed pink
+    // against grey reads as off-white. Set from the *rendered* result rather
+    // than from the palette entry.
+    ice_tint: [1.36, 0.22, 0.55],
     outmap_height_scale: 1.0,
 };
 
@@ -141,6 +156,7 @@ pub fn wgsl_constants() -> String {
     let has_atmosphere = active().has_atmosphere;
     let [tt0, tt1, tt2] = active().terrain_tint;
     let [wt0, wt1, wt2] = active().water_tint;
+    let [it0, it1, it2] = active().ice_tint;
     format!(
         "// Generated from body.rs for `{}`. Do not edit here.\n\
          const PLANET_RADIUS_METERS: f32 = {radius:.1};\n\
@@ -148,7 +164,8 @@ pub fn wgsl_constants() -> String {
          const BODY_HAS_OCEAN: bool = {has_ocean};\n\
          const BODY_HAS_ATMOSPHERE: bool = {has_atmosphere};\n\
          const BODY_TERRAIN_TINT: vec3<f32> = vec3<f32>({tt0}, {tt1}, {tt2});\n\
-         const BODY_WATER_TINT: vec3<f32> = vec3<f32>({wt0}, {wt1}, {wt2});\n{}",
+         const BODY_WATER_TINT: vec3<f32> = vec3<f32>({wt0}, {wt1}, {wt2});\n\
+         const BODY_ICE_TINT: vec3<f32> = vec3<f32>({it0}, {it1}, {it2});\n{}",
         active().name,
         crate::moon::wgsl_constants(),
     )

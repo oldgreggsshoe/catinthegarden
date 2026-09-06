@@ -6625,3 +6625,18 @@ Height range 6,067m to 29,347m, still inside the stored channel with the datum u
 Ice rises 0.41% to 0.57%, which follows: deeper craters hold more permanent shadow.
 
 Poses lifted again — 1.09m and 61.78m. Sixth time.
+
+### Pink ice
+
+`Body::ice_tint`, generated as `BODY_ICE_TINT` and multiplied into the ice half of the airless
+material mix. A body property rather than a palette change, so the planet's glaciers keep reading the
+shared `biome_color(2u)` and its captures stay byte-identical.
+
+The moon's is `[1.36, 0.22, 0.55]`, which is stronger than the ratio that would turn the palette's
+pale blue pink on its own. It has to be: almost no pixel is *pure* ice, because the shader mixes ice
+into regolith by how permanently shadowed the ground is, and a half-mixed pink against grey reads as
+off-white. The first attempt at the palette-accurate ratio rendered `(242, 226, 236)` — sixteen levels
+of red over green, which is not pink. Set from the rendered result instead: `(244, 190, 233)`.
+
+**Still there**: one white patch on a sunlit rim in the survey capture, which is not ice — most likely
+the regolith specular. Small, and not chased.
