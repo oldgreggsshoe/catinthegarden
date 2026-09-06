@@ -216,144 +216,157 @@ pub struct ScenarioRunner {
     next_log_time: f64,
 }
 
+/// The scenario table. One list, used twice: the loader matches on it and
+/// `SCENARIO_NAMES` is built from it, so a name cannot exist in one and not the
+/// other. Adding a scenario means adding one line here.
+macro_rules! scenarios {
+    ($($name:literal => $path:literal,)*) => {
+        /// Every scenario the binary carries, in declaration order.
+        pub const SCENARIO_NAMES: &[&str] = &[$($name),*];
+
+        fn scenario_source(name: &str) -> Option<&'static str> {
+            match name {
+                $($name => Some(include_str!($path)),)*
+                _ => None,
+            }
+        }
+    };
+}
+
+scenarios! {
+    "still_5s" => "../scenarios/still_5s.json",
+    "planet_to_moon" => "../scenarios/planet_to_moon.json",
+    "moon_ground_detail" => "../scenarios/moon_ground_detail.json",
+    "moon_polar_ice" => "../scenarios/moon_polar_ice.json",
+    "moon_crater_wall" => "../scenarios/moon_crater_wall.json",
+    "starfield_space" => "../scenarios/starfield_space.json",
+    "starfield_twilight" => "../scenarios/starfield_twilight.json",
+    "starfield_performance" => "../scenarios/starfield_performance.json",
+    "orbit_once" => "../scenarios/orbit_once.json",
+    "descent_to_10m" => "../scenarios/descent_to_10m.json",
+    "sunset_sweep" => "../scenarios/sunset_sweep.json",
+    "sunset_blue_hour" => "../scenarios/sunset_blue_hour.json",
+    "sunrise_midday_surface" => "../scenarios/sunrise_midday_surface.json",
+    "twilight_directionality" => "../scenarios/twilight_directionality.json",
+    "night_side_atmosphere" => "../scenarios/night_side_atmosphere.json",
+    "limb_atmosphere" => "../scenarios/limb_atmosphere.json",
+    "orbital_atmosphere_profile" => "../scenarios/orbital_atmosphere_profile.json",
+    "orbital_atmosphere_continuity" => "../scenarios/orbital_atmosphere_continuity.json",
+    "atmospheric_mist_paths" => "../scenarios/atmospheric_mist_paths.json",
+    "ground_to_orbit" => "../scenarios/ground_to_orbit.json",
+    "stare_at_sun" => "../scenarios/stare_at_sun.json",
+    "orbital_sun_visibility" => "../scenarios/orbital_sun_visibility.json",
+    "weather_contrast" => "../scenarios/weather_contrast.json",
+    "weather_sun_occlusion" => "../scenarios/weather_sun_occlusion.json",
+    "sun_horizon_visibility" => "../scenarios/sun_horizon_visibility.json",
+    "partial_sun_occultation" => "../scenarios/partial_sun_occultation.json",
+    "ocean_flyover" => "../scenarios/ocean_flyover.json",
+    "ocean_hybrid_close" => "../scenarios/ocean_hybrid_close.json",
+    "ocean_low_sun_stability" => "../scenarios/ocean_low_sun_stability.json",
+    "ocean_rough_horizon" => "../scenarios/ocean_rough_horizon.json",
+    "ocean_waterline_flat" => "../scenarios/ocean_waterline_flat.json",
+    "ocean_ship_float" => "../scenarios/ocean_ship_float.json",
+    "land_chunk_seams" => "../scenarios/land_chunk_seams.json",
+    "coast_waters_edge" => "../scenarios/coast_waters_edge.json",
+    "ocean_grey_foreground" => "../scenarios/ocean_grey_foreground.json",
+    "coastal_spawn_view" => "../scenarios/coastal_spawn_view.json",
+    "mountain_ground" => "../scenarios/mountain_ground.json",
+    "wavedir_spawn" => "../scenarios/wavedir_spawn.json",
+    "wavedir_0" => "../scenarios/wavedir_0.json",
+    "wavedir_1" => "../scenarios/wavedir_1.json",
+    "wavedir_2" => "../scenarios/wavedir_2.json",
+    "wavedir_3" => "../scenarios/wavedir_3.json",
+    "shallow_water_shelf" => "../scenarios/shallow_water_shelf.json",
+    "ocean_coastline" => "../scenarios/ocean_coastline.json",
+    "orbital_zoom_lod" => "../scenarios/orbital_zoom_lod.json",
+    "polar_ice_cap" => "../scenarios/polar_ice_cap.json",
+    "terrain_material_preview" => "../scenarios/terrain_material_preview.json",
+    "low_flight_performance" => "../scenarios/low_flight_performance.json",
+    "landing_site_ground_detail" => "../scenarios/landing_site_ground_detail.json",
+    "landing_site_eye_level" => "../scenarios/landing_site_eye_level.json",
+    "forest_startup" => "../scenarios/forest_startup.json",
+    "forest_performance" => "../scenarios/forest_performance.json",
+    "forest_vast_distance" => "../scenarios/forest_vast_distance.json",
+    "forest_night" => "../scenarios/forest_night.json",
+    "forest_boundary_transition" => "../scenarios/forest_boundary_transition.json",
+    "forest_ground_eligibility" => "../scenarios/forest_ground_eligibility.json",
+    "forest_travel" => "../scenarios/forest_travel.json",
+    "highest_prominence_peak" => "../scenarios/highest_prominence_peak.json",
+    "manual_forward_clearance" => "../scenarios/manual_forward_clearance.json",
+    "manual_high_speed_clearance" => "../scenarios/manual_high_speed_clearance.json",
+    "manual_near_terrain_culling" => "../scenarios/manual_near_terrain_culling.json",
+    "manual_lod_approach_replay" => "../scenarios/manual_lod_approach_replay.json",
+    "manual_sky_ocean_replay" => "../scenarios/manual_sky_ocean_replay.json",
+    "outlined_shadows" => "../scenarios/outlined_shadows.json",
+    "stand_on_ground" => "../scenarios/stand_on_ground.json",
+    "terrain_detail_altitude_ladder" => "../scenarios/terrain_detail_altitude_ladder.json",
+    "path_parity_ridge" => "../scenarios/path_parity_ridge.json",
+    "render_path_parity" => "../scenarios/render_path_parity.json",
+    "manual_render_faults" => "../scenarios/manual_render_faults.json",
+    "mountain_render_faults" => "../scenarios/mountain_render_faults.json",
+    "low_pass_bands" => "../scenarios/low_pass_bands.json",
+    "tour_mountains" => "../scenarios/tour_mountains.json",
+    "tour_desert" => "../scenarios/tour_desert.json",
+    "tour_coast" => "../scenarios/tour_coast.json",
+    "tour_grassland" => "../scenarios/tour_grassland.json",
+    "tour_tundra" => "../scenarios/tour_tundra.json",
+}
+
+/// Characters to change to turn one name into the other. Small and readable
+/// rather than fast: it runs once, on a name that was already wrong.
+fn edit_distance(left: &str, right: &str) -> usize {
+    let right: Vec<char> = right.chars().collect();
+    let mut previous: Vec<usize> = (0..=right.len()).collect();
+    let mut current = vec![0_usize; right.len() + 1];
+    for (row, from) in left.chars().enumerate() {
+        current[0] = row + 1;
+        for (column, to) in right.iter().enumerate() {
+            let substitute = previous[column] + usize::from(from != *to);
+            current[column + 1] = substitute
+                .min(previous[column + 1] + 1)
+                .min(current[column] + 1);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[right.len()]
+}
+
+/// An error that says what to type instead.
+///
+/// The old one was `unknown scenario '<name>'` and nothing else, which sends
+/// you to read the source for a list that is right there. Hyphens for
+/// underscores is the easy mistake and the one this catches first.
+fn unknown_scenario(name: &str) -> String {
+    let mut ranked: Vec<(usize, &str)> = SCENARIO_NAMES
+        .iter()
+        .map(|candidate| (edit_distance(name, candidate), *candidate))
+        .collect();
+    ranked.sort_by_key(|(distance, candidate)| (*distance, *candidate));
+    let close: Vec<&str> = ranked
+        .iter()
+        .filter(|(distance, _)| *distance * 3 <= name.len().max(4))
+        .map(|(_, candidate)| *candidate)
+        .take(3)
+        .collect();
+    let total = SCENARIO_NAMES.len();
+    if close.is_empty() {
+        format!("unknown scenario '{name}'; {total} are available, and they all use underscores")
+    } else {
+        format!(
+            "unknown scenario '{name}'. Did you mean {}? ({total} available, all using underscores)",
+            close
+                .iter()
+                .map(|candidate| format!("'{candidate}'"))
+                .collect::<Vec<_>>()
+                .join(" or ")
+        )
+    }
+}
+
 #[allow(dead_code)]
 impl ScenarioRunner {
     pub fn load(name: &str) -> Result<Self, String> {
-        let source = match name {
-            "still_5s" => include_str!("../scenarios/still_5s.json"),
-            "planet_to_moon" => include_str!("../scenarios/planet_to_moon.json"),
-            "moon_ground_detail" => include_str!("../scenarios/moon_ground_detail.json"),
-            "moon_polar_ice" => include_str!("../scenarios/moon_polar_ice.json"),
-            "moon_crater_wall" => include_str!("../scenarios/moon_crater_wall.json"),
-            "starfield_space" => include_str!("../scenarios/starfield_space.json"),
-            "starfield_twilight" => include_str!("../scenarios/starfield_twilight.json"),
-            "starfield_performance" => include_str!("../scenarios/starfield_performance.json"),
-            "orbit_once" => include_str!("../scenarios/orbit_once.json"),
-            "descent_to_10m" => include_str!("../scenarios/descent_to_10m.json"),
-            "sunset_sweep" => include_str!("../scenarios/sunset_sweep.json"),
-            "sunset_blue_hour" => include_str!("../scenarios/sunset_blue_hour.json"),
-            "sunrise_midday_surface" => {
-                include_str!("../scenarios/sunrise_midday_surface.json")
-            }
-            "twilight_directionality" => {
-                include_str!("../scenarios/twilight_directionality.json")
-            }
-            "night_side_atmosphere" => include_str!("../scenarios/night_side_atmosphere.json"),
-            "limb_atmosphere" => include_str!("../scenarios/limb_atmosphere.json"),
-            "orbital_atmosphere_profile" => {
-                include_str!("../scenarios/orbital_atmosphere_profile.json")
-            }
-            "orbital_atmosphere_continuity" => {
-                include_str!("../scenarios/orbital_atmosphere_continuity.json")
-            }
-            "atmospheric_mist_paths" => {
-                include_str!("../scenarios/atmospheric_mist_paths.json")
-            }
-            "ground_to_orbit" => include_str!("../scenarios/ground_to_orbit.json"),
-            "stare_at_sun" => include_str!("../scenarios/stare_at_sun.json"),
-            "orbital_sun_visibility" => {
-                include_str!("../scenarios/orbital_sun_visibility.json")
-            }
-            "weather_contrast" => include_str!("../scenarios/weather_contrast.json"),
-            "weather_sun_occlusion" => {
-                include_str!("../scenarios/weather_sun_occlusion.json")
-            }
-            "sun_horizon_visibility" => {
-                include_str!("../scenarios/sun_horizon_visibility.json")
-            }
-            "partial_sun_occultation" => {
-                include_str!("../scenarios/partial_sun_occultation.json")
-            }
-            "ocean_flyover" => include_str!("../scenarios/ocean_flyover.json"),
-            "ocean_hybrid_close" => include_str!("../scenarios/ocean_hybrid_close.json"),
-            "ocean_low_sun_stability" => {
-                include_str!("../scenarios/ocean_low_sun_stability.json")
-            }
-            "ocean_rough_horizon" => include_str!("../scenarios/ocean_rough_horizon.json"),
-            "ocean_waterline_flat" => include_str!("../scenarios/ocean_waterline_flat.json"),
-            "ocean_ship_float" => include_str!("../scenarios/ocean_ship_float.json"),
-            "land_chunk_seams" => include_str!("../scenarios/land_chunk_seams.json"),
-            "coast_waters_edge" => include_str!("../scenarios/coast_waters_edge.json"),
-            // The player's own pose from manual run 1788617902-64447, where the
-            // near ocean rendered as flat constant-colour slabs. It draws
-            // correctly here at the default budget; starve it with
-            // CATINGARDEN_MAX_ACTIVE_CHUNKS=24 and the slabs appear, which is
-            // what identified them as giant flat-shaded ocean triangles rather
-            // than fog or missing geometry.
-            "ocean_grey_foreground" => {
-                include_str!("../scenarios/ocean_grey_foreground.json")
-            }
-            "coastal_spawn_view" => include_str!("../scenarios/coastal_spawn_view.json"),
-            "mountain_ground" => include_str!("../scenarios/mountain_ground.json"),
-            "wavedir_spawn" => include_str!("../scenarios/wavedir_spawn.json"),
-            "wavedir_0" => include_str!("../scenarios/wavedir_0.json"),
-            "wavedir_1" => include_str!("../scenarios/wavedir_1.json"),
-            "wavedir_2" => include_str!("../scenarios/wavedir_2.json"),
-            "wavedir_3" => include_str!("../scenarios/wavedir_3.json"),
-            "shallow_water_shelf" => include_str!("../scenarios/shallow_water_shelf.json"),
-            "ocean_coastline" => include_str!("../scenarios/ocean_coastline.json"),
-            "orbital_zoom_lod" => include_str!("../scenarios/orbital_zoom_lod.json"),
-            "polar_ice_cap" => include_str!("../scenarios/polar_ice_cap.json"),
-            "terrain_material_preview" => {
-                include_str!("../scenarios/terrain_material_preview.json")
-            }
-            "low_flight_performance" => {
-                include_str!("../scenarios/low_flight_performance.json")
-            }
-            "landing_site_ground_detail" => {
-                include_str!("../scenarios/landing_site_ground_detail.json")
-            }
-            "landing_site_eye_level" => {
-                include_str!("../scenarios/landing_site_eye_level.json")
-            }
-            "forest_startup" => include_str!("../scenarios/forest_startup.json"),
-            "forest_performance" => include_str!("../scenarios/forest_performance.json"),
-            "forest_vast_distance" => {
-                include_str!("../scenarios/forest_vast_distance.json")
-            }
-            "forest_night" => include_str!("../scenarios/forest_night.json"),
-            "forest_boundary_transition" => {
-                include_str!("../scenarios/forest_boundary_transition.json")
-            }
-            "forest_ground_eligibility" => {
-                include_str!("../scenarios/forest_ground_eligibility.json")
-            }
-            "forest_travel" => include_str!("../scenarios/forest_travel.json"),
-            "highest_prominence_peak" => {
-                include_str!("../scenarios/highest_prominence_peak.json")
-            }
-            "manual_forward_clearance" => {
-                include_str!("../scenarios/manual_forward_clearance.json")
-            }
-            "manual_high_speed_clearance" => {
-                include_str!("../scenarios/manual_high_speed_clearance.json")
-            }
-            "manual_near_terrain_culling" => {
-                include_str!("../scenarios/manual_near_terrain_culling.json")
-            }
-            "manual_lod_approach_replay" => {
-                include_str!("../scenarios/manual_lod_approach_replay.json")
-            }
-            "manual_sky_ocean_replay" => {
-                include_str!("../scenarios/manual_sky_ocean_replay.json")
-            }
-            "outlined_shadows" => include_str!("../scenarios/outlined_shadows.json"),
-            "stand_on_ground" => include_str!("../scenarios/stand_on_ground.json"),
-            "terrain_detail_altitude_ladder" => {
-                include_str!("../scenarios/terrain_detail_altitude_ladder.json")
-            }
-            "path_parity_ridge" => include_str!("../scenarios/path_parity_ridge.json"),
-            "render_path_parity" => include_str!("../scenarios/render_path_parity.json"),
-            "manual_render_faults" => include_str!("../scenarios/manual_render_faults.json"),
-            "mountain_render_faults" => include_str!("../scenarios/mountain_render_faults.json"),
-            "low_pass_bands" => include_str!("../scenarios/low_pass_bands.json"),
-            "tour_mountains" => include_str!("../scenarios/tour_mountains.json"),
-            "tour_desert" => include_str!("../scenarios/tour_desert.json"),
-            "tour_coast" => include_str!("../scenarios/tour_coast.json"),
-            "tour_grassland" => include_str!("../scenarios/tour_grassland.json"),
-            "tour_tundra" => include_str!("../scenarios/tour_tundra.json"),
-            _ => return Err(format!("unknown scenario '{name}'")),
-        };
+        let source = scenario_source(name).ok_or_else(|| unknown_scenario(name))?;
         Self::from_source(source)
     }
 
@@ -983,6 +996,45 @@ fn squared_length(direction: [f64; 3]) -> f64 {
 #[cfg(test)]
 mod tests {
     use glam::DVec3;
+
+    use super::SCENARIO_NAMES;
+
+    /// The table is the only list, so a name cannot be loadable but unlisted,
+    /// nor listed but broken. This is what makes the suggestion trustworthy.
+    #[test]
+    fn every_listed_scenario_loads() {
+        assert_eq!(SCENARIO_NAMES.len(), 76);
+        for name in SCENARIO_NAMES {
+            ScenarioRunner::load(name)
+                .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));
+        }
+    }
+
+    /// The mistake this exists for: hyphens where the names use underscores.
+    #[test]
+    fn a_near_miss_is_named_in_the_error() {
+        let Err(message) = ScenarioRunner::load("planet-to-moon") else {
+            panic!("a hyphenated name should not load");
+        };
+        assert!(
+            message.contains("planet_to_moon"),
+            "the error should name the scenario meant, got: {message}",
+        );
+        assert!(message.contains("underscores"), "got: {message}");
+    }
+
+    /// And something unrelated gets a count rather than a confident wrong guess.
+    #[test]
+    fn nonsense_is_not_given_a_suggestion() {
+        let Err(message) = ScenarioRunner::load("zzzzzzzzzzzz") else {
+            panic!("nonsense should not load");
+        };
+        assert!(!message.contains("Did you mean"), "got: {message}");
+        assert!(
+            message.contains(&SCENARIO_NAMES.len().to_string()),
+            "got: {message}"
+        );
+    }
 
     use crate::planet::{OrbitCamera, PlanetLod};
 

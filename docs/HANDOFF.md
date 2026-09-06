@@ -7004,3 +7004,27 @@ that too.
 
 Planet unchanged: max pixel difference 0 on three controls. Moon scenarios all pass. Moon orbit holds
 16.7ms against 16.6ms without markings.
+
+### `--scenario` now says what you meant
+
+`unknown scenario '<name>'` and nothing else sent you to read `scenario.rs` for a list that was
+already in it. Hyphens for underscores is the easy mistake — every name uses underscores — so the
+error names the nearest few and says how many exist:
+
+```
+unknown scenario 'planet-to-moon'. Did you mean 'planet_to_moon'? (76 available, all using underscores)
+```
+
+A suggestion is only worth having if the list behind it is right, so the match arms and the name list
+are now generated from **one** table by a `scenarios!` macro: a name cannot be loadable but unlisted,
+or listed but broken, and adding a scenario is one line. `every_listed_scenario_loads` walks all 76.
+
+Nonsense gets a count rather than a confident wrong guess — the suggestion is gated on edit distance
+against the name's own length.
+
+**A method note worth more than the feature.** The first attempt dropped 25 of the 76 arms, because
+the extracting regex only matched single-line arms and rustfmt had wrapped the longer ones in braces.
+It compiled, and I "verified" it by running the same regex against `HEAD` and comparing — which is
+circular, and reported "identical sets" on two equally incomplete lists. What caught it was the test
+suite; what should have caught it is the check I did second: compare against `ls crates/app/scenarios`,
+a source the regex has no part in. **Verify against something the method under test did not produce.**
