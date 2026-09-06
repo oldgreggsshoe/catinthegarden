@@ -1,0 +1,52 @@
+{
+  "name": "moon_crater_wall",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 4,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0,
+  "fixed_exposure": true,
+  "screenshot_times_seconds": [
+    2,
+    4
+  ],
+  "waypoints": [
+    {
+      "time_s": 0,
+      "position": [
+        1098822.9911602323,
+        34338.21847375726,
+        -68676.43694751452
+      ],
+      "look_at": [
+        1098796.8019816526,
+        34337.59499407087,
+        -68774.99524599002
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0,
+      "direction": [
+        0.475813035772777,
+        0.016522178644972317,
+        -0.8793912511513391
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0,
+      "vertical_fov_degrees": 60
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 2,
+    "min_surface_probe_points": 20,
+    "min_camera_clearance_m": 1.0
+  }
+}

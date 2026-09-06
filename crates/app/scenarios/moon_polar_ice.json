@@ -1,0 +1,52 @@
+{
+  "name": "moon_polar_ice",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 4,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0,
+  "fixed_exposure": true,
+  "screenshot_times_seconds": [
+    2,
+    4
+  ],
+  "waypoints": [
+    {
+      "time_s": 0,
+      "position": [
+        -302446.3941057037,
+        -1035803.0353319084,
+        -218489.70276532444
+      ],
+      "look_at": [
+        -302499.45879825245,
+        -1035784.2188668187,
+        -218404.6728938307
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0,
+      "direction": [
+        -0.6421765513333771,
+        -0.49863532760463336,
+        0.5822130941349485
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0,
+      "vertical_fov_degrees": 60
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 2,
+    "min_surface_probe_points": 20,
+    "min_camera_clearance_m": 1.0
+  }
+}

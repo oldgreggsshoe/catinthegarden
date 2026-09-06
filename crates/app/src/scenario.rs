@@ -221,6 +221,9 @@ impl ScenarioRunner {
     pub fn load(name: &str) -> Result<Self, String> {
         let source = match name {
             "still_5s" => include_str!("../scenarios/still_5s.json"),
+            "moon_ground_detail" => include_str!("../scenarios/moon_ground_detail.json"),
+            "moon_polar_ice" => include_str!("../scenarios/moon_polar_ice.json"),
+            "moon_crater_wall" => include_str!("../scenarios/moon_crater_wall.json"),
             "starfield_space" => include_str!("../scenarios/starfield_space.json"),
             "starfield_twilight" => include_str!("../scenarios/starfield_twilight.json"),
             "starfield_performance" => include_str!("../scenarios/starfield_performance.json"),

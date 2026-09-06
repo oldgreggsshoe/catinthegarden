@@ -1,0 +1,52 @@
+{
+  "name": "moon_ground_detail",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 4,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0,
+  "fixed_exposure": true,
+  "screenshot_times_seconds": [
+    2,
+    4
+  ],
+  "waypoints": [
+    {
+      "time_s": 0,
+      "position": [
+        -954431.8246255618,
+        -550878.847818776,
+        -366.0200385238533
+      ],
+      "look_at": [
+        -954414.5411901027,
+        -550868.8500329684,
+        -266.0134030556139
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0,
+      "direction": [
+        -0.4593515871270904,
+        -0.2649407940242964,
+        0.8478222072260189
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0,
+      "vertical_fov_degrees": 60
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 2,
+    "min_surface_probe_points": 20,
+    "min_camera_clearance_m": 1.0
+  }
+}

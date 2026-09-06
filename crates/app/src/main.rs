@@ -279,6 +279,19 @@ const MAXIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 =
 /// 5,000 ft spent most of the frame on atmosphere and made the finest sparse
 /// terrain patch effectively invisible even though the camera was above it.
 const LOW_FLIGHT_INITIAL_PITCH_RADIANS: f64 = -18.0_f64.to_radians();
+
+fn inspection_start_direction(
+    body: body::Body,
+    baked_landing: Option<glam::DVec3>,
+    current_position: glam::DVec3,
+) -> glam::DVec3 {
+    match baked_landing {
+        Some(direction) if body::spawns_on_surface(body) => direction,
+        Some(_) => COASTAL_START_DIRECTION,
+        None => current_position.normalize(),
+    }
+}
+
 /// Prevent a slow render frame from turning into a much larger terrain jump on
 /// the next frame. This is a visual navigation mode rather than a physics
 /// integrator, so bounded slowdown is preferable to a performance feedback
@@ -1413,14 +1426,22 @@ impl State {
                 "aerial" => planet::RenderDebugMode::AerialContribution,
                 "sky" => planet::RenderDebugMode::SkyOnly,
                 "ray_hit" => planet::RenderDebugMode::RayHitStatus,
+                // Both modes stay reachable from a scenario, because diagnosing
+                // whether an artifact belongs to a presentation or to the
+                // terrain under it needs to be able to switch between them.
                 "flat_triangles" => planet::RenderDebugMode::FlatTriangles,
-                // Reachable only by keyboard before this: diagnosing whether an
-                // artifact belongs to the flat presentation or to the terrain
-                // under it needs both modes from a scenario.
                 "final" => planet::RenderDebugMode::Final,
-                _ => planet::RenderDebugMode::FlatTriangles,
+                // The faceted low-poly look was the default, which meant every
+                // capture in this repo -- and every screenshot anyone formed an
+                // impression from -- carried one flat colour per triangle and a
+                // dark outline around it. The scene is smooth-shaded now, on
+                // interpolated vertex normals.
+                _ => planet::RenderDebugMode::Final,
             },
-            flat_triangle_outline_mode: planet::FlatTriangleOutlineMode::Dark,
+            // Only drawn in flat-triangle mode, and that is no longer the
+            // default, so this is now the setting you opt in to rather than
+            // the one you opt out of.
+            flat_triangle_outline_mode: planet::FlatTriangleOutlineMode::Off,
             animation_frozen: false,
             frozen_sim_time: 0.0,
             scaled_clock_seconds: 0.0,
@@ -1473,7 +1494,7 @@ impl State {
         }
 
         self.toggle_camera_mode();
-        if self.position_storm_ocean_start() {
+        if body::has_ocean() && self.position_storm_ocean_start() {
             self.toggle_surface_camera_mode();
         }
         self.toggle_blur();
@@ -2360,11 +2381,14 @@ impl State {
                 // differ by hundreds of metres and would move the camera after
                 // F4 while ordinary streaming catches up.
                 let outmap_is_active = self.terrain.preferred_landing_direction().is_some();
-                let local_radial = if outmap_is_active {
-                    COASTAL_START_DIRECTION
-                } else {
-                    local_position.normalize()
-                };
+                let moon_landing = body::spawns_on_surface(body::active())
+                    .then(|| self.terrain.preferred_landing_direction())
+                    .flatten();
+                let local_radial = inspection_start_direction(
+                    body::active(),
+                    self.terrain.preferred_landing_direction(),
+                    local_position,
+                );
                 let flight_start_altitude_meters = if outmap_is_active {
                     COASTAL_START_ALTITUDE_METERS
                 } else {
@@ -2386,13 +2410,17 @@ impl State {
                     * (planet::planet_radius_meters()
                         + self.flight_surface_height_meters
                         + flight_start_altitude_meters);
-                self.flight_local_tangent = if outmap_is_active {
+                self.flight_local_tangent = if moon_landing.is_some() {
+                    initial_flight_tangent(local_radial)
+                } else if outmap_is_active {
                     COASTAL_SEAWARD_TANGENT
                 } else {
                     initial_flight_tangent(local_radial)
                 };
                 self.flight_look_yaw_radians = 0.0;
-                self.flight_look_pitch_radians = if outmap_is_active {
+                self.flight_look_pitch_radians = if moon_landing.is_some() {
+                    0.0
+                } else if outmap_is_active {
                     COASTAL_START_PITCH_RADIANS
                 } else {
                     LOW_FLIGHT_INITIAL_PITCH_RADIANS
@@ -5311,6 +5339,27 @@ mod tests {
         assert!(tangent_before.dot(longitude_tangent_after) < -0.999);
         assert!(tangent_before.dot(transported_tangent) > 0.999);
         assert!(transported_tangent.dot(after_pole).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn moon_inspection_uses_its_baked_landing_without_moving_the_planet_start() {
+        let landing = DVec3::new(
+            -0.866089248887331,
+            -0.4998892903874613,
+            -0.00033214108337932085,
+        );
+        assert_eq!(
+            super::inspection_start_direction(crate::body::MOON, Some(landing), DVec3::X),
+            landing
+        );
+        assert_eq!(
+            super::inspection_start_direction(crate::body::PLANET, Some(landing), DVec3::X),
+            super::COASTAL_START_DIRECTION
+        );
+        assert_eq!(
+            super::inspection_start_direction(crate::body::MOON, None, DVec3::Z * 10.0),
+            DVec3::Z
+        );
     }
 
     #[test]
