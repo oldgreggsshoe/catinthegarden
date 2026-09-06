@@ -36,14 +36,16 @@ pub const MOON_RADIUS_METERS: f64 = 1_080_000.0;
 /// that this world's mean surface is its zero. Applied by
 /// `surface_height_meters`, which is what both the bake and the shader draw.
 ///
-/// Sized from the measurement, not from one basin's depth: a hundred and
-/// twenty thousand craters overlap heavily, and stacked bowls reach 17,519m
-/// below the crater field's zero where a single largest basin reaches only
-/// 10,125m. So this is a property of the *catalogue* and not of any one
-/// crater: raising the count deepens the stack, and
-/// `report_the_baked_height_extremes` in the baker is what to re-run after
-/// changing it. At 22,000m the baked body spans about 4,500m to 26,700m,
-/// inside the stored range at both ends and above zero everywhere.
+/// Sized from the measurement, not from one basin's depth: six hundred
+/// thousand craters overlap heavily, and stacked bowls reach 19,256m below the
+/// crater field's zero where a single largest basin reaches only 10,125m. So
+/// this is a property of the *catalogue* and not of any one crater: raising the
+/// count deepens the stack, and `report_the_baked_height_extremes` in the baker
+/// is what to re-run after changing it. At 22,000m the baked body spans 2,744m
+/// to 26,993m, inside the stored range at both ends and above zero everywhere.
+///
+/// The measurement is exact rather than a sample, because it is taken on the
+/// same grid the bake writes: what it reports is what gets stored.
 pub const MOON_DATUM_METERS: f64 = 22_000.0;
 
 /// One impact structure, as a cap on the unit sphere.
@@ -185,14 +187,15 @@ pub const RUNTIME_SPEC: CatalogueSpec = CatalogueSpec {
 /// hundred-and-thirty-fold in radius and so about eighteen thousand craters.
 /// Past that the law would ask for sizes the grid cannot hold, and the count
 /// instead goes into more craters *at* the floor — which is what a saturated
-/// regolith surface is. 120,176 in total.
+/// regolith surface is. 600,176 in total, so all but about three per cent of
+/// them are floor-sized: the count buys density, not new sizes.
 ///
 /// The split at rank 176 is where the always-tested and windowed costs
 /// balance for the renderer. The bake does not use the window at all: it
 /// splats, so its cost is the craters' total area and not the count.
 pub const BAKED_SPEC: CatalogueSpec = CatalogueSpec {
     basin_count: 176,
-    field_count: 120_000,
+    field_count: 600_000,
     basin_max_angular_radius: 0.30,
     field_max_angular_radius: 0.30,
     basin_rank_exponent: 0.5,
