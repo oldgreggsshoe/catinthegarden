@@ -6772,3 +6772,21 @@ Also cleared, and worth knowing they accumulate: five stale build trees at 12.6G
 (`catingard-target`, `target-forest`, `catingard-target-hash`, `-base`, `-flat`). `assets/outmaps` is
 a further 12G of `test-planet.*-backup-*` from early August, deliberately left alone — history, not
 build output.
+
+### Correction: `ba9ee40` contains work that is not mine
+
+That commit says "464 tests, clippy and fmt clean". **It does not describe the tree it committed.**
+
+Codex began the two-body rendering task in the same working directory while the `/tmp` fix was being
+made, and `git add -A crates docs` swept 34 lines of its in-progress `body.rs` — a `RENDER_BODY`
+thread-local and `with_body`, the start of per-body render state — into a commit about baker test
+cleanup. `with_body` is not called yet, so the tree has a `dead_code` warning and is unformatted where
+Codex is still editing. Both are its work in progress, not defects.
+
+Left in place deliberately: reverting it would delete live work out from under the agent holding it.
+`cargo fmt --all` was also run over its files, which is the same mistake in a different shape.
+
+**The lesson is the working directory, not the commit.** Two agents editing one checkout means one
+can format, stage or commit the other's half-finished edits without either noticing. A second agent
+should get its own worktree, or the two should not be active at once. Check `git status` before
+staging, and stage named paths rather than `-A`.
