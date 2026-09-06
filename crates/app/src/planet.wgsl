@@ -529,6 +529,17 @@ const AIRLESS_REGOLITH_SPECULAR: f32 = 0.16;
 /// around it. Small: the Moon's albedo is about 0.12, so a bounce is dim, but
 /// it is the difference between a crater interior and a hole.
 const AIRLESS_BOUNCE_FRACTION: f32 = 0.09;
+/// How wide the terminator is, in cosine of incidence.
+///
+/// On a body with air the terminator is soft because the air scatters. With no
+/// air the only thing that softens it is that the sun is a disc rather than a
+/// point -- about half a degree seen from here -- so the penumbra is half a
+/// degree wide and nothing else is entitled to blur it. 0.012 is about 0.7
+/// degrees: the sun's own width, plus enough not to alias into a stair edge.
+///
+/// This was 0.06, roughly 3.4 degrees, which is five times the sun and reads
+/// as a body with a thin atmosphere.
+const AIRLESS_TERMINATOR_COSINE_WIDTH: f32 = 0.012;
 
 fn airless_regolith(biome_id: u32) -> bool {
     return !BODY_HAS_ATMOSPHERE && biome_id == AIRLESS_BODY_BIOME;
@@ -1027,14 +1038,30 @@ fn flat_triangle_lighting(
         response = 2.0 * incidence / (incidence + emission);
         // The law alone does not vanish at the terminator; the geometric
         // cosine still has to close it, or the night side would stay lit.
-        response = response * smoothstep(0.0, 0.06, incidence);
+        response = response * smoothstep(0.0, AIRLESS_TERMINATOR_COSINE_WIDTH, incidence);
         // A crater floor turned away from the sun is not truly black: it is lit
         // by sunlight bouncing off its own sunlit far wall. That is
         // inter-reflection, not skylight, so it survives having no atmosphere.
         // Without it the interiors read as holes punched through the body.
-        // Scaled by how lit the neighbourhood is, so the night side stays dark.
+        //
+        // It is gated on the *neighbourhood* rather than on this facet, which
+        // is the whole point -- the facet it lights is the one turned away. But
+        // the neighbourhood's own light falls off with its own cosine, and a
+        // term linear in that keeps lifting ground well inside the terminator
+        // that should already be black: it was added after the closure above,
+        // so nothing shut it off until the geometric terminator itself. Reported
+        // as the moon not going straight to black at the edge of the light.
+        //
+        // Squared, and closed by the same penumbra. Not derived -- the honest
+        // model would integrate the sunlit ground each facet can actually see --
+        // but it has the right shape: near the sub-solar point the ground around
+        // a crater is fully lit and the interior glows, and approaching the
+        // terminator that ground is grazing-lit and has nothing to give.
         let neighbourhood_sun = max(dot(surface_direction, sun_direction), 0.0);
-        response = response + AIRLESS_BOUNCE_FRACTION * neighbourhood_sun;
+        let bounce = neighbourhood_sun
+            * neighbourhood_sun
+            * smoothstep(0.0, AIRLESS_TERMINATOR_COSINE_WIDTH, neighbourhood_sun);
+        response = response + AIRLESS_BOUNCE_FRACTION * bounce;
     }
     let diffuse = sky_diffuse
         + sun_transmittance * cloud_visibility * response * SURFACE_SUNLIGHT_SCALE;

@@ -1799,6 +1799,19 @@ fn terrain_fog(
     surface_direction: vec3<f32>,
     surface_altitude_meters: f32,
 ) -> TerrainFog {
+    // Distance mist is air. There is none here, and the colour it mixes toward
+    // is `physical_camera_sky_radiance` -- Rayleigh blue -- so on an airless
+    // body this laid a blue haze over everything far away, including the
+    // unlit side, which is how a night side that computes to exactly zero
+    // surface lighting still came out at (4, 6, 15) instead of black. Reported
+    // as the moon not going straight to black at the edge of the light.
+    //
+    // The aerial-perspective terms next to this were gated when the moon was
+    // built; this one was missed because it is composed later, as presentation
+    // rather than as physics.
+    if !BODY_HAS_ATMOSPHERE {
+        return TerrainFog(0.0, vec3<f32>(0.0));
+    }
     let air_path_meters = terrain_fog_air_path_meters(
         camera_relative_view_position,
         surface_direction,
