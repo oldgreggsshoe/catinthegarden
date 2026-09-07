@@ -1,1 +1,3 @@
-Waiting for you. The gentler turquoise fade is built and pushed; restart to try it. For the underwater sky bug, I still need an F12 capture taken while it happens.
+Restored a stronger turquoise with a 24m linear fade. Same peak colour, no accelerated mid-transition blend.
+
+Release rebuilt; focused test passes. The underwater sky issue remains unresolved.

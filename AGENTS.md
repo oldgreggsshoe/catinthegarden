@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Crest visibility rebalance: user found the 48m linear fade too faint; restored a 24m span while retaining linear interpolation, original onset and peak colour. Focused regression passes. Underwater sky leakage in manual capture 1788802408-449773 remains unresolved.
+
 - Crest-colour follow-up: turquoise now uses a linear 0–48m blend rather than the 0–24m smoothstep, reducing its maximum colour-change rate threefold while retaining onset and peak colour. Geometry and underwater paths are untouched.
 
 - Crest-colour fade tuning: unchanged zero-height onset and peak turquoise now blend over 24m instead of 8m; geometry/motion are untouched. Focused regression, shader validation and formatting pass; visual acceptance remains pending.

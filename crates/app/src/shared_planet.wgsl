@@ -2703,9 +2703,9 @@ fn ocean_lighting(
     // crest; forward scattering lights it when the sun is behind the wave.
     // Keep depth writes and reflection intact; foam is composed by the caller.
     // Linearly interpolate from the unchanged sea-body colour to full crest
-    // transmission over 48m. Unlike smoothstep, this does not accelerate the
+    // transmission over 24m. Unlike smoothstep, this does not accelerate the
     // colour change through the middle of the ramp.
-    let crest = clamp(crest_height_meters / 48.0, 0.0, 1.0);
+    let crest = clamp(crest_height_meters / 24.0, 0.0, 1.0);
     let backlight = pow(max(dot(-view_direction, sun_direction_view), 0.0), 4.0);
     let transmitted = vec3<f32>(0.025, 0.32, 0.22)
         * sun_transmittance * (SURFACE_SUNLIGHT_SCALE * crest * backlight)
