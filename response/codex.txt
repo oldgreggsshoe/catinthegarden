@@ -1,3 +1,13 @@
-The turquoise now fades in over three times the height, starting at the same point and sea colour, with the same maximum turquoise.
+It’s in the normal release—no underwater flag needed. Restart using:
 
-Tests pass; release rebuilt. Committed and pushed.
+```bash
+/home/dad/catingard/target/release/catinthegarden-app
+```
+
+For the shallow-seabed test:
+
+```bash
+/home/dad/catingard/target/release/catinthegarden-app --scenario ocean_shallow_bottom
+```
+
+Deep water has no visible bottom within 30m, but looking upward should show the wave underside. If this binary shows nothing underwater, that’s a remaining bug—not a missing option. Are you seeing a uniform blue screen, black, or sky?
