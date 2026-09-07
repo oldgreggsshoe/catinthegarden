@@ -4636,6 +4636,29 @@ mod tests {
     }
 
     #[test]
+    fn ocean_underside_uses_water_fog_even_when_the_eye_flag_is_above_water() {
+        let shader = planet_shader_source();
+        let underside = shader
+            .split("fn ocean_underside_fragment(")
+            .nth(1)
+            .unwrap()
+            .split("\nfn ")
+            .next()
+            .unwrap();
+        assert!(underside.contains("ocean_distance_fog("));
+        assert!(!underside.contains("terrain_distance_fog("));
+        let fog = shader
+            .split("fn ocean_distance_fog(")
+            .nth(1)
+            .unwrap()
+            .split("\nfn ")
+            .next()
+            .unwrap();
+        assert!(!fog.contains("flat_triangle_options"));
+        assert!(fog.contains("ocean_water_fog("));
+    }
+
+    #[test]
     fn ocean_shader_transmits_sunlight_and_retains_submerged_bathymetry() {
         let shader = planet_shader_source();
         let lighting = shader
@@ -4646,7 +4669,33 @@ mod tests {
             .next()
             .unwrap();
         assert!(lighting.contains("crest_height_meters"));
-        assert!(lighting.contains("clamp(crest_height_meters / 24.0, 0.0, 1.0)"));
+        // Linear, not smoothstep: the ramp must not accelerate through its
+        // middle. Pinning the literal broke the moment the ramp was retuned, so
+        // read the two constants instead and assert the relationship that
+        // actually matters -- the turquoise starts above mean level, because
+        // transmission is a property of a thin crest and water low on a wave is
+        // not thin, and it starts below where it saturates.
+        assert!(lighting.contains("clamp("));
+        assert!(!lighting.contains("smoothstep(0.0"));
+        let constant = |name: &str| -> f32 {
+            let tail = shader
+                .split(&format!("const {name}: f32 = "))
+                .nth(1)
+                .unwrap_or_else(|| panic!("{name} is declared"));
+            tail.split(';')
+                .next()
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap_or_else(|_| panic!("{name} is a literal"))
+        };
+        let onset = constant("OCEAN_CREST_TRANSMISSION_ONSET_METERS");
+        let full = constant("OCEAN_CREST_TRANSMISSION_FULL_METERS");
+        assert!(
+            onset > 0.0,
+            "turquoise must start above mean level: {onset}"
+        );
+        assert!(onset < full, "onset {onset} must precede full {full}");
         assert!(
             lighting.contains("sun_transmittance * (SURFACE_SUNLIGHT_SCALE * crest * backlight)")
         );

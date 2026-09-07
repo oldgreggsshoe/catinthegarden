@@ -1,8 +1,11 @@
 # Handoff — ocean wind sea spectrum
 
 **Branch:** `experiment/ocean-wind-sea-spectrum`, tracking
-`origin/experiment/ocean-wind-sea-spectrum`, at `23f4a84`. The name is historical: the ocean work it
-was opened for is done, and the active subject is now **a second body**.
+`origin/experiment/ocean-wind-sea-spectrum`. This line used to pin a commit hash and was stale
+almost every time it was read -- a header cannot name the commit that carries it -- so it does not
+any more; `git log -1` is authoritative. The name is historical: the branch was
+opened for the ocean, moved to **a second body**, and the ocean is the active subject again -- its
+surface appearance rather than its geometry.
 
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
@@ -137,7 +140,7 @@ a magnified waterline capture. Scenarios initialise deterministic weather rather
 evolved manual state, so fresh manual travel through the real weather remains the visual acceptance
 gate for anything weather-composed.
 
-**CI.** Green after the rim-landing work: **464 workspace tests** (12 ignored), `cargo fmt --all --check` clean, clippy clean across
+**CI.** Green: **487 workspace tests** (14 ignored), measured 7 September after the foam, sea-colour and crest-onset work; `cargo fmt --all --check` clean, clippy clean across
 all three crates. Note that `coretypes` now carries tests of its own — it used to be types only. Clippy stops at the first crate that fails, so the baker's three
 had been hiding the app's seventy entirely — the app was never being linted. Check both.
 
@@ -256,18 +259,14 @@ See the latest section for the failing-before/passing-after evidence. No terrain
 17. **`moon_crater_wall` passes while rendering entirely black.** Either aim it somewhere lit or say
     in the scenario that it is a night-side capture and assert something that would notice.
 
-18. **~1000ms frames: reproduced at will, and the lead is swap exhaustion.** Blamed on DPMS
-    blanking; that was wrong — the same display state later gave 16.6ms. On 7 September it
-    reproduced for most of a session: six consecutive `ocean_rough_horizon` runs of an *identical*
-    binary and scenario gave 861, **31**, 977, 1000, 1000 and 909 ms/frame, and `ocean_ship_float`
-    went 29-30ms to 1000ms across runs. Not code: one fast run sat between two slow ones with
-    nothing changed. `nvidia-smi` had the GPU at 40% utilisation in P5, 797MHz of 1124, 44C — idle,
-    so the block is on the CPU side. `free -m` then showed **swap 976MB of 976MB used, zero free**
-    against 15.4GB RAM with 9.1GB in use. Blocking on page faults against a full swap has exactly
-    this shape, including the one run in six that found its pages resident. **Untested:** free the
-    swap (the desktop had Chrome, WhatsApp and Sublime resident at 330-440MB each) and re-run
-    `ocean_ship_float`; if it returns to ~30ms consistently this thread closes.
-
+18. **~1000ms frames: CLOSED. It was memory pressure, not the renderer.** The test the previous
+    section asked for has been run. With swap at 51MB of 976MB (against 976/976 during the stalls),
+    five consecutive `ocean_ship_float` runs gave median frame times of 34.8, 34.7, 34.8, 34.6 and
+    60.9ms; the last is an outlier on a machine that was not perfectly idle, and no run went near
+    1000ms. The two runs immediately before, taken during the swap-exhausted session, were 999.93
+    and 999.89ms median. Nothing in the renderer changed between them. **Check `free -m` before
+    believing any timing measured in this repo** -- and note the stall is a property of the machine,
+    so it will come back whenever swap fills.
 19. **The planet's near ground gained detail as a side effect of the moon fix**, moving 76.1% of
     `stand_on_ground`'s pixels. Measured as slightly more relief, not less, and from the same root
     cause — but nobody has looked at the planet since, and every planet baseline older than this is
@@ -289,6 +288,21 @@ See the latest section for the failing-before/passing-after evidence. No terrain
     Measure it from the depth buffer instead.
 25. **`planet_to_moon` pins exposure at 1.0 with auto-exposure off.** Correct for comparing phases,
     but its captures are not the game's lighting and should not be judged as such.
+
+26. **The seabed is raster-only; the raymarch path has no equivalent.** The submerged-bottom branch
+    lives in `terrain_fragment_color` (`planet.wgsl:1866`) and there is nothing matching it in
+    `foveated_debug.wgsl`, which has `is_open_ocean_surface` at line 1038 and no bottom shading at
+    all. Crest transmission *is* in both, because it went into `ocean_lighting`, which both paths
+    call. So a submerged raymarch view should show no sea bed. This is read from the source, not
+    from a capture: there is no CLI switch for the render path, so a scenario cannot select it.
+    Parity is the stated goal and this is the path the work is judged in.
+27. **`ocean_underwater_visibility` cannot fail either.** Its only assertions are
+    `require_finite_metrics` and `expected_screenshots: 4`, the same pair that let the flat-blue
+    seabed run go green. Its captures do currently hold real content (975-1495 distinct colours,
+    luminance 21-86), so this is a missing guard rather than a broken render. The Snell window needs
+    a discriminator of its own: a bright disc against a dark rim is a two-point luminance ratio, and
+    `min_day_night_surface_luminance_ratio` is the shape to copy. `ocean_shallow_bottom` is armed as
+    of 7 September and is the worked example.
 
 **Build convention.** Benchmarks and parity runs build to `CARGO_TARGET_DIR=/home/dad/catingard-target`,
 not the in-repo `target/`. Give every temporary or staged checkout its own `CARGO_TARGET_DIR`
@@ -7537,3 +7551,122 @@ are not part of this change and must remain unstaged.
 
 Focused crest regression and Naga shader validation pass; release rebuilt
 from the active worktree, including its concurrent uncommitted edits.
+
+## 7 September 2026 — verifying the crest/seabed work, and arming the scenario that could not fail
+
+Review of `2dfe3cb` from the relay, on a machine that finally had memory headroom.
+Everything below is measured on this branch, not taken from the report.
+
+**What holds.** 414 app tests, 11 ignored — exact. The seabed does render: at the
+scenario's sample point the good capture is `(66, 47, 25)`, red leading blue by
+0.161, against ocean blue's -0.56. It is genuine structure and not a fog
+gradient: a pure vertical gradient explains only 55% of the luminance variance,
+and the horizontal residual autocorrelates at 0.9995 at lag 1 and 0.76 at lag 64,
+so it is smooth relief rather than noise. `is_open_ocean_surface` guards on
+`BODY_HAS_OCEAN` internally, so the new call site cannot reopen the black-moon
+defect. `flat_triangle_options.w` really is a single-writer channel: only
+`main.rs:3508` sets it, everything else leaves the constructor's 0.0.
+
+**The frame cost is nil, which I nearly got wrong.** `ocean_ship_float` now runs
+~34.8ms median where runs before this work were ~29.3ms, and that looked like a
+19% regression to charge to the crest shader. It is not. Reverting the three
+`.wgsl` files to `20587bf`, rebuilding and re-running gave 34.68, 34.70 and
+34.70ms against HEAD's 34.76, 34.66, 34.80 and 34.64 — the same number. Crest
+transmission and the seabed branch cost nothing measurable. The 29 to 35ms shift
+is real but older than this change and belongs to a binary nobody kept. Same
+scenario, same machine, same session, swap free, monitor on.
+
+**Thread 18 is closed** — see the header. Five runs, no stall, swap at 51MB of
+976MB instead of 976 of 976.
+
+**The defect: `ocean_shallow_bottom` could not fail.** Its assertions were
+`require_finite_metrics` and `expected_screenshots: 4`, which is exactly what the
+abandoned run `1788800195-416229` passed while rendering flat blue. A scenario
+whose whole purpose is to prove the sea bed draws, and which goes green when it
+does not, is worse than no scenario: it is a false witness. This is the third of
+its kind here, after threads 4 and 17.
+
+Armed with `seabed_sample_uv` and `min_seabed_red_minus_blue`, following the
+`ice_sample_uv` pair. Sediment lit through water is warm, open water is not, so
+the sign of red-minus-blue is the whole signal. Threshold 0.08 at frame centre,
+sitting between +0.161 and -0.56 with room on both sides.
+
+Proved by breaking it on purpose, which is the only thing that proves a guard:
+
+| build | assertion | sample | margin |
+| --- | --- | --- | --- |
+| seabed branch on | pass | `(66, 47, 25)` | +0.161 |
+| `if false &&` on the branch | **fail** | `(15, 64, 117)` | -0.400 |
+
+`(15, 64, 117)` is the constant slab colour this file already names as flat
+ocean. The shader was restored, rebuilt, and reproduces +0.161 exactly.
+
+**Validation.** 486 workspace tests (14 ignored), fmt clean, clippy clean on all
+three crates checked separately. `ocean_hybrid_close`, `ocean_underwater_visibility`,
+`ocean_rough_horizon` and `stand_on_ground` all pass, so the blast radius is nil —
+the new assertion fields default to `None`.
+
+**Two new threads, 26 and 27:** the sea bed is raster-only with no raymarch
+counterpart, and `ocean_underwater_visibility` has the same missing teeth that
+`ocean_shallow_bottom` just had.
+
+**A note on the harness.** The first run after every rebuild produced no
+screenshots and a null `passed` — 14 log rows and one frame. The retry was clean
+every time. Related to thread 13; a null result is not a pass and not a failure,
+and nothing says so.
+
+## 7 September 2026 — the foam's straight edge, a darker sea, and a debug mode mistaken for a bug
+
+Three reports from Ian, all on the raster path, all confirmed by rendering rather than by reading.
+
+**The foam cut off in a straight line, and the crest gate was why.** `ocean_foam_coverage` multiplied
+the whitecap slope term by `smoothstep(0.0, OCEAN_WHITECAP_CREST_METERS /* 4.0 */, h)`. Painting the
+two factors into separate channels of one frame settles which one owns the edge: the slope term is
+graded, with 31.7% of sea pixels mid-ramp; the crest gate is a step, with 49% of the sea at exactly
+zero and 6.3% anywhere inside the ramp. A 4m ramp against a sea whose crests run to 53m is not a
+fade. Its edge is the contour h = 0 -- the mean-water line -- which is why it reads as a straight
+line across the swell, and the same frame shows the slope term wanting foam *below* that line and
+being killed by it.
+
+Replaced with `OCEAN_WHITECAP_CREST_LOW_FRACTION` (-0.08) and `OCEAN_WHITECAP_CREST_HIGH_FRACTION`
+(0.18) of `OCEAN_MAXIMUM_WAVE_HEIGHT_METERS`: 3.4x wider, starting below mean level so there is no
+zero-crossing at a level contour, and expressed in the sea's own scale so it keeps its meaning when
+`OCEAN_WAVE_SCALE` changes. The first attempt used a 0.25 high fraction and cost 34% of mean foam
+intensity for no reason; 0.18 keeps the softened edge and gives the intensity back. Foam coverage on
+`ocean_rough_horizon` 21.9% before, 22.3% after.
+
+**A darker sea.** `OCEAN_BODY_COLOUR`, a new named constant, (0.005, 0.032, 0.170) against the
+inline (0.008, 0.055, 0.28) it replaces. Measured 16.3% darker in mean sea luminance -- much less
+than the 39% cut to the constant, because glint, sky reflection, foam and the transmitted crest are
+all added on top of the body rather than mixed into it. Worth knowing before anyone tunes it again:
+raising this constant flattens all four of those at once.
+
+**The turquoise now starts above mean level.** `OCEAN_CREST_TRANSMISSION_ONSET_METERS` 8.0 to
+`_FULL_METERS` 24.0, still linear. Transmission is a property of a thin crest and water low on a
+wave is not thin. Note the interaction: turquoise coverage went *up* (3.2% to 7.7% of sea pixels
+green-dominant) even though the ramp starts higher, because the darker body makes green win over
+blue more easily. Colour changes here are not independent.
+
+**The sea rendering flat-shaded at low LOD is NOT a normals bug.** It is the flat-triangle debug
+mode. `test-runs/manual/1788802885-453933/manifest.json` records `"render_debug_mode": "flat L7
+triangles"`; `flat_ocean_colour` shades from `@interpolate(flat) face_normal` deliberately, "which
+is what the low-poly presentation wants". Reproduced the same pose in the normal mode as the new
+scenario `ocean_eye_level_facets` (82 scenarios now): smooth, at matching conditions -- 17m
+altitude, 248 of 255 chunks on fallback tiles, `budget_limited` true, waves -36.1 to +38.8m.
+
+**The trap that cost the reproduction, and it will cost the next one too.** The `render
+configuration` log line carries `render_debug_mode` and is written *once at startup*. Toggling the
+mode mid-session never appears in the log, so the log said "final HDR scene" for a session that was
+in flat triangles. Only the per-probe `render_debug_mode` in `manifest.json` told the truth. **Log
+the render mode when it changes**, or every manual report is ambiguous.
+
+**Concurrent editing.** Two agents were in this tree at once and a whole-file backup-and-restore of
+`planet.wgsl` nearly discarded the other's `ocean_underside_fragment` change; it survived only
+because the backup happened to be taken after that edit, and the diff was checked before moving on.
+Use targeted edits on shared files. Never restore a whole-file backup of a file someone else is in.
+
+**Validation.** 416 app tests (11 ignored), fmt clean, clippy clean. `ocean_hybrid_close`,
+`ocean_rough_horizon` and `ocean_eye_level_facets` pass. One brittle assertion fixed on the way:
+the crest-ramp test pinned the literal `clamp(crest_height_meters / 24.0, 0.0, 1.0)` and failed the
+moment the ramp was retuned. It now parses the two constants out of the shader and asserts
+`0 < onset < full`. A guard should survive tuning it is not meant to prevent.

@@ -145,6 +145,7 @@ struct AssertionTracker {
     sun_background_samples: Vec<[u8; 3]>,
     day_night_surface_luminance_ratios: Vec<f32>,
     ice_samples: Vec<[u8; 3]>,
+    seabed_samples: Vec<[u8; 3]>,
     exposure_sample_count: usize,
     exposure_bound_violations: usize,
     maximum_exposure_frame_delta: f32,
@@ -190,6 +191,7 @@ impl AssertionTracker {
             sun_background_samples: Vec::new(),
             day_night_surface_luminance_ratios: Vec::new(),
             ice_samples: Vec::new(),
+            seabed_samples: Vec::new(),
             exposure_sample_count: 0,
             exposure_bound_violations: 0,
             maximum_exposure_frame_delta: 0.0,
@@ -871,12 +873,29 @@ impl AssertionTracker {
                 format!("sample {sample:?}, luminance {luminance:.3}, channel spread {spread:.3}"),
             ));
         }
+        if let Some(minimum_margin) = self.config.min_seabed_red_minus_blue {
+            let sample = self.seabed_samples.last().copied();
+            let margin = sample.map(red_minus_blue).unwrap_or(f32::NEG_INFINITY);
+            results.push(assertion_result(
+                "submerged_seabed_is_sediment_not_water",
+                sample.is_some() && margin >= minimum_margin,
+                format!(
+                    "required red-blue margin {minimum_margin:.3}, observed {margin:.3} from sample {sample:?}",
+                ),
+            ));
+        }
         results
     }
 }
 
 fn red_blue_ratio(sample: [u8; 3]) -> f32 {
     f32::from(sample[0]) / f32::from(sample[2]).max(1.0)
+}
+
+/// How far red leads blue, normalised. Sediment lit through water is warm and
+/// positive; open water is strongly negative. The sign is the whole signal.
+fn red_minus_blue(sample: [u8; 3]) -> f32 {
+    (f32::from(sample[0]) - f32::from(sample[2])) / 255.0
 }
 
 fn blue_red_ratio(sample: [u8; 3]) -> f32 {
@@ -1338,6 +1357,17 @@ impl RunArtifacts {
         Some(sample)
     }
 
+    fn record_seabed_sample(&mut self, pixels: &[u8], width: u32, height: u32) -> Option<[u8; 3]> {
+        let [u, v] = self.assertion_tracker.config.seabed_sample_uv?;
+        let x = (u.clamp(0.0, 1.0) * (width - 1) as f32).round() as usize;
+        let y = (v.clamp(0.0, 1.0) * (height - 1) as f32).round() as usize;
+        let sample: [u8; 3] = pixels[(y * width as usize + x) * 4..][..3]
+            .try_into()
+            .expect("sample coordinate is inside the screenshot");
+        self.assertion_tracker.seabed_samples.push(sample);
+        Some(sample)
+    }
+
     fn write_manifests(&self) -> Result<(), String> {
         write_json(self.root.join("manifest.json"), &self.manifest)?;
         write_json(
@@ -1480,6 +1510,7 @@ pub fn finish_capture(
     let day_night_surface_luminance_ratio =
         artifacts.record_day_night_surface_luminance_ratio(&pixels, pending.width, pending.height);
     let ice_sample_rgb = artifacts.record_ice_sample(&pixels, pending.width, pending.height);
+    artifacts.record_seabed_sample(&pixels, pending.width, pending.height);
     artifacts.record_screenshot(
         pending.filename,
         sim_time,
@@ -1544,7 +1575,9 @@ fn git_commit() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{AssertionTracker, LOD_LEVEL_COUNT, SpatialLogSample, SurfaceProbeReport};
+    use super::{
+        AssertionTracker, LOD_LEVEL_COUNT, SpatialLogSample, SurfaceProbeReport, red_minus_blue,
+    };
     use crate::scenario::ScenarioAssertions;
 
     fn assertions() -> ScenarioAssertions {
@@ -1585,12 +1618,33 @@ mod tests {
             ice_sample_uv: None,
             min_ice_sample_luminance: None,
             max_ice_sample_channel_spread: None,
+            seabed_sample_uv: None,
+            min_seabed_red_minus_blue: None,
             max_surface_probe_delta_m: None,
             max_surface_probe_p90_delta_m: None,
             min_camera_clearance_m: None,
             max_camera_clearance_m: None,
             min_surface_probe_points: None,
         }
+    }
+
+    /// The two samples are real pixels at the scenario's sample point: the run
+    /// that drew the bottom (`1788800342-417178`) and the earlier one that was
+    /// flat ocean blue and passed anyway (`1788800195-416229`). The threshold
+    /// has to sit between them, and it does, with room on both sides.
+    #[test]
+    fn the_seabed_margin_separates_sediment_from_flat_ocean_blue() {
+        let drew_the_bottom = red_minus_blue([66, 47, 25]);
+        let flat_ocean_blue = red_minus_blue([14, 57, 157]);
+        assert!(
+            drew_the_bottom > 0.08,
+            "the real seabed capture must pass: {drew_the_bottom}"
+        );
+        assert!(
+            flat_ocean_blue < 0.08,
+            "the flat blue capture must fail: {flat_ocean_blue}"
+        );
+        assert!(drew_the_bottom - flat_ocean_blue > 0.5);
     }
 
     fn sample(level: usize, resident_chunks: u32) -> SpatialLogSample {

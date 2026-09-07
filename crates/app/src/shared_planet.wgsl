@@ -377,6 +377,15 @@ const OCEAN_GEOMETRY_FADE_DISTANCE_METERS: f32 = 10000.0;
 // the bottom's colour.
 const OCEAN_SHALLOW_DEPTH_METERS: f32 = 6.0;
 const OCEAN_SHALLOW_COLOUR: vec3<f32> = vec3<f32>(0.16, 0.52, 0.55);
+// The body of the sea. Deliberately dark: what makes water read as deep is that
+// almost nothing comes back out of it, and every bright thing on this surface --
+// the sun glint, the sky reflection, the foam, the transmitted crest -- is
+// added on top of this rather than mixed into it. Raising it flattens all four.
+const OCEAN_BODY_COLOUR: vec3<f32> = vec3<f32>(0.005, 0.032, 0.170);
+// Where the transmitted turquoise starts and where it is full, in metres of
+// crest height. The onset is above mean level on purpose: see `ocean_lighting`.
+const OCEAN_CREST_TRANSMISSION_ONSET_METERS: f32 = 8.0;
+const OCEAN_CREST_TRANSMISSION_FULL_METERS: f32 = 24.0;
 // How far into breaking a crest must be before it starts going white. Below
 // this the wave is merely feeling the bottom, not yet breaking on it.
 // How far past the depth limit a crest must be before it whitens, and where it
@@ -430,7 +439,19 @@ const OCEAN_WHITECAP_SLOPE_ONSET: f32 = 0.95;
 const OCEAN_WHITECAP_SLOPE_FULL: f32 = 1.55;
 // Foam belongs on the upper part of a wave. A trough has faces just as steep as
 // a crest does, and foam sitting in the hollows reads as scum, not as breaking.
-const OCEAN_WHITECAP_CREST_METERS: f32 = 4.0;
+//
+// Written as a fraction of the sea's own maximum crest rather than in metres, so
+// it keeps its meaning when `OCEAN_WAVE_SCALE` changes the size of the sea; a
+// fixed 4m meant one thing against a 42m calm cap and another against the 53m
+// storm cap. The band also starts *below* mean level. The old `smoothstep(0.0,
+// 4.0, h)` left 49% of the rendered sea at exactly zero with only 6.3% of it
+// anywhere inside the ramp, so the term was a step rather than a fade, and the
+// edge of that step is the mean-water contour -- which drew a straight line
+// across the swell. Foam thrown off a breaking crest runs down the face and
+// lingers; it does not stop dead at sea level. It still has to be gone a few
+// metres into the trough, which is what the negative low end is bounded by.
+const OCEAN_WHITECAP_CREST_LOW_FRACTION: f32 = -0.08;
+const OCEAN_WHITECAP_CREST_HIGH_FRACTION: f32 = 0.18;
 // Still used by the ripple layer and the raymarch path for how far a shore
 // effect reaches; it no longer gates the swell, which is depth-limited instead.
 const OCEAN_SHORE_FULL_DEPTH_METERS: f32 = 30.0;
@@ -1080,7 +1101,11 @@ fn ocean_foam_coverage(
         OCEAN_WHITECAP_SLOPE_ONSET,
         OCEAN_WHITECAP_SLOPE_FULL,
         ocean_surface_slope(normal, up),
-    ) * smoothstep(0.0, OCEAN_WHITECAP_CREST_METERS, surface_height_meters);
+    ) * smoothstep(
+        OCEAN_WHITECAP_CREST_LOW_FRACTION * OCEAN_MAXIMUM_WAVE_HEIGHT_METERS,
+        OCEAN_WHITECAP_CREST_HIGH_FRACTION * OCEAN_MAXIMUM_WAVE_HEIGHT_METERS,
+        surface_height_meters,
+    );
     // Foam has to be made of water. Without this it keys off a depth of zero
     // and whitens ground the sea is barely covering.
     let has_water = smoothstep(0.0, OCEAN_FOAM_MINIMUM_DEPTH_METERS, still_depth_meters);
@@ -1815,6 +1840,28 @@ fn terrain_fog_air_path_meters(
     return average_density * bounded_path_length;
 }
 
+// Water medium chosen by the caller: an ocean back face establishes this
+// per pixel even if the CPU eye-height query still says "above water".
+fn ocean_water_fog(camera_relative_view_position: vec3<f32>) -> TerrainFog {
+    let e_fold_meters = OCEAN_UNDERWATER_VISIBILITY_METERS / log(50.0);
+    let amount = 1.0 - exp(-length(camera_relative_view_position) / e_fold_meters);
+    // Lit by the sky overhead rather than painted: the water goes dark at
+    // night and at depth, because what reaches the eye is daylight that got
+    // down here and then scattered off the water.
+    let up_view = normalize(
+        planet_to_view(camera.camera_planet_direction_view_altitude.xyz),
+    );
+    return TerrainFog(amount, physical_camera_sky_radiance(up_view) * OCEAN_UNDERWATER_TINT);
+}
+
+fn ocean_distance_fog(
+    surface_color: vec3<f32>,
+    camera_relative_view_position: vec3<f32>,
+) -> vec3<f32> {
+    let fog = ocean_water_fog(camera_relative_view_position);
+    return mix(surface_color, fog.color, fog.amount);
+}
+
 fn terrain_fog(
     camera_relative_view_position: vec3<f32>,
     surface_direction: vec3<f32>,
@@ -1836,15 +1883,7 @@ fn terrain_fog(
     // the sea bed and the coast beyond it were drawn at full contrast through
     // any depth of water at all.
     if camera.flat_triangle_options.w > 0.5 {
-        let e_fold_meters = OCEAN_UNDERWATER_VISIBILITY_METERS / log(50.0);
-        let amount = 1.0 - exp(-length(camera_relative_view_position) / e_fold_meters);
-        // Lit by the sky overhead rather than painted: the water goes dark at
-        // night and at depth, because what reaches the eye is daylight that got
-        // down here and then scattered off the water.
-        let up_view = normalize(
-            planet_to_view(camera.camera_planet_direction_view_altitude.xyz),
-        );
-        return TerrainFog(amount, physical_camera_sky_radiance(up_view) * OCEAN_UNDERWATER_TINT);
+        return ocean_water_fog(camera_relative_view_position);
     }
     if !BODY_HAS_ATMOSPHERE {
         return TerrainFog(0.0, vec3<f32>(0.0));
@@ -2693,7 +2732,7 @@ fn ocean_lighting(
     let daylight = max(max(sun_transmittance.x, sun_transmittance.y), sun_transmittance.z);
     // Keep the water body a dark blue; direct sunlight and reflection still
     // provide the daylight highlights and glints.
-    let diffuse = vec3<f32>(0.008, 0.055, 0.28)
+    let diffuse = OCEAN_BODY_COLOUR
         * (sky_diffuse + sun_transmittance * (0.4 * SURFACE_SUNLIGHT_SCALE));
     // The Phase 6 cubemap is static. It represents daytime sky reflection, so
     // gate it by direct daylight instead of reflecting a bright blue sky from
@@ -2702,10 +2741,17 @@ fn ocean_lighting(
     // a measured water-volume thickness. Positive wave height selects the upper
     // crest; forward scattering lights it when the sun is behind the wave.
     // Keep depth writes and reflection intact; foam is composed by the caller.
-    // Linearly interpolate from the unchanged sea-body colour to full crest
-    // transmission over 24m. Unlike smoothstep, this does not accelerate the
-    // colour change through the middle of the ramp.
-    let crest = clamp(crest_height_meters / 24.0, 0.0, 1.0);
+    // Linearly interpolated, so unlike smoothstep it does not accelerate the
+    // colour change through the middle of the ramp. It starts above mean level
+    // rather than at it: transmission is a property of a *thin* crest, and the
+    // water low on a wave is not thin. Beginning the ramp partway up moves the
+    // turquoise onto the tops, which is the only place light gets through.
+    let crest = clamp(
+        (crest_height_meters - OCEAN_CREST_TRANSMISSION_ONSET_METERS)
+            / (OCEAN_CREST_TRANSMISSION_FULL_METERS - OCEAN_CREST_TRANSMISSION_ONSET_METERS),
+        0.0,
+        1.0,
+    );
     let backlight = pow(max(dot(-view_direction, sun_direction_view), 0.0), 4.0);
     let transmitted = vec3<f32>(0.025, 0.32, 0.22)
         * sun_transmittance * (SURFACE_SUNLIGHT_SCALE * crest * backlight)

@@ -1757,7 +1757,7 @@ fn ocean_underside_fragment(input: OceanVertexOutput) -> vec4<f32> {
         max(-macro_height_meters, 0.0),
     );
     return vec4<f32>(
-        terrain_distance_fog(
+        ocean_distance_fog(
             ocean_underside_colour(
                 surface.normal,
                 surface.ripple_slope,
@@ -1765,8 +1765,6 @@ fn ocean_underside_fragment(input: OceanVertexOutput) -> vec4<f32> {
                 input.camera_relative_view_position,
             ),
             input.camera_relative_view_position,
-            direction,
-            surface.vertical_displacement,
         ),
         1.0,
     );

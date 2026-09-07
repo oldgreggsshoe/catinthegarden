@@ -43,6 +43,13 @@ pub struct ScenarioAssertions {
     pub ice_sample_uv: Option<[f32; 2]>,
     pub min_ice_sample_luminance: Option<f32>,
     pub max_ice_sample_channel_spread: Option<f32>,
+    /// Where to sample the sea bed on a submerged capture, and how far red must
+    /// lead blue there. Sediment is warm; water is not. Without this a seabed
+    /// scenario passes on a frame of flat ocean blue, which is exactly how the
+    /// first `ocean_shallow_bottom` run went green while drawing no bottom at
+    /// all. Normalised units, so 0.08 is a 20/255 lead.
+    pub seabed_sample_uv: Option<[f32; 2]>,
+    pub min_seabed_red_minus_blue: Option<f32>,
     /// Largest tolerated gap between the surface the renderer drew and the
     /// surface the CPU would collide with, over the probe's sample grid. This
     /// is an outlier guard and should be set loosely; horizon-grazing samples
@@ -99,6 +106,8 @@ impl Default for ScenarioAssertions {
             ice_sample_uv: None,
             min_ice_sample_luminance: None,
             max_ice_sample_channel_spread: None,
+            seabed_sample_uv: None,
+            min_seabed_red_minus_blue: None,
             max_surface_probe_delta_m: None,
             max_surface_probe_p90_delta_m: None,
             min_camera_clearance_m: None,
@@ -268,6 +277,8 @@ scenarios! {
     "ocean_flyover" => "../scenarios/ocean_flyover.json",
     "ocean_hybrid_close" => "../scenarios/ocean_hybrid_close.json",
     "ocean_underwater_visibility" => "../scenarios/ocean_underwater_visibility.json",
+    "ocean_waterline_medium" => "../scenarios/ocean_waterline_medium.json",
+    "ocean_eye_level_facets" => "../scenarios/ocean_eye_level_facets.json",
     "ocean_shallow_bottom" => "../scenarios/ocean_shallow_bottom.json",
     "ocean_low_sun_stability" => "../scenarios/ocean_low_sun_stability.json",
     "ocean_rough_horizon" => "../scenarios/ocean_rough_horizon.json",
@@ -1014,7 +1025,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 80);
+        assert_eq!(SCENARIO_NAMES.len(), 82);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));

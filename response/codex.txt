@@ -1,3 +1,3 @@
-Restored a stronger turquoise with a 24m linear fade. Same peak colour, no accelerated mid-transition blend.
+The replay reproduces your screenshot: pale grey-blue beneath the wave while the sky above remains visible. The regression test also fails on the old code.
 
-Release rebuilt; focused test passes. The underwater sky issue remains unresolved.
+I’ve separated water fog from the global camera flag. The next capture will check whether that corrects the lower pixels without changing the sky above.

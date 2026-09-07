@@ -1,5 +1,5 @@
 {
-  "name": "ocean_shallow_bottom",
+  "name": "ocean_waterline_medium",
   "fixed_timestep_seconds": 0.016666666666666666,
   "duration_seconds": 4.0,
   "solid_color_screen": false,
@@ -18,14 +18,14 @@
     {
       "time_s": 0.0,
       "position": [
-        2573294.413163422,
-        2025464.1572360527,
-        -2296866.3023743825
+        3345783.3895091745,
+        2014920.2266576474,
+        863693.6148490739
       ],
       "look_at": [
-        2573070.2275760397,
-        2025025.6306168921,
-        -2295995.994830957
+        3345475.3895091745,
+        2014885.2266576474,
+        864644.6148490739
       ]
     }
   ],
@@ -33,9 +33,9 @@
     {
       "time_s": 0.0,
       "direction": [
-        0.6433247291091314,
-        0.5063669254511327,
-        -0.5742175804743614
+        0.5089275188,
+        0.397776994,
+        0.7633912782
       ]
     }
   ],
@@ -47,11 +47,7 @@
   ],
   "assertions": {
     "require_finite_metrics": true,
-    "expected_screenshots": 4,
-    "seabed_sample_uv": [
-      0.5,
-      0.5
-    ],
-    "min_seabed_red_minus_blue": 0.08
-  }
+    "expected_screenshots": 4
+  },
+  "waterline_eye_height_meters": 0.06
 }
