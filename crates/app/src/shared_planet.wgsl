@@ -310,6 +310,18 @@ struct OceanWaveContribution {
     horizontal_displacement: vec3<f32>,
     vertical_displacement: f32,
     slope: vec3<f32>,
+    /// How sharp this wave's crest is here: its dimensionless Gerstner
+    /// steepness `k * a` times `sin(phase)`, so it peaks exactly at the crest,
+    /// where the drawn profile peaks too. Being dimensionless is the whole
+    /// point -- it does not scale with the wave's size, so a small sharp wave
+    /// reads as thin just as a large one does.
+    ///
+    /// It is the quantity that *would* pinch water into the crest if
+    /// `OCEAN_HORIZONTAL_TRANSPORT_ENABLED` were on. That flag is false, so
+    /// nothing here is the divergence of a displacement we actually draw; it
+    /// is a sharpness measure that happens to be derived from one. Do not
+    /// read it as the rendered surface's curvature.
+    convergence: f32,
 }
 
 struct OceanSurface {
@@ -323,6 +335,11 @@ struct OceanSurface {
     normal: vec3<f32>,
     ripple_height: f32,
     ripple_slope: vec3<f32>,
+    /// Summed crest sharpness, dimensionless and scale-free: see
+    /// `OceanWaveContribution::convergence`. Faded by the same geometry weight
+    /// and amplitude scale as the displacement, so water drawn flat in the
+    /// distance does not claim a sharpness it is not showing.
+    crest_sharpness: f32,
 }
 
 // Broad displacement is only evaluated in the camera-local ocean patch. The
@@ -382,10 +399,25 @@ const OCEAN_SHALLOW_COLOUR: vec3<f32> = vec3<f32>(0.16, 0.52, 0.55);
 // the sun glint, the sky reflection, the foam, the transmitted crest -- is
 // added on top of this rather than mixed into it. Raising it flattens all four.
 const OCEAN_BODY_COLOUR: vec3<f32> = vec3<f32>(0.005, 0.032, 0.170);
-// Where the transmitted turquoise starts and where it is full, in metres of
-// crest height. The onset is above mean level on purpose: see `ocean_lighting`.
-const OCEAN_CREST_TRANSMISSION_ONSET_METERS: f32 = 8.0;
-const OCEAN_CREST_TRANSMISSION_FULL_METERS: f32 = 24.0;
+// Where the transmitted turquoise starts and where it is full, in units of
+// summed crest sharpness (`OceanSurface::crest_sharpness`) -- dimensionless
+// Gerstner steepness, not metres of anything.
+//
+// This used to key off displacement above mean sea level, which was wrong in a
+// way worth recording: it made transmission a property of how *tall* the water
+// stood, so a small wave got none however sharp its tip, while a large lazy
+// swell got it on its flanks. Thinness is what lets light through, and thinness
+// does not scale with height. Steepness is dimensionless, so a 2m crest and a
+// 30m crest of the same sharpness now read the same.
+//
+// Chosen against the measured distribution rather than by eye. The table's
+// fold budget -- every component crest aligned at once, the theoretical
+// maximum -- is 2.0507; with the calm amplitude column it is 0.7279. Sampling
+// the sum over random phases puts calm p90 at 0.225 and p99 at 0.381, and
+// storm p75 at 0.509 and p90 at 0.950. So 0.25 is roughly the calm sea's top
+// tenth of water, and 0.75 is reached only by a storm's sharpest crests.
+const OCEAN_CREST_TRANSMISSION_ONSET: f32 = 0.25;
+const OCEAN_CREST_TRANSMISSION_FULL: f32 = 0.75;
 // How far into breaking a crest must be before it starts going white. Below
 // this the wave is merely feeling the bottom, not yet breaking on it.
 // How far past the depth limit a crest must be before it whitens, and where it
@@ -1004,7 +1036,7 @@ fn gerstner_wave(
     let tangent_unnormalized = axis - direction * dot(axis, direction);
     let tangent_length = length(tangent_unnormalized);
     if tangent_length < 1.0e-4 {
-        return OceanWaveContribution(vec3<f32>(0.0), 0.0, vec3<f32>(0.0));
+        return OceanWaveContribution(vec3<f32>(0.0), 0.0, vec3<f32>(0.0), 0.0);
     }
     let tangent = tangent_unnormalized / tangent_length;
     let wave_number = 6.2831853 / wavelength_meters;
@@ -1032,6 +1064,14 @@ fn gerstner_wave(
         // d(dot(direction, axis) * R)/ds is the projected axis, not its
         // unit tangent. Normalizing it exaggerated slopes near an axis pole.
         tangent_unnormalized * (amplitude_meters * wave_number * profile_derivative),
+        // `steepness_scaled * amplitude * wave_number` is this wave's
+        // dimensionless steepness; `sin(phase)` is +1 at the crest, which is
+        // also where the drawn profile peaks, so the product is largest
+        // exactly on the sharp water. `tangent_length` is the same projection
+        // factor the slope uses; without it a wave near its own axis pole
+        // would claim a sharpness it does not have.
+        steepness * OCEAN_STEEPNESS_SCALE * amplitude_meters * wave_number
+            * tangent_length * sine,
     );
 }
 
@@ -1048,7 +1088,7 @@ fn ocean_ripple(
         camera_distance_meters,
     );
     if distance_weight <= 0.0 || shore_weight <= 0.0 {
-        return OceanWaveContribution(vec3<f32>(0.0), 0.0, vec3<f32>(0.0));
+        return OceanWaveContribution(vec3<f32>(0.0), 0.0, vec3<f32>(0.0), 0.0);
     }
     // These shorter waves are part of the local geometry as well as its normal:
     // the CPU surface query mirrors their vertical displacement at the patch
@@ -1061,6 +1101,9 @@ fn ocean_ripple(
         vec3<f32>(0.0),
         (first.vertical_displacement + second.vertical_displacement + third.vertical_displacement) * weight,
         (first.slope + second.slope + third.slope) * weight,
+        // The ripple layer is authored at zero steepness, so it pinches
+        // nothing and contributes no sharpness.
+        0.0,
     );
 }
 
@@ -1166,6 +1209,7 @@ fn ocean_surface(
     var horizontal = vec3<f32>(0.0);
     var vertical = 0.0;
     var slope = vec3<f32>(0.0);
+    var convergence = 0.0;
     for (var i = 0u; i < OCEAN_WAVE_COUNT; i = i + 1u) {
         let spec = OCEAN_WAVE_TABLE[i];
         var amplitude = mix(spec.amplitude_meters, spec.storm_amplitude_meters, storm_blend);
@@ -1185,6 +1229,7 @@ fn ocean_surface(
         horizontal += contribution.horizontal_displacement;
         vertical += contribution.vertical_displacement;
         slope += contribution.slope;
+        convergence += contribution.convergence;
     }
     var ripple = ocean_ripple(
         direction,
@@ -1198,12 +1243,12 @@ fn ocean_surface(
         // sample. Remove sub-mesh ripples whose wavelengths are below the
         // coarse triangle spacing; otherwise interpolation can visibly put
         // the eye above one vertex and below its neighbouring crest.
-        ripple = OceanWaveContribution(vec3<f32>(0.0), 0.0, vec3<f32>(0.0));
+        ripple = OceanWaveContribution(vec3<f32>(0.0), 0.0, vec3<f32>(0.0), 0.0);
     }
     if OCEAN_LARGE_SWELL_ONLY {
         // The ripple layer is a shorter octave by definition, so the large
         // swell diagnostic drops it whatever the camera is doing.
-        ripple = OceanWaveContribution(vec3<f32>(0.0), 0.0, vec3<f32>(0.0));
+        ripple = OceanWaveContribution(vec3<f32>(0.0), 0.0, vec3<f32>(0.0), 0.0);
     }
     let horizontal_transport = select(1.0, 0.0, camera.flat_triangle_options.z > 0.5);
     let geometry_amplitude_scale = mix(
@@ -1249,6 +1294,7 @@ fn ocean_surface(
         normalize(direction - slope * limited_slope - ripple.slope),
         ripple.vertical_displacement,
         ripple.slope,
+        convergence * geometry_weight * geometry_amplitude_scale,
     );
 }
 
@@ -1260,6 +1306,7 @@ fn flat_ocean_surface(direction: vec3<f32>) -> OceanSurface {
         normalize(direction),
         0.0,
         vec3<f32>(0.0),
+        0.0,
     );
 }
 
@@ -2710,7 +2757,7 @@ fn ocean_underside_colour(
 
 fn ocean_lighting(
     normal: vec3<f32>,
-    crest_height_meters: f32,
+    crest_sharpness: f32,
     camera_relative_view_position: vec3<f32>,
     sun_transmittance: vec3<f32>,
     sky_diffuse: vec3<f32>,
@@ -2742,13 +2789,12 @@ fn ocean_lighting(
     // crest; forward scattering lights it when the sun is behind the wave.
     // Keep depth writes and reflection intact; foam is composed by the caller.
     // Linearly interpolated, so unlike smoothstep it does not accelerate the
-    // colour change through the middle of the ramp. It starts above mean level
-    // rather than at it: transmission is a property of a *thin* crest, and the
-    // water low on a wave is not thin. Beginning the ramp partway up moves the
-    // turquoise onto the tops, which is the only place light gets through.
+    // colour change through the middle of the ramp. Keyed on how sharp the
+    // crest is, not how high it stands: a thin crest is what light gets
+    // through, and a small wave's tip is as thin as a large one's.
     let crest = clamp(
-        (crest_height_meters - OCEAN_CREST_TRANSMISSION_ONSET_METERS)
-            / (OCEAN_CREST_TRANSMISSION_FULL_METERS - OCEAN_CREST_TRANSMISSION_ONSET_METERS),
+        (crest_sharpness - OCEAN_CREST_TRANSMISSION_ONSET)
+            / (OCEAN_CREST_TRANSMISSION_FULL - OCEAN_CREST_TRANSMISSION_ONSET),
         0.0,
         1.0,
     );

@@ -392,7 +392,7 @@ fn ocean_with_aerial_perspective(
     );
     let water_color = ocean_lighting(
         surface.normal,
-        surface.vertical_displacement,
+        surface.crest_sharpness,
         camera_relative_view_position,
         sun_transmittance,
         sky_diffuse,
@@ -1822,7 +1822,7 @@ fn ocean_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
     let water_surface_color = mix(
         ocean_lighting(
             surface.normal,
-            surface.vertical_displacement,
+            surface.crest_sharpness,
             input.camera_relative_view_position,
             sun_transmittance,
             sky_diffuse,
@@ -1932,7 +1932,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         );
         let water_surface_color = ocean_lighting(
             surface.normal,
-            surface.vertical_displacement,
+            surface.crest_sharpness,
             input.camera_relative_view_position,
             sun_transmittance,
             sky_diffuse,
@@ -2217,7 +2217,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let water_surface_color = mix(
         ocean_lighting(
             surface.normal,
-            surface.vertical_displacement,
+            surface.crest_sharpness,
             input.camera_relative_view_position,
             sun_transmittance,
             sky_diffuse,

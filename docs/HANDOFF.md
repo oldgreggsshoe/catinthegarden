@@ -7726,3 +7726,53 @@ final focused waterline tests, shader validation, fmt and diff checks pass.
 The generic underside/Snell-window assertion gap in thread 27 and ray seabed
 parity in thread 26 remain separate. Release is rebuilt in target/release.
 Unrelated crates.tar.gz was left untouched.
+
+## 8 September 2026 — the turquoise is keyed on sharpness now, and two things that are not what they looked like
+
+**Crest transmission no longer keys off height.** Ian's objection was exact: keying the turquoise on
+displacement above mean level made it a property of how *tall* the water stood, so a small wave got
+none however sharp its tip while a large lazy swell got it on its flanks. Thinness is what lets
+light through and thinness does not scale with height.
+
+It now keys on `OceanSurface::crest_sharpness`: each wave's dimensionless Gerstner steepness
+`steepness * OCEAN_STEEPNESS_SCALE * amplitude * wave_number * tangent_length` times `sin(phase)`,
+summed. It peaks exactly at the crest, where the drawn profile peaks, and being dimensionless it
+does not scale with the wave's size -- which is the whole point. One fused multiply-add per
+component, reusing the `sine` `gerstner_wave` already computes. **It is not the divergence of a
+displacement we draw**: `OCEAN_HORIZONTAL_TRANSPORT_ENABLED` is false, so the Gerstner horizontal
+term is never applied. It is the quantity that *would* pinch the crest if it were, used as a
+sharpness measure. The comment in the shader says so; do not upgrade that claim.
+
+Thresholds chosen against the measured distribution, not by eye. Sampling the summed sharpness over
+random phases: calm p90 0.225, p99 0.381, ceiling 0.7279; storm p75 0.509, p90 0.950, ceiling
+2.0507. `OCEAN_CREST_TRANSMISSION_ONSET` 0.25 is about the calm sea's top tenth of water and
+`_FULL` 0.75 is reached only by a storm's sharpest crests. Coverage on `ocean_hybrid_close` is
+7.69% of sea pixels green-dominant against 7.71% before, so the amount is unchanged and only its
+distribution moved -- onto the small mid-distance and near-horizon crests, which is what was asked
+for. The test now asserts `0 < onset < full < fold_budget()`, which a retune cannot quietly walk
+past: a threshold above the budget is turquoise that can never appear.
+
+**The handoff header's Gerstner fold budget of 1.17 is stale.** `ocean::fold_budget()` returns
+**2.0507** today, printed from the function itself, not parsed from the table. The wave table has
+been retuned since 1.17 was written and nothing updated the prose. Thread 7's "accepted and held
+invariant at 1.17" should be read as "held invariant by construction, at whatever the table sums
+to", and the number in it is not evidence for anything.
+
+**Two things that looked like defects and are not, both settled by measurement:**
+
+* *Back faces skip the LOD cross-fade cull.* `fs_ocean` returns `ocean_underside_fragment` before
+  the dither discard, so during a transition both levels' undersides rasterise against each other.
+  That is a real asymmetry, but applying the cull to back faces changes **zero pixels** in
+  `ocean_underwater_visibility` and **zero** across all five `ocean_flyover` captures, because no
+  reachable scenario is both submerged and mid-transition. Reverted rather than shipped: a fix
+  nobody has seen do anything is not a fix. It needs a scenario that swims while the LOD changes.
+* *The underwater "background".* Painting `ocean_underside_fragment` shows **100% of that frame is
+  underside geometry** -- there is no sky or background fill visible in it at all. The probe puts
+  every one of 81 sampled points at 2.9m to 9.0m, so what reads as distant background is the
+  underside of the waves a few metres overhead, only 37-69% fogged at 30m visibility. Ian is taking
+  this one to Codex as a separate job; the measurements above are the starting point, and the thing
+  to explain is why close geometry reads as a flat far-off backdrop.
+
+**Validation.** 489 workspace tests (14 ignored), fmt clean, workspace clippy clean.
+`ocean_hybrid_close` and `ocean_rough_horizon` pass. No timing claim: swap was 976MB of 976MB for
+this whole session, which is exactly the state that produces the 1000ms frames.

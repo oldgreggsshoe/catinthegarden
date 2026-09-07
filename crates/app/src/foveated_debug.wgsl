@@ -1341,6 +1341,7 @@ fn shade_ocean(
         surface_direction,
         0.0,
         vec3<f32>(0.0),
+        0.0,
     );
     if (ray_settings.experiment_flags & EXPERIMENT_FOVEATED_SHADING) == 0u
         || detail >= 0.45
@@ -1367,7 +1368,7 @@ fn shade_ocean(
     );
     let surface_color = ocean_lighting(
         surface.normal,
-        surface.vertical_displacement,
+        surface.crest_sharpness,
         hit_view_position,
         sun_transmittance,
         sky_diffuse,

@@ -4668,16 +4668,18 @@ mod tests {
             .split("\nfn ")
             .next()
             .unwrap();
-        assert!(lighting.contains("crest_height_meters"));
+        // Keyed on crest *sharpness*, not height. Height made transmission a
+        // property of how tall the water stood, so a small wave got none
+        // however sharp its tip. If `crest_height_meters` ever comes back here
+        // that regression has come back with it.
+        assert!(lighting.contains("crest_sharpness"));
+        assert!(!lighting.contains("crest_height_meters"));
         // Linear, not smoothstep: the ramp must not accelerate through its
         // middle. Pinning the literal broke the moment the ramp was retuned, so
-        // read the two constants instead and assert the relationship that
-        // actually matters -- the turquoise starts above mean level, because
-        // transmission is a property of a thin crest and water low on a wave is
-        // not thin, and it starts below where it saturates.
+        // read the constants and assert the relationships that actually matter.
         assert!(lighting.contains("clamp("));
         assert!(!lighting.contains("smoothstep(0.0"));
-        let constant = |name: &str| -> f32 {
+        let constant = |name: &str| -> f64 {
             let tail = shader
                 .split(&format!("const {name}: f32 = "))
                 .nth(1)
@@ -4689,13 +4691,25 @@ mod tests {
                 .parse()
                 .unwrap_or_else(|_| panic!("{name} is a literal"))
         };
-        let onset = constant("OCEAN_CREST_TRANSMISSION_ONSET_METERS");
-        let full = constant("OCEAN_CREST_TRANSMISSION_FULL_METERS");
-        assert!(
-            onset > 0.0,
-            "turquoise must start above mean level: {onset}"
-        );
+        let onset = constant("OCEAN_CREST_TRANSMISSION_ONSET");
+        let full = constant("OCEAN_CREST_TRANSMISSION_FULL");
+        assert!(onset > 0.0, "flat water must transmit nothing: {onset}");
         assert!(onset < full, "onset {onset} must precede full {full}");
+        // The sea has to be able to reach these. `fold_budget` is every wave
+        // component's crest aligned at once -- the largest sharpness the table
+        // can ever sum to -- so a threshold above it is turquoise that can
+        // never appear, and one at a large fraction of it is turquoise almost
+        // nothing reaches. This is the guard that a retune cannot quietly
+        // walk past.
+        let budget = crate::ocean::fold_budget();
+        assert!(
+            full < budget,
+            "full turquoise at {full} is unreachable: the table's fold budget is {budget}"
+        );
+        assert!(
+            onset > 0.05 * budget,
+            "onset {onset} is so low that calm water would transmit ({budget})"
+        );
         assert!(
             lighting.contains("sun_transmittance * (SURFACE_SUNLIGHT_SCALE * crest * backlight)")
         );
