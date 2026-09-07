@@ -399,6 +399,15 @@ const OCEAN_BREAKING_FOAM_MAX: f32 = 0.82;
 const OCEAN_SURF_COLUMN_METERS: f32 = 0.25;
 const OCEAN_SURF_COLOUR: vec3<f32> = vec3<f32>(0.92, 0.95, 0.96);
 
+// How far a submerged eye can see, in metres. The usual definition of
+// visibility: the range at which contrast is down to 2%, so the extinction
+// e-fold is this over ln(50) rather than this itself.
+const OCEAN_UNDERWATER_VISIBILITY_METERS: f32 = 20.0;
+// What the water itself looks like once everything else has been extinguished.
+// Blue-green rather than the sky's blue: water absorbs red first, then green,
+// which is why the far end of a flooded quarry is this colour and not navy.
+const OCEAN_UNDERWATER_TINT: vec3<f32> = vec3<f32>(0.055, 0.30, 0.42);
+
 // Whitecaps. A crest that is steep enough spills and goes white wherever it is,
 // with no shore involved -- which is the whole difference from the surf above,
 // and why the open sea had no foam on it at all.
@@ -1821,6 +1830,22 @@ fn terrain_fog(
     // The aerial-perspective terms next to this were gated when the moon was
     // built; this one was missed because it is composed later, as presentation
     // rather than as physics.
+    // A submerged eye is not looking through air. Water extinguishes over
+    // metres where air takes kilometres, so the atmosphere's path integral is
+    // not merely the wrong amount here, it is the wrong medium: without this
+    // the sea bed and the coast beyond it were drawn at full contrast through
+    // any depth of water at all.
+    if camera.flat_triangle_options.w > 0.5 {
+        let e_fold_meters = OCEAN_UNDERWATER_VISIBILITY_METERS / log(50.0);
+        let amount = 1.0 - exp(-length(camera_relative_view_position) / e_fold_meters);
+        // Lit by the sky overhead rather than painted: the water goes dark at
+        // night and at depth, because what reaches the eye is daylight that got
+        // down here and then scattered off the water.
+        let up_view = normalize(
+            planet_to_view(camera.camera_planet_direction_view_altitude.xyz),
+        );
+        return TerrainFog(amount, physical_camera_sky_radiance(up_view) * OCEAN_UNDERWATER_TINT);
+    }
     if !BODY_HAS_ATMOSPHERE {
         return TerrainFog(0.0, vec3<f32>(0.0));
     }
@@ -2597,6 +2622,40 @@ fn triplanar_material_sample(
         fine_weight * TERRAIN_MATERIAL_DETAIL_HEIGHT_SHARE,
     );
     return vec4<f32>(coarse.rgb * gain, height);
+}
+
+/// The sea seen from underneath.
+///
+/// `ocean_lighting` cannot do this: it takes `max(dot(normal, view), 0.0)`, and
+/// from below that is zero over the whole surface, so Fresnel is constant, the
+/// reflection samples one texel of a 1x1-per-face cubemap, and the underside
+/// comes out a single flat colour with no waves in it at all.
+///
+/// What actually makes waves visible from under water is Snell's window. Light
+/// from the whole sky is refracted into a cone of half-angle
+/// `asin(1 / 1.333) = 48.6 degrees` about the surface normal; outside that cone
+/// the surface is a mirror looking back down into the dark. The cone is about
+/// the *local* normal, so its edge follows every wave, and that moving boundary
+/// is the shape you see.
+fn ocean_underside_colour(
+    surface_normal: vec3<f32>,
+    surface_direction: vec3<f32>,
+    camera_relative_view_position: vec3<f32>,
+) -> vec3<f32> {
+    let view_ray = normalize(camera_relative_view_position);
+    let normal_view = normalize(planet_to_view(surface_normal));
+    // How far the outgoing ray is from the surface normal. cos(48.6) = 0.661.
+    let cosine = clamp(dot(-view_ray, normal_view), 0.0, 1.0);
+    let window = smoothstep(0.58, 0.74, cosine);
+    // Inside the window, the sky the ray came from. The refraction bends it
+    // toward the normal; sampling the unrefracted ray keeps the bright disc in
+    // the right place without a second trace.
+    let above = physical_camera_sky_radiance(-view_ray);
+    // Outside it, total internal reflection of the water below, which is the
+    // same medium the fog mixes toward, only darker for being deeper.
+    let up_view = normalize(planet_to_view(surface_direction));
+    let below = physical_camera_sky_radiance(up_view) * OCEAN_UNDERWATER_TINT * 0.30;
+    return mix(below, above, window);
 }
 
 fn ocean_lighting(

@@ -7317,3 +7317,64 @@ terrain's registration by up to half a cell — but those octaves have amplitude
 
 Nothing was committed for this. The instrumentation and the temporary `forest_walk_probe` scenario
 used to take the measurements above were removed; the tree is clean.
+
+
+## 7 September 2026 — underwater: extinction and the underside, and why neither can be seen yet
+
+Ian asked for three things when the camera bobs under: 20m visibility, the waves
+visible from below, and the sea bed visible in shallow water. Two of the three
+are written and neither can be confirmed on screen, because **every underwater
+frame is a single flat colour** and I could not find what draws it.
+
+**What is implemented** (both gated on the submerged flag, so the above-water
+render is provably untouched -- `ocean_hybrid_close` passes and 413 tests pass):
+
+* `terrain_fog` gains an underwater branch. Water extinguishes over metres where
+  air takes kilometres, so the atmosphere's path integral is the wrong *medium*,
+  not merely the wrong amount. The e-fold is `20 / ln(50)`, since visibility
+  conventionally means the range at which contrast is down to 2%. The colour is
+  the sky radiance overhead times a blue-green tint, so the water darkens at
+  night rather than being painted.
+* `ocean_underside_colour`. `ocean_lighting` cannot draw the underside: it takes
+  `max(dot(normal, view), 0.0)`, which is zero across the whole surface from
+  below, so Fresnel is constant and the reflection samples one texel of a
+  1x1-per-face cubemap -- a flat colour with no waves in it. The replacement is
+  Snell's window: light from the whole sky refracts into a cone of half-angle
+  `asin(1/1.333) = 48.6 degrees` about the *local* normal, so the cone's edge
+  follows every wave, and that moving boundary is the shape you see.
+
+**The blocker.** Underwater the whole frame is `(15, 64, 117)`, uniform, at any
+depth from 1m to 25m over deep water. Each of these was tested by forcing the
+branch and re-rendering:
+
+* The submerged flag is **correct**, not the problem: logged from the CPU as
+  `sea_level_altitude 20.72, surface_height 21.72, submerged 1`.
+* Geometry **is** drawn: the surface probe reports 81 hits from 81 points, the
+  nearest at 1.12m and screen centre at 1.72m.
+* `atmosphere.wgsl` `fs_main`'s submerged branch forced to return pure red:
+  **frame unchanged**. The sky pass never covers these pixels.
+* `ocean_fragment_color`'s new underside branch forced with `if true`:
+  **frame unchanged**. The ocean shell's fragment shader is not producing them.
+* Underwater visibility set to 100000m instead of 20m: **frame unchanged**, so
+  the fog branch is not producing them either.
+* The render pass clears to `Color::BLACK`, so it is not a clear colour.
+* Path is raster, `final HDR scene`, no experiments enabled.
+
+So something that fills the screen and is none of those three shaders is drawing
+it. The two suspects I did not get to are `terrain_fragment_color`'s blended
+water (`planet.wgsl` circa 1856 and 2130, which shades water inside the terrain
+pass rather than the ocean shell) and a post stage (`hdr.rs` tonemap, or the
+foveated unwarp). The quickest discriminator is to force a colour in
+`terrain_fragment_color`'s water branch the same way.
+
+**To reproduce.** A scenario at `ocean_hybrid_close`'s position direction,
+radius `4_000_000 - 3`, `waterline_eye_height_meters: -1.0` so the eye tracks
+1m under the moving surface, looking 25 degrees above horizontal. Note that
+scenario JSON reaches the binary through `include_str!`, so editing the JSON
+without touching a `.rs` file will silently replay the previous scenario -- that
+cost me two runs and a wrong conclusion about the camera being buried in land.
+
+**Also unverified:** the third request, the sea bed in shallow water. Bathymetry
+is real geometry (the bake carries -5000m and negative macro heights are not
+scaled), so it should appear once anything underwater renders at all, but I
+never found a shallow site to confirm it.

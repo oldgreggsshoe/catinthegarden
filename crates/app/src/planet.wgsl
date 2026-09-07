@@ -1781,6 +1781,23 @@ fn ocean_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
         surface.vertical_displacement,
         sun_direction,
     );
+    // From underneath the sea is a different surface entirely, so it does not
+    // go through the foam-and-Fresnel path above: see `ocean_underside_colour`.
+    if camera.flat_triangle_options.w > 0.5 {
+        return vec4<f32>(
+            terrain_distance_fog(
+                ocean_underside_colour(
+                    surface.normal,
+                    direction,
+                    input.camera_relative_view_position,
+                ),
+                input.camera_relative_view_position,
+                direction,
+                surface.vertical_displacement,
+            ),
+            1.0,
+        );
+    }
     // Foam: surf where there is a bottom to break on, whitecaps where there is not.
     let foam = ocean_foam_coverage(
         max(-macro_height_meters, 0.0),
