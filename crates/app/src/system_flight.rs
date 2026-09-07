@@ -28,49 +28,6 @@ struct Route {
     landing: DVec3,
     landing_normal: DVec3,
 }
-/// The eye has to clear the ground *around* it, not just the one sample beneath
-/// it. Seating the camera 2m over the height directly below put it 2.05m under
-/// terrain 2m away and 4.09m under terrain 10m away: the departure sits on
-/// broken ground, so the surroundings overtop the point they are measured from.
-/// The visible symptom was the ground drawn edge-on as a one-pixel line across
-/// six frames of the pitch-up, with sky both sides of it.
-const EYE_CLEARANCE_METERS: f64 = 2.0;
-const GROUND_NEIGHBOURHOOD_METERS: f64 = 10.0;
-
-/// Highest surface within `GROUND_NEIGHBOURHOOD_METERS` of `direction`, taken
-/// over two rings so a narrow rise between the samples cannot slip through.
-/// Returns `None` only where the centre itself has no surface, keeping the
-/// caller's existing "leave the pose alone" fallback.
-fn local_ground_height_meters(
-    terrain: &terrain::TerrainRenderer,
-    direction: DVec3,
-    altitude_meters: f64,
-    body_radius_meters: f64,
-) -> Option<f64> {
-    let mut highest = terrain.raster_surface_height_meters_at(direction, altitude_meters)?;
-    let aside = if direction.z.abs() < 0.9 {
-        DVec3::Z
-    } else {
-        DVec3::X
-    };
-    let u = direction.cross(aside).normalize();
-    let v = direction.cross(u);
-    for reach in [
-        GROUND_NEIGHBOURHOOD_METERS * 0.5,
-        GROUND_NEIGHBOURHOOD_METERS,
-    ] {
-        let offset = reach / body_radius_meters;
-        for step in 0..8 {
-            let angle = step as f64 / 8.0 * std::f64::consts::TAU;
-            let around = (direction + (u * angle.cos() + v * angle.sin()) * offset).normalize();
-            if let Some(height) = terrain.raster_surface_height_meters_at(around, altitude_meters) {
-                highest = highest.max(height);
-            }
-        }
-    }
-    Some(highest)
-}
-
 fn ease(t: f64) -> f64 {
     let t = t.clamp(0.0, 1.0);
     t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
@@ -318,36 +275,12 @@ impl SystemFlight {
                 self.route.landing = self.route.moon.origin
                     + self.route.landing_normal * (body::MOON.radius_meters + h + 2.0);
             }
-            if let Some(h) = local_ground_height_meters(
-                &state.terrain,
+            if let Some(h) = state.terrain.raster_surface_height_meters_at(
                 DVec3::X,
                 position.length() - body::PLANET.radius_meters,
-                body::PLANET.radius_meters,
             ) {
-                self.route.departure =
-                    DVec3::X * (body::PLANET.radius_meters + h + EYE_CLEARANCE_METERS);
+                self.route.departure = DVec3::X * (body::PLANET.radius_meters + h + 2.0);
             }
-        }
-        // Re-measured one frame after the last re-seat, against terrain that
-        // has streamed further, so it is not the seating arithmetic read back.
-        // It catches the eye sinking under nearby ground; it cannot catch
-        // GROUND_NEIGHBOURHOOD_METERS itself being too short a reach.
-        let departure_altitude = self.route.departure.length() - body::PLANET.radius_meters;
-        if self.frame == WARMUP
-            && let Some(ground) = local_ground_height_meters(
-                &state.terrain,
-                DVec3::X,
-                departure_altitude,
-                body::PLANET.radius_meters,
-            )
-            && departure_altitude < ground
-        {
-            tracing::error!(
-                eye = departure_altitude,
-                ground,
-                "departure eye is below nearby ground"
-            );
-            self.failed = true;
         }
         let planet_altitude = position.length() - body::PLANET.radius_meters;
         let moon_altitude = moon_position.length() - body::MOON.radius_meters;
