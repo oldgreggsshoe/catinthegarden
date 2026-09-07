@@ -3472,6 +3472,8 @@ impl State {
                 .surface_height_meters_at(camera_direction, camera_sea_level_altitude_meters),
         }
         .unwrap_or(0.0);
+        let mut ocean_water_depth_meters = 0.0;
+        let mut ocean_eye_clearance_meters = 0.0;
         if let Some((bathymetry, water_height, _)) = self.open_ocean_environment_at(
             camera_direction,
             camera_sea_level_altitude_meters,
@@ -3479,6 +3481,8 @@ impl State {
             camera_surface_height_meters,
         ) {
             camera_surface_height_meters = bathymetry.max(water_height);
+            ocean_water_depth_meters = (water_height - bathymetry).max(0.0);
+            ocean_eye_clearance_meters = camera_sea_level_altitude_meters - water_height;
         }
         let aspect_ratio = self.size.width as f32 / self.size.height as f32;
         let mut camera_uniform = planet::CameraUniform::from_camera(
@@ -3495,6 +3499,10 @@ impl State {
         // displacement uses the same temporally interpolated local storm field
         // as the cloud system, without adding a bind group or texture lookup.
         camera_uniform.flat_triangle_options[1] = local_storm_intensity;
+        // Spare basis-vector lanes: local ocean column and signed eye clearance.
+        // Fill background waterline pixels missed by the finite raster shell.
+        camera_uniform.camera_forward[3] = ocean_water_depth_meters as f32;
+        camera_uniform.camera_right[3] = ocean_eye_clearance_meters as f32;
         // Gerstner horizontal transport is off while the CPU wave query is
         // radial, so the camera and the rendered surface sample the same
         // world-space point. This is deliberately independent of

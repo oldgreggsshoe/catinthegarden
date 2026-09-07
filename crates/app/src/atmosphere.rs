@@ -497,6 +497,36 @@ fn draw_lut(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn waterline_background_shader_validates_and_uses_per_ray_water_entry() {
+        let display = include_str!("atmosphere.wgsl");
+        let source = format!("{}\n{display}", crate::body::wgsl_constants());
+        let module = wgpu::naga::front::wgsl::parse_str(&source).expect("display shader parses");
+        wgpu::naga::valid::Validator::new(
+            wgpu::naga::valid::ValidationFlags::all(),
+            wgpu::naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("display shader validates");
+        assert!(
+            display.contains("dot(ray, up_view), camera.camera_right.w, camera.camera_forward.w")
+        );
+        assert!(display.contains("if BODY_HAS_OCEAN && water_coverage > 0.0"));
+        assert!(display.contains("if water_depth_meters <= 0.0"));
+        assert!(display.contains("if ray_up_cosine >= 0.0"));
+        assert!(display.contains("eye_clearance_meters / max(-ray_up_cosine"));
+        // Keep the background and existing volume fog's medium tint paired.
+        let surface = include_str!("shared_planet.wgsl");
+        let tint = surface
+            .split("const OCEAN_UNDERWATER_TINT: vec3<f32> = ")
+            .nth(1)
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap();
+        assert!(display.contains(tint));
+    }
+
+    #[test]
     fn sky_view_generation_and_display_share_the_vertical_convention() {
         for (label, shader) in [
             (

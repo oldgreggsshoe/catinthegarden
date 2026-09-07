@@ -47,7 +47,13 @@
   ],
   "assertions": {
     "require_finite_metrics": true,
-    "expected_screenshots": 4
+    "expected_screenshots": 4,
+    "water_sample_uv": [
+      0.5,
+      0.9
+    ],
+    "min_water_blue_minus_red": 0.25,
+    "max_water_sample_red": 0.35
   },
   "waterline_eye_height_meters": 0.06
 }

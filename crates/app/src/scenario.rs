@@ -50,6 +50,10 @@ pub struct ScenarioAssertions {
     /// all. Normalised units, so 0.08 is a 20/255 lead.
     pub seabed_sample_uv: Option<[f32; 2]>,
     pub min_seabed_red_minus_blue: Option<f32>,
+    /// Waterline background sample: reject pale sky and black missing output.
+    pub water_sample_uv: Option<[f32; 2]>,
+    pub min_water_blue_minus_red: Option<f32>,
+    pub max_water_sample_red: Option<f32>,
     /// Largest tolerated gap between the surface the renderer drew and the
     /// surface the CPU would collide with, over the probe's sample grid. This
     /// is an outlier guard and should be set loosely; horizon-grazing samples
@@ -108,6 +112,9 @@ impl Default for ScenarioAssertions {
             max_ice_sample_channel_spread: None,
             seabed_sample_uv: None,
             min_seabed_red_minus_blue: None,
+            water_sample_uv: None,
+            min_water_blue_minus_red: None,
+            max_water_sample_red: None,
             max_surface_probe_delta_m: None,
             max_surface_probe_p90_delta_m: None,
             min_camera_clearance_m: None,

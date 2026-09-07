@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Waterline sky-leak repair: the sky background now fills nearby downward ocean rays with bounded, sky-lit water colour even when the swimming eye is 6cm above the analytic surface. No mesh/pass added; the new per-capture colour guard rejects the old pale output. Waterline, underwater, shallow-bottom and land GPU replays pass; 489 workspace tests and clippy pass.
+
 - Crest visibility rebalance: user found the 48m linear fade too faint; restored a 24m span while retaining linear interpolation, original onset and peak colour. Focused regression passes. Underwater sky leakage in manual capture 1788802408-449773 remains unresolved.
 
 - Crest-colour follow-up: turquoise now uses a linear 0–48m blend rather than the 0–24m smoothstep, reducing its maximum colour-change rate threefold while retaining onset and peak colour. Geometry and underwater paths are untouched.

@@ -7670,3 +7670,59 @@ Use targeted edits on shared files. Never restore a whole-file backup of a file 
 the crest-ramp test pinned the literal `clamp(crest_height_meters / 24.0, 0.0, 1.0)` and failed the
 moment the ramp was retuned. It now parses the two constants out of the shader and asserts
 `0 < onset < full`. A guard should survive tuning it is not meant to prevent.
+
+## 8 September 2026 — the waterline sky leak was background, not the underside
+
+Finished from 1a4eea3, preserving the concurrent foam, dark-body and crest-onset
+tuning. User captures 1788802408-449773 and 1788802656-452606 show a pale lower
+screen under the waves; the latter manifest confirms final HDR scene, not flat
+triangles. The HUD/probe reports +0.06m analytic eye clearance.
+
+**Correction to my first diagnosis.** Changing the underside from terrain fog
+to unconditional water fog did not remove the pale area. That change was already
+included in 1a4eea3, but its source-level test did not establish the pixel author.
+A red distance diagnostic in ocean_underside_fragment
+(ocean_waterline_medium/1788820919-483417) coloured only narrow patches; the
+large pale region stayed unchanged. It was the sky background exposed where
+the finite/clipped wave mesh does not enclose the water volume. At +6cm, the
+global submerged flag remains false. All diagnostic shader code is removed.
+
+**The fix.** Reuse the existing CPU ocean-environment query to upload actual
+local water-column depth and signed eye clearance in unused camera_forward.w
+and camera_right.w lanes; the layout and all xyz bases are unchanged. The sky
+background tests each ray against the local water plane. Submerged ocean eyes
+get water background; above-water eyes get it only for downward rays entering
+nearby water, with a 20–30m entry-distance fade. Geometry still renders over
+this background, so the wave silhouette selects the visible boundary. Land,
+airless bodies and distant/orbital cameras do not acquire a water background.
+
+The background uses bounded unboosted sky illumination and the existing medium
+tint. An overhead sun's narrow HDR sky lobe must not bleach the whole volume.
+This is a local water-volume fallback, not a refracted scene or a fix for the
+analytic-versus-triangulated wave-height discrepancy. No new geometry, pass,
+uniform allocation or CPU wave query; no measured FPS claim.
+
+**Evidence and guard.** At sample UV (0.5,0.9), the first two waterline captures
+change from (142,155,163) to (2,37,94). Applying the new colour criteria to the
+archived pre-fix PNGs rejects them; all four corrected PNGs pass. The assertion
+checks every captured sample, requires blue-red >= 0.25 and red <= 0.35, and
+also rejects black/missing output. It is opt-in, leaving other scenarios alone.
+A matched 1280x720 diagnostic/after capture has byte-identical top 100 sky rows.
+
+During verification I also tried correcting the existing water-fog up-vector
+transform. With the shallow scenario's overhead sun that turned its fog white
+and failed the sediment guard (1788821818-487445). That extra change was reverted;
+the final shared fog path is unchanged from 1a4eea3. Do not reintroduce it without
+addressing the direct-sun lobe in the ambient lookup.
+
+Final rebuilt GPU runs, all explicit passed=true with all PNGs present:
+* ocean_waterline_medium/1788822013-488314 — four captures, new image guard passes.
+* ocean_underwater_visibility/1788822031-488380 — four captures.
+* ocean_shallow_bottom/1788822045-488452 — four captures, sediment guard passes.
+* stand_on_ground/1788822057-488471 — five captures.
+
+489 workspace tests passed (14 ignored), workspace all-target clippy passed;
+final focused waterline tests, shader validation, fmt and diff checks pass.
+The generic underside/Snell-window assertion gap in thread 27 and ray seabed
+parity in thread 26 remain separate. Release is rebuilt in target/release.
+Unrelated crates.tar.gz was left untouched.

@@ -146,6 +146,7 @@ struct AssertionTracker {
     day_night_surface_luminance_ratios: Vec<f32>,
     ice_samples: Vec<[u8; 3]>,
     seabed_samples: Vec<[u8; 3]>,
+    water_samples: Vec<[u8; 3]>,
     exposure_sample_count: usize,
     exposure_bound_violations: usize,
     maximum_exposure_frame_delta: f32,
@@ -192,6 +193,7 @@ impl AssertionTracker {
             day_night_surface_luminance_ratios: Vec::new(),
             ice_samples: Vec::new(),
             seabed_samples: Vec::new(),
+            water_samples: Vec::new(),
             exposure_sample_count: 0,
             exposure_bound_violations: 0,
             maximum_exposure_frame_delta: 0.0,
@@ -884,8 +886,27 @@ impl AssertionTracker {
                 ),
             ));
         }
+        if let (Some(minimum_margin), Some(maximum_red)) = (
+            self.config.min_water_blue_minus_red,
+            self.config.max_water_sample_red,
+        ) {
+            let samples = &self.water_samples;
+            results.push(assertion_result(
+                "waterline_background_is_water_not_sky",
+                !samples.is_empty() && samples.iter().all(|&sample| {
+                    water_sample_is_blue(sample, minimum_margin, maximum_red)
+                }),
+                format!(
+                    "required blue-red >= {minimum_margin:.3}, red <= {maximum_red:.3}; samples {samples:?}",
+                ),
+            ));
+        }
         results
     }
+}
+
+fn water_sample_is_blue(sample: [u8; 3], minimum_margin: f32, maximum_red: f32) -> bool {
+    -red_minus_blue(sample) >= minimum_margin && f32::from(sample[0]) / 255.0 <= maximum_red
 }
 
 fn red_blue_ratio(sample: [u8; 3]) -> f32 {
@@ -1368,6 +1389,18 @@ impl RunArtifacts {
         Some(sample)
     }
 
+    fn record_water_sample(&mut self, pixels: &[u8], width: u32, height: u32) {
+        let Some([u, v]) = self.assertion_tracker.config.water_sample_uv else {
+            return;
+        };
+        let x = (u.clamp(0.0, 1.0) * (width - 1) as f32).round() as usize;
+        let y = (v.clamp(0.0, 1.0) * (height - 1) as f32).round() as usize;
+        let sample: [u8; 3] = pixels[(y * width as usize + x) * 4..][..3]
+            .try_into()
+            .expect("sample coordinate is inside the screenshot");
+        self.assertion_tracker.water_samples.push(sample);
+    }
+
     fn write_manifests(&self) -> Result<(), String> {
         write_json(self.root.join("manifest.json"), &self.manifest)?;
         write_json(
@@ -1511,6 +1544,7 @@ pub fn finish_capture(
         artifacts.record_day_night_surface_luminance_ratio(&pixels, pending.width, pending.height);
     let ice_sample_rgb = artifacts.record_ice_sample(&pixels, pending.width, pending.height);
     artifacts.record_seabed_sample(&pixels, pending.width, pending.height);
+    artifacts.record_water_sample(&pixels, pending.width, pending.height);
     artifacts.record_screenshot(
         pending.filename,
         sim_time,
@@ -1620,6 +1654,9 @@ mod tests {
             max_ice_sample_channel_spread: None,
             seabed_sample_uv: None,
             min_seabed_red_minus_blue: None,
+            water_sample_uv: None,
+            min_water_blue_minus_red: None,
+            max_water_sample_red: None,
             max_surface_probe_delta_m: None,
             max_surface_probe_p90_delta_m: None,
             min_camera_clearance_m: None,
@@ -1632,6 +1669,16 @@ mod tests {
     /// that drew the bottom (`1788800342-417178`) and the earlier one that was
     /// flat ocean blue and passed anyway (`1788800195-416229`). The threshold
     /// has to sit between them, and it does, with room on both sides.
+    #[test]
+    fn waterline_sample_rejects_the_reproduced_sky_leak_and_black_output() {
+        for sample in [[142, 155, 163], [135, 168, 204], [0, 0, 0]] {
+            assert!(!super::water_sample_is_blue(sample, 0.25, 0.35));
+        }
+        for sample in [[2, 37, 94], [40, 72, 140], [73, 108, 162]] {
+            assert!(super::water_sample_is_blue(sample, 0.25, 0.35));
+        }
+    }
+
     #[test]
     fn the_seabed_margin_separates_sediment_from_flat_ocean_blue() {
         let drew_the_bottom = red_minus_blue([66, 47, 25]);

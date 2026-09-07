@@ -2712,7 +2712,9 @@ fn view_projection_for(
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraUniform {
     pub projection_matrix: [[f32; 4]; 4],
+    /// xyz: forward basis; w: local ocean water-column depth (zero off ocean).
     pub camera_forward: [f32; 4],
+    /// xyz: right basis; w: signed eye clearance above the local ocean.
     pub camera_right: [f32; 4],
     pub camera_up: [f32; 4],
     pub camera_planet_direction_view_altitude: [f32; 4],

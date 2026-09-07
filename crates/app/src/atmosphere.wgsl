@@ -272,14 +272,45 @@ fn displayed_sky_radiance(ray: vec3<f32>) -> vec3<f32> {
     return mix(visible_radiance, horizon_fog_radiance, fog_amount);
 }
 
+// A finite, near-clipped sea shell does not enclose a water volume. At a
+// swimming eye height, some downward rays miss every triangle and reach this
+// background. Classify those rays against the local water plane, not solely
+// by whether the camera point is submerged. Geometry still draws over this.
+// Limit the approximation to nearby water (20–30m entry distance).
+fn ocean_background_water_coverage(
+    ray_up_cosine: f32,
+    eye_clearance_meters: f32,
+    water_depth_meters: f32,
+) -> f32 {
+    if water_depth_meters <= 0.0 {
+        return 0.0;
+    }
+    if eye_clearance_meters <= 0.0 {
+        return 1.0;
+    }
+    if ray_up_cosine >= 0.0 {
+        return 0.0;
+    }
+    let entry_distance = eye_clearance_meters / max(-ray_up_cosine, 1.0e-6);
+    return 1.0 - smoothstep(20.0, 30.0, entry_distance);
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    // A submerged eye has water in every direction, so the sky behind the
-    // geometry is water too. Without this the frame below the surface fills
-    // with the sky the camera can no longer see. Placeholder until there is a
-    // real underwater pass.
-    if camera.flat_triangle_options.w > 0.5 {
-        return vec4<f32>(0.012, 0.055, 0.13, 1.0);
+    let ray = view_direction(input.ndc);
+    let up_view = normalize(camera.camera_planet_direction_view_altitude.xyz);
+    let water_coverage = ocean_background_water_coverage(
+        dot(ray, up_view), camera.camera_right.w, camera.camera_forward.w,
+    );
+    let sky = displayed_sky_radiance(ray);
+    if BODY_HAS_OCEAN && water_coverage > 0.0 {
+        // Ambient water fill, bounded so an overhead sun's narrow HDR sky
+        // lobe cannot turn the whole volume white. Match the existing fog tint.
+        let ambient = min(perceptual_sky_radiance(textureSampleLevel(
+            sky_view_lut, sky_view_sampler, sky_view_uv(up_view), 0.0,
+        ).rgb), vec3<f32>(1.0));
+        let water = ambient * vec3<f32>(0.055, 0.30, 0.42);
+        return vec4<f32>(mix(sky, water, water_coverage), 1.0);
     }
-    return vec4<f32>(displayed_sky_radiance(view_direction(input.ndc)), 1.0);
+    return vec4<f32>(sky, 1.0);
 }
