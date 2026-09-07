@@ -961,9 +961,17 @@ fn gerstner_wave(
     // Same bounded, zero-mean radial crest profile as CPU buoyancy.
     let sine = sin(phase);
     let cosine = cos(phase);
-    let normalization = 1.0 / (1.0 + 0.5 * OCEAN_CREST_SHARPNESS);
-    let profile = (sine + OCEAN_CREST_SHARPNESS * (sine * sine - 0.5)) * normalization;
-    let profile_derivative = cosine * (1.0 + 2.0 * OCEAN_CREST_SHARPNESS * sine) * normalization;
+    // u^k on the wave's rise: a narrow crest over a long shallow trough, and
+    // monotonic in u so it keeps exactly two extrema however sharp it gets.
+    // Mirrors `wave_profile` in ocean.rs, which owns both constants.
+    let rise = 0.5 * (1.0 + sine);
+    let normalization = 1.0 / (1.0 - OCEAN_CREST_MEAN);
+    let profile = (pow(rise, OCEAN_CREST_EXPONENT) - OCEAN_CREST_MEAN) * normalization;
+    let profile_derivative = OCEAN_CREST_EXPONENT
+        * pow(rise, OCEAN_CREST_EXPONENT - 1.0)
+        * 0.5
+        * cosine
+        * normalization;
     return OceanWaveContribution(
         tangent * (steepness * OCEAN_STEEPNESS_SCALE * amplitude_meters * cosine),
         amplitude_meters * profile,

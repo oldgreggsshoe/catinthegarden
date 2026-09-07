@@ -14,19 +14,38 @@ use crate::planet::planet_radius_meters;
 /// fails quietly rather than loudly. Set this instead.
 pub const OCEAN_WAVE_SCALE: f64 = 1.0;
 
-// A zero-mean second harmonic sharpens crests and broadens troughs without
-// horizontal transport. Keep below 0.5 to avoid extra extrema; normalization
-// retains the existing conservative amplitude bound.
-const OCEAN_CREST_SHARPNESS: f64 = 0.4;
+/// How pointed a crest is. Raising it narrows the crest and flattens the
+/// trough; 1.0 is a plain sine.
+///
+/// This replaced a zero-mean second harmonic, `sin + s*(sin^2 - 0.5)`, which
+/// could not go past s = 0.5: its derivative `cos*(1 + 2s*sin)` gains a zero at
+/// `sin = -1/(2s)` beyond that, which puts a bump in the middle of every
+/// trough. So "much more pointy" was not reachable by turning that knob up.
+///
+/// Written on the wave's rise instead, `u = (1 + sin)/2`, the profile is
+/// `u^k` -- monotonic in u, so however sharp it gets it still has exactly two
+/// extrema per period, the crest and the trough. Real gravity waves do this:
+/// a Stokes wave is a narrow peak over a long shallow trough, not a sine. What
+/// this cannot do is *cusp* the crest, because a cusp needs the horizontal
+/// compression of a Gerstner wave and horizontal transport is off.
+const OCEAN_CREST_EXPONENT: f64 = 3.0;
 
+/// Mean of `u^k` over a period, which the profile subtracts so the sea stays at
+/// sea level. Exact for k = 3: E[(1+sin)^3]/8 = (1 + 0 + 3/2 + 0)/8.
+/// `the_crest_profile_has_zero_mean` re-derives it by integration.
+const OCEAN_CREST_MEAN: f64 = 0.3125;
+
+/// Scaled so the crest still reaches exactly 1, which is what every amplitude
+/// bound in this file is stated against.
 fn wave_profile(phase: f64) -> f64 {
-    let sine = phase.sin();
-    (sine + OCEAN_CREST_SHARPNESS * (sine * sine - 0.5)) / (1.0 + 0.5 * OCEAN_CREST_SHARPNESS)
+    let rise = 0.5 * (1.0 + phase.sin());
+    (rise.powf(OCEAN_CREST_EXPONENT) - OCEAN_CREST_MEAN) / (1.0 - OCEAN_CREST_MEAN)
 }
 
 fn wave_profile_derivative(phase: f64) -> f64 {
-    phase.cos() * (1.0 + 2.0 * OCEAN_CREST_SHARPNESS * phase.sin())
-        / (1.0 + 0.5 * OCEAN_CREST_SHARPNESS)
+    let rise = 0.5 * (1.0 + phase.sin());
+    OCEAN_CREST_EXPONENT * rise.powf(OCEAN_CREST_EXPONENT - 1.0) * 0.5 * phase.cos()
+        / (1.0 - OCEAN_CREST_MEAN)
 }
 
 const BASE_CALM_GEOMETRY_AMPLITUDE_SCALE: f64 = 44.0;
@@ -67,7 +86,8 @@ pub(crate) fn wgsl_constants() -> String {
         "// Generated from ocean.rs; OCEAN_WAVE_SCALE = {}. Do not edit here.\n\
          const OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE: f32 = {};\n\
          const OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE: f32 = {};\n\
-         const OCEAN_CREST_SHARPNESS: f32 = {};\n\
+         const OCEAN_CREST_EXPONENT: f32 = {};\n\
+         const OCEAN_CREST_MEAN: f32 = {};\n\
          const OCEAN_STEEPNESS_SCALE: f32 = {};\n\
          const OCEAN_MAXIMUM_WAVE_HEIGHT_METERS: f32 = {};\n\
          const OCEAN_BREAKING_HEIGHT_TO_DEPTH_RATIO: f32 = {};\n\
@@ -77,7 +97,8 @@ pub(crate) fn wgsl_constants() -> String {
         wgsl_number(OCEAN_WAVE_SCALE),
         wgsl_number(OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE),
         wgsl_number(OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE),
-        wgsl_number(OCEAN_CREST_SHARPNESS),
+        wgsl_number(OCEAN_CREST_EXPONENT),
+        wgsl_number(OCEAN_CREST_MEAN),
         wgsl_number(OCEAN_STEEPNESS_SCALE),
         wgsl_number(MAXIMUM_WAVE_HEIGHT_METERS),
         wgsl_number(BREAKING_HEIGHT_TO_DEPTH_RATIO),
@@ -774,12 +795,64 @@ mod tests {
         let crest_curvature = (super::wave_profile_derivative(crest + step)
             - super::wave_profile_derivative(crest - step))
             / (2.0 * step);
-        // A sine crest has curvature -1: this profile is 50% sharper.
-        assert!((crest_curvature + 1.5).abs() < 1.0e-7);
+        // A sine crest has curvature -1. This one is -k/(2*(1-mean)), so at
+        // k = 3 it is 2.18x a sine -- against 1.5x for the second harmonic this
+        // replaced, which could not be pushed past 1.5 at all.
+        let expected_curvature =
+            -super::OCEAN_CREST_EXPONENT / (2.0 * (1.0 - super::OCEAN_CREST_MEAN));
+        assert!((crest_curvature - expected_curvature).abs() < 1.0e-6);
+        assert!(crest_curvature < -2.0);
+        // The trough is flat, not merely gentle: at k >= 3 the rise `u` goes to
+        // zero quadratically and is then cubed, so the bottom is a long shelf.
+        // What must hold is that it never curves *down* -- that would be a bump
+        // in the trough, which is the failure mode the old profile hit past
+        // s = 0.5.
         let trough_curvature = (super::wave_profile_derivative(-crest + step)
             - super::wave_profile_derivative(-crest - step))
             / (2.0 * step);
-        assert!(trough_curvature > 0.0 && trough_curvature < 0.2);
+        assert!((0.0..0.2).contains(&trough_curvature));
+    }
+
+    /// The property that lets the crest sharpen without limit: whatever the
+    /// exponent, the profile still rises once and falls once per period.
+    ///
+    /// This is what the second harmonic could not promise. Its derivative
+    /// `cos * (1 + 2s*sin)` gains a second pair of zeros once `2s > 1`, putting
+    /// a bump in every trough, which is why its comment said "keep below 0.5".
+    #[test]
+    fn the_crest_profile_has_one_crest_and_one_trough_at_any_sharpness() {
+        for exponent in [1.0_f64, 2.0, 3.0, 6.0, 12.0] {
+            let mean = {
+                let mut total = 0.0;
+                for i in 0..8192 {
+                    let phase = std::f64::consts::TAU * i as f64 / 8192.0;
+                    total += (0.5 * (1.0 + phase.sin())).powf(exponent) / 8192.0;
+                }
+                total
+            };
+            let profile =
+                |phase: f64| ((0.5_f64 * (1.0 + phase.sin())).powf(exponent) - mean) / (1.0 - mean);
+            // `u` is a square of a real, so `u^(k-1)` is never negative and
+            // the derivative's sign is exactly `cos(phase)`'s -- the same two
+            // sign changes a sine has, at the same two phases, for any k. A
+            // turning-point count cannot show this: at k >= 3 the trough is so
+            // flat that neighbouring samples are bit-identical and the turn is
+            // invisible to finite differences.
+            let derivative = |phase: f64| {
+                exponent * (0.5_f64 * (1.0 + phase.sin())).powf(exponent - 1.0) * 0.5 * phase.cos()
+                    / (1.0 - mean)
+            };
+            for i in 0..20_000 {
+                let phase = std::f64::consts::TAU * i as f64 / 20_000.0;
+                assert!(
+                    derivative(phase) * phase.cos() >= 0.0,
+                    "exponent {exponent} turns the wrong way at phase {phase}",
+                );
+            }
+            // And it really is a crest over a trough, not a flat line.
+            assert!(profile(std::f64::consts::FRAC_PI_2) > 0.9);
+            assert!(profile(-std::f64::consts::FRAC_PI_2) < -0.1);
+        }
     }
 
     /// Every wave in the table, at storm scale. Independent of the diagnostic
