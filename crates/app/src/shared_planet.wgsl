@@ -344,23 +344,23 @@ const OCEAN_LARGE_SWELL_WAVE_COUNT: u32 = 2u;
 // wave_number * dot(direction, axis) * PLANET_RADIUS_METERS and a planet radius
 // turns a 4th-decimal axis difference into tens of radians of phase.
 var<private> OCEAN_WAVE_TABLE: array<OceanWaveSpec, 17> = array<OceanWaveSpec, 17>(
-    OceanWaveSpec(vec3<f32>(0.9, 0.1, 0.4), 1400.0, 0.375, 0.09, 10.0, 0.45),
-    OceanWaveSpec(vec3<f32>(0.86, 0.18, 0.48), 1400.0, 0.375, 0.09, 9.2, 0.4),
-    OceanWaveSpec(vec3<f32>(0.1596, -0.599, 0.7847), 430.0, 0.0, 0.185, 24.0, 1.5),
-    OceanWaveSpec(vec3<f32>(0.297, -0.7478, 0.5938), 350.0, 0.0, 0.205, 21.5, 1.5),
-    OceanWaveSpec(vec3<f32>(0.3987, -0.8308, 0.3884), 280.0, 0.0, 0.18, 19.0, 1.5),
-    OceanWaveSpec(vec3<f32>(0.576, -0.8032, 0.1519), 200.0, 0.0495, 0.0495, 6.0, 0.34),
-    OceanWaveSpec(vec3<f32>(0.4646, -0.1875, 0.8654), 147.5, 0.0383, 0.0383, 6.59, 0.32),
-    OceanWaveSpec(vec3<f32>(0.5761, -0.8032, 0.1515), 108.7, 0.0295, 0.0295, 7.18, 0.3),
-    OceanWaveSpec(vec3<f32>(0.2007, 0.0492, 0.9784), 80.2, 0.0228, 0.0228, 7.77, 0.28),
-    OceanWaveSpec(vec3<f32>(0.49, -0.8612, -0.1353), 59.1, 0.0176, 0.0176, 8.36, 0.26),
-    OceanWaveSpec(vec3<f32>(0.1087, 0.131, 0.9854), 43.6, 0.0136, 0.0136, 8.95, 0.24),
-    OceanWaveSpec(vec3<f32>(0.5241, -0.8493, -0.063), 32.1, 0.0105, 0.0105, 9.55, 0.22),
-    OceanWaveSpec(vec3<f32>(-0.0574, 0.252, 0.966), 23.7, 0.0081, 0.0081, 10.14, 0.2),
-    OceanWaveSpec(vec3<f32>(0.3157, -0.8148, -0.4862), 17.5, 0.0062, 0.0062, 10.73, 0.18),
-    OceanWaveSpec(vec3<f32>(0.1407, 0.1008, 0.9849), 12.9, 0.0048, 0.0048, 11.32, 0.16),
-    OceanWaveSpec(vec3<f32>(0.3542, -0.8289, -0.4329), 9.5, 0.0037, 0.0037, 11.91, 0.14),
-    OceanWaveSpec(vec3<f32>(-0.2008, 0.3721, 0.9062), 7.0, 0.0029, 0.0029, 12.5, 0.12),
+    OceanWaveSpec(vec3<f32>(0.9, 0.1, 0.4), 1400.0, 0.375, 0.09, 46.7449, 0.45),
+    OceanWaveSpec(vec3<f32>(0.86, 0.18, 0.48), 1400.0, 0.375, 0.09, 46.7449, 0.4),
+    OceanWaveSpec(vec3<f32>(0.1596, -0.599, 0.7847), 430.0, 0.0, 0.185, 25.9063, 1.5),
+    OceanWaveSpec(vec3<f32>(0.297, -0.7478, 0.5938), 350.0, 0.0, 0.205, 23.3725, 1.5),
+    OceanWaveSpec(vec3<f32>(0.3987, -0.8308, 0.3884), 280.0, 0.0, 0.18, 20.905, 1.5),
+    OceanWaveSpec(vec3<f32>(0.576, -0.8032, 0.1519), 200.0, 0.0495, 0.0495, 17.6679, 0.34),
+    OceanWaveSpec(vec3<f32>(0.4646, -0.1875, 0.8654), 147.5, 0.0383, 0.0383, 15.1728, 0.32),
+    OceanWaveSpec(vec3<f32>(0.5761, -0.8032, 0.1515), 108.7, 0.0295, 0.0295, 13.0252, 0.3),
+    OceanWaveSpec(vec3<f32>(0.2007, 0.0492, 0.9784), 80.2, 0.0228, 0.0228, 11.1881, 0.28),
+    OceanWaveSpec(vec3<f32>(0.49, -0.8612, -0.1353), 59.1, 0.0176, 0.0176, 9.6043, 0.26),
+    OceanWaveSpec(vec3<f32>(0.1087, 0.131, 0.9854), 43.6, 0.0136, 0.0136, 8.2492, 0.24),
+    OceanWaveSpec(vec3<f32>(0.5241, -0.8493, -0.063), 32.1, 0.0105, 0.0105, 7.0782, 0.22),
+    OceanWaveSpec(vec3<f32>(-0.0574, 0.252, 0.966), 23.7, 0.0081, 0.0081, 6.082, 0.2),
+    OceanWaveSpec(vec3<f32>(0.3157, -0.8148, -0.4862), 17.5, 0.0062, 0.0062, 5.2262, 0.18),
+    OceanWaveSpec(vec3<f32>(0.1407, 0.1008, 0.9849), 12.9, 0.0048, 0.0048, 4.4871, 0.16),
+    OceanWaveSpec(vec3<f32>(0.3542, -0.8289, -0.4329), 9.5, 0.0037, 0.0037, 3.8506, 0.14),
+    OceanWaveSpec(vec3<f32>(-0.2008, 0.3721, 0.9062), 7.0, 0.0029, 0.0029, 3.3054, 0.12),
 );
 const OCEAN_GEOMETRY_FULL_DISTANCE_METERS: f32 = 4000.0;
 const OCEAN_GEOMETRY_FADE_DISTANCE_METERS: f32 = 10000.0;
@@ -991,9 +991,9 @@ fn ocean_ripple(
     // These shorter waves are part of the local geometry as well as its normal:
     // the CPU surface query mirrors their vertical displacement at the patch
     // centre, so nearby camera buoyancy cannot drift from the visible water.
-    let first = gerstner_wave(direction, OCEAN_RIPPLE_FIRST_AXIS, 180.0, OCEAN_RIPPLE_FIRST_AMPLITUDE, 14.0, 0.0, time_seconds, water_depth_meters);
-    let second = gerstner_wave(direction, OCEAN_RIPPLE_SECOND_AXIS, 70.0, OCEAN_RIPPLE_SECOND_AMPLITUDE, 11.0, 0.0, time_seconds, water_depth_meters);
-    let third = gerstner_wave(direction, OCEAN_RIPPLE_THIRD_AXIS, 28.0, OCEAN_RIPPLE_THIRD_AMPLITUDE, 8.0, 0.0, time_seconds, water_depth_meters);
+    let first = gerstner_wave(direction, OCEAN_RIPPLE_FIRST_AXIS, 180.0, OCEAN_RIPPLE_FIRST_AMPLITUDE, 16.7613, 0.0, time_seconds, water_depth_meters);
+    let second = gerstner_wave(direction, OCEAN_RIPPLE_SECOND_AXIS, 70.0, OCEAN_RIPPLE_SECOND_AMPLITUDE, 10.4525, 0.0, time_seconds, water_depth_meters);
+    let third = gerstner_wave(direction, OCEAN_RIPPLE_THIRD_AXIS, 28.0, OCEAN_RIPPLE_THIRD_AMPLITUDE, 6.6107, 0.0, time_seconds, water_depth_meters);
     let weight = distance_weight * shore_weight;
     return OceanWaveContribution(
         vec3<f32>(0.0),

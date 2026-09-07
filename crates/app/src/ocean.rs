@@ -220,13 +220,25 @@ struct GerstnerWave {
     steepness: f64,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+/// Deep-water phase speed for a gravity wave, `c = sqrt(g * lambda / 2pi)`.
+///
+/// The tables below are `const`, so they carry the resulting literals rather
+/// than calling this; `every_wave_travels_at_its_own_dispersion_speed` is what
+/// keeps the two from parting company.
+fn deep_water_phase_speed_meters_per_second(wavelength_meters: f64) -> f64 {
+    (crate::surface_camera::GRAVITY_METERS_PER_SECOND_SQUARED * wavelength_meters
+        / std::f64::consts::TAU)
+        .sqrt()
+}
+
 const OCEAN_RIPPLE_WAVES: [GerstnerWave; 3] = [
     GerstnerWave {
         direction: DVec3::new(0.72, 0.18, -0.67),
         wavelength_meters: 180.0,
         amplitude_meters: 1.8,
         storm_amplitude_meters: 1.8,
-        speed_meters_per_second: 14.0,
+        speed_meters_per_second: 16.7613,
         steepness: 0.0,
     },
     GerstnerWave {
@@ -234,7 +246,7 @@ const OCEAN_RIPPLE_WAVES: [GerstnerWave; 3] = [
         wavelength_meters: 70.0,
         amplitude_meters: 1.64,
         storm_amplitude_meters: 1.64,
-        speed_meters_per_second: 11.0,
+        speed_meters_per_second: 10.4525,
         steepness: 0.0,
     },
     GerstnerWave {
@@ -242,7 +254,7 @@ const OCEAN_RIPPLE_WAVES: [GerstnerWave; 3] = [
         wavelength_meters: 28.0,
         amplitude_meters: 1.20,
         storm_amplitude_meters: 1.20,
-        speed_meters_per_second: 8.0,
+        speed_meters_per_second: 6.6107,
         steepness: 0.0,
     },
 ];
@@ -258,7 +270,7 @@ const WAVES: [GerstnerWave; 17] = [
         wavelength_meters: 1400.0,
         amplitude_meters: 0.375,
         storm_amplitude_meters: 0.09,
-        speed_meters_per_second: 10.0,
+        speed_meters_per_second: 46.7449,
         steepness: 0.45,
     },
     GerstnerWave {
@@ -266,7 +278,7 @@ const WAVES: [GerstnerWave; 17] = [
         wavelength_meters: 1400.0,
         amplitude_meters: 0.375,
         storm_amplitude_meters: 0.09,
-        speed_meters_per_second: 9.2,
+        speed_meters_per_second: 46.7449,
         steepness: 0.4,
     },
     GerstnerWave {
@@ -274,7 +286,7 @@ const WAVES: [GerstnerWave; 17] = [
         wavelength_meters: 430.0,
         amplitude_meters: 0.0,
         storm_amplitude_meters: 0.185,
-        speed_meters_per_second: 24.0,
+        speed_meters_per_second: 25.9063,
         steepness: 1.5,
     },
     GerstnerWave {
@@ -282,7 +294,7 @@ const WAVES: [GerstnerWave; 17] = [
         wavelength_meters: 350.0,
         amplitude_meters: 0.0,
         storm_amplitude_meters: 0.205,
-        speed_meters_per_second: 21.5,
+        speed_meters_per_second: 23.3725,
         steepness: 1.5,
     },
     GerstnerWave {
@@ -290,7 +302,7 @@ const WAVES: [GerstnerWave; 17] = [
         wavelength_meters: 280.0,
         amplitude_meters: 0.0,
         storm_amplitude_meters: 0.18,
-        speed_meters_per_second: 19.0,
+        speed_meters_per_second: 20.905,
         steepness: 1.5,
     },
     GerstnerWave {
@@ -298,7 +310,7 @@ const WAVES: [GerstnerWave; 17] = [
         wavelength_meters: 200.0,
         amplitude_meters: 0.0495,
         storm_amplitude_meters: 0.0495,
-        speed_meters_per_second: 6.0,
+        speed_meters_per_second: 17.6679,
         steepness: 0.34,
     },
     GerstnerWave {
@@ -306,7 +318,7 @@ const WAVES: [GerstnerWave; 17] = [
         wavelength_meters: 147.5,
         amplitude_meters: 0.0383,
         storm_amplitude_meters: 0.0383,
-        speed_meters_per_second: 6.59,
+        speed_meters_per_second: 15.1728,
         steepness: 0.32,
     },
     GerstnerWave {
@@ -314,7 +326,7 @@ const WAVES: [GerstnerWave; 17] = [
         wavelength_meters: 108.7,
         amplitude_meters: 0.0295,
         storm_amplitude_meters: 0.0295,
-        speed_meters_per_second: 7.18,
+        speed_meters_per_second: 13.0252,
         steepness: 0.3,
     },
     GerstnerWave {
@@ -322,7 +334,7 @@ const WAVES: [GerstnerWave; 17] = [
         wavelength_meters: 80.2,
         amplitude_meters: 0.0228,
         storm_amplitude_meters: 0.0228,
-        speed_meters_per_second: 7.77,
+        speed_meters_per_second: 11.1881,
         steepness: 0.28,
     },
     GerstnerWave {
@@ -330,7 +342,7 @@ const WAVES: [GerstnerWave; 17] = [
         wavelength_meters: 59.1,
         amplitude_meters: 0.0176,
         storm_amplitude_meters: 0.0176,
-        speed_meters_per_second: 8.36,
+        speed_meters_per_second: 9.6043,
         steepness: 0.26,
     },
     GerstnerWave {
@@ -338,7 +350,7 @@ const WAVES: [GerstnerWave; 17] = [
         wavelength_meters: 43.6,
         amplitude_meters: 0.0136,
         storm_amplitude_meters: 0.0136,
-        speed_meters_per_second: 8.95,
+        speed_meters_per_second: 8.2492,
         steepness: 0.24,
     },
     GerstnerWave {
@@ -346,7 +358,7 @@ const WAVES: [GerstnerWave; 17] = [
         wavelength_meters: 32.1,
         amplitude_meters: 0.0105,
         storm_amplitude_meters: 0.0105,
-        speed_meters_per_second: 9.55,
+        speed_meters_per_second: 7.0782,
         steepness: 0.22,
     },
     GerstnerWave {
@@ -354,7 +366,7 @@ const WAVES: [GerstnerWave; 17] = [
         wavelength_meters: 23.7,
         amplitude_meters: 0.0081,
         storm_amplitude_meters: 0.0081,
-        speed_meters_per_second: 10.14,
+        speed_meters_per_second: 6.082,
         steepness: 0.2,
     },
     GerstnerWave {
@@ -362,7 +374,7 @@ const WAVES: [GerstnerWave; 17] = [
         wavelength_meters: 17.5,
         amplitude_meters: 0.0062,
         storm_amplitude_meters: 0.0062,
-        speed_meters_per_second: 10.73,
+        speed_meters_per_second: 5.2262,
         steepness: 0.18,
     },
     GerstnerWave {
@@ -370,7 +382,7 @@ const WAVES: [GerstnerWave; 17] = [
         wavelength_meters: 12.9,
         amplitude_meters: 0.0048,
         storm_amplitude_meters: 0.0048,
-        speed_meters_per_second: 11.32,
+        speed_meters_per_second: 4.4871,
         steepness: 0.16,
     },
     GerstnerWave {
@@ -378,7 +390,7 @@ const WAVES: [GerstnerWave; 17] = [
         wavelength_meters: 9.5,
         amplitude_meters: 0.0037,
         storm_amplitude_meters: 0.0037,
-        speed_meters_per_second: 11.91,
+        speed_meters_per_second: 3.8506,
         steepness: 0.14,
     },
     GerstnerWave {
@@ -386,7 +398,7 @@ const WAVES: [GerstnerWave; 17] = [
         wavelength_meters: 7.0,
         amplitude_meters: 0.0029,
         storm_amplitude_meters: 0.0029,
-        speed_meters_per_second: 12.5,
+        speed_meters_per_second: 3.3054,
         steepness: 0.12,
     },
 ];
@@ -1217,6 +1229,40 @@ mod tests {
         };
         assert_eq!(active_waves().len(), expected_waves);
         assert_eq!(active_ripple_waves().len(), expected_ripples);
+    }
+
+    /// Every component travels at the speed its own wavelength implies.
+    ///
+    /// Deep-water gravity waves disperse: `c = sqrt(g * lambda / 2pi)`, so a
+    /// 1,400m swell outruns a 7m chop by fourteen to one. These speeds used to
+    /// be set by hand, and the wind-sea tail had been given a *linear ramp from
+    /// 6.0 to 12.5 m/s that rose as the wavelength fell* -- the ordering
+    /// inverted, the shortest waves travelling faster than the longest. That is
+    /// what made the small waves appear to slide across the swell instead of
+    /// riding it, because in that sea state they genuinely did.
+    #[test]
+    fn every_wave_travels_at_its_own_dispersion_speed() {
+        for wave in WAVES.iter().chain(OCEAN_RIPPLE_WAVES.iter()) {
+            let expected = super::deep_water_phase_speed_meters_per_second(wave.wavelength_meters);
+            assert!(
+                (wave.speed_meters_per_second - expected).abs() < 1.0e-3,
+                "a {}m wave set to {} m/s should travel at {expected} m/s",
+                wave.wavelength_meters,
+                wave.speed_meters_per_second,
+            );
+        }
+        // Ordering, stated separately: the invariant that actually shows on
+        // screen is that long waves outrun short ones, not any single speed.
+        let mut sorted = WAVES;
+        sorted.sort_by(|a, b| a.wavelength_meters.total_cmp(&b.wavelength_meters));
+        for pair in sorted.windows(2) {
+            assert!(
+                pair[0].speed_meters_per_second <= pair[1].speed_meters_per_second,
+                "a {}m wave must not outrun a {}m one",
+                pair[0].wavelength_meters,
+                pair[1].wavelength_meters,
+            );
+        }
     }
 
     #[test]
