@@ -7515,3 +7515,12 @@ the scenario's generic finite/screenshot assertions alone do not prove it.
 No measured FPS claim or temporal visual sign-off. Monitor was on, but swap
 was nearly full and other desktop work was active. Unrelated crates.tar.gz
 was left untouched.
+
+## 7 September 2026 — gentler crest colour ramp
+
+User likes the turquoise but finds its transition sudden. Extended the existing
+smoothstep from 0–8m to 0–24m, keeping the zero-height onset, zero contribution
+at onset, and maximum transmission colour/intensity unchanged. Geometry, motion,
+underwater rendering and lighting directionality are untouched. Focused crest
+regression, Naga planet shader validation, fmt and diff checks pass. No new GPU
+capture or performance claim; visual acceptance remains pending.

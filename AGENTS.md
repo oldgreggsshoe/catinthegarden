@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Crest-colour fade tuning: unchanged zero-height onset and peak turquoise now blend over 24m instead of 8m; geometry/motion are untouched. Focused regression, shader validation and formatting pass; visual acceptance remains pending.
+
 - Ocean crest/underwater lighting: backlit crests transmit turquoise sunlight without alpha/depth changes; underwater visibility is 30m and submerged raster bathymetry shades as sediment instead of being discarded. Above-water, underside and shallow-bottom GPU captures pass; no FPS or true refracted split-view claim.
 
 - Ocean normal parity: GPU wave slopes now retain the projected-axis magnitude and differentiate the soft breaking limiter, matching CPU buoyancy without changing wave geometry or motion. An actual-WGSL 24-case GPU regression fails before/passes after; 481 workspace tests, clippy and ocean_ship_float pass. Crest shaping, straight seams and temporal visual review remain separate.

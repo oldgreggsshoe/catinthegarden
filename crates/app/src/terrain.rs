@@ -4646,6 +4646,7 @@ mod tests {
             .next()
             .unwrap();
         assert!(lighting.contains("crest_height_meters"));
+        assert!(lighting.contains("smoothstep(0.0, 24.0, crest_height_meters)"));
         assert!(
             lighting.contains("sun_transmittance * (SURFACE_SUNLIGHT_SCALE * crest * backlight)")
         );
