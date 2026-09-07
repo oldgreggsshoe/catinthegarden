@@ -1,13 +1,3 @@
-It’s in the normal release—no underwater flag needed. Restart using:
+Agreed—the underwater view should take on the surrounding water’s colour, with distant detail fading into it, not show unobstructed sky.
 
-```bash
-/home/dad/catingard/target/release/catinthegarden-app
-```
-
-For the shallow-seabed test:
-
-```bash
-/home/dad/catingard/target/release/catinthegarden-app --scenario ocean_shallow_bottom
-```
-
-Deep water has no visible bottom within 30m, but looking upward should show the wave underside. If this binary shows nothing underwater, that’s a remaining bug—not a missing option. Are you seeing a uniform blue screen, black, or sky?
+Please press F12 while it happens and send me the capture path. I’ll use that run’s camera state to reproduce it, then check the underwater detection and sky/ocean shading paths rather than add another blanket tint.
