@@ -344,11 +344,11 @@ const OCEAN_LARGE_SWELL_WAVE_COUNT: u32 = 2u;
 // wave_number * dot(direction, axis) * PLANET_RADIUS_METERS and a planet radius
 // turns a 4th-decimal axis difference into tens of radians of phase.
 var<private> OCEAN_WAVE_TABLE: array<OceanWaveSpec, 17> = array<OceanWaveSpec, 17>(
-    OceanWaveSpec(vec3<f32>(0.9, 0.1, 0.4), 1400.0, 0.375, 0.09, 46.7449, 0.45),
-    OceanWaveSpec(vec3<f32>(0.86, 0.18, 0.48), 1400.0, 0.375, 0.09, 46.7449, 0.4),
-    OceanWaveSpec(vec3<f32>(0.1596, -0.599, 0.7847), 430.0, 0.0, 0.185, 25.9063, 1.5),
-    OceanWaveSpec(vec3<f32>(0.297, -0.7478, 0.5938), 350.0, 0.0, 0.205, 23.3725, 1.5),
-    OceanWaveSpec(vec3<f32>(0.3987, -0.8308, 0.3884), 280.0, 0.0, 0.18, 20.905, 1.5),
+    OceanWaveSpec(vec3<f32>(0.9, 0.1, 0.4), 1400.0, 0.75, 0.18, 46.7449, 0.45),
+    OceanWaveSpec(vec3<f32>(0.86, 0.18, 0.48), 1400.0, 0.75, 0.18, 46.7449, 0.4),
+    OceanWaveSpec(vec3<f32>(0.1596, -0.599, 0.7847), 430.0, 0.1, 0.185, 25.9063, 1.5),
+    OceanWaveSpec(vec3<f32>(0.297, -0.7478, 0.5938), 350.0, 0.11, 0.205, 23.3725, 1.5),
+    OceanWaveSpec(vec3<f32>(0.3987, -0.8308, 0.3884), 280.0, 0.095, 0.18, 20.905, 1.5),
     OceanWaveSpec(vec3<f32>(0.576, -0.8032, 0.1519), 200.0, 0.0495, 0.0495, 17.6679, 0.34),
     OceanWaveSpec(vec3<f32>(0.4646, -0.1875, 0.8654), 147.5, 0.0383, 0.0383, 15.1728, 0.32),
     OceanWaveSpec(vec3<f32>(0.5761, -0.8032, 0.1515), 108.7, 0.0295, 0.0295, 13.0252, 0.3),

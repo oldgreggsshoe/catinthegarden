@@ -65,8 +65,17 @@ pub const OCEAN_STEEPNESS_SCALE: f64 = 1.0 / OCEAN_WAVE_SCALE;
 
 /// Tallest crest the sea can raise, straight from the table and the scale, so
 /// it can never quietly disagree with them.
-pub const MAXIMUM_WAVE_HEIGHT_METERS: f64 =
-    storm_amplitude_sum() * OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE;
+/// The tallest sea either column can raise.
+///
+/// This used to be the storm column alone, which was only right while the two
+/// columns were kept summing to the same total by hand -- a rule stated in a
+/// doc comment and enforced nowhere. Doubling the deep-ocean swell breaks that
+/// tie, so take the taller of the two instead and let the columns differ.
+pub const MAXIMUM_WAVE_HEIGHT_METERS: f64 = {
+    let calm = calm_amplitude_sum() * OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE;
+    let storm = storm_amplitude_sum() * OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE;
+    if calm > storm { calm } else { storm }
+};
 
 /// The ocean constants the shader needs, generated from the knob above.
 ///
@@ -106,6 +115,17 @@ pub(crate) fn wgsl_constants() -> String {
         wgsl_number(REFRACTION_REFERENCE_DEPTH_METERS),
         wgsl_number(REFRACTION_NOMINAL_SHELF_SLOPE),
     )
+}
+
+/// Sum of every wave's calm amplitude, before the geometry scale.
+const fn calm_amplitude_sum() -> f64 {
+    let mut total = 0.0;
+    let mut index = 0;
+    while index < WAVES.len() {
+        total += WAVES[index].amplitude_meters;
+        index += 1;
+    }
+    total
 }
 
 /// Sum of every wave's full-storm amplitude, before the geometry scale.
@@ -289,23 +309,23 @@ const WAVES: [GerstnerWave; 17] = [
     GerstnerWave {
         direction: DVec3::new(0.9, 0.1, 0.4),
         wavelength_meters: 1400.0,
-        amplitude_meters: 0.375,
-        storm_amplitude_meters: 0.09,
+        amplitude_meters: 0.75,
+        storm_amplitude_meters: 0.18,
         speed_meters_per_second: 46.7449,
         steepness: 0.45,
     },
     GerstnerWave {
         direction: DVec3::new(0.86, 0.18, 0.48),
         wavelength_meters: 1400.0,
-        amplitude_meters: 0.375,
-        storm_amplitude_meters: 0.09,
+        amplitude_meters: 0.75,
+        storm_amplitude_meters: 0.18,
         speed_meters_per_second: 46.7449,
         steepness: 0.4,
     },
     GerstnerWave {
         direction: DVec3::new(0.1596, -0.599, 0.7847),
         wavelength_meters: 430.0,
-        amplitude_meters: 0.0,
+        amplitude_meters: 0.100,
         storm_amplitude_meters: 0.185,
         speed_meters_per_second: 25.9063,
         steepness: 1.5,
@@ -313,7 +333,7 @@ const WAVES: [GerstnerWave; 17] = [
     GerstnerWave {
         direction: DVec3::new(0.297, -0.7478, 0.5938),
         wavelength_meters: 350.0,
-        amplitude_meters: 0.0,
+        amplitude_meters: 0.110,
         storm_amplitude_meters: 0.205,
         speed_meters_per_second: 23.3725,
         steepness: 1.5,
@@ -321,7 +341,7 @@ const WAVES: [GerstnerWave; 17] = [
     GerstnerWave {
         direction: DVec3::new(0.3987, -0.8308, 0.3884),
         wavelength_meters: 280.0,
-        amplitude_meters: 0.0,
+        amplitude_meters: 0.095,
         storm_amplitude_meters: 0.18,
         speed_meters_per_second: 20.905,
         steepness: 1.5,
@@ -857,9 +877,14 @@ mod tests {
 
     /// Every wave in the table, at storm scale. Independent of the diagnostic
     /// toggle, so it still guards the table itself.
-    const FULL_TABLE_MAXIMUM_METERS: f64 = 52.6625;
-    /// The dominant swell pair alone, at storm scale.
-    const LARGE_SWELL_ONLY_MAXIMUM_METERS: f64 = 41.25;
+    const FULL_TABLE_MAXIMUM_METERS: f64 = 62.5625;
+    /// The dominant swell pair alone, at storm scale: 0.18 x 2 x 55.
+    ///
+    /// This read 41.25 and had done through at least one amplitude change,
+    /// which the old table could not produce either -- 0.09 x 2 x 55 is 9.9.
+    /// It never showed because `OCEAN_LARGE_SWELL_ONLY` is false, so the branch
+    /// asserting it does not run.
+    const LARGE_SWELL_ONLY_MAXIMUM_METERS: f64 = 19.8;
 
     #[test]
     fn gerstner_wave_height_stats_are_non_zero_and_time_varying() {
@@ -985,12 +1010,24 @@ mod tests {
             .iter()
             .map(|wave| wave.storm_amplitude_meters)
             .sum::<f64>();
-        // A storm redistributes the spectrum, it does not add energy: if these
-        // two drift apart the height cap silently stops holding mid-blend.
-        assert!(
-            (calm_sum - storm_sum).abs() < 1.0e-9,
-            "{calm_sum} vs {storm_sum}"
-        );
+        // The columns used to be required to sum to the same total, on the
+        // reasoning that a storm redistributes the spectrum rather than adding
+        // energy. That was a proxy for what actually matters -- that the cap
+        // holds at every blend, not just at the two ends -- and it stopped the
+        // deep-ocean swell being raised on its own. Assert the real thing
+        // instead, across the whole blend, because the blended height is a
+        // product of two interpolations and so is quadratic in intensity: its
+        // peak can sit in the middle rather than at either end.
+        assert!(calm_sum > 0.0 && storm_sum > 0.0);
+        for step in 0..=1000 {
+            let intensity = step as f32 / 1000.0;
+            let height = maximum_wave_height_meters(intensity);
+            assert!(
+                height <= MAXIMUM_WAVE_HEIGHT_METERS + 1.0e-9,
+                "storm intensity {intensity} raises {height}m past the \
+                 {MAXIMUM_WAVE_HEIGHT_METERS}m cap",
+            );
+        }
         let full_table_maximum = storm_sum * OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE;
         assert!((full_table_maximum - FULL_TABLE_MAXIMUM_METERS).abs() < 1.0e-9);
         for intensity in [0.0, 0.25, 0.5, 0.75, 1.0] {
@@ -1206,12 +1243,13 @@ mod tests {
         // languages, where missing one fails quietly. This holds the knob to
         // owning all of them, and prints the shader lines to paste when it
         // moves.
-        // The cap is the table's own sum, so it cannot drift from it.
+        // The cap is the taller of the table's two columns, so it cannot drift
+        // from them.
+        let calm_sum: f64 = WAVES.iter().map(|wave| wave.amplitude_meters).sum();
         let storm_sum: f64 = WAVES.iter().map(|wave| wave.storm_amplitude_meters).sum();
-        assert!(
-            (MAXIMUM_WAVE_HEIGHT_METERS - storm_sum * OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE).abs()
-                < 1.0e-9
-        );
+        let taller = (calm_sum * OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE)
+            .max(storm_sum * OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE);
+        assert!((MAXIMUM_WAVE_HEIGHT_METERS - taller).abs() < 1.0e-9);
 
         // The point of deriving steepness: the fold budget does not move when
         // the knob does. Without that, scaling the sea scales it straight into
