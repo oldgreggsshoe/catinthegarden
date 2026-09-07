@@ -7206,3 +7206,31 @@ Crest sharpening is still separate. Do **not** simply turn horizontal Gerstner
 transport back on: CPU collision currently assumes radial water and would need
 its corresponding inverse query. `crates.tar.gz` and other developers' work
 remain untouched.
+
+
+## 7 September 2026 — bounded ocean crest shaping (Codex)
+
+User requested a small crest-sharpness pass with limited remaining usage.
+Only ocean.rs/shared_planet.wgsl runtime code changed. Each radial sine now
+uses `(s + 0.4*(s*s-0.5))/1.2`, where `s=sin(phase)`. This zero-mean
+second harmonic gives each individual crest 1.5x sine curvature and broader,
+shallower troughs while retaining the conservative amplitude bound. Composite
+wave heights do change; this is not a claim of 50% sharper final rendered seas.
+CPU height, spatial slope and vertical velocity share the profile and its
+analytic derivative; WGSL uses the CPU-generated sharpness constant. Horizontal
+transport remains OFF. No wave speeds, wavelengths, mesh density, octaves,
+textures, terrain or trees changed. GPU adds only arithmetic on existing sin/cos;
+no FPS comparison was made.
+
+Focused ocean suite: 34 passed, 2 ignored. Explicit production-WGSL Quadro test:
+24 cases passed, maximum normal-vector error 0.000223101 and height error
+0.000119712m against CPU. New regression covers bounds, zero mean, curvature
+and finite-difference derivative. Release rebuilt; ocean_ship_float replay
+`1788776446-352624` passed and produced three PNGs. Compared capture-003 with
+prior `1788775915-349377`: crest shape changes are visible but restrained;
+live motion/user visual acceptance remains pending. Straight seams are NOT
+addressed by this pass. Untracked crates.tar.gz remains untouched.
+App all-target clippy (`-D warnings`) and workspace fmt check pass. Full workspace
+test attempt was interrupted (exit 143) before a summary; do not count that
+attempt as a full-suite pass. Focused ocean and explicit GPU results above are
+completed runs.

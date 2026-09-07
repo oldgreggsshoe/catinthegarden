@@ -1,3 +1,7 @@
-Fixed and pushed. Ocean normals now match CPU buoyancy, including the shallow-water limiter; wave geometry and motion are unchanged.
+Implemented and pushed a modest crest-sharpening pass; release rebuilt.
 
-The GPU regression, 481 workspace tests and ocean replay pass. Release binary rebuilt. Crest sharpness and straight-line seams still need separate investigation.
+- Narrower crests, broader troughs; buoyancy and normals remain matched.
+- No extra geometry, draw calls or wave octaves; FPS impact unmeasured.
+- 34 focused tests, GPU parity, ocean replay, clippy and formatting pass. Full-suite run was interrupted.
+
+Please try it in motion. Terrain/tree work untouched; seams remain separate.

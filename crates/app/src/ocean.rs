@@ -14,6 +14,21 @@ use crate::planet::planet_radius_meters;
 /// fails quietly rather than loudly. Set this instead.
 pub const OCEAN_WAVE_SCALE: f64 = 1.0;
 
+// A zero-mean second harmonic sharpens crests and broadens troughs without
+// horizontal transport. Keep below 0.5 to avoid extra extrema; normalization
+// retains the existing conservative amplitude bound.
+const OCEAN_CREST_SHARPNESS: f64 = 0.4;
+
+fn wave_profile(phase: f64) -> f64 {
+    let sine = phase.sin();
+    (sine + OCEAN_CREST_SHARPNESS * (sine * sine - 0.5)) / (1.0 + 0.5 * OCEAN_CREST_SHARPNESS)
+}
+
+fn wave_profile_derivative(phase: f64) -> f64 {
+    phase.cos() * (1.0 + 2.0 * OCEAN_CREST_SHARPNESS * phase.sin())
+        / (1.0 + 0.5 * OCEAN_CREST_SHARPNESS)
+}
+
 const BASE_CALM_GEOMETRY_AMPLITUDE_SCALE: f64 = 44.0;
 const BASE_STORM_GEOMETRY_AMPLITUDE_SCALE: f64 = 55.0;
 pub const OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE: f64 =
@@ -52,6 +67,7 @@ pub(crate) fn wgsl_constants() -> String {
         "// Generated from ocean.rs; OCEAN_WAVE_SCALE = {}. Do not edit here.\n\
          const OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE: f32 = {};\n\
          const OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE: f32 = {};\n\
+         const OCEAN_CREST_SHARPNESS: f32 = {};\n\
          const OCEAN_STEEPNESS_SCALE: f32 = {};\n\
          const OCEAN_MAXIMUM_WAVE_HEIGHT_METERS: f32 = {};\n\
          const OCEAN_BREAKING_HEIGHT_TO_DEPTH_RATIO: f32 = {};\n\
@@ -61,6 +77,7 @@ pub(crate) fn wgsl_constants() -> String {
         wgsl_number(OCEAN_WAVE_SCALE),
         wgsl_number(OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE),
         wgsl_number(OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE),
+        wgsl_number(OCEAN_CREST_SHARPNESS),
         wgsl_number(OCEAN_STEEPNESS_SCALE),
         wgsl_number(MAXIMUM_WAVE_HEIGHT_METERS),
         wgsl_number(BREAKING_HEIGHT_TO_DEPTH_RATIO),
@@ -475,7 +492,7 @@ pub fn wave_height_meters(
                 * (direction.dot(wave.direction.normalize()) * planet_radius_meters()
                     + OCEAN_WAVE_PHASE_SPEED_SIGN * wave.speed_meters_per_second * sim_time
                     + shoaling_phase_offset_meters(water_depth_meters));
-            wave.amplitude(blend) * amplitude_scale * phase.sin()
+            wave.amplitude(blend) * amplitude_scale * wave_profile(phase)
         })
         .sum()
 }
@@ -585,7 +602,7 @@ pub fn local_wave_height_meters(direction: DVec3, sim_time: f64, water_depth_met
                 * (direction.dot(wave.direction.normalize()) * planet_radius_meters()
                     + OCEAN_WAVE_PHASE_SPEED_SIGN * wave.speed_meters_per_second * sim_time
                     + shoaling_phase_offset_meters(water_depth_meters));
-            wave.amplitude_meters * phase.sin()
+            wave.amplitude_meters * wave_profile(phase)
         })
         .sum::<f64>();
     global_wave_height_meters(direction, sim_time, water_depth_meters)
@@ -620,7 +637,10 @@ pub fn global_wave_slope(direction: DVec3, sim_time: f64, water_depth_meters: f6
                 * (radial.dot(axis) * planet_radius_meters()
                     + OCEAN_WAVE_PHASE_SPEED_SIGN * wave.speed_meters_per_second * sim_time
                     + shoaling_phase_offset_meters(water_depth_meters));
-            axis * (wave.amplitude(blend) * amplitude_scale * wave_number * phase.cos())
+            axis * (wave.amplitude(blend)
+                * amplitude_scale
+                * wave_number
+                * wave_profile_derivative(phase))
         })
         .sum::<DVec3>()
         * breaking_rate_weight(
@@ -655,7 +675,7 @@ pub fn global_wave_vertical_velocity_meters_per_second(
                 * amplitude_scale
                 * wave_number
                 * wave.speed_meters_per_second
-                * phase.cos()
+                * wave_profile_derivative(phase)
         })
         .sum::<f64>();
     // Scaled by the same figure the height was, so a limited crest and its
@@ -699,7 +719,7 @@ pub fn local_wave_vertical_velocity_meters_per_second(
                 * wave.amplitude_meters
                 * wave_number
                 * wave.speed_meters_per_second
-                * phase.cos()
+                * wave_profile_derivative(phase)
         })
         .sum::<f64>();
     global_wave_vertical_velocity_meters_per_second(direction, sim_time, water_depth_meters)
@@ -722,6 +742,33 @@ mod tests {
         global_wave_height_meters, global_wave_vertical_velocity_meters_per_second,
         maximum_wave_height_meters, wave_height_stats,
     };
+
+    #[test]
+    fn crest_profile_is_bounded_zero_mean_and_has_consistent_derivative() {
+        let step = 1.0e-4;
+        let mut mean = 0.0;
+        for i in 0..4096 {
+            let phase = std::f64::consts::TAU * i as f64 / 4096.0;
+            let height = super::wave_profile(phase);
+            assert!(height.abs() <= 1.0 + 1.0e-12);
+            mean += height / 4096.0;
+            let numerical = (super::wave_profile(phase + step) - super::wave_profile(phase - step))
+                / (2.0 * step);
+            assert!((numerical - super::wave_profile_derivative(phase)).abs() < 1.0e-8);
+        }
+        assert!(mean.abs() < 1.0e-12);
+        let crest = std::f64::consts::FRAC_PI_2;
+        assert!((super::wave_profile(crest) - 1.0).abs() < 1.0e-12);
+        let crest_curvature = (super::wave_profile_derivative(crest + step)
+            - super::wave_profile_derivative(crest - step))
+            / (2.0 * step);
+        // A sine crest has curvature -1: this profile is 50% sharper.
+        assert!((crest_curvature + 1.5).abs() < 1.0e-7);
+        let trough_curvature = (super::wave_profile_derivative(-crest + step)
+            - super::wave_profile_derivative(-crest - step))
+            / (2.0 * step);
+        assert!(trough_curvature > 0.0 && trough_curvature < 0.2);
+    }
 
     /// Every wave in the table, at storm scale. Independent of the diagnostic
     /// toggle, so it still guards the table itself.
