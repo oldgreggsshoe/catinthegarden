@@ -951,7 +951,12 @@ mod tests {
         // out of the scene while it does so.
         let drift_meters = (body.position.normalize() - START_DIRECTION.normalize()).length()
             * planet_radius_meters();
-        assert!(drift_meters < 25.0, "hull drifted {drift_meters} m in 50s");
+        // 50m rather than 25m since the sea's slope doubled. Slope-driven
+        // drift goes as the square of steepness, and the measured 33.7m over
+        // 50s is 0.67 m/s against a Stokes-drift scale of about 1.0 m/s for
+        // this spectrum -- physical, not a runaway. What is being tested is
+        // still that the forcing is bounded rather than walking the hull away.
+        assert!(drift_meters < 50.0, "hull drifted {drift_meters} m in 50s");
     }
 
     #[test]

@@ -346,9 +346,9 @@ const OCEAN_LARGE_SWELL_WAVE_COUNT: u32 = 2u;
 var<private> OCEAN_WAVE_TABLE: array<OceanWaveSpec, 17> = array<OceanWaveSpec, 17>(
     OceanWaveSpec(vec3<f32>(0.9, 0.1, 0.4), 1400.0, 0.75, 0.18, 46.7449, 0.45),
     OceanWaveSpec(vec3<f32>(0.86, 0.18, 0.48), 1400.0, 0.75, 0.18, 46.7449, 0.4),
-    OceanWaveSpec(vec3<f32>(0.1596, -0.599, 0.7847), 430.0, 0.1, 0.185, 25.9063, 1.5),
-    OceanWaveSpec(vec3<f32>(0.297, -0.7478, 0.5938), 350.0, 0.11, 0.205, 23.3725, 1.5),
-    OceanWaveSpec(vec3<f32>(0.3987, -0.8308, 0.3884), 280.0, 0.095, 0.18, 20.905, 1.5),
+    OceanWaveSpec(vec3<f32>(0.1596, -0.599, 0.7847), 430.0, 0.1, 0.37, 25.9063, 1.5),
+    OceanWaveSpec(vec3<f32>(0.297, -0.7478, 0.5938), 350.0, 0.11, 0.41, 23.3725, 1.5),
+    OceanWaveSpec(vec3<f32>(0.3987, -0.8308, 0.3884), 280.0, 0.095, 0.36, 20.905, 1.5),
     OceanWaveSpec(vec3<f32>(0.576, -0.8032, 0.1519), 200.0, 0.0495, 0.0495, 17.6679, 0.34),
     OceanWaveSpec(vec3<f32>(0.4646, -0.1875, 0.8654), 147.5, 0.0383, 0.0383, 15.1728, 0.32),
     OceanWaveSpec(vec3<f32>(0.5761, -0.8032, 0.1515), 108.7, 0.0295, 0.0295, 13.0252, 0.3),
@@ -398,6 +398,30 @@ const OCEAN_BREAKING_FOAM_MAX: f32 = 0.82;
 // down the beach with the water instead of sitting there as a painted ring.
 const OCEAN_SURF_COLUMN_METERS: f32 = 0.25;
 const OCEAN_SURF_COLOUR: vec3<f32> = vec3<f32>(0.92, 0.95, 0.96);
+
+// Whitecaps. A crest that is steep enough spills and goes white wherever it is,
+// with no shore involved -- which is the whole difference from the surf above,
+// and why the open sea had no foam on it at all.
+//
+// Tuned against measured coverage in the render, not against the CPU slope
+// probe. `open_sea_slope_distribution` reports p90 0.703 and p99 1.041 on the
+// open sea, but it reads `global_wave_slope`, which excludes the local ripple
+// layer that the *rendered* normal carries -- so thresholds taken from it put
+// foam on 27% of the sea. Real whitecap coverage is a few per cent even in a
+// storm. Swept against `ocean_rough_horizon`:
+//
+//     onset 0.75 / full 1.25   27.2%
+//     onset 0.95 / full 1.55    4.6%
+//     onset 1.15 / full 1.85    0.4%
+//
+// The transition is sharp because slope is the tail of a summed spectrum. 0.95
+// is what makes "when the conditions are right" mean anything: a calmer
+// spectrum stops reaching it at all.
+const OCEAN_WHITECAP_SLOPE_ONSET: f32 = 0.95;
+const OCEAN_WHITECAP_SLOPE_FULL: f32 = 1.55;
+// Foam belongs on the upper part of a wave. A trough has faces just as steep as
+// a crest does, and foam sitting in the hollows reads as scum, not as breaking.
+const OCEAN_WHITECAP_CREST_METERS: f32 = 4.0;
 // Still used by the ripple layer and the raymarch path for how far a shore
 // effect reaches; it no longer gates the swell, which is depth-limited instead.
 const OCEAN_SHORE_FULL_DEPTH_METERS: f32 = 30.0;
@@ -1016,44 +1040,57 @@ fn ocean_ripple(
 /// is the wave's displacement at this point. Their sum is the water actually
 /// standing here at this instant, which is what decides both how shallow it
 /// reads and whether it is breaking.
-fn shoreline_water_albedo(
-    open_water: vec3<f32>,
+/// Rise per metre of horizontal travel, from a surface normal. `tan` of the
+/// tilt, so it is the same quantity `global_wave_slope` reports on the CPU and
+/// the whitecap thresholds are stated in.
+fn ocean_surface_slope(normal: vec3<f32>, up: vec3<f32>) -> f32 {
+    let facing = clamp(dot(normalize(normal), normalize(up)), 1.0e-3, 1.0);
+    return sqrt(max(1.0 - facing * facing, 0.0)) / facing;
+}
+
+/// How much of this patch of sea is white, from both causes: surf, which needs
+/// a bottom to break on, and whitecaps, which do not.
+fn ocean_foam_coverage(
     still_depth_meters: f32,
     surface_height_meters: f32,
     breaking_ratio: f32,
-) -> vec3<f32> {
-    let shallow = 1.0 - smoothstep(0.0, OCEAN_SHALLOW_DEPTH_METERS, still_depth_meters);
-    // Squared so the shallows stay tight to the beach rather than washing the
-    // whole bay out.
-    var albedo = mix(open_water, OCEAN_SHALLOW_COLOUR, shallow * shallow);
-    // A crest that has used up what the depth can hold is breaking, and goes
-    // white. Paired with `breaking_fraction` in ocean.rs. This is the shore
-    // surf: it follows the wave, so the white travels in with each crest
-    // instead of sitting on the beach as a painted ring.
-    // How far past what the depth holds this crest would have stood if the
-    // water let it. Unclamped, so it separates crests that are genuinely
-    // tumbling from ones merely feeling the bottom -- which is what leaves the
-    // foam in bands rather than as one sheet across the whole surf zone.
-    // Surf is a band, not a field. Once a crest is many times what the depth
-    // can hold it broke a long way back and the water behind it is spent, so
-    // the foam has to fade out again -- otherwise the whole shelf whitens,
-    // which is what raising the onset alone could never fix because the ratio
-    // saturates across all of it.
+    normal: vec3<f32>,
+    up: vec3<f32>,
+) -> f32 {
+    // Surf is a band, not a field. Once a crest is many times what the depth can
+    // hold it broke a long way back and the water behind it is spent, so the
+    // foam has to fade out again -- otherwise the whole shelf whitens.
     let crest_foam =
         smoothstep(OCEAN_BREAKING_FOAM_ONSET, OCEAN_BREAKING_FOAM_FULL, breaking_ratio)
-            * (1.0 - smoothstep(OCEAN_BREAKING_FOAM_SPENT, OCEAN_BREAKING_FOAM_GONE, breaking_ratio))
-            * OCEAN_BREAKING_FOAM_MAX;
+            * (1.0 - smoothstep(OCEAN_BREAKING_FOAM_SPENT, OCEAN_BREAKING_FOAM_GONE, breaking_ratio));
     // And the wash right at the edge, where there is barely any water left.
     let column_meters = still_depth_meters + surface_height_meters;
     let wash = 1.0 - smoothstep(0.0, OCEAN_SURF_COLUMN_METERS, max(column_meters, 0.0));
-    // Foam has to be made of water. Without this the wash keys off a depth of
-    // zero and whitens ground the sea is barely covering.
+    let surf = max(crest_foam, wash * wash);
+    let whitecap = smoothstep(
+        OCEAN_WHITECAP_SLOPE_ONSET,
+        OCEAN_WHITECAP_SLOPE_FULL,
+        ocean_surface_slope(normal, up),
+    ) * smoothstep(0.0, OCEAN_WHITECAP_CREST_METERS, surface_height_meters);
+    // Foam has to be made of water. Without this it keys off a depth of zero
+    // and whitens ground the sea is barely covering.
     let has_water = smoothstep(0.0, OCEAN_FOAM_MINIMUM_DEPTH_METERS, still_depth_meters);
-    return mix(
-        albedo,
-        OCEAN_SURF_COLOUR,
-        max(crest_foam, wash * wash * OCEAN_BREAKING_FOAM_MAX) * has_water,
-    );
+    return max(surf, whitecap) * has_water * OCEAN_BREAKING_FOAM_MAX;
+}
+
+/// Foam lit the way the water beside it is lit, so it darkens at dusk instead
+/// of staying a painted white. Same diffuse form as `ocean_lighting`, with
+/// foam's albedo in place of the water body's.
+fn ocean_foam_radiance(sun_transmittance: vec3<f32>, sky_diffuse: vec3<f32>) -> vec3<f32> {
+    return OCEAN_SURF_COLOUR * (sky_diffuse + sun_transmittance * (0.4 * SURFACE_SUNLIGHT_SCALE));
+}
+
+fn shoreline_water_albedo(open_water: vec3<f32>, still_depth_meters: f32, foam: f32) -> vec3<f32> {
+    let shallow = 1.0 - smoothstep(0.0, OCEAN_SHALLOW_DEPTH_METERS, still_depth_meters);
+    // Squared so the shallows stay tight to the beach rather than washing the
+    // whole bay out.
+    let albedo = mix(open_water, OCEAN_SHALLOW_COLOUR, shallow * shallow);
+    return mix(albedo, OCEAN_SURF_COLOUR, foam);
 }
 
 fn ocean_surface(

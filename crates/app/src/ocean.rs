@@ -326,7 +326,7 @@ const WAVES: [GerstnerWave; 17] = [
         direction: DVec3::new(0.1596, -0.599, 0.7847),
         wavelength_meters: 430.0,
         amplitude_meters: 0.100,
-        storm_amplitude_meters: 0.185,
+        storm_amplitude_meters: 0.37,
         speed_meters_per_second: 25.9063,
         steepness: 1.5,
     },
@@ -334,7 +334,7 @@ const WAVES: [GerstnerWave; 17] = [
         direction: DVec3::new(0.297, -0.7478, 0.5938),
         wavelength_meters: 350.0,
         amplitude_meters: 0.110,
-        storm_amplitude_meters: 0.205,
+        storm_amplitude_meters: 0.41,
         speed_meters_per_second: 23.3725,
         steepness: 1.5,
     },
@@ -342,7 +342,7 @@ const WAVES: [GerstnerWave; 17] = [
         direction: DVec3::new(0.3987, -0.8308, 0.3884),
         wavelength_meters: 280.0,
         amplitude_meters: 0.095,
-        storm_amplitude_meters: 0.18,
+        storm_amplitude_meters: 0.36,
         speed_meters_per_second: 20.905,
         steepness: 1.5,
     },
@@ -877,7 +877,7 @@ mod tests {
 
     /// Every wave in the table, at storm scale. Independent of the diagnostic
     /// toggle, so it still guards the table itself.
-    const FULL_TABLE_MAXIMUM_METERS: f64 = 62.5625;
+    const FULL_TABLE_MAXIMUM_METERS: f64 = 93.9125;
     /// The dominant swell pair alone, at storm scale: 0.18 x 2 x 55.
     ///
     /// This read 41.25 and had done through at least one amplitude change,
@@ -1439,6 +1439,46 @@ mod tests {
 #[cfg(test)]
 mod breaking_probe {
     use glam::DVec3;
+
+    /// Instrument, not an assertion: the distribution of surface slope over the
+    /// open sea, which is what decides where a crest is steep enough to spill
+    /// and go white. Run with
+    /// `cargo test -- --ignored --nocapture open_sea_slope`.
+    #[test]
+    #[ignore = "instrument, not an assertion"]
+    fn open_sea_slope_distribution() {
+        // GLOBAL_OCEAN_STORM_INTENSITY is a compile-time constant, so this
+        // measures the sea as it actually runs rather than sweeping intensity.
+        {
+            let mut slopes = Vec::new();
+            let mut crest_slopes = Vec::new();
+            for i in 0..160 {
+                for j in 0..160 {
+                    let a = 0.7 + i as f64 * 1.0e-4;
+                    let b = 0.3 + j as f64 * 1.0e-4;
+                    let direction = DVec3::new(a.cos(), b.sin(), a.sin() * b.cos()).normalize();
+                    let slope = super::global_wave_slope(direction, 3.0, 4000.0).length();
+                    let height = super::global_wave_height_meters(direction, 3.0, 4000.0);
+                    slopes.push(slope);
+                    if height > 0.0 {
+                        crest_slopes.push(slope);
+                    }
+                }
+            }
+            slopes.sort_by(f64::total_cmp);
+            crest_slopes.sort_by(f64::total_cmp);
+            let at = |v: &Vec<f64>, q: f64| v[((v.len() - 1) as f64 * q) as usize];
+            println!(
+                "slope p50 {:.4} p90 {:.4} p99 {:.4} max {:.4} | on crests p90 {:.4} p99 {:.4}",
+                at(&slopes, 0.5),
+                at(&slopes, 0.9),
+                at(&slopes, 0.99),
+                slopes[slopes.len() - 1],
+                at(&crest_slopes, 0.9),
+                at(&crest_slopes, 0.99),
+            );
+        }
+    }
 
     /// Instrument, not an assertion: prints how close crests come to breaking
     /// at each depth. Run with

@@ -1622,8 +1622,13 @@ fn flat_ocean_colour(input: OceanVertexOutput, macro_height_meters: f32) -> vec4
         shoreline_water_albedo(
             ocean_interference_albedo(surface.ripple_height),
             max(-macro_height_meters, 0.0),
-            surface.vertical_displacement,
-            surface.breaking_ratio,
+            ocean_foam_coverage(
+                max(-macro_height_meters, 0.0),
+                surface.vertical_displacement,
+                surface.breaking_ratio,
+                normal,
+                direction,
+            ),
         ),
         // This draw is water by construction, so it is never regolith.
         0u,
@@ -1776,11 +1781,23 @@ fn ocean_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
         surface.vertical_displacement,
         sun_direction,
     );
-    let water_surface_color = ocean_lighting(
+    // Foam: surf where there is a bottom to break on, whitecaps where there is not.
+    let foam = ocean_foam_coverage(
+        max(-macro_height_meters, 0.0),
+        surface.vertical_displacement,
+        surface.breaking_ratio,
         surface.normal,
-        input.camera_relative_view_position,
-        sun_transmittance,
-        sky_diffuse,
+        direction,
+    );
+    let water_surface_color = mix(
+        ocean_lighting(
+            surface.normal,
+            input.camera_relative_view_position,
+            sun_transmittance,
+            sky_diffuse,
+        ),
+        ocean_foam_radiance(sun_transmittance, sky_diffuse),
+        foam,
     );
     if render_debug_mode == RENDER_DEBUG_SURFACE_LIGHTING {
         return vec4<f32>(water_surface_color, 1.0);
@@ -2127,11 +2144,24 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         surface.vertical_displacement,
         sun_direction,
     );
-    let water_surface_color = ocean_lighting(
+    // Same foam on the water blended into the terrain pass, so a shoreline does not
+    // change character at the seam between the two draws.
+    let foam = ocean_foam_coverage(
+        OCEAN_SHORE_FULL_DEPTH_METERS,
+        surface.vertical_displacement,
+        surface.breaking_ratio,
         surface.normal,
-        input.camera_relative_view_position,
-        sun_transmittance,
-        sky_diffuse,
+        direction,
+    );
+    let water_surface_color = mix(
+        ocean_lighting(
+            surface.normal,
+            input.camera_relative_view_position,
+            sun_transmittance,
+            sky_diffuse,
+        ),
+        ocean_foam_radiance(sun_transmittance, sky_diffuse),
+        foam,
     );
     let water_aerial_color = ocean_aerial_perspective(
         water_surface_color,
