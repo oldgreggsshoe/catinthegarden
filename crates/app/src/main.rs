@@ -11,6 +11,7 @@ mod foveated;
 mod haze;
 mod hdr;
 mod moon;
+mod moon_markings;
 mod ocean;
 mod outmap;
 mod planet;

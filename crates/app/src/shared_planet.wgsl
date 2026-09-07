@@ -283,6 +283,14 @@ var atmosphere_sky_view_sampler: sampler;
 @group(2) @binding(12)
 var atmosphere_transmittance_lut: texture_2d<f32>;
 
+// The moon's albedo markings, baked once at startup by moon_markings.wgsl.
+// A 1x1 placeholder on bodies that have none.
+@group(2) @binding(13)
+var moon_marking_map: texture_cube<f32>;
+
+@group(2) @binding(14)
+var moon_marking_sampler: sampler;
+
 struct OceanWaveSpec {
     axis: vec3<f32>,
     wavelength_meters: f32,
@@ -2117,15 +2125,6 @@ const MOON_MARE_DARKEST: f32 = 0.62;
 /// Depth below the datum at which that is reached, in metres.
 const MOON_MARE_DEPTH_METERS: f32 = 6000.0;
 
-/// How much brighter fresh ejecta is than the ground it fell on.
-const MOON_HALO_STRENGTH: f32 = 0.55;
-/// And the rays, which are brighter still but cover far less.
-const MOON_RAY_STRENGTH: f32 = 0.75;
-/// Freshness below which a crater has no rays at all. Rays are the first thing
-/// space weathering erases -- they are thin and bright and made of the finest
-/// material -- so only genuinely young craters keep them.
-const MOON_RAY_FRESHNESS_FLOOR: f32 = 0.45;
-
 /// Where the surface is bright and where it is dark, as a multiplier on the
 /// regolith albedo.
 ///
@@ -2143,96 +2142,34 @@ const MOON_RAY_FRESHNESS_FLOOR: f32 = 0.45;
 ///   years, so the halo fades with the crater's age rather than its size.
 /// * **Rays.** The finest ejecta, thrown furthest, from the youngest craters
 ///   only. This is what makes Tycho visible from a garden on Earth.
+///
+/// The last two depend on direction alone, so they are baked into a cubemap
+/// once at startup and only sampled here; the code that draws them lives in
+/// `moon_markings.wgsl`. The maria depend on the height field, so they stay.
 fn moon_surface_albedo_scale(direction: vec3<f32>, macro_height_meters: f32) -> f32 {
     let unit = normalize(direction);
     // Mare first, so a bright halo laid on a dark floor stays darker than the
-    // same halo on highland -- which is how a real one behaves.
+    // same halo on highland -- which is how a real one behaves. This one stays
+    // per-fragment: it is a smoothstep on a height the shader already has, it
+    // costs nothing, and it tracks the height field at its own resolution
+    // rather than the marking map's.
     let depth = max(MOON_DATUM_METERS - macro_height_meters, 0.0);
-    var scale = mix(
+    let scale = mix(
         1.0,
         MOON_MARE_DARKEST,
         smoothstep(0.0, MOON_MARE_DEPTH_METERS, depth),
     );
-
-    var brightening = 0.0;
-    for (var index = 0u; index < MOON_MARKING_COUNT; index = index + 1u) {
-        let marking = MOON_MARKINGS[index];
-        let traits = MOON_MARKING_TRAITS[index];
-        // Reach in rim radii, already clamped by the cost bound: the fades run
-        // to this, so they land on zero at the same place the cutoff rejects.
-        let extents = MOON_MARKING_EXTENTS[index];
-        let cosine = clamp(dot(marking.xyz, unit), -1.0, 1.0);
-        // Rays reach furthest, so their cutoff rejects everything.
-        if cosine <= traits.w {
-            continue;
-        }
-        // Past this point the marking genuinely reaches, so the transcendentals
-        // are paid for rather than spent on a rejected crater.
-        let freshness = traits.x;
-        let t = acos(cosine) / marking.w;
-
-        // Azimuth around the crater, from a stable basis: the component of the
-        // sample direction perpendicular to the crater's axis.
-        let tangent = normalize(unit - marking.xyz * cosine);
-        let reference = normalize(cross(marking.xyz, vec3<f32>(0.0, 1.0, 0.0))
-            + vec3<f32>(1.0e-5, 0.0, 0.0));
-        let across = cross(marking.xyz, reference);
-        let azimuth = atan2(dot(tangent, across), dot(tangent, reference)) + traits.y;
-
-        // The halo: strongest at the rim, gone by the marking's reach. Squared so
-        // it concentrates near the crater rather than washing the whole area.
-        // Its edge is pushed in and out with azimuth, because an ejecta blanket
-        // is not a circle -- the impact came in at an angle and the ground it
-        // landed on was not flat.
-        if cosine > traits.z {
-            // Normalised to peak at 1 rather than 1.53, so the raggedest
-            // azimuth's fade reaches zero exactly where the cutoff rejects
-            // instead of a third of the way past it. The edge still moves in
-            // and out with azimuth; it just no longer overshoots its own
-            // cutoff and leaves a step there.
-            let ragged = (1.0 + 0.35 * cos(3.0 * azimuth + traits.y)
-                + 0.18 * cos(5.0 * azimuth - traits.y)) / (1.0 + 0.35 + 0.18);
-            let fade = clamp(
-                1.0 - (t - 1.0) / max((extents.x - 1.0) * ragged, 0.05),
-                0.0,
-                1.0,
-            );
-            brightening = brightening + MOON_HALO_STRENGTH * freshness * fade * fade;
-        }
-
-        if freshness <= MOON_RAY_FRESHNESS_FLOOR || t <= 1.0 {
-            continue;
-        }
-        // Four incommensurate harmonics rather than two. With two the rays came
-        // out as evenly spaced spokes of constant width -- a wheel, not a
-        // splash. Real ray systems are uneven in spacing, unequal in strength,
-        // and often heavily one-sided, which is what an oblique impact does.
-        // Normalised by the sum of the amplitudes, so the peak is 1 whatever
-        // the harmonics are. Raising an unnormalised sum to a power crushed the
-        // rays to nothing, because four terms rarely align.
-        let lobes = (0.46 * cos(6.0 * azimuth)
-            + 0.28 * cos(11.0 * azimuth + traits.y)
-            + 0.17 * cos(17.0 * azimuth - 2.0 * traits.y)
-            + 0.22 * cos(2.0 * azimuth + 0.7 * traits.y))
-            / 1.13;
-        // A threshold rather than a power: it sets where a ray starts and how
-        // hard its edge is, instead of dimming everything including the peaks.
-        let streak = smoothstep(0.30, 0.78, lobes);
-        // Patchy along their length as well as around: a ray is a chain of
-        // bright clumps, not a painted line, because it is ballistic ejecta
-        // landing in secondary craters rather than a continuous stream.
-        let clumping = 0.62 + 0.38 * cos(4.0 * t + traits.y * 3.0)
-            * cos(2.3 * t - traits.y);
-        // Cubed, so a ray thins out with distance instead of stopping at a
-        // circle.
-        let reach = clamp(1.0 - (t - 1.0) / max(extents.y - 1.0, 0.05), 0.0, 1.0);
-        let age = smoothstep(MOON_RAY_FRESHNESS_FLOOR, 1.0, freshness);
-        brightening = brightening
-            + MOON_RAY_STRENGTH * age * streak * max(clumping, 0.0) * reach * reach;
-    }
-    // Saturating rather than additive: overlapping haloes brighten toward a
-    // limit instead of running away where young craters cluster.
-    return scale * (1.0 + 1.6 * (1.0 - exp(-brightening)));
+    // The markings are baked once into a cubemap at startup, because they are
+    // a function of direction alone and were costing 12.1ms of every 28.7ms
+    // moon-surface frame to rederive -- 96 markings walked per fragment, each
+    // an acos, an atan2 and seven cosines once it reached.
+    let markings = textureSampleLevel(
+        moon_marking_map,
+        moon_marking_sampler,
+        unit,
+        0.0,
+    ).r;
+    return scale * (1.0 + 1.6 * markings);
 }
 
 /// How much of this ground is ice, 0 to 1.

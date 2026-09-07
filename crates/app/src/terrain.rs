@@ -804,6 +804,7 @@ pub struct TerrainRenderer {
     shared_bind_group: wgpu::BindGroup,
     _terrain_settings_buffer: wgpu::Buffer,
     _environment_cubemap: wgpu::Texture,
+    _moon_marking_cubemap: wgpu::Texture,
     _terrain_material_texture: wgpu::Texture,
     _raster_near_field_height_texture: wgpu::Texture,
     _raster_near_field_biome_texture: wgpu::Texture,
@@ -1081,6 +1082,8 @@ impl TerrainRenderer {
             create_environment_cubemap(device, queue);
         let (terrain_material_texture, terrain_material_view, terrain_material_sampler) =
             create_terrain_material_texture(device, queue);
+        let (moon_marking_texture, moon_marking_view, moon_marking_sampler) =
+            crate::moon_markings::create(device, queue);
         let shared_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("shared planet bind group"),
             layout: &shared_bind_group_layout,
@@ -1124,6 +1127,14 @@ impl TerrainRenderer {
                 wgpu::BindGroupEntry {
                     binding: 12,
                     resource: wgpu::BindingResource::TextureView(atmosphere.transmittance),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 13,
+                    resource: wgpu::BindingResource::TextureView(&moon_marking_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 14,
+                    resource: wgpu::BindingResource::Sampler(&moon_marking_sampler),
                 },
             ],
         });
@@ -1177,6 +1188,7 @@ impl TerrainRenderer {
             shared_bind_group,
             _terrain_settings_buffer: terrain_settings_buffer,
             _environment_cubemap: environment_cubemap,
+            _moon_marking_cubemap: moon_marking_texture,
             _terrain_material_texture: terrain_material_texture,
             _raster_near_field_height_texture: raster_near_field_height_texture,
             _raster_near_field_biome_texture: raster_near_field_biome_texture,
@@ -2985,6 +2997,13 @@ pub fn create_shared_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroup
                 count: None,
             },
             texture_layout_entry(12, wgpu::TextureSampleType::Float { filterable: true }),
+            cube_texture_layout_entry(13),
+            wgpu::BindGroupLayoutEntry {
+                binding: 14,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
         ],
     })
 }
