@@ -2702,9 +2702,10 @@ fn ocean_lighting(
     // a measured water-volume thickness. Positive wave height selects the upper
     // crest; forward scattering lights it when the sun is behind the wave.
     // Keep depth writes and reflection intact; foam is composed by the caller.
-    // Begin at the unchanged sea-body colour, but spread the transition over
-    // a taller crest instead of reaching full turquoise in the first eight metres.
-    let crest = smoothstep(0.0, 24.0, crest_height_meters);
+    // Linearly interpolate from the unchanged sea-body colour to full crest
+    // transmission over 48m. Unlike smoothstep, this does not accelerate the
+    // colour change through the middle of the ramp.
+    let crest = clamp(crest_height_meters / 48.0, 0.0, 1.0);
     let backlight = pow(max(dot(-view_direction, sun_direction_view), 0.0), 4.0);
     let transmitted = vec3<f32>(0.025, 0.32, 0.22)
         * sun_transmittance * (SURFACE_SUNLIGHT_SCALE * crest * backlight)

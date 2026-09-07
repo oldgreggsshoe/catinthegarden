@@ -7524,3 +7524,16 @@ at onset, and maximum transmission colour/intensity unchanged. Geometry, motion,
 underwater rendering and lighting directionality are untouched. Focused crest
 regression, Naga planet shader validation, fmt and diff checks pass. No new GPU
 capture or performance claim; visual acceptance remains pending.
+
+## 7 September 2026 — slower linear turquoise interpolation
+
+The user still found the 24m smoothstep too abrupt. Replaced it with
+clamp(height / 48m, 0, 1): unchanged onset and maximum transmission, twice
+the height span, and one third of the previous maximum ramp derivative.
+This is still the existing lighting contribution, not alpha transparency.
+Updated the focused shader regression. No new visual sign-off or FPS claim.
+Concurrent changes in debug.rs, scenario.rs and ocean_shallow_bottom.json
+are not part of this change and must remain unstaged.
+
+Focused crest regression and Naga shader validation pass; release rebuilt
+from the active worktree, including its concurrent uncommitted edits.
