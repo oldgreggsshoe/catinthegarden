@@ -256,8 +256,17 @@ See the latest section for the failing-before/passing-after evidence. No terrain
 17. **`moon_crater_wall` passes while rendering entirely black.** Either aim it somewhere lit or say
     in the scenario that it is a night-side capture and assert something that would notice.
 
-18. **~1000ms frames were seen once on `orbit_once`, cause unknown.** Blamed on DPMS blanking; that
-    was wrong — the same display state later gave 16.6ms. Not reproduced since.
+18. **~1000ms frames: reproduced at will, and the lead is swap exhaustion.** Blamed on DPMS
+    blanking; that was wrong — the same display state later gave 16.6ms. On 7 September it
+    reproduced for most of a session: six consecutive `ocean_rough_horizon` runs of an *identical*
+    binary and scenario gave 861, **31**, 977, 1000, 1000 and 909 ms/frame, and `ocean_ship_float`
+    went 29-30ms to 1000ms across runs. Not code: one fast run sat between two slow ones with
+    nothing changed. `nvidia-smi` had the GPU at 40% utilisation in P5, 797MHz of 1124, 44C — idle,
+    so the block is on the CPU side. `free -m` then showed **swap 976MB of 976MB used, zero free**
+    against 15.4GB RAM with 9.1GB in use. Blocking on page faults against a full swap has exactly
+    this shape, including the one run in six that found its pages resident. **Untested:** free the
+    swap (the desktop had Chrome, WhatsApp and Sublime resident at 330-440MB each) and re-run
+    `ocean_ship_float`; if it returns to ~30ms consistently this thread closes.
 
 19. **The planet's near ground gained detail as a side effect of the moon fix**, moving 76.1% of
     `stand_on_ground`'s pixels. Measured as slightly more relief, not less, and from the same root
@@ -7432,3 +7441,34 @@ the camera outside Snell's window entirely, which reads as almost black and is
 correct; use 70 degrees to see the window. Reproduction is as described in the
 previous section, with the reminder that scenario JSON reaches the binary
 through `include_str!`.
+
+
+## 7 September 2026 — the 1000ms frames are a memory-pressure symptom, not a render one
+
+Recorded because it cost most of a session's verification time and because the
+thread has read "cause unknown" since July.
+
+The stall reproduced continuously for hours. What rules out the renderer: six
+consecutive `ocean_rough_horizon` runs of one unchanged binary gave 861, 31,
+977, 1000, 1000 and 909 ms/frame. A single 31ms run between two 1000ms runs,
+with nothing edited, is not something a shader can do.
+
+What rules out the GPU: `nvidia-smi` during a 1000ms run reported 40%
+utilisation, P5, 797MHz of a 1124MHz maximum, 44C, one process resident at
+720MiB. A GPU that is not busy while frames take a second means the CPU is
+blocked, not the pipeline.
+
+What points at memory: the harness killed two background waiters for low memory,
+and `free -m` showed swap at 976MB of 976MB with **zero free**, RAM 9.1GB of
+15.4GB in use. Faulting against a full swap produces exactly this signature --
+long stalls, wide run-to-run variance, an idle GPU, and the occasional fast run
+that happens to find everything resident.
+
+This is a lead, not a proof: I did not free the swap and re-measure, because the
+machine's memory was in use by the user's own desktop at the time. The test is
+one command once there is headroom.
+
+Worth carrying into how this repo is verified: scenario replays are the slowest
+part of any change here, and their timings are only meaningful when the machine
+is not swapping. A timing that looks like a regression should be checked against
+`free -m` before it is believed.
