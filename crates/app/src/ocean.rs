@@ -521,7 +521,8 @@ pub fn breaking_weight(raw_height_meters: f64, water_depth_meters: f64) -> f64 {
     (1.0 + ratio).powf(-1.0 / BREAKING_KNEE as f64)
 }
 
-/// The limiter's slope: `d/dx [ L*tanh(h/L) ] = sech^2(h/L) * dh/dx`.
+/// The soft-knee limiter's slope: for `q = (abs(h)/L)^n`, the derivative
+/// of `h * (1 + q)^(-1/n)` is `(1 + q)^(-(n + 1)/n)`.
 ///
 /// Rates of change of a limited height -- vertical velocity and surface slope
 /// -- scale by this, not by `breaking_weight`. Using the height's own factor
@@ -1262,3 +1263,7 @@ mod breaking_probe {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "ocean_gpu_tests.rs"]
+mod gpu_tests;

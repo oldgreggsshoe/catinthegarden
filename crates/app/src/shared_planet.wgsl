@@ -961,7 +961,9 @@ fn gerstner_wave(
     return OceanWaveContribution(
         tangent * (steepness * OCEAN_STEEPNESS_SCALE * amplitude_meters * cos(phase)),
         amplitude_meters * sin(phase),
-        tangent * (amplitude_meters * wave_number * cos(phase)),
+        // d(dot(direction, axis) * R)/ds is the projected axis, not its
+        // unit tangent. Normalizing it exaggerated slopes near an axis pole.
+        tangent_unnormalized * (amplitude_meters * wave_number * cos(phase)),
     );
 }
 
@@ -1134,6 +1136,7 @@ fn ocean_surface(
     let breaking_limit_meters =
         0.5 * OCEAN_BREAKING_HEIGHT_TO_DEPTH_RATIO * max(water_depth_meters, 0.0);
     var breaking_weight = 0.0;
+    var breaking_slope_weight = 0.0;
     if breaking_limit_meters > 0.0 {
         // Soft-max knee, paired with `breaking_weight` in ocean.rs: a crest
         // well under what the depth holds is left alone, and only bends as it
@@ -1141,8 +1144,12 @@ fn ocean_surface(
         // shorter sea than the one being drawn.
         let ratio = pow(abs(raw_vertical) / breaking_limit_meters, OCEAN_BREAKING_KNEE);
         breaking_weight = pow(1.0 + ratio, -1.0 / OCEAN_BREAKING_KNEE);
+        // Differentiate the limited height, not just its raw wave. Paired
+        // with ocean.rs::breaking_rate_weight; reuse the existing pow.
+        breaking_slope_weight = breaking_weight / (1.0 + ratio);
     }
     let limited = geometry_weight * geometry_amplitude_scale * breaking_weight;
+    let limited_slope = geometry_weight * geometry_amplitude_scale * breaking_slope_weight;
     // Zero depth is no water at all, not an infinitely broken wave. Calling it
     // the latter painted every flat where the bake carries no bathymetry as
     // solid foam, which is most of a gently shelving coast.
@@ -1154,7 +1161,7 @@ fn ocean_surface(
         breaking_ratio,
         horizontal * limited * horizontal_transport,
         vertical * limited,
-        normalize(direction - slope * limited - ripple.slope),
+        normalize(direction - slope * limited_slope - ripple.slope),
         ripple.vertical_displacement,
         ripple.slope,
     );

@@ -1,0 +1,175 @@
+//! Executes the production WGSL wave/normal path, rather than a Rust copy of
+//! its algebra. Explicit opt-in: ordinary unit tests do not require a GPU.
+use super::*;
+use bytemuck::Zeroable;
+use wgpu::util::DeviceExt;
+
+#[test]
+#[ignore = "requires a Vulkan GPU; run explicitly for ocean shader changes"]
+fn gpu_ocean_normals_match_cpu_buoyancy_in_deep_and_breaking_water() {
+    // A small test radius keeps f32 phase reduction out of this derivative
+    // regression. Real-planet phase precision is a separate rendering concern.
+    let test_body = crate::body::Body {
+        radius_meters: 64.0,
+        ..crate::body::PLANET
+    };
+    crate::body::with_body(test_body, || {
+        let mut cases = Vec::new();
+        for direction in [
+            DVec3::new(0.836, 0.504, 0.216),
+            DVec3::X,
+            DVec3::Y,
+            DVec3::new(-0.3, 0.8, 0.5),
+        ] {
+            // Use the same rounded input in both implementations.
+            let direction = direction.normalize().as_vec3().as_dvec3();
+            for depth in [2.0, 20.0, 4000.0] {
+                for time in [0.0, 7.0] {
+                    cases.push((direction, depth, time));
+                }
+            }
+        }
+        let directions = cases
+            .iter()
+            .map(|(d, depth, _)| {
+                format!(
+                    "vec4<f32>({:?}, {:?}, {:?}, {:?})",
+                    d.x as f32, d.y as f32, d.z as f32, *depth as f32,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",\n");
+        let times = cases
+            .iter()
+            .map(|(_, _, time)| format!("{:?}", *time as f32))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let source = format!(
+            "{}\n{}",
+            crate::planet::shared_planet_shader_source(),
+            format_args!(
+                r#"
+@group(0) @binding(1) var<storage, read_write> results: array<vec4<f32>>;
+const cases = array<vec4<f32>, {count}>({directions});
+const times = array<f32, {count}>({times});
+@compute @workgroup_size(1)
+fn test_ocean(@builtin(global_invocation_id) id: vec3<u32>) {{
+    let sample = cases[id.x];
+    let surface = ocean_surface(normalize(sample.xyz), times[id.x], 0.0, sample.w);
+    results[id.x] = vec4<f32>(surface.normal, surface.vertical_displacement);
+}}
+"#,
+                count = cases.len()
+            )
+        );
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            ..Default::default()
+        }))
+        .expect("Vulkan adapter");
+        eprintln!("ocean normal test adapter: {}", adapter.get_info().name);
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+                .expect("GPU device");
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("production ocean derivative regression"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("ocean derivative regression"),
+            layout: None,
+            module: &shader,
+            entry_point: Some("test_ocean"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let mut camera = crate::planet::CameraUniform::zeroed();
+        camera.flat_triangle_options[1] = GLOBAL_OCEAN_STORM_INTENSITY;
+        camera.flat_triangle_options[2] = 1.0; // actual radial geometry; no shading-only ripples
+        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("test ocean camera"),
+            contents: bytemuck::bytes_of(&camera),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bytes = (cases.len() * size_of::<[f32; 4]>()) as u64;
+        let output = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("test ocean results"),
+            size: bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("test ocean readback"),
+            size: bytes,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("test ocean inputs"),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: output.as_entire_binding(),
+                },
+            ],
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.dispatch_workgroups(cases.len() as u32, 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, bytes);
+        queue.submit(Some(encoder.finish()));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                sender.send(result).unwrap()
+            });
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(10)),
+            })
+            .unwrap();
+        receiver.recv().unwrap().unwrap();
+        let data = readback.slice(..).get_mapped_range();
+        let rows: &[[f32; 4]] = bytemuck::cast_slice(&data);
+        let mut failures = Vec::new();
+        let mut maximum_normal_error = 0.0_f64;
+        let mut maximum_height_error = 0.0_f64;
+        for ((direction, depth, time), gpu) in cases.iter().zip(rows) {
+            let direction = direction.normalize();
+            let normal = (direction - global_wave_slope(direction, *time, *depth)).normalize();
+            let height = global_wave_height_meters(direction, *time, *depth);
+            let normal_error =
+                normal.distance(DVec3::new(gpu[0] as f64, gpu[1] as f64, gpu[2] as f64));
+            let height_error = (height - gpu[3] as f64).abs();
+            maximum_normal_error = maximum_normal_error.max(normal_error);
+            maximum_height_error = maximum_height_error.max(height_error);
+            if !normal_error.is_finite()
+                || !height_error.is_finite()
+                || normal_error > 0.002
+                || height_error > 0.02
+            {
+                failures.push(format!("direction={direction:?} depth={depth} time={time}: normal error={normal_error}, height error={height_error}"));
+            }
+        }
+        eprintln!(
+            "{} cases: maximum normal error {maximum_normal_error}, height error {maximum_height_error}",
+            cases.len()
+        );
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    });
+}

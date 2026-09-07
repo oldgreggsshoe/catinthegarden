@@ -7146,3 +7146,63 @@ clippy with `-D warnings`, fmt and diff checks pass. Final guarded GPU runs
 least 20 independent depth comparisons and <=2m p90 depth/CPU disagreement;
 walking also caps eye clearance at 2.5m. The reproduced pre-fix view's p90 was
 4.051m, so clearance alone is not the only acceptance signal.
+
+## 7 September 2026 — ocean normal/buoyancy slope parity (Codex)
+
+The user reported a fast surface flowing over broad waves, overly smooth crests,
+and occasional straight normal seams, then approved fixing the proven normal
+mismatch first. **This is that bounded fix, not sign-off on all three symptoms.**
+Terrain/tree rendering is being worked on concurrently. Only ocean functions in
+`shared_planet.wgsl`, ocean test code and documentation were changed; no
+`planet.wgsl`, terrain, forest, camera, scenario or wave-table edits.
+
+Two GPU slope errors differed from the already-correct CPU `global_wave_slope`:
+
+1. Phase is `k * dot(direction, axis) * R`. Its tangential gradient contains
+   `axis - direction * dot(axis, direction)`, **not the normalized tangent**.
+   The latter exaggerated slopes near the wave-axis poles. Horizontal
+   displacement retains its original unit tangent; only the slope changes.
+2. The soft depth limiter multiplies height by `w=(1+q)^(-1/n)`, where
+   `q=(abs(h)/L)^n`. Its derivative is `w/(1+q)`, not `w`. GPU normals now use
+   that derivative, matching CPU buoyancy/velocity. This reuses the existing
+   power calculation rather than adding another `pow`.
+
+Wave height, horizontal displacement, phase speeds, amplitudes, mesh density,
+crest shape and camera/ship motion are unchanged. No extra texture fetches or
+render passes; no FPS improvement is claimed.
+
+### Regression / validation
+
+`ocean_gpu_tests.rs` executes the **production WGSL `ocean_surface`** in a Vulkan
+compute pass and reads its normal/height back. It compares against CPU buoyancy
+for four directions, three depths (2/20/4000 m) and two times. This is not a Rust
+copy standing in for the shader. It uses a deliberately small 64m test radius to
+isolate slope algebra from real-planet f32 phase-reduction error, and full
+near-field geometry weight with the actual default's shading-only ripples off.
+It does not test distant fade gradients, varying bathymetry gradients or
+horizontal-transport inversion.
+
+On the Quadro M1000M it **fails before and passes after**:
+
+- Maximum unit-normal vector difference: **0.182566620 → 0.0001589715**
+  (approximately 10.5° → 0.009° across these fixtures).
+- Maximum height discrepancy against CPU: **0.000180228 m**, unchanged before/
+  after. Production height expressions were not edited.
+- Non-finite normals/heights also fail the test. The normal tolerance is 0.002,
+  height tolerance 0.02m. The GPU test is explicit/ignored in ordinary CI:
+  `cargo test -p catinthegarden-app gpu_ocean_normals -- --ignored --nocapture`.
+- 481 ordinary workspace tests pass, 13 ignored (including this new GPU test);
+  explicit GPU test, workspace/all-target clippy `-D warnings`, fmt and diff
+  checks pass. Release executable rebuilt from this worktree.
+- Release Quadro `ocean_ship_float/1788775915-349377` passes, three PNGs and 17
+  finite spatial samples. Capture 003 was inspected: boat and wave geometry
+  render correctly. This is a shader/runtime smoke test, not temporal visual
+  sign-off or a matched FPS comparison. Manifest names parent `23f4a84` because
+  it ran with the uncommitted normal fix.
+
+Next: user motion review of the corrected lighting; investigate geometry versus
+per-fragment wave bandwidth and source/phase continuity for the straight seams.
+Crest sharpening is still separate. Do **not** simply turn horizontal Gerstner
+transport back on: CPU collision currently assumes radial water and would need
+its corresponding inverse query. `crates.tar.gz` and other developers' work
+remain untouched.

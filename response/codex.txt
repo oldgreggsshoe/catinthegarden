@@ -1,11 +1,3 @@
-Fixed the shared walking/flying collision query—not by raising the camera offset. Your captured pose was about 6.4 m underground despite reporting +1.7 m clearance.
+Fixed and pushed. Ocean normals now match CPU buoyancy, including the shallow-water limiter; wave geometry and motion are unchanged.
 
-Both GPU replays pass, alongside 481 workspace tests and clippy. Committed and pushed; please try the same lunar route again.
-
-<oai-mem-citation>
-<citation_entries>
-MEMORY.md:4-4|note=[Verified checkout and current handoff before renderer changes]
-</citation_entries>
-<rollout_ids>
-</rollout_ids>
-</oai-mem-citation>
+The GPU regression, 481 workspace tests and ocean replay pass. Release binary rebuilt. Crest sharpness and straight-line seams still need separate investigation.
