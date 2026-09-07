@@ -1707,7 +1707,7 @@ fn fs_ocean(
     @builtin(front_facing) front_facing: bool,
 ) -> @location(0) vec4<f32> {
     if !front_facing {
-        return underwater_colour();
+        return ocean_underside_fragment(input);
     }
     if u32(camera.projection.w + 0.5) == RENDER_DEBUG_FLAT_TRIANGLES {
         return ocean_fragment_color(input);
@@ -1728,16 +1728,47 @@ fn fs_ocean_stable(
     @builtin(front_facing) front_facing: bool,
 ) -> @location(0) vec4<f32> {
     if !front_facing {
-        return underwater_colour();
+        return ocean_underside_fragment(input);
     }
     return ocean_fragment_color(input);
 }
 
-// Seen from below, the water is a flat dark blue. A placeholder until there is
-// a real underwater pass: the point is that a submerged eye sees water rather
-// than the sky showing through a culled surface.
-fn underwater_colour() -> vec4<f32> {
-    return vec4<f32>(0.012, 0.055, 0.13, 1.0);
+/// The sea's back faces: the underside, which is all a submerged eye ever sees
+/// of it.
+///
+/// This used to return one hardcoded dark blue -- a placeholder that predates
+/// there being an underwater pass at all, and the reason every submerged frame
+/// was a single flat colour whatever else changed. It intercepts *before*
+/// `ocean_fragment_color`, so no amount of work in there was ever going to show.
+fn ocean_underside_fragment(input: OceanVertexOutput) -> vec4<f32> {
+    let direction = normalize(input.surface_direction);
+    let outmap = input.outmap > 0.5;
+    let macro_height_meters = macro_terrain_height(outmap, input.source_uv, direction);
+    let biome_id = sample_biome(outmap, input.source_uv, direction);
+    // Same ownership rule as the lit side: the shell is not water over land.
+    if !is_open_ocean_surface(outmap, macro_height_meters, biome_id) {
+        discard;
+    }
+    let surface = ocean_surface(
+        direction,
+        camera.projection.z,
+        length(input.camera_relative_view_position),
+        max(-macro_height_meters, 0.0),
+    );
+    return vec4<f32>(
+        terrain_distance_fog(
+            ocean_underside_colour(
+                surface.normal,
+                surface.ripple_slope,
+                direction,
+                input.camera_relative_view_position,
+            ),
+            input.camera_relative_view_position,
+            direction,
+            surface.vertical_displacement,
+        ),
+        1.0,
+    );
 }
 
 fn ocean_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
@@ -1781,23 +1812,6 @@ fn ocean_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
         surface.vertical_displacement,
         sun_direction,
     );
-    // From underneath the sea is a different surface entirely, so it does not
-    // go through the foam-and-Fresnel path above: see `ocean_underside_colour`.
-    if camera.flat_triangle_options.w > 0.5 {
-        return vec4<f32>(
-            terrain_distance_fog(
-                ocean_underside_colour(
-                    surface.normal,
-                    direction,
-                    input.camera_relative_view_position,
-                ),
-                input.camera_relative_view_position,
-                direction,
-                surface.vertical_displacement,
-            ),
-            1.0,
-        );
-    }
     // Foam: surf where there is a bottom to break on, whitecaps where there is not.
     let foam = ocean_foam_coverage(
         max(-macro_height_meters, 0.0),

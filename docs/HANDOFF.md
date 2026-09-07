@@ -7343,9 +7343,14 @@ render is provably untouched -- `ocean_hybrid_close` passes and 413 tests pass):
   `asin(1/1.333) = 48.6 degrees` about the *local* normal, so the cone's edge
   follows every wave, and that moving boundary is the shape you see.
 
-**The blocker.** Underwater the whole frame is `(15, 64, 117)`, uniform, at any
-depth from 1m to 25m over deep water. Each of these was tested by forcing the
-branch and re-rendering:
+**The blocker -- FOUND AND FIXED, see the entry below.** It was `fs_ocean` and
+`fs_ocean_stable` returning a hardcoded `underwater_colour()` for every back
+face, before any shading ran. What follows is the trail that led there, kept
+because the negative results are the useful part.
+
+Underwater the whole frame was `(15, 64, 117)`, uniform, at any depth from 1m to
+25m over deep water. Each of these was tested by forcing the branch and
+re-rendering:
 
 * The submerged flag is **correct**, not the problem: logged from the CPU as
   `sea_level_altitude 20.72, surface_height 21.72, submerged 1`.
@@ -7378,3 +7383,52 @@ cost me two runs and a wrong conclusion about the camera being buried in land.
 is real geometry (the bake carries -5000m and negative macro heights are not
 scaled), so it should appear once anything underwater renders at all, but I
 never found a shallow site to confirm it.
+
+
+## 7 September 2026 — the underwater frame was a hardcoded constant
+
+The flat colour under water was `fs_ocean` and `fs_ocean_stable`:
+
+    if !front_facing {
+        return underwater_colour();   // vec4(0.012, 0.055, 0.13, 1.0)
+    }
+
+Every back face of the sea -- which is the entire thing a submerged eye sees --
+returned one constant *before* reaching `ocean_fragment_color`. Its own comment
+said so: "A placeholder until there is a real underwater pass." That is why
+forcing the atmosphere branch to red, forcing the underside branch on, and
+setting visibility to 100000m all changed nothing: none of them were on the path.
+
+What found it was painting each candidate a different colour in one run --
+terrain red, the ocean shell green. Terrain came back red over 2.4% of the
+frame, green never appeared at all, and an ocean shell that draws zero pixels
+while the probe reports 81 depth hits of 81 is only possible if its fragments
+return before the code being edited. I had been reasoning about which pass
+*covered* the screen when the question was which pass *authored* the pixels.
+
+Back faces now shade through `ocean_underside_fragment`, which applies the same
+open-ocean ownership rule as the lit side and then `ocean_underside_colour`
+under the underwater fog. Keying it on `front_facing` rather than the submerged
+uniform is also better: it is geometric, so it cannot disagree with the CPU.
+
+**Two further corrections, both caught by rendering rather than by reading:**
+
+* The Snell's window cosine had the wrong sign. `view_ray` runs from the eye up
+  to the surface and the normal points out of the water, so looking straight up
+  is `dot(view_ray, normal) = +1`; I had negated the ray, which made it negative
+  everywhere, clamped to zero, and left the whole underside in the dark
+  total-internal-reflection branch. Fixed, the window appears: a bright sky disc
+  with a dark rim, 643 distinct colours where there had been 1.
+* Folding the ripple layer into the underside normal changes nothing visible at
+  1m depth, and should not: the window is about 2.3m across there and the
+  shortest wave in the spectrum is 7m, so a smooth boundary is correct. It is
+  depth that widens the window enough for waves to distort its edge. The comment
+  in the shader says this rather than claiming a fix it did not make.
+
+**Still open.** The sea bed in shallow water is unverified -- bathymetry is real
+geometry, so it should appear now that the underside draws, but I never found a
+shallow site to confirm it. Aiming the probe 25 degrees above horizontal puts
+the camera outside Snell's window entirely, which reads as almost black and is
+correct; use 70 degrees to see the window. Reproduction is as described in the
+previous section, with the reminder that scenario JSON reaches the binary
+through `include_str!`.

@@ -2639,18 +2639,29 @@ fn triplanar_material_sample(
 /// is the shape you see.
 fn ocean_underside_colour(
     surface_normal: vec3<f32>,
+    ripple_slope: vec3<f32>,
     surface_direction: vec3<f32>,
     camera_relative_view_position: vec3<f32>,
 ) -> vec3<f32> {
     let view_ray = normalize(camera_relative_view_position);
-    let normal_view = normalize(planet_to_view(surface_normal));
-    // How far the outgoing ray is from the surface normal. cos(48.6) = 0.661.
-    let cosine = clamp(dot(-view_ray, normal_view), 0.0, 1.0);
+    // The ripple layer is folded in the same way the lit side does it, so both
+    // faces of the sea agree about which way it is pointing. Measured: it does
+    // not visibly move the window's edge at 1m depth, and should not -- the
+    // window is only about 2.3m across there and the shortest wave in the
+    // spectrum is 7m, so a smooth boundary is the correct answer. It is depth
+    // that widens the window enough for waves to distort it.
+    let normal_view = normalize(planet_to_view(normalize(surface_normal - ripple_slope)));
+    // `view_ray` runs from the eye up to the surface, and the normal points out
+    // of the water, so looking straight up gives +1. Using the ray back toward
+    // the eye instead makes this negative everywhere, the window never opens,
+    // and the whole underside is the dark reflection -- which is what it did.
+    // cos(48.6 degrees) = 0.661.
+    let cosine = clamp(dot(view_ray, normal_view), 0.0, 1.0);
     let window = smoothstep(0.58, 0.74, cosine);
-    // Inside the window, the sky the ray came from. The refraction bends it
-    // toward the normal; sampling the unrefracted ray keeps the bright disc in
-    // the right place without a second trace.
-    let above = physical_camera_sky_radiance(-view_ray);
+    // Inside the window, the sky the ray came from. Refraction bends it toward
+    // the normal; sampling the unrefracted ray puts the bright disc in the
+    // right place without a second trace.
+    let above = physical_camera_sky_radiance(view_ray);
     // Outside it, total internal reflection of the water below, which is the
     // same medium the fog mixes toward, only darker for being deeper.
     let up_view = normalize(planet_to_view(surface_direction));
