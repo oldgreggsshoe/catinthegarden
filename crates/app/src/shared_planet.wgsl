@@ -2158,6 +2158,9 @@ fn moon_surface_albedo_scale(direction: vec3<f32>, macro_height_meters: f32) -> 
     for (var index = 0u; index < MOON_MARKING_COUNT; index = index + 1u) {
         let marking = MOON_MARKINGS[index];
         let traits = MOON_MARKING_TRAITS[index];
+        // Reach in rim radii, already clamped by the cost bound: the fades run
+        // to this, so they land on zero at the same place the cutoff rejects.
+        let extents = MOON_MARKING_EXTENTS[index];
         let cosine = clamp(dot(marking.xyz, unit), -1.0, 1.0);
         // Rays reach furthest, so their cutoff rejects everything.
         if cosine <= traits.w {
@@ -2176,16 +2179,21 @@ fn moon_surface_albedo_scale(direction: vec3<f32>, macro_height_meters: f32) -> 
         let across = cross(marking.xyz, reference);
         let azimuth = atan2(dot(tangent, across), dot(tangent, reference)) + traits.y;
 
-        // The halo: strongest at the rim, gone by MOON_HALO_EXTENT. Squared so
+        // The halo: strongest at the rim, gone by the marking's reach. Squared so
         // it concentrates near the crater rather than washing the whole area.
         // Its edge is pushed in and out with azimuth, because an ejecta blanket
         // is not a circle -- the impact came in at an angle and the ground it
         // landed on was not flat.
         if cosine > traits.z {
-            let ragged = 1.0 + 0.35 * cos(3.0 * azimuth + traits.y)
-                + 0.18 * cos(5.0 * azimuth - traits.y);
+            // Normalised to peak at 1 rather than 1.53, so the raggedest
+            // azimuth's fade reaches zero exactly where the cutoff rejects
+            // instead of a third of the way past it. The edge still moves in
+            // and out with azimuth; it just no longer overshoots its own
+            // cutoff and leaves a step there.
+            let ragged = (1.0 + 0.35 * cos(3.0 * azimuth + traits.y)
+                + 0.18 * cos(5.0 * azimuth - traits.y)) / (1.0 + 0.35 + 0.18);
             let fade = clamp(
-                1.0 - (t - 1.0) / max((MOON_HALO_EXTENT - 1.0) * ragged, 0.25),
+                1.0 - (t - 1.0) / max((extents.x - 1.0) * ragged, 0.05),
                 0.0,
                 1.0,
             );
@@ -2217,7 +2225,7 @@ fn moon_surface_albedo_scale(direction: vec3<f32>, macro_height_meters: f32) -> 
             * cos(2.3 * t - traits.y);
         // Cubed, so a ray thins out with distance instead of stopping at a
         // circle.
-        let reach = clamp(1.0 - (t - 1.0) / (MOON_RAY_EXTENT - 1.0), 0.0, 1.0);
+        let reach = clamp(1.0 - (t - 1.0) / max(extents.y - 1.0, 0.05), 0.0, 1.0);
         let age = smoothstep(MOON_RAY_FRESHNESS_FLOOR, 1.0, freshness);
         brightening = brightening
             + MOON_RAY_STRENGTH * age * streak * max(clumping, 0.0) * reach * reach;

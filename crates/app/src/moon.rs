@@ -58,6 +58,10 @@ const RAY_EXTENT: f64 = 14.0;
 /// At 0.35 rad a marking covers about 3% of the sphere, so of 192 markings
 /// roughly six reach any given fragment. It does clip the reach of the very
 /// largest basins' rays, which is a real loss and the price of the bound.
+///
+/// What the bound must not do is clip a marking *mid-fade*. The fades run to
+/// the reach emitted alongside each marking, not to HALO_EXTENT and RAY_EXTENT,
+/// so a clamped marking fades out over the reach it actually has.
 const MAX_MARKING_REACH_RADIANS: f64 = 0.35;
 
 /// The largest impacts, with what the shader needs to draw their markings.
@@ -118,6 +122,16 @@ pub fn wgsl_constants() -> String {
 /// These come from the *baked* catalogue rather than the runtime one, which is
 /// the whole point -- a bright halo has to sit on the crater that threw it, and
 /// the two catalogues are different bodies' worth of impacts.
+/// How far one crater's halo and rays actually reach, in radians, after the
+/// cost bound. The cutoff the shader rejects on and the extent its fades run
+/// to are both derived from this, so the two cannot disagree.
+fn marking_reach_radians(crater: Crater) -> (f64, f64) {
+    (
+        (HALO_EXTENT * crater.angular_radius).min(MAX_MARKING_REACH_RADIANS),
+        (RAY_EXTENT * crater.angular_radius).min(MAX_MARKING_REACH_RADIANS),
+    )
+}
+
 fn emit_markings(source: &mut String, markings: &[(Crater, f64)]) {
     let count = markings.len();
     source.push_str(&format!(
@@ -137,22 +151,34 @@ fn emit_markings(source: &mut String, markings: &[(Crater, f64)]) {
          const MOON_MARKING_TRAITS: array<vec4<f32>, {count}> = array<vec4<f32>, {count}>(\n"
     ));
     for (crater, phase) in markings {
-        let halo = (HALO_EXTENT * crater.angular_radius)
-            .min(MAX_MARKING_REACH_RADIANS)
-            .cos();
-        let ray = (RAY_EXTENT * crater.angular_radius)
-            .min(MAX_MARKING_REACH_RADIANS)
-            .cos();
+        let (halo, ray) = marking_reach_radians(*crater);
         source.push_str(&format!(
             "    vec4<f32>({:.6}, {:.6}, {:.9}, {:.9}),\n",
-            crater.freshness, phase, halo, ray
+            crater.freshness,
+            phase,
+            halo.cos(),
+            ray.cos()
         ));
     }
     source.push_str(");\n");
+    // The fades are written in units of the rim radius, so they need the reach
+    // in those units too. Handing the shader the unclamped HALO_EXTENT and
+    // RAY_EXTENT instead let the fade still be at 85% of full strength where
+    // the clamped cutoff rejected the sample, and the step between the two drew
+    // a hard-edged ring around every basin the clamp touched.
     source.push_str(&format!(
-        "const MOON_HALO_EXTENT: f32 = {HALO_EXTENT:.4};\n\
-         const MOON_RAY_EXTENT: f32 = {RAY_EXTENT:.4};\n"
+        "// halo and ray reach as multiples of the rim radius, after clamping.\n\
+         const MOON_MARKING_EXTENTS: array<vec2<f32>, {count}> = array<vec2<f32>, {count}>(\n"
     ));
+    for (crater, _) in markings {
+        let (halo, ray) = marking_reach_radians(*crater);
+        source.push_str(&format!(
+            "    vec2<f32>({:.9}, {:.9}),\n",
+            halo / crater.angular_radius,
+            ray / crater.angular_radius
+        ));
+    }
+    source.push_str(");\n");
 }
 
 /// One catalogue as a pair of WGSL arrays: axes with rim radius, and the
@@ -260,6 +286,65 @@ mod tests {
                 reach < std::f64::consts::PI - 0.1,
                 "a marking reaching {reach} radians cannot reject anything",
             );
+        }
+    }
+
+    /// A marking's fade has to reach zero exactly where its cutoff rejects.
+    /// When it did not, the halo was still at 85% of full strength at the
+    /// clamped cutoff of the largest basin, and the drop to nothing drew a
+    /// hard-edged ring around it -- the reach clamp is a cost bound, and it
+    /// was being paid for in a visible artifact.
+    ///
+    /// Read back out of the generated source, because that is what the shader
+    /// consumes: the fade runs to MOON_MARKING_EXTENTS and the rejection uses
+    /// the cutoff cosines in MOON_MARKING_TRAITS, and the bug was those two
+    /// disagreeing. It does not check that the shader still *reads* the
+    /// extents rather than a constant of its own.
+    #[test]
+    fn every_marking_fades_out_exactly_where_its_cutoff_rejects() {
+        let generated = wgsl_constants();
+        let rows = |name: &str, kind: &str| -> Vec<Vec<f64>> {
+            generated
+                .split(&format!("const {name}: "))
+                .nth(1)
+                .expect("array is emitted")
+                .split(");")
+                .next()
+                .expect("array is closed")
+                .lines()
+                .filter_map(|line| line.trim().strip_prefix(kind))
+                .map(|row| {
+                    row.trim_end_matches("),")
+                        .split(',')
+                        .map(|field| field.trim().parse::<f64>().expect("numeric field"))
+                        .collect()
+                })
+                .collect()
+        };
+        let markings = rows("MOON_MARKINGS", "vec4<f32>(");
+        let traits = rows("MOON_MARKING_TRAITS", "vec4<f32>(");
+        let extents = rows("MOON_MARKING_EXTENTS", "vec2<f32>(");
+        assert_eq!(markings.len(), ALBEDO_CRATER_COUNT);
+        assert_eq!(traits.len(), ALBEDO_CRATER_COUNT);
+        assert_eq!(extents.len(), ALBEDO_CRATER_COUNT);
+        for index in 0..ALBEDO_CRATER_COUNT {
+            let rim_radians = markings[index][3];
+            for (name, cutoff_cosine, extent) in [
+                ("halo", traits[index][2], extents[index][0]),
+                ("rays", traits[index][3], extents[index][1]),
+            ] {
+                let cutoff = cutoff_cosine.acos() / rim_radians;
+                assert!(
+                    (cutoff - extent).abs() < 1.0e-4,
+                    "{name} fades out at {extent} rim radii but is rejected at \
+                     {cutoff}: the gap between them is the step",
+                );
+                assert!(
+                    extent - 1.0 > 0.05,
+                    "{name} reach of {extent} rim radii leaves no room to fade, \
+                     so the shader's floor truncates it and the step returns",
+                );
+            }
         }
     }
 
