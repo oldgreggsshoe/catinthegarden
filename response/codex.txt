@@ -1,3 +1,1 @@
-Found it: `1788801424-429864/screenshots/capture-001.png`. It shows the above-water waves, and I can see the distinct turquoise bands you mean.
-
-That capture is from 18:18, before the latest linear-fade rebuild. Restart the game to see that change. The newer run folders don’t contain a screenshot yet, so I haven’t received an underwater capture.
+Waiting for you. The gentler turquoise fade is built and pushed; restart to try it. For the underwater sky bug, I still need an F12 capture taken while it happens.
