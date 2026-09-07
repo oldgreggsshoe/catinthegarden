@@ -392,6 +392,7 @@ fn ocean_with_aerial_perspective(
     );
     let water_color = ocean_lighting(
         surface.normal,
+        surface.vertical_displacement,
         camera_relative_view_position,
         sun_transmittance,
         sky_diffuse,
@@ -1823,6 +1824,7 @@ fn ocean_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
     let water_surface_color = mix(
         ocean_lighting(
             surface.normal,
+            surface.vertical_displacement,
             input.camera_relative_view_position,
             sun_transmittance,
             sky_diffuse,
@@ -1857,6 +1859,35 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let biome_id = sample_biome(outmap, input.source_uv, direction);
     let ice = outmap && biome_id == 2u;
     let lake = outmap && biome_id == 1u;
+    // Submerged views need the actual baked bottom, not the ocean material
+    // blend below. The separate sea shell still depth-occludes it from above.
+    // This branch adds no geometry or texture fetches: macro height and the
+    // displaced terrain normal already exist.
+    if camera.flat_triangle_options.w > 0.5
+        && is_open_ocean_surface(outmap, macro_height_meters, biome_id)
+        && input.surface_height_and_fog_color.x <= 0.0
+    {
+        let bottom_height = input.surface_height_and_fog_color.x;
+        let bottom_sun = surface_direct_sun_transmittance(
+            direction, 0.0, sun_direction,
+        );
+        let bottom_sky = sky_diffuse_irradiance(
+            input.world_normal, direction, 0.0, sun_direction,
+        );
+        // Baked ocean biome colour describes water, not sediment. Use the
+        // existing beach palette for the exposed bathymetry instead.
+        let sediment = srgb_to_linear(vec3<f32>(0.48, 0.40, 0.23));
+        let depth_transmittance = exp(
+            min(bottom_height, 0.0) * log(50.0) / OCEAN_UNDERWATER_VISIBILITY_METERS,
+        );
+        let bottom_light = sediment * depth_transmittance * (
+            bottom_sky + bottom_sun * SURFACE_SUNLIGHT_SCALE
+                * max(dot(input.world_normal, sun_direction), 0.0)
+        );
+        return vec4<f32>(terrain_distance_fog(
+            bottom_light, input.camera_relative_view_position, direction, bottom_height,
+        ), 1.0);
+    }
     // Open sea belongs exclusively to the analytic shell drawn after this
     // pass. Keep bathymetry out of the depth buffer unless this interpolated
     // triangle is visibly above sea level. A fallback source tile can sample
@@ -1903,6 +1934,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         );
         let water_surface_color = ocean_lighting(
             surface.normal,
+            surface.vertical_displacement,
             input.camera_relative_view_position,
             sun_transmittance,
             sky_diffuse,
@@ -2187,6 +2219,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let water_surface_color = mix(
         ocean_lighting(
             surface.normal,
+            surface.vertical_displacement,
             input.camera_relative_view_position,
             sun_transmittance,
             sky_diffuse,

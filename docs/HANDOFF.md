@@ -7472,3 +7472,46 @@ Worth carrying into how this repo is verified: scenario replays are the slowest
 part of any change here, and their timings are only meaningful when the machine
 is not swapping. A timing that looks like a regression should be checked against
 `free -m` before it is believed.
+
+## 7 September 2026 — crest transmission and visible shallow bathymetry
+
+Based on 20587bf on experiment/ocean-wind-sea-spectrum; preserved the other
+developer's crest, dispersion, foam and underside work.
+
+* Shared ocean lighting now accepts wave height. Positive height fades a bounded
+  turquoise, forward-scattered direct-sun term in over 0–8m, suppressed by
+  Fresnel and darkness. All five callers pass wave displacement; foam still
+  covers it. This is an inexpensive thin-crest approximation, not measured
+  thickness or alpha transparency. Geometry, buoyancy and depth are unchanged.
+* Existing underwater extinction now targets 2% contrast at 30m (previously
+  20m). Submerged raster open-ocean fragments shade the baked negative-height
+  geometry with the existing beach palette before the old ocean discard.
+  Sun/sky illumination attenuates with bottom depth, then the existing
+  per-pixel view-distance water fog applies. No new mesh, draw or render pass.
+* The existing underside gives an underwater ray its exit surface and fog
+  distance. This does NOT introduce above-water seabed refraction or a true
+  refracted split-camera compositor. Those are separate work, and the camera
+  medium selection still uses the existing CPU submerged flag.
+
+Validation: 414 app tests passed (11 ignored), 28 shader-filtered tests passed,
+explicit Quadro GPU wave parity passed (normal error 0.000089958, height
+0.000058081m), app all-target clippy, fmt and diff checks passed. Adding the two
+scenarios initially failed the hardcoded scenario count; updated 78 to 80 and
+the complete-list loading regression then passed. Release rebuilt.
+
+GPU scenarios, all passed, four captures each:
+* ocean_hybrid_close/1788800036-415020 — inspected turquoise backlit crests.
+* ocean_underwater_visibility/1788800123-415609 — inspected Snell-window rim.
+* ocean_shallow_bottom/1788800342-417178 — inspected visible brown sediment relief.
+
+Shallow fixture provenance: px L4 x15/y14, stored height sample (19,39),
+-10.07443m, ocean biome; fixed eye at -7m, looking downward. Do not use
+waterline_eye_height_meters here: waterline_scenario_pose assumes 4000m depth
+and can drive the camera beneath this shallow bottom. The initial run
+1788800195-416229 did exactly that and was flat blue despite passing its
+generic assertions. The corrected capture visually verifies bottom rendering;
+the scenario's generic finite/screenshot assertions alone do not prove it.
+
+No measured FPS claim or temporal visual sign-off. Monitor was on, but swap
+was nearly full and other desktop work was active. Unrelated crates.tar.gz
+was left untouched.

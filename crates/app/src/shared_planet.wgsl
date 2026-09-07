@@ -402,7 +402,7 @@ const OCEAN_SURF_COLOUR: vec3<f32> = vec3<f32>(0.92, 0.95, 0.96);
 // How far a submerged eye can see, in metres. The usual definition of
 // visibility: the range at which contrast is down to 2%, so the extinction
 // e-fold is this over ln(50) rather than this itself.
-const OCEAN_UNDERWATER_VISIBILITY_METERS: f32 = 20.0;
+const OCEAN_UNDERWATER_VISIBILITY_METERS: f32 = 30.0;
 // What the water itself looks like once everything else has been extinguished.
 // Blue-green rather than the sky's blue: water absorbs red first, then green,
 // which is why the far end of a flooded quarry is this colour and not navy.
@@ -2671,6 +2671,7 @@ fn ocean_underside_colour(
 
 fn ocean_lighting(
     normal: vec3<f32>,
+    crest_height_meters: f32,
     camera_relative_view_position: vec3<f32>,
     sun_transmittance: vec3<f32>,
     sky_diffuse: vec3<f32>,
@@ -2697,7 +2698,16 @@ fn ocean_lighting(
     // The Phase 6 cubemap is static. It represents daytime sky reflection, so
     // gate it by direct daylight instead of reflecting a bright blue sky from
     // the fully occluded hemisphere.
-    return diffuse
+    // Cheap thin-crest transmission approximation, not alpha transparency or
+    // a measured water-volume thickness. Positive wave height selects the upper
+    // crest; forward scattering lights it when the sun is behind the wave.
+    // Keep depth writes and reflection intact; foam is composed by the caller.
+    let crest = smoothstep(0.0, 8.0, crest_height_meters);
+    let backlight = pow(max(dot(-view_direction, sun_direction_view), 0.0), 4.0);
+    let transmitted = vec3<f32>(0.025, 0.32, 0.22)
+        * sun_transmittance * (SURFACE_SUNLIGHT_SCALE * crest * backlight)
+        * (vec3<f32>(1.0) - fresnel);
+    return diffuse + transmitted
         + reflected_color * fresnel * daylight * OCEAN_REFLECTION_SCALE
         + sun_transmittance
             * specular

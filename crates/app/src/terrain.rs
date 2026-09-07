@@ -4636,6 +4636,34 @@ mod tests {
     }
 
     #[test]
+    fn ocean_shader_transmits_sunlight_and_retains_submerged_bathymetry() {
+        let shader = planet_shader_source();
+        let lighting = shader
+            .split("fn ocean_lighting(")
+            .nth(1)
+            .unwrap()
+            .split("\nfn ")
+            .next()
+            .unwrap();
+        assert!(lighting.contains("crest_height_meters"));
+        assert!(
+            lighting.contains("sun_transmittance * (SURFACE_SUNLIGHT_SCALE * crest * backlight)")
+        );
+        assert!(lighting.contains("(vec3<f32>(1.0) - fresnel)"));
+        let terrain = shader.split("fn terrain_fragment_color(").nth(1).unwrap();
+        let bottom = terrain.find("let bottom_height").unwrap();
+        let discard = terrain.find("discard;").unwrap();
+        assert!(
+            bottom < discard,
+            "seabed must shade before the open-ocean discard"
+        );
+        assert!(terrain[..bottom].contains("camera.flat_triangle_options.w > 0.5"));
+        assert!(shader.contains("OCEAN_UNDERWATER_VISIBILITY_METERS: f32 = 30.0"));
+        let contrast_at_visibility = (-30.0_f64 * 50.0_f64.ln() / 30.0).exp();
+        assert!((contrast_at_visibility - 0.02).abs() < 1e-12);
+    }
+
+    #[test]
     fn terrain_cloud_shadows_reuse_the_shared_density_and_project_toward_the_sun() {
         let shader = planet_shader_source();
         assert!(shader.contains("fn cloudDensityWithOctaves("));

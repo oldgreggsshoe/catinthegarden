@@ -267,6 +267,8 @@ scenarios! {
     "partial_sun_occultation" => "../scenarios/partial_sun_occultation.json",
     "ocean_flyover" => "../scenarios/ocean_flyover.json",
     "ocean_hybrid_close" => "../scenarios/ocean_hybrid_close.json",
+    "ocean_underwater_visibility" => "../scenarios/ocean_underwater_visibility.json",
+    "ocean_shallow_bottom" => "../scenarios/ocean_shallow_bottom.json",
     "ocean_low_sun_stability" => "../scenarios/ocean_low_sun_stability.json",
     "ocean_rough_horizon" => "../scenarios/ocean_rough_horizon.json",
     "ocean_waterline_flat" => "../scenarios/ocean_waterline_flat.json",
@@ -1012,7 +1014,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 78);
+        assert_eq!(SCENARIO_NAMES.len(), 80);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));

@@ -1367,6 +1367,7 @@ fn shade_ocean(
     );
     let surface_color = ocean_lighting(
         surface.normal,
+        surface.vertical_displacement,
         hit_view_position,
         sun_transmittance,
         sky_diffuse,

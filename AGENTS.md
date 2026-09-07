@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Ocean crest/underwater lighting: backlit crests transmit turquoise sunlight without alpha/depth changes; underwater visibility is 30m and submerged raster bathymetry shades as sediment instead of being discarded. Above-water, underside and shallow-bottom GPU captures pass; no FPS or true refracted split-view claim.
+
 - Ocean normal parity: GPU wave slopes now retain the projected-axis magnitude and differentiate the soft breaking limiter, matching CPU buoyancy without changing wave geometry or motion. An actual-WGSL 24-case GPU regression fails before/passes after; 481 workspace tests, clippy and ocean_ship_float pass. Crest shaping, straight seams and temporal visual review remain separate.
 
 - Lunar camera collision repair: the raster mesh query now uses the shader's macro-displaced detail distance instead of the datum-sphere distance. The reproduced underside pose changes from falsely safe +1.7m to correctly buried -6.422m; real walking and downward-flight replays pass after shared collision correction, without raising eye offsets or altering terrain. See the 7 September handoff.

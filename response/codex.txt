@@ -1,7 +1,3 @@
-Implemented and pushed a modest crest-sharpening pass; release rebuilt.
+Implemented crest transmission, 30m underwater fog, and visible shallow seabed. Three GPU replays pass; 414 app tests and GPU wave parity pass.
 
-- Narrower crests, broader troughs; buoyancy and normals remain matched.
-- No extra geometry, draw calls or wave octaves; FPS impact unmeasured.
-- 34 focused tests, GPU parity, ocean replay, clippy and formatting pass. Full-suite run was interrupted.
-
-Please try it in motion. Terrain/tree work untouched; seams remain separate.
+Crest translucency is a lighting approximation—not alpha transparency. True above-water seabed refraction remains separate; no FPS claim yet.
