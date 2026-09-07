@@ -1,9 +1,11 @@
-Implemented the rim-site selection and rebake; measured the unchanged detail ladder.
+Fixed the shared walking/flying collision query—not by raising the camera offset. Your captured pose was about 6.4 m underground despite reporting +1.7 m clearance.
 
-- Daylight ground view: 27.48° rim at 4km, 1.689m clearance.
-- Runtime height detail: exactly zero across 74 samples. Fine tile spacing falsely implies fine source detail; amplitude tuning would not fix that.
-- Planet: all 10 comparison captures byte-identical. 464 tests pass; clippy/fmt clean.
+Both GPU replays pass, alongside 481 workspace tests and clippy. Committed and pushed; please try the same lunar route again.
 
-Important: real frozen startup is NOT signed off. It starts in darkness and floats 82.95m above streamed ground. That separate arrival/streaming problem is documented, not hidden by the passing daylight scenario.
-
-Changes committed and pushed; evidence and next steps are in the handoff.
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:4-4|note=[Verified checkout and current handoff before renderer changes]
+</citation_entries>
+<rollout_ids>
+</rollout_ids>
+</oai-mem-citation>

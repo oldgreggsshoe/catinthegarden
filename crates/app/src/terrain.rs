@@ -1877,7 +1877,25 @@ impl TerrainRenderer {
                 let direction = cube_face_direction(surface.node.face, u, v);
                 let camera_position =
                     local_surface_direction * (planet_radius_meters() + camera_altitude_meters);
-                let camera_distance = camera_position.distance(direction * planet_radius_meters());
+                // Match vs_main's macro-displaced detail distance. The shader
+                // no longer filters against the datum sphere: on the moon that
+                // is kilometres below the camera and suppresses terrain detail
+                // in collision while the GPU still draws it under the eye.
+                let key = surface.source_key?;
+                let tile = self.tile_cache.get(&key)?;
+                let uv = source_tile_uv(key, face, [u, v])?;
+                let baked = f64::from(sample_height_cpu(&tile.heights_meters, uv));
+                let macro_height = if baked > 0.0 {
+                    scaled_outmap_macro_height_meters(baked, camera_altitude_meters)
+                } else {
+                    0.0
+                };
+                let camera_distance = raster_vertex_detail_distance(
+                    camera_position,
+                    direction,
+                    planet_radius_meters(),
+                    macro_height,
+                );
                 let breakdown = self.surface_detail_height_breakdown(
                     surface,
                     direction,
@@ -3097,6 +3115,15 @@ fn node_contains_face_uv(node: QuadtreeNode, face: CubeFace, face_uv: [f64; 2]) 
         face_uv,
     )
     .is_some()
+}
+
+fn raster_vertex_detail_distance(
+    camera: DVec3,
+    direction: DVec3,
+    radius: f64,
+    macro_height: f64,
+) -> f64 {
+    camera.distance(direction * (radius + macro_height))
 }
 
 fn radial_triangle_radius(direction: DVec3, triangle: [DVec3; 3]) -> Option<f64> {
@@ -6090,6 +6117,21 @@ mod tests {
             previous_centre_filter = filter;
             previous_filters = filters;
         }
+    }
+
+    #[test]
+    fn lunar_collision_filters_detail_at_macro_ground_not_datum() {
+        let radius = 1_080_000.0;
+        let macro_height = 9_737.2314453125;
+        let eye_altitude = 9_820.348905067658;
+        let direction =
+            DVec3::new(805339.4703311387, -725635.8310803904, -112202.36658197352).normalize();
+        let camera = direction * (radius + eye_altitude);
+        let distance =
+            super::raster_vertex_detail_distance(camera, direction, radius, macro_height);
+        assert!((distance - (eye_altitude - macro_height)).abs() < 1e-8);
+        assert!(distance * super::TERRAIN_DETAIL_FILTER_RATIO < 1.0);
+        assert!(camera.distance(direction * radius) * super::TERRAIN_DETAIL_FILTER_RATIO > 98.0);
     }
 
     #[test]

@@ -3136,7 +3136,15 @@ impl State {
                     .unwrap_or(0.0);
                 self.flight_speed = FlightSpeedState::default();
                 self.flight_travel_direction = glam::DVec3::ZERO;
-                self.camera_mode = CameraMode::LowFlight;
+                self.camera_mode = if self
+                    .scenario
+                    .as_ref()
+                    .is_some_and(scenario::ScenarioRunner::replays_surface_walk)
+                {
+                    CameraMode::Surface
+                } else {
+                    CameraMode::LowFlight
+                };
                 self.previous_camera_world_position = self.camera.world_position();
                 self.camera_velocity_baseline_stale = true;
                 self.scenario_flight_initialized = true;
@@ -3145,11 +3153,19 @@ impl State {
                 forward: forward_held,
                 ..FlightMovementInput::default()
             };
-            self.advance_low_flight_camera(
-                scene_delta_seconds,
-                planet_rotation_radians,
-                ocean_time_seconds,
-            );
+            if self.camera_mode == CameraMode::Surface {
+                self.advance_surface_camera(
+                    scene_delta_seconds,
+                    planet_rotation_radians,
+                    ocean_time_seconds,
+                );
+            } else {
+                self.advance_low_flight_camera(
+                    scene_delta_seconds,
+                    planet_rotation_radians,
+                    ocean_time_seconds,
+                );
+            }
         } else if self.scenario.is_none() {
             let camera_delta_seconds = interactive_camera_delta_seconds(
                 self.camera_mode,

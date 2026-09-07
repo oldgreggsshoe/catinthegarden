@@ -162,6 +162,9 @@ pub struct ScenarioDefinition {
     /// acceleration, geodesic movement, and clearance path as keyboard input.
     #[serde(default)]
     pub forward_flight_start_time_seconds: Option<f64>,
+    /// Exercise the real walking physics instead of free flight in a W replay.
+    #[serde(default)]
+    pub walk_on_surface: bool,
     pub orbit_radius_meters: Option<f64>,
     pub orbit_elevation_degrees: Option<f64>,
     pub orbit_turns: Option<f64>,
@@ -236,6 +239,8 @@ macro_rules! scenarios {
 scenarios! {
     "still_5s" => "../scenarios/still_5s.json",
     "planet_to_moon" => "../scenarios/planet_to_moon.json",
+    "moon_camera_clearance" => "../scenarios/moon_camera_clearance.json",
+    "moon_flight_clearance" => "../scenarios/moon_flight_clearance.json",
     "moon_ground_detail" => "../scenarios/moon_ground_detail.json",
     "moon_polar_ice" => "../scenarios/moon_polar_ice.json",
     "moon_crater_wall" => "../scenarios/moon_crater_wall.json",
@@ -610,6 +615,10 @@ impl ScenarioRunner {
         self.definition
             .surface_probe_max_distance_meters
             .unwrap_or(crate::probe::MAX_COMPARISON_DISTANCE_METERS)
+    }
+
+    pub fn replays_surface_walk(&self) -> bool {
+        self.definition.walk_on_surface
     }
 
     pub fn replays_forward_flight(&self) -> bool {
@@ -1003,7 +1012,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 76);
+        assert_eq!(SCENARIO_NAMES.len(), 78);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));
@@ -1848,6 +1857,24 @@ mod tests {
             .asin()
             .to_degrees();
         assert!((solar_elevation - 18.303_833_434_177_43).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn lunar_clearance_replays_use_real_walking_and_flight_at_the_reported_pose() {
+        for (name, walking) in [
+            ("moon_camera_clearance", true),
+            ("moon_flight_clearance", false),
+        ] {
+            let replay = ScenarioRunner::load(name).unwrap();
+            assert!(replay.replays_forward_flight());
+            assert_eq!(replay.replays_surface_walk(), walking);
+            assert_eq!(
+                replay.definition.forward_flight_start_time_seconds,
+                Some(2.0)
+            );
+            let position = DVec3::from_array(replay.definition.waypoints[0].position);
+            assert!((position.length() - 1_080_000.0 - 9820.348905067658).abs() < 1e-8);
+        }
     }
 
     #[test]

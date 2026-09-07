@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Lunar camera collision repair: the raster mesh query now uses the shader's macro-displaced detail distance instead of the datum-sphere distance. The reproduced underside pose changes from falsely safe +1.7m to correctly buried -6.422m; real walking and downward-flight replays pass after shared collision correction, without raising eye offsets or altering terrain. See the 7 September handoff.
+
 - Experimental two-body replay: `--scenario planet_to_moon` keeps both raster bodies resident in f64 shared space, uses cheap projected-size distant geometry and depth/atmosphere-correct composition, and lands at 2m on the lit moon with the planet visible. Seven captures, 3,241 finite samples, 471 workspace tests and clippy pass; normal interactive flight remains single-body, the planet departure is still ~19 FPS, and streaming spikes/visual sign-off remain open. See the last handoff section.
 
 - Moon rim-landing survey: the baker now selects clean, locally gentle ground near elevated relief, with a failing-before regression and a validated 600,176-crater rebake. Daylight eye-level capture has 1.689m clearance and a 27.48-degree rim at 4km; runtime height detail is exactly zero across 74 samples because sparse-tile high cut and datum-distance filtering leave no band. Planet controls are byte-identical to rebuilt `4726502`; real frozen arrival remains unaccepted (night side, 82.949m clearance after streaming).

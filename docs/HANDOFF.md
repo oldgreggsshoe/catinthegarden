@@ -7087,3 +7087,62 @@ Along the way I claimed, wrongly and twice, that the sun disc was old and just n
 from "you have never been in deep space before", then from older captures having zero saturated
 pixels. The second was framing, not absence — `stare_at_sun` renders it on the ordinary path at 52
 saturated samples. Only the removal test settled it.
+
+## 7 September 2026 — lunar walking/flight collision detail-distance repair (Codex)
+
+User evidence: `test-runs/manual/1788769017-335037/screenshots/capture-001.png`,
+from `a4413da`. This is the underside/ribbon view, not the two-body replay.
+The frozen manual spatial log contains the old startup pose, **not** the captured
+pose. Recovered the actual camera by trilaterating the depth probe's hit positions
+(`direction * (moon_radius + rendered_height)`) and hit distances. The recovered
+position is `[805339.4703311387, -725635.8310803904, -112202.36658197352]`, altitude
+9820.348905 m; maximum reconstructed distance residual is 2.8e-11 m. A static
+replay reproduces the user's underside view.
+
+Cause: `planet.wgsl::vs_main` now filters runtime detail by distance to the
+**macro-displaced** vertex. `raster_mesh_surface_height_meters_at` still used the
+undisplaced datum sphere. Here that is ~9820 m versus ~83 m, with 98 m versus
+0.83 m distance-filter floors. The collision triangles omitted detail the GPU
+actually drew. Both walking and low-flight collision use this same mesh query.
+
+Fix: calculate each collision vertex's macro-displaced distance from its source
+sample, matching the existing shader, before evaluating its detail height. No
+camera-offset inflation, terrain/shader changes, rebake or flight-speed change.
+The focused regression fails with the former distance and passes with the fix.
+
+Evidence (all under `test-runs/`):
+
+- Static before: `moon_camera_clearance/1788769531-336570`: reproduces underside,
+  reports falsely safe **+1.7 m** clearance.
+- Same fixed pose with corrected query: `moon_camera_clearance/1788769616-337102`:
+  **-6.421516 m**, correctly identifying that pose as underground. These first
+  two runs used the initial static diagnostic definition, before the scenario
+  was upgraded to drive real walking.
+- Real walking: `moon_camera_clearance/1788769694-337335`, passes. Waits then holds
+  W from 2 seconds. Capture clearances **1.700 / 1.776 m**; median depth-hit versus
+  CPU field differences **0.062 / 0.129 m**. The nearby overhead skirt lattice is
+  gone and the foreground is above-ground terrain.
+- Real flight: `moon_flight_clearance/1788769707-337369`, passes with the same pose
+  and downward-facing W input. Capture clearances **64.572 / 6.891 m**; median
+  depth-hit differences **0.286 / 0.018 m**. This site's very low sun leaves much
+  of the flight capture dark; these are collision regressions, not lighting or
+  terrain-seam sign-off.
+
+Scenario support adds optional `walk_on_surface` to the existing held-W replay,
+so the walking test uses real surface physics and post-stream correction, not an
+interpolated camera. Existing scenarios default to free flight. The actual fix
+is shared by interactive walking and flight, not confined to these replays.
+
+Reproduce with `target/release/catinthegarden-app --body moon --scenario
+moon_camera_clearance` or `moon_flight_clearance`. Fresh human walking/flying over
+other lunar terrain remains useful; no claim is made here to have repaired all
+terrain seams, geomorphing or source-window discrepancies. Bakes and the user's
+untracked `crates.tar.gz` remain untouched.
+
+Final validation: **481 workspace tests pass, 12 ignored**; workspace/all-target
+clippy with `-D warnings`, fmt and diff checks pass. Final guarded GPU runs
+`moon_camera_clearance/1788770071-339609` and
+`moon_flight_clearance/1788770084-339655` both pass. They additionally require at
+least 20 independent depth comparisons and <=2m p90 depth/CPU disagreement;
+walking also caps eye clearance at 2.5m. The reproduced pre-fix view's p90 was
+4.051m, so clearance alone is not the only acceptance signal.
