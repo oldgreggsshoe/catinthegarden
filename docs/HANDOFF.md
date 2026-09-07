@@ -1,13 +1,13 @@
 # Handoff — ocean wind sea spectrum
 
 **Branch:** `experiment/ocean-wind-sea-spectrum`, tracking
-`origin/experiment/ocean-wind-sea-spectrum`, at `19826f7`. The name is historical: the ocean work it
+`origin/experiment/ocean-wind-sea-spectrum`, at `23f4a84`. The name is historical: the ocean work it
 was opened for is done, and the active subject is now **a second body**.
 
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Written:** 6 September 2026.
+**Written:** 6 September 2026; header current to 7 September 2026.
 
 **How to read this file:** everything below this header is an append-only log of dated sections,
 oldest first. This header is the current state; **the newest work is the last section in the file,
@@ -182,7 +182,15 @@ See the latest section for the failing-before/passing-after evidence. No terrain
 
 **Known failures and open threads,** in the order worth picking up:
 
-1. **The survey and the app disagree by 227.353m about the summit's height.** `global_highest_summit`
+1. **Trees bob against the ground as the camera moves.** Diagnosed and measured, not fixed; the
+   plan and the obstacle are in the 7 September section "trees are planted on one surface and the
+   ground is drawn on another". A tree's ground height is computed on the CPU at *full* detail
+   (`outmap_surface_height_meters` pins the filter to `TERRAIN_DETAIL_MIN_FILTER_METERS`, 0.5m) and
+   baked into the instance as `surface_height: f32` (`forest.wgsl:100`), where it stays until the
+   patch rebuilds. The ground under it is drawn at `max(distance * 0.01, 0.5)`, refiltered every
+   frame. Same class as the collision bug `c99787a` fixed for the camera: a consumer of terrain
+   height using a different detail filter than the shader.
+2. **The survey and the app disagree by 227.353m about the summit's height.** `global_highest_summit`
    reports 186,709.142m at `ACTIVE_HIGHEST_PROMINENCE_DIRECTION`; the app's surface query reports
    186,936.495m there, stable across altitude and converging to exactly `raw_macro * 4` =
    186,941.266m by 36km up. So the app applies almost no detail where the survey applies -232.1m.
@@ -191,83 +199,86 @@ See the latest section for the failing-before/passing-after evidence. No terrain
    settled, `highest_prominence_peak`'s pose is derived from
    `ACTIVE_HIGHEST_PROMINENCE_DRAWN_SURFACE_METERS`, because that is what the clearance assertion
    measures; deriving it from the summit puts the camera 75m inside the mountain.
-2. **The probe is meaningless over water and nothing says so.** All 45 points in
+3. **The probe is meaningless over water and nothing says so.** All 45 points in
    `ocean_hybrid_close` and all 9 in `ocean_rough_horizon` have `cpu_height_meters` of exactly 0.0,
    so their reported deltas are rendered wave height, not a surface disagreement. No scenario arms
    `max_surface_probe_delta_m`; if one were armed on a water scenario it would fail on wave height
    alone.
-3. **A scenario can assert clearance with no probe-point floor, and be buried and green.** The
+4. **A scenario can assert clearance with no probe-point floor, and be buried and green.** The
    harness refuses a delta tolerance without `min_surface_probe_points` (`scenario.rs:740`) but has
    no such rule for a clearance assertion, which is how `landing_site_ground_detail` sat 687m inside
    a mountain and passed. Floors are now set on the four ground scenarios by hand. Whether to make
    that structural is a judgement call: several clearance scenarios are legitimately too far from
    ground to compare anything.
-4. **`descent_to_10m` fails on the terrain streamer**, and did so before any of this branch's work:
+5. **`descent_to_10m` fails on the terrain streamer**, and did so before any of this branch's work:
    LOD peaks at 14 against a required 18, 256 fallback chunks against an allowance of 128, and
    `tiles_loaded` stays at zero across twenty seconds. Not investigated.
-5. **`low_flight_performance`** was a known failure in the terrain era — 420 resident chunks, 334
+6. **`low_flight_performance`** was a known failure in the terrain era — 420 resident chunks, 334
    fallbacks, a 2,071.204m warm-up seam — and has not been re-measured since the ocean work began.
    Treat those numbers as unverified rather than current.
-6. **Thin raymarch probe coverage.** `coast_waters_edge` now has ray baselines (median 1.293m/1.172m,
+7. **Thin raymarch probe coverage.** `coast_waters_edge` now has ray baselines (median 1.293m/1.172m,
    p90 3.880m/4.308m at 70 and 71 points, against `surface_height_breakdown_at` rather than the
    raster node path, so not directly comparable with raster's figures). Every other baseline in this
    file is `render_path: raster`, and the two paths are meant to be at parity.
 7. The Gerstner fold budget stands at 1.17 against a physical limit of 1.0. Accepted and held
    invariant by `OCEAN_WAVE_SCALE`, not fixed; lowering it is a deliberate visual change.
 8. Underwater rendering is unimplemented, which is what the bobbing floor stands in for.
-9. **The moon's bake resolves craters to 2.4km and no finer**, because the working grid is 828m a
+10. **The moon's bake resolves craters to 2.4km and no finer**, because the working grid is 828m a
     cell. Going finer means a bigger grid, and the grid is held in memory as `Vec<DVec3>` — 8,192 x
     4,096 is already 805MB of directions, and doubling it is 3.2GB. Anything below that floor is the
     renderer's detail ladder's job, exactly as it is on the planet. The per-sample catalogue is now
     only the placeholder shown when there is no bake.
-10. **The moon surface spawn has never been verified interactively.** `body::spawns_on_surface`
+11. **The moon surface spawn has never been verified interactively.** `body::spawns_on_surface`
     starts the game standing on the moon, and no scenario reaches that path; scenario replay and
     interactive play differ structurally, and this branch has already lost three defects into that
     gap (ship lag, grey ocean, surface spawn). Needs `--body moon` run by hand.
-11. **The moon has never been looked at from the ground.** Every capture of it so far is
+12. **The moon has never been looked at from the ground.** Every capture of it so far is
     `orbit_once`, from 10,000km, where the disc is under 200 pixels across. Nothing has tested what
     the 2.4km bake floor looks like where the renderer's detail ladder takes over, whether the ice
     reads as a flat pond at eye level, or whether the Lommel-Seeliger lighting still holds when a
     crater wall fills the frame. There are no moon scenarios at all — the four ground scenarios are
     the planet's, on the planet's poses.
-12. **The scenario suite is not I/O-independent.** A `stand_on_ground` run taken while a 378MB bake
+13. **The scenario suite is not I/O-independent.** A `stand_on_ground` run taken while a 378MB bake
     was writing came back with a max pixel difference of 12 against a clean run of the same binary:
     tile streaming missed its budget and an ancestor fallback was drawn. Two clean runs since are 0.
     Nothing is wrong with the renderer, but a pixel comparison taken under disk load is not
     evidence, and nothing in the harness says so.
 
-14. **Rim-site selection and measurement are complete; interactive arrival is NOT signed off.**
+15. **Rim-site selection and measurement are complete; interactive arrival is NOT signed off.**
     The rebaked site has a 27.48-degree rim at 4km and the daylight ground scenario has 1.689m
     clearance. The real frozen startup is on the night side and remains 82.949m above streamed
     ground. Follow up the frozen startup/streaming interaction before calling arrival complete.
-15. **The moon's detail-source bandwidth is wrong for resampled sparse tiles.** At the new site,
+16. **The moon's detail-source bandwidth is wrong for resampled sparse tiles.** At the new site,
     runtime height contribution is exactly zero at all 74 compared points, not 0.158m. The high
     cut treats fine tile spacing as real detail, although moon export only resamples the 828m
     working grid; the datum-distance geometry filter also removes shorter wavelengths. Measured,
     not tuned; see the latest section. Correct source-bandwidth metadata is the next design issue.
-16. **`moon_crater_wall` passes while rendering entirely black.** Either aim it somewhere lit or say
+17. **`moon_crater_wall` passes while rendering entirely black.** Either aim it somewhere lit or say
     in the scenario that it is a night-side capture and assert something that would notice.
 
-17. **~1000ms frames were seen once on `orbit_once`, cause unknown.** Blamed on DPMS blanking; that
+18. **~1000ms frames were seen once on `orbit_once`, cause unknown.** Blamed on DPMS blanking; that
     was wrong — the same display state later gave 16.6ms. Not reproduced since.
 
-18. **The planet's near ground gained detail as a side effect of the moon fix**, moving 76.1% of
+19. **The planet's near ground gained detail as a side effect of the moon fix**, moving 76.1% of
     `stand_on_ground`'s pixels. Measured as slightly more relief, not less, and from the same root
     cause — but nobody has looked at the planet since, and every planet baseline older than this is
     stale.
-19. **`moon_ground_detail`'s camera pose is a measured lift, not a derivation.** Re-deriving it from
+20. **`moon_ground_detail`'s camera pose is a measured lift, not a derivation.** Re-deriving it from
     the baked landing site and eye height would survive the next rebake; this will not.
 
-20. **The near-field window boundary is visible on the moon** as a rectangular island of
+21. **The near-field window boundary is visible on the moon** as a rectangular island of
     differently-detailed ground. `NEAR_FIELD_MIN_EXTENT_METERS` is 12km, sized for a 4,000km body.
-21. **The app's sun is 23 degrees out of the equatorial plane and the ice model assumes zero.** Settle
+22. **The app's sun is 23 degrees out of the equatorial plane and the ice model assumes zero.** Settle
     this before touching any ice threshold; they are compensating for a premise that does not hold.
-22. **`Crater::freshness` is carried and unused**, the first piece of the surface texture.
+23. **`Crater::freshness` is carried and unused**, the first piece of the surface texture.
 
-23. **`planet_to_moon` starts the camera inside the drawn ground**, and its `planet_clearance` is
-    2.0 by construction rather than measurement, so it cannot report this. Measure from the depth
-    buffer. The visible symptom is a one-pixel terrain hairline sweeping the frame during the pitch-up.
-24. **`planet_to_moon` pins exposure at 1.0 with auto-exposure off.** Correct for comparing phases,
+24. **`planet_to_moon`'s underground start is CLOSED; the clearance measurement is not.** The start
+    was the raster mesh query filtering detail against the datum sphere, fixed in `c99787a`; the
+    one-pixel terrain hairline is gone at the plain two-metre seating and `planet_clearance` reads a
+    true 2.000. What remains open is that the number is still `altitude - height_field`, computed
+    from the same query that placed the camera, so it cannot contradict the pose that produced it.
+    Measure it from the depth buffer instead.
+25. **`planet_to_moon` pins exposure at 1.0 with auto-exposure off.** Correct for comparing phases,
     but its captures are not the game's lighting and should not be judged as such.
 
 **Build convention.** Benchmarks and parity runs build to `CARGO_TARGET_DIR=/home/dad/catingard-target`,
@@ -7234,3 +7245,75 @@ App all-target clippy (`-D warnings`) and workspace fmt check pass. Full workspa
 test attempt was interrupted (exit 143) before a summary; do not count that
 attempt as a full-suite pass. Focused ocean and explicit GPU results above are
 completed runs.
+
+
+## 7 September 2026 — trees are planted on one surface and the ground is drawn on another
+
+Ian, walking in a forest: the trees "kind of bounce up and down relative to the ground, it's subtle
+but it's there", and compared it to the boat lag. He is right, and it is the same class of bug
+`c99787a` had just fixed for the camera — a consumer of terrain height using a different detail
+filter from the one the shader draws with. The camera was fixed; the forest was not.
+
+**The mechanism, end to end.** A tree's ground height is computed on the CPU by
+`forest_surface_sample_at` -> `outmap_surface_height_meters`, which pins the detail filter to
+`TERRAIN_DETAIL_MIN_FILTER_METERS` (0.5m) regardless of distance — full detail, everywhere. That
+height is then baked into the instance buffer as a plain `surface_height: f32` (`forest.wgsl:100`,
+position = `direction * (PLANET_RADIUS_METERS + max(surface_height, 0.0))`) and stays fixed until the
+patch rebuilds. The ground *under* it is displaced by the terrain vertex shader at
+`vertex_filter_meters = max(terrain_detail_filter_meters(detail_distance), edge_detail_filter_meters(...))`,
+where `terrain_detail_filter_meters` is `max(distance * 0.01, 0.5)` — refiltered every frame as the
+camera moves. The tree is nailed to one surface; the ground beneath it is a different, moving one.
+
+**Measured**, walking `forest_travel` with `walk_on_surface`, gap = planted minus drawn, at anchors
+held at fixed distances ahead while the camera walked 87m:
+
+| distance | gap |
+| --- | --- |
+| 50 m | +0.015 m |
+| 150 m | -0.010 -> +0.019 (stepped at 33m walked) |
+| 300 m | -0.194 m |
+| 600 m | +0.898 m |
+| 1200 m | +1.006 m |
+
+The offset grows with distance because that is where the two filters diverge: inside ~50m both sit on
+the 0.5m floor and agree to 15mm, which is why the artefact is subtle rather than obvious. The
+*bounce* is the drawn ground stepping between filter levels under a stationary tree. One 29mm step at
+150m was caught in an 87m walk; the same anchor in the fast `forest_travel` flight showed the drawn
+ground jumping by up to 20.8m across LOD transitions. **Not characterised:** how often it steps at
+normal walking pace — 87m only crossed one boundary.
+
+**The fix.** Have the tree's vertex shader compute its ground height with the terrain's own
+displacement code, instead of carrying a CPU-computed f32 that goes stale. Then tree and ground move
+together and the relative motion disappears; the tree's absolute height still changes with distance,
+but only motion *against* the ground reads as a bounce. This is viable because the displacement is
+purely procedural — no texture reads — so the drawn height is
+`base_height + terrain_detail(dir, local, filter(distance), spacing, base_height).height_meters`,
+and a tree knows its own distance. Note `vertex_spacing_meters` does **not** bound the vertex
+displacement (it is only passed to the fragment stage at `planet.wgsl:888`), so distance is the whole
+of it away from node edges.
+
+**The obstacle, which is why this is a handoff and not a commit.** The forest shader cannot simply
+include the terrain shader: `forest.wgsl` declares `@group(2)` bindings 0-3 and `shared_planet.wgsl`
+declares `@group(2)` bindings 3-14, so they collide on binding 3. Only four symbols actually clash —
+`planet_to_view`, `srgb_to_linear`, `Camera`, `camera` — so the route is to extract the detail ladder
+into its own `terrain_detail.wgsl` included by both `shared_planet_shader_source()` and
+`forest_shader_source()`. The block is contiguous (`shared_planet.wgsl` 597-902: `DetailNoise`
+through `terrain_detail_filter_meters`, including `baked_sample_spacing_meters` and
+`terrain_vertex_spacing_meters`) plus the `TERRAIN_DETAIL_*` constants and `terrain_detail_octave_tilt`
+near the top of the file. `terrain_macro_height_scale` must **stay** in `shared_planet.wgsl` — it
+reads the `camera` and `terrain_settings` uniforms.
+
+**Verification the extraction should carry:** it is pure code motion, so the terrain must render
+pixel-identical before the forest is touched. Then the instance needs the macro height and the baked
+sample spacing rather than the final height, and the shader adds the detail itself.
+
+**One precision caveat to watch.** `terrain_detail_band` splits its noise coordinate into an anchor
+cell index plus a local offset precisely because f32 quantises an absolute 4e6 domain coordinate to
+0.25. The terrain uses the node's anchor plus the vertex's local metres. A tree using its own
+direction as the anchor with a zero local offset will mis-register the finest octaves against the
+terrain's registration by up to half a cell — but those octaves have amplitude
+`wavelength * TERRAIN_DETAIL_ROUGHNESS`, so at 1m wavelength that is a few centimetres, against the
+0.9m error being removed. Worth measuring rather than assuming.
+
+Nothing was committed for this. The instrumentation and the temporary `forest_walk_probe` scenario
+used to take the measurements above were removed; the tree is clean.
