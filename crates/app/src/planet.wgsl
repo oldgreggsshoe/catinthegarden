@@ -1961,7 +1961,18 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     // Preserve the established shallow beach colour on positive terrain.
     // Actual open sea (macro height <= 0) was discarded above and is drawn by
     // the level shell, so this blend can no longer raise the ocean silhouette.
-    let ocean_coverage = outmap_ocean_coverage(outmap, macro_height_meters);
+    // The discard above deliberately keeps a fragment whose sampled texel reads
+    // negative while the triangle it belongs to was displaced from a positive
+    // neighbour, because discarding those punches square holes in solid land.
+    // The colour has to honour the same doubt about that sample. Where the
+    // drawn surface is a few metres above the datum this is a wet shoreline and
+    // the blend is wanted; where it is a kilometre up a mountain the sample is
+    // simply stale -- a fallback source tile answering for ground it does not
+    // cover -- and trusting it paints the sea across a summit. Fade the blend
+    // out over the same 80m band the coverage ramp itself uses, so the coast is
+    // untouched and the mountain cannot be flooded.
+    let ocean_coverage = outmap_ocean_coverage(outmap, macro_height_meters)
+        * (1.0 - smoothstep(0.0, 80.0, input.surface_height_and_fog_color.x));
     let biome_blend = sample_biome_blend(input.source_uv);
     let moisture = sample_moisture(input.source_uv);
     let base_biome_color = blended_biome_color(biome_blend);

@@ -7776,3 +7776,49 @@ to", and the number in it is not evidence for anything.
 **Validation.** 489 workspace tests (14 ignored), fmt clean, workspace clippy clean.
 `ocean_hybrid_close` and `ocean_rough_horizon` pass. No timing claim: swap was 976MB of 976MB for
 this whole session, which is exactly the state that produces the 1000ms frames.
+
+## 8 September 2026 — sea colour painted across a mountain, from a source tile that was not looking
+
+Ian reported blue and turquoise terrain far inland near mountains, at 19.5km altitude with
+**248 of 255 chunks on fallback tiles**. It is terrain, not the sea: the HUD reports 4 ocean chunks
+in that frame and the blue area carries terrain relief.
+
+**Mechanism.** `terrain_fragment_color` discards open sea only when the sampled texel *and* the
+drawn geometry agree that this is below the datum:
+
+    if is_open_ocean_surface(outmap, macro_height_meters, biome_id)
+        && input.surface_height_and_fog_color.x <= 0.0 { discard; }
+
+The second condition is deliberate and its comment says why -- a fallback source tile can sample a
+negative texel at a fragment whose triangle was displaced from a positive neighbour, and discarding
+those punches square holes in solid land. But the colour a few lines down still trusted that same
+sample: `outmap_ocean_coverage(outmap, macro_height_meters)` fires for any texel in (-80, 0]. So the
+fragment that was saved from becoming a hole became a patch of sea instead, and `ocean_coverage <=
+0.0` is the ordinary-land early-out, so this blend is reached *only* by fragments whose sample and
+geometry disagree.
+
+**Reproduced before fixing.** Painting the inconsistent set -- sampled height <= 0 while the drawn
+surface is above the datum -- magenta shows **3,593 pixels, 0.390% of frame, in
+`highest_prominence_peak`**, and zero in `mountain_ground` (which has almost no fallback exposure at
+eye level). The defect scales with fallback coverage, which is why Ian's 248-fallback view shows so
+much of it.
+
+**Fix.** Fade the blend out over the same 80m band the coverage ramp already uses:
+
+    let ocean_coverage = outmap_ocean_coverage(outmap, macro_height_meters)
+        * (1.0 - smoothstep(0.0, 80.0, input.surface_height_and_fog_color.x));
+
+The distinction between a wet shoreline and a flooded summit is magnitude. A beach stands metres
+above the datum and keeps its blend; a mountain stands kilometres above it and cannot be flooded by
+a stale sample. Measured: `highest_prominence_peak` changes **3,246 pixels (0.352%)**, matching the
+flagged set, and those pixels go from blue-dominant (68.7, 83.5, 132.4) to land (86.1, 86.6, 122.9).
+`coast_waters_edge` is **bit-identical, 0 pixels changed on both captures**, so the shoreline the
+band exists to protect is untouched.
+
+**Unrelated pre-existing failure, not caused by this.** `highest_prominence_peak` fails
+`camera_stands_on_the_ground` at 379.883m against a 150-155m bound, identically before and after
+this change. That is thread 2's territory -- a pose derived against a summit height the app and the
+survey disagree about -- and it is failing today.
+
+**Validation.** 489 workspace tests (14 ignored), fmt clean, workspace clippy clean.
+`coast_waters_edge` and `mountain_ground` pass. No timing claim; swap has been full all session.
