@@ -88,10 +88,15 @@ horizontal descends; a walker's is still flattened onto the surface. Three thing
 and one had to be added, and the last section in this file is why. The crest floor above is off for
 a diver and on for everyone else, and *only a commanded dive* sets that state — latching it on being
 below the waterline would let a crest turn the guard off, which is the exact bug the guard exists
-for. The restoring spring and the wave-following drag fade out over the first body height of depth,
-because both are surface devices; below that it is Archimedes against drag, and a diver who stops
-swimming drifts back up at `SUBMERGED_ASCENT_SPEED_METERS_PER_SECOND` (0.2 m/s). A dive stops 0.5m
-off the bathymetry, or at the -100m core clearance where the bed is deeper than that. Interactive
+for. The whole floating model — the restoring spring, the wave-following drag and the buoyancy
+itself — fades out over the first body height of depth, because all three are surface devices. Below
+that the diver is **neutrally buoyant and holds the depth they stopped at**; swimming back up is how
+you surface, and it is the only way. A dive stops 0.5m off the bathymetry at **any** depth: the
+-100m `PLANET_CORE_CLEARANCE_METERS` is a backstop for a runaway with no bed to catch it, and no
+longer applies over water. That floor has one definition, `swimming_bed_eye_altitude_meters` —
+`resolve_surface_camera_after_streaming` holds it again after every tile lands, and when it had its
+own arithmetic it used the 1.70m walking eye height and silently overrode the dive floor.
+Interactive
 startup enters swimming mode at 30.246944N, 14.474559W, roughly 50km seaward of the authored coast.
 
 **Clocks.** `INTERACTIVE_DAY_REAL_SECONDS` is 1200 (`main.rs:83`) and the rotation scale derives
@@ -7961,3 +7966,51 @@ One consequence of that commit nobody has signed off by eye: the window rim is n
 as wavier. Fresnel transmission collapses from 0.44 to 0 inside the last 0.004 of cosine, where the
 old `smoothstep(0.58, 0.74)` faded over a band forty times wider. Physically that is what a real
 Snell's window does, but it is a second change riding along with the first.
+
+## 8 September 2026 — hold depth instead of floating, and the bed at any depth
+
+Two reversals of the section above, both asked for after trying to reason about it: a diver should
+be able to reach the sea bed however deep it is, and should hold position rather than drift back up.
+
+**Neutral buoyancy at depth.** The drift was Archimedes still acting on a body that is 0.85 the
+density of water. Rather than special-case it, the same `surface_authority` fade that already
+retired the restoring spring and the wave-following drag now also nets out gravity and buoyancy
+together — one multiply, `acceleration *= surface_authority`, applied after they are summed and
+before drag. At the waterline authority is 1 and nothing changes; a body height under it is 0 and
+the diver is weightless. `SUBMERGED_ASCENT_SPEED_METERS_PER_SECOND` and the drag derived from it are
+gone, replaced by `SUBMERGED_VERTICAL_DRAG_PER_SECOND` (8.0, a 0.125s time constant) whose only job
+is to kill residual motion so releasing the stroke means stopping rather than coasting. The settled
+descent is now the full 2.0 m/s stroke with nothing subtracted from it, and the first two seconds
+cover 3.155m of a possible 4.0m — the missing 0.845m is the floating model still at full authority
+through the first body height, which is correct and is asserted.
+
+Surfacing is now *only* by swimming up, so a test covers that specifically: ten seconds of upward
+stroke from five seconds of descent has to break the surface and hand the swimmer back to the
+floating model, rather than stalling a body height under it where authority is still zero.
+
+**The bed at any depth.** `PLANET_CORE_CLEARANCE_METERS` capped every dive at -100m. Its actual job
+is to stop a runaway that has no bed to land on, so it no longer applies where there is water: over
+water the bathymetry is the floor, four kilometres down if that is where the bed is. The
+compile-time assertion in `ocean.rs` tying it to `MAXIMUM_WAVE_HEIGHT_METERS` is untouched and still
+meaningful, because it is about troughs on dry-land-adjacent water. The old
+`swimming_cannot_fall_below_the_underwater_safety_floor` test asserted the -100m cap; it now asserts
+the bed catches the same runaway, which is a tighter bound than the one it replaces rather than a
+looser one.
+
+**A floor that was being overridden.** Chasing the depth cap turned up a second one.
+`resolve_surface_camera_after_streaming` re-resolves the eye after each tile lands, and its
+`minimum_eye_altitude` was `terrain_height + HUMAN_EYE_HEIGHT_METERS` *unconditionally* — including
+over water. So the 0.5m bed clearance `advance_vertical` had just applied was quietly raised to
+1.70m one call later, and the unit test that asserted 0.5m passed the whole time because it tests
+`advance_vertical` in isolation. Both now go through `swimming_bed_eye_altitude_meters`. Worth
+noting the shape: a unit test on a pure function proves nothing about a value a second writer
+overwrites downstream, and this floor had exactly two writers.
+
+**Not verified.** Nobody has dived deep interactively. Two things are known to be waiting down
+there and neither is a defect in this change: `OCEAN_UNDERWATER_VISIBILITY_METERS` is 30.0, so below
+about thirty metres the fog is everything and a four-kilometre dive is a long descent into black;
+and the ocean shell is drawn at sea level, so from far beneath it the underside is well past the fog
+anyway. Whether the LOD selector and tile streaming behave sensibly at a camera altitude of -4000m
+is untested — before this, nothing could get below -100m, so that range has never been exercised.
+
+501 workspace tests and clippy pass.

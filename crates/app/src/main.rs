@@ -2181,7 +2181,12 @@ impl State {
         let previous_position = self.flight_local_position;
         let local_radial = previous_position.normalize();
         let mut eye_altitude = previous_position.length() - planet::planet_radius_meters();
-        if eye_altitude <= surface_camera::PLANET_CORE_CLEARANCE_METERS {
+        // A backstop for a runaway with no bed to stop it, so it cannot apply to
+        // a swimmer: over water the sea bed is the floor at any depth, and this
+        // clamp runs before the bed is sampled.
+        if !self.surface_physics.in_water
+            && eye_altitude <= surface_camera::PLANET_CORE_CLEARANCE_METERS
+        {
             eye_altitude = surface_camera::PLANET_CORE_CLEARANCE_METERS;
             self.flight_local_position =
                 local_radial * (planet::planet_radius_meters() + eye_altitude);
@@ -2210,8 +2215,15 @@ impl State {
                 eye_altitude = fixed_eye_altitude;
             }
         }
-        let minimum_eye_altitude =
-            environment.terrain_height_meters + surface_camera::HUMAN_EYE_HEIGHT_METERS;
+        // Over water this is the sea bed a diver rests on, not the walking eye
+        // height: those are different numbers, and using the walking one here
+        // silently overrode the dive floor that `advance_vertical` had just
+        // applied.
+        let minimum_eye_altitude = if environment.water_surface.is_some() {
+            surface_camera::swimming_bed_eye_altitude_meters(environment.terrain_height_meters)
+        } else {
+            environment.terrain_height_meters + surface_camera::HUMAN_EYE_HEIGHT_METERS
+        };
         if environment.water_surface.is_none()
             && eye_altitude <= minimum_eye_altitude + surface_camera::GROUND_CONTACT_EPSILON_METERS
         {
