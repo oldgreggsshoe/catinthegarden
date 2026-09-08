@@ -423,19 +423,32 @@ fn flight_movement_direction(
     (movement.length_squared() > 0.0).then(|| movement.normalize())
 }
 
+/// Builds the movement direction for a walker or a swimmer.
+///
+/// A walker's forward axis is the look vector flattened onto the surface: you
+/// cannot walk into the ground by looking down. A swimmer's is the look vector
+/// itself, so pitching below the horizontal descends and pitching above it
+/// climbs. Strafing stays level in both media -- A/D should sidestep, not roll
+/// a dive -- so the right axis is built from the flattened forward either way.
 fn surface_movement_direction(
     input: FlightMovementInput,
     camera_forward: glam::DVec3,
     local_radial: glam::DVec3,
     fallback_forward: glam::DVec3,
+    swimming: bool,
 ) -> Option<glam::DVec3> {
     let projected_forward = camera_forward - local_radial * camera_forward.dot(local_radial);
-    let forward = if projected_forward.length_squared() > f64::EPSILON {
+    let level_forward = if projected_forward.length_squared() > f64::EPSILON {
         projected_forward.normalize()
     } else {
         fallback_forward
     };
-    let right = forward.cross(local_radial).normalize();
+    let right = level_forward.cross(local_radial).normalize();
+    let forward = if swimming && camera_forward.length_squared() > f64::EPSILON {
+        camera_forward.normalize()
+    } else {
+        level_forward
+    };
     flight_movement_direction(input, forward, right)
 }
 
@@ -1980,39 +1993,62 @@ impl State {
                 local_forward,
                 local_radial,
                 self.flight_local_tangent,
+                environment.open_ocean,
             );
             let movement_speed = surface_camera::movement_speed_meters_per_second(
                 environment.open_ocean,
                 self.flight_speed_scale,
             );
+            // The stroke is split here rather than handed whole to the sphere
+            // advance: that clamps its radius at the sea level datum, so a dive
+            // driven through it would stop dead at the surface. Altitude is
+            // `advance_vertical`'s to own -- it holds the sea bed and core
+            // floors -- and the total speed along the look vector stays
+            // `movement_speed`, so pitching down trades travel for depth.
+            let swim_vertical_speed = if environment.open_ocean {
+                movement_direction.map_or(0.0, |direction| {
+                    direction.dot(local_radial) * movement_speed
+                })
+            } else {
+                0.0
+            };
 
             if let Some(movement_direction) = movement_direction {
-                let movement_distance = movement_speed * step_seconds;
-                let candidate_position = advance_flight_position_on_sphere(
-                    self.flight_local_position,
-                    movement_direction,
-                    movement_distance,
-                );
-                let candidate_radial = candidate_position.normalize();
-                if let Some(candidate_environment) = self.surface_environment_at(
-                    candidate_radial,
-                    eye_altitude_meters,
-                    ocean_time_seconds,
-                ) && surface_camera::walkable_step(
-                    environment.terrain_height_meters,
-                    candidate_environment.terrain_height_meters,
-                    movement_distance,
-                    candidate_environment.open_ocean,
-                ) {
-                    self.flight_local_position = candidate_position;
-                    self.flight_local_tangent = transport_flight_tangent(
-                        self.flight_local_tangent,
-                        local_radial,
-                        candidate_radial,
+                let tangential =
+                    movement_direction - local_radial * movement_direction.dot(local_radial);
+                if tangential.length_squared() > f64::EPSILON {
+                    let movement_distance = tangential.length() * movement_speed * step_seconds;
+                    let candidate_position = advance_flight_position_on_sphere(
+                        self.flight_local_position,
+                        tangential.normalize(),
+                        movement_distance,
                     );
+                    let candidate_radial = candidate_position.normalize();
+                    if let Some(candidate_environment) = self.surface_environment_at(
+                        candidate_radial,
+                        eye_altitude_meters,
+                        ocean_time_seconds,
+                    ) && surface_camera::walkable_step(
+                        environment.terrain_height_meters,
+                        candidate_environment.terrain_height_meters,
+                        movement_distance,
+                        candidate_environment.open_ocean,
+                    ) {
+                        self.flight_local_position = candidate_position;
+                        self.flight_local_tangent = transport_flight_tangent(
+                            self.flight_local_tangent,
+                            local_radial,
+                            candidate_radial,
+                        );
+                        self.flight_travel_direction = movement_direction;
+                        self.flight_speed.speed_meters_per_second = movement_speed;
+                        environment = candidate_environment;
+                    }
+                } else if swim_vertical_speed != 0.0 {
+                    // Looking straight down or straight up: there is no ground
+                    // step to test, and the whole stroke is resolved below.
                     self.flight_travel_direction = movement_direction;
                     self.flight_speed.speed_meters_per_second = movement_speed;
-                    environment = candidate_environment;
                 }
             }
 
@@ -2029,6 +2065,7 @@ impl State {
                         environment.terrain_height_meters,
                         environment.water_surface,
                         jump_requested,
+                        swim_vertical_speed,
                         step_seconds,
                     )
                 }
@@ -2038,6 +2075,7 @@ impl State {
                     environment.terrain_height_meters,
                     environment.water_surface,
                     jump_requested,
+                    swim_vertical_speed,
                     step_seconds,
                 )
             };
@@ -2727,6 +2765,7 @@ impl State {
         let surface_vertical_speed = self.surface_physics.vertical_velocity_meters_per_second;
         let surface_grounded = self.surface_physics.grounded;
         let surface_in_water = self.surface_physics.in_water;
+        let surface_submerged = self.surface_physics.submerged;
         let adapter_label = self.adapter_label.clone();
         let terrain_stats = self.terrain_stats.clone();
         let forest_snapshot = self.forest.stats();
@@ -2867,7 +2906,9 @@ impl State {
                         } else if camera_mode == CameraMode::Surface {
                             ui.label(format!(
                                 "Surface speed: {flight_speed_meters_per_second:.2} m/s  |  vertical {surface_vertical_speed:+.2} m/s  |  {}  |  scale {flight_speed_scale:.5}x  ([ / ])",
-                                if surface_in_water {
+                                if surface_submerged {
+                                    "submerged"
+                                } else if surface_in_water {
                                     "swimming"
                                 } else if surface_grounded {
                                     "grounded"
@@ -5386,10 +5427,72 @@ mod tests {
             downhill_look,
             radial,
             DVec3::Z,
+            false,
         )
         .expect("forward is held");
         assert!(movement.dot(radial).abs() < 1.0e-12);
         assert!(movement.dot(DVec3::Z) > 0.999);
+    }
+
+    #[test]
+    fn a_swimmer_looking_down_trades_travel_for_depth() {
+        // The walker above flattens the look vector; a swimmer keeps it, so the
+        // same pose that walks level dives at the pitch it is looking.
+        let radial = DVec3::Y;
+        let downhill_look = DVec3::new(0.0, -0.8, 0.6).normalize();
+        let movement = surface_movement_direction(
+            FlightMovementInput {
+                forward: true,
+                ..FlightMovementInput::default()
+            },
+            downhill_look,
+            radial,
+            DVec3::Z,
+            true,
+        )
+        .expect("forward is held");
+        assert!((movement.length() - 1.0).abs() < 1.0e-12);
+        assert!((movement.dot(radial) - -0.8).abs() < 1.0e-12);
+        // The stroke is one speed shared between depth and travel, so the
+        // horizontal part shrinks by exactly what the descent takes.
+        assert!((movement.dot(DVec3::Z) - 0.6).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn a_swimmer_looking_straight_down_descends_without_travelling() {
+        let radial = DVec3::Y;
+        let movement = surface_movement_direction(
+            FlightMovementInput {
+                forward: true,
+                ..FlightMovementInput::default()
+            },
+            -radial,
+            radial,
+            DVec3::Z,
+            true,
+        )
+        .expect("forward is held");
+        assert!((movement.dot(radial) - -1.0).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn a_swimmer_strafes_level_whatever_the_pitch() {
+        // A/D should sidestep, not roll the dive, so the right axis is built
+        // from the flattened forward in both media.
+        let radial = DVec3::Y;
+        let downhill_look = DVec3::new(0.0, -0.8, 0.6).normalize();
+        let movement = surface_movement_direction(
+            FlightMovementInput {
+                right: true,
+                ..FlightMovementInput::default()
+            },
+            downhill_look,
+            radial,
+            DVec3::Z,
+            true,
+        )
+        .expect("strafe is held");
+        assert!(movement.dot(radial).abs() < 1.0e-12);
     }
 
     #[test]

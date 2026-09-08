@@ -10,7 +10,7 @@ surface appearance rather than its geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Written:** 6 September 2026; header current to 7 September 2026.
+**Written:** 6 September 2026; header current to 8 September 2026.
 
 **How to read this file:** everything below this header is an append-only log of dated sections,
 oldest first. This header is the current state; **the newest work is the last section in the file,
@@ -52,8 +52,10 @@ The calm and storm amplitude scales, `MAXIMUM_WAVE_HEIGHT_METERS` and the steepn
 it; `ocean::wgsl_constants` generates the shader's copies and `planet::shared_planet_shader_source`
 prepends them, which both the raster and raymarch assemblers go through, so the two render paths
 cannot disagree. Steepness is `1 / OCEAN_WAVE_SCALE`, holding the Gerstner self-intersection budget
-invariant at 1.17 against a physical limit of 1.0 — the sea already folds; the knob holds it there
-rather than letting it grow. Its real ceiling is the camera's -100m underwater floor, around 1.8.
+invariant at **2.0507** against a physical limit of 1.0 — the sea already folds; the knob holds it
+there rather than letting it grow. (This line read 1.17 until 8 September: the table was retuned and
+the prose was not. `ocean::fold_budget()` is authoritative and prints the number above; anything
+reasoning from 1.17 is reasoning from a number that stopped being true some retunes ago.) Its real ceiling is the camera's -100m underwater floor, around 1.8.
 Two guards run before the shader mirroring, so an out-of-range knob is reported before anything is
 edited.
 
@@ -76,12 +78,21 @@ breaking.
 flight camera and back; F4 returns either close mode to the saved orbit pose. Surface vertical
 motion is a fixed-substep gravity simulation rather than a surface clamp: `Space` jumps 5.2m/s on
 land or 2.5m/s submerged, uphill movement is rejected above 42 degrees, and descent and water entry
-stay allowed. In water, buoyancy drives the motion but the eye cannot end a substep below the
-surface — this sea's crests accelerate downward at close to g and overtake a floating body, leaving
-it submerged 41% of a storm, and twenty times the restoring force only reached 23%. So bobbing has a
-floor rather than a stiffer spring. That is a camera concession, not physics; true immersion wants
-the underwater rendering that is still unimplemented. Interactive startup enters swimming mode at
-30.246944N, 14.474559W, roughly 50km seaward of the authored coast.
+stay allowed. In water, buoyancy drives the motion but a swimmer who is not diving cannot end a
+substep below the surface — this sea's crests accelerate downward at close to g and overtake a
+floating body, leaving it submerged 41% of a storm, and twenty times the restoring force only
+reached 23%. So bobbing has a floor rather than a stiffer spring.
+
+**You can dive.** A swimmer's forward axis is the whole look vector, so pitching below the
+horizontal descends; a walker's is still flattened onto the surface. Three things had to give way
+and one had to be added, and the last section in this file is why. The crest floor above is off for
+a diver and on for everyone else, and *only a commanded dive* sets that state — latching it on being
+below the waterline would let a crest turn the guard off, which is the exact bug the guard exists
+for. The restoring spring and the wave-following drag fade out over the first body height of depth,
+because both are surface devices; below that it is Archimedes against drag, and a diver who stops
+swimming drifts back up at `SUBMERGED_ASCENT_SPEED_METERS_PER_SECOND` (0.2 m/s). A dive stops 0.5m
+off the bathymetry, or at the -100m core clearance where the bed is deeper than that. Interactive
+startup enters swimming mode at 30.246944N, 14.474559W, roughly 50km seaward of the authored coast.
 
 **Clocks.** `INTERACTIVE_DAY_REAL_SECONDS` is 1200 (`main.rs:83`) and the rotation scale derives
 from it. Weather takes its clock from the rotation — `WEATHER_DAYS_PER_PLANET_ROTATION` is 1.0
@@ -7868,3 +7879,85 @@ diff checks pass. Both explicit Quadro GPU tests pass: six optical cases and
 24 wave-parity cases (maximum normal error 0.000089958, height 0.000058081m).
 Release rebuilt in target/release. No performance claim. Unrelated
 crates.tar.gz is untouched. Ray seabed parity (thread 26) remains open.
+
+## 8 September 2026 — you can swim down now, and three things were holding the eye at the surface
+
+Asked for: pitch the look vector below the horizontal and descend. The obvious blocker was real but
+was one of four, and the interesting part is that the other three were all load-bearing.
+
+`surface_movement_direction` (`main.rs:432`) projected the radial component out of the look vector
+before movement was computed, so the stroke was always tangential. That is the one you would find by
+reading. It now flattens the forward axis only for a walker; a swimmer keeps the raw look vector.
+Strafing stays level in both media — the right axis is built from the flattened forward either way,
+because A/D should sidestep rather than roll a dive. The sphere advance already split a direction
+into radial and tangential parts, but its radius clamp is the sea level datum, so a dive driven
+through it would have stopped dead at the surface. The stroke is therefore split by the caller: the
+tangential part travels, the radial part is handed to `advance_vertical`, which owns altitude and
+its floors. Total speed along the look vector stays `movement_speed`, so pitching down trades travel
+for depth rather than adding to it.
+
+Fixing only that would still not have descended a centimetre. **The buoyancy restoring spring** is
+keyed on the error against still-water equilibrium, and at five metres down that error saturates its
+own 24 m/s^2 clamp — about 8 m/s of upward push against a 2 m/s stroke. **The crest floor** ends
+every substep at least 0.06m above the water by construction. Both are *surface* devices: the spring
+exists to keep a bobbing eye with the sea it floats on, and the wave-following drag reference is the
+surface's orbital velocity, which is not the water's velocity at depth. So both now fade out over
+the first body height of depth via `surface_authority`, and the crest floor is switched off for a
+diver rather than faded.
+
+The subtle one is what sets "submerged". Latching it on merely being below the waterline would mean
+a crest overtaking a floating swimmer sets it, the crest guard switches itself off, and the sea
+closes over an eye that never asked to go under — which is precisely the regression the guard was
+built for. Only a commanded dive sets it; surfacing clears it at the guard's own clearance.
+
+The fourth thing was not blocking, it was waiting: over water **both ground clamps are disabled**
+(`water_surface.is_none()` guards them), so the moment a dive worked at all it would have swum
+straight through the bathymetry to the -100m core clearance. A dive now stops 0.5m off the bed,
+which is enough to inspect the bottom and enough to absorb the disagreement between the bathymetry
+the CPU samples and the bed the renderer draws. Where the bed is deeper than the core clearance the
+core clearance still wins, so that stays the single hard floor.
+
+Measured, over still water: the settled descent is 1.8 m/s, the 2.0 m/s stroke less the 0.2 m/s the
+diver is still floating up at. The first two seconds only cover about 2.6m, because near the surface
+the spring is still at full authority — that is the model behaving correctly, not a governor. The
+release drift is asserted to reach 0.2 m/s within 0.01.
+
+**Nothing about swimming on the surface changes, and that is checked rather than asserted.** While
+the crest floor is holding the eye above the water, `surface_authority` is pinned at exactly 1.0, so
+the blended drag evaluates to `3.0 * 1.0 + x * 0.0` and the spring to `... * 1.0` — bit-identical
+arithmetic, not merely similar. The pre-existing storm-crest regression test passes untouched, and a
+new test holds the guard on for level strokes down to -1e-15 m/s, so a look vector a few float ulps
+off horizontal cannot sink anyone. `DELIBERATE_DESCENT_SPEED_METERS_PER_SECOND` (0.05, about 1.4
+degrees of pitch at swim speed) is that dead zone.
+
+Ten new tests; 501 workspace tests and clippy pass. The HUD's swimming line now reads `submerged`
+while under. **Interactive sign-off is still outstanding** — every number above is from the physics
+model under test, and no one has yet pressed `G`, looked down and held W. Note `G`, not F4: F4
+toggles orbit and low flight, `G` toggles the surface camera out of low flight.
+
+### Verifying the underside refraction of the section above
+
+`4f41d68` was checked rather than taken, and it holds. Its claim was that the window now distorts
+with the waves instead of painting an unchanged sky, and the criterion that shows it is structure
+*inside* the window with the rim excluded: mask the top 40% of luminance, erode it 3px so the rim
+cannot contribute, and take mean |Laplacian| of luminance there. Across the four
+`ocean_underwater_visibility` frames that rises **3.05x, 4.03x, 5.18x and 6.70x**. The pre-fix values
+are 0.10 to 0.29 — flat, which is exactly what "sky sampled along `view_ray`, the normal used only
+for a window mask" has to produce. That rejects the archived captures and passes the new ones.
+
+The optics were re-derived independently and are right, including that the refraction is *not* in
+the GLSL `refract` sign convention — `view_ray` runs toward the surface and the normal is on the
+same side, so the form is `eta*I + (cos_air - eta*cos_water)*N`, which is what the commit has.
+
+Three things about that commit, recorded because they are process rather than code. Its four replays
+were run from a dirty tree and their manifests are therefore stamped `0806dc8`, the commit *before*
+the fix, so the evidence for the change is filed under the state it replaced;
+`ocean_rough_horizon/1788879028-29790` at the real commit passes and is the one to cite. It ran
+`ocean_hybrid_close` this time but `ocean_rough_horizon` was missing for the third time. And the
+`///` block that documents `ocean_underside_colour` now sits above `ocean_water_to_air`, which was
+inserted between the two.
+
+One consequence of that commit nobody has signed off by eye: the window rim is now sharper as well
+as wavier. Fresnel transmission collapses from 0.44 to 0 inside the last 0.004 of cosine, where the
+old `smoothstep(0.58, 0.74)` faded over a band forty times wider. Physically that is what a real
+Snell's window does, but it is a second change riding along with the first.
