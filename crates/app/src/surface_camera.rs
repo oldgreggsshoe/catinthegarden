@@ -51,6 +51,17 @@ pub const SWIMMING_BED_EYE_CLEARANCE_METERS: f64 = 0.5;
 /// through it, so ordinary level swimming cannot be swallowed by a wave on the
 /// strength of a look vector that is a few float ulps off horizontal.
 const DELIBERATE_DESCENT_SPEED_METERS_PER_SECOND: f64 = 0.05;
+/// How far under the waterline the floating model has fully given way to a
+/// neutrally buoyant diver.
+///
+/// This was one body height, and a body height is far too deep: the most
+/// interesting thing to hold station in front of is Snell's window, which is
+/// directly overhead in the first metre or two, and at -1.0m the old fade left
+/// enough buoyancy to float a stopped diver back out in about ten seconds.
+/// Making it short keeps that band neutral while changing nothing about
+/// floating, because the crest guard holds a non-diving eye above the waterline
+/// where the fade is saturated at one regardless of how steep it is.
+const NEUTRAL_BUOYANCY_DEPTH_METERS: f64 = 0.3;
 /// The eye may ride down into a crest, but never through it.
 ///
 /// This ocean's crests accelerate downward at close to g, so a genuinely
@@ -174,8 +185,7 @@ impl SurfacePhysicsState {
                     // fades out over the first body height of depth, leaving a
                     // neutrally buoyant diver who holds the depth they stopped
                     // at. Swimming back up is how you surface.
-                    let surface_authority =
-                        surface_authority(eye_altitude_meters, water_height);
+                    let surface_authority = surface_authority(eye_altitude_meters, water_height);
                     acceleration += GRAVITY_METERS_PER_SECOND_SQUARED * submerged_fraction
                         / EFFECTIVE_BODY_DENSITY_RELATIVE_TO_WATER;
                     // Gravity and buoyancy net out together, so this is the one
@@ -311,12 +321,12 @@ pub fn equilibrium_eye_height_above_water_meters() -> f64 {
 
 /// How much of the surface-floating model still applies at this eye altitude.
 ///
-/// One at and above the waterline, falling to zero one body height under it.
-/// While the crest guard is holding the eye above the surface this is pinned at
-/// one, which is why nothing about swimming on the surface changes.
+/// One at and above the waterline, falling to zero `NEUTRAL_BUOYANCY_DEPTH_METERS`
+/// under it. While the crest guard is holding the eye above the surface this is
+/// pinned at one, which is why nothing about swimming on the surface changes.
 fn surface_authority(eye_altitude_meters: f64, water_height: f64) -> f64 {
-    ((eye_altitude_meters - (water_height - EFFECTIVE_BODY_HEIGHT_METERS))
-        / EFFECTIVE_BODY_HEIGHT_METERS)
+    ((eye_altitude_meters - (water_height - NEUTRAL_BUOYANCY_DEPTH_METERS))
+        / NEUTRAL_BUOYANCY_DEPTH_METERS)
         .clamp(0.0, 1.0)
 }
 
@@ -460,8 +470,14 @@ mod tests {
                 time_seconds,
                 depth,
             );
-            eye =
-                physics.advance_vertical(eye, -depth, Some((height, velocity)), false, 0.0, 1.0 / 60.0);
+            eye = physics.advance_vertical(
+                eye,
+                -depth,
+                Some((height, velocity)),
+                false,
+                0.0,
+                1.0 / 60.0,
+            );
             time_seconds += 1.0 / 60.0;
             let clearance = eye - height;
             if clearance < 0.0 {
@@ -543,7 +559,13 @@ mod tests {
         // no stroke of any size could get the eye under at all.
         let mut state = SurfacePhysicsState::default();
         state.settle_in_water();
-        let eye = dive(&mut state, equilibrium_eye_height_above_water_meters(), -60.0, -2.0, 2.0);
+        let eye = dive(
+            &mut state,
+            equilibrium_eye_height_above_water_meters(),
+            -60.0,
+            -2.0,
+            2.0,
+        );
         assert!(
             eye < -2.0,
             "two seconds of a 2 m/s dive only reached {eye:.3} m"
@@ -554,24 +576,25 @@ mod tests {
     }
 
     #[test]
-    fn the_first_body_height_of_a_dive_is_the_slow_part() {
-        // Buoyancy is not switched off at the waterline, and this is where
-        // that shows: near the surface the whole floating model is still at
-        // full authority and takes most of a metre out of the first two seconds.
-        // It is only below a body height that the diver goes weightless.
+    fn a_dive_goes_weightless_almost_as_soon_as_the_eye_is_under() {
+        // The fade is short on purpose. It used to be a body height, which left
+        // enough buoyancy at -1.0m to float a stopped diver back out in about
+        // ten seconds -- and a metre under is exactly where you want to hold
+        // station to look up at Snell's window.
         let mut state = SurfacePhysicsState::default();
         state.settle_in_water();
         let start = equilibrium_eye_height_above_water_meters();
         let after_two = dive(&mut state, start, -600.0, -2.0, 2.0);
         let first_two_seconds = start - after_two;
-        // Free of the surface the stroke alone would cover 4.0 m in that time.
+        // Free of the surface the stroke alone would cover 4.0 m in that time,
+        // and the only thing missing is the moment spent crossing the fade.
         assert!(
-            (2.5..3.8).contains(&first_two_seconds),
+            (3.8..4.0).contains(&first_two_seconds),
             "the first two seconds covered {first_two_seconds:.3} m of a possible 4.0 m"
         );
 
-        // Below a body height the diver is weightless, so the settled descent
-        // is the stroke itself with nothing left to subtract from it.
+        // Under the fade the diver is weightless, so the settled descent is the
+        // stroke itself with nothing left to subtract from it.
         let after_four = dive(&mut state, after_two, -600.0, -2.0, 2.0);
         let settled_rate = (after_two - after_four) / 2.0;
         assert!(
@@ -587,7 +610,13 @@ mod tests {
         let mut state = SurfacePhysicsState::default();
         state.settle_in_water();
         for stroke in [0.0, -1e-15, -0.04, 0.04] {
-            let eye = dive(&mut state, equilibrium_eye_height_above_water_meters(), -60.0, stroke, 2.0);
+            let eye = dive(
+                &mut state,
+                equilibrium_eye_height_above_water_meters(),
+                -60.0,
+                stroke,
+                2.0,
+            );
             assert!(
                 eye >= MINIMUM_SWIMMING_EYE_CLEARANCE_METERS,
                 "a {stroke} m/s stroke sank the eye to {eye:.3} m"
@@ -600,7 +629,13 @@ mod tests {
     fn a_diver_who_stops_swimming_holds_the_depth_they_stopped_at() {
         let mut state = SurfacePhysicsState::default();
         state.settle_in_water();
-        let deep = dive(&mut state, equilibrium_eye_height_above_water_meters(), -60.0, -2.0, 5.0);
+        let deep = dive(
+            &mut state,
+            equilibrium_eye_height_above_water_meters(),
+            -60.0,
+            -2.0,
+            5.0,
+        );
         assert!(state.submerged);
 
         // Release the stroke. A submerged diver is neutrally buoyant, so this
@@ -619,13 +654,53 @@ mod tests {
     }
 
     #[test]
+    fn a_stopped_diver_holds_station_against_a_frozen_wave() {
+        // Reported from the app: freeze the scene under a shallow dive and the
+        // camera climbs back to the surface. Freezing is not really what does
+        // it -- it stops the wave field, so `water_vertical_velocity` sticks at
+        // whatever it was and the drag term references a surface rising for
+        // ever, while the restoring spring pulls toward a fixed equilibrium.
+        // Both are surface devices and neither may reach a diver.
+        for depth in [0.5, 1.0, 8.0] {
+            for frozen_velocity in [0.0, 2.5, -2.5] {
+                let mut state = SurfacePhysicsState::default();
+                state.settle_in_water();
+                state.in_water = true;
+                state.submerged = true;
+                let mut eye = -depth;
+                for _ in 0..1_800 {
+                    eye = state.advance_vertical(
+                        eye,
+                        -60.0,
+                        Some((0.0, frozen_velocity)),
+                        false,
+                        0.0,
+                        1.0 / 60.0,
+                    );
+                }
+                assert!(
+                    (eye + depth).abs() < 1.0e-6,
+                    "held at -{depth} m against a frozen {frozen_velocity} m/s wave for 30 s \
+                     and drifted to {eye:.4} m"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn a_diver_surfaces_by_swimming_up_and_the_crest_guard_comes_back() {
         // Holding depth means the way back up is the stroke, so the ascent has
         // to actually reach the surface and hand the swimmer back to the
         // floating model rather than stalling a body height under it.
         let mut state = SurfacePhysicsState::default();
         state.settle_in_water();
-        let deep = dive(&mut state, equilibrium_eye_height_above_water_meters(), -60.0, -2.0, 5.0);
+        let deep = dive(
+            &mut state,
+            equilibrium_eye_height_above_water_meters(),
+            -60.0,
+            -2.0,
+            5.0,
+        );
         let surfaced = dive(&mut state, deep, -60.0, 2.0, 10.0);
         assert!(
             surfaced >= MINIMUM_SWIMMING_EYE_CLEARANCE_METERS,
@@ -644,7 +719,13 @@ mod tests {
         let mut state = SurfacePhysicsState::default();
         state.settle_in_water();
         let bed = -8.0;
-        let eye = dive(&mut state, equilibrium_eye_height_above_water_meters(), bed, -2.0, 30.0);
+        let eye = dive(
+            &mut state,
+            equilibrium_eye_height_above_water_meters(),
+            bed,
+            -2.0,
+            30.0,
+        );
         assert!(
             (eye - swimming_bed_eye_altitude_meters(bed)).abs() < 1e-6,
             "came to rest at {eye:.3} m over a {bed} m bed"
@@ -659,7 +740,13 @@ mod tests {
         let bed = -4_000.0;
         let mut state = SurfacePhysicsState::default();
         state.settle_in_water();
-        let deep = dive(&mut state, equilibrium_eye_height_above_water_meters(), bed, -2.0, 2_400.0);
+        let deep = dive(
+            &mut state,
+            equilibrium_eye_height_above_water_meters(),
+            bed,
+            -2.0,
+            2_400.0,
+        );
         assert!(
             (deep - swimming_bed_eye_altitude_meters(bed)).abs() < 1e-6,
             "a 4 km dive stopped at {deep:.3} m, not the bed at \

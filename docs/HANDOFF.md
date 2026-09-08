@@ -89,8 +89,9 @@ and one had to be added, and the last section in this file is why. The crest flo
 a diver and on for everyone else, and *only a commanded dive* sets that state — latching it on being
 below the waterline would let a crest turn the guard off, which is the exact bug the guard exists
 for. The whole floating model — the restoring spring, the wave-following drag and the buoyancy
-itself — fades out over the first body height of depth, because all three are surface devices. Below
-that the diver is **neutrally buoyant and holds the depth they stopped at**; swimming back up is how
+itself — fades out over `NEUTRAL_BUOYANCY_DEPTH_METERS` (0.3m) below the waterline, because all
+three are surface devices. Below that the diver is **neutrally buoyant and holds the depth they
+stopped at**; swimming back up is how
 you surface, and it is the only way. A dive stops 0.5m off the bathymetry at **any** depth: the
 -100m `PLANET_CORE_CLEARANCE_METERS` is a backstop for a runaway with no bed to catch it, and no
 longer applies over water. That floor has one definition, `swimming_bed_eye_altitude_meters` —
@@ -8014,3 +8015,44 @@ anyway. Whether the LOD selector and tile streaming behave sensibly at a camera 
 is untested — before this, nothing could get below -100m, so that range has never been exercised.
 
 501 workspace tests and clippy pass.
+
+## 8 September 2026 — the neutral band was a body height deep, which is where you want to hold station
+
+Reported from the app: dive, press F10, and the camera climbs back to the surface.
+
+F10 is not really what does it. The fade to neutral buoyancy was one body height, 1.70m, so anything
+shallower than that still had some of the floating model acting on it. Measured with the physics
+driven directly, water surface held at 0.0m and no stroke: from -1.0m the eye reached +0.255m — the
+equilibrium float height — inside ten seconds. From -8.0m it held at -8.0000m exactly. So a shallow
+diver floated back out whether or not anything was frozen.
+
+What freezing adds is that it makes it obvious and slightly worse. The scene clock stops, so the
+wave field stops with it, and `water_vertical_velocity` sticks at whatever it was: the drag term
+then references a surface that is rising for ever rather than one that will come back down, and the
+restoring spring pulls toward a fixed equilibrium instead of a moving one. Same run from -1.0m with
+the velocity frozen at 2.5 m/s reached +0.687m rather than +0.255m.
+
+`NEUTRAL_BUOYANCY_DEPTH_METERS` is now 0.3m. A body height was simply the wrong scale for this: the
+thing worth holding station in front of is Snell's window, which is directly overhead in the first
+metre or two, and that was the exact band the old fade floated you out of. From -0.5m, -1.0m and
+-8.0m the eye now holds to within 1e-6 m over thirty seconds against frozen wave velocities of 0,
++2.5 and -2.5 m/s, which is the new regression test. At -0.2m it still floats out, and it should:
+that is a swimmer at the waterline, not a diver.
+
+Shortening it changes nothing about floating, for the same reason the fade never did: the crest
+guard holds a non-diving eye at or above `water_height + 0.06`, where the authority is saturated at
+one however steep the ramp is. The storm-crest test still passes untouched. The dive is now barely
+slowed at all — the first two seconds cover 3.911m of a possible 4.0m, against 3.155m before.
+
+### Still open, and not caused by this
+
+**The ocean freezes under F10, and the code says it must not.** `ocean_animation_time_seconds` is
+documented as keeping the water moving because "F10 holds the planet/sun composition for inspection,
+but must not turn the water at the default coastal start into a static blue sheet", and it is fed
+`presentation_time`, which is `self.scaled_clock_seconds` — which `advance_scaled_clock` stops
+whenever `animation_frozen` is set. The test named
+`ocean_animation_keeps_advancing_while_scene_time_is_frozen` asserts only that the function returns
+its second argument; it never checks that the argument keeps moving, so it cannot catch this. The
+same applies to weather, which carries the same claim at its own call site and is fed the same
+clock. Whether F10 *should* freeze the sea is a judgement call — for inspecting the underside it is
+arguably what you want — so this is recorded rather than changed.
