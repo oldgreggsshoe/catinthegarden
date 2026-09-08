@@ -54,6 +54,10 @@ pub struct ScenarioAssertions {
     pub water_sample_uv: Option<[f32; 2]>,
     pub min_water_blue_minus_red: Option<f32>,
     pub max_water_sample_red: Option<f32>,
+    /// Final underwater sample must pick up the refracted warm horizon, without
+    /// passing on a white or black frame. Uses water_sample_uv.
+    pub min_water_red_blue_ratio: Option<f32>,
+    pub max_water_sample_luminance: Option<f32>,
     /// Largest tolerated gap between the surface the renderer drew and the
     /// surface the CPU would collide with, over the probe's sample grid. This
     /// is an outlier guard and should be set loosely; horizon-grazing samples
@@ -115,6 +119,8 @@ impl Default for ScenarioAssertions {
             water_sample_uv: None,
             min_water_blue_minus_red: None,
             max_water_sample_red: None,
+            min_water_red_blue_ratio: None,
+            max_water_sample_luminance: None,
             max_surface_probe_delta_m: None,
             max_surface_probe_p90_delta_m: None,
             min_camera_clearance_m: None,

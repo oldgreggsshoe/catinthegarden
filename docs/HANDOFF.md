@@ -144,6 +144,12 @@ gate for anything weather-composed.
 all three crates. Note that `coretypes` now carries tests of its own — it used to be types only. Clippy stops at the first crate that fails, so the baker's three
 had been hiding the app's seventy entirely — the app was never being linted. Check both.
 
+**Also closed: thread 27, the underwater scenario's missing visual guard.** It now samples the
+refracted warm horizon at UV (0.05,0.95), rejects the old unrefracted blue result and black/white
+output, and has an actual-WGSL Snell/Fresnel test for normal, tilted, critical and internally
+reflected rays. This replaces the former screenshot-count-only acceptance. See the 8 September
+underside optics entry; it does not claim full-scene refraction or temporal visual sign-off.
+
 **Recently closed, so they are not re-opened:** the "renderer draws near-field land up to 43.58m
 above the CPU's height field" thread was the surface probe reading tree canopies, and
 `detail_correlation` 0.3222 was a canopy height set against a ground height; with the probe reading
@@ -296,13 +302,7 @@ See the latest section for the failing-before/passing-after evidence. No terrain
     call. So a submerged raymarch view should show no sea bed. This is read from the source, not
     from a capture: there is no CLI switch for the render path, so a scenario cannot select it.
     Parity is the stated goal and this is the path the work is judged in.
-27. **`ocean_underwater_visibility` cannot fail either.** Its only assertions are
-    `require_finite_metrics` and `expected_screenshots: 4`, the same pair that let the flat-blue
-    seabed run go green. Its captures do currently hold real content (975-1495 distinct colours,
-    luminance 21-86), so this is a missing guard rather than a broken render. The Snell window needs
-    a discriminator of its own: a bright disc against a dark rim is a two-point luminance ratio, and
-    `min_day_night_surface_luminance_ratio` is the shape to copy. `ocean_shallow_bottom` is armed as
-    of 7 September and is the worked example.
+
 
 **Build convention.** Benchmarks and parity runs build to `CARGO_TARGET_DIR=/home/dad/catingard-target`,
 not the in-repo `target/`. Give every temporary or staged checkout its own `CARGO_TARGET_DIR`
@@ -7822,3 +7822,49 @@ survey disagree about -- and it is failing today.
 
 **Validation.** 489 workspace tests (14 ignored), fmt clean, workspace clippy clean.
 `coast_waters_edge` and `mountain_ground` pass. No timing claim; swap has been full all session.
+
+## 8 September 2026 — underside sky refraction, with a guard that rejects the old result
+
+Based on 0806dc8; above-water sharpness-based turquoise and terrain ownership are
+untouched. The existing underside lookup used the unchanged camera ray and let
+the wave normal affect only a broad smoothstep window mask. This made the sky
+inside the window insensitive to the wave's optical distortion.
+
+ocean_water_to_air now computes the refracted ray at n=1.333, exact
+unpolarised dielectric Fresnel transmission, and total internal reflection.
+The underside samples the existing physical sky LUT with that refracted ray.
+Its reflected-water approximation, 30m water fog, geometry and motion are
+unchanged. No additional texture, mesh, wave component or render pass.
+
+**What the pictures establish, and what they do not.** The Snell-window edge is
+sharper and wave-distorted; warm horizon light now bends into its lower edge.
+At UV (0.05,0.95) in capture 004, the old baseline
+ocean_underwater_visibility/1788859818-507484 is (55,80,125), red/blue 0.440.
+Refraction-only 1788862853-9256 is (116,122,131), ratio 0.885. Broad unfoamed
+areas still look smooth: this does not create missing sky detail, caustics,
+cloud/object refraction or actual reflected underwater geometry. Human motion
+review remains necessary; do not call the entire underwater presentation solved.
+
+I also tried reusing above-water foam coverage on the underside. All four
+captures in 1788862995-9864 were byte-identical to refraction-only. Removed that
+trial and its extra lighting lookups rather than shipping unverified detail.
+
+**Regression.** The underwater scenario now uses water_sample_uv plus opt-in
+minimum red/blue (0.7) and maximum luminance (0.7) on the final sample. The old
+unrefracted pixel fails; black and white fail; the refracted pixel passes.
+The actual-WGSL GPU test covers six normal/oblique/near-critical/tilted/backward
+ray cases against f64 Snell/Fresnel reference calculations, including zero
+transmission under total internal reflection and a changed lookup direction
+for a tilted normal. Ordinary source tests ensure the fragment uses this ray.
+
+Final release GPU runs, all passed with four captures:
+* ocean_underwater_visibility/1788863312-12083 — including the new visual guard.
+* ocean_waterline_medium/1788863323-12117 — sky-leak guard retained.
+* ocean_shallow_bottom/1788863335-12186 — sediment guard retained.
+* ocean_hybrid_close/1788863345-12206 — above-water control.
+
+491 workspace tests passed, 15 ignored; workspace all-target clippy, fmt and
+diff checks pass. Both explicit Quadro GPU tests pass: six optical cases and
+24 wave-parity cases (maximum normal error 0.000089958, height 0.000058081m).
+Release rebuilt in target/release. No performance claim. Unrelated
+crates.tar.gz is untouched. Ray seabed parity (thread 26) remains open.

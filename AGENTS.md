@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Ocean underside optics: wave normals now refract the sky using water-to-air Snell/Fresnel optics rather than merely masking an unrefracted sky lookup. Six actual-WGSL optical cases, wave parity, 491 workspace tests and four GPU replays pass; the underwater scenario now rejects the old blue-only result and black/white output. Smooth unfoamed regions and full-scene reflection/refraction remain limitations.
+
 - Waterline sky-leak repair: the sky background now fills nearby downward ocean rays with bounded, sky-lit water colour even when the swimming eye is 6cm above the analytic surface. No mesh/pass added; the new per-capture colour guard rejects the old pale output. Waterline, underwater, shallow-bottom and land GPU replays pass; 489 workspace tests and clippy pass.
 
 - Crest visibility rebalance: user found the 48m linear fade too faint; restored a 24m span while retaining linear interpolation, original onset and peak colour. Focused regression passes. Underwater sky leakage in manual capture 1788802408-449773 remains unresolved.

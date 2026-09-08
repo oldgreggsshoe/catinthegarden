@@ -2710,6 +2710,24 @@ fn triplanar_material_sample(
     return vec4<f32>(coarse.rgb * gain, height);
 }
 
+// View-ray refraction from water (n=1.333) into air (n=1). xyz is the
+// refracted sky direction; w is unpolarised Fresnel transmission. A zero w
+// means total internal reflection: never sample the sky with a zero vector.
+fn ocean_water_to_air(view_ray: vec3<f32>, outward_normal: vec3<f32>) -> vec4<f32> {
+    let eta = 1.333;
+    let cos_water = clamp(dot(view_ray, outward_normal), 0.0, 1.0);
+    let sin_air_squared = eta * eta * (1.0 - cos_water * cos_water);
+    if sin_air_squared >= 1.0 {
+        return vec4<f32>(0.0);
+    }
+    let cos_air = sqrt(1.0 - sin_air_squared);
+    let sky_ray = eta * view_ray + (cos_air - eta * cos_water) * outward_normal;
+    let rs = (eta * cos_water - cos_air) / (eta * cos_water + cos_air);
+    let rp = (eta * cos_air - cos_water) / (eta * cos_air + cos_water);
+    let transmission = 1.0 - 0.5 * (rs * rs + rp * rp);
+    return vec4<f32>(sky_ray, transmission);
+}
+
 /// The sea seen from underneath.
 ///
 /// `ocean_lighting` cannot do this: it takes `max(dot(normal, view), 0.0)`, and
@@ -2737,22 +2755,18 @@ fn ocean_underside_colour(
     // spectrum is 7m, so a smooth boundary is the correct answer. It is depth
     // that widens the window enough for waves to distort it.
     let normal_view = normalize(planet_to_view(normalize(surface_normal - ripple_slope)));
-    // `view_ray` runs from the eye up to the surface, and the normal points out
-    // of the water, so looking straight up gives +1. Using the ray back toward
-    // the eye instead makes this negative everywhere, the window never opens,
-    // and the whole underside is the dark reflection -- which is what it did.
-    // cos(48.6 degrees) = 0.661.
-    let cosine = clamp(dot(view_ray, normal_view), 0.0, 1.0);
-    let window = smoothstep(0.58, 0.74, cosine);
-    // Inside the window, the sky the ray came from. Refraction bends it toward
-    // the normal; sampling the unrefracted ray puts the bright disc in the
-    // right place without a second trace.
-    let above = physical_camera_sky_radiance(view_ray);
-    // Outside it, total internal reflection of the water below, which is the
-    // same medium the fog mixes toward, only darker for being deeper.
+    // The old path sampled view_ray unchanged and used the normal only for a
+    // soft window mask. It therefore painted the same sky through every wave.
+    // Bend the sky lookup with the local wave normal, with the physical
+    // critical angle and Fresnel transition at the window's moving edge.
+    let refraction = ocean_water_to_air(view_ray, normal_view);
     let up_view = normalize(planet_to_view(surface_direction));
     let below = physical_camera_sky_radiance(up_view) * OCEAN_UNDERWATER_TINT * 0.30;
-    return mix(below, above, window);
+    if refraction.w <= 0.0 {
+        return below;
+    }
+    let above = physical_camera_sky_radiance(normalize(refraction.xyz));
+    return mix(below, above, refraction.w);
 }
 
 fn ocean_lighting(

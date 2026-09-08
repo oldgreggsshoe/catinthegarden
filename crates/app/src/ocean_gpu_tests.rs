@@ -173,3 +173,161 @@ fn test_ocean(@builtin(global_invocation_id) id: vec3<u32>) {{
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     });
 }
+
+#[test]
+#[ignore = "requires a Vulkan GPU; run explicitly for ocean shader changes"]
+fn gpu_ocean_refraction_matches_snell_and_fresnel() {
+    let cases = [
+        (DVec3::Y, DVec3::Y),
+        (DVec3::new(0.6, 0.8, 0.0), DVec3::Y),
+        (DVec3::new(0.75, 0.6614378278, 0.0).normalize(), DVec3::Y),
+        (DVec3::new(0.8, 0.6, 0.0), DVec3::Y),
+        (DVec3::Y, DVec3::new(0.4, 0.916515139, 0.0).normalize()),
+        (-DVec3::Y, DVec3::Y),
+    ];
+    let rays = cases
+        .iter()
+        .map(|(ray, _)| {
+            format!(
+                "vec3<f32>({:?}, {:?}, {:?})",
+                ray.x as f32, ray.y as f32, ray.z as f32
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let normals = cases
+        .iter()
+        .map(|(_, normal)| {
+            format!(
+                "vec3<f32>({:?}, {:?}, {:?})",
+                normal.x as f32, normal.y as f32, normal.z as f32
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source = format!(
+        "{}\n@group(0) @binding(1) var<storage, read_write> results: array<vec4<f32>>;
+        const rays = array<vec3<f32>, 6>({rays});
+        const normals = array<vec3<f32>, 6>({normals});
+        @compute @workgroup_size(1)
+        fn test_optics(@builtin(global_invocation_id) id: vec3<u32>) {{
+            results[id.x] = ocean_water_to_air(rays[id.x], normals[id.x])
+                + vec4<f32>(camera.flat_triangle_options.x);
+        }}",
+        crate::planet::shared_planet_shader_source(),
+    );
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::VULKAN,
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    });
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        ..Default::default()
+    }))
+    .expect("Vulkan adapter");
+    eprintln!("ocean optics test adapter: {}", adapter.get_info().name);
+    let (device, queue) =
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+            .expect("GPU device");
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("production ocean optics regression"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("ocean optics regression"),
+        layout: None,
+        module: &shader,
+        entry_point: Some("test_optics"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
+    let mut camera = crate::planet::CameraUniform::zeroed();
+    camera.flat_triangle_options[1] = GLOBAL_OCEAN_STORM_INTENSITY;
+    camera.flat_triangle_options[2] = 1.0; // actual radial geometry; no shading-only ripples
+    let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("test ocean camera"),
+        contents: bytemuck::bytes_of(&camera),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let bytes = (cases.len() * size_of::<[f32; 4]>()) as u64;
+    let output = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("test ocean results"),
+        size: bytes,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("test ocean readback"),
+        size: bytes,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("test ocean inputs"),
+        layout: &pipeline.get_bind_group_layout(0),
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: output.as_entire_binding(),
+            },
+        ],
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_compute_pass(&Default::default());
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &group, &[]);
+        pass.dispatch_workgroups(cases.len() as u32, 1, 1);
+    }
+    encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, bytes);
+    queue.submit(Some(encoder.finish()));
+    let (sender, receiver) = std::sync::mpsc::channel();
+    readback
+        .slice(..)
+        .map_async(wgpu::MapMode::Read, move |result| {
+            sender.send(result).unwrap()
+        });
+    device
+        .poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(std::time::Duration::from_secs(10)),
+        })
+        .unwrap();
+    receiver.recv().unwrap().unwrap();
+    let data = readback.slice(..).get_mapped_range();
+    let rows: &[[f32; 4]] = bytemuck::cast_slice(&data);
+    for (index, ((ray, normal), actual)) in cases.iter().zip(rows).enumerate() {
+        let eta = 1.333_f64;
+        let cos_water = ray.dot(*normal).clamp(0.0, 1.0);
+        let sin_air_squared = eta * eta * (1.0 - cos_water * cos_water);
+        assert!(
+            actual.iter().all(|x| x.is_finite()),
+            "case {index}: {actual:?}"
+        );
+        if sin_air_squared >= 1.0 {
+            assert_eq!(*actual, [0.0; 4], "total internal reflection case {index}");
+            continue;
+        }
+        let cos_air = (1.0 - sin_air_squared).sqrt();
+        let expected_ray = eta * *ray + (cos_air - eta * cos_water) * *normal;
+        let rs = (eta * cos_water - cos_air) / (eta * cos_water + cos_air);
+        let rp = (eta * cos_air - cos_water) / (eta * cos_air + cos_water);
+        let expected_transmission = 1.0 - 0.5 * (rs * rs + rp * rp);
+        let actual_ray = DVec3::new(actual[0] as f64, actual[1] as f64, actual[2] as f64);
+        assert!(
+            actual_ray.distance(expected_ray) < 0.002,
+            "case {index}: {actual:?}"
+        );
+        assert!((actual[3] as f64 - expected_transmission).abs() < 0.002);
+        if index == 4 {
+            assert!(
+                actual_ray.distance(*ray) > 0.1,
+                "tilted wave must bend the sky lookup"
+            );
+        }
+    }
+}

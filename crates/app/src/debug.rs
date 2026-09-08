@@ -901,6 +901,20 @@ impl AssertionTracker {
                 ),
             ));
         }
+        if let (Some(minimum_ratio), Some(maximum_luminance)) = (
+            self.config.min_water_red_blue_ratio,
+            self.config.max_water_sample_luminance,
+        ) {
+            let sample = self.water_samples.last().copied();
+            results.push(assertion_result(
+                "underwater_window_refracts_the_warm_horizon",
+                sample.is_some_and(|rgb| {
+                    red_blue_ratio(rgb) >= minimum_ratio
+                        && sky_luminance(rgb) <= maximum_luminance
+                }),
+                format!("required red/blue >= {minimum_ratio:.3}, luminance <= {maximum_luminance:.3}; sample {sample:?}"),
+            ));
+        }
         results
     }
 }
@@ -1657,6 +1671,8 @@ mod tests {
             water_sample_uv: None,
             min_water_blue_minus_red: None,
             max_water_sample_red: None,
+            min_water_red_blue_ratio: None,
+            max_water_sample_luminance: None,
             max_surface_probe_delta_m: None,
             max_surface_probe_p90_delta_m: None,
             min_camera_clearance_m: None,
@@ -1669,6 +1685,15 @@ mod tests {
     /// that drew the bottom (`1788800342-417178`) and the earlier one that was
     /// flat ocean blue and passed anyway (`1788800195-416229`). The threshold
     /// has to sit between them, and it does, with room on both sides.
+    #[test]
+    fn underwater_window_guard_rejects_unrefracted_sky_black_and_white() {
+        let passes = |rgb| super::red_blue_ratio(rgb) >= 0.7 && super::sky_luminance(rgb) <= 0.7;
+        assert!(!passes([55, 80, 125])); // original replay at UV (0.05, 0.95)
+        assert!(!passes([0, 0, 0]));
+        assert!(!passes([255, 255, 255]));
+        assert!(passes([116, 122, 131])); // same replay with refracted sky
+    }
+
     #[test]
     fn waterline_sample_rejects_the_reproduced_sky_leak_and_black_output() {
         for sample in [[142, 155, 163], [135, 168, 204], [0, 0, 0]] {

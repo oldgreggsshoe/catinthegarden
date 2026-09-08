@@ -1,8 +1,3 @@
-The waterline sky-leak fix is finished, tested, and pushed as `5eaab5c`. I’ve read the updated handoff.
+Implemented wave-driven sky refraction and Fresnel reflection on the underside. The viewing window now distorts with the waves rather than showing an unchanged sky lookup.
 
-Outstanding ocean work:
-1. Explain why nearby wave undersides look like a flat, distant backdrop—the latest measurements put them only 2.9–9m away. This is separate from the fixed sky leak.
-2. Add a meaningful visual assertion to the underwater scenario.
-3. Bring submerged seabed rendering to the raymarch path.
-
-The underside appearance is the next priority. The newer sharpness-based turquoise tuning will stay untouched.
+491 workspace tests, GPU optics tests and four render replays pass. Release rebuilt—restart to try it. Smooth unfoamed areas remain; this is not full-scene refraction.

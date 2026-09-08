@@ -4636,6 +4636,21 @@ mod tests {
     }
 
     #[test]
+    fn ocean_underside_refracts_the_sky() {
+        let shader = planet_shader_source();
+        let optics = shader
+            .split("fn ocean_underside_colour(")
+            .nth(1)
+            .unwrap()
+            .split("\nfn ")
+            .next()
+            .unwrap();
+        assert!(optics.contains("ocean_water_to_air(view_ray, normal_view)"));
+        assert!(optics.contains("physical_camera_sky_radiance(normalize(refraction.xyz))"));
+        assert!(!optics.contains("physical_camera_sky_radiance(view_ray)"));
+    }
+
+    #[test]
     fn ocean_underside_uses_water_fog_even_when_the_eye_flag_is_above_water() {
         let shader = planet_shader_source();
         let underside = shader
