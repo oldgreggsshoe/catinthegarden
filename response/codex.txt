@@ -1,3 +1,8 @@
-Fixed the reproduced waterline sky leak. The uncovered lower pixels now render blue water instead of sky, while the sky above stays intact.
+The waterline sky-leak fix is finished, tested, and pushed as `5eaab5c`. I’ve read the updated handoff.
 
-Four GPU scenarios pass, including the shallow seabed; 489 workspace tests pass. Release rebuilt—restart the game to try it.
+Outstanding ocean work:
+1. Explain why nearby wave undersides look like a flat, distant backdrop—the latest measurements put them only 2.9–9m away. This is separate from the fixed sky leak.
+2. Add a meaningful visual assertion to the underwater scenario.
+3. Bring submerged seabed rendering to the raymarch path.
+
+The underside appearance is the next priority. The newer sharpness-based turquoise tuning will stay untouched.
