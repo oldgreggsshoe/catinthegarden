@@ -8056,3 +8056,57 @@ its second argument; it never checks that the argument keeps moving, so it canno
 same applies to weather, which carries the same claim at its own call site and is fed the same
 clock. Whether F10 *should* freeze the sea is a judgement call — for inspecting the underside it is
 arguably what you want — so this is recorded rather than changed.
+
+
+## 9 September 2026 — moving-wave swimming and the hidden sea-level clamp
+
+The user reported the opposite of the previous handoff's F10 interpretation:
+**moving** water pulled a diver up; freezing the waves stopped it. Reproduced
+rather than retuning the neutral-depth ramp again.
+
+* The real movement caller split the stroke, but still sent its tangent part
+  through `advance_flight_position_on_sphere`, which clamps radius to sea level.
+  A horizontal step at -4000m lifted the eye by 4000m. The combined tangent-step
+  plus vertical-physics regression stalled at -0.005635m instead of reaching a
+  -150m bed. Surface locomotion now uses a radius-preserving geodesic step;
+  flight retains its existing policy. The same diagonal regression now reaches
+  -149.5m, the existing 0.5m bed clearance. This explains an apparent depth limit
+  relative to a raised wave without any literal 11m depth cap.
+* A moving trough re-enabled buoyancy and cleared `submerged`, so the next
+  crest's floor captured the diver. A stopped -8m diver rose to -6.994071m in
+  the new moving-wave regression. Deliberate diving now latches the neutral
+  swimming mode through transient trough exposure; only an upward stroke
+  through the surface (or leaving ocean) restores floating. The same test holds
+  its original altitude, and existing floating/crest, frozen-wave, upward-stroke
+  and 4km-bed tests still pass. F10's clock policy is unchanged.
+* Going deeper exposed two renderer guards: LOD asserted at -100m, then, after
+  removing that artificial limit, culled the entire bed against the surrounding
+  sea-level sphere. LOD now requires a nonzero camera radius; underwater horizon
+  culling uses the conservative solid inner height bound. The 4km LOD regression
+  retains visible bed nodes and still rejects the far hemisphere. Above-water
+  horizon policy and collision's seabed floor are unchanged.
+
+Validation: 506 workspace tests pass (16 ignored), all-target clippy and fmt
+pass. All four added regressions failed before their respective repairs. GPU
+`ocean_underwater_visibility/1788978590-25052` passes with four captures and the
+existing Snell-window colour guard. Release rebuilt in `target/release`.
+Interactive swimming and a full deep-ocean GPU descent remain human/runtime
+acceptance checks; the automated diagonal test exercises movement plus physics,
+not the complete streaming/window event loop.
+
+### Preserved unfinished transparency work — do not call it finished
+
+Uncommitted raster seabed-transmission work remains in hdr.rs, main.rs's render
+passes, ocean_transmission.rs, planet.wgsl, shared_planet.wgsl, terrain.rs,
+ocean_gpu_tests.rs, scenario.rs and new shallow-water scenarios. It uses a
+pre-water colour/depth snapshot and wave-normal air-to-water refraction with
+30m attenuation. The first version was measured at about +6–7ms in full-screen
+shallows and +2ms in open sea on the Quadro (1280x720 Immediate); a subsequent
+single-evaluation wave/height optimisation is not performance-validated yet.
+This change is separate from the swimming commit. `crates.tar.gz` is untouched.
+
+The user's new manual capture
+`manual/1788978330-21709/screenshots/capture-001.png` visibly contains rectangular
+blue/brown patches beneath foam at the shore. The requested reproduction is a
+straight-down shore view while ascending. `ocean_shore_ascent` is being added for
+that investigation; no shoreline repair or temporal sign-off is claimed yet.

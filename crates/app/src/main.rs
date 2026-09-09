@@ -708,6 +708,23 @@ fn advance_flight_position_on_sphere(
     glam::DQuat::from_axis_angle(rotation_axis, angular_distance).mul_vec3(radial) * next_radius
 }
 
+// Surface locomotion resolves altitude separately against land or bathymetry.
+// Unlike free flight, a tangential swimming step must never clamp to sea level.
+fn advance_surface_position_on_sphere(
+    position: glam::DVec3,
+    tangent_direction: glam::DVec3,
+    distance_meters: f64,
+) -> glam::DVec3 {
+    let radius = position.length();
+    let radial = position / radius;
+    let tangent = tangent_direction - radial * tangent_direction.dot(radial);
+    if tangent.length_squared() <= f64::EPSILON || distance_meters <= 0.0 {
+        return position;
+    }
+    let axis = radial.cross(tangent.normalize()).normalize();
+    glam::DQuat::from_axis_angle(axis, distance_meters / radius).mul_vec3(radial) * radius
+}
+
 fn swept_flight_clearance_lift(
     start: glam::DVec3,
     end: glam::DVec3,
@@ -1999,12 +2016,10 @@ impl State {
                 environment.open_ocean,
                 self.flight_speed_scale,
             );
-            // The stroke is split here rather than handed whole to the sphere
-            // advance: that clamps its radius at the sea level datum, so a dive
-            // driven through it would stop dead at the surface. Altitude is
-            // `advance_vertical`'s to own -- it holds the sea bed and core
-            // floors -- and the total speed along the look vector stays
-            // `movement_speed`, so pitching down trades travel for depth.
+            // The tangent step preserves radius, including below sea level.
+            // `advance_vertical` alone owns altitude and the seabed floor.
+            // Splitting the stroke preserves total speed along the look vector:
+            // pitching down trades horizontal travel for depth.
             let swim_vertical_speed = if environment.open_ocean {
                 movement_direction.map_or(0.0, |direction| {
                     direction.dot(local_radial) * movement_speed
@@ -2018,7 +2033,7 @@ impl State {
                     movement_direction - local_radial * movement_direction.dot(local_radial);
                 if tangential.length_squared() > f64::EPSILON {
                     let movement_distance = tangential.length() * movement_speed * step_seconds;
-                    let candidate_position = advance_flight_position_on_sphere(
+                    let candidate_position = advance_surface_position_on_sphere(
                         self.flight_local_position,
                         tangential.normalize(),
                         movement_distance,
@@ -5538,6 +5553,55 @@ mod tests {
         assert_eq!(
             super::inspection_start_direction(crate::body::MOON, None, DVec3::Z * 10.0),
             DVec3::Z
+        );
+    }
+
+    #[test]
+    fn swimming_horizontal_motion_preserves_subsea_altitude() {
+        let position = DVec3::X * (crate::planet::planet_radius_meters() - 4_000.0);
+        let moved = super::advance_surface_position_on_sphere(position, DVec3::Z, 10.0);
+        assert!(
+            (moved.length() - position.length()).abs() < 1e-6,
+            "horizontal swim lifted the eye by {}m",
+            moved.length() - position.length()
+        );
+    }
+
+    #[test]
+    fn diagonal_swimming_reaches_the_seabed_below_eleven_metres() {
+        let radius = crate::planet::planet_radius_meters();
+        let mut position = DVec3::X * (radius - 8.0);
+        let mut physics = crate::surface_camera::SurfacePhysicsState::default();
+        physics.settle_in_water();
+        physics.submerged = true;
+        let bed = -150.0;
+        let dt = 1.0 / 60.0;
+        for _ in 0..12_000 {
+            let radial = position.normalize();
+            let tangent = (DVec3::Z - radial * DVec3::Z.dot(radial)).normalize();
+            let stroke = (tangent - radial).normalize()
+                * crate::surface_camera::SWIM_SPEED_METERS_PER_SECOND;
+            let horizontal = stroke - radial * stroke.dot(radial);
+            position = super::advance_surface_position_on_sphere(
+                position,
+                horizontal.normalize(),
+                horizontal.length() * dt,
+            );
+            let altitude = physics.advance_vertical(
+                position.length() - radius,
+                bed,
+                Some((0.0, 0.0)),
+                false,
+                stroke.dot(radial),
+                dt,
+            );
+            position = position.normalize() * (radius + altitude);
+        }
+        let floor = crate::surface_camera::swimming_bed_eye_altitude_meters(bed);
+        assert!(
+            (position.length() - radius - floor).abs() < 1e-5,
+            "diagonal dive stopped at {}m, expected bed clearance {floor}m",
+            position.length() - radius
         );
     }
 

@@ -79,10 +79,10 @@ pub struct SurfacePhysicsState {
     pub vertical_velocity_meters_per_second: f64,
     pub grounded: bool,
     pub in_water: bool,
-    /// The eye itself is under the surface, not merely a body partly in the
-    /// water. `in_water` is true for anyone floating; this is true only for a
-    /// diver, and it is what turns the crest guard off so an ascent is not
-    /// snapped back to the surface a metre early.
+    /// Latched underwater-swimming mode, entered by a deliberate dive. A wave
+    /// trough briefly uncovering the eye must not restore surface buoyancy or
+    /// the crest guard. An upward stroke through the surface exits this mode;
+    /// `in_water` separately tracks actual body contact with water.
     pub submerged: bool,
 }
 
@@ -182,10 +182,14 @@ impl SurfacePhysicsState {
                     // saturates its own 24 m/s^2 clamp and no stroke can beat
                     // it, and the surface's orbital velocity is not the water's
                     // velocity down there anyway. So the whole floating model
-                    // fades out over the first body height of depth, leaving a
-                    // neutrally buoyant diver who holds the depth they stopped
-                    // at. Swimming back up is how you surface.
-                    let surface_authority = surface_authority(eye_altitude_meters, water_height);
+                    // fades out near the surface and stays off throughout a
+                    // deliberate dive, even when a moving trough uncovers the
+                    // eye. Swimming back up is how you return to floating.
+                    let surface_authority = if self.submerged {
+                        0.0
+                    } else {
+                        surface_authority(eye_altitude_meters, water_height)
+                    };
                     acceleration += GRAVITY_METERS_PER_SECOND_SQUARED * submerged_fraction
                         / EFFECTIVE_BODY_DENSITY_RELATIVE_TO_WATER;
                     // Gravity and buoyancy net out together, so this is the one
@@ -261,7 +265,11 @@ impl SurfacePhysicsState {
                         .vertical_velocity_meters_per_second
                         .max(water_vertical_velocity);
                 }
-                self.update_submerged(eye_altitude_meters, water_height, diving);
+                self.update_submerged(
+                    eye_altitude_meters,
+                    water_height,
+                    swim_vertical_speed_meters_per_second,
+                );
             } else {
                 self.submerged = false;
             }
@@ -289,13 +297,16 @@ impl SurfacePhysicsState {
     /// This asymmetry is the whole point. If merely being below the waterline
     /// set the flag, a crest overtaking a floating swimmer would set it, the
     /// crest guard would switch itself off, and the sea would close over an eye
-    /// that never asked to go under -- which is the exact regression the guard
-    /// was built for. Surfacing clears the flag at the guard's own clearance,
-    /// so a diver holding station on the waterline does not flicker it.
-    fn update_submerged(&mut self, eye_altitude_meters: f64, water_height: f64, diving: bool) {
-        if diving && eye_altitude_meters < water_height {
+    /// that never asked to go under. Only a deliberate upward stroke through
+    /// the guard's clearance ends a dive, not a moving trough passing the eye.
+    fn update_submerged(&mut self, eye_altitude_meters: f64, water_height: f64, stroke: f64) {
+        if stroke <= -DELIBERATE_DESCENT_SPEED_METERS_PER_SECOND
+            && eye_altitude_meters < water_height
+        {
             self.submerged = true;
-        } else if eye_altitude_meters >= water_height + MINIMUM_SWIMMING_EYE_CLEARANCE_METERS {
+        } else if stroke >= DELIBERATE_DESCENT_SPEED_METERS_PER_SECOND
+            && eye_altitude_meters >= water_height + MINIMUM_SWIMMING_EYE_CLEARANCE_METERS
+        {
             self.submerged = false;
         }
     }
@@ -651,6 +662,38 @@ mod tests {
             state.vertical_velocity_meters_per_second
         );
         assert!(state.submerged, "still under");
+    }
+
+    #[test]
+    fn moving_wave_trough_does_not_recapture_a_stopped_diver() {
+        let mut state = SurfacePhysicsState::default();
+        state.settle_in_water();
+        let mut eye = dive(&mut state, -7.0, -1_000.0, -2.0, 0.5);
+        state.vertical_velocity_meters_per_second = 0.0;
+        let held = eye;
+        assert!(state.submerged);
+        let mut highest = held;
+        for frame in 0..3_600 {
+            let time = frame as f64 / 60.0;
+            // The trough briefly uncovers the eye, but not the body. The
+            // subsequent crest must not turn a stopped diver into a floater.
+            let height = held + 0.2 + 0.4 * (time * 2.0).cos();
+            let velocity = -0.8 * (time * 2.0).sin();
+            eye = state.advance_vertical(
+                eye,
+                -1_000.0,
+                Some((height, velocity)),
+                false,
+                0.0,
+                1.0 / 60.0,
+            );
+            highest = highest.max(eye);
+        }
+        assert!(
+            (eye - held).abs() < 1e-6 && highest <= held + 1e-6,
+            "moving water pulled the stopped diver from {held}m to {eye}m, highest {highest}m"
+        );
+        assert!(state.submerged);
     }
 
     #[test]

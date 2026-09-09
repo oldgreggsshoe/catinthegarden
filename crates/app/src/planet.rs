@@ -15,11 +15,11 @@ use glam::{DQuat, DVec3, IVec3, Mat4, Vec3, Vec4};
 pub fn planet_radius_meters() -> f64 {
     crate::body::radius_meters()
 }
-/// Surface swimming may enter the water below sea level while remaining well
-/// outside the solid planet. This covers the maximum storm-wave trough and
-/// keeps LOD distance math defined until an underwater renderer exists.
+/// LOD direction math requires a nonzero radius, not an above-sea-level eye.
+/// Surface collision owns the seabed floor; imposing a second depth limit here
+/// would panic during a valid deep dive rather than constrain locomotion.
 pub fn minimum_camera_radius_meters() -> f64 {
-    planet_radius_meters() - 100.0
+    0.0
 }
 /// Full-screen post-processing switches. Keeping these beside the planet's
 /// other visual constants makes expensive presentation stages easy to bisect.
@@ -1075,12 +1075,21 @@ fn node_is_above_horizon_with_height_range(
     camera_world: DVec3,
     height_range: TerrainHeightRange,
 ) -> bool {
+    // From underwater, the sea-level sphere surrounds the camera and cannot
+    // be the solid horizon occluder: it would reject even the bed overhead or
+    // directly below. Use the conservative solid inner radius there instead.
+    // Above water retains the established sea-level horizon policy.
+    let occluder_radius = if camera_world.length() < planet_radius_meters() {
+        height_range.minimum_radius().max(0.0)
+    } else {
+        planet_radius_meters()
+    };
     maximum_node_plane_value(
         node_directional_bounds(node),
         DVec3::ZERO,
         camera_world,
         height_range,
-    ) >= planet_radius_meters() * planet_radius_meters()
+    ) >= occluder_radius * occluder_radius
 }
 
 fn node_is_in_view_frustum(
@@ -2909,6 +2918,30 @@ mod tests {
         scaled_outmap_macro_height_meters, terrain_detail_meters, terrain_detail_value_noise,
         unbalanced_coarse_neighbors,
     };
+
+    #[test]
+    fn underwater_lod_accepts_a_camera_above_deep_bathymetry() {
+        let mut lod = PlanetLod::default();
+        lod.set_terrain_height_range(TerrainHeightRange::new(-8_000.0, 1_000.0));
+        let eye = DVec3::X * (planet_radius_meters() - 4_000.0);
+        let update = lod.update_for_view_with_up(
+            eye,
+            -DVec3::X,
+            DVec3::Y,
+            16.0 / 9.0,
+            720,
+            60.0_f64.to_radians(),
+        );
+        assert!(!update.active_nodes.is_empty());
+        assert!(
+            !super::node_is_above_horizon_with_height_range(
+                QuadtreeNode::root(1),
+                eye,
+                TerrainHeightRange::new(-8_000.0, 1_000.0)
+            ),
+            "the far hemisphere must still be culled underwater"
+        );
+    }
 
     fn projected_error_pixels(
         node: QuadtreeNode,
