@@ -1,5 +1,1 @@
-You’re right. A real beach normally has a dry sand strip above the swash line, then a darker wet-sand band, then shallow turquoise water. It should not look like the ocean touches every positive-land pixel.
-
-Our renderer currently has a continuous beach material blend, but no explicit dry-sand/runup band. The analytic ocean shell stops at terrain ownership, so the transition can visually put water/foam right against the land edge—especially with the current large wave envelope.
-
-The correct fix is a land-owned shoreline band: keep pale dry sand above the maximum local wave/runup height, blend to darker wet sand near the waterline, and let the turquoise water begin only below that band. I’ll target that next.
+Noted. I’ll proceed with the dry-sand/wet-sand shoreline band next.
