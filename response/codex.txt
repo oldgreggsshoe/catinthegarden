@@ -1,1 +1,11 @@
-The shoreline band is not implemented yet. I finished the diagnosis: the current problem is the missing land-owned dry/wet sand transition, not the beach colour itself. The last completed work is the turquoise shallow-water blend and transmission fallback; the next code change is to add a dry-sand strip above local wave/runup height, then a darker wet-sand band before the turquoise water.
+Implemented and pushed as `6758a16`.
+
+- Added a land-owned 50m beach band.
+- Pale dry sand remains inland; the first 7m above sea level blends darker as wet sand.
+- Nearshore shoaling phase now fades across the final 30m, reducing the concentric wave pattern.
+
+The curved fronts are not random: they come from the current depth-only shoaling math. A scalar depth phase naturally creates depth-contour arcs. The fade reduces them near the beach, but some remain farther out where refraction is still active.
+
+Replay: `/home/dad/catingard/test-runs/ocean_shore_ascent/1789041409-56996/screenshots/capture-006.png`
+
+Validation passed: ocean unit suite, release build, and three Quadro actual-WGSL GPU tests.
