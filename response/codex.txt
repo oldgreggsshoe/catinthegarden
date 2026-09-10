@@ -1,8 +1,7 @@
-Fixed and pushed as \`b382d97`.
+I reproduced the current release launch on the Quadro. It renders the first frame and remains running normally; it does not exit by itself. The latest manual log shows a normal interactive startup and fullscreen transition.
 
-The shallow blend now keeps a strong depth-weighted turquoise scattering term and reduces sand dominance, while deeper water still fades back to blue.
+Please make sure you are launching without a `--scenario ...` argument: deterministic scenarios intentionally close after their final capture. Use:
 
-Screenshot:
-`/home/dad/catingard/test-runs/ocean_clear_shallows/1789026290-45042/screenshots/capture-004.png`
+`DISPLAY=:0 WGPU_ADAPTER_NAME=Quadro target/release/catinthegarden-app`
 
-This is an above-water replay showing pale turquoise water over cream sand.
+If it still closes when launched that way, send the exact command or the newest `test-runs/manual/*/log.jsonl` path; the current source has no startup panic/error recorded.
