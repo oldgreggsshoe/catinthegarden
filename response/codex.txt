@@ -1,3 +1,14 @@
-Implemented wave-driven sky refraction and Fresnel reflection on the underside. The viewing window now distorts with the waves rather than showing an unchanged sky lookup.
+Implemented and pushed as `6b88719`.
 
-491 workspace tests, GPU optics tests and four render replays pass. Release rebuilt—restart to try it. Smooth unfoamed areas remain; this is not full-scene refraction.
+**Shore fix:** screen-space refraction was returning zero transmission at viewport/bank discontinuities, so the ocean fell back to opaque blue and produced rectangular patches. It now samples the current pre-water sandy bed/depth pixel when the refracted ray misses, only accepting geometry behind the water surface, then applies the same 30m exponential attenuation. This keeps the shore continuous instead of blue blocks.
+
+**Beach colour:** shared pale tropical cream-yellow sand (`sRGB 0.94, 0.89, 0.70`). The existing depth transmission naturally mixes it with blue: shallow water stays turquoise/sandy; increasing depth attenuates the bed and returns to blue.
+
+Validation:
+- 41 focused ocean tests passed
+- shader validation passed
+- 3 actual-WGSL Quadro GPU tests passed
+- release build passed
+- shore replay `1789025349-41472` rebuilt successfully
+
+The replay is visibly pale and continuous in the shallow bed. Foam strips and extreme screen-edge cases still need human visual sign-off; I have not claimed those are fully solved.
