@@ -1,5 +1,12 @@
-I traced the edge precisely. It is the separate sea-shell silhouette at the macro-height ownership boundary, not a remaining colour interpolation bug.
+Implemented and pushed as `5b6b911`.
 
-I widened the land-owned wet-sand transition to 220m, with a 20m wet band, so the colours converge before that boundary. This reduces the contrast and is pushed as `ead8362`.
+I added a dedicated `fs_ocean_shoreline` pass:
+- positive coastal terrain only, 0–220m fade
+- alpha-blended water
+- no depth writes
+- Always depth comparison so it can soften the shell edge over dry terrain
+- opaque ocean and terrain depth ownership remain unchanged
 
-However, the true fix for removing the silhouette itself requires a separate blended shoreline pass or conforming near-shore water geometry. I’m not going to claim the widened colour band solved the geometric edge.
+Validation: shader validation, release build, and `ocean_shore_ascent/1789048908-69947` pass.
+
+Please take another manual shoreline capture for final visual confirmation; the deterministic replay is not the exact pose from your screenshot.
