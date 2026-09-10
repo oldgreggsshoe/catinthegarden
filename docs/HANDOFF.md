@@ -8136,3 +8136,7 @@ Validation: ocean unit suite, release build, and three actual-WGSL Quadro ocean 
 The latest manual frame showed full 360-degree rings centred on the beach. The cause was confirmed: `shoaling_phase_offset_meters` added a scalar depth-only phase to every Gerstner component, so equal-depth contours became circular crest sources. The CPU and WGSL phase helpers now return zero. Depth remains available to the existing amplitude, steepness, breaking, and foam paths, so directional waves remain directional without the artificial radial source. The old steering tests now pin zero shoreline phase instead of requiring the removed radial refraction.
 
 Replay `ocean_shore_ascent/1789041894-58327` shows no former 360-degree ring source. Remaining white foam and coarse nearshore geometry are separate visual issues. Ocean unit tests, release build, and three actual-WGSL Quadro GPU tests pass.
+
+## 10 September 2026 — shoreline edge follow-up
+
+The latest manual capture confirms the remaining hard line is the separate sea-shell silhouette at the macro-height ownership boundary. I widened the land-owned wet-sand transition to the same 220m coastline scale used by the material blend, with a 20m wet band, so colour converges before the boundary. This reduces contrast but does not yet constitute the true geometry/compositing fix: a blended shoreline pass or conforming near-shore shell is still required to remove the silhouette itself.
