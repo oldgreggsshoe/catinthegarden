@@ -1,5 +1,8 @@
-Yes, I see it now. The newest manual frame is not merely curved waves: it is a set of full 360-degree rings centred on the shoreline source.
+Done and pushed as `75e079e`.
 
-That comes from our `shoaling_phase_offset_meters()` term. It uses only scalar water depth, so every equal-depth contour gets the same phase. Around a roughly circular coast, those contours are circles, and the Gerstner crests inherit them. The fixed-axis ripple layer cannot produce this pattern.
+The 360-degree shoreline source was the scalar depth phase in `shoaling_phase_offset_meters()`. I removed that phase from both CPU and WGSL Gerstner paths. Depth still controls wave amplitude, steepness, breaking, and foam, so waves remain directional and still react to shallow water without becoming concentric rings.
 
-The 30m fade reduced the innermost rings, but the screenshot shows the remaining rings are outside that band. The clean fix is to stop using scalar depth as a phase offset near the coast—retain depth-based amplitude/flattening and breaking, but let crest phase/direction stay authored. That removes the artificial 360-degree source without flattening ordinary directional waves.
+Verification screenshot:
+`/home/dad/catingard/test-runs/ocean_shore_ascent/1789041894-58327/screenshots/capture-006.png`
+
+The former circular source is gone. Remaining foam/coarse nearshore geometry is separate.
