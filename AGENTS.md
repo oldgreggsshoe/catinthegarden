@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Shoreward-wave investigation: corrected obsolete steering claims and added a spatial/temporal no-depth-phase regression. Runtime waves are unchanged; coast-aware propagation without concentric sources remains outstanding.
+
 - Water-side shoreline composition: disabled the ineffective Always-depth overlay draw; transmitting water now fades into real pre-water terrain over its last 0.5m of depth. Rebuilt replay shows a turquoise-to-sand gradient; residual sediment colour boundary and screen-edge artefacts remain.
 
 - Underwater swimming repair: tangential movement preserves subsea altitude, deliberate dives remain neutral through moving troughs, and LOD permits deep seabed views without the old -100m assertion/sea-level horizon rejection. Four failing-before regressions, 506 workspace tests, clippy and the underwater GPU control pass; interactive deep-diving acceptance remains. Shoreline transmission patches are a separate unfinished investigation.

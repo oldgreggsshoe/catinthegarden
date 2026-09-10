@@ -215,16 +215,9 @@ pub const REFRACTION_REFERENCE_DEPTH_METERS: f64 = 90.0;
 /// for free. No fixed wave direction can beat it; the best axis on this planet
 /// manages 52.7%.
 pub const REFRACTION_NOMINAL_SHELF_SLOPE: f64 = 0.0045;
-/// Phase distance added by the shoaling bottom, in metres.
-///
-/// Waves slow as they shoal, so a crest is held back where the water is thin.
-/// The gradient of that offset runs along the depth gradient, which turns
-/// crests onto the depth contours -- refraction -- and, once it outweighs the
-/// wave's own axis, also makes the swell arrive from seaward whichever way a
-/// coast faces.
-///
-/// Bounded, and its slope reaches zero exactly at the reference depth, so the
-/// open sea is untouched rather than merely nearly so.
+/// Legacy phase hook, deliberately zero: depth controls breaking, not phase.
+/// A depth-only phase gradient previously forced shoreward travel but also
+/// produced closed concentric crests. Shore-aware propagation is unresolved.
 pub fn shoaling_phase_offset_meters(water_depth_meters: f64) -> f64 {
     let _ = water_depth_meters;
     // A scalar depth phase turns equal-depth contours into circular wave
@@ -1118,18 +1111,34 @@ mod tests {
     }
 
     #[test]
-    fn the_steering_beats_a_wave_heading_even_on_the_gentlest_shelf() {
+    fn depth_does_not_add_a_concentric_wave_phase() {
         for depth in [0.0, 1.0, 8.0, 30.0, 90.0, 4000.0] {
             assert_eq!(super::shoaling_phase_offset_meters(depth), 0.0);
         }
     }
 
     #[test]
-    fn the_bottom_steers_swell_ashore_whatever_its_heading() {
-        // Crest travel remains authored-directional; depth still affects the
-        // wave's height and steepness, but cannot create a radial phase source.
-        assert_eq!(super::shoaling_phase_offset_meters(12.0), 0.0);
-        assert_eq!(super::shoaling_phase_offset_meters(75.0), 0.0);
+    fn varying_bathymetry_does_not_change_the_unlimited_wave_pattern() {
+        // Sample a closed shallow depression at several times. Depth may limit
+        // the final height, but must not introduce rings into the raw phase.
+        let center = DVec3::new(0.836, 0.504, 0.216).normalize();
+        let east = center.cross(DVec3::Y).normalize();
+        let north = center.cross(east).normalize();
+        for time in [0.0, 1.0, 10.0] {
+            for y in -4..=4 {
+                for x in -4..=4 {
+                    let direction = (center * super::planet_radius_meters()
+                        + east * (f64::from(x) * 100.0)
+                        + north * (f64::from(y) * 100.0))
+                        .normalize();
+                    let depth = 1.0 + f64::from(x * x + y * y) * 2.0;
+                    assert_eq!(
+                        super::wave_height_meters(direction, time, 1.0, depth),
+                        super::wave_height_meters(direction, time, 1.0, 4000.0),
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -63,16 +63,12 @@ edited.
 depth limit with a soft-max knee, so it flattens off as it shallows and can never cut through the
 bed — the limit reaches zero exactly where the water does. `BREAKING_HEIGHT_TO_DEPTH_RATIO` is 0.78
 (`ocean.rs:485`); it is a wave *height* to depth ratio, so the crest amplitude limit is half that,
-0.39 · depth. `shoaling_phase_offset_meters` steers propagation along the depth gradient, so swell
-arrives from seaward whichever way a coast faces; re-aiming the wave table cannot do this, because
-the best fixed axis on the whole sphere serves only 52.7% of 897 coasts. Measured by
-cross-correlating nadir frame sequences and dotting the pattern displacement with the onshore direction:
-spawn +0.99, then +0.63, +1.00, +0.66, +0.37. `REFRACTION_NOMINAL_SHELF_SLOPE` is 0.0045
-(`ocean.rs:159`), set to carry the *gentlest* shelf on the planet (0.0076, at the spawn coast)
-rather than a typical one; a test asserts the steering dominates through the surf zone against that
-slope, and only there, since the steering fades with depth by design. Foam keys off
-`breaking_ratio`, the raw crest against the limit, and fades again once a crest is well past
-breaking.
+0.39 · depth. The depth-only `shoaling_phase_offset_meters` was disabled on 10 September
+because it generated closed concentric wave fronts. It now returns zero: waves retain their
+authored global travel directions, which can point offshore. Earlier shoreward correlation
+numbers below describe the removed model, not the current renderer. Shoreward travel without
+those rings remains outstanding; reversing the global phase sign only swaps the affected coasts.
+Foam keys off `breaking_ratio` and fades once a crest is well past breaking.
 
 **Camera.** Three interactive modes. `G` toggles a 1.70m human-eye surface camera out of the F4 low
 flight camera and back; F4 returns either close mode to the saved orbit pose. Surface vertical
@@ -8152,3 +8148,19 @@ Shader validation, release build, and `ocean_shore_ascent/1789048908-69947` pass
 The prior shoreline overlay selected positive terrain then unconditionally discarded it in the shared lighting helper. Its escalating 100km cutoff and Always-depth policy were not a valid repair. The draw is now disabled (pipeline retained, not submitted). The existing transmitting ocean instead composites the real pre-water colour into the wet edge, with coverage approaching zero across the last 0.5m of sampled/interpolated depth and actual surface-to-bed distance. Sky/foreground snapshot samples are rejected; ocean depth ownership remains intact. No extra draw or land overlay is submitted.
 
 Release rebuilt; shader validation and new focused composition guard pass. GPU replay ocean_shore_ascent/1789053752-76393 completed: capture-006 visibly grades turquoise to sand rather than cutting directly between the two. A lighter sediment/dry-sand boundary and screen-edge blue remain visible; this is not complete shoreline visual sign-off or an underwater leak diagnosis.
+
+
+## 10 September — shoreward propagation investigation, not a repair
+
+The current wave API receives direction, time and scalar depth, not a coast normal.
+Its zero depth-phase hook cannot steer waves. Restoring the previous scalar offset
+would restore the reported concentric sources; reversing global time would only
+swap which coasts receive incoming waves. No runtime propagation change was made.
+Corrected the current-state shore description and misleading steering test names;
+a spatial/temporal raw-height regression now protects against depth-contour phase
+sources. A coherent coastal propagation or directional-energy field shared by CPU
+buoyancy and GPU geometry/normals remains implementation work. Do not treat passing
+wave parity or the no-rings regression as shoreward-motion acceptance.
+
+Validation for this investigation: 17 `ocean::tests` pass; workspace formatting
+check passes. No GPU replay or performance claim: runtime code is unchanged.

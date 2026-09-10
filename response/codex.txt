@@ -1,5 +1,3 @@
-Rebuilt with a real water-side blend, and disabled the ineffective land-overlay draw. The new capture shows turquoise fading into visible sand instead of ending at a hard colour cutoff. A lighter wet/dry sediment boundary remains, so I am not claiming the shoreline is visually perfect.
+Not fixed yet. Removing the circular-wave phase also removed shoreward steering. Reversing wave direction globally would just break other coastlines.
 
-Screenshot: test-runs/ocean_shore_ascent/1789053752-76393/screenshots/capture-006.png
-
-Shader validation and the focused regression pass.
+I corrected the misleading tests/handoff and added a no-rings regression; 17 ocean tests and formatting pass. Runtime rendering is unchanged. The remaining fix needs coast-aware propagation shared by rendering and buoyancy—not another phase-sign tweak.
