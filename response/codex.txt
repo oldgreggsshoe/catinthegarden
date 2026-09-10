@@ -1,3 +1,7 @@
-I inspected the new screenshot. The edge is still visibly hard, so the first blended-pass cutoff was too restrictive for the 40× presented terrain; the shoreline pass was fading/discarding before reaching the visible seam.
+I inspected all three captures.
 
-I extended the pass to use the rendered terrain height over a much larger fade range and pushed that adjustment as `f9ac147`. Shader validation passes. Please capture the same manual view again; if the line remains, the next step is to instrument the shoreline alpha/height directly rather than tune another threshold.
+**Specular shimmer (captures 2 and 3):** this is temporal aliasing, not the clock speed itself. The Gerstner/ripple normal changes every frame, and the Blinn-Phong specular lobe is extremely narrow. At 10% time speed the wave still advances, and a one-pixel normal change moves the highlight several pixels. The current near-field ripple wavelengths (28–180m) plus the 128-power lobe make that especially visible. The fix is to stabilize/specifically broaden the specular response or derive a filtered normal for specular only; slowing time cannot eliminate it.
+
+**Dark underwater/background leak (capture 1):** this is separate. The new shoreline pass uses `Always` depth and alpha blending, so it can composite coastal/scene fragments without the normal ocean depth rejection. In a near-surface/submerged pose that can expose thin background streaks through the water. It needs a camera-medium guard and/or an interface-depth check before the shoreline pass is allowed to draw.
+
+So: shimmer = high-frequency specular/normal aliasing; leak = shoreline pass bypassing depth ownership. I have not changed either yet.
