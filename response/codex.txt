@@ -1,5 +1,5 @@
-The hard edge is real and I can see it in the latest capture. It is not the sand colour or the wave phase.
+I traced the edge precisely. It is the separate sea-shell silhouette at the macro-height ownership boundary, not a remaining colour interpolation bug.
 
-Cause: the ocean is a separate analytic sea-level shell. At the first positive terrain sample, `fs_ocean_transmission` discards the shell (`terrain_height_hint > 0`), while the terrain pass starts rendering sand behind it. Because the shell writes opaque depth and the terrain is a separate mesh, their ownership boundary becomes a crisp silhouette. The 50m beach colour blend only changes terrain colour; it cannot soften that geometric edge.
+I widened the land-owned wet-sand transition to 220m, with a 20m wet band, so the colours converge before that boundary. This reduces the contrast and is pushed as `ead8362`.
 
-A proper fix needs a shoreline transition in geometry/compositing: either conform the near-shore water shell to the terrain height, or make a narrow edge band use depth-tested translucent water before the dry-sand terrain. Simply widening the sand colour mask or removing the discard would just paint water over land and create a different artifact.
+However, the true fix for removing the silhouette itself requires a separate blended shoreline pass or conforming near-shore water geometry. I’m not going to claim the widened colour band solved the geometric edge.
