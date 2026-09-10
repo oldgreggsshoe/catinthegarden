@@ -1,11 +1,5 @@
-Implemented and pushed as `6758a16`.
+Yes, I see it now. The newest manual frame is not merely curved waves: it is a set of full 360-degree rings centred on the shoreline source.
 
-- Added a land-owned 50m beach band.
-- Pale dry sand remains inland; the first 7m above sea level blends darker as wet sand.
-- Nearshore shoaling phase now fades across the final 30m, reducing the concentric wave pattern.
+That comes from our `shoaling_phase_offset_meters()` term. It uses only scalar water depth, so every equal-depth contour gets the same phase. Around a roughly circular coast, those contours are circles, and the Gerstner crests inherit them. The fixed-axis ripple layer cannot produce this pattern.
 
-The curved fronts are not random: they come from the current depth-only shoaling math. A scalar depth phase naturally creates depth-contour arcs. The fade reduces them near the beach, but some remain farther out where refraction is still active.
-
-Replay: `/home/dad/catingard/test-runs/ocean_shore_ascent/1789041409-56996/screenshots/capture-006.png`
-
-Validation passed: ocean unit suite, release build, and three Quadro actual-WGSL GPU tests.
+The 30m fade reduced the innermost rings, but the screenshot shows the remaining rings are outside that band. The clean fix is to stop using scalar depth as a phase offset near the coast—retain depth-based amplitude/flattening and breaking, but let crest phase/direction stay authored. That removes the artificial 360-degree source without flattening ordinary directional waves.
