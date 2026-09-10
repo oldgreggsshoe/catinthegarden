@@ -1,12 +1,3 @@
-Implemented and pushed as `5b6b911`.
+I inspected the new screenshot. The edge is still visibly hard, so the first blended-pass cutoff was too restrictive for the 40× presented terrain; the shoreline pass was fading/discarding before reaching the visible seam.
 
-I added a dedicated `fs_ocean_shoreline` pass:
-- positive coastal terrain only, 0–220m fade
-- alpha-blended water
-- no depth writes
-- Always depth comparison so it can soften the shell edge over dry terrain
-- opaque ocean and terrain depth ownership remain unchanged
-
-Validation: shader validation, release build, and `ocean_shore_ascent/1789048908-69947` pass.
-
-Please take another manual shoreline capture for final visual confirmation; the deterministic replay is not the exact pose from your screenshot.
+I extended the pass to use the rendered terrain height over a much larger fade range and pushed that adjustment as `f9ac147`. Shader validation passes. Please capture the same manual view again; if the line remains, the next step is to instrument the shoreline alpha/height directly rather than tune another threshold.
