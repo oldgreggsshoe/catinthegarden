@@ -2919,6 +2919,7 @@ impl TerrainRenderer {
         );
     }
 
+    #[allow(dead_code)] // Retained for now; unsafe Always-depth shoreline overlay is not submitted.
     pub fn draw_shoreline_transition<'pass>(
         &'pass self,
         render_pass: &mut wgpu::RenderPass<'pass>,
@@ -4660,6 +4661,22 @@ mod tests {
         // its sky. Both go into the same irradiance, which is what this pins.
         assert!(fragment.contains("var terrain_ambient = terrain_sky_diffuse;"));
         assert!(fragment.contains("let terrain_surface_irradiance = terrain_ambient"));
+    }
+
+    #[test]
+    fn shoreline_composites_real_bed_without_drawing_over_land() {
+        let shader = planet_shader_source();
+        let fragment = shader
+            .split("fn ocean_transmitting_fragment_color(")
+            .nth(1)
+            .unwrap()
+            .split("\nfn ")
+            .next()
+            .unwrap();
+        assert!(fragment.contains("bed.z >= input.camera_relative_view_position.z"));
+        assert!(fragment.contains("smoothstep(0.0, 0.5, min(column, edge_depth))"));
+        assert!(fragment.contains("mix(background, water.rgb, coverage)"));
+        assert!(!include_str!("main.rs").contains(".draw_shoreline_transition("));
     }
 
     #[test]

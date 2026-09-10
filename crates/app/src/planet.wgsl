@@ -1770,7 +1770,18 @@ fn fs_ocean_shoreline(input: OceanVertexOutput) -> @location(0) vec4<f32> {
 fn ocean_transmitting_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
     let height = macro_terrain_height(input.outmap > 0.5, input.source_uv, normalize(input.surface_direction));
     let surface = ocean_raster_surface(input, height);
-    return ocean_fragment_with_transmission(input, ocean_scene_transmission(input, surface, height), surface, height);
+    let water = ocean_fragment_with_transmission(input, ocean_scene_transmission(input, surface, height), surface, height);
+    // Composite against the real opaque bed, not a painted sand approximation.
+    // Both ownership cutoffs approach transparent water on their wet side.
+    // Keep ocean depth: later sky and scene objects must remain occluded.
+    let bed = ocean_scene_position(input.camera_relative_view_position);
+    if bed.w <= 0.0 || bed.z >= input.camera_relative_view_position.z { return water; }
+    let pixel = vec2<i32>(input.position.xy);
+    let background = textureLoad(water_scene_color, pixel, 0).rgb;
+    let column = distance(bed.xyz, input.camera_relative_view_position);
+    let edge_depth = min(max(-height, 0.0), max(-input.terrain_height_hint, 0.0));
+    let coverage = smoothstep(0.0, 0.5, min(column, edge_depth));
+    return vec4<f32>(mix(background, water.rgb, coverage), 1.0);
 }
 
 // Reconstruct the opaque surface in camera-local metres, not planetary f32.

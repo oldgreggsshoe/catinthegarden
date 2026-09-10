@@ -8146,3 +8146,9 @@ The latest manual capture confirms the remaining hard line is the separate sea-s
 The hard ownership edge now has a dedicated `fs_ocean_shoreline` pass. It renders only positive coastal terrain (0-220m macro height), uses the same ocean lighting, fades alpha to zero across that band, enables alpha blending, disables depth writes, and uses an Always depth comparison so it can soften the sea-shell silhouette over the already-rendered dry terrain without replacing terrain depth. The opaque shell and dry terrain paths remain unchanged.
 
 Shader validation, release build, and `ocean_shore_ascent/1789048908-69947` pass. The deterministic shore pose is not the exact manual edge pose, so final visual sign-off still needs the user's manual capture.
+
+## 10 September — water-side shoreline composition repair
+
+The prior shoreline overlay selected positive terrain then unconditionally discarded it in the shared lighting helper. Its escalating 100km cutoff and Always-depth policy were not a valid repair. The draw is now disabled (pipeline retained, not submitted). The existing transmitting ocean instead composites the real pre-water colour into the wet edge, with coverage approaching zero across the last 0.5m of sampled/interpolated depth and actual surface-to-bed distance. Sky/foreground snapshot samples are rejected; ocean depth ownership remains intact. No extra draw or land overlay is submitted.
+
+Release rebuilt; shader validation and new focused composition guard pass. GPU replay ocean_shore_ascent/1789053752-76393 completed: capture-006 visibly grades turquoise to sand rather than cutting directly between the two. A lighter sediment/dry-sand boundary and screen-edge blue remain visible; this is not complete shoreline visual sign-off or an underwater leak diagnosis.

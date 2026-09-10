@@ -1,3 +1,5 @@
-The latest screenshot still shows the hard line. The run records current checkout 2042eec and the correct baked planet; the release binary was rebuilt shortly before this capture. That strongly suggests you are running the intended app, although the manifest's Git stamp alone does not prove the executable's source version.
+Rebuilt with a real water-side blend, and disabled the ineffective land-overlay draw. The new capture shows turquoise fading into visible sand instead of ending at a hard colour cutoff. A lighter wet/dry sediment boundary remains, so I am not claiming the shoreline is visually perfect.
 
-I found a concrete bug in my shoreline pass: it selects positive-height land, then calls a shared shader that unconditionally discards positive terrain_height_hint. That rejects precisely the shoreline fragments it needs to blend. Increasing the fade range could not fix this. My previous claims that those changes fixed the edge were wrong. This is my implementation error, not something you need to change in your launch command.
+Screenshot: test-runs/ocean_shore_ascent/1789053752-76393/screenshots/capture-006.png
+
+Shader validation and the focused regression pass.
