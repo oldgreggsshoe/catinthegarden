@@ -1,7 +1,3 @@
-I inspected all three captures.
+The latest screenshot still shows the hard line. The run records current checkout 2042eec and the correct baked planet; the release binary was rebuilt shortly before this capture. That strongly suggests you are running the intended app, although the manifest's Git stamp alone does not prove the executable's source version.
 
-**Specular shimmer (captures 2 and 3):** this is temporal aliasing, not the clock speed itself. The Gerstner/ripple normal changes every frame, and the Blinn-Phong specular lobe is extremely narrow. At 10% time speed the wave still advances, and a one-pixel normal change moves the highlight several pixels. The current near-field ripple wavelengths (28–180m) plus the 128-power lobe make that especially visible. The fix is to stabilize/specifically broaden the specular response or derive a filtered normal for specular only; slowing time cannot eliminate it.
-
-**Dark underwater/background leak (capture 1):** this is separate. The new shoreline pass uses `Always` depth and alpha blending, so it can composite coastal/scene fragments without the normal ocean depth rejection. In a near-surface/submerged pose that can expose thin background streaks through the water. It needs a camera-medium guard and/or an interface-depth check before the shoreline pass is allowed to draw.
-
-So: shimmer = high-frequency specular/normal aliasing; leak = shoreline pass bypassing depth ownership. I have not changed either yet.
+I found a concrete bug in my shoreline pass: it selects positive-height land, then calls a shared shader that unconditionally discards positive terrain_height_hint. That rejects precisely the shoreline fragments it needs to blend. Increasing the fade range could not fix this. My previous claims that those changes fixed the edge were wrong. This is my implementation error, not something you need to change in your launch command.
