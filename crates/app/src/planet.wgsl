@@ -1951,15 +1951,28 @@ fn ocean_fragment_with_transmission(input: OceanVertexOutput, bed: vec4<f32>, su
     let facing = max(dot(normal_view, normalize(-input.camera_relative_view_position)), 0.0);
     let fresnel = 0.02 + 0.98 * pow(1.0 - facing, 5.0);
     let body = OCEAN_BODY_COLOUR * (sky_diffuse + sun_transmittance * (0.4 * SURFACE_SUNLIGHT_SCALE));
-    let transmission = (bed.rgb - body) * bed.w * (1.0 - fresnel);
+    // Keep a visible body-water component in shallow bays. A fully opaque
+    // bed contribution reads as dry sand; retaining 45% of the attenuated
+    // bed signal lets the blue body mix with the cream sediment into the
+    // turquoise shallow-water colour seen from above, while deeper water
+    // still returns to the body as `bed.w` falls toward zero.
+    let bed_mix = bed.w * 0.22;
+    let transmission = (bed.rgb - body) * bed_mix * (1.0 - fresnel);
+    let base_water = ocean_lighting(
+        surface.normal,
+        surface.crest_sharpness,
+        input.camera_relative_view_position,
+        sun_transmittance,
+        sky_diffuse,
+    );
+    // Add a shallow-water turquoise scattering tint only where a bed is
+    // visible. It fades with the same depth transmittance, leaving deep water
+    // and open-ocean appearance unchanged.
+    let shallow_turquoise = vec3<f32>(0.018, 0.34, 0.30)
+        * (sky_diffuse + sun_transmittance * (0.25 * SURFACE_SUNLIGHT_SCALE));
+    let shallow_mix = bed.w * 0.82;
     let water_surface_color = mix(
-        ocean_lighting(
-            surface.normal,
-            surface.crest_sharpness,
-            input.camera_relative_view_position,
-            sun_transmittance,
-            sky_diffuse,
-        ) + transmission,
+        mix(base_water, shallow_turquoise, shallow_mix) + transmission,
         ocean_foam_radiance(sun_transmittance, sky_diffuse),
         foam,
     );

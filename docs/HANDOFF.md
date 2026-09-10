@@ -8118,3 +8118,7 @@ The shore replay showed rectangular blue/brown patches because screen-space refr
 The beach/sediment palette is now shared as pale tropical cream-yellow (`0.94, 0.89, 0.70` sRGB). Shallow water naturally blends that bed with the blue body through the existing depth transmittance; deeper water returns to blue as the bed contribution attenuates. `ocean_shore_ascent/1789025349-41472` rebuilt with the fallback and shows the intended pale shallow bed; foam strips and screen-edge coverage still need human sign-off.
 
 Validation: focused ocean tests (41 passed), shader validation, three actual-WGSL GPU optics/normal tests, and release build pass.
+
+## 10 September 2026 — shallow-water turquoise balance
+
+The first transmission blend left shallow replay frames sand-dominant. The ocean fragment now retains a 78% shallow turquoise scattering contribution and limits the visible bed correction to 22% of attenuated transmission; the depth exponential still fades that tint and bed toward the deep-water body. Replay `ocean_clear_shallows/1789026290-45042` now shows pale turquoise water over the cream sand from above.
