@@ -1,1 +1,1 @@
-Noted. I’ll proceed with the dry-sand/wet-sand shoreline band next.
+The shoreline band is not implemented yet. I finished the diagnosis: the current problem is the missing land-owned dry/wet sand transition, not the beach colour itself. The last completed work is the turquoise shallow-water blend and transmission fallback; the next code change is to add a dry-sand strip above local wave/runup height, then a darker wet-sand band before the turquoise water.
