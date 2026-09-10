@@ -1,17 +1,5 @@
-The local prototype demonstrably moves waves shoreward, and CPU/GPU checks pass. It currently costs roughly 5ms extra at that beach, so it remains disabled by default—not a finished global fix.
+Enabled by default and rebuilt the main release app. Launch normally—no extra flags needed.
 
-Try it with:
-```bash
-CATINGARDEN_SPAWN_COAST_WAVES=1 target/release/catinthegarden-app --scenario wavedir_spawn
-```
+Still limited to the spawn coast, with the known ~5ms cost there. Tests pass for this change; committed and pushed.
 
-Code, motion-check script and handoff committed and pushed. Two pre-existing terrain test failures remain documented; the other 507 workspace tests pass. Global coverage and performance optimisation are next.
-
-<oai-mem-citation>
-<citation_entries>
-MEMORY.md:3-4|note=[paired evidence and checkout-specific validation discipline]
-</citation_entries>
-<rollout_ids>
-01a07103-79ca-7e92-99b9-5da47619e658
-</rollout_ids>
-</oai-mem-citation>
+To disable: `CATINGARDEN_SPAWN_COAST_WAVES=0`.

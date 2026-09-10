@@ -1017,7 +1017,7 @@ fn shoaling_phase_offset_meters(water_depth_meters: f32) -> f32 {
     return 0.0;
 }
 
-// Opt-in spawn coast prototype. Blend fields, not phases: no depth contours,
+// Spawn coast prototype (default on, optional opt-out). Blend fields, not phases: no depth contours,
 // camera-relative anchors, tile ownership, or unbounded time-dependent slopes.
 fn gerstner_wave(
     direction: vec3<f32>,

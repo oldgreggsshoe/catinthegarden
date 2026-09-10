@@ -536,17 +536,23 @@ pub fn maximum_wave_height_meters(storm_intensity: f32) -> f64 {
         * geometry_amplitude_scale(storm_intensity)
 }
 
-// Bounded, opt-in spawn-coast experiment. These are the surveyed L4 bed's
+// Bounded spawn-coast experiment, enabled by default; set the environment flag to 0 to disable. These are the surveyed L4 bed's
 // tangent toward increasing height, not a depth-dependent phase offset.
 const SPAWN_COAST_CENTER: DVec3 = DVec3::new(0.84285087, 0.49512231, 0.21084662);
 const SPAWN_COAST_ONSHORE: DVec3 = DVec3::new(0.48197104, -0.86880293, 0.11351380);
 const SPAWN_COAST_INNER: f64 = 0.002; // angular chord: 8 km on this planet
 const SPAWN_COAST_OUTER: f64 = 0.004; // fade ends at 16 km
 
+fn spawn_coast_waves_setting(value: Option<&str>) -> bool {
+    value.is_none_or(|value| value == "1")
+}
+
 pub(crate) fn spawn_coast_waves_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
-        let enabled = std::env::var("CATINGARDEN_SPAWN_COAST_WAVES").as_deref() == Ok("1");
+        let enabled = spawn_coast_waves_setting(
+            std::env::var("CATINGARDEN_SPAWN_COAST_WAVES").ok().as_deref(),
+        );
         if enabled {
             tracing::info!("spawn-coast wave prototype enabled: 8 km interior, 16 km exterior; not global steering");
         }
@@ -1160,7 +1166,15 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "opt-in spawn coast prototype; set CATINGARDEN_SPAWN_COAST_WAVES=1"]
+    fn spawn_coast_waves_default_on_with_explicit_opt_out() {
+        assert!(super::spawn_coast_waves_setting(None));
+        assert!(super::spawn_coast_waves_setting(Some("1")));
+        assert!(!super::spawn_coast_waves_setting(Some("0")));
+        assert!(!super::spawn_coast_waves_setting(Some("invalid")));
+    }
+
+    #[test]
+    #[ignore = "requires enabled spawn coast waves; set CATINGARDEN_SPAWN_COAST_WAVES=1"]
     fn spawn_coast_components_transport_wave_energy_toward_land() {
         assert!(super::spawn_coast_waves_enabled());
         let radial = super::SPAWN_COAST_CENTER.normalize();

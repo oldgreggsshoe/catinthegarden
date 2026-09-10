@@ -10,6 +10,11 @@ surface appearance rather than its geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
+**Current ocean default (10 September):** spawn-coast shoreward waves are now enabled
+for normal launches at the user's request. `CATINGARDEN_SPAWN_COAST_WAVES=0`
+opts out. Earlier opt-in-only notes below are historical. Coverage remains local
+and the measured ~5ms cost is unchanged; global steering is still outstanding.
+
 **Written:** 6 September 2026; header current to 8 September 2026.
 
 **How to read this file:** everything below this header is an append-only log of dated sections,
@@ -8233,3 +8238,20 @@ ignored). Enabled ocean suite: 19 pass, one opt-in test ignored; that component
 transport test passes when explicitly run with `--ignored`. Clippy all targets,
 formatting, and release build pass. Default rendering remains opt-out of the
 prototype. `crates.tar.gz` and terrain/tree implementation files are untouched.
+
+
+## 10 September — enable spawn-coast waves in normal gameplay
+
+At the user's request, an unset `CATINGARDEN_SPAWN_COAST_WAVES` now enables the
+validated local prototype. Explicit `1` enables and `0` disables; other explicit
+values retain their previous disabled behaviour. CPU and generated WGSL still
+share the same setting. No wave maths, patch extent, terrain, or tree changes.
+The previous measured cost and global-coverage limitations remain applicable.
+
+Validation: 20 ocean unit tests pass (one separately enabled-only test ignored);
+the explicit component-transport regression also passes. With the environment
+variable unset, the actual-WGSL 48-case GPU normal/height test passes with the
+same enabled-prototype errors as before. Formatting/diff checks and the release
+build pass. The normal runnable is `target/release/catinthegarden-app`; no launch
+parameter is needed. The two historical terrain source-string failures were not
+changed or reclassified by this small default-setting change.
