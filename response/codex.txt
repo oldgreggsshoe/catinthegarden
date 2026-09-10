@@ -1,7 +1,8 @@
-I ran the above-water shallow replays, but they do **not** currently show convincing turquoise water:
+Fixed and pushed as \`b382d97`.
 
-- `ocean_clear_shallows`: pale sand dominates.
-- `ocean_shallow_transmission`: grey-blue water, not turquoise.
-- `ocean_shallow_bottom`: brown/olive seabed dominates.
+The shallow blend now keeps a strong depth-weighted turquoise scattering term and reduces sand dominance, while deeper water still fades back to blue.
 
-So I can’t honestly give you a turquoise screenshot yet. The shore fallback fixed the blue rectangular misses, but the depth mix is currently weighting the bed too strongly and the shallow-water body colour is being washed out. I’ll correct that blend first, then provide the screenshot path.
+Screenshot:
+`/home/dad/catingard/test-runs/ocean_clear_shallows/1789026290-45042/screenshots/capture-004.png`
+
+This is an above-water replay showing pale turquoise water over cream sand.
