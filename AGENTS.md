@@ -16,6 +16,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 
 - Underwater swimming repair: tangential movement preserves subsea altitude, deliberate dives remain neutral through moving troughs, and LOD permits deep seabed views without the old -100m assertion/sea-level horizon rejection. Four failing-before regressions, 506 workspace tests, clippy and the underwater GPU control pass; interactive deep-diving acceptance remains. Shoreline transmission patches are a separate unfinished investigation.
 
+- Dedicated shoreline blend pass: transmitting ocean now has a separate alpha-blended, depth-nonwriting shoreline pipeline over positive coastal terrain (0-220m fade), preserving dry terrain depth while softening the sea-shell ownership seam. Shader validation, release build, and `ocean_shore_ascent/1789048908-69947` pass; manual edge sign-off remains.
+
 - Shoreline edge follow-up: land-owned wet-sand transition widened from 50m/7m to 220m/20m to match the existing material coastline scale; shader validation and release build pass, but the separate sea-shell silhouette still needs a true blended shoreline pass.
 
 - Circular shoreline wave source removed: scalar depth no longer enters Gerstner crest phase, so equal-depth contours cannot emit 360-degree rings; depth still controls amplitude/steepness/foam. `ocean_shore_ascent/1789041894-58327` shows directional fronts without the former circular source.

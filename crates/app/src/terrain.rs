@@ -799,6 +799,7 @@ pub struct TerrainRenderer {
     water_scene: crate::ocean_transmission::OceanTransmission,
     transmitting_ocean_pipeline: wgpu::RenderPipeline,
     transmitting_ocean_stable_pipeline: wgpu::RenderPipeline,
+    shoreline_pipeline: wgpu::RenderPipeline,
     ocean_transition_pipeline: wgpu::RenderPipeline,
     ocean_stable_pipeline: wgpu::RenderPipeline,
     terrain_tile_bind_group_layout: wgpu::BindGroupLayout,
@@ -1001,12 +1002,13 @@ impl TerrainRenderer {
             source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
         let create_pipeline_with_culling =
-            |label, vertex_entry_point, fragment_entry_point, cull_mode| {
+            |label, vertex_entry_point, fragment_entry_point, cull_mode, shoreline| {
                 device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: Some(label),
                     layout: Some(
                         if fragment_entry_point == "fs_ocean_transmission"
                             || fragment_entry_point == "fs_ocean_transmission_stable"
+                            || fragment_entry_point == "fs_ocean_shoreline"
                         {
                             &water_layout
                         } else {
@@ -1025,7 +1027,11 @@ impl TerrainRenderer {
                         compilation_options: wgpu::PipelineCompilationOptions::default(),
                         targets: &[Some(wgpu::ColorTargetState {
                             format: surface_format,
-                            blend: Some(wgpu::BlendState::REPLACE),
+                            blend: Some(if shoreline {
+                                wgpu::BlendState::ALPHA_BLENDING
+                            } else {
+                                wgpu::BlendState::REPLACE
+                            }),
                             write_mask: wgpu::ColorWrites::ALL,
                         })],
                     }),
@@ -1035,8 +1041,12 @@ impl TerrainRenderer {
                     },
                     depth_stencil: Some(wgpu::DepthStencilState {
                         format: wgpu::TextureFormat::Depth32Float,
-                        depth_write_enabled: Some(true),
-                        depth_compare: Some(wgpu::CompareFunction::Greater),
+                        depth_write_enabled: Some(!shoreline),
+                        depth_compare: Some(if shoreline {
+                            wgpu::CompareFunction::Always
+                        } else {
+                            wgpu::CompareFunction::Greater
+                        }),
                         stencil: wgpu::StencilState::default(),
                         bias: wgpu::DepthBiasState::default(),
                     }),
@@ -1051,6 +1061,7 @@ impl TerrainRenderer {
                 vertex_entry_point,
                 fragment_entry_point,
                 Some(wgpu::Face::Back),
+                false,
             )
         };
         let transition_pipeline =
@@ -1066,12 +1077,14 @@ impl TerrainRenderer {
             "vs_ocean",
             "fs_ocean",
             None,
+            false,
         );
         let ocean_stable_pipeline = create_pipeline_with_culling(
             "LOD ocean stable pipeline",
             "vs_ocean",
             "fs_ocean_stable",
             None,
+            false,
         );
 
         let transmitting_ocean_pipeline = create_pipeline_with_culling(
@@ -1079,12 +1092,21 @@ impl TerrainRenderer {
             "vs_ocean",
             "fs_ocean_transmission",
             None,
+            false,
         );
         let transmitting_ocean_stable_pipeline = create_pipeline_with_culling(
             "stable transmitting ocean",
             "vs_ocean",
             "fs_ocean_transmission_stable",
             None,
+            false,
+        );
+        let shoreline_pipeline = create_pipeline_with_culling(
+            "shoreline transition",
+            "vs_ocean",
+            "fs_ocean_shoreline",
+            None,
+            true,
         );
         let topology = build_chunk_mesh(QuadtreeNode::root(0));
         // Every quadtree leaf has the same 33x33 topology. Node bounds now
@@ -1224,6 +1246,7 @@ impl TerrainRenderer {
             water_scene,
             transmitting_ocean_pipeline,
             transmitting_ocean_stable_pipeline,
+            shoreline_pipeline,
             ocean_transition_pipeline,
             ocean_stable_pipeline,
             terrain_tile_bind_group_layout,
@@ -2894,6 +2917,51 @@ impl TerrainRenderer {
             &self.water_scene.bind_group,
             true,
         );
+    }
+
+    pub fn draw_shoreline_transition<'pass>(
+        &'pass self,
+        render_pass: &mut wgpu::RenderPass<'pass>,
+        camera_bind_group: &'pass wgpu::BindGroup,
+    ) {
+        render_pass.set_pipeline(&self.shoreline_pipeline);
+        render_pass.set_bind_group(0, camera_bind_group, &[]);
+        render_pass.set_bind_group(2, &self.shared_bind_group, &[]);
+        render_pass.set_bind_group(3, &self.water_scene.bind_group, &[]);
+        render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+        for batch in &self.ocean_draw_batches {
+            let (vertex_buffer, index_buffer, index_count) = if batch.dense_near_field {
+                (
+                    &self.near_field_vertex_buffer,
+                    &self.near_field_index_buffer,
+                    self.near_field_index_count,
+                )
+            } else {
+                (
+                    &self.chunk_vertex_buffer,
+                    &self.index_buffer,
+                    self.index_count,
+                )
+            };
+            render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            let bind_group = if batch.near_field {
+                &self.raster_near_field_bind_group
+            } else {
+                let tile = batch.tile_key.map_or(&self.placeholder_tile, |key| {
+                    self.tile_cache
+                        .get(&key)
+                        .expect("draw batch has a resident terrain tile")
+                });
+                &tile.bind_group
+            };
+            render_pass.set_bind_group(1, bind_group, &[]);
+            render_pass.draw_indexed(
+                0..index_count,
+                0,
+                batch.first_instance..batch.first_instance + batch.instance_count,
+            );
+        }
     }
 
     fn draw_ocean<'pass>(

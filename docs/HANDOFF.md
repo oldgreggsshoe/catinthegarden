@@ -8140,3 +8140,9 @@ Replay `ocean_shore_ascent/1789041894-58327` shows no former 360-degree ring sou
 ## 10 September 2026 — shoreline edge follow-up
 
 The latest manual capture confirms the remaining hard line is the separate sea-shell silhouette at the macro-height ownership boundary. I widened the land-owned wet-sand transition to the same 220m coastline scale used by the material blend, with a 20m wet band, so colour converges before the boundary. This reduces contrast but does not yet constitute the true geometry/compositing fix: a blended shoreline pass or conforming near-shore shell is still required to remove the silhouette itself.
+
+## 10 September 2026 — dedicated shoreline blend pass
+
+The hard ownership edge now has a dedicated `fs_ocean_shoreline` pass. It renders only positive coastal terrain (0-220m macro height), uses the same ocean lighting, fades alpha to zero across that band, enables alpha blending, disables depth writes, and uses an Always depth comparison so it can soften the sea-shell silhouette over the already-rendered dry terrain without replacing terrain depth. The opaque shell and dry terrain paths remain unchanged.
+
+Shader validation, release build, and `ocean_shore_ascent/1789048908-69947` pass. The deterministic shore pose is not the exact manual edge pose, so final visual sign-off still needs the user's manual capture.

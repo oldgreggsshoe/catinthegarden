@@ -3915,6 +3915,8 @@ impl State {
             });
             self.terrain
                 .draw_transmitting_ocean(&mut pass, &self.camera_bind_group);
+            self.terrain
+                .draw_shoreline_transition(&mut pass, &self.camera_bind_group);
         }
         if !solid_color_screen && use_foveated_warp {
             {

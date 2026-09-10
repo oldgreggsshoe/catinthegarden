@@ -1756,6 +1756,16 @@ fn fs_ocean_transmission_stable(input: OceanVertexOutput, @builtin(front_facing)
     return ocean_transmitting_fragment_color(input);
 }
 
+@fragment
+fn fs_ocean_shoreline(input: OceanVertexOutput) -> @location(0) vec4<f32> {
+    let height = macro_terrain_height(input.outmap > 0.5, input.source_uv, normalize(input.surface_direction));
+    if input.outmap <= 0.5 || height <= 0.0 || height > 220.0 { discard; }
+    let biome = sample_biome(true, input.source_uv, normalize(input.surface_direction));
+    if biome == 2u { discard; }
+    let surface = ocean_raster_surface(input, height);
+    return ocean_fragment_with_transmission_mode(input, vec4<f32>(0.0), surface, height, true);
+}
+
 fn ocean_transmitting_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
     let height = macro_terrain_height(input.outmap > 0.5, input.source_uv, normalize(input.surface_direction));
     let surface = ocean_raster_surface(input, height);
@@ -1909,13 +1919,17 @@ fn ocean_raster_surface(input: OceanVertexOutput, height: f32) -> OceanSurface {
 }
 
 fn ocean_fragment_with_transmission(input: OceanVertexOutput, bed: vec4<f32>, surface: OceanSurface, macro_height_meters: f32) -> vec4<f32> {
+    return ocean_fragment_with_transmission_mode(input, bed, surface, macro_height_meters, false);
+}
+
+fn ocean_fragment_with_transmission_mode(input: OceanVertexOutput, bed: vec4<f32>, surface: OceanSurface, macro_height_meters: f32, shoreline: bool) -> vec4<f32> {
     let direction = normalize(input.surface_direction);
     let outmap = input.outmap > 0.5;
     let biome_id = sample_biome(outmap, input.source_uv, direction);
     // This draw is a geometric sea shell, not another material arm on the
     // terrain mesh. Sample ownership per fragment so a coastline triangle
     // cannot lift water between a sea-level and a raised land vertex.
-    if !is_open_ocean_surface(outmap, macro_height_meters, biome_id) {
+    if !shoreline && !is_open_ocean_surface(outmap, macro_height_meters, biome_id) {
         discard;
     }
     if input.terrain_height_hint > 0.0 {
@@ -1991,7 +2005,8 @@ fn ocean_fragment_with_transmission(input: OceanVertexOutput, bed: vec4<f32>, su
             1.0,
         );
     }
-    return vec4<f32>(water_aerial_color, 1.0);
+    let shoreline_alpha = select(1.0, 1.0 - smoothstep(0.0, 220.0, max(macro_height_meters, 0.0)), shoreline);
+    return vec4<f32>(water_aerial_color, shoreline_alpha);
 }
 
 fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
