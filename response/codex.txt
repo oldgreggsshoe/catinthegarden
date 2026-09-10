@@ -1,3 +1,17 @@
-Not fixed yet. Removing the circular-wave phase also removed shoreward steering. Reversing wave direction globally would just break other coastlines.
+The local prototype demonstrably moves waves shoreward, and CPU/GPU checks pass. It currently costs roughly 5ms extra at that beach, so it remains disabled by default—not a finished global fix.
 
-I corrected the misleading tests/handoff and added a no-rings regression; 17 ocean tests and formatting pass. Runtime rendering is unchanged. The remaining fix needs coast-aware propagation shared by rendering and buoyancy—not another phase-sign tweak.
+Try it with:
+```bash
+CATINGARDEN_SPAWN_COAST_WAVES=1 target/release/catinthegarden-app --scenario wavedir_spawn
+```
+
+Code, motion-check script and handoff committed and pushed. Two pre-existing terrain test failures remain documented; the other 507 workspace tests pass. Global coverage and performance optimisation are next.
+
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:3-4|note=[paired evidence and checkout-specific validation discipline]
+</citation_entries>
+<rollout_ids>
+01a07103-79ca-7e92-99b9-5da47619e658
+</rollout_ids>
+</oai-mem-citation>

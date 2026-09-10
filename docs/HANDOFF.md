@@ -8164,3 +8164,72 @@ wave parity or the no-rings regression as shoreward-motion acceptance.
 
 Validation for this investigation: 17 `ocean::tests` pass; workspace formatting
 check passes. No GPU replay or performance claim: runtime code is unchanged.
+
+## 10 September — opt-in spawn-coast travelling-wave prototype
+
+Runtime flag `CATINGARDEN_SPAWN_COAST_WAVES=1` enables a **local experiment only**.
+Default remains disabled. This is not automatic steering on arbitrary coastlines.
+At `wavedir_spawn`, the surveyed L4 raw bed is -18.19m; a 4km central difference
+points toward increasing height along `(0.48197104,-0.86880293,0.11351380)`.
+Along that tangent the bed is -52.48m at -5km and +13.50m at +5km. The authored
+patch is centred at `(0.84285087,0.49512231,0.21084662)`, fully active through
+8km and smoothly gone by 16km (angular chord on the 4000km planet).
+
+Only components travelling offshore relative to that surveyed tangent reverse.
+The fade mixes **complete opposite-travelling fields**, not their phase or time
+multiplier. Thus no depth contours enter phase and derivatives cannot grow with
+elapsed time. CPU height, slope, velocity and GPU geometry/ripples share the
+selection. The slope includes the spatial envelope derivative. No draw, mesh,
+texture, bind group, or terrain/tree changes were introduced.
+
+The component-energy regression failed before (dominant swell offshore flux
+-0.007858) and passes with the prototype. Spatial/temporal finite differences
+cover the fade and late time; the actual-WGSL GPU regression now has 48 cases
+including the interior, fade and exterior. Enabled maximum normal error is
+0.0000205841 and height error 0.000165351m; all three GPU ocean tests pass.
+Two existing terrain source-string tests fail in the full app suite: their
+expected strings are already absent from HEAD's unchanged planet.wgsl. Do not
+change concurrent terrain work to hide those failures.
+
+First paired 1280x720 Immediate `wavedir_spawn` captures:
+- disabled: `1789058891-83824`
+- enabled: `1789058948-84358`
+Windowed greyscale cross-correlation between consecutive captures changed from
+roughly (+3,-6) to (-6,+5) pixels; onshore projects approximately screen-down.
+Correlations are 0.985–0.988. This is measured motion, not a still-image inference.
+Timing rechecks and final validation are in progress; do not yet claim a perf win.
+
+Remaining: authoring a shared global coastal direction/energy field, testing
+multiple coast orientations, and visual review of possible standing interference
+in the 8–16km fade. The patch does not cover the older circular-source manual
+capture 60km away. Leave the opt-in disabled by default pending that work.
+
+Repeat captures: disabled `1789063531-86243`, enabled `1789063630-86453`.
+`scripts/measure-spawn-coast-motion.py DISABLED_RUN ENABLED_RUN` reproduces the
+motion check (numpy/Pillow). It asserts high correlation, offshore baseline,
+and shoreward enabled motion for all seven adjacent capture pairs. Repeat
+onshore cosine is -0.891 to -0.635 before and +0.635 after; minimum correlation
+is 0.9849. JSON evidence lives in the enabled run's `coast-motion-comparison.json`.
+
+**Cost remains unacceptable for promotion:** matched 1280x720 Immediate samples
+at sim_time >=1s have median 38.616ms disabled versus 43.640ms enabled (+5.024ms,
++13.0%). Only six logged samples per run: preliminary renderer timing, not a
+comprehensive benchmark or an FPS improvement. Defaults remain disabled.
+The disabled GPU control also passes all three tests (48 normal/height cases,
+maximum normal error 0.000001093, height error 0.000023876m).
+
+Reproduce the local prototype after a release build:
+```
+CATINGARDEN_SPAWN_COAST_WAVES=1 target/release/catinthegarden-app --scenario wavedir_spawn
+```
+Omit `--scenario wavedir_spawn` for interactive use; only the surveyed spawn
+coastal patch is changed. The environment variable must be set before launch.
+Globalisation needs a coherent shared directional-energy field rather than
+more hardcoded coast patches. Do not reintroduce scalar bathymetry phase.
+
+Final validation: 507 workspace tests pass with the two independently confirmed
+pre-existing terrain source-string failures explicitly skipped (17 other tests
+ignored). Enabled ocean suite: 19 pass, one opt-in test ignored; that component
+transport test passes when explicitly run with `--ignored`. Clippy all targets,
+formatting, and release build pass. Default rendering remains opt-out of the
+prototype. `crates.tar.gz` and terrain/tree implementation files are untouched.

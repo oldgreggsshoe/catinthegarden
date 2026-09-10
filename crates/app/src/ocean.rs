@@ -102,7 +102,12 @@ pub(crate) fn wgsl_constants() -> String {
          const OCEAN_BREAKING_HEIGHT_TO_DEPTH_RATIO: f32 = {};\n\
          const OCEAN_WAVE_PHASE_SPEED_SIGN: f32 = {};\n\
          const OCEAN_REFRACTION_REFERENCE_DEPTH_METERS: f32 = {};\n\
-         const OCEAN_REFRACTION_NOMINAL_SHELF_SLOPE: f32 = {};\n",
+         const OCEAN_REFRACTION_NOMINAL_SHELF_SLOPE: f32 = {};\n\
+         const SPAWN_COAST_ENABLED: bool = {};\n\
+         const SPAWN_COAST_CENTER: vec3<f32> = vec3<f32>({}, {}, {});\n\
+         const SPAWN_COAST_ONSHORE: vec3<f32> = vec3<f32>({}, {}, {});\n\
+         const SPAWN_COAST_INNER: f32 = {};\n\
+         const SPAWN_COAST_OUTER: f32 = {};\n",
         wgsl_number(OCEAN_WAVE_SCALE),
         wgsl_number(OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE),
         wgsl_number(OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE),
@@ -114,6 +119,15 @@ pub(crate) fn wgsl_constants() -> String {
         wgsl_number(OCEAN_WAVE_PHASE_SPEED_SIGN),
         wgsl_number(REFRACTION_REFERENCE_DEPTH_METERS),
         wgsl_number(REFRACTION_NOMINAL_SHELF_SLOPE),
+        spawn_coast_waves_enabled(),
+        SPAWN_COAST_CENTER.x,
+        SPAWN_COAST_CENTER.y,
+        SPAWN_COAST_CENTER.z,
+        SPAWN_COAST_ONSHORE.x,
+        SPAWN_COAST_ONSHORE.y,
+        SPAWN_COAST_ONSHORE.z,
+        SPAWN_COAST_INNER,
+        SPAWN_COAST_OUTER,
     )
 }
 
@@ -218,6 +232,7 @@ pub const REFRACTION_NOMINAL_SHELF_SLOPE: f64 = 0.0045;
 /// Legacy phase hook, deliberately zero: depth controls breaking, not phase.
 /// A depth-only phase gradient previously forced shoreward travel but also
 /// produced closed concentric crests. Shore-aware propagation is unresolved.
+#[allow(dead_code)] // legacy zero-phase regression hook
 pub fn shoaling_phase_offset_meters(water_depth_meters: f64) -> f64 {
     let _ = water_depth_meters;
     // A scalar depth phase turns equal-depth contours into circular wave
@@ -521,22 +536,90 @@ pub fn maximum_wave_height_meters(storm_intensity: f32) -> f64 {
         * geometry_amplitude_scale(storm_intensity)
 }
 
+// Bounded, opt-in spawn-coast experiment. These are the surveyed L4 bed's
+// tangent toward increasing height, not a depth-dependent phase offset.
+const SPAWN_COAST_CENTER: DVec3 = DVec3::new(0.84285087, 0.49512231, 0.21084662);
+const SPAWN_COAST_ONSHORE: DVec3 = DVec3::new(0.48197104, -0.86880293, 0.11351380);
+const SPAWN_COAST_INNER: f64 = 0.002; // angular chord: 8 km on this planet
+const SPAWN_COAST_OUTER: f64 = 0.004; // fade ends at 16 km
+
+pub(crate) fn spawn_coast_waves_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        let enabled = std::env::var("CATINGARDEN_SPAWN_COAST_WAVES").as_deref() == Ok("1");
+        if enabled {
+            tracing::info!("spawn-coast wave prototype enabled: 8 km interior, 16 km exterior; not global steering");
+        }
+        enabled
+    })
+}
+
+#[derive(Clone, Copy)]
+struct WaveSample {
+    profile: f64,
+    slope: DVec3,
+    velocity: f64,
+}
+
+/// Spatial envelope only: never interpolate a phase axis or a time multiplier.
+/// Mixing complete opposite-travelling fields keeps phase bounded at long times.
+fn spawn_coast_weight(direction: DVec3) -> (f64, DVec3) {
+    let delta = direction - SPAWN_COAST_CENTER.normalize();
+    let span = SPAWN_COAST_OUTER.powi(2) - SPAWN_COAST_INNER.powi(2);
+    let t = ((delta.length_squared() - SPAWN_COAST_INNER.powi(2)) / span).clamp(0.0, 1.0);
+    let weight = 1.0 - t * t * (3.0 - 2.0 * t);
+    let gradient = delta * (-12.0 * t * (1.0 - t) / (planet_radius_meters() * span));
+    (weight, gradient)
+}
+
+#[inline]
+fn sample_wave(direction: DVec3, time: f64, wave: &GerstnerWave) -> WaveSample {
+    let axis = wave.direction.normalize();
+    let k = std::f64::consts::TAU / wave.wavelength_meters;
+    let sample = |sign: f64| {
+        let phase = k
+            * (direction.dot(axis) * planet_radius_meters()
+                + sign * wave.speed_meters_per_second * time);
+        WaveSample {
+            profile: wave_profile(phase),
+            slope: axis * (k * wave_profile_derivative(phase)),
+            velocity: sign * wave.speed_meters_per_second * k * wave_profile_derivative(phase),
+        }
+    };
+    let sign = OCEAN_WAVE_PHASE_SPEED_SIGN;
+    if !spawn_coast_waves_enabled() || sign * axis.dot(SPAWN_COAST_ONSHORE) <= 0.0 {
+        return sample(sign);
+    }
+    let (weight, gradient) = spawn_coast_weight(direction);
+    if weight <= 0.0 {
+        return sample(sign);
+    }
+    let incoming = sample(-sign);
+    if weight >= 1.0 {
+        return incoming;
+    }
+    let original = sample(sign);
+    WaveSample {
+        profile: original.profile + weight * (incoming.profile - original.profile),
+        slope: original.slope
+            + weight * (incoming.slope - original.slope)
+            + gradient * (incoming.profile - original.profile),
+        velocity: original.velocity + weight * (incoming.velocity - original.velocity),
+    }
+}
+
 pub fn wave_height_meters(
     direction: DVec3,
     sim_time: f64,
     storm_intensity: f32,
-    water_depth_meters: f64,
+    _water_depth_meters: f64,
 ) -> f64 {
     let amplitude_scale = geometry_amplitude_scale(storm_intensity);
     let blend = storm_blend(storm_intensity);
     active_waves()
         .iter()
         .map(|wave| {
-            let phase = std::f64::consts::TAU / wave.wavelength_meters
-                * (direction.dot(wave.direction.normalize()) * planet_radius_meters()
-                    + OCEAN_WAVE_PHASE_SPEED_SIGN * wave.speed_meters_per_second * sim_time
-                    + shoaling_phase_offset_meters(water_depth_meters));
-            wave.amplitude(blend) * amplitude_scale * wave_profile(phase)
+            wave.amplitude(blend) * amplitude_scale * sample_wave(direction, sim_time, wave).profile
         })
         .sum()
 }
@@ -641,13 +724,7 @@ pub fn local_wave_height_meters(direction: DVec3, sim_time: f64, water_depth_met
     );
     let ripple_height = active_ripple_waves()
         .iter()
-        .map(|wave| {
-            let phase = std::f64::consts::TAU / wave.wavelength_meters
-                * (direction.dot(wave.direction.normalize()) * planet_radius_meters()
-                    + OCEAN_WAVE_PHASE_SPEED_SIGN * wave.speed_meters_per_second * sim_time
-                    + shoaling_phase_offset_meters(water_depth_meters));
-            wave.amplitude_meters * wave_profile(phase)
-        })
+        .map(|wave| wave.amplitude_meters * sample_wave(direction, sim_time, wave).profile)
         .sum::<f64>();
     global_wave_height_meters(direction, sim_time, water_depth_meters)
         + if OCEAN_RIPPLES_ARE_GEOMETRIC {
@@ -675,16 +752,7 @@ pub fn global_wave_slope(direction: DVec3, sim_time: f64, water_depth_meters: f6
     let gradient = active_waves()
         .iter()
         .map(|wave| {
-            let axis = wave.direction.normalize();
-            let wave_number = std::f64::consts::TAU / wave.wavelength_meters;
-            let phase = wave_number
-                * (radial.dot(axis) * planet_radius_meters()
-                    + OCEAN_WAVE_PHASE_SPEED_SIGN * wave.speed_meters_per_second * sim_time
-                    + shoaling_phase_offset_meters(water_depth_meters));
-            axis * (wave.amplitude(blend)
-                * amplitude_scale
-                * wave_number
-                * wave_profile_derivative(phase))
+            sample_wave(radial, sim_time, wave).slope * (wave.amplitude(blend) * amplitude_scale)
         })
         .sum::<DVec3>()
         * breaking_rate_weight(
@@ -709,17 +777,9 @@ pub fn global_wave_vertical_velocity_meters_per_second(
     let vertical_velocity = active_waves()
         .iter()
         .map(|wave| {
-            let wave_number = std::f64::consts::TAU / wave.wavelength_meters;
-            let phase = wave_number
-                * (direction.dot(wave.direction.normalize()) * planet_radius_meters()
-                    + OCEAN_WAVE_PHASE_SPEED_SIGN * wave.speed_meters_per_second * sim_time
-                    + shoaling_phase_offset_meters(water_depth_meters));
-            OCEAN_WAVE_PHASE_SPEED_SIGN
-                * wave.amplitude(blend)
+            wave.amplitude(blend)
                 * amplitude_scale
-                * wave_number
-                * wave.speed_meters_per_second
-                * wave_profile_derivative(phase)
+                * sample_wave(direction, sim_time, wave).velocity
         })
         .sum::<f64>();
     // Scaled by the same figure the height was, so a limited crest and its
@@ -753,18 +813,7 @@ pub fn local_wave_vertical_velocity_meters_per_second(
     );
     let ripple_velocity = active_ripple_waves()
         .iter()
-        .map(|wave| {
-            let wave_number = std::f64::consts::TAU / wave.wavelength_meters;
-            let phase = wave_number
-                * (direction.dot(wave.direction.normalize()) * planet_radius_meters()
-                    + OCEAN_WAVE_PHASE_SPEED_SIGN * wave.speed_meters_per_second * sim_time
-                    + shoaling_phase_offset_meters(water_depth_meters));
-            OCEAN_WAVE_PHASE_SPEED_SIGN
-                * wave.amplitude_meters
-                * wave_number
-                * wave.speed_meters_per_second
-                * wave_profile_derivative(phase)
-        })
+        .map(|wave| wave.amplitude_meters * sample_wave(direction, sim_time, wave).velocity)
         .sum::<f64>();
     global_wave_vertical_velocity_meters_per_second(direction, sim_time, water_depth_meters)
         + if OCEAN_RIPPLES_ARE_GEOMETRIC {
@@ -1107,6 +1156,94 @@ mod tests {
                 "local query is {} m off the drawn surface",
                 local - global
             );
+        }
+    }
+
+    #[test]
+    #[ignore = "opt-in spawn coast prototype; set CATINGARDEN_SPAWN_COAST_WAVES=1"]
+    fn spawn_coast_components_transport_wave_energy_toward_land() {
+        assert!(super::spawn_coast_waves_enabled());
+        let radial = super::SPAWN_COAST_CENTER.normalize();
+        let shore = super::SPAWN_COAST_ONSHORE.normalize();
+        for (index, wave) in super::WAVES
+            .iter()
+            .chain(super::OCEAN_RIPPLE_WAVES.iter())
+            .enumerate()
+        {
+            let mut flux = 0.0;
+            for step in 0..64 {
+                let sample = super::sample_wave(radial, step as f64 * 0.25, wave);
+                flux -= sample.velocity * sample.slope.dot(shore);
+            }
+            assert!(flux > 0.0, "component {index} transports offshore: {flux}");
+        }
+    }
+
+    #[test]
+    fn coastal_wave_derivatives_include_the_spatial_blend() {
+        let center = super::SPAWN_COAST_CENTER.normalize();
+        let tangent = super::SPAWN_COAST_ONSHORE.normalize();
+        let radius = super::planet_radius_meters();
+        // Inner patch, fade annulus, and unchanged exterior; late time catches
+        // accidental interpolation of the time multiplier instead of fields.
+        for offset in [0.0, 0.002, 0.003, 0.004, 0.005] {
+            let direction = (center + tangent * offset).normalize();
+            let along = (tangent - direction * tangent.dot(direction)).normalize();
+            for time in [1.0, 7.0, 4096.0] {
+                for wave in super::WAVES.iter().chain(super::OCEAN_RIPPLE_WAVES.iter()) {
+                    let sample = super::sample_wave(direction, time, wave);
+                    let step = 0.001;
+                    let before = super::sample_wave(
+                        (direction - along * (step / radius)).normalize(),
+                        time,
+                        wave,
+                    );
+                    let after = super::sample_wave(
+                        (direction + along * (step / radius)).normalize(),
+                        time,
+                        wave,
+                    );
+                    let spatial = (after.profile - before.profile) / (2.0 * step);
+                    assert!(
+                        (spatial - sample.slope.dot(along)).abs() < 1.0e-5,
+                        "offset={offset} time={time}: spatial={spatial} analytic={}",
+                        sample.slope.dot(along)
+                    );
+                    let dt = 0.0001;
+                    let temporal = (super::sample_wave(direction, time + dt, wave).profile
+                        - super::sample_wave(direction, time - dt, wave).profile)
+                        / (2.0 * dt);
+                    assert!((temporal - sample.velocity).abs() < 1.0e-5);
+                }
+            }
+        }
+        for offset in [0.0, 0.001, 0.005, 0.02] {
+            let (weight, gradient) =
+                super::spawn_coast_weight((center + tangent * offset).normalize());
+            assert_eq!(weight, if offset < 0.002 { 1.0 } else { 0.0 });
+            assert_eq!(gradient, DVec3::ZERO);
+        }
+    }
+
+    #[test]
+    fn coastal_exterior_preserves_the_authored_wave_field() {
+        let center = super::SPAWN_COAST_CENTER.normalize();
+        let shore = super::SPAWN_COAST_ONSHORE.normalize();
+        for direction in [(center + shore * 0.005).normalize(), -center, DVec3::Y] {
+            for time in [0.0, 7.0, 4096.0] {
+                for wave in super::WAVES.iter().chain(super::OCEAN_RIPPLE_WAVES.iter()) {
+                    let phase = std::f64::consts::TAU / wave.wavelength_meters
+                        * (direction.dot(wave.direction.normalize())
+                            * super::planet_radius_meters()
+                            + super::OCEAN_WAVE_PHASE_SPEED_SIGN
+                                * wave.speed_meters_per_second
+                                * time);
+                    assert_eq!(
+                        super::sample_wave(direction, time, wave).profile,
+                        super::wave_profile(phase)
+                    );
+                }
+            }
         }
     }
 

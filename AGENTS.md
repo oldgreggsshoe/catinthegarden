@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Opt-in spawn-coast wave prototype (`CATINGARDEN_SPAWN_COAST_WAVES=1`): locally reverses offshore components with a phase-continuous field blend, including CPU/GPU derivative parity. Initial replay motion is shoreward; default remains unchanged, and global coast coverage/transition visual acceptance are outstanding.
+
 - Shoreward-wave investigation: corrected obsolete steering claims and added a spatial/temporal no-depth-phase regression. Runtime waves are unchanged; coast-aware propagation without concentric sources remains outstanding.
 
 - Water-side shoreline composition: disabled the ineffective Always-depth overlay draw; transmitting water now fades into real pre-water terrain over its last 0.5m of depth. Rebuilt replay shows a turquoise-to-sand gradient; residual sediment colour boundary and screen-edge artefacts remain.

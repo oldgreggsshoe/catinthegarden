@@ -20,6 +20,15 @@ fn gpu_ocean_normals_match_cpu_buoyancy_in_deep_and_breaking_water() {
             DVec3::X,
             DVec3::Y,
             DVec3::new(-0.3, 0.8, 0.5),
+            // Spawn-coast prototype: interior, both sides of the blend, and
+            // exterior. Run with the opt-in both unset and enabled.
+            DVec3::new(0.84285087, 0.49512231, 0.21084662),
+            DVec3::new(0.84285087, 0.49512231, 0.21084662)
+                + DVec3::new(0.48197104, -0.86880293, 0.11351380) * 0.0025,
+            DVec3::new(0.84285087, 0.49512231, 0.21084662)
+                + DVec3::new(0.48197104, -0.86880293, 0.11351380) * 0.0035,
+            DVec3::new(0.84285087, 0.49512231, 0.21084662)
+                + DVec3::new(0.48197104, -0.86880293, 0.11351380) * 0.005,
         ] {
             // Use the same rounded input in both implementations.
             let direction = direction.normalize().as_vec3().as_dvec3();

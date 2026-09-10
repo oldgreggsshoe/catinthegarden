@@ -1017,7 +1017,49 @@ fn shoaling_phase_offset_meters(water_depth_meters: f32) -> f32 {
     return 0.0;
 }
 
+// Opt-in spawn coast prototype. Blend fields, not phases: no depth contours,
+// camera-relative anchors, tile ownership, or unbounded time-dependent slopes.
 fn gerstner_wave(
+    direction: vec3<f32>,
+    wave_axis: vec3<f32>,
+    wavelength_meters: f32,
+    amplitude_meters: f32,
+    speed_meters_per_second: f32,
+    steepness: f32,
+    time_seconds: f32,
+    water_depth_meters: f32,
+) -> OceanWaveContribution {
+    if !SPAWN_COAST_ENABLED || OCEAN_WAVE_PHASE_SPEED_SIGN * dot(normalize(wave_axis), SPAWN_COAST_ONSHORE) <= 0.0 {
+        return gerstner_wave_unsteered(direction, wave_axis, wavelength_meters,
+            amplitude_meters, speed_meters_per_second, steepness, time_seconds, water_depth_meters);
+    }
+    let delta = direction - normalize(SPAWN_COAST_CENTER);
+    let span = SPAWN_COAST_OUTER * SPAWN_COAST_OUTER - SPAWN_COAST_INNER * SPAWN_COAST_INNER;
+    let t = clamp((dot(delta, delta) - SPAWN_COAST_INNER * SPAWN_COAST_INNER) / span, 0.0, 1.0);
+    let weight = 1.0 - t * t * (3.0 - 2.0 * t);
+    if weight <= 0.0 {
+        return gerstner_wave_unsteered(direction, wave_axis, wavelength_meters,
+            amplitude_meters, speed_meters_per_second, steepness, time_seconds, water_depth_meters);
+    }
+    let incoming = gerstner_wave_unsteered(direction, wave_axis, wavelength_meters,
+        amplitude_meters, speed_meters_per_second, steepness, -time_seconds, water_depth_meters);
+    if weight >= 1.0 {
+        return incoming;
+    }
+    let original = gerstner_wave_unsteered(direction, wave_axis, wavelength_meters,
+        amplitude_meters, speed_meters_per_second, steepness, time_seconds, water_depth_meters);
+    let gradient = delta * (-12.0 * t * (1.0 - t) / (PLANET_RADIUS_METERS * span));
+    let tangent_gradient = gradient - direction * dot(gradient, direction);
+    return OceanWaveContribution(
+        mix(original.horizontal_displacement, incoming.horizontal_displacement, weight),
+        mix(original.vertical_displacement, incoming.vertical_displacement, weight),
+        mix(original.slope, incoming.slope, weight)
+            + tangent_gradient * (incoming.vertical_displacement - original.vertical_displacement),
+        mix(original.convergence, incoming.convergence, weight),
+    );
+}
+
+fn gerstner_wave_unsteered(
     direction: vec3<f32>,
     wave_axis: vec3<f32>,
     wavelength_meters: f32,
