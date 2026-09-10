@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Ocean underside reflections: transmitting raster back faces reflect the pre-water scene with a bounded depth trace and a lit local-seabed fallback off-screen. Water visibility is now 100m; no extra draw/target. Detailed off-screen/boat reflection and measured performance remain limitations.
+
 - Spawn-coast shoreward waves enabled for normal launches at user request; `CATINGARDEN_SPAWN_COAST_WAVES=0` disables them. Local 8–16km coverage and previously measured ~5ms cost are unchanged; this is not global coast steering.
 
 - Opt-in spawn-coast wave prototype (`CATINGARDEN_SPAWN_COAST_WAVES=1`): locally reverses offshore components with a phase-continuous field blend, including CPU/GPU derivative parity. Initial replay motion is shoreward; default remains unchanged, and global coast coverage/transition visual acceptance are outstanding.

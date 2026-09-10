@@ -1,5 +1,8 @@
-Enabled by default and rebuilt the main release app. Launch normally—no extra flags needed.
+Implemented and rebuilt—restart the game to load it.
 
-Still limited to the spawn coast, with the known ~5ms cost there. Tests pass for this change; committed and pushed.
+- Water visibility is now **100m**.
+- Wave undersides reflect the seabed, with an approximate fallback for off-screen scenery.
 
-To disable: `CATINGARDEN_SPAWN_COAST_WAVES=0`.
+[Underwater capture](test-runs/ocean_underside_shallows/1789067360-95007/screenshots/capture-004.png)
+
+Three GPU replays pass. Committed and pushed, with limitations recorded in the handoff. Added frame cost hasn’t been measured yet.

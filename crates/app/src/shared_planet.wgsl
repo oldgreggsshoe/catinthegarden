@@ -445,7 +445,7 @@ const OCEAN_SURF_COLOUR: vec3<f32> = vec3<f32>(0.92, 0.95, 0.96);
 // How far a submerged eye can see, in metres. The usual definition of
 // visibility: the range at which contrast is down to 2%, so the extinction
 // e-fold is this over ln(50) rather than this itself.
-const OCEAN_UNDERWATER_VISIBILITY_METERS: f32 = 30.0;
+const OCEAN_UNDERWATER_VISIBILITY_METERS: f32 = 100.0;
 // What the water itself looks like once everything else has been extinguished.
 // Blue-green rather than the sky's blue: water absorbs red first, then green,
 // which is why the far end of a flooded quarry is this colour and not navy.
@@ -2795,6 +2795,7 @@ fn ocean_underside_colour(
     ripple_slope: vec3<f32>,
     surface_direction: vec3<f32>,
     camera_relative_view_position: vec3<f32>,
+    reflected_scene: vec4<f32>,
 ) -> vec3<f32> {
     let view_ray = normalize(camera_relative_view_position);
     // The ripple layer is folded in the same way the lit side does it, so both
@@ -2810,7 +2811,11 @@ fn ocean_underside_colour(
     // critical angle and Fresnel transition at the window's moving edge.
     let refraction = ocean_water_to_air(view_ray, normal_view);
     let up_view = normalize(planet_to_view(surface_direction));
-    let below = physical_camera_sky_radiance(up_view) * OCEAN_UNDERWATER_TINT * 0.30;
+    let fallback = physical_camera_sky_radiance(up_view) * OCEAN_UNDERWATER_TINT * 0.30;
+    // Outside Snell's window the interface reflects the submerged scene,
+    // rather than becoming an opaque dark ceiling. Misses retain a bounded
+    // fallback; confidence fades screen edges and already-extinguished data.
+    let below = mix(fallback, reflected_scene.rgb, reflected_scene.w);
     if refraction.w <= 0.0 {
         return below;
     }

@@ -1740,7 +1740,7 @@ fn fs_ocean_stable(
 
 @fragment
 fn fs_ocean_transmission(input: OceanVertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    if !front { return ocean_underside_fragment(input); }
+    if !front { return ocean_underside_reflecting_fragment(input); }
     if u32(camera.projection.w + 0.5) != RENDER_DEBUG_FLAT_TRIANGLES {
         let threshold = lod_dither_threshold(input.position);
         let incoming = input.lod_transition.y > 0.5;
@@ -1752,7 +1752,7 @@ fn fs_ocean_transmission(input: OceanVertexOutput, @builtin(front_facing) front:
 
 @fragment
 fn fs_ocean_transmission_stable(input: OceanVertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    if !front { return ocean_underside_fragment(input); }
+    if !front { return ocean_underside_reflecting_fragment(input); }
     return ocean_transmitting_fragment_color(input);
 }
 
@@ -1877,6 +1877,89 @@ fn ocean_scene_transmission(input: OceanVertexOutput, surface: OceanSurface, hei
     return ocean_screen_fallback(origin);
 }
 
+// Interpolate reversed-Z depth before reconstructing the reflected ray hit.
+// Nearest-pixel depth produces a staircase at grazing angles: successive
+// bisections alternate between a hit and a miss on each raster row.
+fn ocean_reflection_scene_position(point: vec3<f32>) -> vec4<f32> {
+    if point.z >= -0.001 { return vec4<f32>(0.0); }
+    let clip = camera.projection_matrix * vec4<f32>(point, 1.0);
+    let uv = clip.xy / clip.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
+    let size = vec2<i32>(textureDimensions(water_scene_depth));
+    let coordinate = uv * vec2<f32>(size) - vec2<f32>(0.5);
+    let lower = vec2<i32>(floor(coordinate));
+    if any(lower < vec2<i32>(0)) || any(lower + vec2<i32>(1) >= size) { return vec4<f32>(0.0); }
+    let depths = vec4<f32>(
+        textureLoad(water_scene_depth, lower, 0),
+        textureLoad(water_scene_depth, lower + vec2<i32>(1, 0), 0),
+        textureLoad(water_scene_depth, lower + vec2<i32>(0, 1), 0),
+        textureLoad(water_scene_depth, lower + vec2<i32>(1, 1), 0));
+    if any(depths <= vec4<f32>(0.0)) { return vec4<f32>(0.0); }
+    let distances = vec4<f32>(camera.projection_matrix[3][2]) / depths;
+    let nearest = min(min(distances.x, distances.y), min(distances.z, distances.w));
+    let farthest = max(max(distances.x, distances.y), max(distances.z, distances.w));
+    // Never interpolate across a bank/foreground silhouette into distant land.
+    if farthest - nearest > max(0.5, nearest * 0.05) { return vec4<f32>(0.0); }
+    let weight = fract(coordinate);
+    let depth = mix(mix(depths.x, depths.y, weight.x), mix(depths.z, depths.w, weight.x), weight.y);
+    let z = -camera.projection_matrix[3][2] / depth;
+    return vec4<f32>(point.xy * (z / point.z), z, 1.0);
+}
+
+// Bounded SSR of submerged geometry. Unlike transmission, a reflection can
+// legitimately return toward the camera, so reject by ray/hit separation,
+// not by requiring every hit to lie behind the original water fragment.
+fn ocean_scene_reflection(surface_position: vec3<f32>, normal_view: vec3<f32>) -> vec4<f32> {
+    let remaining = OCEAN_UNDERWATER_VISIBILITY_METERS - length(surface_position);
+    if remaining <= 0.0 { return vec4<f32>(0.0); }
+    let ray = reflect(normalize(surface_position), normal_view);
+    let origin = surface_position - normal_view * 0.05;
+    var low = 0.0;
+    for (var step = 1u; step <= 24u; step += 1u) {
+        let fraction = f32(step) / 24.0;
+        let high = remaining * fraction * fraction;
+        let point = origin + ray * high;
+        let scene = ocean_reflection_scene_position(point);
+        if scene.w > 0.0 && scene.z >= point.z {
+            var end = high;
+            for (var refine = 0u; refine < 6u; refine += 1u) {
+                let mid = (low + end) * 0.5;
+                let probe = origin + ray * mid;
+                let candidate = ocean_reflection_scene_position(probe);
+                if candidate.w > 0.0 && candidate.z >= probe.z { end = mid; } else { low = mid; }
+            }
+            let hit = origin + ray * end;
+            let resolved = ocean_reflection_scene_position(hit);
+            let pixel_span = max(-hit.z, 0.0) / camera.projection_matrix[1][1]
+                / f32(textureDimensions(water_scene_depth).y) * 2.0;
+            if resolved.w <= 0.0 || distance(resolved.xyz, hit) > max(0.25, pixel_span * 2.0) {
+                return vec4<f32>(0.0);
+            }
+            let clip = camera.projection_matrix * vec4<f32>(hit, 1.0);
+            let uv = clip.xy / clip.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
+            if any(uv < vec2<f32>(0.0)) || any(uv >= vec2<f32>(1.0)) { return vec4<f32>(0.0); }
+            let pixel = vec2<i32>(uv * vec2<f32>(textureDimensions(water_scene_color)));
+            var color = textureLoad(water_scene_color, pixel, 0).rgb;
+            var confidence = 1.0;
+            // Snapshot terrain is already fogged along the direct camera ray.
+            // Undo only recoverable water fog, then apply the reflected leg.
+            // The caller adds the surface-to-eye leg exactly once afterward.
+            if camera.flat_triangle_options.w > 0.5 {
+                let direct_fog = ocean_water_fog(resolved.xyz);
+                let transmission = 1.0 - direct_fog.amount;
+                confidence *= smoothstep(0.05, 0.2, transmission);
+                color = max((color - direct_fog.color * direct_fog.amount)
+                    / max(transmission, 0.05), vec3<f32>(0.0));
+            }
+            color = ocean_distance_fog(color, ray * end);
+            let edge = min(min(uv.x, uv.y), min(1.0 - uv.x, 1.0 - uv.y));
+            confidence *= smoothstep(0.0, 0.05, edge);
+            return vec4<f32>(color, confidence);
+        }
+        low = high;
+    }
+    return vec4<f32>(0.0);
+}
+
 /// The sea's back faces: the underside, which is all a submerged eye ever sees
 /// of it.
 ///
@@ -1906,6 +1989,65 @@ fn ocean_underside_fragment(input: OceanVertexOutput) -> vec4<f32> {
                 surface.ripple_slope,
                 direction,
                 input.camera_relative_view_position,
+                vec4<f32>(0.0),
+            ),
+            input.camera_relative_view_position,
+        ),
+        1.0,
+    );
+}
+
+// Off-screen SSR has no scene data. Approximate the local baked sediment as
+// a lit horizontal bed, with the same palette and attenuation as real seabed.
+// This loses reflected detail, not all reflected light, at viewport edges.
+fn ocean_seabed_reflection_fallback(
+    direction: vec3<f32>, normal_view: vec3<f32>, position: vec3<f32>,
+    surface_height: f32, bottom_height: f32,
+) -> vec3<f32> {
+    let ray = reflect(normalize(position), normal_view);
+    let down = -dot(ray, normalize(planet_to_view(direction)));
+    let water = ocean_water_fog(position).color;
+    if down <= 0.001 { return water; }
+    let distance_meters = max(surface_height - bottom_height, 0.0) / down;
+    if distance_meters >= OCEAN_UNDERWATER_VISIBILITY_METERS { return water; }
+    let sun = normalize(view_to_planet(camera.sun_direction_view.xyz));
+    let light = srgb_to_linear(BEACH_SAND_COLOUR_SRGB)
+        * ocean_water_transmittance(max(-bottom_height, 0.0))
+        * (sky_diffuse_irradiance(direction, direction, 0.0, sun)
+            + surface_direct_sun_transmittance(direction, 0.0, sun)
+                * SURFACE_SUNLIGHT_SCALE * max(dot(direction, sun), 0.0));
+    return ocean_distance_fog(light, ray * distance_meters);
+}
+
+// Only the transmitting pass binds the pre-water snapshot. Keep the legacy
+// entry points independent of group 3 rather than adding bindings to land.
+fn ocean_underside_reflecting_fragment(input: OceanVertexOutput) -> vec4<f32> {
+    let direction = normalize(input.surface_direction);
+    let outmap = input.outmap > 0.5;
+    let macro_height_meters = macro_terrain_height(outmap, input.source_uv, direction);
+    let biome_id = sample_biome(outmap, input.source_uv, direction);
+    // Same ownership rule as the lit side: the shell is not water over land.
+    if !is_open_ocean_surface(outmap, macro_height_meters, biome_id) {
+        discard;
+    }
+    let surface = ocean_surface(
+        direction,
+        camera.projection.z,
+        length(input.camera_relative_view_position),
+        max(-macro_height_meters, 0.0),
+    );
+    let normal_view = normalize(planet_to_view(normalize(surface.normal - surface.ripple_slope)));
+    let reflected = ocean_scene_reflection(input.camera_relative_view_position, normal_view);
+    let fallback = ocean_seabed_reflection_fallback(direction, normal_view,
+        input.camera_relative_view_position, surface.vertical_displacement, macro_height_meters);
+    return vec4<f32>(
+        ocean_distance_fog(
+            ocean_underside_colour(
+                surface.normal,
+                surface.ripple_slope,
+                direction,
+                input.camera_relative_view_position,
+                vec4<f32>(mix(fallback, reflected.rgb, reflected.w), 1.0),
             ),
             input.camera_relative_view_position,
         ),
@@ -2031,14 +2173,15 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let ice = outmap && biome_id == 2u;
     let lake = outmap && biome_id == 1u;
     // Render baked bathymetry into the opaque snapshot for surface refraction.
-    // A submerged eye sees it directly through the same 30m water medium.
+    // A submerged eye sees it directly through the same 100m water medium.
     // This branch adds no geometry or texture fetches: macro height and the
     // displaced terrain normal already exist.
     if is_open_ocean_surface(outmap, macro_height_meters, biome_id)
         && input.surface_height_and_fog_color.x <= 0.0
     {
         let bottom_height = input.surface_height_and_fog_color.x;
-        // Beyond this depth there is less than 0.003% return through 30m water.
+        // Retain the existing 80m above-water bathymetry budget; underwater
+        // views are not depth-culled here.
         // Avoid shading invisible deep bathymetry in the above-water snapshot.
         if camera.flat_triangle_options.w <= 0.5 && bottom_height < -80.0 { discard; }
         let bottom_sun = surface_direct_sun_transmittance(

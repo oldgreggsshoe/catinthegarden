@@ -10,6 +10,11 @@ surface appearance rather than its geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
+**Current underwater rendering (10 September):** visibility is now 100m. Raster
+ocean undersides reflect the pre-water scene with a lit local-bed fallback for
+off-screen data. See the newest section for captures and limitations; older 30m
+and flat-dark-underside descriptions below are historical.
+
 **Current ocean default (10 September):** spawn-coast shoreward waves are now enabled
 for normal launches at the user's request. `CATINGARDEN_SPAWN_COAST_WAVES=0`
 opts out. Earlier opt-in-only notes below are historical. Coverage remains local
@@ -8255,3 +8260,63 @@ same enabled-prototype errors as before. Formatting/diff checks and the release
 build pass. The normal runnable is `target/release/catinthegarden-app`; no launch
 parameter is needed. The two historical terrain source-string failures were not
 changed or reclassified by this small default-setting change.
+
+## 10 September — underside scene reflection and 100m water visibility
+
+User captures `manual/1789064534-89566/screenshots/capture-001.png` and `002`
+showed lit shallow sand but a nearly uniform navy ceiling below the waves.
+Outside Snell's window, `ocean_underside_colour` used a constant dark sky-tinted
+fill, not the underwater scene.
+
+The transmitting raster ocean's back-face entry points now trace a reflected
+view ray through the existing pre-water colour/depth snapshot. Search is bounded
+to 24 quadratically spaced samples plus six bisections, within the remaining
+100m path budget. Sky/missing-depth/off-screen samples and mismatched ray hits
+are rejected. Reflection can legitimately return toward the camera, so it does
+not reuse transmission's behind-water-depth restriction. Legacy non-snapshot
+entry points retain their existing fallback and need no new resource bindings.
+No new draw, geometry, or render target was added.
+
+The initial replay `ocean_underside_shallows/1789066909-92734` exposed severe
+horizontal SSR bands. Nearest-pixel reconstructed depth was discontinuous at
+grazing angles; bilinear reversed-Z sampling with a depth-discontinuity guard
+removes the strong bands (`1789067070-93280`). Off-screen hits still produced a
+visible reflection rectangle, so a local horizontal-bed approximation now uses
+the existing sediment palette, sky/sun illumination and water attenuation as
+fallback (`1789067186-93609`). Detailed reflections are screen-space only;
+reflected off-screen terrain shape and objects absent from the snapshot (such
+as the separately drawn boat) are not represented by that approximation.
+Some grazing-angle aliasing remains; this is not full-scene ray tracing.
+
+Snapshot colour has already received direct camera-to-bed water fog. The shader
+undoes only recoverable attenuation, fades unreliable recovery, applies the
+reflected bed-to-surface leg, then adds surface-to-eye fog once. Visibility is
+now **100m at 2% remaining contrast**, shared by underside, underwater terrain,
+and water transmission. The above-water 80m seabed draw budget remains unchanged.
+The GPU transmission test samples 0,20,40,60,80,100m and failed with the old 30m
+constant before passing with the new value. All three GPU optics/wave tests pass.
+
+Added `ocean_underside_shallows`: a fixed shallow submerged shore-facing camera,
+four wave-time captures and an underside colour guard against the old navy fill.
+Source guards pin pass isolation, bounded ray search, discontinuity rejection,
+and the reflected fog leg. Frame cost has not been measured; no FPS claim.
+Final workspace and GPU replay validation is being recorded below.
+
+
+Final validation: 509 workspace tests pass, with the same two pre-existing
+terrain source-string failures explicitly skipped and 17 other tests ignored.
+The new scenario required updating the scenario registry count from 85 to 86;
+its loading regression now passes. Clippy all targets, formatting/diff checks,
+and release rebuild pass. Actual-WGSL optics/visibility and wave parity pass.
+
+Validated GPU replays (all assertions pass):
+- `ocean_underside_shallows/1789067360-95007`: underside colour sample
+  (223,215,189), with reflected sand across the moving surface; screenshot 004
+  is the final reviewed example. The 0.9 red/blue guard excludes the navy fill.
+- `ocean_underwater_visibility/1789067373-95101`: existing submerged control.
+- `ocean_shallow_transmission/1789067384-95136`: above-water transmission control.
+
+The app must be restarted to load the rebuilt shaders. Changes are enabled in
+normal raster gameplay. No performance improvement is claimed; SSR cost and
+fresh human visual acceptance remain unmeasured. `crates.tar.gz` is untouched;
+terrain.rs changes are only the 100m test expectation, not terrain rendering.

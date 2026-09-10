@@ -4921,8 +4921,8 @@ mod tests {
         assert!(!terrain[..bottom].contains("camera.flat_triangle_options.w > 0.5"));
         assert!(shader.contains("ocean_air_to_water(view_ray, normal_view)"));
         assert!(shader.contains("ocean_water_transmittance(end)"));
-        assert!(shader.contains("OCEAN_UNDERWATER_VISIBILITY_METERS: f32 = 30.0"));
-        let contrast_at_visibility = (-30.0_f64 * 50.0_f64.ln() / 30.0).exp();
+        assert!(shader.contains("OCEAN_UNDERWATER_VISIBILITY_METERS: f32 = 100.0"));
+        let contrast_at_visibility = (-100.0_f64 * 50.0_f64.ln() / 100.0).exp();
         assert!((contrast_at_visibility - 0.02).abs() < 1e-12);
     }
 

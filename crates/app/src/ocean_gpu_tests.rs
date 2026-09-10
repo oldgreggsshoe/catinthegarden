@@ -225,7 +225,7 @@ fn check_ocean_optics(entering_water: bool) {
         .collect::<Vec<_>>()
         .join(", ");
     let evaluation = if entering_water {
-        "vec4<f32>(ocean_air_to_water(select(-rays[id.x], rays[id.x], dot(rays[id.x], normals[id.x]) < 0.0), normals[id.x]), ocean_water_transmittance(f32(id.x) * 6.0))"
+        "vec4<f32>(ocean_air_to_water(select(-rays[id.x], rays[id.x], dot(rays[id.x], normals[id.x]) < 0.0), normals[id.x]), ocean_water_transmittance(f32(id.x) * 20.0))"
     } else {
         "ocean_water_to_air(rays[id.x], normals[id.x])"
     };
@@ -336,7 +336,7 @@ fn check_ocean_optics(entering_water: bool) {
                 actual_ray.distance(expected) < 0.00001,
                 "case {index}: {actual:?}"
             );
-            let transmission = (-(index as f64 * 6.0) * 50.0_f64.ln() / 30.0).exp();
+            let transmission = (-(index as f64 * 20.0) * 50.0_f64.ln() / 100.0).exp();
             assert!((actual[3] as f64 - transmission).abs() < 0.00001);
             continue;
         }
@@ -369,4 +369,39 @@ fn check_ocean_optics(entering_water: bool) {
             );
         }
     }
+}
+
+#[test]
+fn underside_reflection_is_bounded_and_confined_to_snapshot_pass() {
+    let shader = include_str!("planet.wgsl");
+    let reflection = shader
+        .split("fn ocean_scene_reflection(")
+        .nth(1)
+        .unwrap()
+        .split("\nfn ")
+        .next()
+        .unwrap();
+    assert!(reflection.contains("reflect(normalize(surface_position), normal_view)"));
+    assert!(reflection.contains("step <= 24u"));
+    assert!(reflection.contains("ocean_reflection_scene_position(point)"));
+    assert!(shader.contains("if farthest - nearest > max(0.5, nearest * 0.05)"));
+    assert!(shader.contains("mix(fallback, reflected.rgb, reflected.w)"));
+    assert!(reflection.contains("distance(resolved.xyz, hit) > max(0.25, pixel_span * 2.0)"));
+    assert!(reflection.contains("color = ocean_distance_fog(color, ray * end)"));
+    let legacy = shader
+        .split("fn ocean_underside_fragment(")
+        .nth(1)
+        .unwrap()
+        .split("\nfn ")
+        .next()
+        .unwrap();
+    assert!(!legacy.contains("ocean_scene_reflection("));
+    let transmitting = shader
+        .split("fn ocean_underside_reflecting_fragment(")
+        .nth(1)
+        .unwrap()
+        .split("\nfn ")
+        .next()
+        .unwrap();
+    assert!(transmitting.contains("ocean_scene_reflection("));
 }
