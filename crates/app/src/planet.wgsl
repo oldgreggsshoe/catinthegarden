@@ -1759,7 +1759,8 @@ fn fs_ocean_transmission_stable(input: OceanVertexOutput, @builtin(front_facing)
 @fragment
 fn fs_ocean_shoreline(input: OceanVertexOutput) -> @location(0) vec4<f32> {
     let height = macro_terrain_height(input.outmap > 0.5, input.source_uv, normalize(input.surface_direction));
-    if input.outmap <= 0.5 || height <= 0.0 || height > 220.0 { discard; }
+    let rendered_height = max(input.terrain_height_hint, 0.0);
+    if input.outmap <= 0.5 || height <= 0.0 || rendered_height > 100000.0 { discard; }
     let biome = sample_biome(true, input.source_uv, normalize(input.surface_direction));
     if biome == 2u { discard; }
     let surface = ocean_raster_surface(input, height);
@@ -2005,7 +2006,7 @@ fn ocean_fragment_with_transmission_mode(input: OceanVertexOutput, bed: vec4<f32
             1.0,
         );
     }
-    let shoreline_alpha = select(1.0, 1.0 - smoothstep(0.0, 220.0, max(macro_height_meters, 0.0)), shoreline);
+    let shoreline_alpha = select(1.0, 1.0 - smoothstep(0.0, 100000.0, max(input.terrain_height_hint, 0.0)), shoreline);
     return vec4<f32>(water_aerial_color, shoreline_alpha);
 }
 
