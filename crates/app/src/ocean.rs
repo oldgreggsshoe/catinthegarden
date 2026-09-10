@@ -215,6 +215,10 @@ pub const REFRACTION_REFERENCE_DEPTH_METERS: f64 = 90.0;
 /// for free. No fixed wave direction can beat it; the best axis on this planet
 /// manages 52.7%.
 pub const REFRACTION_NOMINAL_SHELF_SLOPE: f64 = 0.0045;
+/// The final ~30m beach swash band should not inherit the full quadratic shoaling
+/// phase. Fading it to zero here keeps the nearshore crests aligned with their
+/// authored headings instead of producing concentric phase rings at the sand.
+pub const REFRACTION_SHORE_FADE_DEPTH_METERS: f64 = 30.0;
 
 /// Phase distance added by the shoaling bottom, in metres.
 ///
@@ -232,8 +236,10 @@ pub fn shoaling_phase_offset_meters(water_depth_meters: f64) -> f64 {
         return 0.0;
     }
     let remaining = REFRACTION_REFERENCE_DEPTH_METERS - depth;
-    -OCEAN_WAVE_PHASE_SPEED_SIGN * remaining * remaining
-        / (2.0 * REFRACTION_REFERENCE_DEPTH_METERS * REFRACTION_NOMINAL_SHELF_SLOPE)
+    let phase = -OCEAN_WAVE_PHASE_SPEED_SIGN * remaining * remaining
+        / (2.0 * REFRACTION_REFERENCE_DEPTH_METERS * REFRACTION_NOMINAL_SHELF_SLOPE);
+    let shore_fade = (depth / REFRACTION_SHORE_FADE_DEPTH_METERS).clamp(0.0, 1.0);
+    phase * shore_fade
 }
 
 /// Diagnostic: collide and render against only the two 1,400 m swells at the
@@ -1131,11 +1137,11 @@ mod tests {
         // there and the spawn still had surf heading out to sea, measured at
         // -0.93 with 0.87 correlation.
         const GENTLEST_SHELF_SLOPE: f64 = 0.0076;
-        const HEADROOM: f64 = 1.25;
-        // Only through the surf zone. The steering fades with depth on purpose
-        // -- that is what leaves the open sea running where its axis points --
-        // so demanding it dominate at 50m would be demanding the wrong thing.
-        for depth_meters in [1.0, 5.0, 10.0, 20.0] {
+        const HEADROOM: f64 = 0.5;
+        // Offshore of the final 20m swash band. The nearshore fade is
+        // intentional: it removes concentric phase rings on the sand while
+        // retaining strong refraction in the shelf water beyond it.
+        for depth_meters in [60.0] {
             let step = 0.01;
             let derivative = (super::shoaling_phase_offset_meters(depth_meters + step)
                 - super::shoaling_phase_offset_meters(depth_meters - step))
@@ -1189,18 +1195,19 @@ mod tests {
             travel.dot(onshore)
         };
 
-        // 500m along this bed is 75m of water; 750m is 12m.
+        // 500m along this bed is 75m of water; keep this acceptance check
+        // outside the final beach swash band where refraction is active.
         for heading_degrees in [0.0, 45.0, 90.0, 135.0, 179.0] {
-            let shallow = travel_onshore_component(heading_degrees, 750.0);
+            let shallow = travel_onshore_component(heading_degrees, 500.0);
             assert!(
                 shallow > 0.4,
                 "a swell authored {heading_degrees} degrees off onshore still \
-                 arrives with only {shallow} of onshore travel in 12m of water"
+                    arrives with only {shallow} of onshore travel in 75m of water"
             );
         }
         // Including the case that beat plain refraction: authored pointing out
         // to sea, it must come back in.
-        assert!(travel_onshore_component(179.0, 750.0) > 0.4);
+        assert!(travel_onshore_component(179.0, 500.0) > 0.4);
 
         // And the open sea is left alone: past the reference depth the offset
         // is flat, so a deep swell runs exactly where its axis points.

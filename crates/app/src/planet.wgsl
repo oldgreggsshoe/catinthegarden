@@ -2112,8 +2112,12 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     // A wet sandy shore grades into land over 20 rendered metres. Guard with
     // both the sampled and rasterised height: a stale negative source texel
     // must not paint a beach over a raised mountain triangle.
+    let shoreline_height = max(
+        input.surface_height_and_fog_color.x,
+        scaled_terrain_macro_height(macro_height_meters),
+    );
     let ocean_coverage = select(0.0, 1.0, BODY_HAS_OCEAN && outmap && biome_id != 2u)
-        * (1.0 - smoothstep(0.0, 20.0, max(input.surface_height_and_fog_color.x, scaled_terrain_macro_height(macro_height_meters))));
+        * (1.0 - smoothstep(0.0, 50.0, shoreline_height));
     let biome_blend = sample_biome_blend(input.source_uv);
     let moisture = sample_moisture(input.source_uv);
     let base_biome_color = blended_biome_color(biome_blend);
@@ -2342,7 +2346,10 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     }
     // The raised shoreline is sand, not an opaque water material. Its colour
     // meets the submerged sediment at zero depth and blends into land inland.
-    let sand_light = srgb_to_linear(BEACH_SAND_COLOUR_SRGB) * terrain_surface_irradiance;
+    let dry_sand = srgb_to_linear(BEACH_SAND_COLOUR_SRGB);
+    let wet_sand = srgb_to_linear(vec3<f32>(0.62, 0.53, 0.35));
+    let wet_band = 1.0 - smoothstep(0.0, 7.0, max(shoreline_height, 0.0));
+    let sand_light = mix(dry_sand, wet_sand, wet_band * 0.38) * terrain_surface_irradiance;
     let surface_color = mix(textured_surface_lighting, sand_light, ocean_coverage);
     let aerial_color = surface_color * terrain_material_transmittance(input.aerial_transmittance, biome_id)
         + terrain_material_in_scatter(input.aerial_in_scatter, biome_id);

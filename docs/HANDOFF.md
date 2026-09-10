@@ -8122,3 +8122,11 @@ Validation: focused ocean tests (41 passed), shader validation, three actual-WGS
 ## 10 September 2026 — shallow-water turquoise balance
 
 The first transmission blend left shallow replay frames sand-dominant. The ocean fragment now retains a 78% shallow turquoise scattering contribution and limits the visible bed correction to 22% of attenuated transmission; the depth exponential still fades that tint and bed toward the deep-water body. Replay `ocean_clear_shallows/1789026290-45042` now shows pale turquoise water over the cream sand from above.
+
+## 10 September 2026 — dry beach band and nearshore shoaling fade
+
+The beach shader now uses a 50m land-owned sand band, with pale dry sand inland and a darker wet-sand blend over the first 7m above sea level. This keeps a visible dry strip in front of the water instead of letting the shell meet every positive-land pixel.
+
+The circular-looking nearshore wave fronts come from `shoaling_phase_offset_meters`: its scalar depth-only quadratic phase creates depth contours that look like rings. The CPU and WGSL paths now fade that phase through the final 30m of water, reducing the effect without changing open-ocean wave axes or geometry. Replay `ocean_shore_ascent/1789041409-56996` shows the broad dry strip and less concentrated rings; some curved fronts remain because shelf refraction is still intentionally depth-driven.
+
+Validation: ocean unit suite, release build, and three actual-WGSL Quadro ocean tests pass.
