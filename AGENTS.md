@@ -16,6 +16,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 
 - Underwater swimming repair: tangential movement preserves subsea altitude, deliberate dives remain neutral through moving troughs, and LOD permits deep seabed views without the old -100m assertion/sea-level horizon rejection. Four failing-before regressions, 506 workspace tests, clippy and the underwater GPU control pass; interactive deep-diving acceptance remains. Shoreline transmission patches are a separate unfinished investigation.
 
+- Circular shoreline wave source removed: scalar depth no longer enters Gerstner crest phase, so equal-depth contours cannot emit 360-degree rings; depth still controls amplitude/steepness/foam. `ocean_shore_ascent/1789041894-58327` shows directional fronts without the former circular source.
+
 - Shoreline dry/wet band and nearshore wave steering: land-owned beach colour now stays dry/pale through a 50m shore band with a darker 7m wet-sand transition; shoaling phase fades across the final 30m to reduce concentric wave rings while retaining shelf refraction. Replay `ocean_shore_ascent/1789041409-56996` passes with a broad dry strip; residual curved fronts are a known consequence of the depth-only phase model.
 
 - Shallow-water turquoise balance: the above-water ocean blend now retains a strong depth-weighted turquoise scattering term while limiting sand dominance; replay `ocean_clear_shallows/1789026290-45042` shows the intended pale turquoise over cream sand.

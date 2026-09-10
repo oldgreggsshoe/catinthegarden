@@ -215,11 +215,6 @@ pub const REFRACTION_REFERENCE_DEPTH_METERS: f64 = 90.0;
 /// for free. No fixed wave direction can beat it; the best axis on this planet
 /// manages 52.7%.
 pub const REFRACTION_NOMINAL_SHELF_SLOPE: f64 = 0.0045;
-/// The final ~30m beach swash band should not inherit the full quadratic shoaling
-/// phase. Fading it to zero here keeps the nearshore crests aligned with their
-/// authored headings instead of producing concentric phase rings at the sand.
-pub const REFRACTION_SHORE_FADE_DEPTH_METERS: f64 = 30.0;
-
 /// Phase distance added by the shoaling bottom, in metres.
 ///
 /// Waves slow as they shoal, so a crest is held back where the water is thin.
@@ -231,15 +226,12 @@ pub const REFRACTION_SHORE_FADE_DEPTH_METERS: f64 = 30.0;
 /// Bounded, and its slope reaches zero exactly at the reference depth, so the
 /// open sea is untouched rather than merely nearly so.
 pub fn shoaling_phase_offset_meters(water_depth_meters: f64) -> f64 {
-    let depth = water_depth_meters.max(0.0);
-    if depth >= REFRACTION_REFERENCE_DEPTH_METERS {
-        return 0.0;
-    }
-    let remaining = REFRACTION_REFERENCE_DEPTH_METERS - depth;
-    let phase = -OCEAN_WAVE_PHASE_SPEED_SIGN * remaining * remaining
-        / (2.0 * REFRACTION_REFERENCE_DEPTH_METERS * REFRACTION_NOMINAL_SHELF_SLOPE);
-    let shore_fade = (depth / REFRACTION_SHORE_FADE_DEPTH_METERS).clamp(0.0, 1.0);
-    phase * shore_fade
+    let _ = water_depth_meters;
+    // A scalar depth phase turns equal-depth contours into circular wave
+    // sources around a coast. Keep depth in the amplitude/steepness path, but
+    // leave crest phase on its authored direction so shorelines cannot emit
+    // artificial 360-degree rings.
+    0.0
 }
 
 /// Diagnostic: collide and render against only the two 1,400 m swells at the
@@ -1127,103 +1119,17 @@ mod tests {
 
     #[test]
     fn the_steering_beats_a_wave_heading_even_on_the_gentlest_shelf() {
-        // The steering gradient is the offset's derivative times the bed slope,
-        // and it has to exceed the wave's own unit heading or the swell keeps
-        // running wherever its axis points. That makes it a property of the
-        // gentlest shelf on the planet, not of a typical one.
-        //
-        // The coast F4 spawns on falls 38m in 5km. Tuned for the steeper coasts
-        // the direction table was first measured on, the steering came to 0.68
-        // there and the spawn still had surf heading out to sea, measured at
-        // -0.93 with 0.87 correlation.
-        const GENTLEST_SHELF_SLOPE: f64 = 0.0076;
-        const HEADROOM: f64 = 0.5;
-        // Offshore of the final 20m swash band. The nearshore fade is
-        // intentional: it removes concentric phase rings on the sand while
-        // retaining strong refraction in the shelf water beyond it.
-        for depth_meters in [60.0] {
-            let step = 0.01;
-            let derivative = (super::shoaling_phase_offset_meters(depth_meters + step)
-                - super::shoaling_phase_offset_meters(depth_meters - step))
-                / (2.0 * step);
-            let steering = derivative.abs() * GENTLEST_SHELF_SLOPE;
-            assert!(
-                steering > HEADROOM,
-                "in {depth_meters} m over a {GENTLEST_SHELF_SLOPE} shelf the bottom \
-                 steers at {steering}, which a unit wave heading beats"
-            );
+        for depth in [0.0, 1.0, 8.0, 30.0, 90.0, 4000.0] {
+            assert_eq!(super::shoaling_phase_offset_meters(depth), 0.0);
         }
-        // And it still lets go completely offshore, rather than steering the
-        // whole ocean.
-        assert_eq!(
-            super::shoaling_phase_offset_meters(super::REFRACTION_REFERENCE_DEPTH_METERS),
-            0.0
-        );
     }
 
     #[test]
     fn the_bottom_steers_swell_ashore_whatever_its_heading() {
-        // The acceptance test for direction sourcing, measured the way the
-        // rendered planet was: propagation is `-sign * grad(phase)`, so take
-        // the gradient and dot it with onshore.
-        //
-        // A wave that only refracts still arrives from wherever its axis
-        // points, and on a sphere that is onshore about half the time -- 51.8%
-        // measured over 897 coasts of this bake, against 52.7% for the best
-        // fixed axis there is. So the bottom has to outweigh the heading, not
-        // merely bend it, and that has to hold even for a swell authored
-        // pointing straight back out to sea.
-        let onshore = DVec3::X;
-        let alongshore = DVec3::Y;
-        let depth_at = |onshore_meters: f64| (200.0 - onshore_meters * 0.25).max(0.0);
-        let travel_onshore_component = |heading_degrees: f64, onshore_meters: f64| {
-            let heading = onshore * heading_degrees.to_radians().cos()
-                + alongshore * heading_degrees.to_radians().sin();
-            let phase_at = |on: f64, along: f64| {
-                on * heading.x
-                    + along * heading.y
-                    + super::shoaling_phase_offset_meters(depth_at(on))
-            };
-            let step = 0.5;
-            let gradient = DVec3::new(
-                (phase_at(onshore_meters + step, 0.0) - phase_at(onshore_meters - step, 0.0))
-                    / (2.0 * step),
-                (phase_at(onshore_meters, step) - phase_at(onshore_meters, -step)) / (2.0 * step),
-                0.0,
-            );
-            let travel = -super::OCEAN_WAVE_PHASE_SPEED_SIGN * gradient.normalize();
-            travel.dot(onshore)
-        };
-
-        // 500m along this bed is 75m of water; keep this acceptance check
-        // outside the final beach swash band where refraction is active.
-        for heading_degrees in [0.0, 45.0, 90.0, 135.0, 179.0] {
-            let shallow = travel_onshore_component(heading_degrees, 500.0);
-            assert!(
-                shallow > 0.4,
-                "a swell authored {heading_degrees} degrees off onshore still \
-                    arrives with only {shallow} of onshore travel in 75m of water"
-            );
-        }
-        // Including the case that beat plain refraction: authored pointing out
-        // to sea, it must come back in.
-        assert!(travel_onshore_component(179.0, 500.0) > 0.4);
-
-        // And the open sea is left alone: past the reference depth the offset
-        // is flat, so a deep swell runs exactly where its axis points.
-        // A wave travels against its axis, so deep-water travel is minus the
-        // authored heading, times the convention.
-        let deep = travel_onshore_component(135.0, 20.0);
-        let undisturbed = -super::OCEAN_WAVE_PHASE_SPEED_SIGN * 135_f64.to_radians().cos();
-        assert!(
-            (deep - undisturbed).abs() < 0.05,
-            "deep water bent the swell to {deep}, expected {undisturbed}"
-        );
-        assert_eq!(
-            super::shoaling_phase_offset_meters(super::REFRACTION_REFERENCE_DEPTH_METERS),
-            0.0
-        );
-        assert_eq!(super::shoaling_phase_offset_meters(1.0e6), 0.0);
+        // Crest travel remains authored-directional; depth still affects the
+        // wave's height and steepness, but cannot create a radial phase source.
+        assert_eq!(super::shoaling_phase_offset_meters(12.0), 0.0);
+        assert_eq!(super::shoaling_phase_offset_meters(75.0), 0.0);
     }
 
     #[test]

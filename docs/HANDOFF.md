@@ -8130,3 +8130,9 @@ The beach shader now uses a 50m land-owned sand band, with pale dry sand inland 
 The circular-looking nearshore wave fronts come from `shoaling_phase_offset_meters`: its scalar depth-only quadratic phase creates depth contours that look like rings. The CPU and WGSL paths now fade that phase through the final 30m of water, reducing the effect without changing open-ocean wave axes or geometry. Replay `ocean_shore_ascent/1789041409-56996` shows the broad dry strip and less concentrated rings; some curved fronts remain because shelf refraction is still intentionally depth-driven.
 
 Validation: ocean unit suite, release build, and three actual-WGSL Quadro ocean tests pass.
+
+## 10 September 2026 — remove circular shoreline wave source
+
+The latest manual frame showed full 360-degree rings centred on the beach. The cause was confirmed: `shoaling_phase_offset_meters` added a scalar depth-only phase to every Gerstner component, so equal-depth contours became circular crest sources. The CPU and WGSL phase helpers now return zero. Depth remains available to the existing amplitude, steepness, breaking, and foam paths, so directional waves remain directional without the artificial radial source. The old steering tests now pin zero shoreline phase instead of requiring the removed radial refraction.
+
+Replay `ocean_shore_ascent/1789041894-58327` shows no former 360-degree ring source. Remaining white foam and coarse nearshore geometry are separate visual issues. Ocean unit tests, release build, and three actual-WGSL Quadro GPU tests pass.

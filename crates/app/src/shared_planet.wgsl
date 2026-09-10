@@ -401,7 +401,6 @@ const OCEAN_SHALLOW_COLOUR: vec3<f32> = vec3<f32>(0.16, 0.52, 0.55);
 // Display-space tropical sand, shared by the dry beach and submerged bed.
 const BEACH_SAND_COLOUR_SRGB: vec3<f32> = vec3<f32>(0.94, 0.89, 0.70);
 const OCEAN_BODY_COLOUR: vec3<f32> = vec3<f32>(0.005, 0.032, 0.170);
-const OCEAN_REFRACTION_SHORE_FADE_DEPTH_METERS: f32 = 30.0;
 // Where the transmitted turquoise starts and where it is full, in units of
 // summed crest sharpness (`OceanSurface::crest_sharpness`) -- dimensionless
 // Gerstner steepness, not metres of anything.
@@ -1011,19 +1010,11 @@ fn scaled_terrain_macro_height(macro_height_meters: f32) -> f32 {
     );
 }
 
-/// Phase distance added by the shoaling bottom. Paired with
-/// `shoaling_phase_offset_meters` in ocean.rs; see it for why this both turns
-/// crests onto the contours and makes the swell arrive from seaward.
+/// Depth no longer adds a scalar phase offset: that made equal-depth contours
+/// into artificial circular wave sources around a coast. Depth remains in the
+/// amplitude/steepness path.
 fn shoaling_phase_offset_meters(water_depth_meters: f32) -> f32 {
-    let depth = max(water_depth_meters, 0.0);
-    if depth >= OCEAN_REFRACTION_REFERENCE_DEPTH_METERS {
-        return 0.0;
-    }
-    let remaining = OCEAN_REFRACTION_REFERENCE_DEPTH_METERS - depth;
-    let phase = -OCEAN_WAVE_PHASE_SPEED_SIGN * remaining * remaining
-        / (2.0 * OCEAN_REFRACTION_REFERENCE_DEPTH_METERS
-            * OCEAN_REFRACTION_NOMINAL_SHELF_SLOPE);
-    return phase * clamp(depth / OCEAN_REFRACTION_SHORE_FADE_DEPTH_METERS, 0.0, 1.0);
+    return 0.0;
 }
 
 fn gerstner_wave(
