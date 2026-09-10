@@ -796,6 +796,9 @@ pub struct TerrainRenderer {
     queue: wgpu::Queue,
     transition_pipeline: wgpu::RenderPipeline,
     stable_pipeline: wgpu::RenderPipeline,
+    water_scene: crate::ocean_transmission::OceanTransmission,
+    transmitting_ocean_pipeline: wgpu::RenderPipeline,
+    transmitting_ocean_stable_pipeline: wgpu::RenderPipeline,
     ocean_transition_pipeline: wgpu::RenderPipeline,
     ocean_stable_pipeline: wgpu::RenderPipeline,
     terrain_tile_bind_group_layout: wgpu::BindGroupLayout,
@@ -974,6 +977,24 @@ impl TerrainRenderer {
             ],
             immediate_size: 0,
         });
+        let water_scene = crate::ocean_transmission::OceanTransmission::new(
+            device,
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        let water_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("transmitting ocean pipeline layout"),
+            bind_group_layouts: &[
+                Some(camera_bind_group_layout),
+                Some(&terrain_tile_bind_group_layout),
+                Some(&shared_bind_group_layout),
+                Some(&water_scene.layout),
+            ],
+            immediate_size: 0,
+        });
         let shader_source = planet_shader_source();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("planet raster shader"),
@@ -983,7 +1004,15 @@ impl TerrainRenderer {
             |label, vertex_entry_point, fragment_entry_point, cull_mode| {
                 device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: Some(label),
-                    layout: Some(&pipeline_layout),
+                    layout: Some(
+                        if fragment_entry_point == "fs_ocean_transmission"
+                            || fragment_entry_point == "fs_ocean_transmission_stable"
+                        {
+                            &water_layout
+                        } else {
+                            &pipeline_layout
+                        },
+                    ),
                     vertex: wgpu::VertexState {
                         module: &shader,
                         entry_point: Some(vertex_entry_point),
@@ -1045,6 +1074,18 @@ impl TerrainRenderer {
             None,
         );
 
+        let transmitting_ocean_pipeline = create_pipeline_with_culling(
+            "transmitting ocean",
+            "vs_ocean",
+            "fs_ocean_transmission",
+            None,
+        );
+        let transmitting_ocean_stable_pipeline = create_pipeline_with_culling(
+            "stable transmitting ocean",
+            "vs_ocean",
+            "fs_ocean_transmission_stable",
+            None,
+        );
         let topology = build_chunk_mesh(QuadtreeNode::root(0));
         // Every quadtree leaf has the same 33x33 topology. Node bounds now
         // arrive through the instance stream and the vertex shader projects
@@ -1180,6 +1221,9 @@ impl TerrainRenderer {
             queue: queue.clone(),
             transition_pipeline,
             stable_pipeline,
+            water_scene,
+            transmitting_ocean_pipeline,
+            transmitting_ocean_stable_pipeline,
             ocean_transition_pipeline,
             ocean_stable_pipeline,
             terrain_tile_bind_group_layout,
@@ -2810,30 +2854,66 @@ impl TerrainRenderer {
         })
     }
 
+    pub fn has_ocean_draws(&self) -> bool {
+        !self.ocean_draw_batches.is_empty()
+    }
+
+    pub fn snapshot_water_scene(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        color: &wgpu::Texture,
+        depth: &wgpu::Texture,
+    ) {
+        self.water_scene.snapshot(device, encoder, color, depth);
+    }
+
     pub fn draw<'pass>(
         &'pass self,
         render_pass: &mut wgpu::RenderPass<'pass>,
         camera_bind_group: &'pass wgpu::BindGroup,
         weather_field_bind_group: &'pass wgpu::BindGroup,
     ) {
-        let pipeline = if self.fading_out_chunks.is_empty() && self.fade_in_started_at.is_empty() {
-            &self.stable_pipeline
-        } else {
-            &self.transition_pipeline
+        self.draw_ocean(
+            render_pass,
+            camera_bind_group,
+            weather_field_bind_group,
+            false,
+        );
+        self.draw_ground(render_pass, camera_bind_group, weather_field_bind_group);
+    }
+
+    pub fn draw_transmitting_ocean<'pass>(
+        &'pass self,
+        render_pass: &mut wgpu::RenderPass<'pass>,
+        camera_bind_group: &'pass wgpu::BindGroup,
+    ) {
+        self.draw_ocean(
+            render_pass,
+            camera_bind_group,
+            &self.water_scene.bind_group,
+            true,
+        );
+    }
+
+    fn draw_ocean<'pass>(
+        &'pass self,
+        render_pass: &mut wgpu::RenderPass<'pass>,
+        camera_bind_group: &'pass wgpu::BindGroup,
+        scene_bind_group: &'pass wgpu::BindGroup,
+        transmitting: bool,
+    ) {
+        let stable = self.fading_out_chunks.is_empty() && self.fade_in_started_at.is_empty();
+        let pipeline = match (transmitting, stable) {
+            (true, true) => &self.transmitting_ocean_stable_pipeline,
+            (true, false) => &self.transmitting_ocean_pipeline,
+            (false, true) => &self.ocean_stable_pipeline,
+            (false, false) => &self.ocean_transition_pipeline,
         };
-        let ocean_pipeline =
-            if self.fading_out_chunks.is_empty() && self.fade_in_started_at.is_empty() {
-                &self.ocean_stable_pipeline
-            } else {
-                &self.ocean_transition_pipeline
-            };
-        // Draw the analytic shell first. With reversed-Z, raised terrain then
-        // writes a strictly greater depth and wins even when a mixed
-        // coastline triangle has nearly identical far-plane depth.
-        render_pass.set_pipeline(ocean_pipeline);
+        render_pass.set_pipeline(pipeline);
         render_pass.set_bind_group(0, camera_bind_group, &[]);
         render_pass.set_bind_group(2, &self.shared_bind_group, &[]);
-        render_pass.set_bind_group(3, weather_field_bind_group, &[]);
+        render_pass.set_bind_group(3, scene_bind_group, &[]);
         render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
         for batch in &self.ocean_draw_batches {
             let (vertex_buffer, index_buffer, index_count) = if batch.dense_near_field {
@@ -2868,7 +2948,24 @@ impl TerrainRenderer {
                 batch.first_instance..batch.first_instance + batch.instance_count,
             );
         }
+    }
+
+    pub fn draw_ground<'pass>(
+        &'pass self,
+        render_pass: &mut wgpu::RenderPass<'pass>,
+        camera_bind_group: &'pass wgpu::BindGroup,
+        weather_field_bind_group: &'pass wgpu::BindGroup,
+    ) {
+        let pipeline = if self.fading_out_chunks.is_empty() && self.fade_in_started_at.is_empty() {
+            &self.stable_pipeline
+        } else {
+            &self.transition_pipeline
+        };
         render_pass.set_pipeline(pipeline);
+        render_pass.set_bind_group(0, camera_bind_group, &[]);
+        render_pass.set_bind_group(2, &self.shared_bind_group, &[]);
+        render_pass.set_bind_group(3, weather_field_bind_group, &[]);
+        render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
         for batch in &self.draw_batches {
             let (vertex_buffer, index_buffer, index_count) = if batch.dense_near_field {
                 (
@@ -4509,7 +4606,7 @@ mod tests {
             "if is_open_ocean_surface(outmap, macro_height_meters, biome_id)\n        && input.surface_height_and_fog_color.x <= 0.0"
         ));
         let ocean = shader
-            .split("fn ocean_fragment_color(")
+            .split("fn ocean_fragment_with_transmission(")
             .nth(1)
             .and_then(|source| source.split("\nfn ").next())
             .expect("analytic ocean fragment path is present");
@@ -4736,7 +4833,9 @@ mod tests {
             bottom < discard,
             "seabed must shade before the open-ocean discard"
         );
-        assert!(terrain[..bottom].contains("camera.flat_triangle_options.w > 0.5"));
+        assert!(!terrain[..bottom].contains("camera.flat_triangle_options.w > 0.5"));
+        assert!(shader.contains("ocean_air_to_water(view_ray, normal_view)"));
+        assert!(shader.contains("ocean_water_transmittance(end)"));
         assert!(shader.contains("OCEAN_UNDERWATER_VISIBILITY_METERS: f32 = 30.0"));
         let contrast_at_visibility = (-30.0_f64 * 50.0_f64.ln() / 30.0).exp();
         assert!((contrast_at_visibility - 0.02).abs() < 1e-12);
@@ -4822,7 +4921,7 @@ mod tests {
             .and_then(|source| source.split("\nfn ").next())
             .expect("terrain fragment function is present");
         let ocean_fragment = shader
-            .split("fn ocean_fragment_color(")
+            .split("fn ocean_fragment_with_transmission(")
             .nth(1)
             .and_then(|source| source.split("\nfn ").next())
             .expect("ocean fragment function is present");
@@ -5378,7 +5477,7 @@ mod tests {
     fn ocean_aerial_perspective_preserves_the_dark_water_body() {
         let shader = planet_shader_source();
         assert!(shader.contains("const OCEAN_AERIAL_PERSPECTIVE_WEIGHT: f32 = 0.18;"));
-        assert_eq!(shader.matches("ocean_aerial_perspective(").count(), 6);
+        assert_eq!(shader.matches("ocean_aerial_perspective(").count(), 5);
         assert!(shader.contains("water_surface_color,\n        aerial_color,"));
         assert!(shader.contains("sky_diffuse + sun_transmittance"));
         assert!(!shader.contains("sky_diffuse * daylight"));

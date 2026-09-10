@@ -13,6 +13,7 @@ mod hdr;
 mod moon;
 mod moon_markings;
 mod ocean;
+mod ocean_transmission;
 mod outmap;
 mod planet;
 mod probe;
@@ -3790,6 +3791,11 @@ impl State {
                 || self.foveated.warp_debug_visible());
         let vertex_rebase_ms = 0.0;
         let vertex_upload_ms = upload_started.elapsed().as_secs_f32() * 1_000.0;
+        let transmit_ocean = !solid_color_screen
+            && self.render_path == RenderPath::Raster
+            && self.terrain.has_ocean_draws()
+            && self.render_debug_mode != planet::RenderDebugMode::FlatTriangles
+            && self.render_debug_mode != planet::RenderDebugMode::SkyOnly;
         let encode_started = Instant::now();
         if !solid_color_screen {
             self.atmosphere
@@ -3828,7 +3834,7 @@ impl State {
                         wgpu::RenderPassTimestampWrites {
                             query_set: &profiler.slots[slot_index].query_set,
                             beginning_of_pass_write_index: Some(0),
-                            end_of_pass_write_index: Some(1),
+                            end_of_pass_write_index: if transmit_ocean { None } else { Some(1) },
                         }
                     }),
                 multiview_mask: None,
@@ -3841,11 +3847,19 @@ impl State {
                 self.atmosphere
                     .draw(&mut render_pass, &self.camera_bind_group);
                 if self.render_debug_mode != planet::RenderDebugMode::SkyOnly {
-                    self.terrain.draw(
-                        &mut render_pass,
-                        &self.camera_bind_group,
-                        self.weather_clouds.field_bind_group(),
-                    );
+                    if self.render_debug_mode == planet::RenderDebugMode::FlatTriangles {
+                        self.terrain.draw(
+                            &mut render_pass,
+                            &self.camera_bind_group,
+                            self.weather_clouds.field_bind_group(),
+                        );
+                    } else {
+                        self.terrain.draw_ground(
+                            &mut render_pass,
+                            &self.camera_bind_group,
+                            self.weather_clouds.field_bind_group(),
+                        );
+                    }
                 }
             } else if !solid_color_screen
                 && self.render_path == RenderPath::FoveatedRay
@@ -3857,6 +3871,50 @@ impl State {
                     self.terrain.shared_bind_group(),
                 );
             }
+        }
+        if transmit_ocean {
+            self.terrain.snapshot_water_scene(
+                &self.device,
+                &mut encoder,
+                self.hdr.scene_texture(),
+                &self.depth_texture,
+            );
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("transmitting ocean pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: self.hdr.scene_view(),
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: gpu_slot_index.map(|slot_index| {
+                    wgpu::RenderPassTimestampWrites {
+                        query_set: &self
+                            .gpu_profiler
+                            .as_ref()
+                            .expect("GPU profiler exists")
+                            .slots[slot_index]
+                            .query_set,
+                        beginning_of_pass_write_index: None,
+                        end_of_pass_write_index: Some(1),
+                    }
+                }),
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            self.terrain
+                .draw_transmitting_ocean(&mut pass, &self.camera_bind_group);
         }
         if !solid_color_screen && use_foveated_warp {
             {

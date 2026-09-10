@@ -16,6 +16,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 
 - Underwater swimming repair: tangential movement preserves subsea altitude, deliberate dives remain neutral through moving troughs, and LOD permits deep seabed views without the old -100m assertion/sea-level horizon rejection. Four failing-before regressions, 506 workspace tests, clippy and the underwater GPU control pass; interactive deep-diving acceptance remains. Shoreline transmission patches are a separate unfinished investigation.
 
+- Shoreline transmission repair and tropical palette: shallow-water misses now fall back to the pre-water sandy bed instead of opaque blue screen patches, with pale cream/yellow sand and depth-based blue mixing retained; the shore ascent replay shows continuous sandy shallows, while edge/foam visual sign-off remains.
+
 - Ocean underside optics: wave normals now refract the sky using water-to-air Snell/Fresnel optics rather than merely masking an unrefracted sky lookup. Six actual-WGSL optical cases, wave parity, 491 workspace tests and four GPU replays pass; the underwater scenario now rejects the old blue-only result and black/white output. Smooth unfoamed regions and full-scene reflection/refraction remain limitations.
 
 - Waterline sky-leak repair: the sky background now fills nearby downward ocean rays with bounded, sky-lit water colour even when the swimming eye is 6cm above the analytic surface. No mesh/pass added; the new per-capture colour guard rejects the old pale output. Waterline, underwater, shallow-bottom and land GPU replays pass; 489 workspace tests and clippy pass.

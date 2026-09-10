@@ -177,6 +177,16 @@ fn test_ocean(@builtin(global_invocation_id) id: vec3<u32>) {{
 #[test]
 #[ignore = "requires a Vulkan GPU; run explicitly for ocean shader changes"]
 fn gpu_ocean_refraction_matches_snell_and_fresnel() {
+    check_ocean_optics(false);
+}
+
+#[test]
+#[ignore = "requires a Vulkan GPU"]
+fn gpu_ocean_air_to_water_and_visibility() {
+    check_ocean_optics(true);
+}
+
+fn check_ocean_optics(entering_water: bool) {
     let cases = [
         (DVec3::Y, DVec3::Y),
         (DVec3::new(0.6, 0.8, 0.0), DVec3::Y),
@@ -205,13 +215,18 @@ fn gpu_ocean_refraction_matches_snell_and_fresnel() {
         })
         .collect::<Vec<_>>()
         .join(", ");
+    let evaluation = if entering_water {
+        "vec4<f32>(ocean_air_to_water(select(-rays[id.x], rays[id.x], dot(rays[id.x], normals[id.x]) < 0.0), normals[id.x]), ocean_water_transmittance(f32(id.x) * 6.0))"
+    } else {
+        "ocean_water_to_air(rays[id.x], normals[id.x])"
+    };
     let source = format!(
         "{}\n@group(0) @binding(1) var<storage, read_write> results: array<vec4<f32>>;
         const rays = array<vec3<f32>, 6>({rays});
         const normals = array<vec3<f32>, 6>({normals});
         @compute @workgroup_size(1)
         fn test_optics(@builtin(global_invocation_id) id: vec3<u32>) {{
-            results[id.x] = ocean_water_to_air(rays[id.x], normals[id.x])
+            results[id.x] = {evaluation}
                 + vec4<f32>(camera.flat_triangle_options.x);
         }}",
         crate::planet::shared_planet_shader_source(),
@@ -301,6 +316,21 @@ fn gpu_ocean_refraction_matches_snell_and_fresnel() {
     let data = readback.slice(..).get_mapped_range();
     let rows: &[[f32; 4]] = bytemuck::cast_slice(&data);
     for (index, ((ray, normal), actual)) in cases.iter().zip(rows).enumerate() {
+        if entering_water {
+            let incoming = if ray.dot(*normal) < 0.0 { *ray } else { -*ray };
+            let eta = 1.0 / 1.333_f64;
+            let cosine = -incoming.dot(*normal);
+            let expected = eta * incoming
+                + (eta * cosine - (1.0 - eta * eta * (1.0 - cosine * cosine)).sqrt()) * *normal;
+            let actual_ray = DVec3::new(actual[0] as f64, actual[1] as f64, actual[2] as f64);
+            assert!(
+                actual_ray.distance(expected) < 0.00001,
+                "case {index}: {actual:?}"
+            );
+            let transmission = (-(index as f64 * 6.0) * 50.0_f64.ln() / 30.0).exp();
+            assert!((actual[3] as f64 - transmission).abs() < 0.00001);
+            continue;
+        }
         let eta = 1.333_f64;
         let cos_water = ray.dot(*normal).clamp(0.0, 1.0);
         let sin_air_squared = eta * eta * (1.0 - cos_water * cos_water);

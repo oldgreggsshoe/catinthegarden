@@ -398,6 +398,8 @@ const OCEAN_SHALLOW_COLOUR: vec3<f32> = vec3<f32>(0.16, 0.52, 0.55);
 // almost nothing comes back out of it, and every bright thing on this surface --
 // the sun glint, the sky reflection, the foam, the transmitted crest -- is
 // added on top of this rather than mixed into it. Raising it flattens all four.
+// Display-space tropical sand, shared by the dry beach and submerged bed.
+const BEACH_SAND_COLOUR_SRGB: vec3<f32> = vec3<f32>(0.94, 0.89, 0.70);
 const OCEAN_BODY_COLOUR: vec3<f32> = vec3<f32>(0.005, 0.032, 0.170);
 // Where the transmitted turquoise starts and where it is full, in units of
 // summed crest sharpness (`OceanSurface::crest_sharpness`) -- dimensionless
@@ -2406,7 +2408,7 @@ fn terrain_material_color(
         // Use bilinear terrain height, not a nearest biome class, for the
         // coast. This gives a continuous shallow-water/beach transition.
         let beach = 1.0 - smoothstep(20.0, 220.0, macro_height_meters);
-        color = mix(color, srgb_to_linear(vec3<f32>(0.48, 0.40, 0.23)), beach * 0.65);
+        color = mix(color, srgb_to_linear(BEACH_SAND_COLOUR_SRGB), beach * 0.65);
     }
     // Break up a coarse ancestor material tile at flight altitude without
     // changing its biome or coastline. Correlating this with the bounded
@@ -2708,6 +2710,18 @@ fn triplanar_material_sample(
         fine_weight * TERRAIN_MATERIAL_DETAIL_HEIGHT_SHARE,
     );
     return vec4<f32>(coarse.rgb * gain, height);
+}
+
+// Reverse interface crossing: air into water bends toward the wave normal.
+fn ocean_air_to_water(view_ray: vec3<f32>, outward_normal: vec3<f32>) -> vec3<f32> {
+    let eta = 1.0 / 1.333;
+    let cosine = clamp(-dot(view_ray, outward_normal), 0.0, 1.0);
+    let water_cosine = sqrt(1.0 - eta * eta * (1.0 - cosine * cosine));
+    return eta * view_ray + (eta * cosine - water_cosine) * outward_normal;
+}
+
+fn ocean_water_transmittance(distance_meters: f32) -> f32 {
+    return exp(-max(distance_meters, 0.0) * log(50.0) / OCEAN_UNDERWATER_VISIBILITY_METERS);
 }
 
 // View-ray refraction from water (n=1.333) into air (n=1). xyz is the

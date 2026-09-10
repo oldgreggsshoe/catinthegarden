@@ -236,7 +236,9 @@ impl HdrRenderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: Self::SCENE_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let placeholder_view =
@@ -461,6 +463,10 @@ impl HdrRenderer {
             presentation_size.height.max(1),
         );
         self.write_exposure_uniform(queue);
+    }
+
+    pub fn scene_texture(&self) -> &wgpu::Texture {
+        &self._scene_texture
     }
 
     pub fn scene_view(&self) -> &wgpu::TextureView {
@@ -947,7 +953,9 @@ fn create_scene_texture(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: HdrRenderer::SCENE_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     })
 }

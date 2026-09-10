@@ -1,0 +1,62 @@
+{
+  "name": "ocean_shallow_transmission",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 4.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0.0,
+  "fixed_exposure": true,
+  "screenshot_times_seconds": [
+    0.5,
+    2.0,
+    3.5,
+    4.0
+  ],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [
+        2573308.5663074628,
+        2025475.2973084126,
+        -2296878.935161153
+      ],
+      "look_at": [
+        2573259.128110102,
+        2025410.1772356275,
+        -2296767.7872684305
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        0.6433247291091314,
+        0.5063669254511327,
+        -0.5742175804743614
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 60.0
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 4,
+    "seabed_sample_uv": [
+      0.5,
+      0.5
+    ],
+    "water_sample_uv": [
+      0.5,
+      0.5
+    ],
+    "min_water_red_blue_ratio": 0.45,
+    "max_water_sample_luminance": 0.7
+  }
+}

@@ -1,3 +1,7 @@
+// Read-only copies taken after opaque terrain and before the sea shell.
+@group(3) @binding(6) var water_scene_color: texture_2d<f32>;
+@group(3) @binding(7) var water_scene_depth: texture_depth_2d;
+
 @group(1) @binding(0)
 var height_map: texture_2d<f32>;
 
@@ -1734,6 +1738,123 @@ fn fs_ocean_stable(
     return ocean_fragment_color(input);
 }
 
+@fragment
+fn fs_ocean_transmission(input: OceanVertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    if !front { return ocean_underside_fragment(input); }
+    if u32(camera.projection.w + 0.5) != RENDER_DEBUG_FLAT_TRIANGLES {
+        let threshold = lod_dither_threshold(input.position);
+        let incoming = input.lod_transition.y > 0.5;
+        if (incoming && threshold >= input.lod_transition.x)
+            || (!incoming && threshold < input.lod_transition.x) { discard; }
+    }
+    return ocean_transmitting_fragment_color(input);
+}
+
+@fragment
+fn fs_ocean_transmission_stable(input: OceanVertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    if !front { return ocean_underside_fragment(input); }
+    return ocean_transmitting_fragment_color(input);
+}
+
+fn ocean_transmitting_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
+    let height = macro_terrain_height(input.outmap > 0.5, input.source_uv, normalize(input.surface_direction));
+    let surface = ocean_raster_surface(input, height);
+    return ocean_fragment_with_transmission(input, ocean_scene_transmission(input, surface, height), surface, height);
+}
+
+// Reconstruct the opaque surface in camera-local metres, not planetary f32.
+// w=0 marks sky/off-screen: neither may be transmitted through the ocean.
+fn ocean_scene_position(point: vec3<f32>) -> vec4<f32> {
+    if point.z >= -0.001 { return vec4<f32>(0.0); }
+    let clip = camera.projection_matrix * vec4<f32>(point, 1.0);
+    let uv = clip.xy / clip.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
+    if any(uv < vec2<f32>(0.0)) || any(uv >= vec2<f32>(1.0)) { return vec4<f32>(0.0); }
+    let size = vec2<f32>(textureDimensions(water_scene_depth));
+    let pixel = vec2<i32>(uv * size);
+    let depth = textureLoad(water_scene_depth, pixel, 0);
+    if depth <= 0.0 { return vec4<f32>(0.0); }
+    let z = -camera.projection_matrix[3][2] / depth;
+    let ndc = ((vec2<f32>(pixel) + vec2<f32>(0.5)) / size - vec2<f32>(0.5)) * vec2<f32>(2.0, -2.0);
+    return vec4<f32>(ndc.x * -z / camera.projection_matrix[0][0], ndc.y * -z / camera.projection_matrix[1][1], z, 1.0);
+}
+
+// Keep shallow shoreline pixels continuous when the refracted ray leaves the
+// screen or crosses a one-pixel bank discontinuity. The pre-water snapshot is
+// the same sandy bed that a successful refracted hit would sample; using the
+// current pixel as a bounded fallback avoids turning those misses into opaque
+// ocean-blue rectangles.
+fn ocean_screen_fallback(point: vec3<f32>) -> vec4<f32> {
+    let clip = camera.projection_matrix * vec4<f32>(point, 1.0);
+    let uv = clip.xy / clip.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
+    if any(uv < vec2<f32>(0.0)) || any(uv >= vec2<f32>(1.0)) { return vec4<f32>(0.0); }
+    let size = vec2<f32>(textureDimensions(water_scene_depth));
+    let pixel = vec2<i32>(uv * size);
+    let depth = textureLoad(water_scene_depth, pixel, 0);
+    if depth <= 0.0 { return vec4<f32>(0.0); }
+    let scene = ocean_scene_position(point);
+    if scene.w <= 0.0 || scene.z >= point.z { return vec4<f32>(0.0); }
+    let distance_m = length(scene.xyz - point);
+    return vec4<f32>(
+        textureLoad(water_scene_color, pixel, 0).rgb,
+        ocean_water_transmittance(distance_m),
+    );
+}
+
+// Bounded screen-space refraction through the actual rasterised bed. No sky
+// fallback and no alpha blending: the shell continues to own depth. A missing
+// or off-screen bed retains the scattering colour rather than leaking space.
+fn ocean_scene_transmission(input: OceanVertexOutput, surface: OceanSurface, height: f32) -> vec4<f32> {
+    if height < -80.0 || u32(camera.projection.w + 0.5) == RENDER_DEBUG_FLAT_TRIANGLES {
+        return vec4<f32>(0.0);
+    }
+    let view_ray = normalize(input.camera_relative_view_position);
+    let normal_view = normalize(planet_to_view(normalize(surface.normal - surface.ripple_slope)));
+    // The analytic normal can face away on an under-resolved wave triangle.
+    // Do not trace an invalid air-to-water crossing in that case.
+    if dot(view_ray, normal_view) >= 0.0 {
+        return ocean_screen_fallback(input.camera_relative_view_position);
+    }
+    let ray = ocean_air_to_water(view_ray, normal_view);
+    let origin = input.camera_relative_view_position;
+    var low = 0.0;
+    for (var step = 1u; step <= 12u; step += 1u) {
+        let high = f32(step) * 5.0;
+        let point = origin + ray * high;
+        let bed = ocean_scene_position(point);
+        if bed.w > 0.0 && bed.z >= point.z {
+            // Reject foreground geometry; it cannot lie on a ray inside water.
+            if bed.z >= origin.z {
+                return ocean_screen_fallback(origin);
+            }
+            var end = high;
+            for (var refine = 0u; refine < 5u; refine += 1u) {
+                let mid = (low + end) * 0.5;
+                let probe = origin + ray * mid;
+                let candidate = ocean_scene_position(probe);
+                if candidate.w > 0.0 && candidate.z >= probe.z { end = mid; } else { low = mid; }
+            }
+            let hit = origin + ray * end;
+            let resolved = ocean_scene_position(hit);
+            let pixel_span = -hit.z / camera.projection_matrix[1][1]
+                / f32(textureDimensions(water_scene_depth).y) * 2.0;
+            // A depth discontinuity is not a ray intersection. Reject a bank
+            // or silhouette that merely crossed the projected ray on screen.
+            if resolved.w <= 0.0 || distance(resolved.xyz, hit) > max(0.5, pixel_span * 2.0) {
+                return ocean_screen_fallback(origin);
+            }
+            let clip = camera.projection_matrix * vec4<f32>(hit, 1.0);
+            let uv = clip.xy / clip.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
+            let pixel = vec2<i32>(uv * vec2<f32>(textureDimensions(water_scene_color)));
+            let color = textureLoad(water_scene_color, pixel, 0).rgb;
+            // Fade the screen boundary so refraction never exposes a hard crop.
+            let edge = min(min(uv.x, uv.y), min(1.0 - uv.x, 1.0 - uv.y));
+            return vec4<f32>(color, ocean_water_transmittance(end) * smoothstep(0.0, 0.02, edge));
+        }
+        low = high;
+    }
+    return ocean_screen_fallback(origin);
+}
+
 /// The sea's back faces: the underside, which is all a submerged eye ever sees
 /// of it.
 ///
@@ -1772,8 +1893,24 @@ fn ocean_underside_fragment(input: OceanVertexOutput) -> vec4<f32> {
 
 fn ocean_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
     let direction = normalize(input.surface_direction);
+    let macro_height_meters = macro_terrain_height(input.outmap > 0.5, input.source_uv, direction);
+    if u32(camera.projection.w + 0.5) == RENDER_DEBUG_FLAT_TRIANGLES {
+        if !is_open_ocean_surface(input.outmap > 0.5, macro_height_meters, sample_biome(input.outmap > 0.5, input.source_uv, direction)) || input.terrain_height_hint > 0.0 { discard; }
+        return flat_ocean_colour(input, macro_height_meters);
+    }
+    return ocean_fragment_with_transmission(input, vec4<f32>(0.0), ocean_raster_surface(input, macro_height_meters), macro_height_meters);
+}
+
+// Evaluate the wave field once per pixel, shared by lighting and refraction.
+fn ocean_raster_surface(input: OceanVertexOutput, height: f32) -> OceanSurface {
+    let direction = normalize(input.surface_direction);
+    return ocean_surface(direction, camera.projection.z,
+        length(input.camera_relative_view_position), max(-height, 0.0));
+}
+
+fn ocean_fragment_with_transmission(input: OceanVertexOutput, bed: vec4<f32>, surface: OceanSurface, macro_height_meters: f32) -> vec4<f32> {
+    let direction = normalize(input.surface_direction);
     let outmap = input.outmap > 0.5;
-    let macro_height_meters = macro_terrain_height(outmap, input.source_uv, direction);
     let biome_id = sample_biome(outmap, input.source_uv, direction);
     // This draw is a geometric sea shell, not another material arm on the
     // terrain mesh. Sample ownership per fragment so a coastline triangle
@@ -1786,19 +1923,10 @@ fn ocean_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
     }
 
     let render_debug_mode = u32(camera.projection.w + 0.5);
-    if render_debug_mode == RENDER_DEBUG_FLAT_TRIANGLES {
-        return flat_ocean_colour(input, macro_height_meters);
-    }
 
     if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
         return vec4<f32>(debug_ocean_albedo(), 1.0);
     }
-    let surface = ocean_surface(
-        direction,
-        camera.projection.z,
-        length(input.camera_relative_view_position),
-        max(-macro_height_meters, 0.0),
-    );
     let sun_direction = normalize(camera.sun_direction.xyz);
     let sun_transmittance = surface_direct_sun_transmittance(
         direction,
@@ -1819,6 +1947,11 @@ fn ocean_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
         surface.normal,
         direction,
     );
+    let normal_view = normalize(planet_to_view(surface.normal));
+    let facing = max(dot(normal_view, normalize(-input.camera_relative_view_position)), 0.0);
+    let fresnel = 0.02 + 0.98 * pow(1.0 - facing, 5.0);
+    let body = OCEAN_BODY_COLOUR * (sky_diffuse + sun_transmittance * (0.4 * SURFACE_SUNLIGHT_SCALE));
+    let transmission = (bed.rgb - body) * bed.w * (1.0 - fresnel);
     let water_surface_color = mix(
         ocean_lighting(
             surface.normal,
@@ -1826,7 +1959,7 @@ fn ocean_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
             input.camera_relative_view_position,
             sun_transmittance,
             sky_diffuse,
-        ),
+        ) + transmission,
         ocean_foam_radiance(sun_transmittance, sky_diffuse),
         foam,
     );
@@ -1857,15 +1990,17 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let biome_id = sample_biome(outmap, input.source_uv, direction);
     let ice = outmap && biome_id == 2u;
     let lake = outmap && biome_id == 1u;
-    // Submerged views need the actual baked bottom, not the ocean material
-    // blend below. The separate sea shell still depth-occludes it from above.
+    // Render baked bathymetry into the opaque snapshot for surface refraction.
+    // A submerged eye sees it directly through the same 30m water medium.
     // This branch adds no geometry or texture fetches: macro height and the
     // displaced terrain normal already exist.
-    if camera.flat_triangle_options.w > 0.5
-        && is_open_ocean_surface(outmap, macro_height_meters, biome_id)
+    if is_open_ocean_surface(outmap, macro_height_meters, biome_id)
         && input.surface_height_and_fog_color.x <= 0.0
     {
         let bottom_height = input.surface_height_and_fog_color.x;
+        // Beyond this depth there is less than 0.003% return through 30m water.
+        // Avoid shading invisible deep bathymetry in the above-water snapshot.
+        if camera.flat_triangle_options.w <= 0.5 && bottom_height < -80.0 { discard; }
         let bottom_sun = surface_direct_sun_transmittance(
             direction, 0.0, sun_direction,
         );
@@ -1874,7 +2009,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         );
         // Baked ocean biome colour describes water, not sediment. Use the
         // existing beach palette for the exposed bathymetry instead.
-        let sediment = srgb_to_linear(vec3<f32>(0.48, 0.40, 0.23));
+        let sediment = srgb_to_linear(BEACH_SAND_COLOUR_SRGB);
         let depth_transmittance = exp(
             min(bottom_height, 0.0) * log(50.0) / OCEAN_UNDERWATER_VISIBILITY_METERS,
         );
@@ -1882,6 +2017,9 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             bottom_sky + bottom_sun * SURFACE_SUNLIGHT_SCALE
                 * max(dot(input.world_normal, sun_direction), 0.0)
         );
+        if camera.flat_triangle_options.w <= 0.5 {
+            return vec4<f32>(bottom_light, 1.0);
+        }
         return vec4<f32>(terrain_distance_fog(
             bottom_light, input.camera_relative_view_position, direction, bottom_height,
         ), 1.0);
@@ -1958,21 +2096,11 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         }
         return vec4<f32>(misted_lake_aerial_color, 1.0);
     }
-    // Preserve the established shallow beach colour on positive terrain.
-    // Actual open sea (macro height <= 0) was discarded above and is drawn by
-    // the level shell, so this blend can no longer raise the ocean silhouette.
-    // The discard above deliberately keeps a fragment whose sampled texel reads
-    // negative while the triangle it belongs to was displaced from a positive
-    // neighbour, because discarding those punches square holes in solid land.
-    // The colour has to honour the same doubt about that sample. Where the
-    // drawn surface is a few metres above the datum this is a wet shoreline and
-    // the blend is wanted; where it is a kilometre up a mountain the sample is
-    // simply stale -- a fallback source tile answering for ground it does not
-    // cover -- and trusting it paints the sea across a summit. Fade the blend
-    // out over the same 80m band the coverage ramp itself uses, so the coast is
-    // untouched and the mountain cannot be flooded.
-    let ocean_coverage = outmap_ocean_coverage(outmap, macro_height_meters)
-        * (1.0 - smoothstep(0.0, 80.0, input.surface_height_and_fog_color.x));
+    // A wet sandy shore grades into land over 20 rendered metres. Guard with
+    // both the sampled and rasterised height: a stale negative source texel
+    // must not paint a beach over a raised mountain triangle.
+    let ocean_coverage = select(0.0, 1.0, BODY_HAS_OCEAN && outmap && biome_id != 2u)
+        * (1.0 - smoothstep(0.0, 20.0, max(input.surface_height_and_fog_color.x, scaled_terrain_macro_height(macro_height_meters))));
     let biome_blend = sample_biome_blend(input.source_uv);
     let moisture = sample_moisture(input.source_uv);
     let base_biome_color = blended_biome_color(biome_blend);
@@ -2199,51 +2327,12 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         }
         return vec4<f32>(misted_textured_aerial_color, 1.0);
     }
-    let surface = ocean_surface(
-        direction,
-        camera.projection.z,
-        length(input.camera_relative_view_position),
-        OCEAN_SHORE_FULL_DEPTH_METERS,
-    );
-    let sun_transmittance = surface_direct_sun_transmittance(
-        direction,
-        surface.vertical_displacement,
-        sun_direction,
-    );
-    let sky_diffuse = sky_diffuse_irradiance(
-        surface.normal,
-        direction,
-        surface.vertical_displacement,
-        sun_direction,
-    );
-    // Same foam on the water blended into the terrain pass, so a shoreline does not
-    // change character at the seam between the two draws.
-    let foam = ocean_foam_coverage(
-        OCEAN_SHORE_FULL_DEPTH_METERS,
-        surface.vertical_displacement,
-        surface.breaking_ratio,
-        surface.normal,
-        direction,
-    );
-    let water_surface_color = mix(
-        ocean_lighting(
-            surface.normal,
-            surface.crest_sharpness,
-            input.camera_relative_view_position,
-            sun_transmittance,
-            sky_diffuse,
-        ),
-        ocean_foam_radiance(sun_transmittance, sky_diffuse),
-        foam,
-    );
-    let water_aerial_color = ocean_aerial_perspective(
-        water_surface_color,
-        input.camera_relative_view_position,
-        direction,
-        surface.vertical_displacement,
-    );
-    let surface_color = mix(textured_surface_lighting, water_surface_color, ocean_coverage);
-    let aerial_color = mix(textured_aerial_color, water_aerial_color, ocean_coverage);
+    // The raised shoreline is sand, not an opaque water material. Its colour
+    // meets the submerged sediment at zero depth and blends into land inland.
+    let sand_light = srgb_to_linear(BEACH_SAND_COLOUR_SRGB) * terrain_surface_irradiance;
+    let surface_color = mix(textured_surface_lighting, sand_light, ocean_coverage);
+    let aerial_color = surface_color * terrain_material_transmittance(input.aerial_transmittance, biome_id)
+        + terrain_material_in_scatter(input.aerial_in_scatter, biome_id);
     let misted_aerial_color = apply_terrain_distance_fog(aerial_color, input);
     if render_debug_mode == RENDER_DEBUG_SURFACE_LIGHTING {
         return vec4<f32>(surface_color, 1.0);

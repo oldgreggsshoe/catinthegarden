@@ -8110,3 +8110,11 @@ The user's new manual capture
 blue/brown patches beneath foam at the shore. The requested reproduction is a
 straight-down shore view while ascending. `ocean_shore_ascent` is being added for
 that investigation; no shoreline repair or temporal sign-off is claimed yet.
+
+## 10 September 2026 — tropical shoreline transmission fallback
+
+The shore replay showed rectangular blue/brown patches because screen-space refraction returned zero transmission whenever the refracted ray left the viewport or crossed a one-pixel bank discontinuity. The ocean then contributed only its opaque blue body. `ocean_screen_fallback` now samples the current pre-water colour/depth pixel when that happens, accepts only geometry behind the water surface, and applies the same 30m exponential water transmittance. This keeps the sandy bed continuous instead of exposing a hard blue rectangle.
+
+The beach/sediment palette is now shared as pale tropical cream-yellow (`0.94, 0.89, 0.70` sRGB). Shallow water naturally blends that bed with the blue body through the existing depth transmittance; deeper water returns to blue as the bed contribution attenuates. `ocean_shore_ascent/1789025349-41472` rebuilt with the fallback and shows the intended pale shallow bed; foam strips and screen-edge coverage still need human sign-off.
+
+Validation: focused ocean tests (41 passed), shader validation, three actual-WGSL GPU optics/normal tests, and release build pass.
