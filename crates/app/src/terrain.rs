@@ -4691,7 +4691,7 @@ mod tests {
             "if is_open_ocean_surface(outmap, macro_height_meters, biome_id)\n        && input.surface_height_and_fog_color.x <= 0.0"
         ));
         let ocean = shader
-            .split("fn ocean_fragment_with_transmission(")
+            .split("fn ocean_fragment_with_transmission_mode(")
             .nth(1)
             .and_then(|source| source.split("\nfn ").next())
             .expect("analytic ocean fragment path is present");
@@ -5008,7 +5008,7 @@ mod tests {
             .and_then(|source| source.split("\nfn ").next())
             .expect("terrain fragment function is present");
         let ocean_fragment = shader
-            .split("fn ocean_fragment_with_transmission(")
+            .split("fn ocean_fragment_with_transmission_mode(")
             .nth(1)
             .and_then(|source| source.split("\nfn ").next())
             .expect("ocean fragment function is present");
@@ -5016,7 +5016,7 @@ mod tests {
             "if is_open_ocean_surface(outmap, macro_height_meters, biome_id)\n        && input.surface_height_and_fog_color.x <= 0.0"
         ));
         assert!(ocean_fragment.contains(
-            "if !is_open_ocean_surface(outmap, macro_height_meters, biome_id) {\n        discard;"
+            "if !shoreline && !is_open_ocean_surface(outmap, macro_height_meters, biome_id) {\n        discard;"
         ));
     }
 
