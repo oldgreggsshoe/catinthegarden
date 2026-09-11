@@ -4829,6 +4829,7 @@ mod tests {
             .unwrap();
         assert!(optics.contains("ocean_water_to_air(view_ray, normal_view)"));
         assert!(optics.contains("physical_camera_sky_radiance(normalize(refraction.xyz))"));
+        assert!(optics.contains("ocean_underside_reflection_with_skylight("));
         assert!(!optics.contains("physical_camera_sky_radiance(view_ray)"));
     }
 
@@ -4842,7 +4843,7 @@ mod tests {
             .split("\nfn ")
             .next()
             .unwrap();
-        assert!(underside.contains("ocean_distance_fog("));
+        assert!(underside.contains("ocean_depth_aware_distance_fog("));
         assert!(!underside.contains("terrain_distance_fog("));
         let fog = shader
             .split("fn ocean_distance_fog(")
@@ -4853,6 +4854,7 @@ mod tests {
             .unwrap();
         assert!(!fog.contains("flat_triangle_options"));
         assert!(fog.contains("ocean_water_fog("));
+        assert!(shader.contains("smoothstep(2.0, 30.0"));
     }
 
     #[test]

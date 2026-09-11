@@ -201,16 +201,32 @@ fn gpu_beach_sand_is_continuous_at_the_dry_land_join() {
     check_ocean_optics(OpticsCase::BeachSand);
 }
 
+#[test]
+#[ignore = "requires a Vulkan GPU"]
+fn gpu_ocean_underside_reflection_retains_bounded_skylight() {
+    check_ocean_optics(OpticsCase::UndersideSkylight);
+}
+
+#[test]
+#[ignore = "requires a Vulkan GPU"]
+fn gpu_ocean_extinction_increases_smoothly_with_water_depth() {
+    check_ocean_optics(OpticsCase::DepthExtinction);
+}
+
 #[derive(Clone, Copy)]
 enum OpticsCase {
     LeavingWater,
     EnteringWater,
     BeachSand,
+    UndersideSkylight,
+    DepthExtinction,
 }
 
 fn check_ocean_optics(case: OpticsCase) {
     let entering_water = matches!(case, OpticsCase::EnteringWater);
     let beach_sand = matches!(case, OpticsCase::BeachSand);
+    let underside_skylight = matches!(case, OpticsCase::UndersideSkylight);
+    let depth_extinction = matches!(case, OpticsCase::DepthExtinction);
     let cases = [
         (DVec3::Y, DVec3::Y),
         (DVec3::new(0.6, 0.8, 0.0), DVec3::Y),
@@ -239,7 +255,11 @@ fn check_ocean_optics(case: OpticsCase) {
         })
         .collect::<Vec<_>>()
         .join(", ");
-    let evaluation = if beach_sand {
+    let evaluation = if depth_extinction {
+        "vec4<f32>(ocean_depth_extinction_weight(array<f32, 6>(0.0, 1.0, 2.0, 10.0, 30.0, 100.0)[id.x]))"
+    } else if underside_skylight {
+        "vec4<f32>(ocean_underside_reflection_with_skylight(vec3<f32>(0.8, 0.7, 0.5), vec3<f32>(0.1, 0.4, 0.9)), 1.0)"
+    } else if beach_sand {
         "vec4<f32>(beach_sand_albedo(array<f32, 6>(-1.0, 0.0, 0.01, 4.0, 20.0, 40.0)[id.x]), 1.0)"
     } else if entering_water {
         "vec4<f32>(ocean_air_to_water(select(-rays[id.x], rays[id.x], dot(rays[id.x], normals[id.x]) < 0.0), normals[id.x]), ocean_water_transmittance(f32(id.x) * 20.0))"
@@ -342,6 +362,31 @@ fn check_ocean_optics(case: OpticsCase) {
     let data = readback.slice(..).get_mapped_range();
     let rows: &[[f32; 4]] = bytemuck::cast_slice(&data);
     for (index, ((ray, normal), actual)) in cases.iter().zip(rows).enumerate() {
+        if depth_extinction {
+            let depth = [0.0_f64, 1.0, 2.0, 10.0, 30.0, 100.0][index];
+            let t = ((depth - 2.0) / 28.0).clamp(0.0, 1.0);
+            let smooth = t * t * (3.0 - 2.0 * t);
+            let expected = 0.15 + 0.85 * smooth;
+            assert!(
+                (actual[0] as f64 - expected).abs() < 0.0001,
+                "depth {depth}: {} vs {expected}",
+                actual[0]
+            );
+            assert!(actual[0] >= 0.15 && actual[0] <= 1.0);
+            continue;
+        }
+        if underside_skylight {
+            let expected = [0.625_f32, 0.625, 0.6];
+            for channel in 0..3 {
+                assert!(
+                    (actual[channel] - expected[channel]).abs() < 0.0001,
+                    "underside skylight blend channel {channel}: {} vs {}",
+                    actual[channel],
+                    expected[channel]
+                );
+            }
+            continue;
+        }
         if beach_sand {
             let srgb = |v: f64| ((v + 0.055) / 1.055).powf(2.4);
             let dry = [srgb(0.94), srgb(0.89), srgb(0.70)];
@@ -424,7 +469,7 @@ fn underside_reflection_is_bounded_and_confined_to_snapshot_pass() {
     assert!(shader.contains("if farthest - nearest > max(0.5, nearest * 0.05)"));
     assert!(shader.contains("mix(fallback, reflected.rgb, reflected.w)"));
     assert!(reflection.contains("distance(resolved.xyz, hit) > max(0.25, pixel_span * 2.0)"));
-    assert!(reflection.contains("color = ocean_distance_fog(color, ray * end)"));
+    assert!(reflection.contains("color = ocean_depth_aware_distance_fog("));
     let legacy = shader
         .split("fn ocean_underside_fragment(")
         .nth(1)

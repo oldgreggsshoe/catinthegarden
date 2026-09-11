@@ -1908,7 +1908,9 @@ fn ocean_reflection_scene_position(point: vec3<f32>) -> vec4<f32> {
 // Bounded SSR of submerged geometry. Unlike transmission, a reflection can
 // legitimately return toward the camera, so reject by ray/hit separation,
 // not by requiring every hit to lie behind the original water fragment.
-fn ocean_scene_reflection(surface_position: vec3<f32>, normal_view: vec3<f32>) -> vec4<f32> {
+fn ocean_scene_reflection(
+    surface_position: vec3<f32>, normal_view: vec3<f32>, water_depth_meters: f32,
+) -> vec4<f32> {
     let remaining = OCEAN_UNDERWATER_VISIBILITY_METERS - length(surface_position);
     if remaining <= 0.0 { return vec4<f32>(0.0); }
     let ray = reflect(normalize(surface_position), normal_view);
@@ -1944,13 +1946,13 @@ fn ocean_scene_reflection(surface_position: vec3<f32>, normal_view: vec3<f32>) -
             // Undo only recoverable water fog, then apply the reflected leg.
             // The caller adds the surface-to-eye leg exactly once afterward.
             if camera.flat_triangle_options.w > 0.5 {
-                let direct_fog = ocean_water_fog(resolved.xyz);
+                let direct_fog = ocean_water_fog_at_depth(resolved.xyz, water_depth_meters);
                 let transmission = 1.0 - direct_fog.amount;
                 confidence *= smoothstep(0.05, 0.2, transmission);
                 color = max((color - direct_fog.color * direct_fog.amount)
                     / max(transmission, 0.05), vec3<f32>(0.0));
             }
-            color = ocean_distance_fog(color, ray * end);
+            color = ocean_depth_aware_distance_fog(color, ray * end, water_depth_meters);
             let edge = min(min(uv.x, uv.y), min(1.0 - uv.x, 1.0 - uv.y));
             confidence *= smoothstep(0.0, 0.05, edge);
             return vec4<f32>(color, confidence);
@@ -1983,7 +1985,7 @@ fn ocean_underside_fragment(input: OceanVertexOutput) -> vec4<f32> {
         max(-macro_height_meters, 0.0),
     );
     return vec4<f32>(
-        ocean_distance_fog(
+        ocean_depth_aware_distance_fog(
             ocean_underside_colour(
                 surface.normal,
                 surface.ripple_slope,
@@ -1992,6 +1994,7 @@ fn ocean_underside_fragment(input: OceanVertexOutput) -> vec4<f32> {
                 vec4<f32>(0.0),
             ),
             input.camera_relative_view_position,
+            max(surface.vertical_displacement - macro_height_meters, 0.0),
         ),
         1.0,
     );
@@ -2006,7 +2009,8 @@ fn ocean_seabed_reflection_fallback(
 ) -> vec3<f32> {
     let ray = reflect(normalize(position), normal_view);
     let down = -dot(ray, normalize(planet_to_view(direction)));
-    let water = ocean_water_fog(position).color;
+    let water_depth_meters = max(surface_height - bottom_height, 0.0);
+    let water = ocean_water_fog_at_depth(position, water_depth_meters).color;
     if down <= 0.001 { return water; }
     let distance_meters = max(surface_height - bottom_height, 0.0) / down;
     if distance_meters >= OCEAN_UNDERWATER_VISIBILITY_METERS { return water; }
@@ -2016,7 +2020,7 @@ fn ocean_seabed_reflection_fallback(
         * (sky_diffuse_irradiance(direction, direction, 0.0, sun)
             + surface_direct_sun_transmittance(direction, 0.0, sun)
                 * SURFACE_SUNLIGHT_SCALE * max(dot(direction, sun), 0.0));
-    return ocean_distance_fog(light, ray * distance_meters);
+    return ocean_depth_aware_distance_fog(light, ray * distance_meters, water_depth_meters);
 }
 
 // Only the transmitting pass binds the pre-water snapshot. Keep the legacy
@@ -2037,14 +2041,17 @@ fn ocean_underside_reflecting_fragment(input: OceanVertexOutput) -> vec4<f32> {
         max(-macro_height_meters, 0.0),
     );
     let normal_view = normalize(planet_to_view(normalize(surface.normal - surface.ripple_slope)));
-    let reflected = ocean_scene_reflection(input.camera_relative_view_position, normal_view);
+    let water_depth_meters = max(surface.vertical_displacement - macro_height_meters, 0.0);
+    let reflected = ocean_scene_reflection(
+        input.camera_relative_view_position, normal_view, water_depth_meters,
+    );
     if u32(camera.projection.w + 0.5) == RENDER_DEBUG_UNDERSIDE_REFLECTION_HIT {
         return vec4<f32>(vec3<f32>(reflected.w), 1.0);
     }
     let fallback = ocean_seabed_reflection_fallback(direction, normal_view,
         input.camera_relative_view_position, surface.vertical_displacement, macro_height_meters);
     return vec4<f32>(
-        ocean_distance_fog(
+        ocean_depth_aware_distance_fog(
             ocean_underside_colour(
                 surface.normal,
                 surface.ripple_slope,
@@ -2053,6 +2060,7 @@ fn ocean_underside_reflecting_fragment(input: OceanVertexOutput) -> vec4<f32> {
                 vec4<f32>(mix(fallback, reflected.rgb, reflected.w), 1.0),
             ),
             input.camera_relative_view_position,
+            water_depth_meters,
         ),
         1.0,
     );

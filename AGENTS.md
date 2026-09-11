@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Shallow-water underside optics: grazing wave undersides retain a bounded 25% rough-surface skylight term, while water extinction ramps smoothly from 15% strength below 2m depth to the full 100m-visibility medium at 30m. The shallow replay loses most of its dark-blue distance band while the deep-water and Snell-window controls remain blue; foam attenuation remains separate.
+
 - Ocean underside optics diagnosis: launch-only transmission/sky/reflection masks and a steep-upward replay prove clear water shows refracted sky only within the physical Snell window and reflected sand at grazing angles. No final optical tuning; underside foam scattering/occlusion remains.
 
 - Dry-land/beach colour join: land wet-sand tint now begins continuously from the submerged beach palette, blending over the first 4m of land height. Matched manual-pose replay reduces the seam metric 12→1.33 RGB levels with byte-identical right-hand water/sky. Geometry and water coverage are unchanged.

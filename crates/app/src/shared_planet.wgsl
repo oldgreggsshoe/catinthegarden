@@ -467,6 +467,12 @@ const OCEAN_UNDERWATER_VISIBILITY_METERS: f32 = 100.0;
 // Blue-green rather than the sky's blue: water absorbs red first, then green,
 // which is why the far end of a flooded quarry is this colour and not navy.
 const OCEAN_UNDERWATER_TINT: vec3<f32> = vec3<f32>(0.055, 0.30, 0.42);
+// Real wave faces are not optically smooth. Unresolved capillary roughness and
+// suspended microbubbles scatter a small amount of skylight into the nominally
+// total-internal-reflection region, keeping a grazing underside from reading as
+// a perfect sand-coloured mirror. This is deliberately bounded: the resolved
+// Snell window and the reflected submerged scene remain the dominant terms.
+const OCEAN_UNDERSIDE_SKYLIGHT_BLEND: f32 = 0.25;
 
 // Whitecaps. A crest that is steep enough spills and goes white wherever it is,
 // with no shore involved -- which is the whole difference from the surf above,
@@ -1943,9 +1949,27 @@ fn terrain_fog_air_path_meters(
 
 // Water medium chosen by the caller: an ocean back face establishes this
 // per pixel even if the CPU eye-height query still says "above water".
-fn ocean_water_fog(camera_relative_view_position: vec3<f32>) -> TerrainFog {
+fn ocean_depth_extinction_weight(water_depth_meters: f32) -> f32 {
+    return mix(
+        0.15,
+        1.0,
+        smoothstep(2.0, 30.0, max(water_depth_meters, 0.0)),
+    );
+}
+
+fn ocean_water_fog_at_depth(
+    camera_relative_view_position: vec3<f32>,
+    water_depth_meters: f32,
+) -> TerrainFog {
     let e_fold_meters = OCEAN_UNDERWATER_VISIBILITY_METERS / log(50.0);
-    let amount = 1.0 - exp(-length(camera_relative_view_position) / e_fold_meters);
+    // A shallow shelf is continually relit by the nearby bright bed. Let its
+    // long horizontal views retain that sand/turquoise contribution instead
+    // of converging on the same dark blue as deep water. Below 2m the water is
+    // nearly clear; by 30m it uses the full 100m visibility extinction.
+    let depth_weight = ocean_depth_extinction_weight(water_depth_meters);
+    let amount = 1.0 - exp(
+        -length(camera_relative_view_position) * depth_weight / e_fold_meters,
+    );
     // Lit by the sky overhead rather than painted: the water goes dark at
     // night and at depth, because what reaches the eye is daylight that got
     // down here and then scattered off the water.
@@ -1955,11 +1979,30 @@ fn ocean_water_fog(camera_relative_view_position: vec3<f32>) -> TerrainFog {
     return TerrainFog(amount, physical_camera_sky_radiance(up_view) * OCEAN_UNDERWATER_TINT);
 }
 
+fn ocean_water_fog(camera_relative_view_position: vec3<f32>) -> TerrainFog {
+    return ocean_water_fog_at_depth(
+        camera_relative_view_position,
+        camera.camera_forward.w,
+    );
+}
+
 fn ocean_distance_fog(
     surface_color: vec3<f32>,
     camera_relative_view_position: vec3<f32>,
 ) -> vec3<f32> {
     let fog = ocean_water_fog(camera_relative_view_position);
+    return mix(surface_color, fog.color, fog.amount);
+}
+
+fn ocean_depth_aware_distance_fog(
+    surface_color: vec3<f32>,
+    camera_relative_view_position: vec3<f32>,
+    water_depth_meters: f32,
+) -> vec3<f32> {
+    let fog = ocean_water_fog_at_depth(
+        camera_relative_view_position,
+        water_depth_meters,
+    );
     return mix(surface_color, fog.color, fog.amount);
 }
 
@@ -1984,7 +2027,10 @@ fn terrain_fog(
     // the sea bed and the coast beyond it were drawn at full contrast through
     // any depth of water at all.
     if camera.flat_triangle_options.w > 0.5 {
-        return ocean_water_fog(camera_relative_view_position);
+        return ocean_water_fog_at_depth(
+            camera_relative_view_position,
+            max(-surface_altitude_meters, 0.0),
+        );
     }
     if !BODY_HAS_ATMOSPHERE {
         return TerrainFog(0.0, vec3<f32>(0.0));
@@ -2794,6 +2840,13 @@ fn ocean_water_to_air(view_ray: vec3<f32>, outward_normal: vec3<f32>) -> vec4<f3
     return vec4<f32>(sky_ray, transmission);
 }
 
+fn ocean_underside_reflection_with_skylight(
+    reflected: vec3<f32>,
+    skylight: vec3<f32>,
+) -> vec3<f32> {
+    return mix(reflected, skylight, OCEAN_UNDERSIDE_SKYLIGHT_BLEND);
+}
+
 /// The sea seen from underneath.
 ///
 /// `ocean_lighting` cannot do this: it takes `max(dot(normal, view), 0.0)`, and
@@ -2836,7 +2889,11 @@ fn ocean_underside_colour(
     // Outside Snell's window the interface reflects the submerged scene,
     // rather than becoming an opaque dark ceiling. Misses retain a bounded
     // fallback; confidence fades screen edges and already-extinguished data.
-    let below = mix(fallback, reflected_scene.rgb, reflected_scene.w);
+    let reflected_below = mix(fallback, reflected_scene.rgb, reflected_scene.w);
+    let below = ocean_underside_reflection_with_skylight(
+        reflected_below,
+        physical_camera_sky_radiance(up_view),
+    );
     if render_debug_mode == RENDER_DEBUG_UNDERSIDE_REFRACTED_SKY {
         if refraction.w <= 0.0 { return vec3<f32>(0.0); }
         return physical_camera_sky_radiance(normalize(refraction.xyz));

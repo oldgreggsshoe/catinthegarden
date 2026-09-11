@@ -8418,3 +8418,47 @@ clippy all targets, formatting and release build pass. No final-look shader
 change was made. Diagnostic modes are environment-selected at launch and do
 not enlarge the F9 cycle. Scenario registry is now 88. `crates.tar.gz` remains
 untouched.
+
+## 11 September — grazing underside skylight and depth-aware shallow water
+
+The user accepted the Snell-window diagnosis but found the near-horizontal
+underside too much like a perfect sand mirror. The final presentation now mixes
+a bounded 25% overhead skylight term into the reflected-underwater contribution.
+This is deliberately an artistic model of unresolved capillary roughness and
+microbubble scattering, not direct transmission beyond the critical angle.
+Resolved Fresnel/Snell transmission is unchanged and remains dominant inside
+the window; successful seabed SSR remains 75% of the nominal TIR contribution.
+The existing transmission/sky/reflection debug modes are unchanged.
+
+The same shallow replay exposed a separate depth error: 100m visibility was
+applied from ray length alone, turning a long view across a shallow bright shelf
+into the same dark blue as deep water. Water extinction now retains 15% of its
+normal strength through 2m depth, interpolates smoothly by actual local baked
+water depth, and reaches the existing full-strength 100m visibility medium at
+30m. This is a bounded approximation of the continual bed illumination in
+shallow water; genuinely deep water retains the previous extinction. Raster
+bathymetry, underside surface fog, SSR recovery/reflection legs and off-screen
+sediment fallback share the depth rule. Geometry, waves, ownership and draws
+are unchanged.
+
+Matched final-frame evidence:
+- near-horizontal shallow before `ocean_underside_shallows/1789122236-128337`,
+  after `1789123670-134901`: dark-blue pixels fall 51,341 to 13,659 (the same
+  fixed blue-dominance threshold), reducing the 100-row horizon ROI from 40.1%
+  to 10.7%; the reflected sand and wave structure remain visible;
+- steep-up control `ocean_underside_snell_window/1789123696-135029` retains the
+  large blue Snell window and cream reflected region;
+- deep control `ocean_underwater_visibility/1789123708-134900` remains 97.5%
+  dark-blue by that threshold.
+
+Both new actual-WGSL GPU checks pass on Quadro M1000M: the 25% bounded blend and
+six depth samples from 0m to 100m. All five GPU ocean optics/wave tests pass.
+No foam attenuation was added: aerated white water should later use the existing
+breaking/foam signal to block direct sky and scatter pale light from below.
+No FPS claim; this adds only scalar fragment arithmetic and no sampling, draw,
+texture or geometry work. Final workspace/clippy validation follows below.
+
+Final validation: 510 workspace tests pass with the two documented terrain
+source-string failures skipped (20 tests ignored). Five actual-WGSL GPU ocean
+tests pass on Quadro M1000M; clippy all targets, formatting, diff checks and the
+release build pass. Normal gameplay uses the change after restart.
