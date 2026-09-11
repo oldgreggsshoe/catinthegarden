@@ -473,6 +473,10 @@ const OCEAN_UNDERWATER_TINT: vec3<f32> = vec3<f32>(0.055, 0.30, 0.42);
 // a perfect sand-coloured mirror. This is deliberately bounded: the resolved
 // Snell window and the reflected submerged scene remain the dominant terms.
 const OCEAN_UNDERSIDE_SKYLIGHT_BLEND: f32 = 0.25;
+// Aerated crests are a diffuse layer, not a clear water-air interface. From
+// below they replace the directional sky/reflection with softer, paler light.
+const OCEAN_UNDERSIDE_FOAM_NEUTRALISATION: f32 = 0.55;
+const OCEAN_UNDERSIDE_FOAM_RADIANCE_SCALE: f32 = 0.80;
 
 // Whitecaps. A crest that is steep enough spills and goes white wherever it is,
 // with no shore involved -- which is the whole difference from the surf above,
@@ -2895,6 +2899,20 @@ fn ocean_underside_reflection_with_skylight(
     return mix(reflected, skylight, OCEAN_UNDERSIDE_SKYLIGHT_BLEND);
 }
 
+fn ocean_underside_with_foam(
+    clear_interface: vec3<f32>,
+    skylight: vec3<f32>,
+    foam: f32,
+) -> vec3<f32> {
+    let neutral_skylight = vec3<f32>(max(max(skylight.r, skylight.g), skylight.b));
+    let scattered = mix(
+        skylight,
+        neutral_skylight,
+        OCEAN_UNDERSIDE_FOAM_NEUTRALISATION,
+    ) * OCEAN_UNDERSIDE_FOAM_RADIANCE_SCALE;
+    return mix(clear_interface, scattered, foam);
+}
+
 /// The sea seen from underneath.
 ///
 /// `ocean_lighting` cannot do this: it takes `max(dot(normal, view), 0.0)`, and
@@ -2914,6 +2932,7 @@ fn ocean_underside_colour(
     surface_direction: vec3<f32>,
     camera_relative_view_position: vec3<f32>,
     reflected_scene: vec4<f32>,
+    foam: f32,
 ) -> vec3<f32> {
     let view_ray = normalize(camera_relative_view_position);
     // The ripple layer is folded in the same way the lit side does it, so both
@@ -2933,24 +2952,29 @@ fn ocean_underside_colour(
         return vec3<f32>(refraction.w);
     }
     let up_view = normalize(planet_to_view(surface_direction));
-    let fallback = physical_camera_sky_radiance(up_view) * OCEAN_UNDERWATER_TINT * 0.30;
+    let skylight = physical_camera_sky_radiance(up_view);
+    let fallback = skylight * OCEAN_UNDERWATER_TINT * 0.30;
     // Outside Snell's window the interface reflects the submerged scene,
     // rather than becoming an opaque dark ceiling. Misses retain a bounded
     // fallback; confidence fades screen edges and already-extinguished data.
     let reflected_below = mix(fallback, reflected_scene.rgb, reflected_scene.w);
     let below = ocean_underside_reflection_with_skylight(
         reflected_below,
-        physical_camera_sky_radiance(up_view),
+        skylight,
     );
     if render_debug_mode == RENDER_DEBUG_UNDERSIDE_REFRACTED_SKY {
         if refraction.w <= 0.0 { return vec3<f32>(0.0); }
         return physical_camera_sky_radiance(normalize(refraction.xyz));
     }
-    if refraction.w <= 0.0 {
-        return below;
+    var clear_interface = below;
+    if refraction.w > 0.0 {
+        let above = physical_camera_sky_radiance(normalize(refraction.xyz));
+        clear_interface = mix(below, above, refraction.w);
     }
-    let above = physical_camera_sky_radiance(normalize(refraction.xyz));
-    return mix(below, above, refraction.w);
+    // Use the same breaking/whitecap coverage as the top face. Foam is air in
+    // water, so it blocks the directional sky and bed reflection while
+    // returning diffuse pale skylight instead of behaving like white paint.
+    return ocean_underside_with_foam(clear_interface, skylight, foam);
 }
 
 fn ocean_lighting(

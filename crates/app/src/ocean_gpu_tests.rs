@@ -215,6 +215,12 @@ fn gpu_ocean_extinction_increases_smoothly_with_water_depth() {
 
 #[test]
 #[ignore = "requires a Vulkan GPU"]
+fn gpu_ocean_underside_foam_blocks_directional_light_with_pale_scatter() {
+    check_ocean_optics(OpticsCase::UndersideFoam);
+}
+
+#[test]
+#[ignore = "requires a Vulkan GPU"]
 fn gpu_local_view_altitude_recovers_depth_without_radius_cancellation() {
     check_ocean_optics(OpticsCase::LocalAltitude);
 }
@@ -235,6 +241,7 @@ enum OpticsCase {
     BeachSand,
     UndersideSkylight,
     DepthExtinction,
+    UndersideFoam,
     LocalAltitude,
     FogInverseDepth,
 }
@@ -244,6 +251,7 @@ fn check_ocean_optics(case: OpticsCase) {
     let beach_sand = matches!(case, OpticsCase::BeachSand);
     let underside_skylight = matches!(case, OpticsCase::UndersideSkylight);
     let depth_extinction = matches!(case, OpticsCase::DepthExtinction);
+    let underside_foam = matches!(case, OpticsCase::UndersideFoam);
     let local_altitude = matches!(case, OpticsCase::LocalAltitude);
     let fog_inverse_depth = matches!(case, OpticsCase::FogInverseDepth);
     let cases = [
@@ -274,7 +282,11 @@ fn check_ocean_optics(case: OpticsCase) {
         })
         .collect::<Vec<_>>()
         .join(", ");
-    let evaluation = if local_altitude {
+    let evaluation = if underside_foam {
+        "vec4<f32>(ocean_underside_with_foam(
+            vec3<f32>(0.8, 0.7, 0.5), vec3<f32>(0.1, 0.4, 0.9),
+            array<f32, 6>(0.0, 0.2, 0.4, 0.6, 0.82, 0.82)[id.x]), 1.0)"
+    } else if local_altitude {
         "vec4<f32>(local_view_altitude_meters(array<vec3<f32>, 6>(
             vec3<f32>(0.0, 0.0, 0.0),
             vec3<f32>(0.0, -10.0, 0.0),
@@ -405,6 +417,20 @@ fn check_ocean_optics(case: OpticsCase) {
     let data = readback.slice(..).get_mapped_range();
     let rows: &[[f32; 4]] = bytemuck::cast_slice(&data);
     for (index, ((ray, normal), actual)) in cases.iter().zip(rows).enumerate() {
+        if underside_foam {
+            let foam = [0.0_f32, 0.2, 0.4, 0.6, 0.82, 0.82][index];
+            let clear = [0.8_f32, 0.7, 0.5];
+            let scattered = [0.432_f32, 0.54, 0.72];
+            for channel in 0..3 {
+                let expected = clear[channel] * (1.0 - foam) + scattered[channel] * foam;
+                assert!(
+                    (actual[channel] - expected).abs() < 0.0001,
+                    "foam {foam}, channel {channel}: {} vs {expected}",
+                    actual[channel]
+                );
+            }
+            continue;
+        }
         if local_altitude {
             let radius = catinthegarden_coretypes::PLANET_RADIUS_METERS;
             let points = [
@@ -568,6 +594,8 @@ fn underside_reflection_is_bounded_and_confined_to_snapshot_pass() {
         .split("\nfn ")
         .next()
         .unwrap();
+    assert!(legacy.contains("let foam = ocean_foam_coverage("));
+    assert!(legacy.contains("vec4<f32>(0.0),\n                foam,"));
     assert!(!legacy.contains("ocean_scene_reflection("));
     let transmitting = shader
         .split("fn ocean_underside_reflecting_fragment(")
@@ -576,6 +604,10 @@ fn underside_reflection_is_bounded_and_confined_to_snapshot_pass() {
         .split("\nfn ")
         .next()
         .unwrap();
+    assert!(transmitting.contains("let foam = ocean_foam_coverage("));
+    assert!(transmitting.contains(
+        "vec4<f32>(mix(fallback, reflected.rgb, reflected.w), 1.0),\n                foam,"
+    ));
     assert!(transmitting.contains("ocean_scene_reflection("));
 }
 

@@ -4830,6 +4830,7 @@ mod tests {
         assert!(optics.contains("ocean_water_to_air(view_ray, normal_view)"));
         assert!(optics.contains("physical_camera_sky_radiance(normalize(refraction.xyz))"));
         assert!(optics.contains("ocean_underside_reflection_with_skylight("));
+        assert!(optics.contains("ocean_underside_with_foam(clear_interface, skylight, foam)"));
         // The recovery leg must invert with the resolved point's own depth.
         // Reaching for `water_depth_meters` here is the fragment doing the
         // reflecting, which is a different pixel and does not invert.

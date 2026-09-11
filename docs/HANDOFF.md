@@ -8555,3 +8555,38 @@ or geometry work. No capture evidence for the fix itself yet -- the mismatch is
 largest across a shelf slope, and the existing underside scenarios sit where the
 two depths nearly agree, so the scenario that would show it does not exist yet.
 
+
+## 11 September — aerated crests seen from below
+
+The underside now uses the exact `ocean_foam_coverage` value already used by
+the top face, including surf, whitecap, water-presence and 0.82 maximum-coverage
+rules. Where that signal exists, it replaces the directional Snell-window or
+bed-reflection result with bounded diffuse skylight: 55% neutralised toward pale
+white and scaled to 80% radiance. Thus the bubble layer blocks some direct sky
+and reflected bed without becoming opaque paint or inventing a second moving
+foam mask. Clear water retains the existing Snell/Fresnel, 25% rough-surface
+skylight, SSR and depth-aware fog paths exactly.
+
+A clean `b0b2882` baseline was rebuilt in a separate worktree target and compared
+with the current release in the deterministic `ocean_underside_shallows` replay:
+- before `1789143770-167364`, after `1789143320-161408`;
+- at capture 001, when the existing foam signal covers the approaching shallow
+  crest field, 441,554 pixels change by more than two 8-bit levels and the
+  directional cream ceiling becomes diffuse grey-white;
+- as that existing foam moves away, the change falls to 3,218 pixels in capture
+  002, 132 in 003 and 4 in 004. This pins the effect to the moving foam rather
+  than globally recolouring the underside;
+- `ocean_underside_snell_window/1789143349-161482` and
+  `ocean_underwater_visibility/1789143361-161268` are byte-identical to their
+  pre-change controls in final capture, retaining the clear Snell window and
+  deep-water appearance.
+
+The new actual-WGSL test checks zero-to-0.82 foam composition numerically, while
+the source regression pins both underside entry points to the shared foam signal.
+All nine actual-WGSL ocean tests pass on Quadro M1000M when serialized. A parallel
+run crashed the legacy Vulkan driver with SIGSEGV while constructing several GPU
+instances concurrently; the same tests pass one-by-one, so use `--test-threads=1`.
+Workspace: 512 pass, 0 fail, 23 ignored. Clippy all targets, formatting, diff
+checks and release build pass. No FPS claim; the underside adds scalar ALU only,
+with no texture fetch, geometry or draw. The handoff's pre-existing dead fog
+wrappers and fog-colour coordinate-space concern remain open and untouched.

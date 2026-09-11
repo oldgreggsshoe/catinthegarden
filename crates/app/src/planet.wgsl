@@ -1996,6 +1996,10 @@ fn ocean_underside_fragment(input: OceanVertexOutput) -> vec4<f32> {
         length(input.camera_relative_view_position),
         max(-macro_height_meters, 0.0),
     );
+    let foam = ocean_foam_coverage(
+        max(-macro_height_meters, 0.0), surface.vertical_displacement,
+        surface.breaking_ratio, surface.normal, direction,
+    );
     return vec4<f32>(
         ocean_depth_aware_distance_fog(
             ocean_underside_colour(
@@ -2004,6 +2008,7 @@ fn ocean_underside_fragment(input: OceanVertexOutput) -> vec4<f32> {
                 direction,
                 input.camera_relative_view_position,
                 vec4<f32>(0.0),
+                foam,
             ),
             input.camera_relative_view_position,
             max(surface.vertical_displacement - macro_height_meters, 0.0),
@@ -2054,6 +2059,10 @@ fn ocean_underside_reflecting_fragment(input: OceanVertexOutput) -> vec4<f32> {
     );
     let normal_view = normalize(planet_to_view(normalize(surface.normal - surface.ripple_slope)));
     let water_depth_meters = max(surface.vertical_displacement - macro_height_meters, 0.0);
+    let foam = ocean_foam_coverage(
+        max(-macro_height_meters, 0.0), surface.vertical_displacement,
+        surface.breaking_ratio, surface.normal, direction,
+    );
     let reflected = ocean_scene_reflection(
         input.camera_relative_view_position, normal_view, water_depth_meters,
     );
@@ -2070,6 +2079,7 @@ fn ocean_underside_reflecting_fragment(input: OceanVertexOutput) -> vec4<f32> {
                 direction,
                 input.camera_relative_view_position,
                 vec4<f32>(mix(fallback, reflected.rgb, reflected.w), 1.0),
+                foam,
             ),
             input.camera_relative_view_position,
             water_depth_meters,
