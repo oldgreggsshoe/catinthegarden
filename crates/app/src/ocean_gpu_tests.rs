@@ -442,3 +442,21 @@ fn underside_reflection_is_bounded_and_confined_to_snapshot_pass() {
         .unwrap();
     assert!(transmitting.contains("ocean_scene_reflection("));
 }
+
+#[test]
+fn underside_diagnostics_expose_each_optical_term_without_entering_f9_cycle() {
+    let shader = crate::planet::shared_planet_shader_source();
+    assert!(shader.contains("RENDER_DEBUG_UNDERSIDE_TRANSMISSION"));
+    assert!(shader.contains("return vec3<f32>(refraction.w)"));
+    assert!(shader.contains("RENDER_DEBUG_UNDERSIDE_REFRACTED_SKY"));
+    assert!(shader.contains("return physical_camera_sky_radiance(normalize(refraction.xyz));"));
+    let raster = include_str!("planet.wgsl");
+    assert!(raster.contains("RENDER_DEBUG_UNDERSIDE_REFLECTION_HIT"));
+    assert!(raster.contains("return vec4<f32>(vec3<f32>(reflected.w), 1.0)"));
+
+    // These are launch-only diagnostics, not additional F9 presentation modes.
+    assert_eq!(
+        crate::planet::RenderDebugMode::FlatTriangles.next(),
+        crate::planet::RenderDebugMode::Final
+    );
+}

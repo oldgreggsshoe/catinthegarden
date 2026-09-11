@@ -231,6 +231,9 @@ const RENDER_DEBUG_RAW_ALBEDO: u32 = 1u;
 const RENDER_DEBUG_SURFACE_LIGHTING: u32 = 2u;
 const RENDER_DEBUG_AERIAL_CONTRIBUTION: u32 = 3u;
 const RENDER_DEBUG_FLAT_TRIANGLES: u32 = 6u;
+const RENDER_DEBUG_UNDERSIDE_TRANSMISSION: u32 = 7u;
+const RENDER_DEBUG_UNDERSIDE_REFRACTED_SKY: u32 = 8u;
+const RENDER_DEBUG_UNDERSIDE_REFLECTION_HIT: u32 = 9u;
 
 struct Camera {
     projection_matrix: mat4x4<f32>,
@@ -2824,12 +2827,20 @@ fn ocean_underside_colour(
     // Bend the sky lookup with the local wave normal, with the physical
     // critical angle and Fresnel transition at the window's moving edge.
     let refraction = ocean_water_to_air(view_ray, normal_view);
+    let render_debug_mode = u32(camera.projection.w + 0.5);
+    if render_debug_mode == RENDER_DEBUG_UNDERSIDE_TRANSMISSION {
+        return vec3<f32>(refraction.w);
+    }
     let up_view = normalize(planet_to_view(surface_direction));
     let fallback = physical_camera_sky_radiance(up_view) * OCEAN_UNDERWATER_TINT * 0.30;
     // Outside Snell's window the interface reflects the submerged scene,
     // rather than becoming an opaque dark ceiling. Misses retain a bounded
     // fallback; confidence fades screen edges and already-extinguished data.
     let below = mix(fallback, reflected_scene.rgb, reflected_scene.w);
+    if render_debug_mode == RENDER_DEBUG_UNDERSIDE_REFRACTED_SKY {
+        if refraction.w <= 0.0 { return vec3<f32>(0.0); }
+        return physical_camera_sky_radiance(normalize(refraction.xyz));
+    }
     if refraction.w <= 0.0 {
         return below;
     }

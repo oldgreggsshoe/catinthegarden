@@ -2038,6 +2038,9 @@ fn ocean_underside_reflecting_fragment(input: OceanVertexOutput) -> vec4<f32> {
     );
     let normal_view = normalize(planet_to_view(normalize(surface.normal - surface.ripple_slope)));
     let reflected = ocean_scene_reflection(input.camera_relative_view_position, normal_view);
+    if u32(camera.projection.w + 0.5) == RENDER_DEBUG_UNDERSIDE_REFLECTION_HIT {
+        return vec4<f32>(vec3<f32>(reflected.w), 1.0);
+    }
     let fallback = ocean_seabed_reflection_fallback(direction, normal_view,
         input.camera_relative_view_position, surface.vertical_displacement, macro_height_meters);
     return vec4<f32>(

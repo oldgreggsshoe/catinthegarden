@@ -1461,6 +1461,9 @@ impl State {
                 "aerial" => planet::RenderDebugMode::AerialContribution,
                 "sky" => planet::RenderDebugMode::SkyOnly,
                 "ray_hit" => planet::RenderDebugMode::RayHitStatus,
+                "underside_transmission" => planet::RenderDebugMode::UndersideTransmission,
+                "underside_sky" => planet::RenderDebugMode::UndersideRefractedSky,
+                "underside_reflection" => planet::RenderDebugMode::UndersideReflectionHit,
                 // Both modes stay reachable from a scenario, because diagnosing
                 // whether an artifact belongs to a presentation or to the
                 // terrain under it needs to be able to switch between them.

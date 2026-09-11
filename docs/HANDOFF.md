@@ -8370,3 +8370,51 @@ The new six-case GPU sand test and all three existing GPU ocean tests pass;
 clippy all targets, formatting/diff checks and release build pass. Normal game
 launch uses the correction; restart to load the rebuilt shader. No new FPS
 measurement or global shoreline/underwater-leak sign-off is claimed.
+
+## 11 September — underside Snell/reflection diagnosis
+
+Discussion after the shallow underside reflection change raised a valid question:
+why the near-horizontal surface showed only reflected sand and apparently no sky.
+Three launch-only diagnostic modes now isolate the optical terms without entering
+the normal F9 cycle:
+
+```
+CATINGARDEN_DEBUG_MODE=underside_transmission
+CATINGARDEN_DEBUG_MODE=underside_sky
+CATINGARDEN_DEBUG_MODE=underside_reflection
+```
+
+At the existing near-horizontal `ocean_underside_shallows` pose, the transmission
+mask in `1789122078-127838` is black across the visible underside: every ray is
+outside the 48.6-degree Snell window and undergoes total internal reflection.
+The reflection-hit mask `1789122223-128266` is white over most of the surface,
+showing that the sand is a successful screen-space reflection rather than merely
+the local fallback. The first sky diagnostic capture was misleading on TIR pixels
+because it returned the ordinary reflection before reaching its debug branch;
+that mode now returns black for invalid refraction and sky only for valid rays.
+
+Added `ocean_underside_snell_window`, the same shallow site with a steep upward
+view. Captures prove the three terms:
+- transmission `1789122389-128773`: the expected bright circular Snell window;
+- refracted sky `1789122402-128856`: blue sky within exactly that window;
+- final `1789122413-128914`: refracted blue sky inside, reflected cream sand
+  outside, with a Fresnel transition at the edge.
+
+Conclusion: clear-water refraction/reflection composition is behaving as intended.
+Do not force sky into distant/grazing underside pixels; that would violate total
+internal reflection. The user's requested follow-up is separate: breaking-wave
+foam contains air bubbles and should attenuate the refracted sky, while scattering
+sun/sky light as pale blue-white from below. Reuse the existing foam/breaking
+signal rather than inventing a second moving mask. No foam change was made here.
+
+During this diagnosis an unrelated local `OCEAN_WAVE_SCALE = 4.0` experiment made
+the existing underwater-floor compile-time guard fail. At the user's explicit
+request it was restored to 1.0 before validation. `crates.tar.gz` remains untouched.
+
+Final validation: 510 workspace tests pass with the same two pre-existing
+terrain source-string failures explicitly skipped (18 other tests ignored).
+Four focused underside source tests and all three actual-WGSL ocean tests pass;
+clippy all targets, formatting and release build pass. No final-look shader
+change was made. Diagnostic modes are environment-selected at launch and do
+not enlarge the F9 cycle. Scenario registry is now 88. `crates.tar.gz` remains
+untouched.

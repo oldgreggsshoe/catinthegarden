@@ -2743,6 +2743,9 @@ pub enum RenderDebugMode {
     SkyOnly = 4,
     RayHitStatus = 5,
     FlatTriangles = 6,
+    UndersideTransmission = 7,
+    UndersideRefractedSky = 8,
+    UndersideReflectionHit = 9,
 }
 
 #[repr(u32)]
@@ -2780,7 +2783,11 @@ impl RenderDebugMode {
             Self::SurfaceLighting => Self::AerialContribution,
             Self::AerialContribution => Self::SkyOnly,
             Self::SkyOnly => Self::FlatTriangles,
-            Self::FlatTriangles | Self::RayHitStatus => Self::Final,
+            Self::FlatTriangles
+            | Self::RayHitStatus
+            | Self::UndersideTransmission
+            | Self::UndersideRefractedSky
+            | Self::UndersideReflectionHit => Self::Final,
         }
     }
 
@@ -2793,6 +2800,9 @@ impl RenderDebugMode {
             Self::SkyOnly => "sky only",
             Self::RayHitStatus => "ray detail-hit status",
             Self::FlatTriangles => "flat L7 triangles",
+            Self::UndersideTransmission => "underside Snell transmission",
+            Self::UndersideRefractedSky => "underside refracted sky",
+            Self::UndersideReflectionHit => "underside reflection hit",
         }
     }
 }
