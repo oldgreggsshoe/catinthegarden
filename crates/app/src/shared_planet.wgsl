@@ -1957,18 +1957,66 @@ fn ocean_depth_extinction_weight(water_depth_meters: f32) -> f32 {
     );
 }
 
-fn ocean_water_fog_at_depth(
+// Altitude of a camera-relative view-space point, for the bounded local
+// distances the water paths work over.
+//
+// Expanded about the camera -- its own altitude, the point's rise along the
+// radial, and the curvature drop of the tangent plane -- so every term stays at
+// metre scale. The general form, `altitude_along_ray`, instead subtracts
+// PLANET_RADIUS_METERS from a radius near 6.37e6; in strict binary32 that
+// cancellation costs up to one ulp of the radius, measured at 0.5m. Be honest
+// about what that is worth here: the Quadro evaluates the general form more
+// precisely than strict binary32 and the two agree to under a centimetre on
+// every point the GPU test covers, so this is not repairing an observed fault.
+// It is a form whose accuracy does not depend on the driver being generous.
+// Truncation of the expansion is order distance^3 / radius^2, under a
+// micrometre at the 100m SSR bound.
+//
+// `camera_planet_direction_view_altitude.xyz` is already a unit radial in view
+// space -- it is built by `world_to_view` on the Rust side -- so it is dotted
+// with a view-space vector directly, as `terrain_fog_air_path_meters` does.
+fn local_view_altitude_meters(camera_relative_view_position: vec3<f32>) -> f32 {
+    let camera_altitude_meters = camera.camera_planet_direction_view_altitude.w;
+    let rise_meters = dot(
+        camera.camera_planet_direction_view_altitude.xyz,
+        camera_relative_view_position,
+    );
+    let horizontal_squared = max(
+        dot(camera_relative_view_position, camera_relative_view_position)
+            - rise_meters * rise_meters,
+        0.0,
+    );
+    return camera_altitude_meters
+        + rise_meters
+        + horizontal_squared
+            / (2.0 * (PLANET_RADIUS_METERS + camera_altitude_meters));
+}
+
+// Only the *amount* depends on depth; the colour below does not. Split out so
+// the depth rule can be tested without binding the sky LUT, and so callers that
+// invert an already-applied fog can reason about the one term that differs.
+fn ocean_water_fog_amount(
     camera_relative_view_position: vec3<f32>,
     water_depth_meters: f32,
-) -> TerrainFog {
+) -> f32 {
     let e_fold_meters = OCEAN_UNDERWATER_VISIBILITY_METERS / log(50.0);
     // A shallow shelf is continually relit by the nearby bright bed. Let its
     // long horizontal views retain that sand/turquoise contribution instead
     // of converging on the same dark blue as deep water. Below 2m the water is
     // nearly clear; by 30m it uses the full 100m visibility extinction.
     let depth_weight = ocean_depth_extinction_weight(water_depth_meters);
-    let amount = 1.0 - exp(
+    return 1.0 - exp(
         -length(camera_relative_view_position) * depth_weight / e_fold_meters,
+    );
+}
+
+fn ocean_water_fog_at_depth(
+    camera_relative_view_position: vec3<f32>,
+    water_depth_meters: f32,
+) -> TerrainFog {
+    let amount = ocean_water_fog_amount(
+        camera_relative_view_position,
+        water_depth_meters,
     );
     // Lit by the sky overhead rather than painted: the water goes dark at
     // night and at depth, because what reaches the eye is daylight that got

@@ -1946,7 +1946,19 @@ fn ocean_scene_reflection(
             // Undo only recoverable water fog, then apply the reflected leg.
             // The caller adds the surface-to-eye leg exactly once afterward.
             if camera.flat_triangle_options.w > 0.5 {
-                let direct_fog = ocean_water_fog_at_depth(resolved.xyz, water_depth_meters);
+                // Invert with the depth `terrain_fog` actually used, which is
+                // the *resolved* point's own depth below the datum, not the
+                // water column above the fragment doing the reflecting. Those
+                // two disagree by the whole shelf slope, and since both sides
+                // became depth-aware this stopped being an inverse at all:
+                // under-removal leaves the dark blue this path exists to
+                // remove, and over-removal clamps the reflected bed to black.
+                let resolved_depth_meters = max(
+                    -local_view_altitude_meters(resolved.xyz), 0.0,
+                );
+                let direct_fog = ocean_water_fog_at_depth(
+                    resolved.xyz, resolved_depth_meters,
+                );
                 let transmission = 1.0 - direct_fog.amount;
                 confidence *= smoothstep(0.05, 0.2, transmission);
                 color = max((color - direct_fog.color * direct_fog.amount)

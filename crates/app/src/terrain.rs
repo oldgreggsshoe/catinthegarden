@@ -4830,6 +4830,20 @@ mod tests {
         assert!(optics.contains("ocean_water_to_air(view_ray, normal_view)"));
         assert!(optics.contains("physical_camera_sky_radiance(normalize(refraction.xyz))"));
         assert!(optics.contains("ocean_underside_reflection_with_skylight("));
+        // The recovery leg must invert with the resolved point's own depth.
+        // Reaching for `water_depth_meters` here is the fragment doing the
+        // reflecting, which is a different pixel and does not invert.
+        let reflection = shader
+            .split("fn ocean_scene_reflection(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("screen-space reflection function is present");
+        assert!(reflection.contains(
+            "let resolved_depth_meters = max(\n                    -local_view_altitude_meters(resolved.xyz), 0.0,\n                );"
+        ));
+        assert!(reflection.contains(
+            "ocean_water_fog_at_depth(\n                    resolved.xyz, resolved_depth_meters,\n                )"
+        ));
         assert!(!optics.contains("physical_camera_sky_radiance(view_ray)"));
     }
 

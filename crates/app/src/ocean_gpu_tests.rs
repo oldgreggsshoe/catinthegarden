@@ -213,6 +213,21 @@ fn gpu_ocean_extinction_increases_smoothly_with_water_depth() {
     check_ocean_optics(OpticsCase::DepthExtinction);
 }
 
+#[test]
+#[ignore = "requires a Vulkan GPU"]
+fn gpu_local_view_altitude_recovers_depth_without_radius_cancellation() {
+    check_ocean_optics(OpticsCase::LocalAltitude);
+}
+
+/// The SSR recovery divides out fog the snapshot already carries. That only
+/// inverts if it uses the depth the fog was applied with -- the reflected
+/// point's own -- and not the water column above the reflecting fragment.
+#[test]
+#[ignore = "requires a Vulkan GPU"]
+fn gpu_water_fog_inverse_cancels_only_at_the_depth_it_was_applied_with() {
+    check_ocean_optics(OpticsCase::FogInverseDepth);
+}
+
 #[derive(Clone, Copy)]
 enum OpticsCase {
     LeavingWater,
@@ -220,6 +235,8 @@ enum OpticsCase {
     BeachSand,
     UndersideSkylight,
     DepthExtinction,
+    LocalAltitude,
+    FogInverseDepth,
 }
 
 fn check_ocean_optics(case: OpticsCase) {
@@ -227,6 +244,8 @@ fn check_ocean_optics(case: OpticsCase) {
     let beach_sand = matches!(case, OpticsCase::BeachSand);
     let underside_skylight = matches!(case, OpticsCase::UndersideSkylight);
     let depth_extinction = matches!(case, OpticsCase::DepthExtinction);
+    let local_altitude = matches!(case, OpticsCase::LocalAltitude);
+    let fog_inverse_depth = matches!(case, OpticsCase::FogInverseDepth);
     let cases = [
         (DVec3::Y, DVec3::Y),
         (DVec3::new(0.6, 0.8, 0.0), DVec3::Y),
@@ -255,7 +274,27 @@ fn check_ocean_optics(case: OpticsCase) {
         })
         .collect::<Vec<_>>()
         .join(", ");
-    let evaluation = if depth_extinction {
+    let evaluation = if local_altitude {
+        "vec4<f32>(local_view_altitude_meters(array<vec3<f32>, 6>(
+            vec3<f32>(0.0, 0.0, 0.0),
+            vec3<f32>(0.0, -10.0, 0.0),
+            vec3<f32>(0.0, 5.0, 0.0),
+            vec3<f32>(0.0, 0.0, -50.0),
+            vec3<f32>(30.0, 0.0, 40.0),
+            vec3<f32>(20.6155281, -40.0, 0.0)
+        )[id.x]))"
+    } else if fog_inverse_depth {
+        // The residual an inverse leaves when it un-fogs with `used` a fog that
+        // was applied with `bed`. Only the amount depends on depth, so this is
+        // the whole error. Even lanes match and must cancel exactly; odd lanes
+        // are the mismatch the SSR recovery used to have.
+        "vec4<f32>(
+            ocean_water_fog_amount(vec3<f32>(0.0, 0.0, -30.0),
+                array<f32, 6>(25.0, 25.0, 2.0, 2.0, 40.0, 40.0)[id.x])
+            - ocean_water_fog_amount(vec3<f32>(0.0, 0.0, -30.0),
+                array<f32, 6>(25.0, 1.0, 2.0, 30.0, 40.0, 1.0)[id.x])
+        )"
+    } else if depth_extinction {
         "vec4<f32>(ocean_depth_extinction_weight(array<f32, 6>(0.0, 1.0, 2.0, 10.0, 30.0, 100.0)[id.x]))"
     } else if underside_skylight {
         "vec4<f32>(ocean_underside_reflection_with_skylight(vec3<f32>(0.8, 0.7, 0.5), vec3<f32>(0.1, 0.4, 0.9)), 1.0)"
@@ -305,6 +344,10 @@ fn check_ocean_optics(case: OpticsCase) {
     let mut camera = crate::planet::CameraUniform::zeroed();
     camera.flat_triangle_options[1] = GLOBAL_OCEAN_STORM_INTENSITY;
     camera.flat_triangle_options[2] = 1.0; // actual radial geometry; no shading-only ripples
+    if local_altitude {
+        // Radial straight up the view-space Y axis, eye 5m under the datum.
+        camera.camera_planet_direction_view_altitude = [0.0, 1.0, 0.0, -5.0];
+    }
     let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("test ocean camera"),
         contents: bytemuck::bytes_of(&camera),
@@ -362,6 +405,55 @@ fn check_ocean_optics(case: OpticsCase) {
     let data = readback.slice(..).get_mapped_range();
     let rows: &[[f32; 4]] = bytemuck::cast_slice(&data);
     for (index, ((ray, normal), actual)) in cases.iter().zip(rows).enumerate() {
+        if local_altitude {
+            let radius = catinthegarden_coretypes::PLANET_RADIUS_METERS;
+            let points = [
+                [0.0_f64, 0.0, 0.0],
+                [0.0, -10.0, 0.0],
+                [0.0, 5.0, 0.0],
+                [0.0, 0.0, -50.0],
+                [30.0, 0.0, 40.0],
+                // The one row combining rise and horizontal offset. Picked
+                // because strict binary32 puts the `sqrt(r^2 + ..) - R` form a
+                // full ulp of the radius out here (0.5m); this GPU computes it
+                // better than that, so the row does not in fact separate the
+                // two forms. Kept for the mixed-term coverage, not as a claim.
+                [20.6155281, -40.0, 0.0],
+            ];
+            let point = points[index];
+            let rise = point[1];
+            let horizontal_squared =
+                point[0] * point[0] + point[1] * point[1] + point[2] * point[2] - rise * rise;
+            let expected = -5.0 + rise + horizontal_squared / (2.0 * (radius - 5.0));
+            // A centimetre: tight enough to catch a sign error, the wrong
+            // frame for the radial, or a dropped curvature term.
+            assert!(
+                (actual[0] as f64 - expected).abs() < 0.01,
+                "altitude at {point:?}: {} vs {expected}",
+                actual[0]
+            );
+            continue;
+        }
+        if fog_inverse_depth {
+            let bed = [25.0_f64, 25.0, 2.0, 2.0, 40.0, 40.0][index];
+            let used = [25.0_f64, 1.0, 2.0, 30.0, 40.0, 1.0][index];
+            if bed == used {
+                assert!(
+                    (actual[0] as f64).abs() < 1.0e-6,
+                    "a matched inverse must cancel exactly, got {}",
+                    actual[0]
+                );
+            } else {
+                // Large enough that no tolerance hides it: these are the rows of
+                // the measured mismatch table, 0.11 to 0.58 of the whole fog.
+                assert!(
+                    (actual[0] as f64).abs() > 0.1,
+                    "bed {bed} vs used {used} must not be dismissible, got {}",
+                    actual[0]
+                );
+            }
+            continue;
+        }
         if depth_extinction {
             let depth = [0.0_f64, 1.0, 2.0, 10.0, 30.0, 100.0][index];
             let t = ((depth - 2.0) / 28.0).clamp(0.0, 1.0);

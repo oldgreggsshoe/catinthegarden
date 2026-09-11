@@ -14,17 +14,21 @@ documentation, and response-file changes when staging work.
 `1789119500-120010` is repaired by a continuous land-side sand tint. Water stays
 on its existing footprint. See the latest section for matched capture evidence.
 
-**Current underwater rendering (10 September):** visibility is now 100m. Raster
-ocean undersides reflect the pre-water scene with a lit local-bed fallback for
-off-screen data. See the newest section for captures and limitations; older 30m
-and flat-dark-underside descriptions below are historical.
+**Current underwater rendering (11 September):** visibility is now 100m, scaled
+by local baked water depth. Raster ocean undersides reflect the pre-water scene
+with a lit local-bed fallback for off-screen data, and the screen-space
+reflection now inverts the snapshot's fog with the *reflected* point's own depth.
+All of this is **raster only**: the raymarch path never calls
+`ocean_underside_colour`, `terrain_fog` or any `ocean_water_fog*`, so a submerged
+ray frame still has no underside, no water fog and no seabed. See the newest
+sections; older 30m and flat-dark-underside descriptions below are historical.
 
 **Current ocean default (10 September):** spawn-coast shoreward waves are now enabled
 for normal launches at the user's request. `CATINGARDEN_SPAWN_COAST_WAVES=0`
 opts out. Earlier opt-in-only notes below are historical. Coverage remains local
 and the measured ~5ms cost is unchanged; global steering is still outstanding.
 
-**Written:** 6 September 2026; header current to 8 September 2026.
+**Written:** 6 September 2026; header current to 11 September 2026.
 
 **How to read this file:** everything below this header is an append-only log of dated sections,
 oldest first. This header is the current state; **the newest work is the last section in the file,
@@ -8462,3 +8466,92 @@ Final validation: 510 workspace tests pass with the two documented terrain
 source-string failures skipped (20 tests ignored). Five actual-WGSL GPU ocean
 tests pass on Quadro M1000M; clippy all targets, formatting, diff checks and the
 release build pass. Normal gameplay uses the change after restart.
+
+## 11 September — the SSR fog inverse, and two tests that were not watching
+
+Three findings from verifying caada2e rather than accepting it. The claims in that
+commit's handoff mostly hold: 510 passing is exact (`cargo test --workspace` alone
+stops at the first failing binary and shows only 439 -- `--no-fail-fast` is needed
+to see the real total), clippy and fmt are clean, and the dark-blue pixel evidence
+reproduces. Sweeping blue-dominance thresholds for one criterion that fits all
+three cited figures gives `b>r+20 && b>g+20`: 51,273 / 13,669 / 98.1% against the
+reported 51,341 / 13,659 / 97.5%. One consistent criterion, three matching numbers.
+The GPU count was understated -- six ocean GPU tests pass, not five.
+
+**The recovery leg had stopped being an inverse.** `ocean_scene_reflection` is
+screen-space: it marches the reflected ray against `water_scene_depth` and reads
+colour from `water_scene_color`, a snapshot whose every pixel was already fogged
+by `terrain_fog` along its *own* direct camera ray. To reuse such a pixel as a
+reflection the shader must divide that fog back out. `terrain_fog` applies it with
+the drawn point's own depth below the datum (`max(-surface_altitude_meters, 0.0)`),
+but the recovery was dividing with `water_depth_meters` -- the water column above
+the fragment doing the reflecting. A different pixel, a different depth.
+
+Before caada2e both sides were depth-independent, so subtract-and-divide inverted
+exactly. Making both depth-aware without making them agree turned it into a
+systematic error, measured at e-fold 25.562m:
+
+| wave-frag | bed  | ray  | applied | removed | residual |
+|-----------|------|------|---------|---------|----------|
+| 1m        | 10m  | 20m  | 0.221   | 0.111   | +0.110   |
+| 1m        | 25m  | 30m  | 0.664   | 0.161   | +0.502   |
+| 1m        | 40m  | 40m  | 0.791   | 0.209   | +0.582   |
+| 20m       | 2m   | 20m  | 0.111   | 0.445   | -0.334   |
+| 40m       | 1m   | 30m  | 0.161   | 0.691   | -0.529   |
+| 5m        | 5m   | 20m  | 0.129   | 0.129   | +0.000   |
+
+The last row is the proof that the depth disagreement is the whole error. Positive
+residual leaves up to 0.58 of water tint baked into the recovered reflection -- the
+dark blue caada2e existed to remove, reintroduced inside the SSR path. Negative
+subtracts more fog than was applied, and `max(color - fog.color * amount, 0.0)`
+clamps the reflected bed to black. `confidence` was computed from the same wrong
+transmission, so it was most over-trusted where the colour was worst.
+
+Fixed by recovering the resolved point's own depth from its view-space position.
+`local_view_altitude_meters` expands about the camera -- camera altitude, rise
+along the radial, curvature drop of the tangent plane -- keeping every term at
+metre scale. Honest note on why, because the first version of this comment
+overclaimed: the general `altitude_along_ray` form subtracts the planet radius
+from a radius near 6.37e6, which in strict binary32 costs up to one ulp (measured
+at 0.5m), but **this GPU evaluates it more precisely and both forms pass the new
+test to under a centimetre**. The expansion is not repairing an observed fault; it
+is a form that does not depend on the driver being generous. The reflected leg
+still uses the reflecting fragment's own column, which is an approximation rather
+than an inverse and is left as one.
+
+`ocean_water_fog_amount` is split out of `ocean_water_fog_at_depth` because only
+the amount depends on depth -- the colour does not -- which lets the depth rule be
+tested without binding the sky LUT.
+
+Two new GPU tests, both mutation-verified: `gpu_local_view_altitude_recovers_
+depth_without_radius_cancellation` (a constant sentinel fails it) and
+`gpu_water_fog_inverse_cancels_only_at_the_depth_it_was_applied_with`, which
+asserts a matched inverse cancels to 1e-6 and a mismatched one leaves more than
+0.1. A source test pins the wiring; reverting the fix fails
+`ocean_underside_refracts_the_sky`.
+
+**Two tests had stopped watching anything.** `raster_ocean_uses_a_separate_
+analytic_shell` and `terrain_fragment_keeps_positive_interpolated_land_over_mixed_
+ocean_samples` split the generated shader on `fn ocean_fragment_with_transmission(`,
+which 5b6b911 turned into a four-line wrapper delegating to `..._mode`. They had
+been asserting against an empty body since 10 September -- vacuous, not merely
+red -- and what they were written to guard is the open-ocean discard guard whose
+second consumer painted sea colour across a mountain on the 8th. Repointed at
+`_mode`, discard text updated for the `!shoreline &&` exemption 5b6b911 added,
+both mutation-verified. The standing "two documented failures" carve-out is
+retired: the workspace is 512 passing, 0 failing, 22 ignored.
+
+Still open, unchanged by this: `ocean_distance_fog` and `ocean_water_fog` have
+zero callers between them, so the `camera.camera_forward.w` read in the fog path
+is dead code held alive by a test that pins it. And `ocean_water_fog_at_depth`
+passes an already-view-space vector through `planet_to_view` when picking the
+sky direction for the fog colour -- every sibling call site in this file takes a
+planet-space vector, and the Rust field is built by `world_to_view`. That dates to
+40a1128, whose own message says "both unverified". Not touched here; it changes
+the underwater fog colour and deserves its own measured before/after.
+
+No FPS claim: this adds scalar fragment arithmetic and no sampling, draw, texture
+or geometry work. No capture evidence for the fix itself yet -- the mismatch is
+largest across a shelf slope, and the existing underside scenarios sit where the
+two depths nearly agree, so the scenario that would show it does not exist yet.
+
