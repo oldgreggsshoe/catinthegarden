@@ -186,16 +186,31 @@ fn test_ocean(@builtin(global_invocation_id) id: vec3<u32>) {{
 #[test]
 #[ignore = "requires a Vulkan GPU; run explicitly for ocean shader changes"]
 fn gpu_ocean_refraction_matches_snell_and_fresnel() {
-    check_ocean_optics(false);
+    check_ocean_optics(OpticsCase::LeavingWater);
 }
 
 #[test]
 #[ignore = "requires a Vulkan GPU"]
 fn gpu_ocean_air_to_water_and_visibility() {
-    check_ocean_optics(true);
+    check_ocean_optics(OpticsCase::EnteringWater);
 }
 
-fn check_ocean_optics(entering_water: bool) {
+#[test]
+#[ignore = "requires a Vulkan GPU"]
+fn gpu_beach_sand_is_continuous_at_the_dry_land_join() {
+    check_ocean_optics(OpticsCase::BeachSand);
+}
+
+#[derive(Clone, Copy)]
+enum OpticsCase {
+    LeavingWater,
+    EnteringWater,
+    BeachSand,
+}
+
+fn check_ocean_optics(case: OpticsCase) {
+    let entering_water = matches!(case, OpticsCase::EnteringWater);
+    let beach_sand = matches!(case, OpticsCase::BeachSand);
     let cases = [
         (DVec3::Y, DVec3::Y),
         (DVec3::new(0.6, 0.8, 0.0), DVec3::Y),
@@ -224,7 +239,9 @@ fn check_ocean_optics(entering_water: bool) {
         })
         .collect::<Vec<_>>()
         .join(", ");
-    let evaluation = if entering_water {
+    let evaluation = if beach_sand {
+        "vec4<f32>(beach_sand_albedo(array<f32, 6>(-1.0, 0.0, 0.01, 4.0, 20.0, 40.0)[id.x]), 1.0)"
+    } else if entering_water {
         "vec4<f32>(ocean_air_to_water(select(-rays[id.x], rays[id.x], dot(rays[id.x], normals[id.x]) < 0.0), normals[id.x]), ocean_water_transmittance(f32(id.x) * 20.0))"
     } else {
         "ocean_water_to_air(rays[id.x], normals[id.x])"
@@ -325,6 +342,26 @@ fn check_ocean_optics(entering_water: bool) {
     let data = readback.slice(..).get_mapped_range();
     let rows: &[[f32; 4]] = bytemuck::cast_slice(&data);
     for (index, ((ray, normal), actual)) in cases.iter().zip(rows).enumerate() {
+        if beach_sand {
+            let srgb = |v: f64| ((v + 0.055) / 1.055).powf(2.4);
+            let dry = [srgb(0.94), srgb(0.89), srgb(0.70)];
+            for channel in 0..3 {
+                if index == 3 {
+                    assert!(
+                        (actual[channel] as f64 - dry[channel]).abs() > 0.05,
+                        "retain the existing wet-sand treatment away from the join"
+                    );
+                } else {
+                    assert!(
+                        (actual[channel] as f64 - dry[channel]).abs() < 0.0001,
+                        "sand discontinuity: sample {index} channel {channel}: {} vs {}",
+                        actual[channel],
+                        dry[channel]
+                    );
+                }
+            }
+            continue;
+        }
         if entering_water {
             let incoming = if ray.dot(*normal) < 0.0 { *ray } else { -*ray };
             let eta = 1.0 / 1.333_f64;

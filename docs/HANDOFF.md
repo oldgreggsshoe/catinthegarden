@@ -10,6 +10,10 @@ surface appearance rather than its geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
+**Current beach join (11 September):** the dry-land/beach seam in manual capture
+`1789119500-120010` is repaired by a continuous land-side sand tint. Water stays
+on its existing footprint. See the latest section for matched capture evidence.
+
 **Current underwater rendering (10 September):** visibility is now 100m. Raster
 ocean undersides reflect the pre-water scene with a lit local-bed fallback for
 off-screen data. See the newest section for captures and limitations; older 30m
@@ -8320,3 +8324,49 @@ The app must be restarted to load the rebuilt shaders. Changes are enabled in
 normal raster gameplay. No performance improvement is claimed; SSR cost and
 fresh human visual acceptance remain unmeasured. `crates.tar.gz` is untouched;
 terrain.rs changes are only the 100m test expectation, not terrain rendering.
+
+
+## 11 September — dry-land to wave-washed beach colour continuity
+
+User clarified the left side of `manual/1789119500-120010/screenshots/capture-001.png`
+is entirely dry; the right is the wave-washed beach. Reproduced the debug pose
+(camera `[3372422,1978479,844259]`, direction `[-0.485,0.101,0.868]`, 60° actual
+vertical FOV) in `beach_sand_join`, 1280x720, fixed exposure, three captures.
+
+The paths used different albedos at the same sea-level boundary. Submerged
+sediment used full cream sand, while positive land immediately applied the
+38% wet-sand tint. Actual-WGSL regression reproduced a linear red jump from
+0.8688994 to 0.6688266 between sea level and +1cm. Shared `beach_sand_albedo`
+now multiplies the existing wet tint by smoothstep(0,4,height): both sides meet
+at the same cream colour, with continuous slope, while heights >=4m retain the
+old tint exactly. These are **vertical height metres**, not horizontal beach
+width. The wet treatment still fades out by the existing 20m elevation.
+Submerged sand, the beach/ocean ownership masks, geometry, waves, lighting,
+fog and trees are unchanged. No extra draw or texture lookup was introduced.
+
+Matched GPU replays, all assertions pass:
+- Before: `beach_sand_join/1789119818-120571`.
+- After: `beach_sand_join/1789120066-122324`.
+- Reviewed screenshot: after `screenshots/capture-003.png`.
+
+`scripts/check-beach-sand-join.py RUN_DIRECTORY` checks the vertical seam in all
+three captures; it fails before and passes after. In rows 300–699, columns
+652–667, the p95 strongest adjacent RGB step drops 12.0→1.3333, below the 3.0
+regression limit. Each capture gives the same metric. Capture 003's right-hand
+water region (x>=800,y>=300) and top 200 sky rows are byte-identical before/after.
+The new GPU material test fails before and passes after, checking the signed
+height boundary and retention of darker wet sand away from it. Reused the GPU
+optics test harness with an explicit enum; no runtime testing dependency added.
+
+The separate barely-submerged distant-background leak is still outstanding.
+The CPU-wide water-medium flag versus per-pixel water backfaces is a hypothesis,
+not a diagnosed backface/culling failure. This material correction does not
+change that behaviour. `crates.tar.gz` and concurrent terrain/tree code are
+untouched. Final validation results follow below.
+
+Final validation: 509 workspace tests pass with the two previously documented
+terrain source-string failures explicitly skipped (18 other tests ignored).
+The new six-case GPU sand test and all three existing GPU ocean tests pass;
+clippy all targets, formatting/diff checks and release build pass. Normal game
+launch uses the correction; restart to load the rebuilt shader. No new FPS
+measurement or global shoreline/underwater-leak sign-off is claimed.

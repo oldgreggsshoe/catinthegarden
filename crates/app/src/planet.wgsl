@@ -2192,7 +2192,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         );
         // Baked ocean biome colour describes water, not sediment. Use the
         // existing beach palette for the exposed bathymetry instead.
-        let sediment = srgb_to_linear(BEACH_SAND_COLOUR_SRGB);
+        let sediment = beach_sand_albedo(bottom_height);
         let depth_transmittance = exp(
             min(bottom_height, 0.0) * log(50.0) / OCEAN_UNDERWATER_VISIBILITY_METERS,
         );
@@ -2516,10 +2516,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     }
     // The raised shoreline is sand, not an opaque water material. Its colour
     // meets the submerged sediment at zero depth and blends into land inland.
-    let dry_sand = srgb_to_linear(BEACH_SAND_COLOUR_SRGB);
-    let wet_sand = srgb_to_linear(vec3<f32>(0.62, 0.53, 0.35));
-    let wet_band = 1.0 - smoothstep(0.0, 20.0, max(shoreline_height, 0.0));
-    let sand_light = mix(dry_sand, wet_sand, wet_band * 0.38) * terrain_surface_irradiance;
+    let sand_light = beach_sand_albedo(shoreline_height) * terrain_surface_irradiance;
     let surface_color = mix(textured_surface_lighting, sand_light, ocean_coverage);
     let aerial_color = surface_color * terrain_material_transmittance(input.aerial_transmittance, biome_id)
         + terrain_material_in_scatter(input.aerial_in_scatter, biome_id);

@@ -400,6 +400,20 @@ const OCEAN_SHALLOW_COLOUR: vec3<f32> = vec3<f32>(0.16, 0.52, 0.55);
 // added on top of this rather than mixed into it. Raising it flattens all four.
 // Display-space tropical sand, shared by the dry beach and submerged bed.
 const BEACH_SAND_COLOUR_SRGB: vec3<f32> = vec3<f32>(0.94, 0.89, 0.70);
+// Ground material only: neither water ownership nor wave geometry uses this.
+fn beach_sand_albedo(height_meters: f32) -> vec3<f32> {
+    let dry_sand = srgb_to_linear(BEACH_SAND_COLOUR_SRGB);
+    if height_meters <= 0.0 { return dry_sand; }
+    let wet_sand = srgb_to_linear(vec3<f32>(0.62, 0.53, 0.35));
+    // The submerged beach reaches sea level with the full cream palette.
+    // Start the land's darker wet-sand treatment continuously from that same
+    // colour, then retain the existing treatment from 4m inland height onward.
+    // These are height metres, not a fixed horizontal beach width.
+    let wet_band = smoothstep(0.0, 4.0, height_meters)
+        * (1.0 - smoothstep(0.0, 20.0, height_meters));
+    return mix(dry_sand, wet_sand, wet_band * 0.38);
+}
+
 const OCEAN_BODY_COLOUR: vec3<f32> = vec3<f32>(0.005, 0.032, 0.170);
 // Where the transmitted turquoise starts and where it is full, in units of
 // summed crest sharpness (`OceanSurface::crest_sharpness`) -- dimensionless

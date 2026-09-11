@@ -1,8 +1,7 @@
-Implemented and rebuilt—restart the game to load it.
+Fixed—the left side stays dry and now blends softly into the beach.
 
-- Water visibility is now **100m**.
-- Wave undersides reflect the seabed, with an approximate fallback for off-screen scenery.
+At your reproduced pose, the edge step dropped from **12 to 1.3 RGB levels**; the right-hand water stayed unchanged. GPU and screenshot regression checks pass.
 
-[Underwater capture](test-runs/ocean_underside_shallows/1789067360-95007/screenshots/capture-004.png)
+[After capture](test-runs/beach_sand_join/1789120066-122324/screenshots/capture-003.png)
 
-Three GPU replays pass. Committed and pushed, with limitations recorded in the handoff. Added frame cost hasn’t been measured yet.
+Rebuilt, committed and pushed. Restart the game to see it.

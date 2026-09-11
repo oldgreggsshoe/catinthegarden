@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Dry-land/beach colour join: land wet-sand tint now begins continuously from the submerged beach palette, blending over the first 4m of land height. Matched manual-pose replay reduces the seam metric 12→1.33 RGB levels with byte-identical right-hand water/sky. Geometry and water coverage are unchanged.
+
 - Ocean underside reflections: transmitting raster back faces reflect the pre-water scene with a bounded depth trace and a lit local-seabed fallback off-screen. Water visibility is now 100m; no extra draw/target. Detailed off-screen/boat reflection and measured performance remain limitations.
 
 - Spawn-coast shoreward waves enabled for normal launches at user request; `CATINGARDEN_SPAWN_COAST_WAVES=0` disables them. Local 8–16km coverage and previously measured ~5ms cost are unchanged; this is not global coast steering.
