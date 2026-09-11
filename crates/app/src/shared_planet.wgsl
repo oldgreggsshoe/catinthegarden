@@ -1962,15 +1962,15 @@ fn ocean_depth_extinction_weight(water_depth_meters: f32) -> f32 {
 //
 // Expanded about the camera -- its own altitude, the point's rise along the
 // radial, and the curvature drop of the tangent plane -- so every term stays at
-// metre scale. The general form, `altitude_along_ray`, instead subtracts
-// PLANET_RADIUS_METERS from a radius near 6.37e6; in strict binary32 that
-// cancellation costs up to one ulp of the radius, measured at 0.5m. Be honest
-// about what that is worth here: the Quadro evaluates the general form more
-// precisely than strict binary32 and the two agree to under a centimetre on
-// every point the GPU test covers, so this is not repairing an observed fault.
-// It is a form whose accuracy does not depend on the driver being generous.
-// Truncation of the expansion is order distance^3 / radius^2, under a
-// micrometre at the 100m SSR bound.
+// metre scale rather than cancelling two values near the planet radius.
+//
+// Do not oversell that. This radius is 4.0e6, where one f32 ulp is 0.25m, but
+// measured over realistic local offsets the direct `altitude_along_ray` form is
+// only 1.3mm out in strict binary32, and this GPU does better still: both forms
+// pass the GPU test to under a centimetre. Since the depth this feeds is used by
+// smoothstep(2, 30), anything under a decimetre is invisible. So this is a
+// tidiness choice, not a fix -- it just keeps the arithmetic local. Truncation
+// of the expansion is order distance^3 / radius^2, measured at 1e-6 m.
 //
 // `camera_planet_direction_view_altitude.xyz` is already a unit radial in view
 // space -- it is built by `world_to_view` on the Rust side -- so it is dotted

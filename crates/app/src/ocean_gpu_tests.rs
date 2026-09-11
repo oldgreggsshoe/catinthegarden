@@ -413,11 +413,10 @@ fn check_ocean_optics(case: OpticsCase) {
                 [0.0, 5.0, 0.0],
                 [0.0, 0.0, -50.0],
                 [30.0, 0.0, 40.0],
-                // The one row combining rise and horizontal offset. Picked
-                // because strict binary32 puts the `sqrt(r^2 + ..) - R` form a
-                // full ulp of the radius out here (0.5m); this GPU computes it
-                // better than that, so the row does not in fact separate the
-                // two forms. Kept for the mixed-term coverage, not as a claim.
+                // The one row combining rise and horizontal offset. Kept for
+                // that coverage only: it does not separate the expansion from
+                // the direct sqrt form, because at this 4.0e6 radius the direct
+                // form is accurate to about a millimetre anyway.
                 [20.6155281, -40.0, 0.0],
             ];
             let point = points[index];
