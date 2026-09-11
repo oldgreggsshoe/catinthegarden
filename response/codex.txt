@@ -3,3 +3,14 @@ Implemented, validated, committed and pushed.
 Quick handoff: grazing wave undersides now blend 25% physically sampled skylight into the reflected underwater scene, modelling unresolved roughness/microbubbles without changing the real Snell window. Shallow-water extinction now scales with baked water depth: 15% strength through 2m, smoothly reaching the existing full 100m-visibility extinction at 30m. The shallow replay's dark-blue band fell from 51,341 to 13,659 pixels; the deep control remains blue and the steep-up Snell window remains intact.
 
 Validation: 510 workspace tests passed (two documented unrelated tests skipped), all five actual-WGSL ocean GPU tests passed on Quadro M1000M, plus clippy, fmt and release build. Foam attenuation remains the next separate task. `crates.tar.gz` untouched.
+
+Commit: caada2e (`experiment/ocean-wind-sea-spectrum`), pushed. Current tree is clean except untouched `crates.tar.gz`.
+
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:1-4|note=[checkout-specific renderer workflow]
+</citation_entries>
+<rollout_ids>
+01a07103-79ca-7e92-99b9-5da47619e658
+</rollout_ids>
+</oai-mem-citation>
