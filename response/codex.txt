@@ -1,7 +1,3 @@
-Completed the underside foam treatment.
+I’ve paused the seafloor-hole fix to take your FPS request. The new `ocean_seafloor_hole` replay reproduces the polygonal dark region at the captured pose and wave phase; diagnostic passes indicate it is not Snell/sky transmission, but the exact terrain/depth rejection is not yet proven. I recorded that honestly in the handoff.
 
-The underside now uses the exact existing surf/whitecap mask. Aerated crests replace directional sky/reflection with bounded diffuse pale skylight, so bubbles block some sky without becoming opaque paint or a second animated mask.
-
-Matched replay evidence: at the foam-heavy first frame, 441,554 pixels changed materially; as the foam moved away this fell to 3,218, 132, then 4 pixels. The steep-up Snell-window and deep-water final controls were byte-identical, so clear water is unchanged.
-
-Validation: 512 workspace tests passed, all nine actual-WGSL ocean tests passed on Quadro M1000M serially, plus clippy, fmt and release build. A parallel GPU run hit the old Vulkan driver's multi-instance SIGSEGV; the serialized suite passed. No new draw, texture sample or geometry, and no FPS claim. The unrelated dead fog wrappers/fog-colour coordinate issue remain open. `crates.tar.gz` untouched.
+For FPS I’m choosing the underwater sea view. I’ll establish matched immediate-present frame-time baselines, profile/optimize one bounded cost in that path, and report before/after medians plus visual parity. No gain will be claimed until measured.

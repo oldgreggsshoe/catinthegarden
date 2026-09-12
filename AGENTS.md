@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Seafloor-hole diagnosis (unfixed): `ocean_seafloor_hole` replays manual capture 1789133598 at the logged camera-local pose and 31.18s wave phase. Underwater transmission debug shows no direct sky and raw albedo leaves the cream region while the polygonal dark lower region remains, supporting a missing bathymetry/depth path; investigation paused for an FPS request.
+
 - Underwater foam optics: the underside now reuses the exact surface breaking/whitecap coverage, replacing directional Snell/reflection light with bounded diffuse pale skylight wherever aerated crests exist. A matched replay shows the effect moving with the foam while clear frames, the Snell window and deep-water control remain unchanged; no new draw or sample.
 
 - Shallow-water underside optics: grazing wave undersides retain a bounded 25% rough-surface skylight term, while water extinction ramps smoothly from 15% strength below 2m depth to the full 100m-visibility medium at 30m. The shallow replay loses most of its dark-blue distance band while the deep-water and Snell-window controls remain blue; foam attenuation remains separate.

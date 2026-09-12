@@ -8590,3 +8590,25 @@ Workspace: 512 pass, 0 fail, 23 ignored. Clippy all targets, formatting, diff
 checks and release build pass. No FPS claim; the underside adds scalar ALU only,
 with no texture fetch, geometry or draw. The handoff's pre-existing dead fog
 wrappers and fog-colour coordinate-space concern remain open and untouched.
+
+## 12 September — seafloor-hole reproduction (investigation paused)
+
+Manual capture `test-runs/manual/1789133598-154356/screenshots/capture-001.png`
+shows a polygonal dark lower region adjacent to bright cream seabed. The capture
+was on `7ab5955`, camera about 3.7m below datum, at 31.186s wave time. The HUD
+position was rounded/stale relative to the spatial log; the deterministic
+`ocean_seafloor_hole` scenario therefore uses the 31.150s logged world position
+rotated into the local terrain frame, local view direction, local sun direction,
+31.18s wave phase, fixed exposure and 60-degree FOV.
+
+Replay `test-runs/ocean_seafloor_hole/1789203209-188990/screenshots/capture-001.png`
+reproduces the irregular dark polygon at the same part of the field. The
+`underside_transmission` diagnostic `1789203411-189735` makes the upper wave
+ceiling black (TIR), but does not change the cream/dark lower boundary. The
+`raw_albedo` diagnostic `1789203479-189834` leaves the cream/dark lower boundary
+in place. This rules out the Snell lookup as the cause and makes a terrain
+coverage/depth/ownership gap likely; it is not yet proved which condition
+rejects the missing fragments. Do not call it fixed. The user has switched to a
+specific-area FPS request; resume by instrumenting terrain ownership/depth at
+this scenario pose, then establish an image guard that fails on the dark region.
+`crates.tar.gz` was untouched.
