@@ -56,3 +56,14 @@ Seafloor-hole investigation now takes priority over further FPS work. I will tra
 Seafloor status: the mystery now has a measured cause. At the deterministic pose the L18 chunk directly beneath the camera is selected, resolved from a resident L4 tile and submitted; the near-field texture samples -4.1925m, matching the source data. Its logged camera-relative anchor reconstructs to radius R+0.499m because the f32-normalised anchor direction is not actually unit length at a 4,000km scale. The camera is at R-3.6925m, so a -4.2m bed is effectively only about 1cm below the eye and inside the 5cm near plane. In isolated diagnostic builds, making that same chunk's bed 1m lower fills the missing bottom 60 rows; no-cull alone does not. I am replacing the numerical anchor error without moving the real seafloor or breaking shared chunk edges, then will add a regression and GPU capture.
 I’ve isolated the hole to a precision error in the near-bed chunk’s camera-relative anchor. I’ll check the instance layout and shader projection, make the smallest correction that preserves shared edges, then run the seafloor replay and regression tests. I’ll keep the other in-progress edits separate.
 The first replay fills the missing lower seafloor: the old capture has a large flat-blue hole, while the corrected capture has seabed at the same camera pose. I’ve added a screenshot assertion for that point. I’m checking normal ocean and terrain views for seams or other regressions before committing.
+
+Solved the deterministic missing-seafloor hole. The camera-containing chunk was drawn and had correct -4.19m bathymetry, but its rounded f32 anchor placed the bed about 0.50m too high—inside the 5cm near plane. A per-instance radial correction fixes interior geometry while preserving shared edges. In the matched replay, seafloor probe hits rise from 41/81 to 81/81 and 417,794 flat-blue lower-half pixels fall to zero. The new screenshot assertion, 516 workspace tests, clippy, fmt, and waterline/ship/mountain GPU replays pass. Code and handoff are pushed as 4565768; the separate response relay is being pushed now. Claude's optical WIP and crates.tar.gz remain untouched. A fresh manual swim is the remaining visual check.
+
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:1-4|note=[checkout-specific evidence-based renderer workflow]
+</citation_entries>
+<rollout_ids>
+01a07103-79ca-7e92-99b9-5da47619e658
+</rollout_ids>
+</oai-mem-citation>
