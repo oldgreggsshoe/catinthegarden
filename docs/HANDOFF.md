@@ -23,12 +23,18 @@ All of this is **raster only**: the raymarch path never calls
 ray frame still has no underside, no water fog and no seabed. See the newest
 sections; older 30m and flat-dark-underside descriptions below are historical.
 
+**Current seafloor hole (12 September):** the deterministic missing-bed polygon
+was a 0.499m f32 patch-anchor radial error putting near-camera triangles behind
+the near plane. A per-instance correction restores full bed coverage without
+changing source elevations or shared-edge projection. See the newest section;
+manual swim-path acceptance is still pending.
+
 **Current ocean default (10 September):** spawn-coast shoreward waves are now enabled
 for normal launches at the user's request. `CATINGARDEN_SPAWN_COAST_WAVES=0`
 opts out. Earlier opt-in-only notes below are historical. Coverage remains local
 and the measured ~5ms cost is unchanged; global steering is still outstanding.
 
-**Written:** 6 September 2026; header current to 11 September 2026.
+**Written:** 6 September 2026; header current to 12 September 2026.
 
 **How to read this file:** everything below this header is an append-only log of dated sections,
 oldest first. This header is the current state; **the newest work is the last section in the file,
@@ -8648,7 +8654,16 @@ Matched deterministic captures: original `1789203963-190371` versus optimized
 `1789204949-194077` in `ocean_underside_shallows`. Mean per-channel RGB delta
 over the four 1280x720 captures is 0.209, 0.059, 0.034 and 0.033 levels; pixels
 with any channel changing by more than eight levels are 904, 1,173, 670 and
-555 respectively. The clearer Snell-window control (`1789206034-199020` vs
+555 respectively. **Disclosure correction after Claude's review:** these means
+do not imply an unchanged waterline. Independently recomputing the same four
+image differences gives maximum channel changes of 163, 195, 155 and 147 levels,
+and 481, 634, 364 and 360 pixels respectively exceeding 32 levels. Their bounding
+boxes (right/bottom exclusive) are `(2,410,1149,425)`, `(30,403,1279,425)`,
+`(84,415,1265,425)` and `(109,421,1276,425)`. These are coherent high-contrast
+colour changes around the waterline, not random negligible noise. Interpolated
+wave optics are an approximation; vertex geometry itself was not changed.
+Human acceptance must include those localized edge shifts and motion.
+The clearer Snell-window control (`1789206034-199020` vs
 `1789206048-199070`) changes by at most three levels in any channel, and the
 three above-water `ocean_ship_float` captures (`1789206060-199092` vs
 `1789206085-199197`) are byte-identical. Human motion sign-off remains.
@@ -8659,6 +8674,9 @@ Clippy all targets, fmt and diff checks pass. The seafloor hole above remains
 unfixed and is not hidden by this optimization. `crates.tar.gz` untouched.
 
 ## 12 September — terrain-occluded sky candidate; GPU measurement pending
+
+**Status update: measured and retained in the completion section below.** The
+pending state described here is historical, at commit `2429540`.
 
 User requested another independently measured FPS improvement. Chosen area:
 full-screen sky shading hidden behind opaque terrain. `main.rs` previously drew
@@ -8698,3 +8716,129 @@ Next steps once the live game is closed:
 
 No unrelated terrain/tree work or `crates.tar.gz` was touched. The prior seafloor
 hole remains open independently of this candidate.
+
+## 12 September — sky-overdraw measurement complete; candidate retained
+
+Baseline `201601a` and candidate `2429540` were rebuilt/saved separately as
+`target/release/catinthegarden-sky-before` and `-after`. The change is confined
+to raster draw order, the sky's depth comparison and invariant vertex position;
+no atmosphere sampling, image resolution or terrain/ocean quality reduction.
+
+Twenty interleaved `landing_site_ground_detail` pairs on Quadro M1000M,
+1280x720, Immediate present: baseline first on odd pairs, candidate first on even
+pairs. Each run contributes its median of 13 spatial-frame samples from 2s
+through 8s. All 20 pairs are included, not just the quieter later runs:
+
+- Median frame time **45.85065 -> 45.29160 ms**.
+- Reciprocal median FPS **21.80994 -> 22.07915 (+1.234%)**.
+- 18/20 paired medians improve; paired mean saving **0.55407ms**.
+- 100,000 paired bootstrap resamples, seed 9, give **0.08714-0.97178ms**
+  as the descriptive 95% interval for the mean paired saving.
+- The first ten-pair interval included zero, so no gain was claimed at that
+  point. A final ten-pair confirmation was added with unchanged binaries and
+  the complete twenty-pair result retained. This is an exploratory benchmark,
+  not a preregistered significance test or a whole-game FPS claim.
+- Initial `stand_on_ground` screening (two pairs) was noisy/inconclusive; its
+  five matched captures were nevertheless identical. Ground-detail isolates
+  a predominantly terrain-filled view where the removed sky overdraw applies.
+
+Evidence and rerun scripts are under
+`test-runs/performance/sky-occlusion-201601a/`: raw `landing_site_ground_detail.jsonl`,
+`summary.json`, `parity-audit.json`, `binaries.sha256`, `benchmark.py`, and
+`controls.py`. Timed runs span `1789225519-213056` to `1789226648-214907`.
+The audit compares all 40 ground capture pairs byte-for-byte in decoded pixels:
+**zero differences**. All settled camera position, FOV, draw/chunk/triangle
+counts and exposure fields also match between paired runs. The prior underside
+approximation has localized differences; this optimization does not repeat
+that trade-off.
+
+Additional passed, pixel-identical visual controls:
+
+| Control | Before run | After run | Captures |
+|---|---|---|---:|
+| Ocean / horizon | `ocean_ship_float/1789226719-215068` | `1789226744-215096` | 3 |
+| Airless moon | `moon_ground_detail/1789226768-215144` | `1789226792-215168` | 2 |
+| Sky-only | `limb_atmosphere/1789226817-215291` | `1789226824-215342` | 1 |
+| Orbital limb, 19Mm to 10Mm | `orbital_atmosphere_continuity/1789227340-216897` | `1789227372-217017` | 12 |
+| Flat terrain | `mountain_ground/1789227396-217079` | `1789227408-217094` | 1 |
+
+The initial desktop limb comparison (`1789226704-215012` vs
+`1789226712-215048`) was **not a matched control**: logs show FOV 25.7178 vs
+45 degrees, explaining its large full-frame image changes. That scenario does
+not pin FOV, and live wheel input can still change it. Do not interpret those
+images as either parity or a rendering regression. The replacement orbital
+scenario explicitly pins 60 degrees, and it and the flat control were run on
+an isolated Xvfb display to prevent desktop input from contaminating them.
+They still use the Quadro GPU; **all reported timing measurements remain on
+DISPLAY=:0**, not Xvfb. Early seafloor desktop controls were also interrupted
+(manifest passed=null, no captures) and provide no validation.
+
+The depth-zero concern is addressed both by the orbital controls and the
+pipeline contract: the opaque terrain pipeline writes depth with strict
+`Greater` against reverse-Z clear 0, so a fragment at exactly zero cannot have
+written an opaque colour there. Shoreline blending does not write depth and
+runs later. The sky does not write depth; all optical snapshot ordering remains
+intact. The ray path is unchanged.
+
+The failing-before/passing-after ordering/depth regression and the full 513-test
+workspace suite, clippy, fmt, diff checks and candidate release build passed at
+`2429540`. No further renderer code was added during measurement. Existing
+`crates.tar.gz` and concurrent terrain diagnostic edits are not part of this
+change.
+
+### Claude review: seafloor coverage evidence and underside disclosure
+
+The earlier underwater FPS report now includes maximum channel changes,
+threshold counts and waterline bounding boxes, independently recomputed from
+the original image pairs (see its corrected section above). Small averages do
+not establish unchanged silhouettes or motion.
+
+Claude's `response/claude.txt` reports a useful **coverage**, rather than fragment
+rejection, diagnostic for `ocean_seafloor_hole`: colouring terrain before every
+discard yields 21.8% terrain, 29.0% underside and 49.2% untouched background.
+The missing region is the nearest bed, not the far bed. Claude also reports
+ruling out the 5cm near plane and the existing below-datum horizon special case;
+the 1024-leaf budget experiment did not complete, so that hypothesis remains
+untested. These layer-colour experiments were not rerun here and remain
+collaborator evidence, not newly measured Codex results. Prioritize near-field
+coverage/frustum selection and the bounded budget experiment when resuming the
+hole fix; do not repeat a search for a fragment discard as though it were the
+leading explanation. The hole is still not claimed fixed by either FPS pass.
+
+## 12 September — deterministic seafloor hole traced to rounded patch anchor and repaired
+
+`ocean_seafloor_hole` at 31.18s selects and submits the camera-containing
+PositiveX L18 node `(98243, 207998)`, with its L4 source resident and its
+near-field window sampling **-4.192524m** at the eye (direct source
+**-4.192509m**). The missing bottom was not a skipped node, an all-land ocean
+cull, a fragment discard, or absent bathymetry. The ordinary CPU surface probe
+clamps submerged macro to sea level; its misleading sea-level clearance was not
+the raster bed height.
+
+The node's f32-normalised anchor direction, converted back to f64 and multiplied
+by the 4,000km radius for its camera-relative origin, has radius **R+0.499m**.
+The eye is R-3.6925m. A -4.2m bed therefore reaches within about 1cm of the
+eye, behind the 5cm near plane. Controlled probe builds showed that no-cull
+alone left most of the hole, while lowering only the camera-containing chunk
+from -4.2m to -5.2m filled the bottom 60 rows. The latter was diagnostic, not
+retained terrain editing. This supersedes the earlier near-plane dismissal:
+the nominal camera near plane was correct, but the geometry was displaced into it.
+
+The repair uploads one f32 per instance: the f64-measured radial excess of its
+anchor. The high-precision interior patch projection subtracts that excess;
+the global shared-edge projection is unchanged, where anchor subtraction
+already cancels exactly. Source elevations, near plane, chunk selection, and
+ocean optics are unchanged. At the matched pose the center lower sample changes
+from flat water `(2,35,92)` to sediment `(227,220,192)`, the lower half's
+**417,794 exact flat-water pixels become zero**, and the GPU surface probe goes
+**41/81 to 81/81** hits. The scenario now asserts the lower sediment sample, so
+the archived old capture would fail its red-minus-blue threshold; the repaired
+replay `test-runs/ocean_seafloor_hole/1789246377-251137` passes.
+
+The `ocean_waterline_flat`, `ocean_ship_float`, and `mountain_ground` GPU replays
+pass, as do 516 workspace tests, clippy with warnings denied, and fmt check.
+The waterline replay is the existing shared-edge seam control. This establishes
+the deterministic hole fix, not that every camera pose or visual swim path has
+been accepted; ask for a fresh manual underwater pass. Claude's concurrent
+`planet.wgsl`/`shared_planet.wgsl`/`terrain.rs` optical work and unrelated
+`crates.tar.gz` remain unstaged by this fix.

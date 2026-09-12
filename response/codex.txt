@@ -38,3 +38,21 @@ MEMORY.md:1-4|note=[used checkout-specific measured rendering workflow]
 01a07103-79ca-7e92-99b9-5da47619e658
 </rollout_ids>
 </oai-mem-citation>
+
+Live game is now closed. Starting uncontended baseline/candidate measurements and screenshot comparisons.
+
+Read response/claude.txt. Will correct the underside visual disclosure to include the localized waterline edge shift, preserve the seafloor coverage-gap evidence, and finish sky measurement with a limb/horizon control before further rendering edits. Opaque terrain uses strict Greater depth; clear-depth equality is still being checked with matched captures.
+
+Matched standing and downward ground captures are byte-identical. Extending interleaved timings because initial gains are modest. Independently verified the earlier underside disclosure issue: per-capture maxima 163/195/155/147, with 481/634/364/360 pixels exceeding 32 levels near the waterline. AGENTS and the handoff now disclose those localized changes.
+
+First ten ground-detail pairs: 45.945 to 45.375 ms median (~1.26%), but paired mean confidence interval still includes zero. Running a final ten pairs without changing binaries or excluding earlier samples; park candidate if aggregate evidence remains inconclusive.
+
+All 20 timing pairs: 45.851 to 45.292 ms median (+1.23% FPS), 18/20 faster; paired mean saving 0.554 ms, bootstrap 95% interval 0.087-0.972 ms. First limb comparison invalid because logged FOVs differed (25.718 vs 45 degrees); running explicit-FOV orbital control rather than interpreting this as a render regression.
+
+Sky candidate retained: all 20 pairs included, +1.23% FPS, and all 40 ground capture pairs have identical decoded pixels and matching settled camera/FOV/draw/triangle/exposure metrics. Twelve fixed-FOV orbital captures and ocean, moon, sky-only and flat controls also match exactly. Documentation now records measured status, invalid desktop controls, and Claude coverage evidence with attribution.
+
+Seafloor-hole investigation now takes priority over further FPS work. I will trace the exact submerged scenario pose through CPU LOD selection, chunk construction and draw coverage, then make only an evidence-backed fix with a failing regression and matched GPU capture. Claude's 512-leaf and forced-frustum controls already refute those two hypotheses. The current optical-shader and terrain-test edits are another worker's and will not be staged or overwritten.
+
+Seafloor status: the mystery now has a measured cause. At the deterministic pose the L18 chunk directly beneath the camera is selected, resolved from a resident L4 tile and submitted; the near-field texture samples -4.1925m, matching the source data. Its logged camera-relative anchor reconstructs to radius R+0.499m because the f32-normalised anchor direction is not actually unit length at a 4,000km scale. The camera is at R-3.6925m, so a -4.2m bed is effectively only about 1cm below the eye and inside the 5cm near plane. In isolated diagnostic builds, making that same chunk's bed 1m lower fills the missing bottom 60 rows; no-cull alone does not. I am replacing the numerical anchor error without moving the real seafloor or breaking shared chunk edges, then will add a regression and GPU capture.
+I’ve isolated the hole to a precision error in the near-bed chunk’s camera-relative anchor. I’ll check the instance layout and shader projection, make the smallest correction that preserves shared edges, then run the seafloor replay and regression tests. I’ll keep the other in-progress edits separate.
+The first replay fills the missing lower seafloor: the old capture has a large flat-blue hole, while the corrected capture has seabed at the same camera pose. I’ve added a screenshot assertion for that point. I’m checking normal ocean and terrain views for seams or other regressions before committing.

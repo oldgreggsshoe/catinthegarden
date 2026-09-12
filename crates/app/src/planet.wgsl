@@ -51,6 +51,7 @@ struct VertexInput {
     @location(9) edge_stitch: u32,
     @location(10) node_uv_origin_span: vec4<f32>,
     @location(11) node_anchor_direction_cube_length: vec4<f32>,
+    @location(12) anchor_radius_correction_meters: f32,
 }
 
 struct VertexOutput {
@@ -689,9 +690,13 @@ fn project_patch_vertex(input: VertexInput) -> PatchVertex {
     // Evaluate the tiny direction difference in an anchor-local form. Direct
     // subtraction of two absolute f32 directions loses most of an L18
     // triangle to cancellation near cube-face UV +/-1.
+    // The CPU camera-relative anchor uses this rounded f32 direction at
+    // planet radius. Remove its radial length error in the interior; the
+    // shared-edge path below already cancels the anchor exactly.
     var anchor_relative_position = (
         tangent / surface_cube_length + anchor_direction * radial_scale
-    ) * PLANET_RADIUS_METERS;
+    ) * PLANET_RADIUS_METERS
+        - anchor_direction * input.anchor_radius_correction_meters;
     if tile_uv.x <= 1.0e-5 || tile_uv.x >= 1.0 - 1.0e-5
         || tile_uv.y <= 1.0e-5 || tile_uv.y >= 1.0 - 1.0e-5 {
         // Evaluate shared boundaries from their global dyadic face UV. Both

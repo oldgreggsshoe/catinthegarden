@@ -597,6 +597,7 @@ struct TerrainInstance {
     edge_stitch: u32,
     node_uv_origin_span: [f32; 4],
     node_anchor_direction_cube_length: [f32; 4],
+    anchor_radius_correction_meters: f32,
 }
 
 #[repr(C)]
@@ -628,7 +629,7 @@ impl TerrainSettings {
 }
 
 impl TerrainInstance {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
+    const ATTRIBUTES: [wgpu::VertexAttribute; 9] = wgpu::vertex_attr_array![
         4 => Float32x3,
         5 => Float32x2,
         6 => Float32x2,
@@ -636,7 +637,8 @@ impl TerrainInstance {
         8 => Float32x2,
         9 => Uint32,
         10 => Float32x4,
-        11 => Float32x4
+        11 => Float32x4,
+        12 => Float32
     ];
 
     fn layout() -> wgpu::VertexBufferLayout<'static> {
@@ -2643,6 +2645,10 @@ impl TerrainRenderer {
                 f64::from(anchor_direction.y),
                 f64::from(anchor_direction.z),
             ) * planet_radius_meters();
+            // The f32 anchor is not exactly unit length. At planet scale its
+            // radial rounding error can exceed the camera's near-plane depth.
+            let anchor_radius_correction_meters =
+                (anchor_world.length() - planet_radius_meters()) as f32;
             let anchor_u = (u_min + u_max) * 0.5;
             let anchor_v = (v_min + v_max) * 0.5;
             let edge_stitch = if render_node.active {
@@ -2742,6 +2748,7 @@ impl TerrainRenderer {
                         anchor_direction.z,
                         (1.0 + anchor_u * anchor_u + anchor_v * anchor_v).sqrt() as f32,
                     ],
+                    anchor_radius_correction_meters,
                 },
                 may_contain_ocean,
             ));
@@ -6134,8 +6141,38 @@ mod tests {
         assert!(shader.contains("fn lod_morphed_tile_uv("));
         assert!(shader.contains("@location(10) node_uv_origin_span: vec4<f32>"));
         assert!(shader.contains("@location(11) node_anchor_direction_cube_length: vec4<f32>"));
+        assert!(shader.contains("@location(12) anchor_radius_correction_meters: f32"));
         assert!(shader.contains("let stride = 1u << min(level_delta, 2u);"));
         assert!(shader.contains("requested_level - min(requested_level, level_delta)"));
+    }
+
+    #[test]
+    fn rounded_patch_anchor_does_not_raise_nearby_seabed_into_near_plane() {
+        let node = QuadtreeNode {
+            face: CubeFace::PositiveX.index(),
+            level: 18,
+            x: 98_243,
+            y: 207_998,
+        };
+        let direction = node.center_direction().as_vec3().normalize();
+        let anchor = DVec3::new(
+            f64::from(direction.x),
+            f64::from(direction.y),
+            f64::from(direction.z),
+        );
+        let radius = planet_radius_meters();
+        let uncorrected = anchor * radius;
+        let correction = (uncorrected.length() - radius) as f32;
+        let corrected = uncorrected - anchor * f64::from(correction);
+
+        // The reproduced L18 chunk was roughly half a metre too high before
+        // correction, while the swimming eye was only 0.5 m above its bed.
+        assert!((uncorrected.length() - radius).abs() > 0.1);
+        assert!((corrected.length() - radius).abs() < 0.01);
+        // Shared edges still use the uncorrected anchor cancellation path.
+        let edge_direction = node.center_direction();
+        let edge_relative = (edge_direction - anchor) * radius;
+        assert!((uncorrected + edge_relative - edge_direction * radius).length() < 1.0e-6);
     }
 
     #[test]
