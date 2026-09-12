@@ -123,6 +123,12 @@ struct OceanVertexOutput {
     // triangles the LOD morph produces, and renders a flat sea as a field of
     // tents locked to the tessellation.
     @location(7) @interpolate(flat) face_normal: vec3<f32>,
+    // The underside reuses the vertex wave evaluation instead of tracing the
+    // same twenty waves again for every covered pixel. The top face retains
+    // its per-fragment wave normals and glints.
+    @location(8) smooth_normal: vec3<f32>,
+    @location(9) ripple_slope: vec3<f32>,
+    @location(10) vertical_and_breaking: vec2<f32>,
 }
 
 fn uses_outmap(terrain_info: u32) -> bool {
@@ -931,6 +937,9 @@ fn vs_ocean(input: VertexInput) -> OceanVertexOutput {
         terrain_height_hint,
         projected.tile_uv,
         surface.normal,
+        surface.normal,
+        surface.ripple_slope,
+        vec2<f32>(surface.vertical_displacement, surface.breaking_ratio),
     );
 }
 
@@ -1990,28 +1999,26 @@ fn ocean_underside_fragment(input: OceanVertexOutput) -> vec4<f32> {
     if !is_open_ocean_surface(outmap, macro_height_meters, biome_id) {
         discard;
     }
-    let surface = ocean_surface(
-        direction,
-        camera.projection.z,
-        length(input.camera_relative_view_position),
-        max(-macro_height_meters, 0.0),
-    );
+    let normal = normalize(input.smooth_normal);
+    let ripple_slope = input.ripple_slope;
+    let vertical_displacement = input.vertical_and_breaking.x;
+    let breaking_ratio = input.vertical_and_breaking.y;
     let foam = ocean_foam_coverage(
-        max(-macro_height_meters, 0.0), surface.vertical_displacement,
-        surface.breaking_ratio, surface.normal, direction,
+        max(-macro_height_meters, 0.0), vertical_displacement,
+        breaking_ratio, normal, direction,
     );
     return vec4<f32>(
         ocean_depth_aware_distance_fog(
             ocean_underside_colour(
-                surface.normal,
-                surface.ripple_slope,
+                normal,
+                ripple_slope,
                 direction,
                 input.camera_relative_view_position,
                 vec4<f32>(0.0),
                 foam,
             ),
             input.camera_relative_view_position,
-            max(surface.vertical_displacement - macro_height_meters, 0.0),
+            max(vertical_displacement - macro_height_meters, 0.0),
         ),
         1.0,
     );
@@ -2051,17 +2058,15 @@ fn ocean_underside_reflecting_fragment(input: OceanVertexOutput) -> vec4<f32> {
     if !is_open_ocean_surface(outmap, macro_height_meters, biome_id) {
         discard;
     }
-    let surface = ocean_surface(
-        direction,
-        camera.projection.z,
-        length(input.camera_relative_view_position),
-        max(-macro_height_meters, 0.0),
-    );
-    let normal_view = normalize(planet_to_view(normalize(surface.normal - surface.ripple_slope)));
-    let water_depth_meters = max(surface.vertical_displacement - macro_height_meters, 0.0);
+    let normal = normalize(input.smooth_normal);
+    let ripple_slope = input.ripple_slope;
+    let vertical_displacement = input.vertical_and_breaking.x;
+    let breaking_ratio = input.vertical_and_breaking.y;
+    let normal_view = normalize(planet_to_view(normalize(normal - ripple_slope)));
+    let water_depth_meters = max(vertical_displacement - macro_height_meters, 0.0);
     let foam = ocean_foam_coverage(
-        max(-macro_height_meters, 0.0), surface.vertical_displacement,
-        surface.breaking_ratio, surface.normal, direction,
+        max(-macro_height_meters, 0.0), vertical_displacement,
+        breaking_ratio, normal, direction,
     );
     let reflected = ocean_scene_reflection(
         input.camera_relative_view_position, normal_view, water_depth_meters,
@@ -2070,12 +2075,12 @@ fn ocean_underside_reflecting_fragment(input: OceanVertexOutput) -> vec4<f32> {
         return vec4<f32>(vec3<f32>(reflected.w), 1.0);
     }
     let fallback = ocean_seabed_reflection_fallback(direction, normal_view,
-        input.camera_relative_view_position, surface.vertical_displacement, macro_height_meters);
+        input.camera_relative_view_position, vertical_displacement, macro_height_meters);
     return vec4<f32>(
         ocean_depth_aware_distance_fog(
             ocean_underside_colour(
-                surface.normal,
-                surface.ripple_slope,
+                normal,
+                ripple_slope,
                 direction,
                 input.camera_relative_view_position,
                 vec4<f32>(mix(fallback, reflected.rgb, reflected.w), 1.0),

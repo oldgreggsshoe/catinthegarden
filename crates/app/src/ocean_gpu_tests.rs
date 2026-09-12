@@ -595,6 +595,8 @@ fn underside_reflection_is_bounded_and_confined_to_snapshot_pass() {
         .next()
         .unwrap();
     assert!(legacy.contains("let foam = ocean_foam_coverage("));
+    assert!(legacy.contains("input.smooth_normal"));
+    assert!(!legacy.contains("let surface = ocean_surface("));
     assert!(legacy.contains("vec4<f32>(0.0),\n                foam,"));
     assert!(!legacy.contains("ocean_scene_reflection("));
     let transmitting = shader
@@ -605,6 +607,8 @@ fn underside_reflection_is_bounded_and_confined_to_snapshot_pass() {
         .next()
         .unwrap();
     assert!(transmitting.contains("let foam = ocean_foam_coverage("));
+    assert!(transmitting.contains("input.smooth_normal"));
+    assert!(!transmitting.contains("let surface = ocean_surface("));
     assert!(transmitting.contains(
         "vec4<f32>(mix(fallback, reflected.rgb, reflected.w), 1.0),\n                foam,"
     ));

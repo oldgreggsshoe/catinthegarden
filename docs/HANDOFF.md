@@ -8612,3 +8612,48 @@ rejects the missing fragments. Do not call it fixed. The user has switched to a
 specific-area FPS request; resume by instrumenting terrain ownership/depth at
 this scenario pose, then establish an image guard that fails on the dark region.
 `crates.tar.gz` was untouched.
+
+## 12 September — measured underwater ocean FPS improvement
+
+The bounded area is the raster ocean **underside**, not the top face or CPU
+buoyancy. `vs_ocean` already evaluates the same 17 global and three ripple waves
+to place each sea vertex. Its smooth normal, ripple slope, vertical displacement
+and breaking ratio now interpolate into the two underside fragment paths instead
+of recomputing the entire wave spectrum at each covered pixel. The legacy flat
+face normal remains flat for the low-poly presentation; top-face per-pixel
+lighting and glints still use their original wave evaluation. A source regression
+guards against accidentally restoring per-fragment wave evaluation below water.
+
+Performance control: release binaries built from `2efc5f6` and the optimized
+source, Quadro M1000M, 1280x720, `ocean_underside_shallows`, Immediate present,
+fixed exposure/time/camera. Ten interleaved pairs (baseline first for pairs 1-5,
+optimized first for 6-10); each result is the median of seven logged `spatial
+frame` samples with simulation time >=1s. All runs and captures are retained in
+`test-runs/ocean_underside_shallows/1789205328-195137` through
+`1789205670-196145`. Per-run medians, in pair order, were:
+
+| ms | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Baseline | 37.130 | 33.792 | 35.969 | 37.229 | 36.268 | 35.859 | 36.352 | 36.958 | 35.744 | 37.332 |
+| Optimized | 35.009 | 33.841 | 34.509 | 33.946 | 34.420 | 34.384 | 34.482 | 32.984 | 32.665 | 39.225 |
+
+Medians: **36.31 -> 34.40 ms**, or **27.54 -> 29.07 FPS (+5.5%)**. Eight of
+ten pairs improve. Mean paired saving is 1.72 ms; a 100,000-resample paired
+bootstrap gives 0.66-2.64 ms as its 95% interval. This is a specific-view
+improvement, not a whole-game FPS claim. Earlier 24->16 SSR steps, 6->3 SSR
+refinement and replacing cubic `pow` with multiplication did not give a
+convincing gain; all three trials were reverted.
+
+Matched deterministic captures: original `1789203963-190371` versus optimized
+`1789204949-194077` in `ocean_underside_shallows`. Mean per-channel RGB delta
+over the four 1280x720 captures is 0.209, 0.059, 0.034 and 0.033 levels; pixels
+with any channel changing by more than eight levels are 904, 1,173, 670 and
+555 respectively. The clearer Snell-window control (`1789206034-199020` vs
+`1789206048-199070`) changes by at most three levels in any channel, and the
+three above-water `ocean_ship_float` captures (`1789206060-199092` vs
+`1789206085-199197`) are byte-identical. Human motion sign-off remains.
+
+Workspace: 512 passed, 23 ignored; nine serialized actual-WGSL Quadro ocean
+tests passed (normal parity maximum 0.000020584, height error 0.00016535m).
+Clippy all targets, fmt and diff checks pass. The seafloor hole above remains
+unfixed and is not hidden by this optimization. `crates.tar.gz` untouched.

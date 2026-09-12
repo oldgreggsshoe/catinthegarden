@@ -1,3 +1,21 @@
-I’ve paused the seafloor-hole fix to take your FPS request. The new `ocean_seafloor_hole` replay reproduces the polygonal dark region at the captured pose and wave phase; diagnostic passes indicate it is not Snell/sky transmission, but the exact terrain/depth rejection is not yet proven. I recorded that honestly in the handoff.
+Improved **underwater ocean FPS** by reusing wave values already computed at sea vertices instead of recalculating 20 waves for every underside pixel.
 
-For FPS I’m choosing the underwater sea view. I’ll establish matched immediate-present frame-time baselines, profile/optimize one bounded cost in that path, and report before/after medians plus visual parity. No gain will be claimed until measured.
+| Matched Quadro M1000M, 1280×720, Immediate mode | Before | After |
+|---|---:|---:|
+| Median frame time (10 interleaved pairs) | 36.31 ms | 34.40 ms |
+| Equivalent FPS | 27.54 | 29.07 |
+
+**Gain: 5.5% FPS.** Eight of ten pairs improved; mean paired saving was 1.72 ms (95% bootstrap interval: 0.66–2.64 ms). This is for the tested underwater view, not a whole-game claim.
+
+Visual control: four matched captures differ by at most 0.21 RGB levels per channel on average; the above-water boat captures are byte-identical. Before: `test-runs/ocean_underside_shallows/1789203963-190371/screenshots/capture-001.png`; after: `test-runs/ocean_underside_shallows/1789204949-194077/screenshots/capture-001.png`.
+
+Validation: 512 workspace tests, nine serialized Quadro WGSL tests, clippy, formatting and release build pass. The previously reported seafloor hole remains unfixed.
+
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:1-4|note=[used evidence-based ocean performance workflow]
+</citation_entries>
+<rollout_ids>
+01a07103-79ca-7e92-99b9-5da47619e658
+</rollout_ids>
+</oai-mem-citation>
