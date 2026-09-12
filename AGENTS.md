@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Sky-overdraw candidate (performance unverified): raster opaque ground now draws before the background sky, whose reverse-Z Equal test shades only untouched depth-zero pixels; water snapshots still include sky and the ray path is unchanged. A failing-before ordering/depth regression, 513 workspace tests, clippy and fmt pass. Release baseline/candidate binaries are preserved; matched GPU captures and timing await closure of the live game. Do not claim an FPS gain yet.
+
 - Underwater ocean FPS pass: the underside reuses interpolated vertex-evaluated wave normal, ripple slope, crest and height instead of evaluating all 20 waves again per pixel; the top face and CPU buoyancy are unchanged. Ten interleaved Quadro M1000M 1280x720 Immediate-present pairs improve median 36.31 to 34.40 ms (27.54 to 29.07 FPS, +5.5%); four deterministic captures differ by at most 0.21 RGB levels per channel on average. 512 workspace tests, nine serialized actual-WGSL GPU tests, clippy and fmt pass; human motion sign-off remains.
 
 - Seafloor-hole diagnosis (unfixed): `ocean_seafloor_hole` replays manual capture 1789133598 at the logged camera-local pose and 31.18s wave phase. Underwater transmission debug shows no direct sky and raw albedo leaves the cream region while the polygonal dark lower region remains, supporting a missing bathymetry/depth path; investigation paused for an FPS request.

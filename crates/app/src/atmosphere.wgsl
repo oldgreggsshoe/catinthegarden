@@ -35,7 +35,7 @@ var sky_view_lut: texture_2d<f32>;
 var sky_view_sampler: sampler;
 
 struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
+    @invariant @builtin(position) position: vec4<f32>,
     @location(0) ndc: vec2<f32>,
 }
 

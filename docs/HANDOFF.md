@@ -8657,3 +8657,44 @@ Workspace: 512 passed, 23 ignored; nine serialized actual-WGSL Quadro ocean
 tests passed (normal parity maximum 0.000020584, height error 0.00016535m).
 Clippy all targets, fmt and diff checks pass. The seafloor hole above remains
 unfixed and is not hidden by this optimization. `crates.tar.gz` untouched.
+
+## 12 September — terrain-occluded sky candidate; GPU measurement pending
+
+User requested another independently measured FPS improvement. Chosen area:
+full-screen sky shading hidden behind opaque terrain. `main.rs` previously drew
+sky first with an Always depth test, then replaced those pixels with ground.
+The candidate moves the raster sky draw after opaque ground (still before the
+water-scene snapshot), uses Equal against reverse-Z clear depth 0 without writing
+depth, and marks the sky vertex position invariant. No sky integration, resolution,
+material, geometry or sample count changes. Sky-only mode and the airless
+background still draw; foveated-ray ordering is unchanged. Two-body replay still
+draws its sky against freshly cleared depth, so the new comparison accepts it.
+
+`raster_sky_only_shades_background_after_opaque_ground` fails on the original
+ordering and passes on the candidate, guarding both ordering and depth state.
+Workspace: 513 passed, 23 ignored; clippy all targets, fmt, diff checks and release
+build pass. No matched GPU screenshots or FPS measurements have been taken:
+a live game was running throughout (later restarted with `--body moon`), and the
+user was asked to close it for an uncontended comparison. No FPS improvement or
+visual parity claim is justified yet; retain this only if the measurements pass.
+
+Baseline is `201601a`. Preserved, independently named release binaries in the
+same worktree: `target/release/catinthegarden-sky-before` (baseline) and
+`target/release/catinthegarden-sky-after` (candidate). The main release executable
+is also the candidate. No separate checkout shares the target directory.
+
+Next steps once the live game is closed:
+1. `python3 /tmp/catingard-sky-benchmark-201601a.py stand_on_ground 2` runs two
+   interleaved Quadro Immediate-present pairs, sampling spatial frames from 2s.
+   The harness refuses to run while the live app exists. It appends raw samples,
+   medians and run paths under `test-runs/performance/sky-occlusion-201601a/`.
+2. Check the captures against one another (expected identical); if promising,
+   run another eight pairs with the same command/count 8. Do not compile or run
+   another GPU process during measurements. Exposure is live in this scenario;
+   use fixed-exposure `mountain_ground` and `ocean_ship_float` for additional
+   exact-pixel controls, plus a sky-only/airless control for missing backgrounds.
+3. Keep only a convincing measured gain without a visual regression; otherwise
+   revert this bounded candidate. Update these pending notes with honest results.
+
+No unrelated terrain/tree work or `crates.tar.gz` was touched. The prior seafloor
+hole remains open independently of this candidate.

@@ -19,3 +19,22 @@ MEMORY.md:1-4|note=[used evidence-based ocean performance workflow]
 01a07103-79ca-7e92-99b9-5da47619e658
 </rollout_ids>
 </oai-mem-citation>
+
+--- New FPS task ---
+Chosen target: sky hidden behind opaque terrain. Inspect main.rs raster pass order, atmosphere.rs depth state and atmosphere.wgsl. Minimal change: draw opaque ground first and shade only clear-depth background; validate with matched captures and interleaved Immediate-present runs. Waiting for the live game to close before benchmarking.
+
+Sky optimization implemented; 513 workspace tests, clippy and formatting pass. Baseline/candidate binaries are target/release/catinthegarden-sky-before and -after. Awaiting closure of the live game before uncontended GPU measurement.
+
+--- Current response ---
+I’ve implemented a second candidate: avoid shading sky pixels that opaque terrain will hide. It changes no sky detail or resolution, and all 513 tests pass.
+
+I need you to close the running game (currently the moon instance) before I can give reliable before/after FPS figures. Both release binaries are ready; no gain claimed yet.
+
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:1-4|note=[used checkout-specific measured rendering workflow]
+</citation_entries>
+<rollout_ids>
+01a07103-79ca-7e92-99b9-5da47619e658
+</rollout_ids>
+</oai-mem-citation>

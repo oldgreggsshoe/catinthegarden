@@ -3843,12 +3843,6 @@ impl State {
                 multiview_mask: None,
             });
             if !solid_color_screen && self.render_path == RenderPath::Raster {
-                // The pass still runs on an airless body: it paints the
-                // background, and skipping it leaves the cleared buffer showing
-                // as grey daylight where space should be. What changes is what
-                // it computes -- `BODY_HAS_ATMOSPHERE` makes it vacuum.
-                self.atmosphere
-                    .draw(&mut render_pass, &self.camera_bind_group);
                 if self.render_debug_mode != planet::RenderDebugMode::SkyOnly {
                     if self.render_debug_mode == planet::RenderDebugMode::FlatTriangles {
                         self.terrain.draw(
@@ -3864,6 +3858,16 @@ impl State {
                         );
                     }
                 }
+                // Opaque ground populates reverse-Z first, so the background
+                // sky only shades pixels still at the clear depth of zero.
+                // Keep this before the water snapshot: transmission needs sky
+                // behind the sea wherever no opaque ground was drawn.
+                // The pass still runs on an airless body: it paints the
+                // background, and skipping it leaves the cleared buffer showing
+                // as grey daylight where space should be. What changes is what
+                // it computes -- `BODY_HAS_ATMOSPHERE` makes it vacuum.
+                self.atmosphere
+                    .draw(&mut render_pass, &self.camera_bind_group);
             } else if !solid_color_screen
                 && self.render_path == RenderPath::FoveatedRay
                 && (self.render_debug_mode != planet::RenderDebugMode::Final || !use_foveated_warp)
@@ -5310,6 +5314,37 @@ mod tests {
             camera < upload,
             "the ship transform must be uploaded after the camera is advanced",
         );
+    }
+
+    #[test]
+    fn raster_sky_only_shades_background_after_opaque_ground() {
+        let source = include_str!("main.rs");
+        let raster_pass = source
+            .split("label: Some(\"cube-sphere pass\")")
+            .nth(1)
+            .unwrap()
+            .split("self.terrain.snapshot_water_scene(")
+            .next()
+            .unwrap();
+        let ground = raster_pass.find("self.terrain.draw_ground(").unwrap();
+        let sky = raster_pass
+            .find(".draw(&mut render_pass, &self.camera_bind_group)")
+            .unwrap();
+        assert!(
+            ground < sky,
+            "opaque ground must populate depth before the sky draw"
+        );
+
+        let atmosphere = include_str!("atmosphere.rs");
+        let pipeline = atmosphere
+            .split("label: Some(\"physical LUT atmosphere pipeline\")")
+            .nth(1)
+            .unwrap()
+            .split("let mut encoder")
+            .next()
+            .unwrap();
+        assert!(pipeline.contains("depth_compare: Some(wgpu::CompareFunction::Equal)"));
+        assert!(pipeline.contains("depth_write_enabled: Some(false)"));
     }
 
     #[test]
