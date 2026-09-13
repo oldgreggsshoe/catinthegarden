@@ -38,6 +38,20 @@ const WATER_BUOYANCY_MAX_RESTORING_ACCELERATION: f64 = 24.0;
 /// time constant, brisk enough to feel like stopping and slow enough not to
 /// snap.
 const SUBMERGED_VERTICAL_DRAG_PER_SECOND: f64 = 8.0;
+/// A floating body rides the surface; it should not be flung off it. While the
+/// float model is in charge, the body may rise no faster than the surface under
+/// it, plus one deliberate stroke so a jump still works. A cork tracks the
+/// water; it is not launched by it.
+///
+/// This is worth having but it is *not* the whole of why the camera gets thrown
+/// about, and the measurement says so. Over a storm at 1000m it takes the
+/// highest the eye reaches from 49.7m above the surface down to 30.4m -- real,
+/// and not nearly enough. The fastest rise is unchanged at 27.4m/s, because the
+/// cap never binds there: the sea surface *itself* rises at up to 27.3m/s and
+/// falls at 29.0m/s, and spans 102m from trough to crest. The body is faithfully
+/// riding a sea moving at about 100km/h vertically. Capping buoyancy cannot fix
+/// that; `GLOBAL_OCEAN_STORM_INTENSITY` being pinned at 1.0 is the lever.
+const WATER_RISE_MARGIN_METERS_PER_SECOND: f64 = WATER_UPWARD_IMPULSE_METERS_PER_SECOND;
 /// Eye clearance above the sea bed on a dive. Small enough to inspect the
 /// bottom, large enough to absorb the disagreement between the bathymetry the
 /// CPU samples here and the bed the renderer actually draws.
@@ -168,6 +182,9 @@ impl SurfacePhysicsState {
         while remaining > 0.0 {
             let step = remaining.min(MAXIMUM_PHYSICS_STEP_SECONDS);
             let mut acceleration = -GRAVITY_METERS_PER_SECOND_SQUARED;
+            // Set while the float model is in charge of this step; see
+            // `WATER_RISE_MARGIN_METERS_PER_SECOND`.
+            let mut rise_cap_meters_per_second = None;
             if let Some((water_height, water_vertical_velocity)) = water_surface {
                 let submerged_fraction = ((water_height
                     - (eye_altitude_meters - EFFECTIVE_BODY_HEIGHT_METERS))
@@ -201,6 +218,14 @@ impl SurfacePhysicsState {
                     acceleration += drag_per_second
                         * submerged_fraction
                         * (reference_velocity - self.vertical_velocity_meters_per_second);
+                    if surface_authority > 0.0 {
+                        // A falling surface still allows a stroke's worth of
+                        // rise, so leaving a descending trough does not feel
+                        // like being held under.
+                        rise_cap_meters_per_second = Some(
+                            water_vertical_velocity.max(0.0) + WATER_RISE_MARGIN_METERS_PER_SECOND,
+                        );
+                    }
                     let resting_error = water_height + equilibrium_eye_height_above_water_meters()
                         - eye_altitude_meters;
                     acceleration +=
@@ -212,6 +237,10 @@ impl SurfacePhysicsState {
                 }
             }
             self.vertical_velocity_meters_per_second += acceleration * step;
+            if let Some(cap) = rise_cap_meters_per_second {
+                self.vertical_velocity_meters_per_second =
+                    self.vertical_velocity_meters_per_second.min(cap);
+            }
             eye_altitude_meters += self.vertical_velocity_meters_per_second * step;
             if water_surface.is_some() {
                 eye_altitude_meters += swim_vertical_speed_meters_per_second * step;
@@ -463,6 +492,59 @@ mod tests {
         // in the couple of hundred metres of water an actual coast has.
         for depth in [80.0, 200.0, 1000.0, 4000.0] {
             swim_at_depth(direction, depth);
+        }
+    }
+
+    #[test]
+    fn buoyancy_cannot_rise_faster_than_the_water_under_it() {
+        // Nothing used to cap how fast the float model handed the body upward:
+        // the spring, the buoyancy and the drag toward the water's own velocity
+        // all push the same way on a rising face. Measured over a storm at
+        // 1000m, the eye reached 49.7m above the surface; with the cap, 30.4m.
+        //
+        // The rest of that 30m is the sea, not the swimmer -- see the constant's
+        // own note -- so this pins the invariant the cap actually provides
+        // rather than a height the ocean decides.
+        use crate::ocean;
+        let direction =
+            glam::DVec3::new(0.836442275001636, 0.503727905284262, 0.215922481525239).normalize();
+        for depth in [80.0, 1000.0] {
+            let mut physics = SurfacePhysicsState::default();
+            physics.settle_in_water();
+            let mut eye = ocean::global_wave_height_meters(direction, 0.0, depth) + 0.255;
+            let mut time_seconds = 0.0;
+            for _ in 0..3600 {
+                let height = ocean::local_wave_height_meters(direction, time_seconds, depth);
+                let velocity = ocean::local_wave_vertical_velocity_meters_per_second(
+                    direction,
+                    time_seconds,
+                    depth,
+                );
+                let before = eye;
+                eye = physics.advance_vertical(
+                    eye,
+                    -depth,
+                    Some((height, velocity)),
+                    false,
+                    0.0,
+                    1.0 / 60.0,
+                );
+                // Contact is the body touching the water, not the eye being
+                // under it: the body hangs `EFFECTIVE_BODY_HEIGHT_METERS` below
+                // the eye, and the cap acts over that whole range. Testing
+                // eye-under-water instead checked the wrong frames and passed
+                // with the cap deleted.
+                if height > before - EFFECTIVE_BODY_HEIGHT_METERS {
+                    let allowed = velocity.max(0.0) + WATER_RISE_MARGIN_METERS_PER_SECOND + 1.0e-6;
+                    assert!(
+                        physics.vertical_velocity_meters_per_second <= allowed,
+                        "in contact at {depth}m the body rose at {:.2}m/s while the water \
+                         under it managed {velocity:.2}m/s",
+                        physics.vertical_velocity_meters_per_second
+                    );
+                }
+                time_seconds += 1.0 / 60.0;
+            }
         }
     }
 
