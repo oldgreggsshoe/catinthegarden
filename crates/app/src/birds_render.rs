@@ -157,11 +157,16 @@ impl BirdRenderer {
     /// `camera_local` and the birds are both in the planet frame; the
     /// difference is taken here in f64 and only then narrows to f32, which is
     /// the same contract the ship's hull origin has.
+    /// `alpha` is `BirdFlocks::interpolation_alpha`: how far this frame sits
+    /// between the last completed 30Hz step and the next. Drawing the raw
+    /// stepped pose repeats a position for several frames and then jumps, which
+    /// reads as a stutter and, at wingbeat rate, as the bird hopping in place.
     pub fn update<'a>(
         &mut self,
         queue: &wgpu::Queue,
         birds: impl Iterator<Item = &'a Bird>,
         camera_local: DVec3,
+        alpha: f64,
         world_to_view: impl Fn(DVec3) -> DVec3,
     ) {
         self.scratch.clear();
@@ -169,11 +174,12 @@ impl BirdRenderer {
             if self.scratch.len() >= MAX_BIRD_INSTANCES {
                 break;
             }
-            let offset = bird.position - camera_local;
+            let position = bird.position_at(alpha);
+            let offset = position - camera_local;
             if offset.length() > BIRD_DRAW_DISTANCE_METERS {
                 continue;
             }
-            let up = bird.up();
+            let up = position.normalize();
             // A bird that has just touched down may have no tangential velocity
             // at all for a step; hold it pointing along local east rather than
             // letting the basis collapse.
@@ -188,7 +194,8 @@ impl BirdRenderer {
                 view_position: world_to_view(offset).as_vec3().to_array(),
                 forward: forward.as_vec3().to_array(),
                 up: up.as_vec3().to_array(),
-                motion: Vec3::new(bird.wing_phase, fold, BIRD_BODY_LENGTH_METERS).to_array(),
+                motion: Vec3::new(bird.wing_phase_at(alpha), fold, BIRD_BODY_LENGTH_METERS)
+                    .to_array(),
             });
         }
         self.instance_count = self.scratch.len() as u32;

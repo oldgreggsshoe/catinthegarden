@@ -2254,10 +2254,14 @@ impl State {
                 .planet_frame_direction_dvec3(planet_rotation_radians),
             self.camera.planet_frame_view_up(planet_rotation_radians),
         );
-        self.bird_renderer
-            .update(&self.queue, self.birds.birds(), camera_local, |offset| {
-                basis.world_to_view(offset)
-            });
+        let bird_alpha = self.birds.interpolation_alpha();
+        self.bird_renderer.update(
+            &self.queue,
+            self.birds.birds(),
+            camera_local,
+            bird_alpha,
+            |offset| basis.world_to_view(offset),
+        );
         // The marker takes the same camera-relative difference in f64 before it
         // narrows, for the same reason the birds do.
         // Mark the nearest flock *in front of the camera*. The nearest flock

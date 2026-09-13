@@ -175,6 +175,15 @@ pub struct Bird {
     /// Wingbeat cycle in turns, advanced on the CPU but applied in the vertex
     /// shader so no per-bird geometry is ever uploaded.
     pub wing_phase: f32,
+    /// Where this bird was at the end of the previous fixed step, and what its
+    /// wings were doing. The flock is simulated at a fixed 30Hz so a replay
+    /// lands on the same birds every time, but frames are not drawn at 30Hz --
+    /// so drawing the raw state shows the same pose for several frames and then
+    /// jumps, which reads as a stutter and, at wingbeat rate, as the bird
+    /// hopping. These let the renderer show where the bird is *between* steps.
+    /// They never feed back into the simulation, so determinism is untouched.
+    previous_position: DVec3,
+    previous_wing_phase: f32,
     /// Per-bird offset from the flock's landing point, so a settled flock
     /// spreads over the ground instead of stacking on one spot.
     landing_offset: DVec3,
@@ -184,6 +193,25 @@ pub struct Bird {
 impl Bird {
     pub fn is_grounded(&self) -> bool {
         self.activity == BirdActivity::Walking
+    }
+
+    /// Where to draw this bird, `alpha` of the way from the previous fixed step
+    /// to the current one.
+    pub fn position_at(&self, alpha: f64) -> DVec3 {
+        self.previous_position + (self.position - self.previous_position) * alpha
+    }
+
+    /// The wingbeat to draw, interpolated the short way round the cycle. The
+    /// phase is a fraction of a turn and wraps, so a naive blend across the
+    /// wrap runs the wings backwards through a whole beat in one frame.
+    pub fn wing_phase_at(&self, alpha: f64) -> f32 {
+        let mut delta = self.wing_phase - self.previous_wing_phase;
+        if delta > 0.5 {
+            delta -= 1.0;
+        } else if delta < -0.5 {
+            delta += 1.0;
+        }
+        (self.previous_wing_phase + delta * alpha as f32).rem_euclid(1.0)
     }
 
     /// Local up. Birds are never near the planet centre, so this is safe.
@@ -382,6 +410,8 @@ pub struct BirdFlocks {
     /// Simulation clock, carried so a caller can hand us wall time and let the
     /// fixed step do the accounting.
     simulated_seconds: f64,
+    /// See `interpolation_alpha`. Render-only.
+    interpolation_alpha: f64,
     /// Merges so far. Exposed because "flocks join up" is otherwise invisible
     /// in a replay: the bird count does not change and the flock count falls
     /// the same way a retirement makes it fall.
@@ -402,6 +432,7 @@ impl BirdFlocks {
             flocks: Vec::new(),
             rng: Rng::new(seed),
             simulated_seconds: 0.0,
+            interpolation_alpha: 0.0,
             merges: 0,
             next_bird_id: 1,
             spawn_min_meters: FLOCK_SPAWN_MIN_METERS,
@@ -518,9 +549,13 @@ impl BirdFlocks {
             .iter()
             .find(|flock| flock.birds.iter().any(|bird| bird.id == target))?;
         let bird = flock.birds.iter().find(|bird| bird.id == target)?;
-        let up = bird.up();
+        // The same interpolated pose the renderer draws. Riding the raw stepped
+        // position puts the camera on a 30Hz staircase while every bird around
+        // it moves smoothly, which is worse than either on its own.
+        let position = bird.position_at(self.interpolation_alpha);
+        let up = position.normalize();
         let forward = bird.heading(tangent_basis(up).0);
-        let eye = bird.position - forward * behind_meters + up * above_meters;
+        let eye = position - forward * behind_meters + up * above_meters;
 
         // Aim at the flock, but never behind the bird. Aiming straight at the
         // centroid swings the camera round to look back down the flock whenever
@@ -531,7 +566,7 @@ impl BirdFlocks {
         // points the way the bird is going.
         let mut aim = flock.centroid();
         let minimum_ahead = ahead_meters * 0.5;
-        let forward_component = (aim - bird.position).dot(forward);
+        let forward_component = (aim - position).dot(forward);
         if forward_component < minimum_ahead {
             aim += forward * (minimum_ahead - forward_component);
         }
@@ -574,8 +609,25 @@ impl BirdFlocks {
         }
         while self.simulated_seconds + BIRD_FIXED_STEP_SECONDS <= target_seconds {
             self.simulated_seconds += BIRD_FIXED_STEP_SECONDS;
+            for flock in &mut self.flocks {
+                for bird in &mut flock.birds {
+                    bird.previous_position = bird.position;
+                    bird.previous_wing_phase = bird.wing_phase;
+                }
+            }
             self.step(BIRD_FIXED_STEP_SECONDS, camera_local, ground);
         }
+        // Whatever time is left over is how far into the next step the frame
+        // being drawn sits.
+        self.interpolation_alpha =
+            ((target_seconds - self.simulated_seconds) / BIRD_FIXED_STEP_SECONDS).clamp(0.0, 1.0);
+    }
+
+    /// How far the frame about to be drawn sits between the last completed
+    /// fixed step and the next one, in 0..=1. Render-only: nothing in the
+    /// simulation reads it, so replays stay deterministic.
+    pub fn interpolation_alpha(&self) -> f64 {
+        self.interpolation_alpha
     }
 
     fn step(
@@ -820,13 +872,25 @@ impl BirdFlocks {
                 + anchor_direction * rng.range(-4.0, 4.0);
             let id = self.next_bird_id;
             self.next_bird_id += 1;
+            let position = anchor + scatter;
+            // Drawn in the order the fields used to be written in. Hoisting a
+            // `let` out of a struct literal moves where its generator call
+            // happens, and this generator *is* the simulation: reordering these
+            // two silently reseeds every bird's velocity and wingbeat, which
+            // showed up as two unrelated flocking tests failing.
+            let velocity =
+                heading * CRUISE_SPEED_METERS_PER_SECOND + rng.unit_vector() * rng.range(0.0, 1.5);
+            let wing_phase = rng.unit() as f32;
             birds.push(Bird {
                 id,
-                position: anchor + scatter,
-                velocity: heading * CRUISE_SPEED_METERS_PER_SECOND
-                    + rng.unit_vector() * rng.range(0.0, 1.5),
+                position,
+                velocity,
                 activity: BirdActivity::Flying,
-                wing_phase: rng.unit() as f32,
+                wing_phase,
+                // A new bird has no previous step, so it starts standing still
+                // rather than being interpolated in from the planet centre.
+                previous_position: position,
+                previous_wing_phase: wing_phase,
                 landing_offset: flock_east * rng.range(-7.0, 7.0)
                     + flock_north * rng.range(-7.0, 7.0),
                 activity_seconds: 0.0,
@@ -1093,6 +1157,26 @@ fn flying_steering(
             if let Some(surface_radius) = surface_radius {
                 let altitude = bird.position.length() - surface_radius;
                 let error = cruise_altitude_meters - altitude;
+                // Undamped, and knowingly so. This is a pure spring -- force
+                // proportional to the error with nothing opposing the velocity
+                // -- so a cruising bird porpoises through 1.64m with a period
+                // of about six seconds and never settles. Measured, and worse
+                // than a plain spring: at 3m/s of climb through the cruise
+                // height the rest of the steering *assists* by 2.2, so the ring
+                // is driven rather than merely undamped.
+                //
+                // Adding `- climb_rate * 1.75` does fix it, to 0.85m, and was
+                // tried. It also changes the emergent shape of a flock enough
+                // to break two invariants that have nothing obviously to do
+                // with altitude: flockmates in shot fall from 99.5% to 91.9%,
+                // and settled birds close to 0.086m of each other. Vertical
+                // spread is doing load-bearing work for the horizontal rules,
+                // which is not a thing to correct in passing. Left alone until
+                // it can be done with those rules rather than against them.
+                //
+                // Note for whoever picks this up: 0.16Hz is not what a player
+                // reports as birds bobbing with their wingbeat. That was the
+                // 30Hz render staircase, fixed separately by interpolation.
                 steering += up * (error * ALTITUDE_HOLD_STRENGTH).clamp(-6.0, 6.0);
             }
             // A slow circular drift keeps a cruising flock from freezing into a
@@ -2065,6 +2149,95 @@ mod tests {
             multi_flock > 10,
             "only {multi_flock} picks had a rival flock, so nearest went untested"
         );
+    }
+
+    #[test]
+    fn birds_are_drawn_between_steps_rather_than_on_them() {
+        // The flock is simulated at a fixed 30Hz so replays land on the same
+        // birds. Frames are not drawn at 30Hz, so the drawn pose has to be
+        // interpolated or it repeats for several frames and then jumps.
+        let radius = 4_000_000.0;
+        let camera = camera_at(radius + 2.0);
+        let ground = flat_ground(radius);
+        let mut flocks = BirdFlocks::new(29);
+        flocks.advance(4.0, camera, &ground);
+        let target = flocks
+            .birds()
+            .find(|bird| !bird.is_grounded())
+            .expect("a flier")
+            .id;
+
+        // Sample four times per simulation step.
+        let mut drawn = Vec::new();
+        let mut time = 4.0;
+        while time < 12.0 {
+            time += BIRD_FIXED_STEP_SECONDS / 4.0;
+            flocks.advance(time, camera, &ground);
+            let alpha = flocks.interpolation_alpha();
+            let Some(bird) = flocks.bird(target) else {
+                break;
+            };
+            drawn.push(bird.position_at(alpha));
+        }
+        assert!(drawn.len() > 500, "only {} samples", drawn.len());
+
+        // Every consecutive pair must differ: a repeated position is a frame
+        // that showed the same pose as the last one.
+        let repeats = drawn
+            .windows(2)
+            .filter(|w| (w[1] - w[0]).length() < 1.0e-9)
+            .count();
+        assert_eq!(
+            repeats, 0,
+            "{repeats} frames drew a bird that had not moved"
+        );
+
+        // And the steps must be even. Raw stepped output moves by a whole
+        // step's worth on one frame in four and not at all on the other three,
+        // so the largest single move is several times the mean.
+        let moves: Vec<f64> = drawn.windows(2).map(|w| (w[1] - w[0]).length()).collect();
+        let mean = moves.iter().sum::<f64>() / moves.len() as f64;
+        let largest = moves.iter().cloned().fold(0.0_f64, f64::max);
+        assert!(
+            largest < mean * 2.0,
+            "largest frame-to-frame move {largest:.4}m against a mean of {mean:.4}m, \
+             which is the 30Hz staircase showing through"
+        );
+    }
+
+    #[test]
+    fn a_wingbeat_never_runs_backwards_across_the_wrap() {
+        // The phase is a fraction of a turn, so blending 0.98 -> 0.02 the naive
+        // way runs the wings back through a whole beat in one frame.
+        let mut bird = Bird {
+            id: 0,
+            position: DVec3::new(4_000_050.0, 0.0, 0.0),
+            velocity: DVec3::ZERO,
+            activity: BirdActivity::Flying,
+            wing_phase: 0.02,
+            previous_position: DVec3::new(4_000_050.0, 0.0, 0.0),
+            previous_wing_phase: 0.98,
+            landing_offset: DVec3::ZERO,
+            activity_seconds: 0.0,
+        };
+        // Forwards across the wrap: the short way is +0.04, so the midpoint sits
+        // just past the wrap, not back at 0.5.
+        let mid = bird.wing_phase_at(0.5);
+        assert!(
+            !(0.01..=0.99).contains(&mid),
+            "midpoint {mid} took the long way round the cycle"
+        );
+        // Backwards across the wrap behaves the same.
+        bird.previous_wing_phase = 0.02;
+        bird.wing_phase = 0.98;
+        let mid = bird.wing_phase_at(0.5);
+        assert!(
+            !(0.01..=0.99).contains(&mid),
+            "midpoint {mid} took the long way round the cycle"
+        );
+        // And the ends are exact, so a settled frame is not smeared.
+        assert!((bird.wing_phase_at(1.0) - 0.98).abs() < 1.0e-6);
+        assert!((bird.wing_phase_at(0.0) - 0.02).abs() < 1.0e-6);
     }
 
     #[test]
