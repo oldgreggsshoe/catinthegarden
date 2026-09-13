@@ -81,3 +81,6 @@ MEMORY.md:1-4|note=[checkout-specific measured renderer workflow]
 01a07103-79ca-7e92-99b9-5da47619e658
 </rollout_ids>
 </oai-mem-citation>
+I’ll update the road trial to drive the camera along its S-curve automatically. I’ll inspect the scenario waypoint controls and terrain-height queries, change the trial scenario, then replay it to check camera clearance and capture the view from the road.
+
+Road POV update: `road_surface_trial` now drives the painted S-curve automatically for 20s at 14m/s, following the rendered ground at a 2m eye height. Run `CATINGARDEN_ROAD_EXPERIMENT=1 /home/dad/catingard-target/release/catinthegarden-app --scenario road_surface_trial`. Seven captures at `test-runs/road_surface_trial/1789295599-342703/screenshots/` pass with 2.000m clearance at every sample. Workspace tests, clippy and fmt pass. The replay skips bird simulation only for this diagnostic; normal play is unchanged.

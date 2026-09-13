@@ -178,6 +178,9 @@ pub struct ScenarioDefinition {
     /// showed the underside of the water shell rather than the horizon.
     #[serde(default)]
     pub waterline_eye_height_meters: Option<f64>,
+    /// Follow the raster ground while waypoint positions supply the ground track.
+    #[serde(default)]
+    pub terrain_eye_height_meters: Option<f64>,
     /// Enables the real low-flight camera at the first waypoint and holds W
     /// from this simulation time onward. This is deliberately not waypoint
     /// interpolation: terrain-follow regressions must exercise the same
@@ -187,6 +190,9 @@ pub struct ScenarioDefinition {
     /// Exercise the real walking physics instead of free flight in a W replay.
     #[serde(default)]
     pub walk_on_surface: bool,
+    /// Keep unrelated bird ground sampling out of focused camera replays.
+    #[serde(default)]
+    pub skip_birds: bool,
     pub orbit_radius_meters: Option<f64>,
     pub orbit_elevation_degrees: Option<f64>,
     pub orbit_turns: Option<f64>,
@@ -295,6 +301,7 @@ scenarios! {
     "ocean_shore_ascent" => "../scenarios/ocean_shore_ascent.json",
     "beach_sand_join" => "../scenarios/beach_sand_join.json",
     "bird_flyby" => "../scenarios/bird_flyby.json",
+    "bird_demo" => "../scenarios/bird_demo.json",
     "ocean_clear_shallows" => "../scenarios/ocean_clear_shallows.json",
     "ocean_shallow_transmission" => "../scenarios/ocean_shallow_transmission.json",
     "ocean_shallow_bottom" => "../scenarios/ocean_shallow_bottom.json",
@@ -425,6 +432,12 @@ impl ScenarioRunner {
             .is_some_and(|distance| !distance.is_finite() || distance <= 0.0)
         {
             return Err("surface probe maximum distance must be finite and positive".to_owned());
+        }
+        if definition
+            .terrain_eye_height_meters
+            .is_some_and(|height| !height.is_finite() || height <= 0.0)
+        {
+            return Err("terrain eye height must be finite and positive".to_owned());
         }
         if definition
             .screenshot_times_seconds
@@ -638,12 +651,20 @@ impl ScenarioRunner {
             )
     }
 
+    pub fn skips_birds(&self) -> bool {
+        self.definition.skip_birds
+    }
+
     pub fn ocean_storm_intensity_override(&self) -> Option<f32> {
         self.definition.ocean_storm_intensity_override
     }
 
     pub fn waterline_eye_height_meters(&self) -> Option<f64> {
         self.definition.waterline_eye_height_meters
+    }
+
+    pub fn terrain_eye_height_meters(&self) -> Option<f64> {
+        self.definition.terrain_eye_height_meters
     }
 
     pub fn surface_probe_max_distance_meters(&self) -> f64 {
@@ -1047,7 +1068,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 91);
+        assert_eq!(SCENARIO_NAMES.len(), 92);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));
@@ -1294,6 +1315,37 @@ mod tests {
         assert_eq!(scenario.expected_screenshots(), 9);
         assert_eq!(scenario.assertions().min_camera_clearance_m, Some(150.0));
         assert_eq!(scenario.assertions().max_camera_clearance_m, Some(155.0));
+    }
+
+    #[test]
+    fn road_surface_trial_drives_forward_along_the_painted_corridor() {
+        let scenario = ScenarioRunner::load("road_surface_trial").expect("road replay parses");
+        let anchor = DVec3::new(0.94919006, 0.28950297, 0.12339471);
+        let forward = DVec3::new(-0.11802703, -0.03599824, 0.99235767);
+        let across = DVec3::new(0.29173249, -0.95649995, 0.0);
+        let radius = crate::planet::planet_radius_meters();
+
+        assert_eq!(scenario.expected_screenshots(), 7);
+        assert!(scenario.skips_birds());
+        assert_eq!(scenario.terrain_eye_height_meters(), Some(2.0));
+        assert_eq!(scenario.definition.waypoints.len(), 21);
+        for waypoint in &scenario.definition.waypoints {
+            let eye = DVec3::from_array(waypoint.position);
+            let target = DVec3::from_array(waypoint.look_at);
+            let road_local = (eye.normalize() - anchor) * radius;
+            let along = road_local.dot(forward);
+            let centre = 30.0 * smoothstep_test(along / 220.0)
+                - 50.0 * smoothstep_test((along - 260.0) / 360.0);
+            assert!((along - waypoint.time_s * 14.0).abs() < 0.2);
+            assert!((road_local.dot(across) - centre).abs() < 0.2);
+            assert!((eye.length() - radius - 1902.0).abs() < 0.01);
+            assert!((target - eye).dot(forward) > 40.0);
+        }
+    }
+
+    fn smoothstep_test(value: f64) -> f64 {
+        let value = value.clamp(0.0, 1.0);
+        value * value * (3.0 - 2.0 * value)
     }
 
     #[test]

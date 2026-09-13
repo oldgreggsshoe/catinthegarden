@@ -958,6 +958,7 @@ struct FrameInputs {
     /// When set, `pose` supplies only the ground track and view direction; the
     /// eye rides this far above the ocean surface there.
     waterline_eye_height_meters: Option<f64>,
+    terrain_eye_height_meters: Option<f64>,
 }
 
 /// Frame-local values the debug overlay displays. Everything else it shows is
@@ -2719,6 +2720,7 @@ impl State {
                 planet_rotation_time_scale: INTERACTIVE_PLANET_ROTATION_TIME_SCALE,
                 forward_flight_held: None,
                 waterline_eye_height_meters: None,
+                terrain_eye_height_meters: None,
             };
         };
         let frame = scenario.advance();
@@ -2747,6 +2749,7 @@ impl State {
             planet_rotation_time_scale: frame.planet_rotation_time_scale,
             forward_flight_held: frame.forward_flight_held,
             waterline_eye_height_meters: scenario.waterline_eye_height_meters(),
+            terrain_eye_height_meters: scenario.terrain_eye_height_meters(),
         }
     }
 
@@ -3125,6 +3128,7 @@ impl State {
             planet_rotation_time_scale: scenario_planet_rotation_time_scale,
             forward_flight_held: scenario_forward_flight_held,
             waterline_eye_height_meters: scenario_waterline_eye_height_meters,
+            terrain_eye_height_meters: scenario_terrain_eye_height_meters,
         } = self.frame_inputs();
         let planet_rotation_time = if self.scenario.is_some() {
             sim_time * scenario_planet_rotation_time_scale
@@ -3143,6 +3147,30 @@ impl State {
                     ocean_animation_time_seconds(sim_time, presentation_time),
                     planet_rotation_radians,
                 ),
+                None => (position, look_at),
+            };
+            let (position, look_at) = match scenario_terrain_eye_height_meters {
+                Some(eye_height_meters) => {
+                    let radial = position.normalize();
+                    let local_radial = planet::planet_local_vector(radial, planet_rotation_radians);
+                    let authored_altitude = position.length() - planet::planet_radius_meters();
+                    let ground = self
+                        .terrain
+                        .raster_surface_height_meters_at(local_radial, authored_altitude);
+                    let ground = ground.and_then(|first| {
+                        self.terrain.raster_surface_height_meters_at(
+                            local_radial,
+                            first + eye_height_meters,
+                        )
+                    });
+                    if let Some(ground) = ground {
+                        let eye =
+                            radial * (planet::planet_radius_meters() + ground + eye_height_meters);
+                        (eye, look_at + (eye - position))
+                    } else {
+                        (position, look_at)
+                    }
+                }
                 None => (position, look_at),
             };
             // Surface-level scenarios need the horizon level, so their up axis
@@ -3335,7 +3363,13 @@ impl State {
         // The camera is settled for this frame from here on, so anything that
         // bakes the camera basis into an upload belongs below this line.
         self.upload_ship_transform(planet_rotation_radians);
-        self.advance_birds(ocean_time_seconds, planet_rotation_radians);
+        if !self
+            .scenario
+            .as_ref()
+            .is_some_and(scenario::ScenarioRunner::skips_birds)
+        {
+            self.advance_birds(ocean_time_seconds, planet_rotation_radians);
+        }
         let mut camera_world_position = self.camera.world_position();
         let mut camera_planet_frame_position = self
             .camera

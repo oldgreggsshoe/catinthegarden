@@ -30,7 +30,8 @@ changing source elevations or shared-edge projection. See the newest section;
 manual swim-path acceptance is still pending.
 
 **Current road experiment (13 September):** a single opt-in, terrain-conforming
-surface section is visible in `road_surface_trial`. It does not yet grade,
+surface section is visible in `road_surface_trial`, which now automatically
+drives a surface-following POV along it. It does not yet grade,
 cut/fill, clear trees, stitch dedicated geometry, or tunnel. The measured test
 shader costs about 1ms on the Quadro; the default shader compiles it out. See
 the newest section for captures and paired timing.
@@ -9248,3 +9249,30 @@ avoidance steering 13.34m, and the test fails in each case.
 
 535 workspace tests, 0 failed; clippy and fmt clean.
 
+## 13 September — road trial POV drive replay
+
+`road_surface_trial` now moves the camera automatically rather than holding an
+oblique fixed pose. Twenty-one one-second waypoints follow the same S-curve
+painted by the opt-in road shader at 14m/s for 20s, aiming 45m ahead; seven
+captures show the road from a forward-facing 70-degree view. The waypoint
+radius is only a fallback until terrain loads. The replay samples the current
+raster mesh surface twice (the second query at the corrected eye altitude),
+then moves eye and look target together so view pitch does not jump. It holds
+2m clearance without changing free-flight/walking controls or terrain.
+
+The scenario sets `skip_birds` so this focused diagnostic does not pay for
+unrelated bird ground sampling. A first, unskipped ground-level replay spent
+more than seven minutes inside `BirdFlocks::advance`/forest slope queries before
+its first capture; this is a separate performance issue, not evidence that the
+road shader or camera path is slow. The new flag defaults false, so normal play
+and every other scenario still simulates birds.
+
+Run with `CATINGARDEN_ROAD_EXPERIMENT=1 /home/dad/catingard-target/release/catinthegarden-app --scenario road_surface_trial`.
+Quadro Immediate-present replay
+`test-runs/road_surface_trial/1789295599-342703` passes finite metrics,
+seven captures and 2.000m clearance at all seven captures (allowed
+1–3m). The new scenario regression pins 21
+forward-moving centreline waypoints, captures and terrain-follow/skip settings.
+The paint still follows raw terrain relief; this is a POV presentation of the
+existing trial, not a graded drivable road, FPS improvement, or global road
+network.
