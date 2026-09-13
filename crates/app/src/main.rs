@@ -2005,7 +2005,23 @@ impl State {
         })
     }
 
+    /// True while the bird cam owns the eye.
+    ///
+    /// The player's body keeps being simulated while riding -- it still falls,
+    /// swims and collides -- but the controllers must not *write the camera*,
+    /// because two of them run after the bird cam does: the post-streaming
+    /// clamps for surface and low flight both re-sync the pose from
+    /// `flight_local_position` at the end of the frame. Suppressing the write
+    /// rather than the physics is what lets B hand the eye straight back to a
+    /// body that has been where it should be the whole time.
+    fn player_camera_is_suppressed(&self) -> bool {
+        self.bird_camera_enabled
+    }
+
     fn sync_surface_camera_pose(&mut self, planet_rotation_radians: f64) {
+        if self.player_camera_is_suppressed() {
+            return;
+        }
         let local_radial = self.flight_local_position.normalize();
         let local_view_direction = self.low_flight_view_direction(local_radial);
         let planet_to_world = glam::DQuat::from_rotation_y(planet_rotation_radians);
@@ -2454,16 +2470,18 @@ impl State {
         if (self.flight_local_position.length() - clearance_radius).abs() > f64::EPSILON {
             self.flight_local_position = local_radial * clearance_radius;
         }
-        let local_view_direction = self.low_flight_view_direction(local_radial);
-        let planet_to_world = glam::DQuat::from_rotation_y(planet_rotation_radians);
-        let world_position = planet_to_world.mul_vec3(self.flight_local_position);
-        let world_direction = planet_to_world.mul_vec3(local_view_direction);
-        let world_up = planet_to_world.mul_vec3(local_radial);
-        self.camera.set_world_pose_with_up(
-            world_position,
-            world_position + world_direction,
-            world_up,
-        );
+        if !self.player_camera_is_suppressed() {
+            let local_view_direction = self.low_flight_view_direction(local_radial);
+            let planet_to_world = glam::DQuat::from_rotation_y(planet_rotation_radians);
+            let world_position = planet_to_world.mul_vec3(self.flight_local_position);
+            let world_direction = planet_to_world.mul_vec3(local_view_direction);
+            let world_up = planet_to_world.mul_vec3(local_radial);
+            self.camera.set_world_pose_with_up(
+                world_position,
+                world_position + world_direction,
+                world_up,
+            );
+        }
         previous_local_position.distance_squared(self.flight_local_position) > f64::EPSILON
     }
 
@@ -5481,6 +5499,72 @@ mod tests {
             false,
         );
         assert_eq!(flying, current_radius + 100.0);
+    }
+
+    /// Every controller that writes the player's eye must stand down while the
+    /// bird cam owns it.
+    ///
+    /// Ordering alone was not enough, and this is the bug the ordering test
+    /// missed. Two camera writers run *after* the bird cam by design: the
+    /// post-streaming clamps for surface and low flight, which re-sync the pose
+    /// from `flight_local_position` once the newly streamed patches are known.
+    /// They have to run there -- that is the whole point of them -- so they
+    /// cannot be moved above the bird cam, and the ride was being overwritten
+    /// at the end of every frame. Ian found it by riding one and watching the
+    /// world rotate around the flock instead of orbiting with him.
+    ///
+    /// So the rule is not "the bird cam writes last" but "nothing else writes
+    /// while it is riding". This test holds every writer to it.
+    #[test]
+    fn no_player_camera_writer_runs_while_the_bird_cam_is_riding() {
+        // Scope to the production half: this test names the very call it looks
+        // for, so scanning the whole file would match its own source and any
+        // exempt name it lists.
+        let whole = include_str!("main.rs");
+        let source = &whole[..whole
+            .find("\n#[cfg(test)]\nmod tests {")
+            .expect("the test module is delimited")];
+        // Writers that are allowed to move the eye unguarded, and why.
+        let exempt = [
+            // The bird cam itself.
+            "fn render",
+            // Only ever reached from the key that changes mode, which is the
+            // player asking for their own eye back.
+            "fn toggle_camera_mode",
+        ];
+        let mut checked = 0;
+        for (offset, _) in source.match_indices("self.camera.set_world_pose") {
+            // Walk back to the enclosing function.
+            let head = &source[..offset];
+            let start = head
+                .rfind("\n    fn ")
+                .or_else(|| head.rfind("\n    pub fn "))
+                .expect("every camera write sits inside a method");
+            let signature: String = source[start..].lines().nth(1).unwrap_or("").trim().into();
+            let name = signature
+                .split('(')
+                .next()
+                .unwrap_or("")
+                .replace("pub ", "")
+                .trim()
+                .to_string();
+            if exempt.iter().any(|allowed| name.starts_with(allowed)) {
+                continue;
+            }
+            // The guard has to be between the start of the method and the
+            // write, not merely somewhere in the file.
+            let body = &source[start..offset];
+            assert!(
+                body.contains("player_camera_is_suppressed"),
+                "`{name}` moves the player's eye without standing down for the \
+                 bird cam; it can run after the ride is placed and overwrite it",
+            );
+            checked += 1;
+        }
+        assert!(
+            checked >= 2,
+            "only {checked} guarded writers found, so the rule went untested",
+        );
     }
 
     /// The bird cam is the last camera writer of the frame, and has to be.
