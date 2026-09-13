@@ -1027,6 +1027,11 @@ struct State {
     /// between them every frame.
     bird_camera_enabled: bool,
     bird_camera_target: Option<u64>,
+    /// Whether the ride actually placed the camera on the last frame, as
+    /// opposed to merely being switched on. The two differ whenever there is no
+    /// flock to ride, and the overlay reports both so the difference is visible
+    /// from inside the game instead of only in a log.
+    bird_camera_riding: bool,
     flock_marker: flock_marker::FlockMarkerRenderer,
     ship_sim_time_seconds: f64,
     sun: sun::SunRenderer,
@@ -1448,6 +1453,7 @@ impl State {
             bird_camera_enabled: std::env::var("CATINGARDEN_BIRD_CAM")
                 .is_ok_and(|value| !matches!(value.trim(), "" | "0" | "false" | "off")),
             bird_camera_target: None,
+            bird_camera_riding: false,
             flock_marker,
             ship_sim_time_seconds: 0.0,
             sun,
@@ -2015,7 +2021,11 @@ impl State {
     /// rather than the physics is what lets B hand the eye straight back to a
     /// body that has been where it should be the whole time.
     fn player_camera_is_suppressed(&self) -> bool {
-        self.bird_camera_enabled
+        // Enabled is not enough: if the ride cannot find a bird, nothing writes
+        // the camera at all and the eye freezes in mid-air, movable only by the
+        // one writer that is exempt. That reads as "B does nothing, and F4
+        // teleports me", which is worse than the bug it was guarding against.
+        self.bird_camera_enabled && self.bird_camera_riding
     }
 
     fn sync_surface_camera_pose(&mut self, planet_rotation_radians: f64) {
@@ -2908,6 +2918,27 @@ impl State {
         let raw_input = self.egui_state.take_egui_input(window);
         let show_debug_overlay = self.debug_overlay_visible;
         let fps = self.fps;
+        // Three states, not two: off, on-and-riding, and on-but-with-nothing to
+        // ride. The third is the one that needed a round trip to identify, so
+        // it says so on its own line.
+        let bird_camera = match (
+            self.bird_camera_enabled,
+            self.bird_camera_riding,
+            self.bird_camera_target,
+        ) {
+            (false, _, _) => "off (B to ride the nearest flock)".to_string(),
+            (true, true, Some(id)) => format!("riding bird {id}"),
+            (true, true, None) => "riding".to_string(),
+            (true, false, _) => {
+                "on, but no flock in range to ride -- press F10 if time is stopped".to_string()
+            }
+        };
+        let flock_count = self.birds.flock_count();
+        let airborne_birds = self
+            .birds
+            .birds()
+            .filter(|bird| !bird.is_grounded())
+            .count();
         let camera_position = camera_world_position;
         let camera_direction = self.camera.direction();
         let vertical_fov_degrees = self.camera.vertical_fov_radians().to_degrees();
@@ -3141,6 +3172,9 @@ impl State {
                             if animation_frozen { "frozen" } else { "running" },
                         ));
                         ui.label(format!("Ocean Gerstner range: {ocean_wave_range:.2} m"));
+                        ui.label(format!(
+                            "Bird cam: {bird_camera}  |  {flock_count} flocks, {airborne_birds} airborne"
+                        ));
                         ui.label(
                             "F: fullscreen  |  F3: overlay  |  , / .: time speed  |  F4: orbit/flight  |  G: surface camera  |  WASD: move  |  Space: jump/swim thrust  |  [ / ]: speed  |  F5: render path  |  O: triangle outlines  |  B: ride a bird  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
                         );
@@ -3445,6 +3479,7 @@ impl State {
         // Toggling off needs nothing undone: surface and low flight rebuild the
         // pose from `flight_local_position` every frame, so the player returns
         // to exactly where they were standing.
+        self.bird_camera_riding = false;
         if self.bird_camera_enabled {
             // Where the rider is sitting, which is what "nearest flock" is
             // measured from. While the ride is running this is the ridden
@@ -3467,6 +3502,7 @@ impl State {
                 let look_at = planet::planet_world_vector(look_at_local, planet_rotation_radians);
                 let up = planet::planet_world_vector(up_local, planet_rotation_radians);
                 self.camera.set_world_pose_with_up(eye, look_at, up);
+                self.bird_camera_riding = true;
             }
         }
         // The camera is settled for this frame from here on, so anything that
@@ -5040,6 +5076,7 @@ impl ApplicationHandler for App {
                 }
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state.is_pressed()
+                        && !event.repeat
                         && event.physical_key == PhysicalKey::Code(KeyCode::KeyB) =>
                 {
                     state.toggle_bird_camera();
@@ -5505,6 +5542,36 @@ mod tests {
         assert_eq!(flying, current_radius + 100.0);
     }
 
+    /// A toggle must not fire on key repeat.
+    ///
+    /// Holding B for even a moment sent a stream of repeat events, each of which
+    /// flipped the ride, so which state you landed in depended on how long your
+    /// finger was on the key. Ian could not get B to do anything and had no way
+    /// to tell why; this is most of the reason.
+    #[test]
+    fn toggles_do_not_fire_on_key_repeat() {
+        let whole = include_str!("main.rs");
+        let source = &whole[..whole
+            .find("\n#[cfg(test)]\nmod tests {")
+            .expect("the test module is delimited")];
+        let mut checked = 0;
+        for (offset, _) in source.match_indices("state.toggle_bird_camera();") {
+            // The guard belongs in the match arm, between the handler's start
+            // and the call.
+            let head = &source[..offset];
+            let arm = head
+                .rfind("WindowEvent::KeyboardInput")
+                .expect("the toggle sits in a keyboard handler");
+            assert!(
+                source[arm..offset].contains("!event.repeat"),
+                "the bird cam toggle fires on key repeat, so holding B flips it \
+                 repeatedly and lands on whichever state the last repeat gave",
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 1, "expected exactly one bird cam toggle binding");
+    }
+
     /// Every controller that writes the player's eye must stand down while the
     /// bird cam owns it.
     ///
@@ -5519,6 +5586,12 @@ mod tests {
     ///
     /// So the rule is not "the bird cam writes last" but "nothing else writes
     /// while it is riding". This test holds every writer to it.
+    ///
+    /// "Riding" and "switched on" are different, and conflating them was a
+    /// second bug: with the ride enabled but no flock in range, nothing wrote
+    /// the camera at all and the eye froze in mid-air, movable only by the one
+    /// exempt writer. From the player's side that is "B does nothing, and F4
+    /// teleports me", which is what Ian reported.
     #[test]
     fn no_player_camera_writer_runs_while_the_bird_cam_is_riding() {
         // Scope to the production half: this test names the very call it looks
@@ -5568,6 +5641,17 @@ mod tests {
         assert!(
             checked >= 2,
             "only {checked} guarded writers found, so the rule went untested",
+        );
+        // And the guard must be the narrow one. Standing down merely because the
+        // ride is switched on freezes the eye whenever there is no bird to ride.
+        let rule = source
+            .find("fn player_camera_is_suppressed")
+            .map(|start| &source[start..start + 600])
+            .expect("the rule is defined");
+        assert!(
+            rule.contains("self.bird_camera_enabled && self.bird_camera_riding"),
+            "the stand-down rule must require the ride to be actually placing \
+             the camera, not merely switched on",
         );
     }
 
