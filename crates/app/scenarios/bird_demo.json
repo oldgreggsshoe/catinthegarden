@@ -1,0 +1,107 @@
+{
+  "name": "bird_demo",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 6.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0.0,
+  "fixed_exposure": true,
+  "screenshot_times_seconds": [
+    2.0,
+    2.0667,
+    2.1333,
+    2.2,
+    2.2667,
+    2.3333,
+    2.4,
+    2.4667,
+    2.5333,
+    2.6,
+    2.6667,
+    2.7333,
+    2.8,
+    2.8667,
+    2.9333,
+    3.0,
+    3.0667,
+    3.1333,
+    3.2,
+    3.2667,
+    3.3333,
+    3.4,
+    3.4667,
+    3.5333,
+    3.6,
+    3.6667,
+    3.7333,
+    3.8,
+    3.8667,
+    3.9333,
+    4.0,
+    4.0667,
+    4.1333,
+    4.2,
+    4.2667,
+    4.3333,
+    4.4,
+    4.4667,
+    4.5333,
+    4.6,
+    4.6667,
+    4.7333,
+    4.8,
+    4.8667,
+    4.9333,
+    5.0
+  ],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [
+        3372422.0,
+        1978479.0,
+        844259.0
+      ],
+      "look_at": [
+        3372512.718058632,
+        1978580.4716448463,
+        844405.5392068023
+      ]
+    },
+    {
+      "time_s": 6.0,
+      "position": [
+        3372422.0,
+        1978479.0,
+        844259.0
+      ],
+      "look_at": [
+        3372512.718058632,
+        1978580.4716448463,
+        844405.5392068023
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        0.508927519,
+        0.397776994,
+        0.763391278
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 54.33381094784369
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 46
+  }
+}
