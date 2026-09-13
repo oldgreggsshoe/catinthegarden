@@ -9212,3 +9212,39 @@ fails the limit test with a flock of 23 still merging. `largest_flock` and
 replay: the bird count does not change and the flock count falls the same way a
 retirement makes it fall.
 
+## 13 September — flocks that cannot merge now avoid each other
+
+User observed that the visibility limit reads like nature: a flock knows it has
+reached an advantageous size, and others keep away. The first half was true; the
+second was not. A large flock was not avoided, it was *invisible* -- `is_mergeable`
+returning false removed it from consideration entirely, so a small flock had no
+reason not to fly straight through it.
+
+Measured before changing anything, that never actually happened: over five seeds
+and 300 seconds a small and a large flock came no closer than 19.77m centroid to
+centroid. But by luck, not by rule. At six to ten flocks over a 900m radius a
+specific pair rarely meets, and raising the flock cap or tightening the spawn
+shell would have broken it.
+
+The rule is now complete rather than having a third do-nothing case: a pair that
+could merge is drawn together, and **every other pair pushes apart**, including
+large against large. `attract_mergeable_flocks` became
+`steer_flocks_past_each_other` and now steers every travelling flock, not only
+the mergeable ones.
+
+**That change alone did nothing, and the measurement is why this entry exists.**
+Small against large stayed at 19.77m with the avoidance in and 19.77m with it
+out -- identical to the digit. Timing the closest approach found it at
+**t=0.1s**, the first step after a spawn, with a flock 0.1 seconds old. The
+minimum was a placement artifact and no steering rule can undo where a flock was
+put. `spawn_flock` now retries up to eight bearings and refuses to place a flock
+within 80m of one it could not merge with; pairs that *could* merge may still
+start close, since those are meant to find each other.
+
+With both, the closest approach is **32.61m and occurs at t=268.6s**, during a
+real encounter rather than at birth. Both halves are load-bearing and
+mutation-verified: without the spawn separation it is 15.96m, without the
+avoidance steering 13.34m, and the test fails in each case.
+
+535 workspace tests, 0 failed; clippy and fmt clean.
+

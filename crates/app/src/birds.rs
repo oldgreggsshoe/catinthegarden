@@ -68,6 +68,26 @@ const FLOCK_MERGE_DISTANCE_METERS: f64 = 20.0;
 /// something they do rather than something that happens to them by chance.
 const FLOCK_MERGE_ATTRACTION_METERS: f64 = 160.0;
 const FLOCK_MERGE_ATTRACTION_STRENGTH: f64 = 0.35;
+/// Flocks that cannot merge keep out of each other's way. Without this a large
+/// flock was not avoided but simply invisible, and a small flock had no reason
+/// not to fly straight through it. That only looked right because encounters
+/// are rare at this density: measured before the change, small and large flocks
+/// came no closer than 19.77m centroid to centroid over five seeds and 300
+/// seconds, entirely by luck rather than by any rule. Raise the flock cap or
+/// tighten the spawn shell and it would have broken.
+const FLOCK_AVOIDANCE_METERS: f64 = 90.0;
+const FLOCK_AVOIDANCE_STRENGTH: f64 = 0.6;
+/// A new flock is not placed on top of one already there. Steering cannot undo
+/// a bad initial placement, and measurement showed that is the only thing that
+/// ever mattered here: the closest two flocks came over 300 seconds was at
+/// t=0.1s, on the first step after a spawn, and adding the avoidance rule above
+/// moved that number by nothing at all. Pairs that could merge are still
+/// allowed to start close, since those are meant to find each other.
+const FLOCK_SPAWN_SEPARATION_METERS: f64 = 80.0;
+/// Bearings tried before giving up on a placement this step. Without a retry a
+/// crowded shell would refuse the spawn outright and let the near population
+/// fall below its target.
+const FLOCK_SPAWN_ATTEMPTS: usize = 8;
 
 // Reynolds' three rules, in metres.
 const NEIGHBOUR_RADIUS_METERS: f64 = 16.0;
@@ -382,55 +402,81 @@ impl BirdFlocks {
         for flock in &mut self.flocks {
             advance_flock(flock, step_seconds, camera_local, ground);
         }
-        self.attract_mergeable_flocks(step_seconds);
+        self.steer_flocks_past_each_other(step_seconds);
         self.merge_touching_flocks();
         self.retire_distant_flocks(camera_local);
         self.spawn_missing_flocks(camera_local, ground);
     }
 
-    /// Bends a mergeable flock's heading toward the nearest flock it can both
-    /// see and fit with. Computed against a snapshot of centroids so the pass
-    /// does not depend on the order flocks happen to sit in the vector.
-    fn attract_mergeable_flocks(&mut self, step_seconds: f64) {
+    /// Steers each travelling flock against the others. A pair that could merge
+    /// is drawn together; every other pair pushes apart. There is deliberately
+    /// no third case: leaving non-mergeable flocks with no interaction at all
+    /// is what let a small flock fly through a large one.
+    ///
+    /// Computed against a snapshot of centroids so the pass does not depend on
+    /// the order flocks happen to sit in the vector.
+    fn steer_flocks_past_each_other(&mut self, step_seconds: f64) {
         let summary: Vec<(DVec3, usize, bool)> = self
             .flocks
             .iter()
             .map(|flock| (flock.centroid(), flock.birds.len(), flock.is_mergeable()))
             .collect();
         for (index, flock) in self.flocks.iter_mut().enumerate() {
-            if !summary[index].2 {
+            // Only a flock whose anchor actually travels can be steered; a
+            // settled one is standing on its landing ground.
+            if !matches!(flock.intent, FlockIntent::Cruising | FlockIntent::Lifting) {
                 continue;
             }
-            let (centroid, count, _) = summary[index];
-            let mut nearest: Option<(f64, DVec3)> = None;
+            let (centroid, count, mergeable) = summary[index];
+            let up = flock.anchor.normalize();
+            let mut steer = DVec3::ZERO;
+            let mut nearest_partner: Option<(f64, DVec3)> = None;
+
             for (other_index, (other_centroid, other_count, other_mergeable)) in
                 summary.iter().enumerate()
             {
-                if other_index == index || !other_mergeable {
-                    continue;
-                }
-                if count + other_count > FLOCK_MERGE_CEILING_BIRDS {
+                if other_index == index {
                     continue;
                 }
                 let distance = centroid.distance(*other_centroid);
-                if distance > FLOCK_MERGE_ATTRACTION_METERS {
+                let could_merge = mergeable
+                    && *other_mergeable
+                    && count + other_count <= FLOCK_MERGE_CEILING_BIRDS;
+                if could_merge {
+                    if distance <= FLOCK_MERGE_ATTRACTION_METERS
+                        && nearest_partner.is_none_or(|(best, _)| distance < best)
+                    {
+                        nearest_partner = Some((distance, *other_centroid));
+                    }
                     continue;
                 }
-                if nearest.is_none_or(|(best, _)| distance < best) {
-                    nearest = Some((distance, *other_centroid));
+                if distance > FLOCK_AVOIDANCE_METERS || distance <= 1.0e-6 {
+                    continue;
+                }
+                let away = centroid - *other_centroid;
+                let flat = away - up * away.dot(up);
+                if flat.length_squared() <= 1.0e-9 {
+                    continue;
+                }
+                // Linear in how far inside the radius the other flock is, so a
+                // distant one barely registers and a close one is firm.
+                steer += flat.normalize()
+                    * (((FLOCK_AVOIDANCE_METERS - distance) / FLOCK_AVOIDANCE_METERS)
+                        * FLOCK_AVOIDANCE_STRENGTH);
+            }
+
+            if let Some((_, target)) = nearest_partner {
+                let toward = target - flock.anchor;
+                let flat = toward - up * toward.dot(up);
+                if flat.length_squared() > 1.0e-9 {
+                    steer += flat.normalize() * FLOCK_MERGE_ATTRACTION_STRENGTH;
                 }
             }
-            let Some((_, target)) = nearest else {
-                continue;
-            };
-            let up = flock.anchor.normalize();
-            let toward = target - flock.anchor;
-            let flat = toward - up * toward.dot(up);
-            if flat.length_squared() <= 1.0e-9 {
+
+            if steer.length_squared() <= 1.0e-12 {
                 continue;
             }
-            let blended = flock.drift
-                + flat.normalize() * (FLOCK_MERGE_ATTRACTION_STRENGTH * step_seconds * 10.0);
+            let blended = flock.drift + steer * (step_seconds * 10.0);
             if blended.length_squared() > 1.0e-9 {
                 flock.drift = blended.normalize();
             }
@@ -536,21 +582,37 @@ impl BirdFlocks {
     ) -> Option<Flock> {
         let up = camera_local.normalize();
         let (east, north) = tangent_basis(up);
-        let bearing = self.rng.range(0.0, std::f64::consts::TAU);
-        let distance = self
-            .rng
-            .range(FLOCK_SPAWN_MIN_METERS, FLOCK_SPAWN_MAX_METERS);
-        let offset = east * (distance * bearing.cos()) + north * (distance * bearing.sin());
-        let anchor_direction = (camera_local + offset).normalize();
-        let sample = ground(anchor_direction)?;
-        if !sample.walkable {
-            return None;
+        let mut placement = None;
+        for _ in 0..FLOCK_SPAWN_ATTEMPTS {
+            let bearing = self.rng.range(0.0, std::f64::consts::TAU);
+            let distance = self
+                .rng
+                .range(FLOCK_SPAWN_MIN_METERS, FLOCK_SPAWN_MAX_METERS);
+            let offset = east * (distance * bearing.cos()) + north * (distance * bearing.sin());
+            let anchor_direction = (camera_local + offset).normalize();
+            let Some(sample) = ground(anchor_direction) else {
+                continue;
+            };
+            if !sample.walkable {
+                continue;
+            }
+            let cruise_altitude_meters = self
+                .rng
+                .range(CRUISE_ALTITUDE_MIN_METERS, CRUISE_ALTITUDE_MAX_METERS);
+            let anchor = anchor_direction * (sample.surface_radius_meters + cruise_altitude_meters);
+            // Crowding a flock this one could merge with is fine; crowding any
+            // other is what put two flocks 19.77m apart on their first step.
+            let crowded = self.flocks.iter().any(|flock| {
+                flock.centroid().distance(anchor) < FLOCK_SPAWN_SEPARATION_METERS
+                    && !flock.is_mergeable()
+            });
+            if crowded {
+                continue;
+            }
+            placement = Some((anchor_direction, anchor, cruise_altitude_meters));
+            break;
         }
-
-        let cruise_altitude_meters = self
-            .rng
-            .range(CRUISE_ALTITUDE_MIN_METERS, CRUISE_ALTITUDE_MAX_METERS);
-        let anchor = anchor_direction * (sample.surface_radius_meters + cruise_altitude_meters);
+        let (anchor_direction, anchor, cruise_altitude_meters) = placement?;
         let count = FLOCK_MIN_BIRDS + self.rng.index(FLOCK_MAX_BIRDS - FLOCK_MIN_BIRDS + 1);
         let mut rng = Rng::new(self.rng.next_u64());
         let (flock_east, flock_north) = tangent_basis(anchor_direction);
@@ -1488,6 +1550,52 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn flocks_that_cannot_merge_keep_out_of_each_other() {
+        // Two things were needed and the measurement said which. The steering
+        // rule alone changed nothing at all -- 19.77m with it and 19.77m
+        // without, bit for bit -- because the closest approach was at t=0.1s,
+        // the first step after a spawn, and no amount of steering undoes where
+        // a flock was put. With the spawn separation as well the closest
+        // approach is 32.61m and happens at t=268.6s, during a real encounter.
+        let radius = 4_000_000.0;
+        let camera = camera_at(radius + 2.0);
+        let ground = flat_ground(radius);
+        let mut closest = f64::INFINITY;
+        for seed in [3u64, 13, 41, 97, 128] {
+            let mut flocks = BirdFlocks::new(seed);
+            let mut time = 0.0;
+            while time < 300.0 {
+                time += 0.1;
+                flocks.advance(time, camera, &ground);
+                let live = flocks.flocks();
+                for (index, flock) in live.iter().enumerate() {
+                    for other in live.iter().skip(index + 1) {
+                        // Settled flocks are standing on their landing ground
+                        // and are not steered, so they are not this rule's.
+                        if !matches!(flock.intent, FlockIntent::Cruising | FlockIntent::Lifting)
+                            || !matches!(other.intent, FlockIntent::Cruising | FlockIntent::Lifting)
+                        {
+                            continue;
+                        }
+                        let could_merge = flock.is_mergeable()
+                            && other.is_mergeable()
+                            && flock.birds().len() + other.birds().len()
+                                <= FLOCK_MERGE_CEILING_BIRDS;
+                        if could_merge {
+                            continue;
+                        }
+                        closest = closest.min(flock.centroid().distance(other.centroid()));
+                    }
+                }
+            }
+        }
+        assert!(
+            closest > 25.0,
+            "two flocks that cannot merge closed to {closest:.2}m, which is inside a flock"
+        );
     }
 
     #[test]
