@@ -9169,3 +9169,46 @@ search a longer contour/switchback route before accepting expensive cut/fill;
 if no permissible route exists, a tunnel is a separate portal/interior and
 terrain-hole problem. Forest and other object placement must exclude the road
 footprint. None of those claims is implemented or performance-measured here.
+
+## 13 September — flocks join up, bounded by a mutual visibility limit
+
+User's rule, and it is self-limiting by construction: a flock can only see other
+flocks while it is small, and a flock that is not small cannot be seen either.
+So merging is mutual, and a flock that grows past the limit goes blind and
+invisible at the same moment, which stops the process without anyone having to
+cap it from outside.
+
+`FLOCK_MERGE_VISIBILITY_BIRDS` is 16: at or above it `is_mergeable` is false, so
+the flock neither absorbs nor is absorbed. Mergeable flocks inside
+`FLOCK_MERGE_ATTRACTION_METERS` bend their drift toward the nearest one they
+could actually fit with, so joining up is something they do rather than
+something that happens to them by chance, and they combine once their centroids
+are within 20m. One pair per step, so nothing can cascade several flocks into a
+swarm inside a single step. The larger flock keeps its heading and plans; the
+smaller joins it.
+
+`FLOCK_MERGE_CEILING_BIRDS` is 30 and a merge that would exceed it is refused.
+With these constants that check is redundant -- two flocks each one bird under
+the visibility limit come to exactly 30 -- which is why deleting it fails no
+test. The relationship is what actually needs guarding, so it is a compile-time
+`const _: () = assert!(...)` rather than a test: raise the visibility limit
+without raising the ceiling and the build stops.
+
+`birds_render`'s instance buffer is now `birds::worst_case_bird_count()`, every
+flock at the ceiling, instead of a round number picked to look safe.
+
+Measured before the change, to answer the question that prompted it: flocks
+could not merge at all, because `advance_flock` snapshots `flock.birds` and the
+three rules never see across a flock. Over four seeds and 240 simulated seconds
+the closest two birds in different flocks came was 1.32m and the closest two
+centroids 9.43m.
+
+533 workspace tests, 0 failed; clippy and fmt clean. Merging fires (a counter,
+not an inferred size threshold -- a merge of two flocks under the visibility
+limit lands in the range a single spawn already produces, so size proves
+nothing). Disabling the merge fails the join test; removing the visibility limit
+fails the limit test with a flock of 23 still merging. `largest_flock` and
+`flock_merges` are in the frame log, because merging is otherwise invisible in a
+replay: the bird count does not change and the flock count falls the same way a
+retirement makes it fall.
+

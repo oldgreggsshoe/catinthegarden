@@ -16,8 +16,10 @@ pub fn birds_shader_source() -> String {
 const BIRD_BODY_LENGTH_METERS: f32 = 0.42;
 /// Beyond this a bird is well under a pixel and is not worth an instance.
 const BIRD_DRAW_DISTANCE_METERS: f64 = 620.0;
-/// Ten flocks of at most twenty-six, with headroom rather than a hard trim.
-const MAX_BIRD_INSTANCES: usize = 320;
+/// Exactly the worst case the simulation can present -- every flock at the
+/// merge ceiling -- rather than a round number chosen to look safe. Derived, so
+/// raising the flock cap or the merge ceiling resizes the buffer with it.
+const MAX_BIRD_INSTANCES: usize = birds::worst_case_bird_count();
 
 #[repr(C)]
 #[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
@@ -295,6 +297,13 @@ mod tests {
             flocks.bird_count() <= MAX_BIRD_INSTANCES,
             "{} birds exceeds the {MAX_BIRD_INSTANCES} instance buffer",
             flocks.bird_count()
+        );
+        // The live count is not the bound that matters: flocks merge, so the
+        // worst case the buffer must hold is every flock at the merge ceiling.
+        assert!(
+            birds::worst_case_bird_count() <= MAX_BIRD_INSTANCES,
+            "{} birds in the worst case exceeds the {MAX_BIRD_INSTANCES} instance buffer",
+            birds::worst_case_bird_count()
         );
     }
 }

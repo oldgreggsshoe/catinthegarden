@@ -3707,6 +3707,11 @@ impl State {
                     .birds()
                     .filter(|bird| bird.is_grounded())
                     .count(),
+                // Merging is otherwise invisible in a replay: the bird count is
+                // unchanged and the flock count falls the same way a retirement
+                // makes it fall.
+                largest_flock = self.birds.largest_flock(),
+                flock_merges = self.birds.merge_count(),
                 mass_tonnes = self.ship_hull.mass_kg() / 1000.0,
                 // The depth the hull is floating in. It has to be the depth
                 // the renderer uses, or the two are on different seas.

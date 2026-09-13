@@ -43,6 +43,32 @@ const MAX_FLOCKS: usize = 10;
 const FLOCK_MIN_BIRDS: usize = 9;
 const FLOCK_MAX_BIRDS: usize = 26;
 
+/// Flocks join up, but only while they are small. A flock with this many birds
+/// or more neither sees other flocks nor can be seen by them, so it can neither
+/// absorb nor be absorbed, and the merging stops on its own rather than running
+/// away into one swarm. Both sides have to be under it, so the rule is mutual.
+const FLOCK_MERGE_VISIBILITY_BIRDS: usize = 16;
+/// A merge is refused outright if the result would exceed this, which is what
+/// makes "no flock is ever bigger than this" a property of the code rather than
+/// a hope about the thresholds. Two flocks of fifteen are the worst case.
+const FLOCK_MERGE_CEILING_BIRDS: usize = 30;
+/// The ceiling check in `merge_touching_flocks` and the visibility limit are
+/// deliberately redundant: with these constants either one alone holds the
+/// invariant, so removing the runtime check does not fail any test. What that
+/// leaves unguarded is the *relationship*, which is checked here at compile
+/// time instead. Raise the visibility limit without raising the ceiling and the
+/// build stops, rather than the merge silently starting to be refused.
+const _: () = assert!((FLOCK_MERGE_VISIBILITY_BIRDS - 1) * 2 <= FLOCK_MERGE_CEILING_BIRDS);
+/// Merging has to be reachable from the spawn range, or the rule does nothing.
+const _: () = assert!(FLOCK_MIN_BIRDS < FLOCK_MERGE_VISIBILITY_BIRDS);
+
+/// Centroids inside this are close enough to be one flock.
+const FLOCK_MERGE_DISTANCE_METERS: f64 = 20.0;
+/// Mergeable flocks drift toward each other from here, so joining up is
+/// something they do rather than something that happens to them by chance.
+const FLOCK_MERGE_ATTRACTION_METERS: f64 = 160.0;
+const FLOCK_MERGE_ATTRACTION_STRENGTH: f64 = 0.35;
+
 // Reynolds' three rules, in metres.
 const NEIGHBOUR_RADIUS_METERS: f64 = 16.0;
 const SEPARATION_RADIUS_METERS: f64 = 3.4;
@@ -88,6 +114,13 @@ const STARTLE_RADIUS_METERS: f64 = 34.0;
 const CRUISE_WINGBEATS_PER_SECOND: f32 = 3.1;
 const CLIMB_WINGBEATS_PER_SECOND: f32 = 6.4;
 const GLIDE_WINGBEATS_PER_SECOND: f32 = 1.1;
+
+/// The most birds the whole set can ever present at once: every flock at the
+/// merge ceiling. This is what a renderer's instance buffer has to hold, and it
+/// is larger than the spawn maximum because flocks join up.
+pub const fn worst_case_bird_count() -> usize {
+    MAX_FLOCKS * FLOCK_MERGE_CEILING_BIRDS
+}
 
 /// What the ground under a candidate point is like. The caller resolves this
 /// from the terrain; keeping it a plain value is what lets the whole flock be
@@ -186,6 +219,12 @@ impl Flock {
         self.birds.iter().map(|bird| bird.position).sum::<DVec3>() / self.birds.len() as f64
     }
 
+    /// Small enough, and settled enough, to take an interest in other flocks.
+    /// Birds on the ground or on their way to it are busy.
+    fn is_mergeable(&self) -> bool {
+        self.intent == FlockIntent::Cruising && self.birds.len() < FLOCK_MERGE_VISIBILITY_BIRDS
+    }
+
     fn grounded_count(&self) -> usize {
         self.birds.iter().filter(|bird| bird.is_grounded()).count()
     }
@@ -259,6 +298,10 @@ pub struct BirdFlocks {
     /// Simulation clock, carried so a caller can hand us wall time and let the
     /// fixed step do the accounting.
     simulated_seconds: f64,
+    /// Merges so far. Exposed because "flocks join up" is otherwise invisible
+    /// in a replay: the bird count does not change and the flock count falls
+    /// the same way a retirement makes it fall.
+    merges: u64,
 }
 
 impl BirdFlocks {
@@ -267,6 +310,7 @@ impl BirdFlocks {
             flocks: Vec::new(),
             rng: Rng::new(seed),
             simulated_seconds: 0.0,
+            merges: 0,
         }
     }
 
@@ -276,6 +320,20 @@ impl BirdFlocks {
 
     pub fn flock_count(&self) -> usize {
         self.flocks.len()
+    }
+
+    pub fn merge_count(&self) -> u64 {
+        self.merges
+    }
+
+    /// Largest flock currently alive, which is the number the merge ceiling
+    /// exists to bound.
+    pub fn largest_flock(&self) -> usize {
+        self.flocks
+            .iter()
+            .map(|flock| flock.birds.len())
+            .max()
+            .unwrap_or(0)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -324,8 +382,107 @@ impl BirdFlocks {
         for flock in &mut self.flocks {
             advance_flock(flock, step_seconds, camera_local, ground);
         }
+        self.attract_mergeable_flocks(step_seconds);
+        self.merge_touching_flocks();
         self.retire_distant_flocks(camera_local);
         self.spawn_missing_flocks(camera_local, ground);
+    }
+
+    /// Bends a mergeable flock's heading toward the nearest flock it can both
+    /// see and fit with. Computed against a snapshot of centroids so the pass
+    /// does not depend on the order flocks happen to sit in the vector.
+    fn attract_mergeable_flocks(&mut self, step_seconds: f64) {
+        let summary: Vec<(DVec3, usize, bool)> = self
+            .flocks
+            .iter()
+            .map(|flock| (flock.centroid(), flock.birds.len(), flock.is_mergeable()))
+            .collect();
+        for (index, flock) in self.flocks.iter_mut().enumerate() {
+            if !summary[index].2 {
+                continue;
+            }
+            let (centroid, count, _) = summary[index];
+            let mut nearest: Option<(f64, DVec3)> = None;
+            for (other_index, (other_centroid, other_count, other_mergeable)) in
+                summary.iter().enumerate()
+            {
+                if other_index == index || !other_mergeable {
+                    continue;
+                }
+                if count + other_count > FLOCK_MERGE_CEILING_BIRDS {
+                    continue;
+                }
+                let distance = centroid.distance(*other_centroid);
+                if distance > FLOCK_MERGE_ATTRACTION_METERS {
+                    continue;
+                }
+                if nearest.is_none_or(|(best, _)| distance < best) {
+                    nearest = Some((distance, *other_centroid));
+                }
+            }
+            let Some((_, target)) = nearest else {
+                continue;
+            };
+            let up = flock.anchor.normalize();
+            let toward = target - flock.anchor;
+            let flat = toward - up * toward.dot(up);
+            if flat.length_squared() <= 1.0e-9 {
+                continue;
+            }
+            let blended = flock.drift
+                + flat.normalize() * (FLOCK_MERGE_ATTRACTION_STRENGTH * step_seconds * 10.0);
+            if blended.length_squared() > 1.0e-9 {
+                flock.drift = blended.normalize();
+            }
+        }
+    }
+
+    /// Joins one touching pair per step. One at a time keeps the bookkeeping
+    /// obvious and cannot cascade several flocks into a swarm inside a single
+    /// step, which is the failure this whole rule exists to prevent.
+    fn merge_touching_flocks(&mut self) {
+        let mut pair = None;
+        'outer: for left in 0..self.flocks.len() {
+            for right in (left + 1)..self.flocks.len() {
+                if !self.flocks[left].is_mergeable() || !self.flocks[right].is_mergeable() {
+                    continue;
+                }
+                if self.flocks[left].birds.len() + self.flocks[right].birds.len()
+                    > FLOCK_MERGE_CEILING_BIRDS
+                {
+                    continue;
+                }
+                if self.flocks[left]
+                    .centroid()
+                    .distance(self.flocks[right].centroid())
+                    <= FLOCK_MERGE_DISTANCE_METERS
+                {
+                    pair = Some((left, right));
+                    break 'outer;
+                }
+            }
+        }
+        let Some((left, right)) = pair else {
+            return;
+        };
+        // The larger flock keeps its own heading and landing plans; the smaller
+        // one joins it. Equal sizes fall to the earlier index, which is stable.
+        let (keep, absorb) = if self.flocks[left].birds.len() >= self.flocks[right].birds.len() {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        let joining = self.flocks.swap_remove(absorb);
+        // `swap_remove` moves the last element into `absorb`, so the survivor's
+        // index only shifts if it was that last element.
+        let keep = if keep == self.flocks.len() {
+            absorb
+        } else {
+            keep
+        };
+        self.flocks[keep].birds.extend(joining.birds);
+        self.merges += 1;
+        debug_assert!(self.flocks[keep].birds.len() <= FLOCK_MERGE_CEILING_BIRDS);
     }
 
     fn retire_distant_flocks(&mut self, camera_local: DVec3) {
@@ -1273,6 +1430,64 @@ mod tests {
             closest > 0.1,
             "birds closed to {closest:.3}m even allowing for touchdown"
         );
+    }
+
+    #[test]
+    fn small_flocks_join_up_and_never_grow_past_the_ceiling() {
+        let radius = 4_000_000.0;
+        let camera = camera_at(radius + 2.0);
+        let ground = flat_ground(radius);
+        let mut merges = 0;
+        let mut largest = 0;
+        for seed in [3u64, 13, 41, 97, 128] {
+            let mut flocks = BirdFlocks::new(seed);
+            let mut time = 0.0;
+            while time < 300.0 {
+                time += 0.1;
+                flocks.advance(time, camera, &ground);
+                largest = largest.max(flocks.largest_flock());
+                // The ceiling is the whole point of the visibility rule, so it
+                // is checked every step rather than at the end.
+                assert!(
+                    flocks.largest_flock() <= FLOCK_MERGE_CEILING_BIRDS,
+                    "seed {seed} grew a flock to {} at {time:.1}s",
+                    flocks.largest_flock()
+                );
+            }
+            merges += flocks.merge_count();
+        }
+        // The counter is direct evidence that the path fired; a size threshold
+        // would not be, because a merge of two flocks under the visibility
+        // limit lands in the same range a single spawn can already produce.
+        assert!(merges > 0, "no two flocks ever joined up");
+        assert!(
+            largest >= FLOCK_MIN_BIRDS * 2,
+            "largest flock was only {largest}"
+        );
+    }
+
+    #[test]
+    fn a_flock_at_the_visibility_limit_neither_sees_nor_is_seen() {
+        let radius = 4_000_000.0;
+        let camera = camera_at(radius + 2.0);
+        let ground = flat_ground(radius);
+        for seed in [5u64, 23, 61] {
+            let mut flocks = BirdFlocks::new(seed);
+            let mut time = 0.0;
+            while time < 240.0 {
+                time += 0.1;
+                flocks.advance(time, camera, &ground);
+                for flock in flocks.flocks() {
+                    if flock.birds().len() >= FLOCK_MERGE_VISIBILITY_BIRDS {
+                        assert!(
+                            !flock.is_mergeable(),
+                            "a flock of {} was still merging at {time:.1}s",
+                            flock.birds().len()
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
