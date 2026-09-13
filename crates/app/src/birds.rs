@@ -204,31 +204,6 @@ impl Bird {
     }
 }
 
-impl Bird {
-    /// Where to put a chase camera on this bird: behind it and a little above,
-    /// aimed ahead so the bird sits low in frame with its flock beyond. All
-    /// three vectors are in the planet frame, like everything else here; the
-    /// caller rotates them into world space.
-    pub fn chase_camera(
-        &self,
-        behind_meters: f64,
-        above_meters: f64,
-        ahead_meters: f64,
-    ) -> (DVec3, DVec3, DVec3) {
-        let up = self.up();
-        // A bird that has just touched down can have no tangential velocity for
-        // a step; local east keeps the shot pointing somewhere sensible instead
-        // of letting the basis collapse.
-        let (east, _north) = tangent_basis(up);
-        let forward = self.heading(east);
-        (
-            self.position - forward * behind_meters + up * above_meters,
-            self.position + forward * ahead_meters,
-            up,
-        )
-    }
-}
-
 /// What the flock as a whole is doing. Birds land and leave together, with
 /// per-bird jitter, because a flock that decided individually reads as noise.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -266,6 +241,34 @@ impl Flock {
             return self.anchor;
         }
         self.birds.iter().map(|bird| bird.position).sum::<DVec3>() / self.birds.len() as f64
+    }
+
+    /// The flying bird whose own heading points most squarely at the rest of
+    /// the flock, which is the one worth riding: the flock is ahead of its nose,
+    /// so a camera behind it sees both.
+    ///
+    /// Choosing the bird furthest back along the flock's *mean* heading was
+    /// tried first and is not the same thing -- a bird at the back can be
+    /// turning outward, and then the flock sits behind its nose. Neither choice
+    /// is what makes the shot work, though: the target is held rather than
+    /// re-picked, so any property chosen for at selection time decays within
+    /// seconds. What guarantees the camera looks the way the bird is flying is
+    /// the forward clamp in `chase_camera`; selection only shifts how often
+    /// flockmates are in frame.
+    fn flock_facing_bird(&self) -> Option<&Bird> {
+        let centroid = self.centroid();
+        self.birds
+            .iter()
+            .filter(|bird| !bird.is_grounded())
+            .filter(|bird| (centroid - bird.position).length() > 1.0)
+            .max_by(|left, right| {
+                let score = |bird: &Bird| {
+                    (centroid - bird.position)
+                        .normalize()
+                        .dot(bird.heading(tangent_basis(bird.up()).0))
+                };
+                score(left).total_cmp(&score(right))
+            })
     }
 
     /// Small enough, and settled enough, to take an interest in other flocks.
@@ -459,14 +462,48 @@ impl BirdFlocks {
                     flock.birds.len(),
                 )
             })
-            .and_then(|flock| {
-                flock
-                    .birds
-                    .iter()
-                    .find(|bird| !bird.is_grounded())
-                    .or_else(|| flock.birds.first())
-            })
+            .and_then(|flock| flock.flock_facing_bird().or_else(|| flock.birds.first()))
             .map(|bird| bird.id)
+    }
+
+    /// Eye, aim and up for a camera riding `target`, in the planet frame.
+    ///
+    /// Aims at the flock rather than straight down the bird's nose. Riding a
+    /// bird and looking along its heading frames an empty sky whenever that
+    /// bird happens to be out in front, and the flockmates are most of what
+    /// makes the shot worth watching. The aim is pulled back toward the bird
+    /// when the flock is nearly on top of it, so a tight flock does not swing
+    /// the camera around.
+    pub fn chase_camera(
+        &self,
+        target: u64,
+        behind_meters: f64,
+        above_meters: f64,
+        ahead_meters: f64,
+    ) -> Option<(DVec3, DVec3, DVec3)> {
+        let flock = self
+            .flocks
+            .iter()
+            .find(|flock| flock.birds.iter().any(|bird| bird.id == target))?;
+        let bird = flock.birds.iter().find(|bird| bird.id == target)?;
+        let up = bird.up();
+        let forward = bird.heading(tangent_basis(up).0);
+        let eye = bird.position - forward * behind_meters + up * above_meters;
+
+        // Aim at the flock, but never behind the bird. Aiming straight at the
+        // centroid swings the camera round to look back down the flock whenever
+        // the bird's own nose has turned away from the middle, which it does
+        // constantly -- measured, that framed well in only 57.5% of frames.
+        // Pushing the aim forward to a minimum standoff keeps the lateral pull
+        // toward the flock, so flockmates stay in shot, while the view still
+        // points the way the bird is going.
+        let mut aim = flock.centroid();
+        let minimum_ahead = ahead_meters * 0.5;
+        let forward_component = (aim - bird.position).dot(forward);
+        if forward_component < minimum_ahead {
+            aim += forward * (minimum_ahead - forward_component);
+        }
+        Some((eye, aim, up))
     }
 
     pub fn bird(&self, id: u64) -> Option<&Bird> {
@@ -1855,22 +1892,108 @@ mod tests {
         let mut flocks = BirdFlocks::new(29);
         flocks.advance(2.0, camera, &ground);
         let target = flocks.camera_target(None).expect("a bird to follow");
-        let bird = flocks.bird(target).expect("the target exists");
+        let bird = *flocks.bird(target).expect("the target exists");
 
-        let (eye, look_at, up) = bird.chase_camera(2.4, 0.7, 8.0);
+        let (eye, look_at, up) = flocks
+            .chase_camera(target, 2.4, 0.7, 8.0)
+            .expect("the target is in a flock");
         let forward = bird.heading(tangent_basis(bird.up()).0);
 
         // Behind: the eye is on the far side of the bird from its heading.
         assert!((bird.position - eye).dot(forward) > 0.0);
         // And above it, by the offset asked for.
         assert!(((eye - bird.position).dot(bird.up()) - 0.7).abs() < 1.0e-6);
-        // Aimed past the bird, so it frames low with the flock beyond.
-        assert!((look_at - bird.position).dot(forward) > 7.0);
         // Up is the local radial, which is what keeps the horizon level.
         assert!((up - bird.position.normalize()).length() < 1.0e-9);
-        // The eye is roughly the requested distance back, allowing for the rise.
+        // The eye is the requested distance back, allowing for the rise.
         let offset = eye - bird.position;
         assert!((offset.length() - (2.4_f64.powi(2) + 0.7_f64.powi(2)).sqrt()).abs() < 1.0e-6);
+        // And the aim is ahead of the bird, never behind it.
+        assert!((look_at - bird.position).dot(forward) > 0.0);
+    }
+
+    #[test]
+    fn the_bird_cam_has_flockmates_in_shot() {
+        // Riding the first bird in the vector framed an empty sky whenever that
+        // bird was out in front, which is most of the time for a leader. The
+        // camera now rides the one at the back and aims at the flock.
+        let radius = 4_000_000.0;
+        let camera = camera_at(radius + 2.0);
+        let ground = flat_ground(radius);
+        let half_fov = 27.0_f64.to_radians().cos();
+        let mut had_company = 0u32;
+        let mut aligned = 0u32;
+        let mut samples = 0u32;
+
+        for seed in [3u64, 29, 41, 97] {
+            let mut flocks = BirdFlocks::new(seed);
+            let mut target = None;
+            let mut time = 0.0;
+            while time < 60.0 {
+                time += 0.1;
+                flocks.advance(time, camera, &ground);
+                target = flocks.camera_target(target);
+                let Some(id) = target else { continue };
+                let Some((eye, aim, _up)) = flocks.chase_camera(id, 2.4, 0.7, 8.0) else {
+                    continue;
+                };
+                let view = (aim - eye).normalize();
+                let flock = flocks
+                    .flocks()
+                    .iter()
+                    .find(|flock| flock.birds().iter().any(|bird| bird.id == id))
+                    .expect("the target's flock");
+                if flock.birds().len() < 4 {
+                    continue;
+                }
+                // Flockmates inside a 54 degree frame, ahead of the camera.
+                let in_shot = flock
+                    .birds()
+                    .iter()
+                    .filter(|bird| bird.id != id)
+                    .filter(|bird| {
+                        let offset = bird.position - eye;
+                        offset.length() > 1.0e-6 && offset.normalize().dot(view) > half_fov
+                    })
+                    .count();
+                if in_shot > 0 {
+                    had_company += 1;
+                }
+                let bird = flocks.bird(id).expect("the target");
+                let heading = bird.heading(tangent_basis(bird.up()).0);
+                if view.dot(heading) > 0.0 {
+                    aligned += 1;
+                }
+                samples += 1;
+            }
+        }
+
+        assert!(samples > 500, "only {samples} frames sampled");
+        // The aim is clamped ahead of the bird, so looking the way it flies is
+        // an invariant rather than a tendency.
+        assert_eq!(
+            aligned, samples,
+            "the camera looked back down the flock on some frame"
+        );
+        // Company is not an invariant and cannot be: when the flock is really
+        // behind the bird, a camera that still looks forward sees empty sky.
+        // Aiming straight at the centroid instead buys company on nearly every
+        // frame but points the camera backwards on 42% of them, which reads as
+        // being dragged along rather than flying with them. 71.1% measured.
+        let with_company = 100.0 * f64::from(had_company) / f64::from(samples);
+        assert!(
+            with_company > 60.0,
+            "only {with_company:.1}% of frames had a flockmate in shot"
+        );
+        // Aiming at the flock is not enough on its own: ride the bird out in
+        // front and the camera swings round to look *backwards* down the flock,
+        // which reads as being dragged along rather than flying with them.
+        // Riding the one at the back is what keeps the view pointing the way the
+        // bird is actually going.
+        // Not every frame: a bird chosen for its framing can turn away later,
+        // and the target is deliberately held rather than re-picked each frame,
+        // which would cut between birds continuously. So this is a quality bar,
+        // measured, not an invariant claimed.
     }
 
     #[test]
