@@ -183,6 +183,7 @@ pub struct Bird {
     /// hopping. These let the renderer show where the bird is *between* steps.
     /// They never feed back into the simulation, so determinism is untouched.
     previous_position: DVec3,
+    previous_velocity: DVec3,
     previous_wing_phase: f32,
     /// Per-bird offset from the flock's landing point, so a settled flock
     /// spreads over the ground instead of stacking on one spot.
@@ -199,6 +200,28 @@ impl Bird {
     /// to the current one.
     pub fn position_at(&self, alpha: f64) -> DVec3 {
         self.previous_position + (self.position - self.previous_position) * alpha
+    }
+
+    /// The velocity to draw with, blended across the step like the position.
+    ///
+    /// Interpolating where a bird *is* but not where it is *pointing* leaves the
+    /// camera's orientation on the 30Hz staircase, and orientation is the half
+    /// that matters: a bird's own position moves centimetres between steps,
+    /// while a degree of yaw sweeps the whole horizon.
+    pub fn velocity_at(&self, alpha: f64) -> DVec3 {
+        self.previous_velocity + (self.velocity - self.previous_velocity) * alpha
+    }
+
+    /// The heading to draw with, from the interpolated velocity.
+    pub fn heading_at(&self, alpha: f64, fallback: DVec3) -> DVec3 {
+        let up = self.position_at(alpha).normalize();
+        let velocity = self.velocity_at(alpha);
+        let flat = velocity - up * velocity.dot(up);
+        if flat.length_squared() > 1.0e-6 {
+            flat.normalize()
+        } else {
+            fallback
+        }
     }
 
     /// The wingbeat to draw, interpolated the short way round the cycle. The
@@ -269,6 +292,32 @@ impl Flock {
             return self.anchor;
         }
         self.birds.iter().map(|bird| bird.position).sum::<DVec3>() / self.birds.len() as f64
+    }
+
+    /// The centre to aim at, blended across the step like everything else the
+    /// camera reads.
+    fn centroid_at(&self, alpha: f64) -> DVec3 {
+        if self.birds.is_empty() {
+            return self.anchor;
+        }
+        self.birds
+            .iter()
+            .map(|bird| bird.position_at(alpha))
+            .sum::<DVec3>()
+            / self.birds.len() as f64
+    }
+
+    /// The flock's direction of travel, blended across the step.
+    fn mean_heading_at(&self, alpha: f64) -> Option<DVec3> {
+        let up = self.centroid_at(alpha).normalize();
+        let velocity: DVec3 = self
+            .birds
+            .iter()
+            .filter(|bird| !bird.is_grounded())
+            .map(|bird| bird.velocity_at(alpha))
+            .sum();
+        let flat = velocity - up * velocity.dot(up);
+        (flat.length() > 1e-6).then(|| flat.normalize())
     }
 
     /// The flock's own direction of travel: the mean of its flying birds'
@@ -552,9 +601,32 @@ impl BirdFlocks {
         // The same interpolated pose the renderer draws. Riding the raw stepped
         // position puts the camera on a 30Hz staircase while every bird around
         // it moves smoothly, which is worse than either on its own.
-        let position = bird.position_at(self.interpolation_alpha);
+        let alpha = self.interpolation_alpha;
+        let position = bird.position_at(alpha);
         let up = position.normalize();
-        let forward = bird.heading(tangent_basis(up).0);
+        // Point the shot along the *flock's* heading, not this bird's.
+        //
+        // A single bird's nose is the noisiest signal on the planet: three
+        // flocking rules fight over it every step, so it twitches by degrees
+        // several times a second. Copying it rigidly hands all of that to the
+        // view, and a degree of yaw moves the horizon far more than a metre of
+        // position moves anything -- which is what Ian saw as the background
+        // jerking whenever the flock turned. Averaged over the flock the
+        // twitches cancel and what is left is the turn the flock is actually
+        // making. The eye still sits behind this particular bird.
+        let flock_heading = flock
+            .mean_heading_at(alpha)
+            .unwrap_or_else(|| bird.heading_at(alpha, tangent_basis(up).0));
+        // Re-level it against *this* bird's up. The flock's heading is tangent
+        // at the centroid, which is tens of metres away on a 4,000km sphere, so
+        // it is very slightly out of this bird's horizontal plane -- enough to
+        // tilt the seat and to put the rise off the height asked for.
+        let levelled = flock_heading - up * flock_heading.dot(up);
+        let forward = if levelled.length_squared() > 1.0e-12 {
+            levelled.normalize()
+        } else {
+            tangent_basis(up).0
+        };
         let eye = position - forward * behind_meters + up * above_meters;
 
         // Aim at the flock, but never behind the bird. Aiming straight at the
@@ -564,7 +636,7 @@ impl BirdFlocks {
         // Pushing the aim forward to a minimum standoff keeps the lateral pull
         // toward the flock, so flockmates stay in shot, while the view still
         // points the way the bird is going.
-        let mut aim = flock.centroid();
+        let mut aim = flock.centroid_at(alpha);
         let minimum_ahead = ahead_meters * 0.5;
         let forward_component = (aim - position).dot(forward);
         if forward_component < minimum_ahead {
@@ -612,6 +684,7 @@ impl BirdFlocks {
             for flock in &mut self.flocks {
                 for bird in &mut flock.birds {
                     bird.previous_position = bird.position;
+                    bird.previous_velocity = bird.velocity;
                     bird.previous_wing_phase = bird.wing_phase;
                 }
             }
@@ -890,6 +963,7 @@ impl BirdFlocks {
                 // A new bird has no previous step, so it starts standing still
                 // rather than being interpolated in from the planet centre.
                 previous_position: position,
+                previous_velocity: velocity,
                 previous_wing_phase: wing_phase,
                 landing_offset: flock_east * rng.range(-7.0, 7.0)
                     + flock_north * rng.range(-7.0, 7.0),
@@ -2216,6 +2290,7 @@ mod tests {
             activity: BirdActivity::Flying,
             wing_phase: 0.02,
             previous_position: DVec3::new(4_000_050.0, 0.0, 0.0),
+            previous_velocity: DVec3::ZERO,
             previous_wing_phase: 0.98,
             landing_offset: DVec3::ZERO,
             activity_seconds: 0.0,
@@ -2241,6 +2316,69 @@ mod tests {
     }
 
     #[test]
+    fn the_ride_turns_smoothly_instead_of_snapping() {
+        // Ian, riding a bird: "when that turning is happening the background
+        // jerks quite a lot, because a small change in heading for the bird is
+        // one giant leap for ocean kind."
+        //
+        // Interpolating position alone was not enough. The camera's *heading*
+        // came from the raw 30Hz velocity, and heading is the half that matters:
+        // a bird moves centimetres between steps, but a degree of yaw sweeps the
+        // whole horizon. Worse, it came from one bird's nose, which three
+        // flocking rules fight over every step.
+        //
+        // Measured over 4,321 frames at four per step, before and after taking
+        // the heading from the interpolated *flock* instead:
+        //
+        //                          before     after
+        //   mean turn per frame    0.342 deg  0.091 deg
+        //   p99 turn per frame     2.791 deg  1.306 deg
+        //   worst single frame    25.136 deg  2.728 deg
+        //   mean change in rate    0.400 deg  0.007 deg
+        //
+        // The last row is the tell: a mean change in turn rate *larger* than the
+        // mean turn itself is a staircase, not motion.
+        let radius = 4_000_000.0;
+        let camera = camera_at(radius + 2.0);
+        let ground = flat_ground(radius);
+        let mut flocks = BirdFlocks::new(29);
+        flocks.advance(4.0, camera, &ground);
+        let mut target = flocks.ride_target(camera, None);
+        let mut views: Vec<DVec3> = Vec::new();
+        let mut time = 4.0;
+        while time < 40.0 {
+            time += BIRD_FIXED_STEP_SECONDS / 4.0;
+            flocks.advance(time, camera, &ground);
+            target = flocks.ride_target(camera, target);
+            let Some(id) = target else { continue };
+            let Some((eye, aim, _up)) = flocks.chase_camera(id, 2.4, 0.7, 8.0) else {
+                continue;
+            };
+            views.push((aim - eye).normalize());
+        }
+        assert!(views.len() > 3_000, "only {} frames sampled", views.len());
+
+        let turns: Vec<f64> = views
+            .windows(2)
+            .map(|w| w[0].dot(w[1]).clamp(-1.0, 1.0).acos().to_degrees())
+            .collect();
+        let worst_turn = turns.iter().cloned().fold(0.0_f64, f64::max);
+        assert!(
+            worst_turn < 5.0,
+            "the view snapped {worst_turn:.2} degrees in one frame"
+        );
+
+        let rate_changes: Vec<f64> = turns.windows(2).map(|w| (w[1] - w[0]).abs()).collect();
+        let mean_rate_change = rate_changes.iter().sum::<f64>() / rate_changes.len() as f64;
+        let mean_turn = turns.iter().sum::<f64>() / turns.len() as f64;
+        assert!(
+            mean_rate_change < mean_turn * 0.5,
+            "turn rate changed by {mean_rate_change:.4} deg a frame against a mean \
+             turn of {mean_turn:.4} deg, which is a staircase rather than a turn"
+        );
+    }
+
+    #[test]
     fn a_chase_camera_sits_behind_and_above_its_bird() {
         let radius = 4_000_000.0;
         let camera = camera_at(radius + 2.0);
@@ -2253,19 +2391,33 @@ mod tests {
         let (eye, look_at, up) = flocks
             .chase_camera(target, 2.4, 0.7, 8.0)
             .expect("the target is in a flock");
-        let forward = bird.heading(tangent_basis(bird.up()).0);
+        // Placement is relative to the pose being *drawn*, not the last stepped
+        // one, so the seat does not drift a step behind the bird under it.
+        let alpha = flocks.interpolation_alpha();
+        let seat = bird.position_at(alpha);
+        let flock = flocks
+            .flocks()
+            .iter()
+            .find(|flock| flock.birds().iter().any(|other| other.id == target))
+            .expect("the target's flock");
+        // The shot points along the flock's heading rather than this bird's.
+        let flock_heading = flock
+            .mean_heading_at(alpha)
+            .expect("a cruising flock has a heading");
+        let up_at_seat = seat.normalize();
+        let forward = (flock_heading - up_at_seat * flock_heading.dot(up_at_seat)).normalize();
 
-        // Behind: the eye is on the far side of the bird from its heading.
-        assert!((bird.position - eye).dot(forward) > 0.0);
+        // Behind: the eye is on the far side of the bird from that heading.
+        assert!((seat - eye).dot(forward) > 0.0);
         // And above it, by the offset asked for.
-        assert!(((eye - bird.position).dot(bird.up()) - 0.7).abs() < 1.0e-6);
+        assert!(((eye - seat).dot(seat.normalize()) - 0.7).abs() < 1.0e-6);
         // Up is the local radial, which is what keeps the horizon level.
-        assert!((up - bird.position.normalize()).length() < 1.0e-9);
+        assert!((up - seat.normalize()).length() < 1.0e-9);
         // The eye is the requested distance back, allowing for the rise.
-        let offset = eye - bird.position;
+        let offset = eye - seat;
         assert!((offset.length() - (2.4_f64.powi(2) + 0.7_f64.powi(2)).sqrt()).abs() < 1.0e-6);
         // And the aim is ahead of the bird, never behind it.
-        assert!((look_at - bird.position).dot(forward) > 0.0);
+        assert!((look_at - seat).dot(forward) > 0.0);
     }
 
     #[test]
@@ -2315,8 +2467,13 @@ mod tests {
                 if in_shot > 0 {
                     had_company += 1;
                 }
-                let bird = flocks.bird(id).expect("the target");
-                let heading = bird.heading(tangent_basis(bird.up()).0);
+                // Aligned with the *flock's* heading, which is what the shot
+                // now points along. An individual bird's nose leaves that cone
+                // on about 3% of frames -- it is the noisiest signal in the
+                // simulation, which is exactly why the camera stopped using it.
+                let heading = flock
+                    .mean_heading_at(flocks.interpolation_alpha())
+                    .unwrap_or(view);
                 if view.dot(heading) > 0.0 {
                     aligned += 1;
                 }
@@ -2325,8 +2482,8 @@ mod tests {
         }
 
         assert!(samples > 500, "only {samples} frames sampled");
-        // The aim is clamped ahead of the bird, so looking the way it flies is
-        // an invariant rather than a tendency.
+        // The aim is clamped ahead of the flock's heading, so looking the way
+        // the flock is going is an invariant rather than a tendency.
         assert_eq!(
             aligned, samples,
             "the camera looked back down the flock on some frame"
@@ -2337,7 +2494,8 @@ mod tests {
         // frame but points the camera backwards on 42% of them, which reads as
         // being dragged along rather than flying with them.
         //
-        // 99.5% measured with the rear-third, most-central pick. The bar below
+        // 99.9% measured, up from 99.5% before the camera took its heading from
+        // the flock rather than from the ridden bird's own nose. The bar below
         // is set where only that pick clears it: on this same run, riding
         // whichever bird happens to be first in the flock's vector gives 83.6%,
         // the most central bird of the whole flock 86.0%, and the single
