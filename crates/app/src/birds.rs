@@ -243,32 +243,64 @@ impl Flock {
         self.birds.iter().map(|bird| bird.position).sum::<DVec3>() / self.birds.len() as f64
     }
 
-    /// The flying bird whose own heading points most squarely at the rest of
-    /// the flock, which is the one worth riding: the flock is ahead of its nose,
-    /// so a camera behind it sees both.
-    ///
-    /// Choosing the bird furthest back along the flock's *mean* heading was
-    /// tried first and is not the same thing -- a bird at the back can be
-    /// turning outward, and then the flock sits behind its nose. Neither choice
-    /// is what makes the shot work, though: the target is held rather than
-    /// re-picked, so any property chosen for at selection time decays within
-    /// seconds. What guarantees the camera looks the way the bird is flying is
-    /// the forward clamp in `chase_camera`; selection only shifts how often
-    /// flockmates are in frame.
-    fn flock_facing_bird(&self) -> Option<&Bird> {
-        let centroid = self.centroid();
-        self.birds
+    /// The flock's own direction of travel: the mean of its flying birds'
+    /// velocities, projected onto the local tangent plane. A per-bird heading
+    /// wanders by several degrees a second, so ranking birds front-to-back
+    /// against one bird's nose reshuffles the order constantly; the mean holds
+    /// still enough to mean "the back of the flock".
+    fn mean_heading(&self) -> Option<DVec3> {
+        let up = self.centroid().normalize();
+        let velocity: DVec3 = self
+            .birds
             .iter()
             .filter(|bird| !bird.is_grounded())
-            .filter(|bird| (centroid - bird.position).length() > 1.0)
-            .max_by(|left, right| {
-                let score = |bird: &Bird| {
-                    (centroid - bird.position)
-                        .normalize()
-                        .dot(bird.heading(tangent_basis(bird.up()).0))
+            .map(|bird| bird.velocity)
+            .sum();
+        let flat = velocity - up * velocity.dot(up);
+        (flat.length() > 1e-6).then(|| flat.normalize())
+    }
+
+    /// A bird toward the back of the flock, which is the one worth riding: a
+    /// camera sitting behind it has the whole flock ahead of the lens.
+    ///
+    /// Two properties are wanted and they are not the same bird. Being at the
+    /// back puts the flock in front; being near the flock's own axis puts it
+    /// straight ahead rather than off to one side. So the rear third is taken
+    /// first, on the flock's mean heading, and the most central of those is
+    /// ridden. The very rearmost bird alone is a worse shot often enough to be
+    /// worth the extra step, because it is frequently the one that has fallen
+    /// out to a flank.
+    fn rearward_bird(&self) -> Option<&Bird> {
+        let centroid = self.centroid();
+        let forward = self.mean_heading()?;
+        let mut flying: Vec<&Bird> = self
+            .birds
+            .iter()
+            .filter(|bird| !bird.is_grounded())
+            .collect();
+        if flying.is_empty() {
+            return None;
+        }
+        flying.sort_by(|left, right| {
+            let along = |bird: &Bird| (bird.position - centroid).dot(forward);
+            along(left)
+                .total_cmp(&along(right))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        // At least one, so a flock of one or two still has a rider.
+        let rear = flying.len().div_ceil(3).max(1);
+        flying[..rear]
+            .iter()
+            .min_by(|left, right| {
+                let lateral = |bird: &Bird| {
+                    let offset = bird.position - centroid;
+                    (offset - forward * offset.dot(forward)).length()
                 };
-                score(left).total_cmp(&score(right))
+                lateral(left)
+                    .total_cmp(&lateral(right))
+                    .then_with(|| left.id.cmp(&right.id))
             })
+            .copied()
     }
 
     /// Small enough, and settled enough, to take an interest in other flocks.
@@ -439,12 +471,17 @@ impl BirdFlocks {
         &self.flocks
     }
 
-    /// The bird a camera should ride, given the one it is riding now. Keeps
-    /// `current` while that bird exists and only chooses again once it is
+    /// The bird a camera should ride, given where the rider is standing and the
+    /// bird it is riding now.
+    ///
+    /// Keeps `current` while that bird exists and only chooses again once it is
     /// gone: stability is the point, since re-picking every frame would cut
-    /// between birds continuously. Prefers one on the wing in the largest
-    /// flock, so a chase shot has a flock in it rather than one bird alone.
-    pub fn camera_target(&self, current: Option<u64>) -> Option<u64> {
+    /// between birds continuously. A fresh pick takes the nearest flock that
+    /// has anything airborne in it -- nearest, because this is reached by
+    /// pressing a key while looking at a flock, and the flock being looked at
+    /// is the one meant -- and rides one of its rearward birds, so the flock is
+    /// ahead of the lens.
+    pub fn ride_target(&self, from: DVec3, current: Option<u64>) -> Option<u64> {
         if let Some(current) = current
             && self.bird(current).is_some()
         {
@@ -452,17 +489,12 @@ impl BirdFlocks {
         }
         self.flocks
             .iter()
-            .max_by_key(|flock| {
-                (
-                    flock
-                        .birds
-                        .iter()
-                        .filter(|bird| !bird.is_grounded())
-                        .count(),
-                    flock.birds.len(),
-                )
+            .filter(|flock| flock.birds.iter().any(|bird| !bird.is_grounded()))
+            .min_by(|left, right| {
+                let range = |flock: &Flock| (flock.centroid() - from).length_squared();
+                range(left).total_cmp(&range(right))
             })
-            .and_then(|flock| flock.flock_facing_bird().or_else(|| flock.birds.first()))
+            .and_then(Flock::rearward_bird)
             .map(|bird| bird.id)
     }
 
@@ -504,6 +536,14 @@ impl BirdFlocks {
             aim += forward * (minimum_ahead - forward_component);
         }
         Some((eye, aim, up))
+    }
+
+    /// Every flock's centre, in the planet frame. The caller picks which one to
+    /// mark, because "nearest" alone is the wrong question: the closest flock
+    /// is frequently behind the camera, and a marker on something behind you
+    /// points at nothing. Only the caller has the view basis to tell.
+    pub fn flock_centroids(&self) -> impl Iterator<Item = DVec3> {
+        self.flocks.iter().map(|flock| flock.centroid())
     }
 
     pub fn bird(&self, id: u64) -> Option<&Bird> {
@@ -1895,14 +1935,14 @@ mod tests {
     }
 
     #[test]
-    fn a_camera_target_is_a_live_bird_and_stays_put_while_it_lives() {
+    fn a_ride_target_is_a_live_bird_and_stays_put_while_it_lives() {
         let radius = 4_000_000.0;
         let camera = camera_at(radius + 2.0);
         let ground = flat_ground(radius);
         let mut flocks = BirdFlocks::new(29);
         flocks.advance(1.0, camera, &ground);
         let first = flocks
-            .camera_target(None)
+            .ride_target(camera, None)
             .expect("a flock exists, so a target does");
         assert!(flocks.bird(first).is_some());
 
@@ -1925,7 +1965,7 @@ mod tests {
             flocks.advance(time, eye, &ground);
             let alive = flocks.bird(target).is_some();
             let next = flocks
-                .camera_target(Some(target))
+                .ride_target(eye, Some(target))
                 .expect("there is always some flock to follow here");
             if alive {
                 assert_eq!(next, target, "target moved while its bird still flew");
@@ -1945,13 +1985,96 @@ mod tests {
     }
 
     #[test]
+    fn a_ride_starts_on_a_rearward_bird_of_the_nearest_flock() {
+        // Pressing the key while looking at a flock has to land on *that*
+        // flock, and toward the back of it, or the shot opens with the flock
+        // behind the camera. Both halves are asserted against every flock the
+        // simulation actually produces rather than a constructed one.
+        let radius = 4_000_000.0;
+        let camera = camera_at(radius + 2.0);
+        let ground = flat_ground(radius);
+        let mut flocks = BirdFlocks::new(11);
+        let mut checked = 0u32;
+        let mut multi_flock = 0u32;
+        let mut time = 0.0;
+
+        while time < 90.0 {
+            time += 0.5;
+            flocks.advance(time, camera, &ground);
+            // A fresh pick every step: this is the key-press path, not the
+            // held-target path the neighbouring test covers.
+            let Some(id) = flocks.ride_target(camera, None) else {
+                continue;
+            };
+            let flock = flocks
+                .flocks()
+                .iter()
+                .find(|flock| flock.birds().iter().any(|bird| bird.id == id))
+                .expect("the ridden bird belongs to a flock");
+
+            // Nearest, measured the same way the caller means it.
+            let chosen_range = (flock.centroid() - camera).length();
+            let airborne: Vec<&Flock> = flocks
+                .flocks()
+                .iter()
+                .filter(|flock| flock.birds().iter().any(|bird| !bird.is_grounded()))
+                .collect();
+            if airborne.len() > 1 {
+                multi_flock += 1;
+            }
+            for other in &airborne {
+                assert!(
+                    (other.centroid() - camera).length() >= chosen_range - 1.0e-9,
+                    "rode a flock that was not the nearest"
+                );
+            }
+
+            // And toward the back of it. Rank by the same axis the selection
+            // uses, and require the rider to sit in the rear third.
+            let Some(forward) = flock.mean_heading() else {
+                continue;
+            };
+            let centroid = flock.centroid();
+            let along = |bird: &Bird| (bird.position - centroid).dot(forward);
+            let rider = flock
+                .birds()
+                .iter()
+                .find(|bird| bird.id == id)
+                .expect("the rider");
+            let flying = flock
+                .birds()
+                .iter()
+                .filter(|bird| !bird.is_grounded())
+                .count();
+            let ahead_of_rider = flock
+                .birds()
+                .iter()
+                .filter(|bird| !bird.is_grounded())
+                .filter(|bird| along(bird) > along(rider))
+                .count();
+            assert!(
+                ahead_of_rider + 1 > flying * 2 / 3,
+                "rode a bird with only {ahead_of_rider} of {flying} flockmates ahead of it"
+            );
+            assert!(!rider.is_grounded(), "rode a bird standing on the ground");
+            checked += 1;
+        }
+
+        assert!(checked > 100, "only {checked} picks were checked");
+        assert!(
+            multi_flock > 10,
+            "only {multi_flock} picks had a rival flock, so nearest went untested"
+        );
+    }
+
+    #[test]
     fn a_chase_camera_sits_behind_and_above_its_bird() {
         let radius = 4_000_000.0;
         let camera = camera_at(radius + 2.0);
         let ground = flat_ground(radius);
         let mut flocks = BirdFlocks::new(29);
         flocks.advance(2.0, camera, &ground);
-        let target = flocks.camera_target(None).expect("a bird to follow");
+        let target = flocks.ride_target(camera, None).expect("a bird to follow");
         let bird = *flocks.bird(target).expect("the target exists");
 
         let (eye, look_at, up) = flocks
@@ -1992,7 +2115,7 @@ mod tests {
             while time < 60.0 {
                 time += 0.1;
                 flocks.advance(time, camera, &ground);
-                target = flocks.camera_target(target);
+                target = flocks.ride_target(camera, target);
                 let Some(id) = target else { continue };
                 let Some((eye, aim, _up)) = flocks.chase_camera(id, 2.4, 0.7, 8.0) else {
                     continue;
@@ -2035,25 +2158,54 @@ mod tests {
             aligned, samples,
             "the camera looked back down the flock on some frame"
         );
-        // Company is not an invariant and cannot be: when the flock is really
+        // Company is not an invariant and cannot be: when the flock really is
         // behind the bird, a camera that still looks forward sees empty sky.
         // Aiming straight at the centroid instead buys company on nearly every
         // frame but points the camera backwards on 42% of them, which reads as
-        // being dragged along rather than flying with them. 71.1% measured.
+        // being dragged along rather than flying with them.
+        //
+        // 99.5% measured with the rear-third, most-central pick. The bar below
+        // is set where only that pick clears it: on this same run, riding
+        // whichever bird happens to be first in the flock's vector gives 83.6%,
+        // the most central bird of the whole flock 86.0%, and the single
+        // rearmost bird with no centring 89.9%. Both halves of the rule earn
+        // their place.
         let with_company = 100.0 * f64::from(had_company) / f64::from(samples);
         assert!(
-            with_company > 60.0,
+            with_company > 95.0,
             "only {with_company:.1}% of frames had a flockmate in shot"
         );
-        // Aiming at the flock is not enough on its own: ride the bird out in
-        // front and the camera swings round to look *backwards* down the flock,
-        // which reads as being dragged along rather than flying with them.
-        // Riding the one at the back is what keeps the view pointing the way the
-        // bird is actually going.
-        // Not every frame: a bird chosen for its framing can turn away later,
-        // and the target is deliberately held rather than re-picked each frame,
-        // which would cut between birds continuously. So this is a quality bar,
-        // measured, not an invariant claimed.
+        // Not every frame, and it cannot be: the target is deliberately held
+        // rather than re-picked, since re-picking would cut between birds
+        // continuously, so a bird chosen at the back can drift forward later.
+        // This is a measured quality bar, not an invariant claimed.
+    }
+
+    #[test]
+    fn every_flock_reports_a_centroid_among_its_own_birds() {
+        let radius = 4_000_000.0;
+        let camera = camera_at(radius + 2.0);
+        let ground = flat_ground(radius);
+        let mut flocks = BirdFlocks::new(31);
+        assert_eq!(flocks.flock_centroids().count(), 0, "no flocks yet");
+
+        let mut time = 0.0;
+        while time < 60.0 {
+            time += 0.1;
+            flocks.advance(time, camera, &ground);
+            let centroids: Vec<DVec3> = flocks.flock_centroids().collect();
+            assert_eq!(centroids.len(), flocks.flock_count());
+            // Each centre sits inside its own flock's spread, which is what
+            // makes it a sensible thing to point a marker at.
+            for (centroid, flock) in centroids.iter().zip(flocks.flocks()) {
+                let furthest = flock
+                    .birds()
+                    .iter()
+                    .map(|bird| bird.position.distance(*centroid))
+                    .fold(0.0_f64, f64::max);
+                assert!(furthest < 120.0, "centroid {furthest:.0}m from its flock");
+            }
+        }
     }
 
     #[test]

@@ -46,8 +46,15 @@ newest sections.
 
 **Current birds (13 September):** flocking birds stream in around the camera,
 cruise, land, walk and take off again. Simulation in `birds`, GPU in
-`birds_render`, drawn beside the ship in both render paths. Verified by counts
-in a replay, not yet by eye.
+`birds_render`, drawn beside the ship in both render paths. **B** rides a bird
+in the nearest airborne flock and **B** again gives the eye back; the red
+reticle marks the nearest flock's centre regardless of depth. Verified by
+counts in a replay and by eye in `bird_demo/1789323190-434266`.
+
+**Forest beams removed (13 September):** the opt-in forest beam overlay and its
+whole supporting path are gone at the user's request, and **B** now belongs to
+the bird cam. Sections below describing beams, `CATINGARDEN_FOREST_BEAMS` and
+global forest locators are historical.
 
 **Current ocean default (10 September):** spawn-coast shoreward waves are now enabled
 for normal launches at the user's request. `CATINGARDEN_SPAWN_COAST_WAVES=0`
@@ -9338,3 +9345,99 @@ weather field. Live transitions must not flip wave phases abruptly. Safe
 horizontal crest compression plus inverse CPU surface queries, stronger
 thickness-based scattering, foam quality and measured cost remain subsequent
 phases. Do not describe this as Sea of Thieves-level completion.
+
+## Bird ride camera on B, and forest beams removed - 13 September 2026
+
+### Why the bird cam never worked for the user
+
+The bird cam was reached through `CATINGARDEN_BIRD_CAM`, decided once at launch.
+The user could not get it to do anything, and was right about the cause before I
+was: **the game starts with the scene clock frozen and nothing spawns until F10
+starts it**, so at the moment the launch-time choice is made there are no birds
+and there is no flock to ride. No environment variable can fix that, because the
+decision happens at exactly the wrong time. A key press, taken once a flock is
+up, is the only shape that works interactively.
+
+There was a second, independent fault that a scenario replay structurally cannot
+catch. The bird cam sat directly beneath the authored scenario pose, which is
+*above* the orbit, low-flight and surface camera controllers. A replay authors
+its pose there and then leaves the camera alone, so the bird cam happened to be
+the last writer and the shot worked. Interactively the surface controller runs
+afterwards and rebuilds the pose from `flight_local_position`, putting the
+player's own eye straight back every frame. So even with the variable set the
+feature would have done nothing on the machine it was being tested on. It is now
+the last camera writer of the frame, and
+`the_bird_camera_is_applied_after_every_other_camera_writer` asserts the
+ordering against all four writers; moving the block back where it was fails it.
+
+### What B does
+
+Pressing **B** picks the *nearest* flock with anything airborne in it -- nearest,
+because the key is pressed while looking at a flock, and the flock being looked
+at is the one meant -- and rides one of its rearward birds. Pressing **B** again
+hands the eye back; nothing has to be restored, because surface and low flight
+rebuild the pose from `flight_local_position` every frame, so the player returns
+to exactly where they were standing. The target is dropped on the way out, so
+the next press picks afresh rather than resuming a bird that may be a kilometre
+away. While riding, the target is *held* until that bird is retired, because
+re-picking each frame cuts between birds continuously. `CATINGARDEN_BIRD_CAM`
+still starts a replay already riding.
+
+### Which bird, and why it is measured
+
+Two properties are wanted and they are not the same bird: being at the back puts
+the flock in front of the lens, and being near the flock's own axis puts it
+*straight* ahead rather than off to one side. So `Flock::rearward_bird` takes the
+rear third along the flock's mean heading -- the mean, because a single bird's
+heading wanders several degrees a second and reshuffles the order constantly --
+and rides the most lateral-central of those.
+
+Measured over four seeds, 60s each, counting frames with at least one flockmate
+inside a 54-degree frame ahead of the camera:
+
+| selection                                | frames with company |
+|------------------------------------------|---------------------|
+| rear third, most central (shipped)       | **99.5%**           |
+| rearmost bird only, no centring          | 89.9%               |
+| most central of the whole flock          | 86.0%               |
+| whichever bird is first in the vector    | 83.6%               |
+
+The test bar is 95%, so only the shipped rule clears it and each half of the rule
+earns its place. Company cannot be an invariant: the target is deliberately held,
+so a bird chosen at the back can drift forward later. What *is* an invariant is
+that the camera looks the way the bird is flying, which the forward clamp in
+`chase_camera` guarantees and the same test asserts on every sampled frame.
+
+`a_ride_starts_on_a_rearward_bird_of_the_nearest_flock` covers the pick itself
+against every flock the simulation actually produces. Mutating the selection to
+the farthest flock, to the front third, or to allow grounded birds each fails it.
+
+### Forest beams removed
+
+The user is done with the beam overlay, and **B** is a better key for the bird
+cam than for a debug shaft. Removed: `forest_beam.wgsl`; the beam pipeline,
+vertex buffer, anchors, vertex builders, `toggle_beams`, `draw_beams` and the
+startup refinement in `forest.rs`; the three `FOREST_BEAM_*` constants; the HUD
+field, help text, log fields and key handler in `main.rs`; and, once the
+compiler showed they had no other caller,
+`TerrainRenderer::prepare_global_forest_locator_sample`, `TerrainForestSample`
+and `TerrainStartupSamples::forests` in `terrain.rs`. `ForestRenderer::new` no
+longer takes the global sample slice or a `&mut TerrainRenderer`.
+`grep -i beam` returns nothing in `forest.rs`, `main.rs` or `terrain.rs`.
+
+### Verification
+
+547 workspace tests pass, clippy is clean on `--all-targets` and fmt is clean.
+Release replay `bird_demo/1789323190-434266` under `xvfb-run` logs 6 flocks,
+105 birds, 105 drawn, largest flock 23, 1 merge; frame 020 shows the ride from
+behind a bird with eight flockmates in shot at a range of wingbeat phases and
+the red flock reticle on the flock centre.
+
+### Outstanding
+
+Interactive **B** itself has not been pressed by a human yet -- a scenario replay
+cannot press a key, so the key binding is covered by tests and the ride itself by
+a capture, not by both at once. Orbit mode is the one camera mode that does not
+restore cleanly on the way out, because its azimuth/elevation state *is* the pose
+the bird cam overwrites; surface and low flight, the modes birds are watched
+from, are unaffected.

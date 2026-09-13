@@ -8,6 +8,7 @@ mod birds;
 mod birds_render;
 mod body;
 mod debug;
+mod flock_marker;
 mod forest;
 mod foveated;
 mod haze;
@@ -274,6 +275,13 @@ const MAXIMUM_SHIP_BACKLOG_SECONDS: f64 = 0.25;
 const SURFACE_CAMERA_STEP_SECONDS: f64 = 1.0 / 120.0;
 const SURFACE_CAMERA_MAX_BACKLOG_SECONDS: f64 = 0.25;
 /// Beyond this the hull is smaller than a pixel and not worth a draw call.
+/// Chase-camera placement for the bird cam, in metres: far enough back that a
+/// 0.42m bird reads as a bird, low enough that it sits under the flock rather
+/// than over it.
+const BIRD_CAM_BEHIND_METERS: f64 = 2.4;
+const BIRD_CAM_ABOVE_METERS: f64 = 0.7;
+const BIRD_CAM_AHEAD_METERS: f64 = 8.0;
+
 const SHIP_VISIBLE_DISTANCE_METERS: f64 = 30_000.0;
 const PLANET_ROTATION_SCALE_STEP: f64 = 2.0;
 const MINIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 =
@@ -1013,6 +1021,13 @@ struct State {
     ship_renderer: ship_render::ShipRenderer,
     birds: birds::BirdFlocks,
     bird_renderer: birds_render::BirdRenderer,
+    /// Bird cam: B rides a bird in the nearest flock instead of the authored
+    /// pose, and `CATINGARDEN_BIRD_CAM` starts a replay already riding. The
+    /// target is held here so the shot stays on one bird rather than cutting
+    /// between them every frame.
+    bird_camera_enabled: bool,
+    bird_camera_target: Option<u64>,
+    flock_marker: flock_marker::FlockMarkerRenderer,
     ship_sim_time_seconds: f64,
     sun: sun::SunRenderer,
     foveated: foveated::FoveatedRenderer,
@@ -1360,6 +1375,12 @@ impl State {
             hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
         );
+        let flock_marker = flock_marker::FlockMarkerRenderer::new(
+            &device,
+            &queue,
+            hdr::HdrRenderer::SCENE_FORMAT,
+            &camera_bind_group_layout,
+        );
         if let (Some(scenario), Some(landing_direction)) =
             (&mut scenario, terrain.preferred_landing_direction())
         {
@@ -1419,8 +1440,15 @@ impl State {
             ship_body,
             ship_renderer,
             // One planet seed, so a scenario replay lands on the same flocks.
-            birds: birds::BirdFlocks::new(0x62_69_72_64_73),
+            // CATINGARDEN_BIRD_SPAWN_METERS="min,max" brings the spawn shell in
+            // for a demo or a close-range diagnostic; malformed values are
+            // ignored by `with_spawn_shell` rather than honoured.
+            birds: birds::BirdFlocks::new(0x62_69_72_64_73).with_spawn_shell_from_env(),
             bird_renderer,
+            bird_camera_enabled: std::env::var("CATINGARDEN_BIRD_CAM")
+                .is_ok_and(|value| !matches!(value.trim(), "" | "0" | "false" | "off")),
+            bird_camera_target: None,
+            flock_marker,
             ship_sim_time_seconds: 0.0,
             sun,
             foveated,
@@ -2214,6 +2242,20 @@ impl State {
             .update(&self.queue, self.birds.birds(), camera_local, |offset| {
                 basis.world_to_view(offset)
             });
+        // The marker takes the same camera-relative difference in f64 before it
+        // narrows, for the same reason the birds do.
+        // Mark the nearest flock *in front of the camera*. The nearest flock
+        // outright is often behind it -- measured, the marker sat at a view-space
+        // z of +13.8m and drew nothing at all -- and a reticle on something over
+        // your shoulder points at nothing. View-space z is negative ahead.
+        let marked = self
+            .birds
+            .flock_centroids()
+            .map(|centre| basis.world_to_view(centre - camera_local))
+            .filter(|view| view.z < -1.0)
+            .min_by(|left, right| left.length_squared().total_cmp(&right.length_squared()));
+        self.flock_marker
+            .update(&self.queue, marked, [self.size.width, self.size.height]);
     }
 
     /// Uploads the hull's view-relative transform.
@@ -2423,6 +2465,23 @@ impl State {
             world_up,
         );
         previous_local_position.distance_squared(self.flight_local_position) > f64::EPSILON
+    }
+
+    /// Ride a bird in the nearest flock, or stop riding and hand the eye back
+    /// to the player.
+    ///
+    /// Bound to a key rather than decided at launch because there are no birds
+    /// at launch: the game starts with time stopped, and nothing spawns until
+    /// F10 starts it. A launch-time choice therefore always finds an empty sky,
+    /// which is exactly what an environment variable could never fix. Pressing
+    /// this once a flock is up picks the flock nearest the eye, so "that one"
+    /// is said by looking at it.
+    ///
+    /// The target is dropped on the way out, so the next press picks afresh
+    /// rather than resuming a bird that may be a kilometre away by then.
+    fn toggle_bird_camera(&mut self) {
+        self.bird_camera_enabled = !self.bird_camera_enabled;
+        self.bird_camera_target = None;
     }
 
     fn toggle_surface_camera_mode(&mut self) {
@@ -3061,7 +3120,7 @@ impl State {
                         ));
                         ui.label(format!("Ocean Gerstner range: {ocean_wave_range:.2} m"));
                         ui.label(
-                            "F: fullscreen  |  F3: overlay  |  , / .: time speed  |  F4: orbit/flight  |  G: surface camera  |  WASD: move  |  Space: jump/swim thrust  |  [ / ]: speed  |  F5: render path  |  O: triangle outlines  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
+                            "F: fullscreen  |  F3: overlay  |  , / .: time speed  |  F4: orbit/flight  |  G: surface camera  |  WASD: move  |  Space: jump/swim thrust  |  [ / ]: speed  |  F5: render path  |  O: triangle outlines  |  B: ride a bird  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
                         );
                         ui.label("Default: fullscreen, HUD hidden, auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc/Q: quit");
                     });
@@ -3354,6 +3413,40 @@ impl State {
             }
         }
         self.last_auto_orbit_sim_time = sim_time;
+        // Bird cam, last of the camera writers so it overrides every one of
+        // them: the authored scenario pose, the orbit, and the surface and
+        // flight controllers, which all run above and would otherwise put the
+        // player's own eye back. Still above `advance_birds`, so the flock is
+        // stepped and uploaded against the camera that actually draws it rather
+        // than trailing it by a frame.
+        //
+        // Toggling off needs nothing undone: surface and low flight rebuild the
+        // pose from `flight_local_position` every frame, so the player returns
+        // to exactly where they were standing.
+        if self.bird_camera_enabled {
+            // Where the rider is sitting, which is what "nearest flock" is
+            // measured from. While the ride is running this is the ridden
+            // bird's own seat and the target is held anyway; it only decides
+            // anything on the frame the ride starts, or when a bird is lost.
+            let from = self
+                .camera
+                .planet_frame_world_position(planet_rotation_radians);
+            self.bird_camera_target = self.birds.ride_target(from, self.bird_camera_target);
+            if let Some(pose) = self.bird_camera_target.and_then(|target| {
+                self.birds.chase_camera(
+                    target,
+                    BIRD_CAM_BEHIND_METERS,
+                    BIRD_CAM_ABOVE_METERS,
+                    BIRD_CAM_AHEAD_METERS,
+                )
+            }) {
+                let (eye_local, look_at_local, up_local) = pose;
+                let eye = planet::planet_world_vector(eye_local, planet_rotation_radians);
+                let look_at = planet::planet_world_vector(look_at_local, planet_rotation_radians);
+                let up = planet::planet_world_vector(up_local, planet_rotation_radians);
+                self.camera.set_world_pose_with_up(eye, look_at, up);
+            }
+        }
         // The camera is settled for this frame from here on, so anything that
         // bakes the camera basis into an upload belongs below this line.
         self.upload_ship_transform(planet_rotation_radians);
@@ -3740,6 +3833,8 @@ impl State {
                 // makes it fall.
                 largest_flock = self.birds.largest_flock(),
                 flock_merges = self.birds.merge_count(),
+                marker_visible = self.flock_marker.debug_state().0,
+                marker_view_z = self.flock_marker.debug_state().1,
                 mass_tonnes = self.ship_hull.mass_kg() / 1000.0,
                 // The depth the hull is floating in. It has to be the depth
                 // the renderer uses, or the two are on different seas.
@@ -4198,6 +4293,11 @@ impl State {
                     self.weather_clouds.field_bind_group(),
                 );
             }
+            // Last in the pass, so the reticle sits over the finished scene.
+            // It is not depth-tested, but it can still be painted over by
+            // anything that draws after it.
+            self.flock_marker
+                .draw(&mut render_pass, &self.camera_bind_group);
         }
         // The haze probe asks the opposite question -- whether distance reads on
         // whatever is actually in front of the camera -- and bins each pixel's
@@ -4918,6 +5018,14 @@ impl ApplicationHandler for App {
                 }
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::KeyB) =>
+                {
+                    state.toggle_bird_camera();
+                    state.mark_hud_dirty();
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
                         && event.physical_key == PhysicalKey::Code(KeyCode::Digit6) =>
                 {
                     state.toggle_auto_exposure();
@@ -5373,6 +5481,48 @@ mod tests {
             false,
         );
         assert_eq!(flying, current_radius + 100.0);
+    }
+
+    /// The bird cam is the last camera writer of the frame, and has to be.
+    ///
+    /// It first sat directly under the authored scenario pose, which is above
+    /// the orbit, flight and surface controllers. A scenario replay never
+    /// noticed -- it authors its pose and then leaves the camera alone, so the
+    /// bird cam was the last writer there by accident -- but interactively the
+    /// surface controller ran afterwards and put the player's own eye straight
+    /// back, every frame. The key appeared to do nothing at all.
+    #[test]
+    fn the_bird_camera_is_applied_after_every_other_camera_writer() {
+        let source = include_str!("main.rs");
+        let scenario_pose = source
+            .find("if scenario_planet_relative_up {")
+            .expect("a scenario authors its pose each frame");
+        let surface = source
+            .find("CameraMode::Surface => self.advance_surface_camera(")
+            .expect("the surface camera is advanced each frame");
+        let orbit = source
+            .find("CameraMode::Orbit => self.camera.advance_inclined_orbit(")
+            .expect("the orbit camera is advanced each frame");
+        let bird_cam = source
+            .find("self.bird_camera_target = self.birds.ride_target(")
+            .expect("the bird cam picks its target each frame");
+        let birds = source
+            .find("self.advance_birds(ocean_time_seconds, planet_rotation_radians);")
+            .expect("the flock is stepped each frame");
+        assert!(
+            bird_cam > scenario_pose,
+            "the bird cam must override an authored scenario pose",
+        );
+        assert!(
+            bird_cam > surface && bird_cam > orbit,
+            "the bird cam must override the interactive camera controllers",
+        );
+        // And still above the flock step, so the birds are simulated and
+        // uploaded against the camera that draws them rather than trailing it.
+        assert!(
+            bird_cam < birds,
+            "the flock must be stepped against the camera that draws it",
+        );
     }
 
     /// The ship bakes the camera basis into its view-space upload, so it must
