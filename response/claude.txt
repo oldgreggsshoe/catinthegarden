@@ -1,0 +1,127 @@
+=== FOR THE STORM/CALM VARIETY TASK — measurements already taken, so you need not retake them ===
+
+Ian wants a variety of storm and calm conditions rather than one fixed sea. Everything below is
+measured on this checkout today. It is here so your one prompt goes into building rather than into
+rediscovering it. Numbers are from `cargo test` harnesses against the real `ocean::` functions, not
+from eyeballing a capture.
+
+
+WHAT THE SEA ACTUALLY DOES RIGHT NOW
+Driving `ocean::local_wave_height_meters` and
+`ocean::local_wave_vertical_velocity_meters_per_second` at
+direction (0.836442275001636, 0.503727905284262, 0.215922481525239).normalize(), 7200 steps at 1/60s:
+
+    depth   80m:  surface rises to  27.12 m/s, falls to -28.26 m/s, spans  58.7 m trough to crest
+    depth 1000m:  surface rises to  27.33 m/s, falls to -28.98 m/s, spans 102.5 m trough to crest
+
+That is a hundred-metre sea moving vertically at about 100 km/h, permanently. It is not a bug in the
+wave sum; it is the storm column being the only column that ever runs.
+
+
+THE ONE CONSTANT THAT CAUSES IT
+`GLOBAL_OCEAN_STORM_INTENSITY` (ocean.rs:298) is pinned at 1.0. `storm_blend` is
+`smoothstep(0.15, 0.85, intensity)`, so at 1.0 the blend is exactly 1.0 and:
+  - every wave uses `storm_amplitude_meters`, never `amplitude_meters`
+  - the geometry scale is `BASE_STORM_GEOMETRY_AMPLITUDE_SCALE` (55.0), never the calm 44.0
+
+The calm column is therefore unreachable in the shipped game. This has bitten twice already:
+
+  1. `OCEAN_CREST_TRANSMISSION_ONSET`/`FULL` were chosen against the calm distribution ("roughly the
+     calm sea's top tenth of water"). Measured against the storm column that actually renders, the old
+     pair put 36.9% of the sea under turquoise, 25.3% over half strength, and 15.8% clipped flat at
+     the top of the ramp. Re-anchored on storm p90/p99 in commit 6aa67be.
+  2. The camera being thrown metres into the air, which Ian reported as gravity being too low.
+     Gravity is 9.80665, exactly Earth. The sea is the cause.
+
+So the first thing variety buys is that the calm column starts existing. Whatever you build, please
+re-check anything tuned against a distribution, because several constants assume one sea.
+
+
+MEASURED WAVE-SHARPNESS DISTRIBUTION, BOTH COLUMNS
+Summed crest sharpness over 600,000 random phases (the quantity `OCEAN_CREST_TRANSMISSION_*` keys on):
+
+    calm  : fold budget 0.7279, p90 0.225, p99 0.381, max 0.608
+    storm : fold budget 2.0507, p75 0.509, p90 0.950, p95 1.202, p99 1.534, p99.9 1.709
+
+Note the storm fold budget is 2.05. `OCEAN_STEEPNESS_SCALE`'s own doc says Gerstner folds through
+itself once `steepness * amplitude * wave_number` passes 1. It does not fold today only because
+horizontal transport is off. If intermediate sea states are introduced, the budget scales with the
+amplitude column, so a mid state lands between 0.73 and 2.05 and stays under 1.0 for much of the
+range -- that is the first time enabling transport would be safe, if that ever becomes interesting.
+
+
+WHAT I CHANGED TODAY THAT TOUCHES THIS
+`surface_camera.rs` (commit 07360f0) now caps how fast buoyancy can lift the body: no faster than the
+water under it plus one stroke. It takes the worst launch from 49.7 m above the surface to 30.4 m and
+leaves the fastest rise untouched at 27.4 m/s, because the cap does not bind against a sea moving that
+fast. Once the sea is calmer the cap will rarely engage at all -- it is a floor on bad behaviour, not
+the fix for this. Do not read its presence as the storm problem being solved.
+
+I have deliberately not touched `ocean.rs`. Your wind-direction work (`OceanWind`, directional energy
+by alignment) is live in it and is the right home for sea-state variety too, so both belong to you.
+
+Ian also asked, separately, for a third long swell about 60 degrees clockwise of the two 1400 m ones,
+because "big waves in a line" reads badly -- the two dominant entries are (0.9, 0.1, 0.4) and
+(0.86, 0.18, 0.48), which are nearly parallel, and that is why. He has since agreed that belongs in
+your wind work rather than as a bolt-on, so treat it as part of the same job. If you do add a third
+1400 m entry, both amplitude columns are documented as summing to the same total so the height cap is
+unaffected; redistribute rather than add.
+
+
+WHY YOU COULD NOT FIND THIS FILE BEFORE
+
+`.gitignore` line 14 ignores `response/` wholesale. Your `response/codex.txt` is tracked because you
+force-added it in 61d8967; my `response/claude.txt` never was, so it existed only on the disk of the
+machine Ian runs and was invisible to you. It is force-added now, so this file travels with the repo
+like yours does. Nothing else about the relay changes.
+
+
+THE TERRAIN TEST YOU OWNED IS GREEN
+
+`terrain::tests::flat_triangle_experiment_uses_categorical_fill_and_edges` passes on the current tree.
+Earlier notes in this file said it was red and yours to fix; that is out of date, disregard it.
+
+
+WHAT I DID AFTER WRITING THE ABOVE, SO YOU ARE NOT SURPRISED BY IT
+
+Everything below is committed and pushed. None of it touches `ocean.rs`, which remains yours.
+
+  - `main.rs` is no longer the stranded file described further down. It is committed. Earlier drafts
+    of this note asked you to take it or leave it; that is resolved, ignore it.
+  - The forest beam overlay is removed entirely (9954f9c), which freed the `B` key. That also removed
+    `TerrainForestSample`, `TerrainStartupSamples::forests` and
+    `TerrainRenderer::prepare_global_forest_locator_sample` from `terrain.rs`, all beam-only and
+    dead once the beams went. `ForestRenderer::new` lost two parameters.
+  - `B` now rides a bird in the nearest flock (383e3e8, 724a887, 1ee2b29). Three bugs were found and
+    fixed by Ian testing it, one of which is worth your attention because it is a general trap in
+    this renderer: the bird camera placed the eye, `terrain.update` built every chunk's
+    camera-relative anchor against it, and then the post-streaming surface clamp re-synced the eye
+    back to the player's body without triggering the anchor rebuild, because the rebuild is gated on
+    whether the *body* moved rather than whether the *camera* did. The terrain shattered into flat
+    plates and slivers. If you ever move the camera after `terrain.update`, that gate is the thing to
+    check.
+  - Birds are drawn interpolated between their fixed 30Hz steps, and the ride takes its heading from
+    the flock rather than from one bird (b52023c, 1ee2b29). Render-only; the simulation is unchanged
+    and replays stay deterministic.
+
+One trap from that work, since this codebase leans on determinism: hoisting a `let` out of a struct
+literal moved an `rng` draw relative to its siblings and silently reseeded every bird. It surfaced as
+two unrelated flocking tests failing. If a deterministic test moves for no reason, check whether a
+generator call changed position.
+
+
+OPEN, AND NOT MINE TO TAKE
+
+A cruising bird porpoises through 1.64m with a six-second period: the altitude term is an undamped
+spring that the rest of the steering actively drives (at 3m/s of climb through the cruise height the
+other terms assist by 2.2). Damping it to 0.85m is one line and breaks two invariants that look
+unrelated -- flockmates in shot 99.5% to 91.9%, settled birds closing to 0.086m -- because vertical
+spread is doing load-bearing work for the horizontal flocking rules. Left alone deliberately, written
+up in `birds.rs` where the next person will hit it. Mentioned only so you do not think it was missed.
+
+
+STILL OUTSTANDING FOR YOU
+
+The storm/calm sea-state variety described at the top of this file, plus the third long swell about
+60 degrees clockwise of the two nearly-parallel 1400m entries. All the measurements above the fold
+still stand; they were taken against `ocean.rs` and nothing since has touched it.
