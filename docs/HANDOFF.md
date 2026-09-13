@@ -8924,3 +8924,33 @@ verified to fail when their change is reverted. `ocean_clear_shallows`,
 `ocean_shallow_transmission`, `ocean_coastline` and `land_chunk_seams` replays
 pass. Human acceptance of the new shallow-water colour in motion is still
 outstanding. `crates.tar.gz` untouched.
+
+## 13 September — regression cover for the patch-anchor correction
+
+The anchor repair in `4565768` was guarded only by its scenario assertion. Its
+Rust test recomputes the correction inside its own body, so it never touches the
+production path: removing the subtraction from the shader *and* zeroing the CPU
+measurement left all 516 workspace tests passing. The scenario assertion does
+bite -- a build with the shader subtraction removed fails
+`submerged_seabed_is_sediment_not_water: required red-blue margin 0.080,
+observed -0.353 from sample Some([2, 35, 92])` -- but it only fires when someone
+runs that replay, and that replay is one of the ones that silently captures
+nothing on `DISPLAY=:0`.
+
+The CPU measurement is now a named `anchor_radius_excess_meters` rather than an
+inline expression, so a test can call the real thing, and
+`patch_anchor_radius_excess_is_measured_and_subtracted_in_the_interior` pins all
+three links: the measurement is non-zero and cancels the radial error for the
+`ocean_seafloor_hole` node, the shader's interior projection subtracts it, and
+`update` ships the measured value rather than a constant. That last assertion is
+scoped to the body of `update` so it cannot match its own literal, which is how
+the neighbouring arithmetic test came to pass vacuously. It also pins the
+shared-edge branch still resolving from the global face UV, where the anchor
+cancels exactly and the correction must not be applied.
+
+Each of the three links was verified by mutation: removing the shader
+subtraction, returning zero from the helper, and replacing the instance value
+with `0.0f32` each fail the test. 517 workspace tests, 0 failed, 23 ignored;
+clippy with no warnings; fmt clean. No renderer behaviour changes in this
+commit. `crates.tar.gz` untouched.
+

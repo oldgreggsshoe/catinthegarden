@@ -628,6 +628,16 @@ impl TerrainSettings {
     }
 }
 
+/// The f32 anchor direction is not exactly unit length. Scaled to planet radius
+/// its radial rounding error reaches about half a metre -- more than a swimming
+/// eye's clearance over the sea bed, which is how it put nearby seafloor inside
+/// the near plane. Measure that excess in f64 here so the shader can subtract it
+/// from the interior patch projection; the shared-edge path must not use it,
+/// because there the anchor already cancels exactly.
+fn anchor_radius_excess_meters(anchor_world: DVec3) -> f32 {
+    (anchor_world.length() - planet_radius_meters()) as f32
+}
+
 impl TerrainInstance {
     const ATTRIBUTES: [wgpu::VertexAttribute; 9] = wgpu::vertex_attr_array![
         4 => Float32x3,
@@ -2645,10 +2655,7 @@ impl TerrainRenderer {
                 f64::from(anchor_direction.y),
                 f64::from(anchor_direction.z),
             ) * planet_radius_meters();
-            // The f32 anchor is not exactly unit length. At planet scale its
-            // radial rounding error can exceed the camera's near-plane depth.
-            let anchor_radius_correction_meters =
-                (anchor_world.length() - planet_radius_meters()) as f32;
+            let anchor_radius_correction_meters = anchor_radius_excess_meters(anchor_world);
             let anchor_u = (u_min + u_max) * 0.5;
             let anchor_v = (v_min + v_max) * 0.5;
             let edge_stitch = if render_node.active {
@@ -4439,16 +4446,17 @@ mod tests {
         LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS, OUTMAP_TILE_GRID_SUBDIVISION_LEVELS,
         SurfaceDetailNode, TERRAIN_INFO_NEAR_FIELD_BIT, TERRAIN_INFO_SOURCE_EDGE_FADE_BIT,
         TERRAIN_MATERIAL_LAYER_COUNT, TERRAIN_MATERIAL_TEXTURE_SIZE, TerrainSettings,
-        active_node_at_direction, aligned_texture_row_bytes, conservative_outmap_height_bounds,
-        cube_face_uv, downsample_srgb_rgba8, edge_stitch_info, edge_stitch_level_delta,
-        fallback_uv_transform, forest_biome_owns_trees, forest_slope_radians,
-        forest_surface_is_eligible, height_footprint_is_strictly_land, is_open_ocean_sample,
-        lod_transition_nodes, lod_transition_progress, node_intersects_source_edge_fade,
-        nodes_share_lod_transition, pack_terrain_info, padded_texture_rows, planet_shader_source,
-        purge_expired_lod_transitions, radial_triangle_radius, sample_biome_cpu, sample_height_cpu,
-        sample_moisture_cpu, should_animate_lod_transition, source_tile_uv_at_direction,
-        surface_detail_filter_meters, terrain_material_layer_texels, terrain_material_texel,
-        tileable_value_noise, viewed_surface_direction,
+        active_node_at_direction, aligned_texture_row_bytes, anchor_radius_excess_meters,
+        conservative_outmap_height_bounds, cube_face_uv, downsample_srgb_rgba8, edge_stitch_info,
+        edge_stitch_level_delta, fallback_uv_transform, forest_biome_owns_trees,
+        forest_slope_radians, forest_surface_is_eligible, height_footprint_is_strictly_land,
+        is_open_ocean_sample, lod_transition_nodes, lod_transition_progress,
+        node_intersects_source_edge_fade, nodes_share_lod_transition, pack_terrain_info,
+        padded_texture_rows, planet_shader_source, purge_expired_lod_transitions,
+        radial_triangle_radius, sample_biome_cpu, sample_height_cpu, sample_moisture_cpu,
+        should_animate_lod_transition, source_tile_uv_at_direction, surface_detail_filter_meters,
+        terrain_material_layer_texels, terrain_material_texel, tileable_value_noise,
+        viewed_surface_direction,
     };
     use crate::planet::{
         CHUNK_GRID_QUADS, GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, MAX_LOD_LEVEL,
@@ -6215,6 +6223,50 @@ mod tests {
         let edge_direction = node.center_direction();
         let edge_relative = (edge_direction - anchor) * radius;
         assert!((uncorrected + edge_relative - edge_direction * radius).length() < 1.0e-6);
+    }
+
+    #[test]
+    fn patch_anchor_radius_excess_is_measured_and_subtracted_in_the_interior() {
+        // The node under the camera in `ocean_seafloor_hole`. Codex's
+        // neighbouring test checks the arithmetic; this one checks the fix is
+        // actually wired to it, which the arithmetic test cannot see.
+        let node = QuadtreeNode {
+            face: CubeFace::PositiveX.index(),
+            level: 18,
+            x: 98_243,
+            y: 207_998,
+        };
+        let anchor_direction = node.center_direction().as_vec3().normalize();
+        let anchor_world = DVec3::new(
+            f64::from(anchor_direction.x),
+            f64::from(anchor_direction.y),
+            f64::from(anchor_direction.z),
+        ) * planet_radius_meters();
+        let excess = anchor_radius_excess_meters(anchor_world);
+        assert!(excess.abs() > 0.1, "measured excess {excess}m");
+        assert!((anchor_world.length() - f64::from(excess) - planet_radius_meters()).abs() < 0.01);
+
+        let shader = planet_shader_source();
+        let projection = shader
+            .split("fn project_patch_vertex(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("patch vertex projection is present");
+        assert!(projection.contains("- anchor_direction * input.anchor_radius_correction_meters;"));
+        // The shared boundary must keep resolving from the global face UV,
+        // where the anchor cancels exactly against the world position added
+        // back. Correcting there would round a shared vertex differently in
+        // each neighbour and split the seam `ocean_waterline_flat` guards.
+        assert!(projection.contains("let node_uv = input.node_uv_origin_span.xy"));
+
+        // And the per-instance value must be the measured excess, not a
+        // constant. Scoped to `update` so this assertion cannot match itself.
+        let update_body = include_str!("terrain.rs")
+            .split("    pub fn update(")
+            .nth(1)
+            .and_then(|source| source.split("\n    pub fn ").next())
+            .expect("terrain update is present");
+        assert!(update_body.contains("anchor_radius_excess_meters(anchor_world)"));
     }
 
     #[test]
