@@ -322,6 +322,13 @@ pub struct BirdFlocks {
     /// in a replay: the bird count does not change and the flock count falls
     /// the same way a retirement makes it fall.
     merges: u64,
+    /// The shell new flocks appear in. A field rather than a constant only so a
+    /// demo or a diagnostic replay can bring it in close and show birds at
+    /// arm's length without waiting for one to drift over; the shipping values
+    /// are the constants above. Reading the environment is left to the caller,
+    /// which is what keeps this module testable without one.
+    spawn_min_meters: f64,
+    spawn_max_meters: f64,
 }
 
 impl BirdFlocks {
@@ -331,6 +338,43 @@ impl BirdFlocks {
             rng: Rng::new(seed),
             simulated_seconds: 0.0,
             merges: 0,
+            spawn_min_meters: FLOCK_SPAWN_MIN_METERS,
+            spawn_max_meters: FLOCK_SPAWN_MAX_METERS,
+        }
+    }
+
+    /// Overrides the spawn shell. Ignored unless both bounds are finite,
+    /// positive and ordered, so a malformed override cannot quietly produce a
+    /// flock inside the camera.
+    pub fn with_spawn_shell(mut self, min_meters: f64, max_meters: f64) -> Self {
+        if min_meters.is_finite()
+            && max_meters.is_finite()
+            && min_meters > 0.0
+            && max_meters > min_meters
+        {
+            self.spawn_min_meters = min_meters;
+            self.spawn_max_meters = max_meters;
+        }
+        self
+    }
+
+    /// Applies `CATINGARDEN_BIRD_SPAWN_METERS`, written as `min,max` in metres.
+    /// Anything unparseable leaves the shipping shell alone.
+    ///
+    /// `allow(dead_code)` because the only caller is the binary's own
+    /// construction of the flock set: a build that does not link it has no use
+    /// for the hook, and the alternative is a warning that says nothing.
+    #[allow(dead_code)]
+    pub fn with_spawn_shell_from_env(self) -> Self {
+        let Ok(value) = std::env::var("CATINGARDEN_BIRD_SPAWN_METERS") else {
+            return self;
+        };
+        let Some((min, max)) = value.split_once(',') else {
+            return self;
+        };
+        match (min.trim().parse::<f64>(), max.trim().parse::<f64>()) {
+            (Ok(min), Ok(max)) => self.with_spawn_shell(min, max),
+            _ => self,
         }
     }
 
@@ -585,17 +629,17 @@ impl BirdFlocks {
         let mut placement = None;
         for _ in 0..FLOCK_SPAWN_ATTEMPTS {
             let bearing = self.rng.range(0.0, std::f64::consts::TAU);
-            let distance = self
-                .rng
-                .range(FLOCK_SPAWN_MIN_METERS, FLOCK_SPAWN_MAX_METERS);
+            let distance = self.rng.range(self.spawn_min_meters, self.spawn_max_meters);
             let offset = east * (distance * bearing.cos()) + north * (distance * bearing.sin());
             let anchor_direction = (camera_local + offset).normalize();
+            // Resolvable ground is required, because the flock needs to know
+            // how high it is. Walkable ground is not: birds fly over water all
+            // the time, they just do not land on it. Requiring it here meant no
+            // flock could exist over the sea or near a waterline at all, which
+            // is how a demo camera on a beach came back with an empty sky.
             let Some(sample) = ground(anchor_direction) else {
                 continue;
             };
-            if !sample.walkable {
-                continue;
-            }
             let cruise_altitude_meters = self
                 .rng
                 .range(CRUISE_ALTITUDE_MIN_METERS, CRUISE_ALTITUDE_MAX_METERS);
@@ -1353,20 +1397,35 @@ mod tests {
     }
 
     #[test]
-    fn birds_never_spawn_where_there_is_nowhere_to_stand() {
-        let camera = camera_at(4_000_000.0 + 2.0);
+    fn birds_fly_over_water_but_never_stand_on_it() {
+        let radius = 4_000_000.0;
+        let camera = camera_at(radius + 2.0);
+        // Open water: resolvable, so a flock can be over it, but never
+        // somewhere a bird could put its feet down.
         let open_water = |_direction: DVec3| {
             Some(GroundSample {
-                surface_radius_meters: 4_000_000.0,
+                surface_radius_meters: radius,
                 slope_radians: 0.0,
                 walkable: false,
             })
         };
         let mut flocks = BirdFlocks::new(3);
-        flocks.advance(2.0, camera, &open_water);
-        assert_eq!(flocks.flock_count(), 0);
+        let mut time = 0.0;
+        while time < 200.0 {
+            time += 0.1;
+            flocks.advance(time, camera, &open_water);
+            assert!(
+                flocks.birds().all(|bird| !bird.is_grounded()),
+                "a bird stood on open water at {time:.1}s"
+            );
+        }
+        assert!(
+            flocks.flock_count() > 0,
+            "no flock over water at all, which is what emptied a beach demo"
+        );
 
-        // And unresolved terrain is declined rather than guessed at.
+        // Unresolved terrain is still declined rather than guessed at: without
+        // a surface radius the flock has no altitude to hold.
         let unloaded = |_direction: DVec3| None;
         let mut flocks = BirdFlocks::new(3);
         flocks.advance(2.0, camera, &unloaded);
@@ -1596,6 +1655,50 @@ mod tests {
             closest > 25.0,
             "two flocks that cannot merge closed to {closest:.2}m, which is inside a flock"
         );
+    }
+
+    #[test]
+    fn a_spawn_shell_override_is_honoured_and_a_malformed_one_is_not() {
+        let radius = 4_000_000.0;
+        let camera = camera_at(radius + 2.0);
+        let ground = flat_ground(radius);
+        let mut close = BirdFlocks::new(7).with_spawn_shell(30.0, 60.0);
+        close.advance(1.0, camera, &ground);
+        assert!(close.flock_count() > 0);
+        for flock in close.flocks() {
+            let distance = flock.centroid().distance(camera);
+            assert!(
+                distance < 160.0,
+                "override ignored, flock at {distance:.0}m"
+            );
+        }
+        // Reversed, zero and non-finite bounds all leave the shipping shell in
+        // place rather than putting a flock on top of the camera.
+        for (min, max) in [(60.0, 30.0), (0.0, 50.0), (f64::NAN, 50.0)] {
+            let mut guarded = BirdFlocks::new(7).with_spawn_shell(min, max);
+            guarded.advance(1.0, camera, &ground);
+            for flock in guarded.flocks() {
+                let distance = flock.centroid().distance(camera);
+                assert!(
+                    distance > FLOCK_SPAWN_MIN_METERS - 40.0,
+                    "malformed override ({min}, {max}) was applied: flock at {distance:.0}m"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reading_the_spawn_shell_from_the_environment_always_yields_a_usable_set() {
+        // A smoke test, and honest as one: the variable may or may not be set in
+        // whatever environment the suite runs in, so this pins that the reader
+        // never panics and always hands back a set that still spawns. The
+        // validation itself is covered above, where the bounds are explicit.
+        let radius = 4_000_000.0;
+        let camera = camera_at(radius + 2.0);
+        let ground = flat_ground(radius);
+        let mut flocks = BirdFlocks::new(19).with_spawn_shell_from_env();
+        flocks.advance(1.0, camera, &ground);
+        assert!(flocks.flock_count() > 0);
     }
 
     #[test]
