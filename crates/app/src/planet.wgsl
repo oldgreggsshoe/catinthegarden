@@ -2523,6 +2523,39 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             length(input.camera_relative_view_position),
         );
     }
+    // Opt-in road-surface experiment at a macro-low-slope desert site. This first pass
+    // is a material laid onto the existing terrain, not a graded cut or a
+    // separate mesh. It follows every raster triangle exactly, so no depth
+    // fighting, collision offset or LOD-edge stitching is introduced yet.
+    let road_anchor = vec3<f32>(0.94919006, 0.28950297, 0.12339471);
+    if ROAD_SURFACE_TRIAL && BODY_HAS_ATMOSPHERE
+        && outmap && macro_height_meters > 0.0
+        // Conservative directional box around the entire 650m corridor.
+        // Reject almost every terrain pixel before its local-metre projection.
+        && direction.x > 0.9
+        && abs(direction.y - road_anchor.y) < 0.00005
+        && abs(direction.z - road_anchor.z) < 0.00025 {
+        let road_local = (direction - road_anchor) * PLANET_RADIUS_METERS;
+        let along = dot(road_local, vec3<f32>(-0.11802703, -0.03599824, 0.99235767));
+        if along > -40.0 && along < 650.0 {
+            let across = dot(road_local, vec3<f32>(0.29173249, -0.95649995, 0.0));
+            // The centreline stays within 30m and the shoulder ends at 14m.
+            // Reject the rest of the screen before evaluating the S-curve.
+            if abs(across) < 48.0 {
+                let centre = 30.0 * smoothstep(0.0, 220.0, along)
+                    - 50.0 * smoothstep(260.0, 620.0, along);
+                let offset = abs(across - centre);
+                let ends = smoothstep(-40.0, -20.0, along)
+                    * (1.0 - smoothstep(350.0, 650.0, along));
+                let shoulder = (1.0 - smoothstep(10.0, 14.0, offset)) * ends;
+                let pavement = (1.0 - smoothstep(4.5, 5.5, offset)) * ends;
+                let gravel = srgb_to_linear(vec3<f32>(0.43, 0.38, 0.29));
+                let asphalt = srgb_to_linear(vec3<f32>(0.19, 0.20, 0.19));
+                textured_terrain_albedo = mix(textured_terrain_albedo, gravel, shoulder);
+                textured_terrain_albedo = mix(textured_terrain_albedo, asphalt, pavement);
+            }
+        }
+    }
     if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
         return vec4<f32>(
             mix(textured_terrain_albedo, debug_ocean_albedo(), ocean_coverage),

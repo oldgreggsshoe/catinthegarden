@@ -67,3 +67,17 @@ MEMORY.md:1-4|note=[checkout-specific evidence-based renderer workflow]
 01a07103-79ca-7e92-99b9-5da47619e658
 </rollout_ids>
 </oai-mem-citation>
+Yes—let’s try one bounded road section first. I’ll inspect the current terrain mesh, height queries, and debug scenarios, then add the smallest prototype that can be measured and visually reviewed. I’ll leave the active optical edits alone.
+The renderer already has metre-scale terrain triangles near the camera, so a short road needn’t be costly just to draw. The harder work is grading and terrain edits: cutting or filling ground must also update collision, normals, and LOD edges; tunnels need separate interior geometry. I’ll start with an opt-in, terrain-conforming road-surface section at a fixed test site and measure its cost. I won’t present that first pass as a graded or tunnelled road.
+The first draped road exposed the limitation clearly: on the mountain site it looked like pavement painted onto a cliff. I moved the trial to a surveyed gentler desert site, where it reads as a road, and kept the change opt-in. I’m now comparing matched road-on/road-off runs; cuts, switchbacks, tunnels, and a guaranteed grade remain separate work.
+
+Yes: a road is feasible without tessellating the whole planet. I built an opt-in 650m S-curved asphalt/gravel surface section at a desert test site. Run `CATINGARDEN_ROAD_EXPERIMENT=1 /home/dad/catingard-target/release/catinthegarden-app --scenario road_surface_trial`; the road-on capture is `test-runs/road_surface_trial/1789293121-315868/screenshots/capture-001.png`. Four matched Quadro pairs measured 41.661ms off versus 42.656ms on (24.00 to 23.44 FPS, -2.33%). All eight captures pass, with 42,019 altered road pixels and pixel-identical surroundings; 531 workspace tests and fmt pass. This first slice follows existing terrain exactly and changes no collision or geometry, so it does NOT yet guarantee an 8% grade, cut/fill, switchbacks, or tunnels. That measured ~1ms cost says a full road network should use culled local corridor geometry/deformation rather than evaluating each road in every terrain fragment. I am committing and pushing the isolated trial while leaving the concurrent bird work untouched.
+
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:1-4|note=[checkout-specific measured renderer workflow]
+</citation_entries>
+<rollout_ids>
+01a07103-79ca-7e92-99b9-5da47619e658
+</rollout_ids>
+</oai-mem-citation>

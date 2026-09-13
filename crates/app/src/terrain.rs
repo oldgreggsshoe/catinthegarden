@@ -119,8 +119,17 @@ fn viewed_surface_direction(
 }
 
 pub(crate) fn planet_shader_source() -> String {
+    let road_surface_trial = matches!(
+        std::env::var("CATINGARDEN_ROAD_EXPERIMENT")
+            .ok()
+            .as_deref()
+            .map(str::trim),
+        Some("1" | "true" | "on")
+    );
+    let road_setting = format!("const ROAD_SURFACE_TRIAL: bool = {road_surface_trial};");
     [
         crate::planet::shared_planet_shader_source(),
+        road_setting,
         include_str!("planet.wgsl").to_string(),
         include_str!("weather_cloud_density.wgsl").to_string(),
     ]

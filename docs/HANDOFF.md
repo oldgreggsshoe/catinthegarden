@@ -29,6 +29,12 @@ the near plane. A per-instance correction restores full bed coverage without
 changing source elevations or shared-edge projection. See the newest section;
 manual swim-path acceptance is still pending.
 
+**Current road experiment (13 September):** a single opt-in, terrain-conforming
+surface section is visible in `road_surface_trial`. It does not yet grade,
+cut/fill, clear trees, stitch dedicated geometry, or tunnel. The measured test
+shader costs about 1ms on the Quadro; the default shader compiles it out. See
+the newest section for captures and paired timing.
+
 **Current shallow-water colour and refraction (13 September):** the turquoise a
 bed puts into the water above it is weighted by an extinction falloff over the
 instantaneous column, not merely by whether a bed resolved, on a measured
@@ -9116,3 +9122,50 @@ removing the separation reproduces the original 0.014m.
 
 531 workspace tests, 0 failed; clippy and fmt clean.
 
+## 13 September — bounded road-surface experiment, not graded road geometry
+
+The first trial at the old +X landing pose put asphalt directly on a steep
+snowy wall: a useful rejection of the idea that colouring a slope makes it a
+road. The retained `road_surface_trial` uses a surveyed desert location instead.
+The current L4 macro source changes by only 1.53m over its 650m S-curve, with
+a maximum 0.44% grade between 10m samples; the runtime detail field is **not**
+covered by that number, so there is no 8% road-grade guarantee.
+
+With `CATINGARDEN_ROAD_EXPERIMENT=1`, raster terrain shades a roughly 9m
+asphalt centre with gravel shoulders feathering into the existing material by
+14m. Its centreline is a bounded two-stage smooth S-curve in planet-local
+metres. It changes no terrain vertex, collision height, draw call, depth,
+quadtree policy or ocean. It is a surface/material experiment, **not** a
+cut/fill mesh or a tunnel. The shader source selects a constant at startup;
+with the environment variable absent or 0, the road branch is compiled out.
+The moon and ray path are unaffected. Run the fixed pose with:
+
+`CATINGARDEN_ROAD_EXPERIMENT=1 /home/dad/catingard-target/release/catinthegarden-app --scenario road_surface_trial`
+
+At 1280x720 on the Quadro M1000M, Immediate present, fixed exposure, four
+interleaved off/on pairs alternate order. Each run contributes the median of
+13 spatial-frame times from 2s through 8s, with all eight runs retained:
+
+- Off median **41.661ms / 24.00 FPS**; on median **42.656ms / 23.44 FPS**.
+- Paired on-minus-off frame times **0.879, 1.750, 1.035, 0.937ms**; paired
+  median overhead **0.986ms**. The 2.33% FPS loss is meaningful for a single
+  painted section and argues against doing a whole network in the terrain
+  fragment shader. These are small exploratory samples, not a long-run GPU
+  confidence interval or evidence of the cost of a dedicated road mesh.
+- All eight manifests pass, with 179.58m camera clearance. Every matched
+  capture pair differs at exactly 42,019 pixels confined to road screen box
+  x=540..672, y=89..719; pixels outside that box are identical. A retained
+  road-on capture is `test-runs/road_surface_trial/1789293121-315868/screenshots/capture-001.png`.
+  Raw runs and summary are under
+  `test-runs/performance/road-surface-trial-98f528c-cubic/`.
+
+The next implementation should be a **local, visible-segment-only corridor**:
+plan a spline over actual rendered-height samples with a chosen maximum grade
+and curvature, solve a bounded elevation profile, and deform the shared
+terrain height/collision field over shoulders so cuts and fills reach the old
+surface continuously. Conform or refine neighbouring triangles near the
+corridor rather than increasing every terrain chunk's grid. On steep ground,
+search a longer contour/switchback route before accepting expensive cut/fill;
+if no permissible route exists, a tunnel is a separate portal/interior and
+terrain-hole problem. Forest and other object placement must exclude the road
+footprint. None of those claims is implemented or performance-measured here.

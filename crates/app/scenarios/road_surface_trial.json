@@ -1,0 +1,37 @@
+{
+  "name": "road_surface_trial",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 8.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0.0,
+  "fixed_exposure": true,
+  "screenshot_times_seconds": [4.0, 8.0],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [3798726.9759159037, 1158611.7276543507, 493834.5068690675],
+      "look_at": [3798506.45087476, 1158544.4675168018, 494067.8409217161]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [0.9, 0.3, 0.2]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 60.0
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 2,
+    "min_camera_clearance_m": 30.0,
+    "min_surface_probe_points": 60
+  }
+}
