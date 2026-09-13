@@ -54,6 +54,11 @@ for normal launches at the user's request. `CATINGARDEN_SPAWN_COAST_WAVES=0`
 opts out. Earlier opt-in-only notes below are historical. Coverage remains local
 and the measured ~5ms cost is unchanged; global steering is still outstanding.
 
+**Wind experiment (13 September):** `CATINGARDEN_OCEAN_WIND=speed,x,y,z`
+now controls a fixed startup wind-sea spectrum with CPU/GPU parity. Normal
+launches are unchanged. This is not live weather coupling or the completed
+Sea of Thieves-style ocean; see the latest wind-sea section.
+
 **Written:** 6 September 2026; header current to 13 September 2026.
 
 **How to read this file:** everything below this header is an append-only log of dated sections,
@@ -9276,3 +9281,60 @@ forward-moving centreline waypoints, captures and terrain-follow/skip settings.
 The paint still follows raw terrain relief; this is a POV presentation of the
 existing trial, not a graded drivable road, FPS improvement, or global road
 network.
+
+## 13 September — fixed-wind spectrum foundation
+
+Road work was already pushed (`f8461ca`, response `61f2e5b`) before this phase.
+Concurrent bird/marker/main changes and `crates.tar.gz` were left alone.
+
+`CATINGARDEN_OCEAN_WIND="30,-0.3,0.75,-0.6"` enables reproducible startup
+wind controls: speed in 0–30m/s, followed by a nonzero planet-frame propagation
+axis (towards, not meteorological from). Invalid settings fail explicitly.
+Absent settings preserve the previous sea. Long waves at >=1000m retain their
+amplitude and propagation. The shorter components receive speed-scaled,
+directionally weighted amplitudes and select the downwind sign of their
+existing dispersion speed. Reversing wind therefore reverses travel rather
+than just weakening the same forward waves. Maximum amplitude never exceeds
+the previous component bound; wavelength, phase origin, geometry count and
+horizontal-transport safety flag are unchanged.
+
+CPU height, slope and vertical velocity use the same weights/signs as the GPU.
+Weights are generated into WGSL constants once, avoiding per-fragment
+normalisation, dot products or square roots for wind. The spawn-coast
+shoreward override remains and accounts for the selected propagation sign;
+use `CATINGARDEN_SPAWN_COAST_WAVES=0` to inspect the unsteered wind response.
+The ripple layer also receives paired weights/signs but remains non-geometric.
+
+Validation: 22 focused ocean tests pass (one ignored instrument); 549 workspace
+tests pass with 23 ignored. Fmt passes; clippy completes with the concurrent
+bird `WING_WRIST_LOCAL` dead-code warning. Actual production-WGSL parity passes
+48 cases each at 0m/s, 15m/s and reversed 30m/s, including the spawn-coast blend
+and shallow breaking depths: maximum height difference 0.000149m and normal
+vector difference 0.00000968. The tests use a 64m test radius to isolate
+algebra/derivatives; they do not prove planet-scale phase precision. Analytic
+slope and velocity finite-difference tests also pass with all three settings.
+
+Three Quadro/Vulkan 1280x720 Immediate `ocean_wind_trial` replays pass, with
+identical stationary cameras and two captures each (2s/4s). Used `xvfb-run -a
+-s '-screen 0 1280x720x24'` because the direct :0 connection aborted before
+initialisation; the logs confirm the Quadro, not software rendering.
+
+- Calm: `test-runs/ocean_wind_trial/1789317802-401721`.
+- 30m/s towards (-0.3,0.75,-0.6): `1789317845-402669`.
+- 30m/s reversed: `1789317878-402919`.
+
+At 4s the logged diagnostic sample-grid height ranges are respectively
+24.650m, 56.379m and 53.857m. Calm retains remote swell, not a flat sea.
+The two windy final captures change 602,428 and 591,370 pixels against calm;
+the top 200 sky rows are identical. These establish a rendered response, not
+an FPS improvement or subjective visual sign-off. No matched performance
+claim is made (tests/build activity overlapped some captures).
+
+Run: `CATINGARDEN_SPAWN_COAST_WAVES=0 CATINGARDEN_OCEAN_WIND='30,-0.3,0.75,-0.6' /home/dad/catingard-target/release/catinthegarden-app --scenario ocean_wind_trial`.
+
+Still outstanding: this is an authored finite-spectrum steady-wind experiment,
+not a fetch/duration model, continuously turning wind, or the simulated local
+weather field. Live transitions must not flip wave phases abruptly. Safe
+horizontal crest compression plus inverse CPU surface queries, stronger
+thickness-based scattering, foam quality and measured cost remain subsequent
+phases. Do not describe this as Sea of Thieves-level completion.

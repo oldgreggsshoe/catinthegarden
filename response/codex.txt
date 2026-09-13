@@ -99,3 +99,19 @@ MEMORY.md:1-4|note=[checkout-specific measured renderer workflow]
 01a07103-79ca-7e92-99b9-5da47619e658
 </rollout_ids>
 </oai-mem-citation>
+
+Previous road work was already committed and pushed. I have now implemented the first ocean wind stage: startup wind speed and direction affect the actual waves, with the CPU buoyancy queries and GPU using the same settings. Long swells remain when wind stops, and reversing wind reverses the wind-sea travel direction. Wind weights are calculated once, not per pixel.
+
+144 GPU parity cases and all 549 workspace tests pass. Calm and opposite-wind captures pass; shader/CPU height disagreement is below 0.15mm in the parity test. Fmt passes; clippy reports one existing warning in concurrent bird work. This is an opt-in foundation, not live weather coupling or the completed sharper-crest/subsurface-scattering effect. Those remain next.
+
+Run: CATINGARDEN_SPAWN_COAST_WAVES=0 CATINGARDEN_OCEAN_WIND='30,-0.3,0.75,-0.6' /home/dad/catingard-target/release/catinthegarden-app --scenario ocean_wind_trial
+Capture: test-runs/ocean_wind_trial/1789317845-402669/screenshots/capture-002.png
+
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:3-4|note=[checkout-specific validation and performance evidence]
+</citation_entries>
+<rollout_ids>
+01a07103-79ca-7e92-99b9-5da47619e658
+</rollout_ids>
+</oai-mem-citation>

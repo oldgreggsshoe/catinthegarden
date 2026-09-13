@@ -1080,7 +1080,7 @@ fn gerstner_wave(
     time_seconds: f32,
     water_depth_meters: f32,
 ) -> OceanWaveContribution {
-    if !SPAWN_COAST_ENABLED || OCEAN_WAVE_PHASE_SPEED_SIGN * dot(normalize(wave_axis), SPAWN_COAST_ONSHORE) <= 0.0 {
+    if !SPAWN_COAST_ENABLED || OCEAN_WAVE_PHASE_SPEED_SIGN * sign(speed_meters_per_second) * dot(normalize(wave_axis), SPAWN_COAST_ONSHORE) <= 0.0 {
         return gerstner_wave_unsteered(direction, wave_axis, wavelength_meters,
             amplitude_meters, speed_meters_per_second, steepness, time_seconds, water_depth_meters);
     }
@@ -1181,9 +1181,9 @@ fn ocean_ripple(
     // These shorter waves are part of the local geometry as well as its normal:
     // the CPU surface query mirrors their vertical displacement at the patch
     // centre, so nearby camera buoyancy cannot drift from the visible water.
-    let first = gerstner_wave(direction, OCEAN_RIPPLE_FIRST_AXIS, 180.0, OCEAN_RIPPLE_FIRST_AMPLITUDE, 16.7613, 0.0, time_seconds, water_depth_meters);
-    let second = gerstner_wave(direction, OCEAN_RIPPLE_SECOND_AXIS, 70.0, OCEAN_RIPPLE_SECOND_AMPLITUDE, 10.4525, 0.0, time_seconds, water_depth_meters);
-    let third = gerstner_wave(direction, OCEAN_RIPPLE_THIRD_AXIS, 28.0, OCEAN_RIPPLE_THIRD_AMPLITUDE, 6.6107, 0.0, time_seconds, water_depth_meters);
+    let first = gerstner_wave(direction, OCEAN_RIPPLE_FIRST_AXIS, 180.0, OCEAN_RIPPLE_FIRST_AMPLITUDE * OCEAN_WIND_RIPPLE_WEIGHTS.x, 16.7613 * OCEAN_WIND_RIPPLE_SIGNS.x, 0.0, time_seconds, water_depth_meters);
+    let second = gerstner_wave(direction, OCEAN_RIPPLE_SECOND_AXIS, 70.0, OCEAN_RIPPLE_SECOND_AMPLITUDE * OCEAN_WIND_RIPPLE_WEIGHTS.y, 10.4525 * OCEAN_WIND_RIPPLE_SIGNS.y, 0.0, time_seconds, water_depth_meters);
+    let third = gerstner_wave(direction, OCEAN_RIPPLE_THIRD_AXIS, 28.0, OCEAN_RIPPLE_THIRD_AMPLITUDE * OCEAN_WIND_RIPPLE_WEIGHTS.z, 6.6107 * OCEAN_WIND_RIPPLE_SIGNS.z, 0.0, time_seconds, water_depth_meters);
     let weight = distance_weight * shore_weight;
     return OceanWaveContribution(
         vec3<f32>(0.0),
@@ -1301,6 +1301,9 @@ fn ocean_surface(
     for (var i = 0u; i < OCEAN_WAVE_COUNT; i = i + 1u) {
         let spec = OCEAN_WAVE_TABLE[i];
         var amplitude = mix(spec.amplitude_meters, spec.storm_amplitude_meters, storm_blend);
+        if OCEAN_WIND_ENABLED {
+            amplitude *= OCEAN_WIND_WEIGHTS[i];
+        }
         if OCEAN_LARGE_SWELL_ONLY && i >= OCEAN_LARGE_SWELL_WAVE_COUNT {
             amplitude = 0.0;
         }
@@ -1309,7 +1312,7 @@ fn ocean_surface(
             spec.axis,
             spec.wavelength_meters,
             amplitude,
-            spec.speed_meters_per_second,
+            spec.speed_meters_per_second * OCEAN_WIND_SPEED_SIGNS[i],
             spec.steepness,
             time_seconds,
             water_depth_meters,

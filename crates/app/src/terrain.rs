@@ -4798,7 +4798,9 @@ mod tests {
         // is set by the dispersion relation and owned by
         // `every_wave_travels_at_its_own_dispersion_speed`. Pinning it here too
         // meant a physics fix failed a flat-triangle wiring test.
-        assert!(shader.contains("OCEAN_RIPPLE_FIRST_AXIS, 180.0, OCEAN_RIPPLE_FIRST_AMPLITUDE,"));
+        assert!(shader.contains(
+            "OCEAN_RIPPLE_FIRST_AXIS, 180.0, OCEAN_RIPPLE_FIRST_AMPLITUDE * OCEAN_WIND_RIPPLE_WEIGHTS.x,"
+        ));
         assert!(shader.contains("ripple_height: f32"));
         assert!(shader.contains("fn ocean_interference_albedo("));
         assert!(shader.contains("surface.ripple_height"));

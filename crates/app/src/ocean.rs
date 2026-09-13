@@ -1,5 +1,80 @@
 use glam::DVec3;
 
+/// Reproducible wind-sea experiment. The vector is a planet-frame propagation
+/// axis (towards, not meteorological "from"). Fixed spectral phases avoid
+/// moving the entire ocean when selecting a different wind direction.
+#[derive(Clone, Copy, Debug)]
+struct OceanWind {
+    speed_meters_per_second: f64,
+    direction: DVec3,
+}
+
+impl OceanWind {
+    fn parse(value: &str) -> Option<Self> {
+        let values = value
+            .split(',')
+            .map(str::trim)
+            .map(str::parse::<f64>)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        if values.len() != 4 || values.iter().any(|value| !value.is_finite()) {
+            return None;
+        }
+        let direction = DVec3::new(values[1], values[2], values[3]);
+        if !(0.0..=30.0).contains(&values[0])
+            || !direction.length_squared().is_finite()
+            || direction.length_squared() <= 1.0e-12
+        {
+            return None;
+        }
+        Some(Self {
+            speed_meters_per_second: values[0],
+            direction: direction.normalize(),
+        })
+    }
+
+    fn amplitude_weight(self, axis: DVec3, wavelength_meters: f64) -> f64 {
+        // Remote long-period swell does not vanish when the local wind stops.
+        if wavelength_meters >= 1000.0 {
+            return 1.0;
+        }
+        let alignment = (-OCEAN_WAVE_PHASE_SPEED_SIGN * axis.normalize())
+            .dot(self.direction)
+            .abs()
+            .min(1.0);
+        // Squared directional energy plus a broad background. Amplitude is
+        // its square root; speed is bounded so no existing height/culling
+        // bound can be exceeded by this experiment.
+        (self.speed_meters_per_second / 30.0) * (0.15 + 0.85 * alignment * alignment).sqrt()
+    }
+
+    fn propagation_sign(self, axis: DVec3, wavelength_meters: f64) -> f64 {
+        if wavelength_meters < 1000.0
+            && (-OCEAN_WAVE_PHASE_SPEED_SIGN * axis.normalize()).dot(self.direction) < 0.0
+        {
+            -1.0
+        } else {
+            1.0
+        }
+    }
+}
+
+fn ocean_wind() -> Option<OceanWind> {
+    static WIND: std::sync::OnceLock<Option<OceanWind>> = std::sync::OnceLock::new();
+    *WIND.get_or_init(|| {
+        std::env::var("CATINGARDEN_OCEAN_WIND")
+            .ok()
+            .map(|value| {
+                let wind = OceanWind::parse(&value).expect(
+                    "CATINGARDEN_OCEAN_WIND must be speed,x,y,z: speed 0..30 m/s and a nonzero finite axis",
+                );
+                tracing::info!(speed_meters_per_second = wind.speed_meters_per_second,
+                    propagation_axis = ?wind.direction, "fixed ocean wind experiment");
+                wind
+            })
+    })
+}
+
 use crate::planet::planet_radius_meters;
 
 // Keep these values byte-for-byte aligned with the raster/ray WGSL ocean
@@ -91,8 +166,54 @@ pub(crate) fn wgsl_constants() -> String {
             format!("{value}")
         }
     }
-    format!(
-        "// Generated from ocean.rs; OCEAN_WAVE_SCALE = {}. Do not edit here.\n\
+    let wind = ocean_wind();
+    let wind_direction = wind.map_or(DVec3::X, |wind| wind.direction);
+    let weights = |waves: &[GerstnerWave]| {
+        waves
+            .iter()
+            .map(|wave| {
+                wgsl_number(wind.map_or(1.0, |wind| {
+                    wind.amplitude_weight(wave.direction, wave.wavelength_meters)
+                }))
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let signs = |waves: &[GerstnerWave]| {
+        waves
+            .iter()
+            .map(|wave| {
+                wgsl_number(wind.map_or(1.0, |wind| {
+                    wind.propagation_sign(wave.direction, wave.wavelength_meters)
+                }))
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let wind_constants = format!(
+        "const OCEAN_WIND_ENABLED: bool = {};\nconst OCEAN_WIND_SPEED: f32 = {};\nconst OCEAN_WIND_AXIS: vec3<f32> = vec3<f32>({}, {}, {});\n",
+        wind.is_some(),
+        wgsl_number(wind.map_or(30.0, |wind| wind.speed_meters_per_second)),
+        wgsl_number(wind_direction.x),
+        wgsl_number(wind_direction.y),
+        wgsl_number(wind_direction.z),
+    );
+    // Bake directional weights once: no extra sqrt/dot per wave per fragment.
+    let wind_constants = wind_constants
+        + &format!(
+            "const OCEAN_WIND_WEIGHTS: array<f32, 17> = array<f32, 17>({});\nconst OCEAN_WIND_RIPPLE_WEIGHTS: vec3<f32> = vec3<f32>({});\n",
+            weights(&WAVES),
+            weights(&OCEAN_RIPPLE_WAVES),
+        );
+    let wind_constants = wind_constants
+        + &format!(
+            "const OCEAN_WIND_SPEED_SIGNS: array<f32, 17> = array<f32, 17>({});\nconst OCEAN_WIND_RIPPLE_SIGNS: vec3<f32> = vec3<f32>({});\n",
+            signs(&WAVES),
+            signs(&OCEAN_RIPPLE_WAVES),
+        );
+    wind_constants
+        + &format!(
+            "// Generated from ocean.rs; OCEAN_WAVE_SCALE = {}. Do not edit here.\n\
          const OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE: f32 = {};\n\
          const OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE: f32 = {};\n\
          const OCEAN_CREST_EXPONENT: f32 = {};\n\
@@ -108,27 +229,27 @@ pub(crate) fn wgsl_constants() -> String {
          const SPAWN_COAST_ONSHORE: vec3<f32> = vec3<f32>({}, {}, {});\n\
          const SPAWN_COAST_INNER: f32 = {};\n\
          const SPAWN_COAST_OUTER: f32 = {};\n",
-        wgsl_number(OCEAN_WAVE_SCALE),
-        wgsl_number(OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE),
-        wgsl_number(OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE),
-        wgsl_number(OCEAN_CREST_EXPONENT),
-        wgsl_number(OCEAN_CREST_MEAN),
-        wgsl_number(OCEAN_STEEPNESS_SCALE),
-        wgsl_number(MAXIMUM_WAVE_HEIGHT_METERS),
-        wgsl_number(BREAKING_HEIGHT_TO_DEPTH_RATIO),
-        wgsl_number(OCEAN_WAVE_PHASE_SPEED_SIGN),
-        wgsl_number(REFRACTION_REFERENCE_DEPTH_METERS),
-        wgsl_number(REFRACTION_NOMINAL_SHELF_SLOPE),
-        spawn_coast_waves_enabled(),
-        SPAWN_COAST_CENTER.x,
-        SPAWN_COAST_CENTER.y,
-        SPAWN_COAST_CENTER.z,
-        SPAWN_COAST_ONSHORE.x,
-        SPAWN_COAST_ONSHORE.y,
-        SPAWN_COAST_ONSHORE.z,
-        SPAWN_COAST_INNER,
-        SPAWN_COAST_OUTER,
-    )
+            wgsl_number(OCEAN_WAVE_SCALE),
+            wgsl_number(OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE),
+            wgsl_number(OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE),
+            wgsl_number(OCEAN_CREST_EXPONENT),
+            wgsl_number(OCEAN_CREST_MEAN),
+            wgsl_number(OCEAN_STEEPNESS_SCALE),
+            wgsl_number(MAXIMUM_WAVE_HEIGHT_METERS),
+            wgsl_number(BREAKING_HEIGHT_TO_DEPTH_RATIO),
+            wgsl_number(OCEAN_WAVE_PHASE_SPEED_SIGN),
+            wgsl_number(REFRACTION_REFERENCE_DEPTH_METERS),
+            wgsl_number(REFRACTION_NOMINAL_SHELF_SLOPE),
+            spawn_coast_waves_enabled(),
+            SPAWN_COAST_CENTER.x,
+            SPAWN_COAST_CENTER.y,
+            SPAWN_COAST_CENTER.z,
+            SPAWN_COAST_ONSHORE.x,
+            SPAWN_COAST_ONSHORE.y,
+            SPAWN_COAST_ONSHORE.z,
+            SPAWN_COAST_INNER,
+            SPAWN_COAST_OUTER,
+        )
 }
 
 /// Sum of every wave's calm amplitude, before the geometry scale.
@@ -581,18 +702,28 @@ fn spawn_coast_weight(direction: DVec3) -> (f64, DVec3) {
 #[inline]
 fn sample_wave(direction: DVec3, time: f64, wave: &GerstnerWave) -> WaveSample {
     let axis = wave.direction.normalize();
+    let wind_weight = ocean_wind().map_or(1.0, |wind| {
+        wind.amplitude_weight(axis, wave.wavelength_meters)
+    });
     let k = std::f64::consts::TAU / wave.wavelength_meters;
     let sample = |sign: f64| {
         let phase = k
             * (direction.dot(axis) * planet_radius_meters()
                 + sign * wave.speed_meters_per_second * time);
         WaveSample {
-            profile: wave_profile(phase),
-            slope: axis * (k * wave_profile_derivative(phase)),
-            velocity: sign * wave.speed_meters_per_second * k * wave_profile_derivative(phase),
+            profile: wave_profile(phase) * wind_weight,
+            slope: axis * (k * wave_profile_derivative(phase) * wind_weight),
+            velocity: sign
+                * wave.speed_meters_per_second
+                * k
+                * wave_profile_derivative(phase)
+                * wind_weight,
         }
     };
-    let sign = OCEAN_WAVE_PHASE_SPEED_SIGN;
+    let sign = OCEAN_WAVE_PHASE_SPEED_SIGN
+        * ocean_wind().map_or(1.0, |wind| {
+            wind.propagation_sign(axis, wave.wavelength_meters)
+        });
     if !spawn_coast_waves_enabled() || sign * axis.dot(SPAWN_COAST_ONSHORE) <= 0.0 {
         return sample(sign);
     }
@@ -841,6 +972,44 @@ mod tests {
         global_wave_height_meters, global_wave_vertical_velocity_meters_per_second,
         maximum_wave_height_meters, wave_height_stats,
     };
+
+    #[test]
+    fn wind_settings_reject_invalid_speed_and_axes() {
+        for value in [
+            "",
+            "10,1,0",
+            "-1,1,0,0",
+            "31,1,0,0",
+            "NaN,1,0,0",
+            "10,0,0,0",
+            "10,inf,0,0",
+        ] {
+            assert!(super::OceanWind::parse(value).is_none(), "{value}");
+        }
+        let wind = super::OceanWind::parse("15, 0, 0, 2").unwrap();
+        assert_eq!(wind.direction, DVec3::Z);
+    }
+
+    #[test]
+    fn wind_energy_is_bounded_directional_and_preserves_swell() {
+        let calm = super::OceanWind::parse("0,-1,0,0").unwrap();
+        let breeze = super::OceanWind::parse("15,-1,0,0").unwrap();
+        let strong = super::OceanWind::parse("30,-1,0,0").unwrap();
+        assert_eq!(calm.amplitude_weight(DVec3::X, 350.0), 0.0);
+        assert_eq!(calm.amplitude_weight(DVec3::X, 1400.0), 1.0);
+        assert_eq!(strong.amplitude_weight(DVec3::X, 350.0), 1.0);
+        assert_eq!(breeze.amplitude_weight(DVec3::X, 350.0), 0.5);
+        assert!(strong.amplitude_weight(DVec3::Y, 350.0) < 0.4);
+        assert_eq!(strong.propagation_sign(DVec3::X, 350.0), 1.0);
+        assert_eq!(strong.propagation_sign(-DVec3::X, 350.0), -1.0);
+        assert_eq!(strong.propagation_sign(-DVec3::X, 1400.0), 1.0);
+        for wave in WAVES {
+            assert!(
+                (0.0..=1.0)
+                    .contains(&strong.amplitude_weight(wave.direction, wave.wavelength_meters))
+            );
+        }
+    }
 
     #[test]
     fn crest_profile_is_bounded_zero_mean_and_has_consistent_derivative() {

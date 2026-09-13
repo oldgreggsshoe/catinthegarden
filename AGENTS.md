@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Wind-sea foundation: opt-in `CATINGARDEN_OCEAN_WIND=speed,x,y,z` selects a bounded 0–30m/s startup spectrum and downwind propagation, shared by CPU buoyancy and generated GPU weights/signs. Long swells remain unchanged; 144 Quadro parity cases and three two-capture `ocean_wind_trial` replays pass. Live weather coupling, horizontal compression and improved scattering are not implemented by this phase; default launches retain the previous sea.
+
 - Opt-in road-surface trial: `CATINGARDEN_ROAD_EXPERIMENT=1 --scenario road_surface_trial` paints a 650m S-curved asphalt/gravel corridor on a surveyed desert patch, conforming exactly to existing terrain triangles with no extra geometry or collision change. Four interleaved Quadro Immediate-present pairs at 1280x720 measure 41.661ms off versus 42.656ms on (24.00 to 23.44 FPS, -2.33%); the added full-terrain fragment work is not a scalable network design. Eight GPU replays pass with unchanged camera clearance and 42,019 changed road pixels confined to the road's screen box; 531 workspace tests pass. This is visual/performance scoping only: no guaranteed grade, cut/fill, switchback planner, tunnel, or tree clearance yet. Default shader compiles the trial out.
 - Road trial POV replay: `road_surface_trial` now drives the S-curve automatically at 14m/s for 20s, with the scripted eye following the raster surface at 2m. Seven captures and a GPU clearance assertion pass at 2.000m; the diagnostic skips unrelated bird simulation only for this scenario. The road remains painted, ungraded terrain rather than driveable road geometry.
 
