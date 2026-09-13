@@ -165,6 +165,10 @@ pub enum BirdActivity {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Bird {
+    /// Stable for as long as the bird exists, across merges and across the
+    /// vector shuffling that `swap_remove` does. A camera following one bird
+    /// needs to be able to name it; an index cannot.
+    pub id: u64,
     pub position: DVec3,
     pub velocity: DVec3,
     pub activity: BirdActivity,
@@ -197,6 +201,31 @@ impl Bird {
         } else {
             fallback
         }
+    }
+}
+
+impl Bird {
+    /// Where to put a chase camera on this bird: behind it and a little above,
+    /// aimed ahead so the bird sits low in frame with its flock beyond. All
+    /// three vectors are in the planet frame, like everything else here; the
+    /// caller rotates them into world space.
+    pub fn chase_camera(
+        &self,
+        behind_meters: f64,
+        above_meters: f64,
+        ahead_meters: f64,
+    ) -> (DVec3, DVec3, DVec3) {
+        let up = self.up();
+        // A bird that has just touched down can have no tangential velocity for
+        // a step; local east keeps the shot pointing somewhere sensible instead
+        // of letting the basis collapse.
+        let (east, _north) = tangent_basis(up);
+        let forward = self.heading(east);
+        (
+            self.position - forward * behind_meters + up * above_meters,
+            self.position + forward * ahead_meters,
+            up,
+        )
     }
 }
 
@@ -322,6 +351,7 @@ pub struct BirdFlocks {
     /// in a replay: the bird count does not change and the flock count falls
     /// the same way a retirement makes it fall.
     merges: u64,
+    next_bird_id: u64,
     /// The shell new flocks appear in. A field rather than a constant only so a
     /// demo or a diagnostic replay can bring it in close and show birds at
     /// arm's length without waiting for one to drift over; the shipping values
@@ -338,6 +368,7 @@ impl BirdFlocks {
             rng: Rng::new(seed),
             simulated_seconds: 0.0,
             merges: 0,
+            next_bird_id: 1,
             spawn_min_meters: FLOCK_SPAWN_MIN_METERS,
             spawn_max_meters: FLOCK_SPAWN_MAX_METERS,
         }
@@ -403,6 +434,43 @@ impl BirdFlocks {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn flocks(&self) -> &[Flock] {
         &self.flocks
+    }
+
+    /// The bird a camera should ride, given the one it is riding now. Keeps
+    /// `current` while that bird exists and only chooses again once it is
+    /// gone: stability is the point, since re-picking every frame would cut
+    /// between birds continuously. Prefers one on the wing in the largest
+    /// flock, so a chase shot has a flock in it rather than one bird alone.
+    pub fn camera_target(&self, current: Option<u64>) -> Option<u64> {
+        if let Some(current) = current
+            && self.bird(current).is_some()
+        {
+            return Some(current);
+        }
+        self.flocks
+            .iter()
+            .max_by_key(|flock| {
+                (
+                    flock
+                        .birds
+                        .iter()
+                        .filter(|bird| !bird.is_grounded())
+                        .count(),
+                    flock.birds.len(),
+                )
+            })
+            .and_then(|flock| {
+                flock
+                    .birds
+                    .iter()
+                    .find(|bird| !bird.is_grounded())
+                    .or_else(|| flock.birds.first())
+            })
+            .map(|bird| bird.id)
+    }
+
+    pub fn bird(&self, id: u64) -> Option<&Bird> {
+        self.birds().find(|bird| bird.id == id)
     }
 
     pub fn birds(&self) -> impl Iterator<Item = &Bird> {
@@ -673,7 +741,10 @@ impl BirdFlocks {
             let scatter = flock_east * rng.range(-9.0, 9.0)
                 + flock_north * rng.range(-9.0, 9.0)
                 + anchor_direction * rng.range(-4.0, 4.0);
+            let id = self.next_bird_id;
+            self.next_bird_id += 1;
             birds.push(Bird {
+                id,
                 position: anchor + scatter,
                 velocity: heading * CRUISE_SPEED_METERS_PER_SECOND
                     + rng.unit_vector() * rng.range(0.0, 1.5),
@@ -1699,6 +1770,107 @@ mod tests {
         let mut flocks = BirdFlocks::new(19).with_spawn_shell_from_env();
         flocks.advance(1.0, camera, &ground);
         assert!(flocks.flock_count() > 0);
+    }
+
+    #[test]
+    fn bird_identities_are_unique_and_survive_merges() {
+        let radius = 4_000_000.0;
+        let camera = camera_at(radius + 2.0);
+        let ground = flat_ground(radius);
+        let mut merged = false;
+        for seed in [3u64, 13, 41, 97, 128] {
+            let mut flocks = BirdFlocks::new(seed);
+            let mut time = 0.0;
+            while time < 300.0 {
+                time += 0.1;
+                flocks.advance(time, camera, &ground);
+                merged |= flocks.merge_count() > 0;
+                let ids: Vec<u64> = flocks.birds().map(|bird| bird.id).collect();
+                let unique: std::collections::BTreeSet<u64> = ids.iter().copied().collect();
+                assert_eq!(ids.len(), unique.len(), "duplicate bird id at {time:.1}s");
+                assert!(!ids.contains(&0), "zero is reserved for no-bird");
+            }
+        }
+        assert!(
+            merged,
+            "no merge happened, so identity across one was untested"
+        );
+    }
+
+    #[test]
+    fn a_camera_target_is_a_live_bird_and_stays_put_while_it_lives() {
+        let radius = 4_000_000.0;
+        let camera = camera_at(radius + 2.0);
+        let ground = flat_ground(radius);
+        let mut flocks = BirdFlocks::new(29);
+        flocks.advance(1.0, camera, &ground);
+        let first = flocks
+            .camera_target(None)
+            .expect("a flock exists, so a target does");
+        assert!(flocks.bird(first).is_some());
+
+        // Held for as long as the bird lives, then handed on to another live
+        // bird rather than going blank.
+        let mut target = first;
+        let mut followed = 0;
+        let mut rechosen = 0;
+        let mut time = 1.0;
+        let (east, _north) = tangent_basis(camera.normalize());
+        while time < 200.0 {
+            time += 0.1;
+            // Walk away partway through, so the followed flock is retired and
+            // the re-choosing branch is actually exercised rather than assumed.
+            let eye = if time < 100.0 {
+                camera
+            } else {
+                camera + east * 4_000.0
+            };
+            flocks.advance(time, eye, &ground);
+            let alive = flocks.bird(target).is_some();
+            let next = flocks
+                .camera_target(Some(target))
+                .expect("there is always some flock to follow here");
+            if alive {
+                assert_eq!(next, target, "target moved while its bird still flew");
+                followed += 1;
+            } else {
+                assert_ne!(next, target, "kept a target that no longer exists");
+                assert!(flocks.bird(next).is_some(), "chose a bird that is gone");
+                rechosen += 1;
+            }
+            target = next;
+        }
+        assert!(followed > 100, "only followed for {followed} steps");
+        assert!(
+            rechosen > 0,
+            "no bird was lost, so re-choosing went untested"
+        );
+    }
+
+    #[test]
+    fn a_chase_camera_sits_behind_and_above_its_bird() {
+        let radius = 4_000_000.0;
+        let camera = camera_at(radius + 2.0);
+        let ground = flat_ground(radius);
+        let mut flocks = BirdFlocks::new(29);
+        flocks.advance(2.0, camera, &ground);
+        let target = flocks.camera_target(None).expect("a bird to follow");
+        let bird = flocks.bird(target).expect("the target exists");
+
+        let (eye, look_at, up) = bird.chase_camera(2.4, 0.7, 8.0);
+        let forward = bird.heading(tangent_basis(bird.up()).0);
+
+        // Behind: the eye is on the far side of the bird from its heading.
+        assert!((bird.position - eye).dot(forward) > 0.0);
+        // And above it, by the offset asked for.
+        assert!(((eye - bird.position).dot(bird.up()) - 0.7).abs() < 1.0e-6);
+        // Aimed past the bird, so it frames low with the flock beyond.
+        assert!((look_at - bird.position).dot(forward) > 7.0);
+        // Up is the local radial, which is what keeps the horizon level.
+        assert!((up - bird.position.normalize()).length() < 1.0e-9);
+        // The eye is roughly the requested distance back, allowing for the rise.
+        let offset = eye - bird.position;
+        assert!((offset.length() - (2.4_f64.powi(2) + 0.7_f64.powi(2)).sqrt()).abs() < 1.0e-6);
     }
 
     #[test]

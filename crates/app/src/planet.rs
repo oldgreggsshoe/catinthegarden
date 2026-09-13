@@ -417,6 +417,14 @@ pub fn planet_local_vector(world_vector: DVec3, planet_rotation_radians: f64) ->
     DQuat::from_rotation_y(-planet_rotation_radians).mul_vec3(world_vector)
 }
 
+/// The inverse of `planet_local_vector`: takes a vector in the rotating
+/// planet's local frame back out to world space. Anything that lives in the
+/// local frame -- terrain, and the flock that walks on it -- has to come back
+/// through here before it can be handed to a world-space camera pose.
+pub fn planet_world_vector(local_vector: DVec3, planet_rotation_radians: f64) -> DVec3 {
+    DQuat::from_rotation_y(planet_rotation_radians).mul_vec3(local_vector)
+}
+
 /// Geographic longitude in the renderer's north-up outward surface frame.
 /// A viewer looking inward from +X has screen-right/geographic east along -Z,
 /// so this intentionally negates the grid's mathematical `atan2(z, x)` angle.
@@ -2924,10 +2932,33 @@ mod tests {
         global_terrain_detail_meters, minimum_vertical_fov_radians_for_viewport,
         near_camera_lod_priority_weight, near_plane_meters, outmap_surface_height_meters,
         outmap_terrain_height_scale, placeholder_height_meters, planet_local_vector,
-        planet_radius_meters, planet_rotation_radians, projected_error_pixels_with_height_range,
-        scaled_outmap_macro_height_meters, terrain_detail_meters, terrain_detail_value_noise,
-        unbalanced_coarse_neighbors,
+        planet_radius_meters, planet_rotation_radians, planet_world_vector,
+        projected_error_pixels_with_height_range, scaled_outmap_macro_height_meters,
+        terrain_detail_meters, terrain_detail_value_noise, unbalanced_coarse_neighbors,
     };
+
+    #[test]
+    fn planet_local_and_world_vectors_are_inverses() {
+        // The flock lives in the local frame and the camera pose is authored in
+        // the world one, so a bird cam crosses this boundary every frame. A sign
+        // error here would put the camera on the far side of the planet.
+        let rotation = 4.520_009_936_027_975;
+        for sample in [
+            DVec3::new(3_372_422.0, 1_978_479.0, 844_259.0),
+            DVec3::new(-1_473_513.985, 1_978_409.512, 3_148_814.416),
+            DVec3::X,
+            DVec3::Y,
+        ] {
+            let round_trip = planet_world_vector(planet_local_vector(sample, rotation), rotation);
+            assert!(
+                (round_trip - sample).length() < 1.0e-6,
+                "{sample:?} came back as {round_trip:?}"
+            );
+        }
+        // Rotation about Y leaves the axis itself alone, which is the one case
+        // a sign error would not show up in, so it is checked separately.
+        assert!((planet_world_vector(DVec3::Y, 1.3) - DVec3::Y).length() < 1.0e-12);
+    }
 
     #[test]
     fn underwater_lod_accepts_a_camera_above_deep_bathymetry() {
