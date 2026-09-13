@@ -4716,7 +4716,12 @@ mod tests {
         // are what make the tint belong to thin water.
         assert!(ocean.contains("let shallow_mix = bed.w * 0.82 * shallow_column_transmittance;"));
         assert!(ocean.contains("max(-macro_height_meters, 0.0) + surface.vertical_displacement,"));
-        assert!(ocean.contains("-2.0 * instantaneous_column_meters / shallow_e_fold_meters,"));
+        // The falloff scale is the shallow-water depth, not the open-water
+        // visibility e-fold: at 100m visibility the latter barely varies across
+        // the few metres a shoaling wave spans, so the whole surf zone tinted
+        // together.
+        assert!(ocean.contains("-instantaneous_column_meters / OCEAN_SHALLOW_TINT_EFOLD_METERS,"));
+        assert!(!ocean.contains("OCEAN_UNDERWATER_VISIBILITY_METERS / log(50.0)"));
         assert!(!ocean.contains("let shallow_mix = bed.w * 0.82;"));
     }
 
@@ -5019,8 +5024,11 @@ mod tests {
             .nth(1)
             .and_then(|source| source.split("\nfn ").next())
             .expect("terrain cloud-shadow function is present");
-        assert!(shadow.contains("floor(combined_density * 4.0 + 0.5) / 4.0"));
-        assert!(shadow.contains("posterized_density * 0.88"));
+        // The ground shadow keeps the cloud presentation's band structure at the
+        // same 0.88 strength, but no longer posterizes hard: see
+        // `cloud_shadow_bands_are_continuous_where_they_meet_the_ground`.
+        assert!(shadow.contains("let scaled = combined_density * bands;"));
+        assert!(shadow.contains("banded_density * 0.88"));
     }
 
     #[test]
@@ -6223,6 +6231,22 @@ mod tests {
         let edge_direction = node.center_direction();
         let edge_relative = (edge_direction - anchor) * radius;
         assert!((uncorrected + edge_relative - edge_direction * radius).length() < 1.0e-6);
+    }
+
+    #[test]
+    fn cloud_shadow_bands_are_continuous_where_they_meet_the_ground() {
+        let shader = planet_shader_source();
+        let visibility = shader
+            .split("fn cloud_shadow_visibility(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("cloud shadow visibility is present");
+        // Posterizing the ground shadow to the cloud presentation's hard bands
+        // stepped terrain from full sun to 12% of it in one pixel, which reads
+        // as a material seam. The band character is kept; the edge is not hard.
+        assert!(!visibility.contains("floor(combined_density * 4.0 + 0.5)"));
+        assert!(visibility.contains("smoothstep(0.25, 0.75, scaled - band)"));
+        assert!(visibility.contains("return 1.0 - banded_density * 0.88;"));
     }
 
     #[test]

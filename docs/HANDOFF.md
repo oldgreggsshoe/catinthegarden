@@ -30,11 +30,12 @@ changing source elevations or shared-edge projection. See the newest section;
 manual swim-path acceptance is still pending.
 
 **Current shallow-water colour and refraction (13 September):** the turquoise a
-bed puts into the water above it is now weighted by the water's own two-way
-extinction over the instantaneous column, not merely by whether a bed resolved,
-and the refracted bed is bilinearly filtered instead of point-sampled. Crest
-transmission is re-anchored on the storm sea the game actually renders. See the
-newest section.
+bed puts into the water above it is weighted by an extinction falloff over the
+instantaneous column, not merely by whether a bed resolved, on a measured
+9m e-fold; the refracted bed is bilinearly filtered instead of point-sampled;
+and crest transmission is re-anchored on the storm sea the game actually
+renders. Ground cloud shadow is banded but no longer hard-posterized. See the
+newest sections.
 
 **Current ocean default (10 September):** spawn-coast shoreward waves are now enabled
 for normal launches at the user's request. `CATINGARDEN_SPAWN_COAST_WAVES=0`
@@ -8953,4 +8954,69 @@ subtraction, returning zero from the helper, and replacing the instance value
 with `0.0f32` each fail the test. 517 workspace tests, 0 failed, 23 ignored;
 clippy with no warnings; fmt clean. No renderer behaviour changes in this
 commit. `crates.tar.gz` untouched.
+
+## 13 September — the beach/land contrast is a cloud shadow, and the tint falls off faster
+
+User reported, from a remote session they could not move the camera in, that
+the beach and the land beside it contrast wrongly, guessing at either a
+time-of-day difference or separate beach lighting rules, and that the turquoise
+is still slightly too strong as a wave comes in.
+
+**The contrast is a cloud shadow, not a material seam.** Manual captures
+`test-runs/manual/1789280549-280895` at commit `6aa67be` show a straight,
+stair-stepped boundary with lit sand on one side and a drab neutral surface on
+the other -- a 148-level jump in a single pixel. Two things rule out material.
+The per-channel ratios across the edge are 2.43/2.26/1.90, not a common factor,
+and the two sides carry the same dune ripple texture. Solving
+`lit = A + D`, `shadow = A + 0.12 * D` for each channel gives an ambient share
+of 38% red, 43% green and **53% blue** -- ambient largest in blue is exactly
+what surviving skylight looks like, and 0.12 is precisely the visibility left by
+a full-strength four-band posterized cloud shadow.
+
+Eight bearings swept from the user's own logged position confirm the terrain
+material is not responsible: the largest single-pixel jump in any of them is 52
+levels against the reported 148, and the land there is sand in every direction.
+Reproducing that position needs the logged world position and sun direction
+rotated by `-planet_rotation_radians` (4.5200 here) to reach the planet-fixed
+frame a scenario starts in; rotated, the pose lands next to
+`ocean_seafloor_hole`'s, which is the cross-check that the rotation is right.
+The diagnostic scenario was not retained.
+
+**Repair.** `cloud_shadow_visibility` posterized the ground shadow onto the
+cloud presentation's four hard bands. On the ground a cloud edge crosses several
+bands within a few pixels, so terrain stepped from full sun to 12% of it in one
+pixel with a stair-stepped boundary from the density sampling -- on a beach, a
+hard straight line between two shades of the same sand. The band structure is
+kept, including the flat quarter at each end of every band, but the band edge
+now ramps: `(floor(scaled) + smoothstep(0.25, 0.75, fract)) / bands`. Visibility
+is continuous in density, and the old hard step from 1.000 to 0.780 between
+densities 0.10 and 0.15 becomes 0.952 then 0.828.
+
+This was **not** confirmed against a matched capture. The user's weather state
+at 863s of their session is not reproducible from a scenario, and no ground-level
+scenario here renders a cloud shadow over sand. The evidence is the arithmetic
+above on their own pixels plus the continuity of the repaired function; a fresh
+manual pass under cloud is what would confirm it.
+
+**Turquoise falloff.** The shallow tint's e-fold is now the named
+`OCEAN_SHALLOW_TINT_EFOLD_METERS`, 9m, measured rather than derived. The
+committed 12.8m (half the open-water visibility e-fold, for the two-way path)
+left too much of the approach tinted; `OCEAN_SHALLOW_DEPTH_METERS` itself, 6m,
+removed the effect almost entirely. Obviously-turquoise screen area over the
+four `ocean_clear_shallows` captures:
+
+| setting | c1 | c2 | c3 | c4 |
+|---|---:|---:|---:|---:|
+| stock before any of this work | 5.54% | 3.37% | 8.08% | 8.08% |
+| 12.8m (previous commit) | 4.11% | 0.75% | 2.47% | 2.47% |
+| **9m (retained)** | **3.24%** | **0.41%** | **1.53%** | **1.53%** |
+| 6m (rejected, too far) | 1.97% | 0.03% | 0.23% | 0.23% |
+
+518 workspace tests, 0 failed, 23 ignored; clippy with no warnings; fmt clean.
+`cloud_shadow_bands_are_continuous_where_they_meet_the_ground` is new and
+mutation-verified against the restored posterization; the existing
+`terrain_cloud_shadows_reuse_the_shared_density_and_project_toward_the_sun`
+caught this change and was updated to pin the banded form at the same 0.88
+strength. Human acceptance of both the softened shadow and the weaker tint in
+motion is outstanding. `crates.tar.gz` untouched.
 

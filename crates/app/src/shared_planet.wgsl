@@ -417,6 +417,15 @@ fn beach_sand_albedo(height_meters: f32) -> vec3<f32> {
     return mix(dry_sand, wet_sand, wet_band * 0.38);
 }
 
+// How fast the bed's turquoise contribution falls off with the water standing
+// over it. Chosen by measuring tinted screen area on `ocean_clear_shallows`,
+// not by eye. The open-water visibility e-fold (12.8m once halved for the
+// two-way path) barely varies across the few metres a shoaling wave spans and
+// left the whole surf zone tinted together, at 2.5% of the frame obviously
+// turquoise. OCEAN_SHALLOW_DEPTH_METERS itself, 6m, was too sharp the other
+// way and removed the effect almost entirely, at 0.2%. This sits between them
+// and keeps the tint on the thinnest water only.
+const OCEAN_SHALLOW_TINT_EFOLD_METERS: f32 = 9.0;
 const OCEAN_BODY_COLOUR: vec3<f32> = vec3<f32>(0.005, 0.032, 0.170);
 // Where the transmitted turquoise starts and where it is full, in units of
 // summed crest sharpness (`OceanSurface::crest_sharpness`) -- dimensionless

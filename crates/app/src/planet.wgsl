@@ -1073,10 +1073,20 @@ fn cloud_shadow_visibility(
     let combined_density = 1.0
         - (1.0 - clamp(lower_density, 0.0, 1.0))
             * (1.0 - clamp(upper_density, 0.0, 1.0));
-    // Match the cloud presentation's deliberately small set of hard density
-    // bands instead of putting a soft photographic shadow under it.
-    let posterized_density = floor(combined_density * 4.0 + 0.5) / 4.0;
-    return 1.0 - posterized_density * 0.88;
+    // The cloud presentation uses a small set of hard density bands, and this
+    // used to posterize the ground shadow to match it exactly. On the ground
+    // that reads as a material seam rather than as a shadow: a cloud edge
+    // crosses several bands within a few pixels, so terrain steps from full sun
+    // to 12% of it with a stair-stepped boundary from the density sampling. On
+    // a beach it is a hard straight line between two shades of the same sand,
+    // which is what it was mistaken for. Keep the banded character -- the flat
+    // quarter at each end of a band is untouched -- but ramp across the band
+    // edge so the shadow lands on the ground continuously.
+    let bands = 4.0;
+    let scaled = combined_density * bands;
+    let band = floor(scaled);
+    let banded_density = (band + smoothstep(0.25, 0.75, scaled - band)) / bands;
+    return 1.0 - banded_density * 0.88;
 }
 
 /// How much of the incident sun a regolith facet sends back, per unit
@@ -2240,24 +2250,27 @@ fn ocean_fragment_with_transmission_mode(input: OceanVertexOutput, bed: vec4<f32
     // crests and runs up and down the beach with the wave, instead of sitting
     // on every visible bottom.
     //
-    // The weight is the water's own two-way extinction over that column --
-    // down to the bed and back up -- on the same e-fold the underwater fog
-    // uses, rather than an authored depth ramp. That is what makes the tint
-    // self-calibrating against OCEAN_UNDERWATER_VISIBILITY_METERS: a hard
-    // 6m cutoff was tried first and drove `ocean_clear_shallows` to no tint at
+    // The weight is an extinction falloff over that column rather than an
+    // authored ramp, so it stays continuous and never cuts off: a hard 6m
+    // cutoff was tried first and drove `ocean_clear_shallows` to no tint at
     // all, because clear water legitimately shows a bed from far deeper than
-    // any single authored threshold. Extinction keeps genuine shallows
-    // turquoise (3m holds 79% of the tint) while taking it off deep water that
-    // merely happens to have a visible bottom (20m keeps 21%, 40m keeps 4%).
+    // any single authored threshold.
+    //
+    // The scale is OCEAN_SHALLOW_TINT_EFOLD_METERS, which is measured against
+    // tinted screen area rather than taken from the open-water visibility
+    // e-fold. Visibility is 100m, so its e-fold barely varies across the few
+    // metres a shoaling wave spans and the whole surf zone came out turquoise
+    // together. At this scale the tint holds 90% at 1m, 72% at 3m, 51% at 6m
+    // and 11% at 20m, so it picks out the thinnest water over a bar or a wave
+    // back instead of colouring the whole approach.
     let shallow_turquoise = vec3<f32>(0.018, 0.34, 0.30)
         * (sky_diffuse + sun_transmittance * (0.25 * SURFACE_SUNLIGHT_SCALE));
     let instantaneous_column_meters = max(
         max(-macro_height_meters, 0.0) + surface.vertical_displacement,
         0.0,
     );
-    let shallow_e_fold_meters = OCEAN_UNDERWATER_VISIBILITY_METERS / log(50.0);
     let shallow_column_transmittance = exp(
-        -2.0 * instantaneous_column_meters / shallow_e_fold_meters,
+        -instantaneous_column_meters / OCEAN_SHALLOW_TINT_EFOLD_METERS,
     );
     let shallow_mix = bed.w * 0.82 * shallow_column_transmittance;
     let water_surface_color = mix(
