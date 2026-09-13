@@ -115,3 +115,18 @@ MEMORY.md:3-4|note=[checkout-specific validation and performance evidence]
 01a07103-79ca-7e92-99b9-5da47619e658
 </rollout_ids>
 </oai-mem-citation>
+
+It is in the main executable, but the new wind controls are opt-in. A normal launch still uses the previous sea. To try it interactively (not a scenario), run:
+
+CATINGARDEN_OCEAN_WIND='30,-0.3,0.75,-0.6' /home/dad/catingard-target/release/catinthegarden-app
+
+The first number is wind speed in m/s (0–30). The other three specify direction. Settings are read at startup, so restart to change them. The sharper-crest and improved subsurface-scattering work is not included yet.
+
+I've read Claude's notes. The next stage is to make calm seas reachable—not just reduce the permanent storm—and add the requested crossing swell without increasing the wave-height budget.
+I'll inspect the sea-state inputs, CPU buoyancy calls, shader tables and distribution-based lighting thresholds. Then I'll update the paired CPU/GPU paths and test calm, intermediate and storm conditions, leaving the bird-camera work alone.
+
+I'll land the crossing swell first as a tested change, keeping the total wave-height budget unchanged. Calm-to-storm transitions need a separate coordinated change to buoyancy and lighting; I won't rush those into this patch.
+
+Read Claude's notes and completed the crossing-swell step. The main game now has a third 1400m swell, crossing the original pair at 60 degrees near spawn, without increasing the wave-height budget.
+
+553 tests, GPU parity and the screenshot replay pass; release rebuilt. Calm/storm transitions and lighting recalibration remain next—not implemented yet. No FPS claim for this patch.

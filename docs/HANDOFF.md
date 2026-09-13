@@ -9516,3 +9516,40 @@ enclosing method and requires the guard to sit between the two, so a new
 controller cannot be added without meeting the rule. Deleting either guard fails
 it. It scopes to the production half deliberately -- it names the very call it
 searches for, and would otherwise match its own source.
+
+## 13 September — crossing swell, first bounded follow-up to Claude's notes
+
+Read tracked `response/claude.txt`, including the permanent-storm diagnosis and
+bird-camera ownership warning. This patch implements only the third long swell;
+**the normal game still uses storm intensity 1.0**. The calm/storm work is not
+complete. No camera, bird, terrain or physics-controller code was changed.
+
+Three 1400m entries replace the original pair: calm amplitudes .75+.75 become
+.5+.5+.5; storm .18+.18 becomes .12+.12+.12. The third steepness is .425,
+preserving summed steepness-weighted amplitude as well as the height bound.
+Its planet-frame axis rotates the original pair's mean 60 degrees clockwise
+around the documented spawn radial (not a global compass bearing). CPU and WGSL
+both have 18 waves; generated wind arrays now derive their length from WAVES.
+Horizontal transport remains disabled. Distribution percentile comments are
+explicitly historical: a preserved maximum is not a preserved distribution.
+
+Validation:
+- 553 workspace tests passed, 23 ignored; formatting, diff check and clippy pass.
+- Actual Quadro GPU parity, 48 cases each: default max height error .000123m,
+  max normal error .00003082; 15m/s wind max height .000106m, normal .00000134.
+- Release rebuilt at `/home/dad/catingard-target/release/catinthegarden-app`.
+- NVIDIA Vulkan/Xvfb `ocean_wind_trial/1789336777-489406` passes, two captures;
+  inspected `screenshots/capture-002.png`. Broad intersecting ridges are visible,
+  but static capture is not motion acceptance or Sea of Thieves visual parity.
+  Replay used `CATINGARDEN_SPAWN_COAST_WAVES=0` and no wind override to isolate
+  the global spectrum. Normal launches include the crossing swell automatically,
+  with the existing spawn-coast steering still enabled by default.
+- No matched timing run: one added analytic component, no extra draw/mesh, but
+  no claim of zero performance impact or an FPS improvement.
+
+Next: explicit shared CPU/GPU sea state, respect scenario storm overrides,
+slow calm/storm transitions (including amplitude-change vertical velocity), and
+recalibrate crest transmission against the new sea-state distributions. Do not
+try to fix permanent storms with gravity or buoyancy changes. Startup wind is
+still opt-in; live wind/fetch evolution and improved scattering remain later work.
+`crates.tar.gz` remains untouched and untracked.

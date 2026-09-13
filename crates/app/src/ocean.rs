@@ -198,16 +198,17 @@ pub(crate) fn wgsl_constants() -> String {
         wgsl_number(wind_direction.y),
         wgsl_number(wind_direction.z),
     );
+    let wave_count = WAVES.len();
     // Bake directional weights once: no extra sqrt/dot per wave per fragment.
     let wind_constants = wind_constants
         + &format!(
-            "const OCEAN_WIND_WEIGHTS: array<f32, 17> = array<f32, 17>({});\nconst OCEAN_WIND_RIPPLE_WEIGHTS: vec3<f32> = vec3<f32>({});\n",
+            "const OCEAN_WIND_WEIGHTS: array<f32, {wave_count}> = array<f32, {wave_count}>({});\nconst OCEAN_WIND_RIPPLE_WEIGHTS: vec3<f32> = vec3<f32>({});\n",
             weights(&WAVES),
             weights(&OCEAN_RIPPLE_WAVES),
         );
     let wind_constants = wind_constants
         + &format!(
-            "const OCEAN_WIND_SPEED_SIGNS: array<f32, 17> = array<f32, 17>({});\nconst OCEAN_WIND_RIPPLE_SIGNS: vec3<f32> = vec3<f32>({});\n",
+            "const OCEAN_WIND_SPEED_SIGNS: array<f32, {wave_count}> = array<f32, {wave_count}>({});\nconst OCEAN_WIND_RIPPLE_SIGNS: vec3<f32> = vec3<f32>({});\n",
             signs(&WAVES),
             signs(&OCEAN_RIPPLE_WAVES),
         );
@@ -363,13 +364,13 @@ pub fn shoaling_phase_offset_meters(water_depth_meters: f64) -> f64 {
     0.0
 }
 
-/// Diagnostic: collide and render against only the two 1,400 m swells at the
+/// Diagnostic: collide and render against only the three 1,400 m swells at the
 /// head of `WAVES`, dropping the 160/65/24/9 m global waves and the whole
 /// ripple layer. Must match `OCEAN_LARGE_SWELL_ONLY` in `shared_planet.wgsl`,
 /// which `large_swell_only_is_paired_with_the_shader` enforces.
 pub const OCEAN_LARGE_SWELL_ONLY: bool = false;
-/// Number of leading `WAVES` entries that make up the dominant swell pair.
-const LARGE_SWELL_WAVE_COUNT: usize = 2;
+/// Number of leading `WAVES` entries that make up the dominant swell group.
+const LARGE_SWELL_WAVE_COUNT: usize = 3;
 #[derive(Clone, Copy)]
 struct GerstnerWave {
     direction: DVec3,
@@ -432,22 +433,33 @@ const OCEAN_RIPPLE_WAVES: [GerstnerWave; 3] = [
 /// read as "one big regular wave plus one small regular wave"; real irregularity
 /// comes from the wind sea carrying many components spread widely in azimuth.
 /// Mirrored byte-for-byte by `OCEAN_WAVE_TABLE` in `shared_planet.wgsl`.
-const WAVES: [GerstnerWave; 17] = [
+const WAVES: [GerstnerWave; 18] = [
     GerstnerWave {
         direction: DVec3::new(0.9, 0.1, 0.4),
         wavelength_meters: 1400.0,
-        amplitude_meters: 0.75,
-        storm_amplitude_meters: 0.18,
+        amplitude_meters: 0.5,
+        storm_amplitude_meters: 0.12,
         speed_meters_per_second: 46.7449,
         steepness: 0.45,
     },
     GerstnerWave {
         direction: DVec3::new(0.86, 0.18, 0.48),
         wavelength_meters: 1400.0,
-        amplitude_meters: 0.75,
-        storm_amplitude_meters: 0.18,
+        amplitude_meters: 0.5,
+        storm_amplitude_meters: 0.12,
         speed_meters_per_second: 46.7449,
         steepness: 0.4,
+    },
+    // Rotate the pair's mean axis clockwise 60 degrees around the spawn
+    // radial. Splitting the original amplitude budget keeps the height cap
+    // and total steepness-weighted amplitude unchanged in both sea states.
+    GerstnerWave {
+        direction: DVec3::new(0.65548185, 0.45377367, 0.60368286),
+        wavelength_meters: 1400.0,
+        amplitude_meters: 0.5,
+        storm_amplitude_meters: 0.12,
+        speed_meters_per_second: 46.7449,
+        steepness: 0.425,
     },
     GerstnerWave {
         direction: DVec3::new(0.1596, -0.599, 0.7847),
@@ -1093,7 +1105,7 @@ mod tests {
     /// Every wave in the table, at storm scale. Independent of the diagnostic
     /// toggle, so it still guards the table itself.
     const FULL_TABLE_MAXIMUM_METERS: f64 = 93.9125;
-    /// The dominant swell pair alone, at storm scale: 0.18 x 2 x 55.
+    /// The dominant swell group alone, at storm scale: 0.12 x 3 x 55.
     ///
     /// This read 41.25 and had done through at least one amplitude change,
     /// which the old table could not produce either -- 0.09 x 2 x 55 is 9.9.
@@ -1127,6 +1139,40 @@ mod tests {
         let maximum_possible_height = maximum_wave_height_meters(1.0);
         assert!(maximum_possible_height <= MAXIMUM_WAVE_HEIGHT_METERS);
         assert!(maximum_possible_height >= 20.0);
+    }
+
+    #[test]
+    fn crossing_swell_preserves_both_height_and_compression_budgets() {
+        let swells = &WAVES[..LARGE_SWELL_WAVE_COUNT];
+        assert_eq!(swells.len(), 3);
+        let sum = |storm: bool, weighted: bool| {
+            swells
+                .iter()
+                .map(|wave| {
+                    let amplitude = if storm {
+                        wave.storm_amplitude_meters
+                    } else {
+                        wave.amplitude_meters
+                    };
+                    amplitude * if weighted { wave.steepness } else { 1.0 }
+                })
+                .sum::<f64>()
+        };
+        for (storm, amplitude) in [(false, 0.75), (true, 0.18)] {
+            assert!((sum(storm, false) - 2.0 * amplitude).abs() < 1.0e-12);
+            assert!((sum(storm, true) - amplitude * (0.45 + 0.4)).abs() < 1.0e-12);
+        }
+        let up = DVec3::new(0.836442275001636, 0.503727905284262, 0.215922481525239).normalize();
+        let mean = (swells[0].direction.normalize() + swells[1].direction.normalize()).normalize();
+        let tangent = |axis: DVec3| (axis - up * axis.dot(up)).normalize();
+        let original = tangent(mean);
+        let crossing = tangent(swells[2].direction.normalize());
+        let signed_angle = up
+            .dot(original.cross(crossing))
+            .atan2(original.dot(crossing))
+            .to_degrees();
+        assert!((signed_angle + 60.0).abs() < 0.001, "{signed_angle}");
+        assert!(swells.iter().all(|wave| wave.wavelength_meters == 1400.0));
     }
 
     #[test]

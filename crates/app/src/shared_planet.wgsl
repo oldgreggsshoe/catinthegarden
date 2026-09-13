@@ -350,22 +350,23 @@ struct OceanSurface {
 // survive a little farther as normal-only detail, so the local patch does not
 // end in a visible geometric ring.
 const OCEAN_WAVES_ENABLED: bool = true;
-// Diagnostic: keep only the two 1,400 m swells so the sea carries a single
+// Diagnostic: keep only the three 1,400 m swells so the sea carries a single
 // dominant octave. The 160/65/24/9 m global waves and the whole local ripple
 // layer are silenced. Paired with `OCEAN_LARGE_SWELL_ONLY` in ocean.rs;
 // collision must lose exactly the waves the render loses or the camera floats
 // against water it cannot see.
 const OCEAN_LARGE_SWELL_ONLY: bool = false;
-const OCEAN_WAVE_COUNT: u32 = 17u;
+const OCEAN_WAVE_COUNT: u32 = 18u;
 // Leading entries of OCEAN_WAVE_TABLE that form the dominant swell.
-const OCEAN_LARGE_SWELL_WAVE_COUNT: u32 = 2u;
+const OCEAN_LARGE_SWELL_WAVE_COUNT: u32 = 3u;
 // Mirrored byte-for-byte by `WAVES` in ocean.rs; the axis literals must match
 // exactly, not merely to within rounding, because phase is
 // wave_number * dot(direction, axis) * PLANET_RADIUS_METERS and a planet radius
 // turns a 4th-decimal axis difference into tens of radians of phase.
-var<private> OCEAN_WAVE_TABLE: array<OceanWaveSpec, 17> = array<OceanWaveSpec, 17>(
-    OceanWaveSpec(vec3<f32>(0.9, 0.1, 0.4), 1400.0, 0.75, 0.18, 46.7449, 0.45),
-    OceanWaveSpec(vec3<f32>(0.86, 0.18, 0.48), 1400.0, 0.75, 0.18, 46.7449, 0.4),
+var<private> OCEAN_WAVE_TABLE: array<OceanWaveSpec, 18> = array<OceanWaveSpec, 18>(
+    OceanWaveSpec(vec3<f32>(0.9, 0.1, 0.4), 1400.0, 0.5, 0.12, 46.7449, 0.45),
+    OceanWaveSpec(vec3<f32>(0.86, 0.18, 0.48), 1400.0, 0.5, 0.12, 46.7449, 0.4),
+    OceanWaveSpec(vec3<f32>(0.65548185, 0.45377367, 0.60368286), 1400.0, 0.5, 0.12, 46.7449, 0.425),
     OceanWaveSpec(vec3<f32>(0.1596, -0.599, 0.7847), 430.0, 0.1, 0.37, 25.9063, 1.5),
     OceanWaveSpec(vec3<f32>(0.297, -0.7478, 0.5938), 350.0, 0.11, 0.41, 23.3725, 1.5),
     OceanWaveSpec(vec3<f32>(0.3987, -0.8308, 0.3884), 280.0, 0.095, 0.36, 20.905, 1.5),
@@ -438,6 +439,9 @@ const OCEAN_BODY_COLOUR: vec3<f32> = vec3<f32>(0.005, 0.032, 0.170);
 // does not scale with height. Steepness is dimensionless, so a 2m crest and a
 // 30m crest of the same sharpness now read the same.
 //
+// These percentile measurements predate the third crossing swell. Its
+// redistribution preserves the fold budget, not the phase distribution;
+// recalibrate the thresholds when adding calm/storm sea-state transitions.
 // Chosen against the measured distribution rather than by eye. The table's
 // fold budget -- every component crest aligned at once, the theoretical
 // maximum -- is 2.0507; with the calm amplitude column it is 0.7279. Sampling
