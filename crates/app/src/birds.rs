@@ -1205,21 +1205,36 @@ fn step_walking_bird(
     bird.wing_phase = 0.0;
 }
 
-/// One vertex of the shared low-poly bird. `flap` carries the wing side in
-/// x (-1 left, 0 body, +1 right) and the spanwise fraction in y, so the vertex
-/// shader can hinge the wings at their roots without a skeleton or any per-bird
-/// geometry.
+/// One vertex of the shared low-poly bird.
+///
+/// `flap` is the wing rig, in three numbers so the shader can drive a two-bone
+/// wing without a skeleton or any per-bird geometry:
+///   x  which wing: -1 left, 0 body, +1 right
+///   y  arm weight: 0 at the shoulder, 1 from the wrist outward
+///   z  hand weight: 0 anywhere on the arm, 0 at the wrist, 1 at the tip
+///
+/// One bone was tried first and reads as an insect: a single rigid plate
+/// pivoting at the shoulder is how a dragonfly flies. A bird's hand trails its
+/// arm through the stroke, which is what gives the M-shape at the top of the
+/// beat and the swept-back look at the bottom.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BirdVertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
-    pub flap: [f32; 2],
+    pub flap: [f32; 3],
     pub colour: [f32; 3],
 }
 
 /// Body length of the modelled bird in local units; the renderer scales it to
 /// metres per instance.
+/// Where the hand is hinged, in the bird's local frame. `birds.wgsl` carries
+/// the same point as `WRIST_LOCAL` and `the_shader_hinges_the_hand_at_the_mesh
+/// _wrist` holds the two together: hinge the hand somewhere the geometry has no
+/// joint and the wing tears open mid-beat.
+pub const WING_WRIST_LOCAL: [f32; 3] = [0.325, 0.048, -0.02];
+/// Half the wing's chord at the wrist, fore and aft of the hinge.
+const WING_WRIST_CHORD_HALF: f32 = 0.13;
 const BODY_PALE: [f32; 3] = [0.80, 0.79, 0.76];
 const WING_GREY: [f32; 3] = [0.44, 0.46, 0.50];
 const WING_TIP: [f32; 3] = [0.11, 0.11, 0.13];
@@ -1228,9 +1243,9 @@ fn face(
     a: [f32; 3],
     b: [f32; 3],
     c: [f32; 3],
-    flap_a: [f32; 2],
-    flap_b: [f32; 2],
-    flap_c: [f32; 2],
+    flap_a: [f32; 3],
+    flap_b: [f32; 3],
+    flap_c: [f32; 3],
     colour: [f32; 3],
     out: &mut Vec<BirdVertex>,
 ) {
@@ -1257,33 +1272,96 @@ fn face(
     }
 }
 
-/// A wing surface is one quad, emitted twice with opposite winding so a bird
-/// passing overhead still has wings under back-face culling.
+/// One panel of a wing, emitted twice with opposite winding so a bird passing
+/// overhead still has wings under back-face culling. `inboard` and `outboard`
+/// are the rig weights at the two ends of the panel.
 #[allow(clippy::too_many_arguments)]
-fn wing_quad(
+fn wing_panel(
     root_front: [f32; 3],
     tip_front: [f32; 3],
     tip_back: [f32; 3],
     root_back: [f32; 3],
-    side: f32,
+    inboard: [f32; 3],
+    outboard: [f32; 3],
     colour: [f32; 3],
-    tip_colour: [f32; 3],
     out: &mut Vec<BirdVertex>,
 ) {
-    let root = [side, 0.0];
-    let tip = [side, 1.0];
     face(
-        root_front, tip_front, tip_back, root, tip, tip, tip_colour, out,
+        root_front, tip_front, tip_back, inboard, outboard, outboard, colour, out,
     );
     face(
-        root_front, tip_back, root_back, root, tip, root, colour, out,
+        root_front, tip_back, root_back, inboard, outboard, inboard, colour, out,
     );
     face(
-        tip_back, tip_front, root_front, tip, tip, root, tip_colour, out,
+        tip_back, tip_front, root_front, outboard, outboard, inboard, colour, out,
     );
     face(
-        root_back, tip_back, root_front, root, tip, root, colour, out,
+        root_back, tip_back, root_front, inboard, outboard, inboard, colour, out,
     );
+}
+
+/// Both panels of one wing: the arm from shoulder to wrist, then the hand from
+/// wrist to tip. The hand is a separate panel so the shader can hinge it.
+fn wing(side: f32, out: &mut Vec<BirdVertex>) {
+    let shoulder = [side, 0.0, 0.0];
+    let wrist = [side, 1.0, 0.0];
+    let tip = [side, 1.0, 1.0];
+
+    let shoulder_front = [0.07 * side, 0.04, 0.17];
+    let shoulder_back = [0.07 * side, 0.02, -0.10];
+    // Both wrist vertices are the shader's hinge point, one chord half-width
+    // either side of it. Deriving them rather than writing them out is what
+    // keeps the joint and the hinge in the same place by construction.
+    let [wrist_x, wrist_y, wrist_z] = WING_WRIST_LOCAL;
+    let wrist_front = [wrist_x * side, wrist_y, wrist_z + WING_WRIST_CHORD_HALF];
+    let wrist_back = [wrist_x * side, wrist_y, wrist_z - WING_WRIST_CHORD_HALF];
+    let tip_front = [0.62 * side, 0.06, 0.03];
+    let tip_back = [0.55 * side, 0.05, -0.19];
+
+    // Winding follows the side so both wings face the same way out.
+    if side > 0.0 {
+        wing_panel(
+            shoulder_front,
+            wrist_front,
+            wrist_back,
+            shoulder_back,
+            shoulder,
+            wrist,
+            WING_GREY,
+            out,
+        );
+        wing_panel(
+            wrist_front,
+            tip_front,
+            tip_back,
+            wrist_back,
+            wrist,
+            tip,
+            WING_TIP,
+            out,
+        );
+    } else {
+        wing_panel(
+            shoulder_back,
+            wrist_back,
+            wrist_front,
+            shoulder_front,
+            shoulder,
+            wrist,
+            WING_GREY,
+            out,
+        );
+        wing_panel(
+            wrist_back,
+            tip_back,
+            tip_front,
+            wrist_front,
+            wrist,
+            tip,
+            WING_TIP,
+            out,
+        );
+    }
 }
 
 /// The bird itself: a spindle body, two hinged wings and a tail, eighteen
@@ -1291,7 +1369,7 @@ fn wing_quad(
 /// frame `birds.wgsl` rotates into the bird's heading.
 pub fn build_mesh() -> Vec<BirdVertex> {
     let mut out = Vec::new();
-    let body = [0.0_f32, 0.0];
+    let body = [0.0_f32, 0.0, 0.0];
 
     let nose = [0.0, 0.0, 0.55];
     let tail = [0.0, 0.0, -0.45];
@@ -1313,26 +1391,8 @@ pub fn build_mesh() -> Vec<BirdVertex> {
         face(a, b, c, body, body, body, BODY_PALE, &mut out);
     }
 
-    wing_quad(
-        [0.07, 0.04, 0.17],
-        [0.62, 0.06, 0.03],
-        [0.55, 0.05, -0.19],
-        [0.07, 0.02, -0.10],
-        1.0,
-        WING_GREY,
-        WING_TIP,
-        &mut out,
-    );
-    wing_quad(
-        [-0.07, 0.02, -0.10],
-        [-0.55, 0.05, -0.19],
-        [-0.62, 0.06, 0.03],
-        [-0.07, 0.04, 0.17],
-        -1.0,
-        WING_GREY,
-        WING_TIP,
-        &mut out,
-    );
+    wing(1.0, &mut out);
+    wing(-1.0, &mut out);
 
     face(
         tail,

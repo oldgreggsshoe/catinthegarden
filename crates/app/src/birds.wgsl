@@ -19,15 +19,29 @@ struct Camera {
 var<uniform> camera: Camera;
 
 const TAU: f32 = 6.2831853;
-/// Half-stroke of a wingbeat, in radians about the bird's own forward axis.
-const FLAP_AMPLITUDE: f32 = 0.85;
+/// Half-stroke of the arm, in radians about the bird's own forward axis.
+const SHOULDER_AMPLITUDE: f32 = 0.80;
+/// The hand adds its own stroke on top of the arm's.
+const WRIST_AMPLITUDE: f32 = 0.70;
+/// How far behind the arm the hand runs, in turns. This lag is the whole
+/// difference between a bird and a dragonfly: one rigid plate pivoting at the
+/// shoulder is an insect, and a wing whose hand trails its arm reads as a bird.
+/// It is what produces the M at the top of the beat and the swept look at the
+/// bottom.
+const WRIST_LAG_TURNS: f32 = 0.16;
+/// Where the hand is hinged, in the bird's own local frame. Matches
+/// `WING_WRIST_FRACTION` and the wrist vertices in `birds::build_mesh`.
+const WRIST_LOCAL: vec3<f32> = vec3<f32>(0.325, 0.048, -0.02);
+/// How far the hand folds back against the body when a bird is walking.
+const WRIST_FOLD_RADIANS: f32 = 2.0;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
-    // x: wing side, -1 left, 0 body, +1 right. y: spanwise fraction, 0 at the
-    // root and 1 at the tip, which is also what weights the fold.
-    @location(2) flap: vec2<f32>,
+    // The wing rig: x is the side (-1 left, 0 body, +1 right), y the arm weight
+    // (0 at the shoulder, 1 from the wrist out) and z the hand weight (0 on the
+    // arm, 1 at the tip). See `birds::BirdVertex`.
+    @location(2) flap: vec3<f32>,
     @location(3) colour: vec3<f32>,
 }
 
@@ -62,35 +76,49 @@ fn planet_to_view(vector: vec3<f32>) -> vec3<f32> {
     );
 }
 
+/// Rotate about the bird's own forward axis, which is the axis both wing bones
+/// hinge on.
+fn hinge(vector: vec3<f32>, angle: f32) -> vec3<f32> {
+    let c = cos(angle);
+    let s = sin(angle);
+    return vec3<f32>(vector.x * c - vector.y * s, vector.x * s + vector.y * c, vector.z);
+}
+
 @vertex
 fn vs_main(input: VertexInput, instance: InstanceInput) -> VertexOutput {
     let side = input.flap.x;
-    let span = input.flap.y;
+    let arm = input.flap.y;
+    let hand = input.flap.z;
     let phase = instance.motion.x;
     let fold = clamp(instance.motion.y, 0.0, 1.0);
     let scale = instance.motion.z;
 
-    // Folding draws the tip inboard and a little aft, so a walking bird carries
+    // Folding draws the hand inboard and a little aft, so a walking bird carries
     // its wings against its body instead of holding them out mid-stroke.
     var local = input.position;
-    local.x = local.x * (1.0 - 0.72 * fold * span);
-    local.z = local.z - 0.10 * fold * span;
+    local.x = local.x * (1.0 - 0.72 * fold * arm);
+    local.z = local.z - 0.10 * fold * arm;
 
-    // Hinge the wings about the bird's forward axis. Body vertices carry
-    // span 0, so this is the identity for them without a branch.
-    let flap_angle = sin(phase * TAU) * FLAP_AMPLITUDE * span * (1.0 - fold) * side;
-    let flap_cos = cos(flap_angle);
-    let flap_sin = sin(flap_angle);
-    let hinged = vec3<f32>(
-        local.x * flap_cos - local.y * flap_sin,
-        local.x * flap_sin + local.y * flap_cos,
-        local.z,
+    let beat = 1.0 - fold;
+    let shoulder_angle = sin(phase * TAU) * SHOULDER_AMPLITUDE * beat;
+    let wrist_angle = sin((phase - WRIST_LAG_TURNS) * TAU) * WRIST_AMPLITUDE * beat
+        - WRIST_FOLD_RADIANS * fold;
+
+    // Bone one, hinged at the shoulder. Body vertices carry arm 0, so this is
+    // the identity for them without a branch.
+    let arm_rotation = shoulder_angle * side * arm;
+    var hinged = hinge(local, arm_rotation);
+    var hinged_normal = hinge(input.normal, arm_rotation);
+
+    // Bone two, hinged at the wrist, which has itself been carried round by the
+    // arm. Arm vertices carry hand 0, so again no branch is needed.
+    let wrist_point = hinge(
+        vec3<f32>(WRIST_LOCAL.x * side, WRIST_LOCAL.y, WRIST_LOCAL.z),
+        shoulder_angle * side,
     );
-    let hinged_normal = vec3<f32>(
-        input.normal.x * flap_cos - input.normal.y * flap_sin,
-        input.normal.x * flap_sin + input.normal.y * flap_cos,
-        input.normal.z,
-    );
+    let hand_rotation = wrist_angle * side * hand;
+    hinged = wrist_point + hinge(hinged - wrist_point, hand_rotation);
+    hinged_normal = hinge(hinged_normal, hand_rotation);
 
     // Orthonormal bird frame: +Z forward, +Y up, +X to the bird's right.
     let forward = normalize(instance.forward);

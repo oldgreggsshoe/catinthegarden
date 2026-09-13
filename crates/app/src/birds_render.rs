@@ -32,7 +32,7 @@ struct BirdInstance {
 
 impl BirdVertex {
     const ATTRIBUTES: [wgpu::VertexAttribute; 4] =
-        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x3];
+        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32x3];
 
     fn layout() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
@@ -243,16 +243,30 @@ mod tests {
         let mesh = birds::build_mesh();
         assert_eq!(mesh.len() % 3, 0, "mesh must be whole triangles");
         assert!(!mesh.is_empty());
-        // Body vertices never hinge; wing vertices carry a side and a span.
+        // Body vertices never hinge; wing vertices carry a side and two bone
+        // weights. A hand weight without an arm weight would hinge the hand off
+        // a shoulder that had not moved, which is the dragonfly stroke again.
         for vertex in &mesh {
-            let side = vertex.flap[0];
-            let span = vertex.flap[1];
+            let [side, arm, hand] = vertex.flap;
             assert!(side == -1.0 || side == 0.0 || side == 1.0, "side {side}");
-            assert!((0.0..=1.0).contains(&span), "span {span}");
+            assert!((0.0..=1.0).contains(&arm), "arm {arm}");
+            assert!((0.0..=1.0).contains(&hand), "hand {hand}");
             if side == 0.0 {
-                assert_eq!(span, 0.0, "a body vertex must not hinge");
+                assert_eq!(arm, 0.0, "a body vertex must not hinge");
+                assert_eq!(hand, 0.0, "a body vertex has no hand");
             }
+            assert!(hand <= arm, "hand {hand} hinges off an unmoved arm {arm}");
         }
+        // The wing really is in two pieces: some vertices are out at the wrist
+        // with the arm fully bent but the hand not yet, which is the joint.
+        assert!(
+            mesh.iter().any(|v| v.flap[1] == 1.0 && v.flap[2] == 0.0),
+            "no wrist: the wing is still one rigid bone"
+        );
+        assert!(
+            mesh.iter().any(|v| v.flap[2] == 1.0),
+            "no wingtip on the hand"
+        );
         // Both wings are present and mirrored.
         let left = mesh.iter().filter(|v| v.flap[0] < 0.0).count();
         let right = mesh.iter().filter(|v| v.flap[0] > 0.0).count();
@@ -264,9 +278,48 @@ mod tests {
             .fold(0.0_f32, |widest, v| widest.max(v.position[0].abs()));
         let widest_wing = mesh
             .iter()
-            .filter(|v| v.flap[1] > 0.5)
+            .filter(|v| v.flap[2] > 0.5)
             .fold(0.0_f32, |widest, v| widest.max(v.position[0].abs()));
         assert!(widest_wing > widest_body * 3.0, "wings must span the body");
+    }
+
+    #[test]
+    fn the_shader_hinges_the_hand_at_the_mesh_wrist() {
+        // The shader rotates the hand about a point it declares itself. If that
+        // point is not where the mesh actually has its joint, the wing tears
+        // open mid-beat -- the hand pivots about thin air and separates from the
+        // arm it is supposed to be attached to.
+        let shader = birds_shader_source();
+        let declared = shader
+            .split("const WRIST_LOCAL: vec3<f32> = vec3<f32>(")
+            .nth(1)
+            .and_then(|rest| rest.split(')').next())
+            .expect("the shader declares a wrist");
+        let numbers: Vec<f32> = declared
+            .split(',')
+            .map(|part| part.trim().parse::<f32>().expect("a wrist coordinate"))
+            .collect();
+        assert_eq!(numbers.len(), 3);
+        for (index, value) in numbers.iter().enumerate() {
+            assert!(
+                (value - birds::WING_WRIST_LOCAL[index]).abs() < 1.0e-6,
+                "shader wrist {numbers:?} is not the mesh wrist {:?}",
+                birds::WING_WRIST_LOCAL
+            );
+        }
+
+        // And the mesh really does have vertices there, on both wings.
+        for side in [-1.0_f32, 1.0] {
+            let wrist_x = birds::WING_WRIST_LOCAL[0] * side;
+            assert!(
+                birds::build_mesh().iter().any(|vertex| {
+                    vertex.flap[1] == 1.0
+                        && vertex.flap[2] == 0.0
+                        && (vertex.position[0] - wrist_x).abs() < 0.02
+                }),
+                "no wrist vertices on the {side} wing near x {wrist_x}"
+            );
+        }
     }
 
     #[test]
