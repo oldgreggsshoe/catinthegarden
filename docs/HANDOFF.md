@@ -37,6 +37,11 @@ and crest transmission is re-anchored on the storm sea the game actually
 renders. Ground cloud shadow is banded but no longer hard-posterized. See the
 newest sections.
 
+**Current birds (13 September):** flocking birds stream in around the camera,
+cruise, land, walk and take off again. Simulation in `birds`, GPU in
+`birds_render`, drawn beside the ship in both render paths. Verified by counts
+in a replay, not yet by eye.
+
 **Current ocean default (10 September):** spawn-coast shoreward waves are now enabled
 for normal launches at the user's request. `CATINGARDEN_SPAWN_COAST_WAVES=0`
 opts out. Earlier opt-in-only notes below are historical. Coverage remains local
@@ -9019,4 +9024,63 @@ mutation-verified against the restored posterization; the existing
 caught this change and was updated to pin the banded form at the same 0.88
 strength. Human acceptance of both the softened shadow and the weaker tint in
 motion is outstanding. `crates.tar.gz` untouched.
+
+## 13 September — boids: flocking birds that land, walk and take off
+
+New feature at the user's request. `birds` holds the simulation and `birds_render`
+the GPU side, split the way `ship` and `ship_render` are so the flocking is
+testable without a device. Birds live in the planet frame in f64 and only narrow
+to f32 after the camera-relative difference is taken, which is the same contract
+the ship's hull origin has and the reason a 0.42m bird is not quantised away at a
+4,000km radius.
+
+**Behaviour.** Reynolds separation, alignment and cohesion, plus a flock anchor,
+an altitude hold against the ground below and a slow wander so a balanced flock
+does not freeze into a line. Flocks decide together rather than individually:
+cruise, settle, walk, lift. Landing is a real approach -- a bird becomes a walker
+only when it is inside 0.35m of the ground and under 2.2m/s -- and walking is a
+slow tangential drift with pauses and folded wings. Walk near a settled flock and
+it leaves, which is what birds do.
+
+**Streaming.** Flocks spawn in a 280-460m shell, beyond the range at which a bird
+covers a pixel, and are given up past 900m. They travel at 7.5m/s on a heading
+biased across the camera, so they pass rather than either ignoring the player or
+homing in.
+
+**A bug worth recording, because the obvious test missed it.** The population was
+first topped up by counting *every* flock. Once flocks drift, all of them can sit
+between the 620m draw distance and the 900m despawn distance at the same time:
+alive, so nothing respawns, and the sky is empty while the simulation reports a
+full population. A `bird_flyby` replay showed six flocks and about a hundred
+birds with **drawn_birds 0** on every frame, while the six-second
+`stand_on_ground` replay showed 101 of 101 drawn because nothing had drifted yet.
+The fix counts only flocks within the draw radius, evicts the furthest when the
+total cap would block a top-up, and settles the population *after* moving the
+flocks so the invariant is true of the frame that gets drawn.
+
+The first regression test written for it asserted only "some bird is drawable",
+passed under the broken policy by luck on the first seed, and had to be replaced
+with one asserting the policy itself across four seeds. Both halves of the fix
+are mutation-verified: reverting either the near-count or the eviction fails it.
+
+**Rendering.** One instanced draw, eighteen triangles a bird: a spindle body, two
+wings emitted with both windings so a bird overhead keeps them under back-face
+culling, and a tail. The wingbeat is a per-instance phase hinged about the bird's
+forward axis in the vertex shader, so no per-bird geometry is ever uploaded and a
+walking bird folds its wings from the same parameter.
+
+**Verified.** 530 workspace tests, 0 failed; clippy with no warnings; fmt clean.
+Twelve of those tests are new, covering spawn and retirement, the land/walk/take
+off cycle, birds standing on the ground and never under it, flock spread without
+collapse, refusal to spawn over water or unresolved terrain, seed determinism,
+and the drift regression above. A `stand_on_ground` replay draws **101 of 101
+birds, 1,818 triangles**.
+
+**Not verified: what they actually look like.** No capture shows a bird at close
+range. `stand_on_ground` draws them but its pose faces into shadow;
+`bird_flyby` is the scenario meant for this and it stalled in exposure warm-up on
+this box more than once, which is the `DISPLAY` flakiness noted earlier rather
+than anything about the birds. The counts prove they exist, are in range and are
+being drawn; they do not prove the model reads as a bird. Ask for a manual pass.
+`crates.tar.gz` untouched.
 

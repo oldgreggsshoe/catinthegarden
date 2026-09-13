@@ -294,6 +294,7 @@ scenarios! {
     "ocean_eye_level_facets" => "../scenarios/ocean_eye_level_facets.json",
     "ocean_shore_ascent" => "../scenarios/ocean_shore_ascent.json",
     "beach_sand_join" => "../scenarios/beach_sand_join.json",
+    "bird_flyby" => "../scenarios/bird_flyby.json",
     "ocean_clear_shallows" => "../scenarios/ocean_clear_shallows.json",
     "ocean_shallow_transmission" => "../scenarios/ocean_shallow_transmission.json",
     "ocean_shallow_bottom" => "../scenarios/ocean_shallow_bottom.json",
@@ -306,6 +307,7 @@ scenarios! {
     "ocean_grey_foreground" => "../scenarios/ocean_grey_foreground.json",
     "coastal_spawn_view" => "../scenarios/coastal_spawn_view.json",
     "mountain_ground" => "../scenarios/mountain_ground.json",
+    "road_surface_trial" => "../scenarios/road_surface_trial.json",
     "wavedir_spawn" => "../scenarios/wavedir_spawn.json",
     "ocean_underside_shallows" => "../scenarios/ocean_underside_shallows.json",
     "ocean_underside_snell_window" => "../scenarios/ocean_underside_snell_window.json",
@@ -1045,7 +1047,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 89);
+        assert_eq!(SCENARIO_NAMES.len(), 91);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));

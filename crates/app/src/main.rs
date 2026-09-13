@@ -4,6 +4,8 @@
 #![allow(clippy::too_many_arguments)]
 
 mod atmosphere;
+mod birds;
+mod birds_render;
 mod body;
 mod debug;
 mod forest;
@@ -1008,6 +1010,8 @@ struct State {
     ship_hull: ship::ShipHull,
     ship_body: ship::ShipBody,
     ship_renderer: ship_render::ShipRenderer,
+    birds: birds::BirdFlocks,
+    bird_renderer: birds_render::BirdRenderer,
     ship_sim_time_seconds: f64,
     sun: sun::SunRenderer,
     foveated: foveated::FoveatedRenderer,
@@ -1353,6 +1357,12 @@ impl State {
             hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
         );
+        let bird_renderer = birds_render::BirdRenderer::new(
+            &device,
+            &queue,
+            hdr::HdrRenderer::SCENE_FORMAT,
+            &camera_bind_group_layout,
+        );
         if let (Some(scenario), Some(landing_direction)) =
             (&mut scenario, terrain.preferred_landing_direction())
         {
@@ -1411,6 +1421,9 @@ impl State {
             ship_hull,
             ship_body,
             ship_renderer,
+            // One planet seed, so a scenario replay lands on the same flocks.
+            birds: birds::BirdFlocks::new(0x62_69_72_64_73),
+            bird_renderer,
             ship_sim_time_seconds: 0.0,
             sun,
             foveated,
@@ -2159,6 +2172,51 @@ impl State {
                     }
                 });
         }
+    }
+
+    /// Advances the flock and uploads it, in that order and below the camera
+    /// settle line for the same reason `upload_ship_transform` is: the birds'
+    /// own motion is camera-independent, but the view-relative upload is not.
+    ///
+    /// The ground query is resolved here rather than inside `birds`, which
+    /// keeps the flocking testable without a device or a baked tile. It
+    /// declines over water and below the waterline, so a flock never spawns
+    /// somewhere it could not land.
+    fn advance_birds(&mut self, ocean_time_seconds: f64, planet_rotation_radians: f64) {
+        if !body::has_atmosphere() {
+            // Nothing flies in vacuum.
+            return;
+        }
+        let camera_local = self
+            .camera
+            .planet_frame_world_position(planet_rotation_radians);
+        let camera_altitude_meters = camera_local.length() - planet::planet_radius_meters();
+        let planet_radius_meters = planet::planet_radius_meters();
+        let terrain = &self.terrain;
+        self.birds
+            .advance(ocean_time_seconds, camera_local, &|direction| {
+                let sample = terrain.forest_surface_sample_at(direction, camera_altitude_meters)?;
+                Some(birds::GroundSample {
+                    surface_radius_meters: planet_radius_meters + sample.height_meters,
+                    slope_radians: sample.slope_radians,
+                    // Half a metre of freeboard keeps a flock off the wave-washed
+                    // strip where the rendered water would swallow it.
+                    walkable: !matches!(
+                        sample.biome,
+                        catinthegarden_coretypes::BiomeId::Ocean
+                            | catinthegarden_coretypes::BiomeId::Lake
+                    ) && sample.height_meters > 0.5,
+                })
+            });
+        let basis = planet::CameraViewBasis::from_forward_and_up(
+            self.camera
+                .planet_frame_direction_dvec3(planet_rotation_radians),
+            self.camera.planet_frame_view_up(planet_rotation_radians),
+        );
+        self.bird_renderer
+            .update(&self.queue, self.birds.birds(), camera_local, |offset| {
+                basis.world_to_view(offset)
+            });
     }
 
     /// Uploads the hull's view-relative transform.
@@ -3277,6 +3335,7 @@ impl State {
         // The camera is settled for this frame from here on, so anything that
         // bakes the camera basis into an upload belongs below this line.
         self.upload_ship_transform(planet_rotation_radians);
+        self.advance_birds(ocean_time_seconds, planet_rotation_radians);
         let mut camera_world_position = self.camera.world_position();
         let mut camera_planet_frame_position = self
             .camera
@@ -3637,6 +3696,17 @@ impl State {
                     .linear_velocity
                     .dot(self.ship_body.position.normalize()),
                 hull_triangles = self.ship_renderer.triangle_count(),
+                // The flock is streamed, so its counts are the only way to see
+                // from a replay that birds were present and being drawn.
+                flocks = self.birds.flock_count(),
+                birds = self.birds.bird_count(),
+                drawn_birds = self.bird_renderer.instance_count(),
+                bird_triangles = self.bird_renderer.triangle_count(),
+                grounded_birds = self
+                    .birds
+                    .birds()
+                    .filter(|bird| bird.is_grounded())
+                    .count(),
                 mass_tonnes = self.ship_hull.mass_kg() / 1000.0,
                 // The depth the hull is floating in. It has to be the depth
                 // the renderer uses, or the two are on different seas.
@@ -4069,6 +4139,8 @@ impl State {
                 self.weather_clouds.field_bind_group(),
             );
             self.ship_renderer
+                .draw(&mut render_pass, &self.camera_bind_group);
+            self.bird_renderer
                 .draw(&mut render_pass, &self.camera_bind_group);
             // Vacuum holds no cloud, no rain and no shafts of light. These are
             // the weather passes; the atmosphere pass itself still runs, since
