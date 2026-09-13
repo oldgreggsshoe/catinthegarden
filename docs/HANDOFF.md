@@ -48,8 +48,11 @@ newest sections.
 cruise, land, walk and take off again. Simulation in `birds`, GPU in
 `birds_render`, drawn beside the ship in both render paths. **B** rides a bird
 in the nearest airborne flock and **B** again gives the eye back; the red
-reticle marks the nearest flock's centre regardless of depth. Verified by
-counts in a replay and by eye in `bird_demo/1789323190-434266`.
+reticle marks the nearest flock's centre regardless of depth. While riding,
+every player-camera writer stands down (`player_camera_is_suppressed`) -- not
+the physics, only the camera write -- because two of them run after the bird cam
+by design and were shattering the terrain into plates. Verified by counts and by
+eye in `bird_demo/1789327323-459268`; interactive **B** still needs a human.
 
 **Forest beams removed (13 September):** the opt-in forest beam overlay and its
 whole supporting path are gone at the user's request, and **B** now belongs to
@@ -9441,3 +9444,75 @@ a capture, not by both at once. Orbit mode is the one camera mode that does not
 restore cleanly on the way out, because its azimuth/elevation state *is* the pose
 the bird cam overwrites; surface and low flight, the modes birds are watched
 from, are unaffected.
+
+## The bird cam shattered the terrain in Surface mode - 13 September 2026
+
+Ian rode a bird and the world came apart into flat sand-coloured plates, long
+slivers in the sky, and shards of ocean. He then found the tell himself: **F4
+fixed it, F4 again broke it.** A key that toggles a bug names the state the bug
+lives in, and F4 changes `camera_mode` -- so before any bisect, the answer was
+already known to be in a `match self.camera_mode` arm.
+
+It is this one, in `render`:
+
+```rust
+let camera_corrected = match self.camera_mode {
+    CameraMode::LowFlight => self.enforce_low_flight_clearance(..),
+    CameraMode::Surface   => self.resolve_surface_camera_after_streaming(..),
+    CameraMode::Orbit     => false,
+};
+if camera_corrected { /* recapture camera, re-run terrain.update */ }
+```
+
+Both non-Orbit arms write the player's eye, and both run *after* the bird cam --
+necessarily, because a post-streaming clamp has to see the patches that were just
+streamed. So each frame in Surface mode:
+
+1. the bird cam puts the eye on the bird;
+2. `terrain.update` streams and builds every chunk's camera-relative anchor
+   against *the bird's* eye;
+3. `resolve_surface_camera_after_streaming` ends with an unconditional
+   `sync_surface_camera_pose`, yanking the eye back to the swimming body;
+4. anchors are rebuilt only `if camera_corrected`, which reports whether the
+   *body* moved, not whether the *camera* did -- so the rebuild never fired.
+
+The chunks were then drawn with anchors belonging to an eye that was no longer
+there. At a 4,000km radius each chunk carries its own anchor, so each displaced
+by its own amount: plates where a chunk went flat, slivers where two corners of a
+quad landed far apart. `Orbit` returns `false` and never calls sync, which is
+exactly why F4 was a toggle between broken and fine.
+
+Fix: `player_camera_is_suppressed()`, checked by both writers. Only the camera
+write is suppressed, never the physics -- the body keeps falling, swimming and
+colliding, so **B** hands the eye back to a body that has been where it should be
+all along.
+
+### What the earlier investigation got wrong, and right
+
+Two readings of the first capture set were wrong and worth recording:
+
+- The manifest's 250m `max_abs_delta_meters` looked like a terrain fault. It is
+  not: those probe rays hit **wave troughs at -39m** and are compared against the
+  terrain height function, which returns 0 over sea. The surface probe is not a
+  meaningful instrument for a ray that lands on water.
+- Heavy ancestor fallback looked like the cause. It is not: `bird_demo` at the
+  same commit and the same altitude has the same `fallback_chunks` (247/255) and
+  the same `source_level_delta_histogram` shape, and renders correctly.
+
+Right, and load-bearing: the giant sea predates all of this. Ian's own run
+`manual/1789321529-426001` at `07360f0`, before any of the bird work, logged
+waves from -38.6m to **+60.3m** and threw him to 132m altitude. That is the
+storm-column problem already written up for Codex, and it is why he was 80m in
+the air to see this at all.
+
+### Why the ordering test did not catch it
+
+`the_bird_camera_is_applied_after_every_other_camera_writer` was already passing:
+source order *was* correct. The rule it encoded was wrong. The rule is not "the
+bird cam writes last" but "nothing else writes while it is riding", and
+`no_player_camera_writer_runs_while_the_bird_cam_is_riding` now encodes that
+instead: it walks every `set_world_pose` in the production half back to its
+enclosing method and requires the guard to sit between the two, so a new
+controller cannot be added without meeting the rule. Deleting either guard fails
+it. It scopes to the production half deliberately -- it names the very call it
+searches for, and would otherwise match its own source.
