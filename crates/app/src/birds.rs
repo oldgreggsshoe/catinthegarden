@@ -62,6 +62,13 @@ const CRUISE_SPEED_METERS_PER_SECOND: f64 = 11.0;
 const MAX_SPEED_METERS_PER_SECOND: f64 = 17.0;
 const MIN_FLYING_SPEED_METERS_PER_SECOND: f64 = 5.0;
 const WALK_SPEED_METERS_PER_SECOND: f64 = 0.55;
+/// Birds on the ground need their own separation. The three rules above apply
+/// to birds on the wing, and a walking bird used to ignore its neighbours
+/// entirely: measured, two settled birds closed to 0.014m of each other, which
+/// for a 0.42m bird is one standing inside another. Flying pairs held 0.559m
+/// over the same run, so only the ground case was ever wrong.
+const WALK_SEPARATION_METERS: f64 = 0.75;
+const WALK_SEPARATION_STRENGTH: f64 = 1.8;
 /// Vertical band the flock holds while cruising, above the ground under it.
 const CRUISE_ALTITUDE_MIN_METERS: f64 = 22.0;
 const CRUISE_ALTITUDE_MAX_METERS: f64 = 70.0;
@@ -481,7 +488,8 @@ fn advance_flock(
 
         match bird.activity {
             BirdActivity::Walking => {
-                step_walking_bird(bird, step_seconds, surface_radius, up, intent);
+                let separation = walking_separation(bird, index, &snapshot, up);
+                step_walking_bird(bird, step_seconds, surface_radius, up, intent, separation);
             }
             _ => {
                 let steering = flying_steering(
@@ -766,12 +774,37 @@ fn step_flying_bird(
     bird.wing_phase = (bird.wing_phase + beats * step_seconds as f32).fract();
 }
 
+/// Tangential push away from crowded neighbours, in the ground plane so it
+/// cannot lift a bird off its feet or drive it into the ground.
+fn walking_separation(bird: &Bird, index: usize, snapshot: &[(DVec3, DVec3)], up: DVec3) -> DVec3 {
+    let mut push = DVec3::ZERO;
+    for (other_index, (position, _)) in snapshot.iter().enumerate() {
+        if other_index == index {
+            continue;
+        }
+        let offset = bird.position - *position;
+        let distance = offset.length();
+        if distance >= WALK_SEPARATION_METERS || distance <= 1.0e-6 {
+            continue;
+        }
+        let flat = offset - up * offset.dot(up);
+        if flat.length_squared() <= 1.0e-12 {
+            continue;
+        }
+        // Linear in the overlap, so a bird that is merely close is nudged and
+        // one that is nearly co-located is moved firmly.
+        push += flat.normalize() * ((WALK_SEPARATION_METERS - distance) / WALK_SEPARATION_METERS);
+    }
+    push * WALK_SEPARATION_STRENGTH
+}
+
 fn step_walking_bird(
     bird: &mut Bird,
     step_seconds: f64,
     surface_radius: Option<f64>,
     up: DVec3,
     intent: FlockIntent,
+    separation: DVec3,
 ) {
     if intent == FlockIntent::Lifting {
         bird.activity = BirdActivity::TakingOff;
@@ -786,7 +819,12 @@ fn step_walking_bird(
     let stride = ((bird.activity_seconds * 0.9).sin() * 0.5 + 0.5).powf(2.0);
     let flat = bird.velocity - up * bird.velocity.dot(up);
     let heading = flat.normalize_or_zero();
-    bird.velocity = heading * (WALK_SPEED_METERS_PER_SECOND * stride);
+    // A crowded bird steps aside, and may briefly outpace a stroll to do it,
+    // rather than sliding through its neighbour.
+    bird.velocity = limit(
+        heading * (WALK_SPEED_METERS_PER_SECOND * stride) + separation,
+        WALK_SPEED_METERS_PER_SECOND * 2.0,
+    );
     bird.position += bird.velocity * step_seconds;
 
     if let Some(surface_radius) = surface_radius {
@@ -1072,9 +1110,6 @@ mod tests {
             flocks.advance(time, camera, &ground);
         }
         for flock in flocks.flocks() {
-            if flock.birds().iter().any(|bird| bird.is_grounded()) {
-                continue;
-            }
             let centroid = flock.centroid();
             let spread = flock
                 .birds()
@@ -1179,6 +1214,65 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn birds_never_stand_inside_one_another() {
+        // The flocking rules apply to birds on the wing. Walking birds used to
+        // ignore their neighbours entirely and settled to 0.014m apart, which
+        // for a 0.42m bird is one inside another. The spread test above missed
+        // it for two hundred steps because it skipped any flock with a grounded
+        // bird in it -- exactly the case that was broken.
+        let radius = 4_000_000.0;
+        let camera = camera_at(radius + 2.0);
+        let ground = flat_ground(radius);
+        let mut closest = f64::INFINITY;
+        let mut settled = f64::INFINITY;
+        let mut grounded_seen = false;
+        for seed in [3u64, 13, 41, 97] {
+            let mut flocks = BirdFlocks::new(seed);
+            let mut time = 0.0;
+            while time < 240.0 {
+                time += 0.1;
+                flocks.advance(time, camera, &ground);
+                for flock in flocks.flocks() {
+                    let birds = flock.birds();
+                    grounded_seen |= birds.iter().any(|bird| bird.is_grounded());
+                    for (index, bird) in birds.iter().enumerate() {
+                        for other in birds.iter().skip(index + 1) {
+                            let gap = bird.position.distance(other.position);
+                            closest = closest.min(gap);
+                            if bird.is_grounded()
+                                && other.is_grounded()
+                                && bird.activity_seconds > 1.0
+                                && other.activity_seconds > 1.0
+                            {
+                                settled = settled.min(gap);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            grounded_seen,
+            "no bird ever landed, so the ground case is untested"
+        );
+        // Settled birds must be clear of one another: a bird is about 0.5m
+        // long, so anything under that is one standing in another. Measured
+        // 0.683m with the walking separation in, against 0.014m without it.
+        assert!(
+            settled > 0.5,
+            "two settled birds stood {settled:.3}m apart, inside one another"
+        );
+        // The overall minimum is looser on purpose. It is the instant a landing
+        // bird touches down beside a settled one, before the separation has
+        // pushed them apart over the next few steps; measured 0.132m. Pinned so
+        // a regression that makes the touchdown itself overlap still shows up.
+        assert!(
+            closest > 0.1,
+            "birds closed to {closest:.3}m even allowing for touchdown"
+        );
     }
 
     #[test]

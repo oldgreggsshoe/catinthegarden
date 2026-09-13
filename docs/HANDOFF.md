@@ -9084,3 +9084,35 @@ than anything about the birds. The counts prove they exist, are in range and are
 being drawn; they do not prove the model reads as a bird. Ask for a manual pass.
 `crates.tar.gz` untouched.
 
+## 13 September — walking birds were standing inside one another
+
+Asked whether two flocks would converge into one under the boid rules. They
+cannot: `advance_flock` builds its snapshot from `flock.birds`, so separation,
+alignment and cohesion never see across a flock. Measured over four seeds and
+240 simulated seconds, the closest two birds in *different* flocks ever came
+was 1.32m and the closest two flock centroids 9.43m, so they pass near one
+another without interpenetrating. Flocks are structurally independent and stay
+that way.
+
+Checking it surfaced a real defect in the other direction. Splitting the closest
+same-flock pair by activity gave flying 0.559m, takingoff 0.450m, landing
+0.239m and **walking 0.014m** -- for a bird about 0.5m long, one standing inside
+another. `step_walking_bird` applied no separation at all: the three rules are
+evaluated only for birds on the wing, and a settled flock had nothing keeping it
+apart.
+
+`walking_separation` now pushes a grounded bird off its neighbours in the ground
+plane, linear in the overlap and capped at twice a stroll so a crowded bird steps
+aside rather than sliding through. Settled pairs measure 0.683m apart with it in.
+The overall minimum is 0.132m and is the instant a landing bird touches down
+beside a settled one, before separation resolves it over the next few steps;
+both bounds are pinned.
+
+`a_flock_keeps_together_without_collapsing_onto_one_point` had a `continue` that
+skipped any flock containing a grounded bird -- exactly the case that was broken,
+so it could never have caught this. The skip is gone and
+`birds_never_stand_inside_one_another` covers every activity across four seeds;
+removing the separation reproduces the original 0.014m.
+
+531 workspace tests, 0 failed; clippy and fmt clean.
+
