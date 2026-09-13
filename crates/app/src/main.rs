@@ -1313,7 +1313,7 @@ impl State {
             terrain_source.clone(),
         )
         .expect("foveated renderer must initialize");
-        let mut terrain = terrain::TerrainRenderer::new(
+        let terrain = terrain::TerrainRenderer::new(
             &device,
             &queue,
             hdr::HdrRenderer::SCENE_FORMAT,
@@ -1329,11 +1329,7 @@ impl State {
             hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
             weather_clouds.field_bind_group_layout(),
-            terrain_startup_samples
-                .as_ref()
-                .map(|samples| samples.forests.as_slice())
-                .unwrap_or_default(),
-            &mut terrain,
+            &terrain,
         );
         let ship_hull = ship::ShipHull::new();
         // Offset along a tangent so the hull sits beside the spawn rather than
@@ -2912,12 +2908,10 @@ impl State {
                             terrain_stats.draw_calls,
                         ));
                         ui.label(format!(
-                            "Forest: {} trees  |  {} patches  |  nearest {:?}  |  {} global beams {} (B)",
+                            "Forest: {} trees  |  {} patches  |  nearest {:?}",
                             forest_snapshot.instances,
                             forest_snapshot.patch_count,
                             forest_snapshot.patch_key,
-                            forest_snapshot.beam_count,
-                            if forest_snapshot.beams_enabled { "on" } else { "off" },
                         ));
                         ui.label(format!(
                             "Ocean: {} chunks  |  {} triangles",
@@ -3067,7 +3061,7 @@ impl State {
                         ));
                         ui.label(format!("Ocean Gerstner range: {ocean_wave_range:.2} m"));
                         ui.label(
-                            "F: fullscreen  |  F3: overlay  |  , / .: time speed  |  F4: orbit/flight  |  G: surface camera  |  WASD: move  |  Space: jump/swim thrust  |  [ / ]: speed  |  F5: render path  |  O: triangle outlines  |  B: forest beams  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
+                            "F: fullscreen  |  F3: overlay  |  , / .: time speed  |  F4: orbit/flight  |  G: surface camera  |  WASD: move  |  Space: jump/swim thrust  |  [ / ]: speed  |  F5: render path  |  O: triangle outlines  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
                         );
                         ui.label("Default: fullscreen, HUD hidden, auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc/Q: quit");
                     });
@@ -3765,7 +3759,6 @@ impl State {
                 target: "catinthegarden::forest",
                 patch_count = forest.patch_count,
                 proxy_patch_count = forest.proxy_patch_count,
-                beam_count = forest.beam_count,
                 instances = forest.instances,
                 proxy_instances = forest.proxy_instances,
                 full_instances = forest.full_instances,
@@ -3778,7 +3771,6 @@ impl State {
                 pending_candidates = forest.pending_candidates,
                 pending_candidates_total = forest.pending_candidates_total,
                 transition_progress = forest.transition_progress,
-                beams_enabled = forest.beams_enabled,
                 "procedural forest state"
             );
         }
@@ -4185,11 +4177,6 @@ impl State {
             // the weather passes; the atmosphere pass itself still runs, since
             // it is what paints space black behind the stars.
             if body::has_atmosphere() {
-                self.forest.draw_beams(
-                    &mut render_pass,
-                    &self.camera_bind_group,
-                    camera_sea_level_altitude_meters,
-                );
                 self.weather_clouds
                     .draw(&mut render_pass, &self.camera_bind_group);
             }
@@ -4927,14 +4914,6 @@ impl ApplicationHandler for App {
                         && event.physical_key == PhysicalKey::Code(KeyCode::KeyO) =>
                 {
                     state.cycle_flat_triangle_outline_mode();
-                    window.request_redraw();
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if event.state.is_pressed()
-                        && event.physical_key == PhysicalKey::Code(KeyCode::KeyB) =>
-                {
-                    state.forest.toggle_beams();
-                    state.mark_hud_dirty();
                     window.request_redraw();
                 }
                 WindowEvent::KeyboardInput { event, .. }

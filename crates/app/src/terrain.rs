@@ -479,20 +479,9 @@ pub struct TerrainClimateSample {
     pub ground_moisture: f64,
 }
 
-/// Coarse global inputs used only to place distance-independent forest debug
-/// locators. Exact tree placement still applies the resident terrain slope and
-/// per-cell density tests when the camera gets close enough to draw trees.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct TerrainForestSample {
-    pub direction: DVec3,
-    pub surface_elevation_meters: f64,
-    pub moisture: f32,
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct TerrainStartupSamples {
     pub climate: Vec<TerrainClimateSample>,
-    pub forests: Vec<TerrainForestSample>,
 }
 
 /// Samples the active outmap at the weather grid's 64x64-per-face centres.
@@ -505,8 +494,7 @@ pub fn terrain_climate_samples(
     Ok(terrain_startup_samples(source)?.map(|samples| samples.climate))
 }
 
-/// Loads the climate and coarse forest-locator fields in one bounded outmap
-/// pass so enabling global forest debugging does not duplicate startup I/O.
+/// Loads the climate field in one bounded outmap pass at startup.
 pub fn terrain_startup_samples(
     source: &TerrainSource,
 ) -> Result<Option<TerrainStartupSamples>, TerrainError> {
@@ -519,7 +507,6 @@ pub fn terrain_startup_samples(
     let outmap = Outmap::open(root)?;
     let mut tile_cache: HashMap<TileKey, TileData> = HashMap::new();
     let mut climate = Vec::with_capacity(CubeFace::ALL.len() * WEATHER_GRID_SIDE.pow(2));
-    let mut forests = Vec::new();
     for face in CubeFace::ALL {
         for y in 0..WEATHER_GRID_SIDE {
             for x in 0..WEATHER_GRID_SIDE {
@@ -557,17 +544,10 @@ pub fn terrain_startup_samples(
                     heat_capacity_joules_per_square_meter_kelvin: heat_capacity,
                     ground_moisture,
                 });
-                if forest_biome_owns_trees(biome) && surface_elevation_meters > 0.0 {
-                    forests.push(TerrainForestSample {
-                        direction,
-                        surface_elevation_meters,
-                        moisture: sampled_moisture as f32,
-                    });
-                }
             }
         }
     }
-    Ok(Some(TerrainStartupSamples { climate, forests }))
+    Ok(Some(TerrainStartupSamples { climate }))
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1367,47 +1347,6 @@ impl TerrainRenderer {
         }
         self.tile_last_used.insert(source_key, self.tile_cache_tick);
         self.surface_height_meters_at(local_surface_direction, camera_altitude_meters)
-    }
-
-    /// Resolves one coarse global forest locator against the same dense tile,
-    /// runtime height, biome, moisture, and slope path used by nearby trees.
-    /// This is startup-only: locators must not advertise a forest that the
-    /// resident placement path will reject when the camera arrives.
-    pub fn prepare_global_forest_locator_sample(
-        &mut self,
-        local_surface_direction: DVec3,
-    ) -> Option<ForestSurfaceSample> {
-        let direction = local_surface_direction.normalize_or_zero();
-        if direction.length_squared() <= f64::EPSILON {
-            return None;
-        }
-        let source_key = match &self.source {
-            TerrainDataSource::Placeholder => return None,
-            TerrainDataSource::Outmap(outmap) => {
-                tile_key_for_direction(direction, outmap.manifest().dense_level)
-            }
-        };
-        if !self.tile_cache.contains_key(&source_key) {
-            let TerrainDataSource::Outmap(outmap) = &self.source else {
-                unreachable!("placeholder returned before loading a forest-locator tile");
-            };
-            let tile = outmap.load_tile(source_key).ok()?;
-            let label = format!("global forest locator terrain tile {source_key:?}");
-            self.tile_cache.insert(
-                source_key,
-                create_gpu_tile(
-                    &self.device,
-                    &self.queue,
-                    &self.terrain_tile_bind_group_layout,
-                    &label,
-                    &tile.heights_meters,
-                    &tile.biome_ids,
-                    &tile.moisture,
-                ),
-            );
-        }
-        self.tile_last_used.insert(source_key, self.tile_cache_tick);
-        self.forest_surface_sample_at(direction, 0.0)
     }
 
     pub fn shared_bind_group(&self) -> &wgpu::BindGroup {
