@@ -84,3 +84,18 @@ MEMORY.md:1-4|note=[checkout-specific measured renderer workflow]
 I’ll update the road trial to drive the camera along its S-curve automatically. I’ll inspect the scenario waypoint controls and terrain-height queries, change the trial scenario, then replay it to check camera clearance and capture the view from the road.
 
 Road POV update: `road_surface_trial` now drives the painted S-curve automatically for 20s at 14m/s, following the rendered ground at a 2m eye height. Run `CATINGARDEN_ROAD_EXPERIMENT=1 /home/dad/catingard-target/release/catinthegarden-app --scenario road_surface_trial`. Seven captures at `test-runs/road_surface_trial/1789295599-342703/screenshots/` pass with 2.000m clearance at every sample. Workspace tests, clippy and fmt pass. The replay skips bird simulation only for this diagnostic; normal play is unchanged.
+
+Road replay is finished and pushed as f8461ca. Run `CATINGARDEN_ROAD_EXPERIMENT=1 /home/dad/catingard-target/release/catinthegarden-app --scenario road_surface_trial`; it drives automatically for 20s. Seven captures in `test-runs/road_surface_trial/1789295599-342703/screenshots/` pass at exactly 2m ground clearance. Workspace tests, clippy and fmt pass.
+
+And yes, the ocean should have sharper, more luminous crests for the look you want. Our sea has Gerstner-style wave components, but **horizontal transport is disabled** to keep the radial CPU collision query aligned with the rendered surface. Its cubic vertical crest profile narrows peaks but cannot make the choppy/cusped profile in your sketch; the short ripples are shading-only. Current crest illumination is a backlit tint, not a water-thickness scattering model, and the simulated weather wind does not yet drive the wave spectrum. Simply enabling transport would risk folds (the current summed steepness budget is above 1) and break buoyancy.
+
+Rare's SIGGRAPH description says Sea of Thieves uses an FFT ocean, a choppiness-derived peak mask, and a view/sun/peak-dependent deep-water versus subsurface colour blend, plus foam: https://history.siggraph.org/wp-content/uploads/2022/09/2018-Talks-Ang_The-Technical-Art-of-Sea-of-Thieves.pdf . That is a useful visual target, not a one-constant Gerstner tweak. The safe sequence here is (1) couple wind speed/direction to the wind-sea spectrum in the same CPU and WGSL wave path, preserving stable swell phases and collision; (2) add bounded horizontal crest compression with an inverse surface query and no folding; (3) replace the crest tint with thickness-dependent scattering and wind/breaking-dependent foam; (4) compare fixed-motion captures and matched Quadro frame times. I have not implemented or performance-validated those ocean steps in this road-replay commit.
+
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:1-4|note=[checkout-specific measured renderer workflow]
+</citation_entries>
+<rollout_ids>
+01a07103-79ca-7e92-99b9-5da47619e658
+</rollout_ids>
+</oai-mem-citation>
