@@ -433,10 +433,25 @@ const OCEAN_BODY_COLOUR: vec3<f32> = vec3<f32>(0.005, 0.032, 0.170);
 // fold budget -- every component crest aligned at once, the theoretical
 // maximum -- is 2.0507; with the calm amplitude column it is 0.7279. Sampling
 // the sum over random phases puts calm p90 at 0.225 and p99 at 0.381, and
-// storm p75 at 0.509 and p90 at 0.950. So 0.25 is roughly the calm sea's top
-// tenth of water, and 0.75 is reached only by a storm's sharpest crests.
-const OCEAN_CREST_TRANSMISSION_ONSET: f32 = 0.25;
-const OCEAN_CREST_TRANSMISSION_FULL: f32 = 0.75;
+// storm p75 at 0.509 and p90 at 0.950.
+//
+// The first pair, 0.25 and 0.75, was picked from the calm column: 0.25 is
+// "roughly the calm sea's top tenth of water". That reasoning was against a
+// distribution this game never renders. `GLOBAL_OCEAN_STORM_INTENSITY` is
+// pinned at 1.0, so `storm_blend` is 1.0 always and the storm column is the
+// only one in play; the calm figures are unreachable. Measured against the
+// storm column instead, the old pair put 36.9% of the sea under some
+// turquoise, 25.3% over half strength, and 15.8% clipped flat at the top of
+// the ramp -- so the claim that 0.75 "is reached only by a storm's sharpest
+// crests" was wrong by a factor of about fifteen, and the tint read as a
+// water colour rather than as thin water.
+//
+// Re-anchored on the storm percentiles that do occur: p90 = 0.950 begins the
+// tint and p99 = 1.534 completes it, so turquoise starts on the sharpest tenth
+// of the sea and is only full on the sharpest hundredth. That measures 8.2%
+// under any tint and 2.8% over half strength.
+const OCEAN_CREST_TRANSMISSION_ONSET: f32 = 0.95;
+const OCEAN_CREST_TRANSMISSION_FULL: f32 = 1.534;
 // How far into breaking a crest must be before it starts going white. Below
 // this the wave is merely feeling the bottom, not yet breaking on it.
 // How far past the depth limit a crest must be before it whitens, and where it
@@ -3010,16 +3025,21 @@ fn ocean_lighting(
     // a measured water-volume thickness. Positive wave height selects the upper
     // crest; forward scattering lights it when the sun is behind the wave.
     // Keep depth writes and reflection intact; foam is composed by the caller.
-    // Linearly interpolated, so unlike smoothstep it does not accelerate the
-    // colour change through the middle of the ramp. Keyed on how sharp the
-    // crest is, not how high it stands: a thin crest is what light gets
-    // through, and a small wave's tip is as thin as a large one's.
-    let crest = clamp(
+    // Keyed on how sharp the crest is, not how high it stands: a thin crest is
+    // what light gets through, and a small wave's tip is as thin as a large
+    // one's. Squared rather than linear. The earlier note here preferred a
+    // linear ramp for not accelerating through its middle, but the middle is
+    // the whole question: with the ramp spanning p90 to p99 of the sea's
+    // sharpness, a linear rise hands half-strength tint to everything past
+    // p95. Transmission through a thinning wedge of water is not linear in its
+    // thickness either, so the square is both the duller and the truer curve.
+    let ramp = clamp(
         (crest_sharpness - OCEAN_CREST_TRANSMISSION_ONSET)
             / (OCEAN_CREST_TRANSMISSION_FULL - OCEAN_CREST_TRANSMISSION_ONSET),
         0.0,
         1.0,
     );
+    let crest = ramp * ramp;
     let backlight = pow(max(dot(-view_direction, sun_direction_view), 0.0), 4.0);
     let transmitted = vec3<f32>(0.025, 0.32, 0.22)
         * sun_transmittance * (SURFACE_SUNLIGHT_SCALE * crest * backlight)

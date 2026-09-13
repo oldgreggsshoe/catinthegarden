@@ -1836,6 +1836,54 @@ fn ocean_screen_fallback(point: vec3<f32>) -> vec4<f32> {
     );
 }
 
+// Nearest-texel colour makes the refracted bed staircase for the same reason
+// nearest depth made the reflection staircase in
+// `ocean_reflection_scene_position`: the refracted ray walks the snapshot at an
+// angle, so neighbouring pixels land in different texels and the bed's edges
+// step. Filter the snapshot instead. The binding is declared
+// `filterable: false`, so this cannot be a linear sampler and is interpolated
+// by hand -- and never across a silhouette, because a 2x2 footprint straddling
+// a depth discontinuity is a bank edge and mixing over it drags distant land
+// into the bed. Those keep the single texel.
+fn ocean_scene_colour_filtered(uv: vec2<f32>) -> vec3<f32> {
+    let size = vec2<i32>(textureDimensions(water_scene_color));
+    let nearest_pixel = clamp(
+        vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), size - vec2<i32>(1),
+    );
+    let coordinate = uv * vec2<f32>(size) - vec2<f32>(0.5);
+    let lower = vec2<i32>(floor(coordinate));
+    if any(lower < vec2<i32>(0)) || any(lower + vec2<i32>(1) >= size) {
+        return textureLoad(water_scene_color, nearest_pixel, 0).rgb;
+    }
+    let depths = vec4<f32>(
+        textureLoad(water_scene_depth, lower, 0),
+        textureLoad(water_scene_depth, lower + vec2<i32>(1, 0), 0),
+        textureLoad(water_scene_depth, lower + vec2<i32>(0, 1), 0),
+        textureLoad(water_scene_depth, lower + vec2<i32>(1, 1), 0),
+    );
+    if any(depths <= vec4<f32>(0.0)) {
+        return textureLoad(water_scene_color, nearest_pixel, 0).rgb;
+    }
+    let distances = vec4<f32>(camera.projection_matrix[3][2]) / depths;
+    let nearest = min(min(distances.x, distances.y), min(distances.z, distances.w));
+    let farthest = max(max(distances.x, distances.y), max(distances.z, distances.w));
+    // Same coherence bound the reflection path uses on its own 2x2 footprint.
+    if farthest - nearest > max(0.5, nearest * 0.05) {
+        return textureLoad(water_scene_color, nearest_pixel, 0).rgb;
+    }
+    let lower_row = mix(
+        textureLoad(water_scene_color, lower, 0).rgb,
+        textureLoad(water_scene_color, lower + vec2<i32>(1, 0), 0).rgb,
+        fract(coordinate.x),
+    );
+    let upper_row = mix(
+        textureLoad(water_scene_color, lower + vec2<i32>(0, 1), 0).rgb,
+        textureLoad(water_scene_color, lower + vec2<i32>(1, 1), 0).rgb,
+        fract(coordinate.x),
+    );
+    return mix(lower_row, upper_row, fract(coordinate.y));
+}
+
 // Bounded screen-space refraction through the actual rasterised bed. No sky
 // fallback and no alpha blending: the shell continues to own depth. A missing
 // or off-screen bed retains the scattering colour rather than leaking space.
@@ -1880,8 +1928,7 @@ fn ocean_scene_transmission(input: OceanVertexOutput, surface: OceanSurface, hei
             }
             let clip = camera.projection_matrix * vec4<f32>(hit, 1.0);
             let uv = clip.xy / clip.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
-            let pixel = vec2<i32>(uv * vec2<f32>(textureDimensions(water_scene_color)));
-            let color = textureLoad(water_scene_color, pixel, 0).rgb;
+            let color = ocean_scene_colour_filtered(uv);
             // Fade the screen boundary so refraction never exposes a hard crop.
             let edge = min(min(uv.x, uv.y), min(1.0 - uv.x, 1.0 - uv.y));
             return vec4<f32>(color, ocean_water_transmittance(end) * smoothstep(0.0, 0.02, edge));
@@ -2176,12 +2223,43 @@ fn ocean_fragment_with_transmission_mode(input: OceanVertexOutput, bed: vec4<f32
         sun_transmittance,
         sky_diffuse,
     );
-    // Add a shallow-water turquoise scattering tint only where a bed is
-    // visible. It fades with the same depth transmittance, leaving deep water
-    // and open-ocean appearance unchanged.
+    // Shallow-water turquoise scattering tint. `bed.w` alone only says a bed
+    // was resolved through the water, so keying the mix on it painted the tint
+    // wherever the bottom was visible at all -- and at
+    // OCEAN_UNDERWATER_VISIBILITY_METERS of clear water that reaches far
+    // deeper than anything a swimmer would call shallow. The old comment here
+    // claimed it "fades with the same depth transmittance", but transmittance
+    // to the bed is a function of slant range, not of how much water stands
+    // over it, so a distant bed under twenty metres qualified exactly like a
+    // bar with ankle-deep water on it.
+    //
+    // Gate it on the thinness of the water instead, measured as the
+    // instantaneous column -- still depth plus the wave's own displacement,
+    // the same quantity the surf line uses rather than the sea bed alone. The
+    // tint then belongs to thin water: it picks out the backs of shoaling
+    // crests and runs up and down the beach with the wave, instead of sitting
+    // on every visible bottom.
+    //
+    // The weight is the water's own two-way extinction over that column --
+    // down to the bed and back up -- on the same e-fold the underwater fog
+    // uses, rather than an authored depth ramp. That is what makes the tint
+    // self-calibrating against OCEAN_UNDERWATER_VISIBILITY_METERS: a hard
+    // 6m cutoff was tried first and drove `ocean_clear_shallows` to no tint at
+    // all, because clear water legitimately shows a bed from far deeper than
+    // any single authored threshold. Extinction keeps genuine shallows
+    // turquoise (3m holds 79% of the tint) while taking it off deep water that
+    // merely happens to have a visible bottom (20m keeps 21%, 40m keeps 4%).
     let shallow_turquoise = vec3<f32>(0.018, 0.34, 0.30)
         * (sky_diffuse + sun_transmittance * (0.25 * SURFACE_SUNLIGHT_SCALE));
-    let shallow_mix = bed.w * 0.82;
+    let instantaneous_column_meters = max(
+        max(-macro_height_meters, 0.0) + surface.vertical_displacement,
+        0.0,
+    );
+    let shallow_e_fold_meters = OCEAN_UNDERWATER_VISIBILITY_METERS / log(50.0);
+    let shallow_column_transmittance = exp(
+        -2.0 * instantaneous_column_meters / shallow_e_fold_meters,
+    );
+    let shallow_mix = bed.w * 0.82 * shallow_column_transmittance;
     let water_surface_color = mix(
         mix(base_water, shallow_turquoise, shallow_mix) + transmission,
         ocean_foam_radiance(sun_transmittance, sky_diffuse),

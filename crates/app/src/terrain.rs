@@ -4671,6 +4671,48 @@ mod tests {
     }
 
     #[test]
+    fn refracted_bed_is_filtered_rather_than_point_sampled() {
+        let shader = planet_shader_source();
+        let transmission = shader
+            .split("fn ocean_scene_transmission(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("screen-space transmission path is present");
+        // The staircase on the refracted bed was a nearest-texel fetch. Keep
+        // the filtered one, and keep the raw fetch out of this path.
+        assert!(transmission.contains("let color = ocean_scene_colour_filtered(uv);"));
+        assert!(!transmission.contains("textureLoad(water_scene_color"));
+
+        let filtered = shader
+            .split("fn ocean_scene_colour_filtered(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("filtered scene colour fetch is present");
+        // Bilinear over the 2x2 footprint, and the silhouette guard that stops
+        // a bank edge bleeding distant land into the bed.
+        assert!(filtered.contains("fract(coordinate.x)"));
+        assert!(filtered.contains("fract(coordinate.y)"));
+        assert!(filtered.contains("if farthest - nearest > max(0.5, nearest * 0.05) {"));
+    }
+
+    #[test]
+    fn shallow_turquoise_is_weighted_by_the_water_column_not_bed_visibility() {
+        let shader = planet_shader_source();
+        let ocean = shader
+            .split("fn ocean_fragment_with_transmission_mode(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("analytic ocean fragment path is present");
+        // `bed.w` alone put the tint on every visible bottom regardless of how
+        // much water stood over it. The column, and its two-way extinction,
+        // are what make the tint belong to thin water.
+        assert!(ocean.contains("let shallow_mix = bed.w * 0.82 * shallow_column_transmittance;"));
+        assert!(ocean.contains("max(-macro_height_meters, 0.0) + surface.vertical_displacement,"));
+        assert!(ocean.contains("-2.0 * instantaneous_column_meters / shallow_e_fold_meters,"));
+        assert!(!ocean.contains("let shallow_mix = bed.w * 0.82;"));
+    }
+
+    #[test]
     fn shoreline_composites_real_bed_without_drawing_over_land() {
         let shader = planet_shader_source();
         let fragment = shader

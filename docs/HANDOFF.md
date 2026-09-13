@@ -29,12 +29,19 @@ the near plane. A per-instance correction restores full bed coverage without
 changing source elevations or shared-edge projection. See the newest section;
 manual swim-path acceptance is still pending.
 
+**Current shallow-water colour and refraction (13 September):** the turquoise a
+bed puts into the water above it is now weighted by the water's own two-way
+extinction over the instantaneous column, not merely by whether a bed resolved,
+and the refracted bed is bilinearly filtered instead of point-sampled. Crest
+transmission is re-anchored on the storm sea the game actually renders. See the
+newest section.
+
 **Current ocean default (10 September):** spawn-coast shoreward waves are now enabled
 for normal launches at the user's request. `CATINGARDEN_SPAWN_COAST_WAVES=0`
 opts out. Earlier opt-in-only notes below are historical. Coverage remains local
 and the measured ~5ms cost is unchanged; global steering is still outstanding.
 
-**Written:** 6 September 2026; header current to 12 September 2026.
+**Written:** 6 September 2026; header current to 13 September 2026.
 
 **How to read this file:** everything below this header is an append-only log of dated sections,
 oldest first. This header is the current state; **the newest work is the last section in the file,
@@ -8842,3 +8849,78 @@ the deterministic hole fix, not that every camera pose or visual swim path has
 been accepted; ask for a fresh manual underwater pass. Claude's concurrent
 `planet.wgsl`/`shared_planet.wgsl`/`terrain.rs` optical work and unrelated
 `crates.tar.gz` remain unstaged by this fix.
+
+## 13 September — shallow-water turquoise keyed on the column, and a filtered refracted bed
+
+User report: turquoise appears too readily and should belong to thinner water,
+and the refracted sea bed is aliased. Three separate changes, measured
+independently. Ordinary `xvfb-run` was used for every replay below: on
+`DISPLAY=:0` these scenarios stall in exposure warm-up with the GPU at 0% and
+write no captures, which is the same silent no-evidence failure the earlier
+seafloor controls hit.
+
+**Which turquoise.** Two mechanisms are named for this and neither was
+responsible. Raising `OCEAN_CREST_TRANSMISSION_ONSET` from 0.25 to 0.95 *and*
+squaring its ramp moved `ocean_clear_shallows` by 4 channel levels; its
+`backlight` gate barely fires there. Setting `OCEAN_SHALLOW_COLOUR` to magenta
+and re-rendering changed **zero pixels**. The visible tint is a third term,
+`shallow_mix = bed.w * 0.82` in `ocean_fragment_with_transmission_mode`, whose
+old comment claimed it "fades with the same depth transmittance". It does not:
+`bed.w` is transmittance along the slant range to the bed, not a function of how
+much water stands over it, so at `OCEAN_UNDERWATER_VISIBILITY_METERS` of clear
+water a distant bed under twenty metres qualified exactly like an ankle-deep bar.
+
+**Repair.** The mix is now weighted by two-way extinction over the instantaneous
+column -- still depth plus the wave's own displacement, the quantity the surf
+line already uses -- on the same e-fold as the underwater fog (25.562m). 3m
+keeps 79% of the tint, 10m 46%, 20m 21%, 40m 4%. A hard 6m cutoff was tried
+first and rejected: it drove three of four `ocean_clear_shallows` captures to
+**0.00%** turquoise, because clear water legitimately shows a bed from deeper
+than any single authored threshold. Matched pair `1789231780-223579` (stock)
+against `1789232229-224850`: turquoise coverage 5.54->4.11, 3.37->0.75,
+8.08->2.47 and 8.08->2.47 percent, maximum channel delta 8.
+
+**Refracted bed filtering.** `ocean_scene_transmission` fetched the snapshot with
+`textureLoad` at integer coordinates, i.e. nearest texel, while
+`ocean_reflection_scene_position` immediately below it already hand-rolls
+bilinear interpolation and records why ("nearest-pixel depth produces a
+staircase at grazing angles"). The colour binding is declared
+`filterable: false`, so a linear sampler is not available and the filter is
+hand-rolled, reusing that function's silhouette guard so a 2x2 footprint
+straddling a depth discontinuity keeps its single texel rather than dragging
+distant land into the bed. Matched pair `1789231814-223815` against
+`1789231832-223958` on `ocean_shallow_transmission`: mean absolute second
+difference, a jaggedness proxy, falls 1.0470->0.8259 and 1.0359->0.8181 on the
+two bed-dominated captures (**-21%**) and about -2% on the other two, maximum
+channel delta 12.
+
+**Crest transmission re-anchoring.** `OCEAN_CREST_TRANSMISSION_ONSET` 0.25 and
+`FULL` 0.75 were chosen from the calm amplitude column, but
+`GLOBAL_OCEAN_STORM_INTENSITY` is 1.0, so `storm_blend` is 1.0 always and the
+calm column is never rendered. Re-sampling the summed crest sharpness over
+600,000 random phases reproduces the documented calm p90 0.225 / p99 0.381 and
+storm p75 0.509 / p90 0.950, and gives storm p95 1.202, p99 1.534, p99.9 1.709.
+Against the column that actually runs, the old pair put 36.9% of the sea under
+some tint, 25.3% over half strength and 15.8% clipped flat at the top of the
+ramp -- so the old note that 0.75 "is reached only by a storm's sharpest crests"
+was wrong by more than an order of magnitude. Now onset p90 (0.95) to full p99
+(1.534) with a squared ramp: 8.2% tinted, 2.8% over half strength. Its measured
+effect in these scenarios is under 4 channel levels, so this is a latent
+calibration repair, not the visible turquoise change.
+
+**Refuted here, recorded so it is not retried.** Terrain back-face culling was
+tested as a cause of the seafloor hole before Codex found the anchor error.
+Disabling it globally moved the deterministic replay from 49.20% to 41.29%
+background, but all 72,954 changed pixels are the single colour `(3,41,102)`
+against a `(2,35,92)` background, the maximum change is 10 levels, and the count
+of warm sediment pixels is byte-identical at 412,243. Fully fogged back faces
+asymptote to a constant, so uniformity alone does not distinguish geometry from
+a fill; varied shading does. No culling change was retained.
+
+516 workspace tests, 0 failed, 23 ignored; clippy with no warnings; fmt clean.
+Two new source tests, `refracted_bed_is_filtered_rather_than_point_sampled` and
+`shallow_turquoise_is_weighted_by_the_water_column_not_bed_visibility`, both
+verified to fail when their change is reverted. `ocean_clear_shallows`,
+`ocean_shallow_transmission`, `ocean_coastline` and `land_chunk_seams` replays
+pass. Human acceptance of the new shallow-water colour in motion is still
+outstanding. `crates.tar.gz` untouched.
