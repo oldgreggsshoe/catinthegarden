@@ -978,6 +978,7 @@ struct HudInputs<'a> {
     camera_altitude: f64,
     exposure_state: hdr::ExposureState,
     ocean_wave_range: f32,
+    ocean_storm_intensity: f32,
 }
 
 /// The per-frame measurements the spatial log records. Everything else on the
@@ -1136,6 +1137,11 @@ impl State {
                 .expect("test-run storage must be writable");
         debug::init_tracing(log_writer.clone());
         tracing::info!(scenario = artifact_name, ?terrain_source, "run started");
+        ocean::initialize_sea_state(scenario.as_ref().map(|scenario| {
+            scenario
+                .ocean_storm_intensity_override()
+                .unwrap_or(ocean::GLOBAL_OCEAN_STORM_INTENSITY)
+        }));
 
         let size = window.inner_size();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
@@ -2914,6 +2920,7 @@ impl State {
             camera_altitude,
             exposure_state,
             ocean_wave_range,
+            ocean_storm_intensity,
         } = inputs;
         let raw_input = self.egui_state.take_egui_input(window);
         let show_debug_overlay = self.debug_overlay_visible;
@@ -3172,6 +3179,7 @@ impl State {
                             if animation_frozen { "frozen" } else { "running" },
                         ));
                         ui.label(format!("Ocean Gerstner range: {ocean_wave_range:.2} m"));
+                        ui.label(format!("Sea state: {ocean_storm_intensity:.2} (0 calm, 1 storm)"));
                         ui.label(format!(
                             "Bird cam: {bird_camera}  |  {flock_count} flocks, {airborne_birds} airborne"
                         ));
@@ -3667,7 +3675,10 @@ impl State {
             self.terrain_stats.draw_calls = 0;
         }
         let draw_calls = self.terrain_stats.draw_calls;
-        let local_storm_intensity = ocean::GLOBAL_OCEAN_STORM_INTENSITY;
+        let local_storm_intensity = ocean::sea_state_at(ocean_time_seconds).intensity;
+        if write_log {
+            tracing::info!(local_storm_intensity, "ocean sea-state sample");
+        }
         let ocean_wave_stats = ocean::wave_height_stats(ocean_time_seconds, local_storm_intensity);
         let ocean_wave_range = ocean_wave_stats.range_meters();
         if write_log {
@@ -3697,6 +3708,7 @@ impl State {
                 camera_altitude,
                 exposure_state,
                 ocean_wave_range,
+                ocean_storm_intensity: local_storm_intensity,
             });
         }
         let paint_jobs = render_egui.then_some(&self.cached_paint_jobs);

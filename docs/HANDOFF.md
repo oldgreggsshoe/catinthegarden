@@ -59,6 +59,13 @@ whole supporting path are gone at the user's request, and **B** now belongs to
 the bird cam. Sections below describing beams, `CATINGARDEN_FOREST_BEAMS` and
 global forest locators are historical.
 
+**Current sea-state variety (14 September):** normal launches now use a smooth
+ten-minute calm/storm cycle on the existing scaled ocean clock, rather than
+permanent intensity 1. Startup wind selects fixed speed/30 intensity;
+`CATINGARDEN_OCEAN_STORM=0..1` overrides interactive intensity. Scenario
+intensity overrides now work and take precedence. See the latest section for
+validation and limitations; this is not yet a weather/fetch simulation.
+
 **Current ocean default (10 September):** spawn-coast shoreward waves are now enabled
 for normal launches at the user's request. `CATINGARDEN_SPAWN_COAST_WAVES=0`
 opts out. Earlier opt-in-only notes below are historical. Coverage remains local
@@ -9553,3 +9560,68 @@ recalibrate crest transmission against the new sea-state distributions. Do not
 try to fix permanent storms with gravity or buoyancy changes. Startup wind is
 still opt-in; live wind/fetch evolution and improved scattering remain later work.
 `crates.tar.gz` remains untouched and untracked.
+
+## 14 September — reachable calm seas and phase-continuous sea-state variety
+
+### Behaviour and controls
+
+Normal launch, with no ocean environment overrides, starts in the existing calm
+amplitude column. A cosine envelope reaches storm after 300 scaled ocean seconds
+and returns to calm after 600. It does not reset any wave phases or rotate axes.
+This is deliberately an authored, repeatable demonstration cycle, **not** a
+weather-driven wind/fetch/duration model. The calm column retains large remote
+swells; it is not glass-flat or a physically calibrated Beaufort-zero sea.
+
+- `CATINGARDEN_OCEAN_STORM=0` fixes calm, `.5` intermediate, `1` the old storm.
+- Without that override, `CATINGARDEN_OCEAN_WIND=speed,x,y,z` selects fixed
+  intensity `speed/30`, alongside its existing directional spectrum filtering.
+- Scenario `ocean_storm_intensity_override` is now honored, ahead of environment
+  intensity. Scenarios without it retain legacy fixed storm for compatibility.
+  Wind-axis filtering remains startup-global as before.
+- HUD and JSONL show sea intensity. The cycle shares the existing ocean clock;
+  current F10 behaviour freezes planet/sun composition, NOT ocean motion.
+
+### Implementation
+
+One startup-selected immutable sea mode, sampled by ocean time, supplies all
+CPU heights, slopes, vertical velocities and the existing GPU intensity uniform.
+No camera/controller ordering, terrain source, bird code, wave axes or culling
+bounds changed. The analytic vertical velocity includes d(amplitude*scale)/dt
+before the existing breaking derivative, avoiding a buoyancy mismatch during
+rising/falling sea intensity. A finite-difference regression tests this production
+helper at six transition times and three water depths.
+
+Crest transmission now interpolates p90/p99 reference anchors across the actual
+calm/intermediate/storm columns: .212/.351, .544/.880, .950/1.534. Calibration:
+600,000 independent phase vectors, NumPy default_rng(14926), sin(uniform(0,2pi)),
+using each table component's steepness * amplitude(blend) * (44+11*blend) *
+2pi/wavelength * projected-axis length at the documented spawn radial. Raw
+p90/p99 were .21183958/.35075187, .54402258/.88021640, .94997972/1.53303759.
+These are reference-spectrum anchors, not universal local percentiles: wind
+filtering, shore steering and axis projection elsewhere change the distribution.
+
+### Validation / artifacts
+
+- 556 workspace tests pass, 23 ignored; clippy, formatting and diff check pass.
+- Quadro actual-WGSL parity at intensity 0/.5/1, 48 cases each: max height errors
+  .000276/.000218/.000123m; max normal errors .00000805/.00002171/.00003082.
+  These are small-radius derivative/parity instruments, not planet-scale error bounds.
+- NVIDIA Vulkan/Xvfb replays all pass with two captures each, identical cameras:
+  - calm: `ocean_calm_trial/1789354857-497194`
+  - intermediate: `ocean_moderate_trial/1789354896-497538`
+  - storm: `ocean_wind_trial/1789354917-497960`
+- Viewed all three capture-002 images. Top 200 sky rows are byte-identical;
+  storm capture-002 is entirely byte-identical to `1789336777-489406` from the
+  preceding crossing-swell patch. Calm has broad, smoother swells; storm has
+  steeper wind-sea ridges and whitecaps. All used spawn-coast steering disabled
+  to isolate the global spectrum; normal launch retains that steering.
+- Logged 25-point sampled maximum ranges over these four-second runs were
+  70.734/69.033/73.510m. Do not call these significant wave heights or infer
+  monotonic height from intensity: components interfere and calm retains swell.
+- No matched performance timing: no wave/pass/geometry added, but no FPS claim.
+- Release rebuilt in `/home/dad/catingard-target`. `crates.tar.gz` untouched.
+
+Next: user motion review in the main game; couple sea-state targets to actual
+weather/fetch rather than the authored cycle, preserving time derivatives and
+phase continuity. Wind direction remains startup-only. Foam persistence and
+improved volume-scattering/underside optics are still separate visual work.

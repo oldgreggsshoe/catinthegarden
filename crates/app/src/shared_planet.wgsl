@@ -439,6 +439,8 @@ const OCEAN_BODY_COLOUR: vec3<f32> = vec3<f32>(0.005, 0.032, 0.170);
 // does not scale with height. Steepness is dimensionless, so a 2m crest and a
 // 30m crest of the same sharpness now read the same.
 //
+// Historical calibration notes (the permanent-storm statements below no longer
+// describe normal interactive launches):
 // These percentile measurements predate the third crossing swell. Its
 // redistribution preserves the fold budget, not the phase distribution;
 // recalibrate the thresholds when adding calm/storm sea-state transitions.
@@ -463,6 +465,12 @@ const OCEAN_BODY_COLOUR: vec3<f32> = vec3<f32>(0.005, 0.032, 0.170);
 // tint and p99 = 1.534 completes it, so turquoise starts on the sharpest tenth
 // of the sea and is only full on the sharpest hundredth. That measures 8.2%
 // under any tint and 2.8% over half strength.
+// Current calibration:
+// Recalibrated after adding the crossing swell: 600,000 independent random
+// phase samples, seed 14926, projected at the documented ocean spawn. These
+// are reference-spectrum p90/p99 anchors, not universal local percentiles.
+// Piecewise interpolation follows the changing calm/mid/storm distribution.
+// Wind filtering and shore steering still alter the local distribution.
 const OCEAN_CREST_TRANSMISSION_ONSET: f32 = 0.95;
 const OCEAN_CREST_TRANSMISSION_FULL: f32 = 1.534;
 // How far into breaking a crest must be before it starts going white. Below
@@ -3049,9 +3057,13 @@ fn ocean_lighting(
     // sharpness, a linear rise hands half-strength tint to everything past
     // p95. Transmission through a thinning wedge of water is not linear in its
     // thickness either, so the square is both the duller and the truer curve.
+    let sea_blend = smoothstep(0.15, 0.85, camera.flat_triangle_options.y);
+    let low = clamp(sea_blend * 2.0, 0.0, 1.0);
+    let high = clamp(sea_blend * 2.0 - 1.0, 0.0, 1.0);
+    let onset = mix(mix(0.212, 0.544, low), OCEAN_CREST_TRANSMISSION_ONSET, high);
+    let full = mix(mix(0.351, 0.880, low), OCEAN_CREST_TRANSMISSION_FULL, high);
     let ramp = clamp(
-        (crest_sharpness - OCEAN_CREST_TRANSMISSION_ONSET)
-            / (OCEAN_CREST_TRANSMISSION_FULL - OCEAN_CREST_TRANSMISSION_ONSET),
+        (crest_sharpness - onset) / (full - onset),
         0.0,
         1.0,
     );

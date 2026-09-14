@@ -97,7 +97,7 @@ fn test_ocean(@builtin(global_invocation_id) id: vec3<u32>) {{
             cache: None,
         });
         let mut camera = crate::planet::CameraUniform::zeroed();
-        camera.flat_triangle_options[1] = GLOBAL_OCEAN_STORM_INTENSITY;
+        camera.flat_triangle_options[1] = sea_state_at(0.0).intensity;
         camera.flat_triangle_options[2] = 1.0; // actual radial geometry; no shading-only ripples
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("test ocean camera"),
@@ -354,7 +354,7 @@ fn check_ocean_optics(case: OpticsCase) {
         cache: None,
     });
     let mut camera = crate::planet::CameraUniform::zeroed();
-    camera.flat_triangle_options[1] = GLOBAL_OCEAN_STORM_INTENSITY;
+    camera.flat_triangle_options[1] = sea_state_at(0.0).intensity;
     camera.flat_triangle_options[2] = 1.0; // actual radial geometry; no shading-only ripples
     if local_altitude {
         // Radial straight up the view-space Y axis, eye 5m under the datum.

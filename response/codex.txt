@@ -130,3 +130,25 @@ I'll land the crossing swell first as a tested change, keeping the total wave-he
 Read Claude's notes and completed the crossing-swell step. The main game now has a third 1400m swell, crossing the original pair at 60 degrees near spawn, without increasing the wave-height budget.
 
 553 tests, GPU parity and the screenshot replay pass; release rebuilt. Calm/storm transitions and lighting recalibration remain next—not implemented yet. No FPS claim for this patch.
+
+Next is calm-to-storm variety. I'll update the shared ocean sampling, buoyancy velocity and crest lighting, then add matched calm/intermediate/storm replays. The first version will use a slow, deterministic sea-state cycle with fixed overrides for testing—not yet a full wind/fetch simulation. I'll leave terrain and bird-camera code alone.
+
+Calm, moderate and storm replays now pass, and the storm screenshot is byte-identical to the previous version. CPU/GPU wave agreement passes at all three intensities. The transition's buoyancy calculation also includes changing wave amplitudes, so it follows the evolving surface rather than just the moving crests.
+
+Implemented in the main game and rebuilt the release:
+
+- Smooth calm → storm → calm cycle over 10 minutes of ocean time.
+- Buoyancy and crest lighting follow the changing sea state.
+- 556 tests, 144 GPU parity cases and three screenshot replays pass.
+- Storm appearance is unchanged; no FPS improvement claimed.
+
+Committed and pushed. This is an authored cycle; actual weather/fetch coupling is still next.
+
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:3-4|note=[checkout-specific validation and performance evidence]
+</citation_entries>
+<rollout_ids>
+01a07103-79ca-7e92-99b9-5da47619e658
+</rollout_ids>
+</oai-mem-citation>

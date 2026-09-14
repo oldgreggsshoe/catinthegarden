@@ -298,6 +298,98 @@ pub fn fold_budget_at(wave_scale: f64) -> f64 {
 }
 pub const GLOBAL_OCEAN_STORM_INTENSITY: f32 = 1.0;
 
+/// A startup-selected, phase-continuous sea. Replays remain fixed unless they
+/// explicitly select an intensity; interactive play cycles over ten ocean
+/// minutes. The envelope shares the existing ocean animation clock; F10
+/// currently freezes planet composition, not ocean motion.
+#[derive(Clone, Copy, Debug)]
+enum SeaStateMode {
+    Fixed(f32),
+    Cycle,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SeaState {
+    pub intensity: f32,
+    intensity_rate: f64,
+}
+
+impl SeaStateMode {
+    fn sample(self, time: f64) -> SeaState {
+        match self {
+            Self::Fixed(intensity) => SeaState {
+                intensity,
+                intensity_rate: 0.0,
+            },
+            Self::Cycle => {
+                let frequency = std::f64::consts::TAU / 600.0;
+                let phase = time * frequency;
+                SeaState {
+                    intensity: (0.5 - 0.5 * phase.cos()) as f32,
+                    intensity_rate: 0.5 * frequency * phase.sin(),
+                }
+            }
+        }
+    }
+}
+
+fn fixed_sea_override(value: &str) -> Option<f32> {
+    value
+        .trim()
+        .parse::<f32>()
+        .ok()
+        .filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
+}
+
+fn sea_override_from_environment() -> Option<f32> {
+    std::env::var("CATINGARDEN_OCEAN_STORM").ok().map(|value| {
+        fixed_sea_override(&value)
+            .expect("CATINGARDEN_OCEAN_STORM must be a finite intensity in 0..1")
+    })
+}
+
+static SEA_STATE_MODE: std::sync::OnceLock<SeaStateMode> = std::sync::OnceLock::new();
+
+/// Called before constructing any camera/ship or sampling the ocean. Scenario
+/// settings take precedence over environment, including legacy storm replays.
+pub fn initialize_sea_state(replay_intensity: Option<f32>) {
+    let mode = if let Some(intensity) = replay_intensity {
+        assert!(intensity.is_finite() && (0.0..=1.0).contains(&intensity));
+        SeaStateMode::Fixed(intensity)
+    } else if let Some(intensity) = sea_override_from_environment() {
+        SeaStateMode::Fixed(intensity)
+    } else if let Some(wind) = ocean_wind() {
+        SeaStateMode::Fixed((wind.speed_meters_per_second / 30.0) as f32)
+    } else {
+        SeaStateMode::Cycle
+    };
+    SEA_STATE_MODE
+        .set(mode)
+        .expect("ocean sea state initialized once at startup");
+    tracing::info!(?mode, "ocean sea state");
+}
+
+pub fn sea_state_at(time: f64) -> SeaState {
+    // Standalone instruments/tests retain their historical fixed-storm default.
+    SEA_STATE_MODE
+        .get_or_init(|| {
+            SeaStateMode::Fixed(
+                sea_override_from_environment().unwrap_or(GLOBAL_OCEAN_STORM_INTENSITY),
+            )
+        })
+        .sample(time)
+}
+
+fn amplitude_change_velocity(wave: &GerstnerWave, state: SeaState) -> f64 {
+    let t = ((f64::from(state.intensity) - 0.15) / 0.70).clamp(0.0, 1.0);
+    let blend_rate = 6.0 * t * (1.0 - t) / 0.70 * state.intensity_rate;
+    let scale = geometry_amplitude_scale(state.intensity);
+    let scale_delta = OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE - OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE;
+    (scale_delta * wave.amplitude(storm_blend(state.intensity))
+        + scale * (wave.storm_amplitude_meters - wave.amplitude_meters))
+        * blend_rate
+}
+
 /// Whether the rendered sea carries Gerstner horizontal transport.
 ///
 /// Must stay `false` while the CPU height query is radial: `wave_height_meters`
@@ -848,12 +940,8 @@ pub fn breaking_fraction(water_depth_meters: f64, raw_height_meters: f64) -> f64
 }
 
 pub fn global_wave_height_meters(direction: DVec3, sim_time: f64, water_depth_meters: f64) -> f64 {
-    let raw = wave_height_meters(
-        direction,
-        sim_time,
-        GLOBAL_OCEAN_STORM_INTENSITY,
-        water_depth_meters,
-    );
+    let state = sea_state_at(sim_time);
+    let raw = wave_height_meters(direction, sim_time, state.intensity, water_depth_meters);
     raw * breaking_weight(raw, water_depth_meters)
 }
 
@@ -862,13 +950,9 @@ pub fn global_wave_height_meters(direction: DVec3, sim_time: f64, water_depth_me
 /// the same vertical displacement or the camera will appear to ignore nearby
 /// crests while only following the broad swell.
 pub fn local_wave_height_meters(direction: DVec3, sim_time: f64, water_depth_meters: f64) -> f64 {
+    let state = sea_state_at(sim_time);
     let shore_weight = breaking_weight(
-        wave_height_meters(
-            direction,
-            sim_time,
-            GLOBAL_OCEAN_STORM_INTENSITY,
-            water_depth_meters,
-        ),
+        wave_height_meters(direction, sim_time, state.intensity, water_depth_meters),
         water_depth_meters,
     );
     let ripple_height = active_ripple_waves()
@@ -892,9 +976,10 @@ pub fn local_wave_height_meters(direction: DVec3, sim_time: f64, water_depth_met
 /// that can yaw it; with the force pinned to the radial a hull can heave and
 /// tilt but never swings its head.
 pub fn global_wave_slope(direction: DVec3, sim_time: f64, water_depth_meters: f64) -> DVec3 {
+    let state = sea_state_at(sim_time);
     let radial = direction.normalize();
-    let amplitude_scale = geometry_amplitude_scale(GLOBAL_OCEAN_STORM_INTENSITY);
-    let blend = storm_blend(GLOBAL_OCEAN_STORM_INTENSITY);
+    let amplitude_scale = geometry_amplitude_scale(state.intensity);
+    let blend = storm_blend(state.intensity);
     // d(phase)/ds along a unit tangent u is wave_number * (u . axis): the
     // planet radius in the phase cancels against the 1/radius change in
     // `direction` from moving a metre tangentially.
@@ -905,12 +990,7 @@ pub fn global_wave_slope(direction: DVec3, sim_time: f64, water_depth_meters: f6
         })
         .sum::<DVec3>()
         * breaking_rate_weight(
-            wave_height_meters(
-                radial,
-                sim_time,
-                GLOBAL_OCEAN_STORM_INTENSITY,
-                water_depth_meters,
-            ),
+            wave_height_meters(radial, sim_time, state.intensity, water_depth_meters),
             water_depth_meters,
         );
     gradient - radial * gradient.dot(radial)
@@ -921,14 +1001,28 @@ pub fn global_wave_vertical_velocity_meters_per_second(
     sim_time: f64,
     water_depth_meters: f64,
 ) -> f64 {
-    let amplitude_scale = geometry_amplitude_scale(GLOBAL_OCEAN_STORM_INTENSITY);
-    let blend = storm_blend(GLOBAL_OCEAN_STORM_INTENSITY);
+    wave_vertical_velocity_in_state(
+        direction,
+        sim_time,
+        water_depth_meters,
+        sea_state_at(sim_time),
+    )
+}
+
+fn wave_vertical_velocity_in_state(
+    direction: DVec3,
+    sim_time: f64,
+    water_depth_meters: f64,
+    state: SeaState,
+) -> f64 {
+    let amplitude_scale = geometry_amplitude_scale(state.intensity);
+    let blend = storm_blend(state.intensity);
     let vertical_velocity = active_waves()
         .iter()
         .map(|wave| {
-            wave.amplitude(blend)
-                * amplitude_scale
-                * sample_wave(direction, sim_time, wave).velocity
+            let sample = sample_wave(direction, sim_time, wave);
+            wave.amplitude(blend) * amplitude_scale * sample.velocity
+                + amplitude_change_velocity(wave, state) * sample.profile
         })
         .sum::<f64>();
     // Scaled by the same figure the height was, so a limited crest and its
@@ -936,12 +1030,7 @@ pub fn global_wave_vertical_velocity_meters_per_second(
     // them directly.
     vertical_velocity
         * breaking_rate_weight(
-            wave_height_meters(
-                direction,
-                sim_time,
-                GLOBAL_OCEAN_STORM_INTENSITY,
-                water_depth_meters,
-            ),
+            wave_height_meters(direction, sim_time, state.intensity, water_depth_meters),
             water_depth_meters,
         )
 }
@@ -951,13 +1040,9 @@ pub fn local_wave_vertical_velocity_meters_per_second(
     sim_time: f64,
     water_depth_meters: f64,
 ) -> f64 {
+    let state = sea_state_at(sim_time);
     let shore_weight = breaking_weight(
-        wave_height_meters(
-            direction,
-            sim_time,
-            GLOBAL_OCEAN_STORM_INTENSITY,
-            water_depth_meters,
-        ),
+        wave_height_meters(direction, sim_time, state.intensity, water_depth_meters),
         water_depth_meters,
     );
     let ripple_velocity = active_ripple_waves()
@@ -984,6 +1069,68 @@ mod tests {
         global_wave_height_meters, global_wave_vertical_velocity_meters_per_second,
         maximum_wave_height_meters, wave_height_stats,
     };
+
+    #[test]
+    fn sea_state_cycle_is_smooth_bounded_and_repeatable() {
+        use super::SeaStateMode;
+        for (time, expected) in [(0.0, 0.0), (150.0, 0.5), (300.0, 1.0), (600.0, 0.0)] {
+            assert!((SeaStateMode::Cycle.sample(time).intensity - expected).abs() < 1.0e-6);
+        }
+        for step in 0..=1200 {
+            let time = step as f64 * 0.5;
+            let state = SeaStateMode::Cycle.sample(time);
+            assert!((0.0..=1.0).contains(&state.intensity));
+            assert!(state.intensity_rate.abs() <= std::f64::consts::PI / 600.0);
+            assert_eq!(state.intensity, SeaStateMode::Cycle.sample(time).intensity);
+            assert_eq!(SeaStateMode::Fixed(0.5).sample(time).intensity_rate, 0.0);
+        }
+        for value in ["NaN", "inf", "-0.1", "1.1", ""] {
+            assert!(super::fixed_sea_override(value).is_none());
+        }
+        assert_eq!(super::fixed_sea_override("0.5"), Some(0.5));
+    }
+
+    #[test]
+    fn evolving_sea_velocity_includes_amplitude_changes_through_breaking() {
+        let direction =
+            DVec3::new(0.836442275001636, 0.503727905284262, 0.215922481525239).normalize();
+        for time in [90.0, 150.0, 210.0, 390.0, 450.0, 510.0] {
+            let state = super::SeaStateMode::Cycle.sample(time);
+            let height = |time| {
+                let state = super::SeaStateMode::Cycle.sample(time);
+                super::wave_height_meters(direction, time, state.intensity, 4000.0)
+            };
+            for depth in [2.0, 20.0, 4000.0] {
+                let limited = |time| {
+                    let raw = height(time);
+                    raw * breaking_weight(raw, depth)
+                };
+                let difference = (limited(time + 0.01) - limited(time - 0.01)) / 0.02;
+                let analytic =
+                    super::wave_vertical_velocity_in_state(direction, time, depth, state);
+                assert!(
+                    (difference - analytic).abs() < 0.002,
+                    "time={time} depth={depth}: {difference} != {analytic}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn crest_transmission_tracks_the_sea_state_uniform() {
+        let shader = include_str!("shared_planet.wgsl");
+        let lighting = shader.split("fn ocean_lighting(").nth(1).unwrap();
+        assert!(lighting.contains("smoothstep(0.15, 0.85, camera.flat_triangle_options.y)"));
+        assert!(
+            lighting.contains("mix(mix(0.212, 0.544, low), OCEAN_CREST_TRANSMISSION_ONSET, high)")
+        );
+        assert!(
+            lighting.contains("mix(mix(0.351, 0.880, low), OCEAN_CREST_TRANSMISSION_FULL, high)")
+        );
+        for (onset, full) in [(0.212, 0.351), (0.544, 0.880), (0.950, 1.534)] {
+            assert!(onset > 0.0 && full > onset);
+        }
+    }
 
     #[test]
     fn wind_settings_reject_invalid_speed_and_axes() {
