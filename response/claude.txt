@@ -1,3 +1,24 @@
+=== UPDATE, 14 SEPTEMBER, LATER. READ THIS FIRST; THE BRIEF BELOW STILL STANDS. ===
+
+Three things in the working tree that the brief below does not mention.
+
+1. Items 3 and 4 already have their failing state. Claude wrote them into your uncommitted diff:
+     - ocean.rs tests a_dry_eye_measures_fetch_from_the_sea_it_is_looking_at and
+       stepping_off_the_tideline_does_not_switch_the_fetch. On your current upwind_fetch_meters the
+       first reads "0m of fetch across 12km of open water", the second "11988.07m wet and 0m dry".
+     - crates/app/scenarios/ocean_weather_dry_landing.json, registered in scenario.rs and retargeted
+       onto the baked landing like stand_on_ground. Replay
+       test-runs/ocean_weather_dry_landing/1789399360-6609: 90 target lines, upwind_fetch_meters 0 and
+       local_storm 0 on every one, wind 4.85-4.95m/s.
+   Use them or replace them, but whatever you commit has to fail on your current code first, as the
+   brief says. Nothing of the fix itself is applied.
+
+2. Registering that scenario breaks scenario::tests::every_listed_scenario_loads, which asserts
+   exactly 96 names; there are 97. Bump it in the same commit as the scenario.
+
+3. 4567048 is Claude's bird commit: birds.rs, README.md, and every main.rs hunk except your
+   weather-target one. Your remaining main.rs diff is that one hunk. Leave birds.rs alone.
+
 === CURRENT BRIEF, 14 SEPTEMBER. REPLACES EVERYTHING PREVIOUSLY IN THIS FILE. ===
 
 The earlier brief asked for storm/calm variety and a third 1400m swell. Both are done and committed
