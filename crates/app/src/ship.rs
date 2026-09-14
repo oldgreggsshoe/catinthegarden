@@ -17,12 +17,35 @@ use glam::{DMat3, DQuat, DVec3};
 use crate::planet::planet_radius_meters;
 use crate::surface_camera::GRAVITY_METERS_PER_SECOND_SQUARED;
 
-pub const HULL_LENGTH_METERS: f64 = 42.0;
-pub const HULL_BEAM_METERS: f64 = 11.0;
+/// How big the ship is against the 42m coaster it was designed and tuned as.
+///
+/// Set this rather than any single dimension. Every length in the hull and its
+/// superstructure is multiplied by it, and the float is carried along by Froude
+/// similarity -- lengths by the scale, times by its square root -- so a larger
+/// ship heaves and rolls like the same ship seen larger rather than like a
+/// stiffer or livelier one. That is why the metacentric height and the drag fade
+/// grow with it, the heave drag per square metre grows with its root, and the
+/// roll and yaw damping rates shrink by its root.
+///
+/// Surge damping is left alone. It stands in for the ship riding at anchor, not
+/// for anything the hull's size sets, and scaled with the rest it let a
+/// twice-size hull drift 51m in 50s on the real sea against 36m at scale 1.
+/// Figures quoted in the comments below were measured at scale 1.
+pub const SHIP_SCALE: f64 = 2.0;
+/// `sqrt(SHIP_SCALE)`, the factor Froude similarity stretches time by. Spelt out
+/// because `sqrt` is not const; the assertion keeps the two in step.
+const SHIP_TIME_SCALE: f64 = std::f64::consts::SQRT_2;
+const _: () = assert!(
+    (SHIP_TIME_SCALE * SHIP_TIME_SCALE - SHIP_SCALE).abs() < 1.0e-12,
+    "SHIP_TIME_SCALE must be the square root of SHIP_SCALE"
+);
+
+pub const HULL_LENGTH_METERS: f64 = 42.0 * SHIP_SCALE;
+pub const HULL_BEAM_METERS: f64 = 11.0 * SHIP_SCALE;
 /// Keel below the design waterline amidships.
-pub const HULL_DRAFT_METERS: f64 = 3.0;
+pub const HULL_DRAFT_METERS: f64 = 3.0 * SHIP_SCALE;
 /// Deck above the design waterline amidships.
-pub const HULL_FREEBOARD_METERS: f64 = 3.0;
+pub const HULL_FREEBOARD_METERS: f64 = 3.0 * SHIP_SCALE;
 
 const SEAWATER_DENSITY_KG_PER_CUBIC_METER: f64 = 1025.0;
 /// Longitudinal and transverse buoyancy columns. The hull only pitches and
@@ -33,11 +56,11 @@ const BUOYANCY_COLUMNS: usize = 5;
 /// Vertical drag per square metre of plan area. Chosen for a heave damping
 /// ratio near 0.3: enough that a dropped hull settles in a few oscillations
 /// rather than ringing, and far short of pinning it to the surface.
-const HEAVE_DRAG_KG_PER_SQUARE_METER_SECOND: f64 = 3_100.0;
+const HEAVE_DRAG_KG_PER_SQUARE_METER_SECOND: f64 = 3_100.0 * SHIP_TIME_SCALE;
 /// The first metre of immersion fades drag in. A column that switches its drag
 /// on at full strength the instant it touches makes a hull chatter along a
 /// crest instead of riding it.
-const DRAG_IMMERSION_FADE_METERS: f64 = 1.0;
+const DRAG_IMMERSION_FADE_METERS: f64 = 1.0 * SHIP_SCALE;
 /// Horizontal water resistance, as a fraction of speed shed per second. The
 /// hull carries no propulsion, so this is what stops wave impulses walking it
 /// across the ocean.
@@ -54,13 +77,13 @@ const SURGE_DAMPING_PER_SECOND: f64 = 3.0;
 /// A real hull weathervanes: its lateral area resists being turned, which this
 /// model has no term for. Left at 0.08 the hull swung its head through 134
 /// degrees in a minute, which is a hull with no directional stability at all.
-const YAW_DAMPING_PER_SECOND: f64 = 0.4;
+const YAW_DAMPING_PER_SECOND: f64 = 0.4 / SHIP_TIME_SCALE;
 /// Eddy and bilge-keel roll damping, as a fraction of roll rate shed per
 /// second. The buoyancy columns damp heave and pitch well, because those act
 /// over the hull's length; roll acts over its beam and comes out badly
 /// under-damped, which is the same reason real hulls carry bilge keels. Without
 /// this the hull answers a 23-degree sea with a 55-degree knockdown.
-const ROLL_DAMPING_PER_SECOND: f64 = 0.9;
+const ROLL_DAMPING_PER_SECOND: f64 = 0.9 / SHIP_TIME_SCALE;
 /// Metacentric height: the single number that sets how a hull rolls. The mass
 /// centre is then placed to produce it, rather than the other way round.
 ///
@@ -70,7 +93,7 @@ const ROLL_DAMPING_PER_SECOND: f64 = 0.9;
 /// and reading as welded to the water. Loading it until GM nearly vanished
 /// instead let a 23-degree sea knock it down to 55. Small cargo ships run
 /// around 0.5 to 1.5m; roll period grows as 1/sqrt(GM).
-const METACENTRIC_HEIGHT_METERS: f64 = 0.9;
+const METACENTRIC_HEIGHT_METERS: f64 = 0.9 * SHIP_SCALE;
 /// Below this the prism model of a buoyancy column stops describing anything,
 /// so its displacement is bounded rather than allowed to run away.
 const MINIMUM_COLUMN_TILT_COSINE: f64 = 0.2;
@@ -624,20 +647,32 @@ pub fn build_mesh() -> Vec<ShipVertex> {
     // Superstructure: a two-tier deckhouse set aft, and a funnel.
     push_box(
         &mut vertices,
-        DVec3::new(-6.0, 0.0, HULL_FREEBOARD_METERS + 1.6),
-        DVec3::new(6.0, 3.6, 1.6),
+        DVec3::new(
+            -6.0 * SHIP_SCALE,
+            0.0,
+            HULL_FREEBOARD_METERS + 1.6 * SHIP_SCALE,
+        ),
+        DVec3::new(6.0, 3.6, 1.6) * SHIP_SCALE,
         CABIN_COLOUR,
     );
     push_box(
         &mut vertices,
-        DVec3::new(-8.0, 0.0, HULL_FREEBOARD_METERS + 4.0),
-        DVec3::new(3.4, 2.8, 1.0),
+        DVec3::new(
+            -8.0 * SHIP_SCALE,
+            0.0,
+            HULL_FREEBOARD_METERS + 4.0 * SHIP_SCALE,
+        ),
+        DVec3::new(3.4, 2.8, 1.0) * SHIP_SCALE,
         CABIN_COLOUR,
     );
     push_box(
         &mut vertices,
-        DVec3::new(-10.5, 0.0, HULL_FREEBOARD_METERS + 6.2),
-        DVec3::new(1.3, 1.3, 1.4),
+        DVec3::new(
+            -10.5 * SHIP_SCALE,
+            0.0,
+            HULL_FREEBOARD_METERS + 6.2 * SHIP_SCALE,
+        ),
+        DVec3::new(1.3, 1.3, 1.4) * SHIP_SCALE,
         FUNNEL_COLOUR,
     );
 
@@ -651,8 +686,9 @@ mod tests {
     use crate::ocean;
 
     use super::{
-        HULL_BEAM_METERS, HULL_DRAFT_METERS, HULL_FREEBOARD_METERS, HULL_LENGTH_METERS, ShipBody,
-        ShipHull, WaterSample, build_mesh, half_beam_meters, keel_depth_meters,
+        HULL_BEAM_METERS, HULL_DRAFT_METERS, HULL_FREEBOARD_METERS, HULL_LENGTH_METERS, SHIP_SCALE,
+        SHIP_TIME_SCALE, ShipBody, ShipHull, WaterSample, build_mesh, half_beam_meters,
+        keel_depth_meters,
     };
     use crate::planet::planet_radius_meters;
 
@@ -676,10 +712,12 @@ mod tests {
     fn hull_displaces_its_own_mass_at_the_design_waterline() {
         let hull = ShipHull::new();
         // A 42x11m hull at 3m draft: a few hundred cubic metres, not tens or
-        // tens of thousands. This is the sanity bound on the whole float.
+        // tens of thousands. This is the sanity bound on the whole float, and
+        // like any volume it goes as the cube of `SHIP_SCALE`.
         let volume = hull.displaced_volume_cubic_meters();
+        let scale_cubed = SHIP_SCALE.powi(3);
         assert!(
-            (600.0..1200.0).contains(&volume),
+            (600.0 * scale_cubed..1200.0 * scale_cubed).contains(&volume),
             "displaced volume {volume} m3 is not ship-like"
         );
         // Waterplane area cannot exceed the enclosing rectangle, and a hull
@@ -708,11 +746,15 @@ mod tests {
     fn a_hull_dropped_above_the_water_settles_rather_than_ringing() {
         let (hull, mut body) = afloat();
         body.position = START_DIRECTION.normalize()
-            * (planet_radius_meters() + 6.0 + hull.centre_of_mass_local().z);
+            * (planet_radius_meters() + 6.0 * SHIP_SCALE + hull.centre_of_mass_local().z);
         let mut extremes = 0;
         let mut previous_altitude = body.waterline_altitude_meters(&hull);
         let mut rising = false;
-        for _ in 0..600 {
+        // Ten seconds, a 6m drop and a 5cm settle at scale 1, restated in Froude
+        // units: a bigger hull bobs more slowly, by the root of its scale, and
+        // settling to within 5cm of a 3m draft is the same as 10cm of a 6m one.
+        let steps = (600.0 * SHIP_SCALE.sqrt()).round() as usize;
+        for _ in 0..steps {
             body.advance(&hull, 1.0 / 60.0, still_water(0.0));
             let altitude = body.waterline_altitude_meters(&hull);
             let now_rising = altitude > previous_altitude;
@@ -728,7 +770,7 @@ mod tests {
             (2..=12).contains(&extremes),
             "{extremes} direction changes is not a settling bob"
         );
-        assert!(body.waterline_altitude_meters(&hull).abs() < 0.05);
+        assert!(body.waterline_altitude_meters(&hull).abs() < 0.05 * SHIP_SCALE);
     }
 
     #[test]
@@ -870,9 +912,11 @@ mod tests {
         // a float, so all three rotational axes have to answer the real sea,
         // not a synthetic one chosen to make them.
         let hull = ShipHull::new();
+        // The band small cargo ships run, at the 42m design size. GM is a length
+        // and scales with the hull, which is also what larger coasters carry.
         assert!(
-            (0.5..=1.5).contains(&hull.metacentric_height_meters()),
-            "GM {} m is outside the range small cargo ships run",
+            (0.5 * SHIP_SCALE..=1.5 * SHIP_SCALE).contains(&hull.metacentric_height_meters()),
+            "GM {} m is outside the range small cargo ships run at this size",
             hull.metacentric_height_meters()
         );
         let mut body = ShipBody::afloat_at(
@@ -936,13 +980,17 @@ mod tests {
             }
             count
         };
+        // Reversals in a fixed window count roll and pitch periods, and those
+        // lengthen with the root of the ship's scale: eight at 42m is the same
+        // motion as 5.7 on a hull twice the size.
+        let minimum_reversals = (8.0 / SHIP_TIME_SCALE) as usize;
         assert!(
-            reversals(&roll) > 8,
+            reversals(&roll) > minimum_reversals,
             "roll reversed {} times",
             reversals(&roll)
         );
         assert!(
-            reversals(&pitch) > 8,
+            reversals(&pitch) > minimum_reversals,
             "pitch reversed {} times",
             reversals(&pitch)
         );
@@ -1009,7 +1057,7 @@ mod tests {
             assert!(x.abs() <= 0.5 * HULL_LENGTH_METERS as f32 + 0.01);
             assert!(y.abs() <= 0.5 * HULL_BEAM_METERS as f32 + 0.01);
             assert!(z >= -(HULL_DRAFT_METERS as f32) - 0.01);
-            assert!(z <= (HULL_FREEBOARD_METERS + 9.0) as f32);
+            assert!(z <= (HULL_FREEBOARD_METERS + 9.0 * SHIP_SCALE) as f32);
             let normal = glam::Vec3::from(vertex.normal);
             assert!((normal.length() - 1.0).abs() < 1.0e-4);
         }
