@@ -180,34 +180,9 @@ impl BirdRenderer {
             if self.scratch.len() >= MAX_BIRD_INSTANCES {
                 break;
             }
-            let position = bird.position_at(alpha);
-            let offset = position - camera_local;
-            if offset.length() > BIRD_DRAW_DISTANCE_METERS {
-                continue;
+            if let Some(instance) = bird_instance(bird, camera_local, alpha, &world_to_view) {
+                self.scratch.push(instance);
             }
-            let up = position.normalize();
-            // A bird that has just touched down may have no tangential velocity
-            // at all for a step; hold it pointing along local east rather than
-            // letting the basis collapse.
-            let fallback = fallback_heading(up);
-            let forward = bird.heading(fallback);
-            let fold = if bird.activity == BirdActivity::Walking {
-                1.0
-            } else {
-                0.0
-            };
-            self.scratch.push(BirdInstance {
-                view_position: world_to_view(offset).as_vec3().to_array(),
-                forward: forward.as_vec3().to_array(),
-                up: up.as_vec3().to_array(),
-                motion: [
-                    bird.wing_phase_at(alpha),
-                    fold,
-                    BIRD_BODY_LENGTH_METERS,
-                    bird.bank_at(alpha),
-                ],
-                glide: bird.glide_at(alpha),
-            });
         }
         self.instance_count = self.scratch.len() as u32;
         if self.instance_count > 0 {
@@ -233,6 +208,57 @@ impl BirdRenderer {
         render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
         render_pass.draw(0..self.vertex_count, 0..self.instance_count);
     }
+}
+
+/// One bird's instance, or nothing if it is out of drawing range.
+///
+/// The vertex shader builds a level frame from `up` and `forward` and rolls it
+/// by the bank, and its lighting reads `up` as the local vertical. So a bird
+/// lying along a sloping sea is drawn by leaving `up` as the true vertical and
+/// moving the lean into the other two: the heading is laid along the surface,
+/// which pitches the frame, and whatever roll the surface still needs is added
+/// to the bank. In flight the surface up is the vertical and both are no-ops.
+fn bird_instance(
+    bird: &Bird,
+    camera_local: DVec3,
+    alpha: f64,
+    world_to_view: &impl Fn(DVec3) -> DVec3,
+) -> Option<BirdInstance> {
+    let position = bird.position_at(alpha);
+    let offset = position - camera_local;
+    if offset.length() > BIRD_DRAW_DISTANCE_METERS {
+        return None;
+    }
+    let up = position.normalize();
+    // A bird that has just touched down may have no tangential velocity
+    // at all for a step; hold it pointing along local east rather than
+    // letting the basis collapse.
+    let fallback = fallback_heading(up);
+    let heading = bird.heading(fallback);
+    let surface_up = bird.surface_up_at(alpha);
+    let forward = (heading - surface_up * heading.dot(surface_up))
+        .try_normalize()
+        .unwrap_or(heading);
+    let level_right = up.cross(forward).normalize();
+    let level_up = forward.cross(level_right);
+    let lean = (-surface_up.dot(level_right)).atan2(surface_up.dot(level_up));
+    let fold = if bird.activity == BirdActivity::Walking {
+        1.0
+    } else {
+        0.0
+    };
+    Some(BirdInstance {
+        view_position: world_to_view(offset).as_vec3().to_array(),
+        forward: forward.as_vec3().to_array(),
+        up: up.as_vec3().to_array(),
+        motion: [
+            bird.wing_phase_at(alpha),
+            fold,
+            BIRD_BODY_LENGTH_METERS,
+            bird.bank_at(alpha) + lean as f32,
+        ],
+        glide: bird.glide_at(alpha),
+    })
 }
 
 fn fallback_heading(up: DVec3) -> DVec3 {
@@ -288,6 +314,92 @@ mod tests {
                 line.trim()
             );
         }
+    }
+
+    /// The frame `vs_main` builds from an instance, in the same steps.
+    fn shader_frame(instance: &BirdInstance) -> (Vec3, Vec3, Vec3) {
+        let forward = Vec3::from(instance.forward).normalize();
+        let level_right = Vec3::from(instance.up).cross(forward).normalize();
+        let level_up = forward.cross(level_right);
+        let (bank_cos, bank_sin) = (instance.motion[3].cos(), instance.motion[3].sin());
+        let right = level_right * bank_cos + level_up * bank_sin;
+        let up = level_up * bank_cos - level_right * bank_sin;
+        (right, up, forward)
+    }
+
+    #[test]
+    fn a_bird_sitting_on_a_sloping_sea_is_drawn_lying_along_it() {
+        let radius = 4_000_000.0;
+        let camera = DVec3::new(0.0, 0.0, radius + 2.0);
+        let ground = |_direction: DVec3| {
+            Some(birds::GroundSample {
+                surface_radius_meters: radius,
+                slope_radians: 0.0,
+                walkable: false,
+                water_depth_meters: Some(4000.0),
+            })
+        };
+        // A 300m swell 30m high: faces up to 32 degrees.
+        let sea = move |direction: DVec3, time: f64, _depth: f64| {
+            let wave_number = std::f64::consts::TAU / 300.0;
+            let frequency = (9.806_65 * wave_number).sqrt();
+            30.0 * (wave_number * direction.x * radius - frequency * time).sin()
+        };
+        let mut flocks = birds::BirdFlocks::new(3);
+        let (mut time, mut leaning, mut upright) = (0.0, 0, 0);
+        let mut worst = 0.0_f32;
+        while time < 180.0 {
+            time += birds::BIRD_FIXED_STEP_SECONDS;
+            flocks.advance_over_sea(time, camera, &ground, &sea);
+            let alpha = flocks.interpolation_alpha();
+            for bird in flocks.birds() {
+                let Some(instance) = bird_instance(bird, camera, alpha, &|offset| offset) else {
+                    continue;
+                };
+                let vertical = bird.position_at(alpha).normalize().as_vec3();
+                // Lighting reads `up` as the vertical, so the lean must not
+                // arrive through it.
+                assert!(
+                    (Vec3::from(instance.up) - vertical).length() < 1.0e-5,
+                    "the instance's up left the vertical"
+                );
+                let surface_up = bird.surface_up_at(alpha).as_vec3();
+                // The bird's own roll rides on top of the lean -- a bird that
+                // has just landed is still unwinding its landing bank -- so it
+                // is taken back out to see the lean alone.
+                let mut leaning_only = instance;
+                leaning_only.motion[3] -= bird.bank_at(alpha);
+                let (_, drawn_up, _) = shader_frame(&leaning_only);
+                if bird.activity == BirdActivity::Walking {
+                    if surface_up.angle_between(vertical) > 0.2 {
+                        leaning += 1;
+                    }
+                    worst = worst.max(drawn_up.angle_between(surface_up));
+                } else if surface_up.angle_between(vertical) < 1.0e-4 {
+                    // Upright in the air, the bank is the bird's own and nothing
+                    // is added to it.
+                    upright += 1;
+                    assert!(
+                        (instance.motion[3] - bird.bank_at(alpha)).abs() < 1.0e-3,
+                        "a flying bird was drawn with {} of roll against its bank of {}",
+                        instance.motion[3],
+                        bird.bank_at(alpha)
+                    );
+                }
+            }
+        }
+        assert!(
+            leaning > 100,
+            "only {leaning} drawn birds were leaning on the water"
+        );
+        assert!(
+            upright > 1000,
+            "only {upright} upright flying birds were checked"
+        );
+        assert!(
+            worst < 2.0e-3,
+            "a sitting bird was drawn {worst} radians off the surface it lies on"
+        );
     }
 
     #[test]
