@@ -9687,3 +9687,85 @@ Next: interactive motion review while travelling between weather regions;
 weather-driven directional spectra and fetch remain unimplemented. Do not
 mistake this scalar storm response for either of those, or tune gravity to
 compensate for storm-scale waves. The fixed/cycle overrides remain useful controls.
+
+## Birds bank into turns, and the flock's rigidity is load-bearing - 14 September 2026
+
+Two questions from Ian, one answered with a fix and one with a measurement that
+says do not touch it yet.
+
+### Why they did not roll
+
+They could not. `birds.wgsl` built the bird's frame from `instance.up`, which is
+the planetary radial, so `right = cross(up, forward)` was always horizontal and
+every bird was permanently spirit-level however hard it turned. There was no
+bank term anywhere in the pipeline.
+
+There is now. `step_flying_bird` computes the signed yaw rate from the heading
+swept between the previous and current step and banks by the coordinated-turn
+angle, `atan(speed * yaw_rate / g)` -- the same relation an aircraft flies --
+smoothed with a 0.22s exponential so the wings lean rather than flicker, clamped
+at 0.9 rad, and zeroed when a bird lands. It rides through the instance buffer in
+`motion.w` and rolls the frame about the bird's own forward axis in the shader.
+
+The honest physics is nearly invisible at the rates a flock actually flies:
+measured over 154,795 samples, median bank 2.9 degrees, p90 6.1. A bird leaning
+three degrees does not read as banking, which is precisely why Ian asked. So
+`BANK_EXAGGERATION` is 2.5, giving median 6.4, p90 13.8, p99 26.4 -- present in
+ordinary cruise, emphatic in a hard turn. Four was tried and leaves them
+permanently leaning (p99 36.2). Set it to 1.0 for the true angle.
+
+### The flock is rigid, and that rigidity is holding two other things up
+
+Ian asked whether the birds are rigidly controlled by each other and which
+constant loosens them. Measured on a 22-bird flock over 1,134 samples, splitting
+each bird's vertical motion into the part shared with the flock and the part its
+own:
+
+    var(flock mean) 0.349,  mean var(bird) 0.436,  common-mode fraction 0.800
+
+1.0 would be perfectly in phase; independent birds would give 1/22 = 0.045. So
+**80% of a bird's vertical motion is the whole flock moving as one body.** That
+is why the porpiseing in the previous section is visible at all: it is not noise
+that averages away, it is a flock-level mode. Horizontally the flock is a ball
+about 9.5m across (rms radius 4.73m) with its closest pair at 3.10m.
+
+Sweeping the three Reynolds constants, common-mode fraction and rms radius:
+
+    baseline (16.0 / 1.6 / 2.2)    0.800   4.73m
+    neighbour radius 8.0           0.844   4.77m
+    neighbour radius 5.0           0.573   5.06m
+    cohesion 0.8                   0.943   5.42m
+    alignment 1.1                  0.281   4.62m
+    all three loosened             0.312   5.34m
+
+`ALIGNMENT_STRENGTH` is the lever and the only one that helps much: halving it
+cuts rigidity 2.8x while *tightening* the flock slightly. Loosening cohesion
+makes it markedly worse, because the anchor term then dominates and the anchor is
+identical for every bird in the flock.
+
+It is not changed, because it does not survive contact:
+
+    alignment 2.2 (shipped)   flockmates in shot 99.9%
+    alignment 2.0             94.7%   (bar is 95%)
+    alignment 1.8             94.3%
+    alignment 1.6            83.0%, and flocks closed to 14.79m
+
+A 9% reduction already costs the framing bar. And these are **the same two tests**
+that the altitude damping broke in the previous section: the ride camera assumes
+a coherent group ahead of it, and inter-flock avoidance assumes flocks are
+distinct bodies. Two independent attempts to loosen the flock have now hit the
+same pair.
+
+That is the finding: flock rigidity is load-bearing for the ride camera and for
+avoidance, and all three want reworking together or not at all. Anyone taking it
+on should expect to rewrite `the_bird_cam_has_flockmates_in_shot` and
+`flocks_that_cannot_merge_keep_out_of_each_other` as part of the job, not to
+sneak a constant past them.
+
+### Note on measuring birds in a worktree
+
+`assets/outmaps/` is gitignored, so a fresh worktree has no terrain. Bird
+scenarios then log `flocks: 0` and render an empty sky, because spawning needs a
+ground sample. Symlink `assets/outmaps` before drawing any conclusion from a
+capture there -- three identical "sky" frames cost a detour before the log said
+why.

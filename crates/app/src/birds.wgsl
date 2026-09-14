@@ -55,8 +55,8 @@ struct InstanceInput {
     @location(5) forward: vec3<f32>,
     @location(6) up: vec3<f32>,
     // x: wingbeat phase in turns. y: how folded the wings are, 1 when walking.
-    // z: body length in metres.
-    @location(7) motion: vec3<f32>,
+    // z: body length in metres. w: bank, in radians, positive to the right.
+    @location(7) motion: vec4<f32>,
 }
 
 struct VertexOutput {
@@ -121,9 +121,20 @@ fn vs_main(input: VertexInput, instance: InstanceInput) -> VertexOutput {
     hinged_normal = hinge(hinged_normal, hand_rotation);
 
     // Orthonormal bird frame: +Z forward, +Y up, +X to the bird's right.
+    //
+    // `instance.up` is the planetary radial, so a frame built from it alone is
+    // dead level and the bird flies every turn flat, like a model on a wire.
+    // Rolling it about its own forward axis is what makes a turn read as a
+    // turn: the silhouette carries it, with the wings coming round into view on
+    // the inside of the arc.
     let forward = normalize(instance.forward);
-    let right = normalize(cross(instance.up, forward));
-    let up = cross(forward, right);
+    let level_right = normalize(cross(instance.up, forward));
+    let level_up = cross(forward, level_right);
+    let bank = instance.motion.w;
+    let bank_cos = cos(bank);
+    let bank_sin = sin(bank);
+    let right = level_right * bank_cos + level_up * bank_sin;
+    let up = level_up * bank_cos - level_right * bank_sin;
 
     let planet_offset = (right * hinged.x + up * hinged.y + forward * hinged.z) * scale;
     let view_position = instance.view_position + planet_to_view(planet_offset);

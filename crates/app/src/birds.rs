@@ -131,6 +131,32 @@ const STARTLE_RADIUS_METERS: f64 = 34.0;
 
 /// Wingbeats per second by activity. Walking birds fold their wings, so their
 /// phase stops rather than slowing.
+/// How hard a bird banks into a turn, and how quickly the bank follows.
+///
+/// A real bird rolls to point its lift into the turn, which is the same
+/// coordinated-turn relation an aircraft flies: tan(bank) = speed * yaw_rate / g.
+/// Nothing here was doing that -- the frame was rebuilt from the planetary
+/// radial every frame, so every bird was permanently spirit-level.
+///
+/// The rate is smoothed because a single step's heading change is noisy: three
+/// flocking rules fight over a bird's nose, and rolling straight to the raw
+/// number makes the wings flicker rather than lean.
+const BANK_GRAVITY_METERS_PER_SECOND_SQUARED: f64 = 9.806_65;
+const BANK_LIMIT_RADIANS: f64 = 0.9;
+/// How far the roll is pushed past the physically correct angle.
+///
+/// The coordinated-turn angle is right and, at the rates a flock actually
+/// flies, nearly invisible: measured over 154,795 samples the true bank has a
+/// median of 2.9 degrees and a p90 of 6.1. A bird leaning three degrees does
+/// not read as banking at all, which is what Ian was seeing when he asked why
+/// they do not roll. At 2.5 the median is 6.4, p90 13.8 and p99 26.4 -- present
+/// in ordinary cruise, emphatic in a hard turn, and still short of absurd. Four
+/// was tried and leaves them permanently leaning (p99 36.2).
+///
+/// This is the stylisation knob: 1.0 is the honest physics.
+const BANK_EXAGGERATION: f64 = 2.5;
+const BANK_RESPONSE_SECONDS: f64 = 0.22;
+
 const CRUISE_WINGBEATS_PER_SECOND: f32 = 3.1;
 const CLIMB_WINGBEATS_PER_SECOND: f32 = 6.4;
 const GLIDE_WINGBEATS_PER_SECOND: f32 = 1.1;
@@ -175,6 +201,10 @@ pub struct Bird {
     /// Wingbeat cycle in turns, advanced on the CPU but applied in the vertex
     /// shader so no per-bird geometry is ever uploaded.
     pub wing_phase: f32,
+    /// How far the bird is rolled into its turn, in radians, positive to the
+    /// right. Held here rather than derived in the renderer because it is a
+    /// smoothed quantity: it needs the previous value to advance.
+    pub bank_radians: f32,
     /// Where this bird was at the end of the previous fixed step, and what its
     /// wings were doing. The flock is simulated at a fixed 30Hz so a replay
     /// lands on the same birds every time, but frames are not drawn at 30Hz --
@@ -185,6 +215,7 @@ pub struct Bird {
     previous_position: DVec3,
     previous_velocity: DVec3,
     previous_wing_phase: f32,
+    previous_bank_radians: f32,
     /// Per-bird offset from the flock's landing point, so a settled flock
     /// spreads over the ground instead of stacking on one spot.
     landing_offset: DVec3,
@@ -210,6 +241,11 @@ impl Bird {
     /// while a degree of yaw sweeps the whole horizon.
     pub fn velocity_at(&self, alpha: f64) -> DVec3 {
         self.previous_velocity + (self.velocity - self.previous_velocity) * alpha
+    }
+
+    /// The roll to draw with, blended across the step like everything else.
+    pub fn bank_at(&self, alpha: f64) -> f32 {
+        self.previous_bank_radians + (self.bank_radians - self.previous_bank_radians) * alpha as f32
     }
 
     /// The heading to draw with, from the interpolated velocity.
@@ -686,6 +722,7 @@ impl BirdFlocks {
                     bird.previous_position = bird.position;
                     bird.previous_velocity = bird.velocity;
                     bird.previous_wing_phase = bird.wing_phase;
+                    bird.previous_bank_radians = bird.bank_radians;
                 }
             }
             self.step(BIRD_FIXED_STEP_SECONDS, camera_local, ground);
@@ -960,10 +997,12 @@ impl BirdFlocks {
                 velocity,
                 activity: BirdActivity::Flying,
                 wing_phase,
+                bank_radians: 0.0,
                 // A new bird has no previous step, so it starts standing still
                 // rather than being interpolated in from the planet centre.
                 previous_position: position,
                 previous_velocity: velocity,
+                previous_bank_radians: 0.0,
                 previous_wing_phase: wing_phase,
                 landing_offset: flock_east * rng.range(-7.0, 7.0)
                     + flock_north * rng.range(-7.0, 7.0),
@@ -1341,6 +1380,36 @@ fn step_flying_bird(
         }
     };
     bird.wing_phase = (bird.wing_phase + beats * step_seconds as f32).fract();
+
+    // Roll into the turn. The yaw rate is the signed angle the flat heading
+    // swept this step; the bank that holds a coordinated turn at that rate is
+    // atan(speed * rate / g), the same relation an aircraft flies.
+    let previous_flat = tangential(bird.previous_velocity, up);
+    let current_flat = tangential(bird.velocity, up);
+    let target_bank = match (
+        previous_flat.try_normalize(),
+        current_flat.try_normalize(),
+        step_seconds > 0.0,
+    ) {
+        (Some(before), Some(after), true) => {
+            let swept = before.dot(after).clamp(-1.0, 1.0).acos();
+            let sign = before.cross(after).dot(up).signum();
+            let yaw_rate = sign * swept / step_seconds;
+            let speed = current_flat.length();
+            (speed * yaw_rate * BANK_EXAGGERATION / BANK_GRAVITY_METERS_PER_SECOND_SQUARED)
+                .atan()
+                .clamp(-BANK_LIMIT_RADIANS, BANK_LIMIT_RADIANS)
+        }
+        _ => 0.0,
+    };
+    // Exponential follow, so the wings lean rather than flicker.
+    let response = 1.0 - (-step_seconds / BANK_RESPONSE_SECONDS).exp();
+    bird.bank_radians += ((target_bank - f64::from(bird.bank_radians)) * response) as f32;
+}
+
+/// The part of `vector` lying in the tangent plane at `up`.
+fn tangential(vector: DVec3, up: DVec3) -> DVec3 {
+    vector - up * vector.dot(up)
 }
 
 /// Tangential push away from crowded neighbours, in the ground plane so it
@@ -1401,6 +1470,7 @@ fn step_walking_bird(
     }
     // Wings are folded: the phase holds rather than winding on.
     bird.wing_phase = 0.0;
+    bird.bank_radians = 0.0;
 }
 
 /// One vertex of the shared low-poly bird.
@@ -2289,6 +2359,8 @@ mod tests {
             velocity: DVec3::ZERO,
             activity: BirdActivity::Flying,
             wing_phase: 0.02,
+            bank_radians: 0.0,
+            previous_bank_radians: 0.0,
             previous_position: DVec3::new(4_000_050.0, 0.0, 0.0),
             previous_velocity: DVec3::ZERO,
             previous_wing_phase: 0.98,
@@ -2375,6 +2447,135 @@ mod tests {
             mean_rate_change < mean_turn * 0.5,
             "turn rate changed by {mean_rate_change:.4} deg a frame against a mean \
              turn of {mean_turn:.4} deg, which is a staircase rather than a turn"
+        );
+    }
+
+    #[test]
+    fn birds_roll_into_their_turns_and_stand_level() {
+        // Ian: "why do the birds not appear to roll as they turn?" They did not,
+        // at all. The vertex shader builds the bird's frame from the planetary
+        // radial, so every bird was permanently spirit-level however hard it
+        // turned -- it read like a model on a wire.
+        let radius = 4_000_000.0;
+        let up = DVec3::X;
+        let (east, north) = tangent_basis(up);
+        let step = BIRD_FIXED_STEP_SECONDS;
+
+        let flying = |turn_per_second: f64, seconds: f64| {
+            let mut bird = Bird {
+                id: 1,
+                position: up * (radius + 40.0),
+                velocity: east * CRUISE_SPEED_METERS_PER_SECOND,
+                activity: BirdActivity::Flying,
+                wing_phase: 0.0,
+                bank_radians: 0.0,
+                previous_position: up * (radius + 40.0),
+                previous_velocity: east * CRUISE_SPEED_METERS_PER_SECOND,
+                previous_wing_phase: 0.0,
+                previous_bank_radians: 0.0,
+                landing_offset: DVec3::ZERO,
+                activity_seconds: 0.0,
+            };
+            let mut elapsed = 0.0;
+            while elapsed < seconds {
+                elapsed += step;
+                bird.previous_velocity = bird.velocity;
+                bird.previous_bank_radians = bird.bank_radians;
+                // Steer sideways to curve the track at a steady rate.
+                let heading = bird.velocity.normalize();
+                let sideways = up.cross(heading);
+                let speed = bird.velocity.length();
+                let steering = sideways * (turn_per_second * speed);
+                step_flying_bird(
+                    &mut bird,
+                    step,
+                    steering,
+                    up,
+                    Some(radius),
+                    FlockIntent::Cruising,
+                );
+            }
+            bird
+        };
+
+        // Straight and level.
+        let straight = flying(0.0, 3.0);
+        assert!(
+            straight.bank_radians.abs() < 0.02,
+            "a bird flying straight was banked {} rad",
+            straight.bank_radians
+        );
+
+        // Turning one way banks one way, and the other way the other way.
+        let left = flying(0.35, 3.0);
+        let right = flying(-0.35, 3.0);
+        assert!(
+            left.bank_radians.signum() != right.bank_radians.signum(),
+            "both turns banked the same way: {} and {}",
+            left.bank_radians,
+            right.bank_radians
+        );
+        assert!(
+            left.bank_radians.abs() > 0.15,
+            "a steady turn produced only {} rad of bank",
+            left.bank_radians
+        );
+        // Equal and opposite, near enough.
+        assert!(
+            (left.bank_radians + right.bank_radians).abs() < 0.05,
+            "the two turns were not mirror images: {} and {}",
+            left.bank_radians,
+            right.bank_radians
+        );
+
+        // Bounded, however hard the turn.
+        let violent = flying(4.0, 3.0);
+        assert!(
+            f64::from(violent.bank_radians.abs()) <= BANK_LIMIT_RADIANS + 1.0e-6,
+            "bank ran past its limit at {} rad",
+            violent.bank_radians
+        );
+
+        // Smoothed: one step cannot deliver the whole roll, or the wings
+        // flicker instead of leaning.
+        let mut settling = flying(0.35, 3.0);
+        let settled = settling.bank_radians;
+        settling.previous_bank_radians = settling.bank_radians;
+        settling.bank_radians = 0.0;
+        settling.previous_velocity = settling.velocity;
+        let heading = settling.velocity.normalize();
+        let sideways = up.cross(heading);
+        let speed = settling.velocity.length();
+        step_flying_bird(
+            &mut settling,
+            step,
+            sideways * (0.35 * speed),
+            up,
+            Some(radius),
+            FlockIntent::Cruising,
+        );
+        assert!(
+            settling.bank_radians.abs() < settled.abs() * 0.5,
+            "one step delivered {} of an eventual {settled}, which is a snap not a roll",
+            settling.bank_radians
+        );
+
+        // And a walking bird stands level, whatever it was doing on the way in.
+        let mut walker = flying(0.35, 3.0);
+        assert!(walker.bank_radians.abs() > 0.1);
+        walker.activity = BirdActivity::Walking;
+        step_walking_bird(
+            &mut walker,
+            step,
+            Some(radius),
+            up,
+            FlockIntent::Grounded,
+            DVec3::ZERO,
+        );
+        let _ = north;
+        assert_eq!(
+            walker.bank_radians, 0.0,
+            "a walking bird was still leaning from its approach"
         );
     }
 

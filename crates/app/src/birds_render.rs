@@ -4,7 +4,7 @@
 //! Split from `birds` the way `ship_render` is split from `ship`, so the
 //! flocking stays testable without a device.
 
-use glam::{DVec3, Vec3};
+use glam::DVec3;
 
 use crate::birds::{self, Bird, BirdActivity, BirdVertex};
 
@@ -27,7 +27,7 @@ struct BirdInstance {
     view_position: [f32; 3],
     forward: [f32; 3],
     up: [f32; 3],
-    motion: [f32; 3],
+    motion: [f32; 4],
 }
 
 impl BirdVertex {
@@ -45,7 +45,7 @@ impl BirdVertex {
 
 impl BirdInstance {
     const ATTRIBUTES: [wgpu::VertexAttribute; 4] =
-        wgpu::vertex_attr_array![4 => Float32x3, 5 => Float32x3, 6 => Float32x3, 7 => Float32x3];
+        wgpu::vertex_attr_array![4 => Float32x3, 5 => Float32x3, 6 => Float32x3, 7 => Float32x4];
 
     fn layout() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
@@ -194,8 +194,12 @@ impl BirdRenderer {
                 view_position: world_to_view(offset).as_vec3().to_array(),
                 forward: forward.as_vec3().to_array(),
                 up: up.as_vec3().to_array(),
-                motion: Vec3::new(bird.wing_phase_at(alpha), fold, BIRD_BODY_LENGTH_METERS)
-                    .to_array(),
+                motion: [
+                    bird.wing_phase_at(alpha),
+                    fold,
+                    BIRD_BODY_LENGTH_METERS,
+                    bird.bank_at(alpha),
+                ],
             });
         }
         self.instance_count = self.scratch.len() as u32;
@@ -232,6 +236,7 @@ fn fallback_heading(up: DVec3) -> DVec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec3;
 
     #[test]
     fn bird_shader_parses_and_validates() {
@@ -243,6 +248,39 @@ mod tests {
         )
         .validate(&module)
         .expect("bird shader must validate");
+    }
+
+    /// The bank has to reach the frame, not merely reach the GPU.
+    ///
+    /// The simulation can compute a perfect roll and the instance buffer can
+    /// carry it, and the bird still flies flat if the vertex shader builds its
+    /// frame straight from the planetary radial -- which is exactly what it did
+    /// before. So this checks the value is consumed where it matters: the
+    /// frame's right and up must both be built from the bank, not from the
+    /// level axes.
+    #[test]
+    fn the_vertex_shader_rolls_the_bird_frame_by_its_bank() {
+        let shader = birds_shader_source();
+        let body = shader
+            .split_once("fn vs_main")
+            .expect("the vertex entry point exists")
+            .1;
+        assert!(
+            body.contains("instance.motion.w"),
+            "the vertex shader never reads the bank"
+        );
+        // Both axes, or the frame is sheared rather than rolled.
+        for axis in ["let right =", "let up ="] {
+            let line = body
+                .lines()
+                .find(|line| line.trim_start().starts_with(axis))
+                .unwrap_or_else(|| panic!("the frame defines `{axis}`"));
+            assert!(
+                line.contains("bank_cos") && line.contains("bank_sin"),
+                "`{}` is built without the bank, so the bird stays level",
+                line.trim()
+            );
+        }
     }
 
     #[test]
