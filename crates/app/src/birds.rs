@@ -129,8 +129,6 @@ const MAX_LANDING_SLOPE_RADIANS: f64 = 0.45;
 /// Come near a settled flock and it leaves, which is what birds do.
 const STARTLE_RADIUS_METERS: f64 = 34.0;
 
-/// Wingbeats per second by activity. Walking birds fold their wings, so their
-/// phase stops rather than slowing.
 /// How hard a bird banks into a turn, and how quickly the bank follows.
 ///
 /// A real bird rolls to point its lift into the turn, which is the same
@@ -157,9 +155,39 @@ const BANK_LIMIT_RADIANS: f64 = 0.9;
 const BANK_EXAGGERATION: f64 = 2.5;
 const BANK_RESPONSE_SECONDS: f64 = 0.22;
 
-const CRUISE_WINGBEATS_PER_SECOND: f32 = 3.1;
+/// Wingbeat is a function of effort and nothing else.
+///
+/// It used to be chosen by activity: a fixed rate for taking off, another for
+/// landing, another for cruising. That is the animation deciding what the bird
+/// is doing. It should be the other way round -- the flight is simulated, and
+/// the wings report it -- so the rate now comes from how hard the bird is
+/// working and the activity cases are gone. Taking off flaps hard because
+/// taking off *is* climbing hard; landing sets its wings because landing is
+/// losing energy. Nothing has to say so.
+///
+/// Effort is the specific power the bird is putting in, divided by speed, which
+/// puts it in the same units as an acceleration:
+///
+///     effort = dv/dt + g * climb_rate / speed
+///
+/// the two terms being the rate of change of kinetic and of potential energy.
+/// Descending or slowing is negative, and buys a glide.
 const CLIMB_WINGBEATS_PER_SECOND: f32 = 6.4;
-const GLIDE_WINGBEATS_PER_SECOND: f32 = 1.1;
+/// The effort at which the wings are fully set, and at which they reach the
+/// climb rate. Cruise is not a case any more, it is what falls out at zero
+/// effort: 1.4 / (1.4 + 1.5) * 6.4 = 3.1 beats a second, which is where the old
+/// hand-set cruise constant was.
+const GLIDE_EFFORT: f64 = -1.4;
+const CLIMB_EFFORT: f64 = 1.5;
+/// Beats a second below which the wings are treated as set rather than beating,
+/// for the glide pose.
+const SET_WING_BEATS_PER_SECOND: f32 = 3.1;
+/// How quickly the wings follow a change in effort.
+///
+/// Slow on purpose: a bird settles into a glide and comes out of it, and the
+/// flocking rules shove its acceleration around several times a second. Without
+/// this the wings flicker between poses rather than changing gait.
+const EFFORT_RESPONSE_SECONDS: f64 = 0.45;
 
 /// The most birds the whole set can ever present at once: every flock at the
 /// merge ceiling. This is what a renderer's instance buffer has to hold, and it
@@ -201,6 +229,12 @@ pub struct Bird {
     /// Wingbeat cycle in turns, advanced on the CPU but applied in the vertex
     /// shader so no per-bird geometry is ever uploaded.
     pub wing_phase: f32,
+    /// How hard the bird is working, 0 fully set and 1 climbing flat out. This
+    /// is the held, smoothed state; the wingbeat rate and the wing pose are
+    /// both read off it, so the animation has exactly one input.
+    pub effort: f32,
+    /// How set the wings are, derived from `effort` each step.
+    pub glide: f32,
     /// How far the bird is rolled into its turn, in radians, positive to the
     /// right. Held here rather than derived in the renderer because it is a
     /// smoothed quantity: it needs the previous value to advance.
@@ -216,6 +250,8 @@ pub struct Bird {
     previous_velocity: DVec3,
     previous_wing_phase: f32,
     previous_bank_radians: f32,
+    previous_glide: f32,
+    previous_effort: f32,
     /// Per-bird offset from the flock's landing point, so a settled flock
     /// spreads over the ground instead of stacking on one spot.
     landing_offset: DVec3,
@@ -241,6 +277,11 @@ impl Bird {
     /// while a degree of yaw sweeps the whole horizon.
     pub fn velocity_at(&self, alpha: f64) -> DVec3 {
         self.previous_velocity + (self.velocity - self.previous_velocity) * alpha
+    }
+
+    /// How set the wings are on the frame being drawn.
+    pub fn glide_at(&self, alpha: f64) -> f32 {
+        self.previous_glide + (self.glide - self.previous_glide) * alpha as f32
     }
 
     /// The roll to draw with, blended across the step like everything else.
@@ -723,6 +764,8 @@ impl BirdFlocks {
                     bird.previous_velocity = bird.velocity;
                     bird.previous_wing_phase = bird.wing_phase;
                     bird.previous_bank_radians = bird.bank_radians;
+                    bird.previous_glide = bird.glide;
+                    bird.previous_effort = bird.effort;
                 }
             }
             self.step(BIRD_FIXED_STEP_SECONDS, camera_local, ground);
@@ -998,11 +1041,15 @@ impl BirdFlocks {
                 activity: BirdActivity::Flying,
                 wing_phase,
                 bank_radians: 0.0,
+                effort: 0.5,
+                glide: 0.0,
                 // A new bird has no previous step, so it starts standing still
                 // rather than being interpolated in from the planet centre.
                 previous_position: position,
                 previous_velocity: velocity,
                 previous_bank_radians: 0.0,
+                previous_glide: 0.0,
+                previous_effort: 0.5,
                 previous_wing_phase: wing_phase,
                 landing_offset: flock_east * rng.range(-7.0, 7.0)
                     + flock_north * rng.range(-7.0, 7.0),
@@ -1093,7 +1140,7 @@ fn advance_flock(
                     up,
                     wander_phase,
                 );
-                step_flying_bird(bird, step_seconds, steering, up, surface_radius, intent);
+                step_flying_bird(bird, step_seconds, steering, up, surface_radius);
             }
         }
     }
@@ -1309,7 +1356,6 @@ fn step_flying_bird(
     steering: DVec3,
     up: DVec3,
     surface_radius: Option<f64>,
-    intent: FlockIntent,
 ) {
     bird.velocity += limit(steering, 26.0) * step_seconds;
 
@@ -1368,17 +1414,25 @@ fn step_flying_bird(
         }
     }
 
-    let beats = match bird.activity {
-        BirdActivity::TakingOff => CLIMB_WINGBEATS_PER_SECOND,
-        BirdActivity::Landing => GLIDE_WINGBEATS_PER_SECOND,
-        _ => {
-            if intent == FlockIntent::Lifting {
-                CLIMB_WINGBEATS_PER_SECOND
-            } else {
-                CRUISE_WINGBEATS_PER_SECOND
-            }
-        }
+    // How hard the bird is working: the rate it is gaining kinetic energy plus
+    // the rate it is gaining height, per unit speed. Climbing costs, descending
+    // pays, and neither is asserted anywhere -- it is read off the motion.
+    let speed = bird.velocity.length();
+    let effort = if step_seconds > 0.0 && speed > 1.0e-3 {
+        let along_track = (speed - bird.previous_velocity.length()) / step_seconds;
+        let climb_rate = bird.velocity.dot(up);
+        along_track + BANK_GRAVITY_METERS_PER_SECOND_SQUARED * climb_rate / speed
+    } else {
+        0.0
     };
+    let target_effort01 = ((effort - GLIDE_EFFORT) / (CLIMB_EFFORT - GLIDE_EFFORT)).clamp(0.0, 1.0);
+    let response = 1.0 - (-step_seconds / EFFORT_RESPONSE_SECONDS).exp();
+    bird.effort += ((target_effort01 - f64::from(bird.effort)) * response) as f32;
+
+    let beats = CLIMB_WINGBEATS_PER_SECOND * bird.effort;
+    // The pose follows the same number: wings fully set where the beat has died
+    // away, fully out where it has reached the old cruise rate.
+    bird.glide = (1.0 - beats / SET_WING_BEATS_PER_SECOND).clamp(0.0, 1.0);
     bird.wing_phase = (bird.wing_phase + beats * step_seconds as f32).fract();
 
     // Roll into the turn. The yaw rate is the signed angle the flat heading
@@ -1471,6 +1525,8 @@ fn step_walking_bird(
     // Wings are folded: the phase holds rather than winding on.
     bird.wing_phase = 0.0;
     bird.bank_radians = 0.0;
+    bird.glide = 0.0;
+    bird.effort = 0.5;
 }
 
 /// One vertex of the shared low-poly bird.
@@ -2360,7 +2416,11 @@ mod tests {
             activity: BirdActivity::Flying,
             wing_phase: 0.02,
             bank_radians: 0.0,
+            effort: 0.5,
+            glide: 0.0,
             previous_bank_radians: 0.0,
+            previous_glide: 0.0,
+            previous_effort: 0.5,
             previous_position: DVec3::new(4_000_050.0, 0.0, 0.0),
             previous_velocity: DVec3::ZERO,
             previous_wing_phase: 0.98,
@@ -2469,10 +2529,14 @@ mod tests {
                 activity: BirdActivity::Flying,
                 wing_phase: 0.0,
                 bank_radians: 0.0,
+                effort: 0.5,
+                glide: 0.0,
                 previous_position: up * (radius + 40.0),
                 previous_velocity: east * CRUISE_SPEED_METERS_PER_SECOND,
                 previous_wing_phase: 0.0,
                 previous_bank_radians: 0.0,
+                previous_glide: 0.0,
+                previous_effort: 0.5,
                 landing_offset: DVec3::ZERO,
                 activity_seconds: 0.0,
             };
@@ -2486,14 +2550,7 @@ mod tests {
                 let sideways = up.cross(heading);
                 let speed = bird.velocity.length();
                 let steering = sideways * (turn_per_second * speed);
-                step_flying_bird(
-                    &mut bird,
-                    step,
-                    steering,
-                    up,
-                    Some(radius),
-                    FlockIntent::Cruising,
-                );
+                step_flying_bird(&mut bird, step, steering, up, Some(radius));
             }
             bird
         };
@@ -2552,7 +2609,6 @@ mod tests {
             sideways * (0.35 * speed),
             up,
             Some(radius),
-            FlockIntent::Cruising,
         );
         assert!(
             settling.bank_radians.abs() < settled.abs() * 0.5,
@@ -2577,6 +2633,175 @@ mod tests {
             walker.bank_radians, 0.0,
             "a walking bird was still leaning from its approach"
         );
+    }
+
+    #[test]
+    fn wings_set_when_a_bird_slows_and_beat_when_it_speeds_up() {
+        // Ian: "whenever they are slowing down, a bird should switch to glide
+        // position. Then flap again while accelerating", and then: "the
+        // animation should be based on the acceleration only, not the other way
+        // around."
+        //
+        // It used to be chosen by activity -- one rate for taking off, another
+        // for landing, another for cruising -- which is the animation asserting
+        // what the bird is doing. Now the flight is simulated and the wings
+        // report it. Effort is `dv/dt + g * climb_rate / speed`: the rate of
+        // gain of kinetic plus potential energy, per unit speed.
+        let radius = 4_000_000.0;
+        let up = DVec3::X;
+        let (east, _north) = tangent_basis(up);
+        let step = BIRD_FIXED_STEP_SECONDS;
+
+        // Hold a steady along-track push, and see where the wings settle.
+        let flown = |along_track: f64, seconds: f64| {
+            let start = up * (radius + 40.0);
+            let mut bird = Bird {
+                id: 1,
+                position: start,
+                velocity: east * CRUISE_SPEED_METERS_PER_SECOND,
+                activity: BirdActivity::Flying,
+                wing_phase: 0.0,
+                bank_radians: 0.0,
+                effort: 0.5,
+                glide: 0.5,
+                previous_position: start,
+                previous_velocity: east * CRUISE_SPEED_METERS_PER_SECOND,
+                previous_wing_phase: 0.0,
+                previous_bank_radians: 0.0,
+                previous_glide: 0.5,
+                previous_effort: 0.5,
+                landing_offset: DVec3::ZERO,
+                activity_seconds: 0.0,
+            };
+            let mut elapsed = 0.0;
+            let mut phase_advanced = 0.0_f32;
+            while elapsed < seconds {
+                elapsed += step;
+                bird.previous_velocity = bird.velocity;
+                bird.previous_glide = bird.glide;
+                let before = bird.wing_phase;
+                let heading = bird.velocity.normalize();
+                step_flying_bird(&mut bird, step, heading * along_track, up, Some(radius));
+                phase_advanced += (bird.wing_phase - before).rem_euclid(1.0);
+            }
+            (bird, phase_advanced)
+        };
+
+        // Slowing: wings set. Kept inside the flyable speed band -- past the
+        // 5m/s floor the speed stops changing, the along-track acceleration
+        // falls to zero and the wings correctly come back to neutral.
+        let (coasting, coasting_phase) = flown(-3.0, 1.5);
+        assert!(
+            coasting.glide > 0.9,
+            "a bird losing speed was only {} set",
+            coasting.glide
+        );
+        // Speeding up: wings beating.
+        let (working, working_phase) = flown(3.0, 1.5);
+        assert!(
+            working.glide < 0.1,
+            "a bird gaining speed was still {} set",
+            working.glide
+        );
+        // And a set wing does not cycle: over the same span the coasting bird
+        // gets through a fraction of the beats the working one does.
+        assert!(
+            coasting_phase < working_phase * 0.35,
+            "gliding advanced {coasting_phase} of a wingbeat against {working_phase} \
+             working, so the wings were still cycling"
+        );
+
+        // Climbing at a steady speed is work, and must flap. This is the case
+        // the old along-track-only rule got wrong and the case that used to be
+        // papered over by a hard-coded rate for `TakingOff`: nothing now says a
+        // climbing bird is climbing, it just is.
+        let steady = |rise: f64| {
+            let start = up * (radius + 40.0);
+            let climb = (east + up * rise).normalize() * CRUISE_SPEED_METERS_PER_SECOND;
+            let mut bird = Bird {
+                id: 2,
+                position: start,
+                velocity: climb,
+                activity: BirdActivity::Flying,
+                wing_phase: 0.0,
+                bank_radians: 0.0,
+                effort: 0.5,
+                glide: 0.5,
+                previous_position: start,
+                previous_velocity: climb,
+                previous_wing_phase: 0.0,
+                previous_bank_radians: 0.0,
+                previous_glide: 0.5,
+                previous_effort: 0.5,
+                landing_offset: DVec3::ZERO,
+                activity_seconds: 0.0,
+            };
+            let mut elapsed = 0.0;
+            while elapsed < 1.5 {
+                elapsed += step;
+                // Hold the climb: no change in speed, only in height.
+                bird.previous_velocity = bird.velocity;
+                bird.previous_glide = bird.glide;
+                bird.previous_effort = bird.effort;
+                step_flying_bird(&mut bird, step, DVec3::ZERO, up, Some(radius));
+                bird.velocity = bird.velocity.normalize() * CRUISE_SPEED_METERS_PER_SECOND;
+            }
+            bird
+        };
+        // Compared against level flight at the same speed, because the pose
+        // alone cannot tell them apart -- both have their wings out. What
+        // separates them is how hard they are beating.
+        let level = steady(0.0);
+        let climbing = steady(0.35);
+        let descending = steady(-0.35);
+        assert!(
+            climbing.effort > level.effort + 0.2,
+            "climbing at a steady speed took effort {} against {} flying level, \
+             so height is not being paid for",
+            climbing.effort,
+            level.effort
+        );
+        assert!(
+            descending.effort < level.effort - 0.2,
+            "descending at a steady speed took effort {} against {} flying level, \
+             so a bird gets nothing back for losing height",
+            descending.effort,
+            level.effort
+        );
+        assert!(
+            descending.glide > 0.5,
+            "a descending bird was only {} set",
+            descending.glide
+        );
+
+        // Smoothed. One step cannot throw the wings from beating to set, or a
+        // bird flickers between poses as the flocking rules push it about.
+        let mut jumpy = working;
+        jumpy.previous_glide = jumpy.glide;
+        // Both, or the step sees no change in speed and the assertion below is
+        // vacuous -- which it was, until a mutation that deleted the smoothing
+        // left this test green.
+        jumpy.previous_velocity = jumpy.velocity;
+        let heading = jumpy.velocity.normalize();
+        step_flying_bird(&mut jumpy, step, heading * -3.0, up, Some(radius));
+        assert!(
+            jumpy.glide < 0.35,
+            "one step took the wings from beating to {} set",
+            jumpy.glide
+        );
+
+        // A walking bird has its wings folded, not set.
+        let mut walker = coasting;
+        walker.activity = BirdActivity::Walking;
+        step_walking_bird(
+            &mut walker,
+            step,
+            Some(radius),
+            up,
+            FlockIntent::Grounded,
+            DVec3::ZERO,
+        );
+        assert_eq!(walker.glide, 0.0, "a walking bird was still gliding");
     }
 
     #[test]

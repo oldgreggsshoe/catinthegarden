@@ -9769,3 +9769,58 @@ scenarios then log `flocks: 0` and render an empty sky, because spawning needs a
 ground sample. Symlink `assets/outmaps` before drawing any conclusion from a
 capture there -- three identical "sky" frames cost a detour before the log said
 why.
+
+## Wingbeat is a function of effort, and nothing else - 14 September 2026
+
+Ian: "whenever they are slowing down, a bird should switch to glide position.
+Then flap again while accelerating", and then, on seeing the first attempt, "the
+animation should be based on the acceleration only, not the other way around."
+
+The first version scaled a per-activity rate by along-track acceleration. The
+second sentence is the correction, and it is the better design: the activity
+cases are gone entirely and the wingbeat is now a pure function of how hard the
+bird is working.
+
+    effort = dv/dt + g * climb_rate / speed
+
+the rate of gain of kinetic plus potential energy, per unit speed, which lands in
+the same units as an acceleration. Smoothed over 0.45s, then
+
+    beats = CLIMB_WINGBEATS_PER_SECOND * effort01
+    glide = clamp(1 - beats / SET_WING_BEATS_PER_SECOND, 0, 1)
+
+`GLIDE_EFFORT` (-1.4) and `CLIMB_EFFORT` (+1.5) bracket it, chosen so that zero
+effort falls out at 3.1 beats a second -- exactly where the old hand-set cruise
+constant was, so level cruising is unchanged by the rewrite.
+
+Taking off now flaps hard because taking off *is* climbing hard, and landing sets
+its wings because landing is losing energy. Nothing declares either. The clearest
+sign it was the right shape: `step_flying_bird` no longer needs its `intent`
+parameter at all, and the compiler said so.
+
+Measured over 60s of a cruising flock, before and after:
+
+    old (activity rate x along-track)   median 0.37  p75 0.53  p90 0.72
+    new (effort only)                   median 0.07  p75 0.54  p90 0.98
+
+Both spend about the same share of the time set (28.4% against 26.5%, in bursts
+of 1.2-1.3s), but the new one is bimodal where the old one was mush: a bird is
+either beating or coasting, which is the gait switch that was asked for, rather
+than permanently half-flapping.
+
+The glide pose matters as much as the rate. Wings that merely stop cycling read
+as a bird frozen mid-beat; `GLIDE_DIHEDRAL_RADIANS` and
+`GLIDE_WRIST_DROOP_RADIANS` settle the arm into a shallow V with the hand
+drooping outboard, which is what a gull holds when it stops working.
+
+### A vacuous assertion, caught by mutation and worth the warning
+
+The smoothing assertion in `wings_set_when_a_bird_slows_and_beat_when_it_speeds_up`
+passed with the smoothing deleted. The test bird had its `previous_glide` set but
+not its `previous_velocity`, so the step saw no change in speed and computed no
+effort at all -- the assertion was measuring nothing. The climb assertion had the
+same shape of fault: it asserted on the wing *pose*, which cannot separate a
+climbing bird from a level one because both have their wings out, so deleting the
+whole potential-energy term left it green. It asserts on effort against a
+level-flight reference now. Three mutations, three catches, only after fixing the
+test twice.

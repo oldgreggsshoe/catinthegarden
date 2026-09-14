@@ -34,6 +34,10 @@ const WRIST_LAG_TURNS: f32 = 0.16;
 const WRIST_LOCAL: vec3<f32> = vec3<f32>(0.325, 0.048, -0.02);
 /// How far the hand folds back against the body when a bird is walking.
 const WRIST_FOLD_RADIANS: f32 = 2.0;
+/// The shallow V a set wing holds, and the slight droop of the hand outboard of
+/// the wrist that goes with it.
+const GLIDE_DIHEDRAL_RADIANS: f32 = 0.16;
+const GLIDE_WRIST_DROOP_RADIANS: f32 = 0.22;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -57,6 +61,8 @@ struct InstanceInput {
     // x: wingbeat phase in turns. y: how folded the wings are, 1 when walking.
     // z: body length in metres. w: bank, in radians, positive to the right.
     @location(7) motion: vec4<f32>,
+    // How set the wings are: 0 beating, 1 fully gliding.
+    @location(8) glide: f32,
 }
 
 struct VertexOutput {
@@ -99,10 +105,16 @@ fn vs_main(input: VertexInput, instance: InstanceInput) -> VertexOutput {
     local.x = local.x * (1.0 - 0.72 * fold * arm);
     local.z = local.z - 0.10 * fold * arm;
 
-    let beat = 1.0 - fold;
-    let shoulder_angle = sin(phase * TAU) * SHOULDER_AMPLITUDE * beat;
+    // Gliding sets the wings: the stroke fades out and the arm settles into a
+    // shallow dihedral, the shape a gull holds when it stops working. Without
+    // the dihedral a glide reads as a bird frozen mid-beat rather than coasting.
+    let glide = clamp(instance.glide, 0.0, 1.0);
+    let beat = (1.0 - fold) * (1.0 - glide);
+    let shoulder_angle = sin(phase * TAU) * SHOULDER_AMPLITUDE * beat
+        + GLIDE_DIHEDRAL_RADIANS * glide * (1.0 - fold);
     let wrist_angle = sin((phase - WRIST_LAG_TURNS) * TAU) * WRIST_AMPLITUDE * beat
-        - WRIST_FOLD_RADIANS * fold;
+        - WRIST_FOLD_RADIANS * fold
+        - GLIDE_WRIST_DROOP_RADIANS * glide * (1.0 - fold);
 
     // Bone one, hinged at the shoulder. Body vertices carry arm 0, so this is
     // the identity for them without a branch.

@@ -28,6 +28,7 @@ struct BirdInstance {
     forward: [f32; 3],
     up: [f32; 3],
     motion: [f32; 4],
+    glide: f32,
 }
 
 impl BirdVertex {
@@ -44,8 +45,13 @@ impl BirdVertex {
 }
 
 impl BirdInstance {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 4] =
-        wgpu::vertex_attr_array![4 => Float32x3, 5 => Float32x3, 6 => Float32x3, 7 => Float32x4];
+    const ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+        4 => Float32x3,
+        5 => Float32x3,
+        6 => Float32x3,
+        7 => Float32x4,
+        8 => Float32,
+    ];
 
     fn layout() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
@@ -200,6 +206,7 @@ impl BirdRenderer {
                     BIRD_BODY_LENGTH_METERS,
                     bird.bank_at(alpha),
                 ],
+                glide: bird.glide_at(alpha),
             });
         }
         self.instance_count = self.scratch.len() as u32;
