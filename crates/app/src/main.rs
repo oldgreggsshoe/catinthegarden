@@ -2242,9 +2242,10 @@ impl State {
     /// own motion is camera-independent, but the view-relative upload is not.
     ///
     /// The ground query is resolved here rather than inside `birds`, which
-    /// keeps the flocking testable without a device or a baked tile. It
-    /// declines over water and below the waterline, so a flock never spawns
-    /// somewhere it could not land.
+    /// keeps the flocking testable without a device or a baked tile. Over water
+    /// it reports the depth, and the sea handed over with it is the analytic
+    /// surface the ocean mesh is displaced by and the ship floats on, so birds
+    /// clear the crests that are drawn and sit on the water that is there.
     fn advance_birds(&mut self, ocean_time_seconds: f64, planet_rotation_radians: f64) {
         if !body::has_atmosphere() {
             // Nothing flies in vacuum.
@@ -2256,8 +2257,10 @@ impl State {
         let camera_altitude_meters = camera_local.length() - planet::planet_radius_meters();
         let planet_radius_meters = planet::planet_radius_meters();
         let terrain = &self.terrain;
-        self.birds
-            .advance(ocean_time_seconds, camera_local, &|direction| {
+        self.birds.advance_over_sea(
+            ocean_time_seconds,
+            camera_local,
+            &|direction| {
                 let sample = terrain.forest_surface_sample_at(direction, camera_altitude_meters)?;
                 Some(birds::GroundSample {
                     surface_radius_meters: planet_radius_meters + sample.height_meters,
@@ -2269,8 +2272,16 @@ impl State {
                         catinthegarden_coretypes::BiomeId::Ocean
                             | catinthegarden_coretypes::BiomeId::Lake
                     ) && sample.height_meters > 0.5,
+                    // The same baked depth the renderer and the ship limit their
+                    // waves by, so shoaling crests are the ones a bird sees.
+                    water_depth_meters: terrain
+                        .bathymetry_height_meters_at(direction)
+                        .filter(|height| *height < 0.0)
+                        .map(|height| -height),
                 })
-            });
+            },
+            &ocean::global_wave_height_meters,
+        );
         let basis = planet::CameraViewBasis::from_forward_and_up(
             self.camera
                 .planet_frame_direction_dvec3(planet_rotation_radians),

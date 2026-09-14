@@ -395,6 +395,7 @@ mod tests {
                 surface_radius_meters: radius,
                 slope_radians: 0.0,
                 walkable: true,
+                water_depth_meters: None,
             })
         };
         flocks.advance(1.0, camera, &ground);

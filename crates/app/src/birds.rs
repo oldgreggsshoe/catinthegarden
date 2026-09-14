@@ -1,4 +1,5 @@
-//! Boids: flocking birds that also land, walk about and take off again.
+//! Boids: flocking birds that also land, walk about, sit on the sea and take
+//! off again.
 //!
 //! Split from `birds_render` the way `ship` is split from `ship_render`, so the
 //! flocking itself stays testable without a device.
@@ -119,6 +120,29 @@ const WALK_SEPARATION_STRENGTH: f64 = 1.8;
 const CRUISE_ALTITUDE_MIN_METERS: f64 = 22.0;
 const CRUISE_ALTITUDE_MAX_METERS: f64 = 70.0;
 const ALTITUDE_HOLD_STRENGTH: f64 = 0.55;
+/// The least a flying bird is ever allowed above whatever is under it: ground,
+/// or the sea as it stands this step.
+const FLIGHT_FLOOR_METERS: f64 = 2.0;
+
+/// How far ahead, in seconds, a bird over water looks for the sea coming up to
+/// meet it. Reacting when it arrives is not enough: measured on the game's own
+/// ocean, a storm surface rises at up to 35m/s against a top speed of 17m/s, and
+/// faster than a bird can fly 4.3% of the time. The climb has to start first.
+const SEA_LOOKAHEAD_SECONDS: [f64; 5] = [0.5, 1.0, 1.5, 2.0, 3.0];
+/// The clearance a bird tries to keep over water, above the hard floor so that
+/// the climb begins before the floor ever has to lift anyone.
+const SEA_CLEARANCE_METERS: f64 = 5.0;
+/// A bird's whole steering budget, the same limit `step_flying_bird` applies.
+const SEA_AVOIDANCE_MAX_ACCELERATION: f64 = 26.0;
+/// Seconds along a cruising flock's track scanned for the crest it holds its
+/// height above.
+const SEA_ENVELOPE_LOOKAHEAD_SECONDS: [f64; 3] = [0.0, 2.0, 4.0];
+/// How fast that height sinks back once a crest has passed. Slow on purpose.
+/// Measured on the game's own ocean, holding height above the water directly
+/// beneath instead took the correlation between a cruising bird's height and
+/// the water under it from 0.29 to 0.73, and its mean climb or sink rate from
+/// 7.4 to 8.8m/s: a flock riding the swell rather than flying over it.
+const SEA_ENVELOPE_DECAY_METERS_PER_SECOND: f64 = 0.5;
 
 /// Where a landing run becomes a walk, and where a walk leaves the ground.
 const TOUCHDOWN_ALTITUDE_METERS: f64 = 0.35;
@@ -207,6 +231,10 @@ pub struct GroundSample {
     pub slope_radians: f64,
     /// False over water, ice and anything else a bird should not stand on.
     pub walkable: bool,
+    /// Depth of water below sea level, where there is water. `surface_radius_meters`
+    /// is then sea level, and what a bird actually meets is the moving sea on top
+    /// of it -- which is the only way a bird can know a crest is under it.
+    pub water_depth_meters: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -354,6 +382,15 @@ pub struct Flock {
     anchor: DVec3,
     /// Tangential heading the cruising anchor travels along.
     drift: DVec3,
+    /// The crest a cruising flock over water holds its height above, in metres
+    /// above sea level. Rises at once to a crest ahead and sinks back slowly, so
+    /// the flock clears the swell without riding each wave up and down.
+    /// Meaningless over land.
+    sea_envelope_meters: f64,
+    /// Whether the flock chose water to settle on. Water moves, so a bird coming
+    /// down onto it aims at the surface under it now rather than at the fixed
+    /// point a landing on ground aims at.
+    on_water: bool,
     wander_phase: f64,
     rng: Rng,
 }
@@ -527,6 +564,27 @@ fn limit(vector: DVec3, maximum: f64) -> DVec3 {
         vector * (maximum / length_squared.sqrt())
     } else {
         vector
+    }
+}
+
+/// What a flock can ask of the world during one step: the ground under a
+/// direction, and the height of the sea above sea level at a direction, a time
+/// and a water depth. Both are the caller's, so the flocking stays testable
+/// without a device, a baked tile or the ocean's own tuning.
+#[derive(Clone, Copy)]
+struct World<'a> {
+    ground: &'a dyn Fn(DVec3) -> Option<GroundSample>,
+    sea: &'a dyn Fn(DVec3, f64, f64) -> f64,
+    time: f64,
+}
+
+impl World<'_> {
+    /// Radius of whatever a bird would meet under `direction` right now.
+    fn surface_radius(&self, sample: GroundSample, direction: DVec3) -> f64 {
+        match sample.water_depth_meters {
+            Some(depth) => sample.surface_radius_meters + (self.sea)(direction, self.time, depth),
+            None => sample.surface_radius_meters,
+        }
     }
 }
 
@@ -738,15 +796,33 @@ impl BirdFlocks {
         self.flocks.iter().flat_map(|flock| flock.birds.iter())
     }
 
-    /// Advance to `target_seconds`, spawning and retiring flocks around
-    /// `camera_local`. `ground` resolves the surface under a direction and may
-    /// decline, which is how unloaded terrain and unwalkable ground are both
-    /// handled: a flock that cannot find ground simply stays airborne.
+    /// `advance_over_sea` on a sea that never leaves sea level, which is all the
+    /// flocking on dry ground needs.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn advance(
         &mut self,
         target_seconds: f64,
         camera_local: DVec3,
         ground: &dyn Fn(DVec3) -> Option<GroundSample>,
+    ) {
+        self.advance_over_sea(target_seconds, camera_local, ground, &|_, _, _| 0.0);
+    }
+
+    /// Advance to `target_seconds`, spawning and retiring flocks around
+    /// `camera_local`. `ground` resolves the surface under a direction and may
+    /// decline, which is how unloaded terrain and unwalkable ground are both
+    /// handled: a flock that cannot find ground simply stays airborne.
+    ///
+    /// `sea` is the height of the water above sea level at a direction, a time
+    /// and a depth, consulted wherever `ground` reports water. It has to be the
+    /// surface the renderer draws, or birds clear water that is not there and
+    /// fly into water that is.
+    pub fn advance_over_sea(
+        &mut self,
+        target_seconds: f64,
+        camera_local: DVec3,
+        ground: &dyn Fn(DVec3) -> Option<GroundSample>,
+        sea: &dyn Fn(DVec3, f64, f64) -> f64,
     ) {
         if target_seconds < self.simulated_seconds {
             // A scenario replay can rewind the clock; restart rather than spin.
@@ -768,7 +844,12 @@ impl BirdFlocks {
                     bird.previous_effort = bird.effort;
                 }
             }
-            self.step(BIRD_FIXED_STEP_SECONDS, camera_local, ground);
+            let world = World {
+                ground,
+                sea,
+                time: self.simulated_seconds,
+            };
+            self.step(BIRD_FIXED_STEP_SECONDS, camera_local, world);
         }
         // Whatever time is left over is how far into the next step the frame
         // being drawn sits.
@@ -783,23 +864,18 @@ impl BirdFlocks {
         self.interpolation_alpha
     }
 
-    fn step(
-        &mut self,
-        step_seconds: f64,
-        camera_local: DVec3,
-        ground: &dyn Fn(DVec3) -> Option<GroundSample>,
-    ) {
+    fn step(&mut self, step_seconds: f64, camera_local: DVec3, world: World) {
         // Move first, then settle the population. The renderer reads this
         // state after the step, so topping up last is what makes "there are
         // birds within drawing range" true of the frame that gets drawn rather
         // than of an instant in the middle of it.
         for flock in &mut self.flocks {
-            advance_flock(flock, step_seconds, camera_local, ground);
+            advance_flock(flock, step_seconds, camera_local, world);
         }
         self.steer_flocks_past_each_other(step_seconds);
         self.merge_touching_flocks();
         self.retire_distant_flocks(camera_local);
-        self.spawn_missing_flocks(camera_local, ground);
+        self.spawn_missing_flocks(camera_local, world);
     }
 
     /// Steers each travelling flock against the others. A pair that could merge
@@ -937,11 +1013,7 @@ impl BirdFlocks {
             .count()
     }
 
-    fn spawn_missing_flocks(
-        &mut self,
-        camera_local: DVec3,
-        ground: &dyn Fn(DVec3) -> Option<GroundSample>,
-    ) {
+    fn spawn_missing_flocks(&mut self, camera_local: DVec3, world: World) {
         while self.near_flock_count(camera_local) < MAX_NEAR_FLOCKS {
             if self.flocks.len() >= MAX_FLOCKS {
                 // Outbound stragglers had filled the cap and blocked the near
@@ -959,7 +1031,7 @@ impl BirdFlocks {
                 };
                 self.flocks.swap_remove(furthest);
             }
-            let Some(flock) = self.spawn_flock(camera_local, ground) else {
+            let Some(flock) = self.spawn_flock(camera_local, world) else {
                 // No walkable ground in reach this step -- over open ocean, or
                 // terrain that has not streamed in yet. Try again next step
                 // rather than burning the whole budget on one frame.
@@ -969,11 +1041,7 @@ impl BirdFlocks {
         }
     }
 
-    fn spawn_flock(
-        &mut self,
-        camera_local: DVec3,
-        ground: &dyn Fn(DVec3) -> Option<GroundSample>,
-    ) -> Option<Flock> {
+    fn spawn_flock(&mut self, camera_local: DVec3, world: World) -> Option<Flock> {
         let up = camera_local.normalize();
         let (east, north) = tangent_basis(up);
         let mut placement = None;
@@ -987,13 +1055,19 @@ impl BirdFlocks {
             // the time, they just do not land on it. Requiring it here meant no
             // flock could exist over the sea or near a waterline at all, which
             // is how a demo camera on a beach came back with an empty sky.
-            let Some(sample) = ground(anchor_direction) else {
+            let Some(sample) = (world.ground)(anchor_direction) else {
                 continue;
             };
             let cruise_altitude_meters = self
                 .rng
                 .range(CRUISE_ALTITUDE_MIN_METERS, CRUISE_ALTITUDE_MAX_METERS);
-            let anchor = anchor_direction * (sample.surface_radius_meters + cruise_altitude_meters);
+            // Over water the flock starts above the swell it is born over, not
+            // merely above sea level.
+            let sea_envelope_meters = sample.water_depth_meters.map_or(0.0, |depth| {
+                highest_water_ahead(anchor_direction, DVec3::ZERO, depth, world)
+            });
+            let anchor = anchor_direction
+                * (sample.surface_radius_meters + sea_envelope_meters + cruise_altitude_meters);
             // Crowding a flock this one could merge with is fine; crowding any
             // other is what put two flocks 19.77m apart on their first step.
             let crowded = self.flocks.iter().any(|flock| {
@@ -1003,10 +1077,17 @@ impl BirdFlocks {
             if crowded {
                 continue;
             }
-            placement = Some((anchor_direction, anchor, cruise_altitude_meters));
+            placement = Some((
+                anchor_direction,
+                anchor,
+                cruise_altitude_meters,
+                sample,
+                sea_envelope_meters,
+            ));
             break;
         }
-        let (anchor_direction, anchor, cruise_altitude_meters) = placement?;
+        let (anchor_direction, anchor, cruise_altitude_meters, sample, sea_envelope_meters) =
+            placement?;
         let count = FLOCK_MIN_BIRDS + self.rng.index(FLOCK_MAX_BIRDS - FLOCK_MIN_BIRDS + 1);
         let mut rng = Rng::new(self.rng.next_u64());
         let (flock_east, flock_north) = tangent_basis(anchor_direction);
@@ -1025,7 +1106,17 @@ impl BirdFlocks {
                 + anchor_direction * rng.range(-4.0, 4.0);
             let id = self.next_bird_id;
             self.next_bird_id += 1;
-            let position = anchor + scatter;
+            let mut position = anchor + scatter;
+            // Scattered off the anchor, a bird can land inside a crest the
+            // anchor itself cleared. No generator draw here, so seeding is
+            // untouched.
+            if sample.water_depth_meters.is_some() {
+                let floor =
+                    world.surface_radius(sample, position.normalize()) + FLIGHT_FLOOR_METERS;
+                if position.length() < floor {
+                    position = position.normalize() * floor;
+                }
+            }
             // Drawn in the order the fields used to be written in. Hoisting a
             // `let` out of a struct literal moves where its generator call
             // happens, and this generator *is* the simulation: reordering these
@@ -1077,22 +1168,19 @@ impl BirdFlocks {
             cruise_altitude_meters,
             anchor,
             drift,
+            sea_envelope_meters,
+            on_water: false,
             wander_phase: rng.range(0.0, std::f64::consts::TAU),
             rng,
         })
     }
 }
 
-fn advance_flock(
-    flock: &mut Flock,
-    step_seconds: f64,
-    camera_local: DVec3,
-    ground: &dyn Fn(DVec3) -> Option<GroundSample>,
-) {
+fn advance_flock(flock: &mut Flock, step_seconds: f64, camera_local: DVec3, world: World) {
     flock.intent_seconds += step_seconds;
     flock.wander_phase += step_seconds * 0.6;
-    update_intent(flock, camera_local, ground);
-    advance_anchor(flock, step_seconds, ground);
+    update_intent(flock, camera_local, world);
+    advance_anchor(flock, step_seconds, world);
 
     let centroid = flock.centroid();
     let average_velocity = if flock.birds.is_empty() {
@@ -1114,20 +1202,33 @@ fn advance_flock(
     let cruise_altitude_meters = flock.cruise_altitude_meters;
     let anchor = flock.anchor;
     let wander_phase = flock.wander_phase;
+    let sea_envelope_meters = flock.sea_envelope_meters;
+    let on_water = flock.on_water;
 
     for (index, bird) in flock.birds.iter_mut().enumerate() {
         bird.activity_seconds += step_seconds;
         let up = bird.up();
-        let sample = ground(bird.position.normalize());
-        let surface_radius = sample.map(|sample| sample.surface_radius_meters);
+        let sample = (world.ground)(up);
+        // The ground does not move, so it is sampled once where the bird starts
+        // the step. The sea does, so it is asked again wherever the bird ends
+        // up: over a steep sea the two can stand a metre apart.
+        let surface_at =
+            |direction: DVec3| sample.map(|sample| world.surface_radius(sample, direction));
 
         match bird.activity {
             BirdActivity::Walking => {
                 let separation = walking_separation(bird, index, &snapshot, up);
-                step_walking_bird(bird, step_seconds, surface_radius, up, intent, separation);
+                step_walking_bird(bird, step_seconds, &surface_at, up, intent, separation);
             }
             _ => {
-                let steering = flying_steering(
+                // Over water the cruise height is held above the flock's swell
+                // envelope, not above the water directly beneath.
+                let cruise_surface_radius = sample.map(|sample| match sample.water_depth_meters {
+                    Some(_) => sample.surface_radius_meters + sea_envelope_meters,
+                    None => sample.surface_radius_meters,
+                });
+                let landing_radius = if on_water { surface_at(up) } else { None };
+                let mut steering = flying_steering(
                     bird,
                     index,
                     &snapshot,
@@ -1136,11 +1237,20 @@ fn advance_flock(
                     anchor,
                     intent,
                     cruise_altitude_meters,
-                    surface_radius,
+                    cruise_surface_radius,
+                    landing_radius,
                     up,
                     wander_phase,
                 );
-                step_flying_bird(bird, step_seconds, steering, up, surface_radius);
+                // A landing bird is meant to meet the surface, so only the rest
+                // look out for water coming up at them.
+                if bird.activity != BirdActivity::Landing
+                    && let Some(sample) = sample
+                    && let Some(depth) = sample.water_depth_meters
+                {
+                    steering += sea_avoidance(bird, sample.surface_radius_meters, depth, world);
+                }
+                step_flying_bird(bird, step_seconds, steering, up, &surface_at);
             }
         }
     }
@@ -1149,11 +1259,7 @@ fn advance_flock(
 /// Carries a cruising flock's anchor along its heading and keeps it at the
 /// cruise altitude over whatever ground it is now above. A settled or settling
 /// flock's anchor is its landing ground, so it stays put.
-fn advance_anchor(
-    flock: &mut Flock,
-    step_seconds: f64,
-    ground: &dyn Fn(DVec3) -> Option<GroundSample>,
-) {
+fn advance_anchor(flock: &mut Flock, step_seconds: f64, world: World) {
     if !matches!(flock.intent, FlockIntent::Cruising | FlockIntent::Lifting) {
         return;
     }
@@ -1165,31 +1271,66 @@ fn advance_anchor(
         flock.drift = flat.normalize();
         flock.anchor += flock.drift * (FLOCK_DRIFT_METERS_PER_SECOND * step_seconds);
     }
-    if let Some(sample) = ground(flock.anchor.normalize()) {
-        flock.anchor = flock.anchor.normalize()
-            * (sample.surface_radius_meters + flock.cruise_altitude_meters);
+    let direction = flock.anchor.normalize();
+    if let Some(sample) = (world.ground)(direction) {
+        let decayed =
+            flock.sea_envelope_meters - SEA_ENVELOPE_DECAY_METERS_PER_SECOND * step_seconds;
+        let sea_envelope_meters = match sample.water_depth_meters {
+            Some(depth) => {
+                // A crest ahead lifts the envelope at once; once it has passed,
+                // the envelope sinks back slowly rather than into the trough.
+                let ahead = highest_water_ahead(
+                    flock.anchor,
+                    flock.drift * FLOCK_DRIFT_METERS_PER_SECOND,
+                    depth,
+                    world,
+                );
+                flock.sea_envelope_meters = ahead.max(decayed);
+                flock.sea_envelope_meters
+            }
+            None => {
+                flock.sea_envelope_meters = decayed.max(0.0);
+                0.0
+            }
+        };
+        flock.anchor = direction
+            * (sample.surface_radius_meters + sea_envelope_meters + flock.cruise_altitude_meters);
     }
 }
 
+/// The highest the sea will stand over the next few seconds at a point moving
+/// with `velocity`, in metres above sea level.
+fn highest_water_ahead(position: DVec3, velocity: DVec3, depth: f64, world: World) -> f64 {
+    SEA_ENVELOPE_LOOKAHEAD_SECONDS
+        .iter()
+        .map(|&seconds| {
+            (world.sea)(
+                (position + velocity * seconds).normalize(),
+                world.time + seconds,
+                depth,
+            )
+        })
+        .fold(f64::NEG_INFINITY, f64::max)
+}
+
 /// Flock-level decisions: when to come down, how long to stay, when to leave.
-fn update_intent(
-    flock: &mut Flock,
-    camera_local: DVec3,
-    ground: &dyn Fn(DVec3) -> Option<GroundSample>,
-) {
+fn update_intent(flock: &mut Flock, camera_local: DVec3, world: World) {
     let centroid = flock.centroid();
     let startled = centroid.distance(camera_local) < STARTLE_RADIUS_METERS;
 
     match flock.intent {
         FlockIntent::Cruising => {
             if flock.intent_seconds >= flock.intent_limit_seconds && !startled {
-                // Only commit to a landing if there is somewhere to land.
+                // Only commit to a landing if there is somewhere to land:
+                // walkable ground, or water to sit on. A flock over the sea
+                // rafts on it the way one over a field comes down in it.
                 let direction = centroid.normalize();
-                if let Some(sample) = ground(direction)
-                    && sample.walkable
-                    && sample.slope_radians <= MAX_LANDING_SLOPE_RADIANS
+                if let Some(sample) = (world.ground)(direction)
+                    && (sample.water_depth_meters.is_some()
+                        || (sample.walkable && sample.slope_radians <= MAX_LANDING_SLOPE_RADIANS))
                 {
                     flock.anchor = direction * sample.surface_radius_meters;
+                    flock.on_water = sample.water_depth_meters.is_some();
                     flock.intent = FlockIntent::Settling;
                     flock.intent_seconds = 0.0;
                     flock.intent_limit_seconds = flock.rng.range(8.0, 16.0);
@@ -1263,6 +1404,7 @@ fn flying_steering(
     intent: FlockIntent,
     cruise_altitude_meters: f64,
     surface_radius: Option<f64>,
+    landing_radius: Option<f64>,
     up: DVec3,
     wander_phase: f64,
 ) -> DVec3 {
@@ -1306,6 +1448,8 @@ fn flying_steering(
         FlockIntent::Settling => {
             // Aim at this bird's own patch of the landing ground and sink.
             let target = anchor + bird.landing_offset;
+            // Settling on water, each bird aims at the surface under it now.
+            let target = landing_radius.map_or(target, |radius| target.normalize() * radius);
             steering += (target - bird.position).normalize_or_zero() * 3.0;
             steering -= up * 2.2;
         }
@@ -1350,12 +1494,35 @@ fn flying_steering(
     steering
 }
 
+/// Upward steering for a bird about to meet the sea.
+///
+/// The sea is a function of time, so this asks where the water *will* be at the
+/// point the bird is heading for rather than extrapolating from where it is.
+/// For each look-ahead it finds how far short of `SEA_CLEARANCE_METERS` the
+/// bird's present track would leave it, and the constant acceleration that
+/// makes that up in the time available, `2 * shortfall / t^2`. The most
+/// demanding look-ahead wins.
+fn sea_avoidance(bird: &Bird, sea_level_radius: f64, depth: f64, world: World) -> DVec3 {
+    let mut demand: f64 = 0.0;
+    for seconds in SEA_LOOKAHEAD_SECONDS {
+        let ahead = bird.position + bird.velocity * seconds;
+        let water = (world.sea)(ahead.normalize(), world.time + seconds, depth);
+        let shortfall = water + SEA_CLEARANCE_METERS - (ahead.length() - sea_level_radius);
+        if shortfall > 0.0 {
+            demand = demand.max(2.0 * shortfall / (seconds * seconds));
+        }
+    }
+    bird.up() * demand.min(SEA_AVOIDANCE_MAX_ACCELERATION)
+}
+
+/// `surface_at` is the radius of whatever is under a direction this step:
+/// ground, or the sea as it now stands.
 fn step_flying_bird(
     bird: &mut Bird,
     step_seconds: f64,
     steering: DVec3,
     up: DVec3,
-    surface_radius: Option<f64>,
+    surface_at: &dyn Fn(DVec3) -> Option<f64>,
 ) {
     bird.velocity += limit(steering, 26.0) * step_seconds;
 
@@ -1380,7 +1547,7 @@ fn step_flying_bird(
 
     bird.position += bird.velocity * step_seconds;
 
-    if let Some(surface_radius) = surface_radius {
+    if let Some(surface_radius) = surface_at(bird.position.normalize()) {
         let altitude = bird.position.length() - surface_radius;
         match bird.activity {
             BirdActivity::Landing => {
@@ -1403,8 +1570,10 @@ fn step_flying_bird(
                 }
             }
             _ => {
-                // Never let the flocking rules fly a bird into a hillside.
-                let floor = surface_radius + 2.0;
+                // Never let the flocking rules fly a bird into a hillside, or a
+                // crest the look-ahead could not outclimb swallow it: the water
+                // lifts the bird instead, and it flies on.
+                let floor = surface_radius + FLIGHT_FLOOR_METERS;
                 if bird.position.length() < floor {
                     bird.position = bird.position.normalize() * floor;
                     let into_ground = bird.velocity.dot(up).min(0.0);
@@ -1490,10 +1659,13 @@ fn walking_separation(bird: &Bird, index: usize, snapshot: &[(DVec3, DVec3)], up
     push * WALK_SEPARATION_STRENGTH
 }
 
+/// Walking on ground, or sitting on the sea: the same slow drift either way,
+/// held on whatever `surface_at` says is under the bird now, so a bird on the
+/// water rides the swell up and down.
 fn step_walking_bird(
     bird: &mut Bird,
     step_seconds: f64,
-    surface_radius: Option<f64>,
+    surface_at: &dyn Fn(DVec3) -> Option<f64>,
     up: DVec3,
     intent: FlockIntent,
     separation: DVec3,
@@ -1502,6 +1674,14 @@ fn step_walking_bird(
         bird.activity = BirdActivity::TakingOff;
         bird.activity_seconds = 0.0;
         bird.velocity = up * 6.0 + bird.velocity.normalize_or_zero() * 3.0;
+        // A bird leaving the sea leaves from where the water is now, which a
+        // rising swell may have carried above where it sat last step.
+        if let Some(surface_radius) = surface_at(bird.position.normalize()) {
+            let seat = surface_radius + FOOT_CLEARANCE_METERS;
+            if bird.position.length() < seat {
+                bird.position = bird.position.normalize() * seat;
+            }
+        }
         return;
     }
 
@@ -1519,7 +1699,7 @@ fn step_walking_bird(
     );
     bird.position += bird.velocity * step_seconds;
 
-    if let Some(surface_radius) = surface_radius {
+    if let Some(surface_radius) = surface_at(bird.position.normalize()) {
         bird.position = bird.position.normalize() * (surface_radius + FOOT_CLEARANCE_METERS);
     }
     // Wings are folded: the phase holds rather than winding on.
@@ -1754,6 +1934,7 @@ mod tests {
                 surface_radius_meters: radius,
                 slope_radians: 0.0,
                 walkable: true,
+                water_depth_meters: None,
             })
         }
     }
@@ -1888,40 +2069,261 @@ mod tests {
         }
     }
 
-    #[test]
-    fn birds_fly_over_water_but_never_stand_on_it() {
-        let radius = 4_000_000.0;
-        let camera = camera_at(radius + 2.0);
-        // Open water: resolvable, so a flock can be over it, but never
-        // somewhere a bird could put its feet down.
-        let open_water = |_direction: DVec3| {
+    const SEA_TEST_RADIUS: f64 = 4_000_000.0;
+
+    /// Open water all the way: resolvable, never walkable, 4km deep.
+    fn open_water(radius: f64) -> impl Fn(DVec3) -> Option<GroundSample> {
+        move |_direction| {
             Some(GroundSample {
                 surface_radius_meters: radius,
                 slope_radians: 0.0,
                 walkable: false,
+                water_depth_meters: Some(4000.0),
             })
-        };
+        }
+    }
+
+    /// A sea the birds cannot simply outfly: two crossing 30m swells on the
+    /// deep-water dispersion relation, whose surface rises at up to about 31m/s
+    /// against a 17m/s top speed. Synthetic rather than `ocean`'s own, so these
+    /// tests do not move whenever the ocean is retuned.
+    fn storm_sea(radius: f64) -> impl Fn(DVec3, f64, f64) -> f64 {
+        move |direction, time, _depth| {
+            let swell = |axis: DVec3, wavelength: f64| {
+                let wave_number = std::f64::consts::TAU / wavelength;
+                let frequency = (BANK_GRAVITY_METERS_PER_SECOND_SQUARED * wave_number).sqrt();
+                30.0 * (wave_number * direction.dot(axis.normalize()) * radius - frequency * time)
+                    .sin()
+            };
+            swell(DVec3::X, 300.0) + swell(DVec3::new(0.3, 1.0, 0.0), 180.0)
+        }
+    }
+
+    /// A long, slow swell like the ocean's own 1400m ones: gentle enough that
+    /// nothing is ever in danger, and slow enough that a flock holding its
+    /// height above the water directly beneath would visibly ride up and down
+    /// it. The storm sea is too quick for that to show.
+    fn long_swell_sea(radius: f64) -> impl Fn(DVec3, f64, f64) -> f64 {
+        move |direction, time, _depth| {
+            let wave_number = std::f64::consts::TAU / 1400.0;
+            let frequency = (BANK_GRAVITY_METERS_PER_SECOND_SQUARED * wave_number).sqrt();
+            25.0 * (wave_number * direction.dot(DVec3::X) * radius - frequency * time).sin()
+        }
+    }
+
+    /// Flies flocks over open water on `sea` and shows `visit` every bird after
+    /// every step, with its altitude above sea level and the height of the
+    /// water under it at that same instant.
+    fn over_sea(
+        sea: &dyn Fn(DVec3, f64, f64) -> f64,
+        seconds: f64,
+        mut visit: impl FnMut(&Flock, &Bird, f64, f64),
+    ) {
+        let camera = camera_at(SEA_TEST_RADIUS + 2.0);
+        let ground = open_water(SEA_TEST_RADIUS);
         let mut flocks = BirdFlocks::new(3);
         let mut time = 0.0;
-        while time < 200.0 {
-            time += 0.1;
-            flocks.advance(time, camera, &open_water);
-            assert!(
-                flocks.birds().all(|bird| !bird.is_grounded()),
-                "a bird stood on open water at {time:.1}s"
-            );
+        while time < seconds {
+            time += BIRD_FIXED_STEP_SECONDS;
+            flocks.advance_over_sea(time, camera, &ground, sea);
+            let now = flocks.simulated_seconds;
+            for flock in flocks.flocks() {
+                for bird in flock.birds() {
+                    let water = sea(bird.position.normalize(), now, 4000.0);
+                    visit(flock, bird, bird.position.length() - SEA_TEST_RADIUS, water);
+                }
+            }
         }
+    }
+
+    fn over_a_storm_sea(seconds: f64, visit: impl FnMut(&Flock, &Bird, f64, f64)) {
+        over_sea(&storm_sea(SEA_TEST_RADIUS), seconds, visit);
+    }
+
+    #[test]
+    fn birds_over_a_storm_sea_are_never_under_it() {
+        let mut flying_steps = 0;
+        over_a_storm_sea(300.0, |flock, bird, altitude, water| {
+            let clearance = altitude - water;
+            match bird.activity {
+                BirdActivity::Walking => {
+                    // Sitting on the water, wherever the water now is.
+                    assert!(
+                        (clearance - FOOT_CLEARANCE_METERS).abs() < 1.0e-6,
+                        "a bird sitting on the sea was {clearance}m above it"
+                    );
+                    // And only because its flock chose to. Brushing a crest in
+                    // flight lifts a bird; it does not put it down.
+                    assert!(
+                        matches!(flock.intent, FlockIntent::Settling | FlockIntent::Grounded),
+                        "a bird was sitting on the sea in a flock that was {:?}",
+                        flock.intent
+                    );
+                }
+                BirdActivity::Flying | BirdActivity::TakingOff if bird.activity_seconds > 0.0 => {
+                    flying_steps += 1;
+                    assert!(
+                        clearance >= FLIGHT_FLOOR_METERS - 1.0e-6,
+                        "a flying bird was only {clearance}m above the sea"
+                    );
+                }
+                _ => assert!(
+                    clearance >= -1.0e-6,
+                    "a {:?} bird was {}m under the sea",
+                    bird.activity,
+                    -clearance
+                ),
+            }
+        });
         assert!(
-            flocks.flock_count() > 0,
-            "no flock over water at all, which is what emptied a beach demo"
+            flying_steps > 100_000,
+            "only {flying_steps} flying bird-steps, which is not a test of the sea"
         );
 
         // Unresolved terrain is still declined rather than guessed at: without
         // a surface radius the flock has no altitude to hold.
         let unloaded = |_direction: DVec3| None;
         let mut flocks = BirdFlocks::new(3);
-        flocks.advance(2.0, camera, &unloaded);
+        flocks.advance_over_sea(
+            2.0,
+            camera_at(SEA_TEST_RADIUS + 2.0),
+            &unloaded,
+            &storm_sea(SEA_TEST_RADIUS),
+        );
         assert_eq!(flocks.flock_count(), 0);
+    }
+
+    #[test]
+    fn a_flock_rafts_on_the_sea_and_rides_the_swell() {
+        // An empty sea was the old failure: a beach demo came back with no
+        // birds because none could exist over water. Now they can sit on it.
+        let (mut floating_steps, mut lowest, mut highest) = (0, f64::INFINITY, f64::NEG_INFINITY);
+        over_a_storm_sea(300.0, |_, bird, altitude, _| {
+            if bird.activity == BirdActivity::Walking {
+                floating_steps += 1;
+                lowest = lowest.min(altitude);
+                highest = highest.max(altitude);
+            }
+        });
+        assert!(
+            floating_steps > 10_000,
+            "only {floating_steps} bird-steps on the water, so no flock really rafted"
+        );
+        // The storm sea spans up to 120m from trough to crest, so a bird sitting
+        // on it rises and falls with it rather than holding one radius.
+        assert!(
+            highest - lowest > 30.0,
+            "birds on the water only moved through {}m",
+            highest - lowest
+        );
+    }
+
+    #[test]
+    fn a_bird_climbs_before_a_crest_it_can_outfly_reaches_it() {
+        // The floor guarantees no bird is ever under the water, but a bird the
+        // floor has to hold up is being shoved along by a wave it never saw. A
+        // crest that rises more slowly than a bird can climb should never get
+        // that close: the bird should see it coming and go up first.
+        let radius = SEA_TEST_RADIUS;
+        let ground = open_water(radius);
+        // One 300m swell, 30m high, rising at up to 13.6m/s under a bird flying
+        // across it. The water here falls to a trough and then climbs through
+        // the bird's height about seven seconds in.
+        let sea = |direction: DVec3, time: f64, _depth: f64| {
+            let wave_number = std::f64::consts::TAU / 300.0;
+            let frequency = (BANK_GRAVITY_METERS_PER_SECOND_SQUARED * wave_number).sqrt();
+            30.0 * (wave_number * direction.dot(DVec3::X) * radius - frequency * time).sin()
+        };
+        let position = DVec3::Z * (radius + 8.0);
+        let velocity = DVec3::Y * CRUISE_SPEED_METERS_PER_SECOND;
+        let mut bird = Bird {
+            id: 1,
+            position,
+            velocity,
+            activity: BirdActivity::Flying,
+            wing_phase: 0.0,
+            effort: 0.5,
+            glide: 0.0,
+            bank_radians: 0.0,
+            previous_position: position,
+            previous_velocity: velocity,
+            previous_wing_phase: 0.0,
+            previous_bank_radians: 0.0,
+            previous_glide: 0.0,
+            previous_effort: 0.5,
+            landing_offset: DVec3::ZERO,
+            activity_seconds: 1.0,
+        };
+        // Nothing else steers it, so a bird that does not look ahead flies
+        // level straight into the crest.
+        let (mut time, mut lowest) = (0.0, f64::INFINITY);
+        while time < 12.0 {
+            time += BIRD_FIXED_STEP_SECONDS;
+            let world = World {
+                ground: &ground,
+                sea: &sea,
+                time,
+            };
+            let up = bird.up();
+            let sample = ground(up);
+            let surface_at =
+                |direction: DVec3| sample.map(|sample| world.surface_radius(sample, direction));
+            let steering = sea_avoidance(&bird, radius, 4000.0, world);
+            step_flying_bird(
+                &mut bird,
+                BIRD_FIXED_STEP_SECONDS,
+                steering,
+                up,
+                &surface_at,
+            );
+            let clearance =
+                bird.position.length() - radius - sea(bird.position.normalize(), time, 4000.0);
+            lowest = lowest.min(clearance);
+        }
+        assert!(
+            lowest > FLIGHT_FLOOR_METERS + 1.0,
+            "the bird came within {lowest}m of a crest it could have outclimbed"
+        );
+    }
+
+    #[test]
+    fn a_cruising_flock_holds_its_height_over_the_swell() {
+        // Held above the water directly beneath, a flock rides up and down
+        // every long swell: measured on the game's own ocean, that took the
+        // correlation between a cruising bird's height and the water under it
+        // from 0.29 to 0.73. Held above the envelope, its height should barely
+        // follow the water at all.
+        let (mut altitudes, mut waters) = (Vec::new(), Vec::new());
+        over_sea(
+            &long_swell_sea(SEA_TEST_RADIUS),
+            300.0,
+            |flock, bird, altitude, water| {
+                if flock.intent == FlockIntent::Cruising && bird.activity == BirdActivity::Flying {
+                    altitudes.push(altitude);
+                    waters.push(water);
+                }
+            },
+        );
+        let mean = |values: &[f64]| values.iter().sum::<f64>() / values.len() as f64;
+        let (altitude_mean, water_mean) = (mean(&altitudes), mean(&waters));
+        let covariance = altitudes
+            .iter()
+            .zip(&waters)
+            .map(|(altitude, water)| (altitude - altitude_mean) * (water - water_mean))
+            .sum::<f64>();
+        let spread = |values: &[f64], centre: f64| {
+            values
+                .iter()
+                .map(|value| (value - centre).powi(2))
+                .sum::<f64>()
+                .sqrt()
+        };
+        let correlation =
+            covariance / (spread(&altitudes, altitude_mean) * spread(&waters, water_mean));
+        assert!(
+            correlation < 0.5,
+            "cruising height followed the water under it: correlation {correlation}"
+        );
     }
 
     #[test]
@@ -2550,7 +2952,7 @@ mod tests {
                 let sideways = up.cross(heading);
                 let speed = bird.velocity.length();
                 let steering = sideways * (turn_per_second * speed);
-                step_flying_bird(&mut bird, step, steering, up, Some(radius));
+                step_flying_bird(&mut bird, step, steering, up, &|_| Some(radius));
             }
             bird
         };
@@ -2603,13 +3005,9 @@ mod tests {
         let heading = settling.velocity.normalize();
         let sideways = up.cross(heading);
         let speed = settling.velocity.length();
-        step_flying_bird(
-            &mut settling,
-            step,
-            sideways * (0.35 * speed),
-            up,
-            Some(radius),
-        );
+        step_flying_bird(&mut settling, step, sideways * (0.35 * speed), up, &|_| {
+            Some(radius)
+        });
         assert!(
             settling.bank_radians.abs() < settled.abs() * 0.5,
             "one step delivered {} of an eventual {settled}, which is a snap not a roll",
@@ -2623,7 +3021,7 @@ mod tests {
         step_walking_bird(
             &mut walker,
             step,
-            Some(radius),
+            &|_| Some(radius),
             up,
             FlockIntent::Grounded,
             DVec3::ZERO,
@@ -2681,7 +3079,9 @@ mod tests {
                 bird.previous_glide = bird.glide;
                 let before = bird.wing_phase;
                 let heading = bird.velocity.normalize();
-                step_flying_bird(&mut bird, step, heading * along_track, up, Some(radius));
+                step_flying_bird(&mut bird, step, heading * along_track, up, &|_| {
+                    Some(radius)
+                });
                 phase_advanced += (bird.wing_phase - before).rem_euclid(1.0);
             }
             (bird, phase_advanced)
@@ -2743,7 +3143,7 @@ mod tests {
                 bird.previous_velocity = bird.velocity;
                 bird.previous_glide = bird.glide;
                 bird.previous_effort = bird.effort;
-                step_flying_bird(&mut bird, step, DVec3::ZERO, up, Some(radius));
+                step_flying_bird(&mut bird, step, DVec3::ZERO, up, &|_| Some(radius));
                 bird.velocity = bird.velocity.normalize() * CRUISE_SPEED_METERS_PER_SECOND;
             }
             bird
@@ -2783,7 +3183,7 @@ mod tests {
         // left this test green.
         jumpy.previous_velocity = jumpy.velocity;
         let heading = jumpy.velocity.normalize();
-        step_flying_bird(&mut jumpy, step, heading * -3.0, up, Some(radius));
+        step_flying_bird(&mut jumpy, step, heading * -3.0, up, &|_| Some(radius));
         assert!(
             jumpy.glide < 0.35,
             "one step took the wings from beating to {} set",
@@ -2796,7 +3196,7 @@ mod tests {
         step_walking_bird(
             &mut walker,
             step,
-            Some(radius),
+            &|_| Some(radius),
             up,
             FlockIntent::Grounded,
             DVec3::ZERO,
