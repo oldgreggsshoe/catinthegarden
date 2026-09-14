@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Birds, 14 September: the spawner no longer hangs the game with the eye far above the spawn shell (30,005 spawn attempts in one step before; `tour_mountains` stuck past 240s, now passes). Landing birds arrive slowly and touch down (6.6% of an approach within 1m, from 27.7%). **N** goes to the nearest birds down on the ground or water. The ride heading no longer snaps when a flock lands. Flock avoidance radius 90m to 140m: close passes between flocks that cannot merge fell from 38 to 17 of 100 seeds, not to zero.
+
 - Weather-driven sea response: normal launches now follow the camera region's actual filtered storm field instead of the ten-minute loop. A 120s critically damped response preserves envelope value/rate through weather changes and retains ship-substep history; fixed wind/storm overrides remain, with the old loop available as CATINGARDEN_OCEAN_STORM=cycle. Real-weather replay and continuity/velocity tests pass; directional weather spectra and fetch remain unimplemented.
 
 - Sea-state variety: normal launches now cycle smoothly calm→storm→calm over ten scaled ocean minutes; startup wind selects a fixed speed-linked intensity, and CATINGARDEN_OCEAN_STORM overrides interactive intensity. Replays honor their existing overrides. CPU buoyancy includes envelope velocity; crest transmission follows calibrated calm/mid/storm anchors. Three matched GPU replays and 144 parity cases pass; storm capture is unchanged. Live weather/fetch coupling and dynamic wind remain outstanding.

@@ -281,6 +281,9 @@ const SURFACE_CAMERA_MAX_BACKLOG_SECONDS: f64 = 0.25;
 const BIRD_CAM_BEHIND_METERS: f64 = 2.4;
 const BIRD_CAM_ABOVE_METERS: f64 = 0.7;
 const BIRD_CAM_AHEAD_METERS: f64 = 8.0;
+/// How high N puts the eye in low flight: enough to see birds on the water over
+/// a near swell, low enough to still be looking at them rather than down.
+const BIRD_WATCH_FLIGHT_HEIGHT_METERS: f64 = 4.0;
 
 const SHIP_VISIBLE_DISTANCE_METERS: f64 = 30_000.0;
 const PLANET_ROTATION_SCALE_STEP: f64 = 2.0;
@@ -1033,6 +1036,8 @@ struct State {
     /// flock to ride, and the overlay reports both so the difference is visible
     /// from inside the game instead of only in a log.
     bird_camera_riding: bool,
+    /// What N last did, for the overlay: where it went, or why it could not.
+    bird_watch_note: String,
     flock_marker: flock_marker::FlockMarkerRenderer,
     ship_sim_time_seconds: f64,
     sun: sun::SunRenderer,
@@ -1466,6 +1471,7 @@ impl State {
                 .is_ok_and(|value| !matches!(value.trim(), "" | "0" | "false" | "off")),
             bird_camera_target: None,
             bird_camera_riding: false,
+            bird_watch_note: "N goes to the nearest birds down on the ground or water".to_string(),
             flock_marker,
             ship_sim_time_seconds: 0.0,
             sun,
@@ -2539,6 +2545,135 @@ impl State {
         self.bird_camera_target = None;
     }
 
+    /// N: go and watch the nearest birds that are down on the ground or sitting
+    /// on the water.
+    ///
+    /// The eye is put down `BIRD_WATCH_STANDOFF_METERS` from them, on the side it
+    /// came from and facing them. Not closer: a settled flock leaves the moment
+    /// anything comes inside its startle radius, so arriving on top of it would
+    /// scatter exactly the birds this is for. Walking or swimming in from there
+    /// puts them up the way it should.
+    ///
+    /// Surface walking stays on the surface and low flight stays a few metres
+    /// up. From orbit there is nothing to go to, because flocks only live around
+    /// an eye near the ground.
+    fn go_to_settled_birds(&mut self) {
+        if self.scenario.is_some() {
+            return;
+        }
+        self.mark_hud_dirty();
+        if self.camera_mode == CameraMode::Orbit {
+            self.bird_watch_note = "no birds from orbit -- F4 to fly low first".to_string();
+            return;
+        }
+        let sim_time = self.interactive_sim_time();
+        let planet_rotation_radians =
+            planet::planet_rotation_radians(self.interactive_planet_rotation_time(sim_time));
+        let ocean_time_seconds = self.scaled_clock_seconds;
+        let from = self
+            .camera
+            .planet_frame_world_position(planet_rotation_radians);
+        let Some(settled) = self.birds.nearest_settled_flock(from) else {
+            self.bird_watch_note =
+                "no birds down nearby yet -- flocks land a while after F10 starts time".to_string();
+            return;
+        };
+        let (standpoint, _) = birds::watch_standpoint(settled.centre, from);
+        // The ride writes the eye after everything else, so it has to stop or it
+        // would put the eye straight back on a bird.
+        self.bird_camera_enabled = false;
+        self.bird_camera_target = None;
+        let placed = if self.camera_mode == CameraMode::Surface {
+            let prior_altitude =
+                self.flight_local_position.length() - planet::planet_radius_meters();
+            self.settle_player_on_surface(standpoint, prior_altitude, ocean_time_seconds)
+        } else {
+            self.flight_surface_height_meters = self
+                .terrain
+                .prepare_flight_start_surface_height_meters(
+                    standpoint,
+                    BIRD_WATCH_FLIGHT_HEIGHT_METERS,
+                )
+                .unwrap_or(self.flight_surface_height_meters);
+            self.flight_local_position = standpoint
+                * (planet::planet_radius_meters()
+                    + self.flight_surface_height_meters
+                    + BIRD_WATCH_FLIGHT_HEIGHT_METERS);
+            self.flight_speed = FlightSpeedState::default();
+            self.flight_travel_direction = glam::DVec3::ZERO;
+            true
+        };
+        if !placed {
+            self.bird_watch_note = "the ground by those birds has not loaded yet".to_string();
+            return;
+        }
+        // Face the birds themselves rather than only their bearing, so the view
+        // dips to birds below the eye or lifts to birds up a slope.
+        let local_radial = self.flight_local_position.normalize();
+        let to_birds = (settled.centre - self.flight_local_position).normalize();
+        let level = to_birds - local_radial * to_birds.dot(local_radial);
+        if level.length_squared() > f64::EPSILON {
+            self.flight_local_tangent = level.normalize();
+        }
+        self.flight_look_yaw_radians = 0.0;
+        self.flight_look_pitch_radians = to_birds.dot(local_radial).clamp(-1.0, 1.0).asin();
+        if self.camera_mode == CameraMode::Surface {
+            self.sync_surface_camera_pose(planet_rotation_radians);
+        } else {
+            self.update_low_flight_camera(None, planet_rotation_radians, ocean_time_seconds);
+        }
+        self.previous_camera_world_position = self.camera.world_position();
+        self.camera_velocity_baseline_stale = true;
+        let distance_meters = (settled.centre - self.flight_local_position).length();
+        let surface = if settled.on_water { "water" } else { "ground" };
+        self.bird_watch_note = format!(
+            "watching {} birds on the {surface} from {distance_meters:.0}m",
+            settled.birds_down
+        );
+        tracing::info!(
+            birds_down = settled.birds_down,
+            on_water = settled.on_water,
+            distance_meters,
+            "bird watch"
+        );
+    }
+
+    /// Puts the surface body down at `local_radial`: standing on land, or
+    /// settled in the water at the height a swimmer floats. False if the ground
+    /// there cannot be resolved yet.
+    fn settle_player_on_surface(
+        &mut self,
+        local_radial: glam::DVec3,
+        prior_altitude: f64,
+        ocean_time_seconds: f64,
+    ) -> bool {
+        let _ = self
+            .terrain
+            .prepare_flight_start_surface_height_meters(local_radial, prior_altitude);
+        let Some(environment) =
+            self.surface_environment_at(local_radial, prior_altitude, ocean_time_seconds)
+        else {
+            return false;
+        };
+        let eye_altitude = if let Some((water_height, _)) = environment.water_surface {
+            self.surface_physics.settle_in_water();
+            if surface_camera::WATER_BOBBING_ENABLED {
+                water_height + surface_camera::equilibrium_eye_height_above_water_meters()
+            } else {
+                surface_camera::fixed_water_eye_altitude_meters(water_height)
+            }
+        } else {
+            self.surface_physics.settle_on_land();
+            environment.terrain_height_meters + surface_camera::HUMAN_EYE_HEIGHT_METERS
+        };
+        self.flight_local_position = local_radial * (planet::planet_radius_meters() + eye_altitude);
+        self.flight_surface_height_meters = environment.visible_surface_height_meters();
+        self.flight_speed = FlightSpeedState::default();
+        self.flight_travel_direction = glam::DVec3::ZERO;
+        self.surface_jump_requested = false;
+        true
+    }
+
     fn toggle_surface_camera_mode(&mut self) {
         if self.scenario.is_some() {
             return;
@@ -2557,31 +2692,10 @@ impl State {
                 let local_radial = self.flight_local_position.normalize();
                 let prior_altitude =
                     self.flight_local_position.length() - planet::planet_radius_meters();
-                let _ = self
-                    .terrain
-                    .prepare_flight_start_surface_height_meters(local_radial, prior_altitude);
-                let Some(environment) =
-                    self.surface_environment_at(local_radial, prior_altitude, ocean_time_seconds)
-                else {
+                if !self.settle_player_on_surface(local_radial, prior_altitude, ocean_time_seconds)
+                {
                     return;
-                };
-                let eye_altitude = if let Some((water_height, _)) = environment.water_surface {
-                    self.surface_physics.settle_in_water();
-                    if surface_camera::WATER_BOBBING_ENABLED {
-                        water_height + surface_camera::equilibrium_eye_height_above_water_meters()
-                    } else {
-                        surface_camera::fixed_water_eye_altitude_meters(water_height)
-                    }
-                } else {
-                    self.surface_physics.settle_on_land();
-                    environment.terrain_height_meters + surface_camera::HUMAN_EYE_HEIGHT_METERS
-                };
-                self.flight_local_position =
-                    local_radial * (planet::planet_radius_meters() + eye_altitude);
-                self.flight_surface_height_meters = environment.visible_surface_height_meters();
-                self.flight_speed = FlightSpeedState::default();
-                self.flight_travel_direction = glam::DVec3::ZERO;
-                self.surface_jump_requested = false;
+                }
                 self.camera_mode = CameraMode::Surface;
                 self.camera.set_vertical_fov_degrees_for_viewport(
                     LOW_FLIGHT_VERTICAL_FOV_DEGREES,
@@ -2958,6 +3072,7 @@ impl State {
             }
         };
         let flock_count = self.birds.flock_count();
+        let bird_watch = self.bird_watch_note.clone();
         let airborne_birds = self
             .birds
             .birds()
@@ -3200,8 +3315,9 @@ impl State {
                         ui.label(format!(
                             "Bird cam: {bird_camera}  |  {flock_count} flocks, {airborne_birds} airborne"
                         ));
+                        ui.label(format!("Bird watch: {bird_watch}"));
                         ui.label(
-                            "F: fullscreen  |  F3: overlay  |  , / .: time speed  |  F4: orbit/flight  |  G: surface camera  |  WASD: move  |  Space: jump/swim thrust  |  [ / ]: speed  |  F5: render path  |  O: triangle outlines  |  B: ride a bird  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
+                            "F: fullscreen  |  F3: overlay  |  , / .: time speed  |  F4: orbit/flight  |  G: surface camera  |  WASD: move  |  Space: jump/swim thrust  |  [ / ]: speed  |  F5: render path  |  O: triangle outlines  |  B: ride a bird  |  N: watch birds that are down  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
                         );
                         ui.label("Default: fullscreen, HUD hidden, auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc/Q: quit");
                     });
@@ -5117,6 +5233,14 @@ impl ApplicationHandler for App {
                 {
                     state.toggle_bird_camera();
                     state.mark_hud_dirty();
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && !event.repeat
+                        && event.physical_key == PhysicalKey::Code(KeyCode::KeyN) =>
+                {
+                    state.go_to_settled_birds();
                     window.request_redraw();
                 }
                 WindowEvent::KeyboardInput { event, .. }

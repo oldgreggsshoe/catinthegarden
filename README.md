@@ -59,6 +59,7 @@ automatically, so a fresh clone runs before it bakes.
 | `F12` | Screenshot |
 | `F` | Fullscreen |
 | `O` | Flat-triangle outlines |
+| `N` | Go and watch the nearest birds down on the ground or water, from just outside the range that would put them up |
 | `1`–`5` | Raymarch experiment toggles (3 is reserved but unimplemented) |
 | `6` | Auto exposure |
 

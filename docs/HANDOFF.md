@@ -44,15 +44,20 @@ and crest transmission is re-anchored on the storm sea the game actually
 renders. Ground cloud shadow is banded but no longer hard-posterized. See the
 newest sections.
 
-**Current birds (13 September):** flocking birds stream in around the camera,
-cruise, land, walk and take off again. Simulation in `birds`, GPU in
+**Current birds (14 September):** flocking birds stream in around the camera,
+cruise, land, walk and take off again, and over the sea they meet the real
+moving surface: they climb ahead of rising water, cruise over a swell envelope,
+and raft on the water lying along the wave. Simulation in `birds`, GPU in
 `birds_render`, drawn beside the ship in both render paths. **B** rides a bird
-in the nearest airborne flock and **B** again gives the eye back; the red
-reticle marks the nearest flock's centre regardless of depth. While riding,
-every player-camera writer stands down (`player_camera_is_suppressed`) -- not
-the physics, only the camera write -- because two of them run after the bird cam
-by design and were shattering the terrain into plates. Verified by counts and by
-eye in `bird_demo/1789327323-459268`; interactive **B** still needs a human.
+in the nearest airborne flock and **B** again gives the eye back; **N** goes to
+the nearest flock that is down on the ground or water and stands just outside
+the range that would put it up. While riding, every player-camera writer stands
+down (`player_camera_is_suppressed`) -- not the physics, only the camera write --
+because two of them run after the bird cam by design and were shattering the
+terrain into plates. The spawner used to hang the game, core pinned, whenever
+the eye was far above where flocks spawn; fixed 14 September, see the latest
+section. **B** was verified by counts and by eye in `bird_demo/1789327323-459268`;
+**N**, and birds sitting on the water, have not been seen in the game yet.
 
 **Forest beams removed (13 September):** the opt-in forest beam overlay and its
 whole supporting path are gone at the user's request, and **B** now belongs to
@@ -9824,3 +9829,137 @@ climbing bird from a level one because both have their wings out, so deleting th
 whole potential-energy term left it green. It asserts on effort against a
 level-flight reference now. Three mutations, three catches, only after fixing the
 test twice.
+
+## The bird spawner hung the game; birds land gently; N goes to them - 14 September 2026
+
+### A high eye hung the game, core pinned
+
+Ian, twice today: "the game froze the laptop again", and "i have to shut it down
+as soon as i can as things get very hot". Manual run `1789399608-7296` shows
+frames at a steady 43ms, then the log stops partway through a frame, straight
+after the eye moved about 5km in one frame at 32x flight speed.
+
+Flocks spawn 280-460m from the eye along the ground, but count toward the near
+population only within 620m of the eye in three dimensions.
+`spawn_missing_flocks` spawned until six flocks were near, giving up the
+furthest whenever ten existed. With the eye far above the spawn shell -- or on a
+valley floor under a hillside -- no new flock is ever near, so it spawned and
+gave up flocks until eight placements in a row happened to be crowded. A test
+at 1.5km: 30,005 spawn attempts in one bird step. The game runs up to 15 bird
+steps a frame, and each attempt there is a real terrain sample, plus sea queries
+over water. Present since the birds arrived in 98f528c.
+
+In the game, `tour_mountains` (eye at 35km, birds not skipped): the old build
+never got past its second frame, one core at 99.9%, killed at 240s
+(`test-runs/tour_mountains/1789400783-15251`); the fixed build passes in 48.6s
+(`1789401023-16741`) with no flocks, which is right that high. 48.6s is well over
+the 10-11s this replay took in August; with no birds in it that is not the
+spawner, and it was not looked into.
+
+Now a placement must lie within the near radius less a 20m margin (a new flock's
+centroid sits within 13.3m of where it is placed), and a step spawns at most one
+flock per missing one. Near the ground this draws the same random numbers in the
+same order: the one seeded failure in the bird suite read exactly 7.99m both
+before and after. `an_eye_out_of_reach_of_the_spawn_shell_does_not_spin_the_spawner`
+fails at 30,005 attempts on the old spawner and, with only the reach check
+removed, on six flocks that could never be drawn. The bounded loop is not caught
+separately -- with the reach check in place it cannot be reached -- and is there
+so the loop's termination no longer rests on geometry in two functions.
+
+### Landing birds arrive instead of skimming
+
+The fly-by 5e5acb0 wrote up as a separate defect. A landing bird was pulled at
+its patch with a constant force and a constant sink, so it reached the ground at
+cruising speed and skimmed the touchdown band until it slowed by chance. It now
+arrives: wanted velocity proportional to what is left to go, descent faster than
+approach, capped at 8m/s; neighbours push a landing bird aside but never up; and
+steering follows the bird's own activity, since a flock counts as grounded once
+half of it is down and a bird still landing after that was hauled back to cruise
+height. Flat ground, seeds 1-10, before and after:
+
+    time within 1m of the ground while landing   27.7%          6.6%
+    horizontal speed there, median / p90          6.3 / 10.6     1.7 / 3.5 m/s
+    landings abandoned                            22%            1% (43 of 4,466)
+    time to touch down, median / p90 / max        11.1/14.3/17   6.5/9.3/11.4 s
+    seeds of 30 with two birds within 0.1m        2              0 (closest 0.21m)
+
+Water gives the same. `birds_never_stand_inside_one_another` counts every pair
+again, in the air too. `a_landing_bird_touches_down_instead_of_skating_along_the_ground`
+had been left asserting only `low_share < 1.0`, which the old pull passes; it now
+holds limits, which the old pull fails at 39% of an approach within a metre: under 15% of
+an approach within a metre, a p90 under 5m/s there, a p90 under 11.5s to touch
+down, and under 6% abandoned (a guard only; the old pull's 1.2% passes it). With
+the 140m avoidance below it reads 7.2%, 3.5m/s and 9.2s over 1,416 touchdowns on
+the ground and 7.0%, 3.5m/s and 9.1s over 1,518 on water, none abandoned. The
+closest two birds come is 0.29m.
+
+### The ride's heading no longer snaps when a flock lands
+
+The bird cam pointed along the mean velocity of the flock's airborne birds. Once
+the last one landed there were none, and it fell back to the ridden bird's
+walking step: a 131.7 degree snap in one frame, and a flockmate in shot on only
+47.5% of frames while walking. Each flock now carries a ride heading that turns
+toward its birds' mean direction of travel by as much as the distance they
+covered warrants (3m to come round), so a standing flock keeps its heading.
+After: worst turn 0.71 degrees in a frame, a flockmate in shot on 99.9% of
+frames and 100% while walking. `velocity_at` and `heading_at` lost their last
+callers and are gone.
+
+### N: go and watch birds that are down
+
+`go_to_settled_birds` finds the nearest flock with birds on the ground or the
+water and puts the eye `BIRD_WATCH_STANDOFF_METERS` (the 34m startle radius plus
+11m) from them, on the side it came from and facing them; closer would put them
+up. Surface mode stays on the surface, floating if that is water; low flight is
+4m up; from orbit it says to fly low first. It stops the ride, which writes the
+eye last. The overlay's "Bird watch" line says what it did or why it could not.
+`watching_birds_that_are_down_finds_them_and_does_not_put_them_up` covers ground
+and water. Not tried in the game.
+
+### Flocks that cannot merge: a wider berth, and the test is a sample
+
+`flocks_that_cannot_merge_keep_out_of_each_other` failed once landing changed:
+7.99m against its 25m. The seeded simulation is not bit-identical between debug
+and release builds, and the same code read 20.92m in release, so pass or fail on
+a minimum over five seeds partly depends on the build profile. Every one of the
+worst close passes probed was head on: both anchors turn straight away at the
+avoidance radius, and the birds, still flying at each other, cannot follow in
+time. It was already there: HEAD's landing gave 12 of 30 seeds under 25m, the
+worst 4.50m.
+
+Release, 100 seeds, 300s each (30-seed sweep for the aside variants):
+
+    variant                                 under 25m   worst    mean closest
+    90m, as it was                          38/100      0.84m    34.5m
+    140m                                    17/100      7.53m    47.9m
+    spawn 80m from every flock, 90m         32/100      0.84m    35.5m   flockmates in shot fails
+    both                                    14/100      7.53m    48.5m   merges stop
+    steer aside as well, 0.5 / 1.0 / 2.0    9 / 5 / 9 of 30             2.0 stops merges
+
+140m is in. The bird suite passes in debug and release, and the debug 30-seed
+sweep reads 3 under 25m, the worst 18.22m. Close passes are not fixed: 17% of
+seeds still bring two such flocks within 25m at some point in 300s. Rewriting
+the steering line in a way that changes only rounding moved 15 of 100 to 17, so
+read these as rates. The spawn separation only asks whether the flock already
+there is mergeable, not whether the pair could merge; fixing that measured as
+barely helping and broke two other invariants, so it stays.
+
+### Validation
+
+On exactly this change -- HEAD plus the staged files, built in a separate
+worktree -- 501 app tests pass, 0 fail, 20 ignored, and
+`cargo clippy -p catinthegarden-app --all-targets` is clean. The working tree,
+which also carries Codex's uncommitted fetch diff, reads 504 passed and 3 failed:
+the two fetch tests drafted to fail on that diff, and `every_listed_scenario_loads`,
+which asserts 96 scenarios and finds the uncommitted `ocean_weather_dry_landing`
+as a 97th.
+
+Two earlier claims, corrected. 5e5acb0's "502 app tests pass" was counted on a
+tree carrying Codex's four uncommitted fetch tests: HEAD alone has 498
+non-ignored tests, and this adds three. Its "clippy clean" ran without
+`--all-targets`, which does not lint test code; one type-complexity warning was
+already there.
+
+Not in this change: Codex's uncommitted wind/fetch work (`ocean.rs`, `weather.rs`,
+one `main.rs` hunk, its AGENTS and handoff lines), the two fetch tests and the
+`ocean_weather_dry_landing` scenario drafted for that bug, and `crates.tar.gz`.

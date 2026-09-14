@@ -38,6 +38,10 @@ const MAX_NEAR_FLOCKS: usize = 6;
 /// Matches `birds_render`'s draw distance. A flock outside this is simulated
 /// but not drawn, so it does not count toward the near population.
 const FLOCK_NEAR_RADIUS_METERS: f64 = 620.0;
+/// How far inside that radius a new flock is placed. Its birds scatter up to 9m
+/// either way along the ground and 4m up or down from that point, so the
+/// flock's centroid is within 13.3m of it and still counts as inside.
+const FLOCK_SPAWN_REACH_MARGIN_METERS: f64 = 20.0;
 /// Bounds the total including those on their way out, so the instance buffer
 /// and the per-step cost both stay bounded.
 const MAX_FLOCKS: usize = 10;
@@ -76,7 +80,14 @@ const FLOCK_MERGE_ATTRACTION_STRENGTH: f64 = 0.35;
 /// came no closer than 19.77m centroid to centroid over five seeds and 300
 /// seconds, entirely by luck rather than by any rule. Raise the flock cap or
 /// tighten the spawn shell and it would have broken.
-const FLOCK_AVOIDANCE_METERS: f64 = 90.0;
+///
+/// 140m, not the 90m this started at. Two flocks meeting head on close at over
+/// 20m/s, and at 90m their anchors turned away with too little time for the
+/// birds, still flying at each other, to follow: over 100 seeds and 300 seconds
+/// 38 seeds brought two such flocks within 25m, the worst to 0.84m. At 140m it
+/// is 17, the worst 7.5m. Every close pass is chaotic enough that a bit of
+/// rounding moves which seeds hit one, so read those as rates, not as a list.
+const FLOCK_AVOIDANCE_METERS: f64 = 140.0;
 const FLOCK_AVOIDANCE_STRENGTH: f64 = 0.6;
 /// A new flock is not placed on top of one already there. Steering cannot undo
 /// a bad initial placement, and measurement showed that is the only thing that
@@ -104,6 +115,10 @@ const WANDER_STRENGTH: f64 = 1.4;
 /// resolves into anything. Spawn headings are biased across the camera, so
 /// flocks pass by and are then given up on the far side.
 const FLOCK_DRIFT_METERS_PER_SECOND: f64 = 7.5;
+/// Metres of travel over which a flock's ride heading comes round to a new
+/// direction. Distance rather than time, so a flock that slows to land or stands
+/// on the ground holds the heading it came in on.
+const FLOCK_HEADING_TURN_METERS: f64 = 3.0;
 
 const CRUISE_SPEED_METERS_PER_SECOND: f64 = 11.0;
 const MAX_SPEED_METERS_PER_SECOND: f64 = 17.0;
@@ -159,6 +174,31 @@ const FOOT_CLEARANCE_METERS: f64 = 0.10;
 const MAX_LANDING_SLOPE_RADIANS: f64 = 0.45;
 /// Come near a settled flock and it leaves, which is what birds do.
 const STARTLE_RADIUS_METERS: f64 = 34.0;
+/// How far from birds that are down `watch_standpoint` puts an eye: outside the
+/// startle radius with room to spare, because a flock watched from any closer
+/// leaves, and the flock's centre is not quite where its grounded birds are.
+pub const BIRD_WATCH_STANDOFF_METERS: f64 = STARTLE_RADIUS_METERS + 11.0;
+/// How a landing bird comes in to its patch. It wants to close at a speed that
+/// falls away with distance -- `LANDING_ARRIVAL_RATE_PER_SECOND` metres a second
+/// for every metre still to go, never more than the approach speed -- and
+/// steers toward that velocity, so it reaches the ground already slow enough to
+/// stand rather than skating along it until it happens to be.
+const LANDING_APPROACH_SPEED_METERS_PER_SECOND: f64 = 8.0;
+const LANDING_ARRIVAL_RATE_PER_SECOND: f64 = 0.8;
+/// The same, for the height still to lose. Faster than the approach across the
+/// ground, so a bird drops into the touchdown band while it is still slowing
+/// rather than hovering over its patch waiting for the last few centimetres.
+const LANDING_DESCENT_RATE_PER_SECOND: f64 = 1.5;
+const LANDING_STEERING_GAIN_PER_SECOND: f64 = 2.5;
+/// Where in the touchdown band the approach aims, so it ends in the band rather
+/// than in the ground.
+const LANDING_AIM_HEIGHT_METERS: f64 = 0.2;
+/// How much of the flock's alignment and cohesion a landing bird still answers
+/// to. Both keep a bird moving with its neighbours, which is right in the air
+/// and wrong over the last metres to its own patch. At full strength, before
+/// the descent rate above was added, 31% of landings were abandoned against 17%
+/// at this weight.
+const SETTLING_FLOCKING_WEIGHT: f64 = 0.3;
 
 /// How hard a bird banks into a turn, and how quickly the bank follows.
 ///
@@ -311,16 +351,6 @@ impl Bird {
         self.previous_position + (self.position - self.previous_position) * alpha
     }
 
-    /// The velocity to draw with, blended across the step like the position.
-    ///
-    /// Interpolating where a bird *is* but not where it is *pointing* leaves the
-    /// camera's orientation on the 30Hz staircase, and orientation is the half
-    /// that matters: a bird's own position moves centimetres between steps,
-    /// while a degree of yaw sweeps the whole horizon.
-    pub fn velocity_at(&self, alpha: f64) -> DVec3 {
-        self.previous_velocity + (self.velocity - self.previous_velocity) * alpha
-    }
-
     /// The up to draw with, blended across the step like everything else.
     pub fn surface_up_at(&self, alpha: f64) -> DVec3 {
         self.previous_surface_up
@@ -337,18 +367,6 @@ impl Bird {
     /// The roll to draw with, blended across the step like everything else.
     pub fn bank_at(&self, alpha: f64) -> f32 {
         self.previous_bank_radians + (self.bank_radians - self.previous_bank_radians) * alpha as f32
-    }
-
-    /// The heading to draw with, from the interpolated velocity.
-    pub fn heading_at(&self, alpha: f64, fallback: DVec3) -> DVec3 {
-        let up = self.position_at(alpha).normalize();
-        let velocity = self.velocity_at(alpha);
-        let flat = velocity - up * velocity.dot(up);
-        if flat.length_squared() > 1.0e-6 {
-            flat.normalize()
-        } else {
-            fallback
-        }
     }
 
     /// The wingbeat to draw, interpolated the short way round the cycle. The
@@ -382,6 +400,33 @@ impl Bird {
     }
 }
 
+/// Birds that are down on the ground or sitting on the water: where, how many,
+/// and which.
+#[derive(Clone, Copy, Debug)]
+pub struct SettledFlock {
+    /// Mean position of the birds that are down, in the planet frame.
+    pub centre: DVec3,
+    pub birds_down: usize,
+    pub on_water: bool,
+}
+
+/// Where to stand to watch birds that are down without putting them up:
+/// `BIRD_WATCH_STANDOFF_METERS` out from `centre` across the ground, on the side
+/// `from` is on, so the eye arrives facing them from the way it came. Returns
+/// the standpoint's direction from the planet centre, and the level heading
+/// from there toward the birds.
+pub fn watch_standpoint(centre: DVec3, from: DVec3) -> (DVec3, DVec3) {
+    let up = centre.normalize();
+    let toward_viewer = tangential(from - centre, up)
+        .try_normalize()
+        .unwrap_or_else(|| tangent_basis(up).0);
+    let standpoint = (centre + toward_viewer * BIRD_WATCH_STANDOFF_METERS).normalize();
+    let heading = tangential(centre - standpoint * centre.length(), standpoint)
+        .try_normalize()
+        .unwrap_or(-toward_viewer);
+    (standpoint, heading)
+}
+
 /// What the flock as a whole is doing. Birds land and leave together, with
 /// per-bird jitter, because a flock that decided individually reads as noise.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -404,6 +449,17 @@ pub struct Flock {
     anchor: DVec3,
     /// Tangential heading the cruising anchor travels along.
     drift: DVec3,
+    /// The flock's direction of travel as a ride camera sees it: the mean
+    /// velocity of its birds, followed at a rate that grows with their speed.
+    /// Never read by the simulation.
+    ///
+    /// Taken straight from the mean velocity of the birds still in the air, the
+    /// shot spun whenever a flock came down: with only a bird or two airborne
+    /// the mean is whatever those few are doing, and once the last one landed it
+    /// fell back to the ridden bird's own walking step -- measured, a 131.7
+    /// degree snap in one frame. Held here, a slowing flock keeps its heading.
+    ride_heading: DVec3,
+    previous_ride_heading: DVec3,
     /// The crest a cruising flock over water holds its height above, in metres
     /// above sea level. Rises at once to a crest ahead and sinks back slowly, so
     /// the flock clears the swell without riding each wave up and down.
@@ -443,17 +499,13 @@ impl Flock {
             / self.birds.len() as f64
     }
 
-    /// The flock's direction of travel, blended across the step.
-    fn mean_heading_at(&self, alpha: f64) -> Option<DVec3> {
-        let up = self.centroid_at(alpha).normalize();
-        let velocity: DVec3 = self
-            .birds
-            .iter()
-            .filter(|bird| !bird.is_grounded())
-            .map(|bird| bird.velocity_at(alpha))
-            .sum();
-        let flat = velocity - up * velocity.dot(up);
-        (flat.length() > 1e-6).then(|| flat.normalize())
+    /// The ride heading, blended across the step like everything else the camera
+    /// reads.
+    fn ride_heading_at(&self, alpha: f64) -> DVec3 {
+        self.previous_ride_heading
+            .lerp(self.ride_heading, alpha)
+            .try_normalize()
+            .unwrap_or(self.ride_heading)
     }
 
     /// The flock's own direction of travel: the mean of its flying birds'
@@ -771,9 +823,7 @@ impl BirdFlocks {
         // jerking whenever the flock turned. Averaged over the flock the
         // twitches cancel and what is left is the turn the flock is actually
         // making. The eye still sits behind this particular bird.
-        let flock_heading = flock
-            .mean_heading_at(alpha)
-            .unwrap_or_else(|| bird.heading_at(alpha, tangent_basis(up).0));
+        let flock_heading = flock.ride_heading_at(alpha);
         // Re-level it against *this* bird's up. The flock's heading is tangent
         // at the centroid, which is tens of metres away on a 4,000km sphere, so
         // it is very slightly out of this bird's horizontal plane -- enough to
@@ -808,6 +858,37 @@ impl BirdFlocks {
     /// points at nothing. Only the caller has the view basis to tell.
     pub fn flock_centroids(&self) -> impl Iterator<Item = DVec3> {
         self.flocks.iter().map(|flock| flock.centroid())
+    }
+
+    /// The nearest flock with birds down on the ground or sitting on the water,
+    /// measured from `from`. A flock still coming in counts once any of it is
+    /// down, so there is something to watch by the time the eye gets there.
+    pub fn nearest_settled_flock(&self, from: DVec3) -> Option<SettledFlock> {
+        self.flocks
+            .iter()
+            .filter_map(|flock| {
+                let down = flock.grounded_count();
+                if down == 0 {
+                    return None;
+                }
+                let centre = flock
+                    .birds
+                    .iter()
+                    .filter(|bird| bird.is_grounded())
+                    .map(|bird| bird.position)
+                    .sum::<DVec3>()
+                    / down as f64;
+                Some(SettledFlock {
+                    centre,
+                    birds_down: down,
+                    on_water: flock.on_water,
+                })
+            })
+            .min_by(|left, right| {
+                (left.centre - from)
+                    .length_squared()
+                    .total_cmp(&(right.centre - from).length_squared())
+            })
     }
 
     pub fn bird(&self, id: u64) -> Option<&Bird> {
@@ -857,6 +938,7 @@ impl BirdFlocks {
         while self.simulated_seconds + BIRD_FIXED_STEP_SECONDS <= target_seconds {
             self.simulated_seconds += BIRD_FIXED_STEP_SECONDS;
             for flock in &mut self.flocks {
+                flock.previous_ride_heading = flock.ride_heading;
                 for bird in &mut flock.birds {
                     bird.previous_position = bird.position;
                     bird.previous_velocity = bird.velocity;
@@ -1037,7 +1119,12 @@ impl BirdFlocks {
     }
 
     fn spawn_missing_flocks(&mut self, camera_local: DVec3, world: World) {
-        while self.near_flock_count(camera_local) < MAX_NEAR_FLOCKS {
+        // At most one spawn per missing flock. Spawning until the near count was
+        // met trusted every new flock to land in range; when none could, it
+        // spawned and gave up flocks until a crowded run of attempts stopped it,
+        // 30,000 of them in one step in a test, and the game stopped drawing.
+        let missing = MAX_NEAR_FLOCKS.saturating_sub(self.near_flock_count(camera_local));
+        for _ in 0..missing {
             if self.flocks.len() >= MAX_FLOCKS {
                 // Outbound stragglers had filled the cap and blocked the near
                 // top-up, which is the same empty sky by another route. Give up
@@ -1091,6 +1178,15 @@ impl BirdFlocks {
             });
             let anchor = anchor_direction
                 * (sample.surface_radius_meters + sea_envelope_meters + cruise_altitude_meters);
+            // Only a flock within drawing range counts toward the population
+            // being topped up, so one placed out of range fills nothing. With
+            // the eye far above the shell, or on a valley floor below a
+            // hillside, every placement is out of range.
+            if anchor.distance(camera_local)
+                > FLOCK_NEAR_RADIUS_METERS - FLOCK_SPAWN_REACH_MARGIN_METERS
+            {
+                continue;
+            }
             // Crowding a flock this one could merge with is fine; crowding any
             // other is what put two flocks 19.77m apart on their first step.
             let crowded = self.flocks.iter().any(|flock| {
@@ -1193,6 +1289,8 @@ impl BirdFlocks {
             cruise_altitude_meters,
             anchor,
             drift,
+            ride_heading: heading,
+            previous_ride_heading: heading,
             sea_envelope_meters,
             on_water: false,
             wander_phase: rng.range(0.0, std::f64::consts::TAU),
@@ -1202,6 +1300,11 @@ impl BirdFlocks {
 }
 
 fn advance_flock(flock: &mut Flock, step_seconds: f64, camera_local: DVec3, world: World) {
+    advance_flock_birds(flock, step_seconds, camera_local, world);
+    follow_ride_heading(flock, step_seconds);
+}
+
+fn advance_flock_birds(flock: &mut Flock, step_seconds: f64, camera_local: DVec3, world: World) {
     flock.intent_seconds += step_seconds;
     flock.wander_phase += step_seconds * 0.6;
     update_intent(flock, camera_local, world);
@@ -1297,6 +1400,28 @@ fn advance_flock(flock: &mut Flock, step_seconds: f64, camera_local: DVec3, worl
             .lerp(target_up, response)
             .try_normalize()
             .unwrap_or(target_up);
+    }
+}
+
+/// Follows a flock's ride heading toward its birds' mean direction of travel, by
+/// as much as the distance they covered this step warrants.
+fn follow_ride_heading(flock: &mut Flock, step_seconds: f64) {
+    if flock.birds.is_empty() {
+        return;
+    }
+    let up = flock.centroid().normalize();
+    let mean_velocity =
+        flock.birds.iter().map(|bird| bird.velocity).sum::<DVec3>() / flock.birds.len() as f64;
+    let travel = tangential(mean_velocity, up);
+    let speed = travel.length();
+    let target = if speed > 1.0e-6 {
+        let response = 1.0 - (-step_seconds * speed / FLOCK_HEADING_TURN_METERS).exp();
+        flock.ride_heading.lerp(travel / speed, response)
+    } else {
+        flock.ride_heading
+    };
+    if let Some(levelled) = tangential(target, up).try_normalize() {
+        flock.ride_heading = levelled;
     }
 }
 
@@ -1491,24 +1616,54 @@ fn flying_steering(
         }
     }
 
+    let landing = bird.activity == BirdActivity::Landing;
+    // A bird coming down is only pushed aside by its neighbours, never up: the
+    // birds nearest a landing one are the ones already standing under it.
+    if landing {
+        separation -= up * separation.dot(up);
+    }
+    let flocking = if landing {
+        SETTLING_FLOCKING_WEIGHT
+    } else {
+        1.0
+    };
     let mut steering = separation * SEPARATION_STRENGTH;
     if neighbours > 0.0 {
-        steering +=
-            (alignment / neighbours - bird.velocity).normalize_or_zero() * ALIGNMENT_STRENGTH;
-        steering += (cohesion / neighbours - bird.position).normalize_or_zero() * COHESION_STRENGTH;
+        steering += (alignment / neighbours - bird.velocity).normalize_or_zero()
+            * (ALIGNMENT_STRENGTH * flocking);
+        steering += (cohesion / neighbours - bird.position).normalize_or_zero()
+            * (COHESION_STRENGTH * flocking);
     } else {
-        steering += (centroid - bird.position).normalize_or_zero() * COHESION_STRENGTH;
-        steering += average_velocity.normalize_or_zero() * ALIGNMENT_STRENGTH;
+        steering += (centroid - bird.position).normalize_or_zero() * (COHESION_STRENGTH * flocking);
+        steering += average_velocity.normalize_or_zero() * (ALIGNMENT_STRENGTH * flocking);
     }
 
     match intent {
-        FlockIntent::Settling => {
-            // Aim at this bird's own patch of the landing ground and sink.
+        // Steered by what the bird is doing, not by what its flock is doing. A
+        // flock counts as grounded once half of it is down, and a bird still
+        // coming in after that used to be steered as a cruising one -- hauled
+        // back up toward cruise height until the flock left and its landing
+        // was abandoned, which the slower arrival below made common.
+        _ if landing => {
+            // Come in to this bird's own patch of the landing ground and arrive
+            // slow enough to stand. A constant pull at the patch and a constant
+            // sink, which is what this was, brought birds down at cruising
+            // speed: over ten seeds a landing bird spent 28% of its approach
+            // within a metre of the ground at a median 6.3m/s, took 11s to
+            // touch down, and one landing in five was abandoned first. Coming
+            // in like this, 7% of it is spent within a metre, at a median
+            // 1.7m/s, touchdown takes 6.5s, and 1% are abandoned.
             let target = anchor + bird.landing_offset;
             // Settling on water, each bird aims at the surface under it now.
             let target = landing_radius.map_or(target, |radius| target.normalize() * radius);
-            steering += (target - bird.position).normalize_or_zero() * 3.0;
-            steering -= up * 2.2;
+            let to_go = target + target.normalize() * LANDING_AIM_HEIGHT_METERS - bird.position;
+            let height_to_go = up * to_go.dot(up);
+            let wanted = limit(
+                (to_go - height_to_go) * LANDING_ARRIVAL_RATE_PER_SECOND
+                    + height_to_go * LANDING_DESCENT_RATE_PER_SECOND,
+                LANDING_APPROACH_SPEED_METERS_PER_SECOND,
+            );
+            steering += (wanted - bird.velocity) * LANDING_STEERING_GAIN_PER_SECOND;
         }
         FlockIntent::Lifting => {
             steering += up * 7.0;
@@ -2009,6 +2164,9 @@ mod tests {
         DVec3::new(0.0, 0.0, 1.0) * radius
     }
 
+    /// A named ground to run the same check over.
+    type Surface<'a> = (&'a str, &'a dyn Fn(DVec3) -> Option<GroundSample>);
+
     #[test]
     fn flocks_spawn_out_of_view_and_retire_once_left_behind() {
         let radius = 4_000_000.0;
@@ -2038,6 +2196,56 @@ mod tests {
         assert_eq!(flocks.near_flock_count(moved), MAX_NEAR_FLOCKS);
         for flock in flocks.flocks() {
             assert!(flock.centroid().distance(moved) <= FLOCK_DESPAWN_METERS);
+        }
+    }
+
+    #[test]
+    fn an_eye_out_of_reach_of_the_spawn_shell_does_not_spin_the_spawner() {
+        // The game stopped drawing with a core pinned while Ian flew at 32x. A
+        // flock is spawned in a shell along the ground, but only counts toward
+        // the near population within `FLOCK_NEAR_RADIUS_METERS` of the eye. An
+        // eye far above the shell, or on a valley floor below a hillside of
+        // spawn points, could never fill it, and the top-up spawned flocks and
+        // gave them up again until a run of crowded attempts happened to stop
+        // it. Every spawn attempt asks for ground once, so asks count attempts.
+        let radius: f64 = 4_000_000.0;
+        for (label, eye_height, hillside) in [
+            ("flying 1.5km up", 1_500.0, 0.0),
+            (
+                "on a valley floor 700m below the hillside around it",
+                2.0,
+                700.0,
+            ),
+        ] {
+            let asks = std::cell::Cell::new(0usize);
+            let ground = |direction: DVec3| {
+                asks.set(asks.get() + 1);
+                let floor = direction.dot(DVec3::Z) > (200.0 / radius).cos();
+                // Declining past a cap stops a spinning spawner, so this fails
+                // instead of hanging the run.
+                (asks.get() <= 100_000).then_some(GroundSample {
+                    surface_radius_meters: if floor { radius } else { radius + hillside },
+                    slope_radians: 0.0,
+                    walkable: true,
+                    water_depth_meters: None,
+                })
+            };
+            let mut flocks = BirdFlocks::new(7);
+            flocks.advance(
+                BIRD_FIXED_STEP_SECONDS,
+                camera_at(radius + eye_height),
+                &ground,
+            );
+            assert!(
+                asks.get() <= MAX_NEAR_FLOCKS * FLOCK_SPAWN_ATTEMPTS,
+                "{label}: {} spawn attempts in one step",
+                asks.get()
+            );
+            assert_eq!(
+                flocks.flock_count(),
+                0,
+                "{label}: spawned flocks that could never be drawn"
+            );
         }
     }
 
@@ -2482,8 +2690,7 @@ mod tests {
         let calm = |_: DVec3, _: f64, _: f64| 0.0;
         let land = flat_ground(radius);
         let water = open_water(radius);
-        let surfaces: [(&str, &dyn Fn(DVec3) -> Option<GroundSample>); 2] =
-            [("ground", &land), ("water", &water)];
+        let surfaces: [Surface<'_>; 2] = [("ground", &land), ("water", &water)];
         for (label, ground) in surfaces {
             let mut flocks = BirdFlocks::new(11);
             let (mut time, mut leaving_steps, mut largest) = (0.0, 0, 0.0_f64);
@@ -2512,6 +2719,162 @@ mod tests {
                 largest <= limit,
                 "a bird leaving the {label} moved {largest}m in one step, past the {limit}m its top speed allows"
             );
+        }
+    }
+
+    #[test]
+    fn a_landing_bird_touches_down_instead_of_skating_along_the_ground() {
+        use std::collections::{HashMap, HashSet};
+        let radius = 4_000_000.0;
+        let camera = camera_at(radius + 2.0);
+        let calm = |_: DVec3, _: f64, _: f64| 0.0;
+        let land = flat_ground(radius);
+        let water = open_water(radius);
+        let surfaces: [Surface<'_>; 2] = [("ground", &land), ("water", &water)];
+        for (label, ground) in surfaces {
+            let (mut landing_steps, mut low_steps, mut low_speeds) = (0_u64, 0_u64, Vec::new());
+            let (mut durations, mut touchdowns, mut abandoned) = (Vec::new(), 0_u64, 0_u64);
+            for seed in [1_u64, 2, 3] {
+                let mut flocks = BirdFlocks::new(seed);
+                let mut started: HashMap<u64, f64> = HashMap::new();
+                let mut time = 0.0;
+                while time < 240.0 {
+                    time += BIRD_FIXED_STEP_SECONDS;
+                    flocks.advance_over_sea(time, camera, ground, &calm);
+                    let now = flocks.simulated_seconds;
+                    let mut alive = HashSet::new();
+                    for bird in flocks.birds() {
+                        alive.insert(bird.id);
+                        match bird.activity {
+                            BirdActivity::Landing => {
+                                started.entry(bird.id).or_insert(now);
+                                landing_steps += 1;
+                                if bird.position.length() - radius < 1.0 {
+                                    low_steps += 1;
+                                    low_speeds.push(tangential(bird.velocity, bird.up()).length());
+                                }
+                            }
+                            BirdActivity::Walking => {
+                                if let Some(start) = started.remove(&bird.id) {
+                                    durations.push(now - start);
+                                    touchdowns += 1;
+                                }
+                            }
+                            _ => {
+                                if started.remove(&bird.id).is_some() {
+                                    abandoned += 1;
+                                }
+                            }
+                        }
+                    }
+                    started.retain(|id, _| alive.contains(id));
+                }
+            }
+            low_speeds.sort_by(f64::total_cmp);
+            durations.sort_by(f64::total_cmp);
+            let p90 = |values: &[f64]| values[(values.len() - 1) * 9 / 10];
+            let low_share = low_steps as f64 / landing_steps as f64;
+            let abandoned_share = abandoned as f64 / (touchdowns + abandoned) as f64;
+            let (low_speed_p90, duration_p90) = (p90(&low_speeds), p90(&durations));
+            assert!(
+                touchdowns > 500,
+                "only {touchdowns} landings on the {label}"
+            );
+            // The constant pull this replaced, measured this way on the ground:
+            // 39% of an approach within a metre of it, at a p90 of 10m/s, and a
+            // p90 of 13s to touch down. Arriving, it is 7%, 3.5m/s and 9.2s.
+            // Abandonment does not tell the two apart here (1.2% against 0-1.9%)
+            // and is only guarded.
+            assert!(
+                low_share < 0.15,
+                "{label}: {:.0}% of landing spent within a metre of the surface",
+                low_share * 100.0
+            );
+            assert!(
+                low_speed_p90 < 5.0,
+                "{label}: skimming the surface at a p90 of {low_speed_p90:.1}m/s"
+            );
+            assert!(
+                duration_p90 < 11.5,
+                "{label}: a p90 of {duration_p90:.1}s to touch down"
+            );
+            assert!(
+                abandoned_share < 0.06,
+                "{label}: {:.1}% of landings abandoned",
+                abandoned_share * 100.0
+            );
+        }
+    }
+
+    #[test]
+    fn watching_birds_that_are_down_finds_them_and_does_not_put_them_up() {
+        let radius = 4_000_000.0;
+        let camera = camera_at(radius + 2.0);
+        let calm = |_: DVec3, _: f64, _: f64| 0.0;
+        let land = flat_ground(radius);
+        let water = open_water(radius);
+        let surfaces: [Surface<'_>; 2] = [("ground", &land), ("water", &water)];
+        for (label, ground) in surfaces {
+            let mut flocks = BirdFlocks::new(11);
+            assert!(
+                flocks.nearest_settled_flock(camera).is_none(),
+                "found birds down before there were any birds"
+            );
+            let mut time = 0.0;
+            let settled = loop {
+                time += BIRD_FIXED_STEP_SECONDS;
+                assert!(time < 240.0, "no flock ever came down on the {label}");
+                flocks.advance_over_sea(time, camera, ground, &calm);
+                if let Some(settled) = flocks.nearest_settled_flock(camera)
+                    && settled.birds_down >= 3
+                {
+                    break settled;
+                }
+            };
+            assert_eq!(settled.on_water, label == "water", "wrong surface reported");
+            // It is the nearest of the flocks with birds down, and it is where
+            // those birds are.
+            for flock in flocks.flocks() {
+                let down: Vec<&Bird> = flock.birds().iter().filter(|b| b.is_grounded()).collect();
+                if down.is_empty() {
+                    continue;
+                }
+                let centre = down.iter().map(|b| b.position).sum::<DVec3>() / down.len() as f64;
+                assert!(centre.distance(camera) >= settled.centre.distance(camera) - 1.0e-9);
+            }
+            let (standpoint, heading) = watch_standpoint(settled.centre, camera);
+            let eye = standpoint * (radius + 1.7);
+            assert!(
+                heading.dot(settled.centre - eye) > 0.0,
+                "the standpoint faces away from the birds"
+            );
+            assert!(
+                (eye - settled.centre).dot(camera - settled.centre) > 0.0,
+                "the standpoint is on the far side from where the eye came"
+            );
+            let watched: Vec<u64> = flocks
+                .flocks()
+                .iter()
+                .flat_map(|flock| flock.birds().iter())
+                .filter(|bird| bird.is_grounded() && bird.position.distance(settled.centre) < 30.0)
+                .map(|bird| bird.id)
+                .collect();
+            // Stand there and watch: the flock never has the eye inside its
+            // startle radius, so nothing this did puts it up.
+            let end = time + 5.0;
+            while time < end {
+                time += BIRD_FIXED_STEP_SECONDS;
+                flocks.advance_over_sea(time, eye, ground, &calm);
+                for flock in flocks.flocks() {
+                    if flock.birds().iter().any(|bird| watched.contains(&bird.id)) {
+                        assert!(
+                            flock.centroid().distance(eye) >= STARTLE_RADIUS_METERS,
+                            "watching from {}m startled the birds on the {label}",
+                            flock.centroid().distance(eye)
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -2602,12 +2965,7 @@ mod tests {
                     for (index, bird) in birds.iter().enumerate() {
                         for other in birds.iter().skip(index + 1) {
                             let gap = bird.position.distance(other.position);
-                            // A touchdown beside a bird already down; see below
-                            // for why two birds both still in the air are not
-                            // counted here.
-                            if bird.is_grounded() || other.is_grounded() {
-                                closest = closest.min(gap);
-                            }
+                            closest = closest.min(gap);
                             if bird.is_grounded()
                                 && other.is_grounded()
                                 && bird.activity_seconds > 1.0
@@ -2638,14 +2996,10 @@ mod tests {
         // Pinned so a regression that makes the touchdown itself overlap still
         // shows up.
         //
-        // Only pairs with a bird on the ground count. Two birds still landing
-        // can skim the touchdown band at up to 11m/s and cross head on, closing
-        // at nearly 20m/s, and pass within centimetres in a single step: 0.035m
-        // in seed 41 once taking off stopped lifting birds two metres in one
-        // step and so shifted the flocks' later histories, and already under
-        // 0.1m in 2 of seeds 1-30 before that change. That is a near miss in
-        // flight, a different defect from standing in one another, and this
-        // bound had only been missing it by the luck of its four seeds.
+        // Every pair counts, in the air too. For a while only pairs with a bird
+        // on the ground did: landing birds skimmed the touchdown band at up to
+        // 11m/s, and two crossing head on passed 0.035m apart in seed 41. They
+        // now come in slow, and over seeds 1-30 no two birds come within 0.2m.
         assert!(
             closest > 0.1,
             "birds closed to {closest:.3}m even allowing for touchdown"
@@ -3440,9 +3794,7 @@ mod tests {
             .find(|flock| flock.birds().iter().any(|other| other.id == target))
             .expect("the target's flock");
         // The shot points along the flock's heading rather than this bird's.
-        let flock_heading = flock
-            .mean_heading_at(alpha)
-            .expect("a cruising flock has a heading");
+        let flock_heading = flock.ride_heading_at(alpha);
         let up_at_seat = seat.normalize();
         let forward = (flock_heading - up_at_seat * flock_heading.dot(up_at_seat)).normalize();
 
@@ -3510,9 +3862,7 @@ mod tests {
                 // now points along. An individual bird's nose leaves that cone
                 // on about 3% of frames -- it is the noisiest signal in the
                 // simulation, which is exactly why the camera stopped using it.
-                let heading = flock
-                    .mean_heading_at(flocks.interpolation_alpha())
-                    .unwrap_or(view);
+                let heading = flock.ride_heading_at(flocks.interpolation_alpha());
                 if view.dot(heading) > 0.0 {
                     aligned += 1;
                 }
