@@ -170,6 +170,9 @@ pub struct ScenarioDefinition {
     /// gameplay always uses the live, spatially varying weather field.
     #[serde(default)]
     pub ocean_storm_intensity_override: Option<f32>,
+    /// Exercise the real weather response rather than a fixed sea endpoint.
+    #[serde(default)]
+    pub ocean_weather_response: bool,
     /// Rides the eye this far above the ocean surface at the waypoint's own
     /// ground track, instead of using the waypoint's radius. A waterline
     /// diagnostic authored as a fixed radius stops framing the waterline the
@@ -308,6 +311,7 @@ scenarios! {
     "ocean_low_sun_stability" => "../scenarios/ocean_low_sun_stability.json",
     "ocean_rough_horizon" => "../scenarios/ocean_rough_horizon.json",
     "ocean_wind_trial" => "../scenarios/ocean_wind_trial.json",
+    "ocean_weather_trial" => "../scenarios/ocean_weather_trial.json",
     "ocean_calm_trial" => "../scenarios/ocean_calm_trial.json",
     "ocean_moderate_trial" => "../scenarios/ocean_moderate_trial.json",
     "ocean_waterline_flat" => "../scenarios/ocean_waterline_flat.json",
@@ -656,6 +660,10 @@ impl ScenarioRunner {
 
     pub fn skips_birds(&self) -> bool {
         self.definition.skip_birds
+    }
+
+    pub fn uses_weather_sea(&self) -> bool {
+        self.definition.ocean_weather_response
     }
 
     pub fn ocean_storm_intensity_override(&self) -> Option<f32> {
@@ -1071,7 +1079,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 95);
+        assert_eq!(SCENARIO_NAMES.len(), 96);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));

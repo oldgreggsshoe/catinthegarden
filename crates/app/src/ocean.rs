@@ -299,13 +299,14 @@ pub fn fold_budget_at(wave_scale: f64) -> f64 {
 pub const GLOBAL_OCEAN_STORM_INTENSITY: f32 = 1.0;
 
 /// A startup-selected, phase-continuous sea. Replays remain fixed unless they
-/// explicitly select an intensity; interactive play cycles over ten ocean
-/// minutes. The envelope shares the existing ocean animation clock; F10
+/// explicitly select an intensity; interactive play follows local weather.
+/// The former ten-minute cycle remains an optional diagnostic. The envelope shares the existing ocean animation clock; F10
 /// currently freezes planet composition, not ocean motion.
 #[derive(Clone, Copy, Debug)]
-enum SeaStateMode {
+pub enum SeaStateMode {
     Fixed(f32),
     Cycle,
+    Weather,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -321,6 +322,10 @@ impl SeaStateMode {
                 intensity,
                 intensity_rate: 0.0,
             },
+            Self::Weather => WEATHER_SEA
+                .lock()
+                .expect("weather sea response")
+                .sample(time),
             Self::Cycle => {
                 let frequency = std::f64::consts::TAU / 600.0;
                 let phase = time * frequency;
@@ -341,27 +346,138 @@ fn fixed_sea_override(value: &str) -> Option<f32> {
         .filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
 }
 
-fn sea_override_from_environment() -> Option<f32> {
+fn sea_override_from_environment() -> Option<SeaStateMode> {
     std::env::var("CATINGARDEN_OCEAN_STORM").ok().map(|value| {
-        fixed_sea_override(&value)
-            .expect("CATINGARDEN_OCEAN_STORM must be a finite intensity in 0..1")
+        if value.trim() == "cycle" {
+            SeaStateMode::Cycle
+        } else {
+            SeaStateMode::Fixed(
+                fixed_sea_override(&value)
+                    .expect("CATINGARDEN_OCEAN_STORM must be an intensity in 0..1 or cycle"),
+            )
+        }
     })
+}
+
+/// Critically damped response to a held weather target. A target change retains
+/// both height-envelope value and rate: even crossing a weather front cannot
+/// instantaneously change the surface or launch a buoyant body. This is storm
+/// energy response, not a fetch solver or a directional spectrum simulation.
+const WEATHER_SEA_RESPONSE_SECONDS: f64 = 120.0;
+
+#[derive(Clone, Copy, Debug)]
+struct SeaResponse {
+    start_time: f64,
+    initial: f64,
+    initial_rate: f64,
+    target: f64,
+}
+
+impl SeaResponse {
+    const CALM: Self = Self {
+        start_time: 0.0,
+        initial: 0.0,
+        initial_rate: 0.0,
+        target: 0.0,
+    };
+
+    fn value_and_rate(self, time: f64) -> (f64, f64) {
+        let elapsed = (time - self.start_time).max(0.0);
+        let a = self.initial - self.target;
+        let b = self.initial_rate + a / WEATHER_SEA_RESPONSE_SECONDS;
+        let decay = (-elapsed / WEATHER_SEA_RESPONSE_SECONDS).exp();
+        let residual = a + b * elapsed;
+        (
+            self.target + residual * decay,
+            (b - residual / WEATHER_SEA_RESPONSE_SECONDS) * decay,
+        )
+    }
+
+    fn sample(self, time: f64) -> SeaState {
+        let (value, rate) = self.value_and_rate(time);
+        SeaState {
+            intensity: value.clamp(0.0, 1.0) as f32,
+            intensity_rate: rate,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct WeatherSea {
+    current: SeaResponse,
+    previous: SeaResponse,
+    next_target_time: f64,
+}
+
+impl WeatherSea {
+    const CALM: Self = Self {
+        current: SeaResponse::CALM,
+        previous: SeaResponse::CALM,
+        next_target_time: 0.0,
+    };
+
+    fn sample(&self, time: f64) -> SeaState {
+        // Ship integration can trail the render clock by up to .25 seconds.
+        // Targets update at most once per second, so two segments preserve its
+        // exact historical samples across the most recent target change.
+        if time < self.current.start_time {
+            self.previous.sample(time)
+        } else {
+            self.current.sample(time)
+        }
+    }
+
+    fn retarget(&mut self, time: f64, target: f32) -> bool {
+        if !time.is_finite() || time < self.next_target_time || !target.is_finite() {
+            return false;
+        }
+        let (initial, initial_rate) = self.current.value_and_rate(time);
+        self.previous = self.current;
+        self.current = SeaResponse {
+            start_time: time,
+            initial,
+            initial_rate,
+            target: f64::from(target.clamp(0.0, 1.0)),
+        };
+        self.next_target_time = time + 1.0;
+        true
+    }
+}
+
+static WEATHER_SEA: std::sync::Mutex<WeatherSea> = std::sync::Mutex::new(WeatherSea::CALM);
+
+/// Update before camera/ship water queries. All visible water shares this
+/// camera-region target because the renderer has a single sea-state uniform.
+/// Sampling weather per water vertex would also require spatial derivatives.
+pub fn update_weather_sea(time: f64, sample_local_storm: impl FnOnce() -> f32) {
+    if matches!(SEA_STATE_MODE.get(), Some(SeaStateMode::Weather)) {
+        let mut response = WEATHER_SEA.lock().expect("weather sea response");
+        if !time.is_finite() || time < response.next_target_time {
+            return;
+        }
+        let local_storm = sample_local_storm();
+        if response.retarget(time, local_storm) {
+            tracing::info!(local_storm, ocean_time = time, "ocean weather target");
+        }
+    }
 }
 
 static SEA_STATE_MODE: std::sync::OnceLock<SeaStateMode> = std::sync::OnceLock::new();
 
 /// Called before constructing any camera/ship or sampling the ocean. Scenario
 /// settings take precedence over environment, including legacy storm replays.
-pub fn initialize_sea_state(replay_intensity: Option<f32>) {
-    let mode = if let Some(intensity) = replay_intensity {
-        assert!(intensity.is_finite() && (0.0..=1.0).contains(&intensity));
-        SeaStateMode::Fixed(intensity)
-    } else if let Some(intensity) = sea_override_from_environment() {
-        SeaStateMode::Fixed(intensity)
+pub fn initialize_sea_state(replay_mode: Option<SeaStateMode>) {
+    let mode = if let Some(mode) = replay_mode {
+        if let SeaStateMode::Fixed(intensity) = mode {
+            assert!(intensity.is_finite() && (0.0..=1.0).contains(&intensity));
+        }
+        mode
+    } else if let Some(mode) = sea_override_from_environment() {
+        mode
     } else if let Some(wind) = ocean_wind() {
         SeaStateMode::Fixed((wind.speed_meters_per_second / 30.0) as f32)
     } else {
-        SeaStateMode::Cycle
+        SeaStateMode::Weather
     };
     SEA_STATE_MODE
         .set(mode)
@@ -373,9 +489,8 @@ pub fn sea_state_at(time: f64) -> SeaState {
     // Standalone instruments/tests retain their historical fixed-storm default.
     SEA_STATE_MODE
         .get_or_init(|| {
-            SeaStateMode::Fixed(
-                sea_override_from_environment().unwrap_or(GLOBAL_OCEAN_STORM_INTENSITY),
-            )
+            sea_override_from_environment()
+                .unwrap_or(SeaStateMode::Fixed(GLOBAL_OCEAN_STORM_INTENSITY))
         })
         .sample(time)
 }
@@ -1069,6 +1184,95 @@ mod tests {
         global_wave_height_meters, global_wave_vertical_velocity_meters_per_second,
         maximum_wave_height_meters, wave_height_stats,
     };
+
+    #[test]
+    fn weather_sea_target_is_sampled_before_ship_buoyancy() {
+        let source = include_str!("main.rs");
+        let hook = source
+            .split("ocean::update_weather_sea(ocean_time_seconds, || {")
+            .nth(1)
+            .unwrap();
+        let before_ship = hook
+            .split("self.advance_ship(ocean_time_seconds);")
+            .next()
+            .unwrap();
+        assert!(before_ship.contains("self.camera.world_position().normalize()"));
+        assert!(before_ship.contains("self.weather.storm_intensity_at(weather_direction)"));
+    }
+
+    #[test]
+    fn weather_sea_responds_slowly_without_jumps_and_retains_ship_history() {
+        let mut sea = super::WeatherSea::CALM;
+        assert!(sea.retarget(0.0, 1.0));
+        assert_eq!(sea.sample(0.0).intensity, 0.0);
+        assert_eq!(sea.sample(0.0).intensity_rate, 0.0);
+        assert!((sea.sample(120.0).intensity - 0.2642411).abs() < 1.0e-6);
+        assert!(sea.sample(600.0).intensity > 0.95);
+        let before = sea.sample(120.0);
+        let history = sea.sample(119.75);
+        assert!(sea.retarget(120.0, 0.0));
+        let after = sea.sample(120.0);
+        assert_eq!(before.intensity, after.intensity);
+        assert!((before.intensity_rate - after.intensity_rate).abs() < 1.0e-15);
+        assert_eq!(history.intensity, sea.sample(119.75).intensity);
+        assert_eq!(history.intensity_rate, sea.sample(119.75).intensity_rate);
+        assert!(!sea.retarget(120.5, 1.0));
+        assert!(!sea.retarget(f64::NAN, 1.0));
+        assert!(!sea.retarget(121.0, f32::NAN));
+        assert!(sea.sample(1200.0).intensity < 0.001);
+    }
+
+    #[test]
+    fn weather_sea_is_bounded_under_repeated_fronts_and_unchanged_targets() {
+        let mut fronts = super::WeatherSea::CALM;
+        let mut repeated = super::WeatherSea::CALM;
+        let mut held = super::WeatherSea::CALM;
+        held.retarget(0.0, 0.7);
+        for second in 0..1200 {
+            let time = second as f64;
+            fronts.retarget(time, if second % 180 < 90 { 1.0 } else { 0.0 });
+            repeated.retarget(time, 0.7);
+            let sample = fronts.sample(time + 0.5);
+            assert!((0.0..=1.0).contains(&sample.intensity));
+            assert!(sample.intensity_rate.abs() < 1.0 / super::WEATHER_SEA_RESPONSE_SECONDS);
+            assert!((held.sample(time).intensity - repeated.sample(time).intensity).abs() < 1.0e-6);
+        }
+    }
+
+    #[test]
+    fn weather_sea_buoyancy_velocity_matches_the_evolving_surface() {
+        let direction =
+            DVec3::new(0.836442275001636, 0.503727905284262, 0.215922481525239).normalize();
+        let mut sea = super::WeatherSea::CALM;
+        sea.retarget(0.0, 1.0);
+        for time in [120.0, 180.0, 240.0, 360.0, 480.0, 720.0] {
+            if time == 360.0 {
+                sea.retarget(300.0, 0.0);
+            }
+            for depth in [2.0, 20.0, 4000.0] {
+                let height = |time| {
+                    let raw = super::wave_height_meters(
+                        direction,
+                        time,
+                        sea.sample(time).intensity,
+                        depth,
+                    );
+                    raw * breaking_weight(raw, depth)
+                };
+                let difference = (height(time + 0.0025) - height(time - 0.0025)) / 0.005;
+                let analytic = super::wave_vertical_velocity_in_state(
+                    direction,
+                    time,
+                    depth,
+                    sea.sample(time),
+                );
+                assert!(
+                    (difference - analytic).abs() < 0.002,
+                    "{time}, {depth}: {difference} vs {analytic}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn sea_state_cycle_is_smooth_bounded_and_repeatable() {

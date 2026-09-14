@@ -59,12 +59,12 @@ whole supporting path are gone at the user's request, and **B** now belongs to
 the bird cam. Sections below describing beams, `CATINGARDEN_FOREST_BEAMS` and
 global forest locators are historical.
 
-**Current sea-state variety (14 September):** normal launches now use a smooth
-ten-minute calm/storm cycle on the existing scaled ocean clock, rather than
-permanent intensity 1. Startup wind selects fixed speed/30 intensity;
-`CATINGARDEN_OCEAN_STORM=0..1` overrides interactive intensity. Scenario
-intensity overrides now work and take precedence. See the latest section for
-validation and limitations; this is not yet a weather/fetch simulation.
+**Current sea-state variety (14 September):** normal launches now follow the
+camera region's filtered weather storm field through a slow, continuous sea
+response, replacing the authored cycle. Explicit storm/wind startup overrides
+and legacy replay endpoints remain fixed; `CATINGARDEN_OCEAN_STORM=cycle`
+restores the old demonstration loop. This is a scalar storm-energy response,
+not a wind-direction/fetch solver. See the latest section for validation.
 
 **Current ocean default (10 September):** spawn-coast shoreward waves are now enabled
 for normal launches at the user's request. `CATINGARDEN_SPAWN_COAST_WAVES=0`
@@ -9625,3 +9625,65 @@ Next: user motion review in the main game; couple sea-state targets to actual
 weather/fetch rather than the authored cycle, preserving time derivatives and
 phase continuity. Wind direction remains startup-only. Foam persistence and
 improved volume-scattering/underside optics are still separate visual work.
+
+## 14 September — real-weather sea targets, without amplitude/velocity jumps
+
+Normal interactive launches now use Weather mode. Once per scaled ocean second
+at most, after weather updates and before ship buoyancy, the main loop samples
+`WeatherState::storm_intensity_at` at the camera's planet-local radial. This uses
+the existing spatial bilinear and temporal weather interpolation; weather code
+itself is untouched. A critically damped 120-second response tracks that target.
+For a held 0→1 target it reaches .264241 at 120 seconds and .959572 at 600 seconds.
+It starts calm; it does not start as a fully developed sea for the local weather.
+
+The analytic segment retains both its current value AND velocity when retargeted.
+That matters even when moving/teleporting between weather regions: neither wave
+height nor buoyancy velocity snaps to a new value. The existing amplitude-rate
+term continues to feed the production vertical-velocity query. Two segments are
+retained, covering the ship's .25-second fixed-step backlog because retargeting
+is spaced by at least one second. The per-query mutex protects a small CPU
+response state; there is no new GPU wave, draw, texture or shader operation.
+No matched performance run was made, so this is not a zero-cost/FPS claim.
+
+**Scope:** the renderer still has one global sea-intensity uniform. All visible
+water therefore shares the camera-region response; it is not a spatial ocean
+simulation. Sampling independent per-vertex weather would require matching
+spatial derivatives in CPU/GPU surface queries. Storm intensity is used, not a
+wind-speed/direction/fetch/duration spectrum. Wind axes and weights are still
+startup-only. The calm amplitude column still retains large remote swells.
+
+**Controls:** numeric `CATINGARDEN_OCEAN_STORM=0..1` and explicit startup wind
+remain fixed overrides. `CATINGARDEN_OCEAN_STORM=cycle` retains the former
+600-second loop. Legacy scenarios retain their fixed endpoints; the new
+`ocean_weather_response: true` flag explicitly chooses Weather mode, taking
+precedence over numeric scenario/environment endpoints. The ocean follows its
+existing scaled presentation clock; F10 still freezes composition, not waves.
+
+**Validation:** four new regressions cover the main-loop weather hookup,
+response continuity/history, bounded response under repeated fronts and
+unchanged targets, and production buoyancy velocity versus finite differences
+at six growth/decay times and three depths. The shallow-water difference uses
+a 2.5ms half-step: the previous 10ms step had .009m/s truncation error near the
+nonlinear breaking knee. Error tolerance remains .002m/s. Value/rate continuity
+allows only 1e-15 rate roundoff at retargeting.
+
+Initial Quadro Vulkan/Xvfb `ocean_weather_trial/1789356407-502578` passes with
+three captures across 600 ocean seconds (2-second simulation steps, for state
+coverage rather than motion acceptance). The actual beach target rises from
+.000209 to .062733; filtered sea intensity ends at .038131. These all remain
+below the existing .15 calm-column threshold: this is correctly mild weather,
+not a manufactured storm demonstration. Capture-003 was visually inspected.
+The previous deterministic 0→1→0 tests provide the stronger-front control.
+
+Final-source validation: 560 workspace tests pass (23 ignored), clippy and fmt
+pass, release rebuilt. Final weather replay `ocean_weather_trial/1789356606-504172`
+passes with all three images pixel-identical to the initial run; checked 300
+finite sea samples and 300 weather targets with the same ranges above. Fixed
+storm control `ocean_wind_trial/1789356639-504381` passes and both images are
+pixel-identical to the preceding stage's `1789354917-497960`. No shader changes
+were made. `crates.tar.gz` remains untouched/untracked.
+
+Next: interactive motion review while travelling between weather regions;
+weather-driven directional spectra and fetch remain unimplemented. Do not
+mistake this scalar storm response for either of those, or tune gravity to
+compensate for storm-scale waves. The fixed/cycle overrides remain useful controls.

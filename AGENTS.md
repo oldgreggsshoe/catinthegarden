@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Weather-driven sea response: normal launches now follow the camera region's actual filtered storm field instead of the ten-minute loop. A 120s critically damped response preserves envelope value/rate through weather changes and retains ship-substep history; fixed wind/storm overrides remain, with the old loop available as CATINGARDEN_OCEAN_STORM=cycle. Real-weather replay and continuity/velocity tests pass; directional weather spectra and fetch remain unimplemented.
+
 - Sea-state variety: normal launches now cycle smoothly calm→storm→calm over ten scaled ocean minutes; startup wind selects a fixed speed-linked intensity, and CATINGARDEN_OCEAN_STORM overrides interactive intensity. Replays honor their existing overrides. CPU buoyancy includes envelope velocity; crest transmission follows calibrated calm/mid/storm anchors. Three matched GPU replays and 144 parity cases pass; storm capture is unchanged. Live weather/fetch coupling and dynamic wind remain outstanding.
 
 - Crossing swell: three 1400m components now share the original amplitude and compression budgets; the third travels 60 degrees clockwise from the pair at the documented spawn. CPU/WGSL tables and wind arrays agree; 553 workspace tests, two 48-case GPU parity runs and the ocean_wind_trial replay pass. Main-game release rebuilt; calm/storm transitions and lighting recalibration remain outstanding.

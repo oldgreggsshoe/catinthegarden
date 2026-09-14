@@ -1138,9 +1138,15 @@ impl State {
         debug::init_tracing(log_writer.clone());
         tracing::info!(scenario = artifact_name, ?terrain_source, "run started");
         ocean::initialize_sea_state(scenario.as_ref().map(|scenario| {
-            scenario
-                .ocean_storm_intensity_override()
-                .unwrap_or(ocean::GLOBAL_OCEAN_STORM_INTENSITY)
+            if scenario.uses_weather_sea() {
+                ocean::SeaStateMode::Weather
+            } else {
+                ocean::SeaStateMode::Fixed(
+                    scenario
+                        .ocean_storm_intensity_override()
+                        .unwrap_or(ocean::GLOBAL_OCEAN_STORM_INTENSITY),
+                )
+            }
         }));
 
         let size = window.inner_size();
@@ -3377,6 +3383,13 @@ impl State {
             self.weather.visual_time_seconds(),
         );
         let ocean_time_seconds = ocean_animation_time_seconds(sim_time, presentation_time);
+        ocean::update_weather_sea(ocean_time_seconds, || {
+            let weather_direction = planet::planet_local_vector(
+                self.camera.world_position().normalize(),
+                planet_rotation_radians,
+            );
+            self.weather.storm_intensity_at(weather_direction)
+        });
         self.advance_ship(ocean_time_seconds);
         let scene_delta_seconds = (sim_time - self.last_auto_orbit_sim_time).max(0.0);
         if let Some(forward_held) = scenario_forward_flight_held {

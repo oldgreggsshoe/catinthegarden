@@ -1,0 +1,53 @@
+{
+  "name": "ocean_weather_trial",
+  "fixed_timestep_seconds": 2,
+  "duration_seconds": 600,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0.0,
+  "fixed_exposure": true,
+  "screenshot_times_seconds": [
+    2,
+    120,
+    600
+  ],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [
+        3354193.604953526,
+        2006995.0752244971,
+        850032.970544957
+      ],
+      "look_at": [
+        3354229.6338674137,
+        2006869.642736014,
+        849010.4889518723
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        0.5089275188,
+        0.397776994,
+        0.7633912782
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 60.0
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 3
+  },
+  "skip_birds": true,
+  "ocean_weather_response": true
+}

@@ -152,3 +152,24 @@ MEMORY.md:3-4|note=[checkout-specific validation and performance evidence]
 01a07103-79ca-7e92-99b9-5da47619e658
 </rollout_ids>
 </oai-mem-citation>
+
+I'll replace the repeating cycle with a slow response to the game's actual weather, keeping the fixed test overrides. I'll inspect weather sampling and update timing, then change the ocean response, main-loop hookup and regression tests. Waves must keep their phases, and buoyancy must follow the changing surface; wind-direction changes and fetch modelling will remain separate.
+
+The weather response is working. Its controlled step test reaches 26% of a new sea-state target after two ocean minutes and 96% after ten, preserving both surface height and vertical velocity when the target changes. The real-weather replay also passes. Conditions at the test beach are mild, so it stays calm rather than manufacturing a storm on a timer.
+
+The main game now follows actual local weather instead of a repeating storm timer. Waves build and settle gradually, without height or buoyancy-velocity jumps.
+
+- 560 tests and both weather/storm replays pass.
+- Fixed storm screenshots remain pixel-identical.
+- Release rebuilt; committed and pushed.
+
+Wind-direction evolution and fetch modelling remain separate work.
+
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:3-4|note=[checkout-specific validation and performance evidence]
+</citation_entries>
+<rollout_ids>
+01a07103-79ca-7e92-99b9-5da47619e658
+</rollout_ids>
+</oai-mem-citation>
