@@ -457,9 +457,10 @@ static WEATHER_SEA: std::sync::Mutex<WeatherSea> = std::sync::Mutex::new(Weather
 ///   fetch from the shoreline. This ensures dry-beach viewers see realistic
 ///   sea-state development from distant storms. Validated by scenario
 ///   `ocean_weather_dry_landing`: camera on 2m-high dry beach (baker's landing),
-///   sea visible ~300m upwind. Expected fetch ~12km across open water, producing
-///   visible wave development through the shelter formula (energy suppressed at
-///   zero fetch, restored at full fetch).
+///   sea visible ~300m upwind. Expected fetch ~12km produces shelter factor
+///   1 - exp(-12000/25000) ≈ 0.38, so energy is suppressed to 38% of its value
+///   at infinite fetch. This drives observable wave development: zero fetch yields
+///   calm water (energy fully suppressed); at 12km fetch, swell emerges.
 ///
 /// **Efficiency:** ≤77 height queries (64 coarse + 6 bisection + origin check).
 /// **Edge cases:** narrow islands narrower than the coarse-scan spacing (1.6-100km
