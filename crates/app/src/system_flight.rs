@@ -148,6 +148,7 @@ impl SystemFlight {
                 terrain::TerrainSource::Outmap(
                     find_outmap(MOON_OUTMAP_PATH).expect("moon outmap must be present"),
                 ),
+                None,
             )
             .expect("moon terrain must initialize");
             (atmosphere, terrain)

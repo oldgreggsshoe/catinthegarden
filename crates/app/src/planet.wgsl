@@ -11,6 +11,10 @@ var biome_map: texture_2d<u32>;
 @group(1) @binding(2)
 var moisture_map: texture_2d<f32>;
 
+// The ray path's coarse planet-wide height faces, for cast terrain shadows.
+@group(2) @binding(15)
+var terrain_shadow_heights: texture_2d_array<f32>;
+
 @group(3) @binding(0)
 var cloud_field_current: texture_cube<f32>;
 
@@ -1565,7 +1569,9 @@ fn flat_triangle_colour(
     if BODY_HAS_ATMOSPHERE && fill_biome != 0u && fill_biome != 1u {
         let surface_field = weather_surface_sample(normalize(input.surface_direction));
         let wetness = smoothstep(0.18, 0.82, surface_field.r);
-        let snow_cover = smoothstep(0.08, 0.70, surface_field.g);
+        let fill_slope = 1.0 - clamp(dot(normalize(normal), normalize(input.surface_direction)), 0.0, 1.0);
+        let snow_cover = smoothstep(0.08, 0.70, surface_field.g)
+            * snow_slope_hold(fill_slope, fill_biome);
         fill *= 1.0 - 0.22 * wetness;
         fill = mix(
             fill,
@@ -2297,6 +2303,67 @@ fn ocean_fragment_with_transmission_mode(input: OceanVertexOutput, bed: vec4<f32
     return vec4<f32>(water_aerial_color, shoreline_alpha);
 }
 
+fn terrain_shadow_height(direction: vec3<f32>, face_quads: f32) -> f32 {
+    let d = normalize(direction);
+    let a = abs(d);
+    var face = 0;
+    var uv = vec2<f32>(0.0);
+    if a.x >= a.y && a.x >= a.z {
+        if d.x >= 0.0 { face = 0; uv = vec2<f32>(-d.z, d.y) / d.x; } else { face = 1; uv = vec2<f32>(d.z, d.y) / -d.x; }
+    } else if a.y >= a.z {
+        if d.y >= 0.0 { face = 2; uv = vec2<f32>(d.x, -d.z) / d.y; } else { face = 3; uv = vec2<f32>(d.x, d.z) / -d.y; }
+    } else if d.z >= 0.0 {
+        face = 4;
+        uv = vec2<f32>(d.x, d.y) / d.z;
+    } else {
+        face = 5;
+        uv = vec2<f32>(-d.x, d.y) / -d.z;
+    }
+    let coordinate = vec2<f32>(1.0) + (uv * 0.5 + vec2<f32>(0.5)) * face_quads;
+    let lower = clamp(vec2<i32>(floor(coordinate)), vec2<i32>(0), vec2<i32>(i32(face_quads)));
+    let upper = lower + vec2<i32>(1);
+    let t = clamp(coordinate - vec2<f32>(lower), vec2<f32>(0.0), vec2<f32>(1.0));
+    let h00 = textureLoad(terrain_shadow_heights, lower, face, 0).x;
+    let h10 = textureLoad(terrain_shadow_heights, vec2<i32>(upper.x, lower.y), face, 0).x;
+    let h01 = textureLoad(terrain_shadow_heights, vec2<i32>(lower.x, upper.y), face, 0).x;
+    let h11 = textureLoad(terrain_shadow_heights, upper, face, 0).x;
+    return mix(mix(h00, h10, t.x), mix(h01, h11, t.x), t.y);
+}
+
+/// Sunlight reaching a fragment past the coarse planet-wide relief. The field
+/// is about 3km per texel, so this casts ridge-scale shadows only. The march
+/// starts beyond the fragment's own texel, or the smoothed field would shadow
+/// the ground beneath it.
+fn terrain_cast_shadow_visibility(
+    direction: vec3<f32>,
+    surface_height_meters: f32,
+    sun_direction: vec3<f32>,
+) -> f32 {
+    let face_quads = terrain_settings.outmap_detail.y;
+    if face_quads < 1.0 {
+        return 1.0;
+    }
+    let texel_meters = PLANET_RADIUS_METERS * 1.5707964 / face_quads;
+    let origin = direction * (PLANET_RADIUS_METERS + surface_height_meters);
+    var travel = texel_meters * 1.5;
+    var visibility = 1.0;
+    for (var i = 0; i < 18; i += 1) {
+        let point = origin + sun_direction * travel;
+        let radius = length(point);
+        let ground = PLANET_RADIUS_METERS
+            + scaled_terrain_macro_height(terrain_shadow_height(point / radius, face_quads));
+        let clearance = radius - ground + 150.0;
+        // Soft edge about 3 degrees wide, wider than the sun, to hide the
+        // coarse field's texels.
+        visibility = min(visibility, clamp(0.5 + clearance / (travel * 0.06), 0.0, 1.0));
+        if visibility <= 0.0 || clearance > 60000.0 {
+            break;
+        }
+        travel *= 1.35;
+    }
+    return visibility;
+}
+
 fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let direction = normalize(input.surface_direction);
     let sun_direction = normalize(camera.sun_direction.xyz);
@@ -2446,6 +2513,13 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             input.camera_relative_view_position,
         );
     }
+    if outmap && terrain_direct_light > 0.0 {
+        terrain_direct_light *= terrain_cast_shadow_visibility(
+            direction,
+            input.surface_height_and_fog_color.x,
+            sun_direction,
+        );
+    }
     var terrain_cloud_visibility = 1.0;
     if BODY_HAS_ATMOSPHERE
         && terrain_direct_light > 0.0
@@ -2504,7 +2578,10 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     if BODY_HAS_ATMOSPHERE {
         let weather_surface = weather_surface_sample(direction);
         wetness = smoothstep(0.18, 0.82, weather_surface.r);
-        let snow_cover = smoothstep(0.08, 0.70, weather_surface.g);
+        // Fallen snow sheds off steep faces the same way the biome's snow does.
+        let terrain_slope = 1.0 - clamp(dot(normalize(terrain_normal), direction), 0.0, 1.0);
+        let snow_cover = smoothstep(0.08, 0.70, weather_surface.g)
+            * snow_slope_hold(terrain_slope, biome_id);
         textured_terrain_albedo *= 1.0 - 0.22 * wetness;
         textured_terrain_albedo = mix(
             textured_terrain_albedo,

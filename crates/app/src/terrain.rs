@@ -598,7 +598,7 @@ struct TerrainSettings {
 }
 
 impl TerrainSettings {
-    fn from_planet_constants(dense_level: u8) -> Self {
+    fn from_planet_constants(dense_level: u8, shadow_face_quads: u32) -> Self {
         Self {
             outmap_height_scale: [
                 crate::body::outmap_height_scale() as f32,
@@ -612,7 +612,7 @@ impl TerrainSettings {
                 0.0,
                 0.0,
             ],
-            outmap_detail: [f32::from(dense_level), 0.0, 0.0, 0.0],
+            outmap_detail: [f32::from(dense_level), shadow_face_quads as f32, 0.0, 0.0],
         }
     }
 }
@@ -868,7 +868,9 @@ impl TerrainRenderer {
         weather_field_bind_group_layout: &wgpu::BindGroupLayout,
         atmosphere: crate::atmosphere::SurfaceLightingResources<'_>,
         source: TerrainSource,
+        shadow_heights: Option<(&wgpu::TextureView, u32)>,
     ) -> Result<Self, TerrainError> {
+        let shadow_face_quads = shadow_heights.map_or(0, |(_, quads)| quads);
         let source = match source {
             TerrainSource::Placeholder => TerrainDataSource::Placeholder,
             TerrainSource::Outmap(root) => TerrainDataSource::Outmap(Outmap::open(root)?),
@@ -914,7 +916,7 @@ impl TerrainRenderer {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("terrain settings"),
                 contents: bytemuck::bytes_of(&TerrainSettings::from_planet_constants(
-                    outmap_dense_level,
+                    outmap_dense_level, shadow_face_quads,
                 )),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
@@ -1148,6 +1150,28 @@ impl TerrainRenderer {
             create_terrain_material_texture(device, queue);
         let (moon_marking_texture, moon_marking_view, moon_marking_sampler) =
             crate::moon_markings::create(device, queue);
+        // Bodies without the ray path's height faces bind a 1x1 stand-in and
+        // report zero face quads, which switches cast shadows off.
+        let shadow_height_fallback = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("terrain shadow height fallback"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 6,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let shadow_height_fallback_view =
+            shadow_height_fallback.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            });
+        let (shadow_height_view, _) = shadow_heights.unwrap_or((&shadow_height_fallback_view, 0));
         let shared_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("shared planet bind group"),
             layout: &shared_bind_group_layout,
@@ -1199,6 +1223,10 @@ impl TerrainRenderer {
                 wgpu::BindGroupEntry {
                     binding: 14,
                     resource: wgpu::BindingResource::Sampler(&moon_marking_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 15,
+                    resource: wgpu::BindingResource::TextureView(shadow_height_view),
                 },
             ],
         });
@@ -3150,6 +3178,7 @@ pub fn create_shared_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroup
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
+            texture_array_layout_entry(15, wgpu::TextureSampleType::Float { filterable: false }),
         ],
     })
 }
@@ -4553,7 +4582,7 @@ mod tests {
 
     #[test]
     fn shader_reads_outmap_height_scale_from_terrain_settings() {
-        let settings = TerrainSettings::from_planet_constants(4);
+        let settings = TerrainSettings::from_planet_constants(4, 0);
         let shader = planet_shader_source();
         assert_eq!(OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, 4.0);
         assert_eq!(OUTMAP_TERRAIN_FAR_HEIGHT_SCALE, 4.0);

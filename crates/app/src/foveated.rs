@@ -125,6 +125,11 @@ pub struct FoveatedRenderer {
 }
 
 impl FoveatedRenderer {
+    /// The coarse planet-wide height faces, for raster terrain's cast shadows.
+    pub fn shadow_height_faces(&self) -> (wgpu::TextureView, u32) {
+        (face_array_view(&self._height_texture), self.face_quads)
+    }
+
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,

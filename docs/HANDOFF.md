@@ -44,6 +44,16 @@ and crest transmission is re-anchored on the storm sea the game actually
 renders. Ground cloud shadow is banded but no longer hard-posterized. See the
 newest sections.
 
+**Current peak visual judging (15 September):** `peak_survey_8_directions` (raster) hovers
+100m over the highest summit at solar noon and captures eight headings 30 degrees down. Three
+independent judges scored it against midday summit photos at 2.3/10, then 2.5/10 after this work:
+snow sheds from slopes of 30-45 degrees with rock beneath snow biomes, sky fill uses the
+`(1 + n.up)/2` view factor, and raster casts ridge-scale terrain shadows by marching the ray path's
+~3km height faces (shared binding 15). Each measured small at a 64-degree sun. Still judged:
+stretched cliff texture, faceted/sawtooth ridges, pixel-edged lowland biome patches (next). The
+scenario lowers its camera 227.35m because `ACTIVE_HIGHEST_PROMINENCE_DRAWN_SURFACE_METERS` is
+stale. See the newest section.
+
 **Current birds (14 September):** flocking birds stream in around the camera,
 cruise, land, walk and take off again, and over the sea they meet the real
 moving surface: they climb ahead of rising water, cruise over a swell envelope,
@@ -10045,4 +10055,31 @@ shelter logic remain unchanged.
 **Not changed:** Codex's existing wind/fetch estimation, sea-state response path,
 GPU wave propagation, or any other ocean rendering. This is a single-line bug fix
 with full test coverage.
+
+## Peak visual judging: rock on steep faces, cliff skylight, cast shadows — 15 September 2026
+
+`peak_survey_8_directions` places the eye along local up (`position.normalize()`, never world +Y)
+100m over the drawn summit, pitched 30 degrees down, and holds each of eight headings long enough
+to stream before its capture. Sun at equinox solar noon (64 degrees, due north). Evidence,
+reference photos, judge summaries and notes: `test-runs/peak_judging_2026-09-15/`.
+
+What the measurements showed, in the order they overturned my guesses:
+- **Weather snow was not the white.** Raw weather snow cover is below 0.5 on every pixel here.
+  The white is biome snow: Ice (2) and MountainSnow (9) forced snow regardless of slope, and
+  rock only reduced snow by 35%.
+- **Shedding snow exposed white.** Those biomes' palette colour *is* snow, so the exposed base
+  must be mountain rock. `snow_slope_hold()` now sheds 30 -> 45 degrees (ice 35 -> 50) in the
+  biome colour, the textured weights and both weather-snow sites, and snow biomes expose rock.
+- **Brightness thresholds hid the change.** Steep faces were already mid-grey; judge changes with
+  per-pixel diffs split by a slope mask, not dark/bright counts.
+- **Cliffs are pale from direct sun, not haze.** Steep pixels: albedo 80-122, surface lighting
+  143-174, aerial contribution 0-18. The sky view factor moved lighting ~1 level.
+- **Raster had no planet-wide height.** Cast shadows reuse `FoveatedRenderer::shadow_height_faces()`
+  (R32Float face array, 1-texel gutter) as shared binding 15, with `face_quads` in
+  `TerrainSettings.outmap_detail.y`. The moon flight binds a 1x1 fallback with zero quads, which
+  switches shadows off. Steep-face lighting fell 5-9 levels on N/NE/E/W/NW; judges read the
+  coarse shadows as grey blobs.
+
+Round scores: 2.3 then 2.5/10. All three judges still rank exposed rock/relief shape, stretched
+cliff texture, pixel-edged lowland patches, a repeating snow pattern and stars at noon.
 

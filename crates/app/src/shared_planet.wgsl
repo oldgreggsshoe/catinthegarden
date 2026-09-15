@@ -1596,17 +1596,17 @@ fn sky_diffuse_irradiance(
         uv,
         0.0,
     ).rgb;
-    // The LUT integrates a horizontal Lambertian receiver. Retain most of
-    // that broad sky fill on steep facets, while allowing upward-facing
-    // terrain to receive the full physical E/pi value.
-    let upward_facing = sqrt(max(dot(normal, surface_direction), 0.0));
+    // The LUT integrates a horizontal Lambertian receiver. A tilted facet sees
+    // only (1 + cos tilt) / 2 of the sky dome, so a cliff gets half the fill of
+    // flat ground rather than most of it.
+    let sky_view = 0.5 + 0.5 * clamp(dot(normalize(normal), surface_direction), -1.0, 1.0);
     // The sky display applies one fixed, hue-preserving perceptual curve so
     // nautical twilight remains visible without auto exposure. Apply that
     // same presentation to E/pi before it lights the surface; otherwise the
     // visible blue sky would illuminate the terrain with its much smaller raw
     // radiometric value and appear disconnected from it.
     return perceptual_physical_sky_radiance(max(horizontal_diffuse, vec3<f32>(0.0)))
-        * mix(0.65, 1.0, upward_facing)
+        * sky_view
         * SKY_DIFFUSE_LIGHT_SCALE;
 }
 
@@ -2269,7 +2269,8 @@ fn terrain_material_weights_for_biome(
         1.0,
     );
     var rock_amount = smoothstep(0.10, 0.42, slope);
-    if biome == 8u {
+    // Under a snow biome's snow is mountain rock, not soil or grass.
+    if biome == 8u || terrain_material_is_snow(biome) {
         rock_amount = max(rock_amount, 0.78);
     }
 
@@ -2279,12 +2280,14 @@ fn terrain_material_weights_for_biome(
         snowline_meters,
         snowline_meters + 900.0,
         macro_height_meters,
-    ) * (1.0 - rock_amount * 0.35);
+    );
     if biome == 2u {
         snow_amount = 1.0;
     } else if biome == 9u {
         snow_amount = max(snow_amount, 0.88);
     }
+    // After the biome overrides, or a snow biome paints its cliffs white.
+    snow_amount *= snow_slope_hold(slope, biome);
 
     let exposed_amount = 1.0 - snow_amount;
     let base_amount = exposed_amount * (1.0 - rock_amount);
@@ -2364,6 +2367,18 @@ fn lake_coast_coverage(biome_id: u32, macro_height_meters: f32) -> f32 {
 
 fn terrain_material_is_vegetation(biome_id: u32) -> bool {
     return biome_id == 4u || biome_id == 5u || biome_id == 6u;
+}
+
+/// Snow sheds from faces steeper than it can hold, so those show bare rock.
+/// `slope` is `1 - cos(angle)`: 0.134 is 30 degrees, 0.293 is 45. Glacier ice
+/// clings a little steeper. A small remainder keeps snow lodged in gullies.
+fn snow_slope_hold(slope: f32, biome: u32) -> f32 {
+    let shed = select(
+        smoothstep(0.134, 0.293, slope),
+        smoothstep(0.181, 0.357, slope),
+        biome == 2u,
+    );
+    return 1.0 - shed * 0.92;
 }
 
 fn terrain_material_is_snow(biome_id: u32) -> bool {
@@ -2617,14 +2632,27 @@ fn terrain_material_color(
     let slope = 1.0 - clamp(dot(normalize(surface_normal), surface_direction), 0.0, 1.0);
     let rock_amount = smoothstep(0.10, 0.42, slope);
     let rock_color = srgb_to_linear(vec3<f32>(0.30, 0.28, 0.25));
-    color = mix(color, rock_color, rock_amount * 0.72);
+    // A snow biome's palette colour is the snow itself, so where the face is
+    // too steep to hold snow the rock beneath has to replace it. Luminance of
+    // the blended palette keeps this continuous across biome borders.
+    let snow_palette = smoothstep(
+        0.55,
+        0.80,
+        dot(base_color, vec3<f32>(0.2126, 0.7152, 0.0722)),
+    );
+    color = mix(
+        color,
+        biome_color(8u) * mix(0.88, 1.06, moisture),
+        snow_palette * (1.0 - snow_slope_hold(slope, biome)),
+    );
+    color = mix(color, rock_color, rock_amount * 0.88);
     let latitude_amount = abs(surface_direction.y);
     let snowline_meters = mix(6200.0, 2200.0, latitude_amount);
     let snow_amount = smoothstep(
         snowline_meters,
         snowline_meters + 900.0,
         macro_height_meters,
-    ) * (1.0 - rock_amount * 0.35);
+    ) * snow_slope_hold(slope, biome);
     let snow_color = srgb_to_linear(vec3<f32>(0.82, 0.87, 0.90));
     color = mix(color, snow_color, snow_amount);
     return color;

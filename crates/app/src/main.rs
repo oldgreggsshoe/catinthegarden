@@ -1350,6 +1350,7 @@ impl State {
             terrain_source.clone(),
         )
         .expect("foveated renderer must initialize");
+        let (shadow_height_view, shadow_face_quads) = foveated.shadow_height_faces();
         let terrain = terrain::TerrainRenderer::new(
             &device,
             &queue,
@@ -1359,6 +1360,7 @@ impl State {
             weather_clouds.field_bind_group_layout(),
             atmosphere.surface_lighting_resources(),
             terrain_source,
+            Some((&shadow_height_view, shadow_face_quads)),
         )
         .expect("terrain renderer must initialize");
         let forest = forest::ForestRenderer::new(
