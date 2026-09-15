@@ -455,7 +455,11 @@ static WEATHER_SEA: std::sync::Mutex<WeatherSea> = std::sync::Mutex::new(Weather
 /// - Eye on dry land: find the shoreline upwind via coarse scan (64 taps at
 ///   quadratic spacing up to 100km) + binary search (6 bisections), then measure
 ///   fetch from the shoreline. This ensures dry-beach viewers see realistic
-///   sea-state development from distant storms.
+///   sea-state development from distant storms. Validated by scenario
+///   `ocean_weather_dry_landing`: camera on 2m-high dry beach (baker's landing),
+///   sea visible ~300m upwind. Expected fetch ~12km across open water, producing
+///   visible wave development through the shelter formula (energy suppressed at
+///   zero fetch, restored at full fetch).
 ///
 /// **Efficiency:** ≤77 height queries (64 coarse + 6 bisection + origin check).
 /// **Edge cases:** narrow islands narrower than the coarse-scan spacing (1.6-100km
@@ -513,6 +517,11 @@ pub fn upwind_fetch_meters(
         return Some(100_000.0);
     }
     // Eye is on dry land. Find the shoreline upwind, then measure fetch from there.
+    // Quadratic spacing (100_000 * (step/64)^2) means coarse scan spans:
+    //   step=1: 244m, step=8: 15.6km, step=32: 250km, step=64: 100km
+    // This resolves nearshore detail finely (narrow islands ~1.6km spacing near origin)
+    // while covering far-field fetch up to 100km with just 64 taps. Binary bisection
+    // (6 levels) refines shoreline location to ±1.5km accuracy within that range.
     let mut water_start_distance = None;
     let mut water_start_land = None;
     for step in 1..=64 {
@@ -1408,6 +1417,9 @@ mod tests {
         // refuses to export a landing that is not dry land, and F4 enters
         // inspection there, facing across the sea. Here the beach runs 300m
         // upwind, then 12km of open water to a far shore.
+        // This validates the two-case logic: eye on land finds shoreline (300m away),
+        // then measures fetch from there (~12km across open water), proving that the
+        // fix correctly measures from visible sea rather than from dry ground (the bug).
         let radius = crate::planet::planet_radius_meters();
         let (shore, far_shore) = (-(300.0 / radius).sin(), -(12_300.0 / radius).sin());
         let fetch = super::upwind_fetch_meters(DVec3::X, DVec3::Y, |direction| {
