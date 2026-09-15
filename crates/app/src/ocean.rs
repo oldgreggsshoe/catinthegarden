@@ -446,18 +446,176 @@ impl WeatherSea {
 
 static WEATHER_SEA: std::sync::Mutex<WeatherSea> = std::sync::Mutex::new(WeatherSea::CALM);
 
+/// Bounded upwind fetch estimate using resident raw terrain only. Quadratic
+/// spacing resolves the near shore more finely; narrow islands between taps
+/// can still be missed. No streaming, blocking I/O, or terrain edits here.
+/// Unknown/nonfinite heights return None rather than pretending to be ocean.
+pub fn upwind_fetch_meters(
+    direction: DVec3,
+    wind_velocity: DVec3,
+    mut height_at: impl FnMut(DVec3) -> Option<f64>,
+) -> Option<f64> {
+    if !direction.is_finite() || !wind_velocity.is_finite() {
+        return None;
+    }
+    let radial = direction.normalize_or_zero();
+    if radial.length_squared() < 0.5 {
+        return None;
+    }
+    let wind = wind_velocity - radial * wind_velocity.dot(radial);
+    if wind.length_squared() < 1.0e-8 {
+        return Some(0.0);
+    }
+    let is_water = |height: Option<f64>| {
+        height
+            .filter(|height| height.is_finite())
+            .map(|height| height < 0.0)
+    };
+    let upwind = -wind.normalize();
+    let direction_at = |distance: f64| {
+        let angle = distance / planet_radius_meters();
+        radial * angle.cos() + upwind * angle.sin()
+    };
+    // Check if the eye itself is in water. If so, measure fetch from the origin.
+    // If the eye is on dry land but water is visible upwind, measure from where
+    // the water starts (the shoreline).
+    let eye_in_water = is_water(height_at(radial))?;
+    if eye_in_water {
+        // Eye is in water: measure fetch normally from the origin.
+        let mut previous = 0.0;
+        for step in 1..=64 {
+            let distance = 100_000.0 * (step as f64 / 64.0).powi(2);
+            if !is_water(height_at(direction_at(distance)))? {
+                let mut upper = distance;
+                for _ in 0..6 {
+                    let middle = (previous + upper) * 0.5;
+                    if is_water(height_at(direction_at(middle)))? {
+                        previous = middle;
+                    } else {
+                        upper = middle;
+                    }
+                }
+                return Some(previous);
+            }
+            previous = distance;
+        }
+        return Some(100_000.0);
+    }
+    // Eye is on dry land. Find the shoreline upwind, then measure fetch from there.
+    let mut water_start_distance = None;
+    let mut water_start_land = None;
+    for step in 1..=64 {
+        let distance = 100_000.0 * (step as f64 / 64.0).powi(2);
+        if is_water(height_at(direction_at(distance)))? {
+            water_start_distance = Some(distance);
+            break;
+        }
+        water_start_land = Some(distance);
+    }
+    let fetch_origin = match water_start_distance {
+        Some(water_dist) => {
+            // Refine: bisect between last-land and first-water to find the exact
+            // shoreline, then measure fetch from that point.
+            if let Some(land_dist) = water_start_land {
+                let mut lower = land_dist;
+                let mut upper = water_dist;
+                for _ in 0..6 {
+                    let middle = (lower + upper) * 0.5;
+                    if is_water(height_at(direction_at(middle)))? {
+                        upper = middle;
+                    } else {
+                        lower = middle;
+                    }
+                }
+                upper
+            } else {
+                water_dist
+            }
+        }
+        None => {
+            // No water found along upwind ray. Treat as sheltered land-origin.
+            return Some(0.0);
+        }
+    };
+    let mut previous = fetch_origin;
+    for step in 1..=64 {
+        let distance = 100_000.0 * (step as f64 / 64.0).powi(2);
+        if distance <= fetch_origin {
+            continue;
+        }
+        if !is_water(height_at(direction_at(distance)))? {
+            let mut upper = distance;
+            for _ in 0..6 {
+                let middle = (previous + upper) * 0.5;
+                if is_water(height_at(direction_at(middle)))? {
+                    previous = middle;
+                } else {
+                    upper = middle;
+                }
+            }
+            return Some(previous - fetch_origin);
+        }
+        previous = distance;
+    }
+    Some(100_000.0 - fetch_origin)
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct WeatherSeaTarget {
+    pub storm_intensity: f32,
+    pub wind_speed_meters_per_second: f64,
+    pub fetch_meters: f64,
+}
+
+impl WeatherSeaTarget {
+    fn intensity(self) -> Option<f32> {
+        if !self.storm_intensity.is_finite()
+            || !self.wind_speed_meters_per_second.is_finite()
+            || !self.fetch_meters.is_finite()
+        {
+            return None;
+        }
+        // Artistic development envelope, not a significant-wave-height law.
+        // Keep existing storm energy, allow dry strong winds to develop a sea,
+        // and suppress that developing component when land shortens fetch.
+        // The calm column's remote swell remains present even with zero fetch.
+        let wind = (self.wind_speed_meters_per_second / 30.0).clamp(0.0, 1.0);
+        let energy = wind.max(f64::from(self.storm_intensity.clamp(0.0, 1.0)));
+        let shelter = 1.0 - (-self.fetch_meters.max(0.0) / 25_000.0).exp();
+        Some((energy * shelter) as f32)
+    }
+}
+
 /// Update before camera/ship water queries. All visible water shares this
 /// camera-region target because the renderer has a single sea-state uniform.
 /// Sampling weather per water vertex would also require spatial derivatives.
-pub fn update_weather_sea(time: f64, sample_local_storm: impl FnOnce() -> f32) {
+pub fn update_weather_sea(time: f64, sample_target: impl FnOnce() -> Option<WeatherSeaTarget>) {
     if matches!(SEA_STATE_MODE.get(), Some(SeaStateMode::Weather)) {
         let mut response = WEATHER_SEA.lock().expect("weather sea response");
         if !time.is_finite() || time < response.next_target_time {
             return;
         }
-        let local_storm = sample_local_storm();
-        if response.retarget(time, local_storm) {
-            tracing::info!(local_storm, ocean_time = time, "ocean weather target");
+        let Some((target, intensity)) = sample_target()
+            .and_then(|target| target.intensity().map(|intensity| (target, intensity)))
+        else {
+            // Retry only once per ocean second; keep the last known response
+            // during streaming instead of inventing unlimited fetch.
+            response.next_target_time = time + 1.0;
+            tracing::info!(
+                ocean_time = time,
+                "ocean fetch unavailable; retaining target"
+            );
+            return;
+        };
+        if response.retarget(time, intensity) {
+            tracing::info!(
+                weather_storm_intensity = target.storm_intensity,
+                local_wind_speed_meters_per_second = target.wind_speed_meters_per_second,
+                upwind_fetch_meters = target.fetch_meters,
+                local_storm = intensity,
+                ocean_time = time,
+                "ocean weather target"
+            );
         }
     }
 }
@@ -1184,6 +1342,129 @@ mod tests {
         global_wave_height_meters, global_wave_vertical_velocity_meters_per_second,
         maximum_wave_height_meters, wave_height_stats,
     };
+
+    #[test]
+    fn fetch_uses_upwind_land_and_is_bounded_without_loading_tiles() {
+        let radius = crate::planet::planet_radius_meters();
+        let shore = -(12_000.0 / radius).sin();
+        let mut calls = 0;
+        let mut height = |direction: DVec3| {
+            calls += 1;
+            Some(if direction.y < shore { 5.0 } else { -20.0 })
+        };
+        let sheltered = super::upwind_fetch_meters(DVec3::X, DVec3::Y, &mut height).unwrap();
+        assert!((11_950.0..=12_000.0).contains(&sheltered), "{sheltered}");
+        assert!(calls <= 71);
+        let exposed = super::upwind_fetch_meters(DVec3::X, -DVec3::Y, |direction| {
+            Some(if direction.y < shore { 5.0 } else { -20.0 })
+        });
+        assert_eq!(exposed, Some(100_000.0));
+        assert_eq!(
+            super::upwind_fetch_meters(DVec3::X, DVec3::Y, |_| Some(0.0)),
+            Some(0.0)
+        );
+        assert_eq!(
+            super::upwind_fetch_meters(DVec3::X, DVec3::ZERO, |_| panic!("no fetch without wind")),
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn unknown_fetch_is_not_treated_as_open_ocean() {
+        assert_eq!(
+            super::upwind_fetch_meters(DVec3::X, DVec3::Y, |_| None),
+            None
+        );
+        assert_eq!(
+            super::upwind_fetch_meters(DVec3::X, DVec3::Y, |_| Some(f64::NAN)),
+            None
+        );
+        let mut calls = 0;
+        assert_eq!(
+            super::upwind_fetch_meters(DVec3::X, DVec3::Y, |_| {
+                calls += 1;
+                if calls < 4 { Some(-20.0) } else { None }
+            }),
+            None
+        );
+        assert_eq!(calls, 4);
+    }
+
+    #[test]
+    fn a_dry_eye_measures_fetch_from_the_sea_it_is_looking_at() {
+        // Dry ground under the eye is where the game puts people: the baker
+        // refuses to export a landing that is not dry land, and F4 enters
+        // inspection there, facing across the sea. Here the beach runs 300m
+        // upwind, then 12km of open water to a far shore.
+        let radius = crate::planet::planet_radius_meters();
+        let (shore, far_shore) = (-(300.0 / radius).sin(), -(12_300.0 / radius).sin());
+        let fetch = super::upwind_fetch_meters(DVec3::X, DVec3::Y, |direction| {
+            Some(if direction.y < shore && direction.y > far_shore {
+                -20.0
+            } else {
+                5.0
+            })
+        });
+        let fetch = fetch.expect("the sea 300m away is resident");
+        assert!(
+            (11_950.0..=12_000.0).contains(&fetch),
+            "an eye on the beach measured {fetch}m of fetch across 12km of open water"
+        );
+    }
+
+    #[test]
+    fn stepping_off_the_tideline_does_not_switch_the_fetch() {
+        let radius = crate::planet::planet_radius_meters();
+        // Water from `near` metres upwind of the eye out to 12km; a negative
+        // `near` puts the eye itself that far inside the water.
+        let sea = |near: f64| {
+            move |direction: DVec3| {
+                Some(
+                    if direction.y < -(near / radius).sin()
+                        && direction.y > -(12_000.0 / radius).sin()
+                    {
+                        -20.0
+                    } else {
+                        5.0
+                    },
+                )
+            }
+        };
+        let wet = super::upwind_fetch_meters(DVec3::X, DVec3::Y, sea(-1.0)).unwrap();
+        let dry = super::upwind_fetch_meters(DVec3::X, DVec3::Y, sea(1.0)).unwrap();
+        assert!(
+            (wet - dry).abs() < 40.0,
+            "a metre either side of the tideline measured {wet}m wet and {dry}m dry"
+        );
+    }
+
+    #[test]
+    fn wind_speed_and_fetch_bound_the_developing_sea_target() {
+        let target = |speed, fetch| {
+            super::WeatherSeaTarget {
+                storm_intensity: 0.0,
+                wind_speed_meters_per_second: speed,
+                fetch_meters: fetch,
+            }
+            .intensity()
+            .unwrap()
+        };
+        assert_eq!(target(0.0, 100_000.0), 0.0);
+        assert_eq!(target(30.0, 0.0), 0.0);
+        assert!(target(30.0, 1000.0) < target(30.0, 10_000.0));
+        assert!(target(15.0, 100_000.0) < target(30.0, 100_000.0));
+        assert!(target(30.0, 100_000.0) > 0.98);
+        assert!(target(300.0, 1.0e9) <= 1.0);
+        assert_eq!(
+            super::WeatherSeaTarget {
+                storm_intensity: 0.0,
+                wind_speed_meters_per_second: f64::NAN,
+                fetch_meters: 1.0
+            }
+            .intensity(),
+            None
+        );
+    }
 
     #[test]
     fn weather_sea_target_is_sampled_before_ship_buoyancy() {

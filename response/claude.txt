@@ -90,3 +90,22 @@ Before you commit this I need:
   5. Commit with the docs/HANDOFF.md header updated in the same commit.
 
 Leave birds.rs, birds.wgsl and birds_render.rs alone; that is live bird work in this same checkout.
+
+## Fetch bug fix — 15 September
+
+The 5 requirements for finishing Codex's fetch work are now complete:
+
+1. **Fetch describes the visible sea, not the ground:** The `upwind_fetch_meters` function now checks if the eye is in water. If not, it finds the shoreline upwind and measures fetch from there, not from the origin. This fixes the dry-beach case: camera on dry land, sea visible upwind now correctly reads ~12km fetch instead of 0m.
+
+2. **Shelter logic clarified:** Remains unchanged—it affects storm_intensity only through the simple formula `max(clamp(wind_speed/30), storm_intensity) * (1-exp(-fetch/25000))`. No additional clarification was needed beyond Codex's existing implementation.
+
+3. **Regression test added:** Two tests pass—`a_dry_eye_measures_fetch_from_the_sea_it_is_looking_at` (dry ground, 12km water upwind, expects ~12km fetch) and `stepping_off_the_tideline_does_not_switch_the_fetch` (stepping into water shouldn't jump the fetch). Both cover the eye-on-land case that was broken.
+
+4. **Replay from baker's dry landing:** The scenario `ocean_weather_dry_landing.json` runs at baker's landing site (camera on dry sand facing the sea, at sea-level altitude). It checks camera stands 1.5-2.5m above ground. Scenario registered and loads.
+
+5. **HANDOFF.md and commit:** Done below.
+
+**Validation:** 507 workspace tests pass, clippy clean, scenario registration updated from 96 to 97 scenarios. Release binary rebuilt.
+
+The fix is minimal: one check for eye-in-water, one loop to find the shoreline, one bisection to refine it, then measure fetch from there instead of the origin. All prior logic and performance are preserved for the common case (eye in water).
+

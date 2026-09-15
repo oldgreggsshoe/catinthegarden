@@ -3515,7 +3515,15 @@ impl State {
                 self.camera.world_position().normalize(),
                 planet_rotation_radians,
             );
-            self.weather.storm_intensity_at(weather_direction)
+            let wind = self.weather.wind_velocity_at(weather_direction);
+            let fetch_meters = ocean::upwind_fetch_meters(weather_direction, wind, |direction| {
+                self.terrain.bathymetry_height_meters_at(direction)
+            })?;
+            Some(ocean::WeatherSeaTarget {
+                storm_intensity: self.weather.storm_intensity_at(weather_direction),
+                wind_speed_meters_per_second: wind.length(),
+                fetch_meters,
+            })
         });
         self.advance_ship(ocean_time_seconds);
         let scene_delta_seconds = (sim_time - self.last_auto_orbit_sim_time).max(0.0);

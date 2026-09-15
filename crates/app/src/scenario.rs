@@ -312,6 +312,7 @@ scenarios! {
     "ocean_rough_horizon" => "../scenarios/ocean_rough_horizon.json",
     "ocean_wind_trial" => "../scenarios/ocean_wind_trial.json",
     "ocean_weather_trial" => "../scenarios/ocean_weather_trial.json",
+    "ocean_weather_dry_landing" => "../scenarios/ocean_weather_dry_landing.json",
     "ocean_calm_trial" => "../scenarios/ocean_calm_trial.json",
     "ocean_moderate_trial" => "../scenarios/ocean_moderate_trial.json",
     "ocean_waterline_flat" => "../scenarios/ocean_waterline_flat.json",
@@ -605,6 +606,7 @@ impl ScenarioRunner {
                 | "landing_site_ground_detail"
                 | "landing_site_eye_level"
                 | "stand_on_ground"
+                | "ocean_weather_dry_landing"
                 | "terrain_detail_altitude_ladder"
         ) {
             return;
@@ -630,6 +632,7 @@ impl ScenarioRunner {
                 | "landing_site_ground_detail"
                 | "landing_site_eye_level"
                 | "stand_on_ground"
+                | "ocean_weather_dry_landing"
         ) {
             for waypoint in &mut self.definition.sun_waypoints {
                 waypoint.direction = rotation
@@ -1079,7 +1082,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 96);
+        assert_eq!(SCENARIO_NAMES.len(), 97);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));

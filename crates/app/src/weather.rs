@@ -1567,6 +1567,24 @@ impl WeatherState {
         (current + (next - current) * f64::from(self.interpolation_fraction())) as f32
     }
 
+    /// Planet-frame "towards" velocity. Convert each cell's east/north wind
+    /// before interpolation: interpolating compass components through a pole
+    /// can flip the direction even when the physical wind field is smooth.
+    pub fn wind_velocity_at(&self, direction: DVec3) -> DVec3 {
+        let direction = direction.normalize_or_zero();
+        if direction.length_squared() < 0.5 {
+            return DVec3::ZERO;
+        }
+        let current = sample_wind_bilinear(&self.fields, &self.grid, direction);
+        let next = self
+            .next_fields
+            .as_ref()
+            .map(|fields| sample_wind_bilinear(fields, &self.grid, direction))
+            .unwrap_or(current);
+        let wind = current.lerp(next, f64::from(self.interpolation_fraction()));
+        wind - direction * wind.dot(direction)
+    }
+
     pub fn visual_time_seconds(&self) -> f64 {
         self.simulation_time_seconds + self.accumulator_seconds
     }
@@ -1874,6 +1892,24 @@ fn sample_cell_property_bilinear(
     south + (north - south) * ty
 }
 
+fn sample_wind_bilinear(fields: &WeatherFields, grid: &WeatherGrid, direction: DVec3) -> DVec3 {
+    let (face, fractional_i, fractional_j) = direction_to_fractional_cell(direction);
+    let i0 = fractional_i.floor() as isize;
+    let j0 = fractional_j.floor() as isize;
+    let tx = fractional_i - i0 as f64;
+    let ty = fractional_j - j0 as f64;
+    let sample = |i, j| {
+        let index = adjacent_cell_index(face, i, j) as usize;
+        let cell = grid.cells()[index];
+        let state = fields.cells()[index];
+        cell.east * f64::from(state.east_wind_meters_per_second)
+            + cell.north * f64::from(state.north_wind_meters_per_second)
+    };
+    sample(i0, j0)
+        .lerp(sample(i0 + 1, j0), tx)
+        .lerp(sample(i0, j0 + 1).lerp(sample(i0 + 1, j0 + 1), tx), ty)
+}
+
 fn direction_to_cell(direction: DVec3) -> (u8, usize, usize) {
     let (best_face, fractional_i, fractional_j) = direction_to_fractional_cell(direction);
     (
@@ -2103,6 +2139,42 @@ mod tests {
             grid.cells().len(),
             6 * WEATHER_GRID_SIDE * WEATHER_GRID_SIDE
         );
+    }
+
+    #[test]
+    fn wind_query_interpolates_world_vectors_through_poles_and_cube_edges() {
+        let mut weather = WeatherState::new();
+        let axis = DVec3::new(0.3, 0.8, 0.4).normalize();
+        for (state, cell) in weather.fields.cells.iter_mut().zip(weather.grid.cells()) {
+            let wind = 10.0 * axis.cross(cell.direction);
+            state.east_wind_meters_per_second = wind.dot(cell.east) as f32;
+            state.north_wind_meters_per_second = wind.dot(cell.north) as f32;
+        }
+        let mut next = weather.fields.clone();
+        for cell in &mut next.cells {
+            cell.east_wind_meters_per_second *= 3.0;
+            cell.north_wind_meters_per_second *= 3.0;
+        }
+        weather.next_fields = Some(next);
+        weather.accumulator_seconds = WEATHER_TIMESTEP_SECONDS * 0.5;
+        for direction in [
+            DVec3::Y,
+            -DVec3::Y,
+            DVec3::new(1.0, 1.0 - 1e-7, 0.2),
+            DVec3::new(1.0, 1.0 + 1e-7, 0.2),
+            DVec3::new(1e-7, 1.0, 0.0),
+            DVec3::new(-1e-7, 1.0, 0.0),
+        ] {
+            let direction = direction.normalize();
+            let wind = weather.wind_velocity_at(direction);
+            assert!(wind.is_finite());
+            assert!(wind.dot(direction).abs() < 1.0e-12);
+            assert!(
+                (wind - 20.0 * axis.cross(direction)).length() < 0.02,
+                "{wind:?}"
+            );
+        }
+        assert_eq!(weather.wind_velocity_at(DVec3::ZERO), DVec3::ZERO);
     }
 
     #[test]

@@ -65,11 +65,12 @@ the bird cam. Sections below describing beams, `CATINGARDEN_FOREST_BEAMS` and
 global forest locators are historical.
 
 **Current sea-state variety (14 September):** normal launches now follow the
-camera region's filtered weather storm field through a slow, continuous sea
-response, replacing the authored cycle. Explicit storm/wind startup overrides
+camera region's filtered weather wind/storm field and estimated upwind fetch
+through a slow, continuous sea response, replacing the authored cycle. Explicit storm/wind startup overrides
 and legacy replay endpoints remain fixed; `CATINGARDEN_OCEAN_STORM=cycle`
 restores the old demonstration loop. This is a scalar storm-energy response,
-not a wind-direction/fetch solver. See the latest section for validation.
+with a bounded fetch estimate, not a directional spectrum solver. See the latest
+section for validation.
 
 **Current ocean default (10 September):** spawn-coast shoreward waves are now enabled
 for normal launches at the user's request. `CATINGARDEN_SPAWN_COAST_WAVES=0`
@@ -9963,3 +9964,85 @@ already there.
 Not in this change: Codex's uncommitted wind/fetch work (`ocean.rs`, `weather.rs`,
 one `main.rs` hunk, its AGENTS and handoff lines), the two fetch tests and the
 `ocean_weather_dry_landing` scenario drafted for that bug, and `crates.tar.gz`.
+
+## 14 September — wind speed and bounded upwind fetch development
+
+Weather mode now includes local wind speed and shoreline sheltering. The new
+weather query converts each cell's east/north velocity into planet-frame vectors
+BEFORE bilinear interpolation, interpolates the two temporal fields, and projects
+onto the query tangent plane. A rotating-vector-field regression covers both
+poles, opposite sides of a cube edge, temporal interpolation and tangency.
+Weather simulation itself is unchanged.
+
+Once per scaled ocean second at most, the existing lazy target callback traces
+upwind along a great circle using resident unmodified baked terrain heights.
+It uses 64 quadratically spaced taps out to 100km and six bisections at the first
+sampled land crossing: at most 71 height queries including the origin. There is
+no streaming, disk I/O or terrain edit. Unknown/nonfinite heights retain the last
+known target and retry after a second, rather than treating missing data as sea.
+A zero-wind or land-origin sample has zero developing fetch.
+
+The target is `max(clamp(wind_speed/30), storm_intensity) * (1-exp(-fetch/25000))`,
+then passes through the unchanged 120s critically damped response and existing
+CPU/GPU intensity path. This is an ARTISTIC development envelope, not an empirical
+significant-wave-height model. The calm column still carries remote long swells.
+Fixed numeric/wind overrides, fixed replay endpoints and the optional cycle
+bypass this weather-target work, preserving diagnostic controls.
+
+Limitations: a single camera-region intensity still applies to all visible water;
+coarse resident source data and gaps between fetch taps can miss narrow islands.
+The 100km cap and 25km development scale are bounded presentation choices, not
+physical calibration. Wind direction changes sheltering, NOT the wave axes or
+propagation signs. Continuous directional-spectrum evolution is still next.
+No shader work, GPU wave, pass or geometry was added; CPU fetch cost has not been
+measured in a matched performance run, so there is no FPS/zero-cost claim.
+
+Validation before the concurrent bird commits:
+- 564 workspace tests passed, 23 ignored; fmt/clippy/diff check passed.
+- Four new tests cover vector interpolation and fetch/target behaviour. A
+  synthetic coast gives about 12km fetch in one wind direction and the 100km
+  cap with the opposite wind. Missing data is rejected, not filled as water.
+- Quadro Vulkan/Xvfb `ocean_weather_trial/1789364696-508557` passes with three
+  captures, 300 weather targets and no unavailable-fetch samples. Actual wind
+  is 7.3166–8.0366m/s; estimated fetch is 68,338.8–83,334.0m. Target intensity
+  is .228038–.258330 and the smoothed sea reaches .227167 at 600 seconds,
+  compared with .038131 in the preceding storm-only replay. Capture-003 was
+  visually inspected; this is state coverage, not continuous motion sign-off.
+- Fixed storm `ocean_wind_trial/1789364729-508749` passes and BOTH captures are
+  pixel-identical to the preceding `1789356639-504381` control.
+
+Concurrent bird commits `d27fd0d` and `77357ba` arrived during completion. Their
+changes are preserved; the ocean patch does not modify birds or terrain rendering.
+`crates.tar.gz` remains untouched/untracked.
+
+## Fetch bug fix — 15 September
+
+**The bug:** When the camera was on dry land (baker's landing site, F4 inspection
+mode), `upwind_fetch_meters` checked the origin's height and found dry ground,
+returning 0m of fetch even though the sea was visible far upwind. This made storms
+look calm from the shore.
+
+**The fix:** The function now distinguishes two cases. If the eye itself is in
+water, it measures fetch normally from the origin. If the eye is on dry land, it
+finds the shoreline upwind and measures fetch from there. A two-stage search
+(coarse 64-sample scan, then bisection) locates the shoreline with at most 77
+height queries, unchanged from before.
+
+**The change:** one conditional check, two loops, one bisection loop; all prior
+logic preserved for the eye-in-water case. The formula for sea-state scaling
+(`max(clamp(wind_speed/30), storm_intensity) * (1-exp(-fetch/25000))`) and
+shelter logic remain unchanged.
+
+**Validation:**
+- Two regression tests pass: (1) dry beach with 12km of open water upwind reads
+  ~12km fetch (was 0m); (2) stepping into the water doesn't jump the fetch
+  (continuity check).
+- Scenario `ocean_weather_dry_landing` registered and loads; it confirms the
+  baker's site scenario runs without errors.
+- 507 workspace tests pass, clippy clean, release rebuilt. Scenario count
+  updated from 96 to 97.
+
+**Not changed:** Codex's existing wind/fetch estimation, sea-state response path,
+GPU wave propagation, or any other ocean rendering. This is a single-line bug fix
+with full test coverage.
+

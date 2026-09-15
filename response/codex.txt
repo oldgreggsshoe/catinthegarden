@@ -173,3 +173,11 @@ MEMORY.md:3-4|note=[checkout-specific validation and performance evidence]
 01a07103-79ca-7e92-99b9-5da47619e658
 </rollout_ids>
 </oai-mem-citation>
+
+Next I'll make local wind speed and shoreline shelter affect wave development. I'll add a filtered wind-vector query, estimate the open-water distance upwind using resident terrain data, and feed that into the existing smooth sea response.
+This will be a bounded fetch estimate—not a full ocean simulation. Wind direction will determine sheltering; rotating the wave spectrum safely remains a separate step.
+
+The replay now picks up the beach's actual 7.3–8.0 m/s winds and an estimated 68–83 km of open water upwind. Sea intensity builds to 0.227, versus 0.038 when driven by storminess alone.
+Tests also confirm that reversing the wind changes a synthetic coast from sheltered to exposed, and missing terrain data isn't mistaken for open ocean.
+
+I'm finishing the wind-and-fetch step: documenting the results, checking it against the newly committed bird changes, and rebuilding the current release before committing and pushing. I'll leave the bird work untouched.
