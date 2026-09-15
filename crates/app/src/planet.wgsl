@@ -2303,6 +2303,38 @@ fn ocean_fragment_with_transmission_mode(input: OceanVertexOutput, bed: vec4<f32
     return vec4<f32>(water_aerial_color, shoreline_alpha);
 }
 
+const BIOME_EDGE_NOISE_WAVELENGTH_METERS: f32 = 700.0;
+const BIOME_EDGE_NOISE_STRENGTH: f32 = 1.2;
+const BIOME_EDGE_SHARPNESS: f32 = 2.5;
+
+/// Categorical biomes blended bilinearly meet along a staircase of source
+/// texels, which reads from any distance as pixel-stepped patches. Weight each
+/// biome by its own world-space noise and sharpen, so the meeting line wanders
+/// instead. A corner with zero weight still contributes nothing, so the blend
+/// stays continuous across texel and tile edges.
+fn organic_biome_blend(blend: BiomeBlendSample, direction: vec3<f32>) -> BiomeBlendSample {
+    let domain = terrain_detail_domain(direction);
+    let coarse_cells = domain * (PLANET_RADIUS_METERS / BIOME_EDGE_NOISE_WAVELENGTH_METERS);
+    let coarse_floor = floor(coarse_cells);
+    var scores = vec4<f32>(0.0);
+    for (var i = 0; i < 4; i += 1) {
+        if blend.weights[i] <= 0.0 {
+            continue;
+        }
+        let id = blend.ids[i];
+        var share = 0.0;
+        for (var j = 0; j < 4; j += 1) {
+            share += select(0.0, blend.weights[j], blend.ids[j] == id);
+        }
+        let salt = vec3<f32>(17.31, 5.97, 11.13) * f32(id + 1u);
+        // One octave: a finer one is sub-pixel at lowland range and sparkles.
+        let noise = terrain_detail_value_noise(vec3<i32>(coarse_floor), coarse_cells - coarse_floor + salt).value;
+        let lifted = share * exp(BIOME_EDGE_NOISE_STRENGTH * clamp(noise, -1.0, 1.0));
+        scores[i] = blend.weights[i] / share * pow(lifted, BIOME_EDGE_SHARPNESS);
+    }
+    return BiomeBlendSample(blend.ids, scores / max(scores.x + scores.y + scores.z + scores.w, 1.0e-6));
+}
+
 fn terrain_shadow_height(direction: vec3<f32>, face_quads: f32) -> f32 {
     let d = normalize(direction);
     let a = abs(d);
@@ -2422,11 +2454,14 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     if render_debug_mode == RENDER_DEBUG_FLAT_TRIANGLES {
         return flat_triangle_colour(input);
     }
-    let lake_coverage = lake_coast_coverage(biome_id, macro_height_meters);
-    if lake && lake_coverage > 0.0 {
+    // Weighted by the blended lake share, so the shoreline follows the
+    // bilinear field instead of the lake texels' staircase.
+    let lake_coverage = select(0.0, biome_blend_share(organic_biome_blend(sample_biome_blend(input.source_uv), direction), 1u), outmap)
+        * (1.0 - smoothstep(-80.0, 0.0, macro_height_meters));
+    if lake_coverage > 0.0 {
         if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
             return vec4<f32>(mix(
-                blended_biome_color(sample_biome_blend(input.source_uv)),
+                blended_biome_color(organic_biome_blend(sample_biome_blend(input.source_uv), direction)),
                 debug_ocean_albedo(),
                 lake_coverage,
             ), 1.0);
@@ -2468,7 +2503,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             direction,
             water_surface_height,
         );
-        let lake_land_color = blended_biome_color(sample_biome_blend(input.source_uv));
+        let lake_land_color = blended_biome_color(organic_biome_blend(sample_biome_blend(input.source_uv), direction));
         let lake_surface_color = mix(lake_land_color, water_surface_color, lake_coverage);
         let lake_aerial_color = mix(lake_land_color, water_aerial_color, lake_coverage);
         let misted_lake_aerial_color = apply_terrain_distance_fog(lake_aerial_color, input);
@@ -2487,9 +2522,13 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         input.surface_height_and_fog_color.x,
         scaled_terrain_macro_height(macro_height_meters),
     );
-    let ocean_coverage = select(0.0, 1.0, BODY_HAS_OCEAN && outmap && biome_id != 2u)
+    let biome_blend = organic_biome_blend(sample_biome_blend(input.source_uv), direction);
+    // Snow and ice lowland takes no shoreline sand. Weighted by the blended
+    // snow share: gating on the nearest biome stamped orange texel staircases
+    // into low ground inside the ice.
+    let ocean_coverage = select(0.0, 1.0, BODY_HAS_OCEAN && outmap)
+        * (1.0 - biome_blend_snow_share(biome_blend))
         * (1.0 - smoothstep(0.0, 220.0, shoreline_height));
-    let biome_blend = sample_biome_blend(input.source_uv);
     let moisture = sample_moisture(input.source_uv);
     let base_biome_color = blended_biome_color(biome_blend);
     let terrain_normal = input.world_normal;
@@ -2716,7 +2755,8 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
                 + surface_texture * TERRAIN_DETAIL_ALBEDO_STRENGTH;
         }
     }
-    if outmap && biome_id == 2u {
+    let ice_share = select(0.0, biome_blend_share(biome_blend, 2u), outmap);
+    if ice_share > 0.0 {
         let ice_light_floor = clamp(
             max(
                 max(terrain_surface_irradiance.x, terrain_surface_irradiance.y),
@@ -2725,23 +2765,25 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             0.0,
             1.0,
         );
-        textured_surface_lighting = max(
+        textured_surface_lighting = mix(
             textured_surface_lighting,
-            biome_color(2u) * 0.65 * ice_light_floor,
+            max(textured_surface_lighting, biome_color(2u) * 0.65 * ice_light_floor),
+            ice_share,
         );
     }
-    textured_surface_lighting = neutralize_snow_surface_lighting(
+    textured_surface_lighting = neutralize_snow_surface_lighting_blend(
         textured_surface_lighting,
-        biome_id,
+        biome_blend,
     );
+    let snow_look = albedo_snow_look(textured_terrain_albedo);
     // Aerial perspective is affine: attenuate the fragment-frequency surface
     // by the interpolated view transmittance, then add in-scatter. Rebuilding
     // this from a ratio of two vertex colours used to require a hard threshold
     // near black. Low-sun shadows crossed that threshold per channel, lifting
     // their interiors by up to 16x while leaving a dark outline at the switch.
     let textured_aerial_color = textured_surface_lighting
-        * terrain_material_transmittance(input.aerial_transmittance, biome_id)
-        + terrain_material_in_scatter(input.aerial_in_scatter, biome_id);
+        * terrain_material_transmittance_blend(input.aerial_transmittance, biome_blend, snow_look)
+        + terrain_material_in_scatter_blend(input.aerial_in_scatter, biome_blend, snow_look);
     let misted_textured_aerial_color = apply_terrain_distance_fog(
         textured_aerial_color,
         input,
@@ -2762,8 +2804,8 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     // meets the submerged sediment at zero depth and blends into land inland.
     let sand_light = beach_sand_albedo(shoreline_height) * terrain_surface_irradiance;
     let surface_color = mix(textured_surface_lighting, sand_light, ocean_coverage);
-    let aerial_color = surface_color * terrain_material_transmittance(input.aerial_transmittance, biome_id)
-        + terrain_material_in_scatter(input.aerial_in_scatter, biome_id);
+    let aerial_color = surface_color * terrain_material_transmittance_blend(input.aerial_transmittance, biome_blend, snow_look)
+        + terrain_material_in_scatter_blend(input.aerial_in_scatter, biome_blend, snow_look);
     let misted_aerial_color = apply_terrain_distance_fog(aerial_color, input);
     if render_debug_mode == RENDER_DEBUG_SURFACE_LIGHTING {
         return vec4<f32>(surface_color, 1.0);

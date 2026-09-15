@@ -50,7 +50,7 @@ independent judges scored it against midday summit photos at 2.3/10, then 2.5/10
 snow sheds from slopes of 30-45 degrees with rock beneath snow biomes, sky fill uses the
 `(1 + n.up)/2` view factor, and raster casts ridge-scale terrain shadows by marching the ray path's
 ~3km height faces (shared binding 15). Each measured small at a 64-degree sun. Still judged:
-stretched cliff texture, faceted/sawtooth ridges, pixel-edged lowland biome patches (next). The
+stretched cliff texture, faceted/sawtooth ridges, and a salmon speckle on lake/coast edges; the orange pixel-edged lowland patches are fixed. The
 scenario lowers its camera 227.35m because `ACTIVE_HIGHEST_PROMINENCE_DRAWN_SURFACE_METERS` is
 stale. See the newest section.
 
@@ -10082,4 +10082,23 @@ What the measurements showed, in the order they overturned my guesses:
 
 Round scores: 2.3 then 2.5/10. All three judges still rank exposed rock/relief shape, stretched
 cliff texture, pixel-edged lowland patches, a repeating snow pattern and stars at noon.
+
+## Lowland orange patches were aerial neutrality, not a material — 15 September 2026
+
+The judges' "flat pastel orange patches with pixel-step edges" over the peak's lowlands measured, in
+the same pixels: raw albedo white (216,221,223), surface lighting white (232,235,237), final orange
+(207,177,138) beside neutral ground (187,187,191) of equal luminance. The long-path transmittance is
+blue-depleted; `terrain_material_transmittance/in_scatter` grey it for snow, but keyed on the
+nearest biome ID, so white ground in a non-snow biome kept the orange and took that biome's texel
+staircase as its outline. Neutrality is now `max(blended snow share, albedo_snow_look(albedo))`,
+where the look is bright and low-chroma, so sand and desert keep their warm path. Orange pixels per
+heading fell to 0-9 (S 10,123 -> 3). A luminance-only diff reads 0.00% for this change: judge hue
+fixes by colour, not by brightness.
+
+Also: lake coverage, the ice light floor and snow lighting use blended biome shares, and
+`organic_biome_blend()` reweights the four corners by per-biome world noise so shared edges curve
+instead of stepping. Two beach-sand gates moved to blended shares too, but forcing shoreline sand
+off changed 0.00% of these frames, so they are consistency fixes. Three guesses were wrong before
+the debug modes settled it (biome gates, beach sand, shoreline sand); split a colour by
+albedo/lighting/aerial modes before editing materials. Evidence: `test-runs/peak_judging_2026-09-15/lowland_edges/`.
 

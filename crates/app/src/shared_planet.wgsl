@@ -2385,6 +2385,81 @@ fn terrain_material_is_snow(biome_id: u32) -> bool {
     return biome_id == 2u || biome_id == 9u;
 }
 
+/// Share of a biome blend owned by one biome. Colour decisions weighted by
+/// this fade across a texel border; switching on the nearest biome drew every
+/// patch edge as a staircase of texels.
+fn biome_blend_share(blend: BiomeBlendSample, wanted: u32) -> f32 {
+    return dot(blend.weights, vec4<f32>(
+        select(0.0, 1.0, blend.ids.x == wanted),
+        select(0.0, 1.0, blend.ids.y == wanted),
+        select(0.0, 1.0, blend.ids.z == wanted),
+        select(0.0, 1.0, blend.ids.w == wanted),
+    ));
+}
+
+fn biome_blend_snow_share(blend: BiomeBlendSample) -> f32 {
+    return biome_blend_share(blend, 2u) + biome_blend_share(blend, 9u);
+}
+
+fn biome_blend_vegetation_share(blend: BiomeBlendSample) -> f32 {
+    return biome_blend_share(blend, 4u) + biome_blend_share(blend, 5u) + biome_blend_share(blend, 6u);
+}
+
+/// How much a rendered (linear) albedo looks like snow: bright and nearly grey.
+/// Aerial neutrality keys on this as well as the biome, because ground that
+/// renders white in a non-snow biome otherwise takes the raw orange long-path
+/// transmittance, stamped along that biome's texel edges.
+fn albedo_snow_look(albedo: vec3<f32>) -> f32 {
+    let luminance = dot(albedo, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let brightest = max(max(albedo.x, albedo.y), albedo.z);
+    let chroma = (brightest - min(min(albedo.x, albedo.y), albedo.z)) / max(brightest, 1.0e-4);
+    return smoothstep(0.35, 0.60, luminance) * (1.0 - smoothstep(0.25, 0.45, chroma));
+}
+
+fn terrain_aerial_neutrality(blend: BiomeBlendSample, snow_look: f32) -> f32 {
+    return min(
+        0.82 * biome_blend_vegetation_share(blend)
+            + 0.92 * max(biome_blend_snow_share(blend), snow_look),
+        0.92,
+    );
+}
+
+fn terrain_material_transmittance_blend(
+    transmittance: vec3<f32>,
+    blend: BiomeBlendSample,
+    snow_look: f32,
+) -> vec3<f32> {
+    if !BODY_HAS_ATMOSPHERE {
+        return vec3<f32>(1.0);
+    }
+    let neutrality = terrain_aerial_neutrality(blend, snow_look);
+    let luminance = dot(transmittance, vec3<f32>(0.2126, 0.7152, 0.0722));
+    return mix(transmittance, vec3<f32>(luminance), neutrality);
+}
+
+fn terrain_material_in_scatter_blend(
+    in_scatter: vec3<f32>,
+    blend: BiomeBlendSample,
+    snow_look: f32,
+) -> vec3<f32> {
+    if !BODY_HAS_ATMOSPHERE {
+        return vec3<f32>(0.0);
+    }
+    let vegetation = biome_blend_vegetation_share(blend);
+    let neutrality = terrain_aerial_neutrality(blend, snow_look);
+    let luminance = dot(in_scatter, vec3<f32>(0.2126, 0.7152, 0.0722));
+    return mix(in_scatter, vec3<f32>(luminance), neutrality)
+        * mix(1.0, VEGETATION_AERIAL_IN_SCATTER_SCALE, vegetation);
+}
+
+fn neutralize_snow_surface_lighting_blend(
+    lighting: vec3<f32>,
+    blend: BiomeBlendSample,
+) -> vec3<f32> {
+    let luminance = dot(lighting, vec3<f32>(0.2126, 0.7152, 0.0722));
+    return mix(lighting, vec3<f32>(luminance), 0.82 * biome_blend_snow_share(blend));
+}
+
 fn terrain_material_transmittance(
     transmittance: vec3<f32>,
     biome_id: u32,
@@ -2608,12 +2683,12 @@ fn terrain_material_color(
     }
 
     color = base_color * mix(0.88, 1.06, moisture);
-    if biome != 2u {
-        // Use bilinear terrain height, not a nearest biome class, for the
-        // coast. This gives a continuous shallow-water/beach transition.
-        let beach = 1.0 - smoothstep(20.0, 220.0, macro_height_meters);
-        color = mix(color, srgb_to_linear(BEACH_SAND_COLOUR_SRGB), beach * 0.65);
-    }
+    // Use bilinear terrain height, not a nearest biome class, for the coast:
+    // a continuous shallow-water/beach transition. Ice and snow get no sand,
+    // judged from the blended palette so the exclusion has no texel edges.
+    let beach = (1.0 - smoothstep(20.0, 220.0, macro_height_meters))
+        * (1.0 - smoothstep(0.55, 0.80, dot(base_color, vec3<f32>(0.2126, 0.7152, 0.0722))));
+    color = mix(color, srgb_to_linear(BEACH_SAND_COLOUR_SRGB), beach * 0.65);
     // Break up a coarse ancestor material tile at flight altitude without
     // changing its biome or coastline. Correlating this with the bounded
     // relief keeps ridges readable under both direct and aerial lighting.

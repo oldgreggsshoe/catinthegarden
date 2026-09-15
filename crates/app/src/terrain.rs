@@ -5709,7 +5709,7 @@ mod tests {
             .and_then(|source| source.split("\nfn ").next())
             .expect("raster terrain fragment path is present");
         let material_correction = fragment
-            .find("terrain_material_in_scatter(input.aerial_in_scatter, biome_id)")
+            .find("terrain_material_in_scatter_blend(input.aerial_in_scatter, biome_blend, snow_look)")
             .expect("material-specific physical aerial correction is present");
         let final_mist = fragment
             .find("apply_terrain_distance_fog(\n        textured_aerial_color")
@@ -5783,7 +5783,7 @@ mod tests {
         assert!(shader.contains("@location(2) aerial_in_scatter: vec3<f32>"));
         assert!(shader.contains("@location(8) aerial_transmittance: vec3<f32>"));
         assert!(normalized_shader.contains(
-            "let textured_aerial_color = textured_surface_lighting * terrain_material_transmittance(input.aerial_transmittance, biome_id) + terrain_material_in_scatter(input.aerial_in_scatter, biome_id);"
+            "let textured_aerial_color = textured_surface_lighting * terrain_material_transmittance_blend(input.aerial_transmittance, biome_blend, snow_look) + terrain_material_in_scatter_blend(input.aerial_in_scatter, biome_blend, snow_look);"
         ));
         assert!(!shader.contains("let aerial_ratio ="));
         assert!(!shader.contains("input.surface_lighting > vec3<f32>(1.0e-3)"));
