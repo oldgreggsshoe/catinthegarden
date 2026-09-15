@@ -447,8 +447,19 @@ impl WeatherSea {
 static WEATHER_SEA: std::sync::Mutex<WeatherSea> = std::sync::Mutex::new(WeatherSea::CALM);
 
 /// Bounded upwind fetch estimate using resident raw terrain only. Quadratic
-/// spacing resolves the near shore more finely; narrow islands between taps
-/// can still be missed. No streaming, blocking I/O, or terrain edits here.
+/// Estimate distance over water upwind. Measures fetch from the visible sea,
+/// not from the ground under the camera's feet.
+///
+/// **Two cases:**
+/// - Eye in water: measure fetch from the origin (camera position)
+/// - Eye on dry land: find the shoreline upwind via coarse scan (64 taps at
+///   quadratic spacing up to 100km) + binary search (6 bisections), then measure
+///   fetch from the shoreline. This ensures dry-beach viewers see realistic
+///   sea-state development from distant storms.
+///
+/// **Efficiency:** ≤77 height queries (64 coarse + 6 bisection + origin check).
+/// **Edge cases:** narrow islands narrower than the coarse-scan spacing (1.6-100km
+/// quadratically) can be missed. No streaming, blocking I/O, or terrain edits.
 /// Unknown/nonfinite heights return None rather than pretending to be ocean.
 pub fn upwind_fetch_meters(
     direction: DVec3,
@@ -576,9 +587,10 @@ impl WeatherSeaTarget {
             return None;
         }
         // Artistic development envelope, not a significant-wave-height law.
-        // Keep existing storm energy, allow dry strong winds to develop a sea,
-        // and suppress that developing component when land shortens fetch.
-        // The calm column's remote swell remains present even with zero fetch.
+        // Energy is the max of wind-driven and existing storm intensities.
+        // Shelter (based on fetch) applies to the full energy: both components
+        // scale with fetch. Zero fetch suppresses all intensity; full fetch retains energy.
+        // The calm column's remote swell remains present even with zero fetch (elsewhere).
         let wind = (self.wind_speed_meters_per_second / 30.0).clamp(0.0, 1.0);
         let energy = wind.max(f64::from(self.storm_intensity.clamp(0.0, 1.0)));
         let shelter = 1.0 - (-self.fetch_meters.max(0.0) / 25_000.0).exp();
@@ -1464,6 +1476,27 @@ mod tests {
             .intensity(),
             None
         );
+    }
+
+    #[test]
+    fn shelter_suppresses_full_energy_including_existing_storm() {
+        let target = |intensity, fetch| {
+            super::WeatherSeaTarget {
+                storm_intensity: intensity,
+                wind_speed_meters_per_second: 0.0,
+                fetch_meters: fetch,
+            }
+            .intensity()
+            .unwrap()
+        };
+        // Existing storm with zero fetch → zero intensity (shelter suppresses it)
+        assert_eq!(target(0.8, 0.0), 0.0);
+        // Existing storm with high fetch → survives (shelter ≈ 1)
+        assert!(target(0.8, 100_000.0) > 0.75);
+        // Existing storm with moderate fetch → partial suppression
+        let moderate = target(0.8, 25_000.0);
+        assert!(moderate > 0.0);
+        assert!(moderate < target(0.8, 100_000.0));
     }
 
     #[test]
