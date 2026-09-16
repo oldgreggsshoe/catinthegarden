@@ -2464,8 +2464,10 @@ fn neutralize_snow_surface_lighting_blend(
     lighting: vec3<f32>,
     blend: BiomeBlendSample,
 ) -> vec3<f32> {
+    // 0.82 of the way to grey left snow shadows colourless; sky-lit snow is
+    // blue. Keep enough neutrality that low sun cannot paint the icecap orange.
     let luminance = dot(lighting, vec3<f32>(0.2126, 0.7152, 0.0722));
-    return mix(lighting, vec3<f32>(luminance), 0.82 * biome_blend_snow_share(blend));
+    return mix(lighting, vec3<f32>(luminance), 0.55 * biome_blend_snow_share(blend));
 }
 
 fn terrain_material_transmittance(
