@@ -57,6 +57,12 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 const HUD_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
+/// How long a movement key stays held after its release. A remote desktop
+/// (Sunshine over Moonlight) delivers a held key as repeating press/release
+/// pairs rather than one long press, so clearing the key on its release stops
+/// the camera between repeats -- at ~78ms frames, almost always. Repeats
+/// arrive far inside this window; a real release costs this much glide.
+const MOVEMENT_KEY_LATCH: Duration = Duration::from_millis(120);
 const HIDDEN_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 const GPU_PROFILE_RING_SIZE: usize = 3;
 const GPU_TIMESTAMP_COUNT: u32 = 14;
@@ -72,6 +78,21 @@ fn should_enter_fullscreen(currently_fullscreen: bool) -> bool {
 
 fn should_start_interactive_fullscreen(scenario_active: bool) -> bool {
     !scenario_active
+}
+
+fn movement_key_latch_expired(released_for: Duration) -> bool {
+    released_for >= MOVEMENT_KEY_LATCH
+}
+
+/// The movement keys in the order `State::movement_release_times` stores them.
+fn movement_flag(input: &mut FlightMovementInput, index: usize) -> &mut bool {
+    match index {
+        0 => &mut input.forward,
+        1 => &mut input.backward,
+        2 => &mut input.left,
+        3 => &mut input.right,
+        _ => &mut input.boost,
+    }
 }
 
 fn device_mouse_look_enabled(mouse_captured: bool, scenario_active: bool) -> bool {
@@ -1069,6 +1090,8 @@ struct State {
     flight_look_yaw_radians: f64,
     flight_look_pitch_radians: f64,
     flight_movement: FlightMovementInput,
+    /// When each movement key was released, until its latch expires.
+    movement_release_times: [Option<Instant>; 5],
     flight_speed: FlightSpeedState,
     flight_speed_scale: f64,
     flight_travel_direction: glam::DVec3,
@@ -1499,6 +1522,7 @@ impl State {
             flight_look_yaw_radians: 0.0,
             flight_look_pitch_radians: 0.0,
             flight_movement: FlightMovementInput::default(),
+            movement_release_times: [None; 5],
             flight_speed: FlightSpeedState::default(),
             flight_speed_scale: 1.0,
             flight_travel_direction: glam::DVec3::ZERO,
@@ -1751,6 +1775,7 @@ impl State {
             }
         } else {
             self.flight_movement = FlightMovementInput::default();
+            self.movement_release_times = [None; 5];
             self.surface_jump_requested = false;
             let _ = window.set_cursor_grab(CursorGrabMode::None);
             window.set_cursor_visible(true);
@@ -1873,16 +1898,35 @@ impl State {
     }
 
     fn set_flight_movement_key(&mut self, key_code: KeyCode, pressed: bool) -> bool {
-        let movement_key = match key_code {
-            KeyCode::KeyW => &mut self.flight_movement.forward,
-            KeyCode::KeyS => &mut self.flight_movement.backward,
-            KeyCode::KeyA => &mut self.flight_movement.left,
-            KeyCode::KeyD => &mut self.flight_movement.right,
-            KeyCode::ShiftLeft | KeyCode::ShiftRight => &mut self.flight_movement.boost,
+        let index = match key_code {
+            KeyCode::KeyW => 0,
+            KeyCode::KeyS => 1,
+            KeyCode::KeyA => 2,
+            KeyCode::KeyD => 3,
+            KeyCode::ShiftLeft | KeyCode::ShiftRight => 4,
             _ => return false,
         };
-        *movement_key = pressed;
+        if pressed {
+            self.movement_release_times[index] = None;
+            *movement_flag(&mut self.flight_movement, index) = true;
+        } else {
+            // The key is not cleared here: see `MOVEMENT_KEY_LATCH`.
+            self.movement_release_times[index] = Some(Instant::now());
+        }
         true
+    }
+
+    /// Clears movement keys whose release has outlived the latch. Called once
+    /// per frame before the camera reads them.
+    fn expire_movement_latches(&mut self, now: Instant) {
+        for index in 0..self.movement_release_times.len() {
+            if let Some(released_at) = self.movement_release_times[index]
+                && movement_key_latch_expired(now.saturating_duration_since(released_at))
+            {
+                *movement_flag(&mut self.flight_movement, index) = false;
+                self.movement_release_times[index] = None;
+            }
+        }
     }
 
     fn request_surface_jump(&mut self) {
@@ -3609,6 +3653,7 @@ impl State {
                     self.toggle_surface_camera_mode();
                 }
             }
+            self.expire_movement_latches(now);
             match self.camera_mode {
                 CameraMode::Orbit => self.camera.advance_inclined_orbit(
                     DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND * camera_delta_seconds,
@@ -5570,6 +5615,7 @@ mod tests {
         MINIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE, PLANET_ROTATION_SCALE_STEP, RenderPath,
         STORM_OCEAN_START_DIRECTION, STORM_OCEAN_START_PITCH_RADIANS, adjusted_flight_speed_scale,
         advance_flight_position_on_sphere, advance_flight_speed, device_mouse_look_enabled,
+        movement_key_latch_expired,
         find_default_outmap, flight_movement_direction, flight_view_direction,
         focus_of_expansion_ndc, initial_flight_tangent, interactive_camera_delta_seconds,
         low_flight_clearance_radius, projected_planet_coverage, render_size_for_surface_resize,
@@ -5927,6 +5973,17 @@ mod tests {
             .unwrap();
         assert!(pipeline.contains("depth_compare: Some(wgpu::CompareFunction::Equal)"));
         assert!(pipeline.contains("depth_write_enabled: Some(false)"));
+    }
+
+    /// Sunshine/Moonlight repeats a held key as press/release pairs about 30ms
+    /// apart, so a release must not clear a movement key immediately.
+    #[test]
+    fn a_repeated_key_release_keeps_a_movement_key_held_for_the_latch() {
+        assert!(!movement_key_latch_expired(std::time::Duration::from_millis(0)));
+        assert!(!movement_key_latch_expired(std::time::Duration::from_millis(30)));
+        assert!(!movement_key_latch_expired(std::time::Duration::from_millis(119)));
+        assert!(movement_key_latch_expired(std::time::Duration::from_millis(120)));
+        assert!(movement_key_latch_expired(std::time::Duration::from_millis(400)));
     }
 
     #[test]
