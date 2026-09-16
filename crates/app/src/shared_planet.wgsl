@@ -2853,6 +2853,7 @@ fn terrain_material_tint(
             TERRAIN_MATERIAL_VEGETATION,
             surface_direction,
             surface_normal,
+            macro_height_meters + terrain_detail_meters,
             fine_position,
             fine_weight,
         );
@@ -2862,6 +2863,7 @@ fn terrain_material_tint(
             TERRAIN_MATERIAL_EARTH,
             surface_direction,
             surface_normal,
+            macro_height_meters + terrain_detail_meters,
             fine_position,
             fine_weight,
         );
@@ -2871,6 +2873,7 @@ fn terrain_material_tint(
             TERRAIN_MATERIAL_ROCK,
             surface_direction,
             surface_normal,
+            macro_height_meters + terrain_detail_meters,
             fine_position,
             fine_weight,
         );
@@ -2880,6 +2883,7 @@ fn terrain_material_tint(
             TERRAIN_MATERIAL_SNOW,
             surface_direction,
             surface_normal,
+            macro_height_meters + terrain_detail_meters,
             fine_position,
             fine_weight,
         );
@@ -2971,6 +2975,7 @@ fn triplanar_material_sample(
     layer: i32,
     surface_direction: vec3<f32>,
     surface_normal: vec3<f32>,
+    surface_height_meters: f32,
     fine_position: vec3<f32>,
     fine_weight: f32,
 ) -> vec4<f32> {
@@ -2981,8 +2986,11 @@ fn triplanar_material_sample(
     // One seam-safe triplanar lookup per axis is enough at flight speed. The
     // retired domain warp and second scale repeated 24 sine hashes and six
     // texture samples for every contributing material layer.
+    // Height belongs in the coordinate: without it every point up a cliff face
+    // shares one direction and so one texel, and the material smears into
+    // vertical streaks instead of reading as rock.
     let texture_position = surface_direction
-        * (PLANET_RADIUS_METERS / TERRAIN_MATERIAL_TILE_METERS);
+        * ((PLANET_RADIUS_METERS + surface_height_meters) / TERRAIN_MATERIAL_TILE_METERS);
     let coarse = triplanar_material_sample_at_position(layer, texture_position, weights);
     if fine_weight <= 0.0 {
         return coarse;
