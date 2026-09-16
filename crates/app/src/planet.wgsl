@@ -11,10 +11,6 @@ var biome_map: texture_2d<u32>;
 @group(1) @binding(2)
 var moisture_map: texture_2d<f32>;
 
-// The ray path's coarse planet-wide height faces, for cast terrain shadows.
-@group(2) @binding(15)
-var terrain_shadow_heights: texture_2d_array<f32>;
-
 @group(3) @binding(0)
 var cloud_field_current: texture_cube<f32>;
 
@@ -2303,99 +2299,6 @@ fn ocean_fragment_with_transmission_mode(input: OceanVertexOutput, bed: vec4<f32
     return vec4<f32>(water_aerial_color, shoreline_alpha);
 }
 
-const BIOME_EDGE_NOISE_WAVELENGTH_METERS: f32 = 700.0;
-const BIOME_EDGE_NOISE_STRENGTH: f32 = 1.2;
-const BIOME_EDGE_SHARPNESS: f32 = 2.5;
-
-/// Categorical biomes blended bilinearly meet along a staircase of source
-/// texels, which reads from any distance as pixel-stepped patches. Weight each
-/// biome by its own world-space noise and sharpen, so the meeting line wanders
-/// instead. A corner with zero weight still contributes nothing, so the blend
-/// stays continuous across texel and tile edges.
-fn organic_biome_blend(blend: BiomeBlendSample, direction: vec3<f32>) -> BiomeBlendSample {
-    let domain = terrain_detail_domain(direction);
-    let coarse_cells = domain * (PLANET_RADIUS_METERS / BIOME_EDGE_NOISE_WAVELENGTH_METERS);
-    let coarse_floor = floor(coarse_cells);
-    var scores = vec4<f32>(0.0);
-    for (var i = 0; i < 4; i += 1) {
-        if blend.weights[i] <= 0.0 {
-            continue;
-        }
-        let id = blend.ids[i];
-        var share = 0.0;
-        for (var j = 0; j < 4; j += 1) {
-            share += select(0.0, blend.weights[j], blend.ids[j] == id);
-        }
-        let salt = vec3<f32>(17.31, 5.97, 11.13) * f32(id + 1u);
-        // One octave: a finer one is sub-pixel at lowland range and sparkles.
-        let noise = terrain_detail_value_noise(vec3<i32>(coarse_floor), coarse_cells - coarse_floor + salt).value;
-        let lifted = share * exp(BIOME_EDGE_NOISE_STRENGTH * clamp(noise, -1.0, 1.0));
-        scores[i] = blend.weights[i] / share * pow(lifted, BIOME_EDGE_SHARPNESS);
-    }
-    return BiomeBlendSample(blend.ids, scores / max(scores.x + scores.y + scores.z + scores.w, 1.0e-6));
-}
-
-fn terrain_shadow_height(direction: vec3<f32>, face_quads: f32) -> f32 {
-    let d = normalize(direction);
-    let a = abs(d);
-    var face = 0;
-    var uv = vec2<f32>(0.0);
-    if a.x >= a.y && a.x >= a.z {
-        if d.x >= 0.0 { face = 0; uv = vec2<f32>(-d.z, d.y) / d.x; } else { face = 1; uv = vec2<f32>(d.z, d.y) / -d.x; }
-    } else if a.y >= a.z {
-        if d.y >= 0.0 { face = 2; uv = vec2<f32>(d.x, -d.z) / d.y; } else { face = 3; uv = vec2<f32>(d.x, d.z) / -d.y; }
-    } else if d.z >= 0.0 {
-        face = 4;
-        uv = vec2<f32>(d.x, d.y) / d.z;
-    } else {
-        face = 5;
-        uv = vec2<f32>(-d.x, d.y) / -d.z;
-    }
-    let coordinate = vec2<f32>(1.0) + (uv * 0.5 + vec2<f32>(0.5)) * face_quads;
-    let lower = clamp(vec2<i32>(floor(coordinate)), vec2<i32>(0), vec2<i32>(i32(face_quads)));
-    let upper = lower + vec2<i32>(1);
-    let t = clamp(coordinate - vec2<f32>(lower), vec2<f32>(0.0), vec2<f32>(1.0));
-    let h00 = textureLoad(terrain_shadow_heights, lower, face, 0).x;
-    let h10 = textureLoad(terrain_shadow_heights, vec2<i32>(upper.x, lower.y), face, 0).x;
-    let h01 = textureLoad(terrain_shadow_heights, vec2<i32>(lower.x, upper.y), face, 0).x;
-    let h11 = textureLoad(terrain_shadow_heights, upper, face, 0).x;
-    return mix(mix(h00, h10, t.x), mix(h01, h11, t.x), t.y);
-}
-
-/// Sunlight reaching a fragment past the coarse planet-wide relief. The field
-/// is about 3km per texel, so this casts ridge-scale shadows only. The march
-/// starts beyond the fragment's own texel, or the smoothed field would shadow
-/// the ground beneath it.
-fn terrain_cast_shadow_visibility(
-    direction: vec3<f32>,
-    surface_height_meters: f32,
-    sun_direction: vec3<f32>,
-) -> f32 {
-    let face_quads = terrain_settings.outmap_detail.y;
-    if face_quads < 1.0 {
-        return 1.0;
-    }
-    let texel_meters = PLANET_RADIUS_METERS * 1.5707964 / face_quads;
-    let origin = direction * (PLANET_RADIUS_METERS + surface_height_meters);
-    var travel = texel_meters * 1.5;
-    var visibility = 1.0;
-    for (var i = 0; i < 18; i += 1) {
-        let point = origin + sun_direction * travel;
-        let radius = length(point);
-        let ground = PLANET_RADIUS_METERS
-            + scaled_terrain_macro_height(terrain_shadow_height(point / radius, face_quads));
-        let clearance = radius - ground + 150.0;
-        // Soft edge about 3 degrees wide, wider than the sun, to hide the
-        // coarse field's texels.
-        visibility = min(visibility, clamp(0.5 + clearance / (travel * 0.06), 0.0, 1.0));
-        if visibility <= 0.0 || clearance > 60000.0 {
-            break;
-        }
-        travel *= 1.35;
-    }
-    return visibility;
-}
-
 fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let direction = normalize(input.surface_direction);
     let sun_direction = normalize(camera.sun_direction.xyz);
@@ -2456,12 +2359,12 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     }
     // Weighted by the blended lake share, so the shoreline follows the
     // bilinear field instead of the lake texels' staircase.
-    let lake_coverage = select(0.0, biome_blend_share(organic_biome_blend(sample_biome_blend(input.source_uv), direction), 1u), outmap)
+    let lake_coverage = select(0.0, biome_blend_share(sample_biome_blend(input.source_uv), 1u), outmap)
         * (1.0 - smoothstep(-80.0, 0.0, macro_height_meters));
     if lake_coverage > 0.0 {
         if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
             return vec4<f32>(mix(
-                blended_biome_color(organic_biome_blend(sample_biome_blend(input.source_uv), direction)),
+                blended_biome_color(sample_biome_blend(input.source_uv)),
                 debug_ocean_albedo(),
                 lake_coverage,
             ), 1.0);
@@ -2503,7 +2406,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             direction,
             water_surface_height,
         );
-        let lake_land_color = blended_biome_color(organic_biome_blend(sample_biome_blend(input.source_uv), direction));
+        let lake_land_color = blended_biome_color(sample_biome_blend(input.source_uv));
         let lake_surface_color = mix(lake_land_color, water_surface_color, lake_coverage);
         let lake_aerial_color = mix(lake_land_color, water_aerial_color, lake_coverage);
         let misted_lake_aerial_color = apply_terrain_distance_fog(lake_aerial_color, input);
@@ -2522,7 +2425,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         input.surface_height_and_fog_color.x,
         scaled_terrain_macro_height(macro_height_meters),
     );
-    let biome_blend = organic_biome_blend(sample_biome_blend(input.source_uv), direction);
+    let biome_blend = sample_biome_blend(input.source_uv);
     // Snow and ice lowland takes no shoreline sand. Weighted by the blended
     // snow share: gating on the nearest biome stamped orange texel staircases
     // into low ground inside the ice.
@@ -2550,13 +2453,6 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             direction,
             sun_direction,
             input.camera_relative_view_position,
-        );
-    }
-    if outmap && terrain_direct_light > 0.0 {
-        terrain_direct_light *= terrain_cast_shadow_visibility(
-            direction,
-            input.surface_height_and_fog_color.x,
-            sun_direction,
         );
     }
     var terrain_cloud_visibility = 1.0;
