@@ -134,7 +134,11 @@ const DEFAULT_CAMERA_ORBIT_INCLINATION_RADIANS: f64 = 28.5_f64.to_radians();
 /// This was a bare 0.05 scale, which came to a five-minute day: the sun crossed
 /// the sky faster than the sea it was lighting. Weather derives its own clock
 /// from this, so one rotation stays one weather day whatever it is set to.
-const INTERACTIVE_DAY_REAL_SECONDS: f64 = 1_200.0;
+///
+/// Quartered from 1,200s on 2026-09-16: the sky was still turning over faster
+/// than the world beneath it read. Only the planet's spin slows; the scene
+/// clock, ocean and hull keep their own pace.
+const INTERACTIVE_DAY_REAL_SECONDS: f64 = 4_800.0;
 const INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 =
     planet::PLANET_ROTATION_PERIOD_SECONDS / INTERACTIVE_DAY_REAL_SECONDS;
 /// Time-speed ladder, as multiples of real time. Comma and period step it.
