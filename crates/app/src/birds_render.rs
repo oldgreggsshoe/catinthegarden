@@ -12,8 +12,11 @@ pub fn birds_shader_source() -> String {
     include_str!("birds.wgsl").to_string()
 }
 
-/// Body length of a rendered bird. The mesh is modelled about one unit long.
-const BIRD_BODY_LENGTH_METERS: f32 = 0.42;
+/// Body length of a rendered bird. The mesh is modelled about one unit long,
+/// centred on the position the simulation carries, so its underside hangs a
+/// tenth of this below that point. Every constant that places a bird against
+/// the ground scales with it.
+const BIRD_BODY_LENGTH_METERS: f32 = 2.1;
 /// Beyond this a bird is well under a pixel and is not worth an instance.
 const BIRD_DRAW_DISTANCE_METERS: f64 = 620.0;
 /// Exactly the worst case the simulation can present -- every flock at the

@@ -54,6 +54,12 @@ stretched cliff texture, faceted/sawtooth ridges, and a salmon speckle on lake/c
 scenario lowers its camera 227.35m because `ACTIVE_HIGHEST_PROMINENCE_DRAWN_SURFACE_METERS` is
 stale. See the newest section.
 
+**Current input and world tuning (16 September):** a held movement key survives a remote
+desktop's key repeat (Sunshine/Moonlight sends press/release pairs, which used to cancel WASD while
+F-keys worked), one planet rotation is now 80 real minutes rather than 20, and birds are drawn at
+2.1m rather than 0.42m with every constant that seats them on the ground scaled to match. See the
+newest section.
+
 **Current birds (14 September):** flocking birds stream in around the camera,
 cruise, land, walk and take off again, and over the sea they meet the real
 moving surface: they climb ahead of rising water, cruise over a swell envelope,
@@ -10101,4 +10107,28 @@ instead of stepping. Two beach-sand gates moved to blended shares too, but forci
 off changed 0.00% of these frames, so they are consistency fixes. Three guesses were wrong before
 the debug modes settled it (biome gates, beach sand, shoreline sand); split a colour by
 albedo/lighting/aerial modes before editing materials. Evidence: `test-runs/peak_judging_2026-09-15/lowland_edges/`.
+
+## Remote play, a longer day, and birds at 2.1m — 16 September 2026
+
+Three small changes, each measured:
+
+- **Movement keys survive key repeat.** Over Sunshine/Moonlight a held key arrives as repeating
+  press/release pairs, not one long press, so clearing the key on its release left WASD reading as
+  unpressed at almost every ~78ms frame while F-keys and Escape worked (they act on the press).
+  `MOVEMENT_KEY_LATCH` holds a movement key 120ms past its last press; repeats refresh it.
+  Confirmed by Ian over Moonlight from Android, which is now his remote test path.
+- **A quarter-speed spin.** `INTERACTIVE_DAY_REAL_SECONDS` 1,200 -> 4,800. Weather derives its day
+  from the rotation, so it still runs exactly one weather day per rotation and therefore advances
+  four times slower in real time: a 600s weather step every 33.3 real seconds rather than 8.3.
+- **Birds five times bigger.** Drawn body 0.42 -> 2.1m. The mesh straddles the position the
+  simulation carries, so foot clearance (0.10 -> 0.50m), the touchdown band (0.35 -> 1.75m) and the
+  landing aim height (0.2 -> 1.0m) scale with it or a seated bird sinks. Ground separation went to
+  3.0m, **not** the proportional 3.75m: at 3.75m `flocks_that_cannot_merge_keep_out_of_each_other`
+  fell to 4.10m against its 25m floor, because a five-times-wider settled flock overlaps its
+  neighbour. At 3.0m the closest approach measures 39.66m, above the 32.61m the test's own comment
+  records. Flocking radii, startle distance, flight floor and draw distance are deliberately
+  unchanged; the bird cam offsets scale with the body.
+
+Clippy (all targets) clean and 580 workspace tests pass at each of these. `bird_demo` capture
+`1789566076-230794` shows the new size with the rescaled chase framing.
 

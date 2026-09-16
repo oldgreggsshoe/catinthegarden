@@ -301,11 +301,11 @@ const SURFACE_CAMERA_STEP_SECONDS: f64 = 1.0 / 120.0;
 const SURFACE_CAMERA_MAX_BACKLOG_SECONDS: f64 = 0.25;
 /// Beyond this the hull is smaller than a pixel and not worth a draw call.
 /// Chase-camera placement for the bird cam, in metres: far enough back that a
-/// 0.42m bird reads as a bird, low enough that it sits under the flock rather
-/// than over it.
-const BIRD_CAM_BEHIND_METERS: f64 = 2.4;
-const BIRD_CAM_ABOVE_METERS: f64 = 0.7;
-const BIRD_CAM_AHEAD_METERS: f64 = 8.0;
+/// 2.1m bird reads as a bird, low enough that it sits under the flock rather
+/// than over it. Framed on the body length, so it scales with it.
+const BIRD_CAM_BEHIND_METERS: f64 = 12.0;
+const BIRD_CAM_ABOVE_METERS: f64 = 3.5;
+const BIRD_CAM_AHEAD_METERS: f64 = 40.0;
 /// How high N puts the eye in low flight: enough to see birds on the water over
 /// a near swell, low enough to still be looking at them rather than down.
 const BIRD_WATCH_FLIGHT_HEIGHT_METERS: f64 = 4.0;

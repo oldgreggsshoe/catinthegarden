@@ -128,8 +128,9 @@ const WALK_SPEED_METERS_PER_SECOND: f64 = 0.55;
 /// to birds on the wing, and a walking bird used to ignore its neighbours
 /// entirely: measured, two settled birds closed to 0.014m of each other, which
 /// for a 0.42m bird is one standing inside another. Flying pairs held 0.559m
-/// over the same run, so only the ground case was ever wrong.
-const WALK_SEPARATION_METERS: f64 = 0.75;
+/// over the same run, so only the ground case was ever wrong. Scaled with the
+/// body: at 2.1m the old 0.75m was that same fault again.
+const WALK_SEPARATION_METERS: f64 = 3.0;
 const WALK_SEPARATION_STRENGTH: f64 = 1.8;
 /// Vertical band the flock holds while cruising, above the ground under it.
 const CRUISE_ALTITUDE_MIN_METERS: f64 = 22.0;
@@ -167,9 +168,11 @@ const SEA_ENVELOPE_LOOKAHEAD_SECONDS: [f64; 3] = [0.0, 2.0, 4.0];
 const SEA_ENVELOPE_DECAY_METERS_PER_SECOND: f64 = 0.5;
 
 /// Where a landing run becomes a walk, and where a walk leaves the ground.
-const TOUCHDOWN_ALTITUDE_METERS: f64 = 0.35;
+/// Heights of the body's centre, which the mesh straddles, so both scale with
+/// the drawn body length or a seated bird sinks into its own ground.
+const TOUCHDOWN_ALTITUDE_METERS: f64 = 1.75;
 const TOUCHDOWN_SPEED_METERS_PER_SECOND: f64 = 2.2;
-const FOOT_CLEARANCE_METERS: f64 = 0.10;
+const FOOT_CLEARANCE_METERS: f64 = 0.50;
 /// Ground steeper than this is not worth landing on.
 const MAX_LANDING_SLOPE_RADIANS: f64 = 0.45;
 /// Come near a settled flock and it leaves, which is what birds do.
@@ -191,8 +194,9 @@ const LANDING_ARRIVAL_RATE_PER_SECOND: f64 = 0.8;
 const LANDING_DESCENT_RATE_PER_SECOND: f64 = 1.5;
 const LANDING_STEERING_GAIN_PER_SECOND: f64 = 2.5;
 /// Where in the touchdown band the approach aims, so it ends in the band rather
-/// than in the ground.
-const LANDING_AIM_HEIGHT_METERS: f64 = 0.2;
+/// than in the ground. Scales with the body, like the touchdown band it aims
+/// into.
+const LANDING_AIM_HEIGHT_METERS: f64 = 1.0;
 /// How much of the flock's alignment and cohesion a landing bird still answers
 /// to. Both keep a bird moving with its neighbours, which is right in the air
 /// and wrong over the last metres to its own patch. At full strength, before
