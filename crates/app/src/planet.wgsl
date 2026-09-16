@@ -2752,7 +2752,8 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
                 1.0,
             );
             textured_surface_lighting *= 1.0
-                + surface_texture * TERRAIN_DETAIL_ALBEDO_STRENGTH;
+                + surface_texture * TERRAIN_DETAIL_ALBEDO_STRENGTH
+                    * terrain_detail_steep_fade(vertex_normal, direction);
         }
     }
     let ice_share = select(0.0, biome_blend_share(biome_blend, 2u), outmap);

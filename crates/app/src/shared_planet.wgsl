@@ -993,13 +993,21 @@ fn terrain_vertex_spacing_meters(level: u32) -> f32 {
 
 /// Tilts a surface normal by a detail slope. Only the tangential part matters;
 /// the radial component is the normal already.
+/// A height field laid out by direction cannot describe a cliff: across a steep
+/// face its gradient is stretched down the fall line into stripes. Fade the
+/// detail out as the face steepens. `1 - cos`: 0.18 is 35 degrees, 0.43 is 55.
+fn terrain_detail_steep_fade(normal: vec3<f32>, direction: vec3<f32>) -> f32 {
+    let steepness = 1.0 - clamp(dot(normalize(normal), direction), 0.0, 1.0);
+    return 1.0 - smoothstep(0.181, 0.426, steepness);
+}
+
 fn terrain_detail_perturbed_normal(
     normal: vec3<f32>,
     direction: vec3<f32>,
     slope: vec3<f32>,
 ) -> vec3<f32> {
     let tangential_slope = slope - direction * dot(slope, direction);
-    return normalize(normal - tangential_slope);
+    return normalize(normal - tangential_slope * terrain_detail_steep_fade(normal, direction));
 }
 
 /// How much of one octave this ground can carry without being pushed into the
