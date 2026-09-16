@@ -794,7 +794,33 @@ impl Terrain {
             })
     }
 
+    /// Ground angle at a cell, from its east-west and north-south height
+    /// gradients. Used to decide what can hold snow.
+    fn slope_radians(&self, index: usize) -> f64 {
+        let mut rise_run: f64 = 0.0;
+        for (dx, dy) in [(1_isize, 0_isize), (0, 1)] {
+            let Some(back) = self.grid.offset_index(index, -dx, -dy) else {
+                continue;
+            };
+            let Some(forward) = self.grid.offset_index(index, dx, dy) else {
+                continue;
+            };
+            let run = self.grid.distance_meters(back, forward);
+            if run <= 0.0 {
+                continue;
+            }
+            let rise = (self.height_meters[forward] - self.height_meters[back]).abs();
+            rise_run = rise_run.max(rise / run);
+        }
+        rise_run.atan()
+    }
+
     fn classify_biomes(&mut self, imported_etopo: bool) {
+        // Gathered before the parallel pass: the classifier borrows `self.biome`
+        // mutably, so it cannot read neighbour heights through `&self` as well.
+        let slopes: Vec<f64> = (0..self.grid.len())
+            .map(|index| self.slope_radians(index))
+            .collect();
         self.biome
             .par_iter_mut()
             .enumerate()
@@ -809,6 +835,14 @@ impl Terrain {
                 } else {
                     absolute_latitude > 66.0_f64.to_radians()
                 };
+                // Ice and snow do not cling to a steep face: they avalanche off
+                // and leave bare rock. Without this the height tests below take
+                // every high place, and since this planet's relief runs to tens
+                // of kilometres that meant almost all mountain became Ice --
+                // measured at 74-95% of the view from the highest summit, with
+                // MountainRock under 1%. Rock is the *lowest* mountain band
+                // here, which is the wrong way round for a mountain world.
+                let too_steep_to_hold_snow = slopes[index] > STEEP_ROCK_SLOPE_RADIANS;
                 // Water ownership must win before the polar land-ice rule:
                 // otherwise the old latitude test turns the Arctic Ocean into
                 // a solid circular ice-coloured land cap.
@@ -816,6 +850,8 @@ impl Terrain {
                     BiomeId::Lake
                 } else if height <= 0.0 {
                     BiomeId::Ocean
+                } else if too_steep_to_hold_snow && height > 600.0 {
+                    BiomeId::MountainRock
                 } else if land_ice || height > snowline {
                     BiomeId::Ice
                 } else if height > (snowline - 700.0).max(2_800.0) {
@@ -1319,6 +1355,20 @@ fn accumulate_flow(heights: &[f64], flow_to: &[Option<usize>]) -> Vec<f64> {
     }
     accumulation
 }
+
+/// Above this ground angle, snow and ice slide off and the face is bare rock.
+///
+/// Measured against the bake's own slope distribution, not a mountaineering
+/// angle: samples sit 3,068m apart, so land above 3,000m has a median slope of
+/// 4.3 degrees, p75 of 7.6, p90 of 12.9 and p99 of 24.3. An earlier 35-degree
+/// threshold was steeper than all but a handful of samples on the planet and
+/// classified nothing, leaving the census unchanged to three decimals. 8
+/// The classifier's own field, measured at its 6,136m neighbour spacing, puts
+/// land above 3,000m at p50 4.76 degrees and p75 7.92. An 8-degree cut moved
+/// high-altitude rock only 4.06% -> 5.69%, so this sits at the median: about
+/// half of high ground should come out rock, while gentle caps and plateaux
+/// keep their ice and snow.
+const STEEP_ROCK_SLOPE_RADIANS: f64 = 0.083_776; // 4.8 degrees
 
 pub fn snowline_meters(latitude: f64) -> f64 {
     5_000.0 * (1.0 - latitude.abs() / std::f64::consts::FRAC_PI_2).clamp(0.0, 1.0)

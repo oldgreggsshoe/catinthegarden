@@ -471,6 +471,266 @@ mod tests {
     /// Re-runs the global-summit measurement whenever the active macro source
     /// changes. The standard prominence of the planet's highest summit is its
     /// elevation above the sea-level key col.
+    /// Where in the bake is there actual mountain: rock or mountain-snow biome,
+    /// well above the sea, with relief across it? Authored poses are no guide --
+    /// `tour_mountains` sits over ocean and `mountain_render_faults` is buried
+    /// inside terrain -- so the survey site has to come from the bake itself.
+    /// What the whole planet is made of, by biome, at the globally dense level.
+    /// `CATINGARDEN_SURVEY_OUTMAP` picks which bake to count.
+    /// The slope distribution of the baked macro field, in degrees. The biome
+    /// classifier's steep-rock threshold has to come from this: at 4096x2048 a
+    /// cell spans roughly 5km, so a "mountain" angle in the render is a very
+    /// shallow angle here.
+    #[test]
+    #[ignore = "instrument: cargo test -- --ignored --nocapture baked_slopes"]
+    fn baked_slopes() {
+        use crate::outmap::Outmap;
+        use catinthegarden_coretypes::{
+            CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
+        };
+
+        let root = std::env::var("CATINGARDEN_SURVEY_OUTMAP")
+            .unwrap_or_else(|_| "assets/outmaps/test-planet".to_string());
+        let outmap = Outmap::open(std::path::Path::new(&format!("../../{root}")))
+            .or_else(|_| Outmap::open(std::path::Path::new(&root)))
+            .expect("survey outmap");
+        println!("\n== baked macro slopes of {root}");
+        let level = 4_u8;
+        let tiles_per_side = 1_u32 << level;
+        let stored = TILE_STORED_SIZE as usize;
+        let gutter = TILE_GUTTER as usize;
+        let logical = TILE_LOGICAL_SIZE as usize;
+        // One L4 tile spans a quarter of a cube face edge.
+        let tile_span_meters = planet_radius_meters() * std::f64::consts::FRAC_PI_2
+            / f64::from(tiles_per_side);
+        let sample_spacing = tile_span_meters / (logical as f64 - 1.0);
+
+        let mut all: Vec<f64> = Vec::new();
+        let mut high: Vec<f64> = Vec::new();
+        for face in CubeFace::ALL {
+            for ty in 0..tiles_per_side {
+                for tx in 0..tiles_per_side {
+                    let key = TileKey { face, level, x: tx, y: ty };
+                    let Ok(resolved) = outmap.resolve_tile(key) else { continue };
+                    if resolved.level != level {
+                        continue;
+                    }
+                    let Ok(data) = outmap.load_tile(key) else { continue };
+                    for sy in (1..logical - 1).step_by(4) {
+                        for sx in (1..logical - 1).step_by(4) {
+                            let at = |x: usize, y: usize| {
+                                f64::from(data.heights_meters[(y + gutter) * stored + x + gutter])
+                            };
+                            let height = at(sx, sy);
+                            if height <= 0.0 {
+                                continue;
+                            }
+                            let dx = (at(sx + 1, sy) - at(sx - 1, sy)) / (2.0 * sample_spacing);
+                            let dy = (at(sx, sy + 1) - at(sx, sy - 1)) / (2.0 * sample_spacing);
+                            let degrees = dx.hypot(dy).atan().to_degrees();
+                            all.push(degrees);
+                            if height > 3_000.0 {
+                                high.push(degrees);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        all.sort_by(f64::total_cmp);
+        high.sort_by(f64::total_cmp);
+        let at = |v: &Vec<f64>, q: f64| {
+            if v.is_empty() { f64::NAN } else { v[((v.len() - 1) as f64 * q) as usize] }
+        };
+        println!("   sample spacing {sample_spacing:.0}m");
+        for (label, v) in [("all land", &all), ("land above 3000m", &high)] {
+            println!(
+                "   {label:<18} n={:7}  p50 {:6.3}  p75 {:6.3}  p90 {:6.3}  p95 {:6.3}  p99 {:6.3}  max {:6.3} deg",
+                v.len(), at(v,0.50), at(v,0.75), at(v,0.90), at(v,0.95), at(v,0.99), at(v,1.0)
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "instrument: cargo test -- --ignored --nocapture biome_census"]
+    fn biome_census() {
+        use crate::outmap::Outmap;
+        use catinthegarden_coretypes::{
+            CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
+        };
+
+        let root = std::env::var("CATINGARDEN_SURVEY_OUTMAP")
+            .unwrap_or_else(|_| "assets/outmaps/test-planet".to_string());
+        let outmap = Outmap::open(std::path::Path::new(&format!("../../{root}")))
+            .or_else(|_| Outmap::open(std::path::Path::new(&root)))
+            .expect("survey outmap");
+        let level = 4_u8;
+        let tiles_per_side = 1_u32 << level;
+        let stored = TILE_STORED_SIZE as usize;
+        let gutter = TILE_GUTTER as usize;
+        let logical = TILE_LOGICAL_SIZE as usize;
+        let names = [
+            "ocean", "lake", "ice", "tundra", "temperate forest", "grassland",
+            "tropical forest", "desert", "mountain rock", "mountain snow",
+        ];
+        let mut counts = [0_usize; 10];
+        let mut land = 0_usize;
+        // Rock above the snowline is the thing that was missing entirely.
+        let mut high_rock = 0_usize;
+        let mut high_land = 0_usize;
+
+        for face in CubeFace::ALL {
+            for ty in 0..tiles_per_side {
+                for tx in 0..tiles_per_side {
+                    let key = TileKey { face, level, x: tx, y: ty };
+                    let Ok(resolved) = outmap.resolve_tile(key) else { continue };
+                    if resolved.level != level {
+                        continue;
+                    }
+                    let Ok(data) = outmap.load_tile(key) else { continue };
+                    for sy in (0..logical).step_by(4) {
+                        for sx in (0..logical).step_by(4) {
+                            let at = (sy + gutter) * stored + sx + gutter;
+                            let biome = data.biome_ids[at] as usize;
+                            let height = f64::from(data.heights_meters[at]);
+                            if biome < counts.len() {
+                                counts[biome] += 1;
+                            }
+                            if biome != 0 && biome != 1 {
+                                land += 1;
+                                if height > 3_000.0 {
+                                    high_land += 1;
+                                    if biome == 8 {
+                                        high_rock += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let total: usize = counts.iter().sum();
+        println!("\n== biome census of {root} (L{level}, every 4th sample)");
+        println!("   {total} samples, {land} of them land");
+        for (id, name) in names.iter().enumerate() {
+            if counts[id] > 0 {
+                println!(
+                    "   {:<18} {:7.3}% of planet   {:7.3}% of land",
+                    name,
+                    100.0 * counts[id] as f64 / total.max(1) as f64,
+                    100.0 * counts[id] as f64 / land.max(1) as f64,
+                );
+            }
+        }
+        println!(
+            "   land above 3000m: {high_land} samples, {:.2}% of it mountain rock",
+            100.0 * high_rock as f64 / high_land.max(1) as f64
+        );
+    }
+
+    #[test]
+    #[ignore = "instrument: cargo test -- --ignored --nocapture mountain_survey_sites"]
+    fn mountain_survey_sites() {
+        use crate::outmap::Outmap;
+        use catinthegarden_coretypes::{
+            CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
+            face_uv_to_direction,
+        };
+
+        let root = std::env::var("CATINGARDEN_SURVEY_OUTMAP")
+            .unwrap_or_else(|_| "assets/outmaps/test-planet".to_string());
+        let outmap = Outmap::open(std::path::Path::new(&format!("../../{root}")))
+            .or_else(|_| Outmap::open(std::path::Path::new(&root)))
+            .expect("survey outmap");
+        println!("   outmap: {root}");
+        let level = 4_u8;
+        let tiles_per_side = 1_u32 << level;
+        let stored = TILE_STORED_SIZE as usize;
+        let gutter = TILE_GUTTER as usize;
+        let logical = TILE_LOGICAL_SIZE as usize;
+        let mut candidates: Vec<(f64, f64, f64, f64, f64, DVec3)> = Vec::new();
+
+        for face in CubeFace::ALL {
+            for ty in 0..tiles_per_side {
+                for tx in 0..tiles_per_side {
+                    let key = TileKey { face, level, x: tx, y: ty };
+                    let Ok(resolved) = outmap.resolve_tile(key) else { continue };
+                    if resolved.level != level {
+                        continue;
+                    }
+                    let Ok(data) = outmap.load_tile(key) else { continue };
+                    // The centre sample is where a survey camera would stand, so
+                    // it has to be rock or mountain snow itself. Scoring on the
+                    // tile's average put three cameras in a lake basin whose rim
+                    // was rocky: 100% lake at the eye, 29% rock across the tile.
+                    let centre = logical / 2;
+                    let centre_biome =
+                        data.biome_ids[(centre + gutter) * stored + centre + gutter];
+                    if centre_biome != 8 && centre_biome != 9 {
+                        continue;
+                    }
+                    let step = 8_usize;
+                    let mut rock = 0_usize;
+                    let mut water = 0_usize;
+                    let mut total = 0_usize;
+                    let mut heights: Vec<f64> = Vec::new();
+                    for sy in (0..logical).step_by(step) {
+                        for sx in (0..logical).step_by(step) {
+                            let biome = data.biome_ids[(sy + gutter) * stored + sx + gutter];
+                            let raw = f64::from(
+                                data.heights_meters[(sy + gutter) * stored + sx + gutter],
+                            );
+                            total += 1;
+                            if biome == 8 || biome == 9 {
+                                rock += 1;
+                            }
+                            if biome == 0 || biome == 1 {
+                                water += 1;
+                            }
+                            heights.push(raw);
+                        }
+                    }
+                    if total == 0 || heights.is_empty() {
+                        continue;
+                    }
+                    let rock_share = rock as f64 / total as f64;
+                    let mean = heights.iter().sum::<f64>() / heights.len() as f64;
+                    let lowest = heights.iter().cloned().fold(f64::MAX, f64::min);
+                    let highest = heights.iter().cloned().fold(f64::MIN, f64::max);
+                    let water_share = water as f64 / total as f64;
+                    if rock_share < 0.35 || water_share > 0.10 || lowest < 100.0 {
+                        continue;
+                    }
+                    let face_u = (f64::from(tx) + 0.5) / f64::from(tiles_per_side) * 2.0 - 1.0;
+                    let face_v = (f64::from(ty) + 0.5) / f64::from(tiles_per_side) * 2.0 - 1.0;
+                    let direction = face_uv_to_direction(face, face_u, face_v);
+                    candidates.push((rock_share, highest - lowest, mean, lowest, highest, direction));
+                }
+            }
+        }
+
+        candidates.sort_by(|a, b| (b.0 * b.1).total_cmp(&(a.0 * a.1)));
+        println!("\n== mountain survey sites (L{level}: centre is rock/snow, rock >= 35%, water <= 10%, floor >= 100m)");
+        println!("   found {} tiles", candidates.len());
+        for (share, spread, mean, lowest, highest, direction) in candidates.iter().take(12) {
+            println!(
+                "   rock {:5.1}%  relief {:8.1}m  mean {:8.1}m  range {:8.1}..{:8.1}  lat {:7.2} lon {:8.2}  dir [{:.9}, {:.9}, {:.9}]",
+                share * 100.0,
+                spread,
+                mean,
+                lowest,
+                highest,
+                direction.y.asin().to_degrees(),
+                crate::planet::geographic_longitude_degrees(*direction),
+                direction.x,
+                direction.y,
+                direction.z,
+            );
+        }
+    }
+
     #[test]
     #[ignore = "instrument: cargo test -- --ignored --nocapture global_highest_summit"]
     fn global_highest_summit() {

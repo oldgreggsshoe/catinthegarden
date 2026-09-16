@@ -367,6 +367,7 @@ scenarios! {
     "tour_tundra" => "../scenarios/tour_tundra.json",
     "peak_survey_8_directions" => "../scenarios/peak_survey_8_directions.json",
     "peak_survey_weather" => "../scenarios/peak_survey_weather.json",
+    "mountain_site_probe" => "../scenarios/mountain_site_probe.json",
 }
 
 /// Characters to change to turn one name into the other. Small and readable
@@ -1084,7 +1085,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 99);
+        assert_eq!(SCENARIO_NAMES.len(), 100);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));

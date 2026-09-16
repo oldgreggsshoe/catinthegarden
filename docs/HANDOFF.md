@@ -54,6 +54,14 @@ stretched cliff texture, faceted/sawtooth ridges, and a salmon speckle on lake/c
 scenario lowers its camera 227.35m because `ACTIVE_HIGHEST_PROMINENCE_DRAWN_SURFACE_METERS` is
 stale. See the newest section.
 
+**Current planet (16 September):** rebaked with a slope-aware biome classifier. Steep ground now
+classifies as MountainRock before the ice and snow height tests can take it, because this planet's
+relief runs to tens of kilometres and every high place was becoming Ice. By area, mountain rock went
+2.56% -> 12.46% of the surface and ice 19.56% -> 10.34%; ocean, lake and the temperate biomes are
+untouched. Heights are unchanged, so the summit, the F4 pose and every constant derived from the
+bake are bit-identical and needed no re-derivation. The previous planet is preserved at
+`assets/outmaps/test-planet.pre-steep-rock-backup-20260916-2216`. See the newest section.
+
 **Current renderer cost (16 September):** the summit survey runs at 41.5ms median, down from
 77.2ms, after removing the per-pixel cast-shadow march and the per-fragment biome-edge noise. Both
 were judged down as well as expensive. Shadows are wanted back cheaply (cached/amortised or a baked
@@ -10156,4 +10164,33 @@ Clippy (all targets) clean and 580 workspace tests pass at each of these. `bird_
 Remaining judged faults, by how often they are named: exposed rock, cast shadows, aerial perspective
 grading distant ranges blue, the repeating leopard-spot snow tile, faceted/low-poly silhouettes and
 sawtooth ridges, staircase shorelines, the flat lake, and no clouds.
+
+## A planet with rock on it — 16 September 2026
+
+The judges' unanimous complaint across five rounds was missing rock. It was never a renderer fault:
+the bake had almost none. `classify_biomes` tested height before anything else, so with relief
+reaching 72,000m every mountain passed the snowline test and became Ice, leaving MountainRock as the
+*lowest* mountain band, 2,400m to roughly the snowline. Measured from the summit survey, the view
+was 74-95% biome 2 with rock under 1%.
+
+The fix adds steepness as an input ahead of the height tests: ice and snow do not cling to a steep
+face. `STEEP_ROCK_SLOPE_RADIANS` is 4.8 degrees, which is the *measured median slope of land above
+3,000m on the classifier's own field* (neighbour spacing 6,136m; p50 4.76, p75 7.92, p90 12.74).
+Two earlier guesses failed and are worth recording: 35 degrees exceeded the steepest sample on the
+planet and produced a bake identical to three decimals, and 8 degrees moved high-altitude rock only
+4.06% -> 5.69%.
+
+Measuring it needs care, because cell counts and area disagree sharply on an equirectangular grid:
+the classifier reports 43% of high *cells* taking the steep-rock branch, the exported cube tiles
+report 7.19% of high *samples*, and the area-weighted preview - the honest figure - says rock is
+12.46% of the surface. Use `previews/biome.png` with a cos(latitude) weight for planet-wide shares.
+
+Also found on the way: 21% of land above 3,000m is lake, which is why three attempts to site a
+mountain survey landed in high lake basins. `mountain_survey_sites` now requires the tile's *centre*
+sample to be rock or mountain snow and rejects tiles more than 10% water; on this bake only two
+tiles pass, and both are gentle snow plateaux, so a rock-and-crag survey site still does not exist.
+
+Frame time is unchanged by the rebake: old planet 61.6/62.4ms against new 62.2/64.4/63.1ms on the
+same binary. Note for a later session that this is itself ~20ms worse than the 41.5ms measured at
+round 6 on the same scenario, so something between those commits cost time and has not been found.
 
