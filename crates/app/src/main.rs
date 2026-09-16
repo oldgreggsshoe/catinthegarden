@@ -562,6 +562,21 @@ fn flight_view_direction(
     .normalize()
 }
 
+/// The inverse of `flight_view_direction`: the yaw and pitch that point the eye
+/// along `target_direction`. M holds the eye still and tracks a flock with it.
+fn flight_look_angles_toward(
+    local_radial: glam::DVec3,
+    local_tangent: glam::DVec3,
+    target_direction: glam::DVec3,
+) -> (f64, f64) {
+    let local_right = local_tangent.cross(local_radial).normalize();
+    let pitch = target_direction.dot(local_radial).clamp(-1.0, 1.0).asin();
+    let yaw = target_direction
+        .dot(local_right)
+        .atan2(target_direction.dot(local_tangent));
+    (yaw, pitch)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CameraMode {
     Orbit,
@@ -1096,6 +1111,8 @@ struct State {
     flight_movement: FlightMovementInput,
     /// When each movement key was released, until its latch expires.
     movement_release_times: [Option<Instant>; 5],
+    /// M: hold the eye where it is and keep the nearest flock in view.
+    flock_watch_enabled: bool,
     flight_speed: FlightSpeedState,
     flight_speed_scale: f64,
     flight_travel_direction: glam::DVec3,
@@ -1527,6 +1544,7 @@ impl State {
             flight_look_pitch_radians: 0.0,
             flight_movement: FlightMovementInput::default(),
             movement_release_times: [None; 5],
+            flock_watch_enabled: false,
             flight_speed: FlightSpeedState::default(),
             flight_speed_scale: 1.0,
             flight_travel_direction: glam::DVec3::ZERO,
@@ -1749,6 +1767,12 @@ impl State {
     }
 
     fn look_camera(&mut self, yaw_delta: f64, pitch_delta: f64) {
+        // Looking by hand always wins: M is a convenience, not a lock.
+        if self.flock_watch_enabled && (yaw_delta != 0.0 || pitch_delta != 0.0) {
+            self.flock_watch_enabled = false;
+            self.bird_watch_note = "flock watch off".to_string();
+            self.mark_hud_dirty();
+        }
         if matches!(
             self.camera_mode,
             CameraMode::LowFlight | CameraMode::Surface
@@ -2590,6 +2614,58 @@ impl State {
     ///
     /// The target is dropped on the way out, so the next press picks afresh
     /// rather than resuming a bird that may be a kilometre away by then.
+    /// M: keep the eye where it is and turn it to follow the nearest flock, so
+    /// a flock can be watched going past rather than chased.
+    fn toggle_flock_watch(&mut self) {
+        if self.scenario.is_some() {
+            return;
+        }
+        self.mark_hud_dirty();
+        if self.camera_mode == CameraMode::Orbit {
+            self.bird_watch_note =
+                "no flock to watch from orbit -- F4 to fly low first".to_string();
+            return;
+        }
+        self.flock_watch_enabled = !self.flock_watch_enabled;
+        if !self.flock_watch_enabled {
+            self.bird_watch_note = "flock watch off".to_string();
+        }
+    }
+
+    /// Turns the eye toward the nearest flock and leaves its position alone.
+    /// Runs before the camera advances, so movement follows the new heading.
+    fn aim_at_nearest_flock(&mut self) {
+        if !self.flock_watch_enabled
+            || !matches!(
+                self.camera_mode,
+                CameraMode::LowFlight | CameraMode::Surface
+            )
+        {
+            return;
+        }
+        let from = self.flight_local_position;
+        let Some(centroid) = self
+            .birds
+            .flocks()
+            .iter()
+            .map(|flock| flock.centroid())
+            .min_by(|a, b| a.distance_squared(from).total_cmp(&b.distance_squared(from)))
+        else {
+            self.bird_watch_note = "no flock nearby to watch yet".to_string();
+            return;
+        };
+        let Some(target_direction) = (centroid - from).try_normalize() else {
+            return;
+        };
+        let (yaw, pitch) = flight_look_angles_toward(
+            from.normalize(),
+            self.flight_local_tangent,
+            target_direction,
+        );
+        self.flight_look_yaw_radians = yaw;
+        self.flight_look_pitch_radians = pitch.clamp(-1.5, 1.5);
+    }
+
     fn toggle_bird_camera(&mut self) {
         self.bird_camera_enabled = !self.bird_camera_enabled;
         self.bird_camera_target = None;
@@ -3367,7 +3443,7 @@ impl State {
                         ));
                         ui.label(format!("Bird watch: {bird_watch}"));
                         ui.label(
-                            "F: fullscreen  |  F3: overlay  |  , / .: time speed  |  F4: orbit/flight  |  G: surface camera  |  WASD: move  |  Space: jump/swim thrust  |  [ / ]: speed  |  F5: render path  |  O: triangle outlines  |  B: ride a bird  |  N: watch birds that are down  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
+                            "F: fullscreen  |  F3: overlay  |  , / .: time speed  |  F4: orbit/flight  |  G: surface camera  |  WASD: move  |  Space: jump/swim thrust  |  [ / ]: speed  |  F5: render path  |  O: triangle outlines  |  B: ride a bird  |  N: watch birds that are down  |  M: track the nearest flock from here  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
                         );
                         ui.label("Default: fullscreen, HUD hidden, auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc/Q: quit");
                     });
@@ -3658,6 +3734,7 @@ impl State {
                 }
             }
             self.expire_movement_latches(now);
+            self.aim_at_nearest_flock();
             match self.camera_mode {
                 CameraMode::Orbit => self.camera.advance_inclined_orbit(
                     DEFAULT_CAMERA_ORBIT_RADIANS_PER_SECOND * camera_delta_seconds,
@@ -5304,6 +5381,14 @@ impl ApplicationHandler for App {
                 }
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state.is_pressed()
+                        && !event.repeat
+                        && event.physical_key == PhysicalKey::Code(KeyCode::KeyM) =>
+                {
+                    state.toggle_flock_watch();
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
                         && event.physical_key == PhysicalKey::Code(KeyCode::Digit6) =>
                 {
                     state.toggle_auto_exposure();
@@ -5620,7 +5705,8 @@ mod tests {
         STORM_OCEAN_START_DIRECTION, STORM_OCEAN_START_PITCH_RADIANS, adjusted_flight_speed_scale,
         advance_flight_position_on_sphere, advance_flight_speed, device_mouse_look_enabled,
         movement_key_latch_expired,
-        find_default_outmap, flight_movement_direction, flight_view_direction,
+        find_default_outmap, flight_look_angles_toward, flight_movement_direction,
+        flight_view_direction,
         focus_of_expansion_ndc, initial_flight_tangent, interactive_camera_delta_seconds,
         low_flight_clearance_radius, projected_planet_coverage, render_size_for_surface_resize,
         retimed_planet_rotation, should_enter_fullscreen, should_start_interactive_fullscreen,
@@ -5988,6 +6074,28 @@ mod tests {
         assert!(!movement_key_latch_expired(std::time::Duration::from_millis(119)));
         assert!(movement_key_latch_expired(std::time::Duration::from_millis(120)));
         assert!(movement_key_latch_expired(std::time::Duration::from_millis(400)));
+    }
+
+    /// M points the eye at a flock by solving for the look angles, so the
+    /// solution has to come back out of `flight_view_direction` unchanged.
+    #[test]
+    fn flock_watch_look_angles_point_the_eye_at_the_target() {
+        let radial = glam::DVec3::X;
+        let tangent = glam::DVec3::Y;
+        for target in [
+            glam::DVec3::new(1.0, 2.0, 3.0),
+            glam::DVec3::new(-2.0, 0.5, -1.0),
+            glam::DVec3::new(0.0, -1.0, 0.25),
+            glam::DVec3::Z,
+        ] {
+            let target = target.normalize();
+            let (yaw, pitch) = flight_look_angles_toward(radial, tangent, target);
+            let looked = flight_view_direction(radial, tangent, yaw, pitch);
+            assert!(
+                (looked - target).length() < 1.0e-12,
+                "aimed {looked} at {target}"
+            );
+        }
     }
 
     #[test]

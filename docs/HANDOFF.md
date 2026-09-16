@@ -54,6 +54,11 @@ stretched cliff texture, faceted/sawtooth ridges, and a salmon speckle on lake/c
 scenario lowers its camera 227.35m because `ACTIVE_HIGHEST_PROMINENCE_DRAWN_SURFACE_METERS` is
 stale. See the newest section.
 
+**Current renderer cost (16 September):** the summit survey runs at 41.5ms median, down from
+77.2ms, after removing the per-pixel cast-shadow march and the per-fragment biome-edge noise. Both
+were judged down as well as expensive. Shadows are wanted back cheaply (cached/amortised or a baked
+horizon map); the height-faces plumbing is left in place for it. See the newest section.
+
 **Current input and world tuning (16 September):** a held movement key survives a remote
 desktop's key repeat (Sunshine/Moonlight sends press/release pairs, which used to cancel WASD while
 F-keys worked), one planet rotation is now 80 real minutes rather than 20, and birds are drawn at
@@ -10131,4 +10136,24 @@ Three small changes, each measured:
 
 Clippy (all targets) clean and 580 workspace tests pass at each of these. `bird_demo` capture
 `1789566076-230794` shows the new size with the rescaled chase framing.
+
+## Cheaper frames, M to watch a flock, and a failed rock experiment — 16 September 2026
+
+- **47% off the frame time.** The cast-shadow march (+8.6ms) and the biome-edge noise (+28ms) are
+  gone: 77.22 -> 41.47ms median on `peak_survey_8_directions`. Judges had read the coarse shadows as
+  grey decals, so both cost and picture improved. Round 5 scored 3.17/10, the best so far, against
+  2.5 the round before.
+- **M holds position and tracks the nearest flock**, so a flock can be watched going past rather
+  than chased. `flight_look_angles_toward` inverts `flight_view_direction`; any mouse look cancels
+  the tracking.
+- **Shaded snow takes the sky's colour** (neutrality 0.82 -> 0.55).
+- **Rock on wind-scoured rises: tried four ways, reverted.** `relief` is <=0.01 on 91-99.9% of
+  terrain pixels at this range and never reaches 0.55, so the window never opens; and because a snow
+  biome's palette is white, shedding snow without substituting the rock palette only reveals more
+  white. Measured no change every time. What the judges keep asking for -- dark fractured rock with
+  snow in the gullies -- needs real rock material and distribution, or higher-frequency geology.
+
+Remaining judged faults, by how often they are named: exposed rock, cast shadows, aerial perspective
+grading distant ranges blue, the repeating leopard-spot snow tile, faceted/low-poly silhouettes and
+sawtooth ridges, staircase shorelines, the flat lake, and no clouds.
 
