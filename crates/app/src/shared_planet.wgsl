@@ -2240,7 +2240,7 @@ fn biome_color(biome: u32) -> vec3<f32> {
         case 5u: { display_color = vec3<f32>(105.0, 145.0, 65.0) / 255.0; }
         case 6u: { display_color = vec3<f32>(25.0, 125.0, 55.0) / 255.0; }
         case 7u: { display_color = vec3<f32>(205.0, 180.0, 105.0) / 255.0; }
-        case 8u: { display_color = vec3<f32>(105.0, 100.0, 95.0) / 255.0; }
+        case 8u: { display_color = vec3<f32>(74.0, 70.0, 66.0) / 255.0; }
         default: { display_color = vec3<f32>(236.0, 240.0, 242.0) / 255.0; }
     }
     return srgb_to_linear(display_color);
@@ -2716,7 +2716,11 @@ fn terrain_material_color(
     // and add no runtime macro geography.
     let slope = 1.0 - clamp(dot(normalize(surface_normal), surface_direction), 0.0, 1.0);
     let rock_amount = smoothstep(0.10, 0.42, slope);
-    let rock_color = srgb_to_linear(vec3<f32>(0.30, 0.28, 0.25));
+    // Rock is darker than the grey it used to be, and it is not one tone:
+    // the bounded detail field bands it so a face reads as strata rather than
+    // a flat patch. The field is already computed above, so this is free.
+    let rock_shade = 1.0 + detail * 0.55;
+    let rock_color = srgb_to_linear(vec3<f32>(0.21, 0.19, 0.17)) * rock_shade;
     // A snow biome's palette colour is the snow itself, so where the face is
     // too steep to hold snow the rock beneath has to replace it. Luminance of
     // the blended palette keeps this continuous across biome borders.
