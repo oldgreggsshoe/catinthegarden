@@ -3691,6 +3691,64 @@ fn create_terrain_material_texture(
     (texture, view, sampler)
 }
 
+#[cfg(test)]
+mod material_layer_means {
+    use super::*;
+
+    fn srgb_to_linear(c: f64) -> f64 {
+        if c <= 0.040_45 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    }
+
+    fn layer_mean(layer: u32) -> [f64; 3] {
+        let size = TERRAIN_MATERIAL_TEXTURE_SIZE as usize;
+        let texels = terrain_material_layer_texels(layer, size);
+        let mut sum = [0.0_f64; 3];
+        for chunk in texels.chunks_exact(4) {
+            for channel in 0..3 {
+                sum[channel] += srgb_to_linear(f64::from(chunk[channel]) / 255.0);
+            }
+        }
+        let count = (size * size) as f64;
+        [sum[0] / count, sum[1] / count, sum[2] / count]
+    }
+
+    /// The shader divides the triplanar sample by each layer's mean albedo to
+    /// turn the tint into a pure detail ratio. Those means are baked into
+    /// `shared_planet.wgsl` as constants, so they have to keep matching the
+    /// generator that produced them -- otherwise the tint silently regains a
+    /// brightness term and starts lifting dark materials again.
+    #[test]
+    fn material_layer_means_match_the_generator() {
+        let shader = include_str!("shared_planet.wgsl");
+        let expected = [
+            ("TERRAIN_MATERIAL_MEAN_VEGETATION", 0),
+            ("TERRAIN_MATERIAL_MEAN_EARTH", 1),
+            ("TERRAIN_MATERIAL_MEAN_ROCK", 2),
+            ("TERRAIN_MATERIAL_MEAN_SNOW", 3),
+        ];
+        for (name, layer) in expected {
+            let mean = layer_mean(layer);
+            let line = shader
+                .lines()
+                .find(|line| line.contains(&format!("const {name}:")))
+                .unwrap_or_else(|| panic!("{name} is not declared in shared_planet.wgsl"));
+            let numbers: Vec<f64> = line
+                .split(|c: char| !(c.is_ascii_digit() || c == '.'))
+                .filter(|part| part.contains('.'))
+                .filter_map(|part| part.parse().ok())
+                .collect();
+            assert_eq!(numbers.len(), 3, "{name} should carry three components: {line}");
+            for (channel, declared) in numbers.iter().enumerate() {
+                assert!(
+                    (declared - mean[channel]).abs() < 1.0e-5,
+                    "{name} channel {channel} is {declared} but the generator produces {}",
+                    mean[channel],
+                );
+            }
+        }
+    }
+}
+
 fn terrain_material_layer_texels(layer: u32, texture_size: usize) -> Vec<u8> {
     let mut texels = Vec::with_capacity(texture_size * texture_size * 4);
     for y in 0..texture_size {

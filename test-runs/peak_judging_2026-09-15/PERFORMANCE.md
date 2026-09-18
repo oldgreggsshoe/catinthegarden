@@ -53,3 +53,42 @@ rises" rule was tried four ways and reverted: `relief` is <=0.01 on 91-99.9% of 
 and never exceeds 0.55, so there is no rises-versus-hollows signal at this scale, and on a snow
 biome the palette under the snow is itself white. Exposed rock needs its own material and
 distribution, not a reinterpretation of the detail field.
+
+## Round 8, 18 September: the 41 -> 62ms step is the planet, not the shaders
+
+Median 66.38ms, p90 74.61 at `78a25cd`. Round 6 measured 41.47ms. Walking every run's
+`git_commit` against its median shows the step does **not** land on a commit:
+
+| run | commit | median ms | wall clock |
+|---|---|---|---|
+| 1789568684-237056 | 7c17fb101 | 41.47 | 09-16 15:04 |
+| 1789569854-239516 | 7a2056df5 | 41.07 | 09-16 15:24 |
+| 1789570069-239752 | 7a2056df5 | 41.03 | 09-16 15:47 |
+| 1789570504-240297 | 7a2056df5 | 23.32 | 09-16 15:55 |
+| **1789593571-271022** | **7a2056df5** | **62.20** | **09-16 22:19** |
+| 1789593846-272233 | 7a2056df5 | 64.39 | 09-16 22:24 |
+| 1789599172-279400 | b55c732a5 | 61.76 | 09-16 23:52 |
+| 1789601036-282744 | 27d6bfbca | 62.10 | 09-17 00:23 |
+| 1789735429-415647 | 78a25cda9 | 66.38 | 09-18 13:43 |
+
+**Same commit, same scenario, 41ms then 62ms six hours later.** The only thing that changed in
+between is the planet on disk: every tile under `assets/outmaps/test-planet/tiles` was rewritten at
+**09-16 19:12** by the slope-aware rock rebake, between the last 41ms run (15:55) and the first
+62ms run (22:19). Tile count is identical (9756) and size barely moved (372M -> 374M), so this is
+the same shape of data with different biome content -- 2.56% -> 12.46% rock by area, which puts far
+more of the frame on biome boundaries and mixed-material pixels than the old near-uniform ice.
+
+**RETRACTED -- the A/B killed it.** Same scenario, same commit `78a25cd`, same session:
+
+| planet | median ms | p90 ms |
+|---|---|---|
+| rebaked (active) | 66.38 | 74.61 |
+| pre-rebake backup | **68.14** | 75.43 |
+
+The pre-rebake planet is *slower*, so the rebake did not cost the 21ms. The biome content of the
+baked data is not the driver. Both planets cost ~67ms today while the same commit measured 41ms on
+16 September, which makes this **environmental, not data and not code**: something outside the
+binary changed between 15:55 and 22:19 that day and has not changed back. Sunshine/Moonlight remote
+play was set up in that window ([[reference_moonlight_remote_play]]) and a streaming host holds the
+GPU; that is the next thing to check, along with clocks and thermal throttling. Do not attribute
+this to any commit or to the bake until something is measured with it turned off.

@@ -2652,7 +2652,16 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
                     * terrain_detail_steep_fade(vertex_normal, direction);
         }
     }
-    let ice_share = select(0.0, biome_blend_share(biome_blend, 2u), outmap);
+    // Ground steep enough to shed its snow is bare rock, whatever the baked
+    // biome says, so it must not be lit as ice. Measured on the summit survey:
+    // the floor below is keyed on biome alone and pinned every rock face on an
+    // ice biome at ~0.52 linear when its honest albedo x irradiance is ~0.035 --
+    // a 15x lift that no material change upstream could escape, and the reason
+    // exposed rock never reached the screen. Gate it by the same shed rule the
+    // material uses so the two stages agree about what this facet is.
+    let ice_lighting_slope = 1.0 - clamp(dot(normalize(terrain_normal), direction), 0.0, 1.0);
+    let ice_share = select(0.0, biome_blend_share(biome_blend, 2u), outmap)
+        * snow_slope_hold(ice_lighting_slope, 2u);
     if ice_share > 0.0 {
         let ice_light_floor = clamp(
             max(

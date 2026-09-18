@@ -222,6 +222,14 @@ const TERRAIN_CHUNK_QUADS: f32 = 32.0;
 // How much sub-mesh relief darkens and lightens the albedo, on top of the
 // shading it already drives. Surface texture, not shadowing, so keep it modest.
 const TERRAIN_DETAIL_ALBEDO_STRENGTH: f32 = 0.18;
+// Each material layer's own mean linear albedo -- what its 1x1 top mip holds.
+// The tint below divides by these so it carries a layer's *texture variation*
+// and not its brightness. Taken from `terrain_material_texel`, and pinned by
+// `material_layer_means_match_the_generator` so they cannot drift.
+const TERRAIN_MATERIAL_MEAN_VEGETATION: vec3<f32> = vec3<f32>(0.038619, 0.046335, 0.007556);
+const TERRAIN_MATERIAL_MEAN_EARTH: vec3<f32> = vec3<f32>(0.147235, 0.071834, 0.019578);
+const TERRAIN_MATERIAL_MEAN_ROCK: vec3<f32> = vec3<f32>(0.072114, 0.064923, 0.054733);
+const TERRAIN_MATERIAL_MEAN_SNOW: vec3<f32> = vec3<f32>(0.551075, 0.643671, 0.689233);
 const TERRAIN_MATERIAL_VEGETATION: i32 = 0;
 const TERRAIN_MATERIAL_EARTH: i32 = 1;
 const TERRAIN_MATERIAL_ROCK: i32 = 2;
@@ -2381,12 +2389,18 @@ fn terrain_material_is_vegetation(biome_id: u32) -> bool {
 /// `slope` is `1 - cos(angle)`: 0.134 is 30 degrees, 0.293 is 45. Glacier ice
 /// clings a little steeper. A small remainder keeps snow lodged in gullies.
 fn snow_slope_hold(slope: f32, biome: u32) -> f32 {
+    // Measured on the summit survey: with the old bands only 17.5% of visible
+    // ground shed its snow, against 78% of raw albedo reading near-white, so
+    // faces the photographs show as bare rock stayed white. The geometry was
+    // never the problem -- half the frame sits past 30 degrees -- the bands
+    // simply started too late. Glacier ice still clings steeper than snow.
+    // `1 - cos`: 0.067 is 21 degrees, 0.087 is 24, 0.22 is 38, 0.26 is 41.
     let shed = select(
-        smoothstep(0.134, 0.293, slope),
-        smoothstep(0.181, 0.357, slope),
+        smoothstep(0.067, 0.220, slope),
+        smoothstep(0.087, 0.260, slope),
         biome == 2u,
     );
-    return 1.0 - shed * 0.92;
+    return 1.0 - shed * 0.96;
 }
 
 fn terrain_material_is_snow(biome_id: u32) -> bool {
@@ -2902,8 +2916,21 @@ fn terrain_material_tint(
         + earth.rgb * weights.y
         + rock.rgb * weights.z
         + snow.rgb * weights.w;
+    // Divide by the blend's own mean albedo rather than by `base_albedo`. The
+    // old ratio asked "how does this texel differ from the colour the palette
+    // chose", so a dark palette entry inflated it: measured on the summit
+    // survey, rock's palette colour (linear ~0.035) under rock's texture mean
+    // (~0.065) pinned the ratio at the 2.4 ceiling and multiplied every shed
+    // face back to pale grey -- the exposed rock existed in the material and
+    // was erased here. Dividing by the layer mean makes this a pure detail
+    // ratio centred on 1.0, so rock keeps both the palette's darkness and the
+    // stone texture.
+    let material_mean = TERRAIN_MATERIAL_MEAN_VEGETATION * weights.x
+        + TERRAIN_MATERIAL_MEAN_EARTH * weights.y
+        + TERRAIN_MATERIAL_MEAN_ROCK * weights.z
+        + TERRAIN_MATERIAL_MEAN_SNOW * weights.w;
     let tint = clamp(
-        material_albedo / max(base_albedo, vec3<f32>(0.015)),
+        material_albedo / max(material_mean, vec3<f32>(0.015)),
         vec3<f32>(0.35),
         vec3<f32>(2.4),
     );
