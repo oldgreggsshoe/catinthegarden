@@ -367,6 +367,7 @@ scenarios! {
     "tour_tundra" => "../scenarios/tour_tundra.json",
     "peak_survey_8_directions" => "../scenarios/peak_survey_8_directions.json",
     "peak_survey_weather" => "../scenarios/peak_survey_weather.json",
+    "alpine_survey_8_directions" => "../scenarios/alpine_survey_8_directions.json",
     "mountain_site_probe" => "../scenarios/mountain_site_probe.json",
 }
 
