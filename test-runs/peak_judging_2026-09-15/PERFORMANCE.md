@@ -54,6 +54,49 @@ and never exceeds 0.55, so there is no rises-versus-hollows signal at this scale
 biome the palette under the snow is itself white. Exposed rock needs its own material and
 distribution, not a reinterpretation of the detail field.
 
+## RESOLVED, 19 September: the 38/41ms baselines are not reproducible
+
+Everything below this line about a "41 -> 62ms regression" was chasing a number that cannot
+be reproduced. The decisive measurement, which should have been the first one:
+
+| build | measured today | measured 16 September |
+|---|---|---|
+| `7c17fb1` (round 6), rebuilt | **77.39ms** | 41.47ms |
+| `18e92b6` (HEAD) | **65.78ms** | -- |
+
+**The old code is slower than current HEAD on the same machine and the same scene.** No commit
+regressed anything; HEAD is ~15% faster than the round-6 code.
+
+The 16 September baselines were built from a **dirty working tree**. A manifest records the
+repository HEAD, not the code that ran: `f2770d9` -- the commit stamped on the 37.96ms
+baseline -- does not even contain `peak_survey_8_directions.json`, which was uncommitted then
+and only landed in `a186019`. So every "same commit, different speed" comparison in this file
+is comparing against code that no longer exists.
+
+Five hypotheses died by measurement before this one was tested:
+
+| hypothesis | how it died |
+|---|---|
+| the rebaked planet | A/B: pre-rebake planet measured *slower* (68.14 vs 66.38) |
+| a specific commit | rebuilt round-6 commit measures 77.39, slower than HEAD |
+| machine load | quiet machine 65.86 vs busy 65.22 -- identical |
+| present mode | `CATINGARDEN_PRESENT_MODE=immediate` 65.78 -- identical |
+| sky coverage in frame | baseline 35.4% sky vs round 8 38.5% -- same view |
+
+Workload was provably identical throughout: `budget_limited` 1.00, `fallback_chunks` 240,
+`resident_chunks` 255, `resident_tiles` 61, ~29 draw calls, 587k triangles across every run.
+The GPU boosts to its full 1124MHz at 43C and sits at 61-63% utilisation, so roughly a third
+of each frame is not drawing -- that is the real standing question, and it is a property of
+the renderer today rather than a regression from anything.
+
+**Method rules this cost a day to learn.** Rebuild the old commit before proposing a cause.
+Never trust a manifest's commit as a description of the binary. Give any measurement script a
+freshness guard -- one of mine silently reported the previous run's directory as if it were a
+new result. And do not pipe a gated command into `tail`; the pipeline returns the last
+command's status and a failing test reached a commit that way.
+
+---
+
 ## Round 8, 18 September: the 41 -> 62ms step is the planet, not the shaders
 
 Median 66.38ms, p90 74.61 at `78a25cd`. Round 6 measured 41.47ms. Walking every run's
