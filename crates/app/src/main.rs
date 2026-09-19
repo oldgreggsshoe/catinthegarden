@@ -30,6 +30,8 @@ mod sun;
 mod surface_camera;
 mod system_flight;
 mod terrain;
+mod village;
+mod village_render;
 mod weather;
 mod weather_render;
 
@@ -1060,6 +1062,7 @@ struct State {
     rain: weather_render::RainRenderer,
     local_cloud_impostors: weather_render::LocalCloudImpostorRenderer,
     forest: forest::ForestRenderer,
+    villages: village_render::VillageRenderer,
     ship_hull: ship::ShipHull,
     ship_body: ship::ShipBody,
     ship_renderer: ship_render::ShipRenderer,
@@ -1414,6 +1417,12 @@ impl State {
             weather_clouds.field_bind_group_layout(),
             &terrain,
         );
+        let villages = village_render::VillageRenderer::new(
+            &device,
+            &queue,
+            hdr::HdrRenderer::SCENE_FORMAT,
+            &camera_bind_group_layout,
+        );
         let ship_hull = ship::ShipHull::new();
         // Offset along a tangent so the hull sits beside the spawn rather than
         // under it. The ocean is deep here, so it starts on its waterline.
@@ -1504,6 +1513,7 @@ impl State {
             rain,
             local_cloud_impostors,
             forest,
+            villages,
             ship_hull,
             ship_body,
             ship_renderer,
@@ -4131,6 +4141,17 @@ impl State {
             self.camera.vertical_fov_radians(),
             presentation_time,
         );
+        // Houses are placed in unrotated planet coordinates, so the camera
+        // position they are differenced against has to be in that same frame.
+        // `camera_planet_frame_position` is the rotating frame: identical while
+        // the planet is stopped, which is why every test scenario so far could
+        // not tell the two apart, and wrong by the rotation the moment it turns.
+        self.villages.update(
+            &self.queue,
+            &self.terrain,
+            camera_world_position,
+            camera_sea_level_altitude_meters,
+        );
         if write_log {
             // The float's own instrument. Judging a hull by eye from a
             // screenshot cannot tell a wave-following ship from one welded to
@@ -4194,6 +4215,10 @@ impl State {
                 metacentric_height_meters = self.ship_hull.metacentric_height_meters(),
                 displaced_cubic_meters = self.ship_hull.displaced_volume_cubic_meters(),
                 waterplane_square_meters = self.ship_hull.waterplane_area_square_meters(),
+            );
+            tracing::info!(
+                village_houses = self.villages.instance_count(),
+                "village house instances"
             );
             let forest = self.forest.stats();
             tracing::info!(
@@ -4625,6 +4650,11 @@ impl State {
                 &mut render_pass,
                 &self.camera_bind_group,
                 self.weather_clouds.field_bind_group(),
+                camera_sea_level_altitude_meters,
+            );
+            self.villages.draw(
+                &mut render_pass,
+                &self.camera_bind_group,
                 camera_sea_level_altitude_meters,
             );
             if body::has_atmosphere() {
