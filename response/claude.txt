@@ -1,111 +1,253 @@
-=== UPDATE, 14 SEPTEMBER, LATER. READ THIS FIRST; THE BRIEF BELOW STILL STANDS. ===
+BRIEF FOR CODEX — catingard visual realism, 19 September 2026
+Branch: experiment/ocean-wind-sea-spectrum, HEAD 5b2cdf9 (plus uncommitted glacier work, see §6)
 
-Three things in the working tree that the brief below does not mention.
+=============================================================================
+1. THE OBJECTIVE
+=============================================================================
+Three independent judge agents score how close the renderer looks to real
+photographs of one real place. Ian's target is an average 9.5/10. We are at 2.7.
 
-1. Items 3 and 4 already have their failing state. Claude wrote them into your uncommitted diff:
-     - ocean.rs tests a_dry_eye_measures_fetch_from_the_sea_it_is_looking_at and
-       stepping_off_the_tideline_does_not_switch_the_fetch. On your current upwind_fetch_meters the
-       first reads "0m of fetch across 12km of open water", the second "11988.07m wet and 0m dry".
-     - crates/app/scenarios/ocean_weather_dry_landing.json, registered in scenario.rs and retargeted
-       onto the baked landing like stand_on_ground. Replay
-       test-runs/ocean_weather_dry_landing/1789399360-6609: 90 target lines, upwind_fetch_meters 0 and
-       local_storm 0 on every one, wind 4.85-4.95m/s.
-   Use them or replace them, but whatever you commit has to fail on your current code first, as the
-   brief says. Nothing of the fix itself is applied.
+Judging camera: 100m above ground, 30 degrees below horizontal, eight compass
+headings, solar noon. Scenario `alpine_survey_8_directions`.
+References: fifteen photographs of the Great Aletsch Glacier, five per judge,
+none shared, in `test-runs/peak_judging_2026-09-15/references_aletsch/`.
+Ian approved that set; do not swap photos without asking him.
 
-2. Registering that scenario breaks scenario::tests::every_listed_scenario_loads, which asserts
-   exactly 96 names; there are 97. Bump it in the same commit as the scenario.
+IMPORTANT — MODEL BUDGET: run the three judges as **Luna** models, not Astra.
+Ian has a five-hour window and spawning three Astra judges would consume it
+immediately. Luna is sufficient: the judges look at images and describe them.
 
-3. 4567048 is Claude's bird commit: birds.rs, README.md, and every main.rs hunk except your
-   weather-target one. Your remaining main.rs diff is that one hunk. Leave birds.rs alone.
+=============================================================================
+2. THE JUDGE BRIEF HAS CHANGED — THIS MATTERS
+=============================================================================
+Judges observe. They do NOT diagnose. Ian's instruction, verbatim in spirit:
+"they aren't actually coding supergeniuses, they are just like an average person
+giving their impression... tell us which parts of the game screenshots are
+looking different to the real scenes."
 
-=== CURRENT BRIEF, 14 SEPTEMBER. REPLACES EVERYTHING PREVIOUSLY IN THIS FILE. ===
+Do not ask for, and do not act on, their rendering hypotheses. In round 11 all
+three independently reported the snow "clipping to paper-white". Measured: 0.0%
+of terrain pixels exceeded 0.95 and none reached pure white. The real defect was
+a narrow tonal range (mean luminance 0.837, nothing below 0.15). Their
+perception was right; their diagnosis was wrong; only measurement separated the
+two. Prompt them for comparison and observation. Keep the hypothesising ours.
 
-The earlier brief asked for storm/calm variety and a third 1400m swell. Both are done and committed
-(44bcafe, 23d78f9, 8342280). Disregard it; it is in git history.
+Ask each judge for: SCORE: n/10, then SUMMARY: <= 100 words, strictly.
+Spawn them as three separate agents so they cannot see each other. Tell each one
+only its own five photographs.
 
+=============================================================================
+3. THE BIG WIN, AND HOW IT WAS FOUND
+=============================================================================
+Commit 5c6b692 — "Let exposed rock reach the screen by gating the ice light floor".
 
-OCEAN_WAVE_SCALE WAS 5.0 IN THE TREE. THAT WAS IAN. IT IS BACK TO 1.0.
+The summit rendered every face white however steep. Four fixes aimed at the
+material chain each measured correct and changed nothing, because they were all
+upstream of the fault. `textured_surface_lighting` was floored at
+`biome_color(2u) * 0.65 * ice_light_floor` wherever `ice_share > 0`, and
+`ice_share` came straight off the BAKED BIOME. On an all-ice summit that pinned
+every pixel at ~0.52 linear while an honest rock face computes to
+`albedo 0.065 * irradiance 0.53 = 0.035`. A 7x floor downstream of every
+material decision. Gating it by the same `snow_slope_hold` the material uses:
+lighting-stage rock/snow contrast 1.54x -> 5.64x, final 1.42x -> 2.31x, judges
+2.9 -> 3.23, frame time unchanged.
 
-Ian set it to 5 by hand to look at a bigger sea, which is why the test binary stopped compiling ("the
-deepest trough reaches past the underwater safety floor"). He says it can go back to 1 and is a
-non-issue. I reverted that single line of ocean.rs and touched nothing else in your uncommitted diff.
-Do not tune for scale 5 and do not lower PLANET_CORE_CLEARANCE_METERS on its account.
+**The technique that found it, after four cycles of failure: trace ONE SET OF
+PIXELS through every stage.** Take pixels that are dark rock in the material
+stage, then measure what those same pixels become at albedo, at lighting, at
+final. The stage where contrast collapses is the culprit. Measuring each stage
+in isolation hid this for hours. Debug modes exist for exactly this:
+CATINGARDEN_DEBUG_MODE=albedo|lighting|aerial. I added slope/snowhold/basecolor/
+tint/weathersnow/irradiance modes, used them, and stripped them again — re-add
+what you need, they are cheap.
 
+=============================================================================
+4. THE SECOND BIG WIN — ALTITUDE MUST BE SCALED (IAN'S INSIGHT)
+=============================================================================
+This planet's highest peak is 186,709m. Everest is 8,849m. Scale factor 21.10x.
 
-YOUR UNCOMMITTED FETCH WORK: WHAT I VERIFIED
+  Earth                  altitude    here
+  Everest                8,849m      186,709m   <- our old judging site, exactly
+  Mont Blanc             4,808m      101,446m
+  Jungfraujoch (Sphinx)  3,571m       75,346m
+  Aletsch upper glacier  3,400m       71,738m
+  Konkordiaplatz         2,800m       59,078m
 
-All 300 "ocean weather target" lines in test-runs/ocean_weather_trial/1789364696-508557/log.jsonl:
-wind 7.317 to 8.037 m/s, fetch 68,339 to 83,334 m, target 0.228 to 0.258, and the sea-state sample
-ends at 0.2272. That matches your note.
+The Aletsch photographs correspond to **59,000-75,000m here**, not 3-4km. I
+wasted seven site searches hunting "3-4km alpine terrain" and got ocean, forest
+and high lakes every time, because 3-4km on this planet is a scaled sea-level
+swamp. Glaciers live at 13-31km+ (Earth-equivalent 600-1,500m hills). CONVERT
+BEFORE CHOOSING ANY LOCATION.
 
-`cargo test -p catinthegarden-app --no-fail-fast` on the tree as it stands (your diff plus the scale
-revert): 496 passed, 0 failed, 20 ignored. That is the app crate only, not your 560-test workspace
-figure, so it neither confirms nor contradicts that number.
+The atmosphere scales too: RAYLEIGH_SCALE_HEIGHT_METERS is 72,000m against
+Earth's ~8,500m, so 79km carries ~1/e of sea-level density overhead and has real
+skylight. At the old 186km summit there was essentially none, which is why round
+10's judges asked for shadow fill the location could never physically supply.
 
-Converting each cell's wind to a world vector before interpolating is right, and the pole/cube-edge
-test is a good one. Frames are consistent: terrain and weather both take planet_local_vector.
+Current judging site (committed, aace6e3): 79,247m, lat 48.6, Earth-equivalent
+3,756m, 96.9% glaciated. Clearance measures 100.47m, all assertions pass.
 
+=============================================================================
+5. THE THIRD WIN — THERE WAS NEVER A FRAME-TIME REGRESSION
+=============================================================================
+Commit 5b2cdf9. Do not chase this; it is closed.
 
-NOT READY TO COMMIT: FROM THE DEFAULT START THE SEA IS ALWAYS CALM
+Rebuilding 7c17fb1 — the commit whose run "measured 41.47ms" — gives 77.39ms
+today, SLOWER than HEAD's 65.78ms. The 16 September baselines were built from a
+dirty working tree: f2770d9, stamped on the 37.96ms baseline, does not even
+contain the scenario it supposedly ran. A manifest records HEAD, not the binary.
 
-`upwind_fetch_meters` returns Some(0.0) whenever the ground under the eye is not water:
+Five hypotheses died by measurement before the obvious one was tested: the
+rebaked planet (A/B'd, old planet slower), machine load (quiet 65.86 vs busy
+65.22), present mode (immediate 65.78), sky coverage (35.4% vs 38.5%), and a
+specific commit. Full table in test-runs/peak_judging_2026-09-15/PERFORMANCE.md.
 
-    if !is_water(height_at(radial))? { return Some(0.0); }
+What IS open: the GPU boosts to its full 1124MHz at 43C and sits at 61-63%
+utilisation, so about a third of each frame is not drawing. Workload is
+identical across every run (budget_limited 1.00, fallback_chunks 240,
+resident_chunks 255, resident_tiles 61, ~29 draw calls, 587k triangles).
+Something CPU-side or a stall. Genuinely unexplored.
 
-and `WeatherSeaTarget::intensity` multiplies everything, storm included, by
-shelter = 1 - exp(-fetch / 25km), which is exactly 0 at zero fetch. Any viewer standing on dry ground
-therefore gets intensity 0 -- the calm column -- whatever the wind and however strong the storm.
+=============================================================================
+6. WHERE I STOPPED — GLACIER STRUCTURE (UNCOMMITTED, WORKING, NOT VISIBLE)
+=============================================================================
+Round 11 judges unanimously named what is missing: crevasses, seracs, medial
+moraines, rock strata. These are absent FEATURES, not tuning problems. You
+cannot tune a constant into a moraine.
 
-That is not an edge case; it is where the game puts people:
-  - F4 enters inspection "on the authored dry side of a coast, facing across open sea" (main.rs, the
-    CameraMode::Orbit arm that calls inspection_start_direction).
-  - That landing is the baker's sparse_landing_direction, and the baker refuses to export one that is
-    not dry: crates/baker/src/export.rs:385, "sparse landing site must be dry land".
+Implemented (uncommitted, all tests green, 582 passing):
+ - BiomeId::GlacialMoraine = 10, BiomeId::CrevasseField = 11 in coretypes.
+   ALL is now [Self; 12]; name(), color() updated; TryFrom derives from ALL.
+ - Baker `classify_biomes`: on ALTITUDE ice only (never polar sheets), moraine
+   where flow_accumulation exceeds a quantile of this bake's own ice, crevasse
+   where slope exceeds one. Thresholds are QUANTILES not constants, each with an
+   absolute floor beneath it.
+ - Area-weighted biome census printed by every bake (crates/baker/src/lib.rs).
+ - Shader: palette cases 10u/11u, terrain_material_is_snow includes 11u,
+   biome_blend_snow_share includes 11u, material weights make 10u rock-dominant
+   with no snow and 11u snow at 0.82.
 
-So from Ian's normal start, looking out to sea, your diff shows a calm sea even in a full storm.
-Committed 8342280 does not have this problem; only your diff does. Your replay missed it because its
-camera is 150m up over water (near-field baked height -103.6m in the manifest), which is the one kind
-of pose where the dry-ground branch never runs. The comment "Keep existing storm energy" is also
-contradicted by the code, for the same reason: shelter multiplies storm energy too.
+THE BLOCKER, measured: thin features are decimated by export resampling.
 
-It also turns the tideline into a switch. Stepping from wet sand onto dry sand drops the target from
-exposed to zero. The response is smoothed over minutes, so nothing will visibly pop, but on the dry
-side of that line the target is simply wrong.
+                working grid (preview)    exported L4 tiles
+  moraine       7,356 px = 0.088%         368 cells = 0.0014%   (~60x loss)
+  crevasse      97,230 px = 1.16%         5,642 cells = 0.022%  (~50x loss)
 
-Before you commit this I need:
-  1. Fetch has to describe the sea the viewer is looking at, not the ground under their feet. How you
-     find that water is your call (nearest water, water along the view, keep the previous target when
-     no water is near), but dry ground under the eye must not mean zero fetch.
-  2. A deliberate decision on whether shelter scales storm_intensity or only the wind-driven term,
-     with the comment saying what the code actually does.
-  3. A unit test: dry ground under the eye, water starting a few hundred metres upwind, open water
-     beyond. The current code returns Some(0.0) for it. Show it failing on the current code before
-     you fix it.
-  4. A replay from the baker's dry landing (landing_site_eye_level and stand_on_ground are both moved
-     there) with ocean_weather_response on. Per the code, every target line at that pose today reads
-     upwind_fetch_meters 0 and local_storm 0. Confirm that failing state first, then show it is gone.
-     Do not use coastal_spawn_view: it has its own authored camera position and pins intensity at 1.0,
-     so it cannot exercise this. Scenario replays need xvfb; on DISPLAY=:0 they stall and write nothing.
-  5. Commit with the docs/HANDOFF.md header updated in the same commit.
+The classifier works — the preview proves it, and the crop looks like real
+drainage threading through ice. But the export resamples the 4096x2048
+equirectangular working grid onto cube-face tiles and one-cell-wide features
+fall between samples. Only 417 of 1,536 L4 tiles retain any structure, and the
+judging site's tile (py/l04/x000005_y000001) has NONE. Round 12 frames are
+byte-identical to round 11 for an honest reason: there is nothing there to draw.
 
-Leave birds.rs, birds.wgsl and birds_render.rs alone; that is live bird work in this same checkout.
+My recommendation: DILATE the structure in the working grid before export (grow
+moraine/crevasse by a cell or two) so it survives resampling. At ~3km sample
+spacing a real medial moraine is far below grid resolution anyway, so this is
+already a stylised representation. Widening the thresholds instead makes the
+features more COMMON rather than THICKER, so thin threads would still be lost.
 
-## Fetch bug fix — 15 September
+Three bakes have been spent on this. Each takes a few minutes, not hours.
 
-The 5 requirements for finishing Codex's fetch work are now complete:
+=============================================================================
+7. TRAPS THAT COST ME MOST OF TWO DAYS — PLEASE READ
+=============================================================================
+Every one of these is the same shape: AN ARTEFACT THAT LOOKS CURRENT BUT WAS
+PRODUCED BY DIFFERENT CODE. Verify the artefact contains your change (mtime, or
+`strings <binary> | grep '<a comment you just wrote>'`) BEFORE trusting a run.
+Identical output across two runs that should differ means staleness until
+disproved — not "the change had no effect".
 
-1. **Fetch describes the visible sea, not the ground:** The `upwind_fetch_meters` function now checks if the eye is in water. If not, it finds the shoreline upwind and measures fetch from there, not from the origin. This fixes the dry-beach case: camera on dry land, sea visible upwind now correctly reads ~12km fetch instead of 0m.
+ 1. Scenarios are include_str!'d. Edit the JSON, run without `cargo build`, and
+    you replay the OLD scenario silently.
+ 2. WGSL is validated at pipeline creation, NOT at cargo build. A clean build
+    says nothing about the shader. Run
+    `cargo test -p catinthegarden-app --bin catinthegarden-app \
+     planet_shader_validates_with_filtered_runtime_detail_noise`.
+ 3. `cargo test -p X --lib` builds the LIB TEST target, not the CLI binary. Two
+    full bakes ran the pre-edit baker and produced byte-identical output; I
+    nearly concluded my classifier change did nothing.
+ 4. A run manifest records the repository HEAD, not the binary (see §5).
+ 5. NEVER pipe a gated command into tail/head/grep. A pipeline returns the LAST
+    command's status, so `cargo test ... | tail && git commit` commits on a
+    FAILING test. It did. Use `set -o pipefail` or redirect to a file.
+ 6. Scenario replays need xvfb. On DISPLAY=:0 they stall silently, GPU at 0%,
+    and write no captures.
+ 7. The preview PNGs (assets/outmaps/test-planet/previews/) are ~10km averages
+    and under-report peaks by ~12km. My offline L4 tile reads were also
+    misaligned. ONLY the renderer's own `camera_surface_height_meters` has ever
+    been right about heights. Put a control site of KNOWN height in any probe
+    scenario and verify the method before trusting new numbers.
+ 8. docs/HANDOFF.md's recorded bake command is WRONG for this planet. It bakes
+    from ETOPO; this planet's manifest says `procedural continent/mountain
+    generator`. Copying it would silently produce a different world and
+    invalidate every judged round. The correct command is in §8.
+ 9. VERIFY BY EYE, NOT ONLY BY HISTOGRAM. Eight candidate sites and four
+    material fixes passed on numbers and failed on the picture. A plausible
+    percentage is not evidence. Open the frames.
+10. Do not spend a judging round on a change that is a no-op to the eye. Round 9
+    was staged and never judged for exactly this reason; the series runs 8 -> 10
+    -> 11 with that gap documented.
 
-2. **Shelter logic clarified:** Remains unchanged—it affects storm_intensity only through the simple formula `max(clamp(wind_speed/30), storm_intensity) * (1-exp(-fetch/25000))`. No additional clarification was needed beyond Codex's existing implementation.
+=============================================================================
+8. COMMANDS
+=============================================================================
+Build everything:
+  cargo build --release
 
-3. **Regression test added:** Two tests pass—`a_dry_eye_measures_fetch_from_the_sea_it_is_looking_at` (dry ground, 12km water upwind, expects ~12km fetch) and `stepping_off_the_tideline_does_not_switch_the_fetch` (stepping into water shouldn't jump the fetch). Both cover the eye-on-land case that was broken.
+Judging survey (ALWAYS build first — include_str!):
+  unset DISPLAY
+  xvfb-run -a --server-args="-screen 0 1920x1080x24" \
+    ./target/release/catinthegarden-app --scenario alpine_survey_8_directions
+  # output: test-runs/alpine_survey_8_directions/<run>/ {screenshots,log.jsonl,manifest.json}
+  # captures 001..008 = N,NE,E,SE,S,SW,W,NW
+  # frame time: median of `frame_time_ms` in log.jsonl (69 frames)
 
-4. **Replay from baker's dry landing:** The scenario `ocean_weather_dry_landing.json` runs at baker's landing site (camera on dry sand facing the sea, at sea-level altitude). It checks camera stands 1.5-2.5m above ground. Scenario registered and loads.
+Summit survey — keep this as the PERFORMANCE benchmark so location cost and code
+cost do not contaminate each other:
+  ... --scenario peak_survey_8_directions        # 65.78ms at HEAD
+  # alpine site costs 82-84ms, from the LOCATION, not from code
 
-5. **HANDOFF.md and commit:** Done below.
+Rebake this planet (correct command — NOT the one in HANDOFF):
+  cargo build --release -p catinthegarden-baker        # binary, not just --lib
+  RAYON_NUM_THREADS=2 nice -n 10 ./target/release/catinthegarden-baker \
+    --output assets/outmaps/test-planet.<name>-staging \
+    --procedural-terrain --width 4096 --height 2048 --dense-level 4 --max-level 18
+  ./target/release/catinthegarden-baker --validate assets/outmaps/test-planet.<name>-staging
+  # default seed 0xEA27_2026 = 3928432678 matches the live manifest. Do NOT pass --seed.
+  # verify generator/seed/dimensions/levels/available_tiles all match the live
+  # manifest before promoting, then mv into place.
 
-**Validation:** 507 workspace tests pass, clippy clean, scenario registration updated from 96 to 97 scenarios. Release binary rebuilt.
+Backups of the pre-glacier planet (both good, ~374M each):
+  assets/outmaps/test-planet.pre-glacier-backup-20260919
+  assets/outmaps/test-planet.pre-glacier-superseded-20260919
 
-The fix is minimal: one check for eye-in-water, one loop to find the shoreline, one bisection to refine it, then measure fetch from there instead of the origin. All prior logic and performance are preserved for the common case (eye in water).
+=============================================================================
+9. JUDGES' CURRENT LIST (round 11, at the alpine site, average 2.7)
+=============================================================================
+ 1. Snow has no tonal range — reads as flat paper-white, form vanishes.
+    Measured: mean luminance 0.837, 0.0% of frame below 0.15, 0.0% above 0.95.
+    It is a CONTRAST problem, not an exposure one. Adding headroom does nothing.
+ 2. No glacier structure: crevasses, seracs, ogives, medial moraines. (§6)
+ 3. Rock is flat grey, untextured, hard-edged, with dithered boundaries; no
+    strata, talus or warm mineral tone. Note terrain_detail_steep_fade still
+    strips detail between 35 and 55 degrees — exactly where exposed rock is.
+ 4. Silhouettes read as smooth dunes rather than glacially sculpted ridges.
+ 5. Distant peaks low-poly; repeating hex/dot tiling artefact; violet base haze.
+ Best element every round: aerial perspective and the sky gradient. Don't break it.
 
+Also open: a green/teal band Ian spotted on the ridges. It is in the AERIAL
+stage (335,363 band pixels there, 5,930 surviving to final, ZERO in albedo and
+basecolor), i.e. the long-path in-scatter showing through where neutrality
+fails. Same family as commit d9c85dd's orange-patch bug. Not yet fixed.
+
+=============================================================================
+10. STANDING RULES FROM IAN
+=============================================================================
+ - Raster path only, never the raymarch path.
+ - Performance is the priority: "We're not just trying to make 8 pretty
+   pictures, we're making a real time environment." Measure frame time before
+   and after EVERY renderer change and report it beside the visual result.
+ - Judges independent and unaware of each other. Summaries <= 100 words.
+ - References all from ONE real place.
+ - Do not use --profile-render on this Quadro: it enables TIMESTAMP_QUERY, which
+   is the documented cause of a present deadlock on this card.
