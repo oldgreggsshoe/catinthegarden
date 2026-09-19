@@ -86,6 +86,14 @@ const HOUSE_RIDGE_HEIGHT_METERS: f64 = 2.4;
 /// Sink the walls slightly so a house meets sloping ground without a visible
 /// gap under the downhill corner.
 const HOUSE_BASE_SINK_METERS: f64 = 0.35;
+/// How far the roof oversails the walls on every side. The mesh and the
+/// no-overlap rule both read this, so a house's footprint cannot disagree with
+/// the circle that reserves ground for it.
+const HOUSE_ROOF_OVERHANG_METERS: f64 = 0.45;
+/// How many placements a house may try before the village gives up on it. A
+/// village that runs out of room simply ends up smaller, which is the right
+/// outcome on a cramped site.
+const HOUSE_PLACEMENT_ATTEMPTS: u32 = 24;
 
 /// The four painted timber colours, in linear space. Falu red first because it
 /// is the one everybody pictures; the others are the usual Nordic palette.
@@ -141,13 +149,35 @@ pub fn village_biome_is_habitable(biome: BiomeId) -> bool {
     )
 }
 
-/// Ground a village could stand on at all: the right biome, above water, and a
-/// usable height. Deliberately says nothing about slope -- see
+/// Ground a village could stand on at all: the right biome, clear of the water,
+/// and a usable height. Deliberately says nothing about slope -- see
 /// `VILLAGE_FOOTPRINT_HEIGHT_SPREAD_METERS`.
+///
+/// Tests the *drawn* surface, not just the macro field. Using
+/// `macro_height_meters > 0.0` alone placed houses on open sea: that field is
+/// the coarse macro height, and the surface the renderer actually draws sits
+/// elsewhere -- the same scale mismatch that made a pointwise slope gate reject
+/// every site.
 fn village_surface_is_eligible(sample: ForestSurfaceSample) -> bool {
     village_biome_is_habitable(sample.biome)
         && sample.macro_height_meters > 0.0
         && sample.height_meters.is_finite()
+}
+
+/// Is this spot dry land, by the renderer's own ownership rule?
+///
+/// Four earlier attempts tested a height instead -- the scaled macro height,
+/// the drawn surface height, then the raw baked height -- and every one left
+/// half a village standing on open sea. None of them could work. The rendered
+/// analytic ocean owns *every non-ice, non-lake sample at or below sea level*,
+/// whatever biome that sample carries, and a coastline point can hold a
+/// positive height and a forest biome while the water is drawn over it.
+///
+/// `open_ocean_at` is the CPU mirror of the shader's `is_open_ocean_surface`,
+/// so it cannot disagree with what is drawn. Ask it, rather than inventing a
+/// fifth threshold on a fourth field.
+fn village_ground_is_dry(terrain: &TerrainRenderer, direction: DVec3) -> bool {
+    terrain.open_ocean_at(direction) == Some(false)
 }
 
 /// Is this site level enough, across its own footprint, to hold a village?
@@ -180,7 +210,7 @@ fn village_footprint_height(
             return None;
         }
         let sample = terrain.forest_surface_sample_at(direction, camera_altitude_meters)?;
-        if !village_surface_is_eligible(sample) {
+        if !village_surface_is_eligible(sample) || !village_ground_is_dry(terrain, direction) {
             return None;
         }
         lowest = lowest.min(sample.height_meters);
@@ -191,6 +221,27 @@ fn village_footprint_height(
         return None;
     }
     Some(total / offsets.len() as f64)
+}
+
+/// Furthest a house corner reaches from its centre, seen from above. The roof
+/// oversails the walls, so the corner that matters is the eave's rather than
+/// the wall's, and the diagonal rather than either side.
+fn house_plan_radius_meters() -> f64 {
+    let eave_half_width = HOUSE_WIDTH_METERS * 0.5 + HOUSE_ROOF_OVERHANG_METERS;
+    let eave_half_depth = HOUSE_DEPTH_METERS * 0.5 + HOUSE_ROOF_OVERHANG_METERS;
+    (eave_half_width * eave_half_width + eave_half_depth * eave_half_depth).sqrt()
+}
+
+/// Houses must never overlap, whatever way round they are turned. Each one owns
+/// a circle of `house_plan_radius_meters()`, and a full radius of clear ground
+/// is kept between those circles: two radii for the circles themselves plus one
+/// for the gap makes three.
+///
+/// Working from the circle rather than the rectangle is what makes this hold at
+/// any orientation -- a house turned 45 degrees reaches further along its
+/// diagonal than along either side, and the circle already covers that.
+fn house_minimum_spacing_meters() -> f64 {
+    house_plan_radius_meters() * 3.0
 }
 
 fn hash_u32(mut value: u32) -> u32 {
@@ -236,17 +287,43 @@ fn village_site_direction(key: TileKey, index: u32) -> DVec3 {
     face_uv_to_direction(key.face, u, v)
 }
 
-/// House positions around a village centre, as tangential offsets in metres.
-/// Clustered rather than uniform: a village reads as a village because the
-/// houses crowd toward its middle and thin out at the edge.
-fn house_offset_meters(site_seed: u32, index: u32) -> (f64, f64, f64) {
-    let angle = unit_hash(site_seed ^ index ^ 0x1f83_d9ab) * std::f64::consts::TAU;
-    // sqrt would spread houses evenly over the disc; squaring instead pulls
-    // them inward, which looks like a settlement rather than a scatter.
-    let radius =
-        VILLAGE_RADIUS_METERS * unit_hash(site_seed ^ index ^ 0x5be0_cd19).powf(1.6);
-    let facing = unit_hash(site_seed ^ index ^ 0x9b05_688c) * std::f64::consts::TAU;
-    (angle.cos() * radius, angle.sin() * radius, facing)
+/// House positions around a village centre, as tangential offsets in metres,
+/// with their facings. Clustered rather than uniform: a village reads as a
+/// village because the houses crowd toward its middle and thin out at the edge.
+///
+/// Placement is rejection-sampled against `house_minimum_spacing_meters()`, so
+/// no two houses can overlap however they are turned. A house that cannot find
+/// room within `HOUSE_PLACEMENT_ATTEMPTS` is dropped rather than squeezed in;
+/// the village ends up smaller, which is what a cramped site should produce.
+fn village_house_layout(site_seed: u32) -> Vec<(f64, f64, f64)> {
+    let minimum = house_minimum_spacing_meters();
+    let minimum_squared = minimum * minimum;
+    let mut placed: Vec<(f64, f64, f64)> = Vec::with_capacity(HOUSES_PER_VILLAGE as usize);
+    for index in 0..HOUSES_PER_VILLAGE {
+        for attempt in 0..HOUSE_PLACEMENT_ATTEMPTS {
+            let seed = site_seed
+                ^ index.wrapping_mul(0x9e37_79b9)
+                ^ attempt.wrapping_mul(0x85eb_ca6b);
+            let angle = unit_hash(seed ^ 0x1f83_d9ab) * std::f64::consts::TAU;
+            // sqrt would spread houses evenly over the disc; a higher power
+            // pulls them inward, which looks like a settlement rather than a
+            // scatter.
+            let radius = VILLAGE_RADIUS_METERS * unit_hash(seed ^ 0x5be0_cd19).powf(1.6);
+            let facing = unit_hash(seed ^ 0x9b05_688c) * std::f64::consts::TAU;
+            let east = angle.cos() * radius;
+            let north = angle.sin() * radius;
+            let clear = placed.iter().all(|&(other_east, other_north, _)| {
+                let de = east - other_east;
+                let dn = north - other_north;
+                de * de + dn * dn >= minimum_squared
+            });
+            if clear {
+                placed.push((east, north, facing));
+                break;
+            }
+        }
+    }
+    placed
 }
 
 fn house_colour(site_seed: u32, index: u32) -> [f32; 3] {
@@ -352,7 +429,7 @@ pub fn build_house_mesh() -> Vec<HouseVertex> {
     );
 
     // Two roof planes, oversailing the walls a little so the eaves read.
-    let overhang = 0.45;
+    let overhang = HOUSE_ROOF_OVERHANG_METERS;
     let eave_x = half_width + overhang;
     let eave_y = half_depth + overhang;
     let eave_z = eaves - overhang * 0.35;
@@ -435,11 +512,12 @@ pub fn collect_house_instances(
                     continue;
                 };
 
-                for index in 0..HOUSES_PER_VILLAGE {
+                let layout = village_house_layout(site_seed);
+                for (index, &(offset_east, offset_north, facing)) in layout.iter().enumerate() {
                     if instances.len() >= VILLAGE_MAX_DRAW_INSTANCES {
                         return instances;
                     }
-                    let (offset_east, offset_north, facing) = house_offset_meters(site_seed, index);
+                    let index = index as u32;
                     let offset = east * offset_east + north * offset_north;
                     let house_direction = (site_direction * planet_radius_meters() + offset)
                         .normalize_or_zero();
@@ -453,7 +531,9 @@ pub fn collect_house_instances(
                     };
                     // The second slope test. Without it a village on a shallow
                     // hillside puts one house on the step at its edge.
-                    if !village_surface_is_eligible(ground) {
+                    if !village_surface_is_eligible(ground)
+                        || !village_ground_is_dry(terrain, house_direction)
+                    {
                         continue;
                     }
                     // Keep the cluster coherent: a house whose ground sits well
@@ -546,17 +626,32 @@ mod tests {
 
     #[test]
     fn houses_cluster_toward_the_village_centre() {
-        // The squared radius hash should put more than half the houses inside
-        // half the village radius; a uniform disc would put about a quarter.
-        let inside = (0..HOUSES_PER_VILLAGE)
-            .filter(|&index| {
-                let (east, north, _) = house_offset_meters(0x1234_5678, index);
-                (east * east + north * north).sqrt() < VILLAGE_RADIUS_METERS * 0.5
-            })
-            .count();
+        // The radius hash should put more than half the houses inside half the
+        // village radius; a uniform disc would put about a quarter. Averaged
+        // over many villages, because rejection sampling pushes the occasional
+        // house outward when the middle is already taken.
+        let mut inside = 0_usize;
+        let mut total = 0_usize;
+        for seed_index in 0..256_u32 {
+            for &(east, north, _) in &village_house_layout(hash_u32(0xc0ff_ee00 ^ seed_index)) {
+                total += 1;
+                if (east * east + north * north).sqrt() < VILLAGE_RADIUS_METERS * 0.5 {
+                    inside += 1;
+                }
+            }
+        }
+        // A uniform disc puts a quarter of its points inside half its radius.
+        // The radius hash biases inward, and the no-overlap rule then pushes
+        // some houses back out once the middle is taken, so the result settles
+        // between the two: clustered, but not as tightly as before spacing was
+        // enforced. Measured at 43%; the bar is set against uniform rather than
+        // against the old figure, which described behaviour that no longer
+        // exists.
+        let fraction = inside as f64 / total as f64;
         assert!(
-            inside * 2 > HOUSES_PER_VILLAGE as usize,
-            "expected a clustered village, got {inside} of {HOUSES_PER_VILLAGE} inside half radius"
+            fraction > 0.35,
+            "expected clustering above a uniform disc's 25%, got {:.1}% ({inside} of {total})",
+            fraction * 100.0
         );
     }
 
@@ -605,6 +700,73 @@ mod tests {
                 "{biome:?} must not carry villages"
             );
         }
+    }
+
+    #[test]
+    fn the_spacing_circle_covers_the_real_house() {
+        // The circle that reserves ground must actually contain the mesh,
+        // whatever the house's dimensions become. Measured from the vertices
+        // rather than from the constants, so changing the width, depth or roof
+        // overhang cannot leave the circle behind.
+        let mesh = build_house_mesh();
+        let furthest = mesh
+            .iter()
+            .map(|vertex| {
+                let x = f64::from(vertex.position[0]);
+                let y = f64::from(vertex.position[1]);
+                (x * x + y * y).sqrt()
+            })
+            .fold(0.0_f64, f64::max);
+        let circle = house_plan_radius_meters();
+        assert!(
+            circle >= furthest - 1.0e-6,
+            "circle {circle}m does not cover the mesh's {furthest}m corner"
+        );
+        assert!(
+            circle - furthest < 0.01,
+            "circle {circle}m is needlessly larger than the mesh's {furthest}m"
+        );
+    }
+
+    #[test]
+    fn houses_never_overlap_in_any_village() {
+        // The unbreakable rule. Two houses may not come closer than three plan
+        // radii centre to centre: two for the circles themselves and one for
+        // the clear ground between them.
+        let minimum = house_minimum_spacing_meters();
+        let mut smallest = f64::INFINITY;
+        for seed_index in 0..512_u32 {
+            let site_seed = hash_u32(0x51ed_c0de ^ seed_index);
+            let layout = village_house_layout(site_seed);
+            for (first, &(ae, an, _)) in layout.iter().enumerate() {
+                for &(be, bn, _) in layout.iter().skip(first + 1) {
+                    let separation = ((ae - be).powi(2) + (an - bn).powi(2)).sqrt();
+                    smallest = smallest.min(separation);
+                    assert!(
+                        separation >= minimum - 1.0e-9,
+                        "two houses {separation}m apart, below the {minimum}m minimum"
+                    );
+                }
+            }
+        }
+        assert!(smallest.is_finite(), "no villages produced a pair to compare");
+    }
+
+    #[test]
+    fn a_village_still_fills_out_despite_the_spacing_rule() {
+        // Rejection sampling must not quietly gut the village: a 110m radius
+        // has room for far more than twenty houses at this spacing, so almost
+        // every one should find a home.
+        let mut total = 0_usize;
+        let trials = 256_u32;
+        for seed_index in 0..trials {
+            total += village_house_layout(hash_u32(0xbeef_0001 ^ seed_index)).len();
+        }
+        let mean = total as f64 / f64::from(trials);
+        assert!(
+            mean > f64::from(HOUSES_PER_VILLAGE) * 0.8,
+            "villages average only {mean} houses of {HOUSES_PER_VILLAGE}"
+        );
     }
 
     #[test]
