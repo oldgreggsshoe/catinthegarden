@@ -133,6 +133,30 @@ fn bake_internal(
     progress.stage("terrain generation");
     let terrain = Terrain::try_generate_with_progress(config, progress)?;
     progress.done();
+    // The glacier-structure thresholds are quantiles of each bake's own ice, so
+    // counting what they actually selected is the only way to know whether a
+    // moraine is a stripe or a rash. Area-weighted, because an equirectangular
+    // grid over-samples the poles badly enough to flatter any polar biome.
+    {
+        use catinthegarden_coretypes::BiomeId;
+        let mut weights = [0.0_f64; BiomeId::ALL.len()];
+        let mut total = 0.0_f64;
+        for index in 0..terrain.grid.len() {
+            let weight = terrain.grid.latitude(index).cos().max(0.0);
+            weights[terrain.biome[index] as usize] += weight;
+            total += weight;
+        }
+        if total > 0.0 {
+            let mut line = String::from("biome census (area-weighted):");
+            for biome in BiomeId::ALL {
+                let share = weights[biome as usize] / total * 100.0;
+                if share >= 0.005 {
+                    line.push_str(&format!(" {}={share:.2}%", biome.name()));
+                }
+            }
+            println!("{line}");
+        }
+    }
     let mountain_coverage = if report_mountain_coverage {
         progress.stage("mountain coverage survey");
         let report = terrain.mountain_visibility_coverage();

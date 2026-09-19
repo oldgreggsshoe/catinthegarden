@@ -2249,6 +2249,12 @@ fn biome_color(biome: u32) -> vec3<f32> {
         case 6u: { display_color = vec3<f32>(25.0, 125.0, 55.0) / 255.0; }
         case 7u: { display_color = vec3<f32>(205.0, 180.0, 105.0) / 255.0; }
         case 8u: { display_color = vec3<f32>(74.0, 70.0, 66.0) / 255.0; }
+        // Medial moraine: debris riding on ice, close to mountain rock so the
+        // stripe reads as the same material laid over the glacier.
+        case 10u: { display_color = vec3<f32>(92.0, 86.0, 78.0) / 255.0; }
+        // Crevasse field: darker and bluer than clean firn, because most of
+        // what the eye catches at distance is the inside of the cracks.
+        case 11u: { display_color = vec3<f32>(176.0, 198.0, 214.0) / 255.0; }
         default: { display_color = vec3<f32>(236.0, 240.0, 242.0) / 255.0; }
     }
     return srgb_to_linear(display_color);
@@ -2285,9 +2291,14 @@ fn terrain_material_weights_for_biome(
         1.0,
     );
     var rock_amount = smoothstep(0.10, 0.42, slope);
-    // Under a snow biome's snow is mountain rock, not soil or grass.
-    if biome == 8u || terrain_material_is_snow(biome) {
+    // Under a snow biome's snow is mountain rock, not soil or grass. A moraine
+    // is debris lying on the ice, so it is rock all the way down and never
+    // takes the vegetation or earth layers.
+    if biome == 8u || biome == 10u || terrain_material_is_snow(biome) {
         rock_amount = max(rock_amount, 0.78);
+    }
+    if biome == 10u {
+        rock_amount = 1.0;
     }
 
     let latitude_amount = abs(surface_direction.y);
@@ -2299,8 +2310,15 @@ fn terrain_material_weights_for_biome(
     );
     if biome == 2u {
         snow_amount = 1.0;
+    } else if biome == 11u {
+        // Broken ice still reads mostly white from any distance; the cracks
+        // darken it rather than uncovering it.
+        snow_amount = 0.82;
     } else if biome == 9u {
         snow_amount = max(snow_amount, 0.88);
+    } else if biome == 10u {
+        // Debris cover, not snow.
+        snow_amount = 0.0;
     }
     // After the biome overrides, or a snow biome paints its cliffs white.
     snow_amount *= snow_slope_hold(slope, biome);
@@ -2404,7 +2422,10 @@ fn snow_slope_hold(slope: f32, biome: u32) -> f32 {
 }
 
 fn terrain_material_is_snow(biome_id: u32) -> bool {
-    return biome_id == 2u || biome_id == 9u;
+    // A crevasse field is ice that has pulled apart, so it still holds snow and
+    // sheds it on the same slopes. A moraine is debris lying on top of the ice
+    // and behaves as rock, so it is deliberately excluded here.
+    return biome_id == 2u || biome_id == 9u || biome_id == 11u;
 }
 
 /// Share of a biome blend owned by one biome. Colour decisions weighted by
@@ -2420,7 +2441,14 @@ fn biome_blend_share(blend: BiomeBlendSample, wanted: u32) -> f32 {
 }
 
 fn biome_blend_snow_share(blend: BiomeBlendSample) -> f32 {
-    return biome_blend_share(blend, 2u) + biome_blend_share(blend, 9u);
+    // Must agree with `terrain_material_is_snow`: a crevasse field is ice that
+    // pulled apart, so aerial neutrality and the ice light floor have to treat
+    // it as snow. Disagreeing here is how white ground in a non-snow biome took
+    // the raw orange long-path transmittance and stamped that biome's texel
+    // staircase across it.
+    return biome_blend_share(blend, 2u)
+        + biome_blend_share(blend, 9u)
+        + biome_blend_share(blend, 11u);
 }
 
 fn biome_blend_vegetation_share(blend: BiomeBlendSample) -> f32 {

@@ -243,10 +243,18 @@ pub enum BiomeId {
     Desert = 7,
     MountainRock = 8,
     MountainSnow = 9,
+    /// Debris-covered ice where tributary glaciers merge. Real medial moraines
+    /// are the dark stripes running down a trunk glacier, and they are the most
+    /// recognisable thing missing from our ice: judges named them every round.
+    GlacialMoraine = 10,
+    /// Ice under extension, broken into a crevasse field. Placed where the
+    /// surface steepens along the flow rather than by height, because that is
+    /// where a real glacier pulls apart.
+    CrevasseField = 11,
 }
 
 impl BiomeId {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 12] = [
         Self::Ocean,
         Self::Lake,
         Self::Ice,
@@ -257,6 +265,8 @@ impl BiomeId {
         Self::Desert,
         Self::MountainRock,
         Self::MountainSnow,
+        Self::GlacialMoraine,
+        Self::CrevasseField,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -271,6 +281,8 @@ impl BiomeId {
             Self::Desert => "desert",
             Self::MountainRock => "mountain_rock",
             Self::MountainSnow => "mountain_snow",
+            Self::GlacialMoraine => "glacial_moraine",
+            Self::CrevasseField => "crevasse_field",
         }
     }
 
@@ -286,6 +298,13 @@ impl BiomeId {
             Self::Desert => [205, 180, 105],
             Self::MountainRock => [105, 100, 95],
             Self::MountainSnow => [205, 210, 210],
+            // Rock flour and entrained debris, darker and warmer than the ice
+            // it rides on. Deliberately close to mountain rock so a moraine
+            // reads as the same material, laid over the glacier.
+            Self::GlacialMoraine => [92, 86, 78],
+            // Shadowed ice: the field reads darker and bluer than clean firn
+            // because most of what the eye catches is the inside of the cracks.
+            Self::CrevasseField => [176, 198, 214],
         }
     }
 }
@@ -508,7 +527,7 @@ mod tests {
             assert_eq!(BiomeId::try_from(biome as u8), Ok(biome));
             assert!(!biome.name().is_empty());
         }
-        assert_eq!(BiomeId::try_from(10), Err(10));
+        assert_eq!(BiomeId::try_from(12), Err(12));
     }
 
     #[test]

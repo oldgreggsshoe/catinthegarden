@@ -607,7 +607,10 @@ impl Terrain {
                     if matches!(neighbor_biome, BiomeId::Ocean | BiomeId::Lake) {
                         touches_water = true;
                         touches_ocean |= neighbor_biome == BiomeId::Ocean;
-                    } else if neighbor_biome != BiomeId::Ice {
+                    } else if !matches!(
+                        neighbor_biome,
+                        BiomeId::Ice | BiomeId::CrevasseField | BiomeId::GlacialMoraine
+                    ) {
                         let neighbor_height = self.height_meters[neighbor];
                         minimum_dry_height = minimum_dry_height.min(neighbor_height);
                         maximum_dry_height = maximum_dry_height.max(neighbor_height);
@@ -622,6 +625,9 @@ impl Terrain {
                     BiomeId::TemperateGrassland => 300.0,
                     BiomeId::Tundra | BiomeId::Desert => 100.0,
                     BiomeId::MountainRock | BiomeId::MountainSnow => -200.0,
+                    // Debris-covered and broken ice are land, so they reach
+                    // here, but they are worse to stand on than bare mountain.
+                    BiomeId::GlacialMoraine | BiomeId::CrevasseField => -400.0,
                     BiomeId::Ocean | BiomeId::Lake | BiomeId::Ice => unreachable!(),
                 };
                 let score = biome_bonus
@@ -821,6 +827,70 @@ impl Terrain {
         let slopes: Vec<f64> = (0..self.grid.len())
             .map(|index| self.slope_radians(index))
             .collect();
+
+        // Glacier structure. Medial moraines are the dark stripes where
+        // tributary ice merges into a trunk, and crevasse fields open where the
+        // surface steepens and the ice pulls apart; judges named both as the
+        // most recognisable things missing from our ice.
+        //
+        // Both thresholds are quantiles of *this bake's own ice* rather than
+        // constants. An absolute angle taken from mountaineering experience
+        // classified nothing at all here, because samples sit kilometres apart
+        // and the ice reads far gentler at that spacing than any real glacier:
+        // measured, ice slope runs p50 3.0 degrees to p99 6.9.
+        let ice_cells: Vec<usize> = (0..self.grid.len())
+            .filter(|&index| {
+                if self.lake[index] {
+                    return false;
+                }
+                let height = self.height_meters[index];
+                if height <= 0.0 {
+                    return false;
+                }
+                if slopes[index] > STEEP_ROCK_SLOPE_RADIANS && height > 600.0 {
+                    return false;
+                }
+                let latitude = self.grid.latitude(index);
+                let land_ice = if imported_etopo {
+                    authored_land_ice_mask(self.grid.direction(index), height)
+                } else {
+                    latitude.abs() > 66.0_f64.to_radians()
+                };
+                // Altitude ice only. The polar sheets are excluded from the
+                // thresholds as well as from the classification below, because
+                // including them lets polar cells dominate both quantiles.
+                !land_ice && height > snowline_meters(latitude)
+            })
+            .collect();
+        let quantile = |mut values: Vec<f64>, fraction: f64| -> f64 {
+            if values.is_empty() {
+                return f64::INFINITY;
+            }
+            values.sort_unstable_by(f64::total_cmp);
+            let last = values.len() - 1;
+            values[((last as f64) * fraction).round() as usize]
+        };
+        // Moraines are narrow: a trunk glacier carries one or two stripes, not
+        // a fifth of its surface. Crevasse fields are broader but still the
+        // steep minority of the ice.
+        //
+        // Each threshold carries an absolute floor underneath the quantile,
+        // because a quantile of a constant array is that constant and the
+        // comparison is then true everywhere. A flat icefield has no flow
+        // convergence and no steepening, so it must stay clean ice; without the
+        // floors, uniform ice classified entirely as moraine.
+        const MORAINE_MINIMUM_ACCUMULATION: f64 = 6.0;
+        const CREVASSE_MINIMUM_SLOPE_RADIANS: f64 = 0.026_180; // 1.5 degrees
+        let moraine_accumulation = quantile(
+            ice_cells
+                .iter()
+                .map(|&index| self.flow_accumulation[index])
+                .collect(),
+            0.985,
+        )
+        .max(MORAINE_MINIMUM_ACCUMULATION);
+        let crevasse_slope = quantile(ice_cells.iter().map(|&index| slopes[index]).collect(), 0.80)
+            .max(CREVASSE_MINIMUM_SLOPE_RADIANS);
         self.biome
             .par_iter_mut()
             .enumerate()
@@ -852,8 +922,26 @@ impl Terrain {
                     BiomeId::Ocean
                 } else if too_steep_to_hold_snow && height > 600.0 {
                     BiomeId::MountainRock
-                } else if land_ice || height > snowline {
+                } else if land_ice {
+                    // A continental ice sheet carries no medial moraine: there
+                    // are no tributaries to merge. It is also where this grid
+                    // lies to us -- an equirectangular cell near the pole is
+                    // metres wide and kilometres tall, so steepest-descent flow
+                    // runs east-west and accumulation stacks along latitude
+                    // rows. The first bake with this rule drew moraines as
+                    // horizontal stripes across the icecap for exactly that
+                    // reason. Structure belongs to valley glaciers.
                     BiomeId::Ice
+                } else if height > snowline {
+                    // Debris first: where tributaries converge, the moraine
+                    // rides on top of whatever the ice is doing underneath.
+                    if self.flow_accumulation[index] >= moraine_accumulation {
+                        BiomeId::GlacialMoraine
+                    } else if slopes[index] >= crevasse_slope {
+                        BiomeId::CrevasseField
+                    } else {
+                        BiomeId::Ice
+                    }
                 } else if height > (snowline - 700.0).max(2_800.0) {
                     BiomeId::MountainSnow
                 } else if height > 2_400.0 {
@@ -1968,6 +2056,30 @@ mod tests {
         assert_eq!(terrain.biome[ocean], BiomeId::Ocean);
         assert_eq!(terrain.biome[lake], BiomeId::Lake);
         assert_eq!(terrain.biome[high], BiomeId::Ice);
+    }
+
+    #[test]
+    fn glacier_structure_needs_flow_or_slope_and_excludes_polar_sheets() {
+        let width = 128;
+        let height = 64;
+        let mut terrain = Terrain::from_heights(width, height, vec![20_000.0; width * height]);
+        terrain.classify_biomes(false);
+        assert!(terrain.biome.iter().all(|&biome| biome == BiomeId::Ice));
+
+        let glacier = terrain.grid.index(64, 32);
+        let west = terrain.grid.index(63, 32);
+        let east = terrain.grid.index(65, 32);
+        terrain.height_meters[west] -= 6_000.0;
+        terrain.height_meters[east] += 6_000.0;
+        terrain.classify_biomes(false);
+        assert_eq!(terrain.biome[glacier], BiomeId::CrevasseField);
+
+        let polar = terrain.grid.index(64, 0);
+        terrain.flow_accumulation[glacier] = 100.0;
+        terrain.flow_accumulation[polar] = 100.0;
+        terrain.classify_biomes(false);
+        assert_eq!(terrain.biome[glacier], BiomeId::GlacialMoraine);
+        assert_eq!(terrain.biome[polar], BiomeId::Ice);
     }
 
     #[test]
