@@ -736,8 +736,17 @@ fn baked_biome_detail(
 ) -> u8 {
     let base_biome = BiomeId::try_from(base_biome).expect("terrain biome ids are valid");
     if key.level < BAKED_BIOME_DETAIL_START_LEVEL
-        || matches!(base_biome, BiomeId::Ocean | BiomeId::Lake | BiomeId::Ice)
+        || matches!(
+            base_biome,
+            BiomeId::Ocean
+                | BiomeId::Lake
+                | BiomeId::Ice
+                | BiomeId::GlacialMoraine
+                | BiomeId::CrevasseField
+        )
     {
+        // Glacier structure is classified from flow and slope on the working
+        // grid. Reapplying the altitude-only snowline below erases it at L3+.
         return base_biome as u8;
     }
 
@@ -1116,6 +1125,47 @@ mod tests {
             ),
             0.0
         );
+    }
+
+    #[test]
+    fn exported_tiles_preserve_classified_glacier_structure() {
+        let grid = crate::grid::SphericalGrid::new(16, 8);
+        let count = grid.len();
+        let mut terrain = Terrain {
+            grid,
+            height_meters: vec![10_000.0; count],
+            flow_to: vec![None; count],
+            flow_accumulation: vec![0.0; count],
+            river: vec![false; count],
+            lake: vec![false; count],
+            glacial_valley: vec![false; count],
+            moisture: vec![128; count],
+            biome: vec![BiomeId::Ice; count],
+            moon: false,
+        };
+        let noise = Perlin::new(0xABCD_0123);
+        for biome in [
+            BiomeId::Ice,
+            BiomeId::GlacialMoraine,
+            BiomeId::CrevasseField,
+        ] {
+            terrain.biome.fill(biome);
+            for level in [2, 3, 4, 18] {
+                let key = TileKey {
+                    face: CubeFace::PositiveX,
+                    level,
+                    x: 1 << (level - 1),
+                    y: 1 << (level - 1),
+                };
+                let mut tile = sample_tile(&terrain, key, DVec3::X, &noise);
+                let parent = sample_tile(&terrain, key.parent().unwrap(), DVec3::X, &noise);
+                constrain_logical_border_to_parent(&mut tile, key, &parent);
+                assert!(
+                    tile.biome.iter().all(|&value| value == biome as u8),
+                    "{biome:?} was reclassified while exporting L{level}"
+                );
+            }
+        }
     }
 
     #[test]
