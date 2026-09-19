@@ -62,10 +62,21 @@ untouched. Heights are unchanged, so the summit, the F4 pose and every constant 
 bake are bit-identical and needed no re-derivation. The previous planet is preserved at
 `assets/outmaps/test-planet.pre-steep-rock-backup-20260916-2216`. See the newest section.
 
+**Current glacier export (19 September):** Claude's third glacier bake had moraine/crevasse
+labels in its working grid, but tile refinement overwrote them at L3+. The exporter now
+preserves both labels, with a failing-before tile regression. The corrected procedural bake
+is validated and installed at `assets/outmaps/test-planet`; Claude's third bake is preserved
+at `assets/outmaps/test-planet.claude-third-backup-20260919`. Heights, moisture, previews and
+manifest are identical. Captures show distant tonal patches, not convincing glacier structure,
+so no new judging round or realism gain is claimed. See the newest section for measurements.
+
 **Current renderer cost (16 September):** the summit survey runs at 41.5ms median, down from
 77.2ms, after removing the per-pixel cast-shadow march and the per-fragment biome-edge noise. Both
 were judged down as well as expensive. Shadows are wanted back cheaply (cached/amortised or a baked
 horizon map); the height-faces plumbing is left in place for it. See the newest section.
+These historical timing claims were superseded on 19 September: rebuilding the old code did not
+reproduce the 41.5ms baseline. See `test-runs/peak_judging_2026-09-15/PERFORMANCE.md` and the latest
+matched measurements below; do not treat the old number as a current regression target.
 
 **Current input and world tuning (16 September):** a held movement key survives a remote
 desktop's key repeat (Sunshine/Moonlight sends press/release pairs, which used to cancel WASD while
@@ -10194,3 +10205,59 @@ Frame time is unchanged by the rebake: old planet 61.6/62.4ms against new 62.2/6
 same binary. Note for a later session that this is itself ~20ms worse than the 41.5ms measured at
 round 6 on the same scenario, so something between those commits cost time and has not been found.
 
+## Glacier labels erased by export, not resampling — 19 September 2026
+
+Started from `6e81634` with Claude's uncommitted glacier work and his **third bake live**.
+Claude committed the foundation as `3eb263c` during validation; the exporter correction and
+failing-before regression are committed/pushed separately as `e8248bf`.
+
+`sample_tile` sampled the new IDs correctly, then `baked_biome_detail` reapplied its altitude
+snowline at L3+ and replaced them with Ice. The few survivors came from parent borders:
+L3/L4 interiors contained **zero** moraine or crevasse samples. The fix exempts the two glacier
+IDs alongside Ice. No classifier widening or dilation was needed. The regression exercises
+real tile sampling and parent constraints at L2/L3/L4/L18; it failed at moraine L3 before the fix.
+
+The freshly rebuilt procedural baker produced and validated all 3,252 tiles. Every height
+and moisture payload, all three previews, and the full manifest match the third bake exactly.
+L4 moraine/crevasse counts rise from **368/5,642 to 26,426/402,317**. After matched captures,
+the corrected export was promoted to `assets/outmaps/test-planet`; the third bake remains at
+`assets/outmaps/test-planet.claude-third-backup-20260919`. The staging directory was renamed,
+not left as a second candidate. To reproduce this planet, use the procedural command in the
+results report below, **not the older ETOPO recipe elsewhere in this historical log**.
+
+Same binary, Quadro M1000M, Immediate present, raster, 1280x720, 69 logged frame times per run:
+
+| Scenario | Before median ms | After median ms |
+|---|---:|---:|
+| Alpine pair 1 | 88.547 | 88.235 |
+| Alpine pair 2 (after ran first) | 88.177 | 88.688 |
+| Summit control | 70.372 | 70.251 |
+
+Mean alpine run medians **88.362 -> 88.461ms (+0.11%)**; opposite-signed pair differences,
+not evidence of an FPS improvement. All six comparison replays pass; repeated captures
+are identical within each bake. The corrected alpine capture is
+`alpine_survey_8_directions/1789816935-538761`. Compared both with a fresh baseline and
+round 12: N/NE/E are byte-identical; SE/S/SW/W/NW change 1,002/28,332/19,040/15,783/567 pixels,
+maximum channel deltas 12/32/32/10/1. Inspected contact sheets and full-resolution south views.
+
+**This fixes the data path, not glacier realism.** The new labels make distant tonal patches,
+not actual crevasses, seracs or convincing medial moraines. No judge round was spent; 2.7/10
+remains the previous score, not a new measurement. Next trace restored labels through material,
+lighting and final pixels, and implement resolved glacier structure rather than widening
+classes or expecting palettes alone to create cracks. Keep the approved Aletsch photographs
+and judging camera unchanged; judges remain independent Luna observers, not diagnosticians.
+
+Full evidence and exact bake command:
+`test-runs/peak_judging_2026-09-15/glacier-export-fix/RESULTS.md`.
+
+Claude's follow-up in `2243b70` identifies the next resolution limit: dense L4 material
+samples are kilometres apart, while the judging foreground spans hundreds of metres to a
+few kilometres. Treat the glacier IDs as regional masks, not resolved moraine stripes or
+cracks. Procedural sub-cell material structure is a candidate next step; **no extra texture
+reads does not mean free**. Measure its frame cost and actual visible effect before retaining it.
+
+Final validation: 584 workspace tests pass (26 ignored), clippy all targets passes, and
+changed-Rust-file formatting/diff checks pass. Unrelated pre-existing app formatting still
+fails the workspace-wide fmt check and was left alone. Installed-path replay
+`alpine_survey_8_directions/1789817879-542459` passes with all eight captures identical to the
+staged result; its timing is excluded because it overlapped the final CPU tests.

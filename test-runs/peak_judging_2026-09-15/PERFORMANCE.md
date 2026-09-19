@@ -135,3 +135,20 @@ binary changed between 15:55 and 22:19 that day and has not changed back. Sunshi
 play was set up in that window ([[reference_moonlight_remote_play]]) and a streaming host holds the
 GPU; that is the next thing to check, along with clocks and thermal throttling. Do not attribute
 this to any commit or to the bake until something is measured with it turned off.
+
+## Glacier export correction, 19 September: matched current-binary controls
+
+`e8248bf` preserves the new glacier biome labels through export. No runtime shader change in
+this fix; the same binary renders Claude's third bake and the corrected export. Quadro M1000M,
+Immediate present, raster, 1280x720, 69 logged frame times per run, no timestamp profiling:
+
+| Scenario/pair | Before median ms | After median ms |
+|---|---:|---:|
+| Alpine 1 | 88.547 | 88.235 |
+| Alpine 2 (after first) | 88.177 | 88.688 |
+| Summit control | 70.372 | 70.251 |
+
+Mean alpine run medians 88.362 -> 88.461ms (+0.11%). Opposite pair signs; no FPS gain is
+claimed. All six replays pass, with pixel-identical repeats within each bake. All heights and
+moisture payloads are byte-identical. See `glacier-export-fix/RESULTS.md` for exact run IDs,
+round-12 pixel differences, diagnosis and the intentionally deferred judging round.
