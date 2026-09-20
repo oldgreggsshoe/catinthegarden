@@ -10485,3 +10485,47 @@ interleaved on/off pairs on `village_pov` gave +4.14, +11.34, +2.41 and
 so the sign is not even consistent. An earlier paired run on
 `village_altitude_stability` put it at about 0.5ms with overlapping ranges.
 Neither is a number to quote; a clean measurement needs an idle machine.
+
+## 20 September — `--profile-render` works again, and what still does not
+
+**Resolution.** `CATINGARDEN_VIEWPORT=WIDTHxHEIGHT` sets the internal render
+size, default 1280x720, minimum 64 per axis. Fullscreen keeps whatever that was:
+`toggle_fullscreen` pins `fullscreen_render_size` to the current internal size
+and only the presented surface grows to the monitor, so the env var is the
+fullscreen resolution control too. Verified: 1920x1080 and the 1280x720 default
+both come out at those sizes in a capture.
+
+**The profiler was welded to a feature that breaks this GPU.** `--profile-render`
+requested `TIMESTAMP_QUERY | TIMESTAMP_QUERY_INSIDE_PASSES`, and on the Quadro
+M1000M (550.163.01) asking for timestamps breaks the device. Three findings
+sharpen July's diagnosis, which blamed `present()`:
+
+- `TIMESTAMP_QUERY_INSIDE_PASSES` was requested and never used -- every
+  timestamp is written at a pass boundary through `timestamp_writes`. Dropping
+  it changes nothing and the hang reproduces, so it is the base feature.
+- The hang is not in rendering. With presentation removed the scenario runs to
+  completion; a backtrace shows the process wedged in
+  `NativeSwapchain::release_resources` under `libnvidia-glcore` while *dropping
+  the surface at exit*.
+- The device is broken regardless: with timestamps on, every capture readback
+  times out at 5,000ms, `gpu_render_ms` is -1 on every frame and not one
+  timestamp resolves. That is the real fault; present and teardown are
+  downstream of it.
+
+The CPU-side breakdown had no reason to be behind the same switch, so it is not
+any more. `--profile-render` now asks for no device features and works here;
+`--profile-gpu` asks for the timestamps deliberately and still fails as above.
+A profiling run draws into an offscreen stand-in of the surface's own format and
+never presents, which is what let the run reach the end; captures copy out of it
+exactly as they did out of the swapchain.
+
+**What a report looks like now.** `still_5s` at default resolution, medians over
+11 samples: `total_render` 20.803ms, of which `present` is 18.705ms, `simulation`
+1.508ms, `submit` 0.136ms, `vertex_upload` 0.061ms and everything else under
+0.03ms. That is the shape of a GPU-bound frame -- the CPU is asleep in `present`
+waiting for it -- and it is also the limit of what this tells you. **Per-subsystem
+GPU attribution is still not available on this machine**: the stage split
+(scene / luminance / sun / blur / bloom / tone-map / egui) needs the timestamps.
+The working alternative is matched A/B toggling, which is how the forest, road
+and village costs were measured, and it needs an idle machine to beat the
+run-to-run drift seen today.

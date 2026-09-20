@@ -101,6 +101,29 @@ fn device_mouse_look_enabled(mouse_captured: bool, scenario_active: bool) -> boo
     mouse_captured && !scenario_active
 }
 
+/// The texture a profiling run draws its final image into instead of the
+/// swapchain. `COPY_SRC` so scenario captures can still read it.
+fn create_offscreen_present_texture(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    size: winit::dpi::PhysicalSize<u32>,
+) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("offscreen present target"),
+        size: wgpu::Extent3d {
+            width: size.width.max(1),
+            height: size.height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    })
+}
+
 fn render_size_for_surface_resize(
     surface_size: winit::dpi::PhysicalSize<u32>,
     fullscreen_render_size: Option<winit::dpi::PhysicalSize<u32>>,
@@ -1158,6 +1181,9 @@ struct State {
     scenario_capture_failed: bool,
     mouse_captured: bool,
     profile_render: bool,
+    /// Stand-in for the swapchain image on a profiling run, which never
+    /// presents. Same format and size, so captures are unaffected.
+    offscreen_present_texture: Option<wgpu::Texture>,
     gpu_profiler: Option<GpuProfiler>,
     cached_paint_jobs: Vec<egui::ClippedPrimitive>,
     egui_buffers_dirty: bool,
@@ -1166,10 +1192,12 @@ struct State {
 }
 
 impl State {
+    #[allow(clippy::too_many_arguments)]
     async fn new(
         window: Arc<Window>,
         scenario_name: Option<String>,
         profile_render: bool,
+        profile_gpu_timestamps: bool,
         vertical_fov_degrees: Option<f64>,
         terrain_source: terrain::TerrainSource,
     ) -> Self {
@@ -1231,10 +1259,19 @@ impl State {
                 "no compatible discrete GPU is available; rendering on a non-discrete adapter"
             );
         }
-        let timestamp_features =
-            wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES;
+        // GPU stage timings are opt-in *separately* from the CPU-side render
+        // profile, because on this Quadro (550.163.01) asking for
+        // TIMESTAMP_QUERY breaks the device: queue work stops completing, every
+        // capture readback times out at 5s, no timestamp ever resolves, and the
+        // process wedges in the driver while releasing the swapchain. That cost
+        // this project days in July, when it was blamed on `present()`, and it
+        // reproduces today with TIMESTAMP_QUERY_INSIDE_PASSES dropped -- so it
+        // is the base feature. Coupling the two meant the working half, the
+        // per-stage CPU breakdown, was unreachable here as well. `--profile-gpu`
+        // asks for the broken half deliberately.
+        let timestamp_features = wgpu::Features::TIMESTAMP_QUERY;
         let requested_features =
-            if profile_render && adapter.features().contains(timestamp_features) {
+            if profile_gpu_timestamps && adapter.features().contains(timestamp_features) {
                 timestamp_features
             } else {
                 wgpu::Features::empty()
@@ -1267,6 +1304,10 @@ impl State {
                 .contains(wgpu::TextureUsages::COPY_SRC),
             "the selected surface does not support screenshot readback"
         );
+        // Built here because `device` is moved into the state below.
+        let offscreen_present_texture = gpu_profiler
+            .is_some()
+            .then(|| create_offscreen_present_texture(&device, surface_format, size));
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             format: surface_format,
@@ -1620,6 +1661,7 @@ impl State {
             scenario_capture_failed: false,
             mouse_captured: false,
             profile_render,
+            offscreen_present_texture,
             gpu_profiler,
             cached_paint_jobs: Vec::new(),
             egui_buffers_dirty: true,
@@ -1746,6 +1788,13 @@ impl State {
         self.config.width = size.width;
         self.config.height = size.height;
         self.surface.configure(&self.device, &self.config);
+        if self.offscreen_present_texture.is_some() {
+            self.offscreen_present_texture = Some(create_offscreen_present_texture(
+                &self.device,
+                self.config.format,
+                size,
+            ));
+        }
         self.hdr.set_presentation_size(&self.queue, size);
         let render_size = render_size_for_surface_resize(size, self.fullscreen_render_size);
         if render_size != self.size {
@@ -4030,23 +4079,46 @@ impl State {
 
         let mut reconfigure_surface = false;
         let surface_acquire_started = Instant::now();
-        let output = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(output) => output,
-            wgpu::CurrentSurfaceTexture::Suboptimal(output) => {
-                reconfigure_surface = true;
-                output
+        // Profiling draws to an offscreen stand-in and never presents.
+        //
+        // On this Quadro, enabling TIMESTAMP_QUERY makes `present()` block
+        // forever in `xcb_wait_for_special_event` around the third frame --
+        // diagnosed in July and re-confirmed today, including with
+        // TIMESTAMP_QUERY_INSIDE_PASSES dropped, so it is the base feature and
+        // not the pass-interior one. That left the renderer with no way to
+        // measure itself on the only discrete GPU here. Nothing about a
+        // profiling run needs the image on screen: captures copy out of this
+        // texture exactly as they copied out of the swapchain's.
+        // Keyed on the offscreen target's existence, which tracks the GPU
+        // timestamp feature rather than the CPU profile: it is the timestamps
+        // that break presentation, and the CPU breakdown must stay usable with
+        // a picture on screen.
+        let output = if self.offscreen_present_texture.is_some() {
+            None
+        } else {
+            match self.surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(output) => Some(output),
+                wgpu::CurrentSurfaceTexture::Suboptimal(output) => {
+                    reconfigure_surface = true;
+                    Some(output)
+                }
+                wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                    self.resize(self.surface_size);
+                    return None;
+                }
+                wgpu::CurrentSurfaceTexture::Timeout
+                | wgpu::CurrentSurfaceTexture::Occluded
+                | wgpu::CurrentSurfaceTexture::Validation => return None,
             }
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                self.resize(self.surface_size);
-                return None;
-            }
-            wgpu::CurrentSurfaceTexture::Timeout
-            | wgpu::CurrentSurfaceTexture::Occluded
-            | wgpu::CurrentSurfaceTexture::Validation => return None,
         };
-        let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let target_texture = match &output {
+            Some(output) => output.texture.clone(),
+            None => self
+                .offscreen_present_texture
+                .clone()
+                .expect("a profiling run has an offscreen present target"),
+        };
+        let view = target_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let surface_acquire_ms = surface_acquire_started.elapsed().as_secs_f32() * 1_000.0;
         let mut encoder = self
             .device
@@ -4877,7 +4949,7 @@ impl State {
             debug::schedule_capture(
                 &self.device,
                 &mut encoder,
-                &output.texture,
+                &target_texture,
                 self.surface_size.width,
                 self.surface_size.height,
                 self.config.format,
@@ -4926,7 +4998,9 @@ impl State {
         }
         let gpu_timestamp_readback_ms = gpu_readback_started.elapsed().as_secs_f32() * 1_000.0;
         let present_started = Instant::now();
-        output.present();
+        if let Some(output) = output {
+            output.present();
+        }
         let present_ms = present_started.elapsed().as_secs_f32() * 1_000.0;
         let capture_started = Instant::now();
         let mut captured_frame = None;
@@ -5219,6 +5293,7 @@ impl ApplicationHandler for App {
             window.clone(),
             self.launch_options.scenario_name.clone(),
             self.launch_options.profile_render,
+            self.launch_options.profile_gpu_timestamps,
             self.launch_options.vertical_fov_degrees,
             self.launch_options.terrain_source.clone(),
         ));
@@ -5611,6 +5686,9 @@ impl ApplicationHandler for App {
 struct LaunchOptions {
     scenario_name: Option<String>,
     profile_render: bool,
+    /// GPU stage timings, which are a separate ask: see the feature request in
+    /// `State::new` for why they are not part of `--profile-render`.
+    profile_gpu_timestamps: bool,
     vertical_fov_degrees: Option<f64>,
     terrain_source: terrain::TerrainSource,
 }
@@ -5646,6 +5724,7 @@ fn launch_options() -> Result<LaunchOptions, String> {
     let mut options = LaunchOptions {
         scenario_name: None,
         profile_render: false,
+        profile_gpu_timestamps: false,
         vertical_fov_degrees: None,
         terrain_source: match &default_outmap {
             Some(path) => terrain::TerrainSource::Outmap(path.clone()),
@@ -5696,6 +5775,11 @@ fn launch_options() -> Result<LaunchOptions, String> {
                 )
             }
             "--profile-render" => options.profile_render = true,
+            // Separate because it is the half that breaks this GPU.
+            "--profile-gpu" => {
+                options.profile_render = true;
+                options.profile_gpu_timestamps = true;
+            }
             "--vertical-fov-degrees" => {
                 let value = arguments
                     .next()
