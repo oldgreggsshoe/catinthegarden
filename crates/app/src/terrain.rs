@@ -127,9 +127,23 @@ pub(crate) fn planet_shader_source() -> String {
         Some("1" | "true" | "on")
     );
     let road_setting = format!("const ROAD_SURFACE_TRIAL: bool = {road_surface_trial};");
+    // One binary can capture matched controls; the default shader compiles
+    // the experiment out. The mask mode checks that the source regions are
+    // actually visible before attributing a no-op to the material.
+    let glacier_mode = match std::env::var("CATINGARDEN_GLACIER_DETAIL")
+        .ok()
+        .as_deref()
+        .map(str::trim)
+    {
+        Some("1" | "on") => 1,
+        Some("mask") => 2,
+        _ => 0,
+    };
+    let glacier_setting = format!("const GLACIER_DETAIL_MODE: u32 = {glacier_mode}u;");
     [
         crate::planet::shared_planet_shader_source(),
         road_setting,
+        glacier_setting,
         include_str!("planet.wgsl").to_string(),
         include_str!("weather_cloud_density.wgsl").to_string(),
     ]
@@ -4890,6 +4904,180 @@ mod tests {
             .expect("flat triangle colour path is present");
         assert!(flat.contains("biome_color(fill_biome)"));
         assert!(!flat.contains("terrain_material_color("));
+    }
+
+    #[test]
+    fn glacier_trial_modes_validate_without_geometry_or_texture_work() {
+        let shader = planet_shader_source();
+        let mode_line = shader
+            .lines()
+            .find(|line| line.starts_with("const GLACIER_DETAIL_MODE:"))
+            .unwrap();
+        for mode in 0..=2 {
+            let source = shader.replace(
+                mode_line,
+                &format!("const GLACIER_DETAIL_MODE: u32 = {mode}u;"),
+            );
+            let module = wgpu::naga::front::wgsl::parse_str(&source).unwrap();
+            wgpu::naga::valid::Validator::new(
+                wgpu::naga::valid::ValidationFlags::all(),
+                wgpu::naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .unwrap();
+        }
+        let detail = shader
+            .split("fn glacier_detail_albedo(")
+            .nth(1)
+            .unwrap()
+            .split("\nfn ")
+            .next()
+            .unwrap();
+        assert!(!detail.contains("texture"));
+        assert!(!detail.contains("camera."));
+        assert!(detail.contains("GlacierSurfaceDetail(vec4<f32>(albedo, 0.0), vec3<f32>(0.0))"));
+        assert!(detail.contains("smoothstep(1.0, 4.0, footprint_meters)"));
+        assert!(detail.contains("smoothstep(4.0, 16.0, footprint_meters)"));
+        assert!(detail.contains("let coverage = presence * crack;"));
+        assert!(!detail.contains("shares.y * crack"));
+        assert!(
+            shader.contains("glacier_ice_floor_hold = 1.0 - glacier_detail.albedo_and_coverage.a;")
+        );
+        assert!(
+            shader.contains("snow_slope_hold(ice_lighting_slope, 2u) * glacier_ice_floor_hold")
+        );
+        let vertex = shader
+            .split("fn vs_main(")
+            .nth(1)
+            .unwrap()
+            .split("\nfn ")
+            .next()
+            .unwrap();
+        assert!(!vertex.contains("glacier"));
+    }
+
+    #[test]
+    #[ignore = "requires a Vulkan GPU; run explicitly for glacier shader changes"]
+    fn gpu_sparse_glacier_fractures_keep_solid_interiors_and_fade_at_cell_edges() {
+        let raster = include_str!("planet.wgsl");
+        let helper = raster
+            .split("struct GlacierSurfaceDetail {")
+            .nth(1)
+            .unwrap()
+            .split("fn ocean_fragment_color(")
+            .next()
+            .unwrap();
+        let source = format!(
+            "{}\nstruct GlacierSurfaceDetail {{{helper}\n
+            @group(0) @binding(31) var<storage, read_write> results: array<vec4<f32>>;
+            @compute @workgroup_size(8, 8)
+            fn probe(@builtin(global_invocation_id) id: vec3<u32>) {{
+                let local = vec3<f32>(0.8, 0.0, 0.6) * f32(id.x)
+                    + vec3<f32>(-0.36, 0.8, 0.48) * f32(id.y);
+                let sparse = glacier_detail_albedo(vec3<f32>(0.8), vec2<f32>(0.0, 0.3),
+                    vec3<f32>(0.0), local, 0.25);
+                let distant = glacier_detail_albedo(vec3<f32>(0.8), vec2<f32>(1.0),
+                    vec3<f32>(0.0), local, 16.0);
+                let absent = glacier_detail_albedo(vec3<f32>(0.8), vec2<f32>(0.0),
+                    vec3<f32>(0.0), local, 0.25);
+                results[id.y * 512u + id.x] = vec4<f32>(
+                    sparse.albedo_and_coverage.a, length(sparse.slope),
+                    distant.albedo_and_coverage.a, absent.albedo_and_coverage.a);
+            }}",
+            crate::planet::shared_planet_shader_source(),
+        );
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            ..Default::default()
+        }))
+        .expect("Vulkan adapter");
+        eprintln!("glacier test adapter: {}", adapter.get_info().name);
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+                .expect("GPU device");
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("production glacier material regression"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("glacier material regression"),
+            layout: None,
+            module: &shader,
+            entry_point: Some("probe"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let bytes = 512 * 256 * size_of::<[f32; 4]>() as u64;
+        let output = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("glacier results"),
+            size: bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("glacier readback"),
+            size: bytes,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("glacier test"),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 31,
+                resource: output.as_entire_binding(),
+            }],
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.dispatch_workgroups(64, 32, 1);
+        }
+        encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, bytes);
+        queue.submit(Some(encoder.finish()));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                sender.send(result).unwrap();
+            });
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .unwrap();
+        receiver.recv().unwrap().unwrap();
+        let data = readback.slice(..).get_mapped_range();
+        let samples: &[[f32; 4]] = bytemuck::cast_slice(&data);
+        let mut maximum_coverage = 0.0_f32;
+        let mut maximum_slope = 0.0_f32;
+        for (index, sample) in samples.iter().enumerate() {
+            assert!(sample.iter().all(|v| v.is_finite()));
+            assert!((0.0..=1.0).contains(&sample[0]));
+            assert_eq!(sample[2], 0.0, "unresolved markings must disappear");
+            assert_eq!(sample[3], 0.0, "no markings outside the region");
+            if (index % 512).is_multiple_of(64) || (index / 512).is_multiple_of(128) {
+                assert_eq!(sample[0], 0.0, "fissure must end before the cell boundary");
+                assert!(
+                    sample[1] < 1.0e-5,
+                    "cell boundary must have no relief slope"
+                );
+            }
+            maximum_coverage = maximum_coverage.max(sample[0]);
+            maximum_slope = maximum_slope.max(sample[1]);
+        }
+        assert!(
+            maximum_coverage > 0.95,
+            "sparse must mean fewer solid fissures, not 30% opacity: {maximum_coverage}"
+        );
+        assert!(maximum_slope > 0.1, "fissures must have a lighting normal");
     }
 
     #[test]

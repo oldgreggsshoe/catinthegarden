@@ -2157,6 +2157,116 @@ fn ocean_underside_reflecting_fragment(input: OceanVertexOutput) -> vec4<f32> {
     );
 }
 
+struct GlacierSurfaceDetail {
+    albedo_and_coverage: vec4<f32>,
+    slope: vec3<f32>,
+}
+
+// Surface markings only: no displaced geometry, collision change, or claim
+// that this fixed world-space orientation describes actual glacier flow.
+// Kilometre-scale biome IDs delimit regions; these bands live inside them.
+fn glacier_detail_albedo(
+    albedo: vec3<f32>,
+    shares: vec2<f32>,
+    anchor: vec3<f32>,
+    local_meters: vec3<f32>,
+    footprint_meters: f32,
+) -> GlacierSurfaceDetail {
+    if max(shares.x, shares.y) <= 0.0001 || footprint_meters >= 16.0 {
+        return GlacierSurfaceDetail(vec4<f32>(albedo, 0.0), vec3<f32>(0.0));
+    }
+    // Preserve short local offsets instead of adding them to a 4,000km
+    // absolute f32 coordinate. The common global phases also avoid tile UV
+    // resets at LOD/cube edges. A quarter-metre filter covers anchor rounding.
+    let axis_u = vec3<f32>(0.8, 0.0, 0.6);
+    let axis_v = vec3<f32>(-0.36, 0.8, 0.48);
+    let uv_anchor = vec2<f32>(dot(anchor, axis_u), dot(anchor, axis_v))
+        * PLANET_RADIUS_METERS;
+    let uv_local = vec2<f32>(dot(local_meters, axis_u), dot(local_meters, axis_v));
+    let filter_meters = max(footprint_meters, 0.25);
+    var result = albedo;
+    var covered = 0.0;
+    var fracture_slope = vec3<f32>(0.0);
+    if shares.x > 0.0001 {
+        let phase = fract(uv_anchor / vec2<f32>(320.0, 960.0))
+            + uv_local / vec2<f32>(320.0, 960.0);
+        let warp = 0.12 * sin(phase.y * 6.2831853)
+            + 0.04 * sin(phase.y * 18.849556);
+        let band_distance = abs(fract(phase.x + warp) - 0.5) * 320.0;
+        let band = (1.0 - smoothstep(5.0, 5.0 + filter_meters * 2.0, band_distance))
+            * (1.0 - smoothstep(4.0, 16.0, footprint_meters));
+        result = mix(result, srgb_to_linear(vec3<f32>(0.26, 0.23, 0.19)), shares.x * band);
+        covered += shares.x * band;
+    }
+    if shares.y > 0.0001 && footprint_meters < 4.0 {
+        // Finite fissures, not continuous phase stripes. Cell-local endpoints
+        // fade to zero before a hash changes, so adjacent cells cannot seam.
+        let period = vec2<f32>(64.0, 128.0);
+        let base = floor(uv_anchor / period);
+        let phase = fract(uv_anchor / period) + uv_local / period;
+        let cell = vec2<i32>(base + floor(phase));
+        let seed = detail_mix(bitcast<u32>(cell.x)
+            ^ detail_rotate_left(bitcast<u32>(cell.y), 13u));
+        let random = vec3<f32>(
+            f32(seed & 1023u), f32((seed >> 10u) & 1023u),
+            f32((seed >> 20u) & 1023u),
+        ) / 1023.0;
+        // Region share controls how many fissures exist, not transparency
+        // of every fissure. A narrow transition keeps biome blending smooth.
+        let presence = smoothstep(random.z * 0.875, random.z * 0.875 + 0.125, shares.y);
+        if presence <= 0.0 {
+            return GlacierSurfaceDetail(vec4<f32>(result, covered), fracture_slope);
+        }
+        let local = fract(phase);
+        let along = local.y - (0.5 + (random.y - 0.5) * 0.16);
+        let half_length = mix(0.18, 0.36, random.z);
+        let ends = 1.0 - smoothstep(half_length * 0.65, half_length, abs(along));
+        if ends <= 0.0 {
+            return GlacierSurfaceDetail(vec4<f32>(result, covered), fracture_slope);
+        }
+        let centre = mix(0.30, 0.70, random.x)
+            + (random.y - 0.5) * along * 0.6
+            + 0.025 * sin(along * 37.0 + random.z * 6.2831853)
+            + 0.008 * sin(along * 109.0 + random.x * 6.2831853);
+        let crack_distance = abs(local.x - centre) * period.x;
+        let width = mix(0.5, 1.6, random.y) * ends;
+        if crack_distance >= width + filter_meters * 2.0 {
+            return GlacierSurfaceDetail(vec4<f32>(result, covered), fracture_slope);
+        }
+        let crack = (1.0 - smoothstep(width, width + filter_meters * 2.0, crack_distance))
+            * ends * (1.0 - smoothstep(1.0, 4.0, footprint_meters));
+        let coverage = presence * crack;
+        result = mix(result, srgb_to_linear(vec3<f32>(0.12, 0.24, 0.31)), coverage);
+        covered += coverage;
+        // Analytic normal of a shallow, rounded fissure cross-section. This
+        // changes lighting only, not geometry, silhouettes or collision.
+        let rim_width = width + filter_meters * 2.0;
+        let t = clamp(crack_distance / rim_width, 0.0, 1.0);
+        let profile = 1.0 - t * t * (3.0 - 2.0 * t);
+        let profile_derivative = 6.0 * t * (1.0 - t);
+        let end_t = clamp((abs(along) - half_length * 0.65)
+            / (half_length * 0.35), 0.0, 1.0);
+        let end_derivative = -6.0 * end_t * (1.0 - end_t) * sign(along)
+            / (half_length * 0.35 * period.y);
+        let centre_derivative = ((random.y - 0.5) * 0.6
+            + 0.025 * 37.0 * cos(along * 37.0 + random.z * 6.2831853)
+            + 0.008 * 109.0 * cos(along * 109.0 + random.x * 6.2831853))
+            * period.x / period.y;
+        let side = sign(local.x - centre);
+        let depth = 4.0 * presence * (1.0 - smoothstep(1.0, 4.0, footprint_meters));
+        let slope_u = depth * ends * profile_derivative * side / rim_width;
+        let slope_v = -depth * end_derivative * profile
+            + depth * ends * profile_derivative
+                * (-side * centre_derivative / rim_width
+                    - crack_distance * mix(0.5, 1.6, random.y) * end_derivative
+                        / (rim_width * rim_width));
+        fracture_slope = axis_u * slope_u + axis_v * slope_v;
+    }
+    // Coverage must follow the albedo into the downstream ice-light floor;
+    // otherwise the floor paints an Ice-region fracture white again.
+    return GlacierSurfaceDetail(vec4<f32>(result, clamp(covered, 0.0, 1.0)), fracture_slope);
+}
+
 fn ocean_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
     let direction = normalize(input.surface_direction);
     let macro_height_meters = macro_terrain_height(input.outmap > 0.5, input.source_uv, direction);
@@ -2535,6 +2645,53 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             length(input.camera_relative_view_position),
         );
     }
+    var glacier_ice_floor_hold = 1.0;
+    var glacier_relight = 1.0;
+    if GLACIER_DETAIL_MODE != 0u && BODY_HAS_ATMOSPHERE && outmap {
+        var glacier_shares = vec2<f32>(
+            biome_blend_share(biome_blend, 10u),
+            biome_blend_share(biome_blend, 11u),
+        );
+        // Derivatives of the smooth camera-relative position account for
+        // grazing surfaces as well as distance, without another texture read.
+        let footprint = max(
+            length(dpdx(input.camera_relative_view_position)),
+            length(dpdy(input.camera_relative_view_position)),
+        );
+        if GLACIER_DETAIL_MODE == 2u {
+            // Red=moraine, blue=crevasse; green encodes 0..16m pixel footprint
+            // only inside a glacier region. Black means no region is present.
+            return vec4<f32>(glacier_shares.x,
+                select(0.0, clamp(footprint / 16.0, 0.0, 1.0),
+                    max(glacier_shares.x, glacier_shares.y) > 0.0001),
+                glacier_shares.y, 1.0);
+        }
+        // Non-polar Ice is the broad glacier region. Dedicated crevasse fields
+        // get dense markings; clean altitude ice only sparse fractures.
+        // Never spread debris outside the baker's moraine region.
+        glacier_shares.y += 0.30 * biome_blend_share(biome_blend, 2u)
+            * (1.0 - smoothstep(0.86, 0.91, abs(direction.y)));
+        let glacier_detail = glacier_detail_albedo(
+            textured_terrain_albedo,
+            glacier_shares * snow_slope_hold(
+                1.0 - clamp(dot(normalize(terrain_normal), direction), 0.0, 1.0), 2u),
+            input.detail_anchor_direction,
+            input.detail_local_meters,
+            footprint,
+        );
+        textured_terrain_albedo = glacier_detail.albedo_and_coverage.rgb;
+        glacier_ice_floor_hold = 1.0 - glacier_detail.albedo_and_coverage.a;
+        if dot(glacier_detail.slope, glacier_detail.slope) > 0.0 {
+            let fracture_normal = terrain_detail_perturbed_normal(
+                terrain_normal, direction, glacier_detail.slope,
+            );
+            glacier_relight = clamp(
+                (max(dot(fracture_normal, sun_direction), 0.0) + 0.18)
+                    / (max(dot(terrain_normal, sun_direction), 0.0) + 0.18),
+                0.55, 1.75,
+            );
+        }
+    }
     // Opt-in road-surface experiment at a macro-low-slope desert site. This first pass
     // is a material laid onto the existing terrain, not a graded cut or a
     // separate mesh. It follows every raster triangle exactly, so no depth
@@ -2578,7 +2735,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     // use one geometric normal for the whole rendered triangle instead of
     // rounding its gradient through interpolated vertex normals.
     var textured_surface_lighting = textured_terrain_albedo
-        * terrain_surface_irradiance;
+        * terrain_surface_irradiance * glacier_relight;
     if material_allows_specular(biome_id) {
         let wet_specular = pow(
             max(
@@ -2661,7 +2818,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     // material uses so the two stages agree about what this facet is.
     let ice_lighting_slope = 1.0 - clamp(dot(normalize(terrain_normal), direction), 0.0, 1.0);
     let ice_share = select(0.0, biome_blend_share(biome_blend, 2u), outmap)
-        * snow_slope_hold(ice_lighting_slope, 2u);
+        * snow_slope_hold(ice_lighting_slope, 2u) * glacier_ice_floor_hold;
     if ice_share > 0.0 {
         let ice_light_floor = clamp(
             max(

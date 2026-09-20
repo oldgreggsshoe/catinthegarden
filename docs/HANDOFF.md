@@ -10261,3 +10261,32 @@ changed-Rust-file formatting/diff checks pass. Unrelated pre-existing app format
 fails the workspace-wide fmt check and was left alone. Installed-path replay
 `alpine_survey_8_directions/1789817879-542459` passes with all eight captures identical to the
 staged result; its timing is excluded because it overlapped the final CPU tests.
+
+
+## 20 September — isolated glacier fracture material follow-up
+
+This branch is a trial based on `ce5631f`, separate from active village changes.
+Use `CARGO_TARGET_DIR=/home/dad/catingard/target-glacier-detail`; do not share
+another checkout's target directory. `CATINGARDEN_GLACIER_DETAIL=on` enables the
+raster-only material experiment; unset/default compiles it out, and `mask`
+shows the dedicated moraine/crevasse IDs. The live bake and approved camera are
+unchanged. The active worktree's evidence directory is
+`test-runs/peak_judging_2026-09-15/glacier-detail-trial`.
+
+Finite cell-contained fissures replace continuous lines. Low Ice-region share
+now selects fewer solid fissures rather than making every fissure translucent.
+The analytic slope of a rounded cross-section supplies bounded wall lighting;
+this is bump shading only, not geometry, collision or silhouette displacement.
+The ice-light floor yields under their coverage. Early exits skip expensive
+work outside selected cells, segment ends and fissure bounds, and unmarked
+pixels never receive the normal-renormalization lighting ratio.
+
+Actual-WGSL GPU regression on Quadro M1000M probes 131,072 positions for solid
+interiors at 0.3 region share, finite slopes, zero cell-boundary coverage/slope,
+and zero off-region or unresolved coverage. It passes; mutating only coverage
+back to `shares.y * crack` fails with maximum 0.3 as intended. All 525 app tests
+pass, 24 ignored. This does not prove glacier realism or motion/LOD continuity.
+
+Do not promote yet. Fixed global projection still does not follow glacier flow;
+no new judge score or FPS improvement has been established. Matched captures
+and timing checks are in progress, with concurrent village work monitored.
