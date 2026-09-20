@@ -1,0 +1,90 @@
+{
+  "name": "village_pov",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 4.4,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0.0,
+  "skip_birds": true,
+  "surface_probe_max_distance_meters": 20000.0,
+  "screenshot_times_seconds": [
+    1.8,
+    4.0
+  ],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [
+        162126.84803614573,
+        -2309550.397099863,
+        3262339.2556844624
+      ],
+      "look_at": [
+        162117.99161149267,
+        -2309716.8228873457,
+        3262176.4889157317
+      ]
+    },
+    {
+      "time_s": 2.0,
+      "position": [
+        162126.84803614573,
+        -2309550.397099863,
+        3262339.2556844624
+      ],
+      "look_at": [
+        162117.99161149267,
+        -2309716.8228873457,
+        3262176.4889157317
+      ]
+    },
+    {
+      "time_s": 2.2,
+      "position": [
+        162121.07739300642,
+        -2309659.0109670167,
+        3262233.2098097685
+      ],
+      "look_at": [
+        162117.99161149267,
+        -2309716.8228873457,
+        3262176.4889157317
+      ]
+    },
+    {
+      "time_s": 4.2,
+      "position": [
+        162121.07739300642,
+        -2309659.0109670167,
+        3262233.2098097685
+      ],
+      "look_at": [
+        162117.99161149267,
+        -2309716.8228873457,
+        3262176.4889157317
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        0.05155692383642042,
+        0.0,
+        0.9986700574286412
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 65.0
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 2
+  }
+}

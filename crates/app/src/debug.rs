@@ -49,6 +49,10 @@ pub struct SpatialLogSample {
     pub exposure: f32,
     pub ocean_wave_min_meters: f32,
     pub ocean_wave_max_meters: f32,
+    /// Houses sited around the camera before the render cutoff. Villages are
+    /// a fixed feature of the planet, so this must not move when only the
+    /// camera does.
+    pub village_sited_houses: u32,
 }
 
 #[derive(Clone)]
@@ -155,6 +159,14 @@ struct AssertionTracker {
     previous_exposure_delta: Option<f32>,
     previous_target_exposure: Option<f32>,
     maximum_ocean_wave_range_meters: f32,
+    /// The first non-empty sited-house count seen, and how many samples after
+    /// it disagreed. Leading empty samples are expected and not counted: the
+    /// spatial record is written earlier in the frame than the village
+    /// rebuild, so the first sample of any run is taken before a village
+    /// exists. Falling back to empty afterwards is a disagreement like any
+    /// other.
+    first_village_sited_houses: Option<u32>,
+    village_siting_changes: u32,
     surface_probe_count: usize,
     compared_probe_points: usize,
     maximum_surface_probe_delta_m: f64,
@@ -202,6 +214,8 @@ impl AssertionTracker {
             previous_exposure_delta: None,
             previous_target_exposure: None,
             maximum_ocean_wave_range_meters: 0.0,
+            first_village_sited_houses: None,
+            village_siting_changes: 0,
             surface_probe_count: 0,
             compared_probe_points: 0,
             maximum_surface_probe_delta_m: 0.0,
@@ -302,6 +316,16 @@ impl AssertionTracker {
         self.maximum_ocean_wave_range_meters = self
             .maximum_ocean_wave_range_meters
             .max(sample.ocean_wave_max_meters - sample.ocean_wave_min_meters);
+        match self.first_village_sited_houses {
+            None if sample.village_sited_houses > 0 => {
+                self.first_village_sited_houses = Some(sample.village_sited_houses);
+            }
+            None => {}
+            Some(first) if first != sample.village_sited_houses => {
+                self.village_siting_changes += 1;
+            }
+            Some(_) => {}
+        }
         if sample.max_seam_delta_m.is_finite() {
             self.maximum_seam_delta_m = self.maximum_seam_delta_m.max(sample.max_seam_delta_m);
             if self
@@ -838,6 +862,18 @@ impl AssertionTracker {
                 ),
             ));
         }
+        if self.config.require_constant_village_siting {
+            let first = self.first_village_sited_houses;
+            results.push(assertion_result(
+                "village_siting_does_not_follow_the_camera",
+                first.is_some_and(|count| count > 0) && self.village_siting_changes == 0,
+                format!(
+                    "settled on {} sited houses, {} later samples disagreed",
+                    first.map_or_else(|| "no".to_string(), |count| count.to_string()),
+                    self.village_siting_changes,
+                ),
+            ));
+        }
         if let Some(minimum_range) = self.config.min_ocean_wave_height_range_meters {
             results.push(assertion_result(
                 "ocean_waves_have_required_height_range",
@@ -1124,6 +1160,7 @@ impl RunArtifacts {
             exposure: 1.0,
             ocean_wave_min_meters: 0.0,
             ocean_wave_max_meters: 0.0,
+            village_sited_houses: 0,
         });
     }
 
@@ -1182,6 +1219,7 @@ impl RunArtifacts {
             exposure = sample.exposure,
             ocean_wave_min_meters = sample.ocean_wave_min_meters,
             ocean_wave_max_meters = sample.ocean_wave_max_meters,
+            village_sited_houses = sample.village_sited_houses,
             "spatial frame"
         );
     }
@@ -1663,6 +1701,7 @@ mod tests {
             max_exposure_delta_per_frame: None,
             max_exposure_oscillation_events: None,
             min_ocean_wave_height_range_meters: None,
+            require_constant_village_siting: false,
             ice_sample_uv: None,
             min_ice_sample_luminance: None,
             max_ice_sample_channel_spread: None,
@@ -1756,6 +1795,7 @@ mod tests {
             exposure: 1.0,
             ocean_wave_min_meters: 0.0,
             ocean_wave_max_meters: 0.0,
+            village_sited_houses: 0,
         }
     }
 

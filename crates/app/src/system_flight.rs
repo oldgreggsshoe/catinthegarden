@@ -471,6 +471,7 @@ impl SystemFlight {
                     exposure: 1.0,
                     ocean_wave_min_meters: 0.0,
                     ocean_wave_max_meters: 0.0,
+                    village_sited_houses: 0,
                 });
             tracing::info!(target: "catinthegarden::system_flight", time, phase, wall_ms, nearest_only = self.nearest_only, ?planet_clearance, ?moon_clearance,
                 planet_chunks = planet_stats.drawn_chunks, moon_chunks = moon_stats.drawn_chunks,

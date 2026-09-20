@@ -843,6 +843,14 @@ pub struct TerrainRenderer {
     // The exact unguttered height grid uploaded to the near-field texture.
     // Its UVs cannot be used to test a single guttered source tile.
     raster_near_field_heights: Vec<f32>,
+    /// CPU-only dense-level tiles held for village siting.
+    ///
+    /// The streaming cache cannot serve this: it holds whatever the LOD
+    /// selector asked for, which at low flight is L12 and at orbit is L0, and
+    /// a village whose existence is decided from it changes as you climb. This
+    /// is a small fixed neighbourhood around the camera at the one level that
+    /// is complete everywhere, so the answer is the same from any distance.
+    village_siting_tiles: HashMap<TileKey, TileData>,
     flat_triangle_experiment: bool,
 }
 
@@ -916,7 +924,8 @@ impl TerrainRenderer {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("terrain settings"),
                 contents: bytemuck::bytes_of(&TerrainSettings::from_planet_constants(
-                    outmap_dense_level, shadow_face_quads,
+                    outmap_dense_level,
+                    shadow_face_quads,
                 )),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
@@ -1316,6 +1325,7 @@ impl TerrainRenderer {
             max_outmap_seam_delta_meters: 0.0,
             raster_near_field: None,
             raster_near_field_heights: Vec::new(),
+            village_siting_tiles: HashMap::new(),
             flat_triangle_experiment,
         };
         Ok(renderer)
@@ -1467,6 +1477,187 @@ impl TerrainRenderer {
     /// direction. Outmap sampling deliberately uses only resident CPU tile
     /// data, so following terrain never adds disk I/O or GPU uploads to a
     /// flight frame.
+    /// Samples the surface for a *siting* decision, pinned to the globally
+    /// dense outmap level.
+    ///
+    /// This exists because `forest_surface_sample_at` resolves the finest
+    /// tile that happens to be resident, and residency follows the camera.
+    /// A forest candidate may legitimately sharpen as you approach it, but a
+    /// village may not: whether a settlement exists there is a fact about the
+    /// planet, and a camera that climbs from 150m to 1.5km must not find a
+    /// different village. The dense level is the only level guaranteed
+    /// resident everywhere, so it is the only level a stable answer can come
+    /// from. The returned height is the dense-level surface, not the rendered
+    /// one -- a caller that needs to stand something on the ground should take
+    /// the drawn height from `forest_surface_sample_at` separately.
+    pub fn dense_level_surface_sample_at(
+        &self,
+        local_surface_direction: DVec3,
+    ) -> Option<ForestSurfaceSample> {
+        let TerrainDataSource::Outmap(outmap) = &self.source else {
+            return None;
+        };
+        let direction = local_surface_direction.normalize_or_zero();
+        if direction.length_squared() <= f64::EPSILON {
+            return None;
+        }
+        let dense_level = outmap.manifest().dense_level;
+        let (face, face_uv) = cube_face_uv(direction)?;
+        let source_key = tile_key_for_direction(direction, dense_level);
+        if source_key.face != face {
+            return None;
+        }
+        let source_uv = source_tile_uv(source_key, face, face_uv)?;
+        let tile = self.village_siting_tiles.get(&source_key)?;
+        let baked_meters = f64::from(sample_height_cpu(&tile.heights_meters, source_uv));
+        // The altitude argument is inert -- `outmap_terrain_height_scale`
+        // ignores it -- but it is threaded through the shared height helpers,
+        // so a fixed value is passed to make the independence explicit rather
+        // than smuggling the camera in.
+        let siting_altitude_meters = 0.0;
+        let macro_height_meters = if baked_meters <= 0.0 {
+            0.0
+        } else {
+            scaled_outmap_macro_height_meters(baked_meters, siting_altitude_meters)
+        };
+        // Baked macro geography only, with no runtime detail ladder. The
+        // ladder's amplitude scales with the sample spacing it is filtered
+        // against, and the dense level's spacing is about three kilometres:
+        // asking it for a height here returned 2,213m for ground that renders
+        // at 174m, and a house placed on that answer floated two kilometres up.
+        // The ladder belongs to the surface being drawn, not to the question
+        // of whether a settlement belongs here.
+        let height_meters = macro_height_meters;
+        let biome = BiomeId::try_from(sample_biome_cpu(&tile.biome_ids, source_uv)).ok()?;
+        let moisture = f32::from(sample_moisture_cpu(&tile.moisture, source_uv)) / 255.0;
+        let (tangent_u, tangent_v) = forest_tangent_basis(direction)?;
+        let slope = forest_slope_radians(
+            |offset| self.dense_level_height_meters_at((direction + offset).normalize_or_zero()),
+            tangent_u,
+            tangent_v,
+        )?;
+        Some(ForestSurfaceSample {
+            height_meters,
+            macro_height_meters,
+            biome,
+            moisture,
+            slope_radians: slope,
+            source_key,
+            source_level: dense_level,
+        })
+    }
+
+    /// Dense-level height alone, for the slope stencil above. Kept separate so
+    /// the stencil cannot quietly fall back to a finer resident tile and give
+    /// the centre sample and its neighbours different sources.
+    fn dense_level_height_meters_at(&self, local_surface_direction: DVec3) -> Option<f64> {
+        let TerrainDataSource::Outmap(outmap) = &self.source else {
+            return None;
+        };
+        let direction = local_surface_direction.normalize_or_zero();
+        if direction.length_squared() <= f64::EPSILON {
+            return None;
+        }
+        let dense_level = outmap.manifest().dense_level;
+        let (face, face_uv) = cube_face_uv(direction)?;
+        let source_key = tile_key_for_direction(direction, dense_level);
+        if source_key.face != face {
+            return None;
+        }
+        let source_uv = source_tile_uv(source_key, face, face_uv)?;
+        let tile = self.village_siting_tiles.get(&source_key)?;
+        let baked_meters = f64::from(sample_height_cpu(&tile.heights_meters, source_uv));
+        Some(if baked_meters <= 0.0 {
+            0.0
+        } else {
+            scaled_outmap_macro_height_meters(baked_meters, 0.0)
+        })
+    }
+
+    /// Open-ocean ownership at the dense level, for the same reason as
+    /// `dense_level_surface_sample_at`: a coast that moves as tiles stream in
+    /// would move the villages behind it.
+    pub fn dense_level_open_ocean_at(&self, local_surface_direction: DVec3) -> Option<bool> {
+        let TerrainDataSource::Outmap(outmap) = &self.source else {
+            return Some(false);
+        };
+        let direction = local_surface_direction.normalize_or_zero();
+        if direction.length_squared() <= f64::EPSILON {
+            return None;
+        }
+        let dense_level = outmap.manifest().dense_level;
+        let (face, face_uv) = cube_face_uv(direction)?;
+        let source_key = tile_key_for_direction(direction, dense_level);
+        if source_key.face != face {
+            return None;
+        }
+        let source_uv = source_tile_uv(source_key, face, face_uv)?;
+        let tile = self.village_siting_tiles.get(&source_key)?;
+        let height = sample_height_cpu(&tile.heights_meters, source_uv);
+        let biome = BiomeId::try_from(sample_biome_cpu(&tile.biome_ids, source_uv)).ok()?;
+        Some(is_open_ocean_sample(height, biome))
+    }
+
+    /// Loads the dense-level tiles the village siting samplers will need, and
+    /// drops the ones they will not.
+    ///
+    /// One dense tile spans roughly 390km against a village search region tens
+    /// of kilometres across, so the camera's own tile and its immediate ring
+    /// always cover it. Reading nine tiles is the whole cost, and it is paid
+    /// only when the camera leaves the covered set -- every few hundred
+    /// kilometres, not every frame.
+    pub fn prepare_village_siting_tiles(&mut self, camera_direction: DVec3) {
+        let TerrainDataSource::Outmap(outmap) = &self.source else {
+            return;
+        };
+        let direction = camera_direction.normalize_or_zero();
+        if direction.length_squared() <= f64::EPSILON {
+            return;
+        }
+        let dense_level = outmap.manifest().dense_level;
+        let centre = tile_key_for_direction(direction, dense_level);
+        let side = i64::from(1_u32 << dense_level);
+        let mut wanted = Vec::with_capacity(9);
+        for dy in -1_i64..=1 {
+            for dx in -1_i64..=1 {
+                let x = i64::from(centre.x) + dx;
+                let y = i64::from(centre.y) + dy;
+                // A neighbour off this face belongs to another face's grid and
+                // is not addressable as this face's tile. Villages there are
+                // sited when the camera crosses onto that face, which is well
+                // inside one dense tile of travel.
+                if x < 0 || y < 0 || x >= side || y >= side {
+                    continue;
+                }
+                wanted.push(TileKey {
+                    face: centre.face,
+                    level: dense_level,
+                    x: x as u32,
+                    y: y as u32,
+                });
+            }
+        }
+        self.village_siting_tiles
+            .retain(|key, _| wanted.contains(key));
+        for key in wanted {
+            if self.village_siting_tiles.contains_key(&key) {
+                continue;
+            }
+            let TerrainDataSource::Outmap(outmap) = &self.source else {
+                return;
+            };
+            // A dense tile that will not load is a broken outmap, not a
+            // transient: skip it rather than retrying every rebuild.
+            let Ok(tile) = outmap.load_tile(key) else {
+                continue;
+            };
+            if tile.source_key != key {
+                continue;
+            }
+            self.village_siting_tiles.insert(key, tile);
+        }
+    }
+
     pub fn surface_height_meters_at(
         &self,
         local_surface_direction: DVec3,
@@ -3696,7 +3887,11 @@ mod material_layer_means {
     use super::*;
 
     fn srgb_to_linear(c: f64) -> f64 {
-        if c <= 0.040_45 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        if c <= 0.040_45 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
     }
 
     fn layer_mean(layer: u32) -> [f64; 3] {
@@ -3737,7 +3932,11 @@ mod material_layer_means {
                 .filter(|part| part.contains('.'))
                 .filter_map(|part| part.parse().ok())
                 .collect();
-            assert_eq!(numbers.len(), 3, "{name} should carry three components: {line}");
+            assert_eq!(
+                numbers.len(),
+                3,
+                "{name} should carry three components: {line}"
+            );
             for (channel, declared) in numbers.iter().enumerate() {
                 assert!(
                     (declared - mean[channel]).abs() < 1.0e-5,

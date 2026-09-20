@@ -40,6 +40,11 @@ pub struct ScenarioAssertions {
     pub max_exposure_delta_per_frame: Option<f32>,
     pub max_exposure_oscillation_events: Option<u32>,
     pub min_ocean_wave_height_range_meters: Option<f32>,
+    /// Assert that the number of houses sited around the camera never changes
+    /// during the run. Only meaningful for a scenario that holds the camera's
+    /// ground position and moves something else, such as its altitude.
+    #[serde(default)]
+    pub require_constant_village_siting: bool,
     pub ice_sample_uv: Option<[f32; 2]>,
     pub min_ice_sample_luminance: Option<f32>,
     pub max_ice_sample_channel_spread: Option<f32>,
@@ -111,6 +116,7 @@ impl Default for ScenarioAssertions {
             max_exposure_delta_per_frame: None,
             max_exposure_oscillation_events: None,
             min_ocean_wave_height_range_meters: None,
+            require_constant_village_siting: false,
             ice_sample_uv: None,
             min_ice_sample_luminance: None,
             max_ice_sample_channel_spread: None,
@@ -368,6 +374,8 @@ scenarios! {
     "peak_survey_8_directions" => "../scenarios/peak_survey_8_directions.json",
     "peak_survey_weather" => "../scenarios/peak_survey_weather.json",
     "alpine_survey_8_directions" => "../scenarios/alpine_survey_8_directions.json",
+    "village_pov" => "../scenarios/village_pov.json",
+    "village_altitude_stability" => "../scenarios/village_altitude_stability.json",
     "mountain_site_probe" => "../scenarios/mountain_site_probe.json",
 }
 
@@ -1086,7 +1094,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 101);
+        assert_eq!(SCENARIO_NAMES.len(), 103);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));

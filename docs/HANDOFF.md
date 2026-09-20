@@ -10327,3 +10327,68 @@ medians as a slowdown or speedup. Flow-aligned coordinates, coherent glacier
 structure, motion/LOD acceptance and uncontaminated performance remain undone.
 No promotion or new bake. Evidence and next-design boundary:
 `test-runs/peak_judging_2026-09-15/glacier-detail-trial/FOLLOWUP.md`.
+
+## 20 September — village siting stopped following the camera
+
+Villages were a function of the camera, not of the planet. With the camera's
+ground position held fixed and only its altitude changed, the deterministic
+probe `village_altitude_stability` drew **83 houses at 150m and 500m and 35 at
+1500m and 4000m — a different settlement each time**, one appearing exactly
+where the other vanished.
+
+The cause was not the height maths. `outmap_terrain_height_scale` ignores its
+altitude argument, so the heights themselves are altitude-free. The dependence
+came in through residency: `forest_surface_sample_at` resolves the finest tile
+that happens to be streamed, and the LOD selector streams L12 near the ground
+and falls back to L0 ancestors higher up. Every placement test — habitable
+biome, positive land, footprint flatness, dryness — was reading whichever tile
+the camera had caused to be loaded.
+
+Siting now reads the globally dense level, which is the only level complete
+everywhere, through three new pinned samplers in `terrain.rs`
+(`dense_level_surface_sample_at`, `dense_level_open_ocean_at`, and the private
+height stencil behind them). Those tiles come from a dedicated CPU-only cache,
+`village_siting_tiles`: the streaming cache cannot serve them, because at low
+flight it holds L12 and at orbit L0, and an L4 tile is frequently in neither.
+`prepare_village_siting_tiles` holds the camera's dense tile and its ring — nine
+tiles, about 0.9MB — and reloads only when the camera leaves that set, which at
+390km per tile is not a per-frame cost.
+
+Two further faults surfaced while fixing it, both of which predate this work and
+were masked by the instability:
+
+- **The siting height must be baked macro geography with no runtime detail
+  ladder.** The ladder's amplitude scales with the sample spacing it is filtered
+  against; at the dense level's ~3km spacing it returned **2,213m for ground that
+  renders at 174m**, and a house placed there floated two kilometres up.
+- **`raster_surface_height_breakdown_at_distance` is the wrong query for
+  placement.** It answers with the *highest* surface drawn at a direction,
+  because flight clearance must not miss one, and a coarse ancestor patch's
+  highest surface can be a mountain nowhere near the house — measured at
+  **1,861m** of lift. Houses now take their drawn height from the finest
+  resident sample, the same query the trees use, bounded by
+  `HOUSE_GROUND_DISAGREEMENT_LIMIT_METERS` (the ladder's own amplitude bound
+  plus the global detail term) so another patch's terrain cannot be believed.
+
+The separation that makes this measurable is `sited_houses` against drawn
+houses. Siting must not move with the camera; how many sited houses are near
+enough to draw is allowed to, and is what the 8km cutoff decides. The new
+opt-in assertion `require_constant_village_siting` checks the first, ignoring
+the leading empty sample that every run has because the spatial record is
+written earlier in the frame than the village rebuild.
+
+**Verification.** `village_altitude_stability` settles on **117 sited houses
+with 0 disagreements** across 150m/500m/1500m/4000m. Reverting only the siting
+sampler to the old camera-dependent call and re-running fails the same
+assertion at **319 sited houses, 8 disagreements**, so the test bites. Re-aimed
+`village_pov` passes and its second capture shows the houses standing on the
+ground. 528 app tests, 601 workspace tests, fmt and clippy pass; the one clippy
+warning is the pre-existing constant assertion at `village.rs:890`, untouched.
+
+**Not done.** The worst legitimate gap between a house's drawn ground and its
+sited ground is **513.5m** in `village_pov` — real detail-ladder displacement,
+not a float, but it means the footprint flatness test judges a surface that is
+not exactly the one drawn, so a village on rough ground can still be uneven.
+The captured village also stands on bare sand, which is a question about what
+`village_biome_is_habitable` admits at the coarse dense level, not about
+stability.

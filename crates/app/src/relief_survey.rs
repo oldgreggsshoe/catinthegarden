@@ -501,8 +501,8 @@ mod tests {
         let gutter = TILE_GUTTER as usize;
         let logical = TILE_LOGICAL_SIZE as usize;
         // One L4 tile spans a quarter of a cube face edge.
-        let tile_span_meters = planet_radius_meters() * std::f64::consts::FRAC_PI_2
-            / f64::from(tiles_per_side);
+        let tile_span_meters =
+            planet_radius_meters() * std::f64::consts::FRAC_PI_2 / f64::from(tiles_per_side);
         let sample_spacing = tile_span_meters / (logical as f64 - 1.0);
 
         let mut all: Vec<f64> = Vec::new();
@@ -510,12 +510,21 @@ mod tests {
         for face in CubeFace::ALL {
             for ty in 0..tiles_per_side {
                 for tx in 0..tiles_per_side {
-                    let key = TileKey { face, level, x: tx, y: ty };
-                    let Ok(resolved) = outmap.resolve_tile(key) else { continue };
+                    let key = TileKey {
+                        face,
+                        level,
+                        x: tx,
+                        y: ty,
+                    };
+                    let Ok(resolved) = outmap.resolve_tile(key) else {
+                        continue;
+                    };
                     if resolved.level != level {
                         continue;
                     }
-                    let Ok(data) = outmap.load_tile(key) else { continue };
+                    let Ok(data) = outmap.load_tile(key) else {
+                        continue;
+                    };
                     for sy in (1..logical - 1).step_by(4) {
                         for sx in (1..logical - 1).step_by(4) {
                             let at = |x: usize, y: usize| {
@@ -540,13 +549,23 @@ mod tests {
         all.sort_by(f64::total_cmp);
         high.sort_by(f64::total_cmp);
         let at = |v: &Vec<f64>, q: f64| {
-            if v.is_empty() { f64::NAN } else { v[((v.len() - 1) as f64 * q) as usize] }
+            if v.is_empty() {
+                f64::NAN
+            } else {
+                v[((v.len() - 1) as f64 * q) as usize]
+            }
         };
         println!("   sample spacing {sample_spacing:.0}m");
         for (label, v) in [("all land", &all), ("land above 3000m", &high)] {
             println!(
                 "   {label:<18} n={:7}  p50 {:6.3}  p75 {:6.3}  p90 {:6.3}  p95 {:6.3}  p99 {:6.3}  max {:6.3} deg",
-                v.len(), at(v,0.50), at(v,0.75), at(v,0.90), at(v,0.95), at(v,0.99), at(v,1.0)
+                v.len(),
+                at(v, 0.50),
+                at(v, 0.75),
+                at(v, 0.90),
+                at(v, 0.95),
+                at(v, 0.99),
+                at(v, 1.0)
             );
         }
     }
@@ -570,8 +589,16 @@ mod tests {
         let gutter = TILE_GUTTER as usize;
         let logical = TILE_LOGICAL_SIZE as usize;
         let names = [
-            "ocean", "lake", "ice", "tundra", "temperate forest", "grassland",
-            "tropical forest", "desert", "mountain rock", "mountain snow",
+            "ocean",
+            "lake",
+            "ice",
+            "tundra",
+            "temperate forest",
+            "grassland",
+            "tropical forest",
+            "desert",
+            "mountain rock",
+            "mountain snow",
         ];
         let mut counts = [0_usize; 10];
         let mut land = 0_usize;
@@ -582,12 +609,21 @@ mod tests {
         for face in CubeFace::ALL {
             for ty in 0..tiles_per_side {
                 for tx in 0..tiles_per_side {
-                    let key = TileKey { face, level, x: tx, y: ty };
-                    let Ok(resolved) = outmap.resolve_tile(key) else { continue };
+                    let key = TileKey {
+                        face,
+                        level,
+                        x: tx,
+                        y: ty,
+                    };
+                    let Ok(resolved) = outmap.resolve_tile(key) else {
+                        continue;
+                    };
                     if resolved.level != level {
                         continue;
                     }
-                    let Ok(data) = outmap.load_tile(key) else { continue };
+                    let Ok(data) = outmap.load_tile(key) else {
+                        continue;
+                    };
                     for sy in (0..logical).step_by(4) {
                         for sx in (0..logical).step_by(4) {
                             let at = (sy + gutter) * stored + sx + gutter;
@@ -655,19 +691,27 @@ mod tests {
         for face in CubeFace::ALL {
             for ty in 0..tiles_per_side {
                 for tx in 0..tiles_per_side {
-                    let key = TileKey { face, level, x: tx, y: ty };
-                    let Ok(resolved) = outmap.resolve_tile(key) else { continue };
+                    let key = TileKey {
+                        face,
+                        level,
+                        x: tx,
+                        y: ty,
+                    };
+                    let Ok(resolved) = outmap.resolve_tile(key) else {
+                        continue;
+                    };
                     if resolved.level != level {
                         continue;
                     }
-                    let Ok(data) = outmap.load_tile(key) else { continue };
+                    let Ok(data) = outmap.load_tile(key) else {
+                        continue;
+                    };
                     // The centre sample is where a survey camera would stand, so
                     // it has to be rock or mountain snow itself. Scoring on the
                     // tile's average put three cameras in a lake basin whose rim
                     // was rocky: 100% lake at the eye, 29% rock across the tile.
                     let centre = logical / 2;
-                    let centre_biome =
-                        data.biome_ids[(centre + gutter) * stored + centre + gutter];
+                    let centre_biome = data.biome_ids[(centre + gutter) * stored + centre + gutter];
                     if centre_biome != 8 && centre_biome != 9 {
                         continue;
                     }
@@ -706,13 +750,22 @@ mod tests {
                     let face_u = (f64::from(tx) + 0.5) / f64::from(tiles_per_side) * 2.0 - 1.0;
                     let face_v = (f64::from(ty) + 0.5) / f64::from(tiles_per_side) * 2.0 - 1.0;
                     let direction = face_uv_to_direction(face, face_u, face_v);
-                    candidates.push((rock_share, highest - lowest, mean, lowest, highest, direction));
+                    candidates.push((
+                        rock_share,
+                        highest - lowest,
+                        mean,
+                        lowest,
+                        highest,
+                        direction,
+                    ));
                 }
             }
         }
 
         candidates.sort_by(|a, b| (b.0 * b.1).total_cmp(&(a.0 * a.1)));
-        println!("\n== mountain survey sites (L{level}: centre is rock/snow, rock >= 35%, water <= 10%, floor >= 100m)");
+        println!(
+            "\n== mountain survey sites (L{level}: centre is rock/snow, rock >= 35%, water <= 10%, floor >= 100m)"
+        );
         println!("   found {} tiles", candidates.len());
         for (share, spread, mean, lowest, highest, direction) in candidates.iter().take(12) {
             println!(

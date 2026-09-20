@@ -26,18 +26,22 @@ use glam::DVec3;
 
 use catinthegarden_coretypes::{BiomeId, TileKey, face_uv_to_direction, tile_key_for_direction};
 
-use crate::planet::planet_radius_meters;
+use crate::planet::{
+    GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS,
+    planet_radius_meters,
+};
 use crate::terrain::{ForestSurfaceSample, TerrainRenderer};
 
-/// Quadtree level for village sites: a 12.3km cell on this planet.
+/// Quadtree level for village sites: a 6.1km cell on this planet.
 ///
-/// This has to be read together with the render distance below. At level 8 the
-/// cell is 24.5km against a 6km cutoff, so only a village in the camera's own
-/// cell could ever be drawn, and a randomly placed site lands within 6km of the
-/// camera about six per cent of the time. Villages were therefore almost never
-/// visible. A 12.3km cell against an 8km cutoff means the camera's own cell and
-/// its neighbours can all contribute.
-const VILLAGE_CELL_LEVEL: u8 = 9;
+/// This has to be read together with the render distance and the search ring
+/// below. At level 8 the cell was 24.5km against a 6km cutoff, so only a
+/// village in the camera's own cell could ever be drawn and villages were
+/// almost never visible. Level 9 fixed that; level 10 is the answer to "as many
+/// as you can", putting settlements roughly six kilometres apart -- close
+/// enough that the planet reads as inhabited rather than as empty country with
+/// the occasional hamlet.
+const VILLAGE_CELL_LEVEL: u8 = 10;
 /// Candidate sites tried per cell. Most are rejected by ground or biome, so
 /// this is an upper bound on villages per cell rather than a count.
 const VILLAGE_SITE_CANDIDATES_PER_CELL: u32 = 2;
@@ -70,10 +74,22 @@ const VILLAGE_DRAW_ALTITUDE_METERS: f64 = 12_000.0;
 /// Hard ceiling on drawn houses. The budget, not the scatter, is what bounds
 /// the frame cost.
 const VILLAGE_MAX_DRAW_INSTANCES: usize = 4_096;
-/// Cells searched around the camera each rebuild. The cell is 24.5km and the
-/// render distance is 6km, so the camera's own cell and its immediate ring
-/// always cover the visible ground.
-const VILLAGE_SEARCH_RING: i32 = 1;
+/// Cells searched around the camera each rebuild, as a ring count.
+///
+/// The ring has to reach at least as far as the render cutoff, or villages
+/// inside the cutoff go unsearched and pop in as the camera crosses a cell
+/// boundary. With a 6.1km cell and an 8km cutoff, one ring is not enough: a
+/// camera sitting at its cell's edge has ground 8km away sitting two cells
+/// over. Two rings covers 12.2km, which clears it.
+const VILLAGE_SEARCH_RING: i32 = 2;
+/// How far the drawn ground may differ from the sited ground before the drawn
+/// answer is disbelieved.
+///
+/// The runtime detail ladder is the whole legitimate difference between baked
+/// macro geography and the rendered surface, and it is bounded, so this is
+/// that bound with a little room for the separate global detail term.
+const HOUSE_GROUND_DISAGREEMENT_LIMIT_METERS: f64 =
+    TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS;
 /// Rebuild the instance list when the camera has moved this far. Villages are
 /// static, so the list only changes when the visible set does.
 const VILLAGE_REBUILD_DISTANCE_METERS: f64 = 400.0;
@@ -177,7 +193,7 @@ fn village_surface_is_eligible(sample: ForestSurfaceSample) -> bool {
 /// so it cannot disagree with what is drawn. Ask it, rather than inventing a
 /// fifth threshold on a fourth field.
 fn village_ground_is_dry(terrain: &TerrainRenderer, direction: DVec3) -> bool {
-    terrain.open_ocean_at(direction) == Some(false)
+    terrain.dense_level_open_ocean_at(direction) == Some(false)
 }
 
 /// Is this site level enough, across its own footprint, to hold a village?
@@ -185,12 +201,18 @@ fn village_ground_is_dry(terrain: &TerrainRenderer, direction: DVec3) -> bool {
 /// Samples the centre and four points at the village radius. All five must be
 /// habitable land, and the spread between highest and lowest must stay inside
 /// the budget. Returns the mean height so the houses can be placed against it.
+/// The village's mean ground height, or `None` if the site is not habitable.
+///
+/// Every sample here is taken at the globally dense outmap level rather than
+/// at the finest resident tile. Siting has to be a fact about the planet: with
+/// the camera's own view of the ground, the same spot held two different
+/// villages at 150m and at 1.5km, because climbing changed which tiles were
+/// resident and so changed the biome and height the tests read.
 fn village_footprint_height(
     terrain: &TerrainRenderer,
     site_direction: DVec3,
     east: DVec3,
     north: DVec3,
-    camera_altitude_meters: f64,
 ) -> Option<f64> {
     let radius = VILLAGE_RADIUS_METERS;
     let offsets = [
@@ -204,12 +226,11 @@ fn village_footprint_height(
     let mut highest = f64::NEG_INFINITY;
     let mut total = 0.0;
     for offset in offsets {
-        let direction =
-            (site_direction * planet_radius_meters() + offset).normalize_or_zero();
+        let direction = (site_direction * planet_radius_meters() + offset).normalize_or_zero();
         if direction.length_squared() <= f64::EPSILON {
             return None;
         }
-        let sample = terrain.forest_surface_sample_at(direction, camera_altitude_meters)?;
+        let sample = terrain.dense_level_surface_sample_at(direction)?;
         if !village_surface_is_eligible(sample) || !village_ground_is_dry(terrain, direction) {
             return None;
         }
@@ -282,8 +303,10 @@ fn village_site_direction(key: TileKey, index: u32) -> DVec3 {
     // Keep sites off the cell edge so a village never straddles two cells and
     // gets built twice with different neighbours.
     let inset = 0.12;
-    let u = u_min + (inset + unit_hash(seed ^ index ^ 0x6a09_e667) * (1.0 - 2.0 * inset)) * cell_span;
-    let v = v_min + (inset + unit_hash(seed ^ index ^ 0xbb67_ae85) * (1.0 - 2.0 * inset)) * cell_span;
+    let u =
+        u_min + (inset + unit_hash(seed ^ index ^ 0x6a09_e667) * (1.0 - 2.0 * inset)) * cell_span;
+    let v =
+        v_min + (inset + unit_hash(seed ^ index ^ 0xbb67_ae85) * (1.0 - 2.0 * inset)) * cell_span;
     face_uv_to_direction(key.face, u, v)
 }
 
@@ -301,9 +324,8 @@ fn village_house_layout(site_seed: u32) -> Vec<(f64, f64, f64)> {
     let mut placed: Vec<(f64, f64, f64)> = Vec::with_capacity(HOUSES_PER_VILLAGE as usize);
     for index in 0..HOUSES_PER_VILLAGE {
         for attempt in 0..HOUSE_PLACEMENT_ATTEMPTS {
-            let seed = site_seed
-                ^ index.wrapping_mul(0x9e37_79b9)
-                ^ attempt.wrapping_mul(0x85eb_ca6b);
+            let seed =
+                site_seed ^ index.wrapping_mul(0x9e37_79b9) ^ attempt.wrapping_mul(0x85eb_ca6b);
             let angle = unit_hash(seed ^ 0x1f83_d9ab) * std::f64::consts::TAU;
             // sqrt would spread houses evenly over the disc; a higher power
             // pulls them inward, which looks like a settlement rather than a
@@ -460,14 +482,15 @@ pub fn collect_house_instances(
     camera_direction: DVec3,
     camera_altitude_meters: f64,
     camera_world_position: DVec3,
-) -> Vec<HouseInstance> {
-    let mut instances = Vec::new();
+) -> VillageBuild {
+    let mut build = VillageBuild::default();
+    let instances = &mut build.instances;
     if camera_altitude_meters >= VILLAGE_DRAW_ALTITUDE_METERS {
-        return instances;
+        return build;
     }
     let camera_direction = camera_direction.normalize_or_zero();
     if camera_direction.length_squared() <= f64::EPSILON {
-        return instances;
+        return build;
     }
     let centre_key = tile_key_for_direction(camera_direction, VILLAGE_CELL_LEVEL);
     let side = 1_i64 << VILLAGE_CELL_LEVEL;
@@ -502,36 +525,31 @@ pub fn collect_house_instances(
                 }
                 let north = east.cross(up);
                 // Level across the footprint, not steep at a point.
-                let Some(site_height_meters) = village_footprint_height(
-                    terrain,
-                    site_direction,
-                    east,
-                    north,
-                    camera_altitude_meters,
-                ) else {
+                let Some(site_height_meters) =
+                    village_footprint_height(terrain, site_direction, east, north)
+                else {
                     continue;
                 };
 
                 let layout = village_house_layout(site_seed);
                 for (index, &(offset_east, offset_north, facing)) in layout.iter().enumerate() {
                     if instances.len() >= VILLAGE_MAX_DRAW_INSTANCES {
-                        return instances;
+                        return build;
                     }
                     let index = index as u32;
                     let offset = east * offset_east + north * offset_north;
-                    let house_direction = (site_direction * planet_radius_meters() + offset)
-                        .normalize_or_zero();
+                    let house_direction =
+                        (site_direction * planet_radius_meters() + offset).normalize_or_zero();
                     if house_direction.length_squared() <= f64::EPSILON {
                         continue;
                     }
-                    let Some(ground) =
-                        terrain.forest_surface_sample_at(house_direction, camera_altitude_meters)
+                    let Some(site_ground) = terrain.dense_level_surface_sample_at(house_direction)
                     else {
                         continue;
                     };
                     // The second slope test. Without it a village on a shallow
                     // hillside puts one house on the step at its edge.
-                    if !village_surface_is_eligible(ground)
+                    if !village_surface_is_eligible(site_ground)
                         || !village_ground_is_dry(terrain, house_direction)
                     {
                         continue;
@@ -539,13 +557,55 @@ pub fn collect_house_instances(
                     // Keep the cluster coherent: a house whose ground sits well
                     // off the village's mean is on a step or a bank, not in the
                     // village.
-                    if (ground.height_meters - site_height_meters).abs()
+                    if (site_ground.height_meters - site_height_meters).abs()
                         > HOUSE_HEIGHT_DEVIATION_METERS
                     {
                         continue;
                     }
-                    let house_world = house_direction
-                        * (planet_radius_meters() + ground.height_meters);
+                    // Whether the house exists was decided above, on the dense
+                    // level. Where it stands is a different question, and has
+                    // to follow the surface actually being drawn, or the house
+                    // hovers or sinks. This is the same query flight clearance
+                    // uses, and it is the only one that answers it: the forest
+                    // sampler reads the finest *resident* tile, whose detail
+                    // filter widens with the camera, and it put a house 2km
+                    // above ground it shares with a 180m rendered surface.
+                    // Falling back to the siting height keeps the house placed
+                    // if nothing is drawn there yet.
+                    // The raster query answers with the *highest* surface drawn
+                    // at this direction, because flight clearance must not miss
+                    // one. A coarse ancestor patch covers kilometres of ground
+                    // per vertex, so that highest surface can be a mountain
+                    // that is nowhere near this house -- it put one house
+                    // 1,861m above its own ground. The only legitimate gap
+                    // between baked macro geography and the drawn surface is
+                    // the runtime detail ladder, which is bounded, so a larger
+                    // disagreement is another patch's terrain and the sited
+                    // ground is the better answer.
+                    let drawn_height_meters = terrain
+                        .forest_surface_sample_at(house_direction, camera_altitude_meters)
+                        .map(|drawn| drawn.height_meters)
+                        .filter(|height| {
+                            (height - site_ground.height_meters).abs()
+                                <= HOUSE_GROUND_DISAGREEMENT_LIMIT_METERS
+                        })
+                        .unwrap_or(site_ground.height_meters);
+                    // Counted before the distance cutoff. Siting is the thing
+                    // that has to be camera-independent; how many of those
+                    // houses are near enough to draw is allowed to move with
+                    // the camera, and separating the two is what makes the
+                    // stability claim measurable.
+                    build.sited_houses += 1;
+                    // How far the drawn ground is from the baked macro ground
+                    // the site was judged on. The runtime detail ladder makes
+                    // the two legitimately differ, so this is not a float
+                    // measurement -- it is the size of the gap the limit below
+                    // has to police.
+                    build.max_ground_disagreement_meters = build
+                        .max_ground_disagreement_meters
+                        .max((drawn_height_meters - site_ground.height_meters).abs());
+                    let house_world =
+                        house_direction * (planet_radius_meters() + drawn_height_meters);
                     let to_camera = house_world - camera_world_position;
                     if to_camera.length() > VILLAGE_RENDER_DISTANCE_METERS {
                         continue;
@@ -572,7 +632,20 @@ pub fn collect_house_instances(
             }
         }
     }
-    instances
+    build
+}
+
+/// What one village rebuild produced.
+#[derive(Default)]
+pub struct VillageBuild {
+    /// The houses near enough to draw.
+    pub instances: Vec<HouseInstance>,
+    /// Every house the search region sites, whether or not it is near enough
+    /// to draw. This is the camera-independent number.
+    pub sited_houses: u32,
+    /// The worst gap between a house's drawn ground and its sited ground.
+    /// Legitimately non-zero: the detail ladder displaces the drawn surface.
+    pub max_ground_disagreement_meters: f64,
 }
 
 /// How far the camera may move before the visible house set is rebuilt.
@@ -619,7 +692,8 @@ mod tests {
             .map(|vertex| vertex.position[2])
             .fold(f32::MAX, f32::min);
         assert!(
-            (highest - (HOUSE_WALL_HEIGHT_METERS + HOUSE_RIDGE_HEIGHT_METERS) as f32).abs() < 1.0e-3
+            (highest - (HOUSE_WALL_HEIGHT_METERS + HOUSE_RIDGE_HEIGHT_METERS) as f32).abs()
+                < 1.0e-3
         );
         assert!(lowest < 0.0, "walls sink so sloping ground has no gap");
     }
@@ -749,7 +823,10 @@ mod tests {
                 }
             }
         }
-        assert!(smallest.is_finite(), "no villages produced a pair to compare");
+        assert!(
+            smallest.is_finite(),
+            "no villages produced a pair to compare"
+        );
     }
 
     #[test]
@@ -777,11 +854,7 @@ mod tests {
         // than trusting the copy: every face normal must point away from the
         // house's own middle.
         let mesh = build_house_mesh();
-        let centre = glam::Vec3::new(
-            0.0,
-            0.0,
-            (HOUSE_WALL_HEIGHT_METERS * 0.5) as f32,
-        );
+        let centre = glam::Vec3::new(0.0, 0.0, (HOUSE_WALL_HEIGHT_METERS * 0.5) as f32);
         let mut inward = Vec::new();
         for (index, triangle) in mesh.chunks_exact(3).enumerate() {
             let a = glam::Vec3::from(triangle[0].position);
@@ -808,11 +881,27 @@ mod tests {
         // The footprint spans two village radii. The budget across it should
         // work out to a gentle grade -- a settlement site, not a hillside.
         let span = VILLAGE_RADIUS_METERS * 2.0;
-        let grade = (VILLAGE_FOOTPRINT_HEIGHT_SPREAD_METERS / span).atan().to_degrees();
+        let grade = (VILLAGE_FOOTPRINT_HEIGHT_SPREAD_METERS / span)
+            .atan()
+            .to_degrees();
         assert!(grade < 10.0, "village grade {grade} degrees is too steep");
         // A single house must sit closer to the village's mean than the whole
         // footprint is allowed to vary, or the cluster comes apart.
         assert!(HOUSE_HEIGHT_DEVIATION_METERS < VILLAGE_FOOTPRINT_HEIGHT_SPREAD_METERS);
+    }
+
+    #[test]
+    fn the_search_ring_reaches_as_far_as_the_render_cutoff() {
+        // Villages inside the cutoff must all be searched, or they pop in when
+        // the camera crosses a cell boundary. A camera at its own cell's edge
+        // has the far side of the cutoff `ring * cell` away.
+        let cell_metres = (std::f64::consts::PI * 2.0 * planet_radius_meters() / 4.0)
+            / f64::from(1_u32 << VILLAGE_CELL_LEVEL);
+        let reach = f64::from(VILLAGE_SEARCH_RING) * cell_metres;
+        assert!(
+            reach >= VILLAGE_RENDER_DISTANCE_METERS,
+            "ring reaches {reach}m but the cutoff is {VILLAGE_RENDER_DISTANCE_METERS}m"
+        );
     }
 
     #[test]

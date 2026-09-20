@@ -77,6 +77,16 @@ pub struct VillageRenderer {
     /// Where the camera stood when the visible set was last rebuilt. Villages
     /// are static, so the list only changes when the camera does.
     last_build_position: Option<DVec3>,
+    /// World position of the house nearest the camera at the last rebuild.
+    ///
+    /// Kept because a house count alone cannot say where the settlement is:
+    /// authoring a village scenario means knowing the ground a house stands
+    /// on, and a count of 80 is as true of eighty houses behind the camera as
+    /// of eighty in front of it.
+    nearest_house_world: Option<DVec3>,
+    /// Houses sited in the search region, before the render cutoff.
+    sited_houses: u32,
+    max_ground_disagreement_meters: f64,
     enabled: bool,
 }
 
@@ -160,6 +170,9 @@ impl VillageRenderer {
             instance_buffer,
             instance_count: 0,
             last_build_position: None,
+            nearest_house_world: None,
+            sited_houses: 0,
+            max_ground_disagreement_meters: 0.0,
             // `CATINGARDEN_VILLAGES=off` disables the pass so its frame cost can
             // be measured against the same scenario without a rebuild. Measured
             // this way: 74.07ms with villages against 74.61ms without.
@@ -183,6 +196,9 @@ impl VillageRenderer {
         if camera_altitude_meters >= draw_altitude_meters() {
             self.instance_count = 0;
             self.last_build_position = None;
+            self.nearest_house_world = None;
+            self.sited_houses = 0;
+            self.max_ground_disagreement_meters = 0.0;
             return;
         }
         let moved_far_enough = self
@@ -195,13 +211,25 @@ impl VillageRenderer {
         if direction.length_squared() <= f64::EPSILON {
             return;
         }
-        let instances = village::collect_house_instances(
+        let build = village::collect_house_instances(
             terrain,
             direction,
             camera_altitude_meters,
             camera_world_position,
         );
+        let instances = build.instances;
         self.instance_count = instances.len() as u32;
+        self.sited_houses = build.sited_houses;
+        self.max_ground_disagreement_meters = build.max_ground_disagreement_meters;
+        self.nearest_house_world = instances
+            .iter()
+            .map(|instance| DVec3::from(instance.camera_relative_position.map(f64::from)))
+            .min_by(|a, b| {
+                a.length_squared()
+                    .partial_cmp(&b.length_squared())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|offset| camera_world_position + offset);
         self.last_build_position = Some(camera_world_position);
         if !instances.is_empty() {
             queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&instances));
@@ -226,6 +254,23 @@ impl VillageRenderer {
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
         render_pass.draw(0..self.vertex_count, 0..self.instance_count);
+    }
+
+    /// The house nearest the camera, in world space, or `None` when no house
+    /// is drawn.
+    pub fn nearest_house_world(&self) -> Option<DVec3> {
+        self.nearest_house_world
+    }
+
+    /// Houses sited around the camera, before the render cutoff. Unlike the
+    /// drawn count this should not move when only the camera does.
+    pub fn sited_houses(&self) -> u32 {
+        self.sited_houses
+    }
+
+    /// The worst gap between a drawn house's ground and its sited ground.
+    pub fn max_ground_disagreement_meters(&self) -> f64 {
+        self.max_ground_disagreement_meters
     }
 
     pub fn instance_count(&self) -> u32 {

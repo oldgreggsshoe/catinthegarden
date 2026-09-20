@@ -2659,7 +2659,10 @@ impl State {
             .flocks()
             .iter()
             .map(|flock| flock.centroid())
-            .min_by(|a, b| a.distance_squared(from).total_cmp(&b.distance_squared(from)))
+            .min_by(|a, b| {
+                a.distance_squared(from)
+                    .total_cmp(&b.distance_squared(from))
+            })
         else {
             self.bird_watch_note = "no flock nearby to watch yet".to_string();
             return;
@@ -3171,6 +3174,7 @@ impl State {
                 exposure,
                 ocean_wave_min_meters: ocean_wave_stats.minimum_meters,
                 ocean_wave_max_meters: ocean_wave_stats.maximum_meters,
+                village_sited_houses: self.villages.sited_houses(),
             });
     }
 
@@ -4146,6 +4150,11 @@ impl State {
         // `camera_planet_frame_position` is the rotating frame: identical while
         // the planet is stopped, which is why every test scenario so far could
         // not tell the two apart, and wrong by the rotation the moment it turns.
+        // Villages are sited from the dense outmap level, not from whatever
+        // the LOD selector has streamed, so those tiles have to be in hand
+        // before the visible set is rebuilt.
+        self.terrain
+            .prepare_village_siting_tiles(camera_world_position.normalize_or_zero());
         self.villages.update(
             &self.queue,
             &self.terrain,
@@ -4216,8 +4225,20 @@ impl State {
                 displaced_cubic_meters = self.ship_hull.displaced_volume_cubic_meters(),
                 waterplane_square_meters = self.ship_hull.waterplane_area_square_meters(),
             );
+            let nearest_house = self.villages.nearest_house_world();
             tracing::info!(
                 village_houses = self.villages.instance_count(),
+                village_sited_houses = self.villages.sited_houses(),
+                village_max_ground_disagreement_meters =
+                    self.villages.max_ground_disagreement_meters(),
+                // Where the nearest house stands. A count says villages exist;
+                // this says where to point a camera at one.
+                nearest_house_x = nearest_house.map(|house| house.x).unwrap_or(f64::NAN),
+                nearest_house_y = nearest_house.map(|house| house.y).unwrap_or(f64::NAN),
+                nearest_house_z = nearest_house.map(|house| house.z).unwrap_or(f64::NAN),
+                nearest_house_distance_meters = nearest_house
+                    .map(|house| house.distance(camera_world_position))
+                    .unwrap_or(f64::NAN),
                 "village house instances"
             );
             let forest = self.forest.stats();
@@ -5734,14 +5755,12 @@ mod tests {
         MINIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE, PLANET_ROTATION_SCALE_STEP, RenderPath,
         STORM_OCEAN_START_DIRECTION, STORM_OCEAN_START_PITCH_RADIANS, adjusted_flight_speed_scale,
         advance_flight_position_on_sphere, advance_flight_speed, device_mouse_look_enabled,
-        movement_key_latch_expired,
         find_default_outmap, flight_look_angles_toward, flight_movement_direction,
-        flight_view_direction,
-        focus_of_expansion_ndc, initial_flight_tangent, interactive_camera_delta_seconds,
-        low_flight_clearance_radius, projected_planet_coverage, render_size_for_surface_resize,
-        retimed_planet_rotation, should_enter_fullscreen, should_start_interactive_fullscreen,
-        surface_movement_direction, swept_flight_clearance_lift, transport_flight_tangent,
-        waterline_scenario_pose,
+        flight_view_direction, focus_of_expansion_ndc, initial_flight_tangent,
+        interactive_camera_delta_seconds, low_flight_clearance_radius, movement_key_latch_expired,
+        projected_planet_coverage, render_size_for_surface_resize, retimed_planet_rotation,
+        should_enter_fullscreen, should_start_interactive_fullscreen, surface_movement_direction,
+        swept_flight_clearance_lift, transport_flight_tangent, waterline_scenario_pose,
     };
     use crate::planet::{
         CameraUniform, FlatTriangleOutlineMode, OrbitCamera, PLANET_ROTATION_PERIOD_SECONDS,
@@ -6099,11 +6118,21 @@ mod tests {
     /// apart, so a release must not clear a movement key immediately.
     #[test]
     fn a_repeated_key_release_keeps_a_movement_key_held_for_the_latch() {
-        assert!(!movement_key_latch_expired(std::time::Duration::from_millis(0)));
-        assert!(!movement_key_latch_expired(std::time::Duration::from_millis(30)));
-        assert!(!movement_key_latch_expired(std::time::Duration::from_millis(119)));
-        assert!(movement_key_latch_expired(std::time::Duration::from_millis(120)));
-        assert!(movement_key_latch_expired(std::time::Duration::from_millis(400)));
+        assert!(!movement_key_latch_expired(
+            std::time::Duration::from_millis(0)
+        ));
+        assert!(!movement_key_latch_expired(
+            std::time::Duration::from_millis(30)
+        ));
+        assert!(!movement_key_latch_expired(
+            std::time::Duration::from_millis(119)
+        ));
+        assert!(movement_key_latch_expired(
+            std::time::Duration::from_millis(120)
+        ));
+        assert!(movement_key_latch_expired(
+            std::time::Duration::from_millis(400)
+        ));
     }
 
     /// M points the eye at a flock by solving for the look angles, so the
