@@ -2474,7 +2474,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let terrain_surface_irradiance = terrain_ambient
         + terrain_sun_transmittance * terrain_cloud_visibility
             * terrain_direct_light
-            * SURFACE_SUNLIGHT_SCALE;
+            * select(SURFACE_SUNLIGHT_SCALE, 1.0, (ALPINE_MATERIAL_TRIAL & 4u) != 0u && BODY_HAS_ATMOSPHERE);
     let terrain_albedo = terrain_material_color(
         outmap,
         biome_id,
@@ -2485,6 +2485,12 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         terrain_normal,
         direction,
     );
+    // Snow's fine mottling is a near-ground feature, not a hillside motif.
+    // Blend the distance scale with the existing biome weights; no hard tile
+    // boundary, new texture read, or change to other materials is required.
+    let material_fine_distance = length(input.camera_relative_view_position)
+        * select(1.0, mix(1.0, 10.0, biome_blend_snow_share(biome_blend)),
+            (ALPINE_MATERIAL_TRIAL & 16u) != 0u && BODY_HAS_ATMOSPHERE);
     let detail_tint = terrain_material_tint(
         outmap,
         moisture,
@@ -2497,9 +2503,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         input.terrain_detail_meters_and_fog_amount.x,
         input.detail_anchor_direction,
         input.detail_local_meters,
-        terrain_material_fine_weight(
-            length(input.camera_relative_view_position),
-        ),
+        terrain_material_fine_weight(material_fine_distance),
     );
     var textured_terrain_albedo = terrain_albedo * detail_tint;
     // Rain darkens exposed ground; accumulated snow replaces the material only
@@ -2599,7 +2603,8 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     // Re-light the triangle normal by the finer-than-mesh detail ratio. The
     // offset keeps the divisor away from zero at the terminator and stops
     // grazing light exploding into white speckle.
-    if input.detail_spacing_and_face_normal.x > 0.0 {
+    if input.detail_spacing_and_face_normal.x > 0.0
+        && ((ALPINE_MATERIAL_TRIAL & 8u) == 0u || !BODY_HAS_ATMOSPHERE) {
         // Rebuild the vertex's cutoff from this pixel's own camera distance,
         // using the same expression vs_main used. Both are continuous in
         // distance, so the handover slides smoothly instead of stepping.
@@ -2642,14 +2647,16 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             // where f32 quantises the lookup to whole texels. This field is
             // already anchor-local and exact here, and costs nothing extra.
             // Normalised by the filter so the variation is scale-free.
-            let surface_texture = clamp(
-                fine_detail.height_meters / max(pixel_filter_meters, 0.05),
-                -1.0,
-                1.0,
-            );
-            textured_surface_lighting *= 1.0
-                + surface_texture * TERRAIN_DETAIL_ALBEDO_STRENGTH
-                    * terrain_detail_steep_fade(vertex_normal, direction);
+            if (ALPINE_MATERIAL_TRIAL & 2u) == 0u || !BODY_HAS_ATMOSPHERE {
+                let surface_texture = clamp(
+                    fine_detail.height_meters / max(pixel_filter_meters, 0.05),
+                    -1.0,
+                    1.0,
+                );
+                textured_surface_lighting *= 1.0
+                    + surface_texture * TERRAIN_DETAIL_ALBEDO_STRENGTH
+                        * terrain_detail_steep_fade(vertex_normal, direction);
+            }
         }
     }
     // Ground steep enough to shed its snow is bare rock, whatever the baked
@@ -2662,7 +2669,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let ice_lighting_slope = 1.0 - clamp(dot(normalize(terrain_normal), direction), 0.0, 1.0);
     let ice_share = select(0.0, biome_blend_share(biome_blend, 2u), outmap)
         * snow_slope_hold(ice_lighting_slope, 2u);
-    if ice_share > 0.0 {
+    if ((ALPINE_MATERIAL_TRIAL & 1u) == 0u || !BODY_HAS_ATMOSPHERE) && ice_share > 0.0 {
         let ice_light_floor = clamp(
             max(
                 max(terrain_surface_irradiance.x, terrain_surface_irradiance.y),

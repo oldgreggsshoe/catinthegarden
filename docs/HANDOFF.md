@@ -10261,3 +10261,35 @@ changed-Rust-file formatting/diff checks pass. Unrelated pre-existing app format
 fails the workspace-wide fmt check and was left alone. Installed-path replay
 `alpine_survey_8_directions/1789817879-542459` passes with all eight captures identical to the
 staged result; its timing is excluded because it overlapped the final CPU tests.
+
+
+## 20 September — isolated alpine material probes, in progress
+
+Branch `experiment/alpine-material-contrast` is based on `ce5631f` and reuses
+only its own checkout `tmp/glacier-detail-worktree` and dedicated
+`target-glacier-detail`. It does not contain or enable the rejected fracture
+experiment. No live bake, camera, reference set or main executable was changed.
+
+`CATINGARDEN_ALPINE_MATERIAL_TRIAL` selects compile-time diagnostic removals:
+`floor`, `grain`, `both`, `light`, `contrast`, `mesh`, `mesh-light`,
+`snow-grain`, `snow-mesh-light`; unset/default preserves the baseline.
+The last pair restricts the existing fine snow texture to a blended 15–90m
+range rather than 150–900m while retaining it underfoot and retaining the
+original range for non-snow biomes. No extra texture or geometry was added.
+Airless-body behavior is excluded from these experiments.
+
+The ice-floor and colour-noise removals did not remove the broad stippled look
+in inspected views. Lowering the artistic land sunlight multiplier from 2 to
+1 changes the tone substantially, but is not yet visually accepted. Removing
+only the finer-than-mesh fragment noise shading measured 80.571ms between
+clean same-binary controls of 85.033/85.206ms; the stippled pattern remains,
+so this is not yet a combined quality/performance win. Mode validation passes;
+full validation and final visual judging are still pending.
+
+Evidence is recorded in the active checkout's
+`test-runs/peak_judging_2026-09-15/alpine-material-trial/`.
+Its `run.py` records same-log medians and binary checksums, and marks timings
+ineligible if other renderer/build processes overlap. Earlier lighting trials
+were contaminated by a main-checkout benchmark batch despite the requested
+quiet window; never use them as performance evidence. Each run's eligibility
+and contamination evidence are retained, including the clean later controls.
