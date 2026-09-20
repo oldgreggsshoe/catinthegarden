@@ -1,0 +1,32 @@
+{
+  "mask": {
+    "mode": "mask",
+    "run": "test-runs/alpine_survey_8_directions/1789839114-625737",
+    "median_ms": 81.89839935302734,
+    "frames": 69
+  },
+  "off1": {
+    "mode": "0",
+    "run": "test-runs/alpine_survey_8_directions/1789839296-626903",
+    "median_ms": 87.79557037353516,
+    "frames": 69
+  },
+  "on1": {
+    "mode": "on",
+    "run": "test-runs/alpine_survey_8_directions/1789839483-627380",
+    "median_ms": 88.64147186279297,
+    "frames": 69
+  },
+  "v2_off1": {
+    "mode": "0",
+    "run": "test-runs/alpine_survey_8_directions/1789874552-723308",
+    "median_ms": 88.10930633544922,
+    "frames": 69
+  },
+  "v2_on1": {
+    "mode": "on",
+    "run": "test-runs/alpine_survey_8_directions/1789874739-723811",
+    "median_ms": 90.19397735595703,
+    "frames": 69
+  }
+}

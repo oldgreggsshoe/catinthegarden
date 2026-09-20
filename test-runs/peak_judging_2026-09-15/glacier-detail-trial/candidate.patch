@@ -1,0 +1,171 @@
+diff --git a/crates/app/src/planet.wgsl b/crates/app/src/planet.wgsl
+index 0b06b50..ef92569 100644
+--- a/crates/app/src/planet.wgsl
++++ b/crates/app/src/planet.wgsl
+@@ -2157,6 +2157,54 @@ fn ocean_underside_reflecting_fragment(input: OceanVertexOutput) -> vec4<f32> {
+     );
+ }
+ 
++// Surface markings only: no displaced geometry, collision change, or claim
++// that this fixed world-space orientation describes actual glacier flow.
++// Kilometre-scale biome IDs delimit regions; these bands live inside them.
++fn glacier_detail_albedo(
++    albedo: vec3<f32>,
++    shares: vec2<f32>,
++    anchor: vec3<f32>,
++    local_meters: vec3<f32>,
++    footprint_meters: f32,
++) -> vec3<f32> {
++    if max(shares.x, shares.y) <= 0.0001 || footprint_meters >= 16.0 {
++        return albedo;
++    }
++    // Preserve short local offsets instead of adding them to a 4,000km
++    // absolute f32 coordinate. The common global phases also avoid tile UV
++    // resets at LOD/cube edges. A quarter-metre filter covers anchor rounding.
++    let axis_u = vec3<f32>(0.8, 0.0, 0.6);
++    let axis_v = vec3<f32>(-0.36, 0.8, 0.48);
++    let uv_anchor = vec2<f32>(dot(anchor, axis_u), dot(anchor, axis_v))
++        * PLANET_RADIUS_METERS;
++    let uv_local = vec2<f32>(dot(local_meters, axis_u), dot(local_meters, axis_v));
++    let filter_meters = max(footprint_meters, 0.25);
++    var result = albedo;
++    if shares.x > 0.0001 {
++        let phase = fract(uv_anchor / vec2<f32>(320.0, 960.0))
++            + uv_local / vec2<f32>(320.0, 960.0);
++        let warp = 0.12 * sin(phase.y * 6.2831853)
++            + 0.04 * sin(phase.y * 18.849556);
++        let band_distance = abs(fract(phase.x + warp) - 0.5) * 320.0;
++        let band = (1.0 - smoothstep(5.0, 5.0 + filter_meters * 2.0, band_distance))
++            * (1.0 - smoothstep(4.0, 16.0, footprint_meters));
++        result = mix(result, srgb_to_linear(vec3<f32>(0.26, 0.23, 0.19)), shares.x * band);
++    }
++    if shares.y > 0.0001 && footprint_meters < 4.0 {
++        let phase = fract(uv_anchor / vec2<f32>(32.0, 192.0))
++            + uv_local / vec2<f32>(32.0, 192.0);
++        let warp = 0.18 * sin(phase.y * 6.2831853)
++            + 0.05 * sin(phase.y * 18.849556);
++        let crack_distance = abs(fract(phase.x + warp) - 0.5) * 32.0;
++        // Interrupted transverse lines, rather than an unbroken ruled grid.
++        let opening = smoothstep(-0.35, 0.25, sin(phase.y * 12.566371));
++        let crack = (1.0 - smoothstep(0.8, 0.8 + filter_meters * 2.0, crack_distance))
++            * opening * (1.0 - smoothstep(1.0, 4.0, footprint_meters));
++        result = mix(result, srgb_to_linear(vec3<f32>(0.12, 0.24, 0.31)), shares.y * crack);
++    }
++    return result;
++}
++
+ fn ocean_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
+     let direction = normalize(input.surface_direction);
+     let macro_height_meters = macro_terrain_height(input.outmap > 0.5, input.source_uv, direction);
+@@ -2535,6 +2583,34 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
+             length(input.camera_relative_view_position),
+         );
+     }
++    if GLACIER_DETAIL_MODE != 0u && BODY_HAS_ATMOSPHERE && outmap {
++        let glacier_shares = vec2<f32>(
++            biome_blend_share(biome_blend, 10u),
++            biome_blend_share(biome_blend, 11u),
++        );
++        // Derivatives of the smooth camera-relative position account for
++        // grazing surfaces as well as distance, without another texture read.
++        let footprint = max(
++            length(dpdx(input.camera_relative_view_position)),
++            length(dpdy(input.camera_relative_view_position)),
++        );
++        if GLACIER_DETAIL_MODE == 2u {
++            // Red=moraine, blue=crevasse; green encodes 0..16m pixel footprint
++            // only inside a glacier region. Black means no region is present.
++            return vec4<f32>(glacier_shares.x,
++                select(0.0, clamp(footprint / 16.0, 0.0, 1.0),
++                    max(glacier_shares.x, glacier_shares.y) > 0.0001),
++                glacier_shares.y, 1.0);
++        }
++        textured_terrain_albedo = glacier_detail_albedo(
++            textured_terrain_albedo,
++            glacier_shares * snow_slope_hold(
++                1.0 - clamp(dot(normalize(terrain_normal), direction), 0.0, 1.0), 2u),
++            input.detail_anchor_direction,
++            input.detail_local_meters,
++            footprint,
++        );
++    }
+     // Opt-in road-surface experiment at a macro-low-slope desert site. This first pass
+     // is a material laid onto the existing terrain, not a graded cut or a
+     // separate mesh. It follows every raster triangle exactly, so no depth
+diff --git a/crates/app/src/terrain.rs b/crates/app/src/terrain.rs
+index d05e758..f6dd5b8 100644
+--- a/crates/app/src/terrain.rs
++++ b/crates/app/src/terrain.rs
+@@ -127,9 +127,23 @@ pub(crate) fn planet_shader_source() -> String {
+         Some("1" | "true" | "on")
+     );
+     let road_setting = format!("const ROAD_SURFACE_TRIAL: bool = {road_surface_trial};");
++    // One binary can capture matched controls; the default shader compiles
++    // the experiment out. The mask mode checks that the source regions are
++    // actually visible before attributing a no-op to the material.
++    let glacier_mode = match std::env::var("CATINGARDEN_GLACIER_DETAIL")
++        .ok()
++        .as_deref()
++        .map(str::trim)
++    {
++        Some("1" | "on") => 1,
++        Some("mask") => 2,
++        _ => 0,
++    };
++    let glacier_setting = format!("const GLACIER_DETAIL_MODE: u32 = {glacier_mode}u;");
+     [
+         crate::planet::shared_planet_shader_source(),
+         road_setting,
++        glacier_setting,
+         include_str!("planet.wgsl").to_string(),
+         include_str!("weather_cloud_density.wgsl").to_string(),
+     ]
+@@ -4892,6 +4906,48 @@ mod tests {
+         assert!(!flat.contains("terrain_material_color("));
+     }
+ 
++    #[test]
++    fn glacier_trial_modes_validate_without_geometry_or_texture_work() {
++        let shader = planet_shader_source();
++        let mode_line = shader
++            .lines()
++            .find(|line| line.starts_with("const GLACIER_DETAIL_MODE:"))
++            .unwrap();
++        for mode in 0..=2 {
++            let source = shader.replace(
++                mode_line,
++                &format!("const GLACIER_DETAIL_MODE: u32 = {mode}u;"),
++            );
++            let module = wgpu::naga::front::wgsl::parse_str(&source).unwrap();
++            wgpu::naga::valid::Validator::new(
++                wgpu::naga::valid::ValidationFlags::all(),
++                wgpu::naga::valid::Capabilities::all(),
++            )
++            .validate(&module)
++            .unwrap();
++        }
++        let detail = shader
++            .split("fn glacier_detail_albedo(")
++            .nth(1)
++            .unwrap()
++            .split("\nfn ")
++            .next()
++            .unwrap();
++        assert!(!detail.contains("texture"));
++        assert!(!detail.contains("camera."));
++        assert!(detail.contains("return albedo;"));
++        assert!(detail.contains("smoothstep(1.0, 4.0, footprint_meters)"));
++        assert!(detail.contains("smoothstep(4.0, 16.0, footprint_meters)"));
++        let vertex = shader
++            .split("fn vs_main(")
++            .nth(1)
++            .unwrap()
++            .split("\nfn ")
++            .next()
++            .unwrap();
++        assert!(!vertex.contains("glacier"));
++    }
++
+     #[test]
+     fn planet_shader_validates_with_filtered_runtime_detail_noise() {
+         let shader = planet_shader_source();

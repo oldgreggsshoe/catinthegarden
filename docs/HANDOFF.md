@@ -10261,3 +10261,37 @@ changed-Rust-file formatting/diff checks pass. Unrelated pre-existing app format
 fails the workspace-wide fmt check and was left alone. Installed-path replay
 `alpine_survey_8_directions/1789817879-542459` passes with all eight captures identical to the
 staged result; its timing is excluded because it overlapped the final CPU tests.
+
+
+## 20 September — procedural glacier trial rejected for promotion
+
+Tested in detached `ce5631f` checkout `tmp/glacier-detail-worktree`, with its own
+`target-glacier-detail` build directory, not the concurrently changing village renderer.
+The corrected live bake, judging camera and approved references were held fixed.
+Only the isolated `planet.wgsl` and `terrain.rs` were modified; neither change was
+promoted into the main source tree.
+
+Dedicated moraine/crevasse regions are distant in these views; their metre-scale
+marks filter away. V1 off/on captures are pixel-identical in all eight headings.
+V2 applies faint fractures to non-polar Ice too and gates the downstream ice-light
+floor by mark coverage, otherwise lighting whitens the new marks. This changes
+15,736–39,039 pixels per view, at maximum channel deltas 11–14/255. All eight full
+frames were inspected: the close marks look like faint painted, regularly spaced
+lines, not broken glacier ice. Fixed global orientation does not follow glacier flow.
+**Do not promote this candidate or spend a judging round on it.** This is a rejected
+visual hypothesis, not a new realism score or completion of procedural glacier work.
+
+Same V2 binary, Quadro Immediate-present alpine replay, 69 logged frame times per
+run: off `1789874552-723308` median **88.109ms**, on `1789874739-723811`
+**90.194ms (+2.37%)**. Only one pair: not a statistically established slowdown,
+but certainly not evidence that arithmetic without extra texture reads is free.
+Both replay assertions pass. All eight default-off images also match V1 default-off
+pixels exactly. Focused shader validation passes all three modes; V2 release build
+passes. No final V2 full-workspace or motion acceptance claim.
+
+Reproducible rejected patches, checksums, run IDs and pixel differences:
+`test-runs/peak_judging_2026-09-15/glacier-detail-trial/RESULTS.md`.
+Next design work needs a terrain/flow-aligned glacier coordinate field and irregular,
+resolved fracture structure, rather than darkening these fixed-axis lines or widening
+biome patches. That is an untested direction, not an approved implementation plan.
+The main executable and bake remain unchanged; concurrent village edits are preserved.

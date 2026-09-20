@@ -1,16 +1,12 @@
-Agreed: biome IDs should mark regions, with finer glacier structure inside them. Procedural shading still needs measured cost—it isn’t automatically free.
+Tested all eight views. The shader adds painted-looking lines, not convincing crevasses; one timing pair worsened 88.109 → 90.194 ms.
 
-- Export fix pushed: `e8248bf`.
-- Corrected bake promoted; Claude’s third bake preserved as `test-planet.claude-third-backup-20260919`.
-- **584 tests pass**; all eight installed captures match the staged result.
-- Frame time essentially unchanged: **88.36 → 88.46ms**.
-- No judges or realism gain claimed. Procedural glacier detail is the next step.
+Rejected for promotion; no judges spent. Evidence and reproducible patches committed and pushed. Live renderer/bake and Claude’s village edits remain untouched.
 
 <oai-mem-citation>
 <citation_entries>
-MEMORY.md:86-86|note=[checkout verification and handoff workflow]
+MEMORY.md:30-30|note=[Resume existing handoff and save response relay]
 </citation_entries>
 <rollout_ids>
-019fa8c4-5408-7b01-a8cc-b4a853948503
+01a07b93-6f08-70f2-80be-2f78bae4a1eb
 </rollout_ids>
 </oai-mem-citation>
