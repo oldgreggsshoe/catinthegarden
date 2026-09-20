@@ -124,6 +124,32 @@ fn create_offscreen_present_texture(
     })
 }
 
+/// Subsystems the frame may be asked to skip, as `CATINGARDEN_DISABLE=a,b,c`.
+///
+/// Per-subsystem GPU attribution needs either timestamps, which break this
+/// Quadro outright, or matched A/B runs. Toggles existed for a few systems and
+/// not the rest, each spelled differently, which made a comparable sweep
+/// impossible to write. One switch, one spelling, every draw in the scene.
+/// Skipping a system leaves the frame wrong on purpose: the point is the
+/// difference in frame time, not the picture.
+fn disabled_subsystems() -> &'static std::collections::HashSet<String> {
+    static DISABLED: std::sync::OnceLock<std::collections::HashSet<String>> =
+        std::sync::OnceLock::new();
+    DISABLED.get_or_init(|| {
+        std::env::var("CATINGARDEN_DISABLE")
+            .unwrap_or_default()
+            .split(',')
+            .map(|name| name.trim().to_ascii_lowercase())
+            .filter(|name| !name.is_empty())
+            .collect()
+    })
+}
+
+/// Whether a named scene subsystem should draw this frame.
+fn subsystem_enabled(name: &str) -> bool {
+    !disabled_subsystems().contains(name)
+}
+
 fn render_size_for_surface_resize(
     surface_size: winit::dpi::PhysicalSize<u32>,
     fullscreen_render_size: Option<winit::dpi::PhysicalSize<u32>>,
@@ -4524,12 +4550,14 @@ impl State {
             if !solid_color_screen && self.render_path == RenderPath::Raster {
                 if self.render_debug_mode != planet::RenderDebugMode::SkyOnly {
                     if self.render_debug_mode == planet::RenderDebugMode::FlatTriangles {
-                        self.terrain.draw(
-                            &mut render_pass,
-                            &self.camera_bind_group,
-                            self.weather_clouds.field_bind_group(),
-                        );
-                    } else {
+                        if subsystem_enabled("terrain") {
+                            self.terrain.draw(
+                                &mut render_pass,
+                                &self.camera_bind_group,
+                                self.weather_clouds.field_bind_group(),
+                            );
+                        }
+                    } else if subsystem_enabled("terrain") {
                         self.terrain.draw_ground(
                             &mut render_pass,
                             &self.camera_bind_group,
@@ -4545,8 +4573,10 @@ impl State {
                 // background, and skipping it leaves the cleared buffer showing
                 // as grey daylight where space should be. What changes is what
                 // it computes -- `BODY_HAS_ATMOSPHERE` makes it vacuum.
-                self.atmosphere
-                    .draw(&mut render_pass, &self.camera_bind_group);
+                if subsystem_enabled("sky") {
+                    self.atmosphere
+                        .draw(&mut render_pass, &self.camera_bind_group);
+                }
             } else if !solid_color_screen
                 && self.render_path == RenderPath::FoveatedRay
                 && (self.render_debug_mode != planet::RenderDebugMode::Final || !use_foveated_warp)
@@ -4599,8 +4629,10 @@ impl State {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            self.terrain
-                .draw_transmitting_ocean(&mut pass, &self.camera_bind_group);
+            if subsystem_enabled("ocean") {
+                self.terrain
+                    .draw_transmitting_ocean(&mut pass, &self.camera_bind_group);
+            }
         }
         if !solid_color_screen && use_foveated_warp {
             {
@@ -4742,44 +4774,58 @@ impl State {
             });
             // Sky objects use empty reversed-Z depth after either terrain
             // path, before clouds/ships/trees and before exposure metering.
-            self.stars.draw(
-                &mut render_pass,
-                &self.camera_bind_group,
-                self.weather_clouds.field_bind_group(),
-            );
-            self.ship_renderer
-                .draw(&mut render_pass, &self.camera_bind_group);
-            self.bird_renderer
-                .draw(&mut render_pass, &self.camera_bind_group);
+            if subsystem_enabled("stars") {
+                self.stars.draw(
+                    &mut render_pass,
+                    &self.camera_bind_group,
+                    self.weather_clouds.field_bind_group(),
+                );
+            }
+            if subsystem_enabled("ship") {
+                self.ship_renderer
+                    .draw(&mut render_pass, &self.camera_bind_group);
+            }
+            if subsystem_enabled("birds") {
+                self.bird_renderer
+                    .draw(&mut render_pass, &self.camera_bind_group);
+            }
             // Vacuum holds no cloud, no rain and no shafts of light. These are
             // the weather passes; the atmosphere pass itself still runs, since
             // it is what paints space black behind the stars.
-            if body::has_atmosphere() {
+            if body::has_atmosphere() && subsystem_enabled("clouds") {
                 self.weather_clouds
                     .draw(&mut render_pass, &self.camera_bind_group);
             }
-            self.forest.draw(
-                &mut render_pass,
-                &self.camera_bind_group,
-                self.weather_clouds.field_bind_group(),
-                camera_sea_level_altitude_meters,
-            );
-            self.villages.draw(
-                &mut render_pass,
-                &self.camera_bind_group,
-                camera_sea_level_altitude_meters,
-            );
+            if subsystem_enabled("forest") {
+                self.forest.draw(
+                    &mut render_pass,
+                    &self.camera_bind_group,
+                    self.weather_clouds.field_bind_group(),
+                    camera_sea_level_altitude_meters,
+                );
+            }
+            if subsystem_enabled("villages") {
+                self.villages.draw(
+                    &mut render_pass,
+                    &self.camera_bind_group,
+                    camera_sea_level_altitude_meters,
+                );
+            }
             if body::has_atmosphere() {
-                self.local_cloud_impostors.draw(
-                    &mut render_pass,
-                    &self.camera_bind_group,
-                    self.weather_clouds.field_bind_group(),
-                );
-                self.rain.draw(
-                    &mut render_pass,
-                    &self.camera_bind_group,
-                    self.weather_clouds.field_bind_group(),
-                );
+                if subsystem_enabled("cloud_impostors") {
+                    self.local_cloud_impostors.draw(
+                        &mut render_pass,
+                        &self.camera_bind_group,
+                        self.weather_clouds.field_bind_group(),
+                    );
+                }
+                if subsystem_enabled("rain") {
+                    self.rain.draw(
+                        &mut render_pass,
+                        &self.camera_bind_group,
+                        self.weather_clouds.field_bind_group(),
+                    );
+                }
             }
             // Last in the pass, so the reticle sits over the finished scene.
             // It is not depth-tested, but it can still be painted over by

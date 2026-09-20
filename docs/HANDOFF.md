@@ -10529,3 +10529,45 @@ GPU attribution is still not available on this machine**: the stage split
 The working alternative is matched A/B toggling, which is how the forest, road
 and village costs were measured, and it needs an idle machine to beat the
 run-to-run drift seen today.
+
+## 20 September — where the frame actually goes
+
+`CATINGARDEN_DISABLE=a,b,c` skips any named scene draw. It exists because
+per-subsystem GPU attribution needs either timestamps, which break this card,
+or matched A/B runs, and the toggles that existed covered a few systems under
+inconsistent names. Skipping a system leaves the frame wrong on purpose.
+
+Full report and raw data: `test-runs/render_profile_2026-09-20/`.
+
+At ground level in `village_pov` at 720p, of an **83.6ms** frame: **30.5ms is a
+fixed floor with nothing drawn at all**, **51.3ms is terrain**, and **1.9ms is
+every other subsystem put together**. Terrain draws alone in 81.7ms; ocean, sky,
+stars, clouds, rain, forest, villages, birds and ship add 1.9ms on top of it
+between them, and individually every one is at or under the +/-1ms noise floor.
+Terrain is **97% of the scene work**.
+
+Two things worth carrying forward. The 30.5ms floor -- post, exposure metering,
+present, simulation -- is 36% of the frame before anything is drawn, and is a
+target independent of terrain. And forest measures *consistently* negative
+across four blocks (-1.08/-0.81/-0.32/-0.65), which is systematic: the likely
+reading is that trees occlude terrain and terrain is what costs, so removing
+them exposes more expensive pixels than the trees cost to draw. Untested.
+
+Inside terrain, a resolution sweep says fragment-bound -- 52.1ms at full pixels
+against 4.5ms at a sixteenth. Fitting `cost = a*pixels + b*triangles` to that
+pair gives 50.8ms fragment against 1.3ms geometry, and **the model then fails**:
+it predicts a quarter-size chunk budget at 51.1ms and the measurement is 19.0ms.
+Chunk count scales fragment work, not just vertex work. **Overdraw** fits both
+results and is the next thing to test -- with a fragment count, not a frame time.
+
+**Method, because an earlier attempt was wrong.** Two warm-up runs are discarded
+(the GPU idles at 135MHz and boosts to 1124MHz, which is what made this morning's
+numbers drift 119ms to 76ms), then every condition runs once per block so drift
+hits them all alike. Baseline held to 1.1% across four blocks. A first attempt
+is absent from the data because two sweeps were started concurrently and
+measured each other; the tell was a no-terrain frame coming out 57ms *slower*
+than baseline, which is impossible. One sweep at a time.
+
+**Limits.** One camera pose. Terrain's dominance will differ at orbit, where the
+frontier is a few coarse chunks, and over open ocean. Nothing here attributes
+cost inside a pass.

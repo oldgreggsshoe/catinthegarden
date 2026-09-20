@@ -1,0 +1,19 @@
+{"label": "baseline_720p", "median": 82.55016708374023, "triangles": 589824.0, "chunks": 256.0}
+{"label": "half_res_360p", "median": 48.13566970825195, "triangles": 589824.0, "chunks": 256.0}
+{"label": "quarter_res_180p", "median": 34.9737606048584, "triangles": 587520.0, "chunks": 255.0}
+{"label": "budget_64_chunks", "median": 50.72068977355957, "triangles": 147456.0, "chunks": 64.0}
+{"label": "budget_1024_chunks", "median": 181.31411743164062, "triangles": 2359296.0, "chunks": 1024.0}
+{"label": "no_terrain_720p", "median": 33.766496658325195, "triangles": 589824.0, "chunks": 256.0}
+{"label": "baseline_720p", "median": 82.18053817749023, "triangles": 589824.0, "chunks": 256.0}
+{"label": "half_res_360p", "median": 49.36052322387695, "triangles": 589824.0, "chunks": 256.0}
+{"label": "quarter_res_180p", "median": 35.033212661743164, "triangles": 587520.0, "chunks": 255.0}
+{"label": "budget_64_chunks", "median": 49.40121269226074, "triangles": 147456.0, "chunks": 64.0}
+{"label": "budget_1024_chunks", "median": 182.06189727783203, "triangles": 2359296.0, "chunks": 1024.0}
+{"label": "no_terrain_720p", "median": 34.10015296936035, "triangles": 589824.0, "chunks": 256.0}
+{"label": "baseline_720p", "median": 83.03609085083008, "triangles": 589824.0, "chunks": 256.0}
+{"label": "half_res_360p", "median": 48.84819221496582, "triangles": 589824.0, "chunks": 256.0}
+{"label": "quarter_res_180p", "median": 35.01448440551758, "triangles": 587520.0, "chunks": 255.0}
+{"label": "budget_64_chunks", "median": 49.474449157714844, "triangles": 147456.0, "chunks": 64.0}
+{"label": "budget_1024_chunks", "median": 181.23915100097656, "triangles": 2359296.0, "chunks": 1024.0}
+{"label": "no_terrain_720p", "median": 34.088369369506836, "triangles": 589824.0, "chunks": 256.0}
+DONE

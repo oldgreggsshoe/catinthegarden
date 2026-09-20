@@ -1,0 +1,16 @@
+{"label": "baseline", "median": 115.70550537109375}
+{"label": "no_terrain", "median": 172.21410369873047}
+{"label": "no_terrain_no_sky", "median": 175.00875091552734}
+{"label": "nothing_at_all", "median": 36.43922424316406}
+{"label": "only_terrain", "median": 82.97976303100586}
+{"label": "baseline", "median": 83.66455078125}
+{"label": "no_terrain", "median": 34.66327667236328}
+{"label": "no_terrain_no_sky", "median": 29.304256439208984}
+{"label": "nothing_at_all", "median": 26.98562717437744}
+{"label": "only_terrain", "median": 81.82509231567383}
+{"label": "baseline", "median": 83.54629898071289}
+{"label": "no_terrain", "median": 29.10460090637207}
+{"label": "no_terrain_no_sky", "median": 28.72186851501465}
+{"label": "nothing_at_all", "median": 33.92451286315918}
+{"label": "only_terrain", "median": 81.66263580322266}
+DONE
