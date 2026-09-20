@@ -87,6 +87,9 @@ pub struct VillageRenderer {
     /// Houses sited in the search region, before the render cutoff.
     sited_houses: u32,
     max_ground_disagreement_meters: f64,
+    nearest_site_macro_height_meters: f64,
+    nearest_site_biome: Option<catinthegarden_coretypes::BiomeId>,
+    nearest_site_moisture: f32,
     enabled: bool,
 }
 
@@ -173,6 +176,9 @@ impl VillageRenderer {
             nearest_house_world: None,
             sited_houses: 0,
             max_ground_disagreement_meters: 0.0,
+            nearest_site_macro_height_meters: f64::NAN,
+            nearest_site_biome: None,
+            nearest_site_moisture: f32::NAN,
             // `CATINGARDEN_VILLAGES=off` disables the pass so its frame cost can
             // be measured against the same scenario without a rebuild. Measured
             // this way: 74.07ms with villages against 74.61ms without.
@@ -221,6 +227,9 @@ impl VillageRenderer {
         self.instance_count = instances.len() as u32;
         self.sited_houses = build.sited_houses;
         self.max_ground_disagreement_meters = build.max_ground_disagreement_meters;
+        self.nearest_site_macro_height_meters = build.nearest_site_macro_height_meters;
+        self.nearest_site_biome = build.nearest_site_biome;
+        self.nearest_site_moisture = build.nearest_site_moisture;
         self.nearest_house_world = instances
             .iter()
             .map(|instance| DVec3::from(instance.camera_relative_position.map(f64::from)))
@@ -271,6 +280,15 @@ impl VillageRenderer {
     /// The worst gap between a drawn house's ground and its sited ground.
     pub fn max_ground_disagreement_meters(&self) -> f64 {
         self.max_ground_disagreement_meters
+    }
+
+    /// What siting saw at the house nearest the camera.
+    pub fn nearest_site_ground(&self) -> (f64, Option<catinthegarden_coretypes::BiomeId>, f32) {
+        (
+            self.nearest_site_macro_height_meters,
+            self.nearest_site_biome,
+            self.nearest_site_moisture,
+        )
     }
 
     pub fn instance_count(&self) -> u32 {

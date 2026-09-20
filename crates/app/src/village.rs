@@ -44,7 +44,12 @@ use crate::terrain::{ForestSurfaceSample, TerrainRenderer};
 const VILLAGE_CELL_LEVEL: u8 = 10;
 /// Candidate sites tried per cell. Most are rejected by ground or biome, so
 /// this is an upper bound on villages per cell rather than a count.
-const VILLAGE_SITE_CANDIDATES_PER_CELL: u32 = 2;
+///
+/// Raised from 2 when siting gained a real flatness test, a slope limit and a
+/// beach exclusion. Those cut sited houses at the probe from 117 to 20 -- the
+/// rules were the point, the loss of density was not -- and six candidates
+/// puts it back at 112 with all three still applied.
+const VILLAGE_SITE_CANDIDATES_PER_CELL: u32 = 6;
 /// Houses attempted per village. The cluster thins itself: each house re-tests
 /// its own ground, so a village on broken terrain simply ends up smaller.
 const HOUSES_PER_VILLAGE: u32 = 20;
@@ -176,11 +181,33 @@ pub fn village_biome_is_habitable(biome: BiomeId) -> bool {
 /// every site.
 fn village_surface_is_eligible(sample: ForestSurfaceSample) -> bool {
     village_biome_is_habitable(sample.biome)
-        && sample.macro_height_meters > 0.0
+        && sample.macro_height_meters >= village_min_macro_height_meters()
         && sample.height_meters.is_finite()
         && sample.slope_radians <= village_max_site_slope_radians()
 }
 
+/// Where the fragment shader stops mixing sand into the ground, in raw baked
+/// metres. `shared_planet.wgsl` fades the beach out with
+/// `smoothstep(20, 220, macro_height_meters)`, and the height it passes is
+/// `sample_height(source_uv)` -- the baked value, not the displayed one.
+const SHADER_BEACH_BLEND_TOP_RAW_METERS: f64 = 220.0;
+
+/// The lowest ground a village may stand on, in the scaled metres a
+/// `ForestSurfaceSample` reports.
+///
+/// Biome ownership is baked at the dense level, where one sample spans about
+/// three kilometres, so a cell the fragment shader paints as sand is still
+/// forest to the siting tests -- which is how the village capture came out as
+/// houses on a beach. Clearing the shader's beach band fixes that, but the two
+/// sides count in different units: the shader reads raw baked metres and
+/// `scaled_outmap_macro_height_meters` has already multiplied by the body's
+/// exaggeration. Comparing the raw 220 against a scaled sample let a house
+/// stand on raw 88.9m ground, which the shader paints half sand, and the
+/// capture showed exactly that. Converting costs little: about 79% of
+/// habitable land clears it.
+fn village_min_macro_height_meters() -> f64 {
+    SHADER_BEACH_BLEND_TOP_RAW_METERS * crate::body::outmap_height_scale()
+}
 /// The steepest ground a village may stand on.
 ///
 /// This is the footprint budget restated as a grade, and it has to be, because
@@ -611,6 +638,15 @@ pub fn collect_house_instances(
                     // the camera, and separating the two is what makes the
                     // stability claim measurable.
                     build.sited_houses += 1;
+                    let site_distance_squared = (house_direction * planet_radius_meters()
+                        - camera_world_position)
+                        .length_squared();
+                    if site_distance_squared < build.nearest_site_distance_squared {
+                        build.nearest_site_macro_height_meters = site_ground.macro_height_meters;
+                        build.nearest_site_biome = Some(site_ground.biome);
+                        build.nearest_site_moisture = site_ground.moisture;
+                        build.nearest_site_distance_squared = site_distance_squared;
+                    }
                     // How far the drawn ground is from the baked macro ground
                     // the site was judged on. The runtime detail ladder makes
                     // the two legitimately differ, so this is not a float
@@ -651,7 +687,6 @@ pub fn collect_house_instances(
 }
 
 /// What one village rebuild produced.
-#[derive(Default)]
 pub struct VillageBuild {
     /// The houses near enough to draw.
     pub instances: Vec<HouseInstance>,
@@ -661,6 +696,26 @@ pub struct VillageBuild {
     /// The worst gap between a house's drawn ground and its sited ground.
     /// Legitimately non-zero: the detail ladder displaces the drawn surface.
     pub max_ground_disagreement_meters: f64,
+    /// What siting saw at the house nearest the camera. A capture can show a
+    /// village on sand without saying whether siting was told it was sand.
+    pub nearest_site_macro_height_meters: f64,
+    pub nearest_site_biome: Option<BiomeId>,
+    pub nearest_site_moisture: f32,
+    nearest_site_distance_squared: f64,
+}
+
+impl Default for VillageBuild {
+    fn default() -> Self {
+        Self {
+            instances: Vec::new(),
+            sited_houses: 0,
+            max_ground_disagreement_meters: 0.0,
+            nearest_site_macro_height_meters: f64::NAN,
+            nearest_site_biome: None,
+            nearest_site_moisture: f32::NAN,
+            nearest_site_distance_squared: f64::INFINITY,
+        }
+    }
 }
 
 /// How far the camera may move before the visible house set is rebuilt.
@@ -891,6 +946,180 @@ mod tests {
         );
     }
 
+    /// Instrument: how much does the ladder vary across a village footprint at
+    /// the fixed siting filter? Run with --ignored --nocapture.
+    #[test]
+    #[ignore]
+    fn village_footprint_spread_distribution() {
+        use crate::planet::{detailed_outmap_land_height_meters_with_filter, planet_radius_meters};
+        let radius = 110.0_f64;
+        let spacing = 3068.0_f64;
+        let mut spreads = Vec::new();
+        for i in 0..4000 {
+            // Deterministic scatter of directions over the sphere.
+            let t = (i as f64 + 0.5) / 4000.0;
+            let z = 1.0 - 2.0 * t;
+            let r = (1.0 - z * z).max(0.0).sqrt();
+            let phi = (i as f64) * 2.399963229728653;
+            let dir = DVec3::new(r * phi.cos(), r * phi.sin(), z).normalize();
+            let macro_raw = 200.0_f64; // fixed land height: isolate the ladder
+            let up = dir;
+            let reference = if up.y.abs() < 0.9 { DVec3::Y } else { DVec3::X };
+            let east = up.cross(reference).normalize();
+            let north = east.cross(up);
+            let mut lo = f64::INFINITY;
+            let mut hi = f64::NEG_INFINITY;
+            for offset in [
+                DVec3::ZERO,
+                east * radius,
+                east * -radius,
+                north * radius,
+                north * -radius,
+            ] {
+                let d = (dir * planet_radius_meters() + offset).normalize();
+                let h =
+                    detailed_outmap_land_height_meters_with_filter(macro_raw, d, 0.0, spacing, 8.0);
+                lo = lo.min(h);
+                hi = hi.max(h);
+            }
+            spreads.push(hi - lo);
+        }
+        spreads.sort_by(f64::total_cmp);
+        let q = |p: f64| spreads[((spreads.len() as f64 - 1.0) * p) as usize];
+        println!(
+            "footprint spread over 220m at an 8m filter: p10 {:.1} p50 {:.1} p90 {:.1} p99 {:.1} max {:.1}",
+            q(0.10),
+            q(0.50),
+            q(0.90),
+            q(0.99),
+            spreads[spreads.len() - 1]
+        );
+        let under = spreads.iter().filter(|s| **s <= 30.0).count();
+        println!(
+            "under the 30m budget: {:.1}%",
+            100.0 * under as f64 / spreads.len() as f64
+        );
+    }
+
+    /// Instrument: finds ground that satisfies the village siting rules, so a
+    /// scenario can be aimed at a settlement instead of guessed at. Uses the
+    /// renderer's own cube mapping rather than reimplementing it.
+    /// Run with --ignored --nocapture.
+    #[test]
+    #[ignore]
+    fn find_village_ground() {
+        use crate::outmap::Outmap;
+        use crate::planet::cube_face_direction;
+        use catinthegarden_coretypes::{TILE_LOGICAL_SIZE, TileKey};
+
+        // Tests run with the crate as the working directory, so the repo's
+        // own outmap has to be reached from the manifest, not from `.`.
+        let root = std::env::var("CATINGARDEN_OUTMAP").unwrap_or_else(|_| {
+            format!(
+                "{}/../../assets/outmaps/test-planet",
+                env!("CARGO_MANIFEST_DIR")
+            )
+        });
+        let outmap = Outmap::open(std::path::Path::new(&root)).expect("open outmap");
+        let dense = outmap.manifest().dense_level;
+        let side = 1_u32 << dense;
+        let logical = TILE_LOGICAL_SIZE as usize;
+        let stored = logical + 2;
+        let scale = crate::body::outmap_height_scale();
+        let mut found = 0;
+        'outer: for face in 0..6_u8 {
+            for ty in 0..side {
+                for tx in 0..side {
+                    let key = TileKey {
+                        face: catinthegarden_coretypes::CubeFace::ALL[face as usize],
+                        level: dense,
+                        x: tx,
+                        y: ty,
+                    };
+                    let Ok(tile) = outmap.load_tile(key) else {
+                        continue;
+                    };
+                    for y in (2..stored - 2).step_by(7) {
+                        for x in (2..stored - 2).step_by(7) {
+                            let i = y * stored + x;
+                            let biome =
+                                catinthegarden_coretypes::BiomeId::try_from(tile.biome_ids[i]);
+                            let Ok(biome) = biome else { continue };
+                            if !village_biome_is_habitable(biome) {
+                                continue;
+                            }
+                            let raw = f64::from(tile.heights_meters[i]);
+                            if raw * scale < village_min_macro_height_meters() * 1.25 {
+                                continue;
+                            }
+                            // Macro grade, the same quantity the slope limit tests.
+                            let spacing = (std::f64::consts::PI * 2.0 * planet_radius_meters()
+                                / 4.0)
+                                / f64::from(side * (logical as u32 - 1));
+                            let du =
+                                f64::from(tile.heights_meters[i + 1] - tile.heights_meters[i - 1])
+                                    * scale
+                                    / (2.0 * spacing);
+                            let dv = f64::from(
+                                tile.heights_meters[i + stored] - tile.heights_meters[i - stored],
+                            ) * scale
+                                / (2.0 * spacing);
+                            if du.hypot(dv).atan() > village_max_site_slope_radians() * 0.5 {
+                                continue;
+                            }
+                            let u = 2.0
+                                * ((f64::from(tx) + (x as f64 - 1.0) / (logical as f64 - 1.0))
+                                    / f64::from(side))
+                                - 1.0;
+                            let v = 2.0
+                                * ((f64::from(ty) + (y as f64 - 1.0) / (logical as f64 - 1.0))
+                                    / f64::from(side))
+                                - 1.0;
+                            let dir = cube_face_direction(face, u, v);
+                            println!(
+                                "site face {face} raw {raw:.0}m scaled {:.0}m grade {:.1}deg dir [{}, {}, {}]",
+                                raw * scale,
+                                du.hypot(dv).atan().to_degrees(),
+                                dir.x,
+                                dir.y,
+                                dir.z
+                            );
+                            found += 1;
+                            if found >= 12 {
+                                break 'outer;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(found > 0, "the bake has no ground a village could stand on");
+    }
+
+    #[test]
+    fn a_village_never_sites_where_the_shader_paints_sand() {
+        // The shader mixes sand below 220m of scaled macro height. Siting sees
+        // only the dense level's biome, which is still grassland there, so the
+        // height has to be what keeps houses off the beach.
+        let beach = ForestSurfaceSample {
+            macro_height_meters: village_min_macro_height_meters() - 1.0,
+            ..sample_on_slope(0.0)
+        };
+        let inland = ForestSurfaceSample {
+            macro_height_meters: village_min_macro_height_meters() + 1.0,
+            ..sample_on_slope(0.0)
+        };
+        assert!(!village_surface_is_eligible(beach));
+        assert!(village_surface_is_eligible(inland));
+        // The units are the trap: the shader reads raw baked metres and the
+        // sample is already exaggerated. Comparing them directly put a village
+        // on ground the shader paints half sand.
+        assert!(
+            village_min_macro_height_meters() > SHADER_BEACH_BLEND_TOP_RAW_METERS,
+            "the limit is being compared in the shader's raw units"
+        );
+    }
+
     #[test]
     fn the_slope_limit_is_the_footprint_budget_restated() {
         // The two have to agree, or the grade a village is allowed on depends
@@ -917,8 +1146,8 @@ mod tests {
 
     fn sample_on_slope(slope_radians: f64) -> ForestSurfaceSample {
         ForestSurfaceSample {
-            height_meters: 120.0,
-            macro_height_meters: 120.0,
+            height_meters: 4_000.0,
+            macro_height_meters: 4_000.0,
             biome: BiomeId::TemperateGrassland,
             moisture: 0.5,
             slope_radians,

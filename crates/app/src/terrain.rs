@@ -25,7 +25,8 @@ use crate::{
         PlanetLod, QuadtreeNode, TERRAIN_DETAIL_MIN_FILTER_METERS,
         TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS, TerrainHeightRange, build_chunk_mesh,
         build_chunk_mesh_with_quads, continuous_baked_sample_spacing_meters, cube_face_basis,
-        cube_face_direction, max_active_chunks_from_env, minimum_node_distance_with_height_range,
+        cube_face_direction, detailed_outmap_land_height_meters_with_filter,
+        max_active_chunks_from_env, minimum_node_distance_with_height_range,
         outmap_surface_height_meters, outmap_surface_height_meters_with_filter,
         placeholder_height_meters, planet_radius_meters, scaled_outmap_macro_height_meters,
     },
@@ -493,6 +494,13 @@ pub fn terrain_climate_samples(
 ) -> Result<Option<Vec<TerrainClimateSample>>, TerrainError> {
     Ok(terrain_startup_samples(source)?.map(|samples| samples.climate))
 }
+
+/// The detail-ladder filter village siting is judged at.
+///
+/// Fixed rather than distance-derived so that the same ground gives the same
+/// answer from any camera. Chosen at house scale: a settlement cares whether
+/// its own footprint is level, not whether the hillside a kilometre away is.
+const VILLAGE_SITING_DETAIL_FILTER_METERS: f64 = 8.0;
 
 /// Loads the climate field in one bounded outmap pass at startup.
 pub fn terrain_startup_samples(
@@ -1520,14 +1528,24 @@ impl TerrainRenderer {
         } else {
             scaled_outmap_macro_height_meters(baked_meters, siting_altitude_meters)
         };
-        // Baked macro geography only, with no runtime detail ladder. The
-        // ladder's amplitude scales with the sample spacing it is filtered
-        // against, and the dense level's spacing is about three kilometres:
-        // asking it for a height here returned 2,213m for ground that renders
-        // at 174m, and a house placed on that answer floated two kilometres up.
-        // The ladder belongs to the surface being drawn, not to the question
-        // of whether a settlement belongs here.
-        let height_meters = macro_height_meters;
+        // Macro geography plus the runtime detail ladder at a fixed scale.
+        //
+        // The ladder cannot be left out: it is the only thing that varies at
+        // village scale, and without it the footprint flatness test compares
+        // five samples inside one 3km bilinear cell and rejects 0.07% of
+        // habitable land. It cannot be taken at its default filter either --
+        // at the dense level's spacing that returned 2,213m for ground that
+        // renders at 174m. Fixing the filter makes it deterministic and
+        // camera-independent, which is the whole point, and an offset common
+        // to the whole footprint cancels out of a spread test. Nothing may
+        // stand on this height; placement uses the drawn surface.
+        let height_meters = detailed_outmap_land_height_meters_with_filter(
+            baked_meters,
+            direction,
+            siting_altitude_meters,
+            continuous_baked_sample_spacing_meters(face_uv, dense_level, dense_level),
+            VILLAGE_SITING_DETAIL_FILTER_METERS,
+        );
         let biome = BiomeId::try_from(sample_biome_cpu(&tile.biome_ids, source_uv)).ok()?;
         let moisture = f32::from(sample_moisture_cpu(&tile.moisture, source_uv)) / 255.0;
         let (tangent_u, tangent_v) = forest_tangent_basis(direction)?;
@@ -1567,6 +1585,9 @@ impl TerrainRenderer {
         let source_uv = source_tile_uv(source_key, face, face_uv)?;
         let tile = self.village_siting_tiles.get(&source_key)?;
         let baked_meters = f64::from(sample_height_cpu(&tile.heights_meters, source_uv));
+        // Macro only: this is the slope stencil, and it is meant to answer the
+        // 3km-scale grade of the ground. Folding metre-scale relief into it
+        // would make every site read as a cliff.
         Some(if baked_meters <= 0.0 {
             0.0
         } else {

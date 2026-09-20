@@ -4229,6 +4229,9 @@ impl State {
             tracing::info!(
                 village_houses = self.villages.instance_count(),
                 village_sited_houses = self.villages.sited_houses(),
+                nearest_site_macro_height_meters = self.villages.nearest_site_ground().0,
+                nearest_site_biome = ?self.villages.nearest_site_ground().1,
+                nearest_site_moisture = self.villages.nearest_site_ground().2,
                 village_max_ground_disagreement_meters =
                     self.villages.max_ground_disagreement_meters(),
                 // Where the nearest house stands. A count says villages exist;
