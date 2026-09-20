@@ -51,6 +51,11 @@ about 23ms is still unattributed. Cloud shadow (4.08ms, and zero pixels changed 
 **temporarily switched off** at Ian's request, and interactive startup no longer turns blur on. See
 the newest sections; the cloud-shadow saving is not yet measured.
 
+**Current peak judging (21 September, round 16):** crevasses at icefall scale now read on the steep
+ice, and cost 3.89ms after dropping a second noise lookup for the ladder relief already at the
+fragment (was 6.15ms). Still off by default -- 5% of the frame for a partial-frame feature. See
+`test-runs/peak_judging_2026-09-15/round16/RESULTS.md`.
+
 **Current peak judging (20 September, round 15):** the smeared, waxy ground is fixed and the fix is
 promoted. The detail ladder was exactly self-similar, so its 4m octave carried 23cm and its 1m
 octave 6cm -- relief that rolls rather than relief that is rough. A short-wavelength lift in the

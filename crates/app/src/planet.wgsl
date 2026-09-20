@@ -2471,6 +2471,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             terrain_normal,
             direction,
             scaled_terrain_macro_height(macro_height_meters),
+            input.terrain_detail_meters_and_fog_amount.x,
             input.detail_anchor_direction,
             input.detail_local_meters,
             length(input.camera_relative_view_position),

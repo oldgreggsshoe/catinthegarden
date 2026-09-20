@@ -219,19 +219,32 @@ const TERRAIN_MATERIAL_RELIEF_VEGETATION: f32 = 0.34;
 // is below a pixel and mips to its own average, so blending it out costs
 // nothing visually and saves the second set of triplanar fetches.
 /// Elevation between one crevasse and the next. Metres of height, not of
-/// ground: on a 20-degree slope that is a 76m spacing, on a 40-degree one 40m,
-/// so they crowd together as the ice steepens without needing a flow model.
-const CREVASSE_VERTICAL_SPACING_METERS: f32 = 72.0;
+/// ground, so they crowd together as the ice steepens without needing a flow
+/// model: on a 19-degree slope this is a 507m spacing, on a 41-degree one 252m.
+///
+/// It is this wide because of what the camera can resolve. At 1.5km one pixel
+/// is 2.2m of ground, so a metre-scale crack is sub-pixel and renders as a
+/// hairline; what reads at this range is icefall structure, tens of metres
+/// across and hundreds apart.
+const CREVASSE_VERTICAL_SPACING_METERS: f32 = 165.0;
 /// Share of each cycle that is open slot rather than intact ice.
-const CREVASSE_WIDTH_SHARE: f32 = 0.30;
+const CREVASSE_WIDTH_SHARE: f32 = 0.42;
 /// Tangent of the wall tilt at the slot edge. This is the whole contrast
 /// control: at zero the field is invisible whatever else is set.
 const CREVASSE_WALL_TILT: f32 = 0.85;
 /// Scale the bands are broken into separate segments over.
-const CREVASSE_SEGMENT_WAVELENGTH_METERS: f32 = 480.0;
+const CREVASSE_SEGMENT_WAVELENGTH_METERS: f32 = 1100.0;
 /// How far a segment may slide along the contour, in whole cycles, so
 /// neighbouring segments step rather than line up.
 const CREVASSE_SEGMENT_OFFSET_CYCLES: f32 = 1.7;
+/// Share of the ladder's full reach that counts as one block of relief. Small,
+/// because the relief that breaks a crack is the metre-scale surface, not the
+/// hundreds of metres the whole ladder can reach.
+const CREVASSE_BLOCK_RELIEF_SHARE: f32 = 0.06;
+/// How far the block field may slide a crack, in whole cycles.
+const CREVASSE_BLOCK_OFFSET_CYCLES: f32 = 0.22;
+/// Narrowest a crack is pinched by the block field, as a share of its width.
+const CREVASSE_BLOCK_WIDTH_FLOOR: f32 = 0.12;
 /// Share of the direct beam a slot floor loses to its own walls.
 const CREVASSE_SUN_OCCLUSION: f32 = 0.92;
 /// Ambient the slot interior loses to its own walls.
@@ -240,8 +253,8 @@ const CREVASSE_AMBIENT_OCCLUSION: f32 = 0.55;
 /// a crevasse reads blue rather than black, and it is the one place on this
 /// planet where a shadow has a colour of its own.
 const CREVASSE_INTERIOR_GLOW: f32 = 0.16;
-const CREVASSE_FADE_NEAR_METERS: f32 = 3500.0;
-const CREVASSE_FADE_FAR_METERS: f32 = 12000.0;
+const CREVASSE_FADE_NEAR_METERS: f32 = 6000.0;
+const CREVASSE_FADE_FAR_METERS: f32 = 13000.0;
 const TERRAIN_MATERIAL_DETAIL_NEAR_METERS: f32 = 150.0;
 const TERRAIN_MATERIAL_DETAIL_FAR_METERS: f32 = 900.0;
 // The probe spacing normals are central-differenced over. This is the sharpest
@@ -2581,6 +2594,7 @@ fn glacier_crevasses(
     surface_normal: vec3<f32>,
     surface_direction: vec3<f32>,
     macro_height_meters: f32,
+    terrain_detail_meters: f32,
     anchor_direction: vec3<f32>,
     local_meters: vec3<f32>,
     camera_distance_meters: f32,
@@ -2590,14 +2604,14 @@ fn glacier_crevasses(
         return quiet;
     }
     // Where on a glacier the ice is actually broken, which is a slope band.
-    // Flat firn is intact, mid slopes crack as the ice is pulled over them, and
-    // by the time a face is steep enough to be bare it is already shedding its
-    // snow to `snow_slope_hold` and is rock, not a crevasse field. The three
-    // bands are deliberately continuous with that rule rather than independent
-    // of it. `1 - cos`: 0.022 is 12 degrees, 0.06 is 20, 0.09 is 24.5, 0.22 is 38.
+    // Flat firn is intact, the ice cracks where it is pulled over a steepening,
+    // and by the time a face is steep enough to be bare it is already shedding
+    // its snow to `snow_slope_hold` and is rock, not a crevasse field. The band
+    // is deliberately continuous with that rule rather than independent of it.
+    // `1 - cos`: 0.018 is 10.9 degrees, 0.055 is 19, 0.120 is 28.4, 0.260 is 41.
     let slope = 1.0 - clamp(dot(normalize(surface_normal), surface_direction), 0.0, 1.0);
-    let slope_gate = smoothstep(0.004, 0.020, slope)
-        * (1.0 - smoothstep(0.090, 0.220, slope));
+    let slope_gate = smoothstep(0.018, 0.055, slope)
+        * (1.0 - smoothstep(0.120, 0.260, slope));
     // Below the spacing a band is thinner than a pixel and would only shimmer,
     // so it is faded out well before that rather than aliased.
     let range = 1.0 - smoothstep(
@@ -2631,12 +2645,29 @@ fn glacier_crevasses(
     if present <= 0.0 {
         return quiet;
     }
-    let phase = fract(cycle + segment.value * CREVASSE_SEGMENT_OFFSET_CYCLES);
+    // A second, finer field breaks each crack along its own length, or the
+    // result is evenly spaced curved dashes -- brush strokes rather than broken
+    // ice. A second noise lookup did that and cost half of this function's
+    // 6.15ms, so instead it reuses the ladder's own relief, which is already
+    // interpolated to this fragment and free. It is also the better field: the
+    // ice surface's own bumps are what decide where it opens.
+    let block_value = clamp(
+        terrain_detail_meters / (TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS * CREVASSE_BLOCK_RELIEF_SHARE),
+        -1.0,
+        1.0,
+    );
+    let phase = fract(
+        cycle
+            + segment.value * CREVASSE_SEGMENT_OFFSET_CYCLES
+            + block_value * CREVASSE_BLOCK_OFFSET_CYCLES,
+    );
     // One slot per cycle: a signed ramp across its width, zero on intact ice.
     // `across` is +1 on the uphill wall and -1 on the downhill one.
     let centred = (phase - 0.5) * 2.0;
-    let open = 1.0 - smoothstep(0.0, CREVASSE_WIDTH_SHARE, abs(centred));
-    let across = clamp(centred / max(CREVASSE_WIDTH_SHARE, 1.0e-4), -1.0, 1.0);
+    let width = CREVASSE_WIDTH_SHARE
+        * mix(CREVASSE_BLOCK_WIDTH_FLOOR, 1.0, clamp(block_value * 0.5 + 0.5, 0.0, 1.0));
+    let open = 1.0 - smoothstep(0.0, width, abs(centred));
+    let across = clamp(centred / max(width, 1.0e-4), -1.0, 1.0);
     // Down the fall line: the tangential part of the normal points downhill, so
     // this is the axis a contour-parallel slot is cut across.
     let tangential = surface_normal - surface_direction * dot(surface_normal, surface_direction);
