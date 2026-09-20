@@ -10828,3 +10828,21 @@ against the performance rule, so it is Ian's:
    currently buys the smear and the dapple.
 
 535 app and 608 workspace tests pass, clippy and fmt clean.
+
+## 21 September — ocean wind-sea tail axes spread
+
+Picked the ocean thread back up on `experiment/ocean-wind-sea-spectrum` with a no-new-work shader
+change: the 200m-to-7m wind-sea tail no longer repeats near-parallel axes across several octaves.
+The long 1,400m swell group and 430/350/280m storm group are unchanged; only the short chop axes
+are redistributed around the storm-ocean view direction, with the Rust CPU table and WGSL table kept
+byte-mirrored. This is intended to reduce the corduroy/repeated-line character without adding waves,
+samples, bind groups, branches, or texture work. It is not yet a scored visual win.
+
+Validation: `CARGO_TARGET_DIR=/home/dad/catingard/target-ocean-spectrum cargo test -p
+catinthegarden-app ocean --release` passes, 62 passed and 12 ignored; the actual-WGSL ocean normal
+parity test `ocean::gpu_tests::gpu_ocean_normals_match_cpu_buoyancy_in_deep_and_breaking_water`
+passes under the same target; release build passes; `ocean_wind_trial` release replay passes at
+`test-runs/ocean_wind_trial/1789946830-288902` with two expected captures. Against an older
+`ocean_wind_trial` capture, both frames change about 581k of 921.6k pixels with max channel delta
+201-202, so the table change is visible. No matched FPS claim was made because the instruction count
+is unchanged rather than timed.

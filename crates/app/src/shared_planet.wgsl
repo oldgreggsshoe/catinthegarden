@@ -427,18 +427,18 @@ var<private> OCEAN_WAVE_TABLE: array<OceanWaveSpec, 18> = array<OceanWaveSpec, 1
     OceanWaveSpec(vec3<f32>(0.1596, -0.599, 0.7847), 430.0, 0.1, 0.37, 25.9063, 1.5),
     OceanWaveSpec(vec3<f32>(0.297, -0.7478, 0.5938), 350.0, 0.11, 0.41, 23.3725, 1.5),
     OceanWaveSpec(vec3<f32>(0.3987, -0.8308, 0.3884), 280.0, 0.095, 0.36, 20.905, 1.5),
-    OceanWaveSpec(vec3<f32>(0.576, -0.8032, 0.1519), 200.0, 0.0495, 0.0495, 17.6679, 0.34),
-    OceanWaveSpec(vec3<f32>(0.4646, -0.1875, 0.8654), 147.5, 0.0383, 0.0383, 15.1728, 0.32),
-    OceanWaveSpec(vec3<f32>(0.5761, -0.8032, 0.1515), 108.7, 0.0295, 0.0295, 13.0252, 0.3),
-    OceanWaveSpec(vec3<f32>(0.2007, 0.0492, 0.9784), 80.2, 0.0228, 0.0228, 11.1881, 0.28),
-    OceanWaveSpec(vec3<f32>(0.49, -0.8612, -0.1353), 59.1, 0.0176, 0.0176, 9.6043, 0.26),
-    OceanWaveSpec(vec3<f32>(0.1087, 0.131, 0.9854), 43.6, 0.0136, 0.0136, 8.2492, 0.24),
-    OceanWaveSpec(vec3<f32>(0.5241, -0.8493, -0.063), 32.1, 0.0105, 0.0105, 7.0782, 0.22),
-    OceanWaveSpec(vec3<f32>(-0.0574, 0.252, 0.966), 23.7, 0.0081, 0.0081, 6.082, 0.2),
-    OceanWaveSpec(vec3<f32>(0.3157, -0.8148, -0.4862), 17.5, 0.0062, 0.0062, 5.2262, 0.18),
-    OceanWaveSpec(vec3<f32>(0.1407, 0.1008, 0.9849), 12.9, 0.0048, 0.0048, 4.4871, 0.16),
-    OceanWaveSpec(vec3<f32>(0.3542, -0.8289, -0.4329), 9.5, 0.0037, 0.0037, 3.8506, 0.14),
-    OceanWaveSpec(vec3<f32>(-0.2008, 0.3721, 0.9062), 7.0, 0.0029, 0.0029, 3.3054, 0.12),
+    OceanWaveSpec(vec3<f32>(-0.1455, 0.9255, 0.3498), 200.0, 0.0495, 0.0495, 17.6679, 0.34),
+    OceanWaveSpec(vec3<f32>(0.7017, -0.5337, 0.4721), 147.5, 0.0383, 0.0383, 15.1728, 0.32),
+    OceanWaveSpec(vec3<f32>(0.3314, 0.5967, -0.7308), 108.7, 0.0295, 0.0295, 13.0252, 0.3),
+    OceanWaveSpec(vec3<f32>(0.0303, 0.3888, 0.9208), 80.2, 0.0228, 0.0228, 11.1881, 0.28),
+    OceanWaveSpec(vec3<f32>(0.8446, -0.435, -0.312), 59.1, 0.0176, 0.0176, 9.6043, 0.26),
+    OceanWaveSpec(vec3<f32>(-0.0552, 0.9878, -0.1455), 43.6, 0.0136, 0.0136, 8.2492, 0.24),
+    OceanWaveSpec(vec3<f32>(0.4574, -0.2866, 0.8418), 32.1, 0.0105, 0.0105, 7.0782, 0.22),
+    OceanWaveSpec(vec3<f32>(0.6013, 0.17, -0.7807), 23.7, 0.0081, 0.0081, 6.082, 0.2),
+    OceanWaveSpec(vec3<f32>(-0.1235, 0.771, 0.6247), 17.5, 0.0062, 0.0062, 5.2262, 0.18),
+    OceanWaveSpec(vec3<f32>(0.8015, -0.5719, 0.1745), 12.9, 0.0048, 0.0048, 4.4871, 0.16),
+    OceanWaveSpec(vec3<f32>(0.1622, 0.8076, -0.567), 9.5, 0.0037, 0.0037, 3.8506, 0.14),
+    OceanWaveSpec(vec3<f32>(0.1801, 0.1161, 0.9768), 7.0, 0.0029, 0.0029, 3.3054, 0.12),
 );
 const OCEAN_GEOMETRY_FULL_DISTANCE_METERS: f32 = 4000.0;
 const OCEAN_GEOMETRY_FADE_DISTANCE_METERS: f32 = 10000.0;
@@ -1360,15 +1360,10 @@ fn ocean_surface(
     // Their slightly different phase speeds make the broad constructive and
     // destructive interference pattern evolve rather than lock in place.
     //
-    // Crests here are small circles about each axis, not straight lines, so an
-    // axis near its own pole gives curved long-period rollers while one on its
-    // great circle gives dead-straight parallel bands. The swell pair is aimed
-    // deliberately close to its poles at the ocean scenarios; re-aiming it onto
-    // the great circles renders the sea as corduroy. The three shortest octaves
-    // instead spread widely in azimuth, which is what breaks the crests up, and
-    // are held at least 35 degrees off their poles at every ocean scenario so a
-    // 24 m wave still renders near 24 m instead of collapsing into the 65 m
-    // band.
+    // Crests here are small circles about each axis, not straight lines. The
+    // dominant swell stays coherent; the shorter wind-sea tail is deliberately
+    // spread around the storm-ocean view direction so it breaks the surface into
+    // crossing chop instead of repeating one corduroy axis across many octaves.
     let storm_intensity = clamp(camera.flat_triangle_options.y, 0.0, 1.0);
     let storm_blend = smoothstep(0.15, 0.85, storm_intensity);
     var horizontal = vec3<f32>(0.0);

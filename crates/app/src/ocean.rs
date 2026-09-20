@@ -873,7 +873,7 @@ const WAVES: [GerstnerWave; 18] = [
         steepness: 1.5,
     },
     GerstnerWave {
-        direction: DVec3::new(0.576, -0.8032, 0.1519),
+        direction: DVec3::new(-0.1455, 0.9255, 0.3498),
         wavelength_meters: 200.0,
         amplitude_meters: 0.0495,
         storm_amplitude_meters: 0.0495,
@@ -881,7 +881,7 @@ const WAVES: [GerstnerWave; 18] = [
         steepness: 0.34,
     },
     GerstnerWave {
-        direction: DVec3::new(0.4646, -0.1875, 0.8654),
+        direction: DVec3::new(0.7017, -0.5337, 0.4721),
         wavelength_meters: 147.5,
         amplitude_meters: 0.0383,
         storm_amplitude_meters: 0.0383,
@@ -889,7 +889,7 @@ const WAVES: [GerstnerWave; 18] = [
         steepness: 0.32,
     },
     GerstnerWave {
-        direction: DVec3::new(0.5761, -0.8032, 0.1515),
+        direction: DVec3::new(0.3314, 0.5967, -0.7308),
         wavelength_meters: 108.7,
         amplitude_meters: 0.0295,
         storm_amplitude_meters: 0.0295,
@@ -897,7 +897,7 @@ const WAVES: [GerstnerWave; 18] = [
         steepness: 0.3,
     },
     GerstnerWave {
-        direction: DVec3::new(0.2007, 0.0492, 0.9784),
+        direction: DVec3::new(0.0303, 0.3888, 0.9208),
         wavelength_meters: 80.2,
         amplitude_meters: 0.0228,
         storm_amplitude_meters: 0.0228,
@@ -905,7 +905,7 @@ const WAVES: [GerstnerWave; 18] = [
         steepness: 0.28,
     },
     GerstnerWave {
-        direction: DVec3::new(0.49, -0.8612, -0.1353),
+        direction: DVec3::new(0.8446, -0.435, -0.312),
         wavelength_meters: 59.1,
         amplitude_meters: 0.0176,
         storm_amplitude_meters: 0.0176,
@@ -913,7 +913,7 @@ const WAVES: [GerstnerWave; 18] = [
         steepness: 0.26,
     },
     GerstnerWave {
-        direction: DVec3::new(0.1087, 0.131, 0.9854),
+        direction: DVec3::new(-0.0552, 0.9878, -0.1455),
         wavelength_meters: 43.6,
         amplitude_meters: 0.0136,
         storm_amplitude_meters: 0.0136,
@@ -921,7 +921,7 @@ const WAVES: [GerstnerWave; 18] = [
         steepness: 0.24,
     },
     GerstnerWave {
-        direction: DVec3::new(0.5241, -0.8493, -0.063),
+        direction: DVec3::new(0.4574, -0.2866, 0.8418),
         wavelength_meters: 32.1,
         amplitude_meters: 0.0105,
         storm_amplitude_meters: 0.0105,
@@ -929,7 +929,7 @@ const WAVES: [GerstnerWave; 18] = [
         steepness: 0.22,
     },
     GerstnerWave {
-        direction: DVec3::new(-0.0574, 0.252, 0.966),
+        direction: DVec3::new(0.6013, 0.17, -0.7807),
         wavelength_meters: 23.7,
         amplitude_meters: 0.0081,
         storm_amplitude_meters: 0.0081,
@@ -937,7 +937,7 @@ const WAVES: [GerstnerWave; 18] = [
         steepness: 0.2,
     },
     GerstnerWave {
-        direction: DVec3::new(0.3157, -0.8148, -0.4862),
+        direction: DVec3::new(-0.1235, 0.771, 0.6247),
         wavelength_meters: 17.5,
         amplitude_meters: 0.0062,
         storm_amplitude_meters: 0.0062,
@@ -945,7 +945,7 @@ const WAVES: [GerstnerWave; 18] = [
         steepness: 0.18,
     },
     GerstnerWave {
-        direction: DVec3::new(0.1407, 0.1008, 0.9849),
+        direction: DVec3::new(0.8015, -0.5719, 0.1745),
         wavelength_meters: 12.9,
         amplitude_meters: 0.0048,
         storm_amplitude_meters: 0.0048,
@@ -953,7 +953,7 @@ const WAVES: [GerstnerWave; 18] = [
         steepness: 0.16,
     },
     GerstnerWave {
-        direction: DVec3::new(0.3542, -0.8289, -0.4329),
+        direction: DVec3::new(0.1622, 0.8076, -0.567),
         wavelength_meters: 9.5,
         amplitude_meters: 0.0037,
         storm_amplitude_meters: 0.0037,
@@ -961,7 +961,7 @@ const WAVES: [GerstnerWave; 18] = [
         steepness: 0.14,
     },
     GerstnerWave {
-        direction: DVec3::new(-0.2008, 0.3721, 0.9062),
+        direction: DVec3::new(0.1801, 0.1161, 0.9768),
         wavelength_meters: 7.0,
         amplitude_meters: 0.0029,
         storm_amplitude_meters: 0.0029,
@@ -1636,7 +1636,9 @@ mod tests {
                     let raw = height(time);
                     raw * breaking_weight(raw, depth)
                 };
-                let difference = (limited(time + 0.01) - limited(time - 0.01)) / 0.02;
+                let epsilon = 0.0025;
+                let difference =
+                    (limited(time + epsilon) - limited(time - epsilon)) / (2.0 * epsilon);
                 let analytic =
                     super::wave_vertical_velocity_in_state(direction, time, depth, state);
                 assert!(
