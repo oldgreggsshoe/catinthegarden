@@ -10441,3 +10441,47 @@ gentle at that scale can still be locally rough at the metre scale the camera
 sees -- the worst drawn-versus-sited ground gap remains 513.5m of detail-ladder
 displacement. Villages also site on coarse L4 biome, so a cell the fine shader
 paints as beach can hold one; the `village_pov` capture is a village on sand.
+
+## 20 September — contact shadows, locator beams, and a village glued to the camera
+
+Three changes, one of them a bug the other two exposed.
+
+**Villages drifted with the camera.** The instance buffer holds offsets *from
+the camera*, and it was only rewritten when the camera had moved past the 400m
+resiting threshold. Between rebuilds the whole village translated with the eye:
+a capture 24m from a house was indistinguishable from one 150m away, both
+showing the village the same size in the middle distance, and then it snapped
+back at 400m. `rewrite_camera_relative_positions` now re-differences the built
+houses every frame against the camera's current position, from a kept list of
+world positions. Which houses exist is still recomputed only on a real rebuild.
+This was pre-existing and it made everything else unjudgeable.
+
+**Ground contact shadows.** One alpha-blended fan per house, lying in the
+house's own tangent plane, no depth write, nothing sampled and nothing traced.
+It is an ellipse matched to the footprint rather than a disc, because a
+circular blot under a rectangular building is what makes cheap contact shadows
+look like stickers. The fade start is derived from the fan's spread so that
+full strength lands exactly at the eave line: choosing it by hand put the whole
+falloff under the house where nothing can see it, and the visible strip reached
+only 30 levels instead of 56. Matched captures with the strength set to zero
+measure **2,510 pixels darkened, 56 levels at most, 19.9 on average**.
+
+**Locator beams on `V`.** The forest beams were removed in `9954f9c` when the
+bird camera took `B`; this is the same idea for villages, rebuilt on the
+village pass rather than restored. One shaft per village, not per house, and
+emitted from the *sited* set rather than the drawn one, so settlements too far
+away to draw still show. Width is applied in NDC, so a beam stays the same
+thickness whether its village is 200m or 2,000km away. Off by default, with
+`CATINGARDEN_VILLAGE_BEAMS=1` for captures.
+
+**Verification.** 533 app tests, 606 workspace, fmt and clippy pass; the one
+clippy warning is the pre-existing constant assertion at `village.rs:890`.
+Beams: `village_altitude_stability` and `village_pov` captured with the
+override on show shafts standing on every village in view.
+
+**Not measured.** The village pass's frame cost is *not* resolved here. Four
+interleaved on/off pairs on `village_pov` gave +4.14, +11.34, +2.41 and
+-3.13ms while the baseline itself drifted from 119ms to 76ms across the run,
+so the sign is not even consistent. An earlier paired run on
+`village_altitude_stability` put it at about 0.5ms with overlapping ranges.
+Neither is a number to quote; a clean measurement needs an idle machine.

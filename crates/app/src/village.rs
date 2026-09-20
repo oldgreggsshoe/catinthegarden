@@ -127,6 +127,33 @@ const HOUSE_COLOURS: [[f32; 3]; 4] = [
     [0.600, 0.278, 0.075], // ochre orange
 ];
 
+/// One locator beam: a shaft standing on a village, drawn at constant screen
+/// width so it stays findable from any distance.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct BeamInstance {
+    /// The foot of the beam, relative to the camera, in the planet frame.
+    pub camera_relative_base: [f32; 3],
+    pub _pad0: f32,
+    /// Radial direction at the village, which is the way the beam points.
+    pub up: [f32; 3],
+    pub _pad1: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GroundShadowVertex {
+    /// Across-gable and along-ridge offset from the house's ground point, in
+    /// metres. The fan is flat: it has no height of its own.
+    pub offset: [f32; 2],
+    /// 0 at the house's centre, 1 at the fan's rim. The shader shapes the
+    /// falloff from this rather than from an interpolated strength, so the
+    /// darkening can stay at full depth right against the walls instead of
+    /// peaking under the middle of the house where nothing can see it.
+    pub rim_share: f32,
+    pub _padding: f32,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct HouseVertex {
@@ -294,6 +321,36 @@ fn house_plan_radius_meters() -> f64 {
     let eave_half_depth = HOUSE_DEPTH_METERS * 0.5 + HOUSE_ROOF_OVERHANG_METERS;
     (eave_half_width * eave_half_width + eave_half_depth * eave_half_depth).sqrt()
 }
+
+/// How far past the eaves the ground darkening reaches, as a share of the
+/// footprint. Contact shadow, not a pool: a house this size casts about a
+/// metre of visible darkening at its base.
+const HOUSE_GROUND_SHADOW_SPREAD: f64 = 1.28;
+/// How dark the ground goes directly against the walls. The ground is only
+/// multiplied down, never tinted, so this cannot push a material off its hue.
+const HOUSE_GROUND_SHADOW_STRENGTH: f32 = 0.55;
+/// Where the darkening starts fading, as a share of the fan's radius.
+///
+/// Derived rather than chosen: the eaves sit at exactly this share of the fan,
+/// so the darkening is at full strength right where the wall meets the ground
+/// and fades out from there. Picking a smaller number put the whole falloff
+/// under the house, where nothing can see it, and left the visible strip at
+/// most 30 levels darker instead of 57.
+fn house_ground_shadow_fade_start_share() -> f32 {
+    (1.0 / HOUSE_GROUND_SHADOW_SPREAD) as f32
+}
+/// Lift above the ground, to clear the depth test against the very surface the
+/// shadow is lying on. Small enough not to read as a floating sheet on the
+/// slopes a village is allowed to sit on.
+const HOUSE_GROUND_SHADOW_LIFT_METERS: f64 = 0.10;
+/// How far a locator beam reaches above the ground it stands on. Well past
+/// the atmosphere, so a village is findable from orbit rather than only from
+/// the altitude its houses draw at.
+const VILLAGE_BEAM_LENGTH_METERS: f64 = 2_880_000.0;
+/// Segments around the footprint. The shape is an ellipse the size of the
+/// house, not a disc: a circular blot under a rectangular building is the
+/// thing that makes cheap contact shadows look like stickers.
+const HOUSE_GROUND_SHADOW_SEGMENTS: u32 = 18;
 
 /// Houses must never overlap, whatever way round they are turned. Each one owns
 /// a circle of `house_plan_radius_meters()`, and a full radius of clear ground
@@ -517,6 +574,80 @@ pub fn build_house_mesh() -> Vec<HouseVertex> {
     vertices
 }
 
+/// A flat fan in the house's tangent plane that darkens the ground at its
+/// base.
+///
+/// Cheap contact shadow rather than real occlusion: one blended fan per house,
+/// no depth write, no second sample of anything. It is an ellipse matched to
+/// the house footprint and it fades out past the eaves, so what shows is a
+/// strip of darker ground hugging the walls.
+pub fn build_house_ground_shadow_mesh() -> Vec<GroundShadowVertex> {
+    let half_across =
+        (HOUSE_WIDTH_METERS * 0.5 + HOUSE_ROOF_OVERHANG_METERS) * HOUSE_GROUND_SHADOW_SPREAD;
+    let half_forward =
+        (HOUSE_DEPTH_METERS * 0.5 + HOUSE_ROOF_OVERHANG_METERS) * HOUSE_GROUND_SHADOW_SPREAD;
+    let centre = GroundShadowVertex {
+        offset: [0.0, 0.0],
+        rim_share: 0.0,
+        _padding: 0.0,
+    };
+    let rim = |segment: u32| {
+        let angle = f64::from(segment % HOUSE_GROUND_SHADOW_SEGMENTS)
+            / f64::from(HOUSE_GROUND_SHADOW_SEGMENTS)
+            * std::f64::consts::TAU;
+        GroundShadowVertex {
+            offset: [
+                (angle.cos() * half_across) as f32,
+                (angle.sin() * half_forward) as f32,
+            ],
+            rim_share: 1.0,
+            _padding: 0.0,
+        }
+    };
+    let mut vertices = Vec::with_capacity((HOUSE_GROUND_SHADOW_SEGMENTS * 3) as usize);
+    for segment in 0..HOUSE_GROUND_SHADOW_SEGMENTS {
+        vertices.push(centre);
+        vertices.push(rim(segment));
+        vertices.push(rim(segment + 1));
+    }
+    vertices
+}
+
+/// Where the ground darkening stops being solid, for the shader's falloff.
+pub fn house_ground_shadow_fade_start() -> f32 {
+    house_ground_shadow_fade_start_share()
+}
+
+/// How dark the ground goes against the walls.
+pub const fn house_ground_shadow_strength() -> f32 {
+    HOUSE_GROUND_SHADOW_STRENGTH
+}
+
+/// Half the beam's width on screen, in NDC. Constant with distance.
+const VILLAGE_BEAM_SCREEN_HALF_WIDTH: f32 = 0.0075;
+/// How strongly a beam tints what is behind it.
+const VILLAGE_BEAM_ALPHA: f32 = 0.18;
+
+/// Half the beam's on-screen width, in NDC.
+pub const fn village_beam_screen_half_width() -> f32 {
+    VILLAGE_BEAM_SCREEN_HALF_WIDTH
+}
+
+/// How strongly a beam tints what is behind it.
+pub const fn village_beam_alpha() -> f32 {
+    VILLAGE_BEAM_ALPHA
+}
+
+/// How far a locator beam reaches above its village.
+pub const fn village_beam_length_meters() -> f32 {
+    VILLAGE_BEAM_LENGTH_METERS as f32
+}
+
+/// How far the shadow fan is lifted off the ground it darkens.
+pub const fn house_ground_shadow_lift_meters() -> f32 {
+    HOUSE_GROUND_SHADOW_LIFT_METERS as f32
+}
+
 /// Builds the visible houses around the camera. Pure: it reads terrain and
 /// returns instances, so the placement rules are testable without a device.
 pub fn collect_house_instances(
@@ -574,6 +705,7 @@ pub fn collect_house_instances(
                 };
 
                 let layout = village_house_layout(site_seed);
+                let mut site_beam_base: Option<DVec3> = None;
                 for (index, &(offset_east, offset_north, facing)) in layout.iter().enumerate() {
                     if instances.len() >= VILLAGE_MAX_DRAW_INSTANCES {
                         return build;
@@ -638,6 +770,13 @@ pub fn collect_house_instances(
                     // the camera, and separating the two is what makes the
                     // stability claim measurable.
                     build.sited_houses += 1;
+                    // The first house to survive every test fixes where this
+                    // village's beam stands, so the beam cannot end up on
+                    // ground no house was allowed on.
+                    if site_beam_base.is_none() {
+                        site_beam_base =
+                            Some(house_direction * (planet_radius_meters() + drawn_height_meters));
+                    }
                     let site_distance_squared = (house_direction * planet_radius_meters()
                         - camera_world_position)
                         .length_squared();
@@ -680,6 +819,12 @@ pub fn collect_house_instances(
                         _pad3: 0.0,
                     });
                 }
+                // One beam per village, not per house, and emitted from the
+                // sited set rather than the drawn one: the point of a locator
+                // is to show settlements that are too far away to draw.
+                if let Some(base) = site_beam_base {
+                    build.beam_sites.push(base);
+                }
             }
         }
     }
@@ -693,6 +838,9 @@ pub struct VillageBuild {
     /// Every house the search region sites, whether or not it is near enough
     /// to draw. This is the camera-independent number.
     pub sited_houses: u32,
+    /// Where each sited village stands, in the planet frame. One entry per
+    /// village, for the locator beams.
+    pub beam_sites: Vec<DVec3>,
     /// The worst gap between a house's drawn ground and its sited ground.
     /// Legitimately non-zero: the detail ladder displaces the drawn surface.
     pub max_ground_disagreement_meters: f64,
@@ -709,6 +857,7 @@ impl Default for VillageBuild {
         Self {
             instances: Vec::new(),
             sited_houses: 0,
+            beam_sites: Vec::new(),
             max_ground_disagreement_meters: 0.0,
             nearest_site_macro_height_meters: f64::NAN,
             nearest_site_biome: None,

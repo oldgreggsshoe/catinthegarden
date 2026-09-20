@@ -1081,6 +1081,7 @@ struct State {
     bird_camera_riding: bool,
     /// What N last did, for the overlay: where it went, or why it could not.
     bird_watch_note: String,
+    village_beam_note: String,
     flock_marker: flock_marker::FlockMarkerRenderer,
     ship_sim_time_seconds: f64,
     sun: sun::SunRenderer,
@@ -1528,6 +1529,7 @@ impl State {
             bird_camera_target: None,
             bird_camera_riding: false,
             bird_watch_note: "N goes to the nearest birds down on the ground or water".to_string(),
+            village_beam_note: "V marks every village with a beam".to_string(),
             flock_marker,
             ship_sim_time_seconds: 0.0,
             sun,
@@ -2679,6 +2681,18 @@ impl State {
         self.flight_look_pitch_radians = pitch.clamp(-1.5, 1.5);
     }
 
+    /// Locator beams over every village the siting search found, so a whole
+    /// region's settlements can be seen at once from any altitude.
+    fn toggle_village_beams(&mut self) {
+        let enabled = self.villages.toggle_beams();
+        self.village_beam_note = if enabled {
+            "village beams on".to_string()
+        } else {
+            "village beams off".to_string()
+        };
+        tracing::info!(village_beams_enabled = enabled, "village locator beams");
+    }
+
     fn toggle_bird_camera(&mut self) {
         self.bird_camera_enabled = !self.bird_camera_enabled;
         self.bird_camera_target = None;
@@ -3213,6 +3227,7 @@ impl State {
         };
         let flock_count = self.birds.flock_count();
         let bird_watch = self.bird_watch_note.clone();
+        let village_beams = self.village_beam_note.clone();
         let airborne_birds = self
             .birds
             .birds()
@@ -3456,6 +3471,7 @@ impl State {
                             "Bird cam: {bird_camera}  |  {flock_count} flocks, {airborne_birds} airborne"
                         ));
                         ui.label(format!("Bird watch: {bird_watch}"));
+                        ui.label(format!("Villages: {village_beams}"));
                         ui.label(
                             "F: fullscreen  |  F3: overlay  |  , / .: time speed  |  F4: orbit/flight  |  G: surface camera  |  WASD: move  |  Space: jump/swim thrust  |  [ / ]: speed  |  F5: render path  |  O: triangle outlines  |  B: ride a bird  |  N: watch birds that are down  |  M: track the nearest flock from here  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
                         );
@@ -5414,6 +5430,15 @@ impl ApplicationHandler for App {
                         && event.physical_key == PhysicalKey::Code(KeyCode::KeyO) =>
                 {
                     state.cycle_flat_triangle_outline_mode();
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && !event.repeat
+                        && event.physical_key == PhysicalKey::Code(KeyCode::KeyV) =>
+                {
+                    state.toggle_village_beams();
+                    state.mark_hud_dirty();
                     window.request_redraw();
                 }
                 WindowEvent::KeyboardInput { event, .. }
