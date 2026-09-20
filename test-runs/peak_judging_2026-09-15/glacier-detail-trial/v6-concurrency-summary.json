@@ -1,0 +1,40 @@
+{
+  "v6_off1": {
+    "start_unix": 1789894179.979226,
+    "end_unix": 1789894404.129303,
+    "monitor_samples": 86,
+    "external_build_samples": 7,
+    "external_renderer_samples": 17,
+    "performance_eligible": false,
+    "reason": "Concurrent build/renderer activity; exclude from performance conclusions."
+  },
+  "v6_on1": {
+    "start_unix": 1789894404.910562,
+    "end_unix": 1789894636.200831,
+    "monitor_samples": 115,
+    "external_build_samples": 15,
+    "external_renderer_samples": 39,
+    "performance_eligible": false,
+    "reason": "Concurrent build/renderer activity; exclude from performance conclusions."
+  },
+  "v6_on2": {
+    "start_unix": 1789894637.191581,
+    "end_unix": 1789894923.783351,
+    "monitor_samples": 142,
+    "external_build_samples": 17,
+    "external_renderer_samples": 79,
+    "performance_eligible": false,
+    "reason": "Concurrent build/renderer activity; exclude from performance conclusions.",
+    "repeat_pixels_identical": true
+  },
+  "v6_off2": {
+    "start_unix": 1789894924.311589,
+    "end_unix": 1789895165.490801,
+    "monitor_samples": 119,
+    "external_build_samples": 28,
+    "external_renderer_samples": 36,
+    "performance_eligible": false,
+    "reason": "Concurrent build/renderer activity; exclude from performance conclusions.",
+    "repeat_pixels_identical": true
+  }
+}

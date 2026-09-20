@@ -1,0 +1,22 @@
+Base: ce5631f; source subsequently committed as f10090b.
+All commands use CARGO_TARGET_DIR=/home/dad/catingard/target-glacier-detail
+and --manifest-path tmp/glacier-detail-worktree/Cargo.toml.
+
+cargo test --release -p catinthegarden-app
+525 passed, 24 ignored, 0 failed.
+
+cargo test --release -p catinthegarden-app gpu_sparse_glacier_fractures_keep_solid_interiors_and_fade_at_cell_edges -- --ignored --nocapture
+1 passed on Quadro M1000M; mutation of coverage back to shares.y * crack fails
+at maximum coverage 0.3. Production rule restored and GPU test rerun passing.
+
+cargo build --release -p catinthegarden-app
+Pass.
+
+cargo clippy --release -p catinthegarden-app --all-targets -- -D warnings
+Fails: existing clippy::assertions_on_constants, village.rs:653, also in ce5631f.
+
+cargo clippy --release -p catinthegarden-app --all-targets -- -D warnings -A clippy::assertions_on_constants
+Pass. No source lint suppression added.
+
+Changed test block rustfmt-formatted. git diff --check passes.
+No workspace-wide formatting, motion/LOD or FPS acceptance claim.

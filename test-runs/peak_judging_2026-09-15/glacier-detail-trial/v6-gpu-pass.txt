@@ -1,0 +1,9 @@
+   Compiling catinthegarden-app v0.1.0 (/home/dad/catingard/tmp/glacier-detail-worktree/crates/app)
+    Finished `release` profile [optimized] target(s) in 20.28s
+     Running unittests src/main.rs (target-glacier-detail/release/deps/catinthegarden_app-367c70b3d58d189f)
+
+running 1 test
+glacier test adapter: Quadro M1000M
+test terrain::tests::gpu_sparse_glacier_fractures_keep_solid_interiors_and_fade_at_cell_edges ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 548 filtered out; finished in 0.81s

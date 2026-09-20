@@ -10295,3 +10295,35 @@ Next design work needs a terrain/flow-aligned glacier coordinate field and irreg
 resolved fracture structure, rather than darkening these fixed-axis lines or widening
 biome patches. That is an untested direction, not an approved implementation plan.
 The main executable and bake remain unchanged; concurrent village edits are preserved.
+
+
+## 20 September — fracture density/normal follow-up banked, not promoted
+
+Source commit `f10090b` is pushed on separate branch
+`experiment/glacier-fracture-material` (base `ce5631f`), in isolated checkout
+`tmp/glacier-detail-worktree`, build target `target-glacier-detail`.
+Do not copy over current village changes; the main source and live bake remain
+unchanged. The trial is still opt-in/default-off on its own branch.
+
+Finite segments replace continuous stripes; sparse share controls placement,
+not every crack's opacity. Rounded wall normals provide bounded bump shading,
+with early exits outside marks and no unmarked-surface relighting. Actual-WGSL
+GPU probes pass and deliberately restoring the old opacity rule fails at 0.3
+maximum coverage. 525 app tests pass (24 ignored), release build/shader modes
+pass. Strict all-target clippy hits the existing base village constant assertion;
+no unrelated source was changed to silence it.
+
+Four V6 alpine replays pass; repeated images are identical, and all eight
+default-off frames match V2 controls. The new marks visibly change 596–6,001
+pixels per frame (maximum channel delta 26–200), but do not supply convincing
+glacier structure. Three independent fresh-context Luna reviewers, each with
+five approved Aletsch photos and all eight game frames, score **2.5, 3, 2**,
+mean **2.5/10**. No overall realism improvement is established. Their observations
+remain visual evidence, not technical diagnoses.
+
+**All four V6 timing samples are excluded:** a process monitor confirms concurrent
+main-checkout renderer/build activity during every run. Do not quote their raw
+medians as a slowdown or speedup. Flow-aligned coordinates, coherent glacier
+structure, motion/LOD acceptance and uncontaminated performance remain undone.
+No promotion or new bake. Evidence and next-design boundary:
+`test-runs/peak_judging_2026-09-15/glacier-detail-trial/FOLLOWUP.md`.

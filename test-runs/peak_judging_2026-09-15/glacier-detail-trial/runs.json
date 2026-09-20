@@ -28,5 +28,55 @@
     "run": "test-runs/alpine_survey_8_directions/1789874739-723811",
     "median_ms": 90.19397735595703,
     "frames": 69
+  },
+  "v3_on1": {
+    "mode": "on",
+    "run": "test-runs/alpine_survey_8_directions/1789884084-740115",
+    "median_ms": 90.59345245361328,
+    "frames": 69
+  },
+  "v4_on1": {
+    "mode": "on",
+    "run": "test-runs/alpine_survey_8_directions/1789884375-740979",
+    "median_ms": 90.73390197753906,
+    "frames": 69
+  },
+  "v5_on1": {
+    "mode": "on",
+    "run": "test-runs/alpine_survey_8_directions/1789884633-741736",
+    "median_ms": 91.86280059814453,
+    "frames": 69
+  },
+  "v6_off1": {
+    "mode": "0",
+    "run": "test-runs/alpine_survey_8_directions/1789894179-9530",
+    "median_ms": 89.6875991821289,
+    "frames": 69,
+    "performance_eligible": false,
+    "performance_exclusion_reason": "Concurrent main-checkout renderer/build work; see v6-concurrency-summary.json."
+  },
+  "v6_on1": {
+    "mode": "on",
+    "run": "test-runs/alpine_survey_8_directions/1789894404-10279",
+    "median_ms": 93.28651428222656,
+    "frames": 69,
+    "performance_eligible": false,
+    "performance_exclusion_reason": "Concurrent main-checkout renderer/build work; see v6-concurrency-summary.json."
+  },
+  "v6_on2": {
+    "mode": "on",
+    "run": "test-runs/alpine_survey_8_directions/1789894637-11152",
+    "median_ms": 133.8085174560547,
+    "frames": 69,
+    "performance_eligible": false,
+    "performance_exclusion_reason": "Concurrent main-checkout renderer/build work; see v6-concurrency-summary.json."
+  },
+  "v6_off2": {
+    "mode": "0",
+    "run": "test-runs/alpine_survey_8_directions/1789894924-13705",
+    "median_ms": 103.08853912353516,
+    "frames": 69,
+    "performance_eligible": false,
+    "performance_exclusion_reason": "Concurrent main-checkout renderer/build work; see v6-concurrency-summary.json."
   }
 }

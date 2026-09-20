@@ -1,0 +1,50 @@
+[
+  {
+    "capture": "capture-001.png",
+    "changed_pixels": 2653,
+    "max_delta": 199,
+    "default_matches_v2": true
+  },
+  {
+    "capture": "capture-002.png",
+    "changed_pixels": 4519,
+    "max_delta": 200,
+    "default_matches_v2": true
+  },
+  {
+    "capture": "capture-003.png",
+    "changed_pixels": 2305,
+    "max_delta": 67,
+    "default_matches_v2": true
+  },
+  {
+    "capture": "capture-004.png",
+    "changed_pixels": 6001,
+    "max_delta": 184,
+    "default_matches_v2": true
+  },
+  {
+    "capture": "capture-005.png",
+    "changed_pixels": 3923,
+    "max_delta": 154,
+    "default_matches_v2": true
+  },
+  {
+    "capture": "capture-006.png",
+    "changed_pixels": 2668,
+    "max_delta": 103,
+    "default_matches_v2": true
+  },
+  {
+    "capture": "capture-007.png",
+    "changed_pixels": 596,
+    "max_delta": 26,
+    "default_matches_v2": true
+  },
+  {
+    "capture": "capture-008.png",
+    "changed_pixels": 844,
+    "max_delta": 60,
+    "default_matches_v2": true
+  }
+]
