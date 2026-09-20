@@ -85,3 +85,41 @@ triangles per chunk on a canonical 33x33 grid that is the same at every LOD.
 One camera pose. Terrain's dominance will be different at orbit, where the
 frontier is a few coarse chunks, and over open ocean. Nothing here was measured
 with GPU timestamps, so none of it attributes cost inside a pass.
+
+## Which per-vertex term costs what
+
+`CATINGARDEN_ABLATE=normals,detail,aerial,fog` compiles each term out of the
+terrain vertex shader. Each was confirmed to change the rendered image before
+being timed -- an ablation that silently does nothing reads as "this term is
+free", which is the wrong conclusion. Four blocks, baseline spread 0.36ms.
+
+| condition | frame ms | spread | saving | per-block |
+|---|---:|---:|---:|---|
+| baseline | 82.28 | 0.36 | | |
+| no detail ladder | 74.16 | 0.64 | **8.05** | +7.7 +8.4 +7.6 +8.4 |
+| no aerial perspective | 79.80 | 0.29 | 2.49 | +2.4 +2.6 +2.0 +2.6 |
+| no normals (4 height samples) | 80.18 | 1.46 | 2.09 | +1.4 +2.9 +1.2 +2.8 |
+| no fog | 80.46 | 0.71 | 1.69 | +1.3 +2.0 +1.4 +2.1 |
+| none of the four | 68.80 | 1.04 | **13.51** | +13.3 +13.8 +12.5 +13.7 |
+
+The four sum to 14.32ms individually against 13.51ms measured together, so they
+are near-additive and the numbers are consistent.
+
+**This partly refutes the previous section.** The chunk-scaling rate suggested
+the terrain vertex shader was the cost. It is not, or not mostly: every
+per-vertex term that can be named here comes to **13.5ms of terrain's 52.1ms,
+about a quarter**. The other **38.6ms is somewhere else** -- the base height
+sample and displacement, vertex attribute fetch (the terrain `VertexInput` is
+wide), per-draw overhead across 256 chunks, or the fragment shader. That is the
+next thing to divide, and nothing here says which.
+
+**On replacing the per-vertex normal with `cross(dpdx, dpdy)`:** the term it
+would remove is **2.09ms of an 82ms frame, 2.5%**. Both terrain and ocean were
+moved *off* screen-space derivative normals deliberately -- `planet.wgsl:1565`
+records f32 cancellation quilting the ground along every chunk boundary, and
+`planet.wgsl:1659` records collapse at grazing angles. A true geometric normal
+would also shade the skirts as the near-vertical walls they are, at every chunk
+edge. 2.5% does not buy that.
+
+**The detail ladder at 8.05ms is four times the normals** and is the per-vertex
+term worth looking at, if any of them are.

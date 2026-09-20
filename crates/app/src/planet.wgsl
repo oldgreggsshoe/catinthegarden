@@ -775,7 +775,12 @@ fn vs_main(input: VertexInput) -> VertexOutput {
             requested_level(input.terrain_info),
         ),
     );
-    let detail = terrain_detail(
+    // The runtime octave ladder, evaluated once per vertex. The four normal
+    // probes deliberately do not re-run it -- they are pure texture reads --
+    // so this is the whole of its per-vertex cost.
+    var detail = TerrainDetail(0.0, vec3<f32>(0.0));
+    if !ABLATE_VERTEX_DETAIL {
+        detail = terrain_detail(
         anchor_direction,
         anchor_relative_position,
         vertex_filter_meters,
@@ -787,7 +792,8 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         // Each octave asks this separately for its own headroom, so the
         // ladder no longer needs a single scalar weight on the outside.
         select(0.0, base_height, outmap),
-    );
+        );
+    }
     let terrain_detail_meters = detail.height_meters;
     let height = base_height + terrain_detail_meters;
     // Polar ice overrides ocean in the baked biome contract. Lift it just
@@ -821,15 +827,20 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         + direction * (surface_height - skirt_depth_meters);
     let camera_relative_view_position = input.anchor_view_position
         + planet_to_view(local_planet_position);
-    var normal = displaced_surface_normal(
-        direction,
-        source_uv,
-        input.source_uv_scale,
-        input.terrain_info,
-        // Same distance the displacement filtered by, so shading and geometry
-        // never disagree about which octaves exist here.
-        detail_distance_meters,
-    );
+    // Four extra height samples per vertex, on top of the one the displacement
+    // already took. The ablation replaces them with the radial direction.
+    var normal = direction;
+    if !ABLATE_VERTEX_NORMALS {
+        normal = displaced_surface_normal(
+            direction,
+            source_uv,
+            input.source_uv_scale,
+            input.terrain_info,
+            // Same distance the displacement filtered by, so shading and
+            // geometry never disagree about which octaves exist here.
+            detail_distance_meters,
+        );
+    }
     if outmap {
         // The slope already carries each octave's own headroom, so there is no
         // scalar weight left to apply here.
@@ -856,11 +867,13 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     // distance. A hard near/far cutoff creates a visible ring when a triangle
     // crosses the threshold, while the bounded atmospheric column already
     // fades naturally toward the camera.
-    aerial = aerial_perspective_components(
-        camera_relative_view_position,
-        direction,
-        surface_height,
-    );
+    if !ABLATE_VERTEX_AERIAL {
+        aerial = aerial_perspective_components(
+            camera_relative_view_position,
+            direction,
+            surface_height,
+        );
+    }
     if flat_triangles {
         // Keep flat-mode extinction continuous, but fade the warm forward
         // aerial in-scatter in over distance. Without this bounded blend the
@@ -876,11 +889,14 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     // in-scatter. It must be composed after biome-specific aerial correction;
     // folding the sky endpoint into `aerial.in_scatter` here lets vegetation's
     // 0.42 in-scatter scale darken even fully saturated fog.
-    let fog = terrain_fog(
-        camera_relative_view_position,
-        direction,
-        surface_height,
-    );
+    var fog = TerrainFog(0.0, vec3<f32>(0.0));
+    if !ABLATE_VERTEX_FOG {
+        fog = terrain_fog(
+            camera_relative_view_position,
+            direction,
+            surface_height,
+        );
+    }
     let detail_anchor_or_flat_source_offset = select(
         anchor_direction,
         vec3<f32>(input.source_uv_offset, 0.0),

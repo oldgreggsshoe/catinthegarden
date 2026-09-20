@@ -128,9 +128,30 @@ pub(crate) fn planet_shader_source() -> String {
         Some("1" | "true" | "on")
     );
     let road_setting = format!("const ROAD_SURFACE_TRIAL: bool = {road_surface_trial};");
+    // Terrain vertex ablations, for attributing per-vertex cost.
+    //
+    // Chunk count was measured costing geometry rather than fragments -- about
+    // 40-60ns a triangle, which on this card is shader work and not throughput
+    // -- so the question is which per-vertex term is paying for it. Each of
+    // these compiles the named term out. They are diagnostics: the picture is
+    // wrong with any of them set, and that is the point.
+    let ablate = |name: &str| {
+        std::env::var("CATINGARDEN_ABLATE")
+            .unwrap_or_default()
+            .split(',')
+            .any(|term| term.trim().eq_ignore_ascii_case(name))
+    };
+    let ablation_settings = format!(
+        "const ABLATE_VERTEX_NORMALS: bool = {};\nconst ABLATE_VERTEX_AERIAL: bool = {};\nconst ABLATE_VERTEX_FOG: bool = {};\nconst ABLATE_VERTEX_DETAIL: bool = {};",
+        ablate("normals"),
+        ablate("aerial"),
+        ablate("fog"),
+        ablate("detail"),
+    );
     [
         crate::planet::shared_planet_shader_source(),
         road_setting,
+        ablation_settings,
         include_str!("planet.wgsl").to_string(),
         include_str!("weather_cloud_density.wgsl").to_string(),
     ]
