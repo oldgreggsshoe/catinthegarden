@@ -51,6 +51,13 @@ about 23ms is still unattributed. Cloud shadow (4.08ms, and zero pixels changed 
 **temporarily switched off** at Ian's request, and interactive startup no longer turns blur on. See
 the newest sections; the cloud-shadow saving is not yet measured.
 
+**Current peak judging (21 September, round 17):** **2.0/10**, against 2.7 at the same viewpoint in
+round 11. Three independent judges named: no rock, the tint's "leopard spots", a repeating fish-scale
+patch, grey-never-blue shadows, violet distant peaks with a pink strip, and -- the new one -- the
+foreground as "combed parallel ripples", which is round 15's short-wave lift showing its grain. The
+largest gap is the viewpoint: the camera sits on 93.8% ice while every reference photograph is half
+rock. See `test-runs/peak_judging_2026-09-15/round17/RESULTS.md`.
+
 **Current peak judging (21 September, round 16):** crevasses at icefall scale now read on the steep
 ice, and cost 3.89ms after dropping a second noise lookup for the ladder relief already at the
 fragment (was 6.15ms). Still off by default -- 5% of the frame for a partial-frame feature. See
