@@ -83,8 +83,12 @@ fn gpu_resident_forests_from_env() -> bool {
 }
 
 fn forest_shader_source() -> String {
+    // The same switch terrain reads, so a cloud cannot shadow trees standing
+    // on unshadowed ground.
+    let features = crate::planet::render_feature_constants();
     [
         crate::body::wgsl_constants().as_str(),
+        features.as_str(),
         include_str!("forest.wgsl"),
         include_str!("weather_cloud_density.wgsl"),
     ]

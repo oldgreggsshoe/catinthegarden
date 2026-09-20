@@ -149,8 +149,7 @@ pub(crate) fn planet_shader_source() -> String {
         ablate("detail"),
     );
     let fragment_ablation_settings = format!(
-        "const ABLATE_FRAGMENT_CLOUD_SHADOW: bool = {};\nconst ABLATE_FRAGMENT_WEATHER: bool = {};\nconst ABLATE_FRAGMENT_SKYLIGHT: bool = {};",
-        ablate("cloudshadow"),
+        "const ABLATE_FRAGMENT_WEATHER: bool = {};\nconst ABLATE_FRAGMENT_SKYLIGHT: bool = {};",
         ablate("weather"),
         ablate("skylight"),
     );
@@ -162,6 +161,7 @@ const ABLATE_FRAGMENT_TINT: bool = {};",
     );
     [
         crate::planet::shared_planet_shader_source(),
+        crate::planet::render_feature_constants(),
         road_setting,
         ablation_settings,
         fragment_ablation_settings,
@@ -4958,15 +4958,12 @@ mod tests {
     /// call sites, so a loose `contains` matched a *different* call and went
     /// vacuous -- mutating the one it named left it green. Naming the callee
     /// is what makes it bite.
-    fn call_arguments<'a>(source: &'a str, callee: &str) -> String {
+    fn call_arguments(source: &str, callee: &str) -> String {
         let after = source
             .split(callee)
             .nth(1)
             .unwrap_or_else(|| panic!("{callee} is not called here"));
-        after
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
+        after.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
     #[test]

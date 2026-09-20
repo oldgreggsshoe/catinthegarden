@@ -1184,6 +1184,7 @@ fn flat_triangle_lighting(
     // is, so the beam arrives at full strength. This was still sampling the
     // weather field and shadowing the moon with the planet's clouds.
     if BODY_HAS_ATMOSPHERE
+        && TERRAIN_CLOUD_SHADOW_ENABLED
         && receive_cloud_shadow
         && dot(sun_transmittance, vec3<f32>(0.2126, 0.7152, 0.0722)) > 0.001
     {
@@ -2479,7 +2480,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     // Per fragment, this ray-projects both cloud shells toward the sun and
     // evaluates the shared density at a three-octave budget.
     if BODY_HAS_ATMOSPHERE
-        && !ABLATE_FRAGMENT_CLOUD_SHADOW
+        && TERRAIN_CLOUD_SHADOW_ENABLED
         && terrain_direct_light > 0.0
         && dot(terrain_sun_transmittance, vec3<f32>(0.2126, 0.7152, 0.0722)) > 0.001
     {

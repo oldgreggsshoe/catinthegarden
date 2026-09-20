@@ -1321,7 +1321,9 @@ mod tests {
         assert!(grade < 10.0, "village grade {grade} degrees is too steep");
         // A single house must sit closer to the village's mean than the whole
         // footprint is allowed to vary, or the cluster comes apart.
-        assert!(HOUSE_HEIGHT_DEVIATION_METERS < VILLAGE_FOOTPRINT_HEIGHT_SPREAD_METERS);
+        const {
+            assert!(HOUSE_HEIGHT_DEVIATION_METERS < VILLAGE_FOOTPRINT_HEIGHT_SPREAD_METERS);
+        }
     }
 
     #[test]

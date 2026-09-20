@@ -594,10 +594,6 @@ impl VillageRenderer {
         self.beams_enabled
     }
 
-    pub fn beams_enabled(&self) -> bool {
-        self.beams_enabled
-    }
-
     fn upload_instances(&self, queue: &wgpu::Queue) {
         if !self.instances.is_empty() {
             queue.write_buffer(

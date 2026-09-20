@@ -396,6 +396,35 @@ pub fn cube_face_direction(face: u8, u: f64, v: f64) -> DVec3 {
 ///
 /// Every shader that pulls in the shared prelude goes through here, so the sea
 /// the GPU draws is always the sea `OCEAN_WAVE_SCALE` describes.
+/// Whether lit surfaces are shadowed by the weather field's clouds.
+///
+/// **Temporarily off, 20 September 2026, at Ian's request.** It was measured at
+/// **4.08ms of an 82ms frame** and, under the clear sky it was measured on,
+/// changing **zero pixels**: `cloud_shadow_visibility` ray-projects both cloud
+/// shells toward the sun at a three-octave budget and returns 1.0. Turning it
+/// off is a 5% frame saving that only shows under actual cloud.
+///
+/// `CATINGARDEN_CLOUD_SHADOW=1` puts it back without a rebuild. Restoring the
+/// default is a one-word change here.
+pub(crate) fn cloud_shadow_enabled() -> bool {
+    matches!(
+        std::env::var("CATINGARDEN_CLOUD_SHADOW")
+            .as_deref()
+            .map(str::trim),
+        Ok("1" | "true" | "on")
+    )
+}
+
+/// Feature switches shared by every shader that shades a lit surface. Terrain
+/// and the forest both read this, so a cloud cannot shadow the trees in a wood
+/// whose ground is unshadowed.
+pub(crate) fn render_feature_constants() -> String {
+    format!(
+        "const TERRAIN_CLOUD_SHADOW_ENABLED: bool = {};",
+        cloud_shadow_enabled()
+    )
+}
+
 pub(crate) fn shared_planet_shader_source() -> String {
     format!(
         "{}\n{}\n{}",

@@ -44,6 +44,13 @@ and crest transmission is re-anchored on the storm sea the game actually
 renders. Ground cloud shadow is banded but no longer hard-posterized. See the
 newest sections.
 
+**Current render cost (20 September):** the frame is terrain. At ground level in `village_pov` at
+720p, of 83.6ms, 30.5ms is a fixed floor with nothing drawn and 51.3ms is terrain -- 97% of the
+scene work. Nine named terrain shader terms are priced and total 29.17ms of terrain's 52.1ms, so
+about 23ms is still unattributed. Cloud shadow (4.08ms, and zero pixels changed under clear sky) is
+**temporarily switched off** at Ian's request, and interactive startup no longer turns blur on. See
+the newest sections; the cloud-shadow saving is not yet measured.
+
 **Current peak visual judging (15 September):** `peak_survey_8_directions` (raster) hovers
 100m over the highest summit at solar noon and captures eight headings 30 degrees down. Three
 independent judges scored it against midday summit photos at 2.3/10, then 2.5/10 after this work:
@@ -10603,3 +10610,76 @@ per chunk at *every* LOD. Ablate those terms one at a time with the same
 `CATINGARDEN_DISABLE`-style harness before changing anything. The candidate
 fixes are a coarser grid for distant chunks, cheaper normals, and moving aerial
 perspective off the vertex, but which one is worth doing is not yet measured.
+
+## 20 September — every terrain shader term priced, and the two cheapest wins taken
+
+`CATINGARDEN_ABLATE=normals,detail,aerial,fog,skylight,material,tint,weather`
+compiles named terms out of the terrain shader. Each was confirmed to change the
+rendered image before being timed: an ablation that silently does nothing reads
+as "this term is free", which is the most expensive mistake available here.
+
+Of terrain's 52.1ms at ground level in `village_pov` at 720p:
+
+| term | stage | ms |
+|---|---|---:|
+| detail ladder | vertex | 8.05 |
+| material detail tint | fragment | 7.80 |
+| cloud shadow | fragment | 4.08 |
+| aerial perspective | vertex | 2.49 |
+| central-difference normals | vertex | 2.09 |
+| weather wetness | fragment | 1.80 |
+| fog | vertex | 1.69 |
+| sky irradiance | fragment | 1.25 |
+| material colour (4-way triplanar) | fragment | 0.61 |
+
+That is 29.17ms of 52.1ms named; about **23ms is still unattributed** — base
+height sampling, vertex attribute fetch, per-draw overhead across 256 chunks, or
+fragment work none of these switches reach. Dividing it is the next measurement.
+
+Two results are worth more than the table. The four-way triplanar material
+lookup is **nearly free at 0.61ms**, while the detail tint layered on top of it
+is the second most expensive term in the whole shader at 7.80ms — the
+expectation was the other way round. And the cloud shadow costs 4.08ms while
+changing **zero pixels under clear sky**: it runs the shell projection, gets
+full visibility, and multiplies by one.
+
+Raw data and method: `test-runs/render_profile_2026-09-20/`.
+
+### Cloud shadow is temporarily off
+
+At Ian's request, `crates/app/src/planet.rs::cloud_shadow_enabled` now returns
+false by default and emits `TERRAIN_CLOUD_SHADOW_ENABLED` into both the terrain
+and forest shaders. **One constant for both** is load-bearing: the trees have
+their own `cloud_shadow_visibility` call, so disabling only terrain would shadow
+a tree standing on unshadowed ground. `CATINGARDEN_CLOUD_SHADOW=1` restores it
+with no rebuild; making it permanent is a one-word change in that function,
+which carries a comment saying whose request it was and when.
+
+It is verified in both directions, because "no pixels changed" is equally
+consistent with the switch not working:
+
+- **It does change shading under actual cloud.** Three `weather_contrast`
+  captures, off against on: 11.50%, 22.00% and 26.34% of pixels differ, maximum
+  channel delta 12, 21 and 55 levels, and mean luminance falls when it is on, as
+  a shadow must.
+- **It saves 3.76ms.** Four interleaved off/on blocks of `village_pov` after two
+  discarded warm-ups: off 81.46/79.95/81.40/80.47ms, on 84.93/83.99/83.85/85.30ms.
+  Paired savings 3.47/4.04/2.46/4.83ms, median 3.76ms, **4.45% of the frame**,
+  and all four pairs agree in sign. Slightly under the 4.08ms ablation figure,
+  which is expected: the ablation removed the call, this leaves a `false`
+  constant for the compiler to fold.
+
+### Interactive startup no longer turns blur on
+
+`apply_interactive_startup_controls` dropped its `toggle_blur()`, so an ordinary
+launch keeps the `BLUR_ENABLED = false` default and shows the unfiltered scene.
+F6 still toggles it and scenarios, which set their own post state, are
+unaffected. `interactive_startup_does_not_enable_blur` reads the function's own
+source and fails if the call comes back — mutation-checked by restoring the line.
+
+**Village locator beams are on `V`**, or `CATINGARDEN_VILLAGE_BEAMS=1` at launch
+for captures. They are drawn from the *sited* set, not the drawn one, so
+settlements past the 8km house-draw cutoff still show; the level-10 search ring
+covers roughly 12km around the camera. `V` is now listed in the HUD control line.
+
+534 app tests and 607 workspace tests pass, clippy and fmt are clean.

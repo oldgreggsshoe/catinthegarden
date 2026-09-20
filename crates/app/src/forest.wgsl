@@ -166,7 +166,7 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vertex_index: u32) -> Vert
     let sun_direction = normalize(camera.sun_direction.xyz);
     let solar_elevation_cosine = dot(up, sun_direction);
     var cloud_visibility = 1.0;
-    if solar_elevation_cosine > 0.0 {
+    if TERRAIN_CLOUD_SHADOW_ENABLED && solar_elevation_cosine > 0.0 {
         cloud_visibility = cloud_shadow_visibility(
             up,
             length(centre) - PLANET_RADIUS_METERS,
