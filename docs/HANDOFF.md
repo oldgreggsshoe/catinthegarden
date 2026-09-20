@@ -51,6 +51,13 @@ about 23ms is still unattributed. Cloud shadow (4.08ms, and zero pixels changed 
 **temporarily switched off** at Ian's request, and interactive startup no longer turns blur on. See
 the newest sections; the cloud-shadow saving is not yet measured.
 
+**Current peak judging (20 September, round 15):** the smeared, waxy ground is fixed and the fix is
+promoted. The detail ladder was exactly self-similar, so its 4m octave carried 23cm and its 1m
+octave 6cm -- relief that rolls rather than relief that is rough. A short-wavelength lift in the
+spectral tilt takes tonal spread 0.499 to 0.586 against the photographs' 0.898, at 78.60ms against
+80.45. The gain is derived from where a spectral bump would appear, not chosen by eye. See
+`test-runs/peak_judging_2026-09-15/round15/RESULTS.md`.
+
 **Current peak judging (20 September, round 14):** crevasse shading exists and is **off by
 default** (`CATINGARDEN_CREVASSES=1`); the shipped picture is unchanged to the pixel. It occludes
 the beam rather than painting a line, so it inverts with the sun, but it reads as hairlines at the

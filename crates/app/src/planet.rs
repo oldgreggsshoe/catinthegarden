@@ -520,6 +520,30 @@ pub const TERRAIN_DETAIL_START_WAVELENGTH_METERS: f64 = 4096.0;
 /// later, separately judged pass without removing the finer detail system.
 pub const TERRAIN_DETAIL_LONG_GAIN: f64 = 1.0;
 pub const TERRAIN_DETAIL_TILT_TAPER_METERS: f64 = 256.0;
+/// Extra amplitude for the octaves below a few tens of metres.
+///
+/// 3.2 is not a taste setting: it is the most lift the band can take before the
+/// 24m octave becomes louder than the 64m one, which would put a bump in an
+/// otherwise power-law spectrum and give the ground a characteristic lump size.
+/// `the_spectral_tilt_lifts_the_short_octaves_and_leaves_the_long_ones_alone`
+/// fails if it is raised past that.
+///
+/// Without it the ladder is exactly self-similar -- amplitude is roughness
+/// times wavelength at every scale -- which makes ground that rolls rather than
+/// ground that is rough. Measured on the alpine survey: the 4m octave carried
+/// 23cm and the 1m octave 6cm, so the near field was smooth undulation, and
+/// shading smooth undulation is what produced the smeared, waxy look the judges
+/// reported. Real snow and rock at those scales are sastrugi, blocks and
+/// hollows, not swells.
+///
+/// It is bounded where it belongs: each octave still asks
+/// `terrain_detail_octave_headroom` for room against the ground it stands on,
+/// and the boosted series is re-derived by
+/// `the_ladder_amplitude_bound_is_the_series_it_bounds`.
+pub const TERRAIN_DETAIL_SHORT_GAIN: f64 = 3.2;
+/// Where the short boost has faded back to nothing. Below a quarter of this it
+/// is at full strength.
+pub const TERRAIN_DETAIL_SHORT_TAPER_METERS: f64 = 48.0;
 pub const TERRAIN_DETAIL_OCTAVES: u32 = 13;
 pub const TERRAIN_DETAIL_MIN_FILTER_METERS: f64 = 0.5;
 /// Ridge fold and multifractal attenuation. Mirrors of the shader constants of
@@ -684,9 +708,9 @@ fn lerp(from: f64, to: f64, amount: f64) -> f64 {
 
 /// The most the unboosted ladder can reach, summed over the finite octave set.
 /// Mirrors the shader constant of the same name and is rounded upward from
-/// 475.078m.
+/// 480.666m.
 #[cfg_attr(not(test), allow(dead_code))]
-pub const TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS: f64 = 475.1;
+pub const TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS: f64 = 480.7;
 /// How much elevation an octave needs before it appears at full amplitude,
 /// as a multiple of its own amplitude. Asked per octave rather than per ladder;
 /// see `terrain_detail_octave_headroom` in shared_planet.wgsl for why, and for
@@ -701,6 +725,13 @@ pub fn terrain_detail_octave_tilt(wavelength_meters: f64) -> f64 {
             TERRAIN_DETAIL_START_WAVELENGTH_METERS,
             wavelength_meters,
         )
+        + (TERRAIN_DETAIL_SHORT_GAIN - 1.0)
+            * (1.0
+                - smoothstep(
+                    TERRAIN_DETAIL_SHORT_TAPER_METERS * 0.25,
+                    TERRAIN_DETAIL_SHORT_TAPER_METERS,
+                    wavelength_meters,
+                ))
 }
 
 pub fn terrain_detail_octave_headroom(
@@ -3994,34 +4025,58 @@ mod tests {
         );
     }
 
-    /// The long-wave boost is deliberately neutral while ETOPO is evaluated.
-    /// Keep the dormant tilt function uniform so merely changing wavelength
-    /// cannot reintroduce large random basins.
+    /// The tilt is boosted at the short end and nowhere else.
+    ///
+    /// The long-wave boost stays neutral: at 8x it made a repeating pattern of
+    /// large random basins and ridges, and that is the failure this half still
+    /// guards. The short end is now deliberately lifted, because a ladder whose
+    /// amplitude is exactly roughness times wavelength makes ground that rolls
+    /// instead of ground that is rough -- 23cm of relief at 4m and 6cm at 1m,
+    /// which shaded as the smeared wax the judges reported.
     #[test]
-    fn the_disabled_spectral_tilt_leaves_every_octave_unboosted() {
+    fn the_spectral_tilt_lifts_the_short_octaves_and_leaves_the_long_ones_alone() {
         use super::{
-            TERRAIN_DETAIL_LONG_GAIN, TERRAIN_DETAIL_TILT_TAPER_METERS, terrain_detail_octave_tilt,
+            TERRAIN_DETAIL_LONG_GAIN, TERRAIN_DETAIL_SHORT_GAIN, TERRAIN_DETAIL_SHORT_TAPER_METERS,
+            TERRAIN_DETAIL_TILT_TAPER_METERS, terrain_detail_octave_tilt,
         };
-        assert!(
-            (terrain_detail_octave_tilt(TERRAIN_DETAIL_TILT_TAPER_METERS) - 1.0).abs() < 1.0e-6
-        );
-        assert!(terrain_detail_octave_tilt(TERRAIN_DETAIL_TILT_TAPER_METERS * 0.5) == 1.0);
-        assert!(terrain_detail_octave_tilt(1.0) == 1.0);
         assert_eq!(TERRAIN_DETAIL_LONG_GAIN, 1.0);
+        // Everything from the short taper upward is untouched, including both
+        // ends of the dormant long tilt.
+        assert!((terrain_detail_octave_tilt(TERRAIN_DETAIL_SHORT_TAPER_METERS) - 1.0).abs() < 1e-6);
+        assert!((terrain_detail_octave_tilt(TERRAIN_DETAIL_TILT_TAPER_METERS) - 1.0).abs() < 1e-6);
         assert_eq!(
             terrain_detail_octave_tilt(TERRAIN_DETAIL_START_WAVELENGTH_METERS),
             1.0
         );
-        // Monotone, so no octave is louder than a longer one.
+        // The short end reaches its full boost and no more.
+        assert_eq!(terrain_detail_octave_tilt(1.0), TERRAIN_DETAIL_SHORT_GAIN);
+        assert!(terrain_detail_octave_tilt(TERRAIN_DETAIL_SHORT_TAPER_METERS * 0.5) > 1.0);
+        // Above the taper the series stays monotone, so no long octave can
+        // become louder than a longer one and reintroduce basin-scale ringing.
         let mut previous = f64::MAX;
         let mut wavelength = TERRAIN_DETAIL_START_WAVELENGTH_METERS;
         for _ in 0..TERRAIN_DETAIL_OCTAVES {
+            if wavelength < TERRAIN_DETAIL_SHORT_TAPER_METERS {
+                break;
+            }
             let amplitude =
                 wavelength * TERRAIN_DETAIL_ROUGHNESS * terrain_detail_octave_tilt(wavelength);
             assert!(amplitude < previous, "octave {wavelength}m is not quieter");
             previous = amplitude;
             wavelength *= 0.5;
         }
+        // And the boost is bounded: the loudest short octave stays under the
+        // quietest long one, so the lift cannot dominate hill-scale relief.
+        let loudest_short = (1..=5)
+            .map(|step| {
+                let wavelength = TERRAIN_DETAIL_SHORT_TAPER_METERS / f64::from(1 << step);
+                wavelength * TERRAIN_DETAIL_ROUGHNESS * terrain_detail_octave_tilt(wavelength)
+            })
+            .fold(0.0_f64, f64::max);
+        assert!(
+            loudest_short < previous,
+            "the short lift reaches {loudest_short}m against {previous}m above the taper"
+        );
     }
 
     #[test]

@@ -53,6 +53,11 @@ const TERRAIN_DETAIL_START_WAVELENGTH_METERS: f32 = 4096.0;
 // later as a separate, attributable change.
 const TERRAIN_DETAIL_LONG_GAIN: f32 = 1.0;
 const TERRAIN_DETAIL_TILT_TAPER_METERS: f32 = 256.0;
+// Extra amplitude below a few tens of metres. A self-similar ladder makes
+// ground that rolls; the near field carried 23cm at 4m and 6cm at 1m, and
+// shading that smoothness is what read as smeared wax. Mirrored in planet.rs.
+const TERRAIN_DETAIL_SHORT_GAIN: f32 = 3.2;
+const TERRAIN_DETAIL_SHORT_TAPER_METERS: f32 = 48.0;
 
 fn terrain_detail_octave_tilt(wavelength_meters: f32) -> f32 {
     return 1.0
@@ -61,7 +66,14 @@ fn terrain_detail_octave_tilt(wavelength_meters: f32) -> f32 {
                 TERRAIN_DETAIL_TILT_TAPER_METERS,
                 TERRAIN_DETAIL_START_WAVELENGTH_METERS,
                 wavelength_meters,
-            );
+            )
+        + (TERRAIN_DETAIL_SHORT_GAIN - 1.0)
+            * (1.0
+                - smoothstep(
+                    TERRAIN_DETAIL_SHORT_TAPER_METERS * 0.25,
+                    TERRAIN_DETAIL_SHORT_TAPER_METERS,
+                    wavelength_meters,
+                ));
 }
 
 const TERRAIN_DETAIL_OCTAVES: i32 = 13;
@@ -72,7 +84,7 @@ const TERRAIN_DETAIL_OCTAVES: i32 = 13;
 // With the long-wave boost disabled this is the ordinary finite halving sum,
 // 4096 * 0.058 * (1 + 1/2 + ... + 1/4096) = 475.078m, rounded upward. The ray
 // path and culling shell use it as a conservative bound.
-const TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS: f32 = 475.1;
+const TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS: f32 = 480.7;
 // Erosion-like structure. Two knobs, both mirrored in planet.rs.
 //
 // The fold: `|n|` creases the field at every zero crossing of the noise, and
