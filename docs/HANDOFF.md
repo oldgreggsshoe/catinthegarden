@@ -51,6 +51,14 @@ about 23ms is still unattributed. Cloud shadow (4.08ms, and zero pixels changed 
 **temporarily switched off** at Ian's request, and interactive startup no longer turns blur on. See
 the newest sections; the cloud-shadow saving is not yet measured.
 
+**Current peak judging (20 September, round 14):** crevasse shading exists and is **off by
+default** (`CATINGARDEN_CREVASSES=1`); the shipped picture is unchanged to the pixel. It occludes
+the beam rather than painting a line, so it inverts with the sun, but it reads as hairlines at the
+judging camera and costs 2.75ms. The blocker is scale, not technique: one pixel is 2.2m of ground at
+1.5km, the near glacier is a flat basin, and the nearest baked crevasse texel is 18km away.
+Structure at this camera has to be icefall-scale. See
+`test-runs/peak_judging_2026-09-15/round14/RESULTS.md`.
+
 **Current peak judging (20 September, round 13):** measured, not judged. Ground saturation and
 tonal spread are **0.017 / 0.499** against the Aletsch photographs' **0.176 / 0.898**, and the cause
 is that there is effectively **no fill light** -- skylight is 0.3-0.6% of surface light, which is

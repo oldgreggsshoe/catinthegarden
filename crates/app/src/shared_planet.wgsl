@@ -206,6 +206,30 @@ const TERRAIN_MATERIAL_RELIEF_VEGETATION: f32 = 0.34;
 // Where the fine tile hands back to the 2km one. Past the far end an 8m repeat
 // is below a pixel and mips to its own average, so blending it out costs
 // nothing visually and saves the second set of triplanar fetches.
+/// Elevation between one crevasse and the next. Metres of height, not of
+/// ground: on a 20-degree slope that is a 76m spacing, on a 40-degree one 40m,
+/// so they crowd together as the ice steepens without needing a flow model.
+const CREVASSE_VERTICAL_SPACING_METERS: f32 = 72.0;
+/// Share of each cycle that is open slot rather than intact ice.
+const CREVASSE_WIDTH_SHARE: f32 = 0.30;
+/// Tangent of the wall tilt at the slot edge. This is the whole contrast
+/// control: at zero the field is invisible whatever else is set.
+const CREVASSE_WALL_TILT: f32 = 0.85;
+/// Scale the bands are broken into separate segments over.
+const CREVASSE_SEGMENT_WAVELENGTH_METERS: f32 = 480.0;
+/// How far a segment may slide along the contour, in whole cycles, so
+/// neighbouring segments step rather than line up.
+const CREVASSE_SEGMENT_OFFSET_CYCLES: f32 = 1.7;
+/// Share of the direct beam a slot floor loses to its own walls.
+const CREVASSE_SUN_OCCLUSION: f32 = 0.92;
+/// Ambient the slot interior loses to its own walls.
+const CREVASSE_AMBIENT_OCCLUSION: f32 = 0.55;
+/// Light that enters the ice and scatters back out of a slot wall. This is why
+/// a crevasse reads blue rather than black, and it is the one place on this
+/// planet where a shadow has a colour of its own.
+const CREVASSE_INTERIOR_GLOW: f32 = 0.16;
+const CREVASSE_FADE_NEAR_METERS: f32 = 3500.0;
+const CREVASSE_FADE_FAR_METERS: f32 = 12000.0;
 const TERRAIN_MATERIAL_DETAIL_NEAR_METERS: f32 = 150.0;
 const TERRAIN_MATERIAL_DETAIL_FAR_METERS: f32 = 900.0;
 // The probe spacing normals are central-differenced over. This is the sharpest
@@ -2500,6 +2524,131 @@ fn terrain_material_in_scatter_blend(
     let luminance = dot(in_scatter, vec3<f32>(0.2126, 0.7152, 0.0722));
     return mix(in_scatter, vec3<f32>(luminance), neutrality)
         * mix(1.0, VEGETATION_AERIAL_IN_SCATTER_SCALE, vegetation);
+}
+
+/// A crevasse field, shaded rather than painted.
+///
+/// The baker already says *where* these are: `crevasse_field` is 3.8% of the
+/// texels on the alpine judging tile and 6.2% of the seventeen-texel window the
+/// camera stands in. What it could not say is what one looks like, because its
+/// texels are 3,906m apart, so the label was drawn as a slightly bluer white and
+/// read as a tonal patch. This synthesises the cracks inside the labelled patch.
+///
+/// Two earlier attempts painted dark lines into the albedo and were both judged
+/// as looking painted, which they were: a line that does not move when the sun
+/// moves is a decal. This instead **tilts the normal** across each slot, so the
+/// wall turned toward the sun brightens and the wall turned away darkens, and
+/// the whole field inverts when the sun crosses it. The lighting already in the
+/// shader does the work.
+///
+/// The bands follow **contours of surface height**, which is where transverse
+/// crevasses actually run, and it costs nothing to know: the height is already
+/// interpolated to this fragment. It also means their ground spacing falls out
+/// of the slope for free -- tight where the ice steepens into an icefall, wide
+/// apart on a flat basin -- instead of needing a separate flow model.
+struct GlacierCrevasses {
+    /// Normal tilt across the slot, tangential to the surface.
+    wall_tilt: vec3<f32>,
+    /// 0 on intact ice, 1 deep in a slot: drives occlusion and the blue.
+    interior: f32,
+    /// Share of the direct beam that still reaches the slot floor.
+    ///
+    /// This carries the effect, and tilting the walls alone does not. Measured:
+    /// slots covered 1.6-4.9% of the frame and moved it by at most 5 levels of
+    /// 255, because sunlit snow sits deep in the ACES shoulder where a 20%
+    /// change in radiance is worth 0.02 of display. A crevasse is not a 20%
+    /// change. Its floor sees the sun only when the sun is within a few degrees
+    /// of the slot's own plane, and with sky fill at 0.5% of surface light here
+    /// there is nothing else to light it -- so occluding the beam is what makes
+    /// it read, and it is also what finally gives this picture a dark end.
+    sun_visibility: f32,
+}
+
+fn glacier_crevasses(
+    glacier_share: f32,
+    surface_normal: vec3<f32>,
+    surface_direction: vec3<f32>,
+    macro_height_meters: f32,
+    anchor_direction: vec3<f32>,
+    local_meters: vec3<f32>,
+    camera_distance_meters: f32,
+) -> GlacierCrevasses {
+    let quiet = GlacierCrevasses(vec3<f32>(0.0), 0.0, 1.0);
+    if glacier_share <= 0.0 {
+        return quiet;
+    }
+    // Where on a glacier the ice is actually broken, which is a slope band.
+    // Flat firn is intact, mid slopes crack as the ice is pulled over them, and
+    // by the time a face is steep enough to be bare it is already shedding its
+    // snow to `snow_slope_hold` and is rock, not a crevasse field. The three
+    // bands are deliberately continuous with that rule rather than independent
+    // of it. `1 - cos`: 0.022 is 12 degrees, 0.06 is 20, 0.09 is 24.5, 0.22 is 38.
+    let slope = 1.0 - clamp(dot(normalize(surface_normal), surface_direction), 0.0, 1.0);
+    let slope_gate = smoothstep(0.004, 0.020, slope)
+        * (1.0 - smoothstep(0.090, 0.220, slope));
+    // Below the spacing a band is thinner than a pixel and would only shimmer,
+    // so it is faded out well before that rather than aliased.
+    let range = 1.0 - smoothstep(
+        CREVASSE_FADE_NEAR_METERS,
+        CREVASSE_FADE_FAR_METERS,
+        camera_distance_meters,
+    );
+    let strength = glacier_share * slope_gate * range;
+    if strength <= 0.001 {
+        return quiet;
+    }
+    // Contour bands of the *macro* surface. Using the drawn height instead put
+    // the contours on the runtime detail ladder's own 475m wobble, which cycles
+    // many times over a few metres of ground and ruled the glacier with
+    // corduroy. The baked macro surface is the one the ice actually flows over.
+    let cycle = macro_height_meters / CREVASSE_VERTICAL_SPACING_METERS;
+    // A real field is broken into finite en-echelon segments, not one crack
+    // wrapped round the mountain, so one noise sample offsets and gates the
+    // bands along their own length.
+    let cells = terrain_detail_domain(anchor_direction)
+        * (PLANET_RADIUS_METERS / CREVASSE_SEGMENT_WAVELENGTH_METERS);
+    let cell_floor = floor(cells);
+    let segment = terrain_detail_value_noise(
+        vec3<i32>(cell_floor),
+        (cells - cell_floor)
+            + terrain_detail_domain(local_meters) / CREVASSE_SEGMENT_WAVELENGTH_METERS,
+    );
+    // A field is a scatter of finite cracks, not a ruled contour map: most of
+    // the glacier has none, and where they exist they step past one another.
+    let present = smoothstep(0.24, 0.52, segment.value);
+    if present <= 0.0 {
+        return quiet;
+    }
+    let phase = fract(cycle + segment.value * CREVASSE_SEGMENT_OFFSET_CYCLES);
+    // One slot per cycle: a signed ramp across its width, zero on intact ice.
+    // `across` is +1 on the uphill wall and -1 on the downhill one.
+    let centred = (phase - 0.5) * 2.0;
+    let open = 1.0 - smoothstep(0.0, CREVASSE_WIDTH_SHARE, abs(centred));
+    let across = clamp(centred / max(CREVASSE_WIDTH_SHARE, 1.0e-4), -1.0, 1.0);
+    // Down the fall line: the tangential part of the normal points downhill, so
+    // this is the axis a contour-parallel slot is cut across.
+    let tangential = surface_normal - surface_direction * dot(surface_normal, surface_direction);
+    let fall = normalize_or_zero_vec3(tangential);
+    // Presence is a mask, not a weight. Multiplying four sub-unit factors
+    // together left the deepest slot at 15% darker than intact ice, which the
+    // tone curve then rounded away; a crevasse either is there or is not, and
+    // where it is, its floor is in shadow.
+    let presence = smoothstep(0.10, 0.45, strength * present);
+    let slot = open * open;
+    let amount = presence * open;
+    return GlacierCrevasses(
+        fall * (across * amount * CREVASSE_WALL_TILT),
+        amount,
+        1.0 - presence * slot * CREVASSE_SUN_OCCLUSION,
+    );
+}
+
+fn normalize_or_zero_vec3(value: vec3<f32>) -> vec3<f32> {
+    let length_squared = dot(value, value);
+    if length_squared <= 1.0e-12 {
+        return vec3<f32>(0.0);
+    }
+    return value * inverseSqrt(length_squared);
 }
 
 fn neutralize_snow_surface_lighting_blend(

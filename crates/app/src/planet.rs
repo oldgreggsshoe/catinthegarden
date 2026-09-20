@@ -415,13 +415,38 @@ pub(crate) fn cloud_shadow_enabled() -> bool {
     )
 }
 
+/// Crevasse shading on glacier ice. **Off by default, 20 September 2026.**
+///
+/// Round 14 built it and did not promote it. The technique is sound -- it
+/// occludes the direct beam inside each slot rather than painting a dark line,
+/// so the field inverts when the sun crosses it, which is what the two earlier
+/// painted attempts could not do -- but on the judging camera it renders as
+/// faint hairlines: measured ground saturation 0.017 to 0.018, tonal spread
+/// unmoved, for +2.75ms.
+///
+/// The reason is the site rather than the technique. The glacier within a
+/// kilometre of that camera is the flat basin it stands in, and the ice steep
+/// enough to crack is three to eight kilometres away, where a metre-scale crack
+/// is sub-pixel. What would read at that range is icefall-scale structure, tens
+/// of metres across. Kept opt-in so the next attempt starts from here rather
+/// than from nothing: `CATINGARDEN_CREVASSES=1`.
+pub(crate) fn crevasses_enabled() -> bool {
+    matches!(
+        std::env::var("CATINGARDEN_CREVASSES")
+            .as_deref()
+            .map(str::trim),
+        Ok("1" | "true" | "on")
+    )
+}
+
 /// Feature switches shared by every shader that shades a lit surface. Terrain
 /// and the forest both read this, so a cloud cannot shadow the trees in a wood
 /// whose ground is unshadowed.
 pub(crate) fn render_feature_constants() -> String {
     format!(
-        "const TERRAIN_CLOUD_SHADOW_ENABLED: bool = {};",
-        cloud_shadow_enabled()
+        "const TERRAIN_CLOUD_SHADOW_ENABLED: bool = {};\nconst TERRAIN_CREVASSES_ENABLED: bool = {};",
+        cloud_shadow_enabled(),
+        crevasses_enabled(),
     )
 }
 

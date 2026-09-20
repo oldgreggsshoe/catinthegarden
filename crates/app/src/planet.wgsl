@@ -2452,6 +2452,34 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let moisture = sample_moisture(input.source_uv);
     let base_biome_color = blended_biome_color(biome_blend);
     let terrain_normal = input.world_normal;
+    // Crevasses tilt the *shading* normal only. The material decisions below
+    // read `terrain_normal`, and they must keep reading it: a wall steep enough
+    // to shed snow would otherwise turn the inside of a crevasse into rock.
+    var crevasses = GlacierCrevasses(vec3<f32>(0.0), 0.0, 1.0);
+    if TERRAIN_CREVASSES_ENABLED && BODY_HAS_ATMOSPHERE && outmap {
+        crevasses = glacier_crevasses(
+            // The baked `crevasse_field` label is real but its texels are 3km
+            // apart and the nearest to this camera is eighteen kilometres away,
+            // so on its own it renders nothing here. The glacier as a whole is
+            // the field, and the slope band above decides which of it is broken.
+            clamp(
+                biome_blend_share(biome_blend, 2u)
+                    + biome_blend_share(biome_blend, 11u),
+                0.0,
+                1.0,
+            ),
+            terrain_normal,
+            direction,
+            scaled_terrain_macro_height(macro_height_meters),
+            input.detail_anchor_direction,
+            input.detail_local_meters,
+            length(input.camera_relative_view_position),
+        );
+    }
+    var terrain_lighting_normal = terrain_normal;
+    if crevasses.interior > 0.0 {
+        terrain_lighting_normal = normalize(terrain_normal - crevasses.wall_tilt);
+    }
     let terrain_sun_transmittance = surface_direct_sun_transmittance(
         direction,
         input.surface_height_and_fog_color.x,
@@ -2461,13 +2489,16 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     var terrain_sky_diffuse = vec3<f32>(0.0);
     if !ABLATE_FRAGMENT_SKYLIGHT {
         terrain_sky_diffuse = sky_diffuse_irradiance(
-            terrain_normal,
+            terrain_lighting_normal,
             direction,
             input.surface_height_and_fog_color.x,
             sun_direction,
         );
     }
-    var terrain_direct_light = max(dot(terrain_normal, sun_direction), 0.0);
+    var terrain_direct_light = max(dot(terrain_lighting_normal, sun_direction), 0.0);
+    if TERRAIN_CREVASSES_ENABLED {
+        terrain_direct_light *= crevasses.sun_visibility;
+    }
     if airless_regolith(biome_id) {
         terrain_direct_light = airless_surface_response(
             terrain_normal,
@@ -2491,6 +2522,17 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         );
     }
     var terrain_ambient = terrain_sky_diffuse;
+    if TERRAIN_CREVASSES_ENABLED {
+        // A slot loses ambient to its own walls, and gains the one coloured
+        // light on this planet: sunlight that enters the ice and scatters back
+        // out, which is why a crevasse reads blue and not black.
+        terrain_ambient *= 1.0 - CREVASSE_AMBIENT_OCCLUSION * crevasses.interior;
+        terrain_ambient += biome_color(11u)
+            * terrain_sun_transmittance
+            * (CREVASSE_INTERIOR_GLOW
+                * crevasses.interior
+                * max(dot(direction, sun_direction), 0.0));
+    }
     if !BODY_HAS_ATMOSPHERE {
         terrain_ambient += planetshine_irradiance(terrain_normal, direction, sun_direction)
             * SURFACE_SUNLIGHT_SCALE;

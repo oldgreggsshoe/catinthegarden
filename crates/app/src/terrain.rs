@@ -4958,6 +4958,23 @@ mod tests {
     /// call sites, so a loose `contains` matched a *different* call and went
     /// vacuous -- mutating the one it named left it green. Naming the callee
     /// is what makes it bite.
+    /// Both feature switches are off, so a launch that sets neither renders the
+    /// shipped picture. They are read from the environment once and baked into
+    /// the shader source, so a wrong default is invisible until a capture is
+    /// compared against one taken a week earlier.
+    #[test]
+    fn the_shipped_shader_has_cloud_shadow_and_crevasses_switched_off() {
+        let shader = planet_shader_source();
+        assert!(
+            shader.contains("const TERRAIN_CLOUD_SHADOW_ENABLED: bool = false;"),
+            "cloud shadow is back on by default"
+        );
+        assert!(
+            shader.contains("const TERRAIN_CREVASSES_ENABLED: bool = false;"),
+            "crevasses are on by default, and round 14 did not promote them"
+        );
+    }
+
     fn call_arguments(source: &str, callee: &str) -> String {
         let after = source
             .split(callee)
@@ -4978,10 +4995,18 @@ mod tests {
             .expect("raster terrain fragment path is present");
         assert!(fragment.contains("let terrain_normal = input.world_normal;"));
         // The smoothed vertex normal is what lights the surface, so it has to
-        // be the normal the irradiance is taken against.
+        // be the normal the irradiance is taken against. The lighting normal is
+        // that normal unless an enabled feature tilts it, so both halves are
+        // pinned: what it is seeded from, and that it is what light is measured
+        // against.
+        assert!(fragment.contains("var terrain_lighting_normal = terrain_normal;"));
         assert!(
             call_arguments(fragment, "terrain_sky_diffuse = sky_diffuse_irradiance(")
-                .starts_with("terrain_normal, direction,")
+                .starts_with("terrain_lighting_normal, direction,")
+        );
+        assert!(
+            call_arguments(fragment, "var terrain_direct_light = max(dot(")
+                .starts_with("terrain_lighting_normal, sun_direction)")
         );
         // The sky is the planet's ambient; an airless body's is the planet in
         // its sky. Both go into the same irradiance, which is what this pins.
