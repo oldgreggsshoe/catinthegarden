@@ -178,6 +178,21 @@ fn village_surface_is_eligible(sample: ForestSurfaceSample) -> bool {
     village_biome_is_habitable(sample.biome)
         && sample.macro_height_meters > 0.0
         && sample.height_meters.is_finite()
+        && sample.slope_radians <= village_max_site_slope_radians()
+}
+
+/// The steepest ground a village may stand on.
+///
+/// This is the footprint budget restated as a grade, and it has to be, because
+/// siting reads the dense level and the footprint is 110m against a 3,068m
+/// sample spacing. All five footprint samples land inside a single bilinear
+/// cell, so their spread is at most 7% of that cell's corner-to-corner height
+/// difference: measured against the real bake, the 30m spread test rejected
+/// 0.07% of habitable land, which is not a test. The same 30m across the same
+/// 220m footprint expressed as a slope is the designer's original intent in a
+/// form the coarse data can still answer, and it rejects the steepest quarter.
+fn village_max_site_slope_radians() -> f64 {
+    (VILLAGE_FOOTPRINT_HEIGHT_SPREAD_METERS / (VILLAGE_RADIUS_METERS * 2.0)).atan()
 }
 
 /// Is this spot dry land, by the renderer's own ownership rule?
@@ -874,6 +889,47 @@ mod tests {
             mesh.len() / 3,
             &inward[..inward.len().min(6)]
         );
+    }
+
+    #[test]
+    fn the_slope_limit_is_the_footprint_budget_restated() {
+        // The two have to agree, or the grade a village is allowed on depends
+        // on which of them the data happened to be able to resolve.
+        let from_footprint =
+            (VILLAGE_FOOTPRINT_HEIGHT_SPREAD_METERS / (VILLAGE_RADIUS_METERS * 2.0)).atan();
+        assert!((village_max_site_slope_radians() - from_footprint).abs() < 1e-12);
+        let degrees = village_max_site_slope_radians().to_degrees();
+        assert!(
+            (7.0..9.0).contains(&degrees),
+            "village slope limit {degrees} degrees is not the gentle grade intended"
+        );
+    }
+
+    #[test]
+    fn steep_ground_is_rejected_however_flat_the_footprint_reads() {
+        // The footprint spread cannot see a hillside at dense-level spacing,
+        // so the slope has to be what rejects it.
+        let gentle = sample_on_slope(village_max_site_slope_radians() * 0.5);
+        let steep = sample_on_slope(village_max_site_slope_radians() * 2.0);
+        assert!(village_surface_is_eligible(gentle));
+        assert!(!village_surface_is_eligible(steep));
+    }
+
+    fn sample_on_slope(slope_radians: f64) -> ForestSurfaceSample {
+        ForestSurfaceSample {
+            height_meters: 120.0,
+            macro_height_meters: 120.0,
+            biome: BiomeId::TemperateGrassland,
+            moisture: 0.5,
+            slope_radians,
+            source_key: TileKey {
+                face: catinthegarden_coretypes::CubeFace::PositiveX,
+                level: 4,
+                x: 0,
+                y: 0,
+            },
+            source_level: 4,
+        }
     }
 
     #[test]

@@ -10392,3 +10392,52 @@ not exactly the one drawn, so a village on rough ground can still be uneven.
 The captured village also stands on bare sand, which is a question about what
 `village_biome_is_habitable` admits at the coarse dense level, not about
 stability.
+
+## 20 September — village slope limit, and how often you actually meet one
+
+Answering "fly low and will there be villages often?" turned up a regression in
+the siting fix above. Villages never tested slope; the footprint spread test was
+doing that job, and moving siting to the dense level took its teeth out.
+
+The footprint spans 110m against a **3,068m** dense sample spacing, so all five
+samples land inside one bilinear cell and their spread is at most 7% of that
+cell's corner-to-corner height difference. Measured against the real bake over
+all 1,536 dense L4 tiles, area-weighted: the 30m spread test rejected **0.07%
+of habitable land**. That is not a test.
+
+`village_max_site_slope_radians()` is the same budget restated as a grade --
+`atan(30m / 220m)`, 7.77 degrees -- which the coarse data can still answer, and
+`village_surface_is_eligible` now applies it. Two regressions pin it: that the
+slope limit and the footprint budget agree, and that steep ground is rejected
+however flat the footprint reads. Sited houses at the probe fall **117 to 80**
+and siting stays stable at 0 disagreements.
+
+**Measured answer to the question.** Area-weighted over the whole bake:
+
+| | share of surface |
+|---|---|
+| ocean + lake | 55.5% |
+| ice | 17.6% |
+| village-habitable (tundra, temperate forest, temperate grassland, tropical forest) | **20.3%** |
+| mountain rock/snow, crevasse, moraine, desert | 6.6% |
+
+Habitable biomes are 45.6% of land. Macro slope over that land is p50 3.8, p90
+12.9, p99 22.2 degrees, so the 7.77-degree limit keeps about three quarters of
+it. With two candidate sites per 6.14km cell that is roughly **11 villages per
+1,000 km2, a mean spacing near 10km**, and about **2 villages inside the 8km
+draw radius** averaged over the whole planet -- one to three in view over
+habitable ground, none at all over ocean, ice or high mountains. The drawn
+counts agree: 20-57 houses in view at the probe, at up to 20 houses a village.
+
+**Note on method.** A first attempt flew a 400km transect at a fixed 600m datum
+altitude and read zero villages for 315km. That was not terrain data: the path
+went through ground standing at 11,600m and then 37,428m, so the camera was
+inside a mountain range. A fixed-altitude transect is not a fair sample on this
+bake, and the scenario was removed rather than left to mislead. The figures
+above are from the baked tiles directly.
+
+**Still open.** The slope limit reads the 3km macro grade, so a site that is
+gentle at that scale can still be locally rough at the metre scale the camera
+sees -- the worst drawn-versus-sited ground gap remains 513.5m of detail-ladder
+displacement. Villages also site on coarse L4 biome, so a cell the fine shader
+paints as beach can hold one; the `village_pov` capture is a village on sand.
