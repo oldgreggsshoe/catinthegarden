@@ -123,3 +123,54 @@ edge. 2.5% does not buy that.
 
 **The detail ladder at 8.05ms is four times the normals** and is the per-vertex
 term worth looking at, if any of them are.
+
+## Every term priced
+
+`CATINGARDEN_ABLATE` now covers nine terms across the terrain vertex and
+fragment shaders. Each was confirmed to change the rendered image before being
+timed, except `cloudshadow` -- see the note below. Four blocks each.
+
+| term | stage | ms | of terrain |
+|---|---|---:|---:|
+| detail ladder | vertex | **8.05** | 15.5% |
+| material tint | fragment | **7.80** | 15.0% |
+| cloud shadow | fragment | **4.08** | 7.8% |
+| aerial perspective | vertex | 2.49 | 4.8% |
+| normals (4 height samples) | vertex | 2.09 | 4.0% |
+| weather surface sample | fragment | 1.80 | 3.5% |
+| fog | vertex | 1.69 | 3.2% |
+| sky irradiance | fragment | 1.25 | 2.4% |
+| material colour (4-way triplanar) | fragment | 0.61 | 1.2% |
+| **all nine together** | | **29.17** | **56%** |
+| **still unattributed** | | **~23** | **44%** |
+
+Summed individually the nine come to 29.86ms against 29.17ms measured together,
+so they are near-additive and internally consistent.
+
+**The three worth acting on are the detail ladder, the material tint and the
+cloud shadow: 19.9ms, a quarter of the whole frame.**
+
+Two results that were not expected:
+
+- **`terrain_material_color` is nearly free at 0.61ms** while
+  `terrain_material_tint` is 7.80ms. The four-material triplanar blend was the
+  obvious suspect and is not the problem; the close-range detail tint on top of
+  it is. The material blend's zero-weight bailouts appear to be doing their job.
+- **The cloud shadow costs 4.08ms and changes zero pixels here.** Under a clear
+  sky `cloud_shadow_visibility` ray-projects both shells at a three-octave
+  budget and returns 1.0. An image diff would have called it free; only the
+  timing shows it. Anything that skips it when the weather field is empty along
+  the ray is close to a free 5% of frame.
+
+**A methodological note.** The first fragment ablations were placed in
+`flat_triangle_lighting` and changed nothing, because that function is never
+called: the flat-triangle *fragment* path is gated on the F9 debug mode, not on
+`CATINGARDEN_FLAT_TRIANGLES`, and the scenario manifests say
+`render_debug_mode: final HDR scene`. Forcing the function to return magenta
+produced zero magenta pixels, which is what proved it. Default terrain is
+**smooth-shaded** through `input.world_normal`; the faceted look comes from
+geometry density, not flat normals.
+
+That also re-prices the `dpdx`/`dpdy` idea: it would not be swapping one flat
+normal for another, it would be converting smooth shading into faceted shading,
+which is an art change rather than an optimisation, for 2.09ms.

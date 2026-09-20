@@ -148,10 +148,24 @@ pub(crate) fn planet_shader_source() -> String {
         ablate("fog"),
         ablate("detail"),
     );
+    let fragment_ablation_settings = format!(
+        "const ABLATE_FRAGMENT_CLOUD_SHADOW: bool = {};\nconst ABLATE_FRAGMENT_WEATHER: bool = {};\nconst ABLATE_FRAGMENT_SKYLIGHT: bool = {};",
+        ablate("cloudshadow"),
+        ablate("weather"),
+        ablate("skylight"),
+    );
+    let material_ablation_setting = format!(
+        "const ABLATE_FRAGMENT_MATERIAL: bool = {};
+const ABLATE_FRAGMENT_TINT: bool = {};",
+        ablate("material"),
+        ablate("tint")
+    );
     [
         crate::planet::shared_planet_shader_source(),
         road_setting,
         ablation_settings,
+        fragment_ablation_settings,
+        material_ablation_setting,
         include_str!("planet.wgsl").to_string(),
         include_str!("weather_cloud_density.wgsl").to_string(),
     ]
@@ -4936,6 +4950,25 @@ mod tests {
         assert!(!shader.contains("max(lit_surface_color, biome_color(2u) * 0.65)"));
     }
 
+    /// The whitespace-insensitive argument list of a named call.
+    ///
+    /// These assertions used to pin indentation, so wrapping a call in a
+    /// conditional broke them for no real reason. Collapsing whitespace alone
+    /// is not enough either: `terrain_normal, direction,` appears at several
+    /// call sites, so a loose `contains` matched a *different* call and went
+    /// vacuous -- mutating the one it named left it green. Naming the callee
+    /// is what makes it bite.
+    fn call_arguments<'a>(source: &'a str, callee: &str) -> String {
+        let after = source
+            .split(callee)
+            .nth(1)
+            .unwrap_or_else(|| panic!("{callee} is not called here"));
+        after
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     #[test]
     fn raster_land_uses_smoothed_displaced_normals_for_close_snow() {
         let shader = planet_shader_source();
@@ -4947,7 +4980,12 @@ mod tests {
             .and_then(|source| source.split("\nfn ").next())
             .expect("raster terrain fragment path is present");
         assert!(fragment.contains("let terrain_normal = input.world_normal;"));
-        assert!(fragment.contains("terrain_normal,\n        direction,"));
+        // The smoothed vertex normal is what lights the surface, so it has to
+        // be the normal the irradiance is taken against.
+        assert!(
+            call_arguments(fragment, "terrain_sky_diffuse = sky_diffuse_irradiance(")
+                .starts_with("terrain_normal, direction,")
+        );
         // The sky is the planet's ambient; an airless body's is the planet in
         // its sky. Both go into the same irradiance, which is what this pins.
         assert!(fragment.contains("var terrain_ambient = terrain_sky_diffuse;"));
@@ -6026,7 +6064,10 @@ mod tests {
         assert!(shader.contains("TERRAIN_NORMAL_MIN_SAMPLE_METERS"));
         assert!(shader.contains("let normal_step_scale = cube_step / requested_cube_step;"));
         assert_eq!(shader.matches("terrain_material_color(").count(), 2);
-        assert!(shader.contains("terrain_normal,\n        direction,\n    );"));
+        assert!(
+            call_arguments(&shader, "terrain_albedo = terrain_material_color(")
+                .starts_with("outmap, biome_id, moisture, base_biome_color,")
+        );
     }
 
     #[test]

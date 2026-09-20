@@ -2456,12 +2456,16 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         input.surface_height_and_fog_color.x,
         sun_direction,
     );
-    let terrain_sky_diffuse = sky_diffuse_irradiance(
-        terrain_normal,
-        direction,
-        input.surface_height_and_fog_color.x,
-        sun_direction,
-    );
+    // A LUT fetch plus its surrounding maths, per fragment.
+    var terrain_sky_diffuse = vec3<f32>(0.0);
+    if !ABLATE_FRAGMENT_SKYLIGHT {
+        terrain_sky_diffuse = sky_diffuse_irradiance(
+            terrain_normal,
+            direction,
+            input.surface_height_and_fog_color.x,
+            sun_direction,
+        );
+    }
     var terrain_direct_light = max(dot(terrain_normal, sun_direction), 0.0);
     if airless_regolith(biome_id) {
         terrain_direct_light = airless_surface_response(
@@ -2472,7 +2476,10 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         );
     }
     var terrain_cloud_visibility = 1.0;
+    // Per fragment, this ray-projects both cloud shells toward the sun and
+    // evaluates the shared density at a three-octave budget.
     if BODY_HAS_ATMOSPHERE
+        && !ABLATE_FRAGMENT_CLOUD_SHADOW
         && terrain_direct_light > 0.0
         && dot(terrain_sun_transmittance, vec3<f32>(0.2126, 0.7152, 0.0722)) > 0.001
     {
@@ -2491,17 +2498,27 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         + terrain_sun_transmittance * terrain_cloud_visibility
             * terrain_direct_light
             * SURFACE_SUNLIGHT_SCALE;
-    let terrain_albedo = terrain_material_color(
-        outmap,
-        biome_id,
-        moisture,
-        base_biome_color,
-        macro_height_meters,
-        input.terrain_detail_meters_and_fog_amount.x,
-        terrain_normal,
-        direction,
-    );
-    let detail_tint = terrain_material_tint(
+    // Four mipmapped materials blended through a domain-warped triplanar
+    // projection: broad and fine, three axes each. The ablation falls back to
+    // the flat biome colour.
+    var terrain_albedo = base_biome_color;
+    if !ABLATE_FRAGMENT_MATERIAL {
+        terrain_albedo = terrain_material_color(
+            outmap,
+            biome_id,
+            moisture,
+            base_biome_color,
+            macro_height_meters,
+            input.terrain_detail_meters_and_fog_amount.x,
+            terrain_normal,
+            direction,
+        );
+    }
+    // The close-range detail texture, domain-warped and triplanar like the
+    // materials above it.
+    var detail_tint = vec3<f32>(1.0);
+    if !ABLATE_FRAGMENT_TINT {
+        detail_tint = terrain_material_tint(
         outmap,
         moisture,
         biome_blend,
@@ -2517,6 +2534,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             length(input.camera_relative_view_position),
         ),
     );
+    }
     var textured_terrain_albedo = terrain_albedo * detail_tint;
     // Rain darkens exposed ground; accumulated snow replaces the material only
     // where the coupled surface field says it has persisted. Ocean and lake
@@ -2527,7 +2545,10 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     // nothing updates. `wetness` stays in scope for the wet specular below.
     var wetness = 0.0;
     if BODY_HAS_ATMOSPHERE {
-        let weather_surface = weather_surface_sample(direction);
+        var weather_surface = vec4<f32>(0.0);
+        if !ABLATE_FRAGMENT_WEATHER {
+            weather_surface = weather_surface_sample(direction);
+        }
         wetness = smoothstep(0.18, 0.82, weather_surface.r);
         // Fallen snow sheds off steep faces the same way the biome's snow does.
         let terrain_slope = 1.0 - clamp(dot(normalize(terrain_normal), direction), 0.0, 1.0);
