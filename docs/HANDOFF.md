@@ -51,6 +51,15 @@ about 23ms is still unattributed. Cloud shadow (4.08ms, and zero pixels changed 
 **temporarily switched off** at Ian's request, and interactive startup no longer turns blur on. See
 the newest sections; the cloud-shadow saving is not yet measured.
 
+**Current peak judging (20 September, round 13):** measured, not judged. Ground saturation and
+tonal spread are **0.017 / 0.499** against the Aletsch photographs' **0.176 / 0.898**, and the cause
+is that there is effectively **no fill light** -- skylight is 0.3-0.6% of surface light, which is
+physically correct at a site sitting 2.2 optical scale heights up, and snow inter-reflection is not
+modelled at all. A bounce term, un-greying snow shading and an exposure sweep were each measured and
+none promoted. The smear and the dapple belong to the detail ladder and the material tint, the two
+most expensive terms in the shader. Next change should be structural. See
+`test-runs/peak_judging_2026-09-15/round13/RESULTS.md`.
+
 **Current peak visual judging (15 September):** `peak_survey_8_directions` (raster) hovers
 100m over the highest summit at solar noon and captures eight headings 30 degrees down. Three
 independent judges scored it against midday summit photos at 2.3/10, then 2.5/10 after this work:
@@ -10696,3 +10705,99 @@ No new judges, no new score, no default promotion; live renderer/bake unchanged.
 Evidence: `test-runs/peak_judging_2026-09-15/alpine-material-trial/RESULTS.md`
 in the active checkout. Earlier contaminated timings remain excluded. These
 are single candidate runs bracketed by controls, not statistical sign-off.
+
+## 20 September — round 13: the alpine frame has no fill light
+
+Resuming the judging cycle at HEAD. Eight headings of `alpine_survey_8_directions`,
+raster, 1280x720, median 80.45ms. **No judges were spent**, because nothing
+measured here changed the picture, and round 9 already established that judging
+a no-op wastes a round.
+
+### The gap
+
+One metric, run over the lower 65% of the frame on both sides
+(`test-runs/peak_judging_2026-09-15/round13/measure.py`):
+
+| | ground saturation | tonal spread |
+|---|---:|---:|
+| our eight captures | 0.017 | 0.499 |
+| twelve Aletsch photographs | 0.176 | 0.898 |
+
+Ten times less colour, half the tonal range, and our ground is crammed into the
+top of it: p01 0.38, p50 0.89, p99 0.93. The photographs start at p01 0.005-0.21.
+**We have no dark end.**
+
+By stage: raw albedo is already only 0.054, and lighting plus the tone curve
+remove two thirds of what survives that.
+
+### There is no fill light, and that is not a bug
+
+Ablating the sky-diffuse term moves the frame by at most **5 levels of 255**; in
+the lighting stage it is 0.5-1.5 levels, **0.3-0.6% of surface light**. The hue
+is right (+1.52 blue against +0.65 red) and the magnitude is absent.
+
+Computing the LUT's own integral on the CPU with the shader's constants gives
+E/pi luminance **0.0949 at sea level and 0.0126 at this surface**. The site is
+79,247m up, which the 4.5x optical mapping puts at 17,610m against an 8,000m
+Rayleigh scale height: 2.2 scale heights, **11% of sea-level air overhead**. The
+sky there has almost nothing to give. Real Jungfraujoch is at 0.42 scale heights.
+The altitude scaling rule is Ian's and correct; this is its consequence.
+
+So every facet is lit by direct sun or by nothing, which is precisely the "one
+brightness at every orientation" all three judges reported. And the LUT's
+`GROUND_ALBEDO` is 0.12 while this ground is snow at 0.64 linear, so **snow
+inter-reflection -- the light a real snowfield works by -- is modelled nowhere.**
+
+Aerial perspective (2.7%) and distance mist (0.1%) were checked and cleared.
+
+### Measured and not promoted
+
+| candidate | ground sat | spread | frame ms |
+|---|---:|---:|---:|
+| baseline | 0.017 | 0.499 | 80.45 |
+| one-bounce ground inter-reflection | 0.018 | 0.474 | 79.04 |
+| bounce + no snow greying | 0.038 | 0.474 | -- |
+| bounce + exposure 0.50 | 0.032 | 0.559 | -- |
+| bounce + exposure 0.35 | 0.041 | 0.563 | -- |
+
+The bounce has no tuned constant in it -- a Lambertian ground of albedo `a` under
+irradiance `E` gives a facet `a*E*(1-sky_view)` -- and costs nothing measurable.
+It is still a visual no-op and it *reduces* contrast, lifting shadow without
+adding hue. `neutralize_snow_surface_lighting_blend` deliberately takes 55% of
+the remaining hue so low sun cannot paint the icecap orange; removing it doubles
+saturation to 0.038 and reads the same. Exposure moves both metrics honestly, the
+snow being deep in the ACES shoulder at 1.0, but 0.041 against 0.176 is not a
+different picture. All reverted. `CATINGARDEN_EXPOSURE` is kept as a diagnostic,
+default 1.0, pinned by `the_fixed_presentation_exposure_defaults_to_one`.
+
+### What the eye says, attributed by ablation
+
+- The **smeared waxy swirls** across the foreground are the **detail ladder**
+  (8.05ms). Off, the snow is clean and empty.
+- The **leopard-spot dapple** on near snow is the **material tint** (7.80ms).
+  Off, the mottling is gone.
+
+The two most expensive terms in the terrain shader, 15.85ms of terrain's 52.1ms,
+are producing the two surface artefacts the round 11 judges named. Codex reached
+the same conclusion independently in `../alpine-material-trial`.
+
+- The **dusty pink horizon band** is distant brown lowland: with the mist ablated
+  it measures (127, 93, 65). The mist carries it to sky blue through a magenta
+  midpoint, because green sits below both endpoints. That is the judges' "flat
+  magenta cut-outs".
+
+### Recommendation
+
+Colour and lighting are not where the realism is, and this round is the evidence.
+What is missing is structure and a dark end. Two routes, and the choice trades
+against the performance rule, so it is Ian's:
+
+1. **Cast shadows done cheaply.** The only thing that creates a dark end. The
+   naive per-pixel march was dropped in `0076b4a` at +8.6ms with judges scoring
+   the coarse 3km shadows *down* as "grey decals"; the amortised-cache or baked
+   horizon-map route noted there is still open, and the cloud shadow just freed
+   3.76ms.
+2. **Spend the detail ladder and tint budget on structure instead.** 15.85ms
+   currently buys the smear and the dapple.
+
+535 app and 608 workspace tests pass, clippy and fmt clean.

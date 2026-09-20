@@ -11,11 +11,30 @@ const MINIMUM_EXPOSURE: f32 = 0.05;
 const MAXIMUM_EXPOSURE: f32 = 4.0;
 const READBACK_RING_SIZE: usize = 3;
 
+/// The fixed exposure a launch presents at when the meter is off.
+///
+/// A diagnostic knob rather than a setting: judging captures against
+/// photographs needs the scene placed on the tone curve deliberately, and at
+/// 1.0 the alpine survey's snow sits at luminance 0.88-0.93, hard into the ACES
+/// shoulder where the curve compresses what little colour the ground has.
+/// `CATINGARDEN_EXPOSURE=0.6` moves it without a rebuild.
+fn fixed_presentation_exposure() -> f32 {
+    static EXPOSURE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *EXPOSURE.get_or_init(|| {
+        std::env::var("CATINGARDEN_EXPOSURE")
+            .ok()
+            .and_then(|value| value.trim().parse::<f32>().ok())
+            .filter(|exposure| exposure.is_finite() && *exposure > 0.0)
+            .map(|exposure| exposure.clamp(MINIMUM_EXPOSURE, MAXIMUM_EXPOSURE))
+            .unwrap_or(1.0)
+    })
+}
+
 fn presentation_exposure(metered_exposure: f32, auto_exposure_enabled: bool) -> f32 {
     if auto_exposure_enabled {
         metered_exposure
     } else {
-        1.0
+        fixed_presentation_exposure()
     }
 }
 
@@ -998,6 +1017,15 @@ mod tests {
     fn black_space_cannot_overexpose_a_visible_planet() {
         assert_eq!(target_exposure(0.0), 4.0);
         assert!((target_exposure(0.18) - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn the_fixed_presentation_exposure_defaults_to_one() {
+        // The knob is read once from the environment, so this pins the value a
+        // launch without it presents at. A judging capture compares against
+        // photographs; it must not silently drift with a stray variable.
+        assert_eq!(super::presentation_exposure(0.25, false), 1.0);
+        assert_eq!(super::presentation_exposure(0.25, true), 0.25);
     }
 
     #[test]
