@@ -10288,5 +10288,11 @@ back to `shares.y * crack` fails with maximum 0.3 as intended. All 525 app tests
 pass, 24 ignored. This does not prove glacier realism or motion/LOD continuity.
 
 Do not promote yet. Fixed global projection still does not follow glacier flow;
-no new judge score or FPS improvement has been established. Matched captures
-and timing checks are in progress, with concurrent village work monitored.
+no FPS improvement has been established. Four V6 replays pass and repeated/default
+controls are pixel-identical, but process monitoring confirms concurrent renderer/build
+work during all four runs, so every timing sample is excluded. Three independent Luna
+reviewers score 2.5, 3 and 2, mean 2.5/10: no overall realism win. The primary agent
+inspected all eight images; localized visible fissures do not supply coherent glacier
+structure. Strict clippy hits an existing base village constant-assertion lint; with
+only that lint allowed it passes. Detailed evidence is in the active checkout's
+`glacier-detail-trial/FOLLOWUP.md` and `judges-v6.md`.
