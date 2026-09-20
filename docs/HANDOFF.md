@@ -10683,3 +10683,16 @@ settlements past the 8km house-draw cutoff still show; the level-10 search ring
 covers roughly 12km around the camera. `V` is now listed in the HUD control line.
 
 534 app tests and 607 workspace tests pass, clippy and fmt are clean.
+
+## 20 September — clean alpine material probe results
+
+The V4 same-binary control/snow-range/combined/control block measures
+84.993 / 82.941 / 79.775 / 86.600ms, without observed concurrent app/build
+processes. Both controls are pixel-identical in all eight views. Full app tests
+pass: 525 passed, 23 ignored; all ten diagnostic shader modes validate.
+The range-only images lose fine grain but retain the large artificial patches
+and smeared rock. Combined darker lighting is not an accepted realism gain.
+No new judges, no new score, no default promotion; live renderer/bake unchanged.
+Evidence: `test-runs/peak_judging_2026-09-15/alpine-material-trial/RESULTS.md`
+in the active checkout. Earlier contaminated timings remain excluded. These
+are single candidate runs bracketed by controls, not statistical sign-off.

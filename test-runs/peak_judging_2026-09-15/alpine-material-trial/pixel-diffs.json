@@ -1,0 +1,152 @@
+{
+  "snow_grain1": [
+    {
+      "capture": "capture-001.png",
+      "changed_pixels": 593911,
+      "max_channel_delta": 28,
+      "mean_channel_delta": 0.8798982747395834
+    },
+    {
+      "capture": "capture-002.png",
+      "changed_pixels": 766512,
+      "max_channel_delta": 21,
+      "mean_channel_delta": 0.8879055447048612
+    },
+    {
+      "capture": "capture-003.png",
+      "changed_pixels": 812273,
+      "max_channel_delta": 30,
+      "mean_channel_delta": 1.266120334201389
+    },
+    {
+      "capture": "capture-004.png",
+      "changed_pixels": 707969,
+      "max_channel_delta": 30,
+      "mean_channel_delta": 1.6488777669270833
+    },
+    {
+      "capture": "capture-005.png",
+      "changed_pixels": 473982,
+      "max_channel_delta": 29,
+      "mean_channel_delta": 1.3147507052951388
+    },
+    {
+      "capture": "capture-006.png",
+      "changed_pixels": 286240,
+      "max_channel_delta": 30,
+      "mean_channel_delta": 1.0196747504340278
+    },
+    {
+      "capture": "capture-007.png",
+      "changed_pixels": 261907,
+      "max_channel_delta": 29,
+      "mean_channel_delta": 0.7874362521701389
+    },
+    {
+      "capture": "capture-008.png",
+      "changed_pixels": 362789,
+      "max_channel_delta": 26,
+      "mean_channel_delta": 0.6220109049479167
+    }
+  ],
+  "snow_combo1": [
+    {
+      "capture": "capture-001.png",
+      "changed_pixels": 921179,
+      "max_channel_delta": 67,
+      "mean_channel_delta": 17.30702907986111
+    },
+    {
+      "capture": "capture-002.png",
+      "changed_pixels": 921213,
+      "max_channel_delta": 63,
+      "mean_channel_delta": 16.30244439019097
+    },
+    {
+      "capture": "capture-003.png",
+      "changed_pixels": 921392,
+      "max_channel_delta": 70,
+      "mean_channel_delta": 17.43925564236111
+    },
+    {
+      "capture": "capture-004.png",
+      "changed_pixels": 895279,
+      "max_channel_delta": 67,
+      "mean_channel_delta": 18.338763563368055
+    },
+    {
+      "capture": "capture-005.png",
+      "changed_pixels": 821530,
+      "max_channel_delta": 69,
+      "mean_channel_delta": 16.877191569010417
+    },
+    {
+      "capture": "capture-006.png",
+      "changed_pixels": 845251,
+      "max_channel_delta": 68,
+      "mean_channel_delta": 18.089216037326388
+    },
+    {
+      "capture": "capture-007.png",
+      "changed_pixels": 889052,
+      "max_channel_delta": 67,
+      "mean_channel_delta": 18.95136176215278
+    },
+    {
+      "capture": "capture-008.png",
+      "changed_pixels": 921125,
+      "max_channel_delta": 64,
+      "mean_channel_delta": 17.725649685329863
+    }
+  ],
+  "snow_off2": [
+    {
+      "capture": "capture-001.png",
+      "changed_pixels": 0,
+      "max_channel_delta": 0,
+      "mean_channel_delta": 0.0
+    },
+    {
+      "capture": "capture-002.png",
+      "changed_pixels": 0,
+      "max_channel_delta": 0,
+      "mean_channel_delta": 0.0
+    },
+    {
+      "capture": "capture-003.png",
+      "changed_pixels": 0,
+      "max_channel_delta": 0,
+      "mean_channel_delta": 0.0
+    },
+    {
+      "capture": "capture-004.png",
+      "changed_pixels": 0,
+      "max_channel_delta": 0,
+      "mean_channel_delta": 0.0
+    },
+    {
+      "capture": "capture-005.png",
+      "changed_pixels": 0,
+      "max_channel_delta": 0,
+      "mean_channel_delta": 0.0
+    },
+    {
+      "capture": "capture-006.png",
+      "changed_pixels": 0,
+      "max_channel_delta": 0,
+      "mean_channel_delta": 0.0
+    },
+    {
+      "capture": "capture-007.png",
+      "changed_pixels": 0,
+      "max_channel_delta": 0,
+      "mean_channel_delta": 0.0
+    },
+    {
+      "capture": "capture-008.png",
+      "changed_pixels": 0,
+      "max_channel_delta": 0,
+      "mean_channel_delta": 0.0
+    }
+  ]
+}

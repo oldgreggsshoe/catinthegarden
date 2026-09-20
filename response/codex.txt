@@ -1,12 +1,5 @@
-Implemented and pushed solid, finite fractures with wall shading on the isolated trial branch (`f10090b`). GPU regression and 525 app tests pass.
+Clean timing batch finished; no game replay is still running, so Claude can resume.
 
-But the full scene still scores only **2.5/10** from independent judges. Flow alignment remains missing, and concurrent village runs invalidated the timing measurements. **Not promoted; the overall glacier fix is still unfinished.**
+Controls: 84.99/86.60 ms. Shorter snow texture range: 82.94 ms. Combined trial: 79.77 ms. Both control image sets are identical.
 
-<oai-mem-citation>
-<citation_entries>
-MEMORY.md:30-30|note=[Continue existing handoff and preserve response relay]
-</citation_entries>
-<rollout_ids>
-01a07b93-6f08-70f2-80be-2f78bae4a1eb
-</rollout_ids>
-</oai-mem-citation>
+The changes are faster but not convincingly more realistic: broad patches and smeared rock remain. No score increase claimed or live change promoted. Experimental code and evidence are committed and pushed; 525 tests pass. Strict clippy still hits the unchanged village-test warning.

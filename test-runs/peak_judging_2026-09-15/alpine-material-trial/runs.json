@@ -1,0 +1,137 @@
+{
+  "floor1": {
+    "mode": "floor",
+    "run": "test-runs/alpine_survey_8_directions/1789896522-23890",
+    "median_ms": 86.6588363647461,
+    "frames": 69,
+    "binary_sha256": "ffcca569652d5b477f53145d31e4774e1690841d3e1e365a30b9a02be39266b3",
+    "performance_eligible": false,
+    "contaminated_samples": 70
+  },
+  "grain1": {
+    "mode": "grain",
+    "run": "test-runs/alpine_survey_8_directions/1789896724-24526",
+    "median_ms": 87.84551239013672,
+    "frames": 69,
+    "binary_sha256": "ffcca569652d5b477f53145d31e4774e1690841d3e1e365a30b9a02be39266b3",
+    "performance_eligible": false,
+    "contaminated_samples": 14
+  },
+  "both1": {
+    "mode": "both",
+    "run": "test-runs/alpine_survey_8_directions/1789896911-25182",
+    "median_ms": 98.52228546142578,
+    "frames": 69,
+    "binary_sha256": "ffcca569652d5b477f53145d31e4774e1690841d3e1e365a30b9a02be39266b3",
+    "performance_eligible": false,
+    "contaminated_samples": 187
+  },
+  "quiet_off1": {
+    "mode": "0",
+    "run": "test-runs/alpine_survey_8_directions/1789925501-190996",
+    "median_ms": 88.49242401123047,
+    "frames": 69,
+    "binary_sha256": "b576a1aa7af5eef8ed8407408b36666e851ba302ffefa3f61a30e3385e5d4b8b",
+    "performance_eligible": true,
+    "contaminated_samples": 0
+  },
+  "quiet_light1": {
+    "mode": "light",
+    "run": "test-runs/alpine_survey_8_directions/1789925689-191269",
+    "median_ms": 88.84867095947266,
+    "frames": 69,
+    "binary_sha256": "b576a1aa7af5eef8ed8407408b36666e851ba302ffefa3f61a30e3385e5d4b8b",
+    "performance_eligible": false,
+    "contaminated_samples": 26
+  },
+  "quiet_contrast1": {
+    "mode": "contrast",
+    "run": "test-runs/alpine_survey_8_directions/1789925884-191740",
+    "median_ms": 93.69693756103516,
+    "frames": 69,
+    "binary_sha256": "b576a1aa7af5eef8ed8407408b36666e851ba302ffefa3f61a30e3385e5d4b8b",
+    "performance_eligible": false,
+    "contaminated_samples": 102
+  },
+  "quiet_off2": {
+    "mode": "0",
+    "run": "test-runs/alpine_survey_8_directions/1789926100-193098",
+    "median_ms": 100.93399810791016,
+    "frames": 69,
+    "binary_sha256": "b576a1aa7af5eef8ed8407408b36666e851ba302ffefa3f61a30e3385e5d4b8b",
+    "performance_eligible": false,
+    "contaminated_samples": 177
+  },
+  "mesh_off1": {
+    "mode": "0",
+    "run": "test-runs/alpine_survey_8_directions/1789926940-198292",
+    "median_ms": 85.03316497802734,
+    "frames": 69,
+    "binary_sha256": "2eb3292e82561b996f2053e80cb944749877e0c505b479dd6f2dc019551fa211",
+    "performance_eligible": true,
+    "contaminated_samples": 0
+  },
+  "mesh_on1": {
+    "mode": "mesh",
+    "run": "test-runs/alpine_survey_8_directions/1789927120-198582",
+    "median_ms": 80.57073211669922,
+    "frames": 69,
+    "binary_sha256": "2eb3292e82561b996f2053e80cb944749877e0c505b479dd6f2dc019551fa211",
+    "performance_eligible": true,
+    "contaminated_samples": 0
+  },
+  "mesh_light1": {
+    "mode": "mesh-light",
+    "run": "test-runs/alpine_survey_8_directions/1789927291-198949",
+    "median_ms": 80.6125259399414,
+    "frames": 69,
+    "binary_sha256": "2eb3292e82561b996f2053e80cb944749877e0c505b479dd6f2dc019551fa211",
+    "performance_eligible": true,
+    "contaminated_samples": 0
+  },
+  "mesh_off2": {
+    "mode": "0",
+    "run": "test-runs/alpine_survey_8_directions/1789927464-199254",
+    "median_ms": 85.2057113647461,
+    "frames": 69,
+    "binary_sha256": "2eb3292e82561b996f2053e80cb944749877e0c505b479dd6f2dc019551fa211",
+    "performance_eligible": true,
+    "contaminated_samples": 0
+  },
+  "snow_off1": {
+    "mode": "0",
+    "run": "test-runs/alpine_survey_8_directions/1789927782-199904",
+    "median_ms": 84.9925537109375,
+    "frames": 69,
+    "binary_sha256": "b179127ace4e1051764938be28d12f7b586cafb2ad23372db69c57277123c1aa",
+    "performance_eligible": true,
+    "contaminated_samples": 0
+  },
+  "snow_grain1": {
+    "mode": "snow-grain",
+    "run": "test-runs/alpine_survey_8_directions/1789927962-200240",
+    "median_ms": 82.94058227539062,
+    "frames": 69,
+    "binary_sha256": "b179127ace4e1051764938be28d12f7b586cafb2ad23372db69c57277123c1aa",
+    "performance_eligible": true,
+    "contaminated_samples": 0
+  },
+  "snow_combo1": {
+    "mode": "snow-mesh-light",
+    "run": "test-runs/alpine_survey_8_directions/1789928145-200602",
+    "median_ms": 79.7745590209961,
+    "frames": 69,
+    "binary_sha256": "b179127ace4e1051764938be28d12f7b586cafb2ad23372db69c57277123c1aa",
+    "performance_eligible": true,
+    "contaminated_samples": 0
+  },
+  "snow_off2": {
+    "mode": "0",
+    "run": "test-runs/alpine_survey_8_directions/1789928319-200858",
+    "median_ms": 86.60039520263672,
+    "frames": 69,
+    "binary_sha256": "b179127ace4e1051764938be28d12f7b586cafb2ad23372db69c57277123c1aa",
+    "performance_eligible": true,
+    "contaminated_samples": 0
+  }
+}
