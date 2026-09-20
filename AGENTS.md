@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Alpine material removal measurements, 20 September: clean controls 84.993/86.600ms versus 82.941ms with shorter snow fine-texture range, 79.775ms combined with sub-mesh fragment noise removal and lower land sunlight. Controls are pixel-identical; dominant patches and smeared rock remain. 525 app tests pass, 23 ignored; experimental branch only, no realism-score claim or live promotion.
+
 - Alpine material probes, 20 September: isolated opt-in removal tests separate the ice floor, noise-colour modulation, doubled direct light, sub-mesh noise normals and snow fine-texture range. Shader modes validate; initial clean controls measure 85.03/85.21ms versus 80.57ms without sub-mesh noise shading. No new visual acceptance or default change; snow-texture probes and independent review remain in progress.
 
 - Glacier export repair, 19 September: L3+ tile refinement was overwriting moraine/crevasse IDs with Ice, leaving only inherited borders; both labels now survive, with a failing-before export regression. The validated 3,252-tile corrected bake is installed, with Claude's third bake preserved at `assets/outmaps/test-planet.claude-third-backup-20260919`; heights, moisture, previews and manifest are identical. Two alpine timing pairs measure 88.362 -> 88.461ms, summit control 70.372 -> 70.251ms. Five headings change versus round 12, three are identical; restored labels produce tonal patches, not convincing glacier structure, so judges were not run and no realism/FPS improvement is claimed.

@@ -130,7 +130,9 @@ pub(crate) fn planet_shader_source() -> String {
     // Independent removal probes: never enable an unmeasured material trial
     // in a normal launch. One binary gives matched control/candidate captures.
     let alpine_trial = match std::env::var("CATINGARDEN_ALPINE_MATERIAL_TRIAL")
-        .ok().as_deref().map(str::trim)
+        .ok()
+        .as_deref()
+        .map(str::trim)
     {
         Some("floor") => 1,
         Some("grain") => 2,
@@ -4913,17 +4915,22 @@ mod tests {
     #[test]
     fn alpine_material_removal_modes_validate() {
         let source = planet_shader_source();
-        let setting = source.lines()
+        let setting = source
+            .lines()
             .find(|line| line.starts_with("const ALPINE_MATERIAL_TRIAL:"))
             .unwrap();
         for mode in [0, 1, 2, 3, 4, 7, 8, 12, 16, 28] {
-            let shader = source.replace(setting,
-                &format!("const ALPINE_MATERIAL_TRIAL: u32 = {mode}u;"));
+            let shader = source.replace(
+                setting,
+                &format!("const ALPINE_MATERIAL_TRIAL: u32 = {mode}u;"),
+            );
             let module = wgpu::naga::front::wgsl::parse_str(&shader).unwrap();
             wgpu::naga::valid::Validator::new(
                 wgpu::naga::valid::ValidationFlags::all(),
                 wgpu::naga::valid::Capabilities::all(),
-            ).validate(&module).unwrap();
+            )
+            .validate(&module)
+            .unwrap();
         }
     }
 
