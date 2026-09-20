@@ -1,0 +1,13 @@
+{"label": "720p_b64", "median": 49.4080696105957, "triangles": 147456.0, "chunks": 64.0}
+{"label": "720p_b1024", "median": 180.92601776123047, "triangles": 2359296.0, "chunks": 1024.0}
+{"label": "180p_b64", "median": 14.859330177307129, "triangles": 145152.0, "chunks": 63.0}
+{"label": "180p_b1024", "median": 102.9370231628418, "triangles": 2355840.0, "chunks": 1022.5}
+{"label": "720p_b64", "median": 49.63897132873535, "triangles": 147456.0, "chunks": 64.0}
+{"label": "720p_b1024", "median": 180.46021270751953, "triangles": 2359296.0, "chunks": 1024.0}
+{"label": "180p_b64", "median": 14.799285888671875, "triangles": 145152.0, "chunks": 63.0}
+{"label": "180p_b1024", "median": 103.82194519042969, "triangles": 2355840.0, "chunks": 1022.5}
+{"label": "720p_b64", "median": 48.58504104614258, "triangles": 147456.0, "chunks": 64.0}
+{"label": "720p_b1024", "median": 180.95487213134766, "triangles": 2359296.0, "chunks": 1024.0}
+{"label": "180p_b64", "median": 14.87020206451416, "triangles": 145152.0, "chunks": 63.0}
+{"label": "180p_b1024", "median": 103.7487678527832, "triangles": 2355840.0, "chunks": 1022.5}
+DONE

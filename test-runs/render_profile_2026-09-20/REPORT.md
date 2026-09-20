@@ -52,10 +52,33 @@ quarter-chunks at 51.1ms and the measurement is 19.0ms, so cutting the chunk
 budget saves far more than its triangle count can explain at unchanged
 resolution.
 
-The hypothesis that fits both is **overdraw**: at ground level the 256-chunk
-frontier shades the same pixels several times over, so chunk count scales
-fragment work and not just vertex work. It is a hypothesis, not a result -- the
-way to settle it is to count shaded fragments, not frames.
+The hypothesis that fits both was **overdraw**. It is wrong, and
+`overdraw.jsonl` is the measurement that killed it. Overdraw is fragment work,
+so the cost of extra chunks would have to shrink with the pixel count. Run the
+same two budgets at a sixteenth of the pixels:
+
+| condition | frame ms | spread | triangles |
+|---|---:|---:|---:|
+| 720p, budget 64 | 49.41 | 1.05 | 147,456 |
+| 720p, budget 1024 | 180.93 | 0.49 | 2,359,296 |
+| 320x180, budget 64 | 14.86 | 0.07 | 145,152 |
+| 320x180, budget 1024 | 103.75 | 0.88 | 2,355,840 |
+
+The chunk-budget spread is 131.5ms at 720p and **88.9ms at a sixteenth of the
+pixels** -- a ratio of 0.676 where overdraw demands 0.0625. It survives the
+pixel cut nearly intact, so chunk count costs **geometry, not fragments**, and
+**a depth prepass would not help**.
+
+What it does cost is startling: 40.2ns per triangle at 180p and 59.5ns at 720p,
+or about 25M triangles a second. An M1000M does not struggle to push 2.4M plain
+triangles; that rate is the *terrain vertex shader*, not fixed-function
+throughput. The gap between the two rates says roughly a third of the
+chunk-scaling cost is fragment-correlated and the rest is per-vertex.
+
+That makes the terrain vertex shader the next thing to measure. It is doing
+real work per vertex: a height sample, four more for central-difference
+normals, geomorph blending and per-vertex aerial perspective, at 2,304
+triangles per chunk on a canonical 33x33 grid that is the same at every LOD.
 
 ## Limits
 

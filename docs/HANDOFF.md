@@ -10571,3 +10571,35 @@ than baseline, which is impossible. One sweep at a time.
 **Limits.** One camera pose. Terrain's dominance will differ at orbit, where the
 frontier is a few coarse chunks, and over open ocean. Nothing here attributes
 cost inside a pass.
+
+## 20 September — the overdraw hypothesis is dead; terrain is vertex-bound
+
+The profile above suggested overdraw and a depth prepass. **That was wrong.**
+
+Overdraw is fragment work, so the cost of extra chunks would have to shrink with
+the pixel count. Running chunk budgets 64 and 1024 at both 1280x720 and 320x180:
+
+| condition | frame ms | spread | triangles |
+|---|---:|---:|---:|
+| 720p, budget 64 | 49.41 | 1.05 | 147,456 |
+| 720p, budget 1024 | 180.93 | 0.49 | 2,359,296 |
+| 180p, budget 64 | 14.86 | 0.07 | 145,152 |
+| 180p, budget 1024 | 103.75 | 0.88 | 2,355,840 |
+
+The chunk-budget spread is **131.5ms at 720p and 88.9ms at a sixteenth of the
+pixels** -- ratio 0.676, where overdraw demands 0.0625. It survives the pixel cut
+nearly intact. **Chunk count costs geometry, and a depth prepass would not help.**
+
+The rate is the interesting part: 40.2ns per triangle at 180p, 59.5ns at 720p,
+about **25M triangles a second**. An M1000M does not struggle to push 2.4M plain
+triangles, so that is the *terrain vertex shader*, not fixed-function throughput.
+The difference between the two rates puts roughly a third of the chunk-scaling
+cost on fragments and the rest per-vertex.
+
+**Next measurement, not next fix.** The terrain vertex shader does a height
+sample, four more for central-difference normals, geomorph blending and
+per-vertex aerial perspective, on a canonical 33x33 grid that is 2,304 triangles
+per chunk at *every* LOD. Ablate those terms one at a time with the same
+`CATINGARDEN_DISABLE`-style harness before changing anything. The candidate
+fixes are a coarser grid for distant chunks, cheaper normals, and moving aerial
+perspective off the vertex, but which one is worth doing is not yet measured.
