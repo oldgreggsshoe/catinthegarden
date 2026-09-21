@@ -5351,8 +5351,12 @@ mod tests {
         assert!(lighting.contains("clamp("));
         assert!(lighting.contains("ramp * ramp * ramp"));
         assert!(lighting.contains("min(fine_crest_transmission * 1.75, 1.0)"));
+        assert!(lighting.contains("OCEAN_FINE_CREST_TRANSMISSION_TINT * fine_crest"));
         assert!(lighting.contains("pow(max(dot(-view_direction, sun_direction_view), 0.0), 4.0)"));
         assert!(lighting.contains("OCEAN_CREST_TRANSMISSION_TINT"));
+        assert!(shader.contains(
+            "const OCEAN_FINE_CREST_TRANSMISSION_TINT: vec3<f32> = vec3<f32>(0.025, 0.160, 0.360);"
+        ));
         assert!(!lighting.contains("smoothstep(0.0"));
         assert!(!lighting.contains("vec3<f32>(0.025, 0.32, 0.22)"));
         let fine_crest = shader
@@ -5394,9 +5398,7 @@ mod tests {
             onset > 0.05 * budget,
             "onset {onset} is so low that calm water would transmit ({budget})"
         );
-        assert!(
-            lighting.contains("sun_transmittance * (SURFACE_SUNLIGHT_SCALE * crest * backlight)")
-        );
+        assert!(lighting.contains("sun_transmittance * (SURFACE_SUNLIGHT_SCALE * backlight)"));
         assert!(lighting.contains("(vec3<f32>(1.0) - fresnel)"));
         let terrain = shader.split("fn terrain_fragment_color(").nth(1).unwrap();
         let bottom = terrain.find("let bottom_height").unwrap();

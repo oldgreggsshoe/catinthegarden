@@ -57,7 +57,7 @@ the newest sections; the cloud-shadow saving is not yet measured.
 
 **Current small-wave detail (21 September):** an old fixed-water diagnostic was still zeroing the already-evaluated 180/70/28m normal-only ripple layer because its uniform lane was later repurposed for disabled horizontal transport. The broad geometric normal is now kept CPU-parity-safe while the retained ripple slope is applied once in fragment lighting. Exact-pose edge energy rises 2.28→2.47 (+8.4%) and the rounded small waves gain finer creases, with no new wave evaluations, samples, draws, geometry, or buoyancy change. Actual-WGSL CPU/GPU broad-normal parity still passes.
 
-**Current fine-crest transmission (21 September):** the restored normal-only ripple octave now feeds the existing restrained transmission term from positive ripple height plus steep local slope. The selector is squared spatially and remains fourth-power backlight-gated, so it adds green-blue light to about 1.4% of the matched `ocean_hybrid_close` frame rather than recolouring the sea; maximum channel change is 37/255. One same-machine replay pair measures 60.863→60.394ms, not enough for an FPS claim. Geometry, normals, depth, alpha, buoyancy, wave evaluations, texture samples and draw count are unchanged. The regular square/triangle raised-edge defect remains separate and unresolved.
+**Current fine-crest transmission (21 September):** the restored normal-only ripple octave selects positive, steep small crests and now has its own visible blue-green radiance instead of sharing the deliberately weak broad-crest tint. Across `ocean_hybrid_close/1790029744-444379`, only 1.22-1.60% of pixels move by more than four levels, with maximum RGB deltas 9/61/68. Three matched Immediate-present timing pairs have mixed signs and pooled medians 35.722→35.798ms (+0.21%, no established regression). Geometry, normals, depth, alpha, buoyancy, wave evaluations, texture samples and draw count are unchanged. User visual acceptance and the regular square/triangle raised-edge defect remain separate and unresolved.
 
 **Current peak judging (21 September, round 19):** **2.0/10**, unchanged from round 17 despite eight
 chosen compositions, a viewpoint with real rock and level framing -- so neither the site nor the
@@ -10881,3 +10881,28 @@ catinthegarden-app --release ocean` passes, 62 passed and 12 ignored; the focuse
 release replay passes at `test-runs/ocean_hybrid_close/1789975619-330460` with four captures. The
 reviewed first frame no longer has the broad turquoise sheet; remaining crest brightness is mostly
 specular/foam. No FPS claim is made.
+
+## 21 September — fine-crest transmission made visible
+
+The first fine-ripple transmission pass was numerically present but failed its actual requirement:
+Ian could not see it in the ordinary capture without pixel analysis. The cause was the lighting
+composition, not the selector. The already-localized positive-height/steep-slope selector moved
+about 1.4% of the image, but it shared the deliberately weak broad-crest tint which had been tuned
+to disappear after exposure and tonemapping.
+
+Broad crests retain that restrained `vec3(0.018, 0.045, 0.040)` tint. Fine crests now use a separate
+`vec3(0.025, 0.160, 0.360)` blue-green radiance under the same fourth-power backlight, sunlight and
+Fresnel gates. This changes no geometry, normal, depth, alpha, buoyancy, wave evaluation, texture
+sample or draw. It adds one localized tint composition in the existing ocean fragment lighting.
+
+The four-frame release replay `ocean_hybrid_close/1790029744-444379` passes and shows the cyan-green
+light at normal size on small crests facing away from the low sun. Against the weak prior pass,
+1.22-1.60% of pixels move by more than four levels and the largest RGB change is 9/61/68. This is
+capture evidence, not yet Ian's visual acceptance. Three interleaved Immediate-present pairs have
+mixed signs: 35.793→36.205ms, 35.722→35.334ms, and 35.627→35.798ms; pooled medians are
+35.722→35.798ms (+0.21%), so there is no established performance regression or gain.
+
+The focused shader regression failed before the split tint and passes after. The release ocean
+filter passes 65 tests with 12 ignored; formatting, release build and replay pass. Validation used
+the committed 1.0 wave scale while preserving and excluding the unrelated local 2.0 scale edit.
+The regular square/triangle raised-edge pattern remains a separate unresolved defect.

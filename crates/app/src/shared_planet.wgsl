@@ -534,6 +534,10 @@ const OCEAN_CREST_TRANSMISSION_FULL: f32 = 1.534;
 // are mostly foam and specular; thin-water colour should only bias the most
 // strongly backlit sharp crests.
 const OCEAN_CREST_TRANSMISSION_TINT: vec3<f32> = vec3<f32>(0.018, 0.045, 0.040);
+// Fine ripple crests cover very little screen area, so the restrained broad-
+// crest tint above disappeared through exposure and tone mapping. Give only
+// that already-localised selector enough blue-green radiance to read by eye.
+const OCEAN_FINE_CREST_TRANSMISSION_TINT: vec3<f32> = vec3<f32>(0.025, 0.160, 0.360);
 // How far into breaking a crest must be before it starts going white. Below
 // this the wave is merely feeling the bottom, not yet breaking on it.
 // How far past the depth limit a crest must be before it whitens, and where it
@@ -3464,13 +3468,13 @@ fn ocean_lighting(
         0.0,
         1.0,
     );
-    let crest = max(
-        ramp * ramp * ramp,
-        min(fine_crest_transmission * 1.75, 1.0),
-    );
+    let crest = ramp * ramp * ramp;
+    let fine_crest = min(fine_crest_transmission * 1.75, 1.0);
     let backlight = pow(max(dot(-view_direction, sun_direction_view), 0.0), 4.0);
-    let transmitted = OCEAN_CREST_TRANSMISSION_TINT
-        * sun_transmittance * (SURFACE_SUNLIGHT_SCALE * crest * backlight)
+    let transmission_tint = OCEAN_CREST_TRANSMISSION_TINT * crest
+        + OCEAN_FINE_CREST_TRANSMISSION_TINT * fine_crest;
+    let transmitted = transmission_tint
+        * sun_transmittance * (SURFACE_SUNLIGHT_SCALE * backlight)
         * (vec3<f32>(1.0) - fresnel);
     return diffuse + transmitted
         + reflected_color * fresnel * daylight * OCEAN_REFLECTION_SCALE
