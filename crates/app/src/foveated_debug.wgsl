@@ -1360,14 +1360,15 @@ fn shade_ocean(
         water_surface_height,
         sun_direction,
     );
+    let shading_normal = ocean_shading_normal(surface);
     let sky_diffuse = sky_diffuse_irradiance(
-        surface.normal,
+        shading_normal,
         surface_direction,
         water_surface_height,
         sun_direction,
     );
     let surface_color = ocean_lighting(
-        surface.normal,
+        shading_normal,
         surface.crest_sharpness,
         hit_view_position,
         sun_transmittance,

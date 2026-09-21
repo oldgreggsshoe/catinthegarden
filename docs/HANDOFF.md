@@ -55,6 +55,8 @@ the newest sections; the cloud-shadow saving is not yet measured.
 
 **Current steep-view ocean glitter (21 September):** exact-pose A/Bs proved the large rectangular light cells are the direct-sun specular lobe: disabling specular removes them, while disabling cubemap reflection does not. Narrowing the existing lobe exponent from 128 to 512 turns the blocks into separated highlights with no new samples or arithmetic category. The rejected crest-convergence whitecap gate was reverted because the user's new capture showed no visible improvement.
 
+**Current small-wave detail (21 September):** an old fixed-water diagnostic was still zeroing the already-evaluated 180/70/28m normal-only ripple layer because its uniform lane was later repurposed for disabled horizontal transport. The broad geometric normal is now kept CPU-parity-safe while the retained ripple slope is applied once in fragment lighting. Exact-pose edge energy rises 2.28→2.47 (+8.4%) and the rounded small waves gain finer creases, with no new wave evaluations, samples, draws, geometry, or buoyancy change. Actual-WGSL CPU/GPU broad-normal parity still passes.
+
 **Current peak judging (21 September, round 19):** **2.0/10**, unchanged from round 17 despite eight
 chosen compositions, a viewpoint with real rock and level framing -- so neither the site nor the
 framing was what judges were marking down. Their first two complaints are shape, not shading: no

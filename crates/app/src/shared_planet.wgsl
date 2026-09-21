@@ -1405,13 +1405,6 @@ fn ocean_surface(
         shore_weight,
         water_depth_meters,
     );
-    if camera.flat_triangle_options.z > 0.5 {
-        // Fixed water-following diagnostics compare against the broad CPU
-        // sample. Remove sub-mesh ripples whose wavelengths are below the
-        // coarse triangle spacing; otherwise interpolation can visibly put
-        // the eye above one vertex and below its neighbouring crest.
-        ripple = OceanWaveContribution(vec3<f32>(0.0), 0.0, vec3<f32>(0.0), 0.0);
-    }
     if OCEAN_LARGE_SWELL_ONLY {
         // The ripple layer is a shorter octave by definition, so the large
         // swell diagnostic drops it whatever the camera is doing.
@@ -1458,11 +1451,18 @@ fn ocean_surface(
         breaking_ratio,
         horizontal * limited * horizontal_transport,
         vertical * limited,
-        normalize(direction - slope * limited_slope - ripple.slope),
+        // Geometry and CPU buoyancy share this broad normal. The already-paid
+        // sub-mesh ripple slope stays separate for fragment lighting so it can
+        // sharpen the smallest visible waves without moving the mesh or eye.
+        normalize(direction - slope * limited_slope),
         ripple.vertical_displacement,
         ripple.slope,
         convergence * geometry_weight * geometry_amplitude_scale,
     );
+}
+
+fn ocean_shading_normal(surface: OceanSurface) -> vec3<f32> {
+    return normalize(surface.normal - surface.ripple_slope);
 }
 
 fn flat_ocean_surface(direction: vec3<f32>) -> OceanSurface {

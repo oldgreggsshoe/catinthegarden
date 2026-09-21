@@ -395,14 +395,15 @@ fn ocean_with_aerial_perspective(
         surface.vertical_displacement,
         sun_direction,
     );
+    let shading_normal = ocean_shading_normal(surface);
     let sky_diffuse = sky_diffuse_irradiance(
-        surface.normal,
+        shading_normal,
         direction,
         surface.vertical_displacement,
         sun_direction,
     );
     let water_color = ocean_lighting(
-        surface.normal,
+        shading_normal,
         surface.crest_sharpness,
         camera_relative_view_position,
         sun_transmittance,
@@ -2216,7 +2217,7 @@ fn ocean_fragment_with_transmission_mode(input: OceanVertexOutput, bed: vec4<f32
     // grid does not flash as a false raised ridge, while retaining smooth wave
     // normals across the rest of the view. This is normal arithmetic only: no
     // extra wave evaluation, texture fetch, or draw.
-    let analytic_normal = normalize(surface.normal);
+    let analytic_normal = ocean_shading_normal(surface);
     let vertex_normal = normalize(input.smooth_normal);
     let analytic_facing = max(
         dot(normalize(planet_to_view(analytic_normal)), normalize(-input.camera_relative_view_position)),

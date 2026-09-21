@@ -5499,6 +5499,25 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn sub_mesh_ripples_sharpen_shading_without_moving_the_ocean_mesh() {
+        let shader = planet_shader_source();
+        let surface = shader
+            .split("fn ocean_surface(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("ocean surface is present");
+        assert!(surface.contains("normalize(direction - slope * limited_slope),"));
+        assert!(
+            !surface.contains(
+                "camera.flat_triangle_options.z > 0.5 {\n        // Fixed water-following"
+            )
+        );
+        assert!(shader.contains(
+            "fn ocean_shading_normal(surface: OceanSurface) -> vec3<f32> {\n    return normalize(surface.normal - surface.ripple_slope);"
+        ));
+    }
+
     /// The LOD selector's error budget has to know about the synthesised
     /// ladder, or it caps how steep the terrain may be without anyone saying
     /// so. This is the arithmetic that connects them.
