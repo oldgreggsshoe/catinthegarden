@@ -183,10 +183,15 @@ impl AtmosphereRenderer {
             ],
         });
 
-        let common = &format!(
-            "{}\n{}",
-            crate::body::wgsl_constants(),
-            include_str!("atmosphere_lut_common.wgsl")
+        let common = &crate::planet::retune_air_scale_heights(
+            format!(
+                "{}\n{}",
+                crate::body::wgsl_constants(),
+                include_str!("atmosphere_lut_common.wgsl")
+            ),
+            // The LUTs integrate in an optical space compressed by this much,
+            // so a real-altitude target has to be divided by it here.
+            4.5,
         );
         let transmittance_shader = shader_module(
             device,

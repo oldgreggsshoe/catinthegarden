@@ -450,12 +450,84 @@ pub(crate) fn render_feature_constants() -> String {
     )
 }
 
+/// Diagnostic: retune both atmospheres to one effective Rayleigh scale height,
+/// given in kilometres.
+///
+/// There are two of them and they do not agree. `shared_planet.wgsl` works in
+/// real altitudes with a 72km scale height and drives terrain fog and aerial
+/// perspective; the LUTs work in an optical space compressed 4.5x with an 8km
+/// scale height, an **effective 36km**, and drive the sky, the sun and the
+/// skylight that lights the ground. So what lights the surface and what you see
+/// above it are using air of different thickness -- a factor of two apart.
+///
+/// The question this exists to answer is how much taller the air should be.
+/// Terrain here is 21.1x Earth's vertical scale (a 186.7km summit against
+/// Everest's 8,849m), so matching that asks for 179km, which is 2.5x the fog
+/// path and 5x the LUT path. At the present numbers the alpine judging camera
+/// stands in 33% of sea-level density by one path and 11% by the other, where
+/// Jungfraujoch is at 66%.
+///
+/// `CATINGARDEN_AIR_SCALE_HEIGHT_KM=179` sets both to the same target. Unset,
+/// every constant is left exactly as written.
+pub(crate) fn air_scale_height_override_meters() -> Option<f32> {
+    static OVERRIDE: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *OVERRIDE.get_or_init(|| {
+        std::env::var("CATINGARDEN_AIR_SCALE_HEIGHT_KM")
+            .ok()
+            .and_then(|value| value.trim().parse::<f32>().ok())
+            .filter(|km| km.is_finite() && *km > 1.0 && *km < 4000.0)
+            .map(|km| km * 1000.0)
+    })
+}
+
+/// Rewrites the scale-height constants in one shader source to the override.
+///
+/// `optical_divisor` is the vertical compression that source works in: 1 for
+/// real altitudes, 4.5 for the LUTs. Mie keeps its existing ratio to Rayleigh,
+/// because aerosol sits low in any atmosphere and that relationship is not what
+/// is in question here.
+pub(crate) fn retune_air_scale_heights(source: String, optical_divisor: f32) -> String {
+    let Some(target) = air_scale_height_override_meters() else {
+        return source;
+    };
+    let mut out = String::with_capacity(source.len());
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        let rewritten = if trimmed.starts_with("const RAYLEIGH_SCALE_HEIGHT_METERS") {
+            Some(target / optical_divisor)
+        } else if trimmed.starts_with("const MIE_SCALE_HEIGHT_METERS") {
+            // Earth's aerosol scale height is 1,200m against 8,500m of air.
+            Some(target * (1200.0 / 8500.0) / optical_divisor)
+        } else {
+            None
+        };
+        match rewritten {
+            Some(metres) => {
+                let name = trimmed
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("")
+                    .trim_end_matches(':');
+                out.push_str(&format!("const {name}: f32 = {metres:.1};\n"));
+            }
+            None => {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
 pub(crate) fn shared_planet_shader_source() -> String {
-    format!(
-        "{}\n{}\n{}",
-        crate::body::wgsl_constants(),
-        crate::ocean::wgsl_constants(),
-        include_str!("shared_planet.wgsl")
+    retune_air_scale_heights(
+        format!(
+            "{}\n{}\n{}",
+            crate::body::wgsl_constants(),
+            crate::ocean::wgsl_constants(),
+            include_str!("shared_planet.wgsl")
+        ),
+        1.0,
     )
 }
 
