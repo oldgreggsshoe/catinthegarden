@@ -4983,6 +4983,34 @@ mod tests {
         after.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
+    /// A pale ribbon down every ice/rock border, which three judges picked out
+    /// of the round 19 views as "a hard pale diagonal line".
+    ///
+    /// The shed replacement used to be weighted by a smoothstep on the blended
+    /// palette's *luminance*, standing in for how much of the ground is snow.
+    /// Across a border that proxy leaves a strip only half-replaced, so the ice
+    /// palette's brightness partly survives between two dark faces: measured at
+    /// two to three times either side. Weighting it by anything at all brings
+    /// the ribbon back, so the test is that the weight is the shed alone.
+    #[test]
+    fn steep_ground_sheds_its_snow_palette_without_a_luminance_proxy() {
+        let shader = planet_shader_source();
+        let material = shader
+            .split("fn terrain_material_color(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("the material chain is present");
+        assert!(
+            !material.contains("snow_palette"),
+            "the palette-luminance proxy is back, and with it the pale border ribbon"
+        );
+        assert!(
+            call_arguments(material, "biome_color(8u) * mix(0.88, 1.06, moisture),")
+                .starts_with("1.0 - snow_slope_hold(slope, biome),"),
+            "the shed replacement is weighted by something other than the shed"
+        );
+    }
+
     #[test]
     fn raster_land_uses_smoothed_displaced_normals_for_close_snow() {
         let shader = planet_shader_source();
