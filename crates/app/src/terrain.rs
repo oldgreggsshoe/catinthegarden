@@ -5068,6 +5068,21 @@ mod tests {
     }
 
     #[test]
+    fn open_ocean_whitecaps_require_converging_crests() {
+        let shader = planet_shader_source();
+        let foam = shader
+            .split("fn ocean_foam_coverage(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("ocean foam coverage is present");
+        assert!(foam.contains("crest_sharpness: f32"));
+        assert!(foam.contains("smoothstep(0.95, 1.534, crest_sharpness)"));
+        assert!(shader.contains(
+            "vec3<f32>(surface.vertical_displacement, surface.breaking_ratio, surface.crest_sharpness)"
+        ));
+    }
+
+    #[test]
     fn ocean_grazing_lighting_biases_toward_the_mesh_normal() {
         let shader = planet_shader_source();
         let ocean = shader

@@ -129,7 +129,7 @@ struct OceanVertexOutput {
     // its per-fragment wave normals and glints.
     @location(8) smooth_normal: vec3<f32>,
     @location(9) ripple_slope: vec3<f32>,
-    @location(10) vertical_and_breaking: vec2<f32>,
+    @location(10) vertical_breaking_and_crest: vec3<f32>,
 }
 
 fn uses_outmap(terrain_info: u32) -> bool {
@@ -960,7 +960,7 @@ fn vs_ocean(input: VertexInput) -> OceanVertexOutput {
         surface.normal,
         surface.normal,
         surface.ripple_slope,
-        vec2<f32>(surface.vertical_displacement, surface.breaking_ratio),
+        vec3<f32>(surface.vertical_displacement, surface.breaking_ratio, surface.crest_sharpness),
     );
 }
 
@@ -1674,6 +1674,7 @@ fn flat_ocean_colour(input: OceanVertexOutput, macro_height_meters: f32) -> vec4
                 max(-macro_height_meters, 0.0),
                 surface.vertical_displacement,
                 surface.breaking_ratio,
+                surface.crest_sharpness,
                 normal,
                 direction,
             ),
@@ -2082,11 +2083,11 @@ fn ocean_underside_fragment(input: OceanVertexOutput) -> vec4<f32> {
     }
     let normal = normalize(input.smooth_normal);
     let ripple_slope = input.ripple_slope;
-    let vertical_displacement = input.vertical_and_breaking.x;
-    let breaking_ratio = input.vertical_and_breaking.y;
+    let vertical_displacement = input.vertical_breaking_and_crest.x;
+    let breaking_ratio = input.vertical_breaking_and_crest.y;
     let foam = ocean_foam_coverage(
         max(-macro_height_meters, 0.0), vertical_displacement,
-        breaking_ratio, normal, direction,
+        breaking_ratio, input.vertical_breaking_and_crest.z, normal, direction,
     );
     return vec4<f32>(
         ocean_depth_aware_distance_fog(
@@ -2141,13 +2142,13 @@ fn ocean_underside_reflecting_fragment(input: OceanVertexOutput) -> vec4<f32> {
     }
     let normal = normalize(input.smooth_normal);
     let ripple_slope = input.ripple_slope;
-    let vertical_displacement = input.vertical_and_breaking.x;
-    let breaking_ratio = input.vertical_and_breaking.y;
+    let vertical_displacement = input.vertical_breaking_and_crest.x;
+    let breaking_ratio = input.vertical_breaking_and_crest.y;
     let normal_view = normalize(planet_to_view(normalize(normal - ripple_slope)));
     let water_depth_meters = max(vertical_displacement - macro_height_meters, 0.0);
     let foam = ocean_foam_coverage(
         max(-macro_height_meters, 0.0), vertical_displacement,
-        breaking_ratio, normal, direction,
+        breaking_ratio, input.vertical_breaking_and_crest.z, normal, direction,
     );
     let reflected = ocean_scene_reflection(
         input.camera_relative_view_position, normal_view, water_depth_meters,
@@ -2245,6 +2246,7 @@ fn ocean_fragment_with_transmission_mode(input: OceanVertexOutput, bed: vec4<f32
         max(-macro_height_meters, 0.0),
         surface.vertical_displacement,
         surface.breaking_ratio,
+        surface.crest_sharpness,
         lighting_normal,
         direction,
     );
