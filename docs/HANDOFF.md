@@ -51,6 +51,14 @@ about 23ms is still unattributed. Cloud shadow (4.08ms, and zero pixels changed 
 **temporarily switched off** at Ian's request, and interactive startup no longer turns blur on. See
 the newest sections; the cloud-shadow saving is not yet measured.
 
+**Current peak judging (21 September, round 19):** **2.0/10**, unchanged from round 17 despite eight
+chosen compositions, a viewpoint with real rock and level framing -- so neither the site nor the
+framing was what judges were marking down. Their first two complaints are shape, not shading: no
+rock that reads as rock, and ridges rounded "like whipped cream" when real ones are toothed. One
+judge named round 15's short-wave lift as "combed hair or ripples". Next real gain is anisotropic
+terrain structure -- ridgelines, faces, strata -- not more shader work. See
+`test-runs/peak_judging_2026-09-15/round19/RESULTS.md`.
+
 **Current peak judging (21 September, round 17):** **2.0/10**, against 2.7 at the same viewpoint in
 round 11. Three independent judges named: no rock, the tint's "leopard spots", a repeating fish-scale
 patch, grey-never-blue shadows, violet distant peaks with a pink strip, and -- the new one -- the
