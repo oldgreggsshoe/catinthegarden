@@ -62,3 +62,28 @@ together is a bigger piece of work than one constant.
 
 Nothing is promoted. The knob is committed as a diagnostic, defaulting to the
 constants exactly as written.
+
+## The alternative: thicken the fog and leave the sky alone
+
+The obvious way out is to move only the path that helps. `CATINGARDEN_AIR_SKY_UNCHANGED=1`
+thickens terrain fog and aerial perspective to 179km and leaves the sky, sun and
+skylight LUTs exactly as shipped. `decoupling-attempt.png`.
+
+**It does not work, and the reason is worth keeping.**
+
+| | distant peak toward sky | ground saturation | orbit halo |
+|---|---:|---:|---:|
+| as shipped | 81% | 0.059 | 37.2% |
+| 120km both | 93% | 0.042 | 48.0% |
+| 179km fog only | **81%** | 0.073 | **37.3%** |
+
+The limb is preserved exactly, as intended. But the distant peak does not pale
+at all: **the haze that makes distance read comes from the LUT-driven aerial
+perspective, not from the terrain mist**, and that is the same path that
+thickens the limb. The two cannot be separated by this knob.
+
+Worse, from orbit the planet itself goes milky -- the terrain mist applies to
+the radial column too, so the continents bleach while the limb stays thin.
+
+So the choice is not "ground or limb". It is: accept a heavier limb, or resize
+the shells the limb is drawn in, or leave the air as it is.

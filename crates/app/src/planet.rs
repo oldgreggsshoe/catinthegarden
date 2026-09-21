@@ -490,6 +490,20 @@ pub(crate) fn retune_air_scale_heights(source: String, optical_divisor: f32) -> 
     let Some(target) = air_scale_height_override_meters() else {
         return source;
     };
+    // The two paths can be moved separately, because they fail in opposite
+    // directions: thicker air is what the ground wants and a thicker limb is
+    // what orbit does not. `CATINGARDEN_AIR_SKY_UNCHANGED=1` thickens only the
+    // terrain fog and aerial perspective and leaves the sky, the sun and the
+    // skylight LUTs exactly as shipped.
+    let sky_unchanged = matches!(
+        std::env::var("CATINGARDEN_AIR_SKY_UNCHANGED")
+            .as_deref()
+            .map(str::trim),
+        Ok("1" | "true" | "on")
+    );
+    if sky_unchanged && optical_divisor != 1.0 {
+        return source;
+    }
     let mut out = String::with_capacity(source.len());
     for line in source.lines() {
         let trimmed = line.trim_start();
