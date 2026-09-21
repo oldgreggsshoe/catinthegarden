@@ -1465,6 +1465,17 @@ fn ocean_shading_normal(surface: OceanSurface) -> vec3<f32> {
     return normalize(surface.normal - surface.ripple_slope);
 }
 
+fn ocean_fine_crest_transmission(surface: OceanSurface) -> f32 {
+    // The normal-only ripple octave has no Gerstner convergence because it
+    // deliberately does not transport geometry. Select its thin upper faces
+    // from quantities it does carry: positive crest height and a steep local
+    // slope. Squaring both ramps confines transmission to small highlights
+    // instead of tinting the whole wave field.
+    let upper_face = smoothstep(0.0, 1.2, surface.ripple_height);
+    let steep_face = smoothstep(0.12, 0.32, length(surface.ripple_slope));
+    return upper_face * upper_face * steep_face * steep_face;
+}
+
 fn flat_ocean_surface(direction: vec3<f32>) -> OceanSurface {
     return OceanSurface(
         0.0,
@@ -3399,6 +3410,7 @@ fn ocean_underside_colour(
 fn ocean_lighting(
     normal: vec3<f32>,
     crest_sharpness: f32,
+    fine_crest_transmission: f32,
     camera_relative_view_position: vec3<f32>,
     sun_transmittance: vec3<f32>,
     sky_diffuse: vec3<f32>,
@@ -3452,8 +3464,11 @@ fn ocean_lighting(
         0.0,
         1.0,
     );
-    let crest = ramp * ramp * ramp;
-    let backlight = pow(max(dot(-view_direction, sun_direction_view), 0.0), 8.0);
+    let crest = max(
+        ramp * ramp * ramp,
+        min(fine_crest_transmission * 1.75, 1.0),
+    );
+    let backlight = pow(max(dot(-view_direction, sun_direction_view), 0.0), 4.0);
     let transmitted = OCEAN_CREST_TRANSMISSION_TINT
         * sun_transmittance * (SURFACE_SUNLIGHT_SCALE * crest * backlight)
         * (vec3<f32>(1.0) - fresnel);

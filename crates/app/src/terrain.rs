@@ -5350,10 +5350,19 @@ mod tests {
         // the ramp was retuned, so assert the relationships that matter.
         assert!(lighting.contains("clamp("));
         assert!(lighting.contains("ramp * ramp * ramp"));
-        assert!(lighting.contains("pow(max(dot(-view_direction, sun_direction_view), 0.0), 8.0)"));
+        assert!(lighting.contains("min(fine_crest_transmission * 1.75, 1.0)"));
+        assert!(lighting.contains("pow(max(dot(-view_direction, sun_direction_view), 0.0), 4.0)"));
         assert!(lighting.contains("OCEAN_CREST_TRANSMISSION_TINT"));
         assert!(!lighting.contains("smoothstep(0.0"));
         assert!(!lighting.contains("vec3<f32>(0.025, 0.32, 0.22)"));
+        let fine_crest = shader
+            .split("fn ocean_fine_crest_transmission(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("fine crest transmission selector is present");
+        assert!(fine_crest.contains("surface.ripple_height"));
+        assert!(fine_crest.contains("length(surface.ripple_slope)"));
+        assert!(fine_crest.contains("upper_face * upper_face * steep_face * steep_face"));
         let constant = |name: &str| -> f64 {
             let tail = shader
                 .split(&format!("const {name}: f32 = "))

@@ -57,6 +57,8 @@ the newest sections; the cloud-shadow saving is not yet measured.
 
 **Current small-wave detail (21 September):** an old fixed-water diagnostic was still zeroing the already-evaluated 180/70/28m normal-only ripple layer because its uniform lane was later repurposed for disabled horizontal transport. The broad geometric normal is now kept CPU-parity-safe while the retained ripple slope is applied once in fragment lighting. Exact-pose edge energy rises 2.28→2.47 (+8.4%) and the rounded small waves gain finer creases, with no new wave evaluations, samples, draws, geometry, or buoyancy change. Actual-WGSL CPU/GPU broad-normal parity still passes.
 
+**Current fine-crest transmission (21 September):** the restored normal-only ripple octave now feeds the existing restrained transmission term from positive ripple height plus steep local slope. The selector is squared spatially and remains fourth-power backlight-gated, so it adds green-blue light to about 1.4% of the matched `ocean_hybrid_close` frame rather than recolouring the sea; maximum channel change is 37/255. One same-machine replay pair measures 60.863→60.394ms, not enough for an FPS claim. Geometry, normals, depth, alpha, buoyancy, wave evaluations, texture samples and draw count are unchanged. The regular square/triangle raised-edge defect remains separate and unresolved.
+
 **Current peak judging (21 September, round 19):** **2.0/10**, unchanged from round 17 despite eight
 chosen compositions, a viewpoint with real rock and level framing -- so neither the site nor the
 framing was what judges were marking down. Their first two complaints are shape, not shading: no
