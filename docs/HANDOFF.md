@@ -51,9 +51,9 @@ about 23ms is still unattributed. Cloud shadow (4.08ms, and zero pixels changed 
 **temporarily switched off** at Ian's request, and interactive startup no longer turns blur on. See
 the newest sections; the cloud-shadow saving is not yet measured.
 
-**Current ocean whitecaps (21 September):** open-ocean whitecaps now require horizontal crest convergence as well as slope and height, so crossing waves no longer fill broad square interference cells with foam. The convergence value is packed into the existing final ocean varying slot; there are no extra wave samples, textures, draws, or geometry. `ocean_ship_float` shows narrower crest-following foam; matched performance remains noisy and no FPS claim is made.
-
 **Current ocean mesh-seam mitigation (21 September):** a grazing-angle-only 20% blend toward the interpolated vertex wave normal suppresses the false triangle-grid glints while retaining the analytic wave normal elsewhere. The deterministic `ocean_hybrid_close` capture lowers a foreground edge-energy proxy 11.83→10.81%; no extra samples or draws. A matched performance pair is still outstanding.
+
+**Current steep-view ocean glitter (21 September):** exact-pose A/Bs proved the large rectangular light cells are the direct-sun specular lobe: disabling specular removes them, while disabling cubemap reflection does not. Narrowing the existing lobe exponent from 128 to 512 turns the blocks into separated highlights with no new samples or arithmetic category. The rejected crest-convergence whitecap gate was reverted because the user's new capture showed no visible improvement.
 
 **Current peak judging (21 September, round 19):** **2.0/10**, unchanged from round 17 despite eight
 chosen compositions, a viewpoint with real rock and level framing -- so neither the site nor the

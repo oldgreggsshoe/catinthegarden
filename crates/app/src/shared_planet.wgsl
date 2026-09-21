@@ -1296,7 +1296,6 @@ fn ocean_foam_coverage(
     still_depth_meters: f32,
     surface_height_meters: f32,
     breaking_ratio: f32,
-    crest_sharpness: f32,
     normal: vec3<f32>,
     up: vec3<f32>,
 ) -> f32 {
@@ -1310,9 +1309,6 @@ fn ocean_foam_coverage(
     let column_meters = still_depth_meters + surface_height_meters;
     let wash = 1.0 - smoothstep(0.0, OCEAN_SURF_COLUMN_METERS, max(column_meters, 0.0));
     let surf = max(crest_foam, wash * wash);
-    // Slope and height alone select broad interference cells where crossing
-    // waves happen to add. Require actual horizontal convergence as well, so
-    // white water follows narrow crest ridges instead of filling square blobs.
     let whitecap = smoothstep(
         OCEAN_WHITECAP_SLOPE_ONSET,
         OCEAN_WHITECAP_SLOPE_FULL,
@@ -1321,7 +1317,7 @@ fn ocean_foam_coverage(
         OCEAN_WHITECAP_CREST_LOW_FRACTION * OCEAN_MAXIMUM_WAVE_HEIGHT_METERS,
         OCEAN_WHITECAP_CREST_HIGH_FRACTION * OCEAN_MAXIMUM_WAVE_HEIGHT_METERS,
         surface_height_meters,
-    ) * smoothstep(0.95, 1.534, crest_sharpness);
+    );
     // Foam has to be made of water. Without this it keys off a depth of zero
     // and whitens ground the sea is barely covering.
     let has_water = smoothstep(0.0, OCEAN_FOAM_MINIMUM_DEPTH_METERS, still_depth_meters);
@@ -3420,7 +3416,11 @@ fn ocean_lighting(
     let facing = max(dot(normal_view, view_direction), 0.0);
     let fresnel = vec3<f32>(0.02) + vec3<f32>(0.98) * pow(1.0 - facing, 5.0);
     let half_vector = normalize(sun_direction_view + view_direction);
-    let specular = pow(max(dot(normal_view, half_vector), 0.0), 128.0);
+    // Keep the solar glitter narrower than the resolved swell facets. A broad
+    // lobe turns the regular wave-normal field into large rectangular pools of
+    // light in steep-down views; the narrower lobe reads as separated glints
+    // without adding another normal or texture sample.
+    let specular = pow(max(dot(normal_view, half_vector), 0.0), 512.0);
     let daylight = max(max(sun_transmittance.x, sun_transmittance.y), sun_transmittance.z);
     // Keep the water body a dark blue; direct sunlight and reflection still
     // provide the daylight highlights and glints.
