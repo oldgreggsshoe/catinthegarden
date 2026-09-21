@@ -10854,3 +10854,22 @@ passes under the same target; release build passes; `ocean_wind_trial` release r
 `ocean_wind_trial` capture, both frames change about 581k of 921.6k pixels with max channel delta
 201-202, so the table change is visible. No matched FPS claim was made because the instruction count
 is unchanged rather than timed.
+
+## 21 September — crest transmission de-turquoised
+
+Ian called the open-ocean crest transmission out as unrealistically turquoise: the 7 September
+`ocean_hybrid_close/1788800036-415020` frames read as glowing tropical sheets, and reference open
+water does not. The crest term is therefore retuned as a subtle edge accent instead of a water
+colour: the old `vec3(0.025, 0.32, 0.22)` tint is replaced with a much weaker, less saturated
+`OCEAN_CREST_TRANSMISSION_TINT = vec3(0.018, 0.045, 0.040)`, the p90/p99 sharpness anchors are
+unchanged, the ramp is cubed instead of squared, and the backlight gate is tightened from `pow(...,
+4)` to `pow(..., 8)`. Foam, specular, geometry, wave tables, buoyancy and seabed transmission are
+unchanged.
+
+Validation: `CARGO_TARGET_DIR=/home/dad/catingard/target-ocean-spectrum cargo test -p
+catinthegarden-app --release ocean` passes, 62 passed and 12 ignored; the focused terrain guard
+`ocean_shader_transmits_sunlight_and_retains_submerged_bathymetry` and ocean guard
+`crest_transmission_tracks_the_sea_state_uniform` pass; release build passes; `ocean_hybrid_close`
+release replay passes at `test-runs/ocean_hybrid_close/1789975619-330460` with four captures. The
+reviewed first frame no longer has the broad turquoise sheet; remaining crest brightness is mostly
+specular/foam. No FPS claim is made.

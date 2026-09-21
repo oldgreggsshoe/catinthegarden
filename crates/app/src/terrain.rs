@@ -5288,11 +5288,15 @@ mod tests {
         // that regression has come back with it.
         assert!(lighting.contains("crest_sharpness"));
         assert!(!lighting.contains("crest_height_meters"));
-        // Linear, not smoothstep: the ramp must not accelerate through its
-        // middle. Pinning the literal broke the moment the ramp was retuned, so
-        // read the constants and assert the relationships that actually matter.
+        // Explicit power curve, not smoothstep: keep the tint confined to the
+        // strongest backlit sharp crests. Pinning every literal broke the moment
+        // the ramp was retuned, so assert the relationships that matter.
         assert!(lighting.contains("clamp("));
+        assert!(lighting.contains("ramp * ramp * ramp"));
+        assert!(lighting.contains("pow(max(dot(-view_direction, sun_direction_view), 0.0), 8.0)"));
+        assert!(lighting.contains("OCEAN_CREST_TRANSMISSION_TINT"));
         assert!(!lighting.contains("smoothstep(0.0"));
+        assert!(!lighting.contains("vec3<f32>(0.025, 0.32, 0.22)"));
         let constant = |name: &str| -> f64 {
             let tail = shader
                 .split(&format!("const {name}: f32 = "))

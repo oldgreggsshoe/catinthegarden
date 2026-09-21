@@ -530,6 +530,10 @@ const OCEAN_BODY_COLOUR: vec3<f32> = vec3<f32>(0.005, 0.032, 0.170);
 // Wind filtering and shore steering still alter the local distribution.
 const OCEAN_CREST_TRANSMISSION_ONSET: f32 = 0.95;
 const OCEAN_CREST_TRANSMISSION_FULL: f32 = 1.534;
+// Subtle open-ocean crest transmission, not tropical water colour. Real crests
+// are mostly foam and specular; thin-water colour should only bias the most
+// strongly backlit sharp crests.
+const OCEAN_CREST_TRANSMISSION_TINT: vec3<f32> = vec3<f32>(0.018, 0.045, 0.040);
 // How far into breaking a crest must be before it starts going white. Below
 // this the wave is merely feeling the bottom, not yet breaking on it.
 // How far past the depth limit a crest must be before it whitens, and where it
@@ -3423,7 +3427,8 @@ fn ocean_lighting(
     // the whole question: with the ramp spanning p90 to p99 of the sea's
     // sharpness, a linear rise hands half-strength tint to everything past
     // p95. Transmission through a thinning wedge of water is not linear in its
-    // thickness either, so the square is both the duller and the truer curve.
+    // thickness either. Cube the ramp and require tight sun alignment so this
+    // remains an edge accent rather than a turquoise water colour.
     let sea_blend = smoothstep(0.15, 0.85, camera.flat_triangle_options.y);
     let low = clamp(sea_blend * 2.0, 0.0, 1.0);
     let high = clamp(sea_blend * 2.0 - 1.0, 0.0, 1.0);
@@ -3434,9 +3439,9 @@ fn ocean_lighting(
         0.0,
         1.0,
     );
-    let crest = ramp * ramp;
-    let backlight = pow(max(dot(-view_direction, sun_direction_view), 0.0), 4.0);
-    let transmitted = vec3<f32>(0.025, 0.32, 0.22)
+    let crest = ramp * ramp * ramp;
+    let backlight = pow(max(dot(-view_direction, sun_direction_view), 0.0), 8.0);
+    let transmitted = OCEAN_CREST_TRANSMISSION_TINT
         * sun_transmittance * (SURFACE_SUNLIGHT_SCALE * crest * backlight)
         * (vec3<f32>(1.0) - fresnel);
     return diffuse + transmitted

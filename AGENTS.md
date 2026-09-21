@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Crest transmission de-turquoised, 21 September: open-ocean crest transmission is now a subtle, weak cyan edge accent rather than the broad tropical-turquoise sheets visible in `ocean_hybrid_close/1788800036-415020`. The p90/p99 sharpness anchors are unchanged, but the tint is much weaker/desaturated, the ramp is cubed, and the backlight gate is tighter; foam/specular/geometry/buoyancy are unchanged. `cargo test -p catinthegarden-app --release ocean`, focused shader guards, release build and `ocean_hybrid_close/1789975619-330460` pass; no FPS claim.
+
 - Ocean wind-sea tail axes, 21 September: the short 200m-to-7m chop no longer reuses near-parallel axes across octaves; CPU and WGSL wave tables stay mirrored, long swell/storm groups are unchanged, and no waves/samples/branches were added. `cargo test -p catinthegarden-app ocean --release`, actual-WGSL ocean-normal parity, release build and `ocean_wind_trial/1789946830-288902` pass. Visible change is confirmed against an older ocean_wind_trial capture (~581k/921.6k pixels per frame, max 201-202), but no matched FPS or score claim is made.
 
 - Alpine material removal measurements, 20 September: clean controls 84.993/86.600ms versus 82.941ms with shorter snow fine-texture range, 79.775ms combined with sub-mesh fragment noise removal and lower land sunlight. Controls are pixel-identical; dominant patches and smeared rock remain. 525 app tests pass, 23 ignored; experimental branch only, no realism-score claim or live promotion.
