@@ -5068,6 +5068,21 @@ mod tests {
     }
 
     #[test]
+    fn ocean_grazing_lighting_biases_toward_the_mesh_normal() {
+        let shader = planet_shader_source();
+        let ocean = shader
+            .split("fn ocean_fragment_with_transmission_mode(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("analytic ocean fragment path is present");
+        assert!(
+            ocean.contains("let grazing_weight = smoothstep(0.45, 0.90, 1.0 - analytic_facing);")
+        );
+        assert!(ocean.contains("mix(analytic_normal, vertex_normal, 0.20 * grazing_weight)"));
+        assert!(ocean.contains("let vertex_normal = normalize(input.smooth_normal);"));
+    }
+
+    #[test]
     fn shallow_turquoise_is_weighted_by_the_water_column_not_bed_visibility() {
         let shader = planet_shader_source();
         let ocean = shader

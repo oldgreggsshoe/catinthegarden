@@ -2210,6 +2210,20 @@ fn ocean_fragment_with_transmission_mode(input: OceanVertexOutput, bed: vec4<f32
     }
 
     let render_debug_mode = u32(camera.projection.w + 0.5);
+    // At grazing view angles, the analytic per-pixel wave normal can disagree
+    // with the displaced mesh's interpolated normal across a coarse triangle.
+    // Bias only that specular-sensitive edge toward the vertex normal so the
+    // grid does not flash as a false raised ridge, while retaining smooth wave
+    // normals across the rest of the view. This is normal arithmetic only: no
+    // extra wave evaluation, texture fetch, or draw.
+    let analytic_normal = normalize(surface.normal);
+    let vertex_normal = normalize(input.smooth_normal);
+    let analytic_facing = max(
+        dot(normalize(planet_to_view(analytic_normal)), normalize(-input.camera_relative_view_position)),
+        0.0,
+    );
+    let grazing_weight = smoothstep(0.45, 0.90, 1.0 - analytic_facing);
+    let lighting_normal = normalize(mix(analytic_normal, vertex_normal, 0.20 * grazing_weight));
 
     if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
         return vec4<f32>(debug_ocean_albedo(), 1.0);
@@ -2221,7 +2235,7 @@ fn ocean_fragment_with_transmission_mode(input: OceanVertexOutput, bed: vec4<f32
         sun_direction,
     );
     let sky_diffuse = sky_diffuse_irradiance(
-        surface.normal,
+        lighting_normal,
         direction,
         surface.vertical_displacement,
         sun_direction,
@@ -2231,10 +2245,10 @@ fn ocean_fragment_with_transmission_mode(input: OceanVertexOutput, bed: vec4<f32
         max(-macro_height_meters, 0.0),
         surface.vertical_displacement,
         surface.breaking_ratio,
-        surface.normal,
+        lighting_normal,
         direction,
     );
-    let normal_view = normalize(planet_to_view(surface.normal));
+    let normal_view = normalize(planet_to_view(lighting_normal));
     let facing = max(dot(normal_view, normalize(-input.camera_relative_view_position)), 0.0);
     let fresnel = 0.02 + 0.98 * pow(1.0 - facing, 5.0);
     let body = OCEAN_BODY_COLOUR * (sky_diffuse + sun_transmittance * (0.4 * SURFACE_SUNLIGHT_SCALE));
@@ -2246,7 +2260,7 @@ fn ocean_fragment_with_transmission_mode(input: OceanVertexOutput, bed: vec4<f32
     let bed_mix = bed.w * 0.22;
     let transmission = (bed.rgb - body) * bed_mix * (1.0 - fresnel);
     let base_water = ocean_lighting(
-        surface.normal,
+        lighting_normal,
         surface.crest_sharpness,
         input.camera_relative_view_position,
         sun_transmittance,

@@ -51,6 +51,8 @@ about 23ms is still unattributed. Cloud shadow (4.08ms, and zero pixels changed 
 **temporarily switched off** at Ian's request, and interactive startup no longer turns blur on. See
 the newest sections; the cloud-shadow saving is not yet measured.
 
+**Current ocean mesh-seam mitigation (21 September):** a grazing-angle-only 20% blend toward the interpolated vertex wave normal suppresses the false triangle-grid glints while retaining the analytic wave normal elsewhere. The deterministic `ocean_hybrid_close` capture lowers a foreground edge-energy proxy 11.83→10.81%; no extra samples or draws. A matched performance pair is still outstanding.
+
 **Current peak judging (21 September, round 19):** **2.0/10**, unchanged from round 17 despite eight
 chosen compositions, a viewpoint with real rock and level framing -- so neither the site nor the
 framing was what judges were marking down. Their first two complaints are shape, not shading: no
