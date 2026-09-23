@@ -308,6 +308,8 @@ scenarios! {
     "ocean_waterline_medium" => "../scenarios/ocean_waterline_medium.json",
     "ocean_eye_level_facets" => "../scenarios/ocean_eye_level_facets.json",
     "ocean_steep_cusp" => "../scenarios/ocean_steep_cusp.json",
+    "ocean_deck_reference" => "../scenarios/ocean_deck_reference.json",
+    "ocean_manual_grid" => "../scenarios/ocean_manual_grid.json",
     "ocean_shore_ascent" => "../scenarios/ocean_shore_ascent.json",
     "beach_sand_join" => "../scenarios/beach_sand_join.json",
     "bird_flyby" => "../scenarios/bird_flyby.json",
@@ -1099,7 +1101,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 107);
+        assert_eq!(SCENARIO_NAMES.len(), 110);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));
@@ -1723,6 +1725,44 @@ mod tests {
         assert_eq!(scenario.definition.waypoints.len(), 1);
         let position = DVec3::from_array(scenario.definition.waypoints[0].position);
         assert!(((position.length() - crate::planet::planet_radius_meters()) - 5.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn deck_reference_stays_close_to_moving_water_and_faces_backlit_crests() {
+        let scenario = ScenarioRunner::load("ocean_deck_reference").expect("scenario parses");
+        assert_eq!(scenario.waterline_eye_height_meters(), Some(2.5));
+        assert_eq!(scenario.expected_screenshots(), 4);
+        assert_eq!(scenario.ocean_storm_intensity_override(), Some(1.0));
+        assert!(scenario.uses_planet_relative_up());
+        assert!(scenario.definition.duration_seconds >= 6.0);
+        assert_eq!(scenario.definition.waypoints.len(), 1);
+        assert!(scenario.definition.vertical_fov_waypoints[0].vertical_fov_degrees >= 55.0);
+        let waypoint = &scenario.definition.waypoints[0];
+        let position = DVec3::from_array(waypoint.position);
+        let up = position.normalize();
+        let view = (DVec3::from_array(waypoint.look_at) - position).normalize();
+        let depression_degrees = (-view.dot(up)).asin().to_degrees();
+        assert!((0.0..10.0).contains(&depression_degrees));
+        let sun = DVec3::from_array(scenario.definition.sun_waypoints[0].direction).normalize();
+        let sun_tangent = (sun - up * sun.dot(up)).normalize();
+        assert!(
+            view.dot(sun_tangent) > 0.98,
+            "view must face the sunlit wave backs"
+        );
+    }
+
+    #[test]
+    fn manual_grid_replay_preserves_the_reported_overhead_pose_and_calm_sea() {
+        let scenario = ScenarioRunner::load("ocean_manual_grid").expect("scenario parses");
+        assert_eq!(scenario.expected_screenshots(), 4);
+        assert_eq!(scenario.ocean_storm_intensity_override(), Some(0.048));
+        assert!(scenario.uses_planet_relative_up());
+        let waypoint = &scenario.definition.waypoints[0];
+        let position = DVec3::from_array(waypoint.position);
+        let altitude = position.length() - crate::planet::planet_radius_meters();
+        assert!((altitude - 370.703).abs() < 0.001);
+        let view = (DVec3::from_array(waypoint.look_at) - position).normalize();
+        assert!(view.dot(position.normalize()) < -0.99, "not looking down");
     }
 
     #[test]

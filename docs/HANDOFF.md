@@ -10,6 +10,41 @@ surface appearance rather than its geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
+**Current appearance diagnosis (23 September, latest manual grid complaint):**
+Use `--scenario ocean_deck_reference` as the primary appearance comparison: a
+2.5m wave-following eye, five degrees below the horizon, wide field of view,
+facing toward the sun's horizontal projection. Clearance is asserted between
+2.4m and 2.6m. The old 79m steep camera remains a secondary topology check, not
+evidence that the near sea looks right. The user explicitly finds the water
+viscous and the fine waves too regularly arranged.
+
+`--scenario ocean_manual_grid` reconstructs the overhead pose of
+`manual/1790167051-784385/screenshots/capture-001.png` from its spatial log and
+centre probe: about 371m high, near-vertical view, fixed 0.048 sea state. It
+starts at replay time zero, not the manual frame's 102.9s, so this reproduces
+the framing and repeated pattern, not the exact instantaneous wave field.
+At 1280x720 its FOV matches the logged manual FOV.
+
+Controlled captures locate that pattern in the main short-wave shading:
+baseline `ocean_manual_grid/1790182690-821467`; ripple-layer removal
+`1790182760-821702` leaves it; zero mesh displacement with unchanged analytic
+shading `1790182877-822007` leaves it; removing only the six 32.1–7m slope
+contributions `1790183100-822672` removes the fine lattice but makes the sea
+even smoother. A CPU/WGSL-paired re-aiming of those six bands
+`1790183395-823162` merely rotates the pattern. Earlier quarter-wavelength,
+quarter-amplitude shading ripples also failed the new low view. **All trials
+are reverted.** No visual improvement, motion sign-off, or performance gain
+is claimed; do not re-promote those experiments from their saved binaries.
+
+Next: prototype genuinely less coherent, directionally richer short-wave
+detail, not another axis rotation, missing-wave mask, or mesh-density increase.
+Keep the 2.5m view and overhead reproduction as paired acceptance views and
+measure cost before any promotion. This diagnosis does not establish that every
+historically reported triangle/LOD artefact has the same cause. Preserve the
+user's separate local `OCEAN_WAVE_SCALE=1.5` edit; the grid controls above use
+it, whereas the earlier low-view ripple comparison used 1.0. Evidence, rejected
+patches, and validation logs: `test-runs/ocean_sot_detail_2026-09-23/`.
+
 **Opt-in compressed-wave cusp trial (23 September, based on `49a9994`):**
 `CATINGARDEN_OCEAN_TRANSPORT=1` enables the forward surface map and inverse CPU
 query in `ocean_transport.rs`; `shared_planet.wgsl` carries its matching horizontal
@@ -11042,3 +11077,22 @@ The focused shader regression failed before the split tint and passes after. The
 filter passes 65 tests with 12 ignored; formatting, release build and replay pass. Validation used
 the committed 1.0 wave scale while preserving and excluding the unrelated local 2.0 scale edit.
 The regular square/triangle raised-edge pattern remains a separate unresolved defect.
+
+## 23 September — low-eye ocean acceptance and latest grid isolation
+
+The new `ocean_deck_reference` and `ocean_manual_grid` replays are retained;
+all ripple, displacement, normal-band and axis experiments are reverted.
+See the current-state section above and
+`test-runs/ocean_sot_detail_2026-09-23/REPORT.md` for the controlled findings.
+Final low replay `1790183721-825973` passes with measured eye clearance
+2.4984–2.5070m. Restored grid replay `1790183741-825999` passes and all four
+captures are pixel-identical to control `1790182690-821467`.
+
+Validation: 45 scenario tests pass; the broader release suite has 548 passing,
+25 ignored and four explicit skips. Three are the previously recorded local
+atmosphere, walking and time-ladder failures; the fourth is
+`cpu_wave_scale_matches_the_rendered_ocean_scale`, whose hard-coded maximum
+fixture fails with the separately edited local `OCEAN_WAVE_SCALE=1.5`.
+That edit is preserved and not staged. Formatting, release check and release
+build pass. No production shader changes, performance win, human motion
+acceptance or Sea of Thieves appearance completion is claimed.
