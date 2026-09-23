@@ -10,6 +10,23 @@ surface appearance rather than its geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
+**Cusped interference crest investigation (23 September):** the user wants two gradually
+steepening faces meeting at a near-vertical cusp, especially where waves interfere -- not merely
+a sharper normal, triangle edge, or whitecap. Today's `u^3` radial profile has a horizontal
+tangent at every crest. An opt-in semicubical-height trial on the 200/147.5/108.7m components
+used a regularized `(1 - sin(phase))^(1/3)` deficit, keeping CPU height/slope/velocity and WGSL
+geometry mirrored. Its 68 focused ocean tests and actual-WGSL CPU/GPU normal parity passed, but
+same-build `ocean_rough_horizon` frame 4 controls `1790146788-713083` (off) and
+`1790146678-712784` (on) show the large foreground still rounded and extra repeated ridges in
+the distance. 328,836/921,600 pixels move by over four levels, so it was not inert; it simply
+did not meet the shape criterion. **The source trial was reverted.** The promising geometric path
+is horizontal Gerstner compression approaching a unit Jacobian at constructive crossings (the
+classic trochoidal/semicubical crest), not another height-profile exponent or shading trick.
+Horizontal transport is currently disabled because CPU buoyancy queries radial height and would
+disagree by metres if the mesh slides sideways; implementing it requires an inverse CPU surface
+query, ray/raster consistency, non-folding bounds, mesh LOD checks, and matched performance plus
+motion captures. Do not turn it on with just a shader flag.
+
 **Opt-in foam-history implementation (23 September):** `CATINGARDEN_OCEAN_FOAM_HISTORY=1`
 enables `ocean_foam.rs`/`.wgsl`: a 128² ping-pong atlas over a 512m camera-tangent square. A
 compute pass evaluates only the six shortest existing Gerstner components, makes spatially
