@@ -1,5 +1,11 @@
 use glam::DVec3;
 
+// Reference implementation for the compressed surface. Keep transport disabled
+// until raster/ray WGSL and their parity tests use this same mapping.
+#[allow(dead_code)]
+#[path = "ocean_transport.rs"]
+mod transport;
+
 /// Reproducible wind-sea experiment. The vector is a planet-frame propagation
 /// axis (towards, not meteorological "from"). Fixed spectral phases avoid
 /// moving the entire ocean when selecting a different wind direction.
@@ -101,8 +107,8 @@ pub const OCEAN_WAVE_SCALE: f64 = 1.0;
 /// `u^k` -- monotonic in u, so however sharp it gets it still has exactly two
 /// extrema per period, the crest and the trough. Real gravity waves do this:
 /// a Stokes wave is a narrow peak over a long shallow trough, not a sine. What
-/// this cannot do is *cusp* the crest, because a cusp needs the horizontal
-/// compression of a Gerstner wave and horizontal transport is off.
+/// this profile cannot do is *cusp* the crest: its derivative is zero there.
+/// The transport reference explores horizontal compression instead; it is off.
 const OCEAN_CREST_EXPONENT: f64 = 3.0;
 
 /// Mean of `u^k` over a period, which the profile subtracts so the sea stays at
