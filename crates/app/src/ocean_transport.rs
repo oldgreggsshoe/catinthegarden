@@ -11,6 +11,13 @@ use super::*;
 const MAX_COMPRESSION: f64 = 0.95;
 const QUERY_TOLERANCE_METERS: f64 = 1.0e-5;
 const MAX_QUERY_ITERATIONS: usize = 24;
+const TRANSPORT_WAVELENGTH_MIN_METERS: f64 = 100.0;
+const TRANSPORT_WAVELENGTH_MAX_METERS: f64 = 200.0;
+
+fn carries_compression(wave: &GerstnerWave) -> bool {
+    (TRANSPORT_WAVELENGTH_MIN_METERS..=TRANSPORT_WAVELENGTH_MAX_METERS)
+        .contains(&wave.wavelength_meters)
+}
 
 fn outer(a: DVec3, b: DVec3) -> DMat3 {
     DMat3::from_cols(a * b.x, a * b.y, a * b.z)
@@ -27,7 +34,7 @@ struct TransportSample {
 /// Bound the sum of derivative norms, including spherical curvature and the
 /// coast's blend derivative, rather than clamping a Jacobian after it folds.
 /// This conservative budget is deliberately independent of phase and time.
-fn compression_scale() -> f64 {
+pub(super) fn compression_scale() -> f64 {
     let radius = planet_radius_meters();
     let coast_gradient_bound = if spawn_coast_waves_enabled() {
         let span = SPAWN_COAST_OUTER.powi(2) - SPAWN_COAST_INNER.powi(2);
@@ -37,6 +44,7 @@ fn compression_scale() -> f64 {
     };
     let bound = active_waves()
         .iter()
+        .filter(|wave| carries_compression(wave))
         .map(|wave| {
             let amplitude = wave.amplitude_meters.max(wave.storm_amplitude_meters)
                 * OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE;
@@ -60,6 +68,9 @@ fn transport_sample(q: DVec3, time: f64, state: SeaState, strength: f64) -> Tran
     };
     let gain = compression_scale() * strength.clamp(0.0, 1.0);
     for wave in active_waves() {
+        if !carries_compression(wave) {
+            continue;
+        }
         let axis = wave.direction.normalize();
         let tangent = projection * axis;
         let k = std::f64::consts::TAU / wave.wavelength_meters;
@@ -128,7 +139,8 @@ fn forward(q: DVec3, time: f64, depth: f64, state: SeaState, strength: f64) -> P
     // Sampling a varying bed at displaced positions is a renderer integration
     // requirement, not something this fixed-depth query silently approximates.
     let t = ((depth - 30.0) / 70.0).clamp(0.0, 1.0);
-    let transport = transport_sample(q, time, state, strength * t * t * (3.0 - 2.0 * t));
+    let depth_ramp = t * t * (3.0 - 2.0 * t);
+    let transport = transport_sample(q, time, state, strength * depth_ramp);
     ParametricSurface {
         position: q * (radius + height) + transport.displacement,
         derivative: projection * (1.0 + height / radius)
@@ -139,17 +151,18 @@ fn forward(q: DVec3, time: f64, depth: f64, state: SeaState, strength: f64) -> P
 }
 
 #[derive(Debug)]
-struct SurfaceQuery {
-    parameter: DVec3,
-    height: f64,
-    slope: DVec3,
-    vertical_velocity: f64,
-    residual_meters: f64,
+pub(super) struct SurfaceQuery {
+    pub(super) parameter: DVec3,
+    pub(super) height: f64,
+    pub(super) normal: DVec3,
+    pub(super) slope: DVec3,
+    pub(super) vertical_velocity: f64,
+    pub(super) residual_meters: f64,
 }
 
 /// Solve for the actual world radial, not for the undisplaced wave parameter.
 /// Failed convergence is explicit; never return an apparently valid old height.
-fn query(
+pub(super) fn query(
     direction: DVec3,
     time: f64,
     depth: f64,
@@ -203,6 +216,7 @@ fn invert(
             return Some(SurfaceQuery {
                 parameter: q,
                 height: radial_distance - radius,
+                normal,
                 slope: -(normal - target * facing) / facing * radial_distance / radius,
                 vertical_velocity: normal.dot(surface.velocity) / facing,
                 residual_meters: residual.length(),

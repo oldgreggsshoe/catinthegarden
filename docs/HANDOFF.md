@@ -10,39 +10,41 @@ surface appearance rather than its geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Compressed-ocean CPU reference (23 September, following the cusp diagnosis):**
-`ocean.rs::transport` in `ocean_transport.rs` now contains the forward displaced
-spherical surface and its inverse world-radial query. It is deliberately unconnected:
-the existing gameplay queries, shader, and `OCEAN_HORIZONTAL_TRANSPORT_ENABLED = false`
-are unchanged. **There is still no live cusp feature.** The reference sums the existing
-18 wave components, uses projected rather than normalized wave axes to avoid pole
-singularities, and bounds horizontal derivative norms at 0.95 including spherical
-curvature and the coastal blend gradient. Compression fades out between 100m and
-30m bed depth, independently of instantaneous crest height. Depth is held constant
-for these analytic derivatives, just as for the existing queries; varying-bed lookup
-at displaced positions still needs an explicit renderer integration decision.
+**Opt-in compressed-wave cusp trial (23 September, based on `49a9994`):**
+`CATINGARDEN_OCEAN_TRANSPORT=1` enables the forward surface map and inverse CPU
+query in `ocean_transport.rs`; `shared_planet.wgsl` carries its matching horizontal
+Jacobian and geometric normal. Raster vertices remain surface parameters. Foveated
+ray sampling and the world-direction shading helper solve back to the parameter
+direction with Newton steps. Height, slope, and fixed-world vertical velocity all
+use the inverse query; default rendering/gameplay remain unchanged. The generated
+`OCEAN_TRANSPORT_ENABLED` constant is false unless the process starts with that flag.
 
-The inverse uses a tangent-space Newton solve with backtracking, a 24-iteration
-limit and explicit `None` on failure rather than silently returning the old radial
-height. Height includes the small radial offset of horizontal transport; slope comes
-from the full displaced surface tangents; fixed-world vertical velocity removes the
-horizontal parameter motion and includes changing sea-state amplitude. Five tests
-cover 1,440 forward/inverse cases across the real planet at three sea states and five
-depths, CPU finite-difference height/slope/velocity, coastal blend interiors and poles,
-non-inert failure of the old radial query, and both faces of a synthetic 0.995-compressed
-near-cusp with slope above 5. That synthetic case validates the solver, **not the
-appearance of the authored 18-wave ocean**. The five tests also pass under
-`CATINGARDEN_OCEAN_WIND=30,1,0,0`; derivative tests pass with zero wind and coast reversal
-disabled. `cargo check`, release build, focused formatting and 72 release ocean tests pass (12 ignored;
-the unrelated dirty surface-camera walking failure excluded).
+The bounded transport is confined to the 200m, 147.5m and 108.7m components. Its
+derivative norm budget includes spherical curvature and the coastal reversal blend,
+and stays below 0.95; strength fades smoothly to zero below 100m bed depth. The CPU
+reference and derivative tests cover wind, reversed coast phases, a synthetic
+0.995-compressed crest, and 1,440 real-planet query round trips. On Quadro, the actual
+WGSL parity test under the opt-in checks 48 cases on its deliberately small 64m test
+body: height error under 0.000006m and normal error under 0.03. This test does **not**
+validate real-radius f32 phase precision. The standard 72 focused release tests pass
+(12 ignored; skip the pre-existing dirty surface-camera walking failure); the opt-in
+`ocean_rough_horizon` and `ocean_hybrid_close` scenarios pass their automation checks.
 
-Next: mirror this mapping and Jacobian in WGSL, route CPU gameplay queries through
-the inverse together with an opt-in renderer switch, and give ray queries an inverse
-lookup rather than treating the surface parameter as world position. Reuse the
-existing wave evaluations instead of adding a second full loop per fragment. Validate
-actual WGSL at both a small test radius and the real 4,000km radius, displacement/culling
-bounds, shallow ownership and LOD transitions before matched captures/motion/timings.
-No GPU parity or visual/performance claim is made for the new reference itself.
+Visual/performance status is **not accepted**. The initial all-wave transport trial
+`ocean_hybrid_close/1790150346-727596` versus same-build off
+`1790150407-727887` turned the sea into large, blocky patches and measured 4.27-5.58ms
+extra frame time in three interleaved Immediate-present pairs (`target-ocean-spectrum`).
+After restricting compression to the three wind-sea bands, capture
+`ocean_hybrid_close/1790150753-729240` still has scalloped, chunky faces instead of
+clean interference cusps. Its performance has not been measured. It remains opt-in,
+not the shipped default; do not spend judges or promote it. The 5m rough-horizon camera
+also dips below water during this trial, so use `ocean_hybrid_close` for appearance.
+
+Next: preserve the opt-in only if needed for further diagnostics, and diagnose why
+mesh-scale/LOD structure still dominates the silhouette. The next appearance approach
+must confine compression to constructive crossings without creating broad scallops,
+then validate real-radius CPU/GPU/ray parity, movement, mesh/LOD edges, and matched
+performance before any promotion. No improvement/score claim is made.
 
 **Cusped interference crest investigation (23 September):** the user wants two gradually
 steepening faces meeting at a near-vertical cusp, especially where waves interfere -- not merely

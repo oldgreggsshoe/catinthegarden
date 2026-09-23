@@ -218,6 +218,12 @@ pub(crate) fn wgsl_constants() -> String {
             signs(&WAVES),
             signs(&OCEAN_RIPPLE_WAVES),
         );
+    let wind_constants = wind_constants
+        + &format!(
+            "const OCEAN_TRANSPORT_ENABLED: bool = {};\nconst OCEAN_TRANSPORT_GAIN: f32 = {};\n",
+            horizontal_transport_enabled(),
+            wgsl_number(transport::compression_scale()),
+        );
     wind_constants
         + &format!(
             "// Generated from ocean.rs; OCEAN_WAVE_SCALE = {}. Do not edit here.\n\
@@ -691,18 +697,22 @@ fn amplitude_change_velocity(wave: &GerstnerWave, state: SeaState) -> f64 {
         * blend_rate
 }
 
-/// Whether the rendered sea carries Gerstner horizontal transport.
-///
-/// Must stay `false` while the CPU height query is radial: `wave_height_meters`
-/// asks how high the water is directly below a point, and horizontal transport
-/// slides the rendered surface up to 54m sideways from there. On a steep face
-/// that is metres of height error, and the camera swims under the water it is
-/// supposed to be floating on.
-///
-/// This used to be derived from `WATER_BOBBING_ENABLED`, which welded a camera
-/// setting to a renderer one: turning bobbing back on silently turned transport
-/// on with it. Give the CPU query a horizontal term and this can go true.
+/// Shipped/default setting. The unpromoted transport trial is separately gated
+/// by `CATINGARDEN_OCEAN_TRANSPORT=1`, with paired CPU, raster and ray queries.
 pub const OCEAN_HORIZONTAL_TRANSPORT_ENABLED: bool = false;
+
+/// Opt in only while validating compressed-surface GPU/query parity.
+pub fn horizontal_transport_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        let enabled = OCEAN_HORIZONTAL_TRANSPORT_ENABLED
+            || std::env::var("CATINGARDEN_OCEAN_TRANSPORT").is_ok_and(|value| value == "1");
+        if enabled {
+            tracing::warn!("experimental compressed ocean transport enabled");
+        }
+        enabled
+    })
+}
 
 /// Whether the renderer displaces geometry by the short ripple octave.
 ///
@@ -1242,6 +1252,11 @@ pub fn breaking_fraction(water_depth_meters: f64, raw_height_meters: f64) -> f64
 
 pub fn global_wave_height_meters(direction: DVec3, sim_time: f64, water_depth_meters: f64) -> f64 {
     let state = sea_state_at(sim_time);
+    if horizontal_transport_enabled() {
+        return transport::query(direction, sim_time, water_depth_meters, state, 1.0)
+            .expect("bounded ocean transport inverse failed")
+            .height;
+    }
     let raw = wave_height_meters(direction, sim_time, state.intensity, water_depth_meters);
     raw * breaking_weight(raw, water_depth_meters)
 }
@@ -1277,6 +1292,17 @@ pub fn local_wave_height_meters(direction: DVec3, sim_time: f64, water_depth_met
 /// that can yaw it; with the force pinned to the radial a hull can heave and
 /// tilt but never swings its head.
 pub fn global_wave_slope(direction: DVec3, sim_time: f64, water_depth_meters: f64) -> DVec3 {
+    if horizontal_transport_enabled() {
+        return transport::query(
+            direction,
+            sim_time,
+            water_depth_meters,
+            sea_state_at(sim_time),
+            1.0,
+        )
+        .expect("bounded ocean transport inverse failed")
+        .slope;
+    }
     let state = sea_state_at(sim_time);
     let radial = direction.normalize();
     let amplitude_scale = geometry_amplitude_scale(state.intensity);
@@ -1316,6 +1342,11 @@ fn wave_vertical_velocity_in_state(
     water_depth_meters: f64,
     state: SeaState,
 ) -> f64 {
+    if horizontal_transport_enabled() {
+        return transport::query(direction, sim_time, water_depth_meters, state, 1.0)
+            .expect("bounded ocean transport inverse failed")
+            .vertical_velocity;
+    }
     let amplitude_scale = geometry_amplitude_scale(state.intensity);
     let blend = storm_blend(state.intensity);
     let vertical_velocity = active_waves()
@@ -1968,7 +1999,7 @@ mod tests {
             "const OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE: f32 = {};",
             wgsl_number(OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE)
         )));
-        assert!(shader.contains("let horizontal_transport = select(1.0, 0.0"));
+        assert!(shader.contains("const OCEAN_TRANSPORT_ENABLED: bool = false;"));
         let calm_sum = WAVES.iter().map(|wave| wave.amplitude_meters).sum::<f64>();
         let storm_sum = WAVES
             .iter()
@@ -2212,20 +2243,16 @@ mod tests {
 
     #[test]
     fn horizontal_transport_stays_off_while_the_cpu_query_is_radial() {
-        // wave_height_meters takes a direction and returns the height on that
-        // radial. It has no horizontal term, so it can only describe the
-        // rendered surface while the renderer has none either. Enabling
-        // transport without adding one puts the camera under the water.
+        // The renderer's regular mode remains radial; the transport trial is
+        // only reachable through the explicit paired CPU/GPU opt-in.
         const {
             assert!(
                 !super::OCEAN_HORIZONTAL_TRANSPORT_ENABLED,
-                "give wave_height_meters a horizontal displacement term before \
-                 enabling transport; the radial query cannot follow a surface that \
-                 slides up to 54m sideways"
+                "do not promote experimental transport without visual/performance sign-off"
             );
         }
         let shader = crate::planet::shared_planet_shader_source();
-        assert!(shader.contains("let horizontal_transport = select(1.0, 0.0,"));
+        assert!(shader.contains("const OCEAN_TRANSPORT_ENABLED: bool = false;"));
     }
 
     #[test]

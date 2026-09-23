@@ -384,7 +384,7 @@ fn ocean_with_aerial_perspective(
     camera_relative_view_position: vec3<f32>,
     sun_direction: vec3<f32>,
 ) -> vec3<f32> {
-    let surface = ocean_surface(
+    let surface = ocean_surface_world_direction(
         direction,
         camera.projection.z,
         length(camera_relative_view_position),

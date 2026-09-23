@@ -5528,7 +5528,10 @@ mod tests {
             .nth(1)
             .and_then(|source| source.split("\nfn ").next())
             .expect("ocean surface is present");
-        assert!(surface.contains("normalize(direction - slope * limited_slope),"));
+        assert!(
+            surface
+                .contains("var geometric_normal = normalize(direction - slope * limited_slope);")
+        );
         assert!(
             !surface.contains(
                 "camera.flat_triangle_options.z > 0.5 {\n        // Fixed water-following"

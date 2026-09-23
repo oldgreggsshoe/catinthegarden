@@ -1047,7 +1047,7 @@ fn ocean_hit(
             let direction = normalize(view_to_planet(
                 camera_position_view + ray * distance_meters,
             ));
-            let surface = ocean_surface(
+            let surface = ocean_surface_world_direction(
                 direction,
                 camera.projection.z,
                 distance_meters,
@@ -1337,7 +1337,9 @@ fn shade_ocean(
     var surface = OceanSurface(
         0.0,
         vec3<f32>(0.0),
+        mat3x3<f32>(),
         0.0,
+        vec3<f32>(0.0),
         surface_direction,
         0.0,
         vec3<f32>(0.0),
@@ -1346,7 +1348,7 @@ fn shade_ocean(
     if (ray_settings.experiment_flags & EXPERIMENT_FOVEATED_SHADING) == 0u
         || detail >= 0.45
     {
-        surface = ocean_surface(
+        surface = ocean_surface_world_direction(
             surface_direction,
             camera.projection.z,
             length(hit_view_position),

@@ -64,7 +64,7 @@ const times = array<f32, {count}>({times});
 @compute @workgroup_size(1)
 fn test_ocean(@builtin(global_invocation_id) id: vec3<u32>) {{
     let sample = cases[id.x];
-    let surface = ocean_surface(normalize(sample.xyz), times[id.x], 0.0, sample.w);
+    let surface = ocean_surface_world_direction(normalize(sample.xyz), times[id.x], 0.0, sample.w);
     results[id.x] = vec4<f32>(surface.normal, surface.vertical_displacement);
 }}
 "#,
@@ -158,10 +158,24 @@ fn test_ocean(@builtin(global_invocation_id) id: vec3<u32>) {{
         let mut failures = Vec::new();
         let mut maximum_normal_error = 0.0_f64;
         let mut maximum_height_error = 0.0_f64;
+        // The 64m test body keeps f32 wave phase precision tractable. Its
+        // transported surface can move a non-negligible fraction of its radius,
+        // so direction-based normal comparison is less exact than on the real body.
+        let normal_tolerance = if horizontal_transport_enabled() {
+            0.03
+        } else {
+            0.002
+        };
         for ((direction, depth, time), gpu) in cases.iter().zip(rows) {
             let direction = direction.normalize();
-            let normal = (direction - global_wave_slope(direction, *time, *depth)).normalize();
             let height = global_wave_height_meters(direction, *time, *depth);
+            let normal = if horizontal_transport_enabled() {
+                transport::query(direction, *time, *depth, sea_state_at(*time), 1.0)
+                    .unwrap()
+                    .normal
+            } else {
+                (direction - global_wave_slope(direction, *time, *depth)).normalize()
+            };
             let normal_error =
                 normal.distance(DVec3::new(gpu[0] as f64, gpu[1] as f64, gpu[2] as f64));
             let height_error = (height - gpu[3] as f64).abs();
@@ -169,7 +183,7 @@ fn test_ocean(@builtin(global_invocation_id) id: vec3<u32>) {{
             maximum_height_error = maximum_height_error.max(height_error);
             if !normal_error.is_finite()
                 || !height_error.is_finite()
-                || normal_error > 0.002
+                || normal_error > normal_tolerance
                 || height_error > 0.02
             {
                 failures.push(format!("direction={direction:?} depth={depth} time={time}: normal error={normal_error}, height error={height_error}"));

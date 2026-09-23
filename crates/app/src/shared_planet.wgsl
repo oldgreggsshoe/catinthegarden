@@ -371,6 +371,7 @@ struct OceanWaveSpec {
 
 struct OceanWaveContribution {
     horizontal_displacement: vec3<f32>,
+    horizontal_derivative: mat3x3<f32>,
     vertical_displacement: f32,
     slope: vec3<f32>,
     /// How sharp this wave's crest is here: its dimensionless Gerstner
@@ -379,12 +380,13 @@ struct OceanWaveContribution {
     /// point -- it does not scale with the wave's size, so a small sharp wave
     /// reads as thin just as a large one does.
     ///
-    /// It is the quantity that *would* pinch water into the crest if
-    /// `OCEAN_HORIZONTAL_TRANSPORT_ENABLED` were on. That flag is false, so
-    /// nothing here is the divergence of a displacement we actually draw; it
-    /// is a sharpness measure that happens to be derived from one. Do not
-    /// read it as the rendered surface's curvature.
+    /// Retained as an authored sharpness proxy for the foam/lighting response.
+    /// The rendered transport Jacobian below is the actual geometric curvature.
     convergence: f32,
+}
+
+fn ocean_outer_product(a: vec3<f32>, b: vec3<f32>) -> mat3x3<f32> {
+    return mat3x3<f32>(a * b.x, a * b.y, a * b.z);
 }
 
 struct OceanSurface {
@@ -394,7 +396,9 @@ struct OceanSurface {
     /// only that a crest exists, never how hard it is breaking.
     breaking_ratio: f32,
     horizontal_displacement: vec3<f32>,
+    horizontal_derivative: mat3x3<f32>,
     vertical_displacement: f32,
+    slope: vec3<f32>,
     normal: vec3<f32>,
     ripple_height: f32,
     ripple_slope: vec3<f32>,
@@ -1199,6 +1203,11 @@ fn gerstner_wave(
     let tangent_gradient = gradient - direction * dot(gradient, direction);
     return OceanWaveContribution(
         mix(original.horizontal_displacement, incoming.horizontal_displacement, weight),
+        (original.horizontal_derivative * (1.0 - weight) + incoming.horizontal_derivative * weight)
+            + ocean_outer_product(
+                incoming.horizontal_displacement - original.horizontal_displacement,
+                tangent_gradient,
+            ),
         mix(original.vertical_displacement, incoming.vertical_displacement, weight),
         mix(original.slope, incoming.slope, weight)
             + tangent_gradient * (incoming.vertical_displacement - original.vertical_displacement),
@@ -1220,7 +1229,7 @@ fn gerstner_wave_unsteered(
     let tangent_unnormalized = axis - direction * dot(axis, direction);
     let tangent_length = length(tangent_unnormalized);
     if tangent_length < 1.0e-4 {
-        return OceanWaveContribution(vec3<f32>(0.0), 0.0, vec3<f32>(0.0), 0.0);
+        return OceanWaveContribution(vec3<f32>(0.0), mat3x3<f32>(), 0.0, vec3<f32>(0.0), 0.0);
     }
     let tangent = tangent_unnormalized / tangent_length;
     let wave_number = 6.2831853 / wavelength_meters;
@@ -1242,8 +1251,25 @@ fn gerstner_wave_unsteered(
         * 0.5
         * cosine
         * normalization;
+    let horizontal_scale = steepness * OCEAN_STEEPNESS_SCALE * amplitude_meters;
+    var horizontal_derivative = mat3x3<f32>();
+    var horizontal_displacement = vec3<f32>(0.0);
+    if OCEAN_TRANSPORT_ENABLED && wavelength_meters >= 100.0 && wavelength_meters <= 200.0 {
+        let tangent_derivative = ocean_outer_product(direction, tangent_unnormalized) * -1.0
+            - (mat3x3<f32>(
+                vec3<f32>(1.0, 0.0, 0.0) - direction * direction.x,
+                vec3<f32>(0.0, 1.0, 0.0) - direction * direction.y,
+                vec3<f32>(0.0, 0.0, 1.0) - direction * direction.z,
+            )) * dot(direction, axis);
+        horizontal_derivative =
+            (tangent_derivative * cosine
+                - ocean_outer_product(tangent_unnormalized, tangent_unnormalized)
+                    * (wave_number * sine)) * horizontal_scale;
+        horizontal_displacement = tangent_unnormalized * (horizontal_scale * cosine);
+    }
     return OceanWaveContribution(
-        tangent * (steepness * OCEAN_STEEPNESS_SCALE * amplitude_meters * cosine),
+        horizontal_displacement,
+        horizontal_derivative,
         amplitude_meters * profile,
         // d(dot(direction, axis) * R)/ds is the projected axis, not its
         // unit tangent. Normalizing it exaggerated slopes near an axis pole.
@@ -1272,7 +1298,7 @@ fn ocean_ripple(
         camera_distance_meters,
     );
     if distance_weight <= 0.0 || shore_weight <= 0.0 {
-        return OceanWaveContribution(vec3<f32>(0.0), 0.0, vec3<f32>(0.0), 0.0);
+        return OceanWaveContribution(vec3<f32>(0.0), mat3x3<f32>(), 0.0, vec3<f32>(0.0), 0.0);
     }
     // These shorter waves are part of the local geometry as well as its normal:
     // the CPU surface query mirrors their vertical displacement at the patch
@@ -1283,6 +1309,7 @@ fn ocean_ripple(
     let weight = distance_weight * shore_weight;
     return OceanWaveContribution(
         vec3<f32>(0.0),
+        mat3x3<f32>(),
         (first.vertical_displacement + second.vertical_displacement + third.vertical_displacement) * weight,
         (first.slope + second.slope + third.slope) * weight,
         // The ripple layer is authored at zero steepness, so it pinches
@@ -1408,6 +1435,7 @@ fn ocean_surface(
     let storm_intensity = clamp(camera.flat_triangle_options.y, 0.0, 1.0);
     let storm_blend = smoothstep(0.15, 0.85, storm_intensity);
     var horizontal = vec3<f32>(0.0);
+    var horizontal_derivative = mat3x3<f32>();
     var vertical = 0.0;
     var slope = vec3<f32>(0.0);
     var convergence = 0.0;
@@ -1430,7 +1458,13 @@ fn ocean_surface(
             time_seconds,
             water_depth_meters,
         );
-        horizontal += contribution.horizontal_displacement;
+        if OCEAN_TRANSPORT_ENABLED
+            && spec.wavelength_meters >= 100.0
+            && spec.wavelength_meters <= 200.0
+        {
+            horizontal += contribution.horizontal_displacement;
+            horizontal_derivative += contribution.horizontal_derivative;
+        }
         vertical += contribution.vertical_displacement;
         slope += contribution.slope;
         convergence += contribution.convergence;
@@ -1445,9 +1479,8 @@ fn ocean_surface(
     if OCEAN_LARGE_SWELL_ONLY {
         // The ripple layer is a shorter octave by definition, so the large
         // swell diagnostic drops it whatever the camera is doing.
-        ripple = OceanWaveContribution(vec3<f32>(0.0), 0.0, vec3<f32>(0.0), 0.0);
+        ripple = OceanWaveContribution(vec3<f32>(0.0), mat3x3<f32>(), 0.0, vec3<f32>(0.0), 0.0);
     }
-    let horizontal_transport = select(1.0, 0.0, camera.flat_triangle_options.z > 0.5);
     let geometry_amplitude_scale = mix(
         OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE,
         OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE,
@@ -1477,6 +1510,31 @@ fn ocean_surface(
     }
     let limited = geometry_weight * geometry_amplitude_scale * breaking_weight;
     let limited_slope = geometry_weight * geometry_amplitude_scale * breaking_slope_weight;
+    let transport_weight = select(1.0, 0.0, !OCEAN_TRANSPORT_ENABLED)
+        * smoothstep(30.0, 100.0, water_depth_meters);
+    let transport_limited = geometry_weight * geometry_amplitude_scale;
+    let transport_jacobian = horizontal_derivative
+        * (transport_limited * OCEAN_TRANSPORT_GAIN * transport_weight);
+    var geometric_normal = normalize(direction - slope * limited_slope);
+    if transport_weight > 0.0 {
+        let reference_axis = select(
+            vec3<f32>(1.0, 0.0, 0.0),
+            vec3<f32>(0.0, 1.0, 0.0),
+            abs(direction.x) > 0.9,
+        );
+        let tangent_u = normalize(cross(direction, reference_axis));
+        let tangent_v = cross(direction, tangent_u);
+        let jacobian_u = tangent_u * (1.0 + vertical * limited / PLANET_RADIUS_METERS)
+            + direction * dot(slope * limited_slope, tangent_u)
+            + transport_jacobian * tangent_u;
+        let jacobian_v = tangent_v * (1.0 + vertical * limited / PLANET_RADIUS_METERS)
+            + direction * dot(slope * limited_slope, tangent_v)
+            + transport_jacobian * tangent_v;
+        geometric_normal = normalize(cross(jacobian_u, jacobian_v));
+        if dot(geometric_normal, direction) < 0.0 {
+            geometric_normal = -geometric_normal;
+        }
+    }
     // Zero depth is no water at all, not an infinitely broken wave. Calling it
     // the latter painted every flat where the bake carries no bathymetry as
     // solid foam, which is most of a gently shelving coast.
@@ -1486,12 +1544,14 @@ fn ocean_surface(
     }
     return OceanSurface(
         breaking_ratio,
-        horizontal * limited * horizontal_transport,
+        horizontal * transport_limited * OCEAN_TRANSPORT_GAIN * transport_weight,
+        transport_jacobian,
         vertical * limited,
+        slope * limited_slope,
         // Geometry and CPU buoyancy share this broad normal. The already-paid
         // sub-mesh ripple slope stays separate for fragment lighting so it can
         // sharpen the smallest visible waves without moving the mesh or eye.
-        normalize(direction - slope * limited_slope),
+        geometric_normal,
         ripple.vertical_displacement,
         ripple.slope,
         convergence * geometry_weight * geometry_amplitude_scale,
@@ -1500,6 +1560,66 @@ fn ocean_surface(
 
 fn ocean_shading_normal(surface: OceanSurface) -> vec3<f32> {
     return normalize(surface.normal - surface.ripple_slope);
+}
+
+/// Convert a world radial (used by ray queries) back to the parameter direction
+/// whose transported surface reaches it. Raster vertices already carry that
+/// parameter direction and must continue to call `ocean_surface` directly.
+fn ocean_surface_world_direction(
+    world_direction: vec3<f32>,
+    time_seconds: f32,
+    camera_distance_meters: f32,
+    water_depth_meters: f32,
+) -> OceanSurface {
+    let target_direction = normalize(world_direction);
+    if !OCEAN_TRANSPORT_ENABLED {
+        return ocean_surface(target_direction, time_seconds, camera_distance_meters, water_depth_meters);
+    }
+    let target_direction_axis = select(
+        vec3<f32>(1.0, 0.0, 0.0),
+        vec3<f32>(0.0, 1.0, 0.0),
+        abs(target_direction.x) > 0.9,
+    );
+    let target_direction_u = normalize(cross(target_direction, target_direction_axis));
+    let target_direction_v = cross(target_direction, target_direction_u);
+    var parameter = target_direction;
+    for (var iteration = 0u; iteration < 8u; iteration += 1u) {
+        let surface = ocean_surface(parameter, time_seconds, camera_distance_meters, water_depth_meters);
+        let parameter_axis = select(
+            vec3<f32>(1.0, 0.0, 0.0),
+            vec3<f32>(0.0, 1.0, 0.0),
+            abs(parameter.x) > 0.9,
+        );
+        let parameter_u = normalize(cross(parameter, parameter_axis));
+        let parameter_v = cross(parameter, parameter_u);
+        let gradient = surface.slope;
+        let derivative_u = parameter_u * (1.0 + surface.vertical_displacement / PLANET_RADIUS_METERS)
+            + parameter * dot(gradient, parameter_u)
+            + surface.horizontal_derivative * parameter_u;
+        let derivative_v = parameter_v * (1.0 + surface.vertical_displacement / PLANET_RADIUS_METERS)
+            + parameter * dot(gradient, parameter_v)
+            + surface.horizontal_derivative * parameter_v;
+        let position = parameter * (PLANET_RADIUS_METERS + surface.vertical_displacement)
+            + surface.horizontal_displacement;
+        let radial_residual = position - target_direction * dot(position, target_direction);
+        let a = dot(derivative_u, target_direction_u);
+        let b = dot(derivative_v, target_direction_u);
+        let c = dot(derivative_u, target_direction_v);
+        let d = dot(derivative_v, target_direction_v);
+        let determinant = a * d - b * c;
+        if abs(determinant) < 1.0e-4 {
+            break;
+        }
+        let rhs_u = dot(radial_residual, target_direction_u);
+        let rhs_v = dot(radial_residual, target_direction_v);
+        let step_u = (d * rhs_u - b * rhs_v) / determinant;
+        let step_v = (a * rhs_v - c * rhs_u) / determinant;
+        parameter = normalize(parameter - (target_direction_u * step_u + target_direction_v * step_v) / PLANET_RADIUS_METERS);
+        if abs(step_u) + abs(step_v) < 0.0001 {
+            break;
+        }
+    }
+    return ocean_surface(parameter, time_seconds, camera_distance_meters, water_depth_meters);
 }
 
 fn ocean_fine_crest_transmission(surface: OceanSurface) -> f32 {
@@ -1517,7 +1637,9 @@ fn flat_ocean_surface(direction: vec3<f32>) -> OceanSurface {
     return OceanSurface(
         0.0,
         vec3<f32>(0.0),
+        mat3x3<f32>(),
         0.0,
+        vec3<f32>(0.0),
         normalize(direction),
         0.0,
         vec3<f32>(0.0),

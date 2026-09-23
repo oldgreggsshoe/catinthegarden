@@ -4231,13 +4231,9 @@ impl State {
         // Fill background waterline pixels missed by the finite raster shell.
         camera_uniform.camera_forward[3] = ocean_water_depth_meters as f32;
         camera_uniform.camera_right[3] = ocean_eye_clearance_meters as f32;
-        // Gerstner horizontal transport is off while the CPU wave query is
-        // radial, so the camera and the rendered surface sample the same
-        // world-space point. This is deliberately independent of
-        // WATER_BOBBING_ENABLED: they were once the same flag, and restoring
-        // bobbing then re-enabled transport as a side effect and sank the eye.
-        camera_uniform.flat_triangle_options[2] =
-            f32::from(!ocean::OCEAN_HORIZONTAL_TRANSPORT_ENABLED);
+        // Transport is experimental and paired with the CPU inverse query;
+        // it remains off by default and independent of WATER_BOBBING_ENABLED.
+        camera_uniform.flat_triangle_options[2] = f32::from(!ocean::horizontal_transport_enabled());
         // Submerged: the sky pass paints water instead of sky. Measured against
         // the same surface the collision query uses, so the tint appears at the
         // instant the eye actually goes under rather than at sea level.
