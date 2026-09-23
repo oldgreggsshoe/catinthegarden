@@ -10,6 +10,22 @@ surface appearance rather than its geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
+**Current deck-height ocean reference pass (23 September):** against `/home/dad/Documents/sot.png`,
+uniform wave scaling failed: 0.25x submerged a static 5m eye, 0.1x flattened the surface. The
+promoted spectrum instead cuts the 1400m and 280-430m components to one tenth of their old
+amplitudes in both CPU and WGSL while retaining the 200-7m wind sea and all 18 evaluations.
+Sun-facing body colour is teal over dark blue troughs, and whitecap/transmission thresholds follow
+the new spectrum. Matched `ocean_rough_horizon` frame 4: original
+`1790121422-674391` versus candidate `1790121789-675220`; the latter has overlapping deck-scale
+waves instead of a wall of blue water. Three interleaved, 1280x720 Immediate-present pairs after
+warm-up measure 51.763→47.648ms pooled median (-7.95% frame time), each pair faster. 538 app tests
+pass when three pre-existing failures from unrelated local `surface_camera.rs`, `atmosphere.rs` and
+`main.rs` edits are excluded; actual-WGSL GPU normal parity and `ocean_rough_horizon`,
+`ocean_hybrid_close`, `ocean_ship_float`, `ocean_wind_trial` replays pass. `ocean_clear_shallows`
+fails its sediment-colour assertion in both the original and candidate binaries with the same
+-0.004 margin under those unrelated local edits. **The regular raised mesh-edge pattern remains
+unfixed**, and visual acceptance at the reference pose is still needed.
+
 **Current beach join (11 September):** the dry-land/beach seam in manual capture
 `1789119500-120010` is repaired by a continuous land-side sand tint. Water stays
 on its existing footprint. See the latest section for matched capture evidence.

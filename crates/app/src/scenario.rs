@@ -1717,7 +1717,7 @@ mod tests {
                 .definition
                 .assertions
                 .min_ocean_wave_height_range_meters,
-            Some(30.0)
+            Some(8.0)
         );
         assert_eq!(scenario.definition.waypoints.len(), 1);
         let position = DVec3::from_array(scenario.definition.waypoints[0].position);

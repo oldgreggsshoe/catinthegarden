@@ -2253,7 +2253,7 @@ fn ocean_fragment_with_transmission_mode(input: OceanVertexOutput, bed: vec4<f32
     let normal_view = normalize(planet_to_view(lighting_normal));
     let facing = max(dot(normal_view, normalize(-input.camera_relative_view_position)), 0.0);
     let fresnel = 0.02 + 0.98 * pow(1.0 - facing, 5.0);
-    let body = OCEAN_BODY_COLOUR * (sky_diffuse + sun_transmittance * (0.4 * SURFACE_SUNLIGHT_SCALE));
+    let body = ocean_body_albedo(lighting_normal) * (sky_diffuse + sun_transmittance * (0.4 * SURFACE_SUNLIGHT_SCALE));
     // Keep a visible body-water component in shallow bays. A fully opaque
     // bed contribution reads as dry sand; retaining 45% of the attenuated
     // bed signal lets the blue body mix with the cream sediment into the

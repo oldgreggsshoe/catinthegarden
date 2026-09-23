@@ -815,7 +815,7 @@ const OCEAN_RIPPLE_WAVES: [GerstnerWave; 3] = [
     },
 ];
 
-/// Two narrow-band swells plus a broad-directional wind sea. One component per
+/// Restrained long swells plus a broad-directional wind sea. One component per
 /// wavelength band renders as a single perfect plane wave, so a handful of them
 /// read as "one big regular wave plus one small regular wave"; real irregularity
 /// comes from the wind sea carrying many components spread widely in azimuth.
@@ -824,16 +824,16 @@ const WAVES: [GerstnerWave; 18] = [
     GerstnerWave {
         direction: DVec3::new(0.9, 0.1, 0.4),
         wavelength_meters: 1400.0,
-        amplitude_meters: 0.5,
-        storm_amplitude_meters: 0.12,
+        amplitude_meters: 0.05,
+        storm_amplitude_meters: 0.012,
         speed_meters_per_second: 46.7449,
         steepness: 0.45,
     },
     GerstnerWave {
         direction: DVec3::new(0.86, 0.18, 0.48),
         wavelength_meters: 1400.0,
-        amplitude_meters: 0.5,
-        storm_amplitude_meters: 0.12,
+        amplitude_meters: 0.05,
+        storm_amplitude_meters: 0.012,
         speed_meters_per_second: 46.7449,
         steepness: 0.4,
     },
@@ -843,32 +843,32 @@ const WAVES: [GerstnerWave; 18] = [
     GerstnerWave {
         direction: DVec3::new(0.65548185, 0.45377367, 0.60368286),
         wavelength_meters: 1400.0,
-        amplitude_meters: 0.5,
-        storm_amplitude_meters: 0.12,
+        amplitude_meters: 0.05,
+        storm_amplitude_meters: 0.012,
         speed_meters_per_second: 46.7449,
         steepness: 0.425,
     },
     GerstnerWave {
         direction: DVec3::new(0.1596, -0.599, 0.7847),
         wavelength_meters: 430.0,
-        amplitude_meters: 0.100,
-        storm_amplitude_meters: 0.37,
+        amplitude_meters: 0.010,
+        storm_amplitude_meters: 0.037,
         speed_meters_per_second: 25.9063,
         steepness: 1.5,
     },
     GerstnerWave {
         direction: DVec3::new(0.297, -0.7478, 0.5938),
         wavelength_meters: 350.0,
-        amplitude_meters: 0.110,
-        storm_amplitude_meters: 0.41,
+        amplitude_meters: 0.011,
+        storm_amplitude_meters: 0.041,
         speed_meters_per_second: 23.3725,
         steepness: 1.5,
     },
     GerstnerWave {
         direction: DVec3::new(0.3987, -0.8308, 0.3884),
         wavelength_meters: 280.0,
-        amplitude_meters: 0.095,
-        storm_amplitude_meters: 0.36,
+        amplitude_meters: 0.0095,
+        storm_amplitude_meters: 0.036,
         speed_meters_per_second: 20.905,
         steepness: 1.5,
     },
@@ -1654,13 +1654,11 @@ mod tests {
         let shader = include_str!("shared_planet.wgsl");
         let lighting = shader.split("fn ocean_lighting(").nth(1).unwrap();
         assert!(lighting.contains("smoothstep(0.15, 0.85, camera.flat_triangle_options.y)"));
-        assert!(
-            lighting.contains("mix(mix(0.212, 0.544, low), OCEAN_CREST_TRANSMISSION_ONSET, high)")
-        );
-        assert!(
-            lighting.contains("mix(mix(0.351, 0.880, low), OCEAN_CREST_TRANSMISSION_FULL, high)")
-        );
-        for (onset, full) in [(0.212, 0.351), (0.544, 0.880), (0.950, 1.534)] {
+        assert!(lighting.contains("mix(OCEAN_CREST_TRANSMISSION_CALM_ONSET,"));
+        assert!(lighting.contains("OCEAN_CREST_TRANSMISSION_ONSET, sea_blend)"));
+        assert!(lighting.contains("mix(OCEAN_CREST_TRANSMISSION_CALM_FULL,"));
+        assert!(lighting.contains("OCEAN_CREST_TRANSMISSION_FULL, sea_blend)"));
+        for (onset, full) in [(0.066, 0.118), (0.121, 0.212)] {
             assert!(onset > 0.0 && full > onset);
         }
     }
@@ -1784,14 +1782,14 @@ mod tests {
 
     /// Every wave in the table, at storm scale. Independent of the diagnostic
     /// toggle, so it still guards the table itself.
-    const FULL_TABLE_MAXIMUM_METERS: f64 = 93.9125;
-    /// The dominant swell group alone, at storm scale: 0.12 x 3 x 55.
+    const FULL_TABLE_MAXIMUM_METERS: f64 = 19.6625;
+    /// The dominant swell group alone, at storm scale: 0.012 x 3 x 55.
     ///
     /// This read 41.25 and had done through at least one amplitude change,
     /// which the old table could not produce either -- 0.09 x 2 x 55 is 9.9.
     /// It never showed because `OCEAN_LARGE_SWELL_ONLY` is false, so the branch
     /// asserting it does not run.
-    const LARGE_SWELL_ONLY_MAXIMUM_METERS: f64 = 19.8;
+    const LARGE_SWELL_ONLY_MAXIMUM_METERS: f64 = 1.98;
 
     #[test]
     fn gerstner_wave_height_stats_are_non_zero_and_time_varying() {
@@ -1805,7 +1803,7 @@ mod tests {
     }
 
     #[test]
-    fn storm_intensity_smoothly_reaches_the_giant_wave_scale() {
+    fn storm_intensity_smoothly_reaches_the_wind_sea_scale() {
         assert_eq!(
             geometry_amplitude_scale(0.0),
             OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE
@@ -1818,7 +1816,7 @@ mod tests {
         assert!(geometry_amplitude_scale(0.5) < OCEAN_STORM_GEOMETRY_AMPLITUDE_SCALE);
         let maximum_possible_height = maximum_wave_height_meters(1.0);
         assert!(maximum_possible_height <= MAXIMUM_WAVE_HEIGHT_METERS);
-        assert!(maximum_possible_height >= 20.0);
+        assert!(maximum_possible_height >= 10.0);
     }
 
     #[test]
@@ -1838,7 +1836,7 @@ mod tests {
                 })
                 .sum::<f64>()
         };
-        for (storm, amplitude) in [(false, 0.75), (true, 0.18)] {
+        for (storm, amplitude) in [(false, 0.075), (true, 0.018)] {
             assert!((sum(storm, false) - 2.0 * amplitude).abs() < 1.0e-12);
             assert!((sum(storm, true) - amplitude * (0.45 + 0.4)).abs() < 1.0e-12);
         }
@@ -1853,6 +1851,25 @@ mod tests {
             .to_degrees();
         assert!((signed_angle + 60.0).abs() < 0.001, "{signed_angle}");
         assert!(swells.iter().all(|wave| wave.wavelength_meters == 1400.0));
+    }
+
+    #[test]
+    fn deck_height_spectrum_favors_short_waves_over_long_swells() {
+        let total = |storm: bool, waves: &[super::GerstnerWave]| {
+            waves
+                .iter()
+                .map(|wave| {
+                    if storm {
+                        wave.storm_amplitude_meters
+                    } else {
+                        wave.amplitude_meters
+                    }
+                })
+                .sum::<f64>()
+        };
+        for storm in [false, true] {
+            assert!(total(storm, &WAVES[6..]) > total(storm, &WAVES[..6]));
+        }
     }
 
     #[test]

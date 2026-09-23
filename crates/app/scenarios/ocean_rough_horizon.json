@@ -26,6 +26,6 @@
   "assertions": {
     "require_finite_metrics": true,
     "expected_screenshots": 4,
-    "min_ocean_wave_height_range_meters": 30.0
+    "min_ocean_wave_height_range_meters": 8.0
   }
 }

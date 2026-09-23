@@ -356,10 +356,10 @@ struct OceanWaveSpec {
     wavelength_meters: f32,
     // Calm and full-storm amplitudes. A storm is not a calm sea scaled up: it
     // moves the dominant band from the 1400 m swell down to a 280-430 m storm
-    // sea. Same energy over a quarter of the wavelength is what makes a crest
-    // tower over an eye-level camera instead of passing under it as a long
-    // gentle rise. Both columns sum to the same total, so the height cap holds
-    // at either end and everywhere between.
+    // sea. Long swells are now restrained so the shorter wind sea remains
+    // visible from a deck-height camera rather than being hidden by a wall of
+    // water. The columns need not sum to the same total; the CPU height cap
+    // takes the taller endpoint and checks every intermediate blend.
     amplitude_meters: f32,
     storm_amplitude_meters: f32,
     speed_meters_per_second: f32,
@@ -421,12 +421,12 @@ const OCEAN_LARGE_SWELL_WAVE_COUNT: u32 = 3u;
 // wave_number * dot(direction, axis) * PLANET_RADIUS_METERS and a planet radius
 // turns a 4th-decimal axis difference into tens of radians of phase.
 var<private> OCEAN_WAVE_TABLE: array<OceanWaveSpec, 18> = array<OceanWaveSpec, 18>(
-    OceanWaveSpec(vec3<f32>(0.9, 0.1, 0.4), 1400.0, 0.5, 0.12, 46.7449, 0.45),
-    OceanWaveSpec(vec3<f32>(0.86, 0.18, 0.48), 1400.0, 0.5, 0.12, 46.7449, 0.4),
-    OceanWaveSpec(vec3<f32>(0.65548185, 0.45377367, 0.60368286), 1400.0, 0.5, 0.12, 46.7449, 0.425),
-    OceanWaveSpec(vec3<f32>(0.1596, -0.599, 0.7847), 430.0, 0.1, 0.37, 25.9063, 1.5),
-    OceanWaveSpec(vec3<f32>(0.297, -0.7478, 0.5938), 350.0, 0.11, 0.41, 23.3725, 1.5),
-    OceanWaveSpec(vec3<f32>(0.3987, -0.8308, 0.3884), 280.0, 0.095, 0.36, 20.905, 1.5),
+    OceanWaveSpec(vec3<f32>(0.9, 0.1, 0.4), 1400.0, 0.05, 0.012, 46.7449, 0.45),
+    OceanWaveSpec(vec3<f32>(0.86, 0.18, 0.48), 1400.0, 0.05, 0.012, 46.7449, 0.4),
+    OceanWaveSpec(vec3<f32>(0.65548185, 0.45377367, 0.60368286), 1400.0, 0.05, 0.012, 46.7449, 0.425),
+    OceanWaveSpec(vec3<f32>(0.1596, -0.599, 0.7847), 430.0, 0.01, 0.037, 25.9063, 1.5),
+    OceanWaveSpec(vec3<f32>(0.297, -0.7478, 0.5938), 350.0, 0.011, 0.041, 23.3725, 1.5),
+    OceanWaveSpec(vec3<f32>(0.3987, -0.8308, 0.3884), 280.0, 0.0095, 0.036, 20.905, 1.5),
     OceanWaveSpec(vec3<f32>(-0.1455, 0.9255, 0.3498), 200.0, 0.0495, 0.0495, 17.6679, 0.34),
     OceanWaveSpec(vec3<f32>(0.7017, -0.5337, 0.4721), 147.5, 0.0383, 0.0383, 15.1728, 0.32),
     OceanWaveSpec(vec3<f32>(0.3314, 0.5967, -0.7308), 108.7, 0.0295, 0.0295, 13.0252, 0.3),
@@ -485,6 +485,15 @@ fn beach_sand_albedo(height_meters: f32) -> vec3<f32> {
 // and keeps the tint on the thinnest water only.
 const OCEAN_SHALLOW_TINT_EFOLD_METERS: f32 = 9.0;
 const OCEAN_BODY_COLOUR: vec3<f32> = vec3<f32>(0.005, 0.032, 0.170);
+// Lit wave faces carry the reference's teal, while shaded troughs retain the
+// dark blue body. The transition uses the existing wave normal and sun.
+const OCEAN_SUNLIT_BODY_COLOUR: vec3<f32> = vec3<f32>(0.008, 0.150, 0.220);
+
+fn ocean_body_albedo(normal: vec3<f32>) -> vec3<f32> {
+    let sun_facing = max(dot(normal, normalize(camera.sun_direction.xyz)), 0.0);
+    return mix(OCEAN_BODY_COLOUR, OCEAN_SUNLIT_BODY_COLOUR,
+        smoothstep(0.20, 0.75, sun_facing));
+}
 // Where the transmitted turquoise starts and where it is full, in units of
 // summed crest sharpness (`OceanSurface::crest_sharpness`) -- dimensionless
 // Gerstner steepness, not metres of anything.
@@ -522,14 +531,13 @@ const OCEAN_BODY_COLOUR: vec3<f32> = vec3<f32>(0.005, 0.032, 0.170);
 // tint and p99 = 1.534 completes it, so turquoise starts on the sharpest tenth
 // of the sea and is only full on the sharpest hundredth. That measures 8.2%
 // under any tint and 2.8% over half strength.
-// Current calibration:
-// Recalibrated after adding the crossing swell: 600,000 independent random
-// phase samples, seed 14926, projected at the documented ocean spawn. These
-// are reference-spectrum p90/p99 anchors, not universal local percentiles.
-// Piecewise interpolation follows the changing calm/mid/storm distribution.
-// Wind filtering and shore steering still alter the local distribution.
-const OCEAN_CREST_TRANSMISSION_ONSET: f32 = 0.95;
-const OCEAN_CREST_TRANSMISSION_FULL: f32 = 1.534;
+// Current smaller-swell spectrum: 600,000 independent phase vectors, seed
+// 14926. The calm p90/p99 are 0.066/0.118, the storm p90/p99 0.121/0.212.
+// Wind filtering and shore steering can still change the local distribution.
+const OCEAN_CREST_TRANSMISSION_CALM_ONSET: f32 = 0.066;
+const OCEAN_CREST_TRANSMISSION_CALM_FULL: f32 = 0.118;
+const OCEAN_CREST_TRANSMISSION_ONSET: f32 = 0.121;
+const OCEAN_CREST_TRANSMISSION_FULL: f32 = 0.212;
 // Subtle open-ocean crest transmission, not tropical water colour. Real crests
 // are mostly foam and specular; thin-water colour should only bias the most
 // strongly backlit sharp crests.
@@ -583,7 +591,8 @@ const OCEAN_UNDERSIDE_FOAM_RADIANCE_SCALE: f32 = 0.80;
 // with no shore involved -- which is the whole difference from the surf above,
 // and why the open sea had no foam on it at all.
 //
-// Tuned against measured coverage in the render, not against the CPU slope
+// The previous spectrum was tuned against measured coverage in the render,
+// not against the CPU slope
 // probe. `open_sea_slope_distribution` reports p90 0.703 and p99 1.041 on the
 // open sea, but it reads `global_wave_slope`, which excludes the local ripple
 // layer that the *rendered* normal carries -- so thresholds taken from it put
@@ -594,11 +603,10 @@ const OCEAN_UNDERSIDE_FOAM_RADIANCE_SCALE: f32 = 0.80;
 //     onset 0.95 / full 1.55    4.6%
 //     onset 1.15 / full 1.85    0.4%
 //
-// The transition is sharp because slope is the tail of a summed spectrum. 0.95
-// is what makes "when the conditions are right" mean anything: a calmer
-// spectrum stops reaching it at all.
-const OCEAN_WHITECAP_SLOPE_ONSET: f32 = 0.95;
-const OCEAN_WHITECAP_SLOPE_FULL: f32 = 1.55;
+// The smaller-swell spectrum needs a lower slope band; the positive-height
+// gate below still keeps whitecaps on crests rather than steep troughs.
+const OCEAN_WHITECAP_SLOPE_ONSET: f32 = 0.35;
+const OCEAN_WHITECAP_SLOPE_FULL: f32 = 0.80;
 // Foam belongs on the upper part of a wave. A trough has faces just as steep as
 // a crest does, and foam sitting in the hollows reads as scum, not as breaking.
 //
@@ -3440,7 +3448,7 @@ fn ocean_lighting(
     let daylight = max(max(sun_transmittance.x, sun_transmittance.y), sun_transmittance.z);
     // Keep the water body a dark blue; direct sunlight and reflection still
     // provide the daylight highlights and glints.
-    let diffuse = OCEAN_BODY_COLOUR
+    let diffuse = ocean_body_albedo(normal)
         * (sky_diffuse + sun_transmittance * (0.4 * SURFACE_SUNLIGHT_SCALE));
     // The Phase 6 cubemap is static. It represents daytime sky reflection, so
     // gate it by direct daylight instead of reflecting a bright blue sky from
@@ -3459,10 +3467,10 @@ fn ocean_lighting(
     // thickness either. Cube the ramp and require tight sun alignment so this
     // remains an edge accent rather than a turquoise water colour.
     let sea_blend = smoothstep(0.15, 0.85, camera.flat_triangle_options.y);
-    let low = clamp(sea_blend * 2.0, 0.0, 1.0);
-    let high = clamp(sea_blend * 2.0 - 1.0, 0.0, 1.0);
-    let onset = mix(mix(0.212, 0.544, low), OCEAN_CREST_TRANSMISSION_ONSET, high);
-    let full = mix(mix(0.351, 0.880, low), OCEAN_CREST_TRANSMISSION_FULL, high);
+    let onset = mix(OCEAN_CREST_TRANSMISSION_CALM_ONSET,
+        OCEAN_CREST_TRANSMISSION_ONSET, sea_blend);
+    let full = mix(OCEAN_CREST_TRANSMISSION_CALM_FULL,
+        OCEAN_CREST_TRANSMISSION_FULL, sea_blend);
     let ramp = clamp(
         (crest_sharpness - onset) / (full - onset),
         0.0,
