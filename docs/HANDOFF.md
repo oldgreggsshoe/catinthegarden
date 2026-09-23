@@ -10,6 +10,29 @@ surface appearance rather than its geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
+**Sea of Thieves technique investigation (23 September):** Rare's primary SIGGRAPH 2018 paper,
+`https://history.siggraph.org/wp-content/uploads/2022/09/2018-Talks-Ang_The-Technical-Art-of-Sea-of-Thieves.pdf`,
+states that the ocean is Tessendorf FFT, not Gerstner; deep/subsurface colour is blended with a
+choppiness peak mask, view angle and sun direction; foam is generated at peaks and object
+intersections, blurred with temporal feedback, then mixed with authored textures; and the low sun
+gets an area specular lobe based on Karis's closest-point sphere approximation
+(`https://cdn2.unrealengine.com/Resources/files/2013SiggraphPresentationsNotes-26915738.pdf`).
+Our Gerstner wave field, instantaneous analytic foam and static cubemap do not provide those latter
+behaviours.
+The first bounded experiment added a fifth, generated material-array layer as a foam breakup
+texture and tested the existing whitecaps, sharpness and fine-crest masks against the exact-pose
+`ocean_rough_horizon` baseline `1790121789-675220`. Captures `1790133466-690007`,
+`1790133756-691071`, `1790133989-691714` and `1790134174-692369` respectively remove the
+white patches, add broad false whitecaps, and turn them into static zebra-like streaks as the
+texture scale tightens. None approaches the supplied `sot.png`; all source edits were reverted.
+The 65 focused ocean tests passed with the pre-existing dirty `surface_camera.rs` failure skipped;
+no matched frame-time claim was made. **Next:** a bounded camera-relative foam atlas, with
+world-space reprojection/scrolling, a peak-birth mask, decay/advection and filtered history,
+composited with a spatial texture. Measure its GPU cost against the current renderer and inspect
+sequential captures for swimming/ghosting before promotion. Keep the sea geometry and CPU ship
+buoyancy unchanged in this phase; FFT replacement is a separate CPU/GPU parity and performance
+project. The regular raised mesh-edge pattern is also separate and unchanged.
+
 **Current deck-height ocean reference pass (23 September):** against `/home/dad/Documents/sot.png`,
 uniform wave scaling failed: 0.25x submerged a static 5m eye, 0.1x flattened the surface. The
 promoted spectrum instead cuts the 1400m and 280-430m components to one tenth of their old
