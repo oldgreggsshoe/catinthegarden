@@ -362,6 +362,13 @@ const BIRD_CAM_AHEAD_METERS: f64 = 40.0;
 const BIRD_WATCH_FLIGHT_HEIGHT_METERS: f64 = 4.0;
 
 const SHIP_VISIBLE_DISTANCE_METERS: f64 = 30_000.0;
+/// Place the eye just outside the bow-facing bridge wall, where the windows
+/// would be, with a forward view over the foredeck.
+const BRIDGE_CAMERA_LOCAL_POSITION: glam::DVec3 = glam::DVec3::new(
+    -4.4 * ship::SHIP_SCALE,
+    0.0,
+    ship::HULL_FREEBOARD_METERS + 4.0 * ship::SHIP_SCALE,
+);
 const PLANET_ROTATION_SCALE_STEP: f64 = 2.0;
 const MINIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 =
     INTERACTIVE_PLANET_ROTATION_TIME_SCALE / 32.0;
@@ -633,6 +640,7 @@ enum CameraMode {
     Orbit,
     LowFlight,
     Surface,
+    Boat,
 }
 
 impl CameraMode {
@@ -641,8 +649,21 @@ impl CameraMode {
             Self::Orbit => "orbit",
             Self::LowFlight => "fixed-speed WASD flight; altitude-scaled ([/]: scale, Shift: 4x)",
             Self::Surface => "surface walking/swimming; G: return to flight, Space: jump/thrust",
+            Self::Boat => "ship bridge; F4: detach to flight",
         }
     }
+}
+
+fn ship_bridge_camera_planet_pose(
+    ship_body: &ship::ShipBody,
+    ship_hull: &ship::ShipHull,
+) -> (glam::DVec3, glam::DVec3, glam::DVec3) {
+    let hull_origin = ship_body.position - ship_body.orientation * ship_hull.centre_of_mass_local();
+    (
+        hull_origin + ship_body.orientation * BRIDGE_CAMERA_LOCAL_POSITION,
+        ship_body.orientation * glam::DVec3::X,
+        ship_body.orientation * glam::DVec3::Z,
+    )
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -683,7 +704,7 @@ fn interactive_camera_delta_seconds(
 ) -> f64 {
     match camera_mode {
         CameraMode::Orbit => scene_delta_seconds,
-        CameraMode::LowFlight | CameraMode::Surface => {
+        CameraMode::LowFlight | CameraMode::Surface | CameraMode::Boat => {
             frame_delta_seconds.min(MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS)
         }
     }
@@ -1732,12 +1753,21 @@ impl State {
 
         self.toggle_camera_mode();
         if body::has_ocean() && self.position_storm_ocean_start() {
-            self.toggle_surface_camera_mode();
+            self.camera_mode = CameraMode::Boat;
+            self.camera.set_vertical_fov_degrees_for_viewport(
+                LOW_FLIGHT_VERTICAL_FOV_DEGREES,
+                self.size.height,
+            );
+            self.update_bridge_camera(0.0);
+            self.previous_camera_world_position = self.camera.world_position();
+            self.previous_camera_planet_frame_position = self.camera.world_position();
+            self.camera_velocity_baseline_stale = true;
         }
         self.toggle_animation_freeze();
         tracing::info!(
             target: "catinthegarden::startup",
             camera_mode = self.camera_mode.label(),
+            boat_camera_attached = self.camera_mode == CameraMode::Boat,
             blur_enabled = self.hdr.blur_enabled(),
             animation_frozen = self.animation_frozen,
             "interactive startup controls applied"
@@ -2511,6 +2541,49 @@ impl State {
         );
     }
 
+    fn update_bridge_camera(&mut self, planet_rotation_radians: f64) {
+        if self.player_camera_is_suppressed() {
+            return;
+        }
+        let (eye_local, forward_local, up_local) =
+            ship_bridge_camera_planet_pose(&self.ship_body, &self.ship_hull);
+        let eye = planet::planet_world_vector(eye_local, planet_rotation_radians);
+        let forward = planet::planet_world_vector(forward_local, planet_rotation_radians);
+        let up = planet::planet_world_vector(up_local, planet_rotation_radians);
+        self.camera.set_world_pose_with_up(eye, eye + forward, up);
+    }
+
+    fn detach_bridge_camera_to_flight(&mut self, sim_time: f64) {
+        let planet_rotation_radians =
+            planet::planet_rotation_radians(self.interactive_planet_rotation_time(sim_time));
+        self.flight_local_position = self
+            .camera
+            .planet_frame_world_position(planet_rotation_radians);
+        let local_radial = self.flight_local_position.normalize();
+        let direction = self
+            .camera
+            .planet_frame_direction_dvec3(planet_rotation_radians);
+        let projected_tangent = direction - local_radial * direction.dot(local_radial);
+        self.flight_local_tangent = if projected_tangent.length_squared() > f64::EPSILON {
+            projected_tangent.normalize()
+        } else {
+            initial_flight_tangent(local_radial)
+        };
+        (self.flight_look_yaw_radians, self.flight_look_pitch_radians) =
+            flight_look_angles_toward(local_radial, self.flight_local_tangent, direction);
+        self.flight_surface_height_meters =
+            self.flight_local_position.length() - planet::planet_radius_meters();
+        self.flight_movement = FlightMovementInput::default();
+        self.flight_speed = FlightSpeedState::default();
+        self.flight_travel_direction = glam::DVec3::ZERO;
+        self.camera_mode = CameraMode::LowFlight;
+        self.camera.set_vertical_fov_degrees_for_viewport(
+            LOW_FLIGHT_VERTICAL_FOV_DEGREES,
+            self.size.height,
+        );
+        self.update_low_flight_camera(None, planet_rotation_radians, self.scaled_clock_seconds);
+    }
+
     fn resolve_surface_camera_after_streaming(
         &mut self,
         planet_rotation_radians: f64,
@@ -2911,6 +2984,9 @@ impl State {
         if self.camera_mode == CameraMode::Orbit {
             self.toggle_camera_mode();
         }
+        if self.camera_mode == CameraMode::Boat {
+            self.toggle_camera_mode();
+        }
 
         match self.camera_mode {
             CameraMode::LowFlight => {
@@ -2941,6 +3017,7 @@ impl State {
                 self.camera_mode = CameraMode::LowFlight;
             }
             CameraMode::Orbit => unreachable!("orbit enters low flight before surface mode"),
+            CameraMode::Boat => unreachable!("boat detaches into low flight before surface mode"),
         }
         self.previous_camera_world_position = self.camera.world_position();
         self.camera_velocity_baseline_stale = true;
@@ -3050,6 +3127,7 @@ impl State {
                 self.surface_jump_requested = false;
                 self.camera_mode = CameraMode::Orbit;
             }
+            CameraMode::Boat => self.detach_bridge_camera_to_flight(sim_time),
         }
         self.previous_camera_world_position = self.camera.world_position();
         self.camera_velocity_baseline_stale = true;
@@ -3857,6 +3935,7 @@ impl State {
                     planet_rotation_radians,
                     ocean_time_seconds,
                 ),
+                CameraMode::Boat => self.update_bridge_camera(planet_rotation_radians),
             }
         }
         self.last_auto_orbit_sim_time = sim_time;
@@ -3969,6 +4048,7 @@ impl State {
                     ocean_time_seconds,
                 ),
                 CameraMode::Orbit => false,
+                CameraMode::Boat => false,
             };
             if camera_corrected {
                 camera_world_position = self.camera.world_position();
@@ -5919,8 +5999,8 @@ mod tests {
 
     use super::{
         ACTIVE_HIGHEST_PROMINENCE_DIRECTION, ACTIVE_HIGHEST_PROMINENCE_METERS,
-        ACTIVE_HIGHEST_RAW_MACRO_ELEVATION_METERS, CameraMode, DEFAULT_OUTMAP_PATH,
-        FLIGHT_SPEED_SCALE_STEP, FlightMovementInput, FlightSpeedState,
+        ACTIVE_HIGHEST_RAW_MACRO_ELEVATION_METERS, BRIDGE_CAMERA_LOCAL_POSITION, CameraMode,
+        DEFAULT_OUTMAP_PATH, FLIGHT_SPEED_SCALE_STEP, FlightMovementInput, FlightSpeedState,
         INTERACTIVE_PLANET_ROTATION_TIME_SCALE, LOW_FLIGHT_ALTITUDE_METERS,
         LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND, LOW_FLIGHT_MINIMUM_CLEARANCE_METERS,
         MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS, MAXIMUM_FLIGHT_SPEED_SCALE,
@@ -5932,13 +6012,29 @@ mod tests {
         flight_view_direction, focus_of_expansion_ndc, initial_flight_tangent,
         interactive_camera_delta_seconds, low_flight_clearance_radius, movement_key_latch_expired,
         projected_planet_coverage, render_size_for_surface_resize, retimed_planet_rotation,
-        should_enter_fullscreen, should_start_interactive_fullscreen, surface_movement_direction,
+        ship_bridge_camera_planet_pose, should_enter_fullscreen,
+        should_start_interactive_fullscreen, surface_movement_direction,
         swept_flight_clearance_lift, transport_flight_tangent, waterline_scenario_pose,
     };
     use crate::planet::{
         CameraUniform, FlatTriangleOutlineMode, OrbitCamera, PLANET_ROTATION_PERIOD_SECONDS,
         RenderDebugMode, default_sun_direction, geographic_longitude_degrees,
     };
+
+    #[test]
+    fn bridge_camera_sits_just_forward_of_the_bridge_and_faces_the_bow() {
+        let hull = crate::ship::ShipHull::new();
+        let body = crate::ship::ShipBody::afloat_at(&hull, DVec3::Y, DVec3::X, 0.0);
+        let (eye, forward, up) = ship_bridge_camera_planet_pose(&body, &hull);
+        let hull_origin = body.position - body.orientation * hull.centre_of_mass_local();
+        let eye_ship_local = body.orientation.inverse() * (eye - hull_origin);
+        let bridge_bow_wall_x = (-8.0 + 3.4) * crate::ship::SHIP_SCALE;
+
+        assert!((eye_ship_local - BRIDGE_CAMERA_LOCAL_POSITION).length() < 1.0e-9);
+        assert!((eye_ship_local.x - bridge_bow_wall_x - 0.4).abs() < 1.0e-9);
+        assert!((forward - body.orientation * DVec3::X).length() < 1.0e-12);
+        assert!((up - body.orientation * DVec3::Z).length() < 1.0e-12);
+    }
 
     #[test]
     fn waterline_pose_puts_the_eye_a_fixed_height_above_the_wave_surface() {

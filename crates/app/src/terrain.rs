@@ -4,7 +4,10 @@ use std::{
     error::Error,
     fmt,
     path::PathBuf,
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{
+        OnceLock,
+        mpsc::{self, Receiver, Sender},
+    },
     thread,
 };
 
@@ -183,6 +186,20 @@ const MAX_RASTER_NEAR_FIELD_PREFETCH_PER_FRAME: usize = 4;
 /// source texels. At finer LODs the canonical grid already samples the source
 /// window at roughly one vertex per texel, so avoid paying for extra triangles.
 const NEAR_FIELD_DENSE_MAX_LEVEL: u8 = 10;
+/// The full 40x40 ocean lattice is an expensive visual diagnostic. Keep it
+/// opt-in until a topology solution removes its measured triangle increase.
+fn ocean_dense_grid_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("CATINGARDEN_OCEAN_DENSE_GRID")
+                .ok()
+                .as_deref()
+                .map(str::trim),
+            Some("1" | "true" | "on")
+        )
+    })
+}
 /// Half a second gives a newly resident grid time to replace its parent
 /// without leaving the opaque dither visible long enough to sparkle during
 /// normal flight. The higher-detail request itself begins early in `LodPolicy`.
@@ -2940,8 +2957,8 @@ impl TerrainRenderer {
                 // data.
                 None => true,
             };
-            let ocean_dense_near_field =
-                near_field && render_node.node.level <= NEAR_FIELD_DENSE_MAX_LEVEL;
+            let ocean_dense_near_field = ocean_dense_grid_enabled()
+                || (near_field && render_node.node.level <= NEAR_FIELD_DENSE_MAX_LEVEL);
             prepared_instances.push((
                 if near_field { None } else { tile_key },
                 near_field,

@@ -59,6 +59,18 @@ with a physically coherent crossing-crest profile that is CPU/WGSL-consistent, t
 validate actual movement, non-folding geometry and matched frame time against this
 steep-view baseline; do not promote either discarded diagnostic.
 
+**Bridge-front camera and restored dense-grid diagnostic (23 September):** the
+interactive startup now attaches the eye 0.4m beyond the bow-facing bridge wall,
+at bridge height, and updates it from the ship's current position/orientation each
+frame; F4 detaches to low flight at the same eye pose. The previous 40x40
+all-ocean grid selector is restored behind `CATINGARDEN_OCEAN_DENSE_GRID=1` so it
+can be watched without imposing its measured ~54% ocean-triangle increase on
+ordinary launches. Four-frame same-resolution steep-view replay passes with the
+flag; capture sequence `test-runs/ocean_steep_cusp/1790160596-760717/screenshots/`
+and animated preview `dense-grid-preview.gif`. It remains a topology diagnostic,
+not a cusp fix, and no performance improvement is claimed. Normal ocean startup
+is the bridge camera; non-ocean startup remains unchanged.
+
 **Cusped interference crest investigation (23 September):** the user wants two gradually
 steepening faces meeting at a near-vertical cusp, especially where waves interfere -- not merely
 a sharper normal, triangle edge, or whitecap. Today's `u^3` radial profile has a horizontal
