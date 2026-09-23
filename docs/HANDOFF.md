@@ -10,6 +10,25 @@ surface appearance rather than its geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
+**Opt-in foam-history implementation (23 September):** `CATINGARDEN_OCEAN_FOAM_HISTORY=1`
+enables `ocean_foam.rs`/`.wgsl`: a 128² ping-pong atlas over a 512m camera-tangent square. A
+compute pass evaluates only the six shortest existing Gerstner components, makes spatially
+scattered births at their convergent crests, reprojects the previous atlas from its planet-frame
+basis, and decays it over 1.5 ocean seconds. The transmitting ocean shader samples that history
+on sloping faces, still bounded by the existing water/depth foam rule; geometry and CPU buoyancy
+are unchanged. The group-2 sampled-texture limit on the Quadro is 16, so the atlas uses the
+previously shader-unused binding 15 instead of adding binding 16; the old shadow-height view
+was not referenced by any WGSL entrypoint. The default compiles the history sample out and
+skips the dispatch, and its `ocean_rough_horizon/1790142230-704492` frame 4 is byte-identical
+to the prior `1790121789-675220` frame. Enabled frame 4 at
+`ocean_rough_horizon/1790142246-704529` moves 97,264 of 921,600 pixels by over four levels;
+it reads as faint pale patches rather than the reference's distinct foam streaks, so **do not
+promote it yet**. Four interleaved 1280x720 Immediate-present pairs after two warm-ups give
+enabled-minus-default +0.729/+0.262/+0.335/+0.221ms (median +0.299ms, about 0.6%); no FPS
+improvement is claimed. `ocean_low_sun_stability/1790142092-704068` passes with the camera
+moving; 67 focused ocean tests pass with the pre-existing dirty surface-camera failure skipped,
+and actual-WGSL CPU/GPU broad-normal parity passes. The regular mesh-edge pattern is unchanged.
+
 **Sea of Thieves technique investigation (23 September):** Rare's primary SIGGRAPH 2018 paper,
 `https://history.siggraph.org/wp-content/uploads/2022/09/2018-Talks-Ang_The-Technical-Art-of-Sea-of-Thieves.pdf`,
 states that the ocean is Tessendorf FFT, not Gerstner; deep/subsurface colour is blended with a

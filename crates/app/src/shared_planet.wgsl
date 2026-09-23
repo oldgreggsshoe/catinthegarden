@@ -351,6 +351,9 @@ var moon_marking_map: texture_cube<f32>;
 @group(2) @binding(14)
 var moon_marking_sampler: sampler;
 
+@group(2) @binding(15)
+var foam_history_map: texture_2d<f32>;
+
 struct OceanWaveSpec {
     axis: vec3<f32>,
     wavelength_meters: f32,
@@ -1302,6 +1305,24 @@ fn ocean_surface_slope(normal: vec3<f32>, up: vec3<f32>) -> f32 {
     return sqrt(max(1.0 - facing * facing, 0.0)) / facing;
 }
 
+fn ocean_history_coverage(up: vec3<f32>) -> f32 {
+    if !OCEAN_FOAM_HISTORY_ENABLED {
+        return 0.0;
+    }
+    let center = normalize(view_to_planet(camera.camera_planet_direction_view_altitude.xyz));
+    let east = normalize(camera.camera_right.xyz
+        - center * dot(camera.camera_right.xyz, center));
+    let north = cross(center, east);
+    let offset = (up - center) * PLANET_RADIUS_METERS;
+    let uv = vec2<f32>(dot(offset, east), dot(offset, north)) / 512.0 + 0.5;
+    if any(uv <= vec2<f32>(0.0)) || any(uv >= vec2<f32>(1.0)) {
+        return 0.0;
+    }
+    let edge = min(min(uv.x, uv.y), min(1.0 - uv.x, 1.0 - uv.y));
+    return textureSampleLevel(foam_history_map, terrain_material_sampler, uv, 0.0).r
+        * smoothstep(0.0, 0.04, edge);
+}
+
 /// How much of this patch of sea is white, from both causes: surf, which needs
 /// a bottom to break on, and whitecaps, which do not.
 fn ocean_foam_coverage(
@@ -1321,10 +1342,11 @@ fn ocean_foam_coverage(
     let column_meters = still_depth_meters + surface_height_meters;
     let wash = 1.0 - smoothstep(0.0, OCEAN_SURF_COLUMN_METERS, max(column_meters, 0.0));
     let surf = max(crest_foam, wash * wash);
+    let surface_slope = ocean_surface_slope(normal, up);
     let whitecap = smoothstep(
         OCEAN_WHITECAP_SLOPE_ONSET,
         OCEAN_WHITECAP_SLOPE_FULL,
-        ocean_surface_slope(normal, up),
+        surface_slope,
     ) * smoothstep(
         OCEAN_WHITECAP_CREST_LOW_FRACTION * OCEAN_MAXIMUM_WAVE_HEIGHT_METERS,
         OCEAN_WHITECAP_CREST_HIGH_FRACTION * OCEAN_MAXIMUM_WAVE_HEIGHT_METERS,
@@ -1333,7 +1355,10 @@ fn ocean_foam_coverage(
     // Foam has to be made of water. Without this it keys off a depth of zero
     // and whitens ground the sea is barely covering.
     let has_water = smoothstep(0.0, OCEAN_FOAM_MINIMUM_DEPTH_METERS, still_depth_meters);
-    return max(surf, whitecap) * has_water * OCEAN_BREAKING_FOAM_MAX;
+    let lingering_foam = ocean_history_coverage(up)
+        * smoothstep(0.15, 0.40, surface_slope) * 0.7;
+    return max(max(surf, whitecap), lingering_foam)
+        * has_water * OCEAN_BREAKING_FOAM_MAX;
 }
 
 /// Foam lit the way the water beside it is lit, so it darkens at dusk instead

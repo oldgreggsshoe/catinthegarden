@@ -4507,6 +4507,23 @@ impl State {
             && self.render_debug_mode != planet::RenderDebugMode::FlatTriangles
             && self.render_debug_mode != planet::RenderDebugMode::SkyOnly;
         let encode_started = Instant::now();
+        if !solid_color_screen
+            && self.render_path == RenderPath::Raster
+            && self.terrain.has_ocean_draws()
+            && self.render_debug_mode != planet::RenderDebugMode::SkyOnly
+        {
+            self.terrain.update_ocean_foam(
+                &mut encoder,
+                &self.camera_bind_group,
+                camera_direction,
+                glam::DVec3::new(
+                    f64::from(camera_uniform.camera_right[0]),
+                    f64::from(camera_uniform.camera_right[1]),
+                    f64::from(camera_uniform.camera_right[2]),
+                ),
+                ocean_time_seconds as f32,
+            );
+        }
         if !solid_color_screen {
             self.atmosphere
                 .update(&mut encoder, &self.camera_bind_group);

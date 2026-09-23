@@ -534,14 +534,26 @@ pub(crate) fn retune_air_scale_heights(source: String, optical_divisor: f32) -> 
 }
 
 pub(crate) fn shared_planet_shader_source() -> String {
+    let foam_history_enabled = ocean_foam_history_enabled();
     retune_air_scale_heights(
         format!(
-            "{}\n{}\n{}",
+            "{}\n{}\nconst OCEAN_FOAM_HISTORY_ENABLED: bool = {};\n{}",
             crate::body::wgsl_constants(),
             crate::ocean::wgsl_constants(),
+            foam_history_enabled,
             include_str!("shared_planet.wgsl")
         ),
         1.0,
+    )
+}
+
+pub(crate) fn ocean_foam_history_enabled() -> bool {
+    matches!(
+        std::env::var("CATINGARDEN_OCEAN_FOAM_HISTORY")
+            .ok()
+            .as_deref()
+            .map(str::trim),
+        Some("1" | "true" | "on")
     )
 }
 

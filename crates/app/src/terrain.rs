@@ -15,6 +15,9 @@ use catinthegarden_coretypes::{
 use glam::DVec3;
 use wgpu::util::DeviceExt;
 
+#[path = "ocean_foam.rs"]
+mod ocean_foam;
+
 use crate::{
     outmap::{Outmap, OutmapError, TileData},
     planet::{
@@ -849,7 +852,9 @@ pub struct TerrainRenderer {
     terrain_tile_bind_group_layout: wgpu::BindGroupLayout,
     shared_bind_group_layout: wgpu::BindGroupLayout,
     raster_near_field_bind_group: wgpu::BindGroup,
-    shared_bind_group: wgpu::BindGroup,
+    shared_bind_groups: [wgpu::BindGroup; 2],
+    foam_history: ocean_foam::OceanFoamHistory,
+    foam_history_enabled: bool,
     _terrain_settings_buffer: wgpu::Buffer,
     _environment_cubemap: wgpu::Texture,
     _moon_marking_cubemap: wgpu::Texture,
@@ -1202,85 +1207,67 @@ impl TerrainRenderer {
             create_terrain_material_texture(device, queue);
         let (moon_marking_texture, moon_marking_view, moon_marking_sampler) =
             crate::moon_markings::create(device, queue);
-        // Bodies without the ray path's height faces bind a 1x1 stand-in and
-        // report zero face quads, which switches cast shadows off.
-        let shadow_height_fallback = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("terrain shadow height fallback"),
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 6,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R32Float,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let shadow_height_fallback_view =
-            shadow_height_fallback.create_view(&wgpu::TextureViewDescriptor {
-                dimension: Some(wgpu::TextureViewDimension::D2Array),
-                ..Default::default()
-            });
-        let (shadow_height_view, _) = shadow_heights.unwrap_or((&shadow_height_fallback_view, 0));
-        let shared_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("shared planet bind group"),
-            layout: &shared_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&environment_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::Sampler(&environment_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: terrain_settings_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: wgpu::BindingResource::TextureView(&terrain_material_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 7,
-                    resource: wgpu::BindingResource::Sampler(&terrain_material_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 8,
-                    resource: wgpu::BindingResource::TextureView(atmosphere.irradiance),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 9,
-                    resource: wgpu::BindingResource::Sampler(atmosphere.physical_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 10,
-                    resource: wgpu::BindingResource::TextureView(atmosphere.sky_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 11,
-                    resource: wgpu::BindingResource::Sampler(atmosphere.sky_view_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 12,
-                    resource: wgpu::BindingResource::TextureView(atmosphere.transmittance),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 13,
-                    resource: wgpu::BindingResource::TextureView(&moon_marking_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 14,
-                    resource: wgpu::BindingResource::Sampler(&moon_marking_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 15,
-                    resource: wgpu::BindingResource::TextureView(shadow_height_view),
-                },
-            ],
+        let foam_history =
+            ocean_foam::OceanFoamHistory::new(device, queue, camera_bind_group_layout);
+        let shared_bind_groups = std::array::from_fn(|index| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("shared planet bind group"),
+                layout: &shared_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&environment_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::Sampler(&environment_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: terrain_settings_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::TextureView(&terrain_material_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: wgpu::BindingResource::Sampler(&terrain_material_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: wgpu::BindingResource::TextureView(atmosphere.irradiance),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 9,
+                        resource: wgpu::BindingResource::Sampler(atmosphere.physical_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 10,
+                        resource: wgpu::BindingResource::TextureView(atmosphere.sky_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 11,
+                        resource: wgpu::BindingResource::Sampler(atmosphere.sky_view_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 12,
+                        resource: wgpu::BindingResource::TextureView(atmosphere.transmittance),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 13,
+                        resource: wgpu::BindingResource::TextureView(&moon_marking_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 14,
+                        resource: wgpu::BindingResource::Sampler(&moon_marking_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 15,
+                        resource: wgpu::BindingResource::TextureView(foam_history.view(index)),
+                    },
+                ],
+            })
         });
         let placeholder_tile = create_gpu_tile(
             device,
@@ -1333,7 +1320,9 @@ impl TerrainRenderer {
             terrain_tile_bind_group_layout,
             shared_bind_group_layout,
             raster_near_field_bind_group,
-            shared_bind_group,
+            shared_bind_groups,
+            foam_history,
+            foam_history_enabled: crate::planet::ocean_foam_history_enabled(),
             _terrain_settings_buffer: terrain_settings_buffer,
             _environment_cubemap: environment_cubemap,
             _moon_marking_cubemap: moon_marking_texture,
@@ -1431,7 +1420,28 @@ impl TerrainRenderer {
     }
 
     pub fn shared_bind_group(&self) -> &wgpu::BindGroup {
-        &self.shared_bind_group
+        &self.shared_bind_groups[self.foam_history.current()]
+    }
+
+    pub fn update_ocean_foam(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        camera_bind_group: &wgpu::BindGroup,
+        center: DVec3,
+        right: DVec3,
+        ocean_time_seconds: f32,
+    ) {
+        if !self.foam_history_enabled {
+            return;
+        }
+        self.foam_history.update(
+            &self.queue,
+            encoder,
+            camera_bind_group,
+            center,
+            right,
+            ocean_time_seconds,
+        );
     }
 
     pub(crate) fn shared_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
@@ -3164,7 +3174,7 @@ impl TerrainRenderer {
     ) {
         render_pass.set_pipeline(&self.shoreline_pipeline);
         render_pass.set_bind_group(0, camera_bind_group, &[]);
-        render_pass.set_bind_group(2, &self.shared_bind_group, &[]);
+        render_pass.set_bind_group(2, self.shared_bind_group(), &[]);
         render_pass.set_bind_group(3, &self.water_scene.bind_group, &[]);
         render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
         for batch in &self.ocean_draw_batches {
@@ -3218,7 +3228,7 @@ impl TerrainRenderer {
         };
         render_pass.set_pipeline(pipeline);
         render_pass.set_bind_group(0, camera_bind_group, &[]);
-        render_pass.set_bind_group(2, &self.shared_bind_group, &[]);
+        render_pass.set_bind_group(2, self.shared_bind_group(), &[]);
         render_pass.set_bind_group(3, scene_bind_group, &[]);
         render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
         for batch in &self.ocean_draw_batches {
@@ -3269,7 +3279,7 @@ impl TerrainRenderer {
         };
         render_pass.set_pipeline(pipeline);
         render_pass.set_bind_group(0, camera_bind_group, &[]);
-        render_pass.set_bind_group(2, &self.shared_bind_group, &[]);
+        render_pass.set_bind_group(2, self.shared_bind_group(), &[]);
         render_pass.set_bind_group(3, weather_field_bind_group, &[]);
         render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
         for batch in &self.draw_batches {
@@ -3425,7 +3435,7 @@ pub fn create_shared_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroup
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
-            texture_array_layout_entry(15, wgpu::TextureSampleType::Float { filterable: false }),
+            texture_layout_entry(15, wgpu::TextureSampleType::Float { filterable: true }),
         ],
     })
 }
