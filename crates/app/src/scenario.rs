@@ -307,6 +307,7 @@ scenarios! {
     "ocean_underwater_visibility" => "../scenarios/ocean_underwater_visibility.json",
     "ocean_waterline_medium" => "../scenarios/ocean_waterline_medium.json",
     "ocean_eye_level_facets" => "../scenarios/ocean_eye_level_facets.json",
+    "ocean_steep_cusp" => "../scenarios/ocean_steep_cusp.json",
     "ocean_shore_ascent" => "../scenarios/ocean_shore_ascent.json",
     "beach_sand_join" => "../scenarios/beach_sand_join.json",
     "bird_flyby" => "../scenarios/bird_flyby.json",
@@ -1722,6 +1723,21 @@ mod tests {
         assert_eq!(scenario.definition.waypoints.len(), 1);
         let position = DVec3::from_array(scenario.definition.waypoints[0].position);
         assert!(((position.length() - crate::planet::planet_radius_meters()) - 5.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn steep_cusp_ocean_replay_preserves_the_manual_down_angle() {
+        let scenario = ScenarioRunner::load("ocean_steep_cusp").expect("scenario parses");
+        assert_eq!(scenario.expected_screenshots(), 4);
+        let waypoint = &scenario.definition.waypoints[0];
+        let position = DVec3::from_array(waypoint.position);
+        let view = (DVec3::from_array(waypoint.look_at) - position).normalize();
+        let depression = (-view.dot(position.normalize())).asin();
+        assert!(
+            (25.0_f64.to_radians()..35.0_f64.to_radians()).contains(&depression),
+            "expected a steep down-angle, got {} degrees",
+            depression.to_degrees()
+        );
     }
 
     #[test]

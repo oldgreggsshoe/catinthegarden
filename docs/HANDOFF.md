@@ -46,6 +46,19 @@ must confine compression to constructive crossings without creating broad scallo
 then validate real-radius CPU/GPU/ray parity, movement, mesh/LOD edges, and matched
 performance before any promotion. No improvement/score claim is made.
 
+**Steep-view cusp follow-up (23 September):** added the fixed `ocean_steep_cusp`
+replay (about 30 degrees down from 79m altitude) to reproduce the user's manual
+water view: baseline capture `test-runs/ocean_steep_cusp/1790155819-748019`.
+An all-ocean 40x40 mesh diagnostic retained regular raised ridges while increasing
+ocean triangles from 582,912 to 897,600 (+54%); the temporary selector change was
+reverted. The opt-in transport at this same angle made broad pale sheets rather than
+cusped crossing waves (`1790156393-750771`); it remains off by default. No clean
+performance comparison was made because another app process was live. The bounded
+ocean transport and mesh-density ideas are therefore not visual solutions. Continue
+with a physically coherent crossing-crest profile that is CPU/WGSL-consistent, then
+validate actual movement, non-folding geometry and matched frame time against this
+steep-view baseline; do not promote either discarded diagnostic.
+
 **Cusped interference crest investigation (23 September):** the user wants two gradually
 steepening faces meeting at a near-vertical cusp, especially where waves interfere -- not merely
 a sharper normal, triangle edge, or whitecap. Today's `u^3` radial profile has a horizontal
