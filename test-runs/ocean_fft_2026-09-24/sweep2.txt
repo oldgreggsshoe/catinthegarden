@@ -1,0 +1,8 @@
+d-f37      1,2,3,1.6          grid passed=True grid_fine=118.78  grid_foam=6.63  lattice=21.98  test-runs/ocean_manual_grid/1790251885-20193/
+d-f37      1,2,3,1.6          deck passed=True deck_near_fine=16.62  deck_near_foam=2.07  deck_mid_fine=60.97  deck_mid_foam=2.48  test-runs/ocean_deck_reference/1790251907-20287/
+d-f58      1,2,3,1.6          grid passed=True grid_fine=88.50  grid_foam=2.62  lattice=19.60  test-runs/ocean_manual_grid/1790251937-20391/
+d-f58      1,2,3,1.6          deck passed=True deck_near_fine=15.68  deck_near_foam=0.78  deck_mid_fine=60.73  deck_mid_foam=1.54  test-runs/ocean_deck_reference/1790251968-20500/
+d-f69      1,2,3,1.6          grid passed=True grid_fine=69.58  grid_foam=1.16  lattice=19.98  test-runs/ocean_manual_grid/1790251998-20602/
+d-f69      1,2,3,1.6          deck passed=True deck_near_fine=15.05  deck_near_foam=0.13  deck_mid_fine=59.62  deck_mid_foam=0.97  test-runs/ocean_deck_reference/1790252029-20703/
+d-f15      1,2,3,1.6          grid passed=True grid_fine=150.23  grid_foam=15.11  lattice=23.65  test-runs/ocean_manual_grid/1790252059-20805/
+d-f15      1,2,3,1.6          deck passed=True deck_near_fine=19.20  deck_near_foam=3.71  deck_mid_fine=63.50  deck_mid_foam=4.78  test-runs/ocean_deck_reference/1790252091-20911/

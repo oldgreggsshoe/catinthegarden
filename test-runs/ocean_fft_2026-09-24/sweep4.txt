@@ -1,0 +1,4 @@
+f0.4,1.4   1,2,3,1.6          grid passed=True grid_fine=69.67  grid_foam=0.44  lattice=20.80  test-runs/ocean_manual_grid/1790252672-23291/
+f0.4,1.4   1,2,3,1.6          deck passed=True deck_near_fine=36.38  deck_near_foam=0.65  deck_mid_fine=87.50  deck_mid_foam=0.65  test-runs/ocean_deck_reference/1790252705-23416/
+f0.6,1.8   1,2,3,1.6          grid passed=True grid_fine=51.48  grid_foam=0.16  lattice=25.57  test-runs/ocean_manual_grid/1790252736-23520/
+f0.6,1.8   1,2,3,1.6          deck passed=True deck_near_fine=34.60  deck_near_foam=0.10  deck_mid_fine=85.20  deck_mid_foam=0.09  test-runs/ocean_deck_reference/1790252769-23630/

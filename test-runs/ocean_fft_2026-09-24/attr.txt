@@ -1,0 +1,12 @@
+default 40.818
+chop1.1 41.158
+damp0.25 40.452
+gains1 36.32
+nofoam 40.907
+oldall 36.456
+default 40.778
+chop1.1 40.982
+damp0.25 40.673
+gains1 36.42
+nofoam 40.868
+oldall 36.542

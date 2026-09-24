@@ -945,9 +945,10 @@ fn vs_ocean(input: VertexInput) -> OceanVertexOutput {
     let fft_relative = view_to_planet(flat_camera_relative_view_position);
     // The mesh cannot carry waves shorter than its own spacing; sampled
     // anyway they alias into long straight silhouette facets. Filter the FFT
-    // sea to the vertex spacing (the coarser neighbour's along a stitched
-    // edge, so both chunks displace a shared vertex identically) and let the
-    // per-pixel normal restore the detail.
+    // sea to a multiple of the vertex spacing (the coarser neighbour's along a
+    // stitched edge, so both chunks displace a shared vertex identically) and
+    // let the per-pixel normal restore the detail. The multiple is generated
+    // from `ocean_fft::DEFAULT_VERTEX_FILTER`, which records why it is 4.
     let fft_vertex_filter_meters = edge_detail_filter_meters(
         projected.tile_uv,
         input.edge_stitch,
@@ -983,7 +984,6 @@ fn vs_ocean(input: VertexInput) -> OceanVertexOutput {
     );
 }
 
-const OCEAN_FFT_VERTEX_FILTER_SCALE: f32 = 1.0;
 
 fn lod_dither_threshold(fragment_position: vec4<f32>) -> f32 {
     // Stable interleaved-gradient noise avoids the visible checker/grid of an
@@ -2262,12 +2262,13 @@ fn ocean_fragment_with_transmission_mode(input: OceanVertexOutput, bed: vec4<f32
         sun_direction,
     );
     // Foam: surf where there is a bottom to break on, whitecaps where there is not.
-    let foam = ocean_foam_coverage(
+    let foam = ocean_foam_coverage_at_crest(
         max(-macro_height_meters, 0.0),
         surface.vertical_displacement,
         surface.breaking_ratio,
         lighting_normal,
         direction,
+        surface.crest_sharpness,
     );
     let normal_view = normalize(planet_to_view(lighting_normal));
     let facing = max(dot(normal_view, normalize(-input.camera_relative_view_position)), 0.0);

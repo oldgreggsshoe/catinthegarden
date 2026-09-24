@@ -7,16 +7,19 @@ at the Sea of Thieves plan (`response/claude.txt`). `git log -1` is authoritativ
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current state (24 September): FFT sea works, is cheaper, and does not yet look better.**
+**Current state (24 September, calibrated): the FFT sea is cheaper and more detailed; not yet signed off.**
 `CATINGARDEN_OCEAN_FFT=1` replaces every Gerstner row under 250m and the ripple
 octave with three 256x256 GPU Tessendorf cascades; default launches are unchanged.
-GPU height matches a CPU FFT; CPU buoyancy reads cached 128x128 grids (1cm of the
-exact mode sum) and differences the reported world height for slope and velocity.
-`ocean_deck_reference` frames are ~2.7ms faster (39.0 -> 36.3ms, 7 ABBA runs each).
-The overhead lattice metric falls 70-98 -> 26-31, **but by removing detail**: the
-overhead view is nearly featureless and foam is gone, which the plan says does not
-count. Next: calibrate spectrum strength, choppiness and the crest/foam mask to
-the FFT sea at the deck view. Evidence: `test-runs/ocean_fft_2026-09-24/REPORT.md`.
+Calibrated defaults (short cascades x2/x3, choppiness 1.6, damping 0.04m,
+crest-mask whitecaps 0.4-1.4, waves under 4x vertex spacing shading-only):
+`ocean_deck_reference` 36.6-36.8ms vs 38.6-39.4ms Gerstner (7 ABBA runs each);
+overhead lattice 18-24 vs 70-98; overhead fine detail 69-78 vs 51-55; deck
+foreground detail 32-46 vs 4-11. All six ocean replays pass. Tuning stays
+available at runtime through `CATINGARDEN_OCEAN_FFT_TUNE/_FOAM/_DAMPING/_VERTEX_FILTER`.
+Still wrong: nearest-face foam reads as soft smears (phase F: textured,
+temporal foam), colour is unchanged (phase E: crest-lit subsurface colour), and
+the FFT band barely responds to sea state. **Next:** Ian's visual verdict at the
+deck view, then phase E. Evidence: `test-runs/ocean_fft_2026-09-24/REPORT.md`.
 
 **Previous appearance diagnosis (23 September, latest manual grid complaint):**
 Use `--scenario ocean_deck_reference` as the primary appearance comparison: a
@@ -11128,3 +11131,22 @@ Opt-in `CATINGARDEN_OCEAN_FFT=1` (`ocean_fft.rs`, `ocean_fft.wgsl`,
 - **Tests:** default 558 pass / 0 fail / 26 ignored. With the FFT on, 8 tests fail
   that encode Gerstner-only assumptions (table size, storm ceiling, wave scale,
   depth-independent pattern x2, transport experiment x2, authored waterline pose).
+
+## 24 September (later) — FFT sea calibrated
+
+Detail, foam and cost tuned against `sea_metrics.py` (fine contrast, foam
+fraction, lattice) at the overhead and deck views; the numbers and sweeps are in
+the report's calibration section. Findings worth keeping:
+
+- Short cascades need gain: a plain k^-4 sea (rms slope ~0.15) reads flat next to
+  the stylised Gerstner field. Gains add slope, not height.
+- Whitecaps under the FFT key off `1 - Jacobian`, not slope; slope whitened
+  whole faces. Underside paths keep the slope rule (no per-pixel crest there).
+- The 0.25m damping length removed exactly the ripples a 2.5m eye sees; a
+  normal-colour diagnostic found it (smooth foreground normals, detailed middle
+  distance). Now 0.04m.
+- Rougher near geometry costs GPU time (4.4ms at 1x filter) without changing
+  submission; back faces were ruled out. Waves under 4x vertex spacing are now
+  shading-only, which is also what the old ripple octave was.
+- A sweep that gives byte-identical results across settings means the knob is
+  not wired: `cargo fmt` had reflowed the target line.

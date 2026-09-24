@@ -1359,6 +1359,23 @@ fn ocean_foam_coverage(
     normal: vec3<f32>,
     up: vec3<f32>,
 ) -> f32 {
+    return ocean_foam_coverage_at_crest(
+        still_depth_meters, surface_height_meters, breaking_ratio, normal, up, -1.0);
+}
+
+/// As `ocean_foam_coverage`, for callers that hold the per-pixel crest
+/// sharpness. Under the FFT sea whitecaps key off it -- `1 - Jacobian`, where
+/// the choppy displacement squeezes water into a crest -- rather than off
+/// slope: slope whitens whole wave faces, the fold only their tips. A negative
+/// `crest_sharpness` means the caller has none and keeps the slope rule.
+fn ocean_foam_coverage_at_crest(
+    still_depth_meters: f32,
+    surface_height_meters: f32,
+    breaking_ratio: f32,
+    normal: vec3<f32>,
+    up: vec3<f32>,
+    crest_sharpness: f32,
+) -> f32 {
     // Surf is a band, not a field. Once a crest is many times what the depth can
     // hold it broke a long way back and the water behind it is spent, so the
     // foam has to fade out again -- otherwise the whole shelf whitens.
@@ -1370,11 +1387,15 @@ fn ocean_foam_coverage(
     let wash = 1.0 - smoothstep(0.0, OCEAN_SURF_COLUMN_METERS, max(column_meters, 0.0));
     let surf = max(crest_foam, wash * wash);
     let surface_slope = ocean_surface_slope(normal, up);
-    let whitecap = smoothstep(
+    var whitecap_signal = smoothstep(
         OCEAN_WHITECAP_SLOPE_ONSET,
         OCEAN_WHITECAP_SLOPE_FULL,
         surface_slope,
-    ) * smoothstep(
+    );
+    if OCEAN_FFT_ENABLED && crest_sharpness >= 0.0 {
+        whitecap_signal = smoothstep(OCEAN_FFT_FOAM_ONSET, OCEAN_FFT_FOAM_FULL, crest_sharpness);
+    }
+    let whitecap = whitecap_signal * smoothstep(
         OCEAN_WHITECAP_CREST_LOW_FRACTION * OCEAN_MAXIMUM_WAVE_HEIGHT_METERS,
         OCEAN_WHITECAP_CREST_HIGH_FRACTION * OCEAN_MAXIMUM_WAVE_HEIGHT_METERS,
         surface_height_meters,

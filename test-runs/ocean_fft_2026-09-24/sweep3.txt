@@ -1,0 +1,4 @@
+damp0.1    1,2,3,1.6          grid passed=True grid_fine=99.65  grid_foam=3.48  lattice=20.20  test-runs/ocean_manual_grid/1790252535-22830/
+damp0.1    1,2,3,1.6          deck passed=True deck_near_fine=31.77  deck_near_foam=1.77  deck_mid_fine=83.00  deck_mid_foam=2.11  test-runs/ocean_deck_reference/1790252557-22938/
+damp0.04   1,2,3,1.6          grid passed=True grid_fine=102.25  grid_foam=3.70  lattice=20.38  test-runs/ocean_manual_grid/1790252588-23043/
+damp0.04   1,2,3,1.6          deck passed=True deck_near_fine=44.15  deck_near_foam=2.25  deck_mid_fine=96.58  deck_mid_foam=2.74  test-runs/ocean_deck_reference/1790252610-23151/

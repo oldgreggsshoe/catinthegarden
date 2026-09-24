@@ -1,4 +1,11 @@
-# FFT wind sea: phase B plus CPU parity (24 September)
+# FFT wind sea: phase B, CPU parity and calibration (24 September)
+
+**Status after calibration (section at the end):** the FFT sea beats the
+Gerstner sea on cost and on every detail measure -- 2.4ms faster, lattice 18-24 vs 70-98,
+overhead detail 69-78 vs 51-55, deck foreground detail 32-46 vs 4-11 -- and
+foam coverage is about level. The first half of this report (the flat,
+foamless FFT sea) is superseded.
+Human visual sign-off is still outstanding.
 
 Branch `experiment/fft-ocean`. Opt-in `CATINGARDEN_OCEAN_FFT=1`; the default
 renderer and CPU sea are unchanged (558 app tests pass, 0 fail, 26 ignored).
@@ -74,3 +81,66 @@ the 44x/55x Gerstner convergence, not `1 - Jacobian` at choppiness 1.1.
   (x2; choppiness fades with depth by design), the transport experiment (x2),
   and the waterline pose authored against the Gerstner surface.
 - GPU slope channels and the far-field (phase G) are untested.
+
+## Calibration (same day, later)
+
+Metrics: `sea_metrics.py` -- fine contrast (std of luminance minus a 6px blur,
+x1000) and foam fraction per water region, plus the lattice ratio. Captures under
+xvfb; timings on DISPLAY=:0, Immediate present. Sweeps: `sweep1-5.txt`,
+attributions: `attr*.txt`.
+
+1. **Cascade gains** (`sweep1.txt`). Unit gains gave overhead fine contrast 14
+   against Gerstner's 53. Lifting the short cascades adds slope, not height:
+   gains 1/2/3 with choppiness 1.6 gave 88, lattice 22.
+2. **Foam on the crest mask** (`sweep2.txt`, `sweep4.txt`). Slope-keyed
+   whitecaps whitened whole wave faces; FFT-mode whitecaps now key off
+   `1 - Jacobian` (`ocean_foam_coverage_at_crest`; underside paths keep the
+   slope rule). A 0.5-0.8 ramp cut hard white sheets; 0.4-1.4 leaves
+   translucent crest streaks.
+3. **Damping** (`sweep3.txt`). A normal-colour diagnostic showed the deck
+   foreground normals smooth while mid-distance was detailed: the 0.25m
+   damping cut a 1m ripple to 30%. Deck-foreground fine contrast 15.7 (0.25m),
+   31.8 (0.1m), 44.2 (0.04m). (A first run of this sweep was void: `cargo fmt`
+   had reflowed the line the knob was meant to replace, and three settings
+   gave byte-identical numbers.)
+4. **Frame cost of the gains** (`attr.txt`, `attr3.txt`, `attr4.txt`). The
+   calibrated sea first cost 40.8ms against 36.4ms at unit gains; choppiness,
+   damping and foam were each neutral. Ocean submission and CPU simulation were
+   unchanged; the GPU wait rose. Discarding back faces changed nothing
+   (`attr2.txt`), so it is not the underside shader. It scales with the short
+   cascade's gain (+3.3ms) and the middle one's (+1.4ms): near the eye the
+   mesh is ~1m apart, so the short cascade roughened the near geometry. Moving
+   waves under 4x the vertex spacing into shading only:
+   41.0 (1x), 38.5 (2x), 36.7 (4x), 35.2 (8x) ms, Gerstner 39.1. 8x flattened
+   near silhouettes and banded the horizon; **4x is the default**.
+
+Defaults now: gains 1/2/3, choppiness 1.6, damping 0.04m, foam 0.4-1.4, vertex
+filter 4x. All remain runtime knobs (`CATINGARDEN_OCEAN_FFT_TUNE`,
+`_FOAM`, `_DAMPING`, `_VERTEX_FILTER`), logged as "ocean fft tune".
+
+Final, committed defaults:
+
+| | Gerstner | FFT calibrated |
+|---|---|---|
+| frame time, 7 ABBA runs | 38.56-39.35ms | 36.58-36.80ms |
+| overhead fine / lattice / foam | 51-55 / 70-98 / 0.6-0.8% | 69-78 / 18-24 / 0.3-0.8% |
+| deck near fine | 4-11 | 32-46 |
+| deck mid fine | 24-34 | 70-108 |
+
+`timing-calibrated.txt`; captures `captures/*-calibrated.png`. Replays passing:
+ocean_manual_grid, ocean_deck_reference (2.4-2.6m clearance), ocean_rough_horizon,
+ocean_hybrid_close, ocean_ship_float, ocean_steep_cusp. Tests: default 558/0/26;
+FFT 7/7 including GPU parity (worst |gpu - cpu| 0.20%, 0.22% and 0.33% of the
+three cascades' sigmas); FFT-mode full suite the same 8 Gerstner-assumption failures.
+
+Still wrong or unmeasured:
+- Foreground foam still reads as soft white smears on the nearest faces; it
+  needs texture and temporal history (plan phase F).
+- Colour is unchanged: the near water is mostly uniform sky reflection. Sea of
+  Thieves' crest-lit subsurface colour is plan phase E; the crest-transmission
+  anchors are still Gerstner-calibrated and now also read the FFT crest.
+- The FFT band barely responds to sea state (sigma 2.2 -> 2.75m); calm and
+  storm differ mostly through the Gerstner swells. Wind-driven spectrum is open.
+- The CPU keeps the 15-60m cascade whole while the drawn near mesh trims ~15%
+  of its shortest waves at 4x; not separately measured beyond the clearance
+  assertion.

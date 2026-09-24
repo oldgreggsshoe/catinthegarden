@@ -50,8 +50,11 @@ const CASCADE_BANDS_METERS: [(f64, f64); CASCADE_COUNT] = [
 /// The FFT carries every wave shorter than this. The Gerstner table keeps the
 /// rest; `ocean::FFT_REPLACES_FROM` names the first Gerstner row it replaces.
 pub const FFT_LONGEST_WAVELENGTH_METERS: f64 = 250.0;
-/// Capillary cutoff: modes much shorter than this are damped away.
-const DAMPING_LENGTH_METERS: f64 = 0.25;
+/// Short-wave damping length. At 0.25m it cut a 1m ripple to 30% and removed
+/// everything under ~0.6m, which from a 2.5m eye is exactly the detail that
+/// was missing: deck-foreground fine contrast 15.7 at 0.25m, 31.8 at 0.1m,
+/// 44.2 at 0.04m (`test-runs/ocean_fft_2026-09-24/REPORT.md`).
+const DAMPING_LENGTH_METERS: f64 = 0.04;
 /// Longuet-Higgins spreading exponent, cos^(2s)(theta/2). Low values give the
 /// broad crossing chop of an actively blowing sea rather than a combed swell.
 const SPREADING_S: f64 = 3.0;
@@ -60,17 +63,117 @@ const WIND_DIRECTION: DVec2 = DVec2::new(0.8944271909999159, 0.4472135954999579)
 /// The dispersion relation is quantised to multiples of 2pi/`REPEAT_SECONDS`,
 /// so the whole field is exactly periodic and the GPU never sees a large time.
 pub const REPEAT_SECONDS: f64 = 1000.0;
-/// Horizontal (choppy) displacement factor. Chosen so the calm sea never
-/// folds and the storm sea only just does at its highest crests; the foam
-/// test measures both.
-pub const CHOPPINESS: f64 = 1.1;
+/// Horizontal (choppy) displacement factor: it narrows crests, widens
+/// troughs, and drives the `1 - Jacobian` crest mask the whitecaps read.
+/// 1.1 left the crest mask too weak to foam; 1.6 was chosen from the sweep in
+/// the report. Folding is not bounded analytically -- check the storm replay
+/// after raising it.
+pub const DEFAULT_CHOPPINESS: f64 = 1.6;
+/// Per-cascade amplitude after the unit-sigma normalisation. A plain k^-4 sea
+/// carries rms slope ~0.15 and read as flat beside the Gerstner field it
+/// replaced; lifting the two short cascades adds slope, not height (their rms
+/// heights are 0.5m and 0.1m at unit gain). Swept in the report.
+const DEFAULT_GAINS: [f64; CASCADE_COUNT] = [1.0, 2.0, 3.0];
+/// Whitecap onset and full, in crest sharpness (`1 - Jacobian`). A narrow
+/// 0.5-0.8 ramp cut hard-edged white sheets; this one leaves translucent
+/// streaks on crest lines.
+const DEFAULT_FOAM: (f64, f64) = (0.4, 1.4);
+/// Waves shorter than this many vertex spacings are shading-only. Near the eye
+/// the mesh is about 1m apart, so at 1x the short cascade roughened the near
+/// geometry and cost 4.4ms a frame in steep-wave overdraw (the same triangles,
+/// only rougher; discarding back faces changed nothing). ocean_deck_reference:
+/// 41.0ms at 1x, 38.5 at 2x, 36.7 at 4x, 35.2 at 8x, against 39.1 for the
+/// Gerstner sea. 8x flattened the near silhouettes and banded the horizon; 4x
+/// keeps them. The CPU keeps the 15-60m cascade whole, so near the camera the
+/// drawn geometry trims roughly 15% off its shortest waves; the deck
+/// clearance assertion (2.4-2.6m) still passes.
+const DEFAULT_VERTEX_FILTER: f64 = 4.0;
 /// Standard deviation of the FFT sea height (metres) at calm and at full
-/// storm. This matches the variance of the Gerstner rows it replaced
-/// (rows 6..18 at 44x and 55x geometry scale).
+/// storm, before `DEFAULT_GAINS`. This matches the variance of the Gerstner
+/// rows it replaced (rows 6..18 at 44x and 55x geometry scale); the default
+/// gains raise it by about 8%, almost all of it slope-carrying short waves.
 pub const CALM_HEIGHT_SIGMA_METERS: f64 = 2.2;
 pub const STORM_HEIGHT_SIGMA_METERS: f64 = 2.75;
 /// Cascades the CPU sums. The third holds under 1% of the variance.
 const CPU_CASCADES: usize = 2;
+
+/// Calibration knobs, read once at startup so the look can be swept without
+/// rebuilding: `CATINGARDEN_OCEAN_FFT_TUNE=g0,g1,g2,chop` sets the cascade
+/// gains and the choppiness, `CATINGARDEN_OCEAN_FFT_FOAM=onset,full` the
+/// whitecap ramp, `CATINGARDEN_OCEAN_FFT_DAMPING` the damping length. CPU and
+/// GPU both read the spectrum through here, so buoyancy stays paired.
+struct Tune {
+    gains: [f64; CASCADE_COUNT],
+    choppiness: f64,
+    /// Whitecap onset and full crest sharpness (`1 - Jacobian`);
+    /// `CATINGARDEN_OCEAN_FFT_FOAM=onset,full`.
+    foam: (f64, f64),
+    /// Short-wave damping length, metres; `CATINGARDEN_OCEAN_FFT_DAMPING`.
+    damping: f64,
+    /// Multiple of the mesh's vertex spacing below which waves leave the
+    /// geometry and live only in the per-pixel normal;
+    /// `CATINGARDEN_OCEAN_FFT_VERTEX_FILTER`. See `DEFAULT_VERTEX_FILTER`.
+    vertex_filter: f64,
+}
+
+fn tune() -> &'static Tune {
+    static TUNE: OnceLock<Tune> = OnceLock::new();
+    TUNE.get_or_init(|| {
+        let mut tune = Tune {
+            gains: DEFAULT_GAINS,
+            choppiness: DEFAULT_CHOPPINESS,
+            foam: DEFAULT_FOAM,
+            damping: DAMPING_LENGTH_METERS,
+            vertex_filter: DEFAULT_VERTEX_FILTER,
+        };
+        if let Some(scale) = std::env::var("CATINGARDEN_OCEAN_FFT_VERTEX_FILTER")
+            .ok()
+            .and_then(|value| value.trim().parse::<f64>().ok())
+            .filter(|value| value.is_finite() && *value > 0.0)
+        {
+            tune.vertex_filter = scale;
+        }
+        if let Some(damping) = std::env::var("CATINGARDEN_OCEAN_FFT_DAMPING")
+            .ok()
+            .and_then(|value| value.trim().parse::<f64>().ok())
+            .filter(|value| value.is_finite() && *value >= 0.0)
+        {
+            tune.damping = damping;
+        }
+        if let Ok(value) = std::env::var("CATINGARDEN_OCEAN_FFT_FOAM") {
+            let numbers: Vec<f64> = value
+                .split(',')
+                .filter_map(|part| part.trim().parse().ok())
+                .collect();
+            if numbers.len() == 2 && numbers[0].is_finite() && numbers[1] > numbers[0] {
+                tune.foam = (numbers[0], numbers[1]);
+            }
+        }
+        if let Ok(value) = std::env::var("CATINGARDEN_OCEAN_FFT_TUNE") {
+            let numbers: Vec<f64> = value
+                .split(',')
+                .filter_map(|part| part.trim().parse().ok())
+                .collect();
+            if numbers.len() == 4 && numbers.iter().all(|n| n.is_finite() && *n >= 0.0) {
+                tune.gains = [numbers[0], numbers[1], numbers[2]];
+                tune.choppiness = numbers[3];
+            }
+        }
+        tracing::info!(
+            gains = ?tune.gains,
+            choppiness = tune.choppiness,
+            foam = ?tune.foam,
+            damping = tune.damping,
+            vertex_filter = tune.vertex_filter,
+            "ocean fft tune"
+        );
+        tune
+    })
+}
+
+pub fn choppiness() -> f64 {
+    tune().choppiness
+}
 
 pub fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -146,7 +249,7 @@ fn spectrum(cascade: usize, k: DVec2) -> f64 {
     let cos_theta = (k / wave_number).dot(WIND_DIRECTION);
     // cos^(2s)(theta/2) = ((1 + cos theta)/2)^s
     let spreading = (0.5 * (1.0 + cos_theta)).powf(SPREADING_S);
-    wave_number.powi(-4) * spreading * (-(wave_number * DAMPING_LENGTH_METERS).powi(2)).exp()
+    wave_number.powi(-4) * spreading * (-(wave_number * tune().damping).powi(2)).exp()
 }
 
 /// Initial complex amplitude h0(k) at unit spectral scale.
@@ -239,8 +342,9 @@ fn spectrum_data() -> &'static Spectrum {
         for cascade in 0..CASCADE_COUNT {
             for m in -half..half {
                 for n in -half..half {
-                    let h0 = at(cascade, n, m) * scale;
-                    let h0_minus_conj = conj(at(cascade, -n, -m)) * scale;
+                    let gain = tune().gains[cascade];
+                    let h0 = at(cascade, n, m) * scale * gain;
+                    let h0_minus_conj = conj(at(cascade, -n, -m)) * scale * gain;
                     let k = wave_vector(cascade, n, m);
                     let omega = quantised_omega(k.length());
                     texels.push([
@@ -433,7 +537,7 @@ pub fn sample_world_exact(
     horizontal_weight: f64,
 ) -> FftSample {
     world_query(direction, sigma, horizontal_weight, &|point| {
-        planar_sample(point, time, CHOPPINESS)
+        planar_sample(point, time, choppiness())
     })
 }
 
@@ -477,7 +581,7 @@ mod cpu_grid {
     use glam::DVec2;
 
     use super::{
-        CASCADE_SIZES_METERS, CHOPPINESS, CPU_CASCADES, PlanarSample, REPEAT_SECONDS, complex_mul,
+        CASCADE_SIZES_METERS, CPU_CASCADES, PlanarSample, REPEAT_SECONDS, choppiness, complex_mul,
         conj, spectrum_data,
     };
 
@@ -631,7 +735,7 @@ mod cpu_grid {
                 let texel = m.rem_euclid(side) as usize * SIDE + n.rem_euclid(side) as usize;
                 height_velocity[texel] += h + times_i(rate);
                 // D = -i (k/|k|) h, scaled by the choppiness.
-                let minus_i_h = DVec2::new(h.y, -h.x) * CHOPPINESS;
+                let minus_i_h = DVec2::new(h.y, -h.x) * choppiness();
                 displacement[texel] += minus_i_h * unit.x + times_i(minus_i_h * unit.y);
                 let i_h = times_i(h);
                 gradient[texel] += i_h * mode.k.x + times_i(i_h * mode.k.y);
@@ -721,7 +825,10 @@ pub(crate) fn wgsl_source() -> String {
          const OCEAN_FFT_STORM_SIGMA: f32 = {:.6};\n\
          const OCEAN_FFT_PROJECTION_EXPONENT: f32 = {:.1};\n\
          const OCEAN_FFT_PROJECTION_MINIMUM_WEIGHT: f32 = {:.6};\n\
-         const OCEAN_FFT_REPLACES_FROM: u32 = {}u;\n",
+         const OCEAN_FFT_REPLACES_FROM: u32 = {}u;\n\
+         const OCEAN_FFT_FOAM_ONSET: f32 = {:.6};\n\
+         const OCEAN_FFT_FOAM_FULL: f32 = {:.6};\n\
+         const OCEAN_FFT_VERTEX_FILTER_SCALE: f32 = {:.6};\n",
         enabled(),
         N as f64,
         CASCADE_SIZES_METERS[0],
@@ -732,6 +839,9 @@ pub(crate) fn wgsl_source() -> String {
         PROJECTION_BLEND_EXPONENT as f64,
         PROJECTION_MINIMUM_WEIGHT,
         crate::ocean::FFT_REPLACES_FROM,
+        tune().foam.0,
+        tune().foam.1,
+        tune().vertex_filter,
     );
     if enabled() {
         out.push_str(include_str!("ocean_fft_sample.wgsl"));
@@ -915,7 +1025,7 @@ impl OceanFftGpu {
             label: Some("ocean fft params"),
             contents: bytemuck::bytes_of(&ComputeParams {
                 time: 0.0,
-                choppiness: CHOPPINESS as f32,
+                choppiness: choppiness() as f32,
                 _pad: [0.0; 2],
             }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -1177,7 +1287,7 @@ impl OceanFftGpu {
             0,
             bytemuck::bytes_of(&ComputeParams {
                 time: time.rem_euclid(REPEAT_SECONDS) as f32,
-                choppiness: CHOPPINESS as f32,
+                choppiness: choppiness() as f32,
                 _pad: [0.0; 2],
             }),
         );
@@ -1267,8 +1377,9 @@ pub(crate) mod reference {
         for index in 0..N * N {
             let n = (index % N) as i32 - half;
             let m = (index / N) as i32 - half;
-            let h0 = raw_h0(cascade, n, m) * spectrum.scale;
-            let h0_minus_conj = conj(raw_h0(cascade, -n, -m)) * spectrum.scale;
+            let gain = tune().gains[cascade];
+            let h0 = raw_h0(cascade, n, m) * spectrum.scale * gain;
+            let h0_minus_conj = conj(raw_h0(cascade, -n, -m)) * spectrum.scale * gain;
             let omega = quantised_omega(wave_vector(cascade, n, m).length());
             grid[index] = evolve(h0, h0_minus_conj, omega, time);
         }
@@ -1295,7 +1406,7 @@ pub(crate) mod reference {
     }
 
     pub(crate) fn planar_height(point: DVec2, time: f64) -> f64 {
-        super::planar_sample(point, time, CHOPPINESS).height
+        super::planar_sample(point, time, choppiness()).height
     }
 }
 
@@ -1311,7 +1422,9 @@ mod tests {
             let grid = reference::height_grid(cascade, 0.0);
             let mean = grid.iter().sum::<f64>() / grid.len() as f64;
             assert!(mean.abs() < 1.0e-9, "cascade {cascade} mean {mean}");
-            variance += grid.iter().map(|h| h * h).sum::<f64>() / grid.len() as f64;
+            // The gains apply after normalisation; undo them to check it.
+            let gain = tune().gains[cascade];
+            variance += grid.iter().map(|h| h * h).sum::<f64>() / grid.len() as f64 / (gain * gain);
         }
         assert!((variance - 1.0).abs() < 1.0e-6, "total variance {variance}");
         assert!(
@@ -1377,13 +1490,13 @@ mod tests {
     fn ocean_fft_gradient_matches_finite_difference() {
         let point = DVec2::new(311.0, 77.0);
         let time = 5.5;
-        let sample = planar_sample(point, time, CHOPPINESS);
+        let sample = planar_sample(point, time, choppiness());
         let step = 0.01;
-        let dx = (planar_sample(point + DVec2::X * step, time, CHOPPINESS).height
-            - planar_sample(point - DVec2::X * step, time, CHOPPINESS).height)
+        let dx = (planar_sample(point + DVec2::X * step, time, choppiness()).height
+            - planar_sample(point - DVec2::X * step, time, choppiness()).height)
             / (2.0 * step);
-        let dy = (planar_sample(point + DVec2::Y * step, time, CHOPPINESS).height
-            - planar_sample(point - DVec2::Y * step, time, CHOPPINESS).height)
+        let dy = (planar_sample(point + DVec2::Y * step, time, choppiness()).height
+            - planar_sample(point - DVec2::Y * step, time, choppiness()).height)
             / (2.0 * step);
         assert!(
             (sample.gradient.x - dx).abs() < 1.0e-5,
@@ -1398,8 +1511,8 @@ mod tests {
             dy
         );
         let dt = 0.001;
-        let rate = (planar_sample(point, time + dt, CHOPPINESS).height
-            - planar_sample(point, time - dt, CHOPPINESS).height)
+        let rate = (planar_sample(point, time + dt, choppiness()).height
+            - planar_sample(point, time - dt, choppiness()).height)
             / (2.0 * dt);
         assert!(
             (sample.vertical_velocity - rate).abs() < 1.0e-5,
@@ -1418,7 +1531,8 @@ mod tests {
         // Check the parameter point's displacement lands on the query radial.
         let radius = planet_radius_meters();
         let parameter = world.parameter;
-        let forward = sample_parameter(parameter, &|point| planar_sample(point, time, CHOPPINESS));
+        let forward =
+            sample_parameter(parameter, &|point| planar_sample(point, time, choppiness()));
         let landed = (parameter * radius + forward.horizontal * sigma).normalize();
         let miss_meters = (landed - direction).length() * radius;
         assert!(miss_meters < 0.05, "inversion missed by {miss_meters}m");
