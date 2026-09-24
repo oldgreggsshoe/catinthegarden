@@ -11096,3 +11096,7 @@ fixture fails with the separately edited local `OCEAN_WAVE_SCALE=1.5`.
 That edit is preserved and not staged. Formatting, release check and release
 build pass. No production shader changes, performance win, human motion
 acceptance or Sea of Thieves appearance completion is claimed.
+
+## 25 September - Ocean FFT plan, Phase A (lattice metric)
+
+Added `tools/lattice_metric.py`: whitened 2D-FFT peak/median of a capture (optionally `--crop=x0,y0,x1,y1` fractions to isolate water). Calibration: white noise scores ~19, a synthetic two-tone lattice ~243. Current baselines: `ocean_manual_grid/1790185095-829305` captures 1-4 score 72-88 (older `1790183741-825999` 140), so the woven pattern is clearly detected. Caveat: frames containing horizon/sky (e.g. `ocean_rough_horizon`, 231) need a water-only crop or the gradient dominates. Not yet done for Phase A: interleaved Immediate-present frame-time baseline, and Ian's Sea of Thieves reference shots. No renderer code changed.

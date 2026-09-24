@@ -1,5 +1,109 @@
-Clean timing batch finished; no game replay is still running, so Claude can resume.
+Yes. The missing feature is a **geometric cusp at constructive wave crossings**, not sharper normals or more foam.
 
-Controls: 84.99/86.60 ms. Shorter snow texture range: 82.94 ms. Combined trial: 79.77 ms. Both control image sets are identical.
+I tested a CPU/GPU-matched semicubical height profile. It passed the ocean tests and GPU parity, but the [trial capture](test-runs/ocean_rough_horizon/1790146678-712784/screenshots/capture-004.png) still has rounded foreground crests and gains repetitive distant ridges versus the [control](test-runs/ocean_rough_horizon/1790146788-713083/screenshots/capture-004.png). I reverted the trial; no unconvincing wave change is live.
 
-The changes are faster but not convincingly more realistic: broad patches and smeared rock remain. No score increase claimed or live change promoted. Experimental code and evidence are committed and pushed; 525 tests pass. Strict clippy still hits the unchanged village-test warning.
+The next implementation is **bounded horizontal wave compression at interference peaks**, with a matching inverse CPU buoyancy query. Simply enabling the existing horizontal displacement would make collision disagree with the rendered water. I recorded this diagnosis in the handoff and pushed it as `e813806`; unrelated edits remain untouched.
+
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:67-74|note=[prior crest profile and visual validation context]
+</citation_entries>
+<rollout_ids>
+01a07103-79ca-7e92-99b9-5da47619e658
+</rollout_ids>
+</oai-mem-citation>
+
+
+The trace confirms that enabling the old displacement flag would misalign buoyancy and leave normals and ray queries incorrect. I’ll build and test the shared surface-query foundation first: forward displacement, inverse lookup, and corrected slope/velocity. Rendering will stay unchanged until its shader counterpart is validated.
+
+Latest response:
+Implemented and pushed the CPU foundation (`49a9994`): horizontal compression, inverse surface lookup, and corrected slope/velocity. **72 tests pass**, including a near-cusp regression.
+
+**No visible change yet:** this remains disconnected from gameplay and rendering. Shader/ray integration, captures and performance checks are still outstanding.
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:67-74|note=[paired ocean derivatives and visual performance validation requirements]
+</citation_entries>
+<rollout_ids>
+01a07103-79ca-7e92-99b9-5da47619e658
+</rollout_ids>
+</oai-mem-citation>
+
+Latest response:
+I wired the CPU inverse and matching raster/ray WGSL behind `CATINGARDEN_OCEAN_TRANSPORT=1`; it remains **off by default**. The narrowed trial capture still looks chunky and scalloped, not like the cusped crests you asked for, so I have not promoted it. The earlier all-wave version cost 4.27–5.58 ms per frame; the narrowed version has not been timed.
+
+The 72 focused release tests pass, as does the opt-in 48-case Quadro CPU/GPU check and both ocean scenarios. The trial image is [here](test-runs/ocean_hybrid_close/1790150753-729240/screenshots/capture-002.png); same-build default control [here](test-runs/ocean_hybrid_close/1790150407-727887/screenshots/capture-002.png). Committed and pushed as `09f846e`. Existing unrelated local edits remain unstaged.
+
+Yes. I can take the ocean cusp work through implementation and validation. The latest transport trial is not the result: it still looks chunky/scalloped, and its narrow form has no measured frame cost yet. I’ll target controlled horizontal convergence at crossing crests, keep CPU buoyancy and raster/ray queries matched, and judge it from captures and timing—not from tests alone. I can complete the engineering and evidence; I won’t claim visual success unless the captures show the sharp cusps without the regular mesh-edge pattern. Existing unrelated local edits will remain untouched.
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:67-74|note=[paired ocean derivatives and visual performance validation requirements]
+</citation_entries>
+<rollout_ids>
+01a07103-79ca-7e92-99b9-5da47619e658
+</rollout_ids>
+</oai-mem-citation>
+
+Next-step plan: inspect ocean chunk selection and the relevant steep-angle replay, then quantify analytic-surface versus rendered-triangle error. If a bounded ocean-only mesh-density increase materially reduces that error, test it opt-in with captures and matched Immediate timing; otherwise retain the baseline rather than stacking a failed crest-gate shader tweak. I can only select the available `gpt-6-luna` low-cost model here; `gpt-5.6-luna` is not an available option.
+
+I continued with the steep-view geometry diagnosis. The `ocean_steep_cusp` replay now reproduces the manual view at about 30 degrees down; baseline capture: `test-runs/ocean_steep_cusp/1790155819-748019/screenshots/capture-002.png`. A temporary all-ocean 40x40 mesh run still showed regular raised ridges and raised triangle count 582,912 to 897,600 (+54%), so I reverted that selector experiment. Turning on the existing transport at the same view produced broad pale sheets rather than cusps (`1790156393-750771/screenshots/capture-002.png`), so it remains opt-in/off by default. Neither experiment is accepted; no performance claim was made because another app process (PID 747989) remained live.
+
+The durable change is the fixed steep-view replay and angle regression test, plus the handoff update. `cargo fmt --all -- --check`, `git diff --check`, 78 terrain tests, the new scenario test, and a release build pass. Committed and pushed as `4d96fc0` (`Add steep ocean cusp replay diagnostic`). The cusp itself is not done; next implementation needs a crossing-localized geometric profile with matching CPU/WGSL derivatives and topology-aware mesh refinement rather than a global grid increase or the rejected transport look.
+
+Plan for this request: inspect startup camera/ship integration and the ocean-grid experiment; switch the normal launch to a boat-attached bridge-front camera; restore the all-ocean 40x40 grid diagnostic behind an explicit startup env var so it can be seen in motion without paying its ~54% ocean-triangle increase by default; validate tests/build/replay, then commit and push only these changes.
+
+Implemented both requests and pushed commit `6a27e64` (`Attach ocean startup camera to ship bridge`). Ocean-world interactive launches now start at bridge-window height, 0.4m ahead of the bridge's bow-facing wall, and follow the ship; F4 detaches into flight from the current view. The captured default startup view is [here](test-runs/manual/1790160790-bridge-camera/screenshots/capture-001.png).
+
+The reverted all-ocean 40x40 grid is back behind `CATINGARDEN_OCEAN_DENSE_GRID=1` so it does not burden normal launches; its known cost is about 54% more ocean triangles. The animated four-frame steep-angle replay is [here](test-runs/ocean_steep_cusp/1790160596-760717/screenshots/dense-grid-preview.gif), with the same-resolution baseline in `1790160672-761029`. It changes the image, but the raised regular pattern is still present, so this is a viewing diagnostic, not a cusp fix or performance win. To see it in the normal boat view, launch the release binary with `CATINGARDEN_OCEAN_DENSE_GRID=1`; `--scenario ocean_steep_cusp` instead replays the fixed steep view.
+
+Validation: release build; formatting and diff checks; bridge-pose and bird-camera tests; 546 app tests passed (25 ignored, four known unrelated failures skipped). Other pre-existing local edits remain unstaged. Branch is pushed and clean apart from those edits.
+
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:67-74|note=[ocean geometry and visual performance validation context]
+</citation_entries>
+<rollout_ids>
+01a07103-79ca-7e92-99b9-5da47619e658
+</rollout_ids>
+</oai-mem-citation>
+
+I’ll compare the current water directly with your Sea of Thieves screenshot, then target the most visible mismatch—not add another global tint. I’ll inspect the wave, normal and foam code, make a bounded ocean-only change, and check matched captures and frame times before keeping it. Planned files: ocean.rs/shared_planet.wgsl/planet.wgsl and their focused tests as required; AGENTS.md and docs/HANDOFF.md for verified results.
+
+The reference has crisp, broken surface detail; ours has broad, smooth highlights. One concrete mismatch is that our fine shading waves are 180m, 70m and 28m long. Ranked hypotheses: (1) shortening those waves at fixed slope strength should replace broad highlights with finer broken detail; (2) foam that reads the shading normal may currently inherit its broad blotches, so separating macro foam from micro shading should clarify crests; (3) the 20% grazing vertex-normal blend may imprint triangles, so a same-pose ablation will distinguish this from geometry. First trial modifies only ocean.rs and shared_planet.wgsl ripple parameters/normalized crest mask, with no added wave evaluations or geometry. Boat buoyancy and main wave geometry stay unchanged.
+
+Agreed—the 79m steep-view shot is useful for finding grid artefacts, but poor for judging the look you want. I’ll make a close, sea-level view the main comparison: roughly 2–3m above the moving water, looking across nearby crests. I’ll keep the high view only as a secondary grid check. Plan: inspect scenario.rs and the existing waterline scenarios; add a close water-following reference replay using the existing camera controls, leaving the gameplay bridge camera unchanged.
+
+Yes—the broad, rounded highlights make it read more like thick liquid than water. I’ll use the lower camera to assess both shape and motion, aiming for sharper, broken-up wave faces rather than just changing the colour.
+
+The low view makes the problem much clearer: the near water has broad, smooth faces with very little small-scale breakup. Shortening the existing ripples helped the distance more than the foreground, so I’m not calling that a fix. I’m checking how to add genuinely finer detail without introducing more grid artefacts.
+
+I’ve opened the new screenshot. The small crests form conspicuous diagonal rows—a woven pattern rather than irregular water. I’ll reproduce that exact view and test whether the pattern comes from the wave directions or the mesh, while keeping the low camera as the main appearance check.
+
+I’ll test three causes in order: the three-direction ripple layer, the main crossing waves, then mesh shading. First I’ll remove only the ripple shading in a diagnostic build—leaving the actual wave shapes untouched—to see whether the grid disappears.
+
+The grid survives both removing the ripple layer and flattening the ocean mesh while retaining its shading. That points away from raised triangle edges and toward the main wave-normal pattern. I’m isolating the short-wave bands next; increasing mesh density would not address this result.
+
+Removing the six shortest waves from shading removes the woven pattern, but makes the sea even smoother—so that is not a fix. I’ll try redistributing those existing wave directions next, without adding waves or shader work, and reject it if it merely rotates the pattern.
+
+The direction trial only rotated the grid, so I’ve reverted it. The useful finding is that the repeated short-wave shading—not mesh density—is driving this pattern. The new 2.5m-high test view is now in place, and I’m saving the reproductions and diagnosis without presenting a failed trial as an improvement.
+
+This grid comes from repeated short-wave shading, not raised mesh edges. Re-aiming the waves merely rotated it, so I reverted that trial.
+
+Tests now run **2.5m above the water**. Reproductions and diagnosis are committed and pushed as `2c48623`.
+
+It isn’t fixed yet. The next change needs less repetitive short-wave detail—not more mesh density or colour tweaks.
+
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:67-74|note=[paired ocean validation and matched performance requirements]
+</citation_entries>
+<rollout_ids>
+01a07103-79ca-7e92-99b9-5da47619e658
+</rollout_ids>
+</oai-mem-citation>
+
+I’ll try breaking up the short waves’ long, straight rows rather than rotating them again. I’ll inspect the CPU and shader wave calculations, then test a bounded phase variation using the existing swell—no extra wave layers. I’ll check both views, CPU/GPU agreement, and frame times before keeping it.
+
+25 September - Resume status
+Last committed work is the 24 Sept plan (cea4de6): replace the 18-Gerstner ocean with a GPU FFT wave field, in phases A-H. No code for it has started. Uncommitted local edits (atmosphere, main.rs, ocean.rs, ocean_transport.rs, shared_planet.wgsl, surface_camera.rs) are untouched.
+Next step is Phase A: a lattice metric (2D FFT of the overhead water capture), a frame-time baseline, and 3-4 Sea of Thieves reference shots from Ian. Say "ok ready" or tell me to start Phase A.
