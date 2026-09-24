@@ -69,13 +69,17 @@ fn cs_spectrum(@builtin(global_invocation_id) id: vec3<u32>) {
         inverse_k = 1.0 / wave_number;
     }
     let lambda = fft_params.choppiness;
-    // D = -i k/|k| h lambda; its derivatives pick up another factor i k.
-    let minus_i_h = vec2<f32>(h.y, -h.x);
-    let dx = minus_i_h * (direction.x * lambda);
-    let dz = minus_i_h * (direction.y * lambda);
-    let dxx = h * (k.x * k.x * inverse_k * lambda);
-    let dzz = h * (k.y * k.y * inverse_k * lambda);
-    let dxz = h * (k.x * k.y * inverse_k * lambda);
+    // D = +i k/|k| h lambda: water moves toward a rising crest, as in a
+    // Gerstner wave (h = A cos kx gives D = -A sin kx), so crests sharpen and
+    // troughs flatten. Tessendorf's paper writes x + lambda D with the other
+    // sign; taken literally it rounds the crests and points the troughs,
+    // which read as boiling water. Derivatives pick up another factor i k.
+    let i_h = times_i(h);
+    let dx = i_h * (direction.x * lambda);
+    let dz = i_h * (direction.y * lambda);
+    let dxx = -h * (k.x * k.x * inverse_k * lambda);
+    let dzz = -h * (k.y * k.y * inverse_k * lambda);
+    let dxz = -h * (k.x * k.y * inverse_k * lambda);
     let hx = times_i(h) * k.x;
     let hz = times_i(h) * k.y;
     let a = vec4<f32>(dx + times_i(h), dz + times_i(dxz));

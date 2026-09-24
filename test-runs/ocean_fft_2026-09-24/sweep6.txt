@@ -1,0 +1,2 @@
+signfix    1,2,3,1.6          grid passed=True grid_fine=84.60  grid_foam=1.40  lattice=28.80  test-runs/ocean_manual_grid/1790261273-32386/
+signfix    1,2,3,1.6          deck passed=True deck_near_fine=37.60  deck_near_foam=6.99  deck_mid_fine=100.28  deck_mid_foam=4.31  test-runs/ocean_deck_reference/1790261295-32488/

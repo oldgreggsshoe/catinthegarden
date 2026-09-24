@@ -1,5 +1,9 @@
 # FFT wind sea: phase B, CPU parity and calibration (24 September)
 
+**Crest sign fixed (last section):** everything below the calibration was
+measured with the choppy displacement reversed -- rounded crests, pointed
+troughs, foam in the hollows. Ian saw it as "Severn estuary" boiling water.
+
 **Status after calibration (section at the end):** the FFT sea beats the
 Gerstner sea on cost and on every detail measure -- 2.4ms faster, lattice 18-24 vs 70-98,
 overhead detail 69-78 vs 51-55, deck foreground detail 32-46 vs 4-11 -- and
@@ -144,3 +148,30 @@ Still wrong or unmeasured:
 - The CPU keeps the 15-60m cascade whole while the drawn near mesh trims ~15%
   of its shortest waves at 4x; not separately measured beyond the clearance
   assertion.
+
+## Crest sign fix (Ian's report: boiling water, no pointy crests)
+
+Tessendorf writes the choppy displacement as `x + lambda D` with
+`D = -i k/|k| h`. For `h = A cos kx` that is `D = +A sin kx`, which moves water
+*away* from a rising crest: crests round off and troughs point. A Gerstner wave
+uses `-A sin kx`. CPU and GPU both had the reversed sign, so every parity test
+passed. The foam mask `1 - Jacobian` was therefore largest in the troughs.
+
+Now `D = +i k/|k| h` in `ocean_fft.wgsl`, the CPU mode sum and the CPU grid.
+Two new tests pin the direction physically, not against another implementation:
+
+- `ocean_fft_choppy_crests_are_sharp_and_troughs_broad`: displaced-surface
+  height skewness -0.016 reversed, +0.068 fixed (threshold 0.03).
+- `gpu_fft_matches_cpu_fft` now also requires GPU displacement and height
+  gradient to correlate positively: +0.928 / +0.920 / +0.709 fixed; restoring
+  the old WGSL sign gives -0.928 and fails.
+
+Metrics at the same defaults (`sweep6.txt`): overhead fine 84.6, lattice 28.8,
+foam 1.4%; deck near fine 37.6, foam 7.0%; deck mid fine 100.3, foam 4.3%. Foam
+rose because the crest mask now coincides with the positive-height gate. Six
+ocean replays pass. Captures show pointed crests with whitecaps on their tops
+(`captures/*-signfix.png`).
+
+**Timing after the fix is not measured.** The ABBA run was void: an interactive
+session held the GPU at 100% and both arms read ~70ms. It must be re-run on an
+idle machine; the fix moves vertices, so overdraw may differ.

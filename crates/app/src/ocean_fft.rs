@@ -441,8 +441,9 @@ fn planar_sample(point: DVec2, time: f64, choppiness: f64) -> PlanarSample {
             sample.height += real;
             // d/dx of Re(h e^{ikx}) = Re(i k h e^{ikx}) = -k Im(h e^{ikx}).
             sample.gradient -= mode.k * imaginary;
-            // D = Re(-i k/|k| h e^{ikx}) = (k/|k|) Im(h e^{ikx}).
-            sample.displacement += mode.unit_k * (imaginary * choppiness);
+            // D = Re(+i k/|k| h e^{ikx}) = -(k/|k|) Im(h e^{ikx}): toward a
+            // rising crest. See `ocean_fft.wgsl` for why the sign matters.
+            sample.displacement -= mode.unit_k * (imaginary * choppiness);
             sample.vertical_velocity += mode.rate.x * cos - mode.rate.y * sin;
         }
         sample
@@ -734,9 +735,9 @@ mod cpu_grid {
                 let (n, m) = mode.index;
                 let texel = m.rem_euclid(side) as usize * SIDE + n.rem_euclid(side) as usize;
                 height_velocity[texel] += h + times_i(rate);
-                // D = -i (k/|k|) h, scaled by the choppiness.
-                let minus_i_h = DVec2::new(h.y, -h.x) * choppiness();
-                displacement[texel] += minus_i_h * unit.x + times_i(minus_i_h * unit.y);
+                // D = +i (k/|k|) h, scaled by the choppiness.
+                let i_h_choppy = times_i(h) * choppiness();
+                displacement[texel] += i_h_choppy * unit.x + times_i(i_h_choppy * unit.y);
                 let i_h = times_i(h);
                 gradient[texel] += i_h * mode.k.x + times_i(i_h * mode.k.y);
             }
@@ -1538,6 +1539,39 @@ mod tests {
         assert!(miss_meters < 0.05, "inversion missed by {miss_meters}m");
     }
 
+    /// Choppy displacement has to carry water toward a rising crest, as a
+    /// Gerstner wave does: crests narrow to points and troughs flatten, so
+    /// the height of the displaced surface is positively skewed. With the
+    /// displacement's sign reversed the crests round off, the troughs point,
+    /// and the sea reads as boiling -- which is how it was first shipped.
+    #[test]
+    fn ocean_fft_choppy_crests_are_sharp_and_troughs_broad() {
+        let base = DVec3::new(0.3, 0.5, -0.81).normalize();
+        let east = base.cross(DVec3::Y).normalize();
+        let north = base.cross(east);
+        let radius = planet_radius_meters();
+        let sigma = STORM_HEIGHT_SIGMA_METERS;
+        let mut heights = Vec::new();
+        for i in 0..80 {
+            for j in 0..80 {
+                let offset = east * (i as f64 * 3.7) + north * (j as f64 * 4.3);
+                let direction = (base * radius + offset).normalize();
+                heights.push(sample_world(direction, 321.0, sigma, 1.0).height);
+            }
+        }
+        let n = heights.len() as f64;
+        let mean = heights.iter().sum::<f64>() / n;
+        let variance = heights.iter().map(|h| (h - mean).powi(2)).sum::<f64>() / n;
+        let skewness =
+            heights.iter().map(|h| (h - mean).powi(3)).sum::<f64>() / n / variance.powf(1.5);
+        eprintln!("displaced-surface height skewness {skewness:.3}");
+        // Measured -0.016 with the reversed sign and 0.068 with the right one.
+        assert!(
+            skewness > 0.03,
+            "skewness {skewness}: crests are rounder than troughs"
+        );
+    }
+
     /// The runtime reads grids, not the mode sum; this is what it gives up.
     /// Times off the lattice exercise the time interpolation too.
     #[test]
@@ -1615,30 +1649,67 @@ mod tests {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        let (displacement, _) = gpu.textures();
-        encoder.copy_texture_to_buffer(
-            displacement.as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &readback,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(row_bytes),
-                    rows_per_image: Some(N as u32),
+        let (displacement, derivatives) = gpu.textures();
+        let readback_derivatives = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("fft derivative readback"),
+            size: u64::from(row_bytes) * (N * CASCADE_COUNT) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        for (texture, buffer) in [
+            (displacement, &readback),
+            (derivatives, &readback_derivatives),
+        ] {
+            encoder.copy_texture_to_buffer(
+                texture.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(row_bytes),
+                        rows_per_image: Some(N as u32),
+                    },
                 },
-            },
-            wgpu::Extent3d {
-                width: N as u32,
-                height: N as u32,
-                depth_or_array_layers: CASCADE_COUNT as u32,
-            },
-        );
+                wgpu::Extent3d {
+                    width: N as u32,
+                    height: N as u32,
+                    depth_or_array_layers: CASCADE_COUNT as u32,
+                },
+            );
+        }
         queue.submit([encoder.finish()]);
         readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, |result| result.unwrap());
+        readback_derivatives
             .slice(..)
             .map_async(wgpu::MapMode::Read, |result| result.unwrap());
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         let data = readback.slice(..).get_mapped_range();
         let halves: &[u16] = bytemuck::cast_slice(&data);
+        let derivative_data = readback_derivatives.slice(..).get_mapped_range();
+        let derivative_halves: &[u16] = bytemuck::cast_slice(&derivative_data);
+        // Water moves toward a rising crest: for h = A cos kx the choppy
+        // displacement is -A sin kx and the gradient -Ak sin kx, so the two
+        // correlate positively whatever the spectrum. Reversed, they
+        // anticorrelate and the crests round off.
+        for cascade in 0..CASCADE_COUNT {
+            let (mut cross, mut displacement_power, mut gradient_power) = (0.0, 0.0, 0.0);
+            for index in 0..N * N {
+                let texel = (cascade * N * N + index) * 4;
+                let displacement_x = f64::from(f16_to_f32(halves[texel]));
+                let gradient_x = f64::from(f16_to_f32(derivative_halves[texel]));
+                cross += displacement_x * gradient_x;
+                displacement_power += displacement_x * displacement_x;
+                gradient_power += gradient_x * gradient_x;
+            }
+            let correlation = cross / (displacement_power * gradient_power).sqrt();
+            eprintln!("cascade {cascade}: displacement/gradient correlation {correlation:.3}");
+            assert!(
+                correlation > 0.3,
+                "cascade {cascade}: choppy sign reversed ({correlation})"
+            );
+        }
         for cascade in 0..CASCADE_COUNT {
             let expected = reference::height_grid(cascade, time);
             let sigma =

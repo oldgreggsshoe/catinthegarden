@@ -7,6 +7,12 @@ at the Sea of Thieves plan (`response/claude.txt`). `git log -1` is authoritativ
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
+**Crest sign fixed (24 September, evening):** the choppy displacement was reversed on
+CPU and GPU (Tessendorf's literal sign), giving rounded crests, pointed troughs
+and foam in the hollows -- Ian's "boiling estuary" report. Fixed and pinned by a
+height-skewness test and a GPU displacement/gradient correlation check. Frame
+time after the fix is **not yet re-measured** (void run: machine busy).
+
 **Current state (24 September, calibrated): the FFT sea is cheaper and more detailed; not yet signed off.**
 `CATINGARDEN_OCEAN_FFT=1` replaces every Gerstner row under 250m and the ripple
 octave with three 256x256 GPU Tessendorf cascades; default launches are unchanged.
@@ -11150,3 +11156,16 @@ the report's calibration section. Findings worth keeping:
   shading-only, which is also what the old ripple octave was.
 - A sweep that gives byte-identical results across settings means the knob is
   not wired: `cargo fmt` had reflowed the target line.
+
+
+## 24 September (evening) — choppy displacement sign
+
+Ian: "water like the Severn estuary when the tide is moving fast ... boiling ...
+no pointy crests. Are the crests upside down?" They were. Tessendorf's
+`D = -i k/|k| h` with `x + lambda D` moves water away from a rising crest; the
+Gerstner-consistent sign is `+i`. CPU and GPU agreed with each other, so parity
+tests could not see it. Now fixed in all three places, with two sign tests that
+check physics rather than another implementation (skewness -0.016 -> +0.068;
+GPU displacement/gradient correlation -0.93 -> +0.93). Foam rose to ~7% in the
+storm deck view because the crest mask now lands on crests. Timing re-run
+pending on an idle machine. Details: the report's last section.
