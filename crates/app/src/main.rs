@@ -16,6 +16,7 @@ mod hdr;
 mod moon;
 mod moon_markings;
 mod ocean;
+mod ocean_fft;
 mod ocean_transmission;
 mod outmap;
 mod planet;
