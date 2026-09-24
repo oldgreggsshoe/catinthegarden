@@ -537,9 +537,10 @@ pub(crate) fn shared_planet_shader_source() -> String {
     let foam_history_enabled = ocean_foam_history_enabled();
     retune_air_scale_heights(
         format!(
-            "{}\n{}\nconst OCEAN_FOAM_HISTORY_ENABLED: bool = {};\n{}",
+            "{}\n{}\n{}\nconst OCEAN_FOAM_HISTORY_ENABLED: bool = {};\n{}",
             crate::body::wgsl_constants(),
             crate::ocean::wgsl_constants(),
+            crate::ocean_fft::wgsl_source(),
             foam_history_enabled,
             include_str!("shared_planet.wgsl")
         ),

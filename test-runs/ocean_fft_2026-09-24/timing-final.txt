@@ -1,0 +1,14 @@
+0 True 12 38.984 test-runs/ocean_deck_reference/1790246171-15616/
+1 True 12 35.676 test-runs/ocean_deck_reference/1790246189-15641/
+0 True 12 39.036 test-runs/ocean_deck_reference/1790246206-15665/
+1 True 12 36.178 test-runs/ocean_deck_reference/1790246223-15692/
+1 True 12 36.478 test-runs/ocean_deck_reference/1790246240-15718/
+0 True 12 39.008 test-runs/ocean_deck_reference/1790246257-15743/
+0 True 12 38.997 test-runs/ocean_deck_reference/1790246275-15768/
+1 True 12 36.317 test-runs/ocean_deck_reference/1790246292-15793/
+1 True 12 36.296 test-runs/ocean_deck_reference/1790246309-15818/
+0 True 12 39.031 test-runs/ocean_deck_reference/1790246326-15842/
+0 True 12 39.0 test-runs/ocean_deck_reference/1790246344-15867/
+1 True 12 36.137 test-runs/ocean_deck_reference/1790246361-15891/
+1 True 12 36.149 test-runs/ocean_deck_reference/1790246378-15916/
+0 True 12 38.843 test-runs/ocean_deck_reference/1790246395-15940/

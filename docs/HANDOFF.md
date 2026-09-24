@@ -1,16 +1,24 @@
-# Handoff — ocean wind sea spectrum
+# Handoff — FFT ocean
 
-**Branch:** `experiment/ocean-wind-sea-spectrum`, tracking
-`origin/experiment/ocean-wind-sea-spectrum`. This line used to pin a commit hash and was stale
-almost every time it was read -- a header cannot name the commit that carries it -- so it does not
-any more; `git log -1` is authoritative. The name is historical: the branch was
-opened for the ocean, moved to **a second body**, and the ocean is the active subject again -- its
-surface appearance rather than its geometry.
+**Branch:** `experiment/fft-ocean` (worktree `/home/dad/catingard-fft`, target dir
+`/home/dad/catingard-fft-target`), branched from `experiment/ocean-wind-sea-spectrum`
+at the Sea of Thieves plan (`response/claude.txt`). `git log -1` is authoritative.
 
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current appearance diagnosis (23 September, latest manual grid complaint):**
+**Current state (24 September): FFT sea works, is cheaper, and does not yet look better.**
+`CATINGARDEN_OCEAN_FFT=1` replaces every Gerstner row under 250m and the ripple
+octave with three 256x256 GPU Tessendorf cascades; default launches are unchanged.
+GPU height matches a CPU FFT; CPU buoyancy reads cached 128x128 grids (1cm of the
+exact mode sum) and differences the reported world height for slope and velocity.
+`ocean_deck_reference` frames are ~2.7ms faster (39.0 -> 36.3ms, 7 ABBA runs each).
+The overhead lattice metric falls 70-98 -> 26-31, **but by removing detail**: the
+overhead view is nearly featureless and foam is gone, which the plan says does not
+count. Next: calibrate spectrum strength, choppiness and the crest/foam mask to
+the FFT sea at the deck view. Evidence: `test-runs/ocean_fft_2026-09-24/REPORT.md`.
+
+**Previous appearance diagnosis (23 September, latest manual grid complaint):**
 Use `--scenario ocean_deck_reference` as the primary appearance comparison: a
 2.5m wave-following eye, five degrees below the horizon, wide field of view,
 facing toward the sun's horizontal projection. Clearance is asserted between
@@ -11096,3 +11104,27 @@ fixture fails with the separately edited local `OCEAN_WAVE_SCALE=1.5`.
 That edit is preserved and not staged. Formatting, release check and release
 build pass. No production shader changes, performance win, human motion
 acceptance or Sea of Thieves appearance completion is claimed.
+
+## 24 September — FFT sea phase B, CPU parity, and why it still looks flat
+
+Opt-in `CATINGARDEN_OCEAN_FFT=1` (`ocean_fft.rs`, `ocean_fft.wgsl`,
+`ocean_fft_sample.wgsl`). Full numbers in `test-runs/ocean_fft_2026-09-24/REPORT.md`.
+
+- **Performance bug found and fixed.** The first FFT-on replays ran at ~222ms a
+  frame against 39ms; `--profile-render` put simulation at 155ms. Birds look
+  ahead at up to seven instants per bird, and every CPU query summed ~1,200 modes.
+  CPU queries now read 128x128 grid snapshots (0.1s apart, 56 cached, Catmull-Rom
+  in space, linear in time), pinned against the exact sum by
+  `ocean_fft_cpu_grids_match_the_mode_sum` (height 0.010m, slope 0.0007).
+- **CPU derivative bug fixed.** Slope and vertical velocity were evaluated at the
+  undisplaced point, ignoring the choppy displacement's Jacobian and horizontal
+  velocity (0.0052 analytic vs -0.0009 difference, reproduced with the exact sum).
+  Under the FFT they are now centred differences of the reported height.
+- **Frame time:** 38.84-39.04ms off vs 35.68-36.48ms on, 7 interleaved runs each.
+- **Appearance:** lattice gone, detail gone with it. The FFT sea's rms slope is
+  ~0.15 (0.135 on the CPU's two cascades vs the Gerstner field's 0.189), Gaussian
+  rather than peaked, and the foam/crest calibration still expects Gerstner
+  convergence. Not an appearance improvement; not promoted.
+- **Tests:** default 558 pass / 0 fail / 26 ignored. With the FFT on, 8 tests fail
+  that encode Gerstner-only assumptions (table size, storm ceiling, wave scale,
+  depth-independent pattern x2, transport experiment x2, authored waterline pose).

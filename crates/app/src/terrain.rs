@@ -872,6 +872,7 @@ pub struct TerrainRenderer {
     shared_bind_groups: [wgpu::BindGroup; 2],
     foam_history: ocean_foam::OceanFoamHistory,
     foam_history_enabled: bool,
+    ocean_fft: crate::ocean_fft::OceanFftGpu,
     _terrain_settings_buffer: wgpu::Buffer,
     _environment_cubemap: wgpu::Texture,
     _moon_marking_cubemap: wgpu::Texture,
@@ -1226,6 +1227,7 @@ impl TerrainRenderer {
             crate::moon_markings::create(device, queue);
         let foam_history =
             ocean_foam::OceanFoamHistory::new(device, queue, camera_bind_group_layout);
+        let ocean_fft = crate::ocean_fft::OceanFftGpu::new(device, queue);
         let shared_bind_groups = std::array::from_fn(|index| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("shared planet bind group"),
@@ -1282,6 +1284,22 @@ impl TerrainRenderer {
                     wgpu::BindGroupEntry {
                         binding: 15,
                         resource: wgpu::BindingResource::TextureView(foam_history.view(index)),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 16,
+                        resource: wgpu::BindingResource::TextureView(ocean_fft.displacement_view()),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 17,
+                        resource: wgpu::BindingResource::TextureView(ocean_fft.derivatives_view()),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 18,
+                        resource: wgpu::BindingResource::Sampler(ocean_fft.sampler()),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 19,
+                        resource: ocean_fft.render_params().as_entire_binding(),
                     },
                 ],
             })
@@ -1340,6 +1358,7 @@ impl TerrainRenderer {
             shared_bind_groups,
             foam_history,
             foam_history_enabled: crate::planet::ocean_foam_history_enabled(),
+            ocean_fft,
             _terrain_settings_buffer: terrain_settings_buffer,
             _environment_cubemap: environment_cubemap,
             _moon_marking_cubemap: moon_marking_texture,
@@ -1438,6 +1457,27 @@ impl TerrainRenderer {
 
     pub fn shared_bind_group(&self) -> &wgpu::BindGroup {
         &self.shared_bind_groups[self.foam_history.current()]
+    }
+
+    /// Records this frame's FFT sea. `camera_position` is the camera in the
+    /// planet frame; `radians_per_pixel` sets the sea's mip choice.
+    pub fn update_ocean_fft(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        ocean_time_seconds: f64,
+        camera_position: DVec3,
+        radians_per_pixel: f64,
+    ) {
+        if !crate::ocean_fft::enabled() {
+            return;
+        }
+        self.ocean_fft.update(
+            &self.queue,
+            encoder,
+            ocean_time_seconds,
+            camera_position,
+            radians_per_pixel,
+        );
     }
 
     pub fn update_ocean_foam(
@@ -3453,6 +3493,44 @@ pub fn create_shared_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroup
                 count: None,
             },
             texture_layout_entry(15, wgpu::TextureSampleType::Float { filterable: true }),
+            // The FFT sea (ocean_fft.rs): displaced in the vertex stage,
+            // shaded in the fragment stage, and read by ray queries.
+            wgpu::BindGroupLayoutEntry {
+                binding: 16,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 17,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 18,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 19,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     })
 }
@@ -5541,14 +5619,13 @@ mod tests {
     fn sub_mesh_ripples_sharpen_shading_without_moving_the_ocean_mesh() {
         let shader = planet_shader_source();
         let surface = shader
-            .split("fn ocean_surface(")
+            .split("fn ocean_surface_at(")
             .nth(1)
             .and_then(|source| source.split("\nfn ").next())
             .expect("ocean surface is present");
-        assert!(
-            surface
-                .contains("var geometric_normal = normalize(direction - slope * limited_slope);")
-        );
+        assert!(surface.contains(
+            "var geometric_normal = normalize(direction - slope_meters * limited_slope);"
+        ));
         assert!(
             !surface.contains(
                 "camera.flat_triangle_options.z > 0.5 {\n        // Fixed water-following"

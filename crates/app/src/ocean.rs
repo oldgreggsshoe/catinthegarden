@@ -986,10 +986,16 @@ const WAVES: [GerstnerWave; 18] = [
     },
 ];
 
+/// First row of `WAVES` the FFT sea replaces: every row from here on is
+/// shorter than `ocean_fft::FFT_LONGEST_WAVELENGTH_METERS`.
+pub(crate) const FFT_REPLACES_FROM: usize = 6;
+
 /// The global waves the surface actually carries under the current toggle.
 fn active_waves() -> &'static [GerstnerWave] {
     if OCEAN_LARGE_SWELL_ONLY {
         &WAVES[..LARGE_SWELL_WAVE_COUNT]
+    } else if crate::ocean_fft::enabled() {
+        &WAVES[..FFT_REPLACES_FROM]
     } else {
         &WAVES
     }
@@ -998,7 +1004,7 @@ fn active_waves() -> &'static [GerstnerWave] {
 /// The local ripple octave the surface actually carries under the current
 /// toggle. The renderer drops it wholesale in large-swell-only mode.
 fn active_ripple_waves() -> &'static [GerstnerWave] {
-    if OCEAN_LARGE_SWELL_ONLY {
+    if OCEAN_LARGE_SWELL_ONLY || crate::ocean_fft::enabled() {
         &[]
     } else {
         &OCEAN_RIPPLE_WAVES
@@ -1035,6 +1041,10 @@ pub fn wave_height_stats(sim_time: f64, storm_intensity: f32) -> WaveHeightStats
         minimum_meters: minimum as f32,
         maximum_meters: maximum as f32,
     }
+}
+
+pub(crate) fn storm_blend_value(storm_intensity: f32) -> f64 {
+    storm_blend(storm_intensity)
 }
 
 /// `smoothstep(0.15, 0.85, storm_intensity)`, mirroring the shader.
@@ -1160,20 +1170,97 @@ fn sample_wave(direction: DVec3, time: f64, wave: &GerstnerWave) -> WaveSample {
     }
 }
 
+/// How much of the FFT sea's horizontal (choppy) displacement survives at
+/// this depth. Paired with `fft_horizontal` in `shared_planet.wgsl`.
+fn fft_horizontal_weight(water_depth_meters: f64) -> f64 {
+    let t = ((water_depth_meters - 30.0) / 70.0).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Where the rendered sea under a world radial comes from, and the FFT sea
+/// there. The renderer evaluates every wave at an undisplaced parameter point
+/// and then moves it sideways by the FFT's choppy displacement, so the water
+/// over `direction` is the water from somewhere a few metres upwind. Without
+/// the FFT the two are the same point.
+fn fft_query(
+    direction: DVec3,
+    sim_time: f64,
+    storm_intensity: f32,
+    water_depth_meters: f64,
+) -> (DVec3, crate::ocean_fft::FftSample) {
+    if !crate::ocean_fft::enabled() || OCEAN_LARGE_SWELL_ONLY {
+        return (direction, crate::ocean_fft::FftSample::default());
+    }
+    let sample = crate::ocean_fft::sample_world(
+        direction,
+        sim_time,
+        crate::ocean_fft::height_sigma_meters(storm_intensity),
+        fft_horizontal_weight(water_depth_meters),
+    );
+    (sample.parameter, sample)
+}
+
+fn fft_sea_active() -> bool {
+    crate::ocean_fft::enabled() && !OCEAN_LARGE_SWELL_ONLY
+}
+
+/// Steps for the FFT sea's derivatives. Its water over a fixed radial comes
+/// from a point displaced upwind by the choppy field, so the slope and rate
+/// there pick up that displacement's Jacobian and its horizontal velocity,
+/// and every wave -- Gerstner rows included -- is evaluated at the displaced
+/// point. Differencing the height the CPU reports gets all of it, and is
+/// consistent with that height by construction. The CPU grids are cubic in
+/// space and piecewise linear in time, so the differences carry no noise.
+const FFT_DIFFERENCE_METERS: f64 = 0.02;
+const FFT_DIFFERENCE_SECONDS: f64 = 1.0e-4;
+
+fn fft_world_gradient(
+    radial: DVec3,
+    sim_time: f64,
+    storm_intensity: f32,
+    water_depth_meters: f64,
+) -> DVec3 {
+    let reference = if radial.y.abs() < 0.9 {
+        DVec3::Y
+    } else {
+        DVec3::X
+    };
+    let first = radial.cross(reference).normalize();
+    let second = radial.cross(first);
+    let radius = planet_radius_meters();
+    let height = |tangent: DVec3, sign: f64| {
+        wave_height_meters(
+            (radial * radius + tangent * (sign * FFT_DIFFERENCE_METERS)).normalize(),
+            sim_time,
+            storm_intensity,
+            water_depth_meters,
+        )
+    };
+    [first, second]
+        .into_iter()
+        .map(|tangent| {
+            tangent
+                * ((height(tangent, 1.0) - height(tangent, -1.0)) / (2.0 * FFT_DIFFERENCE_METERS))
+        })
+        .sum()
+}
+
 pub fn wave_height_meters(
     direction: DVec3,
     sim_time: f64,
     storm_intensity: f32,
-    _water_depth_meters: f64,
+    water_depth_meters: f64,
 ) -> f64 {
     let amplitude_scale = geometry_amplitude_scale(storm_intensity);
     let blend = storm_blend(storm_intensity);
+    let (parameter, fft) = fft_query(direction, sim_time, storm_intensity, water_depth_meters);
     active_waves()
         .iter()
         .map(|wave| {
-            wave.amplitude(blend) * amplitude_scale * sample_wave(direction, sim_time, wave).profile
+            wave.amplitude(blend) * amplitude_scale * sample_wave(parameter, sim_time, wave).profile
         })
-        .sum()
+        .sum::<f64>()
+        + fft.height
 }
 
 /// A wave cannot stand taller than the water it is in: past roughly this
@@ -1305,17 +1392,27 @@ pub fn global_wave_slope(direction: DVec3, sim_time: f64, water_depth_meters: f6
     }
     let state = sea_state_at(sim_time);
     let radial = direction.normalize();
+    if fft_sea_active() {
+        let gradient = fft_world_gradient(radial, sim_time, state.intensity, water_depth_meters)
+            * breaking_rate_weight(
+                wave_height_meters(radial, sim_time, state.intensity, water_depth_meters),
+                water_depth_meters,
+            );
+        return gradient - radial * gradient.dot(radial);
+    }
     let amplitude_scale = geometry_amplitude_scale(state.intensity);
     let blend = storm_blend(state.intensity);
     // d(phase)/ds along a unit tangent u is wave_number * (u . axis): the
     // planet radius in the phase cancels against the 1/radius change in
     // `direction` from moving a metre tangentially.
-    let gradient = active_waves()
+    let (parameter, fft) = fft_query(radial, sim_time, state.intensity, water_depth_meters);
+    let gradient = (active_waves()
         .iter()
         .map(|wave| {
-            sample_wave(radial, sim_time, wave).slope * (wave.amplitude(blend) * amplitude_scale)
+            sample_wave(parameter, sim_time, wave).slope * (wave.amplitude(blend) * amplitude_scale)
         })
         .sum::<DVec3>()
+        + fft.slope)
         * breaking_rate_weight(
             wave_height_meters(radial, sim_time, state.intensity, water_depth_meters),
             water_depth_meters,
@@ -1347,16 +1444,33 @@ fn wave_vertical_velocity_in_state(
             .expect("bounded ocean transport inverse failed")
             .vertical_velocity;
     }
+    if fft_sea_active() {
+        let rate = |time: f64| {
+            let intensity = (f64::from(state.intensity) + state.intensity_rate * (time - sim_time))
+                .clamp(0.0, 1.0) as f32;
+            wave_height_meters(direction, time, intensity, water_depth_meters)
+        };
+        let vertical_velocity = (rate(sim_time + FFT_DIFFERENCE_SECONDS)
+            - rate(sim_time - FFT_DIFFERENCE_SECONDS))
+            / (2.0 * FFT_DIFFERENCE_SECONDS);
+        return vertical_velocity
+            * breaking_rate_weight(
+                wave_height_meters(direction, sim_time, state.intensity, water_depth_meters),
+                water_depth_meters,
+            );
+    }
     let amplitude_scale = geometry_amplitude_scale(state.intensity);
     let blend = storm_blend(state.intensity);
+    let (parameter, fft) = fft_query(direction, sim_time, state.intensity, water_depth_meters);
     let vertical_velocity = active_waves()
         .iter()
         .map(|wave| {
-            let sample = sample_wave(direction, sim_time, wave);
+            let sample = sample_wave(parameter, sim_time, wave);
             wave.amplitude(blend) * amplitude_scale * sample.velocity
                 + amplitude_change_velocity(wave, state) * sample.profile
         })
-        .sum::<f64>();
+        .sum::<f64>()
+        + fft.vertical_velocity;
     // Scaled by the same figure the height was, so a limited crest and its
     // velocity stay consistent: the analytic derivative regression compares
     // them directly.
@@ -2350,7 +2464,9 @@ mod tests {
         assert!(
             shader.contains("if OCEAN_LARGE_SWELL_ONLY && i >= OCEAN_LARGE_SWELL_WAVE_COUNT {")
         );
-        assert!(shader.contains("if OCEAN_LARGE_SWELL_ONLY {"));
+        // The ripple octave drops out under either the diagnostic or the FFT
+        // sea, which carries those wavelengths as real modes.
+        assert!(shader.contains("if OCEAN_LARGE_SWELL_ONLY || OCEAN_FFT_ENABLED {"));
         let (expected_waves, expected_ripples) = if OCEAN_LARGE_SWELL_ONLY {
             (LARGE_SWELL_WAVE_COUNT, 0)
         } else {
@@ -2446,7 +2562,10 @@ mod tests {
             - global_wave_height_meters(direction, time - epsilon, 1000.0))
             / (2.0 * epsilon);
         let analytic = global_wave_vertical_velocity_meters_per_second(direction, time, 1000.0);
-        assert!((analytic - finite_difference).abs() < 1.0e-5);
+        assert!(
+            (analytic - finite_difference).abs() < 1.0e-5,
+            "{analytic} vs {finite_difference}"
+        );
         assert_eq!(
             global_wave_vertical_velocity_meters_per_second(direction, time, 0.0),
             0.0

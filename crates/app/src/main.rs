@@ -16,6 +16,7 @@ mod hdr;
 mod moon;
 mod moon_markings;
 mod ocean;
+mod ocean_fft;
 mod ocean_transmission;
 mod outmap;
 mod planet;
@@ -1327,7 +1328,17 @@ impl State {
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("render device"),
                 required_features: requested_features,
-                required_limits: wgpu::Limits::default(),
+                // The shared planet group carries the FFT sea's textures on
+                // top of the atmosphere, material and tile sets, which puts
+                // the ray field shader past WebGPU's default of 16 sampled
+                // textures per stage. Desktop Vulkan allows far more.
+                required_limits: wgpu::Limits {
+                    max_sampled_textures_per_shader_stage: adapter
+                        .limits()
+                        .max_sampled_textures_per_shader_stage
+                        .max(wgpu::Limits::default().max_sampled_textures_per_shader_stage),
+                    ..wgpu::Limits::default()
+                },
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 memory_hints: wgpu::MemoryHints::Performance,
                 trace: wgpu::Trace::Off,
@@ -4588,6 +4599,14 @@ impl State {
             && self.terrain.has_ocean_draws()
             && self.render_debug_mode != planet::RenderDebugMode::SkyOnly
         {
+            let radians_per_pixel = 2.0 * (self.camera.vertical_fov_radians() * 0.5).tan()
+                / f64::from(self.size.height.max(1));
+            self.terrain.update_ocean_fft(
+                &mut encoder,
+                ocean_time_seconds,
+                camera_planet_frame_position,
+                radians_per_pixel,
+            );
             self.terrain.update_ocean_foam(
                 &mut encoder,
                 &self.camera_bind_group,

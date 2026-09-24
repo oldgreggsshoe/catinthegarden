@@ -130,6 +130,9 @@ struct OceanVertexOutput {
     @location(8) smooth_normal: vec3<f32>,
     @location(9) ripple_slope: vec3<f32>,
     @location(10) vertical_and_breaking: vec2<f32>,
+    // Undisplaced sea point minus the camera, planet frame. The FFT sea is
+    // addressed from this rather than from a 4,000km position in f32.
+    @location(11) fft_relative: vec3<f32>,
 }
 
 fn uses_outmap(terrain_info: u32) -> bool {
@@ -939,11 +942,24 @@ fn vs_ocean(input: VertexInput) -> OceanVertexOutput {
     let flat_local_planet_position = projected.anchor_relative_position;
     let flat_camera_relative_view_position = input.anchor_view_position
         + planet_to_view(flat_local_planet_position);
-    let surface = ocean_surface(
+    let fft_relative = view_to_planet(flat_camera_relative_view_position);
+    // The mesh cannot carry waves shorter than its own spacing; sampled
+    // anyway they alias into long straight silhouette facets. Filter the FFT
+    // sea to the vertex spacing (the coarser neighbour's along a stitched
+    // edge, so both chunks displace a shared vertex identically) and let the
+    // per-pixel normal restore the detail.
+    let fft_vertex_filter_meters = edge_detail_filter_meters(
+        projected.tile_uv,
+        input.edge_stitch,
+        requested_level(input.terrain_info),
+    ) * OCEAN_FFT_VERTEX_FILTER_SCALE;
+    let surface = ocean_surface_at(
         projected.direction,
+        fft_relative,
         camera.projection.z,
         length(flat_camera_relative_view_position),
         max(-macro_height_meters, 0.0),
+        fft_vertex_filter_meters,
     );
     let local_planet_position = projected.anchor_relative_position
         + projected.direction * surface.vertical_displacement
@@ -963,8 +979,11 @@ fn vs_ocean(input: VertexInput) -> OceanVertexOutput {
         surface.normal,
         surface.ripple_slope,
         vec2<f32>(surface.vertical_displacement, surface.breaking_ratio),
+        fft_relative,
     );
 }
+
+const OCEAN_FFT_VERTEX_FILTER_SCALE: f32 = 1.0;
 
 fn lod_dither_threshold(fragment_position: vec4<f32>) -> f32 {
     // Stable interleaved-gradient noise avoids the visible checker/grid of an
@@ -2189,8 +2208,8 @@ fn ocean_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
 // Evaluate the wave field once per pixel, shared by lighting and refraction.
 fn ocean_raster_surface(input: OceanVertexOutput, height: f32) -> OceanSurface {
     let direction = normalize(input.surface_direction);
-    return ocean_surface(direction, camera.projection.z,
-        length(input.camera_relative_view_position), max(-height, 0.0));
+    return ocean_surface_at(direction, input.fft_relative, camera.projection.z,
+        length(input.camera_relative_view_position), max(-height, 0.0), 0.0);
 }
 
 fn ocean_fragment_with_transmission(input: OceanVertexOutput, bed: vec4<f32>, surface: OceanSurface, macro_height_meters: f32) -> vec4<f32> {

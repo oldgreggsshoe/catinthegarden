@@ -1409,6 +1409,40 @@ fn ocean_surface(
     camera_distance_meters: f32,
     water_depth_meters: f32,
 ) -> OceanSurface {
+    // Callers without the exact camera-relative sea point (ray queries, flat
+    // mode) rebuild it from the direction. That costs the FFT sea about a
+    // quarter metre of f32 position noise, which only the shortest cascade
+    // can see; the raster path passes the exact offset instead.
+    return ocean_surface_at(
+        direction,
+        direction * PLANET_RADIUS_METERS - ocean_fft_camera_position(),
+        time_seconds,
+        camera_distance_meters,
+        water_depth_meters,
+        0.0,
+    );
+}
+
+fn ocean_fft_camera_position() -> vec3<f32> {
+    if !OCEAN_FFT_ENABLED {
+        return vec3<f32>(0.0);
+    }
+    return ocean_fft_camera_position_uniform();
+}
+
+/// `camera_relative` is the undisplaced sea-level point minus the camera, in
+/// the planet frame. `fft_footprint_floor_meters` is the finest detail the
+/// caller can carry: the vertex stage passes its mesh spacing so geometry does
+/// not alias waves shorter than its triangles, which the per-pixel normal then
+/// carries instead. Pass zero for a per-pixel query.
+fn ocean_surface_at(
+    direction: vec3<f32>,
+    camera_relative: vec3<f32>,
+    time_seconds: f32,
+    camera_distance_meters: f32,
+    water_depth_meters: f32,
+    fft_footprint_floor_meters: f32,
+) -> OceanSurface {
     if !OCEAN_WAVES_ENABLED {
         return flat_ocean_surface(direction);
     }
@@ -1448,6 +1482,11 @@ fn ocean_surface(
         if OCEAN_LARGE_SWELL_ONLY && i >= OCEAN_LARGE_SWELL_WAVE_COUNT {
             amplitude = 0.0;
         }
+        // The FFT sea carries this band instead. Paired with
+        // `ocean::active_waves`.
+        if OCEAN_FFT_ENABLED && i >= OCEAN_FFT_REPLACES_FROM {
+            break;
+        }
         let contribution = gerstner_wave(
             direction,
             spec.axis,
@@ -1476,10 +1515,21 @@ fn ocean_surface(
         shore_weight,
         water_depth_meters,
     );
-    if OCEAN_LARGE_SWELL_ONLY {
+    if OCEAN_LARGE_SWELL_ONLY || OCEAN_FFT_ENABLED {
         // The ripple layer is a shorter octave by definition, so the large
-        // swell diagnostic drops it whatever the camera is doing.
+        // swell diagnostic drops it whatever the camera is doing. The FFT sea
+        // carries these wavelengths as real modes.
         ripple = OceanWaveContribution(vec3<f32>(0.0), mat3x3<f32>(), 0.0, vec3<f32>(0.0), 0.0);
+    }
+    var fft = OceanFftSample(vec3<f32>(0.0), 0.0, vec3<f32>(0.0), 0.0);
+    if OCEAN_FFT_ENABLED && geometry_weight > 0.0 && !OCEAN_LARGE_SWELL_ONLY {
+        fft = ocean_fft_sample(
+            direction,
+            camera_relative,
+            camera_distance_meters,
+            fft_footprint_floor_meters,
+            ocean_fft_sigma(storm_blend),
+        );
     }
     let geometry_amplitude_scale = mix(
         OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE,
@@ -1492,7 +1542,10 @@ fn ocean_surface(
     // it gets there. tanh rather than a clamp keeps the surface smooth and
     // differentiable through the break. Paired with `breaking_weight` in
     // ocean.rs, which the CPU collision query uses.
-    let raw_vertical = vertical * geometry_weight * geometry_amplitude_scale;
+    // Gerstner sums are in table units; the FFT sea is already in metres.
+    let vertical_meters = vertical * geometry_amplitude_scale + fft.height;
+    let slope_meters = slope * geometry_amplitude_scale + fft.slope;
+    let raw_vertical = vertical_meters * geometry_weight;
     let breaking_limit_meters =
         0.5 * OCEAN_BREAKING_HEIGHT_TO_DEPTH_RATIO * max(water_depth_meters, 0.0);
     var breaking_weight = 0.0;
@@ -1508,14 +1561,14 @@ fn ocean_surface(
         // with ocean.rs::breaking_rate_weight; reuse the existing pow.
         breaking_slope_weight = breaking_weight / (1.0 + ratio);
     }
-    let limited = geometry_weight * geometry_amplitude_scale * breaking_weight;
-    let limited_slope = geometry_weight * geometry_amplitude_scale * breaking_slope_weight;
+    let limited = geometry_weight * breaking_weight;
+    let limited_slope = geometry_weight * breaking_slope_weight;
     let transport_weight = select(1.0, 0.0, !OCEAN_TRANSPORT_ENABLED)
         * smoothstep(30.0, 100.0, water_depth_meters);
     let transport_limited = geometry_weight * geometry_amplitude_scale;
     let transport_jacobian = horizontal_derivative
         * (transport_limited * OCEAN_TRANSPORT_GAIN * transport_weight);
-    var geometric_normal = normalize(direction - slope * limited_slope);
+    var geometric_normal = normalize(direction - slope_meters * limited_slope);
     if transport_weight > 0.0 {
         let reference_axis = select(
             vec3<f32>(1.0, 0.0, 0.0),
@@ -1524,11 +1577,11 @@ fn ocean_surface(
         );
         let tangent_u = normalize(cross(direction, reference_axis));
         let tangent_v = cross(direction, tangent_u);
-        let jacobian_u = tangent_u * (1.0 + vertical * limited / PLANET_RADIUS_METERS)
-            + direction * dot(slope * limited_slope, tangent_u)
+        let jacobian_u = tangent_u * (1.0 + vertical_meters * limited / PLANET_RADIUS_METERS)
+            + direction * dot(slope_meters * limited_slope, tangent_u)
             + transport_jacobian * tangent_u;
-        let jacobian_v = tangent_v * (1.0 + vertical * limited / PLANET_RADIUS_METERS)
-            + direction * dot(slope * limited_slope, tangent_v)
+        let jacobian_v = tangent_v * (1.0 + vertical_meters * limited / PLANET_RADIUS_METERS)
+            + direction * dot(slope_meters * limited_slope, tangent_v)
             + transport_jacobian * tangent_v;
         geometric_normal = normalize(cross(jacobian_u, jacobian_v));
         if dot(geometric_normal, direction) < 0.0 {
@@ -1542,20 +1595,27 @@ fn ocean_surface(
     if breaking_limit_meters > 0.0 {
         breaking_ratio = max(raw_vertical, 0.0) / breaking_limit_meters;
     }
+    // Choppy FFT displacement fades out as the water shoals, the same way the
+    // Gerstner transport does. Paired with `ocean::fft_horizontal_weight`.
+    let fft_horizontal = fft.horizontal * (geometry_weight * smoothstep(30.0, 100.0, water_depth_meters));
     return OceanSurface(
         breaking_ratio,
-        horizontal * transport_limited * OCEAN_TRANSPORT_GAIN * transport_weight,
+        horizontal * transport_limited * OCEAN_TRANSPORT_GAIN * transport_weight + fft_horizontal,
         transport_jacobian,
-        vertical * limited,
-        slope * limited_slope,
+        vertical_meters * limited,
+        slope_meters * limited_slope,
         // Geometry and CPU buoyancy share this broad normal. The already-paid
         // sub-mesh ripple slope stays separate for fragment lighting so it can
         // sharpen the smallest visible waves without moving the mesh or eye.
         geometric_normal,
         ripple.vertical_displacement,
         ripple.slope,
-        convergence * geometry_weight * geometry_amplitude_scale,
+        (convergence * geometry_amplitude_scale + max(fft.crest, 0.0)) * geometry_weight,
     );
+}
+
+fn ocean_fft_sigma(storm_blend: f32) -> f32 {
+    return mix(OCEAN_FFT_CALM_SIGMA, OCEAN_FFT_STORM_SIGMA, storm_blend);
 }
 
 fn ocean_shading_normal(surface: OceanSurface) -> vec3<f32> {
