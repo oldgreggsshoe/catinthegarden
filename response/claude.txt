@@ -1,23 +1,111 @@
-FOLLOW-UP (short — you are low on budget, this is the whole message)
+24 September - Plan: get the ocean to the Sea of Thieves standard
 
-Your "tonal patches, not glacier structure" is a resolution ceiling, not a bug.
+SOURCE: Rare's own SIGGRAPH 2018 talk, "The Technical Art of Sea of Thieves"
+https://history.siggraph.org/wp-content/uploads/2022/09/2018-Talks-Ang_The-Technical-Art-of-Sea-of-Thieves.pdf
 
-Baker comment, confirmed by geometry: dense samples sit 3,068m apart.
-(circumference 25,100km / 4 = 6,280km face edge; L4 = 16 tiles x 128 quads
-= 2,048 quads per edge -> 3,067m per cell.)
+WHAT SEA OF THIEVES ACTUALLY DOES (primary source only)
+1. Waves: Tessendorf FFT ocean (2001), not a handful of Gerstner waves.
+2. Colour: stylised, not PBR. It blends a deep-water colour with a
+   subsurface colour. The weights come from view angle, sun direction and a
+   "wave peak mask". The mask is the FFT choppiness (sideways) offset: where
+   that offset is large there is a peak, and light has less water to cross.
+3. Foam: made where the FFT folds (Tessendorf's Jacobian), plus a foam ring
+   wherever an object cuts the surface, found by depth comparison inside a
+   window centred on the camera. That foam buffer is blurred with feedback
+   each frame, so foam spreads and fades over time. The result is mixed with
+   hand-painted foam textures. Calm seas only get foam around objects;
+   storms get a lot of foam.
+4. Sun: an area-light specular (Karis 2013 closest point on a sphere), which
+   gives the big, wide low-sun reflection.
+5. Underwater: a Snell's window.
+6. Deck/stream water: a separate small GPU shallow-water sim. Out of scope.
 
-The judging camera is 100m up, 30 deg down, 60 deg vFOV — its foreground is a
-few hundred metres to ~2km of ground. ONE BIOME CELL IS BIGGER THAN THE FRAME.
-So a one-cell moraine can only tint a region. It can never read as a stripe,
-and widening it (Claude's dilation idea) makes the patch bigger, not stripier.
+WHY OURS FALLS SHORT (from the 23 Sept isolation, test-runs/ocean_sot_detail_2026-09-23)
+- We sum 18 Gerstner waves plus 3 normal-only ripples. The six short waves
+  (32m down to 7m) produce the regular diagonal lattice; masking them makes
+  the lattice disappear. Re-aiming them only rotates it. That is the ceiling
+  for any small hand-picked wave set, however carefully it is tuned.
+- The foreground reads "rounded/viscous": no sideways choppiness (horizontal
+  transport is OFF so buoyancy stays in sync), and too few waves.
+- Foam is analytic and instant, with no memory, so it can't trail or spread.
+  A texture-only foam trial on 23 Sept gave streaks and was rejected.
+So the problem is structural. More tuning of Gerstner constants will not
+reach this standard. The FFT is the step that matters; everything else
+builds on it.
 
-Suggestion: treat the new biomes as REGION MARKERS, and draw the banding
-procedurally in the shader inside them — same shape as the existing rock
-material, keyed in terrain_material_weights_for_biome. Metre-scale structure,
-no extra texture reads, free under Ian's performance rule. Round 10 reached the
-same conclusion about rock: it needs its own material and distribution, not a
-reinterpretation of the detail field.
+THE PLAN (one phase per session, each measured before/after on the Quadro)
 
-Your export fix (e8248bf) is still necessary and banked — without it the ids
-were erased outright. It unblocks the region marker; the structure is the next
-piece. Commit whatever you have before the window closes.
+Phase A - acceptance metrics before any code
+  - Replays: ocean_deck_reference (low eye), ocean_manual_grid (overhead
+    lattice), ocean_rough_horizon (storm), ocean_hybrid_close.
+  - Lattice metric (tier 2): take a 2D FFT of the overhead capture's water
+    region and measure the ratio of the strongest off-centre peak to the
+    median. Today's lattice should score high; the target is near-isotropic.
+  - Frame-time baseline: interleaved Immediate-present pairs, as usual.
+  - Ian captures 3-4 Sea of Thieves reference shots (calm, normal, storm,
+    low sun) to use as the look target.
+
+Phase B - GPU FFT wave field (the core change)
+  - Compute shaders (already proven on this card by the forest pass).
+  - 3 cascades at 256x256, tile sizes chosen so they don't line up
+    (for example 1000m / 237m / 53m), so the repeat can't be seen.
+  - JONSWAP spectrum with directional spreading. Wind speed and fetch come
+    from the existing weather/fetch coupling, so storms still work.
+  - Per frame: spectrum -> time evolve -> inverse FFT (height, x/z
+    displacement, derivatives) -> textures with mips.
+  - Replace the 18 Gerstner + 3 ripple sums inside the camera-local patch
+    with texture samples, and apply them in the tangent plane of the
+    sphere. That should cost less than 21 sine sums per vertex and pixel.
+  - Budget: the FFT must fit in <= 1.0ms, and total ocean time must not rise.
+  - Pass: the lattice metric drops, and the overhead and low views both
+    look better. A lattice fix that removes detail does not count.
+
+Phase C - buoyancy and collision parity
+  - The CPU runs the same spectrum and seed through an FFT of the largest
+    cascade only, at 64x64 (rustfft). The two small cascades are under
+    about 0.3m and go into the tolerance.
+  - With choppiness on, finding the height at a point needs a 2-3 step
+    fixed-point inversion of the horizontal offset.
+  - Turn horizontal transport back on.
+  - Pass: GPU/CPU surface parity test, ship float, surface camera 2.5m
+    deck clearance.
+
+Phase D - near mesh density
+  - Make the camera-local grid denser near the eye, using rings or a
+    projected grid with geomorphing, so choppy crests get enough vertices
+    and the "broad smooth foreground faces" go.
+  - Frame-time gate as always.
+
+Phase E - Sea of Thieves shading
+  - Replace today's crest-transmission layers with Rare's model: deep
+    colour <-> subsurface colour, weighted by the choppiness peak mask,
+    view angle and sun direction.
+  - Area-light sun specular (Karis) for the wide low-sun reflection.
+  - Keep the Snell's window and underside work we already have.
+
+Phase F - temporal foam
+  - A persistent foam texture centred on the camera, re-centred as the
+    camera moves. It is fed by FFT folding (Jacobian < threshold) and
+    object/shore intersection (depth test), and blurred plus decayed with
+    feedback each frame.
+  - Mix it with a tileable authored foam texture.
+  - Sea-state rules: calm = foam around objects only; storm = heavy foam.
+  - Pass: foam coverage by sea state (tier 2), and foam that trails and
+    fades across frames.
+
+Phase G - far field and horizon
+  - Beyond the patch, use the largest cascade's low mips for normals only,
+    then a filtered roughness/sheen, so the horizon doesn't shimmer or
+    alias. The planet shell stays flat.
+
+Phase H - art-direction pass against Ian's reference shots
+  - Colours, foam texture, sun lobe width. Then judges, with clear/storm/
+    low-sun sets.
+
+ORDER / RISK
+- B is the big one. After B, C is required before anything ships
+  (buoyancy). E and F only look right on top of B.
+- Biggest risks: FFT cost on the M1000M (measure in B before anything
+  else) and choppy-inversion parity (C).
+- Everything goes on a branch. Nothing is promoted without the replays,
+  the metric and a frame-time comparison.
