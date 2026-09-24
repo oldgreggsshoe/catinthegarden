@@ -5494,17 +5494,29 @@ impl ApplicationHandler for App {
         if self.startup_fullscreen_pending && matches!(&event, WindowEvent::RedrawRequested) {
             self.startup_redraw_seen = true;
         }
-        if matches!(
-            &event,
-            WindowEvent::KeyboardInput { event, .. }
-                if event.state.is_pressed()
-                    && matches!(
-                        event.physical_key,
-                        PhysicalKey::Code(KeyCode::Escape)
-                    )
-        ) {
-            event_loop.exit();
-            return;
+        if let WindowEvent::KeyboardInput {
+            event,
+            is_synthetic,
+            ..
+        } = &event
+            && event.state.is_pressed()
+            && event.physical_key == PhysicalKey::Code(KeyCode::Escape)
+        {
+            // winit reports keys already held when the window gains focus as
+            // synthetic presses. A remote-desktop session that loses an Escape
+            // release leaves X believing the key is down, and every launch
+            // after it then quit on its first focused frame. Only a real
+            // press quits.
+            tracing::info!(
+                target: "catinthegarden::startup",
+                reason = "escape",
+                synthetic = *is_synthetic,
+                "exit requested"
+            );
+            if !*is_synthetic {
+                event_loop.exit();
+                return;
+            }
         }
         if let WindowEvent::KeyboardInput { event, .. } = &event
             && let PhysicalKey::Code(key_code) = event.physical_key
@@ -5537,7 +5549,14 @@ impl ApplicationHandler for App {
 
         if !egui_response.consumed {
             match event {
-                WindowEvent::CloseRequested => event_loop.exit(),
+                WindowEvent::CloseRequested => {
+                    tracing::info!(
+                        target: "catinthegarden::startup",
+                        reason = "close requested",
+                        "exit requested"
+                    );
+                    event_loop.exit();
+                }
                 WindowEvent::Focused(false) => state.set_mouse_capture(window, false),
                 WindowEvent::MouseInput {
                     state: winit::event::ElementState::Pressed,
