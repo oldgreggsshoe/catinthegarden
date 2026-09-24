@@ -11100,3 +11100,12 @@ acceptance or Sea of Thieves appearance completion is claimed.
 ## 25 September - Ocean FFT plan, Phase A (lattice metric)
 
 Added `tools/lattice_metric.py`: whitened 2D-FFT peak/median of a capture (optionally `--crop=x0,y0,x1,y1` fractions to isolate water). Calibration: white noise scores ~19, a synthetic two-tone lattice ~243. Current baselines: `ocean_manual_grid/1790185095-829305` captures 1-4 score 72-88 (older `1790183741-825999` 140), so the woven pattern is clearly detected. Caveat: frames containing horizon/sky (e.g. `ocean_rough_horizon`, 231) need a water-only crop or the gradient dominates. Not yet done for Phase A: interleaved Immediate-present frame-time baseline, and Ian's Sea of Thieves reference shots. No renderer code changed.
+
+## 25 September - Ocean FFT plan, Phase B step 1 (standalone GPU FFT, cost proven)
+
+New `crates/app/src/ocean_fft.rs` + `ocean_fft.wgsl`, standalone (not wired into rendering or buoyancy). Three 256x256 cascades (tiles 1000/237/53m, disjoint wavenumber bands 0-0.5-2.0-inf rad/m), JONSWAP with cos^2 spreading, deep-water dispersion. Per frame: evolve, row FFT, column FFT, assemble into (h, Dx, Dz) per cascade, using two packed complex FFTs per cascade (h+iDx, Dz). Slopes and the fold Jacobian are meant to come from finite differences of these textures at shading time (not implemented yet). Workgroup-shared 256-point radix-2, one workgroup per line.
+
+Measured on the Quadro M1000M (wall-clock, submit+wait, 100-frame batches, dedicated run): **0.81-0.84ms/frame** for the whole field, inside the 1.0ms budget. Pass split (before halving, 12 FFTs): evolve 0.16, rows 0.71, cols 0.76, assemble 0.22ms; halving to 6 FFTs took 1.53 -> 0.82ms. A shared twiddle table was slower (1.74ms) and was reverted. Correctness: single-mode test matches the analytic standing wave (h, Dx, Dz) to 3e-6.
+
+Run: `cargo test -p catinthegarden-app --release ocean_fft -- --ignored --nocapture --test-threads=1`.
+Not done: texture output with mips, wiring into the camera-local patch, CPU 64x64 parity (phase C), weather-driven wind/fetch, time wrapping (f32 phase over long runs). This is standalone cost, not a total-ocean-cost claim.
