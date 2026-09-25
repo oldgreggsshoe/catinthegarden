@@ -30,6 +30,10 @@ struct SprayFrame {
     ship_axes: vec4<f32>,
     // Ship velocity (u, v, up).
     ship_velocity: vec4<f32>,
+    // Slam intensity at hull stations t = -0.9, -0.3, 0.3, 0.9, port then
+    // starboard.
+    ship_port: vec4<f32>,
+    ship_starboard: vec4<f32>,
 }
 
 struct OceanFftView {
@@ -102,6 +106,19 @@ fn spray_field(local: vec2<f32>) -> SprayField {
     return field;
 }
 
+// Slam intensity at hull position t (-1 stern, +1 stem) from the four stations
+// at t = -0.9, -0.3, 0.3, 0.9 (ocean_spray.rs SHIP_STATIONS).
+fn station_intensity(values: vec4<f32>, t: f32) -> f32 {
+    let x = clamp((t + 0.9) / 0.6, 0.0, 3.0);
+    let i = min(u32(floor(x)), 2u);
+    return mix(values[i], values[i + 1u], x - f32(i));
+}
+
+// Waterline half-beam over the hull half-beam (ship.rs half_beam_meters).
+fn hull_shape(t: f32) -> f32 {
+    return select(1.0 - 0.2 * t * t, pow(max(1.0 - t * t, 0.0), 0.6), t >= 0.0);
+}
+
 @compute @workgroup_size(64)
 fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
     let index = id.x;
@@ -132,30 +149,38 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
 
     let seed = index * 747796405u + u32(frame.shift_dt.w) * 2891336453u;
     if index < SHIP_SPRAY_SLOTS {
-        // Bow spray: torn off the forward waterline where the bow slams into
-        // the water, thrown outward and up, carried with the hull and the wind.
-        let intensity = frame.ship_origin.w;
-        if intensity <= 0.0
+        // Hull spray: torn off the waterline wherever the water slams against
+        // the hull (a floating hull is hit all round, not just at the bow),
+        // thrown outward along the local hull normal and up, carried with the
+        // hull and the wind.
+        let r1 = unit_random(seed ^ 0x9e3779b9u);
+        let r2 = unit_random(seed ^ 0x85ebca6bu);
+        let r3 = unit_random(seed ^ 0xc2b2ae35u);
+        let r4 = unit_random(seed ^ 0x27d4eb2fu);
+        let t = mix(-0.98, 0.98, r1);
+        let side = select(-1.0, 1.0, r2 < 0.5);
+        let intensity = station_intensity(
+            select(frame.ship_starboard, frame.ship_port, side > 0.0),
+            t,
+        );
+        if frame.ship_origin.w <= 0.0 || intensity <= 0.0
             || unit_random(seed ^ 0x2545f491u) >= intensity * SHIP_SPRAY_RATE * dt
         {
             particle.velocity.w = 0.0;
             particles[index] = particle;
             return;
         }
-        let r1 = unit_random(seed ^ 0x9e3779b9u);
-        let r2 = unit_random(seed ^ 0x85ebca6bu);
-        let r3 = unit_random(seed ^ 0xc2b2ae35u);
-        let r4 = unit_random(seed ^ 0x27d4eb2fu);
-        // Station along the forward third of the hull, either side.
-        let t = mix(0.35, 0.97, sqrt(r1));
-        let side = select(-1.0, 1.0, r2 < 0.5);
-        let half_beam = frame.ship_axes.w * pow(max(1.0 - t * t, 0.0), 0.6);
+        let half_length = frame.ship_axes.z;
+        let half_beam = frame.ship_axes.w * hull_shape(t);
         let forward = frame.ship_axes.xy;
         let port = vec2<f32>(-forward.y, forward.x);
-        let along = t * frame.ship_axes.z;
-        let place = frame.ship_origin.xy + forward * along + port * (side * half_beam);
-        // Outward from the hull side, raked forward near the stem.
-        let outward = normalize(port * side + forward * (0.3 + 0.9 * t * t));
+        let place = frame.ship_origin.xy + forward * (t * half_length) + port * (side * half_beam);
+        // Outline normal: raked forward where the bow narrows, aft toward the
+        // stern, straight aft off the transom.
+        let slope = frame.ship_axes.w
+            * (hull_shape(t + 0.01) - hull_shape(t - 0.01)) / (0.02 * half_length);
+        var outward = normalize(port * side - forward * slope);
+        outward = normalize(mix(outward, -forward, smoothstep(-0.88, -0.98, t)));
         let speed = (3.0 + 8.0 * intensity * r3);
         let horizontal = outward * speed + frame.ship_velocity.xy
             + frame.wind.xy * frame.wind.z * 0.15;

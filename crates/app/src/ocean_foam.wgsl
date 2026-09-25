@@ -19,6 +19,10 @@ struct FoamFrame {
     ship: vec4<f32>,
     // Ship forward (east, north), hull half-length, half-beam.
     ship_axes: vec4<f32>,
+    // Slam intensity at hull stations t = -0.9, -0.3, 0.3, 0.9 (port, then
+    // starboard).
+    ship_port: vec4<f32>,
+    ship_starboard: vec4<f32>,
 }
 @group(1) @binding(3) var<uniform> foam_frame: FoamFrame;
 @group(1) @binding(4) var foam_fft_map: texture_2d_array<f32>;
@@ -57,16 +61,26 @@ fn foam_birth_hash(cell: vec3<i32>) -> f32 {
     return f32(value & 65535u) / 65535.0;
 }
 
+// Slam intensity at hull position t from the stations at t = -0.9, -0.3, 0.3,
+// 0.9 (ocean_spray.rs SHIP_STATIONS).
+fn hull_station_intensity(values: vec4<f32>, t: f32) -> f32 {
+    let x = clamp((t + 0.9) / 0.6, 0.0, 3.0);
+    let i = min(u32(floor(x)), 2u);
+    return mix(values[i], values[i + 1u], x - f32(i));
+}
+
 // Water churned against the hull: a band just outside the waterline outline
-// (the same plan shape as ship.rs `half_beam_meters`), heaviest at the bow and
-// stronger when it slams. Left in the world-fixed history, it trails as a wake.
+// (the same plan shape as ship.rs `half_beam_meters`), wider and whiter where
+// the water is slamming against that part of the hull. Left in the
+// world-fixed history, it trails as a wake.
 fn ship_hull_foam(offset: vec2<f32>) -> f32 {
     let forward = foam_frame.ship_axes.xy;
     let port = vec2<f32>(-forward.y, forward.x);
     let relative = offset - foam_frame.ship.xy;
     let half_length = foam_frame.ship_axes.z;
     let t = dot(relative, forward) / half_length;
-    let across = abs(dot(relative, port));
+    let signed_across = dot(relative, port);
+    let across = abs(signed_across);
     let tc = clamp(t, -1.0, 1.0);
     let shape = select(1.0 - 0.2 * tc * tc, pow(max(1.0 - tc * tc, 0.0), 0.6), tc >= 0.0);
     let half_beam = foam_frame.ship_axes.w * shape;
@@ -77,9 +91,12 @@ fn ship_hull_foam(offset: vec2<f32>) -> f32 {
     if inside {
         return 0.0;
     }
-    let band = 1.0 - smoothstep(0.0, 2.5 + 2.0 * foam_frame.ship.z, outside);
-    let bow = 0.35 + 0.65 * smoothstep(-0.2, 0.9, t);
-    return band * bow * (0.45 + 0.55 * foam_frame.ship.z);
+    let slam = hull_station_intensity(
+        select(foam_frame.ship_starboard, foam_frame.ship_port, signed_across > 0.0),
+        t,
+    );
+    let band = 1.0 - smoothstep(0.0, 2.5 + 2.0 * slam, outside);
+    return band * (0.45 + 0.55 * slam);
 }
 
 @compute @workgroup_size(8, 8)

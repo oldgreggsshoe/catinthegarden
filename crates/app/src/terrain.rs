@@ -22,7 +22,7 @@ use wgpu::util::DeviceExt;
 mod ocean_foam;
 #[path = "ocean_spray.rs"]
 mod ocean_spray;
-pub use ocean_spray::ShipSprayEmitter;
+pub use ocean_spray::{SHIP_STATIONS, ShipSprayEmitter};
 
 use crate::{
     outmap::{Outmap, OutmapError, TileData},

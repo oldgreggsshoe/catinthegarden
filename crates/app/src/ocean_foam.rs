@@ -28,6 +28,9 @@ struct FoamFrame {
     ship: [f32; 4],
     /// Ship forward (east, north), hull half-length, half-beam.
     ship_axes: [f32; 4],
+    /// Slam intensity at the hull stations, port then starboard.
+    ship_port: [f32; 4],
+    ship_starboard: [f32; 4],
 }
 
 pub(super) struct OceanFoamHistory {
@@ -305,6 +308,8 @@ impl OceanFoamHistory {
                     (0.5 * crate::ship::HULL_BEAM_METERS) as f32,
                 ]
             }),
+            ship_port: ship.map_or([0.0; 4], |ship| ship.port),
+            ship_starboard: ship.map_or([0.0; 4], |ship| ship.starboard),
         };
         queue.write_buffer(&self._uniform, 0, bytemuck::bytes_of(&frame));
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {

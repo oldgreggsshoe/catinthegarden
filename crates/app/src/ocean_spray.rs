@@ -37,16 +37,27 @@ struct SprayFrame {
     ship_axes: [f32; 4],
     /// Ship velocity (u, v, up m/s), unused.
     ship_velocity: [f32; 4],
+    /// Slam intensity at the waterline stations `SHIP_STATIONS` (port, then
+    /// starboard).
+    ship_port: [f32; 4],
+    ship_starboard: [f32; 4],
 }
 
-/// Where and how hard the ship's bow is throwing spray, in the planet-local
-/// frame. Intensity comes from the bow slamming down into the water.
+/// Where along the hull (-1 stern, +1 stem) the slam is measured, each side.
+pub const SHIP_STATIONS: [f64; 4] = [-0.9, -0.3, 0.3, 0.9];
+
+/// Where and how hard the hull is throwing spray, in the planet-local frame.
+/// A free-floating hull slams wherever the water moves hard against it, so
+/// intensity is measured at waterline stations around it: `port` and
+/// `starboard` at `SHIP_STATIONS`. `intensity` is their maximum.
 #[derive(Clone, Copy, Debug)]
 pub struct ShipSprayEmitter {
     pub waterline_origin: glam::DVec3,
     pub forward: glam::DVec3,
     pub velocity: glam::DVec3,
     pub intensity: f32,
+    pub port: [f32; 4],
+    pub starboard: [f32; 4],
 }
 
 /// Unit wind direction in the FFT (u, v) axes; the spectrum's own wind.
@@ -290,6 +301,8 @@ impl OceanSpray {
         self.frame = self.frame.wrapping_add(1);
         let wind = wind_direction_uv();
         let xyz = |a: [f64; 3]| [a[0] as f32, a[1] as f32, a[2] as f32, 0.0];
+        let (ship_port, ship_starboard) =
+            ship.map_or(([0.0; 4], [0.0; 4]), |ship| (ship.port, ship.starboard));
         let (ship_origin, ship_axes, ship_velocity) = match ship {
             Some(ship) => {
                 let at = |p: glam::DVec3| {
@@ -339,6 +352,8 @@ impl OceanSpray {
             ship_origin,
             ship_axes,
             ship_velocity,
+            ship_port,
+            ship_starboard,
         };
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&frame));
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -398,6 +413,11 @@ mod tests {
         assert!(source.contains(&format!("const SHIP_SPRAY_SLOTS: u32 = {SHIP_SPRAY_SLOTS}u;")));
         let draw = include_str!("ocean_spray_draw.wgsl");
         assert!(draw.contains(&format!("instance_index < {SHIP_SPRAY_SLOTS}u")));
+        // Station positions are baked into both interpolators.
+        for source in [source, include_str!("ocean_foam.wgsl")] {
+            assert!(source.contains("clamp((t + 0.9) / 0.6, 0.0, 3.0)"));
+        }
+        assert_eq!(SHIP_STATIONS, [-0.9, -0.3, 0.3, 0.9]);
         assert!(SHIP_SPRAY_SLOTS < SPRAY_PARTICLES);
     }
 
@@ -405,6 +425,6 @@ mod tests {
     fn particle_layout_matches_the_shader() {
         // Two vec4<f32> per particle.
         assert_eq!(std::mem::size_of::<[[f32; 4]; 2]>(), 32);
-        assert_eq!(std::mem::size_of::<SprayFrame>(), 128);
+        assert_eq!(std::mem::size_of::<SprayFrame>(), 160);
     }
 }
