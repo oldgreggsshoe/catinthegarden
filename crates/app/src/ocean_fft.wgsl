@@ -18,7 +18,7 @@ struct Params {
 @group(0) @binding(1) var<storage, read> h0: array<vec4<f32>>;
 // 6 arrays (cascade * 2 + pack) of N*N complex values.
 @group(0) @binding(2) var<storage, read_write> spec: array<vec2<f32>>;
-// One layer per cascade: (h, Dx, Dz, 0).
+// One layer per cascade: (h, Dx, Dz, |grad h|^2).
 @group(0) @binding(3) var field: texture_storage_2d_array<rgba16float, write>;
 
 fn cmul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
@@ -91,6 +91,17 @@ fn fft_cols(@builtin(local_invocation_index) l: u32, @builtin(workgroup_id) wg: 
     spec[base + (l + 128u) * N] = line[l + 128u];
 }
 
+// Height at spatial texel (x, y) of cascade c, once both FFT passes are done.
+fn spatial_height(c: u32, x: u32, y: u32) -> f32 {
+    let xx = x % N;
+    let yy = y % N;
+    var sign = 1.0;
+    if (((xx + yy) & 1u) == 1u) {
+        sign = -1.0;
+    }
+    return sign * spec[c * 2u * N * N + yy * N + xx].x;
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn assemble(@builtin(global_invocation_id) id: vec3<u32>) {
     let c = id.z;
@@ -103,5 +114,18 @@ fn assemble(@builtin(global_invocation_id) id: vec3<u32>) {
     let base = c * 2u * N * N + cell;
     let p0 = spec[base];
     let p1 = spec[base + N * N];
-    textureStore(field, vec2<i32>(i32(id.x), i32(id.y)), i32(c), sign * vec4<f32>(p0.x, p0.y, p1.x, 0.0));
+    // Alpha: squared slope magnitude (central differences). Averaged down the
+    // mip chain it is the mean-square slope over a footprint, so the shader can
+    // tell how much slope a filtered lookup has lost and put it in roughness.
+    let step = params.tile[c].x / f32(N);
+    let slope_x = (spatial_height(c, id.x + 1u, id.y) - spatial_height(c, id.x + N - 1u, id.y))
+        / (2.0 * step);
+    let slope_z = (spatial_height(c, id.x, id.y + 1u) - spatial_height(c, id.x, id.y + N - 1u))
+        / (2.0 * step);
+    textureStore(
+        field,
+        vec2<i32>(i32(id.x), i32(id.y)),
+        i32(c),
+        vec4<f32>(sign * p0.x, sign * p0.y, sign * p1.x, slope_x * slope_x + slope_z * slope_z),
+    );
 }

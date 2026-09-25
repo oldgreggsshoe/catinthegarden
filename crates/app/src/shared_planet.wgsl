@@ -388,6 +388,11 @@ var<private> ocean_fft_vertex_spacing_meters: f32;
 // dDv/du). Combined per surface into the foam amount below.
 var<private> ocean_fft_last_jacobian: vec4<f32>;
 var<private> ocean_fft_last_displacement: vec2<f32>;
+// Mean-square slope over the last lookup's footprint (texture alpha).
+var<private> ocean_fft_last_mean_square_slope: f32;
+// Slope variance the filtered normal cannot show, for the specular roughness
+// (Bruneton, Neyret & Holzschuch 2010: geometry -> normals -> BRDF).
+var<private> ocean_fft_unresolved_slope_variance: f32;
 // Instantaneous FFT fold foam, 0..1, set by `ocean_surface_fft`. Zero until
 // set, so paths that never evaluate the FFT surface make no foam.
 var<private> ocean_fft_fold_foam: f32;
@@ -1523,6 +1528,7 @@ fn ocean_fft_cascade(cascade_index: u32, local: vec2<f32>, filter_width_meters: 
     let su = textureSampleLevel(ocean_fft_map, ocean_fft_sampler, uv + vec2<f32>(texel, 0.0), cascade_index, lod);
     let sv = textureSampleLevel(ocean_fft_map, ocean_fft_sampler, uv + vec2<f32>(0.0, texel), cascade_index, lod);
     ocean_fft_last_displacement = s0.yz;
+    ocean_fft_last_mean_square_slope = max(s0.w, 0.0);
     ocean_fft_last_jacobian = vec4<f32>(su.y - s0.y, sv.z - s0.z, sv.y - s0.y, su.z - s0.z)
         / step_meters;
     return vec4<f32>(
@@ -1555,27 +1561,45 @@ fn ocean_surface_fft(
     // cascades only shade, fading out before they alias at range.
     // Filter width: twice the vertex spacing in the vertex stage, otherwise
     // twice the pixel footprint (distance times the angle one pixel spans).
-    let pixel_footprint = camera_distance_meters * (2.0 * camera.projection.y / 720.0);
+    // A pixel's footprint on the water is long and thin at grazing angles:
+    // the across-view width divided by the cosine of incidence. Filter to the
+    // long axis so nothing aliases; what that removes from the normal goes
+    // into roughness below instead of being lost.
+    let pixel_across = camera_distance_meters * (2.0 * camera.projection.y / 720.0);
+    let incidence = abs(dot(normalize(planet_offset + direction * 1.0e-3), direction));
+    let pixel_footprint = pixel_across / max(incidence, 0.02);
     let filter_width = 2.0 * select(
         pixel_footprint,
         max(ocean_fft_vertex_spacing_meters, 0.0),
         ocean_fft_vertex_spacing_meters > 0.0,
     );
     let broad = ocean_fft_cascade(0u, local, filter_width);
+    let broad_mean_square = ocean_fft_last_mean_square_slope;
     let broad_jacobian = ocean_fft_last_jacobian;
     let broad_displacement = ocean_fft_last_displacement;
     let mid_weight = 1.0 - smoothstep(600.0, 3000.0, camera_distance_meters);
     let fine_weight = 1.0 - smoothstep(150.0, 700.0, camera_distance_meters);
     let mid = ocean_fft_cascade(1u, local, filter_width);
+    let mid_mean_square = ocean_fft_last_mean_square_slope;
     let mid_jacobian = ocean_fft_last_jacobian;
     let mid_displacement = ocean_fft_last_displacement;
     let fine = ocean_fft_cascade(2u, local, filter_width);
+    let fine_mean_square = ocean_fft_last_mean_square_slope;
     let fine_jacobian = ocean_fft_last_jacobian;
     let fine_displacement = ocean_fft_last_displacement;
     // Swell (cascade 3) is geometry like cascade 0, normalised to 1m
     // significant height and scaled by gain.z (metres).
     let swell_scale = ocean_fft_view.gain.z;
     let swell = ocean_fft_cascade(3u, local, filter_width);
+    let swell_mean_square = ocean_fft_last_mean_square_slope;
+    // Per cascade: mean-square slope over the footprint less what the drawn
+    // normal carries (weight^2 |resolved slope|^2). A cascade faded out by
+    // distance hands all of its slope to roughness.
+    let unresolved = max(broad_mean_square - dot(broad.yz, broad.yz), 0.0)
+        + max(mid_mean_square - mid_weight * mid_weight * dot(mid.yz, mid.yz), 0.0)
+        + max(fine_mean_square - fine_weight * fine_weight * dot(fine.yz, fine.yz), 0.0)
+        + swell_scale * swell_scale * max(swell_mean_square - dot(swell.yz, swell.yz), 0.0);
+    ocean_fft_unresolved_slope_variance = unresolved * gain * gain;
     let core = broad + swell * swell_scale;
     let core_jacobian = broad_jacobian + ocean_fft_last_jacobian * swell_scale;
     let core_displacement = broad_displacement + ocean_fft_last_displacement * swell_scale;
@@ -1584,7 +1608,14 @@ fn ocean_surface_fft(
     ocean_fft_foam_pattern = clamp(0.5 + 0.25 * pattern, 0.0, 1.0);
     ocean_fft_foam_pattern_strength = max(fine_weight, mid_weight);
     let label_jacobian = core_jacobian + mid_jacobian * mid_weight + fine_jacobian * fine_weight;
-    ocean_fft_fold_foam = ocean_fft_fold_amount(label_jacobian * gain);
+    // Folds are a few metres across: once a pixel is several times that, a
+    // thresholded fold is salt-and-pepper, not foam. Fade it out.
+    let foam_resolution = 1.0 - smoothstep(
+        1.5,
+        4.5,
+        log2(max(filter_width / (ocean_fft_view.cascade[1].z / 256.0), 1.0)),
+    );
+    ocean_fft_fold_foam = ocean_fft_fold_amount(label_jacobian * gain) * foam_resolution;
     // Heights are stored per wave-label position, but choppy displacement moves
     // each label sideways; the surface slope at the drawn position is the label
     // slope through the inverse displacement Jacobian. Where crests pinch the
@@ -3876,7 +3907,8 @@ const OCEAN_SOT_PEAK_FULL_V1: f32 = 0.65;
 // sun is 0.0046.
 const OCEAN_SOT_SUN_RADIUS: f32 = 0.06;
 const OCEAN_SOT_ROUGHNESS_NEAR: f32 = 0.08;
-const OCEAN_SOT_ROUGHNESS_FAR: f32 = 0.5;
+const OCEAN_SOT_ROUGHNESS_MAX: f32 = 0.6;
+const OCEAN_SOT_GRAZING_VISIBILITY_MAX: f32 = 8.0;
 
 fn ocean_sot_specular(
     normal_view: vec3<f32>,
@@ -3905,9 +3937,21 @@ fn ocean_sot_specular(
         1.0e-4,
     );
     let energy = (roughness / widened) * (roughness / widened);
+    // The lobe above is peak-normalised, so widening it (unresolved slope
+    // variance in the roughness) would add energy: distant water turned into
+    // white sheens. A true GGX peak falls as 1 / alpha^2; scale against the
+    // base width so the base look is unchanged. What makes a rough sea's
+    // low-sun road bright is the grazing visibility term, so its clamp is
+    // relaxed (1.5 -> OCEAN_SOT_GRAZING_VISIBILITY_MAX); the horizon line it
+    // was clamped for is held off by the n.v fade below.
+    let base_widened = OCEAN_SOT_ROUGHNESS_NEAR + OCEAN_SOT_SUN_RADIUS * 0.5;
+    let conserve = (base_widened / widened) * (base_widened / widened);
     // Fade the lobe out at grazing view angles: Fresnel and visibility both
-    // blow up there and drew a white line along the horizon.
-    return lobe * min(visibility * 2.0, 1.5) * n_dot_l * energy * smoothstep(0.0, 0.12, n_dot_v);
+    // blow up there and drew a white line along the horizon. Kept narrow: the
+    // filtered normal of distant water is nearly flat, so a wide fade removed
+    // the whole far glitter road.
+    return lobe * min(visibility * 2.0, OCEAN_SOT_GRAZING_VISIBILITY_MAX) * n_dot_l * energy * conserve
+        * smoothstep(0.0, 0.03, n_dot_v);
 }
 
 fn ocean_lighting_sot(
@@ -3952,11 +3996,14 @@ fn ocean_lighting_sot(
         * (OCEAN_SOT_TRANSMISSION * SURFACE_SUNLIGHT_SCALE) * toward_sun
         * clamp(thin * thin + 0.6 * peak + 0.3 * fine_crest_transmission, 0.0, 1.5)
         * (vec3<f32>(1.0) - fresnel);
-    let range = length(camera_relative_view_position);
-    let roughness = mix(
-        OCEAN_SOT_ROUGHNESS_NEAR,
-        OCEAN_SOT_ROUGHNESS_FAR,
-        smoothstep(30.0, 1500.0, range),
+    // Base roughness plus the slope the filtered normal could not show
+    // (isotropic: alpha^2 ~ mean-square slope, both axes summed), so distant
+    // water becomes a broad sheen rather than aliased glitter. Replaces the
+    // old distance ramp. At 14m/s the total is ~0.07, as Cox-Munk measured.
+    let roughness = min(
+        sqrt(OCEAN_SOT_ROUGHNESS_NEAR * OCEAN_SOT_ROUGHNESS_NEAR
+            + ocean_fft_unresolved_slope_variance),
+        OCEAN_SOT_ROUGHNESS_MAX,
     );
     let specular = ocean_sot_specular(normal_view, view_direction, sun_direction_view, roughness);
     return diffuse + transmission
