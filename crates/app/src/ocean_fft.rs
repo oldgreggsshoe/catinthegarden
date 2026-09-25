@@ -145,6 +145,18 @@ const REFRESH_SECONDS: f64 = 0.03;
 /// full 2.3ms inverse FFT; a few slots let each time keep its own grid.
 const GRID_SLOTS: usize = 8;
 
+/// Horizontal (choppy) displacement strength; 1.0 is the Tessendorf field the
+/// fold Jacobian is computed from, 0 disables it. `CATINGARDEN_OCEAN_FFT_CHOP`.
+fn choppiness() -> f32 {
+    static VALUE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("CATINGARDEN_OCEAN_FFT_CHOP")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .map_or(1.0, |v| v.clamp(0.0, 2.0))
+    })
+}
+
 struct GridCache {
     slots: Vec<GridState>,
     next_replacement: usize,
@@ -624,7 +636,7 @@ impl OceanFft {
             axis_u: [u[0] as f32, u[1] as f32, u[2] as f32, 0.0],
             axis_v: [v[0] as f32, v[1] as f32, v[2] as f32, 0.0],
             cascade,
-            gain: [gain, 0.0, 0.0, 0.0],
+            gain: [gain, choppiness(), 0.0, 0.0],
         };
         queue.write_buffer(&self.view_params, 0, bytemuck::bytes_of(&params));
     }
