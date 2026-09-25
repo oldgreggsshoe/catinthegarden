@@ -97,21 +97,72 @@ fn tone_map(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     return vec4<f32>(aces_filmic(hdr_color * exposure.exposure), 1.0);
 }
 
+// FXAA-style edge-aware anti-aliasing (replaces the old box blur). Edges are
+// found on tone-compressed luma so bright HDR values cannot dominate, and the
+// blend toward the neighbour across the edge is luma-weighted so a bright
+// pixel does not swamp a dark one. Flat areas and fine texture pass through.
+fn aa_luma(color: vec3<f32>) -> f32 {
+    let luma = dot(color, vec3<f32>(0.299, 0.587, 0.114));
+    return luma / (1.0 + luma);
+}
+
+fn aa_load(pixel: vec2<i32>, size: vec2<i32>) -> vec3<f32> {
+    return textureLoad(source_texture, clamp(pixel, vec2<i32>(0), size - vec2<i32>(1)), 0).rgb;
+}
+
 @fragment
 fn blur_scene(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let pixel = vec2<i32>(position.xy);
     let size = vec2<i32>(textureDimensions(source_texture));
-    var color = vec3<f32>(0.0);
-    var weight = 0.0;
-    for (var y = -2; y <= 2; y += 1) {
-        for (var x = -2; x <= 2; x += 1) {
-            let offset = vec2<i32>(x, y);
-            let sample_weight = select(1.0, 2.0, x == 0 || y == 0);
-            color += textureLoad(source_texture, clamp(pixel + offset, vec2<i32>(0), size - vec2<i32>(1)), 0).rgb * sample_weight;
-            weight += sample_weight;
-        }
+    let rgb_m = aa_load(pixel, size);
+    let rgb_n = aa_load(pixel + vec2<i32>(0, -1), size);
+    let rgb_s = aa_load(pixel + vec2<i32>(0, 1), size);
+    let rgb_w = aa_load(pixel + vec2<i32>(-1, 0), size);
+    let rgb_e = aa_load(pixel + vec2<i32>(1, 0), size);
+    let luma_m = aa_luma(rgb_m);
+    let luma_n = aa_luma(rgb_n);
+    let luma_s = aa_luma(rgb_s);
+    let luma_w = aa_luma(rgb_w);
+    let luma_e = aa_luma(rgb_e);
+    let luma_min = min(luma_m, min(min(luma_n, luma_s), min(luma_w, luma_e)));
+    let luma_max = max(luma_m, max(max(luma_n, luma_s), max(luma_w, luma_e)));
+    let range = luma_max - luma_min;
+    if range < max(0.0312, luma_max * 0.125) {
+        return vec4<f32>(rgb_m, 1.0);
     }
-    return vec4<f32>(color / weight, 1.0);
+    let luma_nw = aa_luma(aa_load(pixel + vec2<i32>(-1, -1), size));
+    let luma_ne = aa_luma(aa_load(pixel + vec2<i32>(1, -1), size));
+    let luma_sw = aa_luma(aa_load(pixel + vec2<i32>(-1, 1), size));
+    let luma_se = aa_luma(aa_load(pixel + vec2<i32>(1, 1), size));
+    let edge_horizontal = abs(luma_nw + luma_sw - 2.0 * luma_w)
+        + 2.0 * abs(luma_n + luma_s - 2.0 * luma_m)
+        + abs(luma_ne + luma_se - 2.0 * luma_e);
+    let edge_vertical = abs(luma_nw + luma_ne - 2.0 * luma_n)
+        + 2.0 * abs(luma_w + luma_e - 2.0 * luma_m)
+        + abs(luma_sw + luma_se - 2.0 * luma_s);
+    let horizontal = edge_horizontal >= edge_vertical;
+    // Neighbour across the edge with the steeper gradient.
+    var toward = rgb_w;
+    var luma_toward = luma_w;
+    var away_luma = luma_e;
+    var away = rgb_e;
+    if horizontal {
+        toward = rgb_n;
+        luma_toward = luma_n;
+        away = rgb_s;
+        away_luma = luma_s;
+    }
+    if abs(away_luma - luma_m) > abs(luma_toward - luma_m) {
+        toward = away;
+    }
+    // Sub-pixel aliasing (isolated bright or dark pixels) gets a stronger blend.
+    let luma_average = (luma_n + luma_s + luma_w + luma_e) * 0.25;
+    var subpixel = clamp(abs(luma_average - luma_m) / range, 0.0, 1.0);
+    subpixel = smoothstep(0.0, 1.0, subpixel);
+    let weight = clamp(0.5 + 0.25 * subpixel * subpixel, 0.0, 0.75);
+    let weight_m = (1.0 - weight) / (1.0 + dot(rgb_m, vec3<f32>(0.299, 0.587, 0.114)));
+    let weight_t = weight / (1.0 + dot(toward, vec3<f32>(0.299, 0.587, 0.114)));
+    return vec4<f32>((rgb_m * weight_m + toward * weight_t) / (weight_m + weight_t), 1.0);
 }
 
 @fragment

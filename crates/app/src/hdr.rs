@@ -355,7 +355,11 @@ impl HdrRenderer {
             average_luminance: EXPOSURE_KEY,
             target_exposure: 1.0,
             exposure: 1.0,
-            blur_enabled: BLUR_ENABLED,
+            blur_enabled: BLUR_ENABLED
+                || matches!(
+                    std::env::var("CATINGARDEN_AA").ok().as_deref().map(str::trim),
+                    Some("1" | "true" | "on")
+                ),
             bloom_enabled: BLOOM_ENABLED,
             hdr_effect_enabled: HDR_EFFECT_ENABLED,
             auto_exposure_enabled: AUTO_EXPOSURE_ENABLED,

@@ -3593,7 +3593,7 @@ impl State {
                             },
                         ));
                         ui.label(format!(
-                            "Post: blur {}  |  bloom {}  |  HDR curve {}",
+                            "Post: AA {}  |  bloom {}  |  HDR curve {}",
                             if blur_enabled { "on" } else { "off" },
                             if bloom_enabled { "on" } else { "off" },
                             if hdr_effect_enabled { "on" } else { "off" },
@@ -3635,7 +3635,7 @@ impl State {
                         ui.label(format!("Bird watch: {bird_watch}"));
                         ui.label(format!("Villages: {village_beams}"));
                         ui.label(
-                            "F: fullscreen  |  F3: overlay  |  , / .: time speed  |  F4: orbit/flight  |  G: surface camera  |  WASD: move  |  Space: jump/swim thrust  |  [ / ]: speed  |  F5: render path  |  O: triangle outlines  |  B: ride a bird  |  N: watch birds that are down  |  M: track the nearest flock from here  |  V: village beams  |  F6: blur  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
+                            "F: fullscreen  |  F3: overlay  |  , / .: time speed  |  F4: orbit/flight  |  G: surface camera  |  WASD: move  |  Space: jump/swim thrust  |  [ / ]: speed  |  F5: render path  |  O: triangle outlines  |  B: ride a bird  |  N: watch birds that are down  |  M: track the nearest flock from here  |  V: village beams  |  F6: anti-aliasing  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
                         );
                         ui.label("Default: fullscreen, HUD hidden, auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc/Q: quit");
                     });
