@@ -29,6 +29,7 @@ mod ship_render;
 mod stars;
 mod sun;
 mod surface_camera;
+mod sky_moon;
 mod system_flight;
 mod terrain;
 mod village;
@@ -1114,6 +1115,8 @@ struct SpatialLogInputs {
 
 struct State {
     system_flight: Option<system_flight::SystemFlight>,
+    /// The moon drawn in the sky during ordinary play; see `sky_moon`.
+    sky_moon: Option<sky_moon::SkyMoon>,
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -1592,6 +1595,7 @@ impl State {
 
         let mut state = Self {
             system_flight: None,
+            sky_moon: None,
             surface,
             device,
             queue,
@@ -1743,6 +1747,11 @@ impl State {
                 &mut state,
                 &camera_bind_group_layout,
             ));
+        } else if sky_moon::enabled(state.scenario.is_some())
+            && body::active() == body::PLANET
+            && state.render_path == RenderPath::Raster
+        {
+            state.sky_moon = sky_moon::SkyMoon::new(&mut state, &camera_bind_group_layout);
         }
         state
     }
@@ -4338,6 +4347,22 @@ impl State {
             f32::from(camera_sea_level_altitude_meters < camera_surface_height_meters);
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
+        if let Some(mut moon) = self.sky_moon.take() {
+            let active = !solid_color_screen
+                && self.render_path == RenderPath::Raster
+                && subsystem_enabled("moon");
+            moon.prepare(
+                self,
+                &camera_uniform,
+                camera_planet_frame_position,
+                camera_planet_frame_direction,
+                camera_planet_frame_up,
+                planet_rotation_radians,
+                presentation_time,
+                active,
+            );
+            self.sky_moon = Some(moon);
+        }
         self.stars.update(
             &self.queue,
             [self.size.width, self.size.height],
@@ -4631,6 +4656,9 @@ impl State {
             self.atmosphere
                 .update(&mut encoder, &self.camera_bind_group);
         }
+        if let Some(moon) = &mut self.sky_moon {
+            moon.encode(&mut encoder, self.weather_clouds.field_bind_group());
+        }
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("cube-sphere pass"),
@@ -4695,6 +4723,11 @@ impl State {
                 // background, and skipping it leaves the cleared buffer showing
                 // as grey daylight where space should be. What changes is what
                 // it computes -- `BODY_HAS_ATMOSPHERE` makes it vacuum.
+                // The moon writes its depth here, so the sky below leaves it
+                // alone; stars, clouds and the sun disc depth-test against it.
+                if let Some(moon) = &self.sky_moon {
+                    moon.draw_composite(&mut render_pass, &self.camera_bind_group);
+                }
                 if subsystem_enabled("sky") {
                     self.atmosphere
                         .draw(&mut render_pass, &self.camera_bind_group);

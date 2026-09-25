@@ -512,7 +512,7 @@ impl SystemFlight {
 // L0 already has 32 segments per cube-face edge. At a <=100px projected
 // radius its smooth-sphere chord error is <0.13px. Preserve the ordinary
 // adaptive path once a body is large enough to resolve terrain geometry.
-fn distant_level(radius: f64, distance: f64, height: u32, fov: f64) -> Option<u8> {
+pub(super) fn distant_level(radius: f64, distance: f64, height: u32, fov: f64) -> Option<u8> {
     if distance <= radius {
         return None;
     }
@@ -554,7 +554,7 @@ fn camera_uniform(
     uniform
 }
 
-fn scene_pass<'a>(
+pub(super) fn scene_pass<'a>(
     encoder: &'a mut wgpu::CommandEncoder,
     colour: &'a wgpu::TextureView,
     depth: &'a wgpu::TextureView,
@@ -593,15 +593,25 @@ fn scene_pass<'a>(
     })
 }
 
-struct Composite {
-    colour: wgpu::TextureView,
-    depth: wgpu::TextureView,
+pub(super) struct Composite {
+    pub(super) colour: wgpu::TextureView,
+    pub(super) depth: wgpu::TextureView,
     pipeline: wgpu::RenderPipeline,
     sky_group: wgpu::BindGroup,
     inputs: wgpu::BindGroup,
 }
 impl Composite {
-    fn new(state: &State, camera_layout: &wgpu::BindGroupLayout) -> Self {
+    /// Adds the offscreen body to the scene through the planet atmosphere,
+    /// writing its depth. Needs the planet camera at group 0.
+    pub(super) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, camera_bind_group: &wgpu::BindGroup) {
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, camera_bind_group, &[]);
+        pass.set_bind_group(1, &self.sky_group, &[]);
+        pass.set_bind_group(2, &self.inputs, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
+    pub(super) fn new(state: &State, camera_layout: &wgpu::BindGroupLayout) -> Self {
         let device = &state.device;
         let texture = |format| {
             device

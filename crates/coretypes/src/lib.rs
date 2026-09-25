@@ -387,8 +387,16 @@ impl OutmapManifest {
         if self.channels.len() != 3 {
             return Err("manifest must describe exactly three terrain channels".to_owned());
         }
-        if self.biomes.len() != BiomeId::ALL.len() {
+        // Biome ids are only ever appended, so an older bake's table is a
+        // prefix of today's and its tiles cannot hold an id it never had. The
+        // moon bake predates the glacier ids and must keep loading. A table
+        // that disagrees entry by entry, or is longer than `BiomeId::ALL`,
+        // is still rejected.
+        if self.biomes.is_empty() {
             return Err("manifest biome table is incomplete".to_owned());
+        }
+        if self.biomes.len() > BiomeId::ALL.len() {
+            return Err("manifest biome table has biomes this build does not know".to_owned());
         }
         for (entry, biome) in self.biomes.iter().zip(BiomeId::ALL) {
             if entry.id != biome as u8 || entry.name != biome.name() || entry.color != biome.color()
@@ -587,6 +595,24 @@ mod tests {
             available_tiles,
         };
         manifest.validate().unwrap();
+        // An older bake's table is a prefix of today's: accepted.
+        let mut older = manifest.clone();
+        older.biomes.truncate(10);
+        older.validate().unwrap();
+        // One disagreeing entry, or an unknown extra biome: rejected.
+        let mut wrong = manifest.clone();
+        wrong.biomes[3].name = "swamp".to_owned();
+        assert!(wrong.validate().is_err());
+        let mut longer = manifest.clone();
+        longer.biomes.push(BiomeManifestEntry {
+            id: BiomeId::ALL.len() as u8,
+            name: "future".to_owned(),
+            color: [0, 0, 0],
+        });
+        assert!(longer.validate().is_err());
+        let mut empty = manifest.clone();
+        empty.biomes.clear();
+        assert!(empty.validate().is_err());
         let missing_grandchild = TileKey {
             face: CubeFace::PositiveX,
             level: 2,

@@ -321,7 +321,9 @@ fn validate_reader_manifest(manifest: &OutmapManifest) -> Result<(), String> {
         return Err("terrain channels must use distinct file names".to_owned());
     }
 
-    for biome in BiomeId::ALL {
+    // An older bake's table is a prefix of today's (ids are only appended):
+    // check the ids it has, and let the newer ones be absent.
+    for biome in BiomeId::ALL.into_iter().take(manifest.biomes.len()) {
         let entry = manifest
             .biomes
             .iter()
