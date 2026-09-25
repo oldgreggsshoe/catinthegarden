@@ -592,8 +592,11 @@ fn planetshine_irradiance(
     }
     let facing = max(dot(normal, planet), 0.0);
     let lit_fraction = clamp(0.5 * (1.0 - dot(planet, sun_direction)), 0.0, 1.0);
+    // camera_up.w: extra gain for the moon seen in the planet's sky
+    // (sky_moon.rs); zero when standing on the moon.
+    let gain = 1.0 + max(camera.camera_up.w, 0.0);
     return MOON_PLANETSHINE_COLOUR
-        * (MOON_PLANETSHINE_FRACTION * risen * facing * lit_fraction);
+        * (MOON_PLANETSHINE_FRACTION * gain * risen * facing * lit_fraction);
 }
 
 fn airless_regolith(biome_id: u32) -> bool {

@@ -7,15 +7,28 @@
 //! atmosphere (in-scatter in front, extinction through the air column) and
 //! written into scene depth so terrain, clouds and the sun occlude correctly.
 //!
-//! The moon is fixed in inertial space at the replay's 40,000km centre
-//! distance, so it rises and sets as the planet turns and shows a phase set by
-//! the sun. It is placed on the first rendered frame relative to that view.
-//! No orbit, earthshine or lunar eclipse yet.
+//! The moon orbits at the replay's 40,000km centre distance with the Kepler
+//! period for this planet's gravity (GM = g R^2): about 35 real hours, which
+//! at the game's 80-minute day is 26.5 days, close to Earth's month. The orbit
+//! runs on the planet-rotation clock, so time speed and F10 apply. It is
+//! tidally locked, turned so the direction the moon shader already lights
+//! with planetshine (`MOON_PLANET_SKY_DIRECTION`) faces the planet: earthshine
+//! on the dark side then follows the planet's phase as seen from the moon,
+//! strongest on a crescent. It starts on the first rendered frame near that
+//! view. No lunar or solar eclipse shadowing yet.
 use super::*;
 use glam::{DQuat, DVec3};
 
 /// Centre distance, matching the `planet_to_moon` replay.
 const MOON_DISTANCE_METERS: f64 = 40_000_000.0;
+/// Earthshine seen from the planet. The moon shader's planetshine (a fixed
+/// fraction with its own visibility boost, tuned for standing on the moon)
+/// comes to ~0.1% of a sunlit crescent here; the physical figure for this
+/// geometry (planet albedo 0.3, planet radius / distance 0.1) is ~0.3%. At
+/// the game's fixed night exposure either is black, so this lifts it to
+/// ~0.6%: the dark limb is just visible on a dark night, as to an adapted
+/// eye. Moonlight on the planet itself is not modelled.
+const SKY_EARTHSHINE_EXTRA_GAIN: f32 = 5.0;
 /// Where the moon is placed on the first frame: this far above the horizon.
 const PLACEMENT_ELEVATION_DEGREES: f64 = 20.0;
 
@@ -37,8 +50,7 @@ pub(super) struct SkyMoon {
     camera_layout: wgpu::BindGroupLayout,
     composite: system_flight::Composite,
     size: winit::dpi::PhysicalSize<u32>,
-    /// World (inertial) frame: centre and body orientation.
-    placement: Option<(DVec3, DQuat)>,
+    orbit: Option<Orbit>,
     visible: bool,
     was_visible: bool,
     sky_lut_ready: bool,
@@ -106,7 +118,7 @@ impl SkyMoon {
             camera_layout: camera_layout.clone(),
             composite,
             size: state.size,
-            placement: None,
+            orbit: None,
             visible: false,
             was_visible: false,
             sky_lut_ready: false,
@@ -124,6 +136,7 @@ impl SkyMoon {
         forward_local: DVec3,
         up_local: DVec3,
         planet_rotation_radians: f64,
+        planet_rotation_time: f64,
         presentation_time: f64,
         active: bool,
     ) {
@@ -136,19 +149,25 @@ impl SkyMoon {
             self.size = state.size;
         }
         let sun_local = planet::planet_local_vector(state.sun_direction, planet_rotation_radians);
-        let (origin_world, rotation_world) = *self.placement.get_or_insert_with(|| {
-            let placement = place(&self.terrain, camera_local, forward_local, sun_local);
-            let origin_world = planet::planet_world_vector(placement.0, planet_rotation_radians);
-            let rotation_world =
-                DQuat::from_rotation_y(planet_rotation_radians) * placement.1;
+        let orbit_angle = orbit_angle_radians(planet_rotation_time);
+        let orbit = *self.orbit.get_or_insert_with(|| {
+            let (position, rotation) = place(camera_local, forward_local, sun_local);
+            let orbit = Orbit::new(
+                planet::planet_world_vector(position, planet_rotation_radians),
+                DQuat::from_rotation_y(planet_rotation_radians) * rotation,
+                orbit_angle,
+            );
             tracing::info!(
                 target: "catinthegarden::startup",
-                moon_direction = ?origin_world.normalize().to_array(),
-                lit_fraction = lit_fraction(placement.0, camera_local, sun_local),
+                moon_direction = ?orbit.start_position.normalize().to_array(),
+                inclination_degrees = orbit.normal.dot(DVec3::Y).clamp(-1.0, 1.0).acos().to_degrees(),
+                period_days = orbital_period_days(),
+                lit_fraction = lit_fraction(position, camera_local, sun_local),
                 "sky moon placed"
             );
-            (origin_world, rotation_world)
+            orbit
         });
+        let (origin_world, rotation_world) = orbit.at(orbit_angle);
         let origin = planet::planet_local_vector(origin_world, planet_rotation_radians);
         let rotation = DQuat::from_rotation_y(-planet_rotation_radians) * rotation_world;
         let to_body = |world: DVec3| rotation.conjugate() * world;
@@ -216,6 +235,9 @@ impl SkyMoon {
         );
         uniform.sun_direction = xyzw(to_body(sun_local).normalize(), 0.0);
         uniform.flat_triangle_options = [planet_uniform.flat_triangle_options[0], 0.0, 0.0, 0.0];
+        // Spare lane read by `planetshine_irradiance` on the moon: extra gain
+        // on earthshine for the view from the planet (0 = the moon's own).
+        uniform.camera_up[3] = SKY_EARTHSHINE_EXTRA_GAIN;
         state
             .queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -258,6 +280,56 @@ impl SkyMoon {
     }
 }
 
+/// Circular orbit in the planet's world (inertial) frame, prograde, in the
+/// least-inclined plane through the starting position. The body turns with
+/// the orbit, so the same face keeps looking at the planet.
+#[derive(Clone, Copy)]
+struct Orbit {
+    start_position: DVec3,
+    start_rotation: DQuat,
+    normal: DVec3,
+    start_angle: f64,
+}
+
+impl Orbit {
+    fn new(start_position: DVec3, start_rotation: DQuat, start_angle: f64) -> Self {
+        let radial = start_position.normalize();
+        let normal = DVec3::Y - radial * DVec3::Y.dot(radial);
+        let normal = if normal.length_squared() > 1.0e-12 {
+            normal.normalize()
+        } else {
+            radial.any_orthonormal_vector()
+        };
+        Self { start_position, start_rotation, normal, start_angle }
+    }
+
+    fn at(self, angle: f64) -> (DVec3, DQuat) {
+        let turn = DQuat::from_axis_angle(self.normal, angle - self.start_angle);
+        (turn * self.start_position, turn * self.start_rotation)
+    }
+}
+
+/// Circular-orbit period (real seconds) at `MOON_DISTANCE_METERS` for the
+/// planet's surface gravity.
+fn orbital_period_seconds() -> f64 {
+    let gm = crate::surface_camera::GRAVITY_METERS_PER_SECOND_SQUARED
+        * body::PLANET.radius_meters
+        * body::PLANET.radius_meters;
+    std::f64::consts::TAU * (MOON_DISTANCE_METERS.powi(3) / gm).sqrt()
+}
+
+/// The period in planet rotations: physics runs in real seconds, and at 100%
+/// time speed the planet turns once per `INTERACTIVE_DAY_REAL_SECONDS`.
+fn orbital_period_days() -> f64 {
+    orbital_period_seconds() / INTERACTIVE_DAY_REAL_SECONDS
+}
+
+/// Orbital phase on the planet-rotation clock.
+fn orbit_angle_radians(planet_rotation_time: f64) -> f64 {
+    let days = planet_rotation_time / planet::PLANET_ROTATION_PERIOD_SECONDS;
+    std::f64::consts::TAU * days / orbital_period_days()
+}
+
 /// Fraction of the visible disc that is sunlit, seen from the camera.
 fn lit_fraction(moon: DVec3, camera: DVec3, sun: DVec3) -> f64 {
     let to_camera = (camera - moon).normalize();
@@ -266,9 +338,9 @@ fn lit_fraction(moon: DVec3, camera: DVec3, sun: DVec3) -> f64 {
 
 /// Chooses a first-frame position `PLACEMENT_ELEVATION_DEGREES` above the
 /// horizon near the view direction, preferring the best-lit of a few
-/// azimuths that stay in view, and turns the moon's preferred landing site toward the planet.
+/// azimuths that stay in view, and turns the moon so the planet stands where
+/// its shader expects it (`MOON_PLANET_SKY_DIRECTION`).
 fn place(
-    terrain: &terrain::TerrainRenderer,
     camera: DVec3,
     forward: DVec3,
     sun: DVec3,
@@ -293,7 +365,7 @@ fn place(
         })
         .max_by(|a, b| lit_fraction(*a, camera, sun).total_cmp(&lit_fraction(*b, camera, sun)))
         .expect("candidates");
-    let facing = terrain.preferred_landing_direction().unwrap_or(DVec3::X).normalize();
+    let facing = DVec3::from_array(catinthegarden_coretypes::moon::MOON_PLANET_SKY_DIRECTION).normalize();
     let rotation = DQuat::from_rotation_arc(facing, -best.normalize());
     (best, rotation)
 }
@@ -309,6 +381,36 @@ mod tests {
             assert!(enabled(false));
             assert!(!enabled(true));
         }
+    }
+
+    #[test]
+    fn orbit_period_is_keplerian_and_about_a_month_of_game_days() {
+        let hours = orbital_period_seconds() / 3600.0;
+        assert!((34.0..37.0).contains(&hours), "{hours}");
+        let days = orbital_period_days();
+        assert!((25.0..28.0).contains(&days), "{days}");
+        // One period brings it back.
+        let orbit = Orbit::new(DVec3::new(3.0e7, 2.0e7, 1.0e7), DQuat::IDENTITY, 0.0);
+        let (back, _) = orbit.at(std::f64::consts::TAU);
+        assert!(back.distance(orbit.start_position) < 1.0e-3);
+    }
+
+    #[test]
+    fn the_orbit_is_prograde_keeps_distance_and_stays_tidally_locked() {
+        let start = DVec3::new(2.0e7, 1.5e7, -3.0e7).normalize() * MOON_DISTANCE_METERS;
+        let facing = DVec3::from_array(catinthegarden_coretypes::moon::MOON_PLANET_SKY_DIRECTION).normalize();
+        let rotation = DQuat::from_rotation_arc(facing, -start.normalize());
+        let orbit = Orbit::new(start, rotation, 1.0);
+        for angle in [1.3, 2.7, 4.0, 6.5] {
+            let (position, rotation) = orbit.at(angle);
+            assert!((position.length() - MOON_DISTANCE_METERS).abs() < 1.0);
+            // The planet stays where the moon shader expects it.
+            let planet_in_body = (rotation.conjugate() * -position).normalize();
+            assert!(planet_in_body.distance(facing) < 1.0e-9);
+        }
+        // Prograde: angular momentum along the spin axis, like the planet.
+        let (ahead, _) = orbit.at(1.01);
+        assert!(start.cross(ahead - start).dot(DVec3::Y) > 0.0);
     }
 
     #[test]

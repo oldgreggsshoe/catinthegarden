@@ -4358,6 +4358,7 @@ impl State {
                 camera_planet_frame_direction,
                 camera_planet_frame_up,
                 planet_rotation_radians,
+                planet_rotation_time,
                 presentation_time,
                 active,
             );
