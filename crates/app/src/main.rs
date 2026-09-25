@@ -4621,6 +4621,11 @@ impl State {
                 ),
                 ocean_time_seconds as f32,
             );
+            self.terrain.update_ocean_spray(
+                &mut encoder,
+                camera_direction,
+                ocean_time_seconds as f32,
+            );
         }
         if !solid_color_screen {
             self.atmosphere
@@ -4749,6 +4754,10 @@ impl State {
             if subsystem_enabled("ocean") {
                 self.terrain
                     .draw_transmitting_ocean(&mut pass, &self.camera_bind_group);
+                // Translucent spray over the finished water, depth-tested
+                // against it and the hull.
+                self.terrain
+                    .draw_ocean_spray(&mut pass, &self.camera_bind_group);
             }
         }
         if !solid_color_screen && use_foveated_warp {

@@ -11,7 +11,8 @@ struct FoamFrame {
     current_center: vec4<f32>,
     current_east: vec4<f32>,
     current_north: vec4<f32>,
-    // x: elapsed seconds, y: whether the previous atlas is valid.
+    // x: elapsed seconds, y: whether the previous atlas is valid, zw: unit
+    // wind direction in the FFT (u, v) axes (FFT mode).
     timing: vec4<f32>,
 }
 @group(1) @binding(3) var<uniform> foam_frame: FoamFrame;
@@ -33,6 +34,9 @@ fn foam_fft_jacobian(cascade_index: u32, local: vec2<f32>, width: f32) -> vec4<f
     return vec4<f32>(su.y - s0.y, sv.z - s0.z, sv.y - s0.y, su.z - s0.z) / (entry.z * texel);
 }
 
+// Wind-driven surface drift of FFT fold foam: it slides downwind and smears
+// along the wind into streaks.
+const FOAM_FFT_DRIFT_METERS_PER_SECOND: f32 = 0.8;
 // Seconds for FFT fold foam to fade to 1/e once its crest has passed.
 const FOAM_FFT_DECAY_SECONDS: f32 = 2.5;
 const FOAM_FFT_ATLAS_JACOBIAN_ONSET: f32 = 0.66;
@@ -63,8 +67,15 @@ fn cs_foam(@builtin(global_invocation_id) id: vec3<u32>) {
 
     var retained = 0.0;
     if foam_frame.timing.y > 0.5 {
+        let wind_world = foam_fft_view.axis_u.xyz * foam_frame.timing.z
+            + foam_fft_view.axis_v.xyz * foam_frame.timing.w;
+        let drift = select(
+            vec3<f32>(0.0),
+            wind_world * (FOAM_FFT_DRIFT_METERS_PER_SECOND * min(foam_frame.timing.x, 1.0)),
+            OCEAN_FFT_ENABLED,
+        );
         let from_previous = (direction - foam_frame.previous_center.xyz)
-            * PLANET_RADIUS_METERS;
+            * PLANET_RADIUS_METERS - drift;
         let old_uv = vec2<f32>(
             dot(from_previous, foam_frame.previous_east.xyz),
             dot(from_previous, foam_frame.previous_north.xyz),
@@ -73,13 +84,20 @@ fn cs_foam(@builtin(global_invocation_id) id: vec3<u32>) {
             let decay_seconds = select(1.5, FOAM_FFT_DECAY_SECONDS, OCEAN_FFT_ENABLED);
             var previous = textureSampleLevel(previous_foam, foam_sampler, old_uv, 0.0).r;
             if OCEAN_FFT_ENABLED {
-                // Small feedback blur: foam spreads a little as it ages.
+                // Small feedback blur, stretched along the wind: foam spreads
+                // as it ages, mostly downwind and upwind, into streaks.
                 let step = 1.0 / vec2<f32>(dimensions);
-                let spread = textureSampleLevel(previous_foam, foam_sampler, old_uv + vec2<f32>(step.x, 0.0), 0.0).r
-                    + textureSampleLevel(previous_foam, foam_sampler, old_uv - vec2<f32>(step.x, 0.0), 0.0).r
-                    + textureSampleLevel(previous_foam, foam_sampler, old_uv + vec2<f32>(0.0, step.y), 0.0).r
-                    + textureSampleLevel(previous_foam, foam_sampler, old_uv - vec2<f32>(0.0, step.y), 0.0).r;
-                let blur = mix(previous, spread * 0.25, 1.0 - exp(-min(foam_frame.timing.x, 1.0) / 0.5));
+                var along = vec2<f32>(
+                    dot(wind_world, foam_frame.previous_east.xyz),
+                    dot(wind_world, foam_frame.previous_north.xyz),
+                );
+                along = select(vec2<f32>(1.0, 0.0), normalize(along), dot(along, along) > 1.0e-6);
+                let across = vec2<f32>(-along.y, along.x);
+                let spread = 0.35 * (textureSampleLevel(previous_foam, foam_sampler, old_uv + along * step, 0.0).r
+                    + textureSampleLevel(previous_foam, foam_sampler, old_uv - along * step, 0.0).r)
+                    + 0.15 * (textureSampleLevel(previous_foam, foam_sampler, old_uv + across * step, 0.0).r
+                    + textureSampleLevel(previous_foam, foam_sampler, old_uv - across * step, 0.0).r);
+                let blur = mix(previous, spread, 1.0 - exp(-min(foam_frame.timing.x, 1.0) / 0.5));
                 previous = blur;
             }
             retained = previous * exp(-min(foam_frame.timing.x, 10.0) / decay_seconds);

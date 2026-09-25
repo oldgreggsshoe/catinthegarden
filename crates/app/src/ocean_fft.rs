@@ -173,8 +173,11 @@ pub fn wind_speed_from_environment() -> f32 {
         .unwrap_or(14.0)
 }
 
+/// Wind direction of the FFT spectrum in the tangent-plane (u, v) axes.
+pub const WIND_DIRECTION: [f32; 2] = [1.0, 0.3];
+
 pub fn default_h0() -> Vec<[f32; 4]> {
-    generate_h0(1, wind_speed_from_environment(), [1.0, 0.3], 80_000.0)
+    generate_h0(1, wind_speed_from_environment(), WIND_DIRECTION, 80_000.0)
 }
 
 static ANCHOR: std::sync::OnceLock<([f64; 3], [f64; 3])> = std::sync::OnceLock::new();

@@ -275,7 +275,10 @@ impl OceanFoamHistory {
             current_center: [basis.0[0], basis.0[1], basis.0[2], 0.0],
             current_east: [basis.1[0], basis.1[1], basis.1[2], 0.0],
             current_north: [basis.2[0], basis.2[1], basis.2[2], 0.0],
-            timing: [elapsed, f32::from(valid_previous), 0.0, 0.0],
+            timing: {
+                let wind = super::ocean_spray::wind_direction_uv();
+                [elapsed, f32::from(valid_previous), wind[0], wind[1]]
+            },
         };
         queue.write_buffer(&self._uniform, 0, bytemuck::bytes_of(&frame));
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {

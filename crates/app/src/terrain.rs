@@ -20,6 +20,8 @@ use wgpu::util::DeviceExt;
 
 #[path = "ocean_foam.rs"]
 mod ocean_foam;
+#[path = "ocean_spray.rs"]
+mod ocean_spray;
 
 use crate::{
     outmap::{Outmap, OutmapError, TileData},
@@ -872,6 +874,7 @@ pub struct TerrainRenderer {
     shared_bind_groups: [wgpu::BindGroup; 2],
     foam_history: ocean_foam::OceanFoamHistory,
     foam_history_enabled: bool,
+    ocean_spray: Option<ocean_spray::OceanSpray>,
     ocean_fft: crate::ocean_fft::OceanFft,
     ocean_fft_enabled: bool,
     _terrain_settings_buffer: wgpu::Buffer,
@@ -1239,6 +1242,15 @@ impl TerrainRenderer {
             camera_bind_group_layout,
             &ocean_fft,
         );
+        let ocean_spray = ocean_spray::spray_enabled().then(|| {
+            ocean_spray::OceanSpray::new(
+                device,
+                camera_bind_group_layout,
+                &shared_bind_group_layout,
+                &ocean_fft,
+                surface_format,
+            )
+        });
         let shared_bind_groups = std::array::from_fn(|index| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("shared planet bind group"),
@@ -1365,6 +1377,7 @@ impl TerrainRenderer {
             shared_bind_groups,
             foam_history,
             foam_history_enabled: crate::planet::ocean_foam_history_enabled(),
+            ocean_spray,
             ocean_fft,
             ocean_fft_enabled,
             _terrain_settings_buffer: terrain_settings_buffer,
@@ -1486,6 +1499,30 @@ impl TerrainRenderer {
             right,
             ocean_time_seconds,
         );
+    }
+
+    /// Advances the wind-blown spray; after `update_ocean_fft`.
+    pub fn update_ocean_spray(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        camera_direction: DVec3,
+        ocean_time_seconds: f32,
+    ) {
+        if let Some(spray) = &mut self.ocean_spray {
+            let storm = crate::ocean::sea_state_at(f64::from(ocean_time_seconds)).intensity;
+            spray.update(&self.queue, encoder, camera_direction, ocean_time_seconds, storm);
+        }
+    }
+
+    /// Draws the spray; after the ocean and everything opaque.
+    pub fn draw_ocean_spray(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        camera_bind_group: &wgpu::BindGroup,
+    ) {
+        if let Some(spray) = &self.ocean_spray {
+            spray.draw(render_pass, camera_bind_group, self.shared_bind_group());
+        }
     }
 
     pub fn update_ocean_fft(
