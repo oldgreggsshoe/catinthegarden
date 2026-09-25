@@ -103,10 +103,25 @@ struct Params {
     tile: [[f32; 4]; CASCADES],
 }
 
+/// Uniform read by the ocean shaders: fixed tangent-plane axes plus, per
+/// cascade, the camera's fractional tile coordinates (u, v), tile length and 0.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ViewParams {
+    pub axis_u: [f32; 4],
+    pub axis_v: [f32; 4],
+    pub cascade: [[f32; 4]; CASCADES],
+    pub gain: [f32; 4],
+}
+
 pub struct OceanFft {
     params: wgpu::Buffer,
     h0: wgpu::Buffer,
-    pub field: wgpu::Buffer,
+    pub field: wgpu::Texture,
+    pub field_view: wgpu::TextureView,
+    pub sampler: wgpu::Sampler,
+    pub view_params: wgpu::Buffer,
+    axes: std::cell::Cell<Option<([f64; 3], [f64; 3])>>,
     bind_group: wgpu::BindGroup,
     evolve: wgpu::ComputePipeline,
     rows: wgpu::ComputePipeline,
@@ -141,7 +156,14 @@ impl OceanFft {
                 ),
                 entry(1, storage(true)),
                 entry(2, storage(false)),
-                entry(3, storage(false)),
+                entry(
+                    3,
+                    wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                    },
+                ),
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -184,10 +206,38 @@ impl OceanFft {
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
-        let field = device.create_buffer(&wgpu::BufferDescriptor {
+        let field = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("ocean fft field"),
-            size: (CASCADES as u64) * cells * 16,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            size: wgpu::Extent3d {
+                width: GRID as u32,
+                height: GRID as u32,
+                depth_or_array_layers: CASCADES as u32,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let field_view = field.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("ocean fft sampler"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let view_params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ocean fft view params"),
+            size: size_of::<ViewParams>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -197,19 +247,58 @@ impl OceanFft {
                 wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: h0.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: spec.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: field.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&field.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() })) },
             ],
         });
         Self {
             params,
             h0,
             field,
+            field_view,
+            sampler,
+            view_params,
+            axes: std::cell::Cell::new(None),
             bind_group,
             evolve: pipeline("evolve"),
             rows: pipeline("fft_rows"),
             cols: pipeline("fft_cols"),
             assemble: pipeline("assemble"),
         }
+    }
+
+    /// Anchors the tangent plane at the first camera direction, then keeps it
+    /// fixed so the wave pattern never slides; only the camera's fractional
+    /// tile coordinates change per frame.
+    pub fn update_view(&self, queue: &wgpu::Queue, camera_direction: [f64; 3], radius_meters: f64, gain: f32) {
+        let (u, v) = self.axes.get().unwrap_or_else(|| {
+            let d = camera_direction;
+            let helper = if d[1].abs() < 0.9 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
+            let cross = |a: [f64; 3], b: [f64; 3]| {
+                [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+            };
+            let norm = |a: [f64; 3]| {
+                let l = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+                [a[0] / l, a[1] / l, a[2] / l]
+            };
+            let u = norm(cross(helper, d));
+            let v = cross(d, u);
+            self.axes.set(Some((u, v)));
+            (u, v)
+        });
+        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let (cu, cv) = (radius_meters * dot(u, camera_direction), radius_meters * dot(v, camera_direction));
+        let mut cascade = [[0.0f32; 4]; CASCADES];
+        for (c, entry) in cascade.iter_mut().enumerate() {
+            let length = TILE_METERS[c] as f64;
+            *entry = [(cu / length).rem_euclid(1.0) as f32, (cv / length).rem_euclid(1.0) as f32, TILE_METERS[c], 0.0];
+        }
+        let params = ViewParams {
+            axis_u: [u[0] as f32, u[1] as f32, u[2] as f32, 0.0],
+            axis_v: [v[0] as f32, v[1] as f32, v[2] as f32, 0.0],
+            cascade,
+            gain: [gain, 0.0, 0.0, 0.0],
+        };
+        queue.write_buffer(&self.view_params, 0, bytemuck::bytes_of(&params));
     }
 
     pub fn set_time(&self, queue: &wgpu::Queue, time: f32) {
@@ -271,8 +360,20 @@ mod tests {
             .unwrap();
     }
 
+    fn f16_to_f32(bits: u16) -> f32 {
+        let sign = if bits & 0x8000 != 0 { -1.0 } else { 1.0 };
+        let exp = ((bits >> 10) & 0x1f) as i32;
+        let frac = (bits & 0x3ff) as f32;
+        match exp {
+            0 => sign * frac * 2f32.powi(-24),
+            31 => sign * f32::INFINITY,
+            _ => sign * (1.0 + frac / 1024.0) * 2f32.powi(exp - 15),
+        }
+    }
+
     fn read_field(device: &wgpu::Device, queue: &wgpu::Queue, fft: &OceanFft) -> Vec<[f32; 4]> {
-        let bytes = fft.field.size();
+        let row = (GRID * 8) as u32;
+        let bytes = row as u64 * GRID as u64 * CASCADES as u64;
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("fft readback"),
             size: bytes,
@@ -280,14 +381,28 @@ mod tests {
             mapped_at_creation: false,
         });
         let mut encoder = device.create_command_encoder(&Default::default());
-        encoder.copy_buffer_to_buffer(&fft.field, 0, &readback, 0, bytes);
+        encoder.copy_texture_to_buffer(
+            fft.field.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: Some(GRID as u32),
+                },
+            },
+            fft.field.size(),
+        );
         queue.submit(Some(encoder.finish()));
         let (tx, rx) = std::sync::mpsc::channel();
         readback.slice(..).map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
         wait(device);
         rx.recv().unwrap().unwrap();
         let data = readback.slice(..).get_mapped_range();
-        bytemuck::cast_slice::<u8, [f32; 4]>(&data).to_vec()
+        bytemuck::cast_slice::<u8, u16>(&data)
+            .chunks(4)
+            .map(|t| [f16_to_f32(t[0]), f16_to_f32(t[1]), f16_to_f32(t[2]), f16_to_f32(t[3])])
+            .collect()
     }
 
     #[test]
@@ -328,7 +443,7 @@ mod tests {
             }
         }
         eprintln!("single-mode max error {max_err}");
-        assert!(max_err < 2e-4, "max error {max_err}");
+        assert!(max_err < 2e-3, "max error {max_err}");
     }
 
     #[test]

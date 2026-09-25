@@ -939,6 +939,7 @@ fn vs_ocean(input: VertexInput) -> OceanVertexOutput {
     let flat_local_planet_position = projected.anchor_relative_position;
     let flat_camera_relative_view_position = input.anchor_view_position
         + planet_to_view(flat_local_planet_position);
+    ocean_fft_view_position = flat_camera_relative_view_position;
     let surface = ocean_surface(
         projected.direction,
         camera.projection.z,
@@ -1653,6 +1654,7 @@ fn flat_triangle_colour(
 
 fn flat_ocean_colour(input: OceanVertexOutput, macro_height_meters: f32) -> vec4<f32> {
     let direction = normalize(input.surface_direction);
+    ocean_fft_view_position = input.camera_relative_view_position;
     let surface = ocean_surface(
         direction,
         camera.projection.z,
@@ -2189,6 +2191,7 @@ fn ocean_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
 // Evaluate the wave field once per pixel, shared by lighting and refraction.
 fn ocean_raster_surface(input: OceanVertexOutput, height: f32) -> OceanSurface {
     let direction = normalize(input.surface_direction);
+    ocean_fft_view_position = input.camera_relative_view_position;
     return ocean_surface(direction, camera.projection.z,
         length(input.camera_relative_view_position), max(-height, 0.0));
 }

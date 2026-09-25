@@ -872,6 +872,8 @@ pub struct TerrainRenderer {
     shared_bind_groups: [wgpu::BindGroup; 2],
     foam_history: ocean_foam::OceanFoamHistory,
     foam_history_enabled: bool,
+    ocean_fft: crate::ocean_fft::OceanFft,
+    ocean_fft_enabled: bool,
     _terrain_settings_buffer: wgpu::Buffer,
     _environment_cubemap: wgpu::Texture,
     _moon_marking_cubemap: wgpu::Texture,
@@ -1226,6 +1228,17 @@ impl TerrainRenderer {
             crate::moon_markings::create(device, queue);
         let foam_history =
             ocean_foam::OceanFoamHistory::new(device, queue, camera_bind_group_layout);
+        let ocean_fft_enabled = crate::planet::ocean_fft_enabled();
+        let ocean_fft_h0 = if ocean_fft_enabled {
+            let wind = std::env::var("CATINGARDEN_OCEAN_FFT_WIND")
+                .ok()
+                .and_then(|value| value.trim().parse::<f32>().ok())
+                .unwrap_or(14.0);
+            crate::ocean_fft::generate_h0(1, wind, [1.0, 0.3], 80_000.0)
+        } else {
+            vec![[0.0; 4]; crate::ocean_fft::CASCADES * crate::ocean_fft::GRID * crate::ocean_fft::GRID]
+        };
+        let ocean_fft = crate::ocean_fft::OceanFft::new(device, &ocean_fft_h0);
         let shared_bind_groups = std::array::from_fn(|index| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("shared planet bind group"),
@@ -1282,6 +1295,18 @@ impl TerrainRenderer {
                     wgpu::BindGroupEntry {
                         binding: 15,
                         resource: wgpu::BindingResource::TextureView(foam_history.view(index)),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 16,
+                        resource: wgpu::BindingResource::TextureView(&ocean_fft.field_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 17,
+                        resource: wgpu::BindingResource::Sampler(&ocean_fft.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 18,
+                        resource: ocean_fft.view_params.as_entire_binding(),
                     },
                 ],
             })
@@ -1340,6 +1365,8 @@ impl TerrainRenderer {
             shared_bind_groups,
             foam_history,
             foam_history_enabled: crate::planet::ocean_foam_history_enabled(),
+            ocean_fft,
+            ocean_fft_enabled,
             _terrain_settings_buffer: terrain_settings_buffer,
             _environment_cubemap: environment_cubemap,
             _moon_marking_cubemap: moon_marking_texture,
@@ -1459,6 +1486,25 @@ impl TerrainRenderer {
             right,
             ocean_time_seconds,
         );
+    }
+
+    pub fn update_ocean_fft(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        camera_direction: DVec3,
+        ocean_time_seconds: f32,
+    ) {
+        if !self.ocean_fft_enabled {
+            return;
+        }
+        self.ocean_fft.set_time(&self.queue, ocean_time_seconds);
+        self.ocean_fft.update_view(
+            &self.queue,
+            camera_direction.to_array(),
+            crate::body::PLANET.radius_meters,
+            1.0,
+        );
+        self.ocean_fft.encode(encoder);
     }
 
     pub(crate) fn shared_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
@@ -3453,6 +3499,32 @@ pub fn create_shared_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroup
                 count: None,
             },
             texture_layout_entry(15, wgpu::TextureSampleType::Float { filterable: true }),
+            wgpu::BindGroupLayoutEntry {
+                binding: 16,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 17,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 18,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     })
 }

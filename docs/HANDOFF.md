@@ -11109,3 +11109,13 @@ Measured on the Quadro M1000M (wall-clock, submit+wait, 100-frame batches, dedic
 
 Run: `cargo test -p catinthegarden-app --release ocean_fft -- --ignored --nocapture --test-threads=1`.
 Not done: texture output with mips, wiring into the camera-local patch, CPU 64x64 parity (phase C), weather-driven wind/fetch, time wrapping (f32 phase over long runs). This is standalone cost, not a total-ocean-cost claim.
+
+## 25 September - Ocean FFT plan, Phase B step 2 (FFT field drives the raster ocean, opt-in)
+
+`CATINGARDEN_OCEAN_FFT=1` (optionally `CATINGARDEN_OCEAN_FFT_WIND=<m/s>`, default 14) routes `ocean_surface` in the raster path through the GPU FFT field instead of the 18 Gerstner waves + 3 ripples. Default is off and the default shader is unchanged (the FFT call is stripped from the source in `shared_planet_shader_source`, so auto-layout tests keep working; the 6 `gpu_ocean_*` tests pass with it off).
+
+Design: assemble writes a 256x256x3 rgba16f storage-texture array (h, Dx, Dz); shared bind group(2) gets bindings 16 (map), 17 (repeat/linear sampler), 18 (`OceanFftView`: fixed tangent-plane axes + per-cascade camera fractional tile coords). Tile coords = camera fraction (f64 on the CPU) + tangent-plane projection of the camera-relative view position, set through `var<private> ocean_fft_view_position` by `vs_ocean`, `ocean_raster_surface`, `flat_ocean_colour`. Cascade 0 (wavelengths >~12m) is mesh geometry and normal; cascades 1-2 only feed `ripple_slope`/`ripple_height`, faded by camera distance (no mips yet). Slopes and div(D) (as `convergence`) are forward finite differences of the texture. The same depth-based breaking limiter is applied. `max_sampled_textures_per_shader_stage` is raised to 20 (the ray-field pipeline was already at 16).
+
+Result on `ocean_manual_grid` (overhead lattice view), lattice metric, four captures: Gerstner 140-188 -> FFT 30-38 (white noise ~19). Captures: `test-runs/ocean_manual_grid/1790294496-11868` (FFT) vs `1790294468-11777` (control). Visually an irregular wind sea with foam patches and no diagonal hatching.
+
+NOT done / known: horizontal displacement is not applied (phase C); **CPU buoyancy, ship, and camera clearance still use the Gerstner sea, so low cameras will clip FFT waves** until phase C; ray/foveated path and `ocean_surface_world_direction` callers (planet.wgsl:387 etc.) don't set the view position so they are not FFT-correct; wind/fetch not coupled to weather; no mips; no frame-time comparison of the whole frame yet; f32 time. Note the game binary is at `target/release/catinthegarden-app` (the `/home/dad/catingard-target/release` binary is stale, 14 Sept).

@@ -535,15 +535,33 @@ pub(crate) fn retune_air_scale_heights(source: String, optical_divisor: f32) -> 
 
 pub(crate) fn shared_planet_shader_source() -> String {
     let foam_history_enabled = ocean_foam_history_enabled();
+    let mut shared = include_str!("shared_planet.wgsl").to_string();
+    if !ocean_fft_enabled() {
+        // Statically referencing the FFT bindings would add group(2) to
+        // shaders that never bind it, so drop the call from the default path.
+        shared = shared.replace(
+            "return ocean_surface_fft(direction, camera_distance_meters, water_depth_meters);",
+            "return flat_ocean_surface(direction);",
+        );
+    }
     retune_air_scale_heights(
         format!(
-            "{}\n{}\nconst OCEAN_FOAM_HISTORY_ENABLED: bool = {};\n{}",
+            "{}\n{}\nconst OCEAN_FOAM_HISTORY_ENABLED: bool = {};\nconst OCEAN_FFT_ENABLED: bool = {};\n{}",
             crate::body::wgsl_constants(),
             crate::ocean::wgsl_constants(),
             foam_history_enabled,
-            include_str!("shared_planet.wgsl")
+            ocean_fft_enabled(),
+            shared
         ),
         1.0,
+    )
+}
+
+/// Experimental FFT wave field (`CATINGARDEN_OCEAN_FFT=1`); default off.
+pub(crate) fn ocean_fft_enabled() -> bool {
+    matches!(
+        std::env::var("CATINGARDEN_OCEAN_FFT").ok().as_deref().map(str::trim),
+        Some("1" | "true" | "on")
     )
 }
 

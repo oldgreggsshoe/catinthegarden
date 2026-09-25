@@ -18,8 +18,8 @@ struct Params {
 @group(0) @binding(1) var<storage, read> h0: array<vec4<f32>>;
 // 6 arrays (cascade * 2 + pack) of N*N complex values.
 @group(0) @binding(2) var<storage, read_write> spec: array<vec2<f32>>;
-// Per cascade one vec4 array: (h, Dx, Dz, 0).
-@group(0) @binding(3) var<storage, read_write> field: array<vec4<f32>>;
+// One layer per cascade: (h, Dx, Dz, 0).
+@group(0) @binding(3) var field: texture_storage_2d_array<rgba16float, write>;
 
 fn cmul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
@@ -103,5 +103,5 @@ fn assemble(@builtin(global_invocation_id) id: vec3<u32>) {
     let base = c * 2u * N * N + cell;
     let p0 = spec[base];
     let p1 = spec[base + N * N];
-    field[c * N * N + cell] = sign * vec4<f32>(p0.x, p0.y, p1.x, 0.0);
+    textureStore(field, vec2<i32>(i32(id.x), i32(id.y)), i32(c), sign * vec4<f32>(p0.x, p0.y, p1.x, 0.0));
 }

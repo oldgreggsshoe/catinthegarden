@@ -1328,7 +1328,13 @@ impl State {
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("render device"),
                 required_features: requested_features,
-                required_limits: wgpu::Limits::default(),
+                // The ray-field pipeline already uses all 16 default sampled
+                // textures; the FFT ocean map is the 17th.
+                required_limits: wgpu::Limits {
+                    max_sampled_textures_per_shader_stage: 20
+                        .min(adapter.limits().max_sampled_textures_per_shader_stage),
+                    ..wgpu::Limits::default()
+                },
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 memory_hints: wgpu::MemoryHints::Performance,
                 trace: wgpu::Trace::Off,
@@ -4604,6 +4610,10 @@ impl State {
         if !solid_color_screen {
             self.atmosphere
                 .update(&mut encoder, &self.camera_bind_group);
+        if !solid_color_screen && self.render_path == RenderPath::Raster {
+            self.terrain
+                .update_ocean_fft(&mut encoder, camera_direction, ocean_time_seconds as f32);
+        }
         }
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

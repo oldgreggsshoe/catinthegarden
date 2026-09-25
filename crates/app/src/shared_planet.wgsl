@@ -354,6 +354,30 @@ var moon_marking_sampler: sampler;
 @group(2) @binding(15)
 var foam_history_map: texture_2d<f32>;
 
+// FFT ocean field: one layer per cascade, (height, Dx, Dz, 0). Written by
+// ocean_fft.wgsl; sampled here only when OCEAN_FFT_ENABLED.
+@group(2) @binding(16)
+var ocean_fft_map: texture_2d_array<f32>;
+
+@group(2) @binding(17)
+var ocean_fft_sampler: sampler;
+
+struct OceanFftView {
+    axis_u: vec4<f32>,
+    axis_v: vec4<f32>,
+    // Camera fractional tile u, v; tile length metres; unused.
+    cascade: array<vec4<f32>, 3>,
+    gain: vec4<f32>,
+}
+
+@group(2) @binding(18)
+var<uniform> ocean_fft_view: OceanFftView;
+
+// Camera-relative view-space position of the surface point being evaluated,
+// set by the caller: it keeps wave coordinates precise where the unit
+// direction alone would quantise to about 0.25m on this planet.
+var<private> ocean_fft_view_position: vec3<f32>;
+
 struct OceanWaveSpec {
     axis: vec3<f32>,
     wavelength_meters: f32,
@@ -1421,6 +1445,80 @@ fn ocean_surface(
         OCEAN_GEOMETRY_FADE_DISTANCE_METERS,
         camera_distance_meters,
     )) * shore_weight;
+
+// (height, dh/du, dh/dv, div D) for one cascade at planet-plane offset `local`.
+fn ocean_fft_cascade(cascade_index: u32, local: vec2<f32>) -> vec4<f32> {
+    let entry = ocean_fft_view.cascade[cascade_index];
+    let uv = entry.xy + local / entry.z;
+    let texel = 1.0 / 256.0;
+    let step_meters = entry.z * texel;
+    let s0 = textureSampleLevel(ocean_fft_map, ocean_fft_sampler, uv, cascade_index, 0.0);
+    let su = textureSampleLevel(ocean_fft_map, ocean_fft_sampler, uv + vec2<f32>(texel, 0.0), cascade_index, 0.0);
+    let sv = textureSampleLevel(ocean_fft_map, ocean_fft_sampler, uv + vec2<f32>(0.0, texel), cascade_index, 0.0);
+    return vec4<f32>(
+        s0.x,
+        (su.x - s0.x) / step_meters,
+        (sv.x - s0.x) / step_meters,
+        ((su.y - s0.y) + (sv.z - s0.z)) / step_meters,
+    );
+}
+
+fn ocean_surface_fft(
+    direction: vec3<f32>,
+    camera_distance_meters: f32,
+    water_depth_meters: f32,
+) -> OceanSurface {
+    let geometry_weight = 1.0 - smoothstep(
+        OCEAN_GEOMETRY_FULL_DISTANCE_METERS,
+        OCEAN_GEOMETRY_FADE_DISTANCE_METERS,
+        camera_distance_meters,
+    );
+    let view = ocean_fft_view_position;
+    let planet_offset = view.x * camera.camera_right.xyz
+        + view.y * camera.camera_up.xyz
+        - view.z * camera.camera_forward.xyz;
+    let axis_u = ocean_fft_view.axis_u.xyz;
+    let axis_v = ocean_fft_view.axis_v.xyz;
+    let local = vec2<f32>(dot(planet_offset, axis_u), dot(planet_offset, axis_v));
+    let gain = ocean_fft_view.gain.x;
+    // Cascade 0 (wavelengths above ~12m) is mesh geometry; the two finer
+    // cascades only shade, fading out before they alias at range.
+    let broad = ocean_fft_cascade(0u, local);
+    let mid_weight = 1.0 - smoothstep(600.0, 3000.0, camera_distance_meters);
+    let fine_weight = 1.0 - smoothstep(150.0, 700.0, camera_distance_meters);
+    let mid = ocean_fft_cascade(1u, local);
+    let fine = ocean_fft_cascade(2u, local);
+    let tangent_slope = (axis_u * broad.y + axis_v * broad.z) * gain;
+    let slope = tangent_slope - direction * dot(tangent_slope, direction);
+    let ripple_tangent = (axis_u * (mid.y * mid_weight + fine.y * fine_weight)
+        + axis_v * (mid.z * mid_weight + fine.z * fine_weight)) * gain;
+    let ripple_slope = ripple_tangent - direction * dot(ripple_tangent, direction);
+    let raw_vertical = broad.x * gain * geometry_weight;
+    let breaking_limit_meters =
+        0.5 * OCEAN_BREAKING_HEIGHT_TO_DEPTH_RATIO * max(water_depth_meters, 0.0);
+    var breaking_weight = 0.0;
+    var breaking_slope_weight = 0.0;
+    var breaking_ratio = 0.0;
+    if breaking_limit_meters > 0.0 {
+        let ratio = pow(abs(raw_vertical) / breaking_limit_meters, OCEAN_BREAKING_KNEE);
+        breaking_weight = pow(1.0 + ratio, -1.0 / OCEAN_BREAKING_KNEE);
+        breaking_slope_weight = breaking_weight / (1.0 + ratio);
+        breaking_ratio = max(raw_vertical, 0.0) / breaking_limit_meters;
+    }
+    let convergence = -(broad.w + mid.w * mid_weight) * gain * geometry_weight;
+    return OceanSurface(
+        breaking_ratio,
+        vec3<f32>(0.0),
+        mat3x3<f32>(),
+        raw_vertical * breaking_weight,
+        slope * (geometry_weight * breaking_slope_weight),
+        normalize(direction - slope * (geometry_weight * breaking_slope_weight)),
+        (mid.x * mid_weight + fine.x * fine_weight) * gain,
+        ripple_slope,
+        convergence,
+    );
+}
+
     if geometry_weight <= 0.0 && camera_distance_meters >= OCEAN_RIPPLE_FADE_DISTANCE_METERS {
         return flat_ocean_surface(direction);
     }
@@ -1430,6 +1528,9 @@ fn ocean_surface(
     //
     // Crests here are small circles about each axis, not straight lines. The
     // dominant swell stays coherent; the shorter wind-sea tail is deliberately
+    if OCEAN_FFT_ENABLED {
+        return ocean_surface_fft(direction, camera_distance_meters, water_depth_meters);
+    }
     // spread around the storm-ocean view direction so it breaks the surface into
     // crossing chop instead of repeating one corduroy axis across many octaves.
     let storm_intensity = clamp(camera.flat_triangle_options.y, 0.0, 1.0);
