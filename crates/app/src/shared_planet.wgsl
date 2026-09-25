@@ -3708,6 +3708,107 @@ fn ocean_lighting(
     // light in steep-down views; the narrower lobe reads as separated glints
     // without adding another normal or texture sample.
     let specular = pow(max(dot(normal_view, half_vector), 0.0), 512.0);
+
+// Sea of Thieves-style water shading (FFT ocean only). After Rare's SIGGRAPH
+// 2018 talk: a stylised blend of a deep-water colour and a subsurface colour,
+// weighted by a wave-peak mask (here the FFT convergence, i.e. where the
+// displacement field bunches), the view angle and the sun direction, plus an
+// area-light sun specular (Karis 2013 representative point) whose roughness
+// grows with range for the wide low-sun reflection.
+const OCEAN_SOT_DEEP_COLOUR: vec3<f32> = vec3<f32>(0.004, 0.030, 0.140);
+const OCEAN_SOT_SUBSURFACE_COLOUR: vec3<f32> = vec3<f32>(0.020, 0.300, 0.330);
+// Convergence where the peak mask starts and is full (dimensionless |k| h).
+const OCEAN_SOT_PEAK_ONSET: f32 = 0.20;
+const OCEAN_SOT_PEAK_FULL: f32 = 0.65;
+// Artistic angular radius (tan) of the sun for the area-light lobe; the real
+// sun is 0.0046.
+const OCEAN_SOT_SUN_RADIUS: f32 = 0.06;
+const OCEAN_SOT_ROUGHNESS_NEAR: f32 = 0.08;
+const OCEAN_SOT_ROUGHNESS_FAR: f32 = 0.5;
+
+fn ocean_sot_specular(
+    normal_view: vec3<f32>,
+    view_direction: vec3<f32>,
+    sun_direction_view: vec3<f32>,
+    roughness: f32,
+) -> f32 {
+    let reflection = reflect(-view_direction, normal_view);
+    let centre_to_ray = dot(sun_direction_view, reflection) * reflection - sun_direction_view;
+    let closest = sun_direction_view
+        + centre_to_ray * clamp(OCEAN_SOT_SUN_RADIUS / max(length(centre_to_ray), 1.0e-5), 0.0, 1.0);
+    let light = normalize(closest);
+    let widened = clamp(roughness + OCEAN_SOT_SUN_RADIUS * 0.5, 0.0, 1.0);
+    let a2 = widened * widened;
+    let half_vector = normalize(light + view_direction);
+    let n_dot_h = max(dot(normal_view, half_vector), 0.0);
+    let n_dot_l = max(dot(normal_view, light), 0.0);
+    let n_dot_v = max(dot(normal_view, view_direction), 1.0e-3);
+    let denominator = n_dot_h * n_dot_h * (a2 - 1.0) + 1.0;
+    // Peak-normalised GGX (1 at the lobe centre) so the existing glint scale
+    // keeps its meaning while the tails give the wide low-sun sheen.
+    let lobe = a2 * a2 / (denominator * denominator);
+    let visibility = 0.5 / max(
+        n_dot_l * (n_dot_v * (1.0 - widened) + widened)
+            + n_dot_v * (n_dot_l * (1.0 - widened) + widened),
+        1.0e-4,
+    );
+    let energy = (roughness / widened) * (roughness / widened);
+    // Fade the lobe out at grazing view angles: Fresnel and visibility both
+    // blow up there and drew a white line along the horizon.
+    return lobe * min(visibility * 2.0, 1.5) * n_dot_l * energy * smoothstep(0.0, 0.12, n_dot_v);
+}
+
+fn ocean_lighting_sot(
+    normal: vec3<f32>,
+    crest_sharpness: f32,
+    fine_crest_transmission: f32,
+    camera_relative_view_position: vec3<f32>,
+    sun_transmittance: vec3<f32>,
+    sky_diffuse: vec3<f32>,
+) -> vec3<f32> {
+    let view_direction = normalize(-camera_relative_view_position);
+    let normal_view = normalize(planet_to_view(normal));
+    let sun_direction_view = normalize(camera.sun_direction_view.xyz);
+    let reflection_direction = view_to_planet(reflect(-view_direction, normal_view));
+    let reflected_color = textureSampleLevel(
+        environment_map,
+        environment_sampler,
+        reflection_direction,
+        0.0,
+    ).rgb;
+    let facing = max(dot(normal_view, view_direction), 0.0);
+    let fresnel = vec3<f32>(0.02) + vec3<f32>(0.98) * pow(1.0 - facing, 5.0);
+    let daylight = max(max(sun_transmittance.x, sun_transmittance.y), sun_transmittance.z);
+    let peak = smoothstep(OCEAN_SOT_PEAK_ONSET, OCEAN_SOT_PEAK_FULL, crest_sharpness);
+    let backlight = pow(max(dot(-view_direction, sun_direction_view), 0.0), 3.0);
+    let sun_facing = max(dot(normal_view, sun_direction_view), 0.0);
+    // Light reaches the viewer through the thin wave top; more so looking
+    // toward the sun, and more where the surface tilts toward it.
+    let subsurface_weight = clamp(
+        peak * (0.35 + 0.65 * backlight) + 0.25 * sun_facing * (1.0 - facing) + 0.5 * fine_crest_transmission,
+        0.0,
+        1.0,
+    );
+    // Deep colour warms toward teal on faces turned to the sun (the existing
+    // sun-facing body ramp), then thin peaks blend on toward the subsurface colour.
+    let deep = mix(OCEAN_SOT_DEEP_COLOUR, ocean_body_albedo(normal), 0.85);
+    let body = mix(deep, OCEAN_SOT_SUBSURFACE_COLOUR, subsurface_weight);
+    let diffuse = body * (sky_diffuse + sun_transmittance * (0.4 * SURFACE_SUNLIGHT_SCALE));
+    let glow = OCEAN_SOT_SUBSURFACE_COLOUR * peak * (0.15 + backlight)
+        * sun_transmittance * (0.5 * SURFACE_SUNLIGHT_SCALE) * (vec3<f32>(1.0) - fresnel);
+    let range = length(camera_relative_view_position);
+    let roughness = mix(
+        OCEAN_SOT_ROUGHNESS_NEAR,
+        OCEAN_SOT_ROUGHNESS_FAR,
+        smoothstep(30.0, 1500.0, range),
+    );
+    let specular = ocean_sot_specular(normal_view, view_direction, sun_direction_view, roughness);
+    return diffuse + glow
+        + reflected_color * fresnel * daylight * OCEAN_REFLECTION_SCALE
+        + sun_transmittance * specular * fresnel
+            * (OCEAN_SUN_GLINT_SCALE * SURFACE_SUNLIGHT_SCALE);
+}
+
     let daylight = max(max(sun_transmittance.x, sun_transmittance.y), sun_transmittance.z);
     // Keep the water body a dark blue; direct sunlight and reflection still
     // provide the daylight highlights and glints.
@@ -3716,6 +3817,10 @@ fn ocean_lighting(
     // The Phase 6 cubemap is static. It represents daytime sky reflection, so
     // gate it by direct daylight instead of reflecting a bright blue sky from
     // the fully occluded hemisphere.
+    if OCEAN_FFT_ENABLED {
+        return ocean_lighting_sot(normal, crest_sharpness, fine_crest_transmission,
+            camera_relative_view_position, sun_transmittance, sky_diffuse);
+    }
     // Cheap thin-crest transmission approximation, not alpha transparency or
     // a measured water-volume thickness. Positive wave height selects the upper
     // crest; forward scattering lights it when the sun is behind the wave.
