@@ -1503,6 +1503,7 @@ impl TerrainRenderer {
             camera_direction.to_array(),
             crate::body::PLANET.radius_meters,
             1.0,
+            crate::ocean::sea_state_at(f64::from(ocean_time_seconds)).intensity,
         );
         self.ocean_fft.encode(encoder);
     }

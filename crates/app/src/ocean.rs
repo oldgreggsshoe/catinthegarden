@@ -1251,7 +1251,8 @@ pub fn breaking_fraction(water_depth_meters: f64, raw_height_meters: f64) -> f64
 }
 
 /// FFT sea (`CATINGARDEN_OCEAN_FFT=1`): the CPU surface mirrors the GPU's
-/// cascade-0 field, so buoyancy and collision follow the drawn water.
+/// geometry cascades (wind sea and swell, with their horizontal displacement),
+/// so buoyancy and collision follow the drawn water.
 fn fft_surface() -> Option<&'static crate::ocean_fft::CpuSurface> {
     static SURFACE: std::sync::OnceLock<Option<crate::ocean_fft::CpuSurface>> =
         std::sync::OnceLock::new();
@@ -1266,7 +1267,12 @@ fn fft_surface() -> Option<&'static crate::ocean_fft::CpuSurface> {
 fn fft_sample(direction: DVec3, sim_time: f64) -> Option<crate::ocean_fft::CpuSample> {
     let surface = fft_surface()?;
     let d = direction.normalize();
-    Some(surface.sample(d.to_array(), planet_radius_meters(), sim_time))
+    Some(surface.sample(
+        d.to_array(),
+        planet_radius_meters(),
+        sim_time,
+        sea_state_at(sim_time).intensity,
+    ))
 }
 
 pub fn global_wave_height_meters(direction: DVec3, sim_time: f64, water_depth_meters: f64) -> f64 {

@@ -5,13 +5,25 @@
 use wgpu::util::DeviceExt;
 
 pub const GRID: usize = 256;
-pub const CASCADES: usize = 3;
+pub const CASCADES: usize = 4;
+/// Cascades 0-2 partition the wind sea by wavenumber; the last is swell.
+pub const WIND_CASCADES: usize = 3;
+pub const SWELL_CASCADE: usize = 3;
 /// 256 down to 1 texel.
 pub const MIP_LEVELS: u32 = 9;
 /// Tile edge lengths in metres, chosen so the repeats do not line up.
-pub const TILE_METERS: [f32; CASCADES] = [1000.0, 237.0, 53.0];
-/// Wavenumber band owned by each cascade (rad/m); bands abut exactly.
-pub const BAND_EDGES: [f32; CASCADES + 1] = [0.0, 0.5, 2.0, 1.0e9];
+pub const TILE_METERS: [f32; CASCADES] = [1000.0, 237.0, 53.0, 2170.0];
+/// Wavenumber band owned by each wind cascade (rad/m); bands abut exactly.
+pub const BAND_EDGES: [f32; WIND_CASCADES + 1] = [0.0, 0.5, 2.0, 1.0e9];
+/// Swell: a narrow-band long-crested sea from distant weather, crossing the
+/// local wind sea so their crests collide. Normalised to 1m significant height
+/// and scaled at run time by `swell_height_meters`.
+const SWELL_PEAK_WAVELENGTH_METERS: f32 = 170.0;
+/// Relative spread of angular frequency around the peak (Gaussian sigma).
+const SWELL_FREQUENCY_SPREAD: f32 = 0.10;
+/// cos^n directional spreading; large n is long-crested.
+const SWELL_SPREAD_POWER: i32 = 16;
+const SWELL_ANGLE_FROM_WIND_RADIANS: f32 = -0.52;
 const GRAVITY: f32 = 9.81;
 
 const WORKGROUPS_PER_LINE_PASS: u32 = GRID as u32;
@@ -61,6 +73,11 @@ pub fn generate_h0(seed: u32, wind_speed: f32, wind_dir: [f32; 2], fetch_meters:
     let wind_angle = wind_dir[1].atan2(wind_dir[0]);
     for c in 0..CASCADES {
         let dk = std::f32::consts::TAU / TILE_METERS[c];
+        if c == SWELL_CASCADE {
+            let layer = swell_h0(seed, dk, wind_angle + SWELL_ANGLE_FROM_WIND_RADIANS);
+            out[c * GRID * GRID..(c + 1) * GRID * GRID].copy_from_slice(&layer);
+            continue;
+        }
         let mut table = vec![[0.0f32; 2]; GRID * GRID];
         for y in 0..GRID {
             for x in 0..GRID {
@@ -97,6 +114,56 @@ pub fn generate_h0(seed: u32, wind_speed: f32, wind_dir: [f32; 2], fetch_meters:
     out
 }
 
+/// Swell h0 layer, normalised to 1m significant wave height (Hs = 4 sigma).
+fn swell_h0(seed: u32, dk: f32, swell_angle: f32) -> Vec<[f32; 4]> {
+    let k_peak = std::f32::consts::TAU / SWELL_PEAK_WAVELENGTH_METERS;
+    let omega_peak = (GRAVITY * k_peak).sqrt();
+    let mut table = vec![[0.0f32; 2]; GRID * GRID];
+    for y in 0..GRID {
+        for x in 0..GRID {
+            let kx = (x as f32 - GRID as f32 / 2.0) * dk;
+            let kz = (y as f32 - GRID as f32 / 2.0) * dk;
+            let k = (kx * kx + kz * kz).sqrt();
+            if k < 1e-6 {
+                continue;
+            }
+            let omega = (GRAVITY * k).sqrt();
+            let offset = (omega - omega_peak) / (SWELL_FREQUENCY_SPREAD * omega_peak);
+            if offset.abs() > 3.5 {
+                continue;
+            }
+            let cosine = (kz.atan2(kx) - swell_angle).cos();
+            if cosine <= 0.0 {
+                continue;
+            }
+            let power = (-0.5 * offset * offset).exp() * cosine.powi(SWELL_SPREAD_POWER)
+                * 0.5 * (GRAVITY / k).sqrt() / k * dk * dk;
+            let (gr, gi) = gaussian_pair(seed ^ 0x5eed_5e11 ^ hash((y * GRID + x) as u32));
+            let a = (0.5 * power).sqrt();
+            table[y * GRID + x] = [gr * a, gi * a];
+        }
+    }
+    let mut layer = vec![[0.0f32; 4]; GRID * GRID];
+    let mut variance = 0.0f64;
+    for y in 0..GRID {
+        for x in 0..GRID {
+            let h = table[y * GRID + x];
+            let m = if x >= 1 && y >= 1 { table[(GRID - y) * GRID + (GRID - x)] } else { [0.0, 0.0] };
+            layer[y * GRID + x] = [h[0], h[1], m[0], m[1]];
+            // Parseval on the unnormalised inverse transform: the spatial
+            // variance at t = 0 is the sum of |h0(k) + conj(h0(-k))|^2.
+            let (re, im) = ((h[0] + m[0]) as f64, (h[1] - m[1]) as f64);
+            variance += re * re + im * im;
+        }
+    }
+    let scale = if variance > 0.0 { (0.25 / variance.sqrt()) as f32 } else { 0.0 };
+    for texel in &mut layer {
+        for value in texel.iter_mut() {
+            *value *= scale;
+        }
+    }
+    layer
+}
 
 /// Wind speed (m/s) for the FFT sea; shared by the GPU spectrum and the CPU model.
 pub fn wind_speed_from_environment() -> f32 {
@@ -128,26 +195,38 @@ pub fn anchor_axes(camera_direction: [f64; 3]) -> ([f64; 3], [f64; 3]) {
     })
 }
 
-/// CPU mirror of cascade 0: the same spectrum the GPU transforms, inverse-FFT'd
-/// on the CPU into a height and vertical-velocity grid that is bilinearly
-/// interpolated exactly like the GPU sampler. The grid is refreshed only when
-/// the ocean clock moves more than `REFRESH_SECONDS`; in between, height is
-/// advanced by its velocity (error below ~5mm for the cascade's periods).
+/// CPU mirror of the geometry cascades: wind sea (cascade 0) and swell. The
+/// same spectra the GPU transforms are inverse-FFT'd on the CPU into height,
+/// vertical velocity and horizontal displacement grids that are bilinearly
+/// interpolated exactly like the GPU sampler. Finer cascades only shade.
+///
+/// Grids are cached on a fixed time lattice (`LATTICE_SECONDS`) and advanced
+/// by velocity to the query time, so any number of callers asking about any
+/// times (camera, ship substeps, every bird's look-ahead) each cost at most
+/// one transform per lattice step. The previous per-query refresh window made
+/// the transform count grow with query count and time speed.
 pub struct CpuSurface {
-    modes: Vec<Mode>,
-    twiddle: Vec<[f64; 2]>,
-    state: std::sync::Mutex<GridCache>,
+    shared: std::sync::Arc<SurfaceShared>,
 }
 
-const REFRESH_SECONDS: f64 = 0.03;
-/// Callers query several distinct times per frame (camera, ship substeps, and
-/// each bird's look-ahead instants). One cached grid made every alternation a
-/// full 2.3ms inverse FFT; a few slots let each time keep its own grid.
-const GRID_SLOTS: usize = 8;
+struct SurfaceShared {
+    cascades: Vec<CpuCascade>,
+    /// Highest lattice key any caller has asked for; the worker builds the
+    /// steps just beyond it so callers normally find them ready.
+    frontier: std::sync::atomic::AtomicI64,
+    wake: (std::sync::Mutex<bool>, std::sync::Condvar),
+}
+
+const LATTICE_SECONDS: f64 = 0.1;
+/// Birds look ahead 3s; this keeps every lattice step they revisit.
+const LATTICE_SLOTS: usize = 40;
+const INVERSE_ITERATIONS: usize = 4;
+/// Lattice steps the background worker builds ahead of the frontier.
+const PREFETCH_STEPS: i64 = 3;
 
 /// Horizontal (choppy) displacement strength; 1.0 is the Tessendorf field the
 /// fold Jacobian is computed from, 0 disables it. `CATINGARDEN_OCEAN_FFT_CHOP`.
-fn choppiness() -> f32 {
+pub fn choppiness() -> f32 {
     static VALUE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
     *VALUE.get_or_init(|| {
         std::env::var("CATINGARDEN_OCEAN_FFT_CHOP")
@@ -157,28 +236,44 @@ fn choppiness() -> f32 {
     })
 }
 
-struct GridCache {
-    slots: Vec<GridState>,
-    next_replacement: usize,
+/// Significant wave height (metres) of the swell cascade. Swell is generated
+/// by distant storms, so it is present in calm local weather; the local storm
+/// raises it by up to 1.8x. Base from `CATINGARDEN_OCEAN_FFT_SWELL` (default 8).
+pub fn swell_height_meters(storm_intensity: f32) -> f32 {
+    static BASE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    let base = *BASE.get_or_init(|| {
+        std::env::var("CATINGARDEN_OCEAN_FFT_SWELL")
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .map_or(8.0, |v| v.clamp(0.0, 15.0))
+    });
+    let t = ((storm_intensity - 0.15) / 0.70).clamp(0.0, 1.0);
+    base * (1.0 + 0.8 * t * t * (3.0 - 2.0 * t))
 }
 
-impl GridCache {
-    /// Index of the slot to sample at `time`, or None if every slot is stale.
-    fn nearest(&self, time: f64) -> Option<usize> {
-        self.slots
-            .iter()
-            .enumerate()
-            .filter(|(_, slot)| slot.valid && (time - slot.time).abs() <= REFRESH_SECONDS)
-            .min_by(|a, b| (time - a.1.time).abs().total_cmp(&(time - b.1.time).abs()))
-            .map(|(index, _)| index)
-    }
+struct CpuCascade {
+    tile_meters: f64,
+    modes: Vec<Mode>,
+    occupied_rows: Vec<bool>,
+    cache: std::sync::Mutex<SlotCache>,
 }
 
-struct GridState {
-    time: f64,
-    valid: bool,
+struct Slot {
+    key: i64,
+    last_used: u64,
+    data: std::sync::Arc<SlotData>,
+}
+
+struct SlotData {
     height: Vec<f32>,
     velocity: Vec<f32>,
+    dx: Vec<f32>,
+    dz: Vec<f32>,
+}
+
+struct SlotCache {
+    slots: Vec<Slot>,
+    clock: u64,
 }
 
 struct Mode {
@@ -187,6 +282,8 @@ struct Mode {
     h0: [f64; 2],
     h0m: [f64; 2],
     omega: f64,
+    /// Unit wave direction (kx/k, kz/k).
+    unit: [f64; 2],
 }
 
 /// Height, tangent-plane slope (du, dv) in metres per metre, vertical velocity.
@@ -199,187 +296,396 @@ pub struct CpuSample {
     pub axis_v: [f64; 3],
 }
 
+/// One cascade's field and its forward differences at a tangent-plane point.
+#[derive(Clone, Copy, Default)]
+struct FieldSample {
+    height: f64,
+    slope: [f64; 2],
+    velocity: f64,
+    displacement: [f64; 2],
+    /// dDu/du, dDv/dv, dDu/dv, dDv/du, as the shader orders them.
+    jacobian: [f64; 4],
+}
+
+impl FieldSample {
+    fn add_scaled(&mut self, other: &FieldSample, scale: f64) {
+        self.height += other.height * scale;
+        self.velocity += other.velocity * scale;
+        for i in 0..2 {
+            self.slope[i] += other.slope[i] * scale;
+            self.displacement[i] += other.displacement[i] * scale;
+        }
+        for i in 0..4 {
+            self.jacobian[i] += other.jacobian[i] * scale;
+        }
+    }
+}
+
 fn cmul(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
     [a[0] * b[0] - a[1] * b[1], a[0] * b[1] + a[1] * b[0]]
 }
 
-impl CpuSurface {
-    pub fn new(h0: &[[f32; 4]]) -> Self {
+fn twiddles() -> &'static [[f64; 2]] {
+    static TABLE: std::sync::OnceLock<Vec<[f64; 2]>> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        (0..GRID / 2)
+            .map(|j| {
+                let a = std::f64::consts::TAU * j as f64 / GRID as f64;
+                [a.cos(), a.sin()]
+            })
+            .collect()
+    })
+}
+
+/// In-place unnormalised inverse FFT (e^{+i}) of one 256-point line.
+fn fft_line(line: &mut [[f64; 2]]) {
+    let twiddle = twiddles();
+    for i in 0..GRID {
+        let j = (i as u32).reverse_bits() as usize >> (32 - 8);
+        if j > i {
+            line.swap(i, j);
+        }
+    }
+    let mut half = 1;
+    while half < GRID {
+        let stride = GRID / (half * 2);
+        for start in (0..GRID).step_by(half * 2) {
+            for j in 0..half {
+                let w = twiddle[j * stride];
+                let t = cmul(w, line[start + j + half]);
+                let u = line[start + j];
+                line[start + j] = [u[0] + t[0], u[1] + t[1]];
+                line[start + j + half] = [u[0] - t[0], u[1] - t[1]];
+            }
+        }
+        half *= 2;
+    }
+}
+
+/// 2D inverse FFT of a centred spectrum, returning [x][y]-transposed output
+/// (index x * GRID + y) with the centring sign already applied.
+fn inverse_fft_2d(mut grid: Vec<[f64; 2]>, occupied_rows: &[bool]) -> Vec<[f64; 2]> {
+    for (y, row) in grid.chunks_mut(GRID).enumerate() {
+        if occupied_rows[y] {
+            fft_line(row);
+        }
+    }
+    let mut transposed = vec![[0.0f64; 2]; GRID * GRID];
+    for y in 0..GRID {
+        for x in 0..GRID {
+            transposed[x * GRID + y] = grid[y * GRID + x];
+        }
+    }
+    for (x, column) in transposed.chunks_mut(GRID).enumerate() {
+        fft_line(column);
+        for (y, value) in column.iter_mut().enumerate() {
+            if (x + y) & 1 == 1 {
+                *value = [-value[0], -value[1]];
+            }
+        }
+    }
+    transposed
+}
+
+impl CpuCascade {
+    fn new(h0: &[[f32; 4]], cascade: usize) -> Self {
         let half = GRID as i32 / 2;
+        let tile_meters = TILE_METERS[cascade] as f64;
+        let layer = &h0[cascade * GRID * GRID..(cascade + 1) * GRID * GRID];
         let mut modes = Vec::new();
+        let mut occupied_rows = vec![false; GRID];
         for y in 0..GRID {
             for x in 0..GRID {
-                let t = h0[y * GRID + x];
+                let t = layer[y * GRID + x];
                 if t == [0.0; 4] {
                     continue;
                 }
                 let n = (x as i32 - half) as f64;
                 let m = (y as i32 - half) as f64;
-                let k = (n * n + m * m).sqrt() * std::f64::consts::TAU / TILE_METERS[0] as f64;
+                let length = (n * n + m * m).sqrt();
+                let k = length * std::f64::consts::TAU / tile_meters;
+                occupied_rows[y] = true;
                 modes.push(Mode {
                     x,
                     y,
                     h0: [t[0] as f64, t[1] as f64],
                     h0m: [t[2] as f64, t[3] as f64],
                     omega: (GRAVITY as f64 * k).sqrt(),
+                    unit: if length > 0.0 { [n / length, m / length] } else { [0.0, 0.0] },
                 });
             }
         }
-        let twiddle = (0..GRID / 2)
-            .map(|j| {
-                let a = std::f64::consts::TAU * j as f64 / GRID as f64;
-                [a.cos(), a.sin()]
-            })
-            .collect();
         Self {
+            tile_meters,
             modes,
-            twiddle,
-            state: std::sync::Mutex::new(GridCache {
-                slots: Vec::new(),
-                next_replacement: 0,
-            }),
+            occupied_rows,
+            cache: std::sync::Mutex::new(SlotCache { slots: Vec::new(), clock: 0 }),
         }
     }
 
-    pub fn mode_count(&self) -> usize {
-        self.modes.len()
-    }
-
-    /// In-place unnormalised inverse FFT (e^{+i}) of one 256-point line.
-    fn fft_line(&self, line: &mut [[f64; 2]; GRID]) {
-        for i in 0..GRID {
-            let j = (i as u32).reverse_bits() as usize >> (32 - 8);
-            if j > i {
-                line.swap(i, j);
-            }
-        }
-        let mut half = 1;
-        while half < GRID {
-            let stride = GRID / (half * 2);
-            for start in (0..GRID).step_by(half * 2) {
-                for j in 0..half {
-                    let w = self.twiddle[j * stride];
-                    let t = cmul(w, line[start + j + half]);
-                    let u = line[start + j];
-                    line[start + j] = [u[0] + t[0], u[1] + t[1]];
-                    line[start + j + half] = [u[0] - t[0], u[1] - t[1]];
-                }
-            }
-            half *= 2;
-        }
-    }
-
-    fn refresh(&self, state: &mut GridState, time: f64) {
-        // Packed spectrum: h_hat + i * v_hat, both Hermitian, so one complex
-        // inverse FFT returns height (real) and velocity (imaginary).
-        let mut grid = vec![[0.0f64; 2]; GRID * GRID];
+    /// Height, velocity and displacement grids at `time`, all stored [y][x].
+    fn transform(&self, time: f64) -> [Vec<f32>; 4] {
+        // Two packed spectra: h + i v and Dx + i Dz; every field is Hermitian,
+        // so each complex inverse FFT returns two real grids.
+        let mut vertical = vec![[0.0f64; 2]; GRID * GRID];
+        let mut horizontal = vec![[0.0f64; 2]; GRID * GRID];
         for mode in &self.modes {
-            let phase = mode.omega * time;
-            let (s, c) = phase.sin_cos();
+            let (s, c) = (mode.omega * time).sin_cos();
             let plus = cmul(mode.h0, [c, s]);
             let minus = cmul([mode.h0m[0], -mode.h0m[1]], [c, -s]);
             let h = [plus[0] + minus[0], plus[1] + minus[1]];
             // d/dt: i*omega*plus - i*omega*minus.
             let v = [-mode.omega * (plus[1] - minus[1]), mode.omega * (plus[0] - minus[0])];
-            // h + i v
-            grid[mode.y * GRID + mode.x] = [h[0] - v[1], h[1] + v[0]];
+            // D = -i (k/|k|) h, as the GPU evolve pass builds it.
+            let dx = [mode.unit[0] * h[1], -mode.unit[0] * h[0]];
+            let dz = [mode.unit[1] * h[1], -mode.unit[1] * h[0]];
+            let cell = mode.y * GRID + mode.x;
+            vertical[cell] = [h[0] - v[1], h[1] + v[0]];
+            horizontal[cell] = [dx[0] - dz[1], dx[1] + dz[0]];
         }
-        let mut line = [[0.0f64; 2]; GRID];
-        let mut occupied = [false; GRID];
-        for mode in &self.modes {
-            occupied[mode.y] = true;
-        }
-        for y in 0..GRID {
-            if !occupied[y] {
-                continue;
-            }
-            line.copy_from_slice(&grid[y * GRID..(y + 1) * GRID]);
-            self.fft_line(&mut line);
-            grid[y * GRID..(y + 1) * GRID].copy_from_slice(&line);
-        }
+        let rows = &self.occupied_rows;
+        let (vertical, horizontal) = std::thread::scope(|scope| {
+            let worker = scope.spawn(|| inverse_fft_2d(horizontal, rows));
+            let vertical = inverse_fft_2d(vertical, rows);
+            (vertical, worker.join().expect("ocean CPU FFT worker"))
+        });
+        let mut out = [
+            vec![0.0f32; GRID * GRID],
+            vec![0.0f32; GRID * GRID],
+            vec![0.0f32; GRID * GRID],
+            vec![0.0f32; GRID * GRID],
+        ];
         for x in 0..GRID {
             for y in 0..GRID {
-                line[y] = grid[y * GRID + x];
-            }
-            self.fft_line(&mut line);
-            for y in 0..GRID {
-                let sign = if (x + y) & 1 == 1 { -1.0 } else { 1.0 };
-                let value = line[y];
-                state.height[y * GRID + x] = (sign * value[0]) as f32;
-                state.velocity[y * GRID + x] = (sign * value[1]) as f32;
+                let (a, b) = (vertical[x * GRID + y], horizontal[x * GRID + y]);
+                let cell = y * GRID + x;
+                out[0][cell] = a[0] as f32;
+                out[1][cell] = a[1] as f32;
+                out[2][cell] = b[0] as f32;
+                out[3][cell] = b[1] as f32;
             }
         }
-        state.time = time;
-        state.valid = true;
+        out
     }
 
-    pub fn sample(&self, direction: [f64; 3], radius_meters: f64, time: f64) -> CpuSample {
+    fn cached(&self, key: i64) -> Option<std::sync::Arc<SlotData>> {
+        let mut cache = self.cache.lock().unwrap();
+        cache.clock += 1;
+        let clock = cache.clock;
+        let slot = cache.slots.iter_mut().find(|slot| slot.key == key)?;
+        slot.last_used = clock;
+        Some(slot.data.clone())
+    }
+
+    fn insert(&self, key: i64, data: std::sync::Arc<SlotData>) -> std::sync::Arc<SlotData> {
+        let mut cache = self.cache.lock().unwrap();
+        cache.clock += 1;
+        let clock = cache.clock;
+        if let Some(slot) = cache.slots.iter_mut().find(|slot| slot.key == key) {
+            slot.last_used = clock;
+            return slot.data.clone();
+        }
+        let slot = Slot { key, last_used: clock, data: data.clone() };
+        if cache.slots.len() < LATTICE_SLOTS {
+            cache.slots.push(slot);
+        } else {
+            let oldest = (0..cache.slots.len())
+                .min_by_key(|&i| cache.slots[i].last_used)
+                .expect("slots");
+            cache.slots[oldest] = slot;
+        }
+        data
+    }
+
+    fn build(&self, key: i64) -> std::sync::Arc<SlotData> {
+        let [height, velocity, dx, dz] = self.transform(key as f64 * LATTICE_SECONDS);
+        std::sync::Arc::new(SlotData { height, velocity, dx, dz })
+    }
+
+    /// The lattice slot for `key`, built on this thread if the worker has not
+    /// got to it. The transform runs outside the cache lock.
+    fn slot(&self, key: i64) -> std::sync::Arc<SlotData> {
+        match self.cached(key) {
+            Some(data) => data,
+            None => self.insert(key, self.build(key)),
+        }
+    }
+}
+
+/// Bilinear sample of a slot at tangent-plane metres (u, v), with the GPU's
+/// one-texel forward differences.
+fn sample_slot(slot: &SlotData, tile_meters: f64, position: [f64; 2], delta_seconds: f64) -> FieldSample {
+    let tx = (position[0] / tile_meters).rem_euclid(1.0) * GRID as f64 - 0.5;
+    let ty = (position[1] / tile_meters).rem_euclid(1.0) * GRID as f64 - 0.5;
+    let (i0, j0) = (tx.floor() as i64, ty.floor() as i64);
+    let (fx, fy) = (tx - i0 as f64, ty - j0 as f64);
+    let bilinear = |field: &[f32], ox: i64, oy: i64| {
+        let at = |i: i64, j: i64| {
+            field[(j.rem_euclid(GRID as i64) as usize) * GRID + i.rem_euclid(GRID as i64) as usize]
+                as f64
+        };
+        let (i, j) = (i0 + ox, j0 + oy);
+        (at(i, j) * (1.0 - fx) + at(i + 1, j) * fx) * (1.0 - fy)
+            + (at(i, j + 1) * (1.0 - fx) + at(i + 1, j + 1) * fx) * fy
+    };
+    let step = tile_meters / GRID as f64;
+    let velocity = bilinear(&slot.velocity, 0, 0);
+    let height_at = |ox, oy| bilinear(&slot.height, ox, oy) + delta_seconds * bilinear(&slot.velocity, ox, oy);
+    let height = height_at(0, 0);
+    let (dx0, dz0) = (bilinear(&slot.dx, 0, 0), bilinear(&slot.dz, 0, 0));
+    let (dxu, dzu) = (bilinear(&slot.dx, 1, 0), bilinear(&slot.dz, 1, 0));
+    let (dxv, dzv) = (bilinear(&slot.dx, 0, 1), bilinear(&slot.dz, 0, 1));
+    FieldSample {
+        height,
+        slope: [(height_at(1, 0) - height) / step, (height_at(0, 1) - height) / step],
+        velocity,
+        displacement: [dx0, dz0],
+        jacobian: [(dxu - dx0) / step, (dzv - dz0) / step, (dxv - dx0) / step, (dzu - dz0) / step],
+    }
+}
+
+/// Builds the lattice steps just past the highest one requested, so a clock
+/// moving forward finds its grids ready. Exits when the surface is dropped.
+fn prefetch_worker(shared: std::sync::Weak<SurfaceShared>) {
+    loop {
+        let Some(surface) = shared.upgrade() else { return };
+        let frontier = surface.frontier.load(std::sync::atomic::Ordering::Relaxed);
+        if frontier != i64::MIN {
+            for key in frontier + 1..=frontier + PREFETCH_STEPS {
+                for cascade in &surface.cascades {
+                    if cascade.cached(key).is_none() {
+                        cascade.insert(key, cascade.build(key));
+                    }
+                }
+            }
+        }
+        let (flag, condvar) = &surface.wake;
+        let mut woken = flag.lock().unwrap();
+        if !*woken {
+            woken = condvar
+                .wait_timeout(woken, std::time::Duration::from_millis(50))
+                .unwrap()
+                .0;
+        }
+        *woken = false;
+    }
+}
+
+fn smoothstep(edge0: f64, edge1: f64, x: f64) -> f64 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+impl CpuSurface {
+    pub fn new(h0: &[[f32; 4]]) -> Self {
+        let shared = std::sync::Arc::new(SurfaceShared {
+            cascades: vec![CpuCascade::new(h0, 0), CpuCascade::new(h0, SWELL_CASCADE)],
+            frontier: std::sync::atomic::AtomicI64::new(i64::MIN),
+            wake: (std::sync::Mutex::new(false), std::sync::Condvar::new()),
+        });
+        let weak = std::sync::Arc::downgrade(&shared);
+        std::thread::Builder::new()
+            .name("ocean-cpu-fft".into())
+            .spawn(move || prefetch_worker(weak))
+            .expect("spawn ocean CPU FFT worker");
+        Self { shared }
+    }
+
+    fn cascades(&self) -> &[CpuCascade] {
+        &self.shared.cascades
+    }
+
+    pub fn mode_count(&self) -> usize {
+        self.cascades().iter().map(|c| c.modes.len()).sum()
+    }
+
+    /// The water surface drawn at planet direction `direction`: the label
+    /// point x0 whose displaced position x0 - D(x0) lands here is found by
+    /// Newton iteration, then height, slope (through the displacement
+    /// Jacobian, as the shader shades it) and vertical velocity are read there.
+    pub fn sample(
+        &self,
+        direction: [f64; 3],
+        radius_meters: f64,
+        time: f64,
+        storm_intensity: f32,
+    ) -> CpuSample {
         let (u, v) = anchor_axes(direction);
         let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-        let length = TILE_METERS[0] as f64;
-        let tx = ((radius_meters * dot(u, direction) / length).rem_euclid(1.0)) * GRID as f64 - 0.5;
-        let ty = ((radius_meters * dot(v, direction) / length).rem_euclid(1.0)) * GRID as f64 - 0.5;
-        let (i0, j0) = (tx.floor() as i64, ty.floor() as i64);
-        let (fx, fy) = (tx - i0 as f64, ty - j0 as f64);
-        let mut cache = self.state.lock().unwrap();
-        let index = match cache.nearest(time) {
-            Some(index) => index,
-            None => {
-                let index = if cache.slots.len() < GRID_SLOTS {
-                    cache.slots.push(GridState {
-                        time: 0.0,
-                        valid: false,
-                        height: vec![0.0; GRID * GRID],
-                        velocity: vec![0.0; GRID * GRID],
-                    });
-                    cache.slots.len() - 1
-                } else {
-                    let index = cache.next_replacement;
-                    cache.next_replacement = (index + 1) % GRID_SLOTS;
-                    index
+        let target = [radius_meters * dot(u, direction), radius_meters * dot(v, direction)];
+        let (sample, _) = self.sample_at(target, time, storm_intensity);
+        CpuSample { axis_u: u, axis_v: v, ..sample }
+    }
+
+    /// `sample` at tangent-plane metres `target`; also returns the label point.
+    fn sample_at(&self, target: [f64; 2], time: f64, storm_intensity: f32) -> (CpuSample, [f64; 2]) {
+        let key = (time / LATTICE_SECONDS).round() as i64;
+        let delta = time - key as f64 * LATTICE_SECONDS;
+        let scales = [1.0, swell_height_meters(storm_intensity) as f64];
+        let chop = choppiness() as f64;
+        let [wind, swell] = [&self.cascades()[0], &self.cascades()[1]];
+        let previous = self.shared.frontier.fetch_max(key, std::sync::atomic::Ordering::Relaxed);
+        if key > previous {
+            let (flag, condvar) = &self.shared.wake;
+            *flag.lock().unwrap() = true;
+            condvar.notify_one();
+        }
+        let wind_slot = &*wind.slot(key);
+        let swell_slot = &*swell.slot(key);
+        {
+            {
+                let field = |position: [f64; 2]| {
+                    let mut total = FieldSample::default();
+                    total.add_scaled(&sample_slot(wind_slot, wind.tile_meters, position, delta), scales[0]);
+                    total.add_scaled(&sample_slot(swell_slot, swell.tile_meters, position, delta), scales[1]);
+                    total
                 };
-                self.refresh(&mut cache.slots[index], time);
-                index
+                // Mirrors the shader's fold limiter: displacement eases off
+                // where the surface would otherwise turn inside out.
+                let limited = |sample: &FieldSample| {
+                    let j = sample.jacobian;
+                    let raw = (1.0 - chop * j[0]) * (1.0 - chop * j[1]) - chop * chop * j[2] * j[3];
+                    chop * (0.25 + 0.75 * smoothstep(0.1, 0.6, raw))
+                };
+                let mut label = target;
+                let mut sample = field(label);
+                for _ in 0..INVERSE_ITERATIONS {
+                    let c = limited(&sample);
+                    let residual = [
+                        label[0] - c * sample.displacement[0] - target[0],
+                        label[1] - c * sample.displacement[1] - target[1],
+                    ];
+                    let j = sample.jacobian;
+                    // d(label - cD)/d(label), rows u and v.
+                    let (a, b, cc, d) = (1.0 - c * j[0], -c * j[2], -c * j[3], 1.0 - c * j[1]);
+                    let det = (a * d - b * cc).max(0.2);
+                    label[0] -= (d * residual[0] - b * residual[1]) / det;
+                    label[1] -= (-cc * residual[0] + a * residual[1]) / det;
+                    sample = field(label);
+                }
+                let c = limited(&sample);
+                let j = sample.jacobian;
+                let (a, b, cc, d) = (1.0 - c * j[0], -c * j[2], -c * j[3], 1.0 - c * j[1]);
+                let det = (a * d - b * cc).max(0.35);
+                let [hu, hv] = sample.slope;
+                (
+                    CpuSample {
+                        height: sample.height,
+                        slope_uv: [(d * hu - cc * hv) / det, (-b * hu + a * hv) / det],
+                        velocity: sample.velocity,
+                        axis_u: [0.0; 3],
+                        axis_v: [0.0; 3],
+                    },
+                    label,
+                )
             }
-        };
-        let state = &cache.slots[index];
-        let delta = time - state.time;
-        let at = |i: i64, j: i64| {
-            let index = (j.rem_euclid(GRID as i64) as usize) * GRID + i.rem_euclid(GRID as i64) as usize;
-            (
-                state.height[index] as f64 + delta * state.velocity[index] as f64,
-                state.velocity[index] as f64,
-            )
-        };
-        let bilinear = |ox: i64, oy: i64, pick: fn((f64, f64)) -> f64| {
-            let c = |a: i64, b: i64| pick(at(i0 + a + ox, j0 + b + oy));
-            (c(0, 0) * (1.0 - fx) + c(1, 0) * fx) * (1.0 - fy)
-                + (c(0, 1) * (1.0 - fx) + c(1, 1) * fx) * fy
-        };
-        let base = bilinear(0, 0, |c| c.0);
-        let step_meters = length / GRID as f64;
-        CpuSample {
-            height: base,
-            slope_uv: [
-                (bilinear(1, 0, |c| c.0) - base) / step_meters,
-                (bilinear(0, 1, |c| c.0) - base) / step_meters,
-            ],
-            velocity: bilinear(0, 0, |c| c.1),
-            axis_u: u,
-            axis_v: v,
         }
     }
 
+    /// Height texel of CPU cascade `index` (0 wind, 1 swell) at exact `time`.
     #[cfg(test)]
-    fn texel(&self, i: usize, j: usize, time: f64) -> f64 {
-        let mut state = GridState {
-            time: 0.0,
-            valid: false,
-            height: vec![0.0; GRID * GRID],
-            velocity: vec![0.0; GRID * GRID],
-        };
-        self.refresh(&mut state, time);
-        state.height[j * GRID + i] as f64
+    fn texel(&self, index: usize, i: usize, j: usize, time: f64) -> f64 {
+        self.cascades()[index].transform(time)[0][j * GRID + i] as f64
     }
 }
 
@@ -623,7 +929,14 @@ impl OceanFft {
     /// Anchors the tangent plane at the first camera direction, then keeps it
     /// fixed so the wave pattern never slides; only the camera's fractional
     /// tile coordinates change per frame.
-    pub fn update_view(&self, queue: &wgpu::Queue, camera_direction: [f64; 3], radius_meters: f64, gain: f32) {
+    pub fn update_view(
+        &self,
+        queue: &wgpu::Queue,
+        camera_direction: [f64; 3],
+        radius_meters: f64,
+        gain: f32,
+        storm_intensity: f32,
+    ) {
         let (u, v) = anchor_axes(camera_direction);
         let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
         let (cu, cv) = (radius_meters * dot(u, camera_direction), radius_meters * dot(v, camera_direction));
@@ -636,7 +949,7 @@ impl OceanFft {
             axis_u: [u[0] as f32, u[1] as f32, u[2] as f32, 0.0],
             axis_v: [v[0] as f32, v[1] as f32, v[2] as f32, 0.0],
             cascade,
-            gain: [gain, choppiness(), 0.0, 0.0],
+            gain: [gain, choppiness(), swell_height_meters(storm_intensity), 0.0],
         };
         queue.write_buffer(&self.view_params, 0, bytemuck::bytes_of(&params));
     }
@@ -835,7 +1148,7 @@ pub(crate) mod tests {
         };
         run(20);
         let samples: Vec<f64> = (0..5).map(|_| run(100)).collect();
-        eprintln!("ocean FFT (3 x 256^2, 6 FFTs) ms/frame: {samples:.3?}");
+        eprintln!("ocean FFT ({CASCADES} x 256^2, {FFT_ARRAYS} FFTs) ms/frame: {samples:.3?}");
         let field = read_field(&device, &queue, &fft);
         let (mut lo, mut hi) = (f32::MAX, f32::MIN);
         for texel in &field[..GRID * GRID] {
@@ -859,59 +1172,125 @@ pub(crate) mod tests {
         fft.encode(&mut encoder);
         queue.submit(Some(encoder.finish()));
         let field = read_field(&device, &queue, &fft);
-        let (mut max_err, mut max_h) = (0.0f64, 0.0f64);
-        for &(i, j) in &[(0usize, 0usize), (5, 9), (100, 200), (255, 255), (128, 64), (17, 240), (77, 3)] {
-            let gpu = field[j * GRID + i][0] as f64;
-            max_err = max_err.max((gpu - cpu.texel(i, j, time)).abs());
-            max_h = max_h.max(gpu.abs());
+        for (index, layer) in [(0usize, 0usize), (1, SWELL_CASCADE)] {
+            let (mut max_err, mut max_h) = (0.0f64, 0.0f64);
+            for &(i, j) in &[(0usize, 0usize), (5, 9), (100, 200), (255, 255), (128, 64), (17, 240), (77, 3)] {
+                let gpu = field[layer * GRID * GRID + j * GRID + i][0] as f64;
+                max_err = max_err.max((gpu - cpu.texel(index, i, j, time)).abs());
+                max_h = max_h.max(gpu.abs());
+            }
+            eprintln!("layer {layer}: cpu vs gpu texel max error {max_err:.5} m (max height {max_h:.3})");
+            assert!(max_err < 0.02, "layer {layer} max error {max_err}");
         }
-        eprintln!("cpu vs gpu texel max error {max_err:.5} m (max height {max_h:.3}), modes {}", cpu.mode_count());
-        assert!(max_err < 0.02, "max error {max_err}");
     }
 
     #[test]
-    fn cpu_velocity_matches_numeric_derivative_and_refresh_is_cheap() {
+    fn swell_layer_is_normalised_to_one_metre_significant_height() {
         let cpu = CpuSurface::new(&default_h0());
-        let d = [0.836_f64, 0.504, 0.216];
-        let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-        let d = [d[0] / l, d[1] / l, d[2] / l];
-        let r = 4_000_000.0;
-        let a = cpu.sample(d, r, 10.0);
-        let b = cpu.sample(d, r, 10.001);
-        let numeric = (b.height - a.height) / 0.001;
-        assert!((numeric - a.velocity).abs() < 5e-3, "numeric {numeric} analytic {}", a.velocity);
-        // Height between refreshes tracks a fresh transform to a few mm.
-        let near = cpu.sample(d, r, 10.025).height;
-        let fresh = {
-            let other = CpuSurface::new(&default_h0());
-            other.sample(d, r, 10.025).height
-        };
-        eprintln!("held-grid error {:.5} m", (near - fresh).abs());
-        assert!((near - fresh).abs() < 0.01);
-        let start = std::time::Instant::now();
-        for k in 0..20 {
-            std::hint::black_box(CpuSurface::sample(&cpu, d, r, 100.0 + k as f64));
-        }
-        eprintln!("refresh+sample: {:.3} ms each", start.elapsed().as_secs_f64() * 50.0);
+        let grid = cpu.cascades()[1].transform(0.0);
+        let n = grid[0].len() as f64;
+        let mean = grid[0].iter().map(|&h| h as f64).sum::<f64>() / n;
+        let sigma = (grid[0].iter().map(|&h| (h as f64 - mean).powi(2)).sum::<f64>() / n).sqrt();
+        eprintln!("swell layer Hs {:.4} m, modes {}", 4.0 * sigma, cpu.cascades()[1].modes.len());
+        assert!((4.0 * sigma - 1.0).abs() < 0.01, "Hs {}", 4.0 * sigma);
+        assert!(swell_height_meters(0.0) > 0.0);
     }
 
     #[test]
-    fn interleaved_query_times_do_not_refresh_every_call() {
+    fn lattice_extrapolation_tracks_an_exact_transform() {
+        let cpu = CpuSurface::new(&default_h0());
+        let cascade = &cpu.cascades()[0];
+        // Worst case: halfway between lattice points.
+        let time = 12.0 + 0.5 * LATTICE_SECONDS - 1e-9;
+        let key = (time / LATTICE_SECONDS).round() as i64;
+        let delta = time - key as f64 * LATTICE_SECONDS;
+        let exact = cascade.transform(time);
+        let mut worst = 0.0f64;
+        let step = cascade.tile_meters / GRID as f64;
+        for &(i, j) in &[(3usize, 7usize), (90, 12), (200, 150), (255, 0)] {
+            let position = [(i as f64 + 0.5) * step, (j as f64 + 0.5) * step];
+            let held = sample_slot(&cascade.slot(key), cascade.tile_meters, position, delta);
+            worst = worst.max((held.height - exact[0][j * GRID + i] as f64).abs());
+        }
+        eprintln!("lattice extrapolation worst height error {worst:.5} m");
+        assert!(worst < 0.005, "{worst}");
+    }
+
+    #[test]
+    fn inverse_displacement_finds_the_label_that_lands_on_the_target() {
+        let cpu = CpuSurface::new(&default_h0());
+        let (time, storm) = (21.3, 0.0);
+        let key = (time / LATTICE_SECONDS).round() as i64;
+        let delta = time - key as f64 * LATTICE_SECONDS;
+        let scale = swell_height_meters(storm) as f64;
+        let chop = choppiness() as f64;
+        for label in [[10.0, 20.0], [333.3, -71.0], [1234.5, 876.5], [-40.0, 512.25]] {
+            // Forward-map a label exactly as the shader displaces a vertex.
+            let (wind, swell) = (&cpu.cascades()[0], &cpu.cascades()[1]);
+            let at = |p: [f64; 2]| {
+                let mut total = FieldSample::default();
+                total.add_scaled(&sample_slot(&wind.slot(key), wind.tile_meters, p, delta), 1.0);
+                total.add_scaled(&sample_slot(&swell.slot(key), swell.tile_meters, p, delta), scale);
+                total
+            };
+            let field = at(label);
+            let j = field.jacobian;
+            let raw = (1.0 - chop * j[0]) * (1.0 - chop * j[1]) - chop * chop * j[2] * j[3];
+            let c = chop * (0.25 + 0.75 * smoothstep(0.1, 0.6, raw));
+            let target = [label[0] - c * field.displacement[0], label[1] - c * field.displacement[1]];
+            let (sample, found) = cpu.sample_at(target, time, storm);
+            let miss = ((found[0] - label[0]).powi(2) + (found[1] - label[1]).powi(2)).sqrt();
+            eprintln!(
+                "label {label:?}: displaced {:.2} m, recovered within {miss:.4} m, height {:.3} vs {:.3}",
+                (c * c * (field.displacement[0].powi(2) + field.displacement[1].powi(2))).sqrt(),
+                sample.height,
+                field.height
+            );
+            assert!(miss < 0.02, "{miss}");
+            assert!((sample.height - field.height).abs() < 0.005);
+        }
+    }
+
+    #[test]
+    fn a_clock_moving_forward_finds_its_grids_prefetched() {
+        let cpu = CpuSurface::new(&default_h0());
+        let time = 50.0;
+        cpu.sample([0.6_f64, 0.8, 0.0], 4_000_000.0, time, 0.0);
+        let key = (time / LATTICE_SECONDS).round() as i64;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        // The render thread never asked for these; the worker must build them.
+        for ahead in 1..=PREFETCH_STEPS {
+            for cascade in cpu.cascades() {
+                while cascade.cached(key + ahead).is_none() {
+                    assert!(std::time::Instant::now() < deadline, "step +{ahead} never prefetched");
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn interleaved_query_times_cost_one_transform_per_lattice_step() {
         let cpu = CpuSurface::new(&default_h0());
         let d = [0.6_f64, 0.8, 0.0];
         let r = 4_000_000.0;
-        let times = [10.0, 10.5, 11.0, 11.5, 12.0, 13.0];
-        for t in times {
-            cpu.sample(d, r, t); // warm each slot
-        }
         let start = std::time::Instant::now();
-        for _ in 0..200 {
-            for t in times {
-                std::hint::black_box(cpu.sample(d, r, t));
+        std::hint::black_box(cpu.cascades()[0].transform(5.0));
+        std::hint::black_box(cpu.cascades()[1].transform(5.0));
+        let one_step = start.elapsed().as_secs_f64();
+        // A bird's look-ahead pattern: several times, stepped at 30Hz for 1s.
+        let start = std::time::Instant::now();
+        for step in 0..30 {
+            let now = 10.0 + step as f64 / 30.0;
+            for ahead in [0.0, 0.5, 1.0, 1.5, 2.0, 3.0] {
+                std::hint::black_box(cpu.sample(d, r, now + ahead, 0.0));
             }
         }
-        // 1200 samples; one refresh per call would be ~2.8s.
-        assert!(start.elapsed().as_secs_f64() < 0.5, "{:?}", start.elapsed());
+        let elapsed = start.elapsed().as_secs_f64();
+        // 1s of steps spans ~10 lattice steps per look-ahead offset, but the
+        // offsets revisit each other's steps: at most ~40 distinct keys.
+        eprintln!("transform (wind + swell) {:.2} ms; 180 look-ahead samples {:.1} ms", one_step * 1e3, elapsed * 1e3);
+        assert!(elapsed < one_step * 45.0, "{elapsed} vs {one_step}");
     }
 }
 
@@ -943,7 +1322,7 @@ mod jacobian_study {
                     let dzdz = (u[2] - d[2]) / (2.0 * step);
                     let dxdz = (u[1] - d[1]) / (2.0 * step);
                     let dzdx = (r[2] - l[2]) / (2.0 * step);
-                    j.push((1.0 + dxdx) * (1.0 + dzdz) - dxdz * dzdx);
+                    j.push((1.0 - dxdx) * (1.0 - dzdz) - dxdz * dzdx);
                 }
             }
             j.sort_by(|a, b| a.partial_cmp(b).unwrap());

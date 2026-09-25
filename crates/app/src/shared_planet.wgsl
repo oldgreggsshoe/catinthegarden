@@ -365,8 +365,9 @@ var ocean_fft_sampler: sampler;
 struct OceanFftView {
     axis_u: vec4<f32>,
     axis_v: vec4<f32>,
-    // Camera fractional tile u, v; tile length metres; unused.
-    cascade: array<vec4<f32>, 3>,
+    // Camera fractional tile u, v; tile length metres; unused. Three wind
+    // cascades, then swell.
+    cascade: array<vec4<f32>, 4>,
     gain: vec4<f32>,
 }
 
@@ -415,8 +416,10 @@ fn ocean_fft_textured_foam(coverage: f32) -> f32 {
 const OCEAN_FFT_FOAM_JACOBIAN_ONSET: f32 = 0.62;
 const OCEAN_FFT_FOAM_JACOBIAN_FULL: f32 = 0.32;
 
+// `jacobian` holds derivatives of D; the drawn surface is x0 - D (D = +sin
+// where height = cos), so its Jacobian is I - grad D and folds at crests.
 fn ocean_fft_fold_amount(jacobian: vec4<f32>) -> f32 {
-    let j = (1.0 + jacobian.x) * (1.0 + jacobian.y) - jacobian.z * jacobian.w;
+    let j = (1.0 - jacobian.x) * (1.0 - jacobian.y) - jacobian.z * jacobian.w;
     return smoothstep(OCEAN_FFT_FOAM_JACOBIAN_ONSET, OCEAN_FFT_FOAM_JACOBIAN_FULL, j);
 }
 
@@ -1559,26 +1562,41 @@ fn ocean_surface_fft(
     let mid_jacobian = ocean_fft_last_jacobian;
     let mid_displacement = ocean_fft_last_displacement;
     let fine = ocean_fft_cascade(2u, local, filter_width);
+    let fine_jacobian = ocean_fft_last_jacobian;
+    let fine_displacement = ocean_fft_last_displacement;
+    // Swell (cascade 3) is geometry like cascade 0, normalised to 1m
+    // significant height and scaled by gain.z (metres).
+    let swell_scale = ocean_fft_view.gain.z;
+    let swell = ocean_fft_cascade(3u, local, filter_width);
+    let core = broad + swell * swell_scale;
+    let core_jacobian = broad_jacobian + ocean_fft_last_jacobian * swell_scale;
+    let core_displacement = broad_displacement + ocean_fft_last_displacement * swell_scale;
     let pattern = (fine.x / OCEAN_FFT_FINE_HEIGHT_STD) * fine_weight
         + (mid.x / OCEAN_FFT_MID_HEIGHT_STD) * (1.0 - fine_weight) * mid_weight;
     ocean_fft_foam_pattern = clamp(0.5 + 0.25 * pattern, 0.0, 1.0);
     ocean_fft_foam_pattern_strength = max(fine_weight, mid_weight);
-    ocean_fft_fold_foam = ocean_fft_fold_amount(
-        (broad_jacobian + mid_jacobian * mid_weight + ocean_fft_last_jacobian * fine_weight) * gain,
-    );
+    let label_jacobian = core_jacobian + mid_jacobian * mid_weight + fine_jacobian * fine_weight;
+    ocean_fft_fold_foam = ocean_fft_fold_amount(label_jacobian * gain);
     // Heights are stored per wave-label position, but choppy displacement moves
     // each label sideways; the surface slope at the drawn position is the label
     // slope through the inverse displacement Jacobian. Where crests pinch the
     // Jacobian shrinks and the faces steepen into cusps.
     let chop_strength = ocean_fft_view.gain.y * geometry_weight;
-    let fine_jacobian = ocean_fft_last_jacobian;
-    let drawn_jacobian = (broad_jacobian + mid_jacobian * mid_weight + fine_jacobian * fine_weight)
-        * (gain * chop_strength);
+    // Derivatives of the drawn offset -D: the surface is x0 - D.
+    let full_jacobian = label_jacobian * (-gain * chop_strength);
+    let raw_determinant =
+        (1.0 + full_jacobian.x) * (1.0 + full_jacobian.y) - full_jacobian.z * full_jacobian.w;
+    // Where crests pinch past a cusp the surface folds over itself and, with
+    // per-frame changes, boils. Ease the displacement off as the Jacobian
+    // approaches zero so the mesh never turns inside out. The CPU surface
+    // (ocean_fft::CpuSurface::sample) applies the same limit.
+    let fold_limit = mix(0.25, 1.0, smoothstep(0.1, 0.6, raw_determinant));
+    let drawn_jacobian = full_jacobian * fold_limit;
     let drawn_determinant = max(
         (1.0 + drawn_jacobian.x) * (1.0 + drawn_jacobian.y) - drawn_jacobian.z * drawn_jacobian.w,
-        0.2,
+        0.35,
     );
-    let broad_uv = vec2<f32>(broad.y, broad.z) * gain;
+    let broad_uv = vec2<f32>(core.y, core.z) * gain;
     let ripple_uv = vec2<f32>(
         mid.y * mid_weight + fine.y * fine_weight,
         mid.z * mid_weight + fine.z * fine_weight,
@@ -1597,7 +1615,7 @@ fn ocean_surface_fft(
     let slope = tangent_slope - direction * dot(tangent_slope, direction);
     let ripple_tangent = axis_u * ripple_drawn.x + axis_v * ripple_drawn.y;
     let ripple_slope = ripple_tangent - direction * dot(ripple_tangent, direction);
-    let raw_vertical = broad.x * gain * geometry_weight;
+    let raw_vertical = core.x * gain * geometry_weight;
     let breaking_limit_meters =
         0.5 * OCEAN_BREAKING_HEIGHT_TO_DEPTH_RATIO * max(water_depth_meters, 0.0);
     var breaking_weight = 0.0;
@@ -1609,17 +1627,20 @@ fn ocean_surface_fft(
         breaking_slope_weight = breaking_weight / (1.0 + ratio);
         breaking_ratio = max(raw_vertical, 0.0) / breaking_limit_meters;
     }
-    let convergence = -(broad.w + mid.w * mid_weight) * gain * geometry_weight;
+    // Points bunch where div D > 0 (x = x0 - D), which is at the crests.
+    let convergence = (core.w + mid.w * mid_weight) * gain * geometry_weight;
     // Choppy horizontal displacement: the vertex moves toward the crest, which
-    // is what pinches wave tops into cusps. Cascades are already box-filtered to
-    // the mesh spacing, so this only carries what the mesh can represent.
+    // is what pinches wave tops into cusps. D = +sin where height = cos, so the
+    // crest-ward move is -D; +D pinches the troughs into downward spikes.
+    // Cascades are already box-filtered to the mesh spacing, so this only
+    // carries what the mesh can represent.
     let chop_tangent = (
-        axis_u * (broad_displacement.x + mid_displacement.x * mid_weight
-            + ocean_fft_last_displacement.x * fine_weight)
-        + axis_v * (broad_displacement.y + mid_displacement.y * mid_weight
-            + ocean_fft_last_displacement.y * fine_weight)
-    ) * (gain * ocean_fft_view.gain.y * geometry_weight * breaking_weight);
-    let chop = chop_tangent - direction * dot(chop_tangent, direction);
+        axis_u * (core_displacement.x + mid_displacement.x * mid_weight
+            + fine_displacement.x * fine_weight)
+        + axis_v * (core_displacement.y + mid_displacement.y * mid_weight
+            + fine_displacement.y * fine_weight)
+    ) * (gain * ocean_fft_view.gain.y * geometry_weight * breaking_weight * fold_limit);
+    let chop = -(chop_tangent - direction * dot(chop_tangent, direction));
     return OceanSurface(
         breaking_ratio,
         chop,

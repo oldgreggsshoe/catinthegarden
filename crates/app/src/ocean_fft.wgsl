@@ -1,4 +1,4 @@
-// GPU FFT ocean wave field (Tessendorf). Three cascades of 256x256, each with
+// GPU FFT ocean wave field (Tessendorf). Four cascades (three wind, one swell) of 256x256, each with
 // two packed complex FFTs carrying h, Dx, Dz (P0 = h + i Dx, P1 = Dz).
 const N: u32 = 256u;
 const HALF_N: f32 = 128.0;
@@ -10,7 +10,7 @@ struct Params {
     pad0: f32,
     pad1: f32,
     pad2: f32,
-    tile: array<vec4<f32>, 3>,
+    tile: array<vec4<f32>, 4>,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;

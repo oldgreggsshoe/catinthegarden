@@ -99,11 +99,13 @@ fn cs_foam(@builtin(global_invocation_id) id: vec3<u32>) {
         let texel_meters = 512.0 / f32(dimensions.x);
         let jacobian = foam_fft_jacobian(0u, local, texel_meters)
             + foam_fft_jacobian(1u, local, texel_meters)
-            + foam_fft_jacobian(2u, local, texel_meters);
+            + foam_fft_jacobian(2u, local, texel_meters)
+            + foam_fft_jacobian(3u, local, texel_meters) * foam_fft_view.gain.z;
         // 2m texels average away the finer cascades' sharpest folds, so the
         // atlas births foam at a gentler Jacobian than the per-pixel rule.
         let scaled = jacobian * foam_fft_view.gain.x;
-        let j = (1.0 + scaled.x) * (1.0 + scaled.y) - scaled.z * scaled.w;
+        // Drawn surface is x0 - D, so it folds where I - grad D does: crests.
+        let j = (1.0 - scaled.x) * (1.0 - scaled.y) - scaled.z * scaled.w;
         born = smoothstep(FOAM_FFT_ATLAS_JACOBIAN_ONSET, FOAM_FFT_ATLAS_JACOBIAN_FULL, j);
     } else {
         // Resolve the six shortest wind-sea components only. Re-running the full
