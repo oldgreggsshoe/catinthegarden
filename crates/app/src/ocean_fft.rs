@@ -95,6 +95,238 @@ pub fn generate_h0(seed: u32, wind_speed: f32, wind_dir: [f32; 2], fetch_meters:
     out
 }
 
+
+/// Wind speed (m/s) for the FFT sea; shared by the GPU spectrum and the CPU model.
+pub fn wind_speed_from_environment() -> f32 {
+    std::env::var("CATINGARDEN_OCEAN_FFT_WIND")
+        .ok()
+        .and_then(|value| value.trim().parse::<f32>().ok())
+        .unwrap_or(14.0)
+}
+
+pub fn default_h0() -> Vec<[f32; 4]> {
+    generate_h0(1, wind_speed_from_environment(), [1.0, 0.3], 80_000.0)
+}
+
+static ANCHOR: std::sync::OnceLock<([f64; 3], [f64; 3])> = std::sync::OnceLock::new();
+
+/// Tangent-plane axes shared by the shader and the CPU surface model. Fixed at
+/// the first camera direction seen so the pattern never slides afterwards.
+pub fn anchor_axes(camera_direction: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+    *ANCHOR.get_or_init(|| {
+        let d = camera_direction;
+        let helper = if d[1].abs() < 0.9 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
+        let cross = |a: [f64; 3], b: [f64; 3]| {
+            [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+        };
+        let c = cross(helper, d);
+        let l = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt();
+        let u = [c[0] / l, c[1] / l, c[2] / l];
+        (u, cross(d, u))
+    })
+}
+
+/// CPU mirror of cascade 0: the same spectrum the GPU transforms, inverse-FFT'd
+/// on the CPU into a height and vertical-velocity grid that is bilinearly
+/// interpolated exactly like the GPU sampler. The grid is refreshed only when
+/// the ocean clock moves more than `REFRESH_SECONDS`; in between, height is
+/// advanced by its velocity (error below ~5mm for the cascade's periods).
+pub struct CpuSurface {
+    modes: Vec<Mode>,
+    twiddle: Vec<[f64; 2]>,
+    state: std::sync::Mutex<GridState>,
+}
+
+const REFRESH_SECONDS: f64 = 0.03;
+
+struct GridState {
+    time: f64,
+    valid: bool,
+    height: Vec<f32>,
+    velocity: Vec<f32>,
+}
+
+struct Mode {
+    x: usize,
+    y: usize,
+    h0: [f64; 2],
+    h0m: [f64; 2],
+    omega: f64,
+}
+
+/// Height, tangent-plane slope (du, dv) in metres per metre, vertical velocity.
+#[derive(Clone, Copy, Debug)]
+pub struct CpuSample {
+    pub height: f64,
+    pub slope_uv: [f64; 2],
+    pub velocity: f64,
+    pub axis_u: [f64; 3],
+    pub axis_v: [f64; 3],
+}
+
+fn cmul(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
+    [a[0] * b[0] - a[1] * b[1], a[0] * b[1] + a[1] * b[0]]
+}
+
+impl CpuSurface {
+    pub fn new(h0: &[[f32; 4]]) -> Self {
+        let half = GRID as i32 / 2;
+        let mut modes = Vec::new();
+        for y in 0..GRID {
+            for x in 0..GRID {
+                let t = h0[y * GRID + x];
+                if t == [0.0; 4] {
+                    continue;
+                }
+                let n = (x as i32 - half) as f64;
+                let m = (y as i32 - half) as f64;
+                let k = (n * n + m * m).sqrt() * std::f64::consts::TAU / TILE_METERS[0] as f64;
+                modes.push(Mode {
+                    x,
+                    y,
+                    h0: [t[0] as f64, t[1] as f64],
+                    h0m: [t[2] as f64, t[3] as f64],
+                    omega: (GRAVITY as f64 * k).sqrt(),
+                });
+            }
+        }
+        let twiddle = (0..GRID / 2)
+            .map(|j| {
+                let a = std::f64::consts::TAU * j as f64 / GRID as f64;
+                [a.cos(), a.sin()]
+            })
+            .collect();
+        Self {
+            modes,
+            twiddle,
+            state: std::sync::Mutex::new(GridState {
+                time: 0.0,
+                valid: false,
+                height: vec![0.0; GRID * GRID],
+                velocity: vec![0.0; GRID * GRID],
+            }),
+        }
+    }
+
+    pub fn mode_count(&self) -> usize {
+        self.modes.len()
+    }
+
+    /// In-place unnormalised inverse FFT (e^{+i}) of one 256-point line.
+    fn fft_line(&self, line: &mut [[f64; 2]; GRID]) {
+        for i in 0..GRID {
+            let j = (i as u32).reverse_bits() as usize >> (32 - 8);
+            if j > i {
+                line.swap(i, j);
+            }
+        }
+        let mut half = 1;
+        while half < GRID {
+            let stride = GRID / (half * 2);
+            for start in (0..GRID).step_by(half * 2) {
+                for j in 0..half {
+                    let w = self.twiddle[j * stride];
+                    let t = cmul(w, line[start + j + half]);
+                    let u = line[start + j];
+                    line[start + j] = [u[0] + t[0], u[1] + t[1]];
+                    line[start + j + half] = [u[0] - t[0], u[1] - t[1]];
+                }
+            }
+            half *= 2;
+        }
+    }
+
+    fn refresh(&self, state: &mut GridState, time: f64) {
+        // Packed spectrum: h_hat + i * v_hat, both Hermitian, so one complex
+        // inverse FFT returns height (real) and velocity (imaginary).
+        let mut grid = vec![[0.0f64; 2]; GRID * GRID];
+        for mode in &self.modes {
+            let phase = mode.omega * time;
+            let (s, c) = phase.sin_cos();
+            let plus = cmul(mode.h0, [c, s]);
+            let minus = cmul([mode.h0m[0], -mode.h0m[1]], [c, -s]);
+            let h = [plus[0] + minus[0], plus[1] + minus[1]];
+            // d/dt: i*omega*plus - i*omega*minus.
+            let v = [-mode.omega * (plus[1] - minus[1]), mode.omega * (plus[0] - minus[0])];
+            // h + i v
+            grid[mode.y * GRID + mode.x] = [h[0] - v[1], h[1] + v[0]];
+        }
+        let mut line = [[0.0f64; 2]; GRID];
+        let mut occupied = [false; GRID];
+        for mode in &self.modes {
+            occupied[mode.y] = true;
+        }
+        for y in 0..GRID {
+            if !occupied[y] {
+                continue;
+            }
+            line.copy_from_slice(&grid[y * GRID..(y + 1) * GRID]);
+            self.fft_line(&mut line);
+            grid[y * GRID..(y + 1) * GRID].copy_from_slice(&line);
+        }
+        for x in 0..GRID {
+            for y in 0..GRID {
+                line[y] = grid[y * GRID + x];
+            }
+            self.fft_line(&mut line);
+            for y in 0..GRID {
+                let sign = if (x + y) & 1 == 1 { -1.0 } else { 1.0 };
+                let value = line[y];
+                state.height[y * GRID + x] = (sign * value[0]) as f32;
+                state.velocity[y * GRID + x] = (sign * value[1]) as f32;
+            }
+        }
+        state.time = time;
+        state.valid = true;
+    }
+
+    pub fn sample(&self, direction: [f64; 3], radius_meters: f64, time: f64) -> CpuSample {
+        let (u, v) = anchor_axes(direction);
+        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let length = TILE_METERS[0] as f64;
+        let tx = ((radius_meters * dot(u, direction) / length).rem_euclid(1.0)) * GRID as f64 - 0.5;
+        let ty = ((radius_meters * dot(v, direction) / length).rem_euclid(1.0)) * GRID as f64 - 0.5;
+        let (i0, j0) = (tx.floor() as i64, ty.floor() as i64);
+        let (fx, fy) = (tx - i0 as f64, ty - j0 as f64);
+        let mut state = self.state.lock().unwrap();
+        if !state.valid || (time - state.time).abs() > REFRESH_SECONDS {
+            self.refresh(&mut state, time);
+        }
+        let delta = time - state.time;
+        let at = |i: i64, j: i64| {
+            let index = (j.rem_euclid(GRID as i64) as usize) * GRID + i.rem_euclid(GRID as i64) as usize;
+            (
+                state.height[index] as f64 + delta * state.velocity[index] as f64,
+                state.velocity[index] as f64,
+            )
+        };
+        let bilinear = |ox: i64, oy: i64, pick: fn((f64, f64)) -> f64| {
+            let c = |a: i64, b: i64| pick(at(i0 + a + ox, j0 + b + oy));
+            (c(0, 0) * (1.0 - fx) + c(1, 0) * fx) * (1.0 - fy)
+                + (c(0, 1) * (1.0 - fx) + c(1, 1) * fx) * fy
+        };
+        let base = bilinear(0, 0, |c| c.0);
+        let step_meters = length / GRID as f64;
+        CpuSample {
+            height: base,
+            slope_uv: [
+                (bilinear(1, 0, |c| c.0) - base) / step_meters,
+                (bilinear(0, 1, |c| c.0) - base) / step_meters,
+            ],
+            velocity: bilinear(0, 0, |c| c.1),
+            axis_u: u,
+            axis_v: v,
+        }
+    }
+
+    #[cfg(test)]
+    fn texel(&self, i: usize, j: usize, time: f64) -> f64 {
+        let mut state = self.state.lock().unwrap();
+        self.refresh(&mut state, time);
+        state.height[j * GRID + i] as f64
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Params {
@@ -121,7 +353,6 @@ pub struct OceanFft {
     pub field_view: wgpu::TextureView,
     pub sampler: wgpu::Sampler,
     pub view_params: wgpu::Buffer,
-    axes: std::cell::Cell<Option<([f64; 3], [f64; 3])>>,
     bind_group: wgpu::BindGroup,
     evolve: wgpu::ComputePipeline,
     rows: wgpu::ComputePipeline,
@@ -257,7 +488,6 @@ impl OceanFft {
             field_view,
             sampler,
             view_params,
-            axes: std::cell::Cell::new(None),
             bind_group,
             evolve: pipeline("evolve"),
             rows: pipeline("fft_rows"),
@@ -270,21 +500,7 @@ impl OceanFft {
     /// fixed so the wave pattern never slides; only the camera's fractional
     /// tile coordinates change per frame.
     pub fn update_view(&self, queue: &wgpu::Queue, camera_direction: [f64; 3], radius_meters: f64, gain: f32) {
-        let (u, v) = self.axes.get().unwrap_or_else(|| {
-            let d = camera_direction;
-            let helper = if d[1].abs() < 0.9 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
-            let cross = |a: [f64; 3], b: [f64; 3]| {
-                [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
-            };
-            let norm = |a: [f64; 3]| {
-                let l = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
-                [a[0] / l, a[1] / l, a[2] / l]
-            };
-            let u = norm(cross(helper, d));
-            let v = cross(d, u);
-            self.axes.set(Some((u, v)));
-            (u, v)
-        });
+        let (u, v) = anchor_axes(camera_direction);
         let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
         let (cu, cv) = (radius_meters * dot(u, camera_direction), radius_meters * dot(v, camera_direction));
         let mut cascade = [[0.0f32; 4]; CASCADES];
@@ -489,5 +705,54 @@ mod tests {
         }
         eprintln!("cascade 0 height range {lo:.3}..{hi:.3} m");
         assert!(lo.is_finite() && hi.is_finite() && hi > lo);
+    }
+
+    #[test]
+    #[ignore = "requires a Vulkan GPU"]
+    fn cpu_model_matches_the_gpu_texture() {
+        let h0 = default_h0();
+        let cpu = CpuSurface::new(&h0);
+        let (device, queue) = device();
+        let fft = OceanFft::new(&device, &h0);
+        let time = 37.25;
+        fft.set_time(&queue, time as f32);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        fft.encode(&mut encoder);
+        queue.submit(Some(encoder.finish()));
+        let field = read_field(&device, &queue, &fft);
+        let (mut max_err, mut max_h) = (0.0f64, 0.0f64);
+        for &(i, j) in &[(0usize, 0usize), (5, 9), (100, 200), (255, 255), (128, 64), (17, 240), (77, 3)] {
+            let gpu = field[j * GRID + i][0] as f64;
+            max_err = max_err.max((gpu - cpu.texel(i, j, time)).abs());
+            max_h = max_h.max(gpu.abs());
+        }
+        eprintln!("cpu vs gpu texel max error {max_err:.5} m (max height {max_h:.3}), modes {}", cpu.mode_count());
+        assert!(max_err < 0.02, "max error {max_err}");
+    }
+
+    #[test]
+    fn cpu_velocity_matches_numeric_derivative_and_refresh_is_cheap() {
+        let cpu = CpuSurface::new(&default_h0());
+        let d = [0.836_f64, 0.504, 0.216];
+        let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        let d = [d[0] / l, d[1] / l, d[2] / l];
+        let r = 4_000_000.0;
+        let a = cpu.sample(d, r, 10.0);
+        let b = cpu.sample(d, r, 10.001);
+        let numeric = (b.height - a.height) / 0.001;
+        assert!((numeric - a.velocity).abs() < 5e-3, "numeric {numeric} analytic {}", a.velocity);
+        // Height between refreshes tracks a fresh transform to a few mm.
+        let near = cpu.sample(d, r, 10.025).height;
+        let fresh = {
+            let other = CpuSurface::new(&default_h0());
+            other.sample(d, r, 10.025).height
+        };
+        eprintln!("held-grid error {:.5} m", (near - fresh).abs());
+        assert!((near - fresh).abs() < 0.01);
+        let start = std::time::Instant::now();
+        for k in 0..20 {
+            std::hint::black_box(CpuSurface::sample(&cpu, d, r, 100.0 + k as f64));
+        }
+        eprintln!("refresh+sample: {:.3} ms each", start.elapsed().as_secs_f64() * 50.0);
     }
 }

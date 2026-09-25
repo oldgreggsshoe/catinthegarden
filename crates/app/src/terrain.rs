@@ -1230,11 +1230,7 @@ impl TerrainRenderer {
             ocean_foam::OceanFoamHistory::new(device, queue, camera_bind_group_layout);
         let ocean_fft_enabled = crate::planet::ocean_fft_enabled();
         let ocean_fft_h0 = if ocean_fft_enabled {
-            let wind = std::env::var("CATINGARDEN_OCEAN_FFT_WIND")
-                .ok()
-                .and_then(|value| value.trim().parse::<f32>().ok())
-                .unwrap_or(14.0);
-            crate::ocean_fft::generate_h0(1, wind, [1.0, 0.3], 80_000.0)
+            crate::ocean_fft::default_h0()
         } else {
             vec![[0.0; 4]; crate::ocean_fft::CASCADES * crate::ocean_fft::GRID * crate::ocean_fft::GRID]
         };
