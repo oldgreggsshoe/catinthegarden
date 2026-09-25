@@ -1749,9 +1749,11 @@ impl State {
 
     /// Start interactive launches floating in the maximum-intensity ocean
     /// storm, then apply the existing F10 presentation default.
-    /// Blur is deliberately not enabled here: startup leaves it on the
-    /// `BLUR_ENABLED` default (off) at Ian's request, 20 September 2026, so an
-    /// ordinary launch shows the unfiltered scene. F6 still toggles it.
+    /// The F6 stage is now edge-aware anti-aliasing, and at Ian's request
+    /// (25 September 2026) interactive launches start with it on;
+    /// `CATINGARDEN_AA=0` opts out and F6 still toggles it. It is not the old
+    /// blur that was switched off on 20 September. Scenarios keep the
+    /// `BLUR_ENABLED` default so their captures stay unchanged.
     /// Scenarios retain their authored camera, post-processing, and clock.
     fn apply_interactive_startup_controls(&mut self) {
         if self.scenario.is_some() {
@@ -1774,6 +1776,12 @@ impl State {
         tracing::info!(
             target: "catinthegarden::startup",
             camera_mode = self.camera_mode.label(),
+        let anti_aliasing = !matches!(
+            std::env::var("CATINGARDEN_AA").ok().as_deref().map(str::trim),
+            Some("0" | "false" | "off")
+        );
+        self.hdr
+            .set_effects(&self.device, anti_aliasing, self.hdr.bloom_enabled());
             boat_camera_attached = self.camera_mode == CameraMode::Boat,
             blur_enabled = self.hdr.blur_enabled(),
             animation_frozen = self.animation_frozen,
@@ -6141,11 +6149,10 @@ mod tests {
         assert!(!should_start_interactive_fullscreen(true));
     }
 
-    /// Startup must leave blur on its `BLUR_ENABLED` default. Switching it on
-    /// was one call inside one function, so that is what this guards: the
-    /// alternative is a GPU device and a whole `State`.
+    /// Interactive startup turns the F6 anti-aliasing stage on through
+    /// `set_effects` (not the F6 toggle), honouring `CATINGARDEN_AA=0`.
     #[test]
-    fn interactive_startup_does_not_enable_blur() {
+    fn interactive_startup_enables_anti_aliasing() {
         let source = include_str!("main.rs");
         let after = source
             .split("fn apply_interactive_startup_controls")
@@ -6155,10 +6162,9 @@ mod tests {
             .split("\n    fn ")
             .next()
             .expect("the function body ends at the next method");
-        assert!(
-            !body.contains("toggle_blur"),
-            "interactive startup turns blur on again:\n{body}"
-        );
+        assert!(body.contains("set_effects"), "startup no longer enables AA:\n{body}");
+        assert!(body.contains("CATINGARDEN_AA"));
+        assert!(!body.contains("toggle_blur"));
     }
 
     #[test]
