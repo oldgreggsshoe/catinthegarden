@@ -98,7 +98,55 @@ fn build_marker() -> Vec<MarkerVertex> {
     out
 }
 
+const BADGE_TEXT: &str = "FFT OCEAN";
+const BADGE_PIXEL: f32 = 4.0;
+const BADGE_TOP_MARGIN_PIXELS: f32 = 10.0;
+
+/// 5x7 glyph rows, top to bottom, low five bits left to right.
+fn glyph(character: char) -> [u8; 7] {
+    match character {
+        'F' => [0b11111, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000, 0b10000],
+        'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+        'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+        'C' => [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
+        'E' => [0b11111, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000, 0b11111],
+        'A' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+        'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
+        _ => [0; 7],
+    }
+}
+
+/// The badge text as pixel quads, offsets from the top-centre point, y downward.
+fn build_badge() -> Vec<MarkerVertex> {
+    let mut out = Vec::new();
+    let advance = 6.0 * BADGE_PIXEL;
+    let count = BADGE_TEXT.chars().count() as f32;
+    let left = -(count * advance - BADGE_PIXEL) / 2.0;
+    for (index, character) in BADGE_TEXT.chars().enumerate() {
+        let origin = left + index as f32 * advance;
+        for (row, bits) in glyph(character).iter().enumerate() {
+            for column in 0..5 {
+                if bits & (1 << (4 - column)) != 0 {
+                    let x = origin + column as f32 * BADGE_PIXEL;
+                    let y = BADGE_TOP_MARGIN_PIXELS + row as f32 * BADGE_PIXEL;
+                    quad(x, y, x + BADGE_PIXEL, y + BADGE_PIXEL, &mut out);
+                }
+            }
+        }
+    }
+    out
+}
+
+struct Badge {
+    pipeline: wgpu::RenderPipeline,
+    vertex_buffer: wgpu::Buffer,
+    vertex_count: u32,
+    uniform_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+}
+
 pub struct FlockMarkerRenderer {
+    badge: Option<Badge>,
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     vertex_count: u32,
@@ -200,7 +248,75 @@ impl FlockMarkerRenderer {
             cache: None,
         });
 
+        let badge = crate::planet::ocean_fft_enabled().then(|| {
+            let mesh = build_badge();
+            let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("mode badge vertices"),
+                size: (mesh.len() * size_of::<MarkerVertex>()) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            queue.write_buffer(&vertex_buffer, 0, bytemuck::cast_slice(&mesh));
+            let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("mode badge uniform"),
+                size: size_of::<MarkerUniform>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("mode badge bind group"),
+                layout: &bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                }],
+            });
+            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("mode badge pipeline"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_badge"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &[MarkerVertex::layout()],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_badge"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: hdr_format,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::Always),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+            Badge {
+                pipeline,
+                vertex_buffer,
+                vertex_count: mesh.len() as u32,
+                uniform_buffer,
+                bind_group,
+            }
+        });
+
         Self {
+            badge,
             pipeline,
             vertex_buffer,
             vertex_count: mesh.len() as u32,
@@ -235,6 +351,17 @@ impl FlockMarkerRenderer {
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 
+    /// Keeps the mode badge's viewport current; call once per frame.
+    pub fn update_badge(&self, queue: &wgpu::Queue, viewport: [u32; 2]) {
+        if let Some(badge) = &self.badge {
+            let uniform = MarkerUniform {
+                view_position: [0.0; 4],
+                viewport: [viewport[0].max(1) as f32, viewport[1].max(1) as f32, 0.0, 0.0],
+            };
+            queue.write_buffer(&badge.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
+        }
+    }
+
     /// Where the reticle landed, for the frame log: view-space z (negative is in
     /// front of the camera) and whether there was anything to mark at all.
     pub fn debug_state(&self) -> (bool, f32) {
@@ -246,6 +373,13 @@ impl FlockMarkerRenderer {
         render_pass: &mut wgpu::RenderPass<'_>,
         camera_bind_group: &wgpu::BindGroup,
     ) {
+        if let Some(badge) = &self.badge {
+            render_pass.set_pipeline(&badge.pipeline);
+            render_pass.set_bind_group(0, camera_bind_group, &[]);
+            render_pass.set_bind_group(1, &badge.bind_group, &[]);
+            render_pass.set_vertex_buffer(0, badge.vertex_buffer.slice(..));
+            render_pass.draw(0..badge.vertex_count, 0..1);
+        }
         if !self.visible || self.vertex_count == 0 {
             return;
         }

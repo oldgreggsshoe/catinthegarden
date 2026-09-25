@@ -4175,6 +4175,8 @@ impl State {
         }
         let simulation_ms = profile_started.elapsed().as_secs_f32() * 1_000.0;
 
+        self.flock_marker
+            .update_badge(&self.queue, [self.size.width, self.size.height]);
         let mut textures_to_free = Vec::new();
         let render_egui = !solid_color_screen && !hide_overlay && self.debug_overlay_visible;
         let refresh_egui = render_egui && (self.hud_dirty || now >= self.next_hud_update);

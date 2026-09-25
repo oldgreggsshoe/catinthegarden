@@ -70,3 +70,18 @@ fn vs_main(input: VertexInput) -> @builtin(position) vec4<f32> {
 fn fs_main() -> @location(0) vec4<f32> {
     return vec4<f32>(MARKER_COLOUR, 1.0);
 }
+
+// Plain white status text at the top centre of the frame ("FFT OCEAN"), built
+// from pixel quads offset from the top-centre point. Not tied to any flock, so
+// it reads only the viewport size from its own uniform.
+@vertex
+fn vs_badge(input: VertexInput) -> @builtin(position) vec4<f32> {
+    let to_ndc = vec2<f32>(2.0 / marker.viewport.x, -2.0 / marker.viewport.y);
+    return vec4<f32>(vec2<f32>(0.0, 1.0) + input.offset_pixels * to_ndc, 0.0, 1.0);
+}
+
+@fragment
+fn fs_badge() -> @location(0) vec4<f32> {
+    // HDR-bright so it stays white after exposure and tone mapping.
+    return vec4<f32>(4.0, 4.0, 4.0, 1.0);
+}
