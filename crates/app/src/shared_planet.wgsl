@@ -368,7 +368,10 @@ struct OceanFftView {
     // Camera fractional tile u, v; tile length metres; unused. Three wind
     // cascades, then swell.
     cascade: array<vec4<f32>, 4>,
+    // x: overall gain, y: choppiness, z: swell height (m).
     gain: vec4<f32>,
+    // x: second-order strength, y: its mean lift (m), subtracted.
+    second_order: vec4<f32>,
 }
 
 @group(2) @binding(18)
@@ -1596,7 +1599,19 @@ fn ocean_surface_fft(
         (1.0 + drawn_jacobian.x) * (1.0 + drawn_jacobian.y) - drawn_jacobian.z * drawn_jacobian.w,
         0.35,
     );
-    let broad_uv = vec2<f32>(core.y, core.z) * gain;
+    // Second-order (Stokes) crest term: h * div(D) less its mean. On a single
+    // wave this is (k a^2 / 2) cos(2 theta), sharper crests and flatter
+    // troughs; where crests cross, h and div(D) are both large and the peak
+    // piles up. Mirrored by ocean_fft::CpuSurface::sample.
+    // The 3-12m cascade is geometry too, so short crests can rise.
+    let linear_height = (core.x + mid.x * mid_weight) * gain;
+    let divergence = clamp((core.w + mid.w * mid_weight) * gain, -0.6, 0.6);
+    let second_order_strength = ocean_fft_view.second_order.x;
+    let second_order = second_order_strength * linear_height * divergence
+        - ocean_fft_view.second_order.y;
+    let broad_uv = vec2<f32>(core.y, core.z) * gain
+        + 2.0 * second_order_strength * divergence
+            * (vec2<f32>(core.y, core.z) + vec2<f32>(mid.y, mid.z) * mid_weight) * gain;
     let ripple_uv = vec2<f32>(
         mid.y * mid_weight + fine.y * fine_weight,
         mid.z * mid_weight + fine.z * fine_weight,
@@ -1615,7 +1630,7 @@ fn ocean_surface_fft(
     let slope = tangent_slope - direction * dot(tangent_slope, direction);
     let ripple_tangent = axis_u * ripple_drawn.x + axis_v * ripple_drawn.y;
     let ripple_slope = ripple_tangent - direction * dot(ripple_tangent, direction);
-    let raw_vertical = core.x * gain * geometry_weight;
+    let raw_vertical = (linear_height + second_order) * geometry_weight;
     let breaking_limit_meters =
         0.5 * OCEAN_BREAKING_HEIGHT_TO_DEPTH_RATIO * max(water_depth_meters, 0.0);
     var breaking_weight = 0.0;

@@ -207,6 +207,7 @@ pub fn anchor_axes(camera_direction: [f64; 3]) -> ([f64; 3], [f64; 3]) {
 /// the transform count grow with query count and time speed.
 pub struct CpuSurface {
     shared: std::sync::Arc<SurfaceShared>,
+    second_order_means: [f64; CASCADES],
 }
 
 struct SurfaceShared {
@@ -220,7 +221,7 @@ struct SurfaceShared {
 const LATTICE_SECONDS: f64 = 0.1;
 /// Birds look ahead 3s; this keeps every lattice step they revisit.
 const LATTICE_SLOTS: usize = 40;
-const INVERSE_ITERATIONS: usize = 4;
+const INVERSE_ITERATIONS: usize = 6;
 /// Lattice steps the background worker builds ahead of the frontier.
 const PREFETCH_STEPS: i64 = 3;
 
@@ -249,6 +250,50 @@ pub fn swell_height_meters(storm_intensity: f32) -> f32 {
     });
     let t = ((storm_intensity - 0.15) / 0.70).clamp(0.0, 1.0);
     base * (1.0 + 0.8 * t * t * (3.0 - 2.0 * t))
+}
+
+/// Strength of the second-order (Stokes) crest term, `CATINGARDEN_OCEAN_FFT_PEAKS`
+/// (default 1, 0-3). 1 is second-order Stokes for a single wave: crests rise
+/// and troughs flatten by k a^2 / 2. Where crests cross it adds several times
+/// that, which is what piles colliding crests into higher peaks.
+pub fn second_order_strength() -> f32 {
+    static VALUE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("CATINGARDEN_OCEAN_FFT_PEAKS")
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .map_or(1.0, |v| v.clamp(0.0, 3.0))
+    })
+}
+
+/// Divergence of D is clamped to this before the second-order product, so a
+/// near-fold cannot throw a spike.
+pub const SECOND_ORDER_DIVERGENCE_LIMIT: f64 = 0.6;
+
+/// Spatial mean of h * div(D) per cascade (Parseval: sum of |k| |h~(k)|^2),
+/// subtracted so the second-order term does not raise mean sea level.
+pub fn second_order_means(h0: &[[f32; 4]]) -> [f64; CASCADES] {
+    let mut out = [0.0; CASCADES];
+    for (c, mean) in out.iter_mut().enumerate() {
+        let dk = std::f64::consts::TAU / TILE_METERS[c] as f64;
+        for y in 0..GRID {
+            for x in 0..GRID {
+                let t = h0[c * GRID * GRID + y * GRID + x];
+                let (re, im) = ((t[0] + t[2]) as f64, (t[1] - t[3]) as f64);
+                let n = x as f64 - GRID as f64 / 2.0;
+                let m = y as f64 - GRID as f64 / 2.0;
+                *mean += dk * (n * n + m * m).sqrt() * (re * re + im * im);
+            }
+        }
+    }
+    out
+}
+
+/// Mean second-order lift of the geometry cascades (wind 0, mid 1, swell
+/// scaled by its height), times the strength.
+fn second_order_offset(means: &[f64; CASCADES], swell_height: f64) -> f64 {
+    second_order_strength() as f64
+        * (means[0] + means[1] + swell_height * swell_height * means[SWELL_CASCADE])
 }
 
 struct CpuCascade {
@@ -579,7 +624,11 @@ fn smoothstep(edge0: f64, edge1: f64, x: f64) -> f64 {
 impl CpuSurface {
     pub fn new(h0: &[[f32; 4]]) -> Self {
         let shared = std::sync::Arc::new(SurfaceShared {
-            cascades: vec![CpuCascade::new(h0, 0), CpuCascade::new(h0, SWELL_CASCADE)],
+            cascades: vec![
+                CpuCascade::new(h0, 0),
+                CpuCascade::new(h0, 1),
+                CpuCascade::new(h0, SWELL_CASCADE),
+            ],
             frontier: std::sync::atomic::AtomicI64::new(i64::MIN),
             wake: (std::sync::Mutex::new(false), std::sync::Condvar::new()),
         });
@@ -588,7 +637,7 @@ impl CpuSurface {
             .name("ocean-cpu-fft".into())
             .spawn(move || prefetch_worker(weak))
             .expect("spawn ocean CPU FFT worker");
-        Self { shared }
+        Self { shared, second_order_means: second_order_means(h0) }
     }
 
     fn cascades(&self) -> &[CpuCascade] {
@@ -621,23 +670,26 @@ impl CpuSurface {
     fn sample_at(&self, target: [f64; 2], time: f64, storm_intensity: f32) -> (CpuSample, [f64; 2]) {
         let key = (time / LATTICE_SECONDS).round() as i64;
         let delta = time - key as f64 * LATTICE_SECONDS;
-        let scales = [1.0, swell_height_meters(storm_intensity) as f64];
+        let swell_height = swell_height_meters(storm_intensity) as f64;
+        // Wind (0) and mid (1) cascades at unit gain; the mid cascade's
+        // distance fade is 1 within 600m of the camera, where CPU queries are.
+        let scales = [1.0, 1.0, swell_height];
         let chop = choppiness() as f64;
-        let [wind, swell] = [&self.cascades()[0], &self.cascades()[1]];
+        let cascades = self.cascades();
         let previous = self.shared.frontier.fetch_max(key, std::sync::atomic::Ordering::Relaxed);
         if key > previous {
             let (flag, condvar) = &self.shared.wake;
             *flag.lock().unwrap() = true;
             condvar.notify_one();
         }
-        let wind_slot = &*wind.slot(key);
-        let swell_slot = &*swell.slot(key);
+        let slots: Vec<_> = cascades.iter().map(|cascade| cascade.slot(key)).collect();
         {
             {
                 let field = |position: [f64; 2]| {
                     let mut total = FieldSample::default();
-                    total.add_scaled(&sample_slot(wind_slot, wind.tile_meters, position, delta), scales[0]);
-                    total.add_scaled(&sample_slot(swell_slot, swell.tile_meters, position, delta), scales[1]);
+                    for ((cascade, slot), scale) in cascades.iter().zip(&slots).zip(scales) {
+                        total.add_scaled(&sample_slot(slot, cascade.tile_meters, position, delta), scale);
+                    }
                     total
                 };
                 // Mirrors the shader's fold limiter: displacement eases off
@@ -667,12 +719,20 @@ impl CpuSurface {
                 let j = sample.jacobian;
                 let (a, b, cc, d) = (1.0 - c * j[0], -c * j[2], -c * j[3], 1.0 - c * j[1]);
                 let det = (a * d - b * cc).max(0.35);
-                let [hu, hv] = sample.slope;
+                // Second-order crest term, as the shader adds it.
+                let strength = second_order_strength() as f64;
+                let divergence = (j[0] + j[1])
+                    .clamp(-SECOND_ORDER_DIVERGENCE_LIMIT, SECOND_ORDER_DIVERGENCE_LIMIT);
+                let lift = 1.0 + 2.0 * strength * divergence;
+                let height = sample.height
+                    + strength * sample.height * divergence
+                    - second_order_offset(&self.second_order_means, swell_height);
+                let [hu, hv] = [sample.slope[0] * lift, sample.slope[1] * lift];
                 (
                     CpuSample {
-                        height: sample.height,
+                        height,
                         slope_uv: [(d * hu - cc * hv) / det, (-b * hu + a * hv) / det],
-                        velocity: sample.velocity,
+                        velocity: sample.velocity * lift,
                         axis_u: [0.0; 3],
                         axis_v: [0.0; 3],
                     },
@@ -682,7 +742,7 @@ impl CpuSurface {
         }
     }
 
-    /// Height texel of CPU cascade `index` (0 wind, 1 swell) at exact `time`.
+    /// Height texel of CPU cascade `index` (0 wind, 1 mid, 2 swell) at exact `time`.
     #[cfg(test)]
     fn texel(&self, index: usize, i: usize, j: usize, time: f64) -> f64 {
         self.cascades()[index].transform(time)[0][j * GRID + i] as f64
@@ -705,7 +765,10 @@ pub struct ViewParams {
     pub axis_u: [f32; 4],
     pub axis_v: [f32; 4],
     pub cascade: [[f32; 4]; CASCADES],
+    /// x: overall gain, y: choppiness, z: swell height (m), w: unused.
     pub gain: [f32; 4],
+    /// x: second-order strength, y: its mean (m) to subtract.
+    pub second_order: [f32; 4],
 }
 
 pub struct OceanFft {
@@ -722,11 +785,13 @@ pub struct OceanFft {
     rows: wgpu::ComputePipeline,
     cols: wgpu::ComputePipeline,
     assemble: wgpu::ComputePipeline,
+    second_order_means: [f64; CASCADES],
 }
 
 impl OceanFft {
     pub fn new(device: &wgpu::Device, h0: &[[f32; 4]]) -> Self {
         assert_eq!(h0.len(), CASCADES * GRID * GRID);
+        let means = second_order_means(h0);
         let storage = |read_only| wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Storage { read_only },
             has_dynamic_offset: false,
@@ -923,6 +988,7 @@ impl OceanFft {
             rows: pipeline("fft_rows"),
             cols: pipeline("fft_cols"),
             assemble: pipeline("assemble"),
+            second_order_means: means,
         }
     }
 
@@ -950,6 +1016,13 @@ impl OceanFft {
             axis_v: [v[0] as f32, v[1] as f32, v[2] as f32, 0.0],
             cascade,
             gain: [gain, choppiness(), swell_height_meters(storm_intensity), 0.0],
+            second_order: [
+                second_order_strength(),
+                second_order_offset(&self.second_order_means, swell_height_meters(storm_intensity) as f64)
+                    as f32,
+                0.0,
+                0.0,
+            ],
         };
         queue.write_buffer(&self.view_params, 0, bytemuck::bytes_of(&params));
     }
@@ -1172,7 +1245,7 @@ pub(crate) mod tests {
         fft.encode(&mut encoder);
         queue.submit(Some(encoder.finish()));
         let field = read_field(&device, &queue, &fft);
-        for (index, layer) in [(0usize, 0usize), (1, SWELL_CASCADE)] {
+        for (index, layer) in [(0usize, 0usize), (1, 1), (2, SWELL_CASCADE)] {
             let (mut max_err, mut max_h) = (0.0f64, 0.0f64);
             for &(i, j) in &[(0usize, 0usize), (5, 9), (100, 200), (255, 255), (128, 64), (17, 240), (77, 3)] {
                 let gpu = field[layer * GRID * GRID + j * GRID + i][0] as f64;
@@ -1187,11 +1260,11 @@ pub(crate) mod tests {
     #[test]
     fn swell_layer_is_normalised_to_one_metre_significant_height() {
         let cpu = CpuSurface::new(&default_h0());
-        let grid = cpu.cascades()[1].transform(0.0);
+        let grid = cpu.cascades()[2].transform(0.0);
         let n = grid[0].len() as f64;
         let mean = grid[0].iter().map(|&h| h as f64).sum::<f64>() / n;
         let sigma = (grid[0].iter().map(|&h| (h as f64 - mean).powi(2)).sum::<f64>() / n).sqrt();
-        eprintln!("swell layer Hs {:.4} m, modes {}", 4.0 * sigma, cpu.cascades()[1].modes.len());
+        eprintln!("swell layer Hs {:.4} m, modes {}", 4.0 * sigma, cpu.cascades()[2].modes.len());
         assert!((4.0 * sigma - 1.0).abs() < 0.01, "Hs {}", 4.0 * sigma);
         assert!(swell_height_meters(0.0) > 0.0);
     }
@@ -1226,11 +1299,11 @@ pub(crate) mod tests {
         let chop = choppiness() as f64;
         for label in [[10.0, 20.0], [333.3, -71.0], [1234.5, 876.5], [-40.0, 512.25]] {
             // Forward-map a label exactly as the shader displaces a vertex.
-            let (wind, swell) = (&cpu.cascades()[0], &cpu.cascades()[1]);
             let at = |p: [f64; 2]| {
                 let mut total = FieldSample::default();
-                total.add_scaled(&sample_slot(&wind.slot(key), wind.tile_meters, p, delta), 1.0);
-                total.add_scaled(&sample_slot(&swell.slot(key), swell.tile_meters, p, delta), scale);
+                for (cascade, weight) in cpu.cascades().iter().zip([1.0, 1.0, scale]) {
+                    total.add_scaled(&sample_slot(&cascade.slot(key), cascade.tile_meters, p, delta), weight);
+                }
                 total
             };
             let field = at(label);
@@ -1246,9 +1319,27 @@ pub(crate) mod tests {
                 sample.height,
                 field.height
             );
+            let divergence = (j[0] + j[1])
+                .clamp(-SECOND_ORDER_DIVERGENCE_LIMIT, SECOND_ORDER_DIVERGENCE_LIMIT);
+            let strength = second_order_strength() as f64;
+            let expected = field.height + strength * field.height * divergence
+                - second_order_offset(&cpu.second_order_means, scale);
             assert!(miss < 0.02, "{miss}");
-            assert!((sample.height - field.height).abs() < 0.005);
+            assert!((sample.height - expected).abs() < 0.005, "{} vs {expected}", sample.height);
         }
+    }
+
+    #[test]
+    fn second_order_term_is_stokes_for_one_wave_and_keeps_mean_level() {
+        // One mode: h = a cos(kx); second order must add (k a^2 / 2) cos(2kx).
+        let mut h0 = vec![[0.0f32; 4]; CASCADES * GRID * GRID];
+        let (n, amp) = (8usize, 0.5f32);
+        h0[(GRID / 2) * GRID + GRID / 2 + n] = [amp, 0.0, amp, 0.0];
+        h0[(GRID / 2) * GRID + GRID / 2 - n] = [amp, 0.0, amp, 0.0];
+        let means = second_order_means(&h0);
+        let k = std::f64::consts::TAU * n as f64 / TILE_METERS[0] as f64;
+        let a = 4.0 * amp as f64; // both +k and -k, each doubled by h0(-k)
+        assert!((means[0] - 0.5 * k * a * a).abs() < 1e-6 * means[0].max(1.0), "{} vs {}", means[0], 0.5 * k * a * a);
     }
 
     #[test]
@@ -1275,8 +1366,9 @@ pub(crate) mod tests {
         let d = [0.6_f64, 0.8, 0.0];
         let r = 4_000_000.0;
         let start = std::time::Instant::now();
-        std::hint::black_box(cpu.cascades()[0].transform(5.0));
-        std::hint::black_box(cpu.cascades()[1].transform(5.0));
+        for cascade in cpu.cascades() {
+            std::hint::black_box(cascade.transform(5.0));
+        }
         let one_step = start.elapsed().as_secs_f64();
         // A bird's look-ahead pattern: several times, stepped at 30Hz for 1s.
         let start = std::time::Instant::now();
@@ -1289,7 +1381,7 @@ pub(crate) mod tests {
         let elapsed = start.elapsed().as_secs_f64();
         // 1s of steps spans ~10 lattice steps per look-ahead offset, but the
         // offsets revisit each other's steps: at most ~40 distinct keys.
-        eprintln!("transform (wind + swell) {:.2} ms; 180 look-ahead samples {:.1} ms", one_step * 1e3, elapsed * 1e3);
+        eprintln!("transform (all CPU cascades) {:.2} ms; 180 look-ahead samples {:.1} ms", one_step * 1e3, elapsed * 1e3);
         assert!(elapsed < one_step * 45.0, "{elapsed} vs {one_step}");
     }
 }
