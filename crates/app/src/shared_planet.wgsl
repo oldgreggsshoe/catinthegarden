@@ -398,6 +398,11 @@ var<private> ocean_fft_foam_pattern: f32;
 var<private> ocean_fft_foam_pattern_strength: f32;
 // Height standard deviations of cascades 1 and 2 on the 14m/s spectrum.
 const OCEAN_FFT_MID_HEIGHT_STD: f32 = 0.218;
+// Measured height std of the wind-sea geometry cascade (jacobian_study).
+const OCEAN_FFT_BROAD_HEIGHT_STD: f32 = 1.264;
+// Surface height in units of the local sea's height std, set by
+// ocean_surface_fft for the lighting: high on a wave means thin water.
+var<private> ocean_fft_surface_height_fraction: f32;
 const OCEAN_FFT_FINE_HEIGHT_STD: f32 = 0.056;
 
 /// Breaks a smooth foam coverage into lacy cells: fresh, full foam covers
@@ -1631,6 +1636,12 @@ fn ocean_surface_fft(
     let ripple_tangent = axis_u * ripple_drawn.x + axis_v * ripple_drawn.y;
     let ripple_slope = ripple_tangent - direction * dot(ripple_tangent, direction);
     let raw_vertical = (linear_height + second_order) * geometry_weight;
+    let height_std = gain * sqrt(
+        OCEAN_FFT_BROAD_HEIGHT_STD * OCEAN_FFT_BROAD_HEIGHT_STD
+            + OCEAN_FFT_MID_HEIGHT_STD * OCEAN_FFT_MID_HEIGHT_STD * mid_weight * mid_weight
+            + 0.0625 * swell_scale * swell_scale,
+    );
+    ocean_fft_surface_height_fraction = raw_vertical / max(height_std, 0.05);
     let breaking_limit_meters =
         0.5 * OCEAN_BREAKING_HEIGHT_TO_DEPTH_RATIO * max(water_depth_meters, 0.0);
     var breaking_weight = 0.0;
@@ -3835,16 +3846,24 @@ fn ocean_underside_colour(
     return ocean_underside_with_foam(clear_interface, skylight, foam);
 }
 
-// Sea of Thieves-style water shading (FFT ocean only). After Rare's SIGGRAPH
-// 2018 talk: a stylised blend of a deep-water colour and a subsurface colour,
-// weighted by a wave-peak mask (here the FFT convergence, i.e. where the
-// displacement field bunches), the view angle and the sun direction, plus an
-// area-light sun specular (Karis 2013 representative point) whose roughness
-// grows with range for the wide low-sun reflection.
-const OCEAN_SOT_DEEP_COLOUR: vec3<f32> = vec3<f32>(0.004, 0.030, 0.140);
-// Thin water is the same water, lighter and a little more cyan, not a
-// different colour: about 1.5x the sunlit body (0.008, 0.150, 0.220).
-const OCEAN_SOT_SUBSURFACE_COLOUR: vec3<f32> = vec3<f32>(0.014, 0.225, 0.300);
+// Sea of Thieves-style water shading (FFT ocean only), after Rare's SIGGRAPH
+// 2018 talk and Ian's reference frame, plus an area-light sun specular (Karis
+// 2013 representative point) whose roughness grows with range.
+//
+// The water is one hue at every brightness. Measured from examples/waves.png
+// (sRGB): troughs looked into (0, 92, 115), typical water (0, 155, 176), a
+// thin backlit wave top (6, 195, 208); hue 182-192 degrees and saturation ~1
+// throughout, and down one wave face the top is ~25% brighter than the base.
+// Translucency brightens; it does not tint. Linear albedo in that hue, the
+// overall level calibrated against the deck-height replay.
+const OCEAN_SOT_WATER_ALBEDO: vec3<f32> = vec3<f32>(0.0018, 0.24, 0.30);
+// Body brightness gain for thin water (high on a wave).
+const OCEAN_SOT_THIN_BRIGHTENING: f32 = 0.9;
+// Looking steeply down into deep water returns less scattered light than a
+// grazing look through a wave.
+const OCEAN_SOT_STEEP_VIEW_BRIGHTNESS: f32 = 0.45;
+// Sunlight transmitted through thin water toward an eye looking at the sun.
+const OCEAN_SOT_TRANSMISSION: f32 = 0.9;
 // Convergence where the peak mask starts and is full (dimensionless |k| h).
 // Wide so the change is a gradient across the wave, not a patch edge.
 const OCEAN_SOT_PEAK_ONSET: f32 = 0.06;
@@ -3918,23 +3937,21 @@ fn ocean_lighting_sot(
         1.0,
     );
     let peak = peak_linear * peak_linear * (3.0 - 2.0 * peak_linear) * peak_linear;
-    let backlight = pow(max(dot(-view_direction, sun_direction_view), 0.0), 3.0);
-    let sun_facing = max(dot(normal_view, sun_direction_view), 0.0);
-    // Light reaches the viewer through the thin wave top; more so looking
-    // toward the sun, and more where the surface tilts toward it.
-    let subsurface_weight = clamp(
-        peak * (0.35 + 0.65 * backlight) + 0.25 * sun_facing * (1.0 - facing) + 0.25 * fine_crest_transmission,
-        0.0,
-        1.0,
-    );
-    // Deep colour warms toward teal on faces turned to the sun (the existing
-    // sun-facing body ramp), then thin peaks blend on toward the subsurface colour.
-    let deep = mix(OCEAN_SOT_DEEP_COLOUR, ocean_body_albedo(normal), 0.85);
-    let body = mix(deep, OCEAN_SOT_SUBSURFACE_COLOUR, subsurface_weight);
+    // Two components, both in the one water hue. (1) The water body lit by
+    // sun and sky, brighter where it is thin: high on a wave, or a sharp peak.
+    // (2) Sunlight transmitted through that thin water when the wave stands
+    // between the sun and the eye: strongly forward-scattered, so it needs
+    // the eye to look toward the sun, and it is the brightest part.
+    let thin = smoothstep(-0.6, 1.6, ocean_fft_surface_height_fraction);
+    let view_depth = mix(OCEAN_SOT_STEEP_VIEW_BRIGHTNESS, 1.0, smoothstep(0.1, 0.8, 1.0 - facing));
+    let body = OCEAN_SOT_WATER_ALBEDO * view_depth
+        * (1.0 + OCEAN_SOT_THIN_BRIGHTENING * thin + 0.4 * peak);
     let diffuse = body * (sky_diffuse + sun_transmittance * (0.4 * SURFACE_SUNLIGHT_SCALE));
-    // Glow keeps the body's hue: it lightens the water rather than tinting it.
-    let glow = body * peak * (0.15 + backlight)
-        * sun_transmittance * (0.35 * SURFACE_SUNLIGHT_SCALE) * (vec3<f32>(1.0) - fresnel);
+    let toward_sun = pow(max(dot(-view_direction, sun_direction_view), 0.0), 4.0);
+    let transmission = OCEAN_SOT_WATER_ALBEDO * sun_transmittance
+        * (OCEAN_SOT_TRANSMISSION * SURFACE_SUNLIGHT_SCALE) * toward_sun
+        * clamp(thin * thin + 0.6 * peak + 0.3 * fine_crest_transmission, 0.0, 1.5)
+        * (vec3<f32>(1.0) - fresnel);
     let range = length(camera_relative_view_position);
     let roughness = mix(
         OCEAN_SOT_ROUGHNESS_NEAR,
@@ -3942,7 +3959,7 @@ fn ocean_lighting_sot(
         smoothstep(30.0, 1500.0, range),
     );
     let specular = ocean_sot_specular(normal_view, view_direction, sun_direction_view, roughness);
-    return diffuse + glow
+    return diffuse + transmission
         + reflected_color * fresnel * daylight * OCEAN_REFLECTION_SCALE
         + sun_transmittance * specular * fresnel
             * (OCEAN_SUN_GLINT_SCALE * SURFACE_SUNLIGHT_SCALE);
