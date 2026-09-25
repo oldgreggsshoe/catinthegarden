@@ -1250,7 +1250,29 @@ pub fn breaking_fraction(water_depth_meters: f64, raw_height_meters: f64) -> f64
     (raw_height_meters.max(0.0) / limit).min(1.0)
 }
 
+/// FFT sea (`CATINGARDEN_OCEAN_FFT=1`): the CPU surface mirrors the GPU's
+/// cascade-0 field, so buoyancy and collision follow the drawn water.
+fn fft_surface() -> Option<&'static crate::ocean_fft::CpuSurface> {
+    static SURFACE: std::sync::OnceLock<Option<crate::ocean_fft::CpuSurface>> =
+        std::sync::OnceLock::new();
+    SURFACE
+        .get_or_init(|| {
+            crate::planet::ocean_fft_enabled()
+                .then(|| crate::ocean_fft::CpuSurface::new(&crate::ocean_fft::default_h0()))
+        })
+        .as_ref()
+}
+
+fn fft_sample(direction: DVec3, sim_time: f64) -> Option<crate::ocean_fft::CpuSample> {
+    let surface = fft_surface()?;
+    let d = direction.normalize();
+    Some(surface.sample(d.to_array(), planet_radius_meters(), sim_time))
+}
+
 pub fn global_wave_height_meters(direction: DVec3, sim_time: f64, water_depth_meters: f64) -> f64 {
+    if let Some(sample) = fft_sample(direction, sim_time) {
+        return sample.height * breaking_weight(sample.height, water_depth_meters);
+    }
     let state = sea_state_at(sim_time);
     if horizontal_transport_enabled() {
         return transport::query(direction, sim_time, water_depth_meters, state, 1.0)
@@ -1266,6 +1288,10 @@ pub fn global_wave_height_meters(direction: DVec3, sim_time: f64, water_depth_me
 /// the same vertical displacement or the camera will appear to ignore nearby
 /// crests while only following the broad swell.
 pub fn local_wave_height_meters(direction: DVec3, sim_time: f64, water_depth_meters: f64) -> f64 {
+    if fft_surface().is_some() {
+        // Finer FFT cascades only shade; they are not geometry.
+        return global_wave_height_meters(direction, sim_time, water_depth_meters);
+    }
     let state = sea_state_at(sim_time);
     let shore_weight = breaking_weight(
         wave_height_meters(direction, sim_time, state.intensity, water_depth_meters),
@@ -1292,6 +1318,13 @@ pub fn local_wave_height_meters(direction: DVec3, sim_time: f64, water_depth_met
 /// that can yaw it; with the force pinned to the radial a hull can heave and
 /// tilt but never swings its head.
 pub fn global_wave_slope(direction: DVec3, sim_time: f64, water_depth_meters: f64) -> DVec3 {
+    if let Some(sample) = fft_sample(direction, sim_time) {
+        let radial = direction.normalize();
+        let tangent = DVec3::from_array(sample.axis_u) * sample.slope_uv[0]
+            + DVec3::from_array(sample.axis_v) * sample.slope_uv[1];
+        let gradient = tangent * breaking_rate_weight(sample.height, water_depth_meters);
+        return gradient - radial * gradient.dot(radial);
+    }
     if horizontal_transport_enabled() {
         return transport::query(
             direction,
@@ -1311,29 +1344,7 @@ pub fn global_wave_slope(direction: DVec3, sim_time: f64, water_depth_meters: f6
     // planet radius in the phase cancels against the 1/radius change in
     // `direction` from moving a metre tangentially.
     let gradient = active_waves()
-/// FFT sea (`CATINGARDEN_OCEAN_FFT=1`): the CPU surface mirrors the GPU's
-/// cascade-0 field, so buoyancy and collision follow the drawn water.
-fn fft_surface() -> Option<&'static crate::ocean_fft::CpuSurface> {
-    static SURFACE: std::sync::OnceLock<Option<crate::ocean_fft::CpuSurface>> =
-        std::sync::OnceLock::new();
-    SURFACE
-        .get_or_init(|| {
-            crate::planet::ocean_fft_enabled()
-                .then(|| crate::ocean_fft::CpuSurface::new(&crate::ocean_fft::default_h0()))
-        })
-        .as_ref()
-}
-
-fn fft_sample(direction: DVec3, sim_time: f64) -> Option<crate::ocean_fft::CpuSample> {
-    let surface = fft_surface()?;
-    let d = direction.normalize();
-    Some(surface.sample(d.to_array(), planet_radius_meters(), sim_time))
-}
-
         .iter()
-    if let Some(sample) = fft_sample(direction, sim_time) {
-        return sample.height * breaking_weight(sample.height, water_depth_meters);
-    }
         .map(|wave| {
             sample_wave(radial, sim_time, wave).slope * (wave.amplitude(blend) * amplitude_scale)
         })
@@ -1349,10 +1360,6 @@ pub fn global_wave_vertical_velocity_meters_per_second(
     direction: DVec3,
     sim_time: f64,
     water_depth_meters: f64,
-    if fft_surface().is_some() {
-        // Finer FFT cascades only shade; they are not geometry.
-        return global_wave_height_meters(direction, sim_time, water_depth_meters);
-    }
 ) -> f64 {
     wave_vertical_velocity_in_state(
         direction,
@@ -1368,6 +1375,9 @@ fn wave_vertical_velocity_in_state(
     water_depth_meters: f64,
     state: SeaState,
 ) -> f64 {
+    if let Some(sample) = fft_sample(direction, sim_time) {
+        return sample.velocity * breaking_rate_weight(sample.height, water_depth_meters);
+    }
     if horizontal_transport_enabled() {
         return transport::query(direction, sim_time, water_depth_meters, state, 1.0)
             .expect("bounded ocean transport inverse failed")
@@ -1379,13 +1389,6 @@ fn wave_vertical_velocity_in_state(
         .iter()
         .map(|wave| {
             let sample = sample_wave(direction, sim_time, wave);
-    if let Some(sample) = fft_sample(direction, sim_time) {
-        let radial = direction.normalize();
-        let tangent = DVec3::from_array(sample.axis_u) * sample.slope_uv[0]
-            + DVec3::from_array(sample.axis_v) * sample.slope_uv[1];
-        let gradient = tangent * breaking_rate_weight(sample.height, water_depth_meters);
-        return gradient - radial * gradient.dot(radial);
-    }
             wave.amplitude(blend) * amplitude_scale * sample.velocity
                 + amplitude_change_velocity(wave, state) * sample.profile
         })
@@ -1405,6 +1408,9 @@ pub fn local_wave_vertical_velocity_meters_per_second(
     sim_time: f64,
     water_depth_meters: f64,
 ) -> f64 {
+    if fft_surface().is_some() {
+        return global_wave_vertical_velocity_meters_per_second(direction, sim_time, water_depth_meters);
+    }
     let state = sea_state_at(sim_time);
     let shore_weight = breaking_weight(
         wave_height_meters(direction, sim_time, state.intensity, water_depth_meters),
@@ -1426,9 +1432,6 @@ pub fn local_wave_vertical_velocity_meters_per_second(
 mod tests {
     use glam::DVec3;
 
-    if let Some(sample) = fft_sample(direction, sim_time) {
-        return sample.velocity * breaking_rate_weight(sample.height, water_depth_meters);
-    }
     use super::{
         GLOBAL_OCEAN_STORM_INTENSITY, LARGE_SWELL_WAVE_COUNT, MAXIMUM_WAVE_HEIGHT_METERS,
         OCEAN_CALM_GEOMETRY_AMPLITUDE_SCALE, OCEAN_LARGE_SWELL_ONLY, OCEAN_RIPPLE_WAVES,
@@ -1446,9 +1449,6 @@ mod tests {
         let mut height = |direction: DVec3| {
             calls += 1;
             Some(if direction.y < shore { 5.0 } else { -20.0 })
-    if fft_surface().is_some() {
-        return global_wave_vertical_velocity_meters_per_second(direction, sim_time, water_depth_meters);
-    }
         };
         let sheltered = super::upwind_fetch_meters(DVec3::X, DVec3::Y, &mut height).unwrap();
         assert!((11_950.0..=12_000.0).contains(&sheltered), "{sheltered}");

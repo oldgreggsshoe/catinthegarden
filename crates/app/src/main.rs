@@ -1773,15 +1773,15 @@ impl State {
             self.camera_velocity_baseline_stale = true;
         }
         self.toggle_animation_freeze();
-        tracing::info!(
-            target: "catinthegarden::startup",
-            camera_mode = self.camera_mode.label(),
         let anti_aliasing = !matches!(
             std::env::var("CATINGARDEN_AA").ok().as_deref().map(str::trim),
             Some("0" | "false" | "off")
         );
         self.hdr
             .set_effects(&self.device, anti_aliasing, self.hdr.bloom_enabled());
+        tracing::info!(
+            target: "catinthegarden::startup",
+            camera_mode = self.camera_mode.label(),
             boat_camera_attached = self.camera_mode == CameraMode::Boat,
             blur_enabled = self.hdr.blur_enabled(),
             animation_frozen = self.animation_frozen,

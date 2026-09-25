@@ -1430,25 +1430,6 @@ fn shoreline_water_albedo(open_water: vec3<f32>, still_depth_meters: f32, foam: 
     return mix(albedo, OCEAN_SURF_COLOUR, foam);
 }
 
-fn ocean_surface(
-    direction: vec3<f32>,
-    time_seconds: f32,
-    camera_distance_meters: f32,
-    water_depth_meters: f32,
-) -> OceanSurface {
-    if !OCEAN_WAVES_ENABLED {
-        return flat_ocean_surface(direction);
-    }
-    // Applied to the summed height further down, not here: the limit depends on
-    // how tall this crest actually is, which is not known until the waves are
-    // summed. See `breaking_weight` in ocean.rs.
-    let shore_weight = 1.0;
-    let geometry_weight = (1.0 - smoothstep(
-        OCEAN_GEOMETRY_FULL_DISTANCE_METERS,
-        OCEAN_GEOMETRY_FADE_DISTANCE_METERS,
-        camera_distance_meters,
-    )) * shore_weight;
-
 // (height, dh/du, dh/dv, div D) for one cascade at planet-plane offset `local`.
 fn ocean_fft_cascade(cascade_index: u32, local: vec2<f32>, filter_width_meters: f32) -> vec4<f32> {
     let entry = ocean_fft_view.cascade[cascade_index];
@@ -1534,6 +1515,27 @@ fn ocean_surface_fft(
     );
 }
 
+fn ocean_surface(
+    direction: vec3<f32>,
+    time_seconds: f32,
+    camera_distance_meters: f32,
+    water_depth_meters: f32,
+) -> OceanSurface {
+    if !OCEAN_WAVES_ENABLED {
+        return flat_ocean_surface(direction);
+    }
+    if OCEAN_FFT_ENABLED {
+        return ocean_surface_fft(direction, camera_distance_meters, water_depth_meters);
+    }
+    // Applied to the summed height further down, not here: the limit depends on
+    // how tall this crest actually is, which is not known until the waves are
+    // summed. See `breaking_weight` in ocean.rs.
+    let shore_weight = 1.0;
+    let geometry_weight = (1.0 - smoothstep(
+        OCEAN_GEOMETRY_FULL_DISTANCE_METERS,
+        OCEAN_GEOMETRY_FADE_DISTANCE_METERS,
+        camera_distance_meters,
+    )) * shore_weight;
     if geometry_weight <= 0.0 && camera_distance_meters >= OCEAN_RIPPLE_FADE_DISTANCE_METERS {
         return flat_ocean_surface(direction);
     }
@@ -1543,9 +1545,6 @@ fn ocean_surface_fft(
     //
     // Crests here are small circles about each axis, not straight lines. The
     // dominant swell stays coherent; the shorter wind-sea tail is deliberately
-    if OCEAN_FFT_ENABLED {
-        return ocean_surface_fft(direction, camera_distance_meters, water_depth_meters);
-    }
     // spread around the storm-ocean view direction so it breaks the surface into
     // crossing chop instead of repeating one corduroy axis across many octaves.
     let storm_intensity = clamp(camera.flat_triangle_options.y, 0.0, 1.0);
@@ -3682,33 +3681,6 @@ fn ocean_underside_colour(
     return ocean_underside_with_foam(clear_interface, skylight, foam);
 }
 
-fn ocean_lighting(
-    normal: vec3<f32>,
-    crest_sharpness: f32,
-    fine_crest_transmission: f32,
-    camera_relative_view_position: vec3<f32>,
-    sun_transmittance: vec3<f32>,
-    sky_diffuse: vec3<f32>,
-) -> vec3<f32> {
-    let view_direction = normalize(-camera_relative_view_position);
-    let normal_view = normalize(planet_to_view(normal));
-    let sun_direction_view = normalize(camera.sun_direction_view.xyz);
-    let reflection_direction = view_to_planet(reflect(-view_direction, normal_view));
-    let reflected_color = textureSampleLevel(
-        environment_map,
-        environment_sampler,
-        reflection_direction,
-        0.0,
-    ).rgb;
-    let facing = max(dot(normal_view, view_direction), 0.0);
-    let fresnel = vec3<f32>(0.02) + vec3<f32>(0.98) * pow(1.0 - facing, 5.0);
-    let half_vector = normalize(sun_direction_view + view_direction);
-    // Keep the solar glitter narrower than the resolved swell facets. A broad
-    // lobe turns the regular wave-normal field into large rectangular pools of
-    // light in steep-down views; the narrower lobe reads as separated glints
-    // without adding another normal or texture sample.
-    let specular = pow(max(dot(normal_view, half_vector), 0.0), 512.0);
-
 // Sea of Thieves-style water shading (FFT ocean only). After Rare's SIGGRAPH
 // 2018 talk: a stylised blend of a deep-water colour and a subsurface colour,
 // weighted by a wave-peak mask (here the FFT convergence, i.e. where the
@@ -3822,6 +3794,36 @@ fn ocean_lighting_sot(
             * (OCEAN_SUN_GLINT_SCALE * SURFACE_SUNLIGHT_SCALE);
 }
 
+fn ocean_lighting(
+    normal: vec3<f32>,
+    crest_sharpness: f32,
+    fine_crest_transmission: f32,
+    camera_relative_view_position: vec3<f32>,
+    sun_transmittance: vec3<f32>,
+    sky_diffuse: vec3<f32>,
+) -> vec3<f32> {
+    if OCEAN_FFT_ENABLED {
+        return ocean_lighting_sot(normal, crest_sharpness, fine_crest_transmission,
+            camera_relative_view_position, sun_transmittance, sky_diffuse);
+    }
+    let view_direction = normalize(-camera_relative_view_position);
+    let normal_view = normalize(planet_to_view(normal));
+    let sun_direction_view = normalize(camera.sun_direction_view.xyz);
+    let reflection_direction = view_to_planet(reflect(-view_direction, normal_view));
+    let reflected_color = textureSampleLevel(
+        environment_map,
+        environment_sampler,
+        reflection_direction,
+        0.0,
+    ).rgb;
+    let facing = max(dot(normal_view, view_direction), 0.0);
+    let fresnel = vec3<f32>(0.02) + vec3<f32>(0.98) * pow(1.0 - facing, 5.0);
+    let half_vector = normalize(sun_direction_view + view_direction);
+    // Keep the solar glitter narrower than the resolved swell facets. A broad
+    // lobe turns the regular wave-normal field into large rectangular pools of
+    // light in steep-down views; the narrower lobe reads as separated glints
+    // without adding another normal or texture sample.
+    let specular = pow(max(dot(normal_view, half_vector), 0.0), 512.0);
     let daylight = max(max(sun_transmittance.x, sun_transmittance.y), sun_transmittance.z);
     // Keep the water body a dark blue; direct sunlight and reflection still
     // provide the daylight highlights and glints.
@@ -3830,10 +3832,6 @@ fn ocean_lighting_sot(
     // The Phase 6 cubemap is static. It represents daytime sky reflection, so
     // gate it by direct daylight instead of reflecting a bright blue sky from
     // the fully occluded hemisphere.
-    if OCEAN_FFT_ENABLED {
-        return ocean_lighting_sot(normal, crest_sharpness, fine_crest_transmission,
-            camera_relative_view_position, sun_transmittance, sky_diffuse);
-    }
     // Cheap thin-crest transmission approximation, not alpha transparency or
     // a measured water-volume thickness. Positive wave height selects the upper
     // crest; forward scattering lights it when the sun is behind the wave.
