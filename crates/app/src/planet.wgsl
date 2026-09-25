@@ -940,6 +940,8 @@ fn vs_ocean(input: VertexInput) -> OceanVertexOutput {
     let flat_camera_relative_view_position = input.anchor_view_position
         + planet_to_view(flat_local_planet_position);
     ocean_fft_view_position = flat_camera_relative_view_position;
+    // Cube-face UV span of the chunk over 32 quads, about 0.7 planet radii per unit.
+    ocean_fft_vertex_spacing_meters = input.node_uv_origin_span.z * PLANET_RADIUS_METERS * 0.7 / 32.0;
     let surface = ocean_surface(
         projected.direction,
         camera.projection.z,

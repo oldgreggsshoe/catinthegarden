@@ -6,6 +6,8 @@ use wgpu::util::DeviceExt;
 
 pub const GRID: usize = 256;
 pub const CASCADES: usize = 3;
+/// 256 down to 1 texel.
+pub const MIP_LEVELS: u32 = 9;
 /// Tile edge lengths in metres, chosen so the repeats do not line up.
 pub const TILE_METERS: [f32; CASCADES] = [1000.0, 237.0, 53.0];
 /// Wavenumber band owned by each cascade (rad/m); bands abut exactly.
@@ -354,6 +356,8 @@ pub struct OceanFft {
     pub sampler: wgpu::Sampler,
     pub view_params: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    mip_pipeline: wgpu::ComputePipeline,
+    mip_groups: Vec<wgpu::BindGroup>,
     evolve: wgpu::ComputePipeline,
     rows: wgpu::ComputePipeline,
     cols: wgpu::ComputePipeline,
@@ -444,7 +448,7 @@ impl OceanFft {
                 height: GRID as u32,
                 depth_or_array_layers: CASCADES as u32,
             },
-            mip_level_count: 1,
+            mip_level_count: MIP_LEVELS,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba16Float,
@@ -471,6 +475,70 @@ impl OceanFft {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let mip_view = |texture: &wgpu::Texture, level: u32| {
+            texture.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                base_mip_level: level,
+                mip_level_count: Some(1),
+                ..Default::default()
+            })
+        };
+        let mip_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("ocean fft mip layout"),
+            entries: &[
+                entry(
+                    0,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                ),
+                entry(
+                    1,
+                    wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                    },
+                ),
+            ],
+        });
+        let mip_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("ocean fft mips"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("ocean_fft_mips.wgsl").into()),
+        });
+        let mip_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("ocean fft mip pipeline layout"),
+            bind_group_layouts: &[Some(&mip_layout)],
+            immediate_size: 0,
+        });
+        let mip_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("ocean fft downsample"),
+            layout: Some(&mip_pipeline_layout),
+            module: &mip_shader,
+            entry_point: Some("downsample"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let mip_groups = (1..MIP_LEVELS)
+            .map(|level| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("ocean fft mip bind group"),
+                    layout: &mip_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&mip_view(&field, level - 1)),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(&mip_view(&field, level)),
+                        },
+                    ],
+                })
+            })
+            .collect();
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ocean fft bind group"),
             layout: &layout,
@@ -478,7 +546,7 @@ impl OceanFft {
                 wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: h0.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: spec.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&field.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() })) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&mip_view(&field, 0)) },
             ],
         });
         Self {
@@ -489,6 +557,8 @@ impl OceanFft {
             sampler,
             view_params,
             bind_group,
+            mip_pipeline,
+            mip_groups,
             evolve: pipeline("evolve"),
             rows: pipeline("fft_rows"),
             cols: pipeline("fft_cols"),
@@ -522,7 +592,7 @@ impl OceanFft {
     }
 
     pub fn encode(&self, encoder: &mut wgpu::CommandEncoder) {
-        self.encode_mask(encoder, 0b1111);
+        self.encode_mask(encoder, 0b11111);
     }
 
     pub fn encode_mask(&self, encoder: &mut wgpu::CommandEncoder, mask: u32) {
@@ -544,6 +614,16 @@ impl OceanFft {
         if mask & 8 != 0 {
         pass.set_pipeline(&self.assemble);
         pass.dispatch_workgroups(groups, groups, CASCADES as u32);
+        }
+        drop(pass);
+        if mask & 16 != 0 {
+            for (index, group) in self.mip_groups.iter().enumerate() {
+                let size = (GRID as u32 >> (index + 1)).max(1);
+                let mut pass = encoder.begin_compute_pass(&Default::default());
+                pass.set_pipeline(&self.mip_pipeline);
+                pass.set_bind_group(0, group, &[]);
+                pass.dispatch_workgroups(size.div_ceil(8), size.div_ceil(8), CASCADES as u32);
+            }
         }
     }
 }

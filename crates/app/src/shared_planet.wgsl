@@ -377,6 +377,9 @@ var<uniform> ocean_fft_view: OceanFftView;
 // set by the caller: it keeps wave coordinates precise where the unit
 // direction alone would quantise to about 0.25m on this planet.
 var<private> ocean_fft_view_position: vec3<f32>;
+// Metres between adjacent mesh vertices, set only by the vertex stage. Zero in
+// the fragment stage, which filters to its pixel footprint instead.
+var<private> ocean_fft_vertex_spacing_meters: f32;
 
 struct OceanWaveSpec {
     axis: vec3<f32>,
@@ -1447,14 +1450,18 @@ fn ocean_surface(
     )) * shore_weight;
 
 // (height, dh/du, dh/dv, div D) for one cascade at planet-plane offset `local`.
-fn ocean_fft_cascade(cascade_index: u32, local: vec2<f32>) -> vec4<f32> {
+fn ocean_fft_cascade(cascade_index: u32, local: vec2<f32>, filter_width_meters: f32) -> vec4<f32> {
     let entry = ocean_fft_view.cascade[cascade_index];
     let uv = entry.xy + local / entry.z;
-    let texel = 1.0 / 256.0;
+    let texel_meters = entry.z / 256.0;
+    // Box-filtering to 2^lod texels removes waves shorter than ~2x that width,
+    // which is what a mesh (or pixel) this coarse cannot represent.
+    let lod = clamp(log2(max(filter_width_meters / texel_meters, 1.0)), 0.0, 8.0);
+    let texel = exp2(lod) / 256.0;
     let step_meters = entry.z * texel;
-    let s0 = textureSampleLevel(ocean_fft_map, ocean_fft_sampler, uv, cascade_index, 0.0);
-    let su = textureSampleLevel(ocean_fft_map, ocean_fft_sampler, uv + vec2<f32>(texel, 0.0), cascade_index, 0.0);
-    let sv = textureSampleLevel(ocean_fft_map, ocean_fft_sampler, uv + vec2<f32>(0.0, texel), cascade_index, 0.0);
+    let s0 = textureSampleLevel(ocean_fft_map, ocean_fft_sampler, uv, cascade_index, lod);
+    let su = textureSampleLevel(ocean_fft_map, ocean_fft_sampler, uv + vec2<f32>(texel, 0.0), cascade_index, lod);
+    let sv = textureSampleLevel(ocean_fft_map, ocean_fft_sampler, uv + vec2<f32>(0.0, texel), cascade_index, lod);
     return vec4<f32>(
         s0.x,
         (su.x - s0.x) / step_meters,
@@ -1483,11 +1490,19 @@ fn ocean_surface_fft(
     let gain = ocean_fft_view.gain.x;
     // Cascade 0 (wavelengths above ~12m) is mesh geometry; the two finer
     // cascades only shade, fading out before they alias at range.
-    let broad = ocean_fft_cascade(0u, local);
+    // Filter width: twice the vertex spacing in the vertex stage, otherwise
+    // twice the pixel footprint (distance times the angle one pixel spans).
+    let pixel_footprint = camera_distance_meters * (2.0 * camera.projection.y / 720.0);
+    let filter_width = 2.0 * select(
+        pixel_footprint,
+        max(ocean_fft_vertex_spacing_meters, 0.0),
+        ocean_fft_vertex_spacing_meters > 0.0,
+    );
+    let broad = ocean_fft_cascade(0u, local, filter_width);
     let mid_weight = 1.0 - smoothstep(600.0, 3000.0, camera_distance_meters);
     let fine_weight = 1.0 - smoothstep(150.0, 700.0, camera_distance_meters);
-    let mid = ocean_fft_cascade(1u, local);
-    let fine = ocean_fft_cascade(2u, local);
+    let mid = ocean_fft_cascade(1u, local, filter_width);
+    let fine = ocean_fft_cascade(2u, local, filter_width);
     let tangent_slope = (axis_u * broad.y + axis_v * broad.z) * gain;
     let slope = tangent_slope - direction * dot(tangent_slope, direction);
     let ripple_tangent = (axis_u * (mid.y * mid_weight + fine.y * fine_weight)
