@@ -380,6 +380,44 @@ var<private> ocean_fft_view_position: vec3<f32>;
 // Metres between adjacent mesh vertices, set only by the vertex stage. Zero in
 // the fragment stage, which filters to its pixel footprint instead.
 var<private> ocean_fft_vertex_spacing_meters: f32;
+// Fold-Jacobian parts of the last cascade sampled: (dDu/du, dDv/dv, dDu/dv,
+// dDv/du). Combined per surface into the foam amount below.
+var<private> ocean_fft_last_jacobian: vec4<f32>;
+// Instantaneous FFT fold foam, 0..1, set by `ocean_surface_fft`. Zero until
+// set, so paths that never evaluate the FFT surface make no foam.
+var<private> ocean_fft_fold_foam: f32;
+// Foam pattern from the finer cascades' own heights (0..1, 0.5 = mean) and
+// how much of it this distance resolves. Stands in for Rare's authored foam
+// texture, and moves with the small waves instead of sliding over them.
+var<private> ocean_fft_foam_pattern: f32;
+var<private> ocean_fft_foam_pattern_strength: f32;
+// Height standard deviations of cascades 1 and 2 on the 14m/s spectrum.
+const OCEAN_FFT_MID_HEIGHT_STD: f32 = 0.218;
+const OCEAN_FFT_FINE_HEIGHT_STD: f32 = 0.056;
+
+/// Breaks a smooth foam coverage into lacy cells: fresh, full foam covers
+/// almost everything; thinning foam survives only on the pattern's highs.
+fn ocean_fft_textured_foam(coverage: f32) -> f32 {
+    let threshold = 1.0 - 1.4 * coverage;
+    // Thin foam stays partly see-through; only dense fresh foam is opaque.
+    let lacy = smoothstep(threshold - 0.15, threshold + 0.25, ocean_fft_foam_pattern)
+        * smoothstep(0.0, 0.08, coverage)
+        * mix(0.5, 1.0, coverage);
+    return mix(coverage, lacy, ocean_fft_foam_pattern_strength);
+}
+
+// Tessendorf fold foam: J = (1 + dDu/du)(1 + dDv/dv) - dDu/dv dDv/du drops
+// toward zero where the displacement field bunches and the surface would
+// fold. Measured on the 14m/s spectrum, one cascade alone has 1% of its area
+// below 0.62; the three summed reach lower. Onset/full chosen so foam covers
+// a few percent of the sea at that wind.
+const OCEAN_FFT_FOAM_JACOBIAN_ONSET: f32 = 0.62;
+const OCEAN_FFT_FOAM_JACOBIAN_FULL: f32 = 0.32;
+
+fn ocean_fft_fold_amount(jacobian: vec4<f32>) -> f32 {
+    let j = (1.0 + jacobian.x) * (1.0 + jacobian.y) - jacobian.z * jacobian.w;
+    return smoothstep(OCEAN_FFT_FOAM_JACOBIAN_ONSET, OCEAN_FFT_FOAM_JACOBIAN_FULL, j);
+}
 
 struct OceanWaveSpec {
     axis: vec3<f32>,
@@ -1359,6 +1397,21 @@ fn ocean_surface_slope(normal: vec3<f32>, up: vec3<f32>) -> f32 {
     return sqrt(max(1.0 - facing * facing, 0.0)) / facing;
 }
 
+/// 1 well inside the foam history atlas, fading to 0 at and beyond its edge.
+fn ocean_history_weight(up: vec3<f32>) -> f32 {
+    if !OCEAN_FOAM_HISTORY_ENABLED {
+        return 0.0;
+    }
+    let center = normalize(view_to_planet(camera.camera_planet_direction_view_altitude.xyz));
+    let east = normalize(camera.camera_right.xyz
+        - center * dot(camera.camera_right.xyz, center));
+    let north = cross(center, east);
+    let offset = (up - center) * PLANET_RADIUS_METERS;
+    let uv = vec2<f32>(dot(offset, east), dot(offset, north)) / 512.0 + 0.5;
+    let edge = min(min(uv.x, uv.y), min(1.0 - uv.x, 1.0 - uv.y));
+    return smoothstep(0.0, 0.08, edge);
+}
+
 fn ocean_history_coverage(up: vec3<f32>) -> f32 {
     if !OCEAN_FOAM_HISTORY_ENABLED {
         return 0.0;
@@ -1409,6 +1462,20 @@ fn ocean_foam_coverage(
     // Foam has to be made of water. Without this it keys off a depth of zero
     // and whitens ground the sea is barely covering.
     let has_water = smoothstep(0.0, OCEAN_FOAM_MINIMUM_DEPTH_METERS, still_depth_meters);
+    if OCEAN_FFT_ENABLED {
+        // Fold foam replaces the slope/height whitecap rule. The history atlas
+        // near the camera already contains every fold born there, so foam
+        // persists and trails there and is instantaneous beyond it.
+        // Inside the atlas use its smoothly filtered history only: the
+        // per-pixel fold is forward differences of 3.9m texels, piecewise
+        // flat, and drew polygonal chips near the camera.
+        let fold = ocean_fft_textured_foam(mix(
+            ocean_fft_fold_foam,
+            ocean_history_coverage(up),
+            ocean_history_weight(up),
+        ));
+        return max(surf, fold) * has_water * OCEAN_BREAKING_FOAM_MAX;
+    }
     let lingering_foam = ocean_history_coverage(up)
         * smoothstep(0.15, 0.40, surface_slope) * 0.7;
     return max(max(surf, whitecap), lingering_foam)
@@ -1443,6 +1510,8 @@ fn ocean_fft_cascade(cascade_index: u32, local: vec2<f32>, filter_width_meters: 
     let s0 = textureSampleLevel(ocean_fft_map, ocean_fft_sampler, uv, cascade_index, lod);
     let su = textureSampleLevel(ocean_fft_map, ocean_fft_sampler, uv + vec2<f32>(texel, 0.0), cascade_index, lod);
     let sv = textureSampleLevel(ocean_fft_map, ocean_fft_sampler, uv + vec2<f32>(0.0, texel), cascade_index, lod);
+    ocean_fft_last_jacobian = vec4<f32>(su.y - s0.y, sv.z - s0.z, sv.y - s0.y, su.z - s0.z)
+        / step_meters;
     return vec4<f32>(
         s0.x,
         (su.x - s0.x) / step_meters,
@@ -1480,10 +1549,19 @@ fn ocean_surface_fft(
         ocean_fft_vertex_spacing_meters > 0.0,
     );
     let broad = ocean_fft_cascade(0u, local, filter_width);
+    let broad_jacobian = ocean_fft_last_jacobian;
     let mid_weight = 1.0 - smoothstep(600.0, 3000.0, camera_distance_meters);
     let fine_weight = 1.0 - smoothstep(150.0, 700.0, camera_distance_meters);
     let mid = ocean_fft_cascade(1u, local, filter_width);
+    let mid_jacobian = ocean_fft_last_jacobian;
     let fine = ocean_fft_cascade(2u, local, filter_width);
+    let pattern = (fine.x / OCEAN_FFT_FINE_HEIGHT_STD) * fine_weight
+        + (mid.x / OCEAN_FFT_MID_HEIGHT_STD) * (1.0 - fine_weight) * mid_weight;
+    ocean_fft_foam_pattern = clamp(0.5 + 0.25 * pattern, 0.0, 1.0);
+    ocean_fft_foam_pattern_strength = max(fine_weight, mid_weight);
+    ocean_fft_fold_foam = ocean_fft_fold_amount(
+        (broad_jacobian + mid_jacobian * mid_weight + ocean_fft_last_jacobian * fine_weight) * gain,
+    );
     let tangent_slope = (axis_u * broad.y + axis_v * broad.z) * gain;
     let slope = tangent_slope - direction * dot(tangent_slope, direction);
     let ripple_tangent = (axis_u * (mid.y * mid_weight + fine.y * fine_weight)

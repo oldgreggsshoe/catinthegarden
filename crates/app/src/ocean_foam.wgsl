@@ -15,6 +15,28 @@ struct FoamFrame {
     timing: vec4<f32>,
 }
 @group(1) @binding(3) var<uniform> foam_frame: FoamFrame;
+@group(1) @binding(4) var foam_fft_map: texture_2d_array<f32>;
+@group(1) @binding(5) var foam_fft_sampler: sampler;
+@group(1) @binding(6) var<uniform> foam_fft_view: OceanFftView;
+
+// Fold-Jacobian parts (dDu/du, dDv/dv, dDu/dv, dDv/du) of one cascade at
+// tangent-plane offset `local` metres from the camera, filtered to `width`.
+fn foam_fft_jacobian(cascade_index: u32, local: vec2<f32>, width: f32) -> vec4<f32> {
+    let entry = foam_fft_view.cascade[cascade_index];
+    let texel_meters = entry.z / 256.0;
+    let lod = clamp(log2(max(width / texel_meters, 1.0)), 0.0, 8.0);
+    let texel = exp2(lod) / 256.0;
+    let uv = entry.xy + local / entry.z;
+    let s0 = textureSampleLevel(foam_fft_map, foam_fft_sampler, uv, cascade_index, lod);
+    let su = textureSampleLevel(foam_fft_map, foam_fft_sampler, uv + vec2<f32>(texel, 0.0), cascade_index, lod);
+    let sv = textureSampleLevel(foam_fft_map, foam_fft_sampler, uv + vec2<f32>(0.0, texel), cascade_index, lod);
+    return vec4<f32>(su.y - s0.y, sv.z - s0.z, sv.y - s0.y, su.z - s0.z) / (entry.z * texel);
+}
+
+// Seconds for FFT fold foam to fade to 1/e once its crest has passed.
+const FOAM_FFT_DECAY_SECONDS: f32 = 2.5;
+const FOAM_FFT_ATLAS_JACOBIAN_ONSET: f32 = 0.66;
+const FOAM_FFT_ATLAS_JACOBIAN_FULL: f32 = 0.36;
 
 fn foam_birth_hash(cell: vec3<i32>) -> f32 {
     var value = u32(cell.x) * 0x9e3779b9u
@@ -48,34 +70,66 @@ fn cs_foam(@builtin(global_invocation_id) id: vec3<u32>) {
             dot(from_previous, foam_frame.previous_north.xyz),
         ) / 512.0 + 0.5;
         if all(old_uv >= vec2<f32>(0.0)) && all(old_uv <= vec2<f32>(1.0)) {
-            retained = textureSampleLevel(previous_foam, foam_sampler, old_uv, 0.0).r
-                * exp(-min(foam_frame.timing.x, 10.0) / 1.5);
+            let decay_seconds = select(1.5, FOAM_FFT_DECAY_SECONDS, OCEAN_FFT_ENABLED);
+            var previous = textureSampleLevel(previous_foam, foam_sampler, old_uv, 0.0).r;
+            if OCEAN_FFT_ENABLED {
+                // Small feedback blur: foam spreads a little as it ages.
+                let step = 1.0 / vec2<f32>(dimensions);
+                let spread = textureSampleLevel(previous_foam, foam_sampler, old_uv + vec2<f32>(step.x, 0.0), 0.0).r
+                    + textureSampleLevel(previous_foam, foam_sampler, old_uv - vec2<f32>(step.x, 0.0), 0.0).r
+                    + textureSampleLevel(previous_foam, foam_sampler, old_uv + vec2<f32>(0.0, step.y), 0.0).r
+                    + textureSampleLevel(previous_foam, foam_sampler, old_uv - vec2<f32>(0.0, step.y), 0.0).r;
+                let blur = mix(previous, spread * 0.25, 1.0 - exp(-min(foam_frame.timing.x, 1.0) / 0.5));
+                previous = blur;
+            }
+            retained = previous * exp(-min(foam_frame.timing.x, 10.0) / decay_seconds);
         }
     }
 
-    // Resolve the six shortest wind-sea components only. Re-running the full
-    // eighteen-wave ocean at every atlas texel costs more than the foam buys.
-    let storm_blend = smoothstep(0.15, 0.85,
-        clamp(camera.flat_triangle_options.y, 0.0, 1.0));
-    var convergence = 0.0;
-    for (var i = 12u; i < OCEAN_WAVE_COUNT; i = i + 1u) {
-        let spec = OCEAN_WAVE_TABLE[i];
-        var amplitude = mix(spec.amplitude_meters, spec.storm_amplitude_meters,
-            storm_blend);
-        if OCEAN_WIND_ENABLED {
-            amplitude *= OCEAN_WIND_WEIGHTS[i];
+    var born = 0.0;
+    if OCEAN_FFT_ENABLED {
+        // The texel's offset from the camera is exact in metres; no f32
+        // planet-radius subtraction.
+        let world_offset = foam_frame.current_east.xyz * offset.x
+            + foam_frame.current_north.xyz * offset.y;
+        let local = vec2<f32>(
+            dot(world_offset, foam_fft_view.axis_u.xyz),
+            dot(world_offset, foam_fft_view.axis_v.xyz),
+        );
+        let texel_meters = 512.0 / f32(dimensions.x);
+        let jacobian = foam_fft_jacobian(0u, local, texel_meters)
+            + foam_fft_jacobian(1u, local, texel_meters)
+            + foam_fft_jacobian(2u, local, texel_meters);
+        // 2m texels average away the finer cascades' sharpest folds, so the
+        // atlas births foam at a gentler Jacobian than the per-pixel rule.
+        let scaled = jacobian * foam_fft_view.gain.x;
+        let j = (1.0 + scaled.x) * (1.0 + scaled.y) - scaled.z * scaled.w;
+        born = smoothstep(FOAM_FFT_ATLAS_JACOBIAN_ONSET, FOAM_FFT_ATLAS_JACOBIAN_FULL, j);
+    } else {
+        // Resolve the six shortest wind-sea components only. Re-running the full
+        // eighteen-wave ocean at every atlas texel costs more than the foam buys.
+        let storm_blend = smoothstep(0.15, 0.85,
+            clamp(camera.flat_triangle_options.y, 0.0, 1.0));
+        var convergence = 0.0;
+        for (var i = 12u; i < OCEAN_WAVE_COUNT; i = i + 1u) {
+            let spec = OCEAN_WAVE_TABLE[i];
+            var amplitude = mix(spec.amplitude_meters, spec.storm_amplitude_meters,
+                storm_blend);
+            if OCEAN_WIND_ENABLED {
+                amplitude *= OCEAN_WIND_WEIGHTS[i];
+            }
+            if OCEAN_LARGE_SWELL_ONLY || !OCEAN_WAVES_ENABLED {
+                amplitude = 0.0;
+            }
+            let wave = gerstner_wave(direction, spec.axis, spec.wavelength_meters,
+                amplitude, spec.speed_meters_per_second * OCEAN_WIND_SPEED_SIGNS[i],
+                spec.steepness, camera.projection.z, 1000.0);
+            convergence += wave.convergence;
         }
-        if OCEAN_LARGE_SWELL_ONLY || !OCEAN_WAVES_ENABLED {
-            amplitude = 0.0;
-        }
-        let wave = gerstner_wave(direction, spec.axis, spec.wavelength_meters,
-            amplitude, spec.speed_meters_per_second * OCEAN_WIND_SPEED_SIGNS[i],
-            spec.steepness, camera.projection.z, 1000.0);
-        convergence += wave.convergence;
+        let peak = smoothstep(0.0003, 0.0018, convergence);
+        let cell = vec3<i32>(floor(direction * (PLANET_RADIUS_METERS / 7.0)));
+        let fleck = smoothstep(0.72, 0.98, foam_birth_hash(cell));
+        born = peak * 0.65 * fleck;
     }
-    let peak = smoothstep(0.0003, 0.0018, convergence);
-    let cell = vec3<i32>(floor(direction * (PLANET_RADIUS_METERS / 7.0)));
-    let fleck = smoothstep(0.72, 0.98, foam_birth_hash(cell));
-    let born = peak * 0.65 * fleck;
     textureStore(next_foam, vec2<i32>(id.xy), vec4<f32>(max(retained, born), 0.0, 0.0, 1.0));
 }

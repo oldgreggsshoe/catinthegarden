@@ -565,8 +565,10 @@ pub(crate) fn ocean_fft_enabled() -> bool {
     )
 }
 
+/// The FFT ocean always runs the history atlas: its fold foam is fed there.
 pub(crate) fn ocean_foam_history_enabled() -> bool {
-    matches!(
+    ocean_fft_enabled()
+        || matches!(
         std::env::var("CATINGARDEN_OCEAN_FOAM_HISTORY")
             .ok()
             .as_deref()

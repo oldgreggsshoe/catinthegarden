@@ -629,10 +629,15 @@ impl OceanFft {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests_support {
+    pub(crate) use super::tests::{device, read_field};
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
     use super::*;
 
-    fn device() -> (wgpu::Device, wgpu::Queue) {
+    pub(crate) fn device() -> (wgpu::Device, wgpu::Queue) {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -667,7 +672,7 @@ mod tests {
         }
     }
 
-    fn read_field(device: &wgpu::Device, queue: &wgpu::Queue, fft: &OceanFft) -> Vec<[f32; 4]> {
+    pub(crate) fn read_field(device: &wgpu::Device, queue: &wgpu::Queue, fft: &OceanFft) -> Vec<[f32; 4]> {
         let row = (GRID * 8) as u32;
         let bytes = row as u64 * GRID as u64 * CASCADES as u64;
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
@@ -834,5 +839,50 @@ mod tests {
             std::hint::black_box(CpuSurface::sample(&cpu, d, r, 100.0 + k as f64));
         }
         eprintln!("refresh+sample: {:.3} ms each", start.elapsed().as_secs_f64() * 50.0);
+    }
+}
+
+#[cfg(test)]
+mod jacobian_study {
+    use super::tests_support::*;
+    use super::*;
+
+    #[test]
+    #[ignore = "requires a Vulkan GPU; prints the fold Jacobian distribution"]
+    fn jacobian_distribution() {
+        let h0 = default_h0();
+        let (device, queue) = device();
+        let fft = OceanFft::new(&device, &h0);
+        fft.set_time(&queue, 37.25);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        fft.encode(&mut encoder);
+        queue.submit(Some(encoder.finish()));
+        let field = read_field(&device, &queue, &fft);
+        for c in 0..CASCADES {
+            let at = |x: usize, y: usize| field[c * GRID * GRID + (y % GRID) * GRID + (x % GRID)];
+            let step = TILE_METERS[c] / GRID as f32;
+            let mut j = Vec::new();
+            for y in 0..GRID {
+                for x in 0..GRID {
+                    let (l, r) = (at(x + GRID - 1, y), at(x + 1, y));
+                    let (d, u) = (at(x, y + GRID - 1), at(x, y + 1));
+                    let dxdx = (r[1] - l[1]) / (2.0 * step);
+                    let dzdz = (u[2] - d[2]) / (2.0 * step);
+                    let dxdz = (u[1] - d[1]) / (2.0 * step);
+                    let dzdx = (r[2] - l[2]) / (2.0 * step);
+                    j.push((1.0 + dxdx) * (1.0 + dzdz) - dxdz * dzdx);
+                }
+            }
+            j.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let p = |q: f32| j[((j.len() - 1) as f32 * q) as usize];
+            let hs: Vec<f32> = (0..GRID * GRID).map(|i| field[c * GRID * GRID + i][0]).collect();
+            let mean = hs.iter().sum::<f32>() / hs.len() as f32;
+            let std = (hs.iter().map(|h| (h - mean) * (h - mean)).sum::<f32>() / hs.len() as f32).sqrt();
+            eprintln!("cascade {c}: height std {std:.4} m");
+            eprintln!(
+                "cascade {c}: J min {:.3} p0.1 {:.3} p1 {:.3} p5 {:.3} p50 {:.3}",
+                j[0], p(0.001), p(0.01), p(0.05), p(0.5)
+            );
+        }
     }
 }

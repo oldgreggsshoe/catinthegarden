@@ -4598,6 +4598,11 @@ impl State {
             && self.render_debug_mode != planet::RenderDebugMode::FlatTriangles
             && self.render_debug_mode != planet::RenderDebugMode::SkyOnly;
         let encode_started = Instant::now();
+        // The FFT field must be current before the foam atlas reads it.
+        if !solid_color_screen && self.render_path == RenderPath::Raster {
+            self.terrain
+                .update_ocean_fft(&mut encoder, camera_direction, ocean_time_seconds as f32);
+        }
         if !solid_color_screen
             && self.render_path == RenderPath::Raster
             && self.terrain.has_ocean_draws()
@@ -4618,10 +4623,6 @@ impl State {
         if !solid_color_screen {
             self.atmosphere
                 .update(&mut encoder, &self.camera_bind_group);
-        if !solid_color_screen && self.render_path == RenderPath::Raster {
-            self.terrain
-                .update_ocean_fft(&mut encoder, camera_direction, ocean_time_seconds as f32);
-        }
         }
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

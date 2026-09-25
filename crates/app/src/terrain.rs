@@ -1226,8 +1226,6 @@ impl TerrainRenderer {
             create_terrain_material_texture(device, queue);
         let (moon_marking_texture, moon_marking_view, moon_marking_sampler) =
             crate::moon_markings::create(device, queue);
-        let foam_history =
-            ocean_foam::OceanFoamHistory::new(device, queue, camera_bind_group_layout);
         let ocean_fft_enabled = crate::planet::ocean_fft_enabled();
         let ocean_fft_h0 = if ocean_fft_enabled {
             crate::ocean_fft::default_h0()
@@ -1235,6 +1233,12 @@ impl TerrainRenderer {
             vec![[0.0; 4]; crate::ocean_fft::CASCADES * crate::ocean_fft::GRID * crate::ocean_fft::GRID]
         };
         let ocean_fft = crate::ocean_fft::OceanFft::new(device, &ocean_fft_h0);
+        let foam_history = ocean_foam::OceanFoamHistory::new(
+            device,
+            queue,
+            camera_bind_group_layout,
+            &ocean_fft,
+        );
         let shared_bind_groups = std::array::from_fn(|index| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("shared planet bind group"),

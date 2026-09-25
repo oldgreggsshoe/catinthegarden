@@ -3,7 +3,11 @@
 use bytemuck::Zeroable;
 use wgpu::util::DeviceExt;
 
-const SIDE: u32 = 128;
+/// Atlas side in texels over 512m: 4m texels for the Gerstner trial, 2m for
+/// FFT fold foam, whose folds are a few metres across.
+fn atlas_side() -> u32 {
+    if crate::planet::ocean_fft_enabled() { 256 } else { 128 }
+}
 
 fn previous_atlas_is_valid(previous_time: Option<f32>, current_time: f32) -> bool {
     previous_time.is_some_and(|previous| current_time >= previous && current_time - previous < 10.0)
@@ -31,6 +35,7 @@ pub(super) struct OceanFoamHistory {
     current: usize,
     previous_basis: Option<([f32; 3], [f32; 3], [f32; 3])>,
     previous_time: Option<f32>,
+    side: u32,
 }
 
 impl OceanFoamHistory {
@@ -38,7 +43,9 @@ impl OceanFoamHistory {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         camera_layout: &wgpu::BindGroupLayout,
+        ocean_fft: &crate::ocean_fft::OceanFft,
     ) -> Self {
+        let side = atlas_side();
         let textures = std::array::from_fn(|index| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(if index == 0 {
@@ -47,8 +54,8 @@ impl OceanFoamHistory {
                     "foam history B"
                 }),
                 size: wgpu::Extent3d {
-                    width: SIDE,
-                    height: SIDE,
+                    width: side,
+                    height: side,
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
@@ -61,15 +68,15 @@ impl OceanFoamHistory {
                 view_formats: &[],
             })
         });
-        let zero = vec![0_u8; (SIDE * SIDE * 4) as usize];
+        let zero = vec![0_u8; (side * side * 4) as usize];
         for texture in &textures {
             queue.write_texture(
                 texture.as_image_copy(),
                 &zero,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(SIDE * 4),
-                    rows_per_image: Some(SIDE),
+                    bytes_per_row: Some(side * 4),
+                    rows_per_image: Some(side),
                 },
                 texture.size(),
             );
@@ -125,6 +132,34 @@ impl OceanFoamHistory {
                     },
                     count: None,
                 },
+                // FFT field, its repeat sampler and view parameters: the fold
+                // foam source. Bound always; read only in FFT mode.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let bind_groups = std::array::from_fn(|index| {
@@ -147,6 +182,18 @@ impl OceanFoamHistory {
                     wgpu::BindGroupEntry {
                         binding: 3,
                         resource: uniform.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&ocean_fft.field_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::Sampler(&ocean_fft.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: ocean_fft.view_params.as_entire_binding(),
                     },
                 ],
             })
@@ -185,6 +232,7 @@ impl OceanFoamHistory {
             current: 0,
             previous_basis: None,
             previous_time: None,
+            side,
         }
     }
 
@@ -237,7 +285,7 @@ impl OceanFoamHistory {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, camera_bind_group, &[]);
         pass.set_bind_group(1, &self.bind_groups[self.current], &[]);
-        pass.dispatch_workgroups(SIDE / 8, SIDE / 8, 1);
+        pass.dispatch_workgroups(self.side / 8, self.side / 8, 1);
         drop(pass);
         self.current = 1 - self.current;
         self.previous_basis = Some(basis);
