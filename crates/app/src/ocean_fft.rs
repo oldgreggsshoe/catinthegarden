@@ -136,10 +136,31 @@ pub fn anchor_axes(camera_direction: [f64; 3]) -> ([f64; 3], [f64; 3]) {
 pub struct CpuSurface {
     modes: Vec<Mode>,
     twiddle: Vec<[f64; 2]>,
-    state: std::sync::Mutex<GridState>,
+    state: std::sync::Mutex<GridCache>,
 }
 
 const REFRESH_SECONDS: f64 = 0.03;
+/// Callers query several distinct times per frame (camera, ship substeps, and
+/// each bird's look-ahead instants). One cached grid made every alternation a
+/// full 2.3ms inverse FFT; a few slots let each time keep its own grid.
+const GRID_SLOTS: usize = 8;
+
+struct GridCache {
+    slots: Vec<GridState>,
+    next_replacement: usize,
+}
+
+impl GridCache {
+    /// Index of the slot to sample at `time`, or None if every slot is stale.
+    fn nearest(&self, time: f64) -> Option<usize> {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| slot.valid && (time - slot.time).abs() <= REFRESH_SECONDS)
+            .min_by(|a, b| (time - a.1.time).abs().total_cmp(&(time - b.1.time).abs()))
+            .map(|(index, _)| index)
+    }
+}
 
 struct GridState {
     time: f64,
@@ -201,11 +222,9 @@ impl CpuSurface {
         Self {
             modes,
             twiddle,
-            state: std::sync::Mutex::new(GridState {
-                time: 0.0,
-                valid: false,
-                height: vec![0.0; GRID * GRID],
-                velocity: vec![0.0; GRID * GRID],
+            state: std::sync::Mutex::new(GridCache {
+                slots: Vec::new(),
+                next_replacement: 0,
             }),
         }
     }
@@ -290,10 +309,28 @@ impl CpuSurface {
         let ty = ((radius_meters * dot(v, direction) / length).rem_euclid(1.0)) * GRID as f64 - 0.5;
         let (i0, j0) = (tx.floor() as i64, ty.floor() as i64);
         let (fx, fy) = (tx - i0 as f64, ty - j0 as f64);
-        let mut state = self.state.lock().unwrap();
-        if !state.valid || (time - state.time).abs() > REFRESH_SECONDS {
-            self.refresh(&mut state, time);
-        }
+        let mut cache = self.state.lock().unwrap();
+        let index = match cache.nearest(time) {
+            Some(index) => index,
+            None => {
+                let index = if cache.slots.len() < GRID_SLOTS {
+                    cache.slots.push(GridState {
+                        time: 0.0,
+                        valid: false,
+                        height: vec![0.0; GRID * GRID],
+                        velocity: vec![0.0; GRID * GRID],
+                    });
+                    cache.slots.len() - 1
+                } else {
+                    let index = cache.next_replacement;
+                    cache.next_replacement = (index + 1) % GRID_SLOTS;
+                    index
+                };
+                self.refresh(&mut cache.slots[index], time);
+                index
+            }
+        };
+        let state = &cache.slots[index];
         let delta = time - state.time;
         let at = |i: i64, j: i64| {
             let index = (j.rem_euclid(GRID as i64) as usize) * GRID + i.rem_euclid(GRID as i64) as usize;
@@ -323,7 +360,12 @@ impl CpuSurface {
 
     #[cfg(test)]
     fn texel(&self, i: usize, j: usize, time: f64) -> f64 {
-        let mut state = self.state.lock().unwrap();
+        let mut state = GridState {
+            time: 0.0,
+            valid: false,
+            height: vec![0.0; GRID * GRID],
+            velocity: vec![0.0; GRID * GRID],
+        };
         self.refresh(&mut state, time);
         state.height[j * GRID + i] as f64
     }
@@ -839,6 +881,25 @@ pub(crate) mod tests {
             std::hint::black_box(CpuSurface::sample(&cpu, d, r, 100.0 + k as f64));
         }
         eprintln!("refresh+sample: {:.3} ms each", start.elapsed().as_secs_f64() * 50.0);
+    }
+
+    #[test]
+    fn interleaved_query_times_do_not_refresh_every_call() {
+        let cpu = CpuSurface::new(&default_h0());
+        let d = [0.6_f64, 0.8, 0.0];
+        let r = 4_000_000.0;
+        let times = [10.0, 10.5, 11.0, 11.5, 12.0, 13.0];
+        for t in times {
+            cpu.sample(d, r, t); // warm each slot
+        }
+        let start = std::time::Instant::now();
+        for _ in 0..200 {
+            for t in times {
+                std::hint::black_box(cpu.sample(d, r, t));
+            }
+        }
+        // 1200 samples; one refresh per call would be ~2.8s.
+        assert!(start.elapsed().as_secs_f64() < 0.5, "{:?}", start.elapsed());
     }
 }
 
