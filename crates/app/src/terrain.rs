@@ -22,6 +22,7 @@ use wgpu::util::DeviceExt;
 mod ocean_foam;
 #[path = "ocean_spray.rs"]
 mod ocean_spray;
+pub use ocean_spray::ShipSprayEmitter;
 
 use crate::{
     outmap::{Outmap, OutmapError, TileData},
@@ -875,6 +876,8 @@ pub struct TerrainRenderer {
     foam_history: ocean_foam::OceanFoamHistory,
     foam_history_enabled: bool,
     ocean_spray: Option<ocean_spray::OceanSpray>,
+    /// The ship's bow, for spray and hull foam; set each frame by the caller.
+    ship_spray: Option<ShipSprayEmitter>,
     ocean_fft: crate::ocean_fft::OceanFft,
     ocean_fft_enabled: bool,
     _terrain_settings_buffer: wgpu::Buffer,
@@ -1378,6 +1381,7 @@ impl TerrainRenderer {
             foam_history,
             foam_history_enabled: crate::planet::ocean_foam_history_enabled(),
             ocean_spray,
+            ship_spray: None,
             ocean_fft,
             ocean_fft_enabled,
             _terrain_settings_buffer: terrain_settings_buffer,
@@ -1491,6 +1495,10 @@ impl TerrainRenderer {
         if !self.foam_history_enabled {
             return;
         }
+        let ship = self
+            .ocean_fft_enabled
+            .then_some(self.ship_spray.as_ref())
+            .flatten();
         self.foam_history.update(
             &self.queue,
             encoder,
@@ -1498,7 +1506,13 @@ impl TerrainRenderer {
             center,
             right,
             ocean_time_seconds,
+            ship,
         );
+    }
+
+    /// The ship's bow for this frame's spray and hull foam (FFT ocean only).
+    pub fn set_ship_spray(&mut self, ship: Option<ShipSprayEmitter>) {
+        self.ship_spray = ship;
     }
 
     /// Advances the wind-blown spray; after `update_ocean_fft`.
@@ -1510,7 +1524,14 @@ impl TerrainRenderer {
     ) {
         if let Some(spray) = &mut self.ocean_spray {
             let storm = crate::ocean::sea_state_at(f64::from(ocean_time_seconds)).intensity;
-            spray.update(&self.queue, encoder, camera_direction, ocean_time_seconds, storm);
+            spray.update(
+                &self.queue,
+                encoder,
+                camera_direction,
+                ocean_time_seconds,
+                storm,
+                self.ship_spray.as_ref(),
+            );
         }
     }
 

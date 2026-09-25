@@ -13,6 +13,9 @@ struct SprayDrawFrame {
     shift_dt: vec4<f32>,
     wind: vec4<f32>,
     params: vec4<f32>,
+    ship_origin: vec4<f32>,
+    ship_axes: vec4<f32>,
+    ship_velocity: vec4<f32>,
 }
 
 @group(1) @binding(0) var<storage, read> spray_particles: array<SprayParticle>;
@@ -53,9 +56,12 @@ fn vs_spray(
     let age = particle.position.w / lifetime;
     let seed = fract(f32(instance_index) * 0.61803398875);
     let distance = length(view_position);
-    // Puffs start small and spread as the droplets disperse, capped on screen
-    // so one passing the eye cannot become a cloud.
-    let size = min(mix(0.3, 1.3, sqrt(age)) * (0.7 + 0.6 * seed), distance * 0.05);
+    // Fine droplets that spread a little as they disperse, capped on screen so
+    // one passing the eye cannot become a cloud. The ship's slots (first
+    // SHIP_SPRAY_SLOTS) throw sheets of spray metres across off the bow.
+    let from_ship = instance_index < 2048u;
+    let grown = select(mix(0.12, 0.5, sqrt(age)), mix(0.8, 3.5, sqrt(age)), from_ship);
+    let size = min(grown * (0.7 + 0.6 * seed), distance * select(0.03, 0.06, from_ship));
     // Stretched along the droplets' motion: spray streaks downwind.
     let velocity_view = planet_to_view(spray_frame.axis_u.xyz * particle.velocity.x
         + spray_frame.axis_v.xyz * particle.velocity.y + up * particle.velocity.z);
@@ -66,15 +72,18 @@ fn vs_spray(
         dot(screen_velocity, screen_velocity) > 1.0e-6,
     );
     let across = vec2<f32>(-along.y, along.x);
-    let streak = min(length(screen_velocity) * 0.06, distance * 0.05);
+    let streak = min(length(screen_velocity) * 0.12, distance * 0.06);
     view_position = vec3<f32>(
         view_position.xy + along * corner.x * (size + streak) + across * corner.y * size,
         view_position.z,
     );
     out.clip_position = camera.projection_matrix * vec4<f32>(view_position, 1.0);
-    // Thin with age, and fade near the eye.
-    out.alpha = 0.6 * pow(1.0 - age, 1.5) * smoothstep(0.0, 0.08, age)
-        * smoothstep(3.0, 10.0, distance);
+    // Densest the instant it leaves the water and gone quickly after: the
+    // source reads as a hard edge (the crest or the hull), the mist as a fast
+    // fade downwind. No fade-in, so there is no soft start.
+    // Bow sheets are denser water and hang longer than wind-torn crest mist.
+    let fade = select(0.8 * exp(-4.0 * age), 0.9 * exp(-2.5 * age), from_ship);
+    out.alpha = fade * (1.0 - age) * smoothstep(3.0, 10.0, distance);
     let sun_direction = normalize(camera.sun_direction.xyz);
     let height = max(particle.position.z, 0.0);
     let sun_transmittance = surface_direct_sun_transmittance(up, height, sun_direction);

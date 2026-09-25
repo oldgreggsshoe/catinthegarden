@@ -23,6 +23,11 @@ struct FoamFrame {
     current_east: [f32; 4],
     current_north: [f32; 4],
     timing: [f32; 4],
+    /// Ship waterline origin relative to the current atlas centre (east,
+    /// north m), foam intensity 0-1, 1 if a ship is present.
+    ship: [f32; 4],
+    /// Ship forward (east, north), hull half-length, half-beam.
+    ship_axes: [f32; 4],
 }
 
 pub(super) struct OceanFoamHistory {
@@ -252,6 +257,7 @@ impl OceanFoamHistory {
         center: glam::DVec3,
         right: glam::DVec3,
         ocean_time_seconds: f32,
+        ship: Option<&super::ocean_spray::ShipSprayEmitter>,
     ) {
         let center = center.normalize();
         let east = (right - center * right.dot(center)).normalize();
@@ -279,6 +285,26 @@ impl OceanFoamHistory {
                 let wind = super::ocean_spray::wind_direction_uv();
                 [elapsed, f32::from(valid_previous), wind[0], wind[1]]
             },
+            ship: ship.map_or([0.0; 4], |ship| {
+                let offset = ship.waterline_origin
+                    - center * crate::planet::planet_radius_meters();
+                [
+                    offset.dot(east) as f32,
+                    offset.dot(north) as f32,
+                    ship.intensity,
+                    1.0,
+                ]
+            }),
+            ship_axes: ship.map_or([1.0, 0.0, 0.0, 0.0], |ship| {
+                let f = glam::DVec2::new(ship.forward.dot(east), ship.forward.dot(north))
+                    .normalize_or(glam::DVec2::X);
+                [
+                    f.x as f32,
+                    f.y as f32,
+                    (0.5 * crate::ship::HULL_LENGTH_METERS) as f32,
+                    (0.5 * crate::ship::HULL_BEAM_METERS) as f32,
+                ]
+            }),
         };
         queue.write_buffer(&self._uniform, 0, bytemuck::bytes_of(&frame));
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {

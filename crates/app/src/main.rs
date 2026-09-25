@@ -2534,6 +2534,38 @@ impl State {
             .update(&self.queue, marked, [self.size.width, self.size.height]);
     }
 
+    /// The ship's bow for spray and hull foam. Intensity is how fast the bow is
+    /// driving down into the water surface (its vertical speed against the
+    /// water's), counted only while the bow is at or in the water.
+    fn ship_spray_emitter(&self, ocean_time_seconds: f64) -> terrain::ShipSprayEmitter {
+        let origin = self.ship_body.position
+            + self.ship_body.orientation * -self.ship_hull.centre_of_mass_local();
+        let forward = self.ship_body.forward();
+        let bow = origin + forward * (0.45 * ship::HULL_LENGTH_METERS);
+        let bow_velocity = self.ship_body.linear_velocity
+            + self.ship_body.angular_velocity.cross(bow - self.ship_body.position);
+        let radial = bow.normalize();
+        let water_up = ocean::global_wave_vertical_velocity_meters_per_second(
+            radial,
+            ocean_time_seconds,
+            SHIP_FALLBACK_DEPTH_METERS,
+        );
+        let water_height =
+            ocean::global_wave_height_meters(radial, ocean_time_seconds, SHIP_FALLBACK_DEPTH_METERS);
+        let immersion = water_height - (bow.length() - planet::planet_radius_meters());
+        let slam = (water_up - bow_velocity.dot(radial)).max(0.0);
+        let ramp = |low: f64, high: f64, x: f64| {
+            let t = ((x - low) / (high - low)).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        };
+        terrain::ShipSprayEmitter {
+            waterline_origin: origin,
+            forward,
+            velocity: self.ship_body.linear_velocity,
+            intensity: (ramp(0.3, 2.5, slam) * ramp(-1.5, 0.5, immersion)) as f32,
+        }
+    }
+
     /// Uploads the hull's view-relative transform.
     ///
     /// Split from the physics above and called *after* the camera has been
@@ -4002,6 +4034,8 @@ impl State {
         // The camera is settled for this frame from here on, so anything that
         // bakes the camera basis into an upload belongs below this line.
         self.upload_ship_transform(planet_rotation_radians);
+        let ship_spray = self.ship_spray_emitter(ocean_time_seconds);
+        self.terrain.set_ship_spray(Some(ship_spray));
         if !self
             .scenario
             .as_ref()

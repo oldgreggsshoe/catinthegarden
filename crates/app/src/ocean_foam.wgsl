@@ -14,6 +14,11 @@ struct FoamFrame {
     // x: elapsed seconds, y: whether the previous atlas is valid, zw: unit
     // wind direction in the FFT (u, v) axes (FFT mode).
     timing: vec4<f32>,
+    // Ship waterline origin from the atlas centre (east, north m), bow slam
+    // intensity, 1 if a ship is present.
+    ship: vec4<f32>,
+    // Ship forward (east, north), hull half-length, half-beam.
+    ship_axes: vec4<f32>,
 }
 @group(1) @binding(3) var<uniform> foam_frame: FoamFrame;
 @group(1) @binding(4) var foam_fft_map: texture_2d_array<f32>;
@@ -50,6 +55,31 @@ fn foam_birth_hash(cell: vec3<i32>) -> f32 {
     value = (value ^ (value >> 15u)) * 0x846ca68bu;
     value = value ^ (value >> 16u);
     return f32(value & 65535u) / 65535.0;
+}
+
+// Water churned against the hull: a band just outside the waterline outline
+// (the same plan shape as ship.rs `half_beam_meters`), heaviest at the bow and
+// stronger when it slams. Left in the world-fixed history, it trails as a wake.
+fn ship_hull_foam(offset: vec2<f32>) -> f32 {
+    let forward = foam_frame.ship_axes.xy;
+    let port = vec2<f32>(-forward.y, forward.x);
+    let relative = offset - foam_frame.ship.xy;
+    let half_length = foam_frame.ship_axes.z;
+    let t = dot(relative, forward) / half_length;
+    let across = abs(dot(relative, port));
+    let tc = clamp(t, -1.0, 1.0);
+    let shape = select(1.0 - 0.2 * tc * tc, pow(max(1.0 - tc * tc, 0.0), 0.6), tc >= 0.0);
+    let half_beam = foam_frame.ship_axes.w * shape;
+    // Distance outside the hull outline, ends included.
+    let beyond_ends = max(abs(t) - 1.0, 0.0) * half_length;
+    let outside = max(across - half_beam, 0.0) + beyond_ends;
+    let inside = across < half_beam && abs(t) <= 1.0;
+    if inside {
+        return 0.0;
+    }
+    let band = 1.0 - smoothstep(0.0, 2.5 + 2.0 * foam_frame.ship.z, outside);
+    let bow = 0.35 + 0.65 * smoothstep(-0.2, 0.9, t);
+    return band * bow * (0.45 + 0.55 * foam_frame.ship.z);
 }
 
 @compute @workgroup_size(8, 8)
@@ -150,6 +180,9 @@ fn cs_foam(@builtin(global_invocation_id) id: vec3<u32>) {
         let cell = vec3<i32>(floor(direction * (PLANET_RADIUS_METERS / 7.0)));
         let fleck = smoothstep(0.72, 0.98, foam_birth_hash(cell));
         born = peak * 0.65 * fleck;
+    }
+    if foam_frame.ship.w > 0.5 {
+        born = max(born, ship_hull_foam(offset));
     }
     textureStore(next_foam, vec2<i32>(id.xy), vec4<f32>(max(retained, born), 0.0, 0.0, 1.0));
 }

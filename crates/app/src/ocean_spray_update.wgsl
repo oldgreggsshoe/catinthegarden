@@ -24,6 +24,12 @@ struct SprayFrame {
     // x: spawn radius (m); y: births per second per fully folded particle
     // attempt; z: choppiness; w: swell height (m).
     params: vec4<f32>,
+    // Ship waterline origin relative to the camera (u, v, height), intensity.
+    ship_origin: vec4<f32>,
+    // Ship forward (u, v), hull half-length, half-beam.
+    ship_axes: vec4<f32>,
+    // Ship velocity (u, v, up).
+    ship_velocity: vec4<f32>,
 }
 
 struct OceanFftView {
@@ -41,6 +47,10 @@ struct OceanFftView {
 @group(0) @binding(4) var<uniform> fft_view: OceanFftView;
 
 const GRAVITY: f32 = 9.81;
+// The first particle slots belong to the ship's bow (ocean_spray.rs).
+const SHIP_SPRAY_SLOTS: u32 = 2048u;
+// Bow births per second per slot attempt at full slam.
+const SHIP_SPRAY_RATE: f32 = 30.0;
 // Horizontal air drag toward the wind, and vertical drag, per second.
 const WIND_DRAG: f32 = 1.2;
 const VERTICAL_DRAG: f32 = 0.6;
@@ -120,9 +130,45 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
 
+    let seed = index * 747796405u + u32(frame.shift_dt.w) * 2891336453u;
+    if index < SHIP_SPRAY_SLOTS {
+        // Bow spray: torn off the forward waterline where the bow slams into
+        // the water, thrown outward and up, carried with the hull and the wind.
+        let intensity = frame.ship_origin.w;
+        if intensity <= 0.0
+            || unit_random(seed ^ 0x2545f491u) >= intensity * SHIP_SPRAY_RATE * dt
+        {
+            particle.velocity.w = 0.0;
+            particles[index] = particle;
+            return;
+        }
+        let r1 = unit_random(seed ^ 0x9e3779b9u);
+        let r2 = unit_random(seed ^ 0x85ebca6bu);
+        let r3 = unit_random(seed ^ 0xc2b2ae35u);
+        let r4 = unit_random(seed ^ 0x27d4eb2fu);
+        // Station along the forward third of the hull, either side.
+        let t = mix(0.35, 0.97, sqrt(r1));
+        let side = select(-1.0, 1.0, r2 < 0.5);
+        let half_beam = frame.ship_axes.w * pow(max(1.0 - t * t, 0.0), 0.6);
+        let forward = frame.ship_axes.xy;
+        let port = vec2<f32>(-forward.y, forward.x);
+        let along = t * frame.ship_axes.z;
+        let place = frame.ship_origin.xy + forward * along + port * (side * half_beam);
+        // Outward from the hull side, raked forward near the stem.
+        let outward = normalize(port * side + forward * (0.3 + 0.9 * t * t));
+        let speed = (3.0 + 8.0 * intensity * r3);
+        let horizontal = outward * speed + frame.ship_velocity.xy
+            + frame.wind.xy * frame.wind.z * 0.15;
+        // Up to ~17m/s: storm bow spray clears the 6m freeboard and the deck.
+        let lift = frame.ship_velocity.z * 0.5 + 5.0 + 12.0 * intensity * r4;
+        particle.position = vec4<f32>(place, frame.ship_origin.z + 0.3, 0.0);
+        particle.velocity = vec4<f32>(horizontal, lift, 0.9 + 1.2 * r3);
+        particles[index] = particle;
+        return;
+    }
+
     // Dead: one spawn attempt at a random point, density weighted toward the
     // camera (radius linear in the random number), where spray is visible.
-    let seed = index * 747796405u + u32(frame.shift_dt.w) * 2891336453u;
     let radius = frame.params.x * unit_random(seed);
     let angle = 6.2831853 * unit_random(seed ^ 0x68e31da4u);
     let local = radius * vec2<f32>(cos(angle), sin(angle));

@@ -8,7 +8,11 @@
 use bytemuck::Zeroable;
 use wgpu::util::DeviceExt;
 
-pub(super) const SPRAY_PARTICLES: u32 = 8192;
+pub(super) const SPRAY_PARTICLES: u32 = 16384;
+/// The first slots belong to the ship's bow; the rest to breaking crests.
+/// Mirrored in ocean_spray_update.wgsl, pinned by a test.
+#[allow(dead_code)]
+pub(super) const SHIP_SPRAY_SLOTS: u32 = 2048;
 /// Spray is drawn within this distance of the camera; beyond it a puff is a
 /// pixel or two and the fold foam carries the look.
 const SPAWN_RADIUS_METERS: f32 = 300.0;
@@ -26,6 +30,23 @@ struct SprayFrame {
     shift_dt: [f32; 4],
     wind: [f32; 4],
     params: [f32; 4],
+    /// Ship waterline origin relative to the camera (u, v m, height above sea
+    /// level m), spray intensity 0-1.
+    ship_origin: [f32; 4],
+    /// Ship forward (u, v), hull half-length, hull half-beam.
+    ship_axes: [f32; 4],
+    /// Ship velocity (u, v, up m/s), unused.
+    ship_velocity: [f32; 4],
+}
+
+/// Where and how hard the ship's bow is throwing spray, in the planet-local
+/// frame. Intensity comes from the bow slamming down into the water.
+#[derive(Clone, Copy, Debug)]
+pub struct ShipSprayEmitter {
+    pub waterline_origin: glam::DVec3,
+    pub forward: glam::DVec3,
+    pub velocity: glam::DVec3,
+    pub intensity: f32,
 }
 
 /// Unit wind direction in the FFT (u, v) axes; the spectrum's own wind.
@@ -245,6 +266,7 @@ impl OceanSpray {
         camera_direction: glam::DVec3,
         ocean_time_seconds: f32,
         storm_intensity: f32,
+        ship: Option<&ShipSprayEmitter>,
     ) {
         let (u, v) = crate::ocean_fft::anchor_axes(camera_direction.normalize().to_array());
         let radius = crate::planet::planet_radius_meters();
@@ -268,6 +290,41 @@ impl OceanSpray {
         self.frame = self.frame.wrapping_add(1);
         let wind = wind_direction_uv();
         let xyz = |a: [f64; 3]| [a[0] as f32, a[1] as f32, a[2] as f32, 0.0];
+        let (ship_origin, ship_axes, ship_velocity) = match ship {
+            Some(ship) => {
+                let at = |p: glam::DVec3| {
+                    let d = p.normalize().to_array();
+                    [radius * dot(u, d), radius * dot(v, d)]
+                };
+                let o = at(ship.waterline_origin);
+                let relative = [o[0] - camera_uv[0], o[1] - camera_uv[1]];
+                let tangent = |w: glam::DVec3| {
+                    let w = w.to_array();
+                    [dot(u, w), dot(v, w)]
+                };
+                let f = tangent(ship.forward);
+                let f_len = (f[0] * f[0] + f[1] * f[1]).sqrt().max(1e-9);
+                let vel = tangent(ship.velocity);
+                let up_speed = ship.velocity.dot(ship.waterline_origin.normalize());
+                let far = relative[0].hypot(relative[1]) > 2_000.0;
+                (
+                    [
+                        relative[0] as f32,
+                        relative[1] as f32,
+                        (ship.waterline_origin.length() - radius) as f32,
+                        if far { 0.0 } else { ship.intensity },
+                    ],
+                    [
+                        (f[0] / f_len) as f32,
+                        (f[1] / f_len) as f32,
+                        (0.5 * crate::ship::HULL_LENGTH_METERS) as f32,
+                        (0.5 * crate::ship::HULL_BEAM_METERS) as f32,
+                    ],
+                    [vel[0] as f32, vel[1] as f32, up_speed as f32, 0.0],
+                )
+            }
+            None => ([0.0; 4], [1.0, 0.0, 0.0, 0.0], [0.0; 4]),
+        };
         let frame = SprayFrame {
             axis_u: xyz(u),
             axis_v: xyz(v),
@@ -279,6 +336,9 @@ impl OceanSpray {
                 crate::ocean_fft::choppiness(),
                 crate::ocean_fft::swell_height_meters(storm_intensity),
             ],
+            ship_origin,
+            ship_axes,
+            ship_velocity,
         };
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&frame));
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -333,9 +393,18 @@ mod tests {
     }
 
     #[test]
+    fn the_shader_reserves_the_same_ship_slots() {
+        let source = include_str!("ocean_spray_update.wgsl");
+        assert!(source.contains(&format!("const SHIP_SPRAY_SLOTS: u32 = {SHIP_SPRAY_SLOTS}u;")));
+        let draw = include_str!("ocean_spray_draw.wgsl");
+        assert!(draw.contains(&format!("instance_index < {SHIP_SPRAY_SLOTS}u")));
+        assert!(SHIP_SPRAY_SLOTS < SPRAY_PARTICLES);
+    }
+
+    #[test]
     fn particle_layout_matches_the_shader() {
         // Two vec4<f32> per particle.
         assert_eq!(std::mem::size_of::<[[f32; 4]; 2]>(), 32);
-        assert_eq!(std::mem::size_of::<SprayFrame>(), 80);
+        assert_eq!(std::mem::size_of::<SprayFrame>(), 128);
     }
 }
