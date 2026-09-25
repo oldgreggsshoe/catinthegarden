@@ -3716,10 +3716,17 @@ fn ocean_lighting(
 // area-light sun specular (Karis 2013 representative point) whose roughness
 // grows with range for the wide low-sun reflection.
 const OCEAN_SOT_DEEP_COLOUR: vec3<f32> = vec3<f32>(0.004, 0.030, 0.140);
-const OCEAN_SOT_SUBSURFACE_COLOUR: vec3<f32> = vec3<f32>(0.020, 0.300, 0.330);
+// Thin water is the same water, lighter and a little more cyan, not a
+// different colour: about 1.5x the sunlit body (0.008, 0.150, 0.220).
+const OCEAN_SOT_SUBSURFACE_COLOUR: vec3<f32> = vec3<f32>(0.014, 0.225, 0.300);
 // Convergence where the peak mask starts and is full (dimensionless |k| h).
-const OCEAN_SOT_PEAK_ONSET: f32 = 0.20;
-const OCEAN_SOT_PEAK_FULL: f32 = 0.65;
+// Wide so the change is a gradient across the wave, not a patch edge.
+const OCEAN_SOT_PEAK_ONSET: f32 = 0.06;
+const OCEAN_SOT_PEAK_FULL: f32 = 1.0;
+// First pass (25 Sept, judged too contrasty), kept for comparison.
+const OCEAN_SOT_SUBSURFACE_COLOUR_V1: vec3<f32> = vec3<f32>(0.020, 0.300, 0.330);
+const OCEAN_SOT_PEAK_ONSET_V1: f32 = 0.20;
+const OCEAN_SOT_PEAK_FULL_V1: f32 = 0.65;
 // Artistic angular radius (tan) of the sun for the area-light lobe; the real
 // sun is 0.0046.
 const OCEAN_SOT_SUN_RADIUS: f32 = 0.06;
@@ -3779,13 +3786,18 @@ fn ocean_lighting_sot(
     let facing = max(dot(normal_view, view_direction), 0.0);
     let fresnel = vec3<f32>(0.02) + vec3<f32>(0.98) * pow(1.0 - facing, 5.0);
     let daylight = max(max(sun_transmittance.x, sun_transmittance.y), sun_transmittance.z);
-    let peak = smoothstep(OCEAN_SOT_PEAK_ONSET, OCEAN_SOT_PEAK_FULL, crest_sharpness);
+    let peak_linear = clamp(
+        (crest_sharpness - OCEAN_SOT_PEAK_ONSET) / (OCEAN_SOT_PEAK_FULL - OCEAN_SOT_PEAK_ONSET),
+        0.0,
+        1.0,
+    );
+    let peak = peak_linear * peak_linear * (3.0 - 2.0 * peak_linear) * peak_linear;
     let backlight = pow(max(dot(-view_direction, sun_direction_view), 0.0), 3.0);
     let sun_facing = max(dot(normal_view, sun_direction_view), 0.0);
     // Light reaches the viewer through the thin wave top; more so looking
     // toward the sun, and more where the surface tilts toward it.
     let subsurface_weight = clamp(
-        peak * (0.35 + 0.65 * backlight) + 0.25 * sun_facing * (1.0 - facing) + 0.5 * fine_crest_transmission,
+        peak * (0.35 + 0.65 * backlight) + 0.25 * sun_facing * (1.0 - facing) + 0.25 * fine_crest_transmission,
         0.0,
         1.0,
     );
@@ -3794,8 +3806,9 @@ fn ocean_lighting_sot(
     let deep = mix(OCEAN_SOT_DEEP_COLOUR, ocean_body_albedo(normal), 0.85);
     let body = mix(deep, OCEAN_SOT_SUBSURFACE_COLOUR, subsurface_weight);
     let diffuse = body * (sky_diffuse + sun_transmittance * (0.4 * SURFACE_SUNLIGHT_SCALE));
-    let glow = OCEAN_SOT_SUBSURFACE_COLOUR * peak * (0.15 + backlight)
-        * sun_transmittance * (0.5 * SURFACE_SUNLIGHT_SCALE) * (vec3<f32>(1.0) - fresnel);
+    // Glow keeps the body's hue: it lightens the water rather than tinting it.
+    let glow = body * peak * (0.15 + backlight)
+        * sun_transmittance * (0.35 * SURFACE_SUNLIGHT_SCALE) * (vec3<f32>(1.0) - fresnel);
     let range = length(camera_relative_view_position);
     let roughness = mix(
         OCEAN_SOT_ROUGHNESS_NEAR,
