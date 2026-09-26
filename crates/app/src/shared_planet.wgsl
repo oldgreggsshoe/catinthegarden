@@ -1524,18 +1524,27 @@ fn ocean_fft_cascade(cascade_index: u32, local: vec2<f32>, filter_width_meters: 
     let lod = clamp(log2(max(filter_width_meters / texel_meters, 1.0)), 0.0, 8.0);
     let texel = exp2(lod) / 256.0;
     let step_meters = entry.z * texel;
-    let s0 = textureSampleLevel(ocean_fft_map, ocean_fft_sampler, uv, cascade_index, lod);
-    let su = textureSampleLevel(ocean_fft_map, ocean_fft_sampler, uv + vec2<f32>(texel, 0.0), cascade_index, lod);
-    let sv = textureSampleLevel(ocean_fft_map, ocean_fft_sampler, uv + vec2<f32>(0.0, texel), cascade_index, lod);
+    // Differences across half-texel offsets either side, not a one-texel
+    // forward difference: the forward difference of a bilinear field is
+    // constant over each texel square, which shaded big waves as tilted flat
+    // squares with creases between them (a "low-poly" sea). These are
+    // continuous, and the height is the average of the same four samples,
+    // which halves the crease angles too. Mirrored by ocean_fft::sample_slot.
+    let half = 0.5 * texel;
+    let se = textureSampleLevel(ocean_fft_map, ocean_fft_sampler, uv + vec2<f32>(half, 0.0), cascade_index, lod);
+    let sw = textureSampleLevel(ocean_fft_map, ocean_fft_sampler, uv - vec2<f32>(half, 0.0), cascade_index, lod);
+    let sn = textureSampleLevel(ocean_fft_map, ocean_fft_sampler, uv + vec2<f32>(0.0, half), cascade_index, lod);
+    let ss = textureSampleLevel(ocean_fft_map, ocean_fft_sampler, uv - vec2<f32>(0.0, half), cascade_index, lod);
+    let s0 = 0.25 * (se + sw + sn + ss);
     ocean_fft_last_displacement = s0.yz;
     ocean_fft_last_mean_square_slope = max(s0.w, 0.0);
-    ocean_fft_last_jacobian = vec4<f32>(su.y - s0.y, sv.z - s0.z, sv.y - s0.y, su.z - s0.z)
+    ocean_fft_last_jacobian = vec4<f32>(se.y - sw.y, sn.z - ss.z, sn.y - ss.y, se.z - sw.z)
         / step_meters;
     return vec4<f32>(
         s0.x,
-        (su.x - s0.x) / step_meters,
-        (sv.x - s0.x) / step_meters,
-        ((su.y - s0.y) + (sv.z - s0.z)) / step_meters,
+        (se.x - sw.x) / step_meters,
+        (sn.x - ss.x) / step_meters,
+        ((se.y - sw.y) + (sn.z - ss.z)) / step_meters,
     );
 }
 
@@ -1562,21 +1571,38 @@ fn ocean_surface_fft(
     // Filter width: twice the vertex spacing in the vertex stage, otherwise
     // twice the pixel footprint (distance times the angle one pixel spans).
     // A pixel's footprint on the water is long and thin at grazing angles:
-    // the across-view width divided by the cosine of incidence. Filter to the
-    // long axis so nothing aliases; what that removes from the normal goes
-    // into roughness below instead of being lost.
+    // the across-view width divided by the cosine of incidence. Filtering to
+    // the long axis stops distant detail aliasing, and what it removes from
+    // the normal goes into roughness below instead of being lost.
+    //
+    // The incidence that matters is against the wave actually being looked
+    // at, not the flat sea: a tall swell face seen head-on is not grazing.
+    // Measured against the flat sea it lost all its ripples and foam lace and
+    // read as smooth clay. So the geometry cascades (wind sea and swell) are
+    // read first with the flat-sea stretch capped at 4x, their surface gives
+    // the incidence, and the finer cascades are filtered by that.
     let pixel_across = camera_distance_meters * (2.0 * camera.projection.y / 720.0);
-    let incidence = abs(dot(normalize(planet_offset + direction * 1.0e-3), direction));
-    let pixel_footprint = pixel_across / max(incidence, 0.02);
-    let filter_width = 2.0 * select(
-        pixel_footprint,
-        max(ocean_fft_vertex_spacing_meters, 0.0),
-        ocean_fft_vertex_spacing_meters > 0.0,
-    );
-    let broad = ocean_fft_cascade(0u, local, filter_width);
+    let view_ray = normalize(planet_offset + direction * 1.0e-3);
+    let flat_incidence = abs(dot(view_ray, direction));
+    let vertex_stage = ocean_fft_vertex_spacing_meters > 0.0;
+    let vertex_filter = 2.0 * max(ocean_fft_vertex_spacing_meters, 0.0);
+    let geometry_filter = select(2.0 * pixel_across / max(flat_incidence, 0.25), vertex_filter, vertex_stage);
+    let broad = ocean_fft_cascade(0u, local, geometry_filter);
     let broad_mean_square = ocean_fft_last_mean_square_slope;
     let broad_jacobian = ocean_fft_last_jacobian;
     let broad_displacement = ocean_fft_last_displacement;
+    // Swell (cascade 3) is geometry like cascade 0, normalised to 1m
+    // significant height and scaled by gain.z (metres).
+    let swell_scale = ocean_fft_view.gain.z;
+    let swell = ocean_fft_cascade(3u, local, geometry_filter);
+    let swell_mean_square = ocean_fft_last_mean_square_slope;
+    let swell_jacobian = ocean_fft_last_jacobian;
+    let swell_displacement = ocean_fft_last_displacement;
+    let large_slope = (axis_u * (broad.y + swell.y * swell_scale)
+        + axis_v * (broad.z + swell.z * swell_scale)) * gain;
+    let large_normal = normalize(direction - (large_slope - direction * dot(large_slope, direction)));
+    let wave_incidence = abs(dot(view_ray, large_normal));
+    let filter_width = select(2.0 * pixel_across / max(wave_incidence, 0.02), vertex_filter, vertex_stage);
     let mid_weight = 1.0 - smoothstep(600.0, 3000.0, camera_distance_meters);
     let fine_weight = 1.0 - smoothstep(150.0, 700.0, camera_distance_meters);
     let mid = ocean_fft_cascade(1u, local, filter_width);
@@ -1587,11 +1613,6 @@ fn ocean_surface_fft(
     let fine_mean_square = ocean_fft_last_mean_square_slope;
     let fine_jacobian = ocean_fft_last_jacobian;
     let fine_displacement = ocean_fft_last_displacement;
-    // Swell (cascade 3) is geometry like cascade 0, normalised to 1m
-    // significant height and scaled by gain.z (metres).
-    let swell_scale = ocean_fft_view.gain.z;
-    let swell = ocean_fft_cascade(3u, local, filter_width);
-    let swell_mean_square = ocean_fft_last_mean_square_slope;
     // Per cascade: mean-square slope over the footprint less what the drawn
     // normal carries (weight^2 |resolved slope|^2). A cascade faded out by
     // distance hands all of its slope to roughness.
@@ -1601,8 +1622,8 @@ fn ocean_surface_fft(
         + swell_scale * swell_scale * max(swell_mean_square - dot(swell.yz, swell.yz), 0.0);
     ocean_fft_unresolved_slope_variance = unresolved * gain * gain;
     let core = broad + swell * swell_scale;
-    let core_jacobian = broad_jacobian + ocean_fft_last_jacobian * swell_scale;
-    let core_displacement = broad_displacement + ocean_fft_last_displacement * swell_scale;
+    let core_jacobian = broad_jacobian + swell_jacobian * swell_scale;
+    let core_displacement = broad_displacement + swell_displacement * swell_scale;
     let pattern = (fine.x / OCEAN_FFT_FINE_HEIGHT_STD) * fine_weight
         + (mid.x / OCEAN_FFT_MID_HEIGHT_STD) * (1.0 - fine_weight) * mid_weight;
     ocean_fft_foam_pattern = clamp(0.5 + 0.25 * pattern, 0.0, 1.0);

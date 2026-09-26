@@ -88,12 +88,16 @@ fn spray_cascade(index: u32, local: vec2<f32>, weight: f32, field: ptr<function,
     let uv = entry.xy + local / entry.z;
     let texel = 1.0 / 256.0;
     let step = entry.z * texel;
-    let s0 = textureSampleLevel(fft_map, fft_sampler, uv, index, 0.0);
-    let su = textureSampleLevel(fft_map, fft_sampler, uv + vec2<f32>(texel, 0.0), index, 0.0);
-    let sv = textureSampleLevel(fft_map, fft_sampler, uv + vec2<f32>(0.0, texel), index, 0.0);
+    // Half-texel central differences, as ocean_fft_cascade takes them.
+    let half = 0.5 * texel;
+    let se = textureSampleLevel(fft_map, fft_sampler, uv + vec2<f32>(half, 0.0), index, 0.0);
+    let sw = textureSampleLevel(fft_map, fft_sampler, uv - vec2<f32>(half, 0.0), index, 0.0);
+    let sn = textureSampleLevel(fft_map, fft_sampler, uv + vec2<f32>(0.0, half), index, 0.0);
+    let ss = textureSampleLevel(fft_map, fft_sampler, uv - vec2<f32>(0.0, half), index, 0.0);
+    let s0 = 0.25 * (se + sw + sn + ss);
     (*field).height += s0.x * weight;
     (*field).displacement += s0.yz * weight;
-    (*field).jacobian += vec4<f32>(su.y - s0.y, sv.z - s0.z, sv.y - s0.y, su.z - s0.z)
+    (*field).jacobian += vec4<f32>(se.y - sw.y, sn.z - ss.z, sn.y - ss.y, se.z - sw.z)
         * (weight / step);
 }
 

@@ -560,35 +560,49 @@ impl CpuCascade {
     }
 }
 
-/// Bilinear sample of a slot at tangent-plane metres (u, v), with the GPU's
-/// one-texel forward differences.
+/// Sample of a slot at tangent-plane metres (u, v) exactly as the shader
+/// takes it (`ocean_fft_cascade`): four bilinear samples half a texel either
+/// side, the value their average and the derivatives their differences, so
+/// slopes are continuous instead of constant over each texel.
 fn sample_slot(slot: &SlotData, tile_meters: f64, position: [f64; 2], delta_seconds: f64) -> FieldSample {
-    let tx = (position[0] / tile_meters).rem_euclid(1.0) * GRID as f64 - 0.5;
-    let ty = (position[1] / tile_meters).rem_euclid(1.0) * GRID as f64 - 0.5;
-    let (i0, j0) = (tx.floor() as i64, ty.floor() as i64);
-    let (fx, fy) = (tx - i0 as f64, ty - j0 as f64);
-    let bilinear = |field: &[f32], ox: i64, oy: i64| {
+    let bilinear = |field: &[f32], position: [f64; 2]| {
+        let tx = (position[0] / tile_meters).rem_euclid(1.0) * GRID as f64 - 0.5;
+        let ty = (position[1] / tile_meters).rem_euclid(1.0) * GRID as f64 - 0.5;
+        let (i0, j0) = (tx.floor() as i64, ty.floor() as i64);
+        let (fx, fy) = (tx - i0 as f64, ty - j0 as f64);
         let at = |i: i64, j: i64| {
             field[(j.rem_euclid(GRID as i64) as usize) * GRID + i.rem_euclid(GRID as i64) as usize]
                 as f64
         };
-        let (i, j) = (i0 + ox, j0 + oy);
-        (at(i, j) * (1.0 - fx) + at(i + 1, j) * fx) * (1.0 - fy)
-            + (at(i, j + 1) * (1.0 - fx) + at(i + 1, j + 1) * fx) * fy
+        (at(i0, j0) * (1.0 - fx) + at(i0 + 1, j0) * fx) * (1.0 - fy)
+            + (at(i0, j0 + 1) * (1.0 - fx) + at(i0 + 1, j0 + 1) * fx) * fy
     };
     let step = tile_meters / GRID as f64;
-    let velocity = bilinear(&slot.velocity, 0, 0);
-    let height_at = |ox, oy| bilinear(&slot.height, ox, oy) + delta_seconds * bilinear(&slot.velocity, ox, oy);
-    let height = height_at(0, 0);
-    let (dx0, dz0) = (bilinear(&slot.dx, 0, 0), bilinear(&slot.dz, 0, 0));
-    let (dxu, dzu) = (bilinear(&slot.dx, 1, 0), bilinear(&slot.dz, 1, 0));
-    let (dxv, dzv) = (bilinear(&slot.dx, 0, 1), bilinear(&slot.dz, 0, 1));
+    let half = 0.5 * step;
+    let taps = [
+        [position[0] + half, position[1]],
+        [position[0] - half, position[1]],
+        [position[0], position[1] + half],
+        [position[0], position[1] - half],
+    ];
+    let read = |field: &[f32]| taps.map(|tap| bilinear(field, tap));
+    let velocity = read(&slot.velocity);
+    let raw = read(&slot.height);
+    let height: [f64; 4] = std::array::from_fn(|i| raw[i] + delta_seconds * velocity[i]);
+    let dx = read(&slot.dx);
+    let dz = read(&slot.dz);
+    let mean = |v: [f64; 4]| 0.25 * (v[0] + v[1] + v[2] + v[3]);
     FieldSample {
-        height,
-        slope: [(height_at(1, 0) - height) / step, (height_at(0, 1) - height) / step],
-        velocity,
-        displacement: [dx0, dz0],
-        jacobian: [(dxu - dx0) / step, (dzv - dz0) / step, (dxv - dx0) / step, (dzu - dz0) / step],
+        height: mean(height),
+        slope: [(height[0] - height[1]) / step, (height[2] - height[3]) / step],
+        velocity: mean(velocity),
+        displacement: [mean(dx), mean(dz)],
+        jacobian: [
+            (dx[0] - dx[1]) / step,
+            (dz[2] - dz[3]) / step,
+            (dx[2] - dx[3]) / step,
+            (dz[0] - dz[1]) / step,
+        ],
     }
 }
 
@@ -1280,13 +1294,15 @@ pub(crate) mod tests {
         let time = 12.0 + 0.5 * LATTICE_SECONDS - 1e-9;
         let key = (time / LATTICE_SECONDS).round() as i64;
         let delta = time - key as f64 * LATTICE_SECONDS;
-        let exact = cascade.transform(time);
+        let [height, velocity, dx, dz] = cascade.transform(time);
+        let exact = SlotData { height, velocity, dx, dz };
         let mut worst = 0.0f64;
         let step = cascade.tile_meters / GRID as f64;
         for &(i, j) in &[(3usize, 7usize), (90, 12), (200, 150), (255, 0)] {
-            let position = [(i as f64 + 0.5) * step, (j as f64 + 0.5) * step];
+            let position = [(i as f64 + 0.3) * step, (j as f64 + 0.7) * step];
             let held = sample_slot(&cascade.slot(key), cascade.tile_meters, position, delta);
-            worst = worst.max((held.height - exact[0][j * GRID + i] as f64).abs());
+            let fresh = sample_slot(&exact, cascade.tile_meters, position, 0.0);
+            worst = worst.max((held.height - fresh.height).abs());
         }
         eprintln!("lattice extrapolation worst height error {worst:.5} m");
         assert!(worst < 0.005, "{worst}");

@@ -37,10 +37,13 @@ fn foam_fft_jacobian(cascade_index: u32, local: vec2<f32>, width: f32) -> vec4<f
     let lod = clamp(log2(max(width / texel_meters, 1.0)), 0.0, 8.0);
     let texel = exp2(lod) / 256.0;
     let uv = entry.xy + local / entry.z;
-    let s0 = textureSampleLevel(foam_fft_map, foam_fft_sampler, uv, cascade_index, lod);
-    let su = textureSampleLevel(foam_fft_map, foam_fft_sampler, uv + vec2<f32>(texel, 0.0), cascade_index, lod);
-    let sv = textureSampleLevel(foam_fft_map, foam_fft_sampler, uv + vec2<f32>(0.0, texel), cascade_index, lod);
-    return vec4<f32>(su.y - s0.y, sv.z - s0.z, sv.y - s0.y, su.z - s0.z) / (entry.z * texel);
+    // Half-texel central differences, as ocean_fft_cascade takes them.
+    let half = 0.5 * texel;
+    let se = textureSampleLevel(foam_fft_map, foam_fft_sampler, uv + vec2<f32>(half, 0.0), cascade_index, lod);
+    let sw = textureSampleLevel(foam_fft_map, foam_fft_sampler, uv - vec2<f32>(half, 0.0), cascade_index, lod);
+    let sn = textureSampleLevel(foam_fft_map, foam_fft_sampler, uv + vec2<f32>(0.0, half), cascade_index, lod);
+    let ss = textureSampleLevel(foam_fft_map, foam_fft_sampler, uv - vec2<f32>(0.0, half), cascade_index, lod);
+    return vec4<f32>(se.y - sw.y, sn.z - ss.z, sn.y - ss.y, se.z - sw.z) / (entry.z * texel);
 }
 
 // Wind-driven surface drift of FFT fold foam: it slides downwind and smears
