@@ -565,27 +565,44 @@ impl CpuCascade {
 /// side, the value their average and the derivatives their differences, so
 /// slopes are continuous instead of constant over each texel.
 fn sample_slot(slot: &SlotData, tile_meters: f64, position: [f64; 2], delta_seconds: f64) -> FieldSample {
-    let bilinear = |field: &[f32], position: [f64; 2]| {
-        let tx = (position[0] / tile_meters).rem_euclid(1.0) * GRID as f64 - 0.5;
-        let ty = (position[1] / tile_meters).rem_euclid(1.0) * GRID as f64 - 0.5;
-        let (i0, j0) = (tx.floor() as i64, ty.floor() as i64);
-        let (fx, fy) = (tx - i0 as f64, ty - j0 as f64);
-        let at = |i: i64, j: i64| {
-            field[(j.rem_euclid(GRID as i64) as usize) * GRID + i.rem_euclid(GRID as i64) as usize]
-                as f64
-        };
-        (at(i0, j0) * (1.0 - fx) + at(i0 + 1, j0) * fx) * (1.0 - fy)
-            + (at(i0, j0 + 1) * (1.0 - fx) + at(i0 + 1, j0 + 1) * fx) * fy
-    };
+    const MASK: i64 = GRID as i64 - 1;
     let step = tile_meters / GRID as f64;
     let half = 0.5 * step;
+    // Per tap: the four texel indices and bilinear weights, computed once and
+    // shared by every field (GRID is a power of two, so wrapping is a mask).
+    let tap = |u: f64, v: f64| {
+        let tx = (u / tile_meters).rem_euclid(1.0) * GRID as f64 - 0.5;
+        let ty = (v / tile_meters).rem_euclid(1.0) * GRID as f64 - 0.5;
+        let (fi, fj) = (tx.floor(), ty.floor());
+        let (fx, fy) = (tx - fi, ty - fj);
+        let (i0, j0) = (fi as i64, fj as i64);
+        let (i1, j1) = ((i0 + 1) & MASK, (j0 + 1) & MASK);
+        let (i0, j0) = (i0 & MASK, j0 & MASK);
+        let row = |j: i64| j as usize * GRID;
+        (
+            [
+                row(j0) + i0 as usize,
+                row(j0) + i1 as usize,
+                row(j1) + i0 as usize,
+                row(j1) + i1 as usize,
+            ],
+            [(1.0 - fx) * (1.0 - fy), fx * (1.0 - fy), (1.0 - fx) * fy, fx * fy],
+        )
+    };
     let taps = [
-        [position[0] + half, position[1]],
-        [position[0] - half, position[1]],
-        [position[0], position[1] + half],
-        [position[0], position[1] - half],
+        tap(position[0] + half, position[1]),
+        tap(position[0] - half, position[1]),
+        tap(position[0], position[1] + half),
+        tap(position[0], position[1] - half),
     ];
-    let read = |field: &[f32]| taps.map(|tap| bilinear(field, tap));
+    let read = |field: &[f32]| {
+        taps.map(|(index, weight)| {
+            field[index[0]] as f64 * weight[0]
+                + field[index[1]] as f64 * weight[1]
+                + field[index[2]] as f64 * weight[2]
+                + field[index[3]] as f64 * weight[3]
+        })
+    };
     let velocity = read(&slot.velocity);
     let raw = read(&slot.height);
     let height: [f64; 4] = std::array::from_fn(|i| raw[i] + delta_seconds * velocity[i]);
@@ -727,6 +744,10 @@ impl CpuSurface {
                     let j = sample.jacobian;
                     // d(label - cD)/d(label), rows u and v.
                     let (a, b, cc, d) = (1.0 - c * j[0], -c * j[2], -c * j[3], 1.0 - c * j[1]);
+                    // Within a millimetre: the sample in hand is the answer.
+                    if residual[0].abs() + residual[1].abs() < 1.0e-3 {
+                        break;
+                    }
                     let det = (a * d - b * cc).max(0.2);
                     label[0] -= (d * residual[0] - b * residual[1]) / det;
                     label[1] -= (-cc * residual[0] + a * residual[1]) / det;
@@ -1359,6 +1380,22 @@ pub(crate) mod tests {
         let k = std::f64::consts::TAU * n as f64 / TILE_METERS[0] as f64;
         let a = 4.0 * amp as f64; // both +k and -k, each doubled by h0(-k)
         assert!((means[0] - 0.5 * k * a * a).abs() < 1e-6 * means[0].max(1.0), "{} vs {}", means[0], 0.5 * k * a * a);
+    }
+
+    #[test]
+    #[ignore = "benchmark: CPU cost of one water sample"]
+    fn cpu_sample_cost() {
+        let cpu = CpuSurface::new(&default_h0());
+        let r = 4_000_000.0;
+        let time = 30.0;
+        cpu.sample([0.6, 0.8, 0.0], r, time, 1.0); // warm the slots
+        let n = 20_000;
+        let start = std::time::Instant::now();
+        for i in 0..n {
+            let a = i as f64 * 1.0e-6;
+            std::hint::black_box(cpu.sample([0.6 + a, 0.8, a], r, time + (i % 3) as f64 * 0.01, 1.0));
+        }
+        eprintln!("CPU water sample: {:.2} us each", start.elapsed().as_secs_f64() * 1e6 / n as f64);
     }
 
     #[test]

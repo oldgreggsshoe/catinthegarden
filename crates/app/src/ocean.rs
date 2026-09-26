@@ -1266,13 +1266,28 @@ fn fft_surface() -> Option<&'static crate::ocean_fft::CpuSurface> {
 
 fn fft_sample(direction: DVec3, sim_time: f64) -> Option<crate::ocean_fft::CpuSample> {
     let surface = fft_surface()?;
+    // Callers ask for height, vertical velocity and slope at the same point
+    // and time back to back (the ship does, per buoyancy column): reuse the
+    // last sample rather than inverting the displacement three times.
+    thread_local! {
+        static LAST: std::cell::Cell<Option<(DVec3, f64, crate::ocean_fft::CpuSample)>> =
+            const { std::cell::Cell::new(None) };
+    }
+    if let Some((last_direction, last_time, sample)) = LAST.get()
+        && last_direction == direction
+        && last_time == sim_time
+    {
+        return Some(sample);
+    }
     let d = direction.normalize();
-    Some(surface.sample(
+    let sample = surface.sample(
         d.to_array(),
         planet_radius_meters(),
         sim_time,
         sea_state_at(sim_time).intensity,
-    ))
+    );
+    LAST.set(Some((direction, sim_time, sample)));
+    Some(sample)
 }
 
 pub fn global_wave_height_meters(direction: DVec3, sim_time: f64, water_depth_meters: f64) -> f64 {
