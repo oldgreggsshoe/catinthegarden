@@ -403,6 +403,9 @@ var<private> ocean_fft_foam_pattern: f32;
 var<private> ocean_fft_foam_pattern_strength: f32;
 // Height standard deviations of cascades 1 and 2 on the 14m/s spectrum.
 const OCEAN_FFT_MID_HEIGHT_STD: f32 = 0.218;
+// How far a crest may pinch (drawn-surface Jacobian determinant) before the
+// choppy displacement is held back; mirrored in ocean_fft.rs.
+const OCEAN_FFT_MIN_JACOBIAN: f32 = 0.1;
 // Measured height std of the wind-sea geometry cascade (jacobian_study).
 const OCEAN_FFT_BROAD_HEIGHT_STD: f32 = 1.264;
 // Surface height in units of the local sea's height std, set by
@@ -1515,6 +1518,32 @@ fn shoreline_water_albedo(open_water: vec3<f32>, still_depth_meters: f32, foam: 
 }
 
 // (height, dh/du, dh/dv, div D) for one cascade at planet-plane offset `local`.
+// Largest scale f in [0, 1] on the choppy offset whose Jacobian J keeps
+// det(I + f J) = 1 + f tr(J) + f^2 det(J) at or above OCEAN_FFT_MIN_JACOBIAN.
+// Exact for crests compressed along both axes (where two crests cross), which
+// a one-axis estimate under-corrected into fold-overs. Mirrored in
+// ocean_fft.rs `fold_scale`.
+fn ocean_fft_fold_scale(j: vec4<f32>) -> f32 {
+    let trace = j.x + j.y;
+    let det = j.x * j.y - j.z * j.w;
+    let margin = 1.0 - OCEAN_FFT_MIN_JACOBIAN;
+    if 1.0 + trace + det >= OCEAN_FFT_MIN_JACOBIAN {
+        return 1.0;
+    }
+    // g(f) = det f^2 + trace f + margin: positive at 0, negative at 1, so
+    // exactly one root lies in (0, 1).
+    if abs(det) < 1.0e-6 {
+        return clamp(-margin / trace, 0.0, 1.0);
+    }
+    let root = sqrt(max(trace * trace - 4.0 * det * margin, 0.0));
+    let a = (-trace - root) / (2.0 * det);
+    let b = (-trace + root) / (2.0 * det);
+    var f = 1.0;
+    if a > 0.0 { f = min(f, a); }
+    if b > 0.0 { f = min(f, b); }
+    return clamp(f, 0.0, 1.0);
+}
+
 fn ocean_fft_cascade(cascade_index: u32, local: vec2<f32>, filter_width_meters: f32) -> vec4<f32> {
     let entry = ocean_fft_view.cascade[cascade_index];
     let uv = entry.xy + local / entry.z;
@@ -1636,7 +1665,11 @@ fn ocean_surface_fft(
         4.5,
         log2(max(filter_width / (ocean_fft_view.cascade[1].z / 256.0), 1.0)),
     );
-    ocean_fft_fold_foam = ocean_fft_fold_amount(label_jacobian * gain) * foam_resolution;
+    // Scaled by the choppiness up to 1: gentler crests fold less and foam
+    // less, while above 1 the fold foam would whiten whole crests.
+    ocean_fft_fold_foam = ocean_fft_fold_amount(
+        label_jacobian * (gain * min(ocean_fft_view.gain.y, 1.0)),
+    ) * foam_resolution;
     // Heights are stored per wave-label position, but choppy displacement moves
     // each label sideways; the surface slope at the drawn position is the label
     // slope through the inverse displacement Jacobian. Where crests pinch the
@@ -1647,14 +1680,17 @@ fn ocean_surface_fft(
     let raw_determinant =
         (1.0 + full_jacobian.x) * (1.0 + full_jacobian.y) - full_jacobian.z * full_jacobian.w;
     // Where crests pinch past a cusp the surface folds over itself and, with
-    // per-frame changes, boils. Ease the displacement off as the Jacobian
-    // approaches zero so the mesh never turns inside out. The CPU surface
-    // (ocean_fft::CpuSurface::sample) applies the same limit.
-    let fold_limit = mix(0.25, 1.0, smoothstep(0.1, 0.6, raw_determinant));
+    // per-frame changes, boils. A floor, not a ramp: displacement is left
+    // alone until the surface would pinch past OCEAN_FFT_MIN_JACOBIAN, then
+    // scaled back just enough to hold it there, so crests can come to an
+    // acute point (which is also where spray and foam are born) but never
+    // turn inside out. The old ramp eased off from 0.6 and rounded every
+    // crest. The CPU surface (ocean_fft::CpuSurface::sample) applies the same.
+    let fold_limit = ocean_fft_fold_scale(full_jacobian);
     let drawn_jacobian = full_jacobian * fold_limit;
     let drawn_determinant = max(
         (1.0 + drawn_jacobian.x) * (1.0 + drawn_jacobian.y) - drawn_jacobian.z * drawn_jacobian.w,
-        0.35,
+        OCEAN_FFT_MIN_JACOBIAN,
     );
     // Second-order (Stokes) crest term: h * div(D) less its mean. On a single
     // wave this is (k a^2 / 2) cos(2 theta), sharper crests and flatter

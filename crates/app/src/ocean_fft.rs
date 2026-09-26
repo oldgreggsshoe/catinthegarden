@@ -225,6 +225,9 @@ const LATTICE_SECONDS: f64 = 0.1;
 /// Birds look ahead 3s; this keeps every lattice step they revisit.
 const LATTICE_SLOTS: usize = 40;
 const INVERSE_ITERATIONS: usize = 6;
+/// How far a crest may pinch (drawn-surface Jacobian determinant) before the
+/// choppy displacement is held back; the shader's OCEAN_FFT_MIN_JACOBIAN.
+pub const MIN_JACOBIAN: f64 = 0.1;
 /// Lattice steps the background worker builds ahead of the frontier.
 const PREFETCH_STEPS: i64 = 3;
 
@@ -650,6 +653,29 @@ fn prefetch_worker(shared: std::sync::Weak<SurfaceShared>) {
     }
 }
 
+/// Largest scale f in [0, 1] on a choppy offset with Jacobian `j` (dDu/du,
+/// dDv/dv, dDu/dv, dDv/du of the drawn offset) keeping det(I + f J) at or above
+/// `MIN_JACOBIAN`. The shader's `ocean_fft_fold_scale`.
+fn fold_scale(j: [f64; 4]) -> f64 {
+    let trace = j[0] + j[1];
+    let det = j[0] * j[1] - j[2] * j[3];
+    let margin = 1.0 - MIN_JACOBIAN;
+    if 1.0 + trace + det >= MIN_JACOBIAN {
+        return 1.0;
+    }
+    if det.abs() < 1.0e-6 {
+        return (-margin / trace).clamp(0.0, 1.0);
+    }
+    let root = (trace * trace - 4.0 * det * margin).max(0.0).sqrt();
+    let mut f: f64 = 1.0;
+    for candidate in [(-trace - root) / (2.0 * det), (-trace + root) / (2.0 * det)] {
+        if candidate > 0.0 {
+            f = f.min(candidate);
+        }
+    }
+    f.clamp(0.0, 1.0)
+}
+
 fn smoothstep(edge0: f64, edge1: f64, x: f64) -> f64 {
     let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
@@ -729,9 +755,8 @@ impl CpuSurface {
                 // Mirrors the shader's fold limiter: displacement eases off
                 // where the surface would otherwise turn inside out.
                 let limited = |sample: &FieldSample| {
-                    let j = sample.jacobian;
-                    let raw = (1.0 - chop * j[0]) * (1.0 - chop * j[1]) - chop * chop * j[2] * j[3];
-                    chop * (0.25 + 0.75 * smoothstep(0.1, 0.6, raw))
+                    let j = sample.jacobian.map(|value| -chop * value);
+                    chop * fold_scale(j)
                 };
                 let mut label = target;
                 let mut sample = field(label);
@@ -756,7 +781,7 @@ impl CpuSurface {
                 let c = limited(&sample);
                 let j = sample.jacobian;
                 let (a, b, cc, d) = (1.0 - c * j[0], -c * j[2], -c * j[3], 1.0 - c * j[1]);
-                let det = (a * d - b * cc).max(0.35);
+                let det = (a * d - b * cc).max(MIN_JACOBIAN);
                 // Second-order crest term, as the shader adds it.
                 let strength = second_order_strength() as f64;
                 let divergence = (j[0] + j[1])
@@ -1348,8 +1373,7 @@ pub(crate) mod tests {
             };
             let field = at(label);
             let j = field.jacobian;
-            let raw = (1.0 - chop * j[0]) * (1.0 - chop * j[1]) - chop * chop * j[2] * j[3];
-            let c = chop * (0.25 + 0.75 * smoothstep(0.1, 0.6, raw));
+            let c = chop * fold_scale(j.map(|value| -chop * value));
             let target = [label[0] - c * field.displacement[0], label[1] - c * field.displacement[1]];
             let (sample, found) = cpu.sample_at(target, time, storm);
             let miss = ((found[0] - label[0]).powi(2) + (found[1] - label[1]).powi(2)).sqrt();
@@ -1396,6 +1420,28 @@ pub(crate) mod tests {
             std::hint::black_box(cpu.sample([0.6 + a, 0.8, a], r, time + (i % 3) as f64 * 0.01, 1.0));
         }
         eprintln!("CPU water sample: {:.2} us each", start.elapsed().as_secs_f64() * 1e6 / n as f64);
+    }
+
+    #[test]
+    fn fold_scale_never_lets_the_surface_turn_inside_out() {
+        let det = |j: [f64; 4], f: f64| (1.0 + f * j[0]) * (1.0 + f * j[1]) - f * f * j[2] * j[3];
+        // Gentle, one-axis cusp, crossing crests compressing both ways, shear.
+        for j in [[-0.3, -0.1, 0.0, 0.0], [-1.6, 0.2, 0.1, 0.1], [-1.2, -1.2, 0.3, 0.3], [-0.9, -0.9, -0.8, 0.8]] {
+            let f = fold_scale(j);
+            assert!((0.0..=1.0).contains(&f));
+            assert!(det(j, f) >= MIN_JACOBIAN - 1.0e-9, "{j:?} f {f} det {}", det(j, f));
+            if det(j, 1.0) >= MIN_JACOBIAN {
+                assert_eq!(f, 1.0, "left alone when it does not fold");
+            } else {
+                assert!((det(j, f) - MIN_JACOBIAN).abs() < 1.0e-9, "held exactly at the floor");
+            }
+        }
+    }
+
+    #[test]
+    fn the_shader_holds_crests_at_the_same_pinch() {
+        let shader = include_str!("shared_planet.wgsl");
+        assert!(shader.contains(&format!("const OCEAN_FFT_MIN_JACOBIAN: f32 = {MIN_JACOBIAN:?};")));
     }
 
     #[test]

@@ -1758,12 +1758,20 @@ fn fs_main_stable(input: VertexOutput) -> @location(0) vec4<f32> {
     return terrain_fragment_color(input);
 }
 
+// A heightfield sea has no true overhangs, so from above the water a back
+// face is a fold of the choppy mesh (a sharply pinched crest seen edge-on),
+// not the underside of the surface: shade it as the top rather than as the
+// dark underside meant for looking up from below.
+fn ocean_back_face_is_fold() -> bool {
+    return OCEAN_FFT_ENABLED && camera.camera_right.w > 0.25;
+}
+
 @fragment
 fn fs_ocean(
     input: OceanVertexOutput,
     @builtin(front_facing) front_facing: bool,
 ) -> @location(0) vec4<f32> {
-    if !front_facing {
+    if !front_facing && !ocean_back_face_is_fold() {
         return ocean_underside_fragment(input);
     }
     if u32(camera.projection.w + 0.5) == RENDER_DEBUG_FLAT_TRIANGLES {
@@ -1784,7 +1792,7 @@ fn fs_ocean_stable(
     input: OceanVertexOutput,
     @builtin(front_facing) front_facing: bool,
 ) -> @location(0) vec4<f32> {
-    if !front_facing {
+    if !front_facing && !ocean_back_face_is_fold() {
         return ocean_underside_fragment(input);
     }
     return ocean_fragment_color(input);
@@ -1792,7 +1800,7 @@ fn fs_ocean_stable(
 
 @fragment
 fn fs_ocean_transmission(input: OceanVertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    if !front { return ocean_underside_reflecting_fragment(input); }
+    if !front && !ocean_back_face_is_fold() { return ocean_underside_reflecting_fragment(input); }
     if u32(camera.projection.w + 0.5) != RENDER_DEBUG_FLAT_TRIANGLES {
         let threshold = lod_dither_threshold(input.position);
         let incoming = input.lod_transition.y > 0.5;
@@ -1804,7 +1812,7 @@ fn fs_ocean_transmission(input: OceanVertexOutput, @builtin(front_facing) front:
 
 @fragment
 fn fs_ocean_transmission_stable(input: OceanVertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    if !front { return ocean_underside_reflecting_fragment(input); }
+    if !front && !ocean_back_face_is_fold() { return ocean_underside_reflecting_fragment(input); }
     return ocean_transmitting_fragment_color(input);
 }
 
