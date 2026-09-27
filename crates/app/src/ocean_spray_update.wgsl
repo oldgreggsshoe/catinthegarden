@@ -172,10 +172,14 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
         particle.position = vec4<f32>(position, particle.position.w + dt);
         particle.velocity = vec4<f32>(velocity, particle.velocity.w);
         // Spray that falls back into the sea is gone: retire it at the
-        // surface rather than letting it fly on underwater.
+        // surface rather than letting it fly on underwater. Only once it is
+        // falling: the surface here is estimated at the undisplaced (label)
+        // point, which on a steep crest can stand above the water the spray
+        // was actually born from, and rising spray retired against it blinked
+        // out the frame after it appeared.
         let clearance = position.z - spray_surface_height(spray_field(position.xy));
         particle.extra = vec4<f32>(clearance, 0.0, 0.0, 0.0);
-        if clearance < 0.0 {
+        if clearance < 0.0 && velocity.z < 0.0 {
             particle.velocity.w = 0.0;
         }
         // Out of the spawn disc: retire rather than draw spray nobody sees.
