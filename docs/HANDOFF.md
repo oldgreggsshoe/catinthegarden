@@ -11326,3 +11326,17 @@ The floor now rises with the undisplaced slope: `fold_floor` / `ocean_fft_fold_f
 ## 27 September - Thicker optical air: Rayleigh scale height 72km -> 122km (committed)
 
 Ian's local sky-haze edit, finished and committed at his request. `RAYLEIGH_SCALE_HEIGHT_METERS` is 122km in both `atmosphere.wgsl` (visible-sky mist) and `shared_planet.wgsl` (terrain/water aerial transmittance and distance mist, and the F5 ray renderer's twilight sampling), so sky and ground haze still converge on the same horizon colour. Haze fractions at the reference 177.7km pose: straight up 1.2% -> 5.5%, ground horizon 82.2% -> 94.7%; space-to-sea-level column 13.4% -> 21.7%. The three haze tests are retuned to those figures. Matched 72km/122km replays (`atmospheric_mist_paths` 1790517839-667409 / 1790517959-669352, `orbit_once` 1790517927-668895 / 1790518057-670909, `ocean_deck_reference` 1790517901-668157 / 1790518031-670167, `sunset_blue_hour` 1790517862-667678 / 1790517992-669690): ground-level views barely change; from orbit the whole disc takes a purple-blue veil and the limb glow is thicker. `sunset_blue_hour` fails identically at both values (its pre-existing blue-hour assertions); the rest pass.
+
+## 27 September - Correction: the slope-aware fold floor is reverted (it caused sideways shards)
+
+Ian's next captures (`manual/1790520906-735221`, default sea) showed jagged sideways shards along the sides of big foamy crests. The 1142d30 slope-aware floor caused them. It was judged by a per-point estimate of the drawn slope (A^-T grad h at each point), which ignores how the limiter itself varies across the surface: the drawn position is x0 - f D, so its true Jacobian carries a D (x) grad f term, and a floor that follows the slope makes f jump between a crest's tip and its flanks, shearing neighbouring vertices past each other. Measured on the actual drawn mesh (x0 - fD on a 0.5m grid, 3.2M cells, default sea, new instrument `drawn_fold_census`):
+
+| limiter | inverted cells | true slope over 60 deg | p99.99 |
+|---|---|---|---|
+| fixed floor 0.10 (restored) | 0.0004% | 0.002% | 53.2 deg |
+| fixed 0.15 | 0.0009% | 0.002% | 53.2 |
+| fixed 0.20 | 0.0020% | 0.004% | 53.6 |
+| fixed 0.30 | 0.0098% | 0.011% | 61.6 |
+| slope-aware (1142d30) | 0.0489% | 0.031% | 77.9 |
+
+So the slope floor made both fold-overs and steep cells worse, and raising a fixed floor does too (more of the sea is limited, so f varies more). The fixed 0.1 floor is restored on the GPU surface, CPU surface and foam; the misleading per-point test and census are removed. New regression test `the_drawn_sea_almost_never_turns_inside_out` measures the drawn mesh itself (0 of 268k cells at 0.1; the slope floor fails it at 0.032%). The rare needle crest (0.002% of cells past 60 deg) remains; a real fix has to keep the limiter smooth across the surface, e.g. computing f from a coarser (smoothed) Jacobian, and must be judged on the drawn mesh.

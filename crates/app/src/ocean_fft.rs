@@ -278,12 +278,6 @@ const INVERSE_ITERATIONS: usize = 6;
 /// How far a crest may pinch (drawn-surface Jacobian determinant) before the
 /// choppy displacement is held back; the shader's OCEAN_FFT_MIN_JACOBIAN.
 pub const MIN_JACOBIAN: f64 = 0.1;
-/// Steepest the pinch may pull the drawn surface: tan 45 degrees, a crest
-/// angle of at least 90. The shader's OCEAN_FFT_MAX_DRAWN_SLOPE; see
-/// `fold_floor`.
-pub const MAX_DRAWN_SLOPE: f64 = 1.0;
-/// The floor never reaches 1, where no displacement at all would satisfy it.
-const MAX_FOLD_FLOOR: f64 = 0.95;
 /// Lattice steps the background worker builds ahead of the frontier.
 const PREFETCH_STEPS: i64 = 3;
 
@@ -755,24 +749,11 @@ fn prefetch_worker(shared: std::sync::Weak<SurfaceShared>) {
 /// Largest scale f in [0, 1] on a choppy offset with Jacobian `j` (dDu/du,
 /// dDv/dv, dDu/dv, dDv/du of the drawn offset) keeping det(I + f J) at or above
 /// `MIN_JACOBIAN`. The shader's `ocean_fft_fold_scale`.
-/// The pinch floor where the undisplaced (label) surface has slope `slope`.
-/// Pinching by a factor p steepens a flank p times, so holding p at slope /
-/// MAX_DRAWN_SLOPE keeps flanks within 45 degrees, while at a crest's tip the
-/// slope is zero and the floor is MIN_JACOBIAN, so crests still come to a
-/// point. With the fixed floor alone 0.004% of the sea was steeper than 60
-/// degrees (up to 74), and a crest seen end-on stood up as a thin needle.
-/// The shader's ocean_fft_fold_floor.
-fn fold_floor(slope: [f64; 2]) -> f64 {
-    let s = (slope[0] * slope[0] + slope[1] * slope[1]).sqrt();
-    MIN_JACOBIAN.max((s / MAX_DRAWN_SLOPE).min(MAX_FOLD_FLOOR))
-}
-
-/// `fold_scale_to` at the fixed floor alone.
-#[cfg(test)]
 fn fold_scale(j: [f64; 4]) -> f64 {
     fold_scale_to(j, MIN_JACOBIAN)
 }
 
+/// `fold_scale` held at an arbitrary `floor` (for measuring alternatives).
 fn fold_scale_to(j: [f64; 4], floor: f64) -> f64 {
     let trace = j[0] + j[1];
     let det = j[0] * j[1] - j[2] * j[3];
@@ -878,11 +859,10 @@ impl CpuSurface {
                     (total, bands)
                 };
                 // Mirrors the shader's fold limiter: displacement eases off
-                // where the surface would otherwise turn inside out, or be
-                // pulled steeper than MAX_DRAWN_SLOPE.
+                // where the surface would otherwise turn inside out.
                 let limited = |sample: &FieldSample| {
                     let j = sample.jacobian.map(|value| -chop * value);
-                    chop * fold_scale_to(j, fold_floor(sample.slope))
+                    chop * fold_scale(j)
                 };
                 let mut label = target;
                 let (mut sample, mut bands) = field(label);
@@ -907,7 +887,7 @@ impl CpuSurface {
                 let c = limited(&sample);
                 let j = sample.jacobian;
                 let (a, b, cc, d) = (1.0 - c * j[0], -c * j[2], -c * j[3], 1.0 - c * j[1]);
-                let det = (a * d - b * cc).max(fold_floor(sample.slope));
+                let det = (a * d - b * cc).max(MIN_JACOBIAN);
                 // Second-order crest term, band by band, as the shader adds it.
                 let k = self.wavenumbers;
                 let (lift, lift_slope, lift_rate) =
@@ -1497,7 +1477,7 @@ pub(crate) mod tests {
             };
             let field = at(label);
             let j = field.jacobian;
-            let c = chop * fold_scale_to(j.map(|value| -chop * value), fold_floor(field.slope));
+            let c = chop * fold_scale(j.map(|value| -chop * value));
             let target = [label[0] - c * field.displacement[0], label[1] - c * field.displacement[1]];
             let (sample, found) = cpu.sample_at(target, time, storm);
             let miss = ((found[0] - label[0]).powi(2) + (found[1] - label[1]).powi(2)).sqrt();
@@ -1608,67 +1588,107 @@ pub(crate) mod tests {
         eprintln!("CPU water sample: {:.2} us each", start.elapsed().as_secs_f64() * 1e6 / n as f64);
     }
 
-    /// Drawn slopes (A^-T grad h, as the geometry cascades are shaded) at
-    /// `side` x `side` label points `spacing` apart, at `steps` times, with
-    /// the production fold limit, on the default sea.
-    fn drawn_slopes(steps: usize, side: usize, spacing: f64) -> Vec<f64> {
-        let cpu = CpuSurface::new(&default_h0());
+    /// The drawn mesh, as the vertex shader places it: label points on a
+    /// `side` x `side` grid `spacing` apart moved to x0 - cD, with the fold
+    /// limiter held at `floor` (as a function of the label slope), plus
+    /// their heights.
+    fn drawn_mesh(
+        cpu: &CpuSurface,
+        time: f64,
+        side: usize,
+        spacing: f64,
+        floor: &dyn Fn([f64; 2]) -> f64,
+    ) -> Vec<[f64; 3]> {
         let chop = choppiness() as f64;
-        let scale = swell_height_meters(0.24) as f64;
-        let mut slopes = Vec::with_capacity(steps * side * side);
-        for step in 0..steps {
-            let time = 5.0 + step as f64 * 7.3;
-            let key = (time / LATTICE_SECONDS).round() as i64;
-            let delta = time - key as f64 * LATTICE_SECONDS;
-            for i in 0..side {
-                for j in 0..side {
-                    let p = [i as f64 * spacing, j as f64 * spacing];
-                    let mut f = FieldSample::default();
-                    for (cascade, w) in cpu.cascades().iter().zip([1.0, 1.0, scale]) {
-                        f.add_scaled(&sample_slot(&cascade.slot(key), cascade.tile_meters, p, delta), w);
-                    }
-                    let c = chop * fold_scale_to(f.jacobian.map(|v| -chop * v), fold_floor(f.slope));
-                    let jj = f.jacobian;
-                    let (a, b, cc, d) = (1.0 - c * jj[0], -c * jj[2], -c * jj[3], 1.0 - c * jj[1]);
-                    let det = (a * d - b * cc).max(fold_floor(f.slope));
-                    let [hu, hv] = f.slope;
-                    let (su, sv) = ((d * hu - cc * hv) / det, (-b * hu + a * hv) / det);
-                    slopes.push((su * su + sv * sv).sqrt());
+        let scale = swell_height_meters(0.22) as f64;
+        let key = (time / LATTICE_SECONDS).round() as i64;
+        let delta = time - key as f64 * LATTICE_SECONDS;
+        (0..side * side)
+            .map(|n| {
+                let p = [(n % side) as f64 * spacing, (n / side) as f64 * spacing];
+                let mut f = FieldSample::default();
+                for (cascade, w) in cpu.cascades().iter().zip([1.0, 1.0, scale]) {
+                    f.add_scaled(&sample_slot(&cascade.slot(key), cascade.tile_meters, p, delta), w);
                 }
+                let c = chop * fold_scale_to(f.jacobian.map(|v| -chop * v), floor(f.slope));
+                [p[0] - c * f.displacement[0], p[1] - c * f.displacement[1], f.height]
+            })
+            .collect()
+    }
+
+    /// Per cell of a drawn mesh: None if it turned inside out, otherwise the
+    /// slope of the plane through its three corners.
+    fn drawn_cells(mesh: &[[f64; 3]], side: usize) -> Vec<Option<f64>> {
+        let mut cells = Vec::with_capacity((side - 1) * (side - 1));
+        for y in 0..side - 1 {
+            for x in 0..side - 1 {
+                let a = mesh[y * side + x];
+                let b = mesh[y * side + x + 1];
+                let c = mesh[(y + 1) * side + x];
+                let (du, dv) = ([b[0] - a[0], b[1] - a[1]], [c[0] - a[0], c[1] - a[1]]);
+                let det = du[0] * dv[1] - du[1] * dv[0];
+                if det <= 0.0 {
+                    cells.push(None);
+                    continue;
+                }
+                let (eb, ec) = (b[2] - a[2], c[2] - a[2]);
+                let su = (eb * dv[1] - ec * du[1]) / det;
+                let sv = (du[0] * ec - dv[0] * eb) / det;
+                cells.push(Some((su * su + sv * sv).sqrt()));
             }
         }
-        slopes
+        cells
     }
 
     #[test]
-    fn the_chop_never_pulls_a_crest_into_a_needle() {
-        // Ian's "distant blue peak": with only the fixed 0.1 floor the pinch
-        // pulled flanks to 74 degrees and a crest seen end-on stood up as a
-        // thin spire. The undisplaced waves themselves reach about 50 degrees
-        // in rare places; the chop may not steepen past 45 beyond that.
-        let slopes = drawn_slopes(6, 200, 1.0);
-        let steepest = slopes.iter().cloned().fold(0.0, f64::max).atan().to_degrees();
-        eprintln!("steepest drawn flank {steepest:.1} deg over {} samples", slopes.len());
-        assert!(steepest < 55.0, "{steepest} degrees");
-        // At a crest's tip the slope is zero and it may still pinch to a point.
-        assert_eq!(fold_floor([0.0, 0.0]), MIN_JACOBIAN);
-        assert_eq!(fold_floor([0.6, 0.8]), MAX_DRAWN_SLOPE.recip().min(MAX_FOLD_FLOOR));
+    fn the_drawn_sea_almost_never_turns_inside_out() {
+        // Measured on the mesh itself, so the limiter's variation from point
+        // to point counts, not just each point's own pinch. The fixed 0.1
+        // floor turns 0.0004% of 0.5m cells inside out. A slope-dependent
+        // floor tried on 27 September looked better point by point but
+        // sheared neighbouring vertices past each other: 0.049% of cells,
+        // seen as sideways shards along big crests.
+        let cpu = CpuSurface::new(&default_h0());
+        let (mut cells, mut inverted) = (0usize, 0usize);
+        for time in [12.3, 47.9, 96.1] {
+            for cell in drawn_cells(&drawn_mesh(&cpu, time, 300, 0.5, &|_| MIN_JACOBIAN), 300) {
+                cells += 1;
+                inverted += usize::from(cell.is_none());
+            }
+        }
+        let percent = 100.0 * inverted as f64 / cells as f64;
+        eprintln!("{inverted} of {cells} drawn cells inside out ({percent:.4}%)");
+        assert!(percent < 0.005, "{percent}% of the drawn sea turned inside out");
     }
 
     #[test]
-    #[ignore = "instrument: drawn slope distribution of the default sea"]
-    fn drawn_slope_census() {
-        let mut slopes = drawn_slopes(60, 200, 1.0);
-        slopes.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let q = |p: f64| slopes[((slopes.len() - 1) as f64 * p) as usize].atan().to_degrees();
-        let over = |degrees: f64| {
-            let t = degrees.to_radians().tan();
-            100.0 * slopes.iter().filter(|&&s| s > t).count() as f64 / slopes.len() as f64
-        };
-        eprintln!(
-            "{} samples: p50 {:.1} p99 {:.1} p99.9 {:.1} p99.99 {:.1} max {:.1} deg; over 30 {:.3}%, 45 {:.4}%, 60 {:.5}%",
-            slopes.len(), q(0.5), q(0.99), q(0.999), q(0.9999), q(1.0), over(30.0), over(45.0), over(60.0)
-        );
+    #[ignore = "instrument: drawn-mesh fold-overs and steepness at several limiter floors"]
+    fn drawn_fold_census() {
+        let cpu = CpuSurface::new(&default_h0());
+        for floor in [0.10, 0.15, 0.20, 0.30] {
+            let (mut total, mut inverted) = (0usize, 0usize);
+            let mut slopes = Vec::new();
+            for step in 0..20 {
+                let time = 5.0 + step as f64 * 7.3;
+                for cell in drawn_cells(&drawn_mesh(&cpu, time, 400, 0.5, &|_| floor), 400) {
+                    total += 1;
+                    match cell {
+                        None => inverted += 1,
+                        Some(slope) => slopes.push(slope),
+                    }
+                }
+            }
+            slopes.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let q = |p: f64| slopes[((slopes.len() - 1) as f64 * p) as usize].atan().to_degrees();
+            let over = |degrees: f64| {
+                let t = degrees.to_radians().tan();
+                100.0 * slopes.iter().filter(|&&s| s > t).count() as f64 / slopes.len() as f64
+            };
+            eprintln!(
+                "floor {floor:.2}: inverted {:.4}% | slope p50 {:.1} p99 {:.1} p99.99 {:.1} deg, over 45 {:.4}%, over 60 {:.5}%",
+                100.0 * inverted as f64 / total as f64, q(0.5), q(0.99), q(0.9999), over(45.0), over(60.0)
+            );
+        }
     }
 
     #[test]
@@ -1691,8 +1711,6 @@ pub(crate) mod tests {
     fn the_shader_holds_crests_at_the_same_pinch() {
         let shader = include_str!("shared_planet.wgsl");
         assert!(shader.contains(&format!("const OCEAN_FFT_MIN_JACOBIAN: f32 = {MIN_JACOBIAN:?};")));
-        assert!(shader.contains(&format!("const OCEAN_FFT_MAX_DRAWN_SLOPE: f32 = {MAX_DRAWN_SLOPE:?};")));
-        assert!(shader.contains(&format!("length(label_slope) / OCEAN_FFT_MAX_DRAWN_SLOPE, {MAX_FOLD_FLOOR:?})")));
     }
 
     #[test]
