@@ -10,6 +10,13 @@ surface appearance rather than its geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
+**Current crest-shard diagnosis (27 September):** `--scenario ocean_swell_shards` with
+`CATINGARDEN_OCEAN_FFT=1 CATINGARDEN_OCEAN_FFT_SWELL=30` reproduces bright wedges on a large
+crest. Spray-off / foam-off / back-face / instant-foam captures isolate the white to foam,
+especially retained FFT foam history, not flipped GPU triangles. **No fix has passed visual
+acceptance yet.** See the latest dated section for measurements. Ocean mesh seams are a separate
+concurrent task; do not conflate them with the shards.
+
 **Current appearance diagnosis (23 September, latest manual grid complaint):**
 Use `--scenario ocean_deck_reference` as the primary appearance comparison: a
 2.5m wave-following eye, five degrees below the horizon, wide field of view,
@@ -11356,3 +11363,16 @@ Ian: approaching a storm the sky should fade to dark grey, as a grey fog that cl
 ## 27 September - Spray no longer blinks out the frame after it appears
 
 Spray is retired when it falls below the water, but the water height the GPU spray pass can afford is the surface at the undisplaced (label) point, which on a steep crest can stand metres above the drawn water the spray was born from. Since ed9fccd ship spray is born at the CPU's drawn water height, so it could be retired the frame after it appeared; crest spray could too. Spray is now retired at the water only while falling. Ian's `manual/1790528168-776083` also shows long thin vertical white streaks: those are crest spray falling near the end of its life at up to 16 m/s (terminal velocity of the 0.6/s vertical drag), drawn stretched along their motion; that belongs to the spray rework he asked for (research how Sea of Thieves does it), as does the dotted chunk-seam pattern in its first capture, which is a separate ocean-mesh LOD issue.
+
+## 27 September - Sideways white shards on big FFT crests: foam diagnosis, not fixed
+
+Reproducer: `CATINGARDEN_OCEAN_FFT=1 CATINGARDEN_OCEAN_FFT_SWELL=30 CATINGARDEN_OCEAN_FFT_SPRAY=0 CATINGARDEN_PRESENT_MODE=immediate target/release/catinthegarden-app --scenario ocean_swell_shards`. This holds a ~29m-eye view across a crest for 12s with six captures. The scenario reconstructs the view near `manual/1790525174-746683`; **do not** use `manual/1790520906-735221`, which predates the slope-floor revert. Baseline: `ocean_swell_shards/1790531472-816468`. The same white wedges reproduce in the separate clean-commit worktree with normal blue water: `ocean_swell_shards/1790533266-831875`. The local, uncommitted red-water colour experiment in `shared_planet.wgsl` made white pixels easy to count; the colour change is not part of this diagnosis or commit. Pixel counts below use RGB minimum >170 and channel range <60, rows 220-719, 1280x720 captures; this is a bright-foam proxy, not a perceptual shard score.
+
+- `CATINGARDEN_DEBUG_MODE=ocean_no_foam` (`1790530013-796233`) gives zero white ocean pixels in all six frames. With spray already off, the wedges are foam shading, not white geometry or specular. A separate test disabling ship foam birth was pixel-identical to the candidate control, so ship foam is not responsible.
+- `ocean_backfaces` (`1790529982-794731`) marks only about 449 magenta back-face pixels in the 10s frame, versus 87,482 white baseline pixels; only three white-mask pixels overlap. The shader's top-shaded back faces do not account for the white wedges.
+- `CATINGARDEN_OCEAN_DENSE_GRID=1` (`1790531498-817675`) adds about 54% triangles yet changes the white mask by only 0.12-1.24% of ocean-region pixels across frames; at 10s the white count is 87,305 versus 87,482. Coarse vertex spacing is not the main cause of this white artifact. This says nothing about the distinct sea seams.
+- `ocean_instant_foam` (`1790530167-800059`) bypasses history inside the atlas and leaves only current per-pixel fold foam. It still makes smaller angular white patches, but loses the broad solid sheet; at 12s the baseline has 359,211 white pixels (largest connected component 341,759), versus 100,875 white pixels with instantaneous foam. An experimental birth-only atlas at 12s yielded 53,517 white pixels (largest component 34,802). Thus temporal retention and its 2m label-space atlas substantially enlarge/merge the angular fold foam. This is the image-space cause isolated so far, not evidence of mesh inversion.
+
+Rejected trials, all reverted: a higher/faster foam decay, limiting retained foam by instantaneous fold, alternate atlas lookup in drawn coordinates without changing birth coordinates, narrower atlas coverage, a swell-height birth gate, a fine/mid-height foam pattern, and a flat-position fragment lookup. Each either left obvious white sheets, worsened them or stripped crest foam without a validated improvement. No fixed-Jacobian-floor or crest-geometry change was made; the acute tips and CPU regression remain as before. Only the scenario is retained: the temporary `CATINGARDEN_DEBUG_MODE` values `ocean_backfaces`, `ocean_no_foam`, `ocean_instant_foam` were used for captures and reverted rather than leaving unmeasured per-pixel branches in the normal renderer.
+
+**Outstanding:** design a foam-history mapping/birth rule that retains narrow crest foam but cannot paint huge sideways wedges on pinched swell faces; compare matched captures with an automated image-space component/shape metric and measure GPU cost. Run `the_drawn_sea_almost_never_turns_inside_out` and add a regression for the accepted image-space failure before claiming a fix. The image regression and before/after fix metric requested in the brief are **not yet met**. Ian says Claude is handling the separate visible sea seams, so do not alter that work here.

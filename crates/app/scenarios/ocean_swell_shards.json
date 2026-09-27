@@ -1,0 +1,31 @@
+{
+  "name": "ocean_swell_shards",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 12.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0.0,
+  "fixed_exposure": true,
+  "ocean_storm_intensity_override": 0.0,
+  "screenshot_times_seconds": [2.0, 4.0, 6.0, 8.0, 10.0, 12.0],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [3345730.3808310586, 2014929.84987279, 863930.8274766805],
+      "look_at": [3345094.1450590543, 2015631.2564085, 863609.5286841446]
+    }
+  ],
+  "sun_waypoints": [
+    { "time_s": 0.0, "direction": [0.5089275188, 0.397776994, 0.7633912782] }
+  ],
+  "vertical_fov_waypoints": [
+    { "time_s": 0.0, "vertical_fov_degrees": 60.0 }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 6,
+    "min_ocean_wave_height_range_meters": 2.0
+  }
+}

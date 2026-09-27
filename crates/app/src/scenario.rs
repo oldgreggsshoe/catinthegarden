@@ -329,6 +329,7 @@ scenarios! {
     "ocean_ship_impacts" => "../scenarios/ocean_ship_impacts.json",
     "ocean_swell_ship" => "../scenarios/ocean_swell_ship.json",
     "ocean_swell_deck" => "../scenarios/ocean_swell_deck.json",
+    "ocean_swell_shards" => "../scenarios/ocean_swell_shards.json",
     "ocean_ship_foam_plan" => "../scenarios/ocean_ship_foam_plan.json",
     "land_chunk_seams" => "../scenarios/land_chunk_seams.json",
     "coast_waters_edge" => "../scenarios/coast_waters_edge.json",
