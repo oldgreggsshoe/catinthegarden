@@ -26,6 +26,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 
 - Thicker optical air, 27 September: Rayleigh scale height 72km -> 122km in sky and terrain haze alike (Ian's edit, finished). Ground views barely change; from orbit the disc gets a purple-blue veil. Haze tests retuned.
 
+- Swirling sea colours, 27 September: `CATINGARDEN_OCEAN_SWIRL=<seed>` replaces the FFT water albedo with a seeded, slowly churning, domain-warped colour field fixed to the sea (channels 0-0.05), about 1ms.
+
 - Crest spray restyled, 27 September: short-lived (0.35-0.8s) mist sheets born on the wind waves' tops, strong drag so they follow the wind and fall slowly, strongest at birth with a strand texture; no more long flights or falling streaks. Replay `ocean_spray_sequence`.
 
 - FFT sea seams fixed, 27 September: ocean chunks filter the sea at the coarser neighbour's vertex spacing on a shared edge (`ocean_edge_vertex_spacing`), removing the dotted pinhole lines at changes of mesh detail; GPU test `gpu_ocean_chunks_agree_on_their_shared_edge`.

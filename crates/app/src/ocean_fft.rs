@@ -326,6 +326,17 @@ pub fn swell_base_height_meters() -> f32 {
     })
 }
 
+/// `CATINGARDEN_OCEAN_SWIRL=<seed>`: swirling dark sea colours from that seed
+/// (shared_planet.wgsl `ocean_swirl_albedo`); unset, the ordinary water colour.
+pub fn swirl_seed() -> Option<u32> {
+    static SEED: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    *SEED.get_or_init(|| {
+        std::env::var("CATINGARDEN_OCEAN_SWIRL")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+    })
+}
+
 /// Strength of the second-order (Stokes) crest term, `CATINGARDEN_OCEAN_FFT_PEAKS`
 /// (default 1, 0-3). 1 is second-order Stokes for a single wave: crests rise
 /// and troughs flatten by k a^2 / 2. Where crests of one band cross it adds
@@ -970,7 +981,9 @@ pub struct ViewParams {
     pub cascade: [[f32; 4]; CASCADES],
     /// x: overall gain, y: choppiness, z: swell height (m), w: unused.
     pub gain: [f32; 4],
-    /// x: second-order strength; y, z, w unused.
+    /// x: second-order strength; y unused; z, w: the camera's absolute
+    /// tangent-plane position (u, v metres), for patterns fixed to the sea
+    /// rather than to the camera (`ocean_swirl_albedo`).
     pub second_order: [f32; 4],
 }
 
@@ -1224,7 +1237,7 @@ impl OceanFft {
             axis_v: [v[0] as f32, v[1] as f32, v[2] as f32, 0.0],
             cascade,
             gain: [gain, choppiness(), swell_height_meters(storm_intensity), 0.0],
-            second_order: [second_order_strength(), 0.0, 0.0, 0.0],
+            second_order: [second_order_strength(), 0.0, cu as f32, cv as f32],
         };
         queue.write_buffer(&self.view_params, 0, bytemuck::bytes_of(&params));
     }

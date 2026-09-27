@@ -437,6 +437,8 @@ const OCEAN_FFT_BROAD_HEIGHT_STD: f32 = 1.264;
 // Surface height in units of the local sea's height std, set by
 // ocean_surface_fft for the lighting: high on a wave means thin water.
 var<private> ocean_fft_surface_height_fraction: f32;
+// Swirling water colour at this pixel (ocean_swirl_albedo), when enabled.
+var<private> ocean_fft_swirl_albedo: vec3<f32>;
 const OCEAN_FFT_FINE_HEIGHT_STD: f32 = 0.056;
 
 /// Breaks a smooth foam coverage into lacy cells: fresh, full foam covers
@@ -1656,6 +1658,9 @@ fn ocean_surface_fft(
     let vertex_stage = ocean_fft_vertex_spacing_meters > 0.0;
     let vertex_filter = 2.0 * max(ocean_fft_vertex_spacing_meters, 0.0);
     let geometry_filter = select(2.0 * pixel_across / max(flat_incidence, 0.25), vertex_filter, vertex_stage);
+    if OCEAN_SWIRL_ENABLED && !vertex_stage {
+        ocean_fft_swirl_albedo = ocean_swirl_albedo(local);
+    }
     let broad = ocean_fft_cascade(0u, local, geometry_filter);
     let broad_mean_square = ocean_fft_last_mean_square_slope;
     let broad_jacobian = ocean_fft_last_jacobian;
@@ -4003,6 +4008,68 @@ const OCEAN_SOT_PEAK_FULL: f32 = 1.0;
 const OCEAN_SOT_SUBSURFACE_COLOUR_V1: vec3<f32> = vec3<f32>(0.020, 0.300, 0.330);
 const OCEAN_SOT_PEAK_ONSET_V1: f32 = 0.20;
 const OCEAN_SOT_PEAK_FULL_V1: f32 = 0.65;
+// Swirling dark sea colour (CATINGARDEN_OCEAN_SWIRL=<seed>): a slowly churning,
+// seeded, deterministic field of hues fixed to the sea (not to the camera, and
+// not tied to the waves), replacing OCEAN_SOT_WATER_ALBEDO. Domain-warped value
+// noise makes the swirls (one warp, two octaves: 6 lookups a pixel; a warp of
+// a warp at three octaves was 15 and cost 5.5ms); a cosine palette whose phase comes
+// from the seed colours them. No channel exceeds OCEAN_SWIRL_MAX.
+const OCEAN_SWIRL_MAX: f32 = 0.05;
+// Size of the swirls, and how long they take to churn noticeably.
+const OCEAN_SWIRL_SCALE_METERS: f32 = 250.0;
+const OCEAN_SWIRL_SECONDS: f32 = 60.0;
+// How strongly each layer of noise bends the next: higher is more swirly.
+const OCEAN_SWIRL_WARP: f32 = 3.0;
+
+fn ocean_swirl_hash(cell: vec2<i32>, salt: u32) -> f32 {
+    var h = u32(cell.x) * 0x8da6b343u ^ u32(cell.y) * 0xd8163841u ^ (OCEAN_SWIRL_SEED + salt) * 0xcb1ab31fu;
+    h = (h ^ (h >> 16u)) * 0x7feb352du;
+    h = (h ^ (h >> 15u)) * 0x846ca68bu;
+    h = h ^ (h >> 16u);
+    return f32(h & 0xffffu) / 65535.0;
+}
+
+fn ocean_swirl_noise(p: vec2<f32>, salt: u32) -> f32 {
+    let cell = vec2<i32>(floor(p));
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = ocean_swirl_hash(cell, salt);
+    let b = ocean_swirl_hash(cell + vec2<i32>(1, 0), salt);
+    let c = ocean_swirl_hash(cell + vec2<i32>(0, 1), salt);
+    let d = ocean_swirl_hash(cell + vec2<i32>(1, 1), salt);
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+// Two octaves, rotated between them so the lattice does not show.
+fn ocean_swirl_fbm(p: vec2<f32>, salt: u32) -> f32 {
+    let rotation = mat2x2<f32>(0.8, 0.6, -0.6, 0.8);
+    var q = p;
+    var sum = 0.0;
+    var amplitude = 0.5;
+    for (var octave = 0u; octave < 2u; octave += 1u) {
+        sum += amplitude * ocean_swirl_noise(q, salt + octave * 17u);
+        q = rotation * q * 2.03;
+        amplitude *= 0.5;
+    }
+    return sum / 0.75;
+}
+
+// `local` is the tangent-plane offset (m) from the camera, as the FFT sea
+// takes it; the camera's absolute position there comes in second_order.zw.
+fn ocean_swirl_albedo(local: vec2<f32>) -> vec3<f32> {
+    let p = (ocean_fft_view.second_order.zw + local) / OCEAN_SWIRL_SCALE_METERS;
+    let t = camera.projection.z / OCEAN_SWIRL_SECONDS;
+    let q = vec2<f32>(
+        ocean_swirl_fbm(p + vec2<f32>(0.0, 0.31 * t), 1u),
+        ocean_swirl_fbm(p + vec2<f32>(5.2, 1.3) - vec2<f32>(0.23 * t, 0.0), 2u),
+    );
+    let v = ocean_swirl_fbm(p + OCEAN_SWIRL_WARP * q + vec2<f32>(1.7, 9.2) + 0.17 * t, 5u);
+    let phase = f32(OCEAN_SWIRL_SEED % 997u) / 997.0;
+    let hue = 1.4 * v + 0.6 * length(q) + phase;
+    return OCEAN_SWIRL_MAX
+        * (0.5 + 0.5 * cos(6.2831853 * (vec3<f32>(hue) + vec3<f32>(0.0, 0.33, 0.67))));
+}
+
 // Artistic angular radius (tan) of the sun for the area-light lobe; the real
 // sun is 0.0046.
 const OCEAN_SOT_SUN_RADIUS: f32 = 0.06;
@@ -4079,6 +4146,8 @@ fn ocean_lighting_sot(
     let daylight = max(max(sun_transmittance.x, sun_transmittance.y), sun_transmittance.z);
     let sun = sun_transmittance * (1.0 - STORM_SUN_BLOCK * storm_overcast());
     let sky_light = storm_overcast_colour(sky_diffuse);
+    // Set by ocean_surface_fft for this pixel when swirling colours are on.
+    let water_albedo = select(OCEAN_SOT_WATER_ALBEDO, ocean_fft_swirl_albedo, OCEAN_SWIRL_ENABLED);
     let peak_linear = clamp(
         (crest_sharpness - OCEAN_SOT_PEAK_ONSET) / (OCEAN_SOT_PEAK_FULL - OCEAN_SOT_PEAK_ONSET),
         0.0,
@@ -4092,11 +4161,11 @@ fn ocean_lighting_sot(
     // the eye to look toward the sun, and it is the brightest part.
     let thin = smoothstep(-0.6, 1.6, ocean_fft_surface_height_fraction);
     let view_depth = mix(OCEAN_SOT_STEEP_VIEW_BRIGHTNESS, 1.0, smoothstep(0.1, 0.8, 1.0 - facing));
-    let body = OCEAN_SOT_WATER_ALBEDO * view_depth
+    let body = water_albedo * view_depth
         * (1.0 + OCEAN_SOT_THIN_BRIGHTENING * thin + 0.4 * peak);
     let diffuse = body * (sky_light + sun * (0.4 * SURFACE_SUNLIGHT_SCALE));
     let toward_sun = pow(max(dot(-view_direction, sun_direction_view), 0.0), 4.0);
-    let transmission = OCEAN_SOT_WATER_ALBEDO * sun
+    let transmission = water_albedo * sun
         * (OCEAN_SOT_TRANSMISSION * SURFACE_SUNLIGHT_SCALE) * toward_sun
         * clamp(thin * thin + 0.6 * peak + 0.3 * fine_crest_transmission, 0.0, 1.5)
         * (vec3<f32>(1.0) - fresnel);
