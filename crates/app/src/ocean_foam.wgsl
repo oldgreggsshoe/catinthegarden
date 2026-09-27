@@ -23,6 +23,9 @@ struct FoamFrame {
     // starboard).
     ship_port: vec4<f32>,
     ship_starboard: vec4<f32>,
+    // Water-against-hull contact at the same stations, 0-1.
+    ship_port_contact: vec4<f32>,
+    ship_starboard_contact: vec4<f32>,
 }
 @group(1) @binding(3) var<uniform> foam_frame: FoamFrame;
 @group(1) @binding(4) var foam_fft_map: texture_2d_array<f32>;
@@ -107,6 +110,12 @@ fn ship_hull_foam(offset: vec2<f32>) -> f32 {
         select(foam_frame.ship_starboard, foam_frame.ship_port, signed_across > 0.0),
         t,
     );
+    // Only where the water surface is actually against this part of the
+    // hull: none round a hull thrown clear of the water or wholly under it.
+    let contact = hull_station_intensity(
+        select(foam_frame.ship_starboard_contact, foam_frame.ship_port_contact, signed_across > 0.0),
+        t,
+    );
     // 2.5-4.5m wide on the 84m hull the band was tuned on; in proportion on
     // any other. A band narrower than an atlas texel is drawn a texel wide at
     // its share of the texel's area, rather than hitting or missing texel
@@ -115,7 +124,7 @@ fn ship_hull_foam(offset: vec2<f32>) -> f32 {
     let texel_meters = 512.0 / f32(textureDimensions(next_foam).x);
     let band = (1.0 - smoothstep(0.0, max(width, texel_meters), outside))
         * min(width / texel_meters, 1.0);
-    return band * (0.45 + 0.55 * slam);
+    return band * contact * (0.45 + 0.55 * slam);
 }
 
 @compute @workgroup_size(8, 8)

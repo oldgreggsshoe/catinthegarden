@@ -22,6 +22,8 @@ struct SprayDrawFrame {
     ship_starboard: vec4<f32>,
     ship_port_impact: vec4<f32>,
     ship_starboard_impact: vec4<f32>,
+    ship_port_water: vec4<f32>,
+    ship_starboard_water: vec4<f32>,
 }
 
 @group(1) @binding(0) var<storage, read> spray_particles: array<SprayParticle>;

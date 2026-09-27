@@ -46,6 +46,10 @@ struct SprayFrame {
     /// Wave impact intensity at the same stations.
     ship_port_impact: [f32; 4],
     ship_starboard_impact: [f32; 4],
+    /// Altitude (m above sea level) of the water against the hull at the same
+    /// stations: where their splashes start.
+    ship_port_water: [f32; 4],
+    ship_starboard_water: [f32; 4],
 }
 
 /// Where along the hull (-1 stern, +1 stem) the slam is measured, each side.
@@ -66,6 +70,13 @@ pub struct ShipSprayEmitter {
     /// Steep or breaking waves running into each station, 0-1.
     pub port_impact: [f32; 4],
     pub starboard_impact: [f32; 4],
+    /// How much the water surface is against the hull side at each station,
+    /// 0-1: 0 where the hull there is clear of the water or wholly under it.
+    pub port_contact: [f32; 4],
+    pub starboard_contact: [f32; 4],
+    /// Altitude of the water at each station (m above sea level).
+    pub port_water: [f32; 4],
+    pub starboard_water: [f32; 4],
 }
 
 /// Unit wind direction in the FFT (u, v) axes; the spectrum's own wind.
@@ -311,6 +322,8 @@ impl OceanSpray {
         let xyz = |a: [f64; 3]| [a[0] as f32, a[1] as f32, a[2] as f32, 0.0];
         let (ship_port, ship_starboard) =
             ship.map_or(([0.0; 4], [0.0; 4]), |ship| (ship.port, ship.starboard));
+        let (ship_port_water, ship_starboard_water) =
+            ship.map_or(([0.0; 4], [0.0; 4]), |ship| (ship.port_water, ship.starboard_water));
         let (ship_port_impact, ship_starboard_impact) = ship
             .map_or(([0.0; 4], [0.0; 4]), |ship| (ship.port_impact, ship.starboard_impact));
         let (ship_origin, ship_axes, ship_velocity) = match ship {
@@ -366,6 +379,8 @@ impl OceanSpray {
             ship_starboard,
             ship_port_impact,
             ship_starboard_impact,
+            ship_port_water,
+            ship_starboard_water,
         };
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&frame));
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -454,6 +469,6 @@ mod tests {
         for source in [include_str!("ocean_spray_update.wgsl"), include_str!("ocean_spray_draw.wgsl")] {
             assert!(source.contains("    extra: vec4<f32>,\n}"));
         }
-        assert_eq!(std::mem::size_of::<SprayFrame>(), 192);
+        assert_eq!(std::mem::size_of::<SprayFrame>(), 224);
     }
 }

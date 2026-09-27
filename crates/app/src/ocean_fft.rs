@@ -825,6 +825,41 @@ impl CpuSurface {
         CpuSample { axis_u: u, axis_v: v, ..sample }
     }
 
+    /// Horizontal velocity (planet frame, m/s) of the water drawn at
+    /// `direction`. The drawn surface is x0 - cD(x0, t), so the water there
+    /// is its label x0 moving at -c dD/dt: the orbital motion that carries
+    /// anything floating on it back and forth under each crest. dD/dt is
+    /// taken across the 0.1s time lattice at the label.
+    pub fn horizontal_velocity(
+        &self,
+        direction: [f64; 3],
+        radius_meters: f64,
+        time: f64,
+        storm_intensity: f32,
+    ) -> [f64; 3] {
+        let (u, v) = anchor_axes(direction);
+        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let target = [radius_meters * dot(u, direction), radius_meters * dot(v, direction)];
+        let (_, label) = self.sample_at(target, time, storm_intensity);
+        let key = (time / LATTICE_SECONDS).floor() as i64;
+        let scales = [1.0, 1.0, swell_height_meters(storm_intensity) as f64];
+        let field = |key: i64| {
+            let mut total = FieldSample::default();
+            for (cascade, scale) in self.cascades().iter().zip(scales) {
+                total.add_scaled(&sample_slot(&cascade.slot(key), cascade.tile_meters, label, 0.0), scale);
+            }
+            total
+        };
+        let (now, next) = (field(key), field(key + 1));
+        let chop = choppiness() as f64;
+        let c = chop * fold_scale(now.jacobian.map(|value| -chop * value));
+        let rate = [
+            -c * (next.displacement[0] - now.displacement[0]) / LATTICE_SECONDS,
+            -c * (next.displacement[1] - now.displacement[1]) / LATTICE_SECONDS,
+        ];
+        std::array::from_fn(|i| u[i] * rate[0] + v[i] * rate[1])
+    }
+
     /// `sample` at tangent-plane metres `target`; also returns the label point.
     fn sample_at(&self, target: [f64; 2], time: f64, storm_intensity: f32) -> (CpuSample, [f64; 2]) {
         let key = (time / LATTICE_SECONDS).round() as i64;

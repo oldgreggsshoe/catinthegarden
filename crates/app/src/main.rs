@@ -2440,6 +2440,12 @@ impl State {
             let step_time_seconds = self.ship_sim_time_seconds + ship::FIXED_STEP_SECONDS;
             self.ship_sim_time_seconds = step_time_seconds;
             let ocean_time_seconds = step_time_seconds;
+            // One orbital-velocity query per step, at the hull: it varies over
+            // the swell's scale, not the hull's.
+            let water_horizontal = ocean::global_wave_horizontal_velocity(
+                self.ship_body.position.normalize(),
+                ocean_time_seconds,
+            );
             self.ship_body
                 .advance(&self.ship_hull, ship::FIXED_STEP_SECONDS, |direction| {
                     ship::WaterSample {
@@ -2459,6 +2465,7 @@ impl State {
                             ocean_time_seconds,
                             SHIP_FALLBACK_DEPTH_METERS,
                         ),
+                        horizontal_velocity: water_horizontal,
                     }
                 });
         }
@@ -2576,8 +2583,14 @@ impl State {
             let water_height =
                 ocean::global_wave_height_meters(radial, ocean_time_seconds, SHIP_FALLBACK_DEPTH_METERS);
             let immersion = water_height - waterline_altitude;
+            // Is the water surface against the hull side here, between keel
+            // and deck? A hull thrown clear of the water, or buried under it,
+            // has no waterline there to splash or churn foam at.
+            let (contact, below_deck) = ship::hull_water_contact(t, immersion);
             let slam = (water_up - point_velocity.dot(radial)).max(0.0);
-            let slam = ramp(0.3 * speed, 2.5 * speed, slam) * ramp(-1.5 * size, 0.5 * size, immersion);
+            let slam = ramp(0.3 * speed, 2.5 * speed, slam)
+                * ramp(-1.5 * size, 0.5 * size, immersion)
+                * below_deck;
 
             // The hull outline's outward normal here (raked forward at the bow).
             let slope_along = (ship::half_beam_meters((t + 0.01).min(1.0))
@@ -2610,25 +2623,30 @@ impl State {
             let impact = toward_hull
                 * violent
                 * ramp(0.3 * speed, 2.0 * speed, rise)
-                * ramp(-1.0 * size, 1.0 * size, crest - waterline_altitude);
-            (slam as f32, impact as f32)
+                * ramp(-1.0 * size, 1.0 * size, crest - waterline_altitude)
+                * below_deck;
+            (slam as f32, impact as f32, contact as f32, water_height as f32)
         };
         let port = terrain::SHIP_STATIONS.map(|t| station(t, 1.0));
         let starboard = terrain::SHIP_STATIONS.map(|t| station(t, -1.0));
         let intensity = port
             .iter()
             .chain(&starboard)
-            .map(|&(slam, impact)| slam.max(impact))
+            .map(|&(slam, impact, _, _)| slam.max(impact))
             .fold(0.0_f32, f32::max);
         terrain::ShipSprayEmitter {
             waterline_origin: origin,
             forward: self.ship_body.forward(),
             velocity: self.ship_body.linear_velocity,
             intensity,
-            port: port.map(|(slam, _)| slam),
-            starboard: starboard.map(|(slam, _)| slam),
-            port_impact: port.map(|(_, impact)| impact),
-            starboard_impact: starboard.map(|(_, impact)| impact),
+            port: port.map(|(slam, ..)| slam),
+            starboard: starboard.map(|(slam, ..)| slam),
+            port_impact: port.map(|(_, impact, ..)| impact),
+            starboard_impact: starboard.map(|(_, impact, ..)| impact),
+            port_contact: port.map(|(_, _, contact, _)| contact),
+            starboard_contact: starboard.map(|(_, _, contact, _)| contact),
+            port_water: port.map(|(.., water)| water),
+            starboard_water: starboard.map(|(.., water)| water),
         }
     }
 

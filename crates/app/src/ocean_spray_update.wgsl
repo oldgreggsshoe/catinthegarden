@@ -39,6 +39,9 @@ struct SprayFrame {
     // Steep or breaking waves running into the same stations.
     ship_port_impact: vec4<f32>,
     ship_starboard_impact: vec4<f32>,
+    // Altitude of the water against the hull at the same stations.
+    ship_port_water: vec4<f32>,
+    ship_starboard_water: vec4<f32>,
 }
 
 struct OceanFftView {
@@ -238,14 +241,15 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
         // freeboard and the deck.
         let lift = frame.ship_velocity.z * 0.5
             + select(5.0 + 12.0 * intensity * r4, 8.0 + 14.0 * impact * r4, struck) * froude;
-        // Above the water actually there: a struck station is often under a
-        // rising crest, and spray born inside it would die at once.
-        let water_here = spray_surface_height(spray_field(place));
-        particle.position = vec4<f32>(
-            place,
-            max(frame.ship_origin.z + 0.3 * size, water_here + 0.2 * size),
-            0.0,
+        // Where the water actually meets the hull at this station (measured
+        // on the CPU at the drawn surface, so a pitched or heaving hull throws
+        // from its own waterline, not from the midship height or a nearby
+        // crest), just above it so it is not retired at birth.
+        let water_here = station_intensity(
+            select(frame.ship_starboard_water, frame.ship_port_water, side > 0.0),
+            t,
         );
+        particle.position = vec4<f32>(place, water_here + 0.2 * size, 0.0);
         particle.extra = vec4<f32>(1.0e3, 0.0, 0.0, 0.0);
         particle.velocity = vec4<f32>(
             horizontal,

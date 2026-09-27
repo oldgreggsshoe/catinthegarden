@@ -73,9 +73,14 @@ const HEAVE_DRAG_KG_PER_SQUARE_METER_SECOND: f64 = 3_100.0 * SHIP_TIME_SCALE;
 /// on at full strength the instant it touches makes a hull chatter along a
 /// crest instead of riding it.
 const DRAG_IMMERSION_FADE_METERS: f64 = 1.0 * SHIP_SCALE;
-/// Horizontal water resistance, as a fraction of speed shed per second. The
+/// Horizontal water resistance, as a fraction of the speed *relative to the
+/// water* shed per second, in proportion to how much of the hull is in it. The
 /// hull carries no propulsion, so this is what stops wave impulses walking it
-/// across the ocean.
+/// across the ocean. Relative to the water, not to the planet: a floating hull
+/// is carried back and forth by the orbital motion under each crest, which is
+/// what keeps it riding the same water up and over. Held still instead, it let
+/// a 23 m/s crest sweep underneath, so a 38m storm swell drove it under, threw
+/// it 26m clear of the water behind the crest and plunged it back in.
 /// A hull dragged broadside through water meets a great deal of resistance,
 /// from its own drag and from the water it has to shift with it. At 0.35 the
 /// wave-slope forcing walked the hull 46m in under a minute. This acts only on
@@ -122,6 +127,9 @@ pub struct WaterSample {
     /// Tangential gradient of the surface, in the planet frame: metres of rise
     /// per metre travelled. Tilts the buoyant force off the vertical.
     pub slope: DVec3,
+    /// Horizontal velocity of the surface water (planet frame): its orbital
+    /// motion under the waves. The hull's horizontal drag is relative to it.
+    pub horizontal_velocity: DVec3,
 }
 
 /// Normalised station position, -1 at the transom and +1 at the stem.
@@ -140,6 +148,23 @@ pub fn half_beam_meters(t: f64) -> f64 {
         1.0 - 0.2 * t * t
     };
     0.5 * HULL_BEAM_METERS * shape
+}
+
+/// How the water surface meets the hull side at station `t`, given the water's
+/// height above the design waterline there (`immersion`, metres): `contact` is
+/// 1 while the surface lies between keel and deck and fades to 0 as it passes
+/// either (hull clear of the water, or buried), and `below_deck` fades to 0 as
+/// the surface rises over the deck. Splashes and hull foam need the first;
+/// spray thrown at the surface needs the second.
+pub fn hull_water_contact(t: f64, immersion: f64) -> (f64, f64) {
+    let ramp = |low: f64, high: f64, x: f64| {
+        let s = ((x - low) / (high - low)).clamp(0.0, 1.0);
+        s * s * (3.0 - 2.0 * s)
+    };
+    let edge = 0.5 * SPLASH_LENGTH_SCALE;
+    let (keel, deck) = (keel_depth_meters(t), sheer_height_meters(t));
+    let below_deck = 1.0 - ramp(deck - edge, deck + edge, immersion);
+    (ramp(-keel - edge, -keel + edge, immersion) * below_deck, below_deck)
 }
 
 /// Keel depth below the design waterline. The forefoot rises toward the stem.
@@ -379,6 +404,8 @@ impl ShipBody {
         let ship_up = rotation * DVec3::Z;
         let mut force = radial * (-GRAVITY_METERS_PER_SECOND_SQUARED * hull.mass_kg);
         let mut torque = DVec3::ZERO;
+        let mut submerged_volume = 0.0;
+        let mut water_horizontal = DVec3::ZERO;
 
         for column in &hull.columns {
             let keel_offset = rotation * (column.keel_local - hull.centre_of_mass_local);
@@ -401,6 +428,9 @@ impl ShipBody {
                 .dot(column_direction)
                 .max(MINIMUM_COLUMN_TILT_COSINE);
             let immersion = (vertical_depth / axis_tilt_cosine).min(column.height_meters);
+            let volume = column.plan_area_square_meters * immersion;
+            submerged_volume += volume;
+            water_horizontal += sample.horizontal_velocity * volume;
 
             // Archimedes on the submerged part of this column, acting at the
             // centroid of that part. Applying it at the keel instead would
@@ -436,11 +466,21 @@ impl ShipBody {
         self.linear_velocity += force / hull.mass_kg * step_seconds;
         // Surge damping is horizontal only: vertical resistance already comes
         // from the columns, and damping it twice would sink the hull into a
-        // rising crest.
+        // rising crest. It pulls toward the water's own horizontal motion,
+        // averaged over the submerged volume, as strongly as the hull is wet.
         let vertical_velocity = radial * self.linear_velocity.dot(radial);
         let horizontal_velocity = self.linear_velocity - vertical_velocity;
+        let wetted = (submerged_volume / hull.displaced_volume_cubic_meters()).min(1.0);
+        let current = if submerged_volume > 0.0 {
+            let mean = water_horizontal / submerged_volume;
+            mean - radial * mean.dot(radial)
+        } else {
+            DVec3::ZERO
+        };
         self.linear_velocity = vertical_velocity
-            + horizontal_velocity * (1.0 - SURGE_DAMPING_PER_SECOND * step_seconds).max(0.0);
+            + current
+            + (horizontal_velocity - current)
+                * (1.0 - SURGE_DAMPING_PER_SECOND * wetted * step_seconds).max(0.0);
         self.position += self.linear_velocity * step_seconds;
 
         let inverse_inertia =
@@ -715,6 +755,7 @@ mod tests {
             height_meters,
             vertical_velocity_meters_per_second: 0.0,
             slope: DVec3::ZERO,
+            horizontal_velocity: DVec3::ZERO,
         }
     }
 
@@ -816,6 +857,7 @@ mod tests {
                 height_meters: height,
                 vertical_velocity_meters_per_second: climb_rate,
                 slope: DVec3::ZERO,
+                horizontal_velocity: DVec3::ZERO,
             });
             elapsed += 1.0 / 60.0;
         }
@@ -839,6 +881,7 @@ mod tests {
                 height_meters: slope * along,
                 vertical_velocity_meters_per_second: 0.0,
                 slope: DVec3::ZERO,
+                horizontal_velocity: DVec3::ZERO,
             }
         });
         let pitch = body.forward().dot(radial).asin();
@@ -880,6 +923,7 @@ mod tests {
                         * 1.6
                         * (wave_number * phase + 1.6 * elapsed).cos(),
                     slope: DVec3::ZERO,
+                    horizontal_velocity: DVec3::ZERO,
                 }
             });
             elapsed += 1.0 / 60.0;
@@ -952,6 +996,7 @@ mod tests {
                         direction, elapsed, 4000.0,
                     ),
                 slope: ocean::global_wave_slope(direction, elapsed, 4000.0),
+                horizontal_velocity: DVec3::ZERO,
             });
             elapsed += 1.0 / 60.0;
             // Skip the first second: the hull starts level on a moving sea and
@@ -1036,6 +1081,7 @@ mod tests {
             height_meters: 3.0 * (direction.x * 4.0e5).sin(),
             vertical_velocity_meters_per_second: 0.4,
             slope: DVec3::ZERO,
+            horizontal_velocity: DVec3::ZERO,
         };
         single.advance(&hull, super::FIXED_STEP_SECONDS * 8.0, water);
         for _ in 0..8 {
@@ -1089,6 +1135,44 @@ mod tests {
             assert_eq!(triangle[0].normal, triangle[1].normal);
             assert_eq!(triangle[1].normal, triangle[2].normal);
         }
+    }
+
+    #[test]
+    fn a_floating_hull_is_carried_by_the_water_and_not_held_still() {
+        // Drag is relative to the water: in a steady 2 m/s current the hull
+        // ends up moving with it. Damped toward the planet instead, it stood
+        // still while crests swept under it and was thrown clear of them.
+        let (hull, mut body) = afloat();
+        let east = body.position.normalize().cross(DVec3::Y).normalize();
+        let current = |_: DVec3| WaterSample {
+            height_meters: 0.0,
+            vertical_velocity_meters_per_second: 0.0,
+            slope: DVec3::ZERO,
+            horizontal_velocity: east * 2.0,
+        };
+        for _ in 0..(10.0 / super::FIXED_STEP_SECONDS) as usize {
+            body.advance(&hull, super::FIXED_STEP_SECONDS, current);
+        }
+        let along = body.linear_velocity.dot(east);
+        assert!((along - 2.0).abs() < 0.05, "hull moves at {along} m/s in a 2 m/s current");
+
+        // Clear of the water nothing drags it: horizontal speed is kept.
+        let (hull, mut body) = afloat();
+        body.position += body.position.normalize() * 50.0;
+        body.linear_velocity = east * 3.0;
+        body.advance(&hull, super::FIXED_STEP_SECONDS * 10.0, current);
+        assert!((body.linear_velocity.dot(east) - 3.0).abs() < 1.0e-4);
+    }
+
+    #[test]
+    fn splashes_need_the_water_against_the_hull_side() {
+        // Floating at its waterline: full contact, below the deck.
+        assert_eq!(super::hull_water_contact(0.0, 0.0), (1.0, 1.0));
+        // Hull thrown clear of the water: no contact.
+        assert_eq!(super::hull_water_contact(0.0, -2.0 * HULL_DRAFT_METERS).0, 0.0);
+        // Buried with the sea over the deck: no contact, and above the deck.
+        let buried = super::hull_water_contact(0.0, 2.0 * HULL_FREEBOARD_METERS);
+        assert_eq!(buried, (0.0, 0.0));
     }
 
     #[test]

@@ -38,6 +38,10 @@ struct FoamFrame {
     /// Slam intensity at the hull stations, port then starboard.
     ship_port: [f32; 4],
     ship_starboard: [f32; 4],
+    /// Water-against-hull contact at the same stations, 0-1 (see
+    /// `ShipSprayEmitter::port_contact`).
+    ship_port_contact: [f32; 4],
+    ship_starboard_contact: [f32; 4],
 }
 
 pub(super) struct OceanFoamHistory {
@@ -322,6 +326,8 @@ impl OceanFoamHistory {
             ship_starboard: ship.map_or([0.0; 4], |ship| {
                 std::array::from_fn(|i| ship.starboard[i].max(ship.starboard_impact[i]))
             }),
+            ship_port_contact: ship.map_or([0.0; 4], |ship| ship.port_contact),
+            ship_starboard_contact: ship.map_or([0.0; 4], |ship| ship.starboard_contact),
         };
         queue.write_buffer(&self._uniform, 0, bytemuck::bytes_of(&frame));
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {

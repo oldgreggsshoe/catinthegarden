@@ -1290,6 +1290,20 @@ fn fft_sample(direction: DVec3, sim_time: f64) -> Option<crate::ocean_fft::CpuSa
     Some(sample)
 }
 
+/// Horizontal velocity of the water surface here (planet frame, m/s): the FFT
+/// sea's orbital motion. Zero on the Gerstner sea, whose drawn surface only
+/// moves radially.
+pub fn global_wave_horizontal_velocity(direction: DVec3, sim_time: f64) -> DVec3 {
+    fft_surface().map_or(DVec3::ZERO, |surface| {
+        DVec3::from_array(surface.horizontal_velocity(
+            direction.normalize().to_array(),
+            planet_radius_meters(),
+            sim_time,
+            sea_state_at(sim_time).intensity,
+        ))
+    })
+}
+
 /// How folded (pinched, breaking) the drawn surface is here: the determinant of
 /// its horizontal Jacobian, 1 on flat water and approaching
 /// `ocean_fft::MIN_JACOBIAN` at a breaking crest. Always 1 on the Gerstner sea,
