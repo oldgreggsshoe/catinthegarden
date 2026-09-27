@@ -47,6 +47,10 @@ fn gaussian_pair(seed: u32) -> (f32, f32) {
 
 /// JONSWAP omnidirectional spectrum S(omega).
 fn jonswap(omega: f32, wind_speed: f32, fetch_meters: f32) -> f32 {
+    // The peak frequency divides by the wind speed: no wind, no wind sea.
+    if wind_speed < MIN_WIND_SEA_METERS_PER_SECOND {
+        return 0.0;
+    }
     let alpha = 0.076 * (wind_speed * wind_speed / (fetch_meters * GRAVITY)).powf(0.22);
     let omega_peak = 22.0 * (GRAVITY * GRAVITY / (wind_speed * fetch_meters)).powf(1.0 / 3.0);
     let sigma = if omega <= omega_peak { 0.07 } else { 0.09 };
@@ -166,11 +170,16 @@ fn swell_h0(seed: u32, dk: f32, swell_angle: f32) -> Vec<[f32; 4]> {
 }
 
 /// Wind speed (m/s) for the FFT sea; shared by the GPU spectrum and the CPU model.
+/// Below this there is no wind sea at all (a glassy swell): the JONSWAP peak
+/// divides by the wind speed, and at zero every wave came out NaN.
+pub const MIN_WIND_SEA_METERS_PER_SECOND: f32 = 0.5;
+
 pub fn wind_speed_from_environment() -> f32 {
     std::env::var("CATINGARDEN_OCEAN_FFT_WIND")
         .ok()
         .and_then(|value| value.trim().parse::<f32>().ok())
-        .unwrap_or(14.0)
+        .filter(|value| value.is_finite())
+        .map_or(14.0, |value| value.clamp(0.0, 40.0))
 }
 
 /// Wind direction of the FFT spectrum in the tangent-plane (u, v) axes.
@@ -1446,6 +1455,20 @@ pub(crate) mod tests {
     fn the_shader_holds_crests_at_the_same_pinch() {
         let shader = include_str!("shared_planet.wgsl");
         assert!(shader.contains(&format!("const OCEAN_FFT_MIN_JACOBIAN: f32 = {MIN_JACOBIAN:?};")));
+    }
+
+    #[test]
+    fn no_wind_leaves_a_finite_glassy_swell() {
+        let h0 = generate_h0(1, 0.0, WIND_DIRECTION, 80_000.0);
+        assert!(h0.iter().flatten().all(|value| value.is_finite()));
+        let wind_layers = &h0[..WIND_CASCADES * GRID * GRID];
+        assert!(wind_layers.iter().flatten().all(|&value| value == 0.0), "no wind sea");
+        let swell = &h0[SWELL_CASCADE * GRID * GRID..];
+        assert!(swell.iter().flatten().any(|&value| value != 0.0), "swell remains");
+        let cpu = CpuSurface::new(&h0);
+        let sample = cpu.sample([0.6, 0.8, 0.0], 4_000_000.0, 12.0, 0.0);
+        assert!(sample.height.is_finite() && sample.velocity.is_finite() && sample.fold.is_finite());
+        assert!(sample.slope_uv.iter().all(|value| value.is_finite()));
     }
 
     #[test]
