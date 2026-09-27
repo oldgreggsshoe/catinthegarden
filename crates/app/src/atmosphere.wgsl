@@ -6,6 +6,10 @@ const ORBITAL_ATMOSPHERE_LUT_V: f32 = 0.72;
 const ORBITAL_GROUND_LUT_V: f32 = 0.88;
 const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 122000.0;
 const TERRAIN_FOG_AIR_PATH_E_FOLD_METERS: f32 = 500000.0;
+// Storm overcast: the sky side of shared_planet.wgsl's storm_overcast, with the
+// same constants, so sky and terrain mist still meet at the horizon.
+const STORM_FOG_AIR_PATH_E_FOLD_METERS: f32 = 5000.0;
+const STORM_OVERCAST_BRIGHTNESS: f32 = 0.45;
 // Presentation-only gain for the visible sky. Keep this outside the physical
 // LUTs so surface lighting, extinction, and exposure remain unchanged.
 const VISIBLE_SKY_RADIANCE_SCALE: f32 = 2.0;
@@ -243,9 +247,15 @@ fn displayed_sky_radiance(ray: vec3<f32>) -> vec3<f32> {
     );
     let visible_radiance = VISIBLE_SKY_RADIANCE_SCALE
         * mix(perceptual_sky_radiance(radiance), radiance, orbital_blend);
-    let fog_amount = 1.0 - exp(
-        -sky_fog_air_path_meters(ray) / TERRAIN_FOG_AIR_PATH_E_FOLD_METERS,
-    );
+    // Storm overcast (camera.sun_direction.w): the fog closes in and it and
+    // the sky go grey, at the terrain mist's rate.
+    let overcast = clamp(camera.sun_direction.w, 0.0, 1.0);
+    let e_fold = exp(mix(
+        log(TERRAIN_FOG_AIR_PATH_E_FOLD_METERS),
+        log(STORM_FOG_AIR_PATH_E_FOLD_METERS),
+        overcast,
+    ));
+    let fog_amount = 1.0 - exp(-sky_fog_air_path_meters(ray) / e_fold);
     let camera_altitude = max(
         camera.camera_planet_direction_view_altitude.w,
         SKY_VIEW_MINIMUM_CAMERA_ALTITUDE_METERS,
@@ -269,7 +279,12 @@ fn displayed_sky_radiance(ray: vec3<f32>) -> vec3<f32> {
         horizon_radiance,
         orbital_blend,
     );
-    return mix(visible_radiance, horizon_fog_radiance, fog_amount);
+    return storm_overcast_colour(mix(visible_radiance, horizon_fog_radiance, fog_amount), overcast);
+}
+
+fn storm_overcast_colour(radiance: vec3<f32>, overcast: f32) -> vec3<f32> {
+    let luminance = dot(radiance, vec3<f32>(0.2126, 0.7152, 0.0722));
+    return mix(radiance, vec3<f32>(luminance * STORM_OVERCAST_BRIGHTNESS), overcast);
 }
 
 // A finite, near-clipped sea shell does not enclose a water volume. At a

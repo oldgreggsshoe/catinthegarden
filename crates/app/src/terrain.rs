@@ -6270,9 +6270,28 @@ mod tests {
         assert!(shader.contains("let view_interval = atmosphere_interval("));
         assert!(shader.contains("let bounded_path_length = min("));
         assert!(shader.contains("let average_density = 0.5"));
-        assert!(shader.contains("-air_path_meters / TERRAIN_FOG_AIR_PATH_E_FOLD_METERS"));
+        assert!(shader.contains("-air_path_meters / storm_fog_e_fold_meters()"));
         assert!(!shader.contains("near_surface_amount"));
         assert!(!shader.contains("TERRAIN_FOG_MAX_CAMERA_CLEARANCE_METERS"));
+    }
+
+    #[test]
+    fn storm_overcast_greys_sky_and_ground_fog_alike() {
+        // Sky and terrain mist must close in and grey at the same rate, or a
+        // storm would draw a seam at the horizon.
+        let terrain = include_str!("shared_planet.wgsl");
+        let sky = include_str!("atmosphere.wgsl");
+        for declaration in [
+            "const STORM_FOG_AIR_PATH_E_FOLD_METERS: f32 = 5000.0;",
+            "const STORM_OVERCAST_BRIGHTNESS: f32 = 0.45;",
+        ] {
+            assert!(terrain.contains(declaration), "shared_planet.wgsl lacks {declaration}");
+            assert!(sky.contains(declaration), "atmosphere.wgsl lacks {declaration}");
+        }
+        for shader in [terrain, sky] {
+            assert!(shader.contains("camera.sun_direction.w"));
+            assert!(shader.contains("log(STORM_FOG_AIR_PATH_E_FOLD_METERS)"));
+        }
     }
 
     #[test]

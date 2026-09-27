@@ -24,6 +24,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 
 - Thicker optical air, 27 September: Rayleigh scale height 72km -> 122km in sky and terrain haze alike (Ian's edit, finished). Ground views barely change; from orbit the disc gets a purple-blue veil. Haze tests retuned.
 
+- Storm overcast, 27 September: the weather's storm strength at the camera (eased, `CATINGARDEN_STORM_OVERCAST` to force) greys the sky, closes the distance fog in to a 5km grey, turns the sea's sky reflection grey and cuts its direct sun by 85%.
+
 - Ship rides big swells, 27 September: hull drag is relative to the water's orbital velocity (new FFT `horizontal_velocity`), so a 38m storm swell no longer throws it 26m clear (3m now); hull spray and foam need the water against the hull side (`hull_water_contact`), and spray starts at each station's own water height.
 
 - Needle-crest fix reverted, 27 September: the slope-aware fold floor (1142d30) sheared neighbouring vertices past each other and drew sideways shards; measured on the drawn mesh it raised inverted cells 0.0004% -> 0.049%. Fixed 0.1 floor restored; test `the_drawn_sea_almost_never_turns_inside_out` measures the mesh itself. Rare needles remain; a fix must keep the limiter smooth across the surface.

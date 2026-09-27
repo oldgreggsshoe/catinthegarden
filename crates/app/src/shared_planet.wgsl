@@ -186,6 +186,32 @@ const TWILIGHT_SHADOW_TRANSITION_METERS: f32 = 72000.0;
 // crosses roughly one scale height of effective air, while a grazing view can
 // cross many. There is deliberately no authored camera-altitude fade.
 const TERRAIN_FOG_AIR_PATH_E_FOLD_METERS: f32 = 500000.0;
+// Storm overcast, 0-1, from the weather at the camera (camera.sun_direction.w;
+// main.rs update_storm_overcast). Under it the distance fog closes in to this
+// sea-level e-fold (from TERRAIN_FOG_AIR_PATH_E_FOLD_METERS, geometrically) and
+// greys, the sky and its reflection go to a grey of STORM_OVERCAST_BRIGHTNESS
+// times their own luminance (so night stays dark), and direct sun on the sea
+// is cut by STORM_SUN_BLOCK. Mirrored in atmosphere.wgsl.
+const STORM_FOG_AIR_PATH_E_FOLD_METERS: f32 = 5000.0;
+const STORM_OVERCAST_BRIGHTNESS: f32 = 0.45;
+const STORM_SUN_BLOCK: f32 = 0.85;
+
+fn storm_overcast() -> f32 {
+    return clamp(camera.sun_direction.w, 0.0, 1.0);
+}
+
+fn storm_fog_e_fold_meters() -> f32 {
+    return exp(mix(
+        log(TERRAIN_FOG_AIR_PATH_E_FOLD_METERS),
+        log(STORM_FOG_AIR_PATH_E_FOLD_METERS),
+        storm_overcast(),
+    ));
+}
+
+fn storm_overcast_colour(radiance: vec3<f32>) -> vec3<f32> {
+    let luminance = dot(radiance, vec3<f32>(0.2126, 0.7152, 0.0722));
+    return mix(radiance, vec3<f32>(luminance * STORM_OVERCAST_BRIGHTNESS), storm_overcast());
+}
 const TERRAIN_MATERIAL_TILE_METERS: f32 = 2048.0;
 // Close-range material repeat. The 2km tile above covers a whole landscape, so
 // standing on the ground it is one flat colour; this is the tile that actually
@@ -2752,9 +2778,7 @@ fn terrain_fog(
         surface_direction,
         surface_altitude_meters,
     );
-    let fog_amount = 1.0 - exp(
-        -air_path_meters / TERRAIN_FOG_AIR_PATH_E_FOLD_METERS,
-    );
+    let fog_amount = 1.0 - exp(-air_path_meters / storm_fog_e_fold_meters());
     if fog_amount <= 1.0e-4 {
         return TerrainFog(0.0, vec3<f32>(0.0));
     }
@@ -2765,7 +2789,7 @@ fn terrain_fog(
     let camera_to_surface_ray_view = normalize(camera_relative_view_position);
     return TerrainFog(
         fog_amount,
-        physical_camera_sky_radiance(camera_to_surface_ray_view),
+        storm_overcast_colour(physical_camera_sky_radiance(camera_to_surface_ray_view)),
     );
 }
 
@@ -4042,15 +4066,19 @@ fn ocean_lighting_sot(
     let normal_view = normalize(planet_to_view(normal));
     let sun_direction_view = normalize(camera.sun_direction_view.xyz);
     let reflection_direction = view_to_planet(reflect(-view_direction, normal_view));
-    let reflected_color = textureSampleLevel(
+    // Under a storm the sea mirrors, and is lit by, a grey overcast sky, and
+    // the sun barely reaches it: no bright road, little glow through the tops.
+    let reflected_color = storm_overcast_colour(textureSampleLevel(
         environment_map,
         environment_sampler,
         reflection_direction,
         0.0,
-    ).rgb;
+    ).rgb);
     let facing = max(dot(normal_view, view_direction), 0.0);
     let fresnel = vec3<f32>(0.02) + vec3<f32>(0.98) * pow(1.0 - facing, 5.0);
     let daylight = max(max(sun_transmittance.x, sun_transmittance.y), sun_transmittance.z);
+    let sun = sun_transmittance * (1.0 - STORM_SUN_BLOCK * storm_overcast());
+    let sky_light = storm_overcast_colour(sky_diffuse);
     let peak_linear = clamp(
         (crest_sharpness - OCEAN_SOT_PEAK_ONSET) / (OCEAN_SOT_PEAK_FULL - OCEAN_SOT_PEAK_ONSET),
         0.0,
@@ -4066,9 +4094,9 @@ fn ocean_lighting_sot(
     let view_depth = mix(OCEAN_SOT_STEEP_VIEW_BRIGHTNESS, 1.0, smoothstep(0.1, 0.8, 1.0 - facing));
     let body = OCEAN_SOT_WATER_ALBEDO * view_depth
         * (1.0 + OCEAN_SOT_THIN_BRIGHTENING * thin + 0.4 * peak);
-    let diffuse = body * (sky_diffuse + sun_transmittance * (0.4 * SURFACE_SUNLIGHT_SCALE));
+    let diffuse = body * (sky_light + sun * (0.4 * SURFACE_SUNLIGHT_SCALE));
     let toward_sun = pow(max(dot(-view_direction, sun_direction_view), 0.0), 4.0);
-    let transmission = OCEAN_SOT_WATER_ALBEDO * sun_transmittance
+    let transmission = OCEAN_SOT_WATER_ALBEDO * sun
         * (OCEAN_SOT_TRANSMISSION * SURFACE_SUNLIGHT_SCALE) * toward_sun
         * clamp(thin * thin + 0.6 * peak + 0.3 * fine_crest_transmission, 0.0, 1.5)
         * (vec3<f32>(1.0) - fresnel);
@@ -4084,7 +4112,7 @@ fn ocean_lighting_sot(
     let specular = ocean_sot_specular(normal_view, view_direction, sun_direction_view, roughness);
     return diffuse + transmission
         + reflected_color * fresnel * daylight * OCEAN_REFLECTION_SCALE
-        + sun_transmittance * specular * fresnel
+        + sun * specular * fresnel
             * (OCEAN_SUN_GLINT_SCALE * SURFACE_SUNLIGHT_SCALE);
 }
 

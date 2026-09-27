@@ -367,6 +367,24 @@ const BIRD_CAM_AHEAD_METERS: f64 = 40.0;
 const BIRD_WATCH_FLIGHT_HEIGHT_METERS: f64 = 4.0;
 
 const SHIP_VISIBLE_DISTANCE_METERS: f64 = 30_000.0;
+/// Weather storm strength (weather.rs `storm_intensity`) where the camera's
+/// sky starts to cloud over, and where it is fully overcast.
+const STORM_OVERCAST_ONSET: f64 = 0.1;
+const STORM_OVERCAST_FULL: f64 = 0.5;
+/// Seconds (ocean clock) for the overcast to follow the weather, so flying
+/// into or out of a storm fades rather than switches.
+const STORM_OVERCAST_EASE_SECONDS: f64 = 4.0;
+
+fn storm_overcast_override() -> Option<f32> {
+    static VALUE: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("CATINGARDEN_STORM_OVERCAST")
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .filter(|v| v.is_finite())
+            .map(|v| v.clamp(0.0, 1.0))
+    })
+}
 /// Place the eye just outside the bow-facing bridge wall, where the windows
 /// would be, with a forward view over the foredeck. The wall and windows scale
 /// with the ship; the eye's 0.4m standoff is a person's, so it does not.
@@ -1221,6 +1239,10 @@ struct State {
     /// Scene clock in scaled seconds. Accumulated rather than derived from
     /// elapsed real time, so changing speed never makes the scene jump.
     scaled_clock_seconds: f64,
+    /// Storm overcast at the camera, 0-1, eased (see `update_storm_overcast`),
+    /// and the ocean-clock time it was last eased at.
+    storm_overcast: f32,
+    storm_overcast_time: f64,
     last_real_clock_seconds: f64,
     time_speed_index: usize,
     interactive_scene_time_offset_seconds: f64,
@@ -1708,6 +1730,8 @@ impl State {
             animation_frozen: false,
             frozen_sim_time: 0.0,
             scaled_clock_seconds: 0.0,
+            storm_overcast: 0.0,
+            storm_overcast_time: f64::NAN,
             last_real_clock_seconds: 0.0,
             time_speed_index: DEFAULT_TIME_SPEED_INDEX,
             interactive_scene_time_offset_seconds: 0.0,
@@ -2679,6 +2703,37 @@ impl State {
             self.ship_body.position.normalize(),
             camera_offset.length() < SHIP_VISIBLE_DISTANCE_METERS,
         );
+    }
+
+    /// Eases the storm overcast toward the weather's storm strength at the
+    /// camera. Storm here is the weather's own (cloud water, uplift,
+    /// condensation), not the sea state, which also rises with wind alone and
+    /// would grey a clear windy day. It fades above the lower cloud shell,
+    /// where the camera looks down on the storm rather than out from under it.
+    /// `CATINGARDEN_STORM_OVERCAST` (0-1) fixes it, for comparisons.
+    fn update_storm_overcast(&mut self, planet_rotation_radians: f64, ocean_time_seconds: f64) {
+        let target = storm_overcast_override().unwrap_or_else(|| {
+            let direction = planet::planet_local_vector(
+                self.camera.world_position().normalize(),
+                planet_rotation_radians,
+            );
+            let storm = f64::from(self.weather.storm_intensity_at(direction));
+            let altitude = self.camera.world_position().length() - planet::planet_radius_meters();
+            let smoothstep = |low: f64, high: f64, x: f64| {
+                let t = ((x - low) / (high - low)).clamp(0.0, 1.0);
+                t * t * (3.0 - 2.0 * t)
+            };
+            (smoothstep(STORM_OVERCAST_ONSET, STORM_OVERCAST_FULL, storm)
+                * (1.0 - smoothstep(60_000.0, 90_000.0, altitude))) as f32
+        });
+        let elapsed = ocean_time_seconds - self.storm_overcast_time;
+        self.storm_overcast = if elapsed.is_finite() && elapsed >= 0.0 {
+            let weight = 1.0 - (-elapsed / STORM_OVERCAST_EASE_SECONDS).exp();
+            self.storm_overcast + (target - self.storm_overcast) * weight as f32
+        } else {
+            target
+        };
+        self.storm_overcast_time = ocean_time_seconds;
     }
 
     fn update_bridge_camera(&mut self, planet_rotation_radians: f64) {
@@ -3961,6 +4016,7 @@ impl State {
             self.weather.visual_time_seconds(),
         );
         let ocean_time_seconds = ocean_animation_time_seconds(sim_time, presentation_time);
+        self.update_storm_overcast(planet_rotation_radians, ocean_time_seconds);
         ocean::update_weather_sea(ocean_time_seconds, || {
             let weather_direction = planet::planet_local_vector(
                 self.camera.world_position().normalize(),
@@ -4451,6 +4507,10 @@ impl State {
         // displacement uses the same temporally interpolated local storm field
         // as the cloud system, without adding a bind group or texture lookup.
         camera_uniform.flat_triangle_options[1] = local_storm_intensity;
+        // Unused sun lane: storm overcast at the camera, which greys the sky,
+        // closes in and greys the distance fog, and swaps the sea's sky
+        // reflection and sun glitter for overcast light.
+        camera_uniform.sun_direction[3] = self.storm_overcast;
         // Spare basis-vector lanes: local ocean column and signed eye clearance.
         // Fill background waterline pixels missed by the finite raster shell.
         camera_uniform.camera_forward[3] = ocean_water_depth_meters as f32;
