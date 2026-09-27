@@ -19,6 +19,20 @@ pub const BAND_EDGES: [f32; WIND_CASCADES + 1] = [0.0, 0.5, 2.0, 1.0e9];
 /// local wind sea so their crests collide. Normalised to 1m significant height
 /// and scaled at run time by `swell_height_meters`.
 const SWELL_PEAK_WAVELENGTH_METERS: f32 = 170.0;
+/// Bigger swell is longer swell: the peak wavelength is at least this many
+/// times the (unstormed) significant height, so crests keep a sea's
+/// steepness instead of pinching into spikes. 15m -> 180m, 20m -> 240m,
+/// 30m -> 360m; the default 8m keeps 170m.
+const SWELL_WAVELENGTH_PER_HEIGHT: f32 = 12.0;
+
+/// Swell peak wavelength for the configured swell height.
+pub fn swell_peak_wavelength_meters() -> f32 {
+    swell_wavelength_for_height(swell_base_height_meters())
+}
+
+fn swell_wavelength_for_height(height_meters: f32) -> f32 {
+    SWELL_PEAK_WAVELENGTH_METERS.max(SWELL_WAVELENGTH_PER_HEIGHT * height_meters)
+}
 /// Relative spread of angular frequency around the peak (Gaussian sigma).
 const SWELL_FREQUENCY_SPREAD: f32 = 0.10;
 /// cos^n directional spreading; large n is long-crested.
@@ -120,7 +134,7 @@ pub fn generate_h0(seed: u32, wind_speed: f32, wind_dir: [f32; 2], fetch_meters:
 
 /// Swell h0 layer, normalised to 1m significant wave height (Hs = 4 sigma).
 fn swell_h0(seed: u32, dk: f32, swell_angle: f32) -> Vec<[f32; 4]> {
-    let k_peak = std::f32::consts::TAU / SWELL_PEAK_WAVELENGTH_METERS;
+    let k_peak = std::f32::consts::TAU / swell_peak_wavelength_meters();
     let omega_peak = (GRAVITY * k_peak).sqrt();
     let mut table = vec![[0.0f32; 2]; GRID * GRID];
     for y in 0..GRID {
@@ -254,17 +268,23 @@ pub fn choppiness() -> f32 {
 
 /// Significant wave height (metres) of the swell cascade. Swell is generated
 /// by distant storms, so it is present in calm local weather; the local storm
-/// raises it by up to 1.8x. Base from `CATINGARDEN_OCEAN_FFT_SWELL` (default 8).
+/// raises it by up to 1.8x. Base from `CATINGARDEN_OCEAN_FFT_SWELL` (default 8, max 30).
 pub fn swell_height_meters(storm_intensity: f32) -> f32 {
+    let t = ((storm_intensity - 0.15) / 0.70).clamp(0.0, 1.0);
+    swell_base_height_meters() * (1.0 + 0.8 * t * t * (3.0 - 2.0 * t))
+}
+
+/// `CATINGARDEN_OCEAN_FFT_SWELL` (default 8m, up to 30m): the swell's
+/// significant height before the local storm raises it.
+pub fn swell_base_height_meters() -> f32 {
     static BASE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
-    let base = *BASE.get_or_init(|| {
+    *BASE.get_or_init(|| {
         std::env::var("CATINGARDEN_OCEAN_FFT_SWELL")
             .ok()
             .and_then(|v| v.trim().parse::<f32>().ok())
-            .map_or(8.0, |v| v.clamp(0.0, 15.0))
-    });
-    let t = ((storm_intensity - 0.15) / 0.70).clamp(0.0, 1.0);
-    base * (1.0 + 0.8 * t * t * (3.0 - 2.0 * t))
+            .filter(|v| v.is_finite())
+            .map_or(8.0, |v| v.clamp(0.0, 30.0))
+    })
 }
 
 /// Strength of the second-order (Stokes) crest term, `CATINGARDEN_OCEAN_FFT_PEAKS`
@@ -1455,6 +1475,15 @@ pub(crate) mod tests {
     fn the_shader_holds_crests_at_the_same_pinch() {
         let shader = include_str!("shared_planet.wgsl");
         assert!(shader.contains(&format!("const OCEAN_FFT_MIN_JACOBIAN: f32 = {MIN_JACOBIAN:?};")));
+    }
+
+    #[test]
+    fn bigger_swell_is_longer_swell() {
+        assert_eq!(swell_wavelength_for_height(8.0), 170.0, "default unchanged");
+        assert_eq!(swell_wavelength_for_height(20.0), 240.0);
+        assert_eq!(swell_wavelength_for_height(30.0), 360.0);
+        // Several waves per swell tile even at the largest.
+        assert!(TILE_METERS[SWELL_CASCADE] / swell_wavelength_for_height(30.0) > 5.0);
     }
 
     #[test]
