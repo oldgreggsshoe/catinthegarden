@@ -3704,7 +3704,7 @@ impl State {
                         ui.label(
                             "F: fullscreen  |  F3: overlay  |  , / .: time speed  |  F4: orbit/flight  |  G: surface camera  |  WASD: move  |  Space: jump/swim thrust  |  [ / ]: speed  |  F5: render path  |  O: triangle outlines  |  B: ride a bird  |  N: watch birds that are down  |  M: track the nearest flock from here  |  V: village beams  |  F6: anti-aliasing  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
                         );
-                        ui.label("Default: fullscreen, HUD hidden, auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc/Q: quit");
+                        ui.label("Default: fullscreen, HUD hidden, auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc twice: quit");
                     });
             }
         });
@@ -5515,6 +5515,20 @@ struct App {
     /// acquire can leave the desktop image visible until a later resize.
     startup_fullscreen_pending: bool,
     startup_redraw_seen: bool,
+    /// When Escape was last pressed. Quitting takes a second press within
+    /// `ESCAPE_QUIT_WINDOW`: remote desktops (NoMachine) send a lone Escape
+    /// when the window takes focus after going fullscreen, which quit the
+    /// game straight after startup.
+    last_escape: Option<Instant>,
+}
+
+/// Two Escape presses within this long quit the game.
+const ESCAPE_QUIT_WINDOW: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Whether an Escape press at `now` completes a quit (a second press, or a
+/// held key's repeat, within the window of the previous one).
+fn escape_quits(last_escape: Option<Instant>, now: Instant) -> bool {
+    last_escape.is_some_and(|last| now.duration_since(last) <= ESCAPE_QUIT_WINDOW)
 }
 
 impl App {
@@ -5526,6 +5540,7 @@ impl App {
             state: None,
             startup_fullscreen_pending: false,
             startup_redraw_seen: false,
+            last_escape: None,
         }
     }
 }
@@ -5601,7 +5616,15 @@ impl ApplicationHandler for App {
                         PhysicalKey::Code(KeyCode::Escape)
                     )
         ) {
-            event_loop.exit();
+            let now = Instant::now();
+            if escape_quits(self.last_escape, now) {
+                tracing::info!(target: "catinthegarden::exit", "Escape pressed twice: quitting");
+                let _ = state.log_writer.flush();
+                event_loop.exit();
+            } else {
+                tracing::info!(target: "catinthegarden::exit", "Escape pressed: press again to quit");
+                self.last_escape = Some(now);
+            }
             return;
         }
         if let WindowEvent::KeyboardInput { event, .. } = &event
@@ -5635,7 +5658,11 @@ impl ApplicationHandler for App {
 
         if !egui_response.consumed {
             match event {
-                WindowEvent::CloseRequested => event_loop.exit(),
+                WindowEvent::CloseRequested => {
+                    tracing::info!(target: "catinthegarden::exit", "window close requested: quitting");
+                    let _ = state.log_writer.flush();
+                    event_loop.exit();
+                }
                 WindowEvent::Focused(false) => state.set_mouse_capture(window, false),
                 WindowEvent::MouseInput {
                     state: winit::event::ElementState::Pressed,
@@ -6263,6 +6290,14 @@ mod tests {
         assert!(body.contains("set_effects"), "startup no longer enables AA:\n{body}");
         assert!(body.contains("CATINGARDEN_AA"));
         assert!(!body.contains("toggle_blur"));
+    }
+
+    #[test]
+    fn a_lone_escape_does_not_quit_but_a_second_press_does() {
+        let now = std::time::Instant::now();
+        assert!(!super::escape_quits(None, now), "first press only arms");
+        assert!(super::escape_quits(Some(now), now + std::time::Duration::from_millis(400)));
+        assert!(!super::escape_quits(Some(now), now + std::time::Duration::from_secs(3)));
     }
 
     #[test]
