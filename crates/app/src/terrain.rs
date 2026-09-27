@@ -6185,7 +6185,7 @@ mod tests {
         for declaration in [
             "const ATMOSPHERE_HEIGHT_METERS: f32 = 2880000.0;",
             "const ATMOSPHERE_EDGE_FADE_METERS: f32 = 1920000.0;",
-            "const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 72000.0;",
+            "const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 122000.0;",
             "const MIE_SCALE_HEIGHT_METERS: f32 = 9600.0;",
             "const TWILIGHT_SHADOW_TRANSITION_METERS: f32 = 72000.0;",
         ] {
@@ -6281,23 +6281,25 @@ mod tests {
             |equivalent_air_path_meters: f64| 1.0 - (-equivalent_air_path_meters / 500_000.0).exp();
         // A space-to-ground radial ray starts at negligible density and ends
         // at sea-level density. The shader's bounded endpoint average is one
-        // effective 72km scale height.
-        let radial_air_path_meters = 72_000.0;
+        // effective 122km scale height.
+        let radial_air_path_meters = 122_000.0;
         // A long horizon path reaches the 12x air-mass cap, with the same
         // half-density endpoint average: 0.5 * 2H * 12 = 12H.
-        let grazing_air_path_meters = 12.0 * 72_000.0;
+        let grazing_air_path_meters = 12.0 * 122_000.0;
         let radial_fog = fog_amount(radial_air_path_meters);
         let grazing_fog = fog_amount(grazing_air_path_meters);
 
+        // 21.7% straight down from space, 94.6% at the horizon (72km air
+        // gave 13.4% and 82.2%).
         assert!(
-            (0.10..0.20).contains(&radial_fog),
+            (0.15..0.30).contains(&radial_fog),
             "radial fog {radial_fog}"
         );
         assert!(
-            (0.75..0.90).contains(&grazing_fog),
+            (0.90..0.97).contains(&grazing_fog),
             "grazing fog {grazing_fog}"
         );
-        assert!(grazing_fog > radial_fog * 5.0);
+        assert!(grazing_fog > radial_fog * 4.0);
     }
 
     #[test]

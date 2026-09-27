@@ -4,7 +4,7 @@ const ORBITAL_GEOMETRY_BLEND_END_METERS: f32 = 400000.0;
 const OPTICAL_ATMOSPHERE_HEIGHT_METERS: f32 = 640000.0;
 const ORBITAL_ATMOSPHERE_LUT_V: f32 = 0.72;
 const ORBITAL_GROUND_LUT_V: f32 = 0.88;
-const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 72000.0;
+const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 122000.0;
 const TERRAIN_FOG_AIR_PATH_E_FOLD_METERS: f32 = 500000.0;
 // Presentation-only gain for the visible sky. Keep this outside the physical
 // LUTs so surface lighting, extinction, and exposure remain unchanged.

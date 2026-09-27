@@ -615,7 +615,7 @@ mod tests {
         let display = include_str!("atmosphere.wgsl");
         let terrain = include_str!("shared_planet.wgsl");
         for declaration in [
-            "const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 72000.0;",
+            "const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 122000.0;",
             "const TERRAIN_FOG_AIR_PATH_E_FOLD_METERS: f32 = 500000.0;",
         ] {
             assert!(display.contains(declaration));
@@ -634,7 +634,7 @@ mod tests {
     #[test]
     fn sky_mist_air_path_is_grazing_weighted_without_an_altitude_switch() {
         const PLANET_RADIUS_METERS: f64 = 4_000_000.0;
-        const SCALE_HEIGHT_METERS: f64 = 72_000.0;
+        const SCALE_HEIGHT_METERS: f64 = 122_000.0;
         const E_FOLD_METERS: f64 = 500_000.0;
         // The reported capture was 144.6km clear of its unusually tall local
         // terrain, but the atmosphere uniform correctly carries 177.7km datum
@@ -664,12 +664,14 @@ mod tests {
         let radial_fog = fog_amount(radial_air_path);
         let grazing_fog = fog_amount(grazing_air_path);
 
-        assert!(radial_fog < 0.03, "radial sky fog {radial_fog}");
+        // 122km air: 5.5% straight up, 94.7% at the ground horizon (72km
+        // air gave 1.2% and 82.2%).
+        assert!(radial_fog < 0.07, "radial sky fog {radial_fog}");
         assert!(
-            (0.75..0.90).contains(&grazing_fog),
+            (0.90..0.97).contains(&grazing_fog),
             "grazing sky fog {grazing_fog}"
         );
-        assert!(grazing_fog > radial_fog * 20.0);
+        assert!(grazing_fog > radial_fog * 15.0);
 
         // Crossing the local horizontal must not introduce another visible
         // atmosphere band. The closest-density contribution fades in with
