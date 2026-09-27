@@ -5,6 +5,8 @@
 struct SprayParticle {
     position: vec4<f32>,
     velocity: vec4<f32>,
+    // x: height above the water beneath it (m).
+    extra: vec4<f32>,
 }
 
 struct SprayDrawFrame {
@@ -87,7 +89,11 @@ fn vs_spray(
     // fade downwind. No fade-in, so there is no soft start.
     // Bow sheets are denser water and hang longer than wind-torn crest mist.
     let fade = select(0.8 * exp(-4.0 * age), 0.9 * exp(-2.5 * age), from_ship);
-    out.alpha = fade * (1.0 - age) * smoothstep(3.0, 10.0, distance);
+    // Falling back to the sea, it thins over its last metre above the
+    // surface instead of sitting on the water as a blob (it is retired at
+    // the surface). Rising spray keeps its hard edge at the source.
+    let settling = select(1.0, smoothstep(0.0, 1.0, particle.extra.x), particle.velocity.z < 0.0);
+    out.alpha = fade * (1.0 - age) * smoothstep(3.0, 10.0, distance) * settling;
     let sun_direction = normalize(camera.sun_direction.xyz);
     let height = max(particle.position.z, 0.0);
     let sun_transmittance = surface_direct_sun_transmittance(up, height, sun_direction);

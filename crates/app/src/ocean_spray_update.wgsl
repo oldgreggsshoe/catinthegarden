@@ -12,6 +12,8 @@ struct Particle {
     position: vec4<f32>,
     // du, dv, dh (m/s), lifetime (s); lifetime <= 0 means dead.
     velocity: vec4<f32>,
+    // x: height above the water surface beneath it (m), for the draw fade.
+    extra: vec4<f32>,
 }
 
 struct SprayFrame {
@@ -113,6 +115,15 @@ fn spray_field(local: vec2<f32>) -> SprayField {
     return field;
 }
 
+// Water surface height (m above sea level) at a sampled field, with the
+// shader's second-order crest term.
+fn spray_surface_height(field: SprayField) -> f32 {
+    let j = field.jacobian * fft_view.gain.x;
+    let divergence = clamp((j.x + j.y), -0.6, 0.6);
+    return field.height * fft_view.gain.x
+        * (1.0 + fft_view.second_order.x * divergence) - fft_view.second_order.y;
+}
+
 // Slam intensity at hull position t (-1 stern, +1 stem) from the four stations
 // at t = -0.9, -0.3, 0.3, 0.9 (ocean_spray.rs SHIP_STATIONS).
 fn station_intensity(values: vec4<f32>, t: f32) -> f32 {
@@ -146,6 +157,13 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
         position = vec3<f32>(position.xy - frame.shift_dt.xy, position.z);
         particle.position = vec4<f32>(position, particle.position.w + dt);
         particle.velocity = vec4<f32>(velocity, particle.velocity.w);
+        // Spray that falls back into the sea is gone: retire it at the
+        // surface rather than letting it fly on underwater.
+        let clearance = position.z - spray_surface_height(spray_field(position.xy));
+        particle.extra = vec4<f32>(clearance, 0.0, 0.0, 0.0);
+        if clearance < 0.0 {
+            particle.velocity.w = 0.0;
+        }
         // Out of the spawn disc: retire rather than draw spray nobody sees.
         if length(position.xy) > frame.params.x * 1.5 {
             particle.velocity.w = 0.0;
@@ -203,7 +221,11 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
         // Up to ~17m/s: storm bow spray clears the 6m freeboard and the deck.
         let lift = frame.ship_velocity.z * 0.5
             + select(5.0 + 12.0 * intensity * r4, 8.0 + 14.0 * impact * r4, struck);
-        particle.position = vec4<f32>(place, frame.ship_origin.z + 0.3, 0.0);
+        // Above the water actually there: a struck station is often under a
+        // rising crest, and spray born inside it would die at once.
+        let water_here = spray_surface_height(spray_field(place));
+        particle.position = vec4<f32>(place, max(frame.ship_origin.z + 0.3, water_here + 0.2), 0.0);
+        particle.extra = vec4<f32>(1.0e3, 0.0, 0.0, 0.0);
         particle.velocity = vec4<f32>(horizontal, lift, select(0.9 + 1.2 * r3, 1.2 + 1.3 * r3, struck));
         particles[index] = particle;
         return;
@@ -225,9 +247,7 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
         particles[index] = particle;
         return;
     }
-    let divergence = clamp((j.x + j.y), -0.6, 0.6);
-    let height = field.height * fft_view.gain.x
-        * (1.0 + fft_view.second_order.x * divergence) - fft_view.second_order.y;
+    let height = spray_surface_height(field) + 0.1;
     // Born at the drawn crest: the label point moved by -D.
     let drawn = local - chop * field.displacement * fft_view.gain.x;
     let r1 = unit_random(seed ^ 0x9e3779b9u);
@@ -237,6 +257,7 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
     let sideways = (vec2<f32>(r2, r3) - 0.5) * 2.0;
     let horizontal = frame.wind.xy * frame.wind.z * (0.2 + 0.3 * r2) + sideways;
     particle.position = vec4<f32>(drawn, height, 0.0);
+    particle.extra = vec4<f32>(1.0e3, 0.0, 0.0, 0.0);
     particle.velocity = vec4<f32>(horizontal, lift, 1.0 + 1.6 * r3);
     particles[index] = particle;
 }

@@ -9,6 +9,8 @@ use bytemuck::Zeroable;
 use wgpu::util::DeviceExt;
 
 pub(super) const SPRAY_PARTICLES: u32 = 16384;
+/// Three vec4<f32> per particle: position/age, velocity/lifetime, extra.
+const PARTICLE_BYTES: usize = 48;
 /// The first slots belong to the ship's bow; the rest to breaking crests.
 /// Mirrored in ocean_spray_update.wgsl, pinned by a test.
 #[allow(dead_code)]
@@ -111,7 +113,7 @@ impl OceanSpray {
     ) -> Self {
         let particles = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("ocean spray particles"),
-            contents: &vec![0u8; SPRAY_PARTICLES as usize * 32],
+            contents: &vec![0u8; SPRAY_PARTICLES as usize * PARTICLE_BYTES],
             usage: wgpu::BufferUsages::STORAGE,
         });
         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -433,8 +435,11 @@ mod tests {
 
     #[test]
     fn particle_layout_matches_the_shader() {
-        // Two vec4<f32> per particle.
-        assert_eq!(std::mem::size_of::<[[f32; 4]; 2]>(), 32);
+        // Three vec4<f32> per particle, in both shaders.
+        assert_eq!(std::mem::size_of::<[[f32; 4]; 3]>(), PARTICLE_BYTES);
+        for source in [include_str!("ocean_spray_update.wgsl"), include_str!("ocean_spray_draw.wgsl")] {
+            assert!(source.contains("    extra: vec4<f32>,\n}"));
+        }
         assert_eq!(std::mem::size_of::<SprayFrame>(), 192);
     }
 }
