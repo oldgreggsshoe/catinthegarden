@@ -34,6 +34,9 @@ struct SprayFrame {
     // starboard.
     ship_port: vec4<f32>,
     ship_starboard: vec4<f32>,
+    // Steep or breaking waves running into the same stations.
+    ship_port_impact: vec4<f32>,
+    ship_starboard_impact: vec4<f32>,
 }
 
 struct OceanFftView {
@@ -163,12 +166,18 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
         let r4 = unit_random(seed ^ 0x27d4eb2fu);
         let t = mix(-0.98, 0.98, r1);
         let side = select(-1.0, 1.0, r2 < 0.5);
-        let intensity = station_intensity(
+        let slam = station_intensity(
             select(frame.ship_starboard, frame.ship_port, side > 0.0),
             t,
         );
+        let impact = station_intensity(
+            select(frame.ship_starboard_impact, frame.ship_port_impact, side > 0.0),
+            t,
+        );
+        let intensity = max(slam, impact);
+        // A wave striking the hull throws more water than the hull slamming.
         if frame.ship_origin.w <= 0.0 || intensity <= 0.0
-            || unit_random(seed ^ 0x2545f491u) >= intensity * SHIP_SPRAY_RATE * dt
+            || unit_random(seed ^ 0x2545f491u) >= intensity * SHIP_SPRAY_RATE * dt * (1.0 + impact)
         {
             particle.velocity.w = 0.0;
             particles[index] = particle;
@@ -185,13 +194,17 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
             * (hull_shape(t + 0.01) - hull_shape(t - 0.01)) / (0.02 * half_length);
         var outward = normalize(port * side - forward * slope);
         outward = normalize(mix(outward, -forward, smoothstep(-0.88, -0.98, t)));
-        let speed = (3.0 + 8.0 * intensity * r3);
+        // Slam: thrown outward off the hull. Wave impact: a sheet driven up
+        // the hull side, barely outward, then carried by the wind.
+        let struck = impact > slam;
+        let speed = select(3.0 + 8.0 * intensity * r3, 1.0 + 2.5 * impact * r3, struck);
         let horizontal = outward * speed + frame.ship_velocity.xy
-            + frame.wind.xy * frame.wind.z * 0.15;
+            + frame.wind.xy * frame.wind.z * select(0.15, 0.3, struck);
         // Up to ~17m/s: storm bow spray clears the 6m freeboard and the deck.
-        let lift = frame.ship_velocity.z * 0.5 + 5.0 + 12.0 * intensity * r4;
+        let lift = frame.ship_velocity.z * 0.5
+            + select(5.0 + 12.0 * intensity * r4, 8.0 + 14.0 * impact * r4, struck);
         particle.position = vec4<f32>(place, frame.ship_origin.z + 0.3, 0.0);
-        particle.velocity = vec4<f32>(horizontal, lift, 0.9 + 1.2 * r3);
+        particle.velocity = vec4<f32>(horizontal, lift, select(0.9 + 1.2 * r3, 1.2 + 1.3 * r3, struck));
         particles[index] = particle;
         return;
     }

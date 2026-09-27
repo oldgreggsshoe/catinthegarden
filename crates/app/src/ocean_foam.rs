@@ -308,8 +308,13 @@ impl OceanFoamHistory {
                     (0.5 * crate::ship::HULL_BEAM_METERS) as f32,
                 ]
             }),
-            ship_port: ship.map_or([0.0; 4], |ship| ship.port),
-            ship_starboard: ship.map_or([0.0; 4], |ship| ship.starboard),
+            // Foam churns wherever the water strikes the hull, slam or wave.
+            ship_port: ship.map_or([0.0; 4], |ship| {
+                std::array::from_fn(|i| ship.port[i].max(ship.port_impact[i]))
+            }),
+            ship_starboard: ship.map_or([0.0; 4], |ship| {
+                std::array::from_fn(|i| ship.starboard[i].max(ship.starboard_impact[i]))
+            }),
         };
         queue.write_buffer(&self._uniform, 0, bytemuck::bytes_of(&frame));
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {

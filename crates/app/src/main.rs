@@ -2534,12 +2534,17 @@ impl State {
             .update(&self.queue, marked, [self.size.width, self.size.height]);
     }
 
-    /// Where the water is slamming against the hull, for spray and hull foam.
-    /// At each waterline station (`SHIP_STATIONS`, both sides) intensity is
-    /// how fast the water surface is rising against that point of the hull
-    /// (the hull driving down into it, or a crest striking it), counted only
-    /// while that point is at or in the water. A floating hull is hit all
-    /// round: rolling slams the sides, pitching the ends.
+    /// Where the water is striking the hull, for spray and hull foam. At each
+    /// waterline station (`SHIP_STATIONS`, both sides) two things throw water:
+    ///
+    /// - **slam**: the water surface rising fast against that point of the
+    ///   hull (the hull driving down into it as it rolls or pitches);
+    /// - **impact**: a steep or breaking wave front running into that side,
+    ///   sampled just outside the hull. Its travel direction comes from the
+    ///   surface itself: a rising face moves downslope, so the local wave runs
+    ///   along minus the slope when the water there is rising.
+    ///
+    /// Both count only while that point is at or in the water.
     fn ship_spray_emitter(&self, ocean_time_seconds: f64) -> terrain::ShipSprayEmitter {
         let origin = self.ship_body.position
             + self.ship_body.orientation * -self.ship_hull.centre_of_mass_local();
@@ -2547,40 +2552,74 @@ impl State {
             let t = ((x - low) / (high - low)).clamp(0.0, 1.0);
             t * t * (3.0 - 2.0 * t)
         };
-        let slam_at = |t: f64, side: f64| {
-            let local = glam::DVec3::new(
-                t * 0.5 * ship::HULL_LENGTH_METERS,
-                side * ship::half_beam_meters(t),
-                0.0,
-            );
+        let half_length = 0.5 * ship::HULL_LENGTH_METERS;
+        let station = |t: f64, side: f64| {
+            let local = glam::DVec3::new(t * half_length, side * ship::half_beam_meters(t), 0.0);
             let point = origin + self.ship_body.orientation * local;
             let point_velocity = self.ship_body.linear_velocity
                 + self.ship_body.angular_velocity.cross(point - self.ship_body.position);
             let radial = point.normalize();
+            let waterline_altitude = point.length() - planet::planet_radius_meters();
             let water_up = ocean::global_wave_vertical_velocity_meters_per_second(
                 radial,
                 ocean_time_seconds,
                 SHIP_FALLBACK_DEPTH_METERS,
             );
-            let water_height = ocean::global_wave_height_meters(
-                radial,
+            let water_height =
+                ocean::global_wave_height_meters(radial, ocean_time_seconds, SHIP_FALLBACK_DEPTH_METERS);
+            let immersion = water_height - waterline_altitude;
+            let slam = (water_up - point_velocity.dot(radial)).max(0.0);
+            let slam = ramp(0.3, 2.5, slam) * ramp(-1.5, 0.5, immersion);
+
+            // The hull outline's outward normal here (raked forward at the bow).
+            let slope_along = (ship::half_beam_meters((t + 0.01).min(1.0))
+                - ship::half_beam_meters((t - 0.01).max(-1.0)))
+                / (0.02 * half_length);
+            let normal = (self.ship_body.orientation
+                * glam::DVec3::new(-slope_along, side, 0.0).normalize())
+            .reject_from_normalized(radial)
+            .normalize_or_zero();
+            // The water about to arrive, two metres out from the hull.
+            let outside = (point + normal * 2.0).normalize();
+            let rise = ocean::global_wave_vertical_velocity_meters_per_second(
+                outside,
                 ocean_time_seconds,
                 SHIP_FALLBACK_DEPTH_METERS,
             );
-            let immersion = water_height - (point.length() - planet::planet_radius_meters());
-            let slam = (water_up - point_velocity.dot(radial)).max(0.0);
-            (ramp(0.3, 2.5, slam) * ramp(-1.5, 0.5, immersion)) as f32
+            let slope = ocean::global_wave_slope(outside, ocean_time_seconds, SHIP_FALLBACK_DEPTH_METERS);
+            let fold = ocean::global_wave_fold(outside, ocean_time_seconds);
+            let crest =
+                ocean::global_wave_height_meters(outside, ocean_time_seconds, SHIP_FALLBACK_DEPTH_METERS);
+            let steepness = slope.length();
+            let travel = if steepness > 1.0e-4 {
+                -slope / steepness * rise.signum()
+            } else {
+                glam::DVec3::ZERO
+            };
+            let toward_hull = travel.dot(-normal).max(0.0);
+            let violent = ramp(0.15, 0.45, steepness).max(ramp(0.6, 0.2, fold));
+            let impact = toward_hull
+                * violent
+                * ramp(0.3, 2.0, rise)
+                * ramp(-1.0, 1.0, crest - waterline_altitude);
+            (slam as f32, impact as f32)
         };
-        let port = terrain::SHIP_STATIONS.map(|t| slam_at(t, 1.0));
-        let starboard = terrain::SHIP_STATIONS.map(|t| slam_at(t, -1.0));
-        let intensity = port.iter().chain(&starboard).copied().fold(0.0_f32, f32::max);
+        let port = terrain::SHIP_STATIONS.map(|t| station(t, 1.0));
+        let starboard = terrain::SHIP_STATIONS.map(|t| station(t, -1.0));
+        let intensity = port
+            .iter()
+            .chain(&starboard)
+            .map(|&(slam, impact)| slam.max(impact))
+            .fold(0.0_f32, f32::max);
         terrain::ShipSprayEmitter {
             waterline_origin: origin,
             forward: self.ship_body.forward(),
             velocity: self.ship_body.linear_velocity,
             intensity,
-            port,
-            starboard,
+            port: port.map(|(slam, _)| slam),
+            starboard: starboard.map(|(slam, _)| slam),
+            port_impact: port.map(|(_, impact)| impact),
+            starboard_impact: starboard.map(|(_, impact)| impact),
         }
     }
 

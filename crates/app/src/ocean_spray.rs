@@ -41,6 +41,9 @@ struct SprayFrame {
     /// starboard).
     ship_port: [f32; 4],
     ship_starboard: [f32; 4],
+    /// Wave impact intensity at the same stations.
+    ship_port_impact: [f32; 4],
+    ship_starboard_impact: [f32; 4],
 }
 
 /// Where along the hull (-1 stern, +1 stem) the slam is measured, each side.
@@ -58,6 +61,9 @@ pub struct ShipSprayEmitter {
     pub intensity: f32,
     pub port: [f32; 4],
     pub starboard: [f32; 4],
+    /// Steep or breaking waves running into each station, 0-1.
+    pub port_impact: [f32; 4],
+    pub starboard_impact: [f32; 4],
 }
 
 /// Unit wind direction in the FFT (u, v) axes; the spectrum's own wind.
@@ -303,6 +309,8 @@ impl OceanSpray {
         let xyz = |a: [f64; 3]| [a[0] as f32, a[1] as f32, a[2] as f32, 0.0];
         let (ship_port, ship_starboard) =
             ship.map_or(([0.0; 4], [0.0; 4]), |ship| (ship.port, ship.starboard));
+        let (ship_port_impact, ship_starboard_impact) = ship
+            .map_or(([0.0; 4], [0.0; 4]), |ship| (ship.port_impact, ship.starboard_impact));
         let (ship_origin, ship_axes, ship_velocity) = match ship {
             Some(ship) => {
                 let at = |p: glam::DVec3| {
@@ -354,6 +362,8 @@ impl OceanSpray {
             ship_velocity,
             ship_port,
             ship_starboard,
+            ship_port_impact,
+            ship_starboard_impact,
         };
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&frame));
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -425,6 +435,6 @@ mod tests {
     fn particle_layout_matches_the_shader() {
         // Two vec4<f32> per particle.
         assert_eq!(std::mem::size_of::<[[f32; 4]; 2]>(), 32);
-        assert_eq!(std::mem::size_of::<SprayFrame>(), 160);
+        assert_eq!(std::mem::size_of::<SprayFrame>(), 192);
     }
 }

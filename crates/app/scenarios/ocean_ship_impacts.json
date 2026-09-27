@@ -1,0 +1,70 @@
+{
+  "name": "ocean_ship_impacts",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 10.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0.0,
+  "fixed_exposure": true,
+  "ocean_storm_intensity_override": 1.0,
+  "waterline_eye_height_meters": 14.0,
+  "screenshot_times_seconds": [
+    0.5,
+    1.0,
+    1.5,
+    2.0,
+    2.5,
+    3.0,
+    3.5,
+    4.0,
+    4.5,
+    5.0,
+    5.5,
+    6.0,
+    6.5,
+    7.0,
+    7.5,
+    8.0,
+    8.5,
+    9.0,
+    9.5,
+    10.0
+  ],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [
+        3345764.921776,
+        2014866.048734,
+        863854.092978
+      ],
+      "look_at": [
+        3345735.777811,
+        2014912.627359,
+        863825.913706
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        0.5089275188,
+        0.397776994,
+        0.7633912782
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 55.0
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 20
+  }
+}

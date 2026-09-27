@@ -343,6 +343,9 @@ pub struct CpuSample {
     pub height: f64,
     pub slope_uv: [f64; 2],
     pub velocity: f64,
+    /// Determinant of the drawn surface's horizontal Jacobian: 1 on flat
+    /// water, falling toward `MIN_JACOBIAN` as a crest pinches and breaks.
+    pub fold: f64,
     pub axis_u: [f64; 3],
     pub axis_v: [f64; 3],
 }
@@ -796,6 +799,7 @@ impl CpuSurface {
                         height,
                         slope_uv: [(d * hu - cc * hv) / det, (-b * hu + a * hv) / det],
                         velocity: sample.velocity * lift,
+                        fold: det,
                         axis_u: [0.0; 3],
                         axis_v: [0.0; 3],
                     },

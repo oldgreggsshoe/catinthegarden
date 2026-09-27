@@ -1290,6 +1290,14 @@ fn fft_sample(direction: DVec3, sim_time: f64) -> Option<crate::ocean_fft::CpuSa
     Some(sample)
 }
 
+/// How folded (pinched, breaking) the drawn surface is here: the determinant of
+/// its horizontal Jacobian, 1 on flat water and approaching
+/// `ocean_fft::MIN_JACOBIAN` at a breaking crest. Always 1 on the Gerstner sea,
+/// which has no choppy displacement.
+pub fn global_wave_fold(direction: DVec3, sim_time: f64) -> f64 {
+    fft_sample(direction, sim_time).map_or(1.0, |sample| sample.fold)
+}
+
 pub fn global_wave_height_meters(direction: DVec3, sim_time: f64, water_depth_meters: f64) -> f64 {
     if let Some(sample) = fft_sample(direction, sim_time) {
         return sample.height * breaking_weight(sample.height, water_depth_meters);
