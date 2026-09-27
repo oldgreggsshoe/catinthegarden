@@ -278,6 +278,12 @@ const INVERSE_ITERATIONS: usize = 6;
 /// How far a crest may pinch (drawn-surface Jacobian determinant) before the
 /// choppy displacement is held back; the shader's OCEAN_FFT_MIN_JACOBIAN.
 pub const MIN_JACOBIAN: f64 = 0.1;
+/// Steepest the pinch may pull the drawn surface: tan 45 degrees, a crest
+/// angle of at least 90. The shader's OCEAN_FFT_MAX_DRAWN_SLOPE; see
+/// `fold_floor`.
+pub const MAX_DRAWN_SLOPE: f64 = 1.0;
+/// The floor never reaches 1, where no displacement at all would satisfy it.
+const MAX_FOLD_FLOOR: f64 = 0.95;
 /// Lattice steps the background worker builds ahead of the frontier.
 const PREFETCH_STEPS: i64 = 3;
 
@@ -749,11 +755,29 @@ fn prefetch_worker(shared: std::sync::Weak<SurfaceShared>) {
 /// Largest scale f in [0, 1] on a choppy offset with Jacobian `j` (dDu/du,
 /// dDv/dv, dDu/dv, dDv/du of the drawn offset) keeping det(I + f J) at or above
 /// `MIN_JACOBIAN`. The shader's `ocean_fft_fold_scale`.
+/// The pinch floor where the undisplaced (label) surface has slope `slope`.
+/// Pinching by a factor p steepens a flank p times, so holding p at slope /
+/// MAX_DRAWN_SLOPE keeps flanks within 45 degrees, while at a crest's tip the
+/// slope is zero and the floor is MIN_JACOBIAN, so crests still come to a
+/// point. With the fixed floor alone 0.004% of the sea was steeper than 60
+/// degrees (up to 74), and a crest seen end-on stood up as a thin needle.
+/// The shader's ocean_fft_fold_floor.
+fn fold_floor(slope: [f64; 2]) -> f64 {
+    let s = (slope[0] * slope[0] + slope[1] * slope[1]).sqrt();
+    MIN_JACOBIAN.max((s / MAX_DRAWN_SLOPE).min(MAX_FOLD_FLOOR))
+}
+
+/// `fold_scale_to` at the fixed floor alone.
+#[cfg(test)]
 fn fold_scale(j: [f64; 4]) -> f64 {
+    fold_scale_to(j, MIN_JACOBIAN)
+}
+
+fn fold_scale_to(j: [f64; 4], floor: f64) -> f64 {
     let trace = j[0] + j[1];
     let det = j[0] * j[1] - j[2] * j[3];
-    let margin = 1.0 - MIN_JACOBIAN;
-    if 1.0 + trace + det >= MIN_JACOBIAN {
+    let margin = 1.0 - floor;
+    if 1.0 + trace + det >= floor {
         return 1.0;
     }
     if det.abs() < 1.0e-6 {
@@ -854,10 +878,11 @@ impl CpuSurface {
                     (total, bands)
                 };
                 // Mirrors the shader's fold limiter: displacement eases off
-                // where the surface would otherwise turn inside out.
+                // where the surface would otherwise turn inside out, or be
+                // pulled steeper than MAX_DRAWN_SLOPE.
                 let limited = |sample: &FieldSample| {
                     let j = sample.jacobian.map(|value| -chop * value);
-                    chop * fold_scale(j)
+                    chop * fold_scale_to(j, fold_floor(sample.slope))
                 };
                 let mut label = target;
                 let (mut sample, mut bands) = field(label);
@@ -882,7 +907,7 @@ impl CpuSurface {
                 let c = limited(&sample);
                 let j = sample.jacobian;
                 let (a, b, cc, d) = (1.0 - c * j[0], -c * j[2], -c * j[3], 1.0 - c * j[1]);
-                let det = (a * d - b * cc).max(MIN_JACOBIAN);
+                let det = (a * d - b * cc).max(fold_floor(sample.slope));
                 // Second-order crest term, band by band, as the shader adds it.
                 let k = self.wavenumbers;
                 let (lift, lift_slope, lift_rate) =
@@ -1472,7 +1497,7 @@ pub(crate) mod tests {
             };
             let field = at(label);
             let j = field.jacobian;
-            let c = chop * fold_scale(j.map(|value| -chop * value));
+            let c = chop * fold_scale_to(j.map(|value| -chop * value), fold_floor(field.slope));
             let target = [label[0] - c * field.displacement[0], label[1] - c * field.displacement[1]];
             let (sample, found) = cpu.sample_at(target, time, storm);
             let miss = ((found[0] - label[0]).powi(2) + (found[1] - label[1]).powi(2)).sqrt();
@@ -1583,6 +1608,69 @@ pub(crate) mod tests {
         eprintln!("CPU water sample: {:.2} us each", start.elapsed().as_secs_f64() * 1e6 / n as f64);
     }
 
+    /// Drawn slopes (A^-T grad h, as the geometry cascades are shaded) at
+    /// `side` x `side` label points `spacing` apart, at `steps` times, with
+    /// the production fold limit, on the default sea.
+    fn drawn_slopes(steps: usize, side: usize, spacing: f64) -> Vec<f64> {
+        let cpu = CpuSurface::new(&default_h0());
+        let chop = choppiness() as f64;
+        let scale = swell_height_meters(0.24) as f64;
+        let mut slopes = Vec::with_capacity(steps * side * side);
+        for step in 0..steps {
+            let time = 5.0 + step as f64 * 7.3;
+            let key = (time / LATTICE_SECONDS).round() as i64;
+            let delta = time - key as f64 * LATTICE_SECONDS;
+            for i in 0..side {
+                for j in 0..side {
+                    let p = [i as f64 * spacing, j as f64 * spacing];
+                    let mut f = FieldSample::default();
+                    for (cascade, w) in cpu.cascades().iter().zip([1.0, 1.0, scale]) {
+                        f.add_scaled(&sample_slot(&cascade.slot(key), cascade.tile_meters, p, delta), w);
+                    }
+                    let c = chop * fold_scale_to(f.jacobian.map(|v| -chop * v), fold_floor(f.slope));
+                    let jj = f.jacobian;
+                    let (a, b, cc, d) = (1.0 - c * jj[0], -c * jj[2], -c * jj[3], 1.0 - c * jj[1]);
+                    let det = (a * d - b * cc).max(fold_floor(f.slope));
+                    let [hu, hv] = f.slope;
+                    let (su, sv) = ((d * hu - cc * hv) / det, (-b * hu + a * hv) / det);
+                    slopes.push((su * su + sv * sv).sqrt());
+                }
+            }
+        }
+        slopes
+    }
+
+    #[test]
+    fn the_chop_never_pulls_a_crest_into_a_needle() {
+        // Ian's "distant blue peak": with only the fixed 0.1 floor the pinch
+        // pulled flanks to 74 degrees and a crest seen end-on stood up as a
+        // thin spire. The undisplaced waves themselves reach about 50 degrees
+        // in rare places; the chop may not steepen past 45 beyond that.
+        let slopes = drawn_slopes(6, 200, 1.0);
+        let steepest = slopes.iter().cloned().fold(0.0, f64::max).atan().to_degrees();
+        eprintln!("steepest drawn flank {steepest:.1} deg over {} samples", slopes.len());
+        assert!(steepest < 55.0, "{steepest} degrees");
+        // At a crest's tip the slope is zero and it may still pinch to a point.
+        assert_eq!(fold_floor([0.0, 0.0]), MIN_JACOBIAN);
+        assert_eq!(fold_floor([0.6, 0.8]), MAX_DRAWN_SLOPE.recip().min(MAX_FOLD_FLOOR));
+    }
+
+    #[test]
+    #[ignore = "instrument: drawn slope distribution of the default sea"]
+    fn drawn_slope_census() {
+        let mut slopes = drawn_slopes(60, 200, 1.0);
+        slopes.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let q = |p: f64| slopes[((slopes.len() - 1) as f64 * p) as usize].atan().to_degrees();
+        let over = |degrees: f64| {
+            let t = degrees.to_radians().tan();
+            100.0 * slopes.iter().filter(|&&s| s > t).count() as f64 / slopes.len() as f64
+        };
+        eprintln!(
+            "{} samples: p50 {:.1} p99 {:.1} p99.9 {:.1} p99.99 {:.1} max {:.1} deg; over 30 {:.3}%, 45 {:.4}%, 60 {:.5}%",
+            slopes.len(), q(0.5), q(0.99), q(0.999), q(0.9999), q(1.0), over(30.0), over(45.0), over(60.0)
+        );
+    }
+
     #[test]
     fn fold_scale_never_lets_the_surface_turn_inside_out() {
         let det = |j: [f64; 4], f: f64| (1.0 + f * j[0]) * (1.0 + f * j[1]) - f * f * j[2] * j[3];
@@ -1603,6 +1691,8 @@ pub(crate) mod tests {
     fn the_shader_holds_crests_at_the_same_pinch() {
         let shader = include_str!("shared_planet.wgsl");
         assert!(shader.contains(&format!("const OCEAN_FFT_MIN_JACOBIAN: f32 = {MIN_JACOBIAN:?};")));
+        assert!(shader.contains(&format!("const OCEAN_FFT_MAX_DRAWN_SLOPE: f32 = {MAX_DRAWN_SLOPE:?};")));
+        assert!(shader.contains(&format!("length(label_slope) / OCEAN_FFT_MAX_DRAWN_SLOPE, {MAX_FOLD_FLOOR:?})")));
     }
 
     #[test]

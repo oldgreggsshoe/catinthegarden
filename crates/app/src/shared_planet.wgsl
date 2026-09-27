@@ -406,6 +406,9 @@ const OCEAN_FFT_MID_HEIGHT_STD: f32 = 0.218;
 // How far a crest may pinch (drawn-surface Jacobian determinant) before the
 // choppy displacement is held back; mirrored in ocean_fft.rs.
 const OCEAN_FFT_MIN_JACOBIAN: f32 = 0.1;
+// Steepest the pinch may pull the drawn surface (tan 45 degrees); see
+// ocean_fft_fold_floor. Mirrored in ocean_fft.rs as MAX_DRAWN_SLOPE.
+const OCEAN_FFT_MAX_DRAWN_SLOPE: f32 = 1.0;
 // Measured height std of the wind-sea geometry cascade (jacobian_study).
 const OCEAN_FFT_BROAD_HEIGHT_STD: f32 = 1.264;
 // Surface height in units of the local sea's height std, set by
@@ -1521,13 +1524,13 @@ fn shoreline_water_albedo(open_water: vec3<f32>, still_depth_meters: f32, foam: 
 // Largest scale f in [0, 1] on the choppy offset whose Jacobian J keeps
 // det(I + f J) = 1 + f tr(J) + f^2 det(J) at or above OCEAN_FFT_MIN_JACOBIAN.
 // Exact for crests compressed along both axes (where two crests cross), which
-// a one-axis estimate under-corrected into fold-overs. Mirrored in
-// ocean_fft.rs `fold_scale`.
-fn ocean_fft_fold_scale(j: vec4<f32>) -> f32 {
+// a one-axis estimate under-corrected into fold-overs. `floor` is
+// ocean_fft_fold_floor. Mirrored in ocean_fft.rs `fold_scale_to`.
+fn ocean_fft_fold_scale(j: vec4<f32>, floor: f32) -> f32 {
     let trace = j.x + j.y;
     let det = j.x * j.y - j.z * j.w;
-    let margin = 1.0 - OCEAN_FFT_MIN_JACOBIAN;
-    if 1.0 + trace + det >= OCEAN_FFT_MIN_JACOBIAN {
+    let margin = 1.0 - floor;
+    if 1.0 + trace + det >= floor {
         return 1.0;
     }
     // g(f) = det f^2 + trace f + margin: positive at 0, negative at 1, so
@@ -1542,6 +1545,17 @@ fn ocean_fft_fold_scale(j: vec4<f32>) -> f32 {
     if a > 0.0 { f = min(f, a); }
     if b > 0.0 { f = min(f, b); }
     return clamp(f, 0.0, 1.0);
+}
+
+// The pinch floor where the undisplaced (label) surface has slope
+// `label_slope`: pinching by a factor p steepens a flank p times, so holding
+// p at slope / OCEAN_FFT_MAX_DRAWN_SLOPE keeps flanks within 45 degrees. At
+// a crest's tip the slope is zero and the floor is OCEAN_FFT_MIN_JACOBIAN,
+// so crests still come to a point. With the fixed floor alone the flanks
+// reached 74 degrees and a crest seen end-on stood up as a thin needle.
+// Mirrored in ocean_fft.rs `fold_floor`.
+fn ocean_fft_fold_floor(label_slope: vec2<f32>) -> f32 {
+    return max(OCEAN_FFT_MIN_JACOBIAN, min(length(label_slope) / OCEAN_FFT_MAX_DRAWN_SLOPE, 0.95));
 }
 
 fn ocean_fft_cascade(cascade_index: u32, local: vec2<f32>, filter_width_meters: f32) -> vec4<f32> {
@@ -1699,12 +1713,15 @@ fn ocean_surface_fft(
     // scaled back just enough to hold it there, so crests can come to an
     // acute point (which is also where spray and foam are born) but never
     // turn inside out. The old ramp eased off from 0.6 and rounded every
-    // crest. The CPU surface (ocean_fft::CpuSurface::sample) applies the same.
-    let fold_limit = ocean_fft_fold_scale(full_jacobian);
+    // crest. The floor rises with the slope (ocean_fft_fold_floor) so the
+    // flanks are never pulled past 45 degrees. The CPU surface
+    // (ocean_fft::CpuSurface::sample) applies the same.
+    let fold_floor = ocean_fft_fold_floor((vec2<f32>(core.y, core.z) + vec2<f32>(mid.y, mid.z) * mid_weight) * gain);
+    let fold_limit = ocean_fft_fold_scale(full_jacobian, fold_floor);
     let drawn_jacobian = full_jacobian * fold_limit;
     let drawn_determinant = max(
         (1.0 + drawn_jacobian.x) * (1.0 + drawn_jacobian.y) - drawn_jacobian.z * drawn_jacobian.w,
-        OCEAN_FFT_MIN_JACOBIAN,
+        fold_floor,
     );
     // Second-order (Stokes) crest term, band by band: (k/2)(h^2 - |D|^2) at
     // each geometry band's own mean wavenumber (cascade .w). On a single wave
