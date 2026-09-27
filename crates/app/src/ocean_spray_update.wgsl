@@ -67,9 +67,19 @@ const SHIP_SPRAY_RATE: f32 = 30.0;
 // SPLASH_TUNED_HALF_LENGTH_METERS). Any other hull scales it by Froude
 // similarity: lengths by the size ratio, speeds and times by its root.
 const SHIP_SPRAY_TUNED_HALF_LENGTH: f32 = 42.0;
-// Horizontal air drag toward the wind, and vertical drag, per second.
+// Horizontal air drag toward the wind, and vertical drag, per second: the
+// ship's sheets of water.
 const WIND_DRAG: f32 = 1.2;
 const VERTICAL_DRAG: f32 = 0.6;
+// Crest spray, after Sea of Thieves: a thin sheet of mist torn off the crest
+// line, brightest where it leaves the water, combed downwind and gone within
+// a second. Fine mist follows the air: it is at the wind's speed within a
+// quarter second and falls at ~3 m/s, rather than flying on ballistically
+// and falling at 16 m/s as a streak for a frame before it hit the water.
+const CREST_WIND_DRAG: f32 = 4.0;
+const CREST_VERTICAL_DRAG: f32 = 3.0;
+const CREST_LIFETIME_SECONDS: f32 = 0.35;
+const CREST_LIFETIME_SPREAD_SECONDS: f32 = 0.45;
 // Spray is born only where the drawn surface is close to folding over.
 const SPRAY_JACOBIAN_ONSET: f32 = 0.40;
 const SPRAY_JACOBIAN_FULL: f32 = 0.0;
@@ -82,6 +92,8 @@ struct SprayField {
     // Sum over the geometry bands of (k/2)(h^2 - |D|^2), before strength and
     // gain (ocean_fft.rs `second_order`).
     stokes: f32,
+    // Height of the wind sea alone (every cascade but the swell).
+    wind_height: f32,
 }
 
 fn hash(value: u32) -> u32 {
@@ -111,6 +123,9 @@ fn spray_cascade(index: u32, local: vec2<f32>, weight: f32, geometry: bool, fiel
     let ss = textureSampleLevel(fft_map, fft_sampler, uv - vec2<f32>(0.0, half), index, 0.0);
     let s0 = 0.25 * (se + sw + sn + ss);
     (*field).height += s0.x * weight;
+    if index != 3u {
+        (*field).wind_height += s0.x * weight;
+    }
     (*field).displacement += s0.yz * weight;
     (*field).jacobian += vec4<f32>(se.y - sw.y, sn.z - ss.z, sn.y - ss.y, se.z - sw.z)
         * (weight / step);
@@ -123,7 +138,7 @@ fn spray_cascade(index: u32, local: vec2<f32>, weight: f32, geometry: bool, fiel
 }
 
 fn spray_field(local: vec2<f32>) -> SprayField {
-    var field = SprayField(0.0, vec2<f32>(0.0), vec4<f32>(0.0), 0.0);
+    var field = SprayField(0.0, vec2<f32>(0.0), vec4<f32>(0.0), 0.0, 0.0);
     spray_cascade(0u, local, 1.0, true, &field);
     spray_cascade(1u, local, 1.0, true, &field);
     spray_cascade(2u, local, 1.0, false, &field);
@@ -162,10 +177,13 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
     let alive = particle.velocity.w > 0.0 && particle.position.w < particle.velocity.w;
     if alive {
         let wind_velocity = frame.wind.xy * frame.wind.z;
+        let from_ship = index < SHIP_SPRAY_SLOTS;
+        let wind_drag = select(CREST_WIND_DRAG, WIND_DRAG, from_ship);
+        let vertical_drag = select(CREST_VERTICAL_DRAG, VERTICAL_DRAG, from_ship);
         var velocity = particle.velocity.xyz;
         velocity = vec3<f32>(
-            velocity.xy + (wind_velocity - velocity.xy) * (1.0 - exp(-WIND_DRAG * dt)),
-            velocity.z * exp(-VERTICAL_DRAG * dt) - GRAVITY * dt,
+            velocity.xy + (wind_velocity - velocity.xy) * (1.0 - exp(-wind_drag * dt)),
+            velocity.z * exp(-vertical_drag * dt) - GRAVITY * dt,
         );
         var position = particle.position.xyz + velocity * dt;
         position = vec3<f32>(position.xy - frame.shift_dt.xy, position.z);
@@ -274,23 +292,38 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
     let j = field.jacobian * fft_view.gain.x;
     let jacobian = (1.0 - chop * j.x) * (1.0 - chop * j.y) - chop * chop * j.z * j.w;
     let fold = smoothstep(SPRAY_JACOBIAN_ONSET, SPRAY_JACOBIAN_FULL, jacobian);
-    let chance = fold * frame.params.y * dt;
+    // From the tops of the wind waves, not their faces: pinched water well
+    // above the wind sea's own mean, wherever it rides on the swell (a crest
+    // in a swell's trough is still a crest to the wind). Scaled by the wind
+    // sea's height spread, about 1.26m.
+    let wind_spread = 1.26 * fft_view.gain.x;
+    let crest = smoothstep(0.2 * wind_spread, 1.0 * wind_spread, field.wind_height * fft_view.gain.x);
+    let chance = fold * crest * frame.params.y * dt;
     if frame.params.y <= 0.0 || unit_random(seed ^ 0x2545f491u) >= chance {
         particle.velocity.w = 0.0;
         particles[index] = particle;
         return;
     }
-    let height = spray_surface_height(field) + 0.1;
-    // Born at the drawn crest: the label point moved by -D.
+    // Born on the crest itself, at the drawn crest (the label point moved by
+    // -D), so the crest hides the sheet's lower part and it starts from a
+    // hard line at the wave's edge.
+    let height = spray_surface_height(field);
     let drawn = local - chop * field.displacement * fft_view.gain.x;
     let r1 = unit_random(seed ^ 0x9e3779b9u);
     let r2 = unit_random(seed ^ 0x85ebca6bu);
     let r3 = unit_random(seed ^ 0xc2b2ae35u);
-    let lift = 1.0 + 3.5 * fold * r1;
-    let sideways = (vec2<f32>(r2, r3) - 0.5) * 2.0;
-    let horizontal = frame.wind.xy * frame.wind.z * (0.2 + 0.3 * r2) + sideways;
+    // Lifted off the crest by the air flowing over it (rising a metre or
+    // two before the drag stops it), and already moving most of the way to
+    // the wind.
+    let lift = 2.0 + 6.0 * fold * r1;
+    let sideways = (vec2<f32>(r2, r3) - 0.5) * 0.8;
+    let horizontal = frame.wind.xy * frame.wind.z * (0.5 + 0.3 * r2) + sideways;
     particle.position = vec4<f32>(drawn, height, 0.0);
     particle.extra = vec4<f32>(1.0e3, 0.0, 0.0, 0.0);
-    particle.velocity = vec4<f32>(horizontal, lift, 1.0 + 1.6 * r3);
+    particle.velocity = vec4<f32>(
+        horizontal,
+        lift,
+        CREST_LIFETIME_SECONDS + CREST_LIFETIME_SPREAD_SECONDS * r3,
+    );
     particles[index] = particle;
 }

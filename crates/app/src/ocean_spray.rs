@@ -19,7 +19,7 @@ pub(super) const SHIP_SPRAY_SLOTS: u32 = 2048;
 /// pixel or two and the fold foam carries the look.
 const SPAWN_RADIUS_METERS: f32 = 300.0;
 /// Births per second per spawn attempt on fully folded water.
-const SPAWN_RATE: f32 = 40.0;
+const SPAWN_RATE: f32 = 100.0;
 /// Frames longer than this (pauses, hitches) are clamped so particles do not
 /// teleport.
 const MAX_STEP_SECONDS: f32 = 0.1;

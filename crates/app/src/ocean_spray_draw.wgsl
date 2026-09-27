@@ -35,6 +35,8 @@ struct SprayVertexOutput {
     @location(1) colour: vec3<f32>,
     @location(2) alpha: f32,
     @location(3) seed: f32,
+    // 1 for the ship's sheets of water, 0 for crest mist.
+    @location(4) kind: f32,
 }
 
 // Hull spray is strongest where it leaves the hull and fades as it travels:
@@ -90,7 +92,9 @@ fn vs_spray(
     // Ship sheets were sized on the 84m hull (half-length 42m); a smaller
     // hull throws proportionally smaller ones.
     let ship_size = spray_frame.ship_axes.z / 42.0;
-    let grown = select(mix(0.12, 0.5, sqrt(age)), mix(0.8, 3.5, sqrt(age)) * ship_size, from_ship);
+    // Crest mist is sheet-sized from birth, so a crest's worth of it reads as
+    // one torn curtain rather than separate specks.
+    let grown = select(mix(0.25, 0.9, sqrt(age)), mix(0.8, 3.5, sqrt(age)) * ship_size, from_ship);
     let size = min(grown * (0.7 + 0.6 * seed), distance * select(0.03, 0.06, from_ship));
     // Stretched along the droplets' motion: spray streaks downwind.
     let velocity_view = planet_to_view(spray_frame.axis_u.xyz * particle.velocity.x
@@ -114,7 +118,7 @@ fn vs_spray(
     // source reads as a hard edge (the crest or the hull), the mist as a fast
     // fade downwind. No fade-in, so there is no soft start.
     // Bow sheets are denser water and hang longer than wind-torn crest mist.
-    let fade = select(0.8 * exp(-4.0 * age), 0.9 * exp(-2.5 * age), from_ship);
+    let fade = select(0.7 * exp(-5.0 * age), 0.9 * exp(-2.5 * age), from_ship);
     // Falling back to the sea, it thins over its last metre above the
     // surface instead of sitting on the water as a blob (it is retired at
     // the surface). Rising spray keeps its hard edge at the source.
@@ -132,16 +136,24 @@ fn vs_spray(
     out.colour = ocean_foam_radiance(sun_transmittance, sky_diffuse)
         + sun_transmittance * (0.6 * forward * SURFACE_SUNLIGHT_SCALE);
     out.seed = seed;
+    out.kind = select(0.0, 1.0, from_ship);
     return out;
 }
 
 @fragment
 fn fs_spray(input: SprayVertexOutput) -> @location(0) vec4<f32> {
     let radius = length(input.corner);
-    // A soft round puff broken into a few droplet clumps.
     let s = input.seed * 40.0;
+    // Ship sheets: a soft puff broken into a few droplet clumps. Crest mist:
+    // fine strands combed along its motion (the quad's long axis), the
+    // wind-torn look of spray leaving a crest.
     let clumps = 0.55 + 0.45 * sin(input.corner.x * 5.3 + s) * sin(input.corner.y * 4.7 + s * 1.7);
-    let alpha = input.alpha * smoothstep(1.0, 0.15, radius) * clamp(clumps, 0.0, 1.0);
+    // Irregular and low-contrast: regular stripes read as a hatched patch.
+    let strands = 0.72 + 0.28 * sin(
+        input.corner.y * 17.0 + s + 2.3 * sin(input.corner.x * 2.7 + s * 1.3),
+    );
+    let texture = select(strands, clumps, input.kind > 0.5);
+    let alpha = input.alpha * smoothstep(1.0, 0.15, radius) * clamp(texture, 0.0, 1.0);
     if alpha <= 0.002 {
         discard;
     }
