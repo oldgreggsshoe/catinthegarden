@@ -1,111 +1,42 @@
-24 September - Plan: get the ocean to the Sea of Thieves standard
+27 September - Brief for Codex: find and fix the "sideways white shards" on big FFT-ocean crests
 
-SOURCE: Rare's own SIGGRAPH 2018 talk, "The Technical Art of Sea of Thieves"
-https://history.siggraph.org/wp-content/uploads/2022/09/2018-Talks-Ang_The-Technical-Art-of-Sea-of-Thieves.pdf
+Read AGENTS.md and the latest sections of docs/HANDOFF.md first (from "27 September - Spiky 'mountain' sea" onward). Branch experiment/ocean-wind-sea-spectrum, HEAD dc10e98 or later. Pull first.
 
-WHAT SEA OF THIEVES ACTUALLY DOES (primary source only)
-1. Waves: Tessendorf FFT ocean (2001), not a handful of Gerstner waves.
-2. Colour: stylised, not PBR. It blends a deep-water colour with a
-   subsurface colour. The weights come from view angle, sun direction and a
-   "wave peak mask". The mask is the FFT choppiness (sideways) offset: where
-   that offset is large there is a peak, and light has less water to cross.
-3. Foam: made where the FFT folds (Tessendorf's Jacobian), plus a foam ring
-   wherever an object cuts the surface, found by depth comparison inside a
-   window centred on the camera. That foam buffer is blurred with feedback
-   each frame, so foam spreads and fades over time. The result is mixed with
-   hand-painted foam textures. Calm seas only get foam around objects;
-   storms get a lot of foam.
-4. Sun: an area-light specular (Karis 2013 closest point on a sphere), which
-   gives the big, wide low-sun reflection.
-5. Underwater: a Snell's window.
-6. Deck/stream water: a separate small GPU shallow-water sim. Out of scope.
+Symptom
+- With a big swell, e.g.
+    CATINGARDEN_OCEAN_FFT=1 CATINGARDEN_OCEAN_FFT_SWELL=30 target/release/catinthegarden-app
+  jagged, sideways-pointing white shards appear along the sides and faces of big foamy crests: saw-tooth wedges, as if triangles were stretched sideways.
+- Evidence on the current limiter: test-runs/manual/1790525174-746683/screenshots/capture-001..003.png (the white wedges pointing left along the crest face).
+- Do NOT use test-runs/manual/1790520906-735221 as evidence: it was taken with a slope-aware fold floor that has since been reverted (316d3ba).
 
-WHY OURS FALLS SHORT (from the 23 Sept isolation, test-runs/ocean_sot_detail_2026-09-23)
-- We sum 18 Gerstner waves plus 3 normal-only ripples. The six short waves
-  (32m down to 7m) produce the regular diagonal lattice; masking them makes
-  the lattice disappear. Re-aiming them only rotates it. That is the ceiling
-  for any small hand-picked wave set, however carefully it is tuned.
-- The foreground reads "rounded/viscous": no sideways choppiness (horizontal
-  transport is OFF so buoyancy stays in sync), and too few waves.
-- Foam is analytic and instant, with no memory, so it can't trail or spread.
-  A texture-only foam trial on 23 Sept gave streaks and was rejected.
-So the problem is structural. More tuning of Gerstner constants will not
-reach this standard. The FFT is the step that matters; everything else
-builds on it.
+What is already known (all measured on the CPU surface, not the GPU)
+- The fold limiter is the fixed Jacobian floor MIN_JACOBIAN = 0.1: ocean_fft.rs fold_scale, mirrored by ocean_fft_fold_scale in shared_planet.wgsl, and used in the foam shader.
+- A slope-dependent floor was tried and reverted. It made the per-point limit jump between a crest's tip and flanks, which sheared neighbouring vertices past each other: 120x more mesh fold-overs.
+- Measured on a 0.5m CPU grid of the drawn mesh (x0 - cD):
+  - fold-overs are 0.0004% of cells at swell 8 and 0.0041% at swell 30 (ignored instrument `drawn_fold_census`; regression test `the_drawn_sea_almost_never_turns_inside_out`)
+  - double folds (collapsed in both directions, orientation preserved) were effectively 0 by a symmetric-part eigenvalue check
+  - raising the fixed floor (0.15/0.2/0.3) makes fold-overs worse, not better
+- So the CPU mesh at 0.5m barely folds. The shards are either something the CPU grid can't see, or not geometry at all.
 
-THE PLAN (one phase per session, each measured before/after on the Quadro)
+Suspects, in the order I would test them
+1. GPU mesh resolution: distant ocean chunks have vertex spacing of metres, and the vertex stage filters the cascades to about 2x the vertex spacing (ocean_surface_fft, vertex_filter). A displacement field sampled coarsely can invert triangles that the 0.5m CPU grid does not.
+2. Foam drawn stretched rather than inverted geometry: the foam history atlas has 2m texels in label coordinates (ocean_foam.wgsl, ocean_history_coverage), and fold foam is per pixel. On strongly pinched crests, label-space foam is squeezed into thin wedges in drawn space.
+3. The fine cascade (under 3m) displaces vertices on the GPU (chop_tangent includes fine_displacement * fine_weight) but the CPU mirror omits it.
+4. Back faces being shaded as tops (planet.wgsl ocean_back_face_is_fold) hiding inverted triangles that would otherwise show as dark undersides.
 
-Phase A - acceptance metrics before any code
-  - Replays: ocean_deck_reference (low eye), ocean_manual_grid (overhead
-    lattice), ocean_rough_horizon (storm), ocean_hybrid_close.
-  - Lattice metric (tier 2): take a 2D FFT of the overhead capture's water
-    region and measure the ratio of the strongest off-centre peak to the
-    median. Today's lattice should score high; the target is near-isotropic.
-  - Frame-time baseline: interleaved Immediate-present pairs, as usual.
-  - Ian captures 3-4 Sea of Thieves reference shots (calm, normal, storm,
-    low sun) to use as the look target.
+How to work
+- Reproduce first: a deterministic scenario, a storm or big-swell view at 20-60m eye height looking across big crests, that shows the shards in its captures.
+- Then split geometry from foam with diagnostics: spray off (CATINGARDEN_OCEAN_FFT_SPRAY=0), foam off, and a render debug mode that tints back faces or inverted triangles, with a pixel count.
+- Measure on the GPU image or mesh, not only the CPU grid; the CPU grid has already been shown not to see this.
+- Judge any fix by before/after measurements on the drawn mesh or image, not per-point estimates. That mistake has been made once already.
 
-Phase B - GPU FFT wave field (the core change)
-  - Compute shaders (already proven on this card by the forest pass).
-  - 3 cascades at 256x256, tile sizes chosen so they don't line up
-    (for example 1000m / 237m / 53m), so the repeat can't be seen.
-  - JONSWAP spectrum with directional spreading. Wind speed and fetch come
-    from the existing weather/fetch coupling, so storms still work.
-  - Per frame: spectrum -> time evolve -> inverse FFT (height, x/z
-    displacement, derivatives) -> textures with mips.
-  - Replace the 18 Gerstner + 3 ripple sums inside the camera-local patch
-    with texture samples, and apply them in the tangent plane of the
-    sphere. That should cost less than 21 sine sums per vertex and pixel.
-  - Budget: the FFT must fit in <= 1.0ms, and total ocean time must not rise.
-  - Pass: the lattice metric drops, and the overhead and low views both
-    look better. A lattice fix that removes detail does not count.
+Constraints
+- Keep the acute crests (tips must still come to a point) and don't bring back needles or spikes.
+- No frame-time regression; measure GPU cost if you add work per vertex or pixel.
+- The user's uncommitted colour experiments in shared_planet.wgsl (OCEAN_SOT_WATER_ALBEDO, OCEAN_REFLECTION_SCALE) must not be committed. Commit only your own hunks, and verify the committed tree in a separate worktree with its own CARGO_TARGET_DIR.
+- Update docs/HANDOFF.md (header and a new dated section) and AGENTS.md "What exists now"; commit and push.
 
-Phase C - buoyancy and collision parity
-  - The CPU runs the same spectrum and seed through an FFT of the largest
-    cascade only, at 64x64 (rustfft). The two small cascades are under
-    about 0.3m and go into the tolerance.
-  - With choppiness on, finding the height at a point needs a 2-3 step
-    fixed-point inversion of the horizontal offset.
-  - Turn horizontal transport back on.
-  - Pass: GPU/CPU surface parity test, ship float, surface camera 2.5m
-    deck clearance.
-
-Phase D - near mesh density
-  - Make the camera-local grid denser near the eye, using rings or a
-    projected grid with geomorphing, so choppy crests get enough vertices
-    and the "broad smooth foreground faces" go.
-  - Frame-time gate as always.
-
-Phase E - Sea of Thieves shading
-  - Replace today's crest-transmission layers with Rare's model: deep
-    colour <-> subsurface colour, weighted by the choppiness peak mask,
-    view angle and sun direction.
-  - Area-light sun specular (Karis) for the wide low-sun reflection.
-  - Keep the Snell's window and underside work we already have.
-
-Phase F - temporal foam
-  - A persistent foam texture centred on the camera, re-centred as the
-    camera moves. It is fed by FFT folding (Jacobian < threshold) and
-    object/shore intersection (depth test), and blurred plus decayed with
-    feedback each frame.
-  - Mix it with a tileable authored foam texture.
-  - Sea-state rules: calm = foam around objects only; storm = heavy foam.
-  - Pass: foam coverage by sea state (tier 2), and foam that trails and
-    fades across frames.
-
-Phase G - far field and horizon
-  - Beyond the patch, use the largest cascade's low mips for normals only,
-    then a filtered roughness/sheen, so the horizon doesn't shimmer or
-    alias. The planet shell stays flat.
-
-Phase H - art-direction pass against Ian's reference shots
-  - Colours, foam texture, sun lobe width. Then judges, with clear/storm/
-    low-sun sets.
-
-ORDER / RISK
-- B is the big one. After B, C is required before anything ships
-  (buoyancy). E and F only look right on top of B.
-- Biggest risks: FFT cost on the M1000M (measure in B before anything
-  else) and choppy-inversion parity (C).
-- Everything goes on a branch. Nothing is promoted without the replays,
-  the metric and a frame-time comparison.
+Done when
+- You can name the cause, with a measurement that shows it.
+- A fix removes the shards in the reproducing scenario, backed by a before/after metric.
+- the_drawn_sea_almost_never_turns_inside_out still passes, and a new regression check covers the actual cause.
