@@ -13,6 +13,32 @@ pub const SWELL_CASCADE: usize = 3;
 pub const MIP_LEVELS: u32 = 9;
 /// Tile edge lengths in metres, chosen so the repeats do not line up.
 pub const TILE_METERS: [f32; CASCADES] = [1000.0, 237.0, 53.0, 2170.0];
+
+/// Global wavelength modifier: every wave (wind sea and swell) is this many
+/// times longer, at the same height. A spatial stretch of the whole field:
+/// the spectra are built on `TILE_METERS` and the tiles are laid out
+/// `OCEAN_WAVELENGTH_SCALE` times larger, so longer waves travel slower (deep-
+/// water dispersion from the stretched wavenumbers) and are gentler in the
+/// same proportion. `CATINGARDEN_OCEAN_FFT_WAVELENGTH` overrides it (0.25-4).
+pub const OCEAN_WAVELENGTH_SCALE: f32 = 1.0;
+
+pub fn wavelength_scale() -> f32 {
+    static VALUE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("CATINGARDEN_OCEAN_FFT_WAVELENGTH")
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .filter(|v| v.is_finite())
+            .map_or(OCEAN_WAVELENGTH_SCALE, |v| v.clamp(0.25, 4.0))
+    })
+}
+
+/// Laid-out tile length of cascade `c` in metres (`TILE_METERS` stretched by
+/// the wavelength modifier). Everything that places, samples or evolves the
+/// field uses this; only the spectrum construction uses `TILE_METERS`.
+pub fn tile_meters(c: usize) -> f32 {
+    TILE_METERS[c] * wavelength_scale()
+}
 /// Wavenumber band owned by each wind cascade (rad/m); bands abut exactly.
 pub const BAND_EDGES: [f32; WIND_CASCADES + 1] = [0.0, 0.5, 2.0, 1.0e9];
 /// Swell: a narrow-band long-crested sea from distant weather, crossing the
@@ -322,7 +348,7 @@ pub const SECOND_ORDER_DIVERGENCE_LIMIT: f64 = 0.6;
 pub fn second_order_means(h0: &[[f32; 4]]) -> [f64; CASCADES] {
     let mut out = [0.0; CASCADES];
     for (c, mean) in out.iter_mut().enumerate() {
-        let dk = std::f64::consts::TAU / TILE_METERS[c] as f64;
+        let dk = std::f64::consts::TAU / tile_meters(c) as f64;
         for y in 0..GRID {
             for x in 0..GRID {
                 let t = h0[c * GRID * GRID + y * GRID + x];
@@ -485,7 +511,7 @@ fn inverse_fft_2d(mut grid: Vec<[f64; 2]>, occupied_rows: &[bool]) -> Vec<[f64; 
 impl CpuCascade {
     fn new(h0: &[[f32; 4]], cascade: usize) -> Self {
         let half = GRID as i32 / 2;
-        let tile_meters = TILE_METERS[cascade] as f64;
+        let tile_meters = tile_meters(cascade) as f64;
         let layer = &h0[cascade * GRID * GRID..(cascade + 1) * GRID * GRID];
         let mut modes = Vec::new();
         let mut occupied_rows = vec![false; GRID];
@@ -954,8 +980,8 @@ impl OceanFft {
             })
         };
         let mut tile = [[0.0; 4]; CASCADES];
-        for (t, l) in tile.iter_mut().zip(TILE_METERS) {
-            t[0] = l;
+        for (c, t) in tile.iter_mut().enumerate() {
+            t[0] = tile_meters(c);
         }
         let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("ocean fft params"),
@@ -1116,8 +1142,8 @@ impl OceanFft {
         let (cu, cv) = (radius_meters * dot(u, camera_direction), radius_meters * dot(v, camera_direction));
         let mut cascade = [[0.0f32; 4]; CASCADES];
         for (c, entry) in cascade.iter_mut().enumerate() {
-            let length = TILE_METERS[c] as f64;
-            *entry = [(cu / length).rem_euclid(1.0) as f32, (cv / length).rem_euclid(1.0) as f32, TILE_METERS[c], 0.0];
+            let length = tile_meters(c) as f64;
+            *entry = [(cu / length).rem_euclid(1.0) as f32, (cv / length).rem_euclid(1.0) as f32, tile_meters(c), 0.0];
         }
         let params = ViewParams {
             axis_u: [u[0] as f32, u[1] as f32, u[2] as f32, 0.0],
@@ -1272,7 +1298,7 @@ pub(crate) mod tests {
         fft.encode(&mut encoder);
         queue.submit(Some(encoder.finish()));
         let field = read_field(&device, &queue, &fft);
-        let dk = std::f32::consts::TAU / TILE_METERS[0];
+        let dk = std::f32::consts::TAU / tile_meters(0);
         let (kx, kz) = (n_idx as f32 * dk, m_idx as f32 * dk);
         let kl = (kx * kx + kz * kz).sqrt();
         let mut max_err = 0.0f32;
@@ -1446,7 +1472,7 @@ pub(crate) mod tests {
         h0[(GRID / 2) * GRID + GRID / 2 + n] = [amp, 0.0, amp, 0.0];
         h0[(GRID / 2) * GRID + GRID / 2 - n] = [amp, 0.0, amp, 0.0];
         let means = second_order_means(&h0);
-        let k = std::f64::consts::TAU * n as f64 / TILE_METERS[0] as f64;
+        let k = std::f64::consts::TAU * n as f64 / tile_meters(0) as f64;
         let a = 4.0 * amp as f64; // both +k and -k, each doubled by h0(-k)
         assert!((means[0] - 0.5 * k * a * a).abs() < 1e-6 * means[0].max(1.0), "{} vs {}", means[0], 0.5 * k * a * a);
     }
@@ -1583,7 +1609,7 @@ mod jacobian_study {
         let field = read_field(&device, &queue, &fft);
         for c in 0..CASCADES {
             let at = |x: usize, y: usize| field[c * GRID * GRID + (y % GRID) * GRID + (x % GRID)];
-            let step = TILE_METERS[c] / GRID as f32;
+            let step = tile_meters(c) / GRID as f32;
             let mut j = Vec::new();
             for y in 0..GRID {
                 for x in 0..GRID {
