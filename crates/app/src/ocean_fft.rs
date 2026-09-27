@@ -259,7 +259,8 @@ pub fn anchor_axes(camera_direction: [f64; 3]) -> ([f64; 3], [f64; 3]) {
 /// the transform count grow with query count and time speed.
 pub struct CpuSurface {
     shared: std::sync::Arc<SurfaceShared>,
-    second_order_means: [f64; CASCADES],
+    /// `band_wavenumbers` of the CPU cascades (wind, mid, swell).
+    wavenumbers: [f64; 3],
 }
 
 struct SurfaceShared {
@@ -327,8 +328,8 @@ pub fn swell_base_height_meters() -> f32 {
 
 /// Strength of the second-order (Stokes) crest term, `CATINGARDEN_OCEAN_FFT_PEAKS`
 /// (default 1, 0-3). 1 is second-order Stokes for a single wave: crests rise
-/// and troughs flatten by k a^2 / 2. Where crests cross it adds several times
-/// that, which is what piles colliding crests into higher peaks.
+/// and troughs flatten by k a^2 / 2. Where crests of one band cross it adds
+/// more than that, which is what piles colliding crests into higher peaks.
 pub fn second_order_strength() -> f32 {
     static VALUE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
     *VALUE.get_or_init(|| {
@@ -339,34 +340,56 @@ pub fn second_order_strength() -> f32 {
     })
 }
 
-/// Divergence of D is clamped to this before the second-order product, so a
-/// near-fold cannot throw a spike.
-pub const SECOND_ORDER_DIVERGENCE_LIMIT: f64 = 0.6;
-
-/// Spatial mean of h * div(D) per cascade (Parseval: sum of |k| |h~(k)|^2),
-/// subtracted so the second-order term does not raise mean sea level.
-pub fn second_order_means(h0: &[[f32; 4]]) -> [f64; CASCADES] {
+/// Mean wavenumber of each cascade's band, sum |k| |h~|^2 / sum |h~|^2 (0 for
+/// an empty band). The second-order term of a band is taken at this one
+/// wavenumber: the narrow-band (Tayfun) form of Stokes' correction.
+pub fn band_wavenumbers(h0: &[[f32; 4]]) -> [f64; CASCADES] {
     let mut out = [0.0; CASCADES];
     for (c, mean) in out.iter_mut().enumerate() {
         let dk = std::f64::consts::TAU / tile_meters(c) as f64;
+        let (mut weighted, mut total) = (0.0, 0.0);
         for y in 0..GRID {
             for x in 0..GRID {
                 let t = h0[c * GRID * GRID + y * GRID + x];
                 let (re, im) = ((t[0] + t[2]) as f64, (t[1] - t[3]) as f64);
                 let n = x as f64 - GRID as f64 / 2.0;
                 let m = y as f64 - GRID as f64 / 2.0;
-                *mean += dk * (n * n + m * m).sqrt() * (re * re + im * im);
+                let power = re * re + im * im;
+                weighted += dk * (n * n + m * m).sqrt() * power;
+                total += power;
             }
         }
+        *mean = if total > 0.0 { weighted / total } else { 0.0 };
     }
     out
 }
 
-/// Mean second-order lift of the geometry cascades (wind 0, mid 1, swell
-/// scaled by its height), times the strength.
-fn second_order_offset(means: &[f64; CASCADES], swell_height: f64) -> f64 {
-    second_order_strength() as f64
-        * (means[0] + means[1] + swell_height * swell_height * means[SWELL_CASCADE])
+/// Second-order (Stokes) height, its (u, v) gradient and its rate of change,
+/// band by band: each band `(k, field)` adds (k/2)(h^2 - |D|^2) at its own
+/// mean wavenumber k.
+///
+/// For one wave, h = a cos, D = a sin, this is Stokes' (k a^2 / 2) cos 2theta,
+/// and crossing crests of a band (large h, small D) pile higher. It averages to
+/// zero, since a linear field's h and D carry equal power, so sea level stays
+/// put. It is *not* taken across bands: the old h(total) * div D(total) form
+/// multiplied every short wave by (1 + k_short * swell height), so on a big
+/// swell crest the chop grew into tall spikes and in the trough turned upside
+/// down. A short wave riding a swell is carried by it, not amplified by it.
+///
+/// The rate uses D.dD/dt ~ -h dh/dt, exact for one wave, since the CPU grids
+/// carry no displacement velocity.
+fn second_order(bands: &[(f64, FieldSample)]) -> (f64, [f64; 2], f64) {
+    let strength = second_order_strength() as f64;
+    let (mut height, mut gradient, mut rate) = (0.0, [0.0; 2], 0.0);
+    for (k, f) in bands {
+        let [du, dv] = f.displacement;
+        let j = f.jacobian;
+        height += 0.5 * k * (f.height * f.height - du * du - dv * dv);
+        gradient[0] += k * (f.height * f.slope[0] - du * j[0] - dv * j[3]);
+        gradient[1] += k * (f.height * f.slope[1] - du * j[2] - dv * j[1]);
+        rate += 2.0 * k * f.height * f.velocity;
+    }
+    (strength * height, gradient.map(|g| strength * g), strength * rate)
 }
 
 struct CpuCascade {
@@ -767,7 +790,8 @@ impl CpuSurface {
             .name("ocean-cpu-fft".into())
             .spawn(move || prefetch_worker(weak))
             .expect("spawn ocean CPU FFT worker");
-        Self { shared, second_order_means: second_order_means(h0) }
+        let k = band_wavenumbers(h0);
+        Self { shared, wavenumbers: [k[0], k[1], k[SWELL_CASCADE]] }
     }
 
     fn cascades(&self) -> &[CpuCascade] {
@@ -815,12 +839,19 @@ impl CpuSurface {
         let slots: Vec<_> = cascades.iter().map(|cascade| cascade.slot(key)).collect();
         {
             {
+                // The sum, and each cascade scaled (for the per-band term).
                 let field = |position: [f64; 2]| {
+                    let bands: [FieldSample; 3] = std::array::from_fn(|i| {
+                        let mut band = FieldSample::default();
+                        let sample = sample_slot(&slots[i], cascades[i].tile_meters, position, delta);
+                        band.add_scaled(&sample, scales[i]);
+                        band
+                    });
                     let mut total = FieldSample::default();
-                    for ((cascade, slot), scale) in cascades.iter().zip(&slots).zip(scales) {
-                        total.add_scaled(&sample_slot(slot, cascade.tile_meters, position, delta), scale);
+                    for band in &bands {
+                        total.add_scaled(band, 1.0);
                     }
-                    total
+                    (total, bands)
                 };
                 // Mirrors the shader's fold limiter: displacement eases off
                 // where the surface would otherwise turn inside out.
@@ -829,7 +860,7 @@ impl CpuSurface {
                     chop * fold_scale(j)
                 };
                 let mut label = target;
-                let mut sample = field(label);
+                let (mut sample, mut bands) = field(label);
                 for _ in 0..INVERSE_ITERATIONS {
                     let c = limited(&sample);
                     let residual = [
@@ -846,26 +877,23 @@ impl CpuSurface {
                     let det = (a * d - b * cc).max(0.2);
                     label[0] -= (d * residual[0] - b * residual[1]) / det;
                     label[1] -= (-cc * residual[0] + a * residual[1]) / det;
-                    sample = field(label);
+                    (sample, bands) = field(label);
                 }
                 let c = limited(&sample);
                 let j = sample.jacobian;
                 let (a, b, cc, d) = (1.0 - c * j[0], -c * j[2], -c * j[3], 1.0 - c * j[1]);
                 let det = (a * d - b * cc).max(MIN_JACOBIAN);
-                // Second-order crest term, as the shader adds it.
-                let strength = second_order_strength() as f64;
-                let divergence = (j[0] + j[1])
-                    .clamp(-SECOND_ORDER_DIVERGENCE_LIMIT, SECOND_ORDER_DIVERGENCE_LIMIT);
-                let lift = 1.0 + 2.0 * strength * divergence;
-                let height = sample.height
-                    + strength * sample.height * divergence
-                    - second_order_offset(&self.second_order_means, swell_height);
-                let [hu, hv] = [sample.slope[0] * lift, sample.slope[1] * lift];
+                // Second-order crest term, band by band, as the shader adds it.
+                let k = self.wavenumbers;
+                let (lift, lift_slope, lift_rate) =
+                    second_order(&[(k[0], bands[0]), (k[1], bands[1]), (k[2], bands[2])]);
+                let height = sample.height + lift;
+                let [hu, hv] = [sample.slope[0] + lift_slope[0], sample.slope[1] + lift_slope[1]];
                 (
                     CpuSample {
                         height,
                         slope_uv: [(d * hu - cc * hv) / det, (-b * hu + a * hv) / det],
-                        velocity: sample.velocity * lift,
+                        velocity: sample.velocity + lift_rate,
                         fold: det,
                         axis_u: [0.0; 3],
                         axis_v: [0.0; 3],
@@ -892,7 +920,8 @@ struct Params {
 }
 
 /// Uniform read by the ocean shaders: fixed tangent-plane axes plus, per
-/// cascade, the camera's fractional tile coordinates (u, v), tile length and 0.
+/// cascade, the camera's fractional tile coordinates (u, v), tile length and
+/// the band's mean wavenumber (`band_wavenumbers`, for the second-order term).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ViewParams {
@@ -901,7 +930,7 @@ pub struct ViewParams {
     pub cascade: [[f32; 4]; CASCADES],
     /// x: overall gain, y: choppiness, z: swell height (m), w: unused.
     pub gain: [f32; 4],
-    /// x: second-order strength, y: its mean (m) to subtract.
+    /// x: second-order strength; y, z, w unused.
     pub second_order: [f32; 4],
 }
 
@@ -919,13 +948,13 @@ pub struct OceanFft {
     rows: wgpu::ComputePipeline,
     cols: wgpu::ComputePipeline,
     assemble: wgpu::ComputePipeline,
-    second_order_means: [f64; CASCADES],
+    wavenumbers: [f64; CASCADES],
 }
 
 impl OceanFft {
     pub fn new(device: &wgpu::Device, h0: &[[f32; 4]]) -> Self {
         assert_eq!(h0.len(), CASCADES * GRID * GRID);
-        let means = second_order_means(h0);
+        let wavenumbers = band_wavenumbers(h0);
         let storage = |read_only| wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Storage { read_only },
             has_dynamic_offset: false,
@@ -1122,7 +1151,7 @@ impl OceanFft {
             rows: pipeline("fft_rows"),
             cols: pipeline("fft_cols"),
             assemble: pipeline("assemble"),
-            second_order_means: means,
+            wavenumbers,
         }
     }
 
@@ -1143,20 +1172,19 @@ impl OceanFft {
         let mut cascade = [[0.0f32; 4]; CASCADES];
         for (c, entry) in cascade.iter_mut().enumerate() {
             let length = tile_meters(c) as f64;
-            *entry = [(cu / length).rem_euclid(1.0) as f32, (cv / length).rem_euclid(1.0) as f32, tile_meters(c), 0.0];
+            *entry = [
+                (cu / length).rem_euclid(1.0) as f32,
+                (cv / length).rem_euclid(1.0) as f32,
+                tile_meters(c),
+                self.wavenumbers[c] as f32,
+            ];
         }
         let params = ViewParams {
             axis_u: [u[0] as f32, u[1] as f32, u[2] as f32, 0.0],
             axis_v: [v[0] as f32, v[1] as f32, v[2] as f32, 0.0],
             cascade,
             gain: [gain, choppiness(), swell_height_meters(storm_intensity), 0.0],
-            second_order: [
-                second_order_strength(),
-                second_order_offset(&self.second_order_means, swell_height_meters(storm_intensity) as f64)
-                    as f32,
-                0.0,
-                0.0,
-            ],
+            second_order: [second_order_strength(), 0.0, 0.0, 0.0],
         };
         queue.write_buffer(&self.view_params, 0, bytemuck::bytes_of(&params));
     }
@@ -1454,27 +1482,89 @@ pub(crate) mod tests {
                 sample.height,
                 field.height
             );
-            let divergence = (j[0] + j[1])
-                .clamp(-SECOND_ORDER_DIVERGENCE_LIMIT, SECOND_ORDER_DIVERGENCE_LIMIT);
-            let strength = second_order_strength() as f64;
-            let expected = field.height + strength * field.height * divergence
-                - second_order_offset(&cpu.second_order_means, scale);
+            let bands: Vec<(f64, FieldSample)> = cpu
+                .cascades()
+                .iter()
+                .zip([1.0, 1.0, scale])
+                .zip(cpu.wavenumbers)
+                .map(|((cascade, weight), k)| {
+                    let mut band = FieldSample::default();
+                    band.add_scaled(&sample_slot(&cascade.slot(key), cascade.tile_meters, label, delta), weight);
+                    (k, band)
+                })
+                .collect();
+            let expected = field.height + second_order(&bands).0;
             assert!(miss < 0.02, "{miss}");
             assert!((sample.height - expected).abs() < 0.005, "{} vs {expected}", sample.height);
         }
     }
 
+    /// One wave along u, h = a cos(kx), D = a sin(kx) (the field's D = +k^ a sin),
+    /// with its slope, velocity and displacement Jacobian.
+    fn one_wave(k: f64, a: f64, x: f64) -> FieldSample {
+        let omega = (GRAVITY as f64 * k).sqrt();
+        FieldSample {
+            height: a * (k * x).cos(),
+            slope: [-k * a * (k * x).sin(), 0.0],
+            velocity: a * omega * (k * x).sin(),
+            displacement: [a * (k * x).sin(), 0.0],
+            jacobian: [k * a * (k * x).cos(), 0.0, 0.0, 0.0],
+        }
+    }
+
     #[test]
     fn second_order_term_is_stokes_for_one_wave_and_keeps_mean_level() {
-        // One mode: h = a cos(kx); second order must add (k a^2 / 2) cos(2kx).
+        let strength = second_order_strength() as f64;
+        let (k, a) = (0.05, 3.0);
+        let mut mean = 0.0;
+        let steps = 64;
+        for i in 0..steps {
+            let x = std::f64::consts::TAU / k * i as f64 / steps as f64;
+            let (lift, gradient, _) = second_order(&[(k, one_wave(k, a, x))]);
+            // (k a^2 / 2) cos(2kx) and its derivative.
+            let stokes = strength * 0.5 * k * a * a * (2.0 * k * x).cos();
+            let slope = -strength * k * k * a * a * (2.0 * k * x).sin();
+            assert!((lift - stokes).abs() < 1e-9, "{lift} vs {stokes}");
+            assert!((gradient[0] - slope).abs() < 1e-9, "{} vs {slope}", gradient[0]);
+            mean += lift / steps as f64;
+        }
+        assert!(mean.abs() < 1e-9, "sea level moved {mean}");
+        // The band wavenumber of a one-mode spectrum is that mode's.
         let mut h0 = vec![[0.0f32; 4]; CASCADES * GRID * GRID];
-        let (n, amp) = (8usize, 0.5f32);
-        h0[(GRID / 2) * GRID + GRID / 2 + n] = [amp, 0.0, amp, 0.0];
-        h0[(GRID / 2) * GRID + GRID / 2 - n] = [amp, 0.0, amp, 0.0];
-        let means = second_order_means(&h0);
-        let k = std::f64::consts::TAU * n as f64 / tile_meters(0) as f64;
-        let a = 4.0 * amp as f64; // both +k and -k, each doubled by h0(-k)
-        assert!((means[0] - 0.5 * k * a * a).abs() < 1e-6 * means[0].max(1.0), "{} vs {}", means[0], 0.5 * k * a * a);
+        let n = 8usize;
+        h0[(GRID / 2) * GRID + GRID / 2 + n] = [0.5, 0.0, 0.5, 0.0];
+        h0[(GRID / 2) * GRID + GRID / 2 - n] = [0.5, 0.0, 0.5, 0.0];
+        let expected = std::f64::consts::TAU * n as f64 / tile_meters(0) as f64;
+        assert!((band_wavenumbers(&h0)[0] - expected).abs() < 1e-9 * expected);
+        assert_eq!(band_wavenumbers(&h0)[1], 0.0, "an empty band has no term");
+    }
+
+    #[test]
+    fn a_swell_carries_the_chop_without_scaling_it() {
+        // Ian: with any wind the sea went spiky. The old term, h(total) *
+        // div D(total), multiplied a short wave by (1 + k_short * swell
+        // height): on a 10m swell crest 8m chop grew several times over and in
+        // the trough turned upside down. Per band, the chop's second-order
+        // shape is the same on the crest as in the trough.
+        let (k_swell, a_swell) = (std::f64::consts::TAU / 300.0, 10.0);
+        let (k_chop, a_chop) = (std::f64::consts::TAU / 8.0, 0.4);
+        let chop_range = |centre: f64| {
+            let (mut low, mut high) = (f64::MAX, f64::MIN);
+            for i in 0..=80 {
+                let x = centre + 8.0 * (i as f64 / 80.0 - 0.5);
+                let swell = one_wave(k_swell, a_swell, x);
+                let both = second_order(&[(k_swell, swell), (k_chop, one_wave(k_chop, a_chop, x))]).0;
+                let chop_part = both - second_order(&[(k_swell, swell)]).0;
+                low = low.min(chop_part);
+                high = high.max(chop_part);
+            }
+            high - low
+        };
+        let (crest, trough) = (chop_range(0.0), chop_range(150.0));
+        let own = second_order_strength() as f64 * k_chop * a_chop * a_chop;
+        eprintln!("chop second-order range: crest {crest:.4} m, trough {trough:.4} m, own Stokes {own:.4} m");
+        assert!((crest - trough).abs() < 1e-3, "crest {crest} vs trough {trough}");
+        assert!(crest <= own + 1e-3, "{crest} is more than the chop's own Stokes term {own}");
     }
 
     #[test]

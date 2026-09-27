@@ -1577,6 +1577,20 @@ fn ocean_fft_cascade(cascade_index: u32, local: vec2<f32>, filter_width_meters: 
     );
 }
 
+// One band's second-order (Stokes) term at its mean wavenumber k: the height
+// (k/2)(h^2 - |D|^2) and its (u, v) gradient k (h grad h - Du grad Du -
+// Dv grad Dv). j is (dDu/du, dDv/dv, dDu/dv, dDv/du).
+fn ocean_fft_band_stokes(
+    k: f32,
+    h: f32,
+    slope: vec2<f32>,
+    d: vec2<f32>,
+    j: vec4<f32>,
+) -> vec3<f32> {
+    let gradient = h * slope - d.x * vec2<f32>(j.x, j.z) - d.y * vec2<f32>(j.w, j.y);
+    return vec3<f32>(0.5 * k * (h * h - dot(d, d)), k * gradient);
+}
+
 fn ocean_surface_fft(
     direction: vec3<f32>,
     camera_distance_meters: f32,
@@ -1692,19 +1706,24 @@ fn ocean_surface_fft(
         (1.0 + drawn_jacobian.x) * (1.0 + drawn_jacobian.y) - drawn_jacobian.z * drawn_jacobian.w,
         OCEAN_FFT_MIN_JACOBIAN,
     );
-    // Second-order (Stokes) crest term: h * div(D) less its mean. On a single
-    // wave this is (k a^2 / 2) cos(2 theta), sharper crests and flatter
-    // troughs; where crests cross, h and div(D) are both large and the peak
-    // piles up. Mirrored by ocean_fft::CpuSurface::sample.
-    // The 3-12m cascade is geometry too, so short crests can rise.
+    // Second-order (Stokes) crest term, band by band: (k/2)(h^2 - |D|^2) at
+    // each geometry band's own mean wavenumber (cascade .w). On a single wave
+    // this is (k a^2 / 2) cos(2 theta), sharper crests and flatter troughs;
+    // where crests of a band cross (h large, D small) the peak piles up. It
+    // averages to zero, so needs no mean offset. Not taken across bands: the
+    // old h(total) * div D(total) multiplied every short wave by
+    // (1 + k_short * swell height), spiking the chop on swell crests.
+    // Mirrored by ocean_fft::second_order. The 3-12m cascade is geometry too.
     let linear_height = (core.x + mid.x * mid_weight) * gain;
-    let divergence = clamp((core.w + mid.w * mid_weight) * gain, -0.6, 0.6);
-    let second_order_strength = ocean_fft_view.second_order.x;
-    let second_order = second_order_strength * linear_height * divergence
-        - ocean_fft_view.second_order.y;
-    let broad_uv = vec2<f32>(core.y, core.z) * gain
-        + 2.0 * second_order_strength * divergence
-            * (vec2<f32>(core.y, core.z) + vec2<f32>(mid.y, mid.z) * mid_weight) * gain;
+    let stokes = (ocean_fft_band_stokes(
+            ocean_fft_view.cascade[0].w, broad.x, broad.yz, broad_displacement, broad_jacobian)
+        + ocean_fft_band_stokes(ocean_fft_view.cascade[3].w, swell.x * swell_scale,
+            swell.yz * swell_scale, swell_displacement * swell_scale, swell_jacobian * swell_scale)
+        + ocean_fft_band_stokes(ocean_fft_view.cascade[1].w, mid.x * mid_weight,
+            mid.yz * mid_weight, mid_displacement * mid_weight, mid_jacobian * mid_weight))
+        * (ocean_fft_view.second_order.x * gain * gain);
+    let second_order = stokes.x;
+    let broad_uv = vec2<f32>(core.y, core.z) * gain + stokes.yz;
     let ripple_uv = vec2<f32>(
         mid.y * mid_weight + fine.y * fine_weight,
         mid.z * mid_weight + fine.z * fine_weight,

@@ -76,6 +76,9 @@ struct SprayField {
     displacement: vec2<f32>,
     // dDu/du, dDv/dv, dDu/dv, dDv/du.
     jacobian: vec4<f32>,
+    // Sum over the geometry bands of (k/2)(h^2 - |D|^2), before strength and
+    // gain (ocean_fft.rs `second_order`).
+    stokes: f32,
 }
 
 fn hash(value: u32) -> u32 {
@@ -92,7 +95,7 @@ fn unit_random(seed: u32) -> f32 {
     return f32(hash(seed) & 0xffffffu) / 16777216.0;
 }
 
-fn spray_cascade(index: u32, local: vec2<f32>, weight: f32, field: ptr<function, SprayField>) {
+fn spray_cascade(index: u32, local: vec2<f32>, weight: f32, geometry: bool, field: ptr<function, SprayField>) {
     let entry = fft_view.cascade[index];
     let uv = entry.xy + local / entry.z;
     let texel = 1.0 / 256.0;
@@ -108,24 +111,28 @@ fn spray_cascade(index: u32, local: vec2<f32>, weight: f32, field: ptr<function,
     (*field).displacement += s0.yz * weight;
     (*field).jacobian += vec4<f32>(se.y - sw.y, sn.z - ss.z, sn.y - ss.y, se.z - sw.z)
         * (weight / step);
+    if geometry {
+        // This band's own second-order term, at its mean wavenumber (entry.w).
+        let h = s0.x * weight;
+        let d = s0.yz * weight;
+        (*field).stokes += 0.5 * entry.w * (h * h - dot(d, d));
+    }
 }
 
 fn spray_field(local: vec2<f32>) -> SprayField {
-    var field = SprayField(0.0, vec2<f32>(0.0), vec4<f32>(0.0));
-    spray_cascade(0u, local, 1.0, &field);
-    spray_cascade(1u, local, 1.0, &field);
-    spray_cascade(2u, local, 1.0, &field);
-    spray_cascade(3u, local, frame.params.w, &field);
+    var field = SprayField(0.0, vec2<f32>(0.0), vec4<f32>(0.0), 0.0);
+    spray_cascade(0u, local, 1.0, true, &field);
+    spray_cascade(1u, local, 1.0, true, &field);
+    spray_cascade(2u, local, 1.0, false, &field);
+    spray_cascade(3u, local, frame.params.w, true, &field);
     return field;
 }
 
 // Water surface height (m above sea level) at a sampled field, with the
 // shader's second-order crest term.
 fn spray_surface_height(field: SprayField) -> f32 {
-    let j = field.jacobian * fft_view.gain.x;
-    let divergence = clamp((j.x + j.y), -0.6, 0.6);
-    return field.height * fft_view.gain.x
-        * (1.0 + fft_view.second_order.x * divergence) - fft_view.second_order.y;
+    let gain = fft_view.gain.x;
+    return field.height * gain + fft_view.second_order.x * gain * gain * field.stokes;
 }
 
 // Slam intensity at hull position t (-1 stern, +1 stem) from the four stations
