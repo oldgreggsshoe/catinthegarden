@@ -35,6 +35,25 @@ struct SprayVertexOutput {
     @location(3) seed: f32,
 }
 
+// Hull spray is strongest where it leaves the hull and fades as it travels:
+// gone one half-beam out from the waterline outline (the plan shape of ship.rs
+// half_beam_meters). Blown along the hull by the wind it otherwise drew
+// splashes off the bow and stern, where there is no hull to throw them.
+fn ship_spray_near_hull(position: vec2<f32>) -> f32 {
+    let forward = spray_frame.ship_axes.xy;
+    let port = vec2<f32>(-forward.y, forward.x);
+    let relative = position - spray_frame.ship_origin.xy;
+    let half_length = spray_frame.ship_axes.z;
+    let t = dot(relative, forward) / half_length;
+    let tc = clamp(t, -1.0, 1.0);
+    let shape = select(1.0 - 0.2 * tc * tc, pow(max(1.0 - tc * tc, 0.0), 0.6), tc >= 0.0);
+    let outside = length(vec2<f32>(
+        max(abs(t) - 1.0, 0.0) * half_length,
+        max(abs(dot(relative, port)) - spray_frame.ship_axes.w * shape, 0.0),
+    ));
+    return 1.0 - smoothstep(0.0, spray_frame.ship_axes.w, outside);
+}
+
 @vertex
 fn vs_spray(
     @builtin(vertex_index) vertex_index: u32,
@@ -66,7 +85,10 @@ fn vs_spray(
     // one passing the eye cannot become a cloud. The ship's slots (first
     // SHIP_SPRAY_SLOTS) throw sheets of spray metres across off the bow.
     let from_ship = instance_index < 2048u;
-    let grown = select(mix(0.12, 0.5, sqrt(age)), mix(0.8, 3.5, sqrt(age)), from_ship);
+    // Ship sheets were sized on the 84m hull (half-length 42m); a smaller
+    // hull throws proportionally smaller ones.
+    let ship_size = spray_frame.ship_axes.z / 42.0;
+    let grown = select(mix(0.12, 0.5, sqrt(age)), mix(0.8, 3.5, sqrt(age)) * ship_size, from_ship);
     let size = min(grown * (0.7 + 0.6 * seed), distance * select(0.03, 0.06, from_ship));
     // Stretched along the droplets' motion: spray streaks downwind.
     let velocity_view = planet_to_view(spray_frame.axis_u.xyz * particle.velocity.x
@@ -78,7 +100,9 @@ fn vs_spray(
         dot(screen_velocity, screen_velocity) > 1.0e-6,
     );
     let across = vec2<f32>(-along.y, along.x);
-    let streak = min(length(screen_velocity) * 0.12, distance * 0.06);
+    // A streak is velocity times a time, and time scales with the hull's root.
+    let streak_seconds = 0.12 * select(1.0, sqrt(ship_size), from_ship);
+    let streak = min(length(screen_velocity) * streak_seconds, distance * 0.06);
     view_position = vec3<f32>(
         view_position.xy + along * corner.x * (size + streak) + across * corner.y * size,
         view_position.z,
@@ -92,8 +116,10 @@ fn vs_spray(
     // Falling back to the sea, it thins over its last metre above the
     // surface instead of sitting on the water as a blob (it is retired at
     // the surface). Rising spray keeps its hard edge at the source.
-    let settling = select(1.0, smoothstep(0.0, 1.0, particle.extra.x), particle.velocity.z < 0.0);
-    out.alpha = fade * (1.0 - age) * smoothstep(3.0, 10.0, distance) * settling;
+    let settle_meters = select(1.0, ship_size, from_ship);
+    let settling = select(1.0, smoothstep(0.0, settle_meters, particle.extra.x), particle.velocity.z < 0.0);
+    out.alpha = fade * (1.0 - age) * smoothstep(3.0, 10.0, distance) * settling
+        * select(1.0, ship_spray_near_hull(particle.position.xy), from_ship);
     let sun_direction = normalize(camera.sun_direction.xyz);
     let height = max(particle.position.z, 0.0);
     let sun_transmittance = surface_direct_sun_transmittance(up, height, sun_direction);

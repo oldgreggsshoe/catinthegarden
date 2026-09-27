@@ -94,6 +94,14 @@ with a physically coherent crossing-crest profile that is CPU/WGSL-consistent, t
 validate actual movement, non-folding geometry and matched frame time against this
 steep-view baseline; do not promote either discarded diagnostic.
 
+**Ship size (27 September):** the ship is now a quarter of its former size,
+21m x 5.5m (`ship::SHIP_SCALE` 0.5, was 2.0). Its float follows by Froude
+similarity as before; spray, the hull foam band and the slam/impact thresholds
+were tuned on the 84m hull and now scale from it (`SPLASH_LENGTH_SCALE`,
+`splash_speed_scale`; the shaders take the ratio from the hull half-length they
+are sent). The bridge eye stays a fixed 0.4m off the (scaled) bridge wall. Ship
+replay cameras are re-authored at a quarter of their old offsets.
+
 **Bridge-front camera and restored dense-grid diagnostic (23 September):** the
 interactive startup now attaches the eye 0.4m beyond the bow-facing bridge wall,
 at bridge height, and updates it from the ship's current position/orientation each
@@ -11286,3 +11294,13 @@ Ian: spray persisted below the water surface. Droplets flew on for their whole l
 ## 27 September - Global wavelength modifier
 
 `OCEAN_WAVELENGTH_SCALE` (ocean_fft.rs, default 1.0; `CATINGARDEN_OCEAN_FFT_WAVELENGTH` overrides, 0.25-4): every wave, wind sea and swell, is that many times longer at the same height. Implemented as a spatial stretch of the whole field: the spectra are still built on `TILE_METERS`, but every consumer lays the tiles out through `tile_meters(c)` = `TILE_METERS[c]` x scale (GPU evolve/params, view entries used by the shader, foam atlas and spray, the CPU mirror, the second-order means), so deep-water dispersion follows the stretched wavenumbers (longer is slower) and steepness falls in proportion. CPU/GPU texel parity 0.26/0.15/0.11 mm at 1.0 and 0.39/0.28/0.22 mm at 2.0 (all FFT tests pass with the variable set to 2). Sheet: calm `ocean_swell_ship` / `ocean_swell_deck` at 0.75/1.0/1.5/2.0 (WIND 14, SWELL 8, CHOP 1.0), e.g. `ocean_swell_ship/1790502425-530458` .. `1790502608-535461`: 0.75 busier and choppier, 1.5-2.0 the same heights over longer, gentler rollers.
+
+## 27 September - Ship splashes ran past the bow and stern; ship at a quarter size
+
+Ian: the splash outline around the ship extended past the bow and stern where there is no hull to throw it (width was fine). New overhead replay `ocean_ship_foam_plan` (camera above the ship, storm 0) located it. Three findings, in the order they were measured:
+
+- **The drawn hull was 4.7m short at the stern.** `build_mesh` copied buoyancy's half-station midpoint offset, so the transom was drawn at t = -0.889 while buoyancy, foam and spray all put it at -1. Mesh stations are now section edges; `the_mesh_is_low_poly_closed_and_within_the_hull_envelope` asserts the drawn transom and stem sit at -/+ half the hull length (fails on the old mesh).
+- **Not the cause (kept as correctness fixes, pixel change small):** the hull foam band was born at the water's rest position but the sea is drawn displaced by the choppy -D, so it is now tested at the texel's drawn position (same cascade weights and fold limit as `ocean_surface_fft`). The foam history atlas was 8-bit, where the per-frame decay at 60 fps is under one step below ~0.29, so faint foam never faded; it is now `Rgba16Float` (`FOAM_ATLAS_FORMAT`).
+- **The cause was ship spray** (with `CATINGARDEN_OCEAN_FFT_SPRAY=0` the foam hugged the hull in all four captures, before/after `1790503593-544150` / `1790503644-545429`). The ship surges only 0.6m in 8s, so it is not a wake: spray thrown off the raked bow and the transom, and blown along the hull by the unscaled wind, drew white 10-20m past the ends (5-6m after the resize). Hull spray now fades out over one half-beam beyond the waterline outline (`ship_spray_near_hull`, draw shader): strong where it leaves the hull, gone before it can sit off the ends. Overhead, quarter-size, no fade vs fade: `1790504102-548634` / `1790504223-549788` (stern overshoot about 6m -> 3m, the same margin as the sides).
+
+Ian then asked for the ship at 0.25 of its size with everything to do with it scaled. `SHIP_SCALE` 2.0 -> 0.5 (hull 21m x 5.5m, draft and freeboard 1.5m; mass, metacentric height and damping already follow it). Spray, foam and slam thresholds scale from the 84m hull they were tuned on by Froude similarity: lengths by `SPLASH_LENGTH_SCALE` (0.25), speeds and times by its root (0.5). That is the spray's outward speed, lift, lifetime, spawn offsets, sheet size, streak and settling fade; the spawn rate rises by 1/root so the same number of particles make the smaller sheet; the foam band width (drawn a texel wide at its share of the texel's area when it is narrower than the 2m atlas texels); and the emitter's slam speed, immersion, 2m impact sample, rise and crest thresholds. The shaders read the ratio from the hull half-length they are sent over a tuned 42m, pinned to `ship::SPLASH_TUNED_HALF_LENGTH_METERS` by `ship_splashes_scale_from_the_same_tuned_hull_everywhere`. The wind and the sea are not scaled, so the small hull now rides a proportionally rougher sea. The bridge eye stays 0.4m off the scaled bridge wall (a person's standoff). `ocean_ship_float`, `ocean_ship_impacts`, `ocean_swell_ship` and `ocean_ship_foam_plan` cameras are re-authored at a quarter of their offsets from the ship (eye 3.5m); calm and storm replays `ocean_swell_ship/1790504286-551076`, `ocean_ship_impacts/1790504322-551981`, `ocean_ship_float/1790504365-553141` pass.

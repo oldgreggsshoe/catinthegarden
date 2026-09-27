@@ -31,16 +31,28 @@ use crate::surface_camera::GRAVITY_METERS_PER_SECOND_SQUARED;
 /// for anything the hull's size sets, and scaled with the rest it let a
 /// twice-size hull drift 51m in 50s on the real sea against 36m at scale 1.
 /// Figures quoted in the comments below were measured at scale 1.
-pub const SHIP_SCALE: f64 = 2.0;
+pub const SHIP_SCALE: f64 = 0.5;
 /// `sqrt(SHIP_SCALE)`, the factor Froude similarity stretches time by. Spelt out
 /// because `sqrt` is not const; the assertion keeps the two in step.
-const SHIP_TIME_SCALE: f64 = std::f64::consts::SQRT_2;
+const SHIP_TIME_SCALE: f64 = std::f64::consts::FRAC_1_SQRT_2;
 const _: () = assert!(
     (SHIP_TIME_SCALE * SHIP_TIME_SCALE - SHIP_SCALE).abs() < 1.0e-12,
     "SHIP_TIME_SCALE must be the square root of SHIP_SCALE"
 );
 
 pub const HULL_LENGTH_METERS: f64 = 42.0 * SHIP_SCALE;
+/// The hull's splashes -- spray, the foam band round it, and the slam and
+/// impact thresholds that start them -- were tuned against the scale-2 hull,
+/// 84m long. They follow the hull from there as the float does: lengths by
+/// `SPLASH_LENGTH_SCALE`, speeds and times by its square root
+/// (`splash_speed_scale`). The spray and foam shaders take the same ratio from
+/// the hull half-length they are sent, over this.
+pub const SPLASH_TUNED_HALF_LENGTH_METERS: f64 = 42.0;
+pub const SPLASH_LENGTH_SCALE: f64 = 0.5 * HULL_LENGTH_METERS / SPLASH_TUNED_HALF_LENGTH_METERS;
+
+pub fn splash_speed_scale() -> f64 {
+    SPLASH_LENGTH_SCALE.sqrt()
+}
 pub const HULL_BEAM_METERS: f64 = 11.0 * SHIP_SCALE;
 /// Keel below the design waterline amidships.
 pub const HULL_DRAFT_METERS: f64 = 3.0 * SHIP_SCALE;
@@ -554,8 +566,12 @@ fn push_box(vertices: &mut Vec<ShipVertex>, centre: DVec3, half_extents: DVec3, 
 pub fn build_mesh() -> Vec<ShipVertex> {
     let mut vertices = Vec::new();
 
+    // Mesh stations are the section *edges*, -1 at the transom to +1 at the
+    // stem. (Buoyancy takes the half-station offset because it samples
+    // section midpoints; copied here it put the transom 4.7m forward of the
+    // hull that floats, and foam and spray drew off the end of the boat.)
     let station = |index: usize| {
-        let t = station_parameter(index, MESH_STATIONS - 1) + 1.0 / (MESH_STATIONS - 1) as f64;
+        let t = station_parameter(index, MESH_STATIONS - 1);
         let t = t.clamp(-1.0, 1.0);
         let x = 0.5 * HULL_LENGTH_METERS * t;
         (
@@ -1061,6 +1077,13 @@ mod tests {
             let normal = glam::Vec3::from(vertex.normal);
             assert!((normal.length() - 1.0).abs() < 1.0e-4);
         }
+        // And it fills that envelope end to end: the drawn transom and stem are
+        // where buoyancy, foam and spray put them.
+        let aft = mesh.iter().map(|v| v.position[0]).fold(f32::MAX, f32::min);
+        let fore = mesh.iter().map(|v| v.position[0]).fold(f32::MIN, f32::max);
+        let half_length = 0.5 * HULL_LENGTH_METERS as f32;
+        assert!((aft + half_length).abs() < 0.01, "transom drawn at {aft}m, not -{half_length}m");
+        assert!((fore - half_length).abs() < 0.01, "stem drawn at {fore}m, not {half_length}m");
         // Every triangle is flat-shaded, so its three vertices share a normal.
         for triangle in mesh.chunks_exact(3) {
             assert_eq!(triangle[0].normal, triangle[1].normal);

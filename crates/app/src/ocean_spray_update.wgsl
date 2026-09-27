@@ -58,8 +58,12 @@ struct OceanFftView {
 const GRAVITY: f32 = 9.81;
 // The first particle slots belong to the ship's bow (ocean_spray.rs).
 const SHIP_SPRAY_SLOTS: u32 = 2048u;
-// Bow births per second per slot attempt at full slam.
+// Bow births per second per slot attempt at full slam, on the tuned hull.
 const SHIP_SPRAY_RATE: f32 = 30.0;
+// Ship spray was tuned against a hull of this half-length (84m, ship.rs
+// SPLASH_TUNED_HALF_LENGTH_METERS). Any other hull scales it by Froude
+// similarity: lengths by the size ratio, speeds and times by its root.
+const SHIP_SPRAY_TUNED_HALF_LENGTH: f32 = 42.0;
 // Horizontal air drag toward the wind, and vertical drag, per second.
 const WIND_DRAG: f32 = 1.2;
 const VERTICAL_DRAG: f32 = 0.6;
@@ -193,9 +197,14 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
             t,
         );
         let intensity = max(slam, impact);
+        let size = frame.ship_axes.z / SHIP_SPRAY_TUNED_HALF_LENGTH;
+        let froude = sqrt(size);
         // A wave striking the hull throws more water than the hull slamming.
+        // Shorter-lived spray off a smaller hull is born faster, so the same
+        // number of particles make up its (smaller) sheet.
         if frame.ship_origin.w <= 0.0 || intensity <= 0.0
-            || unit_random(seed ^ 0x2545f491u) >= intensity * SHIP_SPRAY_RATE * dt * (1.0 + impact)
+            || unit_random(seed ^ 0x2545f491u)
+                >= intensity * (SHIP_SPRAY_RATE / froude) * dt * (1.0 + impact)
         {
             particle.velocity.w = 0.0;
             particles[index] = particle;
@@ -215,18 +224,27 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
         // Slam: thrown outward off the hull. Wave impact: a sheet driven up
         // the hull side, barely outward, then carried by the wind.
         let struck = impact > slam;
-        let speed = select(3.0 + 8.0 * intensity * r3, 1.0 + 2.5 * impact * r3, struck);
+        let speed = select(3.0 + 8.0 * intensity * r3, 1.0 + 2.5 * impact * r3, struck) * froude;
         let horizontal = outward * speed + frame.ship_velocity.xy
             + frame.wind.xy * frame.wind.z * select(0.15, 0.3, struck);
-        // Up to ~17m/s: storm bow spray clears the 6m freeboard and the deck.
+        // Up to ~17m/s on the tuned hull: storm bow spray clears its 6m
+        // freeboard and the deck.
         let lift = frame.ship_velocity.z * 0.5
-            + select(5.0 + 12.0 * intensity * r4, 8.0 + 14.0 * impact * r4, struck);
+            + select(5.0 + 12.0 * intensity * r4, 8.0 + 14.0 * impact * r4, struck) * froude;
         // Above the water actually there: a struck station is often under a
         // rising crest, and spray born inside it would die at once.
         let water_here = spray_surface_height(spray_field(place));
-        particle.position = vec4<f32>(place, max(frame.ship_origin.z + 0.3, water_here + 0.2), 0.0);
+        particle.position = vec4<f32>(
+            place,
+            max(frame.ship_origin.z + 0.3 * size, water_here + 0.2 * size),
+            0.0,
+        );
         particle.extra = vec4<f32>(1.0e3, 0.0, 0.0, 0.0);
-        particle.velocity = vec4<f32>(horizontal, lift, select(0.9 + 1.2 * r3, 1.2 + 1.3 * r3, struck));
+        particle.velocity = vec4<f32>(
+            horizontal,
+            lift,
+            select(0.9 + 1.2 * r3, 1.2 + 1.3 * r3, struck) * froude,
+        );
         particles[index] = particle;
         return;
     }

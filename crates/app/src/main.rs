@@ -365,9 +365,10 @@ const BIRD_WATCH_FLIGHT_HEIGHT_METERS: f64 = 4.0;
 
 const SHIP_VISIBLE_DISTANCE_METERS: f64 = 30_000.0;
 /// Place the eye just outside the bow-facing bridge wall, where the windows
-/// would be, with a forward view over the foredeck.
+/// would be, with a forward view over the foredeck. The wall and windows scale
+/// with the ship; the eye's 0.4m standoff is a person's, so it does not.
 const BRIDGE_CAMERA_LOCAL_POSITION: glam::DVec3 = glam::DVec3::new(
-    -4.4 * ship::SHIP_SCALE,
+    (-8.0 + 3.4) * ship::SHIP_SCALE + 0.4,
     0.0,
     ship::HULL_FREEBOARD_METERS + 4.0 * ship::SHIP_SCALE,
 );
@@ -2553,6 +2554,10 @@ impl State {
             t * t * (3.0 - 2.0 * t)
         };
         let half_length = 0.5 * ship::HULL_LENGTH_METERS;
+        // Thresholds tuned on the 84m hull, carried to this one by Froude
+        // similarity: lengths by the size ratio, speeds by its root.
+        let size = ship::SPLASH_LENGTH_SCALE;
+        let speed = ship::splash_speed_scale();
         let station = |t: f64, side: f64| {
             let local = glam::DVec3::new(t * half_length, side * ship::half_beam_meters(t), 0.0);
             let point = origin + self.ship_body.orientation * local;
@@ -2569,7 +2574,7 @@ impl State {
                 ocean::global_wave_height_meters(radial, ocean_time_seconds, SHIP_FALLBACK_DEPTH_METERS);
             let immersion = water_height - waterline_altitude;
             let slam = (water_up - point_velocity.dot(radial)).max(0.0);
-            let slam = ramp(0.3, 2.5, slam) * ramp(-1.5, 0.5, immersion);
+            let slam = ramp(0.3 * speed, 2.5 * speed, slam) * ramp(-1.5 * size, 0.5 * size, immersion);
 
             // The hull outline's outward normal here (raked forward at the bow).
             let slope_along = (ship::half_beam_meters((t + 0.01).min(1.0))
@@ -2579,8 +2584,9 @@ impl State {
                 * glam::DVec3::new(-slope_along, side, 0.0).normalize())
             .reject_from_normalized(radial)
             .normalize_or_zero();
-            // The water about to arrive, two metres out from the hull.
-            let outside = (point + normal * 2.0).normalize();
+            // The water about to arrive, just out from the hull (two metres on
+            // the 84m hull).
+            let outside = (point + normal * (2.0 * size)).normalize();
             let rise = ocean::global_wave_vertical_velocity_meters_per_second(
                 outside,
                 ocean_time_seconds,
@@ -2600,8 +2606,8 @@ impl State {
             let violent = ramp(0.15, 0.45, steepness).max(ramp(0.6, 0.2, fold));
             let impact = toward_hull
                 * violent
-                * ramp(0.3, 2.0, rise)
-                * ramp(-1.0, 1.0, crest - waterline_altitude);
+                * ramp(0.3 * speed, 2.0 * speed, rise)
+                * ramp(-1.0 * size, 1.0 * size, crest - waterline_altitude);
             (slam as f32, impact as f32)
         };
         let port = terrain::SHIP_STATIONS.map(|t| station(t, 1.0));

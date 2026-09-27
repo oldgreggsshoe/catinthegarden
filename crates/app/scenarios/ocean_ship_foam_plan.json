@@ -1,49 +1,32 @@
 {
-  "name": "ocean_ship_impacts",
+  "name": "ocean_ship_foam_plan",
   "fixed_timestep_seconds": 0.016666666666666666,
-  "duration_seconds": 10.0,
+  "duration_seconds": 8.0,
   "solid_color_screen": false,
   "hide_overlay": true,
   "seam_gap_check": false,
   "planet_relative_up": true,
   "planet_rotation_time_scale": 0.0,
   "fixed_exposure": true,
-  "ocean_storm_intensity_override": 1.0,
-  "waterline_eye_height_meters": 3.5,
+  "ocean_storm_intensity_override": 0.0,
   "screenshot_times_seconds": [
-    0.5,
-    1.0,
-    1.5,
     2.0,
-    2.5,
-    3.0,
-    3.5,
     4.0,
-    4.5,
-    5.0,
-    5.5,
     6.0,
-    6.5,
-    7.0,
-    7.5,
-    8.0,
-    8.5,
-    9.0,
-    9.5,
-    10.0
+    8.0
   ],
   "waypoints": [
     {
       "time_s": 0.0,
       "position": [
-        3345741.809152,
-        2014900.227111,
-        863832.634589
+        3345769.653369,
+        2014933.028339,
+        863834.659939
       ],
       "look_at": [
-        3345734.523161,
-        2014911.871767,
-        863825.589771
+        3345735.080422,
+        2014909.892178,
+        863825.733606
       ]
     }
   ],
@@ -65,6 +48,6 @@
   ],
   "assertions": {
     "require_finite_metrics": true,
-    "expected_screenshots": 20
+    "expected_screenshots": 4
   }
 }

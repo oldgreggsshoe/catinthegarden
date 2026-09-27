@@ -9,6 +9,13 @@ fn atlas_side() -> u32 {
     if crate::planet::ocean_fft_enabled() { 256 } else { 128 }
 }
 
+/// Half float, not 8-bit. The history fades by exp(-dt/decay) a frame, which
+/// at 60 fps is under one 8-bit step for anything below ~0.29: it rounded back
+/// up and never faded, while the feedback blur kept spreading it downwind, so
+/// foam trailed metres off the bow and stern and never went away.
+const FOAM_ATLAS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+const FOAM_ATLAS_TEXEL_BYTES: u32 = 8;
+
 fn previous_atlas_is_valid(previous_time: Option<f32>, current_time: f32) -> bool {
     previous_time.is_some_and(|previous| current_time >= previous && current_time - previous < 10.0)
 }
@@ -69,21 +76,21 @@ impl OceanFoamHistory {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
+                format: FOAM_ATLAS_FORMAT,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING
                     | wgpu::TextureUsages::STORAGE_BINDING
                     | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             })
         });
-        let zero = vec![0_u8; (side * side * 4) as usize];
+        let zero = vec![0_u8; (side * side * FOAM_ATLAS_TEXEL_BYTES) as usize];
         for texture in &textures {
             queue.write_texture(
                 texture.as_image_copy(),
                 &zero,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(side * 4),
+                    bytes_per_row: Some(side * FOAM_ATLAS_TEXEL_BYTES),
                     rows_per_image: Some(side),
                 },
                 texture.size(),
@@ -125,7 +132,7 @@ impl OceanFoamHistory {
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::StorageTexture {
                         access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        format: FOAM_ATLAS_FORMAT,
                         view_dimension: wgpu::TextureViewDimension::D2,
                     },
                     count: None,

@@ -434,6 +434,20 @@ mod tests {
     }
 
     #[test]
+    fn ship_splashes_scale_from_the_same_tuned_hull_everywhere() {
+        // The spray and foam shaders take the hull's size from the half-length
+        // they are sent, over the tuned hull's; all three must name the hull
+        // ship.rs tuned against.
+        let tuned = crate::ship::SPLASH_TUNED_HALF_LENGTH_METERS;
+        assert!(include_str!("ocean_spray_update.wgsl")
+            .contains(&format!("const SHIP_SPRAY_TUNED_HALF_LENGTH: f32 = {tuned:.1};")));
+        assert!(include_str!("ocean_spray_draw.wgsl")
+            .contains(&format!("spray_frame.ship_axes.z / {tuned:.1};")));
+        assert!(include_str!("ocean_foam.wgsl")
+            .contains(&format!("const SHIP_FOAM_TUNED_HALF_LENGTH: f32 = {tuned:.1};")));
+    }
+
+    #[test]
     fn particle_layout_matches_the_shader() {
         // Three vec4<f32> per particle, in both shaders.
         assert_eq!(std::mem::size_of::<[[f32; 4]; 3]>(), PARTICLE_BYTES);

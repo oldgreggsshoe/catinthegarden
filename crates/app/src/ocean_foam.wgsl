@@ -2,7 +2,7 @@
 // explicitly so camera motion reprojects the old mask instead of dragging it.
 @group(1) @binding(0) var previous_foam: texture_2d<f32>;
 @group(1) @binding(1) var foam_sampler: sampler;
-@group(1) @binding(2) var next_foam: texture_storage_2d<rgba8unorm, write>;
+@group(1) @binding(2) var next_foam: texture_storage_2d<rgba16float, write>;
 
 struct FoamFrame {
     previous_center: vec4<f32>,
@@ -29,6 +29,10 @@ struct FoamFrame {
 @group(1) @binding(5) var foam_fft_sampler: sampler;
 @group(1) @binding(6) var<uniform> foam_fft_view: OceanFftView;
 
+// Displacement (Du, Dv) of the cascade foam_fft_jacobian last read: the
+// average of its four taps, as ocean_fft_cascade takes it.
+var<private> foam_fft_last_displacement: vec2<f32>;
+
 // Fold-Jacobian parts (dDu/du, dDv/dv, dDu/dv, dDv/du) of one cascade at
 // tangent-plane offset `local` metres from the camera, filtered to `width`.
 fn foam_fft_jacobian(cascade_index: u32, local: vec2<f32>, width: f32) -> vec4<f32> {
@@ -43,6 +47,7 @@ fn foam_fft_jacobian(cascade_index: u32, local: vec2<f32>, width: f32) -> vec4<f
     let sw = textureSampleLevel(foam_fft_map, foam_fft_sampler, uv - vec2<f32>(half, 0.0), cascade_index, lod);
     let sn = textureSampleLevel(foam_fft_map, foam_fft_sampler, uv + vec2<f32>(0.0, half), cascade_index, lod);
     let ss = textureSampleLevel(foam_fft_map, foam_fft_sampler, uv - vec2<f32>(0.0, half), cascade_index, lod);
+    foam_fft_last_displacement = 0.25 * (se.yz + sw.yz + sn.yz + ss.yz);
     return vec4<f32>(se.y - sw.y, sn.z - ss.z, sn.y - ss.y, se.z - sw.z) / (entry.z * texel);
 }
 
@@ -63,6 +68,10 @@ fn foam_birth_hash(cell: vec3<i32>) -> f32 {
     value = value ^ (value >> 16u);
     return f32(value & 65535u) / 65535.0;
 }
+
+// Half-length of the hull the foam band was tuned on (84m; ship.rs
+// SPLASH_TUNED_HALF_LENGTH_METERS).
+const SHIP_FOAM_TUNED_HALF_LENGTH: f32 = 42.0;
 
 // Slam intensity at hull position t from the stations at t = -0.9, -0.3, 0.3,
 // 0.9 (ocean_spray.rs SHIP_STATIONS).
@@ -98,7 +107,14 @@ fn ship_hull_foam(offset: vec2<f32>) -> f32 {
         select(foam_frame.ship_starboard, foam_frame.ship_port, signed_across > 0.0),
         t,
     );
-    let band = 1.0 - smoothstep(0.0, 2.5 + 2.0 * slam, outside);
+    // 2.5-4.5m wide on the 84m hull the band was tuned on; in proportion on
+    // any other. A band narrower than an atlas texel is drawn a texel wide at
+    // its share of the texel's area, rather than hitting or missing texel
+    // centres and breaking into dashes.
+    let width = (2.5 + 2.0 * slam) * (half_length / SHIP_FOAM_TUNED_HALF_LENGTH);
+    let texel_meters = 512.0 / f32(textureDimensions(next_foam).x);
+    let band = (1.0 - smoothstep(0.0, max(width, texel_meters), outside))
+        * min(width / texel_meters, 1.0);
     return band * (0.45 + 0.55 * slam);
 }
 
@@ -155,6 +171,12 @@ fn cs_foam(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 
     var born = 0.0;
+    // Where this texel's water is drawn. The atlas is indexed by where the
+    // water rests (the sea shader reads it at the undisplaced position), but
+    // the hull sits among the drawn, displaced water. Testing the hull band at
+    // the rest position drew the whole ring shifted by the waves' sideways
+    // displacement, metres past the bow or stern as each wave went by.
+    var drawn_offset = offset;
     if OCEAN_FFT_ENABLED {
         // The texel's offset from the camera is exact in metres; no f32
         // planet-radius subtraction.
@@ -165,10 +187,34 @@ fn cs_foam(@builtin(global_invocation_id) id: vec3<u32>) {
             dot(world_offset, foam_fft_view.axis_v.xyz),
         );
         let texel_meters = 512.0 / f32(dimensions.x);
-        let jacobian = foam_fft_jacobian(0u, local, texel_meters)
-            + foam_fft_jacobian(1u, local, texel_meters)
-            + foam_fft_jacobian(2u, local, texel_meters)
-            + foam_fft_jacobian(3u, local, texel_meters) * foam_fft_view.gain.z;
+        let broad = foam_fft_jacobian(0u, local, texel_meters);
+        let broad_displacement = foam_fft_last_displacement;
+        let mid = foam_fft_jacobian(1u, local, texel_meters);
+        let mid_displacement = foam_fft_last_displacement;
+        let fine = foam_fft_jacobian(2u, local, texel_meters);
+        let fine_displacement = foam_fft_last_displacement;
+        let swell = foam_fft_jacobian(3u, local, texel_meters);
+        let swell_displacement = foam_fft_last_displacement;
+        let jacobian = broad + mid + fine + swell * foam_fft_view.gain.z;
+        // The drawn surface is x0 - D, weighted and fold-limited as
+        // ocean_surface_fft does (distance from the camera's foot stands in
+        // for camera distance; the atlas is well inside geometry range, and
+        // hulls float in water too deep for the breaking limiter).
+        let distance = length(offset);
+        let mid_weight = 1.0 - smoothstep(600.0, 3000.0, distance);
+        let fine_weight = 1.0 - smoothstep(150.0, 700.0, distance);
+        let chop_gain = foam_fft_view.gain.x * foam_fft_view.gain.y;
+        let drawn_jacobian = (broad + swell * foam_fft_view.gain.z
+            + mid * mid_weight + fine * fine_weight) * (-chop_gain);
+        let displacement = (broad_displacement + swell_displacement * foam_fft_view.gain.z
+            + mid_displacement * mid_weight + fine_displacement * fine_weight)
+            * (chop_gain * ocean_fft_fold_scale(drawn_jacobian));
+        let displacement_world = foam_fft_view.axis_u.xyz * displacement.x
+            + foam_fft_view.axis_v.xyz * displacement.y;
+        drawn_offset = offset - vec2<f32>(
+            dot(displacement_world, foam_frame.current_east.xyz),
+            dot(displacement_world, foam_frame.current_north.xyz),
+        );
         // 2m texels average away the finer cascades' sharpest folds, so the
         // atlas births foam at a gentler Jacobian than the per-pixel rule.
         let scaled = jacobian * (foam_fft_view.gain.x * min(foam_fft_view.gain.y, 1.0));
@@ -202,7 +248,7 @@ fn cs_foam(@builtin(global_invocation_id) id: vec3<u32>) {
         born = peak * 0.65 * fleck;
     }
     if foam_frame.ship.w > 0.5 {
-        born = max(born, ship_hull_foam(offset));
+        born = max(born, ship_hull_foam(drawn_offset));
     }
     textureStore(next_foam, vec2<i32>(id.xy), vec4<f32>(max(retained, born), 0.0, 0.0, 1.0));
 }
