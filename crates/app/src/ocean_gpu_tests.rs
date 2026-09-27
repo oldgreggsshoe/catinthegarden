@@ -646,3 +646,112 @@ fn underside_diagnostics_expose_each_optical_term_without_entering_f9_cycle() {
         crate::planet::RenderDebugMode::Final
     );
 }
+
+#[test]
+#[ignore = "requires a Vulkan GPU; run explicitly for ocean shader changes"]
+fn gpu_ocean_chunks_agree_on_their_shared_edge() {
+    // A fine ocean chunk beside a coarser one must filter the FFT sea at the
+    // coarser chunk's vertex spacing on their shared edge, or the two place
+    // the same edge vertex in different spots and the sky shows through a
+    // dotted line of pinholes. Deep inside the fine chunk its own spacing is
+    // kept. Cases: (tile_uv, level delta on edge 3 (u = 0), node spacing).
+    let spacing = 3.0_f32;
+    let cases: [([f32; 2], u32, f32); 5] = [
+        ([0.0, 0.25], 1, spacing * 2.0),  // on the shared edge, neighbour one level coarser
+        ([0.0, 0.5], 2, spacing * 4.0),   // two levels coarser
+        ([0.5, 0.5], 1, spacing),         // centre: its own spacing
+        ([0.5, 0.0], 1, spacing),         // another edge, same-level neighbour
+        ([0.0, 0.5], 0, spacing),         // same-level neighbour on this edge
+    ];
+    let inputs = cases
+        .iter()
+        .map(|([u, v], delta, _)| {
+            format!("vec4<f32>({u:?}, {v:?}, {:?}, 0.0)", (delta << 15) as f32)
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let source = format!(
+        "{}\n{}",
+        crate::terrain::planet_shader_source(),
+        format_args!(
+            r#"
+@group(3) @binding(0) var<storage, read_write> edge_results: array<f32>;
+const edge_cases = array<vec4<f32>, {count}>({inputs});
+@compute @workgroup_size(1)
+fn test_edge(@builtin(global_invocation_id) id: vec3<u32>) {{
+    let c = edge_cases[id.x];
+    edge_results[id.x] = ocean_edge_vertex_spacing(c.xy, u32(c.z), {spacing:?});
+}}
+"#,
+            count = cases.len()
+        )
+    );
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::VULKAN,
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    });
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        ..Default::default()
+    }))
+    .expect("Vulkan adapter");
+    let (device, queue) =
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+            .expect("GPU device");
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("ocean shared-edge filter regression"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("ocean shared-edge filter regression"),
+        layout: None,
+        module: &shader,
+        entry_point: Some("test_edge"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
+    let bytes = (cases.len() * size_of::<f32>()) as u64;
+    let output = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("edge results"),
+        size: bytes,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("edge readback"),
+        size: bytes,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("edge results"),
+        layout: &pipeline.get_bind_group_layout(3),
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: output.as_entire_binding(),
+        }],
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_compute_pass(&Default::default());
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(3, &group, &[]);
+        pass.dispatch_workgroups(cases.len() as u32, 1, 1);
+    }
+    encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, bytes);
+    queue.submit(Some(encoder.finish()));
+    let (sender, receiver) = std::sync::mpsc::channel();
+    readback.slice(..).map_async(wgpu::MapMode::Read, move |result| sender.send(result).unwrap());
+    device
+        .poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(std::time::Duration::from_secs(10)),
+        })
+        .unwrap();
+    receiver.recv().unwrap().unwrap();
+    let data = readback.slice(..).get_mapped_range();
+    let results: &[f32] = bytemuck::cast_slice(&data);
+    for ((uv, delta, expected), got) in cases.iter().zip(results) {
+        assert_eq!(got, expected, "tile_uv {uv:?}, level delta {delta}");
+    }
+}

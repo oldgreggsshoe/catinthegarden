@@ -506,6 +506,41 @@ fn edge_detail_filter_meters(
     return filter_meters;
 }
 
+// The FFT sea is filtered to twice its vertex spacing, so a fine chunk and its
+// coarser neighbour sampled their shared edge vertices at different blur and
+// displaced them to different places: a dotted line of pinholes, showing the
+// sky, along every change of detail. As `edge_detail_filter_meters` does for
+// the terrain, take the coarser neighbour's spacing at a shared edge and hand
+// back to this chunk's own over the first few quads, so both chunks evaluate
+// the same surface there.
+fn ocean_edge_vertex_spacing(
+    tile_uv: vec2<f32>,
+    edge_stitch: u32,
+    node_spacing: f32,
+) -> f32 {
+    var spacing = node_spacing;
+    let edge_distances = vec4<f32>(
+        tile_uv.y,
+        1.0 - tile_uv.x,
+        1.0 - tile_uv.y,
+        tile_uv.x,
+    );
+    for (var edge = 0u; edge < 4u; edge += 1u) {
+        let level_delta = edge_stitch_level_delta(edge_stitch, edge);
+        if level_delta == 0u {
+            continue;
+        }
+        let scale = exp2(f32(level_delta));
+        let edge_weight = 1.0 - smoothstep(
+            0.0,
+            min(scale / TERRAIN_CHUNK_QUADS, 1.0),
+            edge_distances[edge],
+        );
+        spacing = max(spacing, mix(node_spacing, node_spacing * scale, edge_weight));
+    }
+    return spacing;
+}
+
 fn lod_morphed_tile_uv(tile_uv: vec2<f32>, lod_transition: vec2<f32>) -> vec2<f32> {
     if lod_transition.y <= 0.5 || lod_transition.x >= 1.0 {
         return tile_uv;
@@ -944,7 +979,11 @@ fn vs_ocean(input: VertexInput) -> OceanVertexOutput {
         + planet_to_view(flat_local_planet_position);
     ocean_fft_view_position = flat_camera_relative_view_position;
     // Cube-face UV span of the chunk over 32 quads, about 0.7 planet radii per unit.
-    ocean_fft_vertex_spacing_meters = input.node_uv_origin_span.z * PLANET_RADIUS_METERS * 0.7 / 32.0;
+    ocean_fft_vertex_spacing_meters = ocean_edge_vertex_spacing(
+        projected.tile_uv,
+        input.edge_stitch,
+        input.node_uv_origin_span.z * PLANET_RADIUS_METERS * 0.7 / 32.0,
+    );
     let surface = ocean_surface(
         projected.direction,
         camera.projection.z,

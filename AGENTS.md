@@ -26,6 +26,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 
 - Thicker optical air, 27 September: Rayleigh scale height 72km -> 122km in sky and terrain haze alike (Ian's edit, finished). Ground views barely change; from orbit the disc gets a purple-blue veil. Haze tests retuned.
 
+- FFT sea seams fixed, 27 September: ocean chunks filter the sea at the coarser neighbour's vertex spacing on a shared edge (`ocean_edge_vertex_spacing`), removing the dotted pinhole lines at changes of mesh detail; GPU test `gpu_ocean_chunks_agree_on_their_shared_edge`.
+
 - Storm overcast, 27 September: the weather's storm strength at the camera (eased, `CATINGARDEN_STORM_OVERCAST` to force) greys the sky, closes the distance fog in to a 5km grey, turns the sea's sky reflection grey and cuts its direct sun by 85%.
 
 - Ship rides big swells, 27 September: hull drag is relative to the water's orbital velocity (new FFT `horizontal_velocity`), so a 38m storm swell no longer throws it 26m clear (3m now); hull spray and foam need the water against the hull side (`hull_water_contact`), and spray starts at each station's own water height.
