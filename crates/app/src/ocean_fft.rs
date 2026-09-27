@@ -268,10 +268,22 @@ pub fn choppiness() -> f32 {
 
 /// Significant wave height (metres) of the swell cascade. Swell is generated
 /// by distant storms, so it is present in calm local weather; the local storm
-/// raises it by up to 1.8x. Base from `CATINGARDEN_OCEAN_FFT_SWELL` (default 8, max 30).
+/// raises it by up to 80%, at most 8m. Base from `CATINGARDEN_OCEAN_FFT_SWELL` (default 8, max 30).
 pub fn swell_height_meters(storm_intensity: f32) -> f32 {
+    stormed_swell_height(swell_base_height_meters(), storm_intensity)
+}
+
+/// The most a local storm adds to the swell, however big the swell is: a
+/// swell from distant weather does not grow by 80% because of local weather
+/// (30m would have become 54m, past any real sea and at breaking steepness).
+const SWELL_STORM_BOOST_MAX_METERS: f32 = 8.0;
+
+/// Swell height with the local storm's boost: up to 80% more, capped at
+/// `SWELL_STORM_BOOST_MAX_METERS` (the default 8m swell keeps its full 80%).
+fn stormed_swell_height(base: f32, storm_intensity: f32) -> f32 {
     let t = ((storm_intensity - 0.15) / 0.70).clamp(0.0, 1.0);
-    swell_base_height_meters() * (1.0 + 0.8 * t * t * (3.0 - 2.0 * t))
+    let blend = t * t * (3.0 - 2.0 * t);
+    base + (0.8 * base).min(SWELL_STORM_BOOST_MAX_METERS) * blend
 }
 
 /// `CATINGARDEN_OCEAN_FFT_SWELL` (default 8m, up to 30m): the swell's
@@ -1475,6 +1487,15 @@ pub(crate) mod tests {
     fn the_shader_holds_crests_at_the_same_pinch() {
         let shader = include_str!("shared_planet.wgsl");
         assert!(shader.contains(&format!("const OCEAN_FFT_MIN_JACOBIAN: f32 = {MIN_JACOBIAN:?};")));
+    }
+
+    #[test]
+    fn a_storm_adds_at_most_eight_metres_of_swell() {
+        assert_eq!(stormed_swell_height(8.0, 0.0), 8.0);
+        assert!((stormed_swell_height(8.0, 1.0) - 14.4).abs() < 1e-4, "default keeps its 80%");
+        assert!((stormed_swell_height(5.0, 1.0) - 9.0).abs() < 1e-4);
+        assert!((stormed_swell_height(30.0, 1.0) - 38.0).abs() < 1e-4, "not 54m");
+        assert!(stormed_swell_height(30.0, 0.5) < 38.0);
     }
 
     #[test]
