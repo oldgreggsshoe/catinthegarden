@@ -7,7 +7,8 @@
 pub const HUMAN_EYE_HEIGHT_METERS: f64 = 1.70;
 pub const WALK_SPEED_METERS_PER_SECOND: f64 = 4.4704;
 pub const SWIM_SPEED_METERS_PER_SECOND: f64 = 2.0;
-pub const MAXIMUM_WALKABLE_SLOPE_DEGREES: f64 = 42.0;
+/// 90 lets the walker climb anything; lower it to turn slope rejection back on.
+pub const MAXIMUM_WALKABLE_SLOPE_DEGREES: f64 = 90.0;
 pub const GRAVITY_METERS_PER_SECOND_SQUARED: f64 = 9.806_65;
 pub const LAND_JUMP_SPEED_METERS_PER_SECOND: f64 = 5.2;
 pub const WATER_UPWARD_IMPULSE_METERS_PER_SECOND: f64 = 2.5;
@@ -385,9 +386,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn walking_rejects_steep_uphill_but_allows_descent_and_ocean_entry() {
+    fn walking_climbs_any_slope_and_allows_descent_and_ocean_entry() {
         assert!(walkable_step(10.0, 10.5, 1.0, false));
-        assert!(!walkable_step(10.0, 11.0, 1.0, false));
+        // 45 degrees, and a near-cliff: both climbable at a 90 degree limit.
+        assert!(walkable_step(10.0, 11.0, 1.0, false));
+        assert!(walkable_step(10.0, 20.0, 0.1, false));
         assert!(walkable_step(11.0, 10.0, 1.0, false));
         assert!(walkable_step(-1.0, 2.0, 1.0, true));
     }

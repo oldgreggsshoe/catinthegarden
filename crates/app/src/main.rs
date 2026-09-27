@@ -200,7 +200,10 @@ const INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 =
 /// the ocean, the weather and the hull all speed up together and the derived
 /// relationships between them -- a weather day per rotation, most of all --
 /// hold at every rung.
-const TIME_SPEED_LADDER: [f64; 9] = [0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 10.0, 20.0, 40.0];
+const TIME_SPEED_LADDER: [f64; 21] = [
+    0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 10.0, 20.0, 40.0, 80.0, 160.0, 320.0, 640.0, 1280.0, 2560.0,
+    5120.0, 10240.0, 20480.0, 40960.0, 81920.0, 163840.0,
+];
 const DEFAULT_TIME_SPEED_INDEX: usize = 3;
 const MOUSE_LOOK_RADIANS_PER_PIXEL: f64 = 0.0006;
 /// F4 enters close inspection at roughly 2m above the resident surface so
@@ -6280,22 +6283,27 @@ mod tests {
         for pair in TIME_SPEED_LADDER.windows(2) {
             assert!(pair[1] > pair[0], "ladder is not increasing at {pair:?}");
         }
-        // The rungs as asked for, as fractions of real time.
+        // The rungs as asked for: up to 40x, then doubling to 163,840x.
         let percentages: Vec<f64> = TIME_SPEED_LADDER.iter().map(|s| s * 100.0).collect();
         assert_eq!(
             percentages,
             vec![
-                10.0, 25.0, 50.0, 100.0, 200.0, 400.0, 1000.0, 2000.0, 4000.0
+                10.0, 25.0, 50.0, 100.0, 200.0, 400.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
+                32000.0, 64000.0, 128000.0, 256000.0, 512000.0, 1024000.0, 2048000.0,
+                4096000.0, 8192000.0, 16384000.0,
             ]
         );
-        // Even the top rung leaves the weather's per-frame step cap alone at a
-        // sane frame rate: twelve steps of 600s is 7200 weather-seconds, and
-        // the fastest rung needs a small fraction of that per frame.
-        let top = TIME_SPEED_LADDER[TIME_SPEED_LADDER.len() - 1];
-        let weather_seconds_per_frame = crate::weather::INTERACTIVE_WEATHER_TIME_SCALE * top / 30.0;
+        // Up to 40x the weather keeps pace at a sane frame rate: twelve steps
+        // of 600s is 7200 weather-seconds a frame, more than 40x owes at
+        // 30fps. The faster rungs are for watching days and seasons go by;
+        // there the weather's per-frame catch-up cap holds and it falls
+        // behind the clock rather than stalling a frame.
+        let weather_seconds_per_frame =
+            |speed: f64| crate::weather::INTERACTIVE_WEATHER_TIME_SCALE * speed / 30.0;
         assert!(
-            weather_seconds_per_frame < crate::weather::WEATHER_TIMESTEP_SECONDS * 12.0,
-            "at {top}x and 30fps the weather owes {weather_seconds_per_frame} s a frame"
+            weather_seconds_per_frame(40.0) < crate::weather::WEATHER_TIMESTEP_SECONDS * 12.0,
+            "at 40x and 30fps the weather owes {} s a frame",
+            weather_seconds_per_frame(40.0)
         );
     }
 
