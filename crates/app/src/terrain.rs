@@ -799,6 +799,7 @@ impl ActiveNodeIndex {
         Self { by_level }
     }
 
+    #[cfg(test)]
     fn node_at_direction(&self, direction: DVec3) -> Option<QuadtreeNode> {
         for (level, nodes) in self.by_level.iter().enumerate().rev() {
             let node = node_for_direction(direction, level as u8);
@@ -807,6 +808,27 @@ impl ActiveNodeIndex {
             }
         }
         None
+    }
+
+    /// The active node covering `direction` when it is coarser than `level`,
+    /// as the full walk down from level 18 (`node_at_direction`) finds it. Stitching asks this 36 times a
+    /// node every frame, and the answer is usually "the same level" or a
+    /// level either side; the frontier does not overlap, so finding the
+    /// covering node at this level or one or two finer settles it without
+    /// walking down from level 18.
+    fn coarser_node_at_direction(&self, direction: DVec3, level: u8) -> Option<QuadtreeNode> {
+        let covered_at = |candidate: u8| {
+            let node = node_for_direction(direction, candidate);
+            self.by_level[usize::from(candidate)]
+                .contains(&node)
+                .then_some(node)
+        };
+        for finer in level..=level.saturating_add(2).min(MAX_LOD_LEVEL) {
+            if covered_at(finer).is_some() {
+                return None;
+            }
+        }
+        (0..level).rev().find_map(covered_at)
     }
 }
 
@@ -1549,7 +1571,7 @@ impl TerrainRenderer {
     pub fn update_ocean_fft(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
-        camera_direction: DVec3,
+        camera_planet_frame_position: DVec3,
         ocean_time_seconds: f32,
     ) {
         if !self.ocean_fft_enabled {
@@ -1558,7 +1580,7 @@ impl TerrainRenderer {
         self.ocean_fft.set_time(&self.queue, ocean_time_seconds);
         self.ocean_fft.update_view(
             &self.queue,
-            camera_direction.to_array(),
+            camera_planet_frame_position.to_array(),
             crate::body::PLANET.radius_meters,
             1.0,
             crate::ocean::sea_state_at(f64::from(ocean_time_seconds)).intensity,
@@ -3629,9 +3651,7 @@ fn edge_stitch_info_indexed(node: QuadtreeNode, active_nodes: &ActiveNodeIndex) 
                 _ => (u_min - outside, v),
             };
             let direction = cube_face_direction(node.face, outside_u, outside_v);
-            if let Some(neighbor) = active_nodes.node_at_direction(direction)
-                && neighbor.level < node.level
-            {
+            if let Some(neighbor) = active_nodes.coarser_node_at_direction(direction, node.level) {
                 // Keep the full delta for the displacement filter even though
                 // the position stitcher below caps its grid collapse at two
                 // levels. Mountain-scale runtime relief otherwise evaluates
@@ -3643,7 +3663,34 @@ fn edge_stitch_info_indexed(node: QuadtreeNode, active_nodes: &ActiveNodeIndex) 
         }
         packed |= u32::from(maximum_delta) << (edge * 5);
     }
+    // A coarser node can also touch this one at a single corner, diagonally,
+    // with same-level nodes along both edges. The vertex at that corner is
+    // shared by all four nodes, and the ones that border the coarse node
+    // filter their displacement to its spacing there; without being told,
+    // this one did not, and a wedge opened between them at the corner.
+    for corner in 0..4_u32 {
+        let (outside_u, outside_v) = match corner {
+            0 => (u_min - outside, v_min - outside),
+            1 => (u_max + outside, v_min - outside),
+            2 => (u_max + outside, v_max + outside),
+            _ => (u_min - outside, v_max + outside),
+        };
+        let direction = cube_face_direction(node.face, outside_u, outside_v);
+        if let Some(neighbor) = active_nodes.coarser_node_at_direction(direction, node.level) {
+            let delta = (node.level - neighbor.level).min(CORNER_STITCH_MAX_DELTA);
+            packed |= u32::from(delta) << (CORNER_STITCH_SHIFT + corner * 3);
+        }
+    }
     packed
+}
+
+/// Four edges take five bits each; the four corners share the last twelve.
+const CORNER_STITCH_SHIFT: u32 = 20;
+const CORNER_STITCH_MAX_DELTA: u8 = 7;
+
+#[cfg(test)]
+fn corner_stitch_level_delta(packed: u32, corner: u32) -> u8 {
+    ((packed >> (CORNER_STITCH_SHIFT + corner * 3)) & 0x7) as u8
 }
 
 #[cfg(test)]
@@ -4895,16 +4942,16 @@ mod tests {
         SurfaceDetailNode, TERRAIN_INFO_NEAR_FIELD_BIT, TERRAIN_INFO_SOURCE_EDGE_FADE_BIT,
         TERRAIN_MATERIAL_LAYER_COUNT, TERRAIN_MATERIAL_TEXTURE_SIZE, TerrainSettings,
         active_node_at_direction, aligned_texture_row_bytes, anchor_radius_excess_meters,
-        conservative_outmap_height_bounds, cube_face_uv, downsample_srgb_rgba8, edge_stitch_info,
-        edge_stitch_level_delta, fallback_uv_transform, forest_biome_owns_trees,
-        forest_slope_radians, forest_surface_is_eligible, height_footprint_is_strictly_land,
-        is_open_ocean_sample, lod_transition_nodes, lod_transition_progress,
-        node_intersects_source_edge_fade, nodes_share_lod_transition, pack_terrain_info,
-        padded_texture_rows, planet_shader_source, purge_expired_lod_transitions,
-        radial_triangle_radius, sample_biome_cpu, sample_height_cpu, sample_moisture_cpu,
-        should_animate_lod_transition, source_tile_uv_at_direction, surface_detail_filter_meters,
-        terrain_material_layer_texels, terrain_material_texel, tileable_value_noise,
-        viewed_surface_direction,
+        conservative_outmap_height_bounds, corner_stitch_level_delta, cube_face_uv,
+        downsample_srgb_rgba8, edge_stitch_info, edge_stitch_level_delta, fallback_uv_transform,
+        forest_biome_owns_trees, forest_slope_radians, forest_surface_is_eligible,
+        height_footprint_is_strictly_land, is_open_ocean_sample, lod_transition_nodes,
+        lod_transition_progress, node_intersects_source_edge_fade, nodes_share_lod_transition,
+        pack_terrain_info, padded_texture_rows, planet_shader_source,
+        purge_expired_lod_transitions, radial_triangle_radius, sample_biome_cpu, sample_height_cpu,
+        sample_moisture_cpu, should_animate_lod_transition, source_tile_uv_at_direction,
+        surface_detail_filter_meters, terrain_material_layer_texels, terrain_material_texel,
+        tileable_value_noise, viewed_surface_direction,
     };
     use crate::planet::{
         CHUNK_GRID_QUADS, GLOBAL_TERRAIN_DETAIL_HEIGHT_SCALE, MAX_LOD_LEVEL,
@@ -4981,6 +5028,58 @@ mod tests {
                 active_node_at_direction(&nodes, direction)
             );
         }
+    }
+
+    #[test]
+    fn coarser_lookup_agrees_with_the_full_walk() {
+        // A real frontier: every face at level 1, then one corner child split
+        // down to level 7, so the probes meet neighbours coarser, finer and
+        // level with them, several levels apart, and across face edges.
+        let mut nodes: Vec<QuadtreeNode> = (0..6)
+            .flat_map(|face| {
+                (0..4).map(move |i| QuadtreeNode {
+                    face,
+                    level: 1,
+                    x: i % 2,
+                    y: i / 2,
+                })
+            })
+            .collect();
+        for level in 1..7 {
+            let split = QuadtreeNode {
+                face: 0,
+                level,
+                x: (1 << level) - 1,
+                y: (1 << level) - 1,
+            };
+            nodes.retain(|node| *node != split);
+            for i in 0..4 {
+                nodes.push(QuadtreeNode {
+                    face: 0,
+                    level: level + 1,
+                    x: split.x * 2 + i % 2,
+                    y: split.y * 2 + i / 2,
+                });
+            }
+        }
+        let index = ActiveNodeIndex::from_nodes(nodes.iter().copied());
+        let mut coarser_hits = 0;
+        for i in 0..=40 {
+            for j in 0..=40 {
+                let u = -1.05 + 2.1 * f64::from(i) / 40.0;
+                let v = -1.05 + 2.1 * f64::from(j) / 40.0;
+                let direction = cube_face_direction(0, u, v);
+                for level in 0..=9 {
+                    let expected = index
+                        .node_at_direction(direction)
+                        .filter(|node| node.level < level);
+                    let got = index.coarser_node_at_direction(direction, level);
+                    assert_eq!(got, expected, "u {u}, v {v}, level {level}");
+                    coarser_hits += usize::from(got.is_some());
+                }
+            }
+        }
+        assert!(coarser_hits > 0);
     }
 
     #[test]
@@ -6816,6 +6915,60 @@ mod tests {
         assert!(shader.contains("@location(12) anchor_radius_correction_meters: f32"));
         assert!(shader.contains("let stride = 1u << min(level_delta, 2u);"));
         assert!(shader.contains("requested_level - min(requested_level, level_delta)"));
+    }
+
+    #[test]
+    fn a_coarser_node_touching_only_a_corner_is_recorded() {
+        // L1 (0,0) covers L3 cells x 0..3, y 0..3. The L3 node at (4, 4)
+        // borders it along neither edge -- its left and lower neighbours are
+        // outside it -- but shares its lower-left corner vertex with it. The
+        // sea filter at that vertex has to know, or the chunks that do border
+        // the coarse node displace the corner differently from this one.
+        let coarse = QuadtreeNode {
+            face: 0,
+            level: 1,
+            x: 0,
+            y: 0,
+        };
+        let diagonal = QuadtreeNode {
+            face: 0,
+            level: 3,
+            x: 4,
+            y: 4,
+        };
+        let stitch = edge_stitch_info(diagonal, &[coarse, diagonal]);
+        for edge in 0..4 {
+            assert_eq!(edge_stitch_level_delta(stitch, edge), 0, "edge {edge}");
+        }
+        assert_eq!(corner_stitch_level_delta(stitch, 0), 2);
+        for corner in 1..4 {
+            assert_eq!(
+                corner_stitch_level_delta(stitch, corner),
+                0,
+                "corner {corner}"
+            );
+        }
+        // Corners ride above the edge fields, which the shader masks to five
+        // bits each, so the terrain's own edge decode is unaffected.
+        assert_eq!(stitch & 0xf_ffff, 0);
+
+        // An edge neighbour also touches both corners on that edge; the
+        // corner field records it too, which is harmless: the same coarse
+        // node is the nearest one either way.
+        let edge_fine = QuadtreeNode {
+            face: 0,
+            level: 3,
+            x: 4,
+            y: 1,
+        };
+        let edge_stitch = edge_stitch_info(edge_fine, &[coarse, edge_fine]);
+        assert_eq!(edge_stitch_level_delta(edge_stitch, 3), 2);
+        assert_eq!(corner_stitch_level_delta(edge_stitch, 0), 2);
+        assert_eq!(corner_stitch_level_delta(edge_stitch, 3), 2);
+
+        let shader = planet_shader_source();
+        assert!(shader.contains("fn corner_stitch_level_delta("));
+        assert!(shader.contains("(edge_stitch >> (20u + corner * 3u)) & 0x7u"));
     }
 
     #[test]

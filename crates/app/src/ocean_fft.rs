@@ -985,6 +985,15 @@ pub struct ViewParams {
     /// tangent-plane position (u, v metres), for patterns fixed to the sea
     /// rather than to the camera (`ocean_swirl_albedo`).
     pub second_order: [f32; 4],
+    /// xyz: the camera's planet direction rounded to f32; w unused. Chunk
+    /// edge vertices measure their offset from the camera through this one
+    /// shared point, so neighbouring chunks sample the waves at bit-identical
+    /// coordinates and land on bit-identical positions (see
+    /// `ocean_edge_planet_offset` in planet.wgsl).
+    pub edge_reference_direction: [f32; 4],
+    /// xyz: that direction at planet radius minus the camera position,
+    /// planet frame, metres, formed in f64; w unused.
+    pub edge_reference_offset: [f32; 4],
 }
 
 pub struct OceanFft {
@@ -1214,11 +1223,23 @@ impl OceanFft {
     pub fn update_view(
         &self,
         queue: &wgpu::Queue,
-        camera_direction: [f64; 3],
+        camera_position: [f64; 3],
         radius_meters: f64,
         gain: f32,
         storm_intensity: f32,
     ) {
+        let camera_distance = (camera_position[0] * camera_position[0]
+            + camera_position[1] * camera_position[1]
+            + camera_position[2] * camera_position[2])
+            .sqrt();
+        let camera_direction = camera_position.map(|axis| axis / camera_distance);
+        let reference_direction = camera_direction.map(|axis| axis as f32);
+        let reference_offset: [f32; 4] = [
+            (f64::from(reference_direction[0]) * radius_meters - camera_position[0]) as f32,
+            (f64::from(reference_direction[1]) * radius_meters - camera_position[1]) as f32,
+            (f64::from(reference_direction[2]) * radius_meters - camera_position[2]) as f32,
+            0.0,
+        ];
         let (u, v) = anchor_axes(camera_direction);
         let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
         let (cu, cv) = (radius_meters * dot(u, camera_direction), radius_meters * dot(v, camera_direction));
@@ -1238,6 +1259,13 @@ impl OceanFft {
             cascade,
             gain: [gain, choppiness(), swell_height_meters(storm_intensity), 0.0],
             second_order: [second_order_strength(), 0.0, cu as f32, cv as f32],
+            edge_reference_direction: [
+                reference_direction[0],
+                reference_direction[1],
+                reference_direction[2],
+                0.0,
+            ],
+            edge_reference_offset: reference_offset,
         };
         queue.write_buffer(&self.view_params, 0, bytemuck::bytes_of(&params));
     }

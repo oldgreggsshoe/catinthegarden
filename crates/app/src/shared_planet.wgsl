@@ -396,8 +396,13 @@ struct OceanFftView {
     cascade: array<vec4<f32>, 4>,
     // x: overall gain, y: choppiness, z: swell height (m).
     gain: vec4<f32>,
-    // x: second-order strength, y: its mean lift (m), subtracted.
+    // x: second-order strength; zw: the camera's absolute plane position.
     second_order: vec4<f32>,
+    // The camera's planet direction in f32, and that direction at planet
+    // radius minus the camera, in metres: one reference point every chunk
+    // shares, for `ocean_edge_planet_offset`.
+    edge_reference_direction: vec4<f32>,
+    edge_reference_offset: vec4<f32>,
 }
 
 @group(2) @binding(18)

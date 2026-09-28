@@ -755,3 +755,148 @@ fn test_edge(@builtin(global_invocation_id) id: vec3<u32>) {{
         assert_eq!(got, expected, "tile_uv {uv:?}, level delta {delta}");
     }
 }
+
+#[test]
+#[ignore = "requires a Vulkan GPU; run explicitly for ocean shader changes"]
+fn gpu_ocean_shared_vertices_get_one_filter_from_every_side() {
+    // Each pair is one vertex as two neighbouring chunks see it; the sea
+    // filter spacing, and so its displacement, must come out bit for bit the
+    // same from both, or a hairline opens between them. Stitch words carry
+    // edge deltas in bits 5e.. and corner deltas in bits 20 + 3c...
+    //
+    // Diagonal: chunk A is below chunk C (same level); coarse B is left of C
+    // and meets A only at A's top-left corner. A must hear about B through
+    // its corner field -- edge-only stitching left A at its own spacing there.
+    let diagonal_a = 1u32 << (20 + 3 * 3); // corner 3 (u_min, v_max), delta 1
+    let diagonal_c = 1u32 << (5 * 3); // edge 3 (u_min), delta 1
+    // Three levels: F's right edge meets M (one level coarser) along the
+    // upper half of M's left edge; K, one level coarser again, sits above M
+    // and touches F only at F's top-right corner.
+    let three_f = (1u32 << 5) | (2u32 << (20 + 3 * 2)); // edge 1 delta 1, corner 2 delta 2
+    let three_m = 1u32 << (5 * 2); // edge 2 (v_max), delta 1
+    let mut pairs: Vec<([f32; 2], u32, f32, [f32; 2], u32, f32)> = Vec::new();
+    for k in 0..=8 {
+        let x = k as f32 / 32.0;
+        pairs.push(([x, 1.0], diagonal_a, 3.0, [x, 0.0], diagonal_c, 3.0));
+    }
+    for k in (16..=32).step_by(2) {
+        let t = k as f32 / 32.0;
+        pairs.push(([1.0, t], three_f, 3.0, [0.0, 0.5 + t / 2.0], three_m, 6.0));
+    }
+    let inputs = pairs
+        .iter()
+        .flat_map(|(a, sa, na, b, sb, nb)| {
+            [
+                format!("EdgeCase(vec2<f32>({:?}, {:?}), {sa}u, {na:?})", a[0], a[1]),
+                format!("EdgeCase(vec2<f32>({:?}, {:?}), {sb}u, {nb:?})", b[0], b[1]),
+            ]
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let count = pairs.len() * 2;
+    let source = format!(
+        "{}\n{}",
+        crate::terrain::planet_shader_source(),
+        format_args!(
+            r#"
+struct EdgeCase {{ uv: vec2<f32>, stitch: u32, spacing: f32 }}
+@group(3) @binding(0) var<storage, read_write> edge_results: array<f32>;
+const edge_cases = array<EdgeCase, {count}>({inputs});
+@compute @workgroup_size(1)
+fn test_edge(@builtin(global_invocation_id) id: vec3<u32>) {{
+    let c = edge_cases[id.x];
+    edge_results[id.x] = ocean_edge_vertex_spacing(c.uv, c.stitch, c.spacing);
+}}
+"#
+        )
+    );
+    let results = run_edge_spacing_shader(&source, count);
+    let mut diagonal_differs_from_own_spacing = false;
+    for (index, pair) in pairs.iter().enumerate() {
+        let (a, b) = (results[2 * index], results[2 * index + 1]);
+        assert_eq!(
+            a.to_bits(),
+            b.to_bits(),
+            "shared vertex {index}: {:?} -> {a}, {:?} -> {b}",
+            pair.0,
+            pair.3
+        );
+        diagonal_differs_from_own_spacing |= index == 0 && a != 3.0;
+    }
+    assert!(
+        diagonal_differs_from_own_spacing,
+        "the corner vertex must take the coarse neighbour's spacing"
+    );
+}
+
+fn run_edge_spacing_shader(source: &str, count: usize) -> Vec<f32> {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::VULKAN,
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    });
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        ..Default::default()
+    }))
+    .expect("Vulkan adapter");
+    let (device, queue) =
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+            .expect("GPU device");
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("ocean shared-vertex filter regression"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("ocean shared-vertex filter regression"),
+        layout: None,
+        module: &shader,
+        entry_point: Some("test_edge"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
+    let bytes = (count * size_of::<f32>()) as u64;
+    let output = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("shared-vertex results"),
+        size: bytes,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("shared-vertex readback"),
+        size: bytes,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("shared-vertex results"),
+        layout: &pipeline.get_bind_group_layout(3),
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: output.as_entire_binding(),
+        }],
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_compute_pass(&Default::default());
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(3, &group, &[]);
+        pass.dispatch_workgroups(count as u32, 1, 1);
+    }
+    encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, bytes);
+    queue.submit(Some(encoder.finish()));
+    let (sender, receiver) = std::sync::mpsc::channel();
+    readback
+        .slice(..)
+        .map_async(wgpu::MapMode::Read, move |result| {
+            sender.send(result).unwrap()
+        });
+    device
+        .poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(std::time::Duration::from_secs(10)),
+        })
+        .unwrap();
+    receiver.recv().unwrap().unwrap();
+    let data = readback.slice(..).get_mapped_range();
+    bytemuck::cast_slice::<u8, f32>(&data).to_vec()
+}

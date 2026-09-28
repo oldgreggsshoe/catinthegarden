@@ -506,13 +506,35 @@ fn edge_detail_filter_meters(
     return filter_meters;
 }
 
+fn corner_stitch_level_delta(edge_stitch: u32, corner: u32) -> u32 {
+    return (edge_stitch >> (20u + corner * 3u)) & 0x7u;
+}
+
+// The spacing a coarser neighbour imposes at a point this far from it: its own
+// at its boundary, retiring over one of its quads.
+fn ocean_coarse_neighbour_spacing(
+    node_spacing: f32,
+    level_delta: u32,
+    distance_in_node: f32,
+) -> f32 {
+    let scale = exp2(f32(level_delta));
+    return node_spacing * scale * (1.0 - smoothstep(
+        0.0,
+        min(scale / TERRAIN_CHUNK_QUADS, 1.0),
+        distance_in_node,
+    ));
+}
+
 // The FFT sea is filtered to twice its vertex spacing, so a fine chunk and its
 // coarser neighbour sampled their shared edge vertices at different blur and
 // displaced them to different places: a dotted line of pinholes, showing the
-// sky, along every change of detail. As `edge_detail_filter_meters` does for
-// the terrain, take the coarser neighbour's spacing at a shared edge and hand
-// back to this chunk's own over the first few quads, so both chunks evaluate
-// the same surface there.
+// sky, along every change of detail. A shared vertex has to be displaced the
+// same by every chunk that draws it, so the spacing here is a function of the
+// point alone: the largest of this chunk's own and each coarser neighbour's,
+// fading with distance from that neighbour over one of its quads. Every
+// chunk touching a vertex sees the same coarse neighbours at the same
+// distances -- including one that only meets it diagonally at a corner, which
+// edge-only stitching missed -- so all of them agree on it.
 fn ocean_edge_vertex_spacing(
     tile_uv: vec2<f32>,
     edge_stitch: u32,
@@ -525,18 +547,37 @@ fn ocean_edge_vertex_spacing(
         1.0 - tile_uv.y,
         tile_uv.x,
     );
-    for (var edge = 0u; edge < 4u; edge += 1u) {
-        let level_delta = edge_stitch_level_delta(edge_stitch, edge);
-        if level_delta == 0u {
-            continue;
+    let near = tile_uv;
+    let far = vec2<f32>(1.0) - tile_uv;
+    // Offsets to corners (0,0), (1,0), (1,1), (0,1) by their larger axis.
+    let corner_distances = vec4<f32>(
+        max(near.x, near.y),
+        max(far.x, near.y),
+        max(far.x, far.y),
+        max(near.x, far.y),
+    );
+    for (var side = 0u; side < 4u; side += 1u) {
+        let edge_delta = edge_stitch_level_delta(edge_stitch, side);
+        if edge_delta > 0u {
+            spacing = max(spacing, ocean_coarse_neighbour_spacing(
+                node_spacing,
+                edge_delta,
+                max(edge_distances[side], 0.0),
+            ));
         }
-        let scale = exp2(f32(level_delta));
-        let edge_weight = 1.0 - smoothstep(
-            0.0,
-            min(scale / TERRAIN_CHUNK_QUADS, 1.0),
-            edge_distances[edge],
-        );
-        spacing = max(spacing, mix(node_spacing, node_spacing * scale, edge_weight));
+        let corner_delta = corner_stitch_level_delta(edge_stitch, side);
+        if corner_delta > 0u {
+            // The larger axis offset, not the Euclidean distance: on the two
+            // edges through the corner -- the only shared vertices it reaches
+            // -- they are equal, and this one is exact, where sqrt on a GPU
+            // need not be. A neighbour measuring the same vertex from its own
+            // edge must get the same bits.
+            spacing = max(spacing, ocean_coarse_neighbour_spacing(
+                node_spacing,
+                corner_delta,
+                corner_distances[side],
+            ));
+        }
     }
     return spacing;
 }
@@ -963,6 +1004,30 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     );
 }
 
+// Two chunks that share an edge vertex each reach it from their own anchor, so
+// their camera-relative positions for it differ in the last bits. That was
+// enough, twice over, to leave the odd lone pixel of sky on an edge: the GPU's
+// bilinear filter quantises its weights to 1/256 of a texel, so wave samples a
+// hair apart can land a whole step -- millimetres of displacement -- apart;
+// and even with equal samples, the positions round differently. On a chunk
+// boundary `project_patch_vertex` gives every chunk the same `direction`, bit
+// for bit. Measured from one reference point they all share, the vertex's
+// offset from the camera is then bit-identical too, and so is everything built
+// from it: the wave samples and the drawn position. The rasteriser's fill rules
+// only guarantee a watertight edge when both sides hand it identical vertices.
+fn ocean_vertex_on_chunk_edge(tile_uv: vec2<f32>) -> bool {
+    return tile_uv.x <= 1.0e-5 || tile_uv.x >= 1.0 - 1.0e-5
+        || tile_uv.y <= 1.0e-5 || tile_uv.y >= 1.0 - 1.0e-5;
+}
+
+// Planet-frame offset of a boundary vertex from the camera, through the shared
+// reference point: the direction differences exactly (the two are close), and
+// the reference's own offset was formed in f64 on the CPU.
+fn ocean_edge_planet_offset(direction: vec3<f32>) -> vec3<f32> {
+    return (direction - ocean_fft_view.edge_reference_direction.xyz) * PLANET_RADIUS_METERS
+        + ocean_fft_view.edge_reference_offset.xyz;
+}
+
 @vertex
 fn vs_ocean(input: VertexInput) -> OceanVertexOutput {
     let projected = project_patch_vertex(input);
@@ -974,9 +1039,13 @@ fn vs_ocean(input: VertexInput) -> OceanVertexOutput {
         scaled_terrain_macro_height(macro_height_meters),
         outmap,
     );
-    let flat_local_planet_position = projected.anchor_relative_position;
-    let flat_camera_relative_view_position = input.anchor_view_position
-        + planet_to_view(flat_local_planet_position);
+    let on_edge = ocean_vertex_on_chunk_edge(projected.tile_uv);
+    let edge_planet_offset = ocean_edge_planet_offset(projected.direction);
+    let flat_camera_relative_view_position = select(
+        input.anchor_view_position + planet_to_view(projected.anchor_relative_position),
+        planet_to_view(edge_planet_offset),
+        on_edge,
+    );
     ocean_fft_view_position = flat_camera_relative_view_position;
     // Cube-face UV span of the chunk over 32 quads, about 0.7 planet radii per unit.
     ocean_fft_vertex_spacing_meters = ocean_edge_vertex_spacing(
@@ -990,11 +1059,14 @@ fn vs_ocean(input: VertexInput) -> OceanVertexOutput {
         length(flat_camera_relative_view_position),
         max(-macro_height_meters, 0.0),
     );
-    let local_planet_position = projected.anchor_relative_position
-        + projected.direction * surface.vertical_displacement
+    let displacement = projected.direction * surface.vertical_displacement
         + surface.horizontal_displacement;
-    let camera_relative_view_position = input.anchor_view_position
-        + planet_to_view(local_planet_position);
+    let camera_relative_view_position = select(
+        input.anchor_view_position
+            + planet_to_view(projected.anchor_relative_position + displacement),
+        planet_to_view(edge_planet_offset + displacement),
+        on_edge,
+    );
     return OceanVertexOutput(
         camera.projection_matrix * vec4<f32>(camera_relative_view_position, 1.0),
         camera_relative_view_position,

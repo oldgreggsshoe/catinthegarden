@@ -4806,8 +4806,11 @@ impl State {
         let encode_started = Instant::now();
         // The FFT field must be current before the foam atlas reads it.
         if !solid_color_screen && self.render_path == RenderPath::Raster {
-            self.terrain
-                .update_ocean_fft(&mut encoder, camera_direction, ocean_time_seconds as f32);
+            self.terrain.update_ocean_fft(
+                &mut encoder,
+                camera_planet_frame_position,
+                ocean_time_seconds as f32,
+            );
         }
         if !solid_color_screen
             && self.render_path == RenderPath::Raster
