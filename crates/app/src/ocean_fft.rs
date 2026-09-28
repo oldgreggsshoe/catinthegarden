@@ -1001,6 +1001,8 @@ pub struct OceanFft {
     h0: wgpu::Buffer,
     pub field: wgpu::Texture,
     pub field_view: wgpu::TextureView,
+    /// Height Laplacian of cascade c in channel c, one mip, for caustics.
+    pub curvature_view: wgpu::TextureView,
     pub sampler: wgpu::Sampler,
     pub view_params: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -1010,6 +1012,7 @@ pub struct OceanFft {
     rows: wgpu::ComputePipeline,
     cols: wgpu::ComputePipeline,
     assemble: wgpu::ComputePipeline,
+    curvature: wgpu::ComputePipeline,
     wavenumbers: [f64; CASCADES],
 }
 
@@ -1047,6 +1050,14 @@ impl OceanFft {
                         access: wgpu::StorageTextureAccess::WriteOnly,
                         format: wgpu::TextureFormat::Rgba16Float,
                         view_dimension: wgpu::TextureViewDimension::D2Array,
+                    },
+                ),
+                entry(
+                    4,
+                    wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        view_dimension: wgpu::TextureViewDimension::D2,
                     },
                 ),
             ],
@@ -1111,6 +1122,21 @@ impl OceanFft {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
         });
+        let curvature = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ocean fft curvature"),
+            size: wgpu::Extent3d {
+                width: GRID as u32,
+                height: GRID as u32,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let curvature_view = curvature.create_view(&Default::default());
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("ocean fft sampler"),
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -1197,6 +1223,7 @@ impl OceanFft {
                 wgpu::BindGroupEntry { binding: 1, resource: h0.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: spec.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&mip_view(&field, 0)) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&curvature_view) },
             ],
         });
         Self {
@@ -1204,6 +1231,7 @@ impl OceanFft {
             h0,
             field,
             field_view,
+            curvature_view,
             sampler,
             view_params,
             bind_group,
@@ -1213,6 +1241,7 @@ impl OceanFft {
             rows: pipeline("fft_rows"),
             cols: pipeline("fft_cols"),
             assemble: pipeline("assemble"),
+            curvature: pipeline("curvature_bands"),
             wavenumbers,
         }
     }
@@ -1297,6 +1326,8 @@ impl OceanFft {
         if mask & 8 != 0 {
         pass.set_pipeline(&self.assemble);
         pass.dispatch_workgroups(groups, groups, CASCADES as u32);
+        pass.set_pipeline(&self.curvature);
+        pass.dispatch_workgroups(groups, groups, 1);
         }
         drop(pass);
         if mask & 16 != 0 {

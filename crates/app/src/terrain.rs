@@ -1345,6 +1345,10 @@ impl TerrainRenderer {
                         binding: 18,
                         resource: ocean_fft.view_params.as_entire_binding(),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 19,
+                        resource: wgpu::BindingResource::TextureView(&ocean_fft.curvature_view),
+                    },
                 ],
             })
         });
@@ -3606,6 +3610,16 @@ pub fn create_shared_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroup
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 19,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
         ],
     })
 }
@@ -5028,6 +5042,34 @@ mod tests {
                 active_node_at_direction(&nodes, direction)
             );
         }
+    }
+
+    #[test]
+    fn sea_bed_caustics_light_only_the_direct_sun_on_the_bed() {
+        let shader = planet_shader_source();
+        let fragment = shader
+            .split("fn terrain_fragment_color(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("raster terrain fragment path is present");
+        // In the bathymetry branch only, and on the direct sun only: the sky
+        // fill is not focused by the waves.
+        let bed = fragment
+            .split("let bottom_height = input.surface_height_and_fog_color.x;")
+            .nth(1)
+            .expect("bathymetry branch is present");
+        assert!(bed.contains("let caustics = ocean_fft_caustics("));
+        assert!(bed.contains(
+            "bottom_sky + bottom_sun * SURFACE_SUNLIGHT_SCALE * caustics"
+        ));
+        assert_eq!(fragment.matches("ocean_fft_caustics(").count(), 1);
+        // No FFT sea, no caustics: the Gerstner path is left as it was.
+        let caustics = shader
+            .split("fn ocean_fft_caustics(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .unwrap();
+        assert!(caustics.contains("if !OCEAN_FFT_ENABLED || depth_meters <= 0.0"));
     }
 
     #[test]

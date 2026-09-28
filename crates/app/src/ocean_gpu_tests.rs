@@ -900,3 +900,50 @@ fn run_edge_spacing_shader(source: &str, count: usize) -> Vec<f32> {
     let data = readback.slice(..).get_mapped_range();
     bytemuck::cast_slice::<u8, f32>(&data).to_vec()
 }
+
+#[test]
+#[ignore = "requires a Vulkan GPU; run explicitly for ocean shader changes"]
+fn gpu_caustic_brightness_is_a_bounded_lens_with_no_seam_at_the_focus() {
+    // `spread` is the relative area the light through a patch of surface
+    // lands on: 1 over flat water, 0 at the focus, negative past it.
+    let spreads: Vec<f32> = (0..=400).map(|i| 3.0 - i as f32 / 80.0).collect();
+    let inputs = spreads
+        .iter()
+        .map(|s| format!("{s:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let count = spreads.len();
+    let source = format!(
+        "{}\n{}",
+        crate::terrain::planet_shader_source(),
+        format_args!(
+            r#"
+@group(3) @binding(0) var<storage, read_write> edge_results: array<f32>;
+const spreads = array<f32, {count}>({inputs});
+@compute @workgroup_size(1)
+fn test_edge(@builtin(global_invocation_id) id: vec3<u32>) {{
+    edge_results[id.x] = ocean_caustic_brightness(spreads[id.x]);
+}}
+"#
+        )
+    );
+    let brightness = run_edge_spacing_shader(&source, count);
+    let at = |spread: f32| brightness[((3.0 - spread) * 80.0).round() as usize];
+    // Flat water is unchanged; spreading dims and gathering brightens as the
+    // reciprocal of the area.
+    assert!((at(1.0) - 1.0).abs() < 1.0e-5);
+    assert!((at(2.0) - 0.5).abs() < 1.0e-5);
+    assert!((at(0.5) - 2.0).abs() < 1.0e-5);
+    // Capped at the focal peak, and eased back to the mean once the rays have
+    // well and truly crossed rather than darkening the bed.
+    let peak = brightness.iter().cloned().fold(0.0_f32, f32::max);
+    assert!(peak <= 3.0 + 1.0e-4, "peak {peak}");
+    assert!((at(-1.5) - 1.0).abs() < 1.0e-5);
+    assert!(brightness.iter().all(|b| b.is_finite() && *b > 0.0));
+    // No seam anywhere along the sweep, the focus included: neighbouring
+    // spreads 1/80 apart never differ by more than the reciprocal's own
+    // steepest step up to the cap (1/0.3333 - 1/0.3458, about 0.11).
+    for pair in brightness.windows(2) {
+        assert!((pair[0] - pair[1]).abs() < 0.12, "{pair:?}");
+    }
+}

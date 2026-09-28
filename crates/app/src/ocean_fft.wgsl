@@ -20,6 +20,9 @@ struct Params {
 @group(0) @binding(2) var<storage, read_write> spec: array<vec2<f32>>;
 // One layer per cascade: (h, Dx, Dz, |grad h|^2).
 @group(0) @binding(3) var field: texture_storage_2d_array<rgba16float, write>;
+// Height Laplacian of every cascade at once, cascade c in channel c, for the
+// sea-bed caustics: curvature is what makes the surface a lens.
+@group(0) @binding(4) var curvature: texture_storage_2d<rgba16float, write>;
 
 fn cmul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
@@ -128,4 +131,18 @@ fn assemble(@builtin(global_invocation_id) id: vec3<u32>) {
         i32(c),
         vec4<f32>(sign * p0.x, sign * p0.y, sign * p1.x, slope_x * slope_x + slope_z * slope_z),
     );
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn curvature_bands(@builtin(global_invocation_id) id: vec3<u32>) {
+    var laplacian = vec4<f32>(0.0);
+    for (var c = 0u; c < 4u; c += 1u) {
+        let step = params.tile[c].x / f32(N);
+        let around = spatial_height(c, id.x + 1u, id.y)
+            + spatial_height(c, id.x + N - 1u, id.y)
+            + spatial_height(c, id.x, id.y + 1u)
+            + spatial_height(c, id.x, id.y + N - 1u);
+        laplacian[c] = (around - 4.0 * spatial_height(c, id.x, id.y)) / (step * step);
+    }
+    textureStore(curvature, vec2<i32>(i32(id.x), i32(id.y)), laplacian);
 }

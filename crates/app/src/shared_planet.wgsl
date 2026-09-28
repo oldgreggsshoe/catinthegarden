@@ -388,6 +388,11 @@ var ocean_fft_map: texture_2d_array<f32>;
 @group(2) @binding(17)
 var ocean_fft_sampler: sampler;
 
+// Height Laplacian of cascade c in channel c, written with the field: the
+// curvature the sea-bed caustics are made from.
+@group(2) @binding(19)
+var ocean_fft_curvature: texture_2d<f32>;
+
 struct OceanFftView {
     axis_u: vec4<f32>,
     axis_v: vec4<f32>,
@@ -1607,6 +1612,135 @@ fn ocean_fft_cascade(cascade_index: u32, local: vec2<f32>, filter_width_meters: 
         (se.x - sw.x) / step_meters,
         (sn.x - ss.x) / step_meters,
         ((se.y - sw.y) + (sn.z - ss.z)) / step_meters,
+    );
+}
+
+// Height Laplacian of one cascade, read through a cubic B-spline rather than
+// the bilinear filter: four bilinear taps placed and weighted so that together
+// they are the B-spline (the usual trick). Bilinear curvature is piecewise
+// bilinear, and the lens term below turned its kinks into straight-edged
+// diamonds of light; the B-spline is smooth to the second derivative.
+fn ocean_fft_laplacian(cascade_index: u32, local: vec2<f32>) -> f32 {
+    let entry = ocean_fft_view.cascade[cascade_index];
+    let texel_position = (entry.xy + local / entry.z) * 256.0;
+    let base = floor(texel_position - 0.5);
+    let f = texel_position - 0.5 - base;
+    let f2 = f * f;
+    let f3 = f2 * f;
+    let w0 = (1.0 - 3.0 * f + 3.0 * f2 - f3) / 6.0;
+    let w1 = (4.0 - 6.0 * f2 + 3.0 * f3) / 6.0;
+    let w2 = (1.0 + 3.0 * f + 3.0 * f2 - 3.0 * f3) / 6.0;
+    let w3 = f3 / 6.0;
+    let g0 = w0 + w1;
+    let g1 = w2 + w3;
+    let low = (base - 0.5 + w1 / g0) / 256.0;
+    let high = (base + 1.5 + w3 / g1) / 256.0;
+    let a = textureSampleLevel(ocean_fft_curvature, ocean_fft_sampler, vec2<f32>(low.x, low.y), 0.0);
+    let b = textureSampleLevel(ocean_fft_curvature, ocean_fft_sampler, vec2<f32>(high.x, low.y), 0.0);
+    let c = textureSampleLevel(ocean_fft_curvature, ocean_fft_sampler, vec2<f32>(low.x, high.y), 0.0);
+    let d = textureSampleLevel(ocean_fft_curvature, ocean_fft_sampler, vec2<f32>(high.x, high.y), 0.0);
+    let smooth_laplacian = g0.y * (g0.x * a + g1.x * b) + g1.y * (g0.x * c + g1.x * d);
+    return smooth_laplacian[cascade_index];
+}
+
+// How much of a cascade's caustic pattern survives a blur this wide (a pixel,
+// or the sun's disc seen through the water): all of it while the blur is under
+// half a texel, none by two. Fading rather than filtering keeps the B-spline
+// at full resolution and costs nothing extra.
+fn ocean_caustic_band_weight(cascade_index: u32, blur_meters: f32) -> f32 {
+    let texel_meters = ocean_fft_view.cascade[cascade_index].z / 256.0;
+    return 1.0 - smoothstep(0.5 * texel_meters, 2.0 * texel_meters, blur_meters);
+}
+
+// Refraction bends a ray entering water towards the normal by about
+// (1 - 1/1.333) of the surface slope, so a patch of surface with curvature
+// L acts as a lens: after a path s through the water, the sunlight it let in
+// covers 1 + s (1 - 1/n) L of the area it would have, and its brightness is the
+// reciprocal. Crests (L < 0) gather light, troughs spread it. Past the focus
+// the rays have crossed and it spreads again, hence the absolute value.
+const OCEAN_CAUSTIC_REFRACTION: f32 = 0.2498;
+// The brightest a caustic line gets, times the flat-water level; a real focus
+// is limited by the sun's size rather than going to infinity.
+const OCEAN_CAUSTIC_MAX_GAIN: f32 = 3.0;
+// The sun's angular diameter in radians: every point of the bed is lit by a
+// patch of surface this many metres wide per metre of water, so deeper
+// caustics are softer. Treated as a blur width alongside the pixel's.
+const OCEAN_CAUSTIC_SUN_BLUR: f32 = 0.0093;
+// Deep beds lose them altogether: the pattern tangles and blurs away.
+const OCEAN_CAUSTIC_FADE_START_METERS: f32 = 20.0;
+const OCEAN_CAUSTIC_FADE_END_METERS: f32 = 70.0;
+
+// Bed brightness, relative to flat water, from `spread`: the relative area
+// the light through a patch of surface lands on (1 flat, 0 at the focus,
+// negative once the rays have crossed). Until the focus it is the reciprocal,
+// capped at the focal peak. Past it, rays from several surface points overlap
+// on every bit of bed and the one read here no longer speaks for them all, so
+// the light eases from the peak back to the mean instead of darkening.
+fn ocean_caustic_brightness(spread: f32) -> f32 {
+    let focus = 1.0 / OCEAN_CAUSTIC_MAX_GAIN;
+    return select(
+        mix(OCEAN_CAUSTIC_MAX_GAIN, 1.0, smoothstep(focus, -1.0, spread)),
+        1.0 / spread,
+        spread >= focus,
+    );
+}
+
+// Multiplier for direct sunlight on a sea bed `depth_meters` under the water:
+// the FFT sea's own short waves, read where the refracted sun ray crossed the
+// surface. 1 with no FFT sea, at night, or out of range.
+fn ocean_fft_caustics(
+    planet_offset: vec3<f32>,
+    up: vec3<f32>,
+    sun: vec3<f32>,
+    depth_meters: f32,
+    pixel_meters: f32,
+) -> f32 {
+    if !OCEAN_FFT_ENABLED || depth_meters <= 0.0
+        || depth_meters >= OCEAN_CAUSTIC_FADE_END_METERS {
+        return 1.0;
+    }
+    let cos_air = dot(sun, up);
+    if cos_air <= 0.0 {
+        return 1.0;
+    }
+    let axis_u = ocean_fft_view.axis_u.xyz;
+    let axis_v = ocean_fft_view.axis_v.xyz;
+    // The sun ray reaching this point entered the water up-sun of it, by the
+    // depth times the tangent of the refracted angle.
+    let sin_water = sqrt(max(1.0 - cos_air * cos_air, 0.0)) / 1.333;
+    let cos_water = sqrt(max(1.0 - sin_water * sin_water, 1.0e-4));
+    let toward_sun = sun - up * cos_air;
+    let toward_sun_uv = vec2<f32>(dot(toward_sun, axis_u), dot(toward_sun, axis_v));
+    let entry = vec2<f32>(dot(planet_offset, axis_u), dot(planet_offset, axis_v))
+        + toward_sun_uv / max(length(toward_sun_uv), 1.0e-6)
+            * (depth_meters * sin_water / cos_water);
+    let path = depth_meters / cos_water;
+    let blur = max(pixel_meters, path * OCEAN_CAUSTIC_SUN_BLUR);
+    // The two short cascades (waves under ~50m): longer ones barely curve.
+    let mid_weight = ocean_caustic_band_weight(1u, blur);
+    let fine_weight = ocean_caustic_band_weight(2u, blur);
+    if mid_weight + fine_weight <= 0.0 {
+        return 1.0;
+    }
+    var curvature = 0.0;
+    if mid_weight > 0.0 {
+        curvature += mid_weight * ocean_fft_laplacian(1u, entry);
+    }
+    if fine_weight > 0.0 {
+        curvature += fine_weight * ocean_fft_laplacian(2u, entry);
+    }
+    curvature *= ocean_fft_view.gain.x;
+    let gathered = ocean_caustic_brightness(
+        1.0 + path * OCEAN_CAUSTIC_REFRACTION * curvature,
+    );
+    return mix(
+        1.0,
+        gathered,
+        1.0 - smoothstep(
+            OCEAN_CAUSTIC_FADE_START_METERS,
+            OCEAN_CAUSTIC_FADE_END_METERS,
+            depth_meters,
+        ),
     );
 }
 

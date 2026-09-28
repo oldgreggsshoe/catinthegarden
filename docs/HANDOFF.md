@@ -23,6 +23,10 @@ sky-through-the-sea pixel count is 0 with terrain switched off (was 8,215) and 4
 seam. See "FFT sea seams closed" at the end of this file for the causes, the method, the
 rejected approaches and the measured cost.
 
+**Sea-bed caustics (28 September):** the FFT sea now focuses sunlight on the shallow sea bed
+(see "Caustics on the sea bed" at the end of this file); up to +0.7ms when the bed fills the frame,
+nothing elsewhere.
+
 **Current appearance diagnosis (23 September, latest manual grid complaint):**
 Use `--scenario ocean_deck_reference` as the primary appearance comparison: a
 2.5m wave-following eye, five degrees below the horizon, wide field of view,
@@ -11420,3 +11424,32 @@ Ian: "with the seams we really should be aiming for no pixels." After `5616dc7` 
 **Tests.** `a_coarser_node_touching_only_a_corner_is_recorded`, `coarser_lookup_agrees_with_the_full_walk`, and GPU `gpu_ocean_shared_vertices_get_one_filter_from_every_side` (opt-in, real WGSL). The last one pairs each shared vertex as two chunks see it, for a diagonal corner and a three-level corner, and demands identical bits. With the corner term removed it fails on the corner vertex, 3 against 6. 579 app tests pass.
 
 **Still open.** The coastline ownership sliver (4 px here). The cheap route is probably to sample ownership at the drawn rather than the label position, not to add a fragment path. LOD transitions draw fading-out chunks unstitched; nothing in these captures traced to it, but a moving camera could show it. Level gaps above two still leave a T-junction, since the stitch collapses at most four quads; balancing kept every gap here at two or less.
+
+## 28 September - Caustics on the sea bed (FFT sea)
+
+Ian asked whether the waves had caustics; they had none. Direct sunlight on the sea bed is now multiplied by a lens term from the FFT sea's own short waves, so the shallows carry the moving bright network of focused light. It shows wherever the terrain pass draws bathymetry: from above through the water (via the pre-water snapshot), and from underwater.
+
+**Model.** Refraction bends a ray entering water toward the normal by about (1 - 1/1.333) of the surface slope, so surface curvature L acts as a lens. After a path s through the water, light through a patch lands on `spread = 1 + s * 0.2498 * L` of the area, and the bed's brightness is the reciprocal: crests gather, troughs spread (`ocean_fft_caustics`, `ocean_caustic_brightness` in `shared_planet.wgsl`). The surface point is read up-sun of the bed point, where the refracted sun ray entered, by depth times the tangent of the refracted angle. Only the two short cascades count (under ~50m); longer waves barely curve. Three shaping rules:
+- The focal peak is capped at 3x.
+- Past the focus (spread < 0), rays from several surface points overlap on the bed and one reading no longer speaks for them, so the light eases back to the mean. The plain reciprocal there darkened a rough close-up 14%.
+- The pattern fades between 20m and 70m of depth.
+
+Each band also fades once the blur (a pixel, or the sun's 0.53-degree disc seen through the water) passes half a texel of it.
+
+**Curvature.** A new compute pass, `curvature_bands` in `ocean_fft.wgsl`, writes the height Laplacian of every cascade into one 256x256 RGBA16F texture, cascade c in channel c, straight from the spatial FFT result (shared group 2, binding 19). The shader reads it through a cubic B-spline built from four bilinear taps. Read bilinearly, curvature is piecewise bilinear, and the lens term turned its kinks into straight-edged diamonds and quadrilaterals of light (first attempt, rejected on sight); the B-spline is smooth to the second derivative and draws curved caustic lines. An intermediate version took five B-spline height reads per band and differenced them (40 taps a pixel). It gave the same image to within one level (the two operations commute), at twice the cost.
+
+**Brightness.** Mean seabed luminance over the changed pixels, against the bed without caustics:
+- `ocean_clear_shallows` (bed seen through water): +5.5%, the expected small brightening of a reciprocal.
+- `ocean_underside_shallows`: -1% to +1%.
+- `ocean_shallow_bottom`: -13%. That is display clipping: the sand there is near white with the HDR curve off, so brightened lines clip. With ACES on they would roll off.
+
+**Cost.** Proportional to visible sea bed:
+- `ocean_clear_shallows`, bed filling the frame: +0.7ms (four balanced pairs +1.56/+0.58/+0.80/+0.70 against about 50ms).
+- `ocean_swell_shards`, open sea: +0.09ms mean, within noise.
+- `landing_site_eye_level`, land: +0.01ms.
+
+The first 40-tap version cost +1.5ms on the shallows.
+
+**Unchanged.** The Gerstner sea (FFT off) is pixel-identical: `ocean_clear_shallows`, four captures, max difference 0. No caustics on the ship's hull yet.
+
+**Tests.** GPU `gpu_caustic_brightness_is_a_bounded_lens_with_no_seam_at_the_focus` pins flat water at 1, the reciprocal before the focus, the 3x cap, the return to 1 well past it, and no jump anywhere along a 401-point sweep. `sea_bed_caustics_light_only_the_direct_sun_on_the_bed` keeps them on the bed's direct sun only. All 12 ocean GPU tests and 580 app tests pass.

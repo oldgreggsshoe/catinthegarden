@@ -2471,8 +2471,8 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let lake = outmap && biome_id == 1u;
     // Render baked bathymetry into the opaque snapshot for surface refraction.
     // A submerged eye sees it directly through the same 100m water medium.
-    // This branch adds no geometry or texture fetches: macro height and the
-    // displaced terrain normal already exist.
+    // This branch adds no geometry, and fetches only for its caustics: macro
+    // height and the displaced terrain normal already exist.
     if is_open_ocean_surface(outmap, macro_height_meters, biome_id)
         && input.surface_height_and_fog_color.x <= 0.0
     {
@@ -2493,8 +2493,15 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         let depth_transmittance = exp(
             min(bottom_height, 0.0) * log(50.0) / OCEAN_UNDERWATER_VISIBILITY_METERS,
         );
+        let caustics = ocean_fft_caustics(
+            view_to_planet(input.camera_relative_view_position),
+            direction,
+            sun_direction,
+            -bottom_height,
+            length(input.camera_relative_view_position) * (2.0 * camera.projection.y / 720.0),
+        );
         let bottom_light = sediment * depth_transmittance * (
-            bottom_sky + bottom_sun * SURFACE_SUNLIGHT_SCALE
+            bottom_sky + bottom_sun * SURFACE_SUNLIGHT_SCALE * caustics
                 * max(dot(input.world_normal, sun_direction), 0.0)
         );
         if camera.flat_triangle_options.w <= 0.5 {
