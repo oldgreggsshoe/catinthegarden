@@ -219,10 +219,8 @@ impl AtmosphereRenderer {
         );
         let display_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("physical atmosphere display shader"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Owned(format!(
-                "{}\n{}",
-                crate::body::wgsl_constants(),
-                include_str!("atmosphere.wgsl")
+            source: wgpu::ShaderSource::Wgsl(Cow::Owned(display_shader_source(
+                crate::planet::ocean_fft_enabled(),
             ))),
         });
 
@@ -499,8 +497,52 @@ fn draw_lut(
     render_pass.draw(0..3, 0..1);
 }
 
+/// The sky display shader. Under the FFT sea its water fill is switched off:
+/// the sea draws that water itself, in its own colour.
+fn display_shader_source(fft_sea: bool) -> String {
+    let display = include_str!("atmosphere.wgsl");
+    let display = if fft_sea {
+        display.replace(
+            "const SKY_PASS_WATER_FILL: bool = true;",
+            "const SKY_PASS_WATER_FILL: bool = false;",
+        )
+    } else {
+        display.to_string()
+    };
+    format!("{}\n{display}", crate::body::wgsl_constants())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_fft_sea_takes_over_the_sky_pass_water_fill() {
+        let gerstner = super::display_shader_source(false);
+        let fft = super::display_shader_source(true);
+        assert!(gerstner.contains("const SKY_PASS_WATER_FILL: bool = true;"));
+        assert!(fft.contains("const SKY_PASS_WATER_FILL: bool = false;"));
+        for source in [&gerstner, &fft] {
+            let module = wgpu::naga::front::wgsl::parse_str(source).expect("display shader parses");
+            wgpu::naga::valid::Validator::new(
+                wgpu::naga::valid::ValidationFlags::all(),
+                wgpu::naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .expect("display shader validates");
+        }
+        // The sea's fill must classify rays exactly as this one did.
+        let planet = include_str!("planet.wgsl");
+        let sky = include_str!("atmosphere.wgsl");
+        let body = |source: &str| {
+            source
+                .split("fn ocean_background_water_coverage(")
+                .nth(1)
+                .and_then(|rest| rest.split("\n}\n").next())
+                .expect("water coverage function is present")
+                .to_string()
+        };
+        assert_eq!(body(planet), body(sky));
+    }
+
     #[test]
     fn waterline_background_shader_validates_and_uses_per_ray_water_entry() {
         let display = include_str!("atmosphere.wgsl");
@@ -515,7 +557,9 @@ mod tests {
         assert!(
             display.contains("dot(ray, up_view), camera.camera_right.w, camera.camera_forward.w")
         );
-        assert!(display.contains("if BODY_HAS_OCEAN && water_coverage > 0.0"));
+        assert!(
+            display.contains("if SKY_PASS_WATER_FILL && BODY_HAS_OCEAN && water_coverage > 0.0")
+        );
         assert!(display.contains("if water_depth_meters <= 0.0"));
         assert!(display.contains("if ray_up_cosine >= 0.0"));
         assert!(display.contains("eye_clearance_meters / max(-ray_up_cosine"));

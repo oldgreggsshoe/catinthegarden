@@ -1938,6 +1938,76 @@ fn fs_ocean_shoreline(input: OceanVertexOutput) -> @location(0) vec4<f32> {
     return ocean_fragment_with_transmission_mode(input, vec4<f32>(0.0), surface, height, true);
 }
 
+// The water around a swimmer where nothing was drawn: the long views out
+// through the sea that end on no geometry at all. The sky pass used to paint
+// these with a fixed blue-green of its own, so under the FFT sea they were a
+// different colour from both the haze and the sea seen from above. Drawn here
+// instead, a full-screen triangle at the start of the transmitting pass, it
+// uses the very same `ocean_underwater_medium_colour` as the haze, and the
+// pre-water snapshot says both where nothing was drawn and what the sky
+// behind looked like. The sea then draws over it as usual.
+struct UnderwaterBackgroundOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) ndc: vec2<f32>,
+}
+
+@vertex
+fn vs_underwater_background(@builtin(vertex_index) vertex_index: u32) -> UnderwaterBackgroundOutput {
+    let positions = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(3.0, -1.0),
+        vec2<f32>(-1.0, 3.0),
+    );
+    let position = positions[vertex_index];
+    return UnderwaterBackgroundOutput(vec4<f32>(position, 0.0, 1.0), position);
+}
+
+// How much of a background ray is water: all of it for a submerged eye, and
+// for one just above the surface the downward rays that would reach the water
+// within 20-30m. Mirrors `ocean_background_water_coverage` in atmosphere.wgsl,
+// which still fills for the Gerstner sea.
+fn ocean_background_water_coverage(
+    ray_up_cosine: f32,
+    eye_clearance_meters: f32,
+    water_depth_meters: f32,
+) -> f32 {
+    if water_depth_meters <= 0.0 {
+        return 0.0;
+    }
+    if eye_clearance_meters <= 0.0 {
+        return 1.0;
+    }
+    if ray_up_cosine >= 0.0 {
+        return 0.0;
+    }
+    let entry_distance = eye_clearance_meters / max(-ray_up_cosine, 1.0e-6);
+    return 1.0 - smoothstep(20.0, 30.0, entry_distance);
+}
+
+@fragment
+fn fs_underwater_background(input: UnderwaterBackgroundOutput) -> @location(0) vec4<f32> {
+    let pixel = vec2<i32>(input.position.xy);
+    // Only where the opaque scene left nothing: reversed-Z clears to zero.
+    if !BODY_HAS_OCEAN || textureLoad(water_scene_depth, pixel, 0) > 0.0 {
+        discard;
+    }
+    let ray = normalize(vec3<f32>(
+        input.ndc.x * camera.projection.x * camera.projection.y,
+        input.ndc.y * camera.projection.y,
+        -1.0,
+    ));
+    let coverage = ocean_background_water_coverage(
+        dot(ray, normalize(camera.camera_planet_direction_view_altitude.xyz)),
+        camera.camera_right.w,
+        camera.camera_forward.w,
+    );
+    if coverage <= 0.0 {
+        discard;
+    }
+    let behind = textureLoad(water_scene_color, pixel, 0).rgb;
+    return vec4<f32>(mix(behind, ocean_underwater_medium_colour(), coverage), 1.0);
+}
+
 fn ocean_transmitting_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
     let height = macro_terrain_height(input.outmap > 0.5, input.source_uv, normalize(input.surface_direction));
     let surface = ocean_raster_surface(input, height);

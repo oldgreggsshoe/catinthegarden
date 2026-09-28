@@ -2852,13 +2852,35 @@ fn ocean_water_fog_at_depth(
         camera_relative_view_position,
         water_depth_meters,
     );
-    // Lit by the sky overhead rather than painted: the water goes dark at
-    // night and at depth, because what reaches the eye is daylight that got
-    // down here and then scattered off the water.
-    let up_view = normalize(
-        planet_to_view(camera.camera_planet_direction_view_altitude.xyz),
+    return TerrainFog(amount, ocean_underwater_medium_colour());
+}
+
+// What the water itself looks like to an eye inside it, once everything else
+// has been extinguished.
+//
+// On the FFT sea this is the sea's own colour -- OCEAN_SOT_WATER_ALBEDO, or the
+// swirl at the camera when those are on -- lit exactly as the body of the water
+// is lit seen from above (`ocean_sot_body_light`). The light that comes back up
+// out of the sea and the light that reaches a swimmer are the same scattered
+// daylight, so the two views should agree; a separate blue-green tint made the
+// sea one colour from the boat and another from under it.
+fn ocean_underwater_medium_colour() -> vec3<f32> {
+    if !OCEAN_FFT_ENABLED {
+        // Lit by the sky overhead rather than painted: the water goes dark at
+        // night and at depth, because what reaches the eye is daylight that
+        // got down here and then scattered off the water.
+        let up_view = normalize(
+            planet_to_view(camera.camera_planet_direction_view_altitude.xyz),
+        );
+        return physical_camera_sky_radiance(up_view) * OCEAN_UNDERWATER_TINT;
+    }
+    // Already a view-space radial (built by `world_to_view` on the CPU).
+    let up = normalize(view_to_planet(camera.camera_planet_direction_view_altitude.xyz));
+    let sun_direction = normalize(camera.sun_direction.xyz);
+    return ocean_water_albedo_at(vec2<f32>(0.0)) * ocean_sot_body_light(
+        surface_direct_sun_transmittance(up, 0.0, sun_direction),
+        sky_diffuse_irradiance(up, up, 0.0, sun_direction),
     );
-    return TerrainFog(amount, physical_camera_sky_radiance(up_view) * OCEAN_UNDERWATER_TINT);
 }
 
 fn ocean_water_fog(camera_relative_view_position: vec3<f32>) -> TerrainFog {
@@ -4097,7 +4119,13 @@ fn ocean_underside_colour(
     }
     let up_view = normalize(planet_to_view(surface_direction));
     let skylight = physical_camera_sky_radiance(up_view);
-    let fallback = skylight * OCEAN_UNDERWATER_TINT * 0.30;
+    // A reflection that finds nothing has found deep water: on the FFT sea,
+    // the water's own colour, as everywhere else under it.
+    let fallback = select(
+        skylight * OCEAN_UNDERWATER_TINT * 0.30,
+        ocean_underwater_medium_colour(),
+        OCEAN_FFT_ENABLED,
+    );
     // Outside Snell's window the interface reflects the submerged scene,
     // rather than becoming an opaque dark ceiling. Misses retain a bounded
     // fallback; confidence fades screen edges and already-extinguished data.
@@ -4260,6 +4288,23 @@ fn ocean_sot_specular(
         * smoothstep(0.0, 0.03, n_dot_v);
 }
 
+// Light on the body of the water: sky fill plus a share of the sun, both greyed
+// and dimmed by a storm overcast. Shared by the sea seen from above and the
+// water around a swimmer, so the two are one colour.
+fn ocean_sot_body_light(sun_transmittance: vec3<f32>, sky_diffuse: vec3<f32>) -> vec3<f32> {
+    let sun = sun_transmittance * (1.0 - STORM_SUN_BLOCK * storm_overcast());
+    return storm_overcast_colour(sky_diffuse) + sun * (0.4 * SURFACE_SUNLIGHT_SCALE);
+}
+
+// The sea's water colour at a tangent-plane offset from the camera: the swirl
+// there when those are on, otherwise OCEAN_SOT_WATER_ALBEDO.
+fn ocean_water_albedo_at(local: vec2<f32>) -> vec3<f32> {
+    if OCEAN_SWIRL_ENABLED {
+        return ocean_swirl_albedo(local);
+    }
+    return OCEAN_SOT_WATER_ALBEDO;
+}
+
 fn ocean_lighting_sot(
     normal: vec3<f32>,
     crest_sharpness: f32,
@@ -4284,7 +4329,6 @@ fn ocean_lighting_sot(
     let fresnel = vec3<f32>(0.02) + vec3<f32>(0.98) * pow(1.0 - facing, 5.0);
     let daylight = max(max(sun_transmittance.x, sun_transmittance.y), sun_transmittance.z);
     let sun = sun_transmittance * (1.0 - STORM_SUN_BLOCK * storm_overcast());
-    let sky_light = storm_overcast_colour(sky_diffuse);
     // Set by ocean_surface_fft for this pixel when swirling colours are on.
     let water_albedo = select(OCEAN_SOT_WATER_ALBEDO, ocean_fft_swirl_albedo, OCEAN_SWIRL_ENABLED);
     let peak_linear = clamp(
@@ -4302,7 +4346,7 @@ fn ocean_lighting_sot(
     let view_depth = mix(OCEAN_SOT_STEEP_VIEW_BRIGHTNESS, 1.0, smoothstep(0.1, 0.8, 1.0 - facing));
     let body = water_albedo * view_depth
         * (1.0 + OCEAN_SOT_THIN_BRIGHTENING * thin + 0.4 * peak);
-    let diffuse = body * (sky_light + sun * (0.4 * SURFACE_SUNLIGHT_SCALE));
+    let diffuse = body * ocean_sot_body_light(sun_transmittance, sky_diffuse);
     let toward_sun = pow(max(dot(-view_direction, sun_direction_view), 0.0), 4.0);
     let transmission = water_albedo * sun
         * (OCEAN_SOT_TRANSMISSION * SURFACE_SUNLIGHT_SCALE) * toward_sun

@@ -889,6 +889,8 @@ pub struct TerrainRenderer {
     transmitting_ocean_pipeline: wgpu::RenderPipeline,
     transmitting_ocean_stable_pipeline: wgpu::RenderPipeline,
     shoreline_pipeline: wgpu::RenderPipeline,
+    /// Full-screen water behind a swimmer where no geometry was drawn.
+    underwater_background_pipeline: wgpu::RenderPipeline,
     ocean_transition_pipeline: wgpu::RenderPipeline,
     ocean_stable_pipeline: wgpu::RenderPipeline,
     terrain_tile_bind_group_layout: wgpu::BindGroupLayout,
@@ -1116,6 +1118,7 @@ impl TerrainRenderer {
                         if fragment_entry_point == "fs_ocean_transmission"
                             || fragment_entry_point == "fs_ocean_transmission_stable"
                             || fragment_entry_point == "fs_ocean_shoreline"
+                            || fragment_entry_point == "fs_underwater_background"
                         {
                             &water_layout
                         } else {
@@ -1212,6 +1215,15 @@ impl TerrainRenderer {
             "shoreline transition",
             "vs_ocean",
             "fs_ocean_shoreline",
+            None,
+            true,
+        );
+        // Depth test off and no depth write, as for the shoreline: it only
+        // touches pixels the pre-water snapshot shows empty.
+        let underwater_background_pipeline = create_pipeline_with_culling(
+            "underwater background",
+            "vs_underwater_background",
+            "fs_underwater_background",
             None,
             true,
         );
@@ -1398,6 +1410,7 @@ impl TerrainRenderer {
             transmitting_ocean_pipeline,
             transmitting_ocean_stable_pipeline,
             shoreline_pipeline,
+            underwater_background_pipeline,
             ocean_transition_pipeline,
             ocean_stable_pipeline,
             terrain_tile_bind_group_layout,
@@ -3306,6 +3319,21 @@ impl TerrainRenderer {
         render_pass: &mut wgpu::RenderPass<'pass>,
         camera_bind_group: &'pass wgpu::BindGroup,
     ) {
+        // Water wherever a swimmer sees no geometry, in the sea's own colour;
+        // first, so the sea itself draws over it. The Gerstner sea keeps the
+        // sky pass's fill instead (see SKY_PASS_WATER_FILL).
+        if crate::planet::ocean_fft_enabled() {
+            render_pass.set_pipeline(&self.underwater_background_pipeline);
+            render_pass.set_bind_group(0, camera_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.placeholder_tile.bind_group, &[]);
+            render_pass.set_bind_group(2, self.shared_bind_group(), &[]);
+            render_pass.set_bind_group(3, &self.water_scene.bind_group, &[]);
+            // The vertex stage reads neither buffer, but the pipeline shares
+            // the sea's vertex layout, so both slots must be bound.
+            render_pass.set_vertex_buffer(0, self.chunk_vertex_buffer.slice(..));
+            render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+            render_pass.draw(0..3, 0..1);
+        }
         self.draw_ocean(
             render_pass,
             camera_bind_group,

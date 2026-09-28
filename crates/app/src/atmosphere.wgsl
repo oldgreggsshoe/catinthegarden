@@ -287,6 +287,12 @@ fn storm_overcast_colour(radiance: vec3<f32>, overcast: f32) -> vec3<f32> {
     return mix(radiance, vec3<f32>(luminance * STORM_OVERCAST_BRIGHTNESS), overcast);
 }
 
+// Whether this pass paints the water fill below. The FFT sea paints its own,
+// in its own colour, at the start of the transmitting pass
+// (`fs_underwater_background` in planet.wgsl), so atmosphere.rs sets this
+// false for it; mixing both would leave a trace of this pass's tint.
+const SKY_PASS_WATER_FILL: bool = true;
+
 // A finite, near-clipped sea shell does not enclose a water volume. At a
 // swimming eye height, some downward rays miss every triangle and reach this
 // background. Classify those rays against the local water plane, not solely
@@ -318,7 +324,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         dot(ray, up_view), camera.camera_right.w, camera.camera_forward.w,
     );
     let sky = displayed_sky_radiance(ray);
-    if BODY_HAS_OCEAN && water_coverage > 0.0 {
+    if SKY_PASS_WATER_FILL && BODY_HAS_OCEAN && water_coverage > 0.0 {
         // Ambient water fill, bounded so an overhead sun's narrow HDR sky
         // lobe cannot turn the whole volume white. Match the existing fog tint.
         let ambient = min(perceptual_sky_radiance(textureSampleLevel(

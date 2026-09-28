@@ -23,6 +23,9 @@ sky-through-the-sea pixel count is 0 with terrain switched off (was 8,215) and 4
 seam. See "FFT sea seams closed" at the end of this file for the causes, the method, the
 rejected approaches and the measured cost.
 
+**Underwater colour (28 September):** under the FFT sea the water is `OCEAN_SOT_WATER_ALBEDO` (or
+the swirl), lit as the sea is from above; see "Underwater water is the sea's own colour".
+
 **Sea-bed caustics (28 September):** the FFT sea now focuses sunlight on the shallow sea bed
 (see "Caustics on the sea bed" at the end of this file); up to +0.7ms when the bed fills the frame,
 nothing elsewhere.
@@ -11453,3 +11456,24 @@ The first 40-tap version cost +1.5ms on the shallows.
 **Unchanged.** The Gerstner sea (FFT off) is pixel-identical: `ocean_clear_shallows`, four captures, max difference 0. No caustics on the ship's hull yet.
 
 **Tests.** GPU `gpu_caustic_brightness_is_a_bounded_lens_with_no_seam_at_the_focus` pins flat water at 1, the reciprocal before the focus, the 3x cap, the return to 1 well past it, and no jump anywhere along a 401-point sweep. `sea_bed_caustics_light_only_the_direct_sun_on_the_bed` keeps them on the bed's direct sun only. All 12 ocean GPU tests and 580 app tests pass.
+
+## 28 September - Underwater water is the sea's own colour
+
+Ian: under the water it should be the same colour as the one set for the surface, with the sky showing near the surface looking up. It was not. The haze around a swimmer, the underside's fallback reflection and the sky pass's fill all used a separate fixed blue-green, `OCEAN_UNDERWATER_TINT` (0.055, 0.30, 0.42), and the sky pass held its own literal copy of it. None of them read `OCEAN_SOT_WATER_ALBEDO` or the swirl colours. The fill is the one that matters most: for a submerged eye it paints every pixel no geometry covers, so the long views out through the sea.
+
+**Now, on the FFT sea:**
+- `ocean_underwater_medium_colour` (shared_planet.wgsl) is the water albedo lit exactly as the water body seen from above is lit. That albedo is `OCEAN_SOT_WATER_ALBEDO`, or the swirl at the camera through `ocean_water_albedo_at`. The lighting, `ocean_sot_body_light`, is sky fill plus 0.4 of the sun, greyed and dimmed by storm overcast, and is now shared with `ocean_lighting_sot`. It feeds the water fog, the reflection fallback outside Snell's window, and the seabed-reflection fallback. The sky seen through Snell's window is unchanged.
+- The water behind a swimmer where nothing was drawn is painted by a new full-screen triangle at the start of the transmitting sea pass (`vs/fs_underwater_background`, planet.wgsl; `underwater_background_pipeline`, terrain.rs). It runs with depth test off and fills only pixels the pre-water snapshot shows empty. It uses the same water-coverage rule as before, a test keeps that rule identical to the sky pass's copy, and it blends over the sky from the snapshot. The sea then draws over it.
+- The sky pass's own fill is switched off for the FFT sea (`SKY_PASS_WATER_FILL`, set false by `atmosphere.rs::display_shader_source`).
+
+**Unchanged.** The Gerstner sea keeps the old tint and the sky-pass fill, unchanged. The old fog colour also looked the sky up along `planet_to_view` of an already view-space radial, i.e. in the wrong direction; the Gerstner path keeps that as it was, and the FFT path no longer uses it.
+
+**Evidence.**
+- Before/after on `ocean_underwater_visibility`, `ocean_underside_snell_window`, `ocean_underside_shallows` and `ocean_waterline_medium`: the navy water outside the window and the far band in the shallows become the sea's colour.
+- A temporary build with Ian's purple (0.025, 0, 0.05), reverted afterwards, shows the same purple above and below the waterline.
+
+**Cost.** None:
+- `ocean_swell_shards`, above water: four pairs +0.14/+0.32/+0.02/-0.21ms.
+- `ocean_seafloor_hole`, underwater, 31s: four pairs all faster, about -1.9ms (55.8 -> 53.9). The old fog colour ran a sky-view lookup per pixel.
+
+**Tests.** `the_fft_sea_takes_over_the_sky_pass_water_fill` validates both display-shader variants and pins the two coverage functions to identical text. 581 app tests and the 12 ocean GPU tests pass.
