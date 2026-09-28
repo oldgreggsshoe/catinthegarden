@@ -1,42 +1,22 @@
-27 September - Brief for Codex: find and fix the "sideways white shards" on big FFT-ocean crests
+28 September - Settings for Ian's "sideways spikes" screenshots
 
-Read AGENTS.md and the latest sections of docs/HANDOFF.md first (from "27 September - Spiky 'mountain' sea" onward). Branch experiment/ocean-wind-sea-spectrum, HEAD dc10e98 or later. Pull first.
+Short answer: SWELL=30 is the best-supported setting. There is no sign of WIND 50 / CHOP 0 / WAVELENGTH 0.6. The logs don't record environment variables, so no screenshot's exact settings can be proved.
 
-Symptom
-- With a big swell, e.g.
-    CATINGARDEN_OCEAN_FFT=1 CATINGARDEN_OCEAN_FFT_SWELL=30 target/release/catinthegarden-app
-  jagged, sideways-pointing white shards appear along the sides and faces of big foamy crests: saw-tooth wedges, as if triangles were stretched sideways.
-- Evidence on the current limiter: test-runs/manual/1790525174-746683/screenshots/capture-001..003.png (the white wedges pointing left along the crest face).
-- Do NOT use test-runs/manual/1790520906-735221 as evidence: it was taken with a slope-aware fold floor that has since been reverted (316d3ba).
+Which screenshot is which:
+- "Sideways spikes" is manual/1790520906-735221 (27 Sep 15:55, commit 3e190ee). Its jagged sideways shards were caused by the slope-aware fold floor in 1142d30, which Claude reverted the same afternoon ("Needle-crest fix reverted" in AGENTS.md; "drawn_fold_census" in HANDOFF). They cannot be reproduced on the current code whatever the settings. Your broad pointed foam patches being "less extreme" is expected.
+- Your ocean_swell_shards replay is built from manual/1790525174-746683 (commit 316d3ba), after the revert. That is the right screenshot to chase.
 
-What is already known (all measured on the CPU surface, not the GPU)
-- The fold limiter is the fixed Jacobian floor MIN_JACOBIAN = 0.1: ocean_fft.rs fold_scale, mirrored by ocean_fft_fold_scale in shared_planet.wgsl, and used in the foam shader.
-- A slope-dependent floor was tried and reverted. It made the per-point limit jump between a crest's tip and flanks, which sheared neighbouring vertices past each other: 120x more mesh fold-overs.
-- Measured on a 0.5m CPU grid of the drawn mesh (x0 - cD):
-  - fold-overs are 0.0004% of cells at swell 8 and 0.0041% at swell 30 (ignored instrument `drawn_fold_census`; regression test `the_drawn_sea_almost_never_turns_inside_out`)
-  - double folds (collapsed in both directions, orientation preserved) were effectively 0 by a symmetric-part eigenvalue check
-  - raising the fixed floor (0.15/0.2/0.3) makes fold-overs worse, not better
-- So the CPU mesh at 0.5m barely folds. The shards are either something the CPU grid can't see, or not geometry at all.
+Settings evidence: the ship's wave height at t=0 (the first "ship float" record in each log.jsonl) is a fingerprint of the sea settings.
+- 1790520906, 1790524927, 1790525069 (the "~30m swell" float log) and 1790525174 all read -18.7706, so they share one setting.
+- That day's plain launches (1790518487, 1790520762) read -3.5403.
 
-Suspects, in the order I would test them
-1. GPU mesh resolution: distant ocean chunks have vertex spacing of metres, and the vertex stage filters the cascades to about 2x the vertex spacing (ocean_surface_fft, vertex_filter). A displacement field sampled coarsely can invert triangles that the 0.5m CPU grid does not.
-2. Foam drawn stretched rather than inverted geometry: the foam history atlas has 2m texels in label coordinates (ocean_foam.wgsl, ocean_history_coverage), and fold foam is per pixel. On strongly pinched crests, label-space foam is squeezed into thin wedges in drawn space.
-3. The fine cascade (under 3m) displaces vertices on the GPU (chop_tangent includes fine_displacement * fine_weight) but the CPU mirror omits it.
-4. Back faces being shaded as tops (planet.wgsl ocean_back_face_is_fold) hiding inverted triangles that would otherwise show as dark undersides.
+On a clean rebuild of 3e190ee, interactive launch, FFT=1:
+- no overrides: -1.0498 (not -3.5403)
+- SWELL=30: -18.0332 (closest)
+- SWELL=30 WIND=50 CHOP=0 WAVELENGTH=0.6: -15.1509
+- WIND=50: -1.7607; WIND=20: -0.1384; WIND=30: 0.4020
+- PEAKS=0: -0.7969; CHOP=0: -0.9900; WAVELENGTH=0.6: -1.1379
 
-How to work
-- Reproduce first: a deterministic scenario, a storm or big-swell view at 20-60m eye height looking across big crests, that shows the shards in its captures.
-- Then split geometry from foam with diagnostics: spray off (CATINGARDEN_OCEAN_FFT_SPRAY=0), foam off, and a render debug mode that tints back faces or inverted triangles, with a pixel count.
-- Measure on the GPU image or mesh, not only the CPU grid; the CPU grid has already been shown not to see this.
-- Judge any fix by before/after measurements on the drawn mesh or image, not per-point estimates. That mistake has been made once already.
+Neither baseline matches a clean build, and no single WIND/CHOP/PEAKS/WAVELENGTH value restores -3.5403. So the binary Ian ran then differed from clean 3e190ee (probably uncommitted changes in the shared checkout at the time), and an exact fingerprint match is not possible.
 
-Constraints
-- Keep the acute crests (tips must still come to a point) and don't bring back needles or spikes.
-- No frame-time regression; measure GPU cost if you add work per vertex or pixel.
-- The user's uncommitted colour experiments in shared_planet.wgsl (OCEAN_SOT_WATER_ALBEDO, OCEAN_REFLECTION_SCALE) must not be committed. Commit only your own hunks, and verify the committed tree in a separate worktree with its own CARGO_TARGET_DIR.
-- Update docs/HANDOFF.md (header and a new dated section) and AGENTS.md "What exists now"; commit and push.
-
-Done when
-- You can name the cause, with a measurement that shows it.
-- A fix removes the shards in the reproducing scenario, backed by a before/after metric.
-- the_drawn_sea_almost_never_turns_inside_out still passes, and a new regression check covers the actual cause.
+Recommendation: keep CATINGARDEN_OCEAN_FFT=1 CATINGARDEN_OCEAN_FFT_SWELL=30 with no other overrides. Judge the replay against 1790525174-746683, not 1790520906-735221.
