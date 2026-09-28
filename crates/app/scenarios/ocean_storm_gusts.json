@@ -1,21 +1,20 @@
 {
-  "name": "ocean_storm_approach",
+  "name": "ocean_storm_gusts",
   "fixed_timestep_seconds": 0.016666666666666666,
-  "duration_seconds": 22.0,
+  "duration_seconds": 16.0,
   "solid_color_screen": false,
   "hide_overlay": true,
   "seam_gap_check": false,
   "planet_relative_up": true,
   "planet_rotation_time_scale": 0.0,
   "fixed_exposure": true,
-  "waterline_eye_height_meters": 2.5,
-  "storm_approach_seconds": 20.0,
-  "screenshot_times_seconds": [0.5, 5.0, 10.0, 15.0, 20.0, 22.0],
+  "storm_approach_seconds": 1.0,
+  "screenshot_times_seconds": [6.0, 8.0, 10.0, 12.0, 14.0, 16.0],
   "waypoints": [
     {
       "time_s": 0.0,
-      "position": [3354072.0199947827, 2006922.3243811773, 850002.158005245],
-      "look_at": [3353752.2662582356, 2006882.065403244, 850948.8030087495]
+      "position": [3354101.368088272, 2006939.8849295645, 850009.5955148307],
+      "look_at": [3354003.455432042, 2007019.2408937472, 850020.3538928974]
     }
   ],
   "sun_waypoints": [
@@ -27,9 +26,6 @@
   "assertions": {
     "require_finite_metrics": true,
     "expected_screenshots": 6,
-    "min_camera_clearance_m": 2.4,
-    "max_camera_clearance_m": 2.6,
-    "min_ocean_wave_height_range_meters": 4.0,
     "min_peak_rain_intensity": 0.7,
     "min_gust_wind_range_meters_per_second": 1.0
   }

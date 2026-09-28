@@ -28,6 +28,13 @@ calm and brings a full storm in (fog, grey, desaturated sea, swell); replay `oce
 At the interactive start the live weather never reaches a storm (measured). The hull now has
 underwater and reflected caustics. See "Caustics on the hull, and a storm on demand".
 
+**Rain, gusts, a darker storm, keyboard look (29 September):** storms now bring rain (streaks around
+the camera slanted by the wind) and gusts (patches of stronger, veered wind running downwind, with
+rougher water, more whitecaps and spray, tilting the rain as they pass); the finished frame darkens
+by up to 40% of its displayed brightness with the storm overcast; Q/E turn and Z/X tilt the view,
+also on the ship's bridge. Replay `ocean_storm_gusts`. See "Rain, gusts, a darker storm, and
+keyboard look" at the end of this file.
+
 **Underwater colour (28 September):** under the FFT sea the water is `OCEAN_SOT_WATER_ALBEDO` (or
 the swirl), lit as the sea is from above; see "Underwater water is the sea's own colour".
 
@@ -11512,3 +11519,34 @@ Cost in `ocean_ship_float`, four pairs: +0.10/+0.29/-0.05/+0.26ms.
 The horizon fades into grey haze and whitecaps build.
 
 **Tests.** The approach's calm start, full end and continuity are added to the sea-state test. 581 app tests and the 12 ocean GPU tests pass; the scenario count is 117.
+
+## 29 September - Rain, gusts, a darker storm, and keyboard look
+
+**Rain** (`rain.rs`, `rain.wgsl`; replaces the old 384 static lines in `weather_rain.wgsl`, which hung 35m+ overhead and never moved). Drops fill a 24m box of air around the eye, carried by the wind and falling at the terminal speeds of four drop sizes (5.5-9 m/s). The box wraps around the eye: its offset is integrated on the CPU in f64 (wind in, fall in, the camera's own movement out) and handed to the shader reduced to one box, so the rain stays put in the air as the eye moves through it. Each drop is drawn as the streak it makes in a 1/40s exposure along its velocity relative to the eye, so the wind slants it, gusts slant it further, and a pitching bridge tilts it (camera velocity smoothed over 0.15s; relative air speed capped at 40 m/s so fast flight does not draw lines across the screen). Streaks are expanded to at least a pixel in screen space; a drop thinner than a pixel keeps its share as opacity, so distant rain thins out rather than aliasing. 32,768 streaks at full rain, fading out to the sphere inside the box.
+
+- *How hard:* `rain::intensity_for` = smoothstep(0.3, 0.8) of the storm overcast (the same eased storm strength that closes in the fog), times 1 +/- 0.3 with the gust at the camera (bursts in gusts, easing in lulls). Nothing above 20km or with the eye under the sea. The weather's own precipitation field no longer draws rain; only storms do.
+- *Colour:* the horizon sky in the drop's own direction, greyed by the overcast, x1.25, plus forward-scattered sun toward a sunward eye. A storm's sky is mostly its fog, which is the horizon sky, so rain is pale against the dark sea and all but vanishes against the sky. The first try used the zenith sky and drew dark streaks on the sky: the sky pass shows the sky at 2x its physical radiance and the fog at the horizon's.
+
+**Gusts** (`gust.rs`, `gust.wgsl`). Frozen turbulence (Taylor's hypothesis): one 2D value-noise field (two octaves, 240m along the wind by 140m across, standard deviation 0.5), slid downwind at the mean wind. A gust is up to 45% over the mean wind and veers it 12 degrees; a lull is as far under and backs it. Gustiness is smoothstep(0.2, 0.9) of the storm overcast, so calm weather has none. The mean wind is the FFT sea's own (`WIND_DIRECTION`, `CATINGARDEN_OCEAN_FFT_WIND`, 14 m/s default).
+- The field is evaluated on the CPU at the camera (rain slant and bursts) and on the GPU wherever the sea and spray need it. They agree because the camera's field coordinate is formed in f64 and handed over reduced to the field's 256-cell period (`ViewParams.gust`, `SprayFrame.gust`), where f32 is exact to millimetres. Test `a_gust_is_carried_downwind_at_the_mean_wind`.
+- *On the sea:* in shading only (the mesh and the CPU buoyancy never see it), a gust roughens the short waves (slope x1.6 at a full gust, x0.4 in a lull; roughness likewise), dulls the sky reflection by up to 35% (dark cat's paws; no effect while `OCEAN_REFLECTION_SCALE` is 0), and steepens the fold Jacobian by up to 30% so more crests break, both in the per-pixel fold foam and in the foam history atlas's births (`ocean_foam.wgsl`), which is what carries the foam near the camera. In `ocean_storm_gusts` the gust patch reads as a crest covered in whitecaps that is mostly dark water with gusts off.
+- *Spray* follows the gust where each particle is, and a full gust tears three times as much off the crests as the mean wind (a lull a quarter).
+- `CATINGARDEN_GUSTS=0` keeps the storm wind steady, for comparisons.
+
+The sea evaluates the gust field once per mesh vertex (`ocean_fft_vertex_gust`, carried to the fragment as `OceanVertexOutput.gust`) rather than per pixel: per pixel it cost 1.09-1.45ms in four pairs (1.93ms with spray off, so it was the sea shader, not the extra spray). Gust patches are hundreds of metres across, far coarser than the mesh.
+
+**A darker storm.** The finished frame is darkened by up to 40% of its displayed brightness at full storm (`STORM_FRAME_DARKENING`), linear in the same eased storm overcast that greys the sky, fog and sea, so it comes in with them. Applied in the tone-map pass (`hdr.wgsl` `darken_output`) to the sRGB-encoded values, so every on-screen pixel value is at 60%, not 60% of linear light (which would read only about 20% darker). After the exposure meter, so auto exposure cannot undo it; before the overlay. Measured on `ocean_storm_gusts` capture 4 against the frame before the change: sky and sea both 0.62 (overcast just under 1).
+
+**Keyboard look.** Q/E turn the view left/right and Z/X tilt it up/down at 1.2 rad/s while held (`KEY_LOOK_RADIANS_PER_SECOND`, frame step capped at 0.1s), through the same 120ms held-key latch as WASD so they work over Moonlight. They go through `look_camera`, so they work wherever the mouse does and respect the zoom's look sensitivity. On the ship's bridge the view used to be pinned to the bow every frame, so neither mouse nor keys could look around; the look angles now turn the head relative to the hull (`ship_bridge_look_direction`), reset to straight ahead when the bridge is entered, and F4 still detaches into flight looking the same way.
+
+**Replays.** `ocean_storm_approach` now also asserts rain reaches 0.7 and gusts swing the wind by 1 m/s: measured rain 0.81 (the run ends in a lull, wind 9.8 m/s, which is why not 1.0) and wind 9.7-14.0 m/s. New `ocean_storm_gusts`: 40m up, looking crosswind, full storm in 1s, captures 6-16s; rain 0.84, wind 8.9-14.0 m/s. The spatial log gains `rain_intensity` and `gust_wind_meters_per_second`; the HUD shows overcast, rain, gust and wind speed.
+
+**Cost** (`ocean_storm_gusts`, full storm, frame about 53ms; four interleaved Immediate-present pairs each, same binary, environment switches):
+- Rain against `CATINGARDEN_DISABLE=rain`: +0.39/+0.06/+0.17/+0.46ms.
+- Gusts against `CATINGARDEN_GUSTS=0`, evaluated per vertex: +0.02/+0.82/+0.29/+0.77ms (mean 0.47). The remainder is likely the extra spray and whitecaps the gusts add, which is the point of them.
+- The frame darkening is a few operations per pixel in the tone-map pass; not timed separately.
+- In calm weather: no streaks are drawn and the gust branches are skipped (gustiness 0), so nothing.
+
+**Tests.** 595 app tests and the 12 ocean GPU tests pass; the scenario count is 118. `sunset_blue_hour` fails its two blue-hour assertions, identically on the previous commit's binary (d9235a4), so that is not from this work.
+
+**Not done.** No splashes or rings where drops hit the sea or deck; no rain on the lens; no sound. Gusts do not push the ship. The weather at the start point still never makes a storm on its own (see the previous section), so `CATINGARDEN_STORM_APPROACH` is the way to see this.

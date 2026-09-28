@@ -582,92 +582,6 @@ impl WeatherCloudRenderer {
     }
 }
 
-const RAIN_PARTICLE_COUNT: u32 = 384;
-
-/// Lightweight camera-local rain streaks. The precipitation channel remains
-/// sampled from the same interpolated weather cubemap as cloud shadows; the
-/// particles are only a presentation layer and do not own water state.
-pub struct RainRenderer {
-    pipeline: wgpu::RenderPipeline,
-}
-
-impl RainRenderer {
-    pub fn new(
-        device: &wgpu::Device,
-        hdr_format: wgpu::TextureFormat,
-        camera_bind_group_layout: &wgpu::BindGroupLayout,
-        field_bind_group_layout: &wgpu::BindGroupLayout,
-    ) -> Self {
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("weather rain pipeline layout"),
-            bind_group_layouts: &[
-                Some(camera_bind_group_layout),
-                Some(field_bind_group_layout),
-            ],
-            immediate_size: 0,
-        });
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("weather rain shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                format!(
-                    "{}\n{}",
-                    crate::body::wgsl_constants(),
-                    include_str!("weather_rain.wgsl")
-                )
-                .into(),
-            ),
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("weather rain pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: hdr_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::LineList,
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Greater),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
-        Self { pipeline }
-    }
-
-    pub fn draw<'pass>(
-        &'pass self,
-        render_pass: &mut wgpu::RenderPass<'pass>,
-        camera_bind_group: &'pass wgpu::BindGroup,
-        field_bind_group: &'pass wgpu::BindGroup,
-    ) {
-        render_pass.set_pipeline(&self.pipeline);
-        render_pass.set_bind_group(0, camera_bind_group, &[]);
-        render_pass.set_bind_group(1, field_bind_group, &[]);
-        render_pass.draw(0..RAIN_PARTICLE_COUNT * 2, 0..1);
-    }
-}
-
 const LOCAL_IMPOSTOR_COUNT: u32 = 96;
 
 /// Near-surface cloud puffs. These are camera-local billboards driven by the
@@ -920,25 +834,6 @@ mod tests {
         assert!(!shader.contains("let precursor = select(0.08"));
         assert!(shader.contains("texture_cube<f32>"));
         assert!(!shader.contains("fn cube_field_uv"));
-    }
-
-    #[test]
-    fn weather_rain_shader_parses_and_reads_precipitation() {
-        let shader = &format!(
-            "{}\n{}",
-            crate::body::wgsl_constants(),
-            include_str!("weather_rain.wgsl")
-        );
-        let module =
-            wgpu::naga::front::wgsl::parse_str(shader).expect("weather rain shader must parse");
-        wgpu::naga::valid::Validator::new(
-            wgpu::naga::valid::ValidationFlags::all(),
-            wgpu::naga::valid::Capabilities::all(),
-        )
-        .validate(&module)
-        .expect("weather rain shader must validate");
-        assert!(shader.contains("textureSampleLevel(cloud_field_current"));
-        assert!(shader.contains("mix(previous, current, weather.blend)"));
     }
 
     #[test]

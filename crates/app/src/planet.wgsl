@@ -130,6 +130,8 @@ struct OceanVertexOutput {
     @location(8) smooth_normal: vec3<f32>,
     @location(9) ripple_slope: vec3<f32>,
     @location(10) vertical_and_breaking: vec2<f32>,
+    // Storm gust here (ocean_fft_gust), evaluated per vertex.
+    @location(11) gust: f32,
 }
 
 fn uses_outmap(terrain_info: u32) -> bool {
@@ -1047,6 +1049,7 @@ fn vs_ocean(input: VertexInput) -> OceanVertexOutput {
         on_edge,
     );
     ocean_fft_view_position = flat_camera_relative_view_position;
+    ocean_fft_vertex_gust = 0.0;
     // Cube-face UV span of the chunk over 32 quads, about 0.7 planet radii per unit.
     ocean_fft_vertex_spacing_meters = ocean_edge_vertex_spacing(
         projected.tile_uv,
@@ -1080,6 +1083,7 @@ fn vs_ocean(input: VertexInput) -> OceanVertexOutput {
         surface.normal,
         surface.ripple_slope,
         vec2<f32>(surface.vertical_displacement, surface.breaking_ratio),
+        ocean_fft_vertex_gust,
     );
 }
 
@@ -2386,6 +2390,7 @@ fn ocean_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
 fn ocean_raster_surface(input: OceanVertexOutput, height: f32) -> OceanSurface {
     let direction = normalize(input.surface_direction);
     ocean_fft_view_position = input.camera_relative_view_position;
+    ocean_fft_gust = input.gust;
     return ocean_surface(direction, camera.projection.z,
         length(input.camera_relative_view_position), max(-height, 0.0));
 }

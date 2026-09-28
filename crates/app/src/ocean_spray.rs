@@ -50,6 +50,9 @@ struct SprayFrame {
     /// stations: where their splashes start.
     ship_port_water: [f32; 4],
     ship_starboard_water: [f32; 4],
+    /// Storm gusts (`gust::Gust::uniform`): the camera's gust-field
+    /// coordinate, gustiness, mean wind speed.
+    gust: [f32; 4],
 }
 
 /// Where along the hull (-1 stern, +1 stem) the slam is measured, each side.
@@ -199,7 +202,7 @@ impl OceanSpray {
         });
         let update_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("ocean spray update"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("ocean_spray_update.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(update_shader_source().into()),
         });
         let update_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("ocean spray update pipeline layout"),
@@ -297,6 +300,7 @@ impl OceanSpray {
         ocean_time_seconds: f32,
         storm_intensity: f32,
         ship: Option<&ShipSprayEmitter>,
+        gust: &crate::gust::Gust,
     ) {
         let (u, v) = crate::ocean_fft::anchor_axes(camera_direction.normalize().to_array());
         let radius = crate::planet::planet_radius_meters();
@@ -381,6 +385,7 @@ impl OceanSpray {
             ship_starboard_impact,
             ship_port_water,
             ship_starboard_water,
+            gust: gust.uniform(),
         };
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&frame));
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -404,6 +409,15 @@ impl OceanSpray {
         render_pass.set_bind_group(2, shared_bind_group, &[]);
         render_pass.draw(0..6, 0..SPRAY_PARTICLES);
     }
+}
+
+/// The update shader reads the storm gusts where each particle is.
+fn update_shader_source() -> String {
+    format!(
+        "{}\n{}",
+        crate::gust::wgsl_source(),
+        include_str!("ocean_spray_update.wgsl")
+    )
 }
 
 fn draw_shader_source() -> String {
@@ -430,7 +444,7 @@ mod tests {
 
     #[test]
     fn spray_shaders_parse_and_validate() {
-        validate(include_str!("ocean_spray_update.wgsl"));
+        validate(&update_shader_source());
         validate(&draw_shader_source());
     }
 
@@ -469,6 +483,6 @@ mod tests {
         for source in [include_str!("ocean_spray_update.wgsl"), include_str!("ocean_spray_draw.wgsl")] {
             assert!(source.contains("    extra: vec4<f32>,\n}"));
         }
-        assert_eq!(std::mem::size_of::<SprayFrame>(), 224);
+        assert_eq!(std::mem::size_of::<SprayFrame>(), 240);
     }
 }

@@ -994,6 +994,9 @@ pub struct ViewParams {
     /// xyz: that direction at planet radius minus the camera position,
     /// planet frame, metres, formed in f64; w unused.
     pub edge_reference_offset: [f32; 4],
+    /// Storm gusts (`gust::Gust::uniform`): the camera's gust-field
+    /// coordinate, gustiness, mean wind speed.
+    pub gust: [f32; 4],
 }
 
 pub struct OceanFft {
@@ -1256,6 +1259,7 @@ impl OceanFft {
         radius_meters: f64,
         gain: f32,
         storm_intensity: f32,
+        gust: [f32; 4],
     ) {
         let camera_distance = (camera_position[0] * camera_position[0]
             + camera_position[1] * camera_position[1]
@@ -1295,6 +1299,7 @@ impl OceanFft {
                 0.0,
             ],
             edge_reference_offset: reference_offset,
+            gust,
         };
         queue.write_buffer(&self.view_params, 0, bytemuck::bytes_of(&params));
     }

@@ -1560,6 +1560,7 @@ impl TerrainRenderer {
         encoder: &mut wgpu::CommandEncoder,
         camera_direction: DVec3,
         ocean_time_seconds: f32,
+        gust: &crate::gust::Gust,
     ) {
         if let Some(spray) = &mut self.ocean_spray {
             let storm = crate::ocean::sea_state_at(f64::from(ocean_time_seconds)).intensity;
@@ -1570,6 +1571,7 @@ impl TerrainRenderer {
                 ocean_time_seconds,
                 storm,
                 self.ship_spray.as_ref(),
+                gust,
             );
         }
     }
@@ -1590,6 +1592,7 @@ impl TerrainRenderer {
         encoder: &mut wgpu::CommandEncoder,
         camera_planet_frame_position: DVec3,
         ocean_time_seconds: f32,
+        gust: &crate::gust::Gust,
     ) {
         if !self.ocean_fft_enabled {
             return;
@@ -1601,6 +1604,7 @@ impl TerrainRenderer {
             crate::body::PLANET.radius_meters,
             1.0,
             crate::ocean::sea_state_at(f64::from(ocean_time_seconds)).intensity,
+            gust.uniform(),
         );
         self.ocean_fft.encode(encoder);
     }

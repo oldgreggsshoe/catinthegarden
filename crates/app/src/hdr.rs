@@ -44,6 +44,8 @@ struct ExposureUniform {
     exposure: f32,
     hdr_effect_enabled: u32,
     presentation_size: [f32; 2],
+    /// Share of the displayed brightness taken away, and 1 for an sRGB target.
+    output: [f32; 4],
 }
 
 struct PendingLuminanceReadback {
@@ -103,6 +105,10 @@ pub struct HdrRenderer {
     bloom_enabled: bool,
     hdr_effect_enabled: bool,
     auto_exposure_enabled: bool,
+    /// Share of the displayed brightness the final pass takes away
+    /// (`set_output_darkening`).
+    output_darkening: f32,
+    output_is_srgb: bool,
 }
 
 impl HdrRenderer {
@@ -363,6 +369,8 @@ impl HdrRenderer {
             bloom_enabled: BLOOM_ENABLED,
             hdr_effect_enabled: HDR_EFFECT_ENABLED,
             auto_exposure_enabled: AUTO_EXPOSURE_ENABLED,
+            output_darkening: 0.0,
+            output_is_srgb: surface_format.is_srgb(),
         };
         renderer.resize(device, size);
         renderer
@@ -545,6 +553,19 @@ impl HdrRenderer {
         self.write_exposure_uniform(queue);
     }
 
+    /// Darkens the finished frame by this share of its displayed brightness
+    /// (0 none, 0.4 = every on-screen value at 60%). After the exposure meter,
+    /// so auto exposure does not undo it; before the overlay, which keeps its
+    /// own brightness.
+    pub fn set_output_darkening(&mut self, queue: &wgpu::Queue, darkening: f32) {
+        let darkening = darkening.clamp(0.0, 1.0);
+        if (darkening - self.output_darkening).abs() < 1.0e-4 {
+            return;
+        }
+        self.output_darkening = darkening;
+        self.write_exposure_uniform(queue);
+    }
+
     pub fn set_auto_exposure_enabled(&mut self, queue: &wgpu::Queue, auto_exposure_enabled: bool) {
         self.auto_exposure_enabled = auto_exposure_enabled;
         self.write_exposure_uniform(queue);
@@ -598,6 +619,12 @@ impl HdrRenderer {
                 presentation_size: [
                     self.presentation_size.width as f32,
                     self.presentation_size.height as f32,
+                ],
+                output: [
+                    self.output_darkening,
+                    if self.output_is_srgb { 1.0 } else { 0.0 },
+                    0.0,
+                    0.0,
                 ],
             }),
         );

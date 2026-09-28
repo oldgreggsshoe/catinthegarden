@@ -53,6 +53,10 @@ pub struct SpatialLogSample {
     /// a fixed feature of the planet, so this must not move when only the
     /// camera does.
     pub village_sited_houses: u32,
+    /// How hard it is raining at the camera, 0-1 (`rain::intensity_for`).
+    pub rain_intensity: f32,
+    /// Wind speed at the camera with the storm's gusts (m/s).
+    pub gust_wind_meters_per_second: f32,
 }
 
 #[derive(Clone)]
@@ -167,6 +171,8 @@ struct AssertionTracker {
     /// other.
     first_village_sited_houses: Option<u32>,
     village_siting_changes: u32,
+    maximum_rain_intensity: f32,
+    gust_wind_range_meters_per_second: Option<(f32, f32)>,
     surface_probe_count: usize,
     compared_probe_points: usize,
     maximum_surface_probe_delta_m: f64,
@@ -216,6 +222,8 @@ impl AssertionTracker {
             maximum_ocean_wave_range_meters: 0.0,
             first_village_sited_houses: None,
             village_siting_changes: 0,
+            maximum_rain_intensity: 0.0,
+            gust_wind_range_meters_per_second: None,
             surface_probe_count: 0,
             compared_probe_points: 0,
             maximum_surface_probe_delta_m: 0.0,
@@ -316,6 +324,12 @@ impl AssertionTracker {
         self.maximum_ocean_wave_range_meters = self
             .maximum_ocean_wave_range_meters
             .max(sample.ocean_wave_max_meters - sample.ocean_wave_min_meters);
+        self.maximum_rain_intensity = self.maximum_rain_intensity.max(sample.rain_intensity);
+        let wind = sample.gust_wind_meters_per_second;
+        self.gust_wind_range_meters_per_second = Some(
+            self.gust_wind_range_meters_per_second
+                .map_or((wind, wind), |(low, high)| (low.min(wind), high.max(wind))),
+        );
         match self.first_village_sited_houses {
             None if sample.village_sited_houses > 0 => {
                 self.first_village_sited_houses = Some(sample.village_sited_houses);
@@ -874,6 +888,24 @@ impl AssertionTracker {
                 ),
             ));
         }
+        if let Some(minimum) = self.config.min_peak_rain_intensity {
+            results.push(assertion_result(
+                "rain_reaches_the_required_intensity",
+                self.maximum_rain_intensity >= minimum,
+                format!(
+                    "required {minimum:.2}, heaviest {:.2}",
+                    self.maximum_rain_intensity,
+                ),
+            ));
+        }
+        if let Some(minimum_range) = self.config.min_gust_wind_range_meters_per_second {
+            let (low, high) = self.gust_wind_range_meters_per_second.unwrap_or((0.0, 0.0));
+            results.push(assertion_result(
+                "gusts_vary_the_wind",
+                high - low >= minimum_range,
+                format!("required range {minimum_range:.2}m/s, observed {low:.2}..={high:.2}m/s"),
+            ));
+        }
         if let Some(minimum_range) = self.config.min_ocean_wave_height_range_meters {
             results.push(assertion_result(
                 "ocean_waves_have_required_height_range",
@@ -1037,6 +1069,8 @@ fn sample_metrics_are_finite(sample: &SpatialLogSample) -> bool {
         && sample.exposure.is_finite()
         && sample.ocean_wave_min_meters.is_finite()
         && sample.ocean_wave_max_meters.is_finite()
+        && sample.rain_intensity.is_finite()
+        && sample.gust_wind_meters_per_second.is_finite()
 }
 
 fn assertion_result(name: &str, passed: bool, details: String) -> ScenarioAssertionResult {
@@ -1161,6 +1195,8 @@ impl RunArtifacts {
             ocean_wave_min_meters: 0.0,
             ocean_wave_max_meters: 0.0,
             village_sited_houses: 0,
+            rain_intensity: 0.0,
+            gust_wind_meters_per_second: 0.0,
         });
     }
 
@@ -1220,6 +1256,8 @@ impl RunArtifacts {
             ocean_wave_min_meters = sample.ocean_wave_min_meters,
             ocean_wave_max_meters = sample.ocean_wave_max_meters,
             village_sited_houses = sample.village_sited_houses,
+            rain_intensity = sample.rain_intensity,
+            gust_wind_meters_per_second = sample.gust_wind_meters_per_second,
             "spatial frame"
         );
     }
@@ -1701,6 +1739,8 @@ mod tests {
             max_exposure_delta_per_frame: None,
             max_exposure_oscillation_events: None,
             min_ocean_wave_height_range_meters: None,
+            min_peak_rain_intensity: None,
+            min_gust_wind_range_meters_per_second: None,
             require_constant_village_siting: false,
             ice_sample_uv: None,
             min_ice_sample_luminance: None,
@@ -1796,6 +1836,8 @@ mod tests {
             ocean_wave_min_meters: 0.0,
             ocean_wave_max_meters: 0.0,
             village_sited_houses: 0,
+            rain_intensity: 0.0,
+            gust_wind_meters_per_second: 0.0,
         }
     }
 

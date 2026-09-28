@@ -40,6 +40,10 @@ pub struct ScenarioAssertions {
     pub max_exposure_delta_per_frame: Option<f32>,
     pub max_exposure_oscillation_events: Option<u32>,
     pub min_ocean_wave_height_range_meters: Option<f32>,
+    /// Heaviest rain the run must reach at the camera, 0-1.
+    pub min_peak_rain_intensity: Option<f32>,
+    /// How far the storm's gusts must swing the wind at the camera (m/s).
+    pub min_gust_wind_range_meters_per_second: Option<f32>,
     /// Assert that the number of houses sited around the camera never changes
     /// during the run. Only meaningful for a scenario that holds the camera's
     /// ground position and moves something else, such as its altitude.
@@ -116,6 +120,8 @@ impl Default for ScenarioAssertions {
             max_exposure_delta_per_frame: None,
             max_exposure_oscillation_events: None,
             min_ocean_wave_height_range_meters: None,
+            min_peak_rain_intensity: None,
+            min_gust_wind_range_meters_per_second: None,
             require_constant_village_siting: false,
             ice_sample_uv: None,
             min_ice_sample_luminance: None,
@@ -337,6 +343,7 @@ scenarios! {
     "ocean_ship_foam_plan" => "../scenarios/ocean_ship_foam_plan.json",
     "ocean_spray_sequence" => "../scenarios/ocean_spray_sequence.json",
     "ocean_storm_approach" => "../scenarios/ocean_storm_approach.json",
+    "ocean_storm_gusts" => "../scenarios/ocean_storm_gusts.json",
     "land_chunk_seams" => "../scenarios/land_chunk_seams.json",
     "coast_waters_edge" => "../scenarios/coast_waters_edge.json",
     "ocean_grey_foreground" => "../scenarios/ocean_grey_foreground.json",
@@ -1022,6 +1029,14 @@ fn validate_assertions(
             "minimum ocean wave height range",
             assertions.min_ocean_wave_height_range_meters,
         ),
+        (
+            "minimum peak rain intensity",
+            assertions.min_peak_rain_intensity,
+        ),
+        (
+            "minimum gust wind range",
+            assertions.min_gust_wind_range_meters_per_second,
+        ),
     ] {
         if value.is_some_and(|value| !value.is_finite() || value < 0.0) {
             return Err(format!("{name} must be finite and non-negative"));
@@ -1116,7 +1131,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 117);
+        assert_eq!(SCENARIO_NAMES.len(), 118);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));

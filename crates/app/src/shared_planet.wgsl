@@ -408,6 +408,9 @@ struct OceanFftView {
     // shares, for `ocean_edge_planet_offset`.
     edge_reference_direction: vec4<f32>,
     edge_reference_offset: vec4<f32>,
+    // Storm gusts (gust.rs `Gust::uniform`): the camera's gust-field
+    // coordinate, gustiness 0-1, mean wind speed.
+    gust: vec4<f32>,
 }
 
 @group(2) @binding(18)
@@ -450,6 +453,26 @@ var<private> ocean_fft_surface_height_fraction: f32;
 // Swirling water colour at this pixel (ocean_swirl_albedo), when enabled.
 var<private> ocean_fft_swirl_albedo: vec3<f32>;
 const OCEAN_FFT_FINE_HEIGHT_STD: f32 = 0.056;
+// Storm gusts at this pixel (gust.wgsl), -1 lull to 1 full gust, scaled by the
+// storm's gustiness. Set by the fragment's caller before ocean_surface: the sea
+// mesh evaluates the field once per vertex (ocean_fft_vertex_gust) and
+// interpolates it, since gust patches are hundreds of metres across and the
+// field per pixel cost over a millisecond. Only shading reads it, so the drawn
+// mesh and the CPU buoyancy never see it.
+var<private> ocean_fft_gust: f32;
+// The gust at the vertex being evaluated, set by ocean_surface_fft in the
+// vertex stage for vs_ocean to hand to its fragments.
+var<private> ocean_fft_vertex_gust: f32;
+// A gust roughens the short waves it blows over (their slope grows by this
+// fraction at a full gust, and falls by it in a lull), so gust patches read
+// as rougher water running downwind, and the stronger wind breaks more
+// crests: the fold foam's Jacobian is steepened by OCEAN_GUST_FOAM.
+const OCEAN_GUST_ROUGHEN: f32 = 0.6;
+const OCEAN_GUST_FOAM: f32 = 0.3;
+// Roughened water reflects less of the bright low sky toward a low eye and
+// shows more of the dark water beneath: the dark 'cat's paws' a gust drives
+// across the sea. Smoothed water in a lull reflects more.
+const OCEAN_GUST_DULLING: f32 = 0.35;
 
 /// Breaks a smooth foam coverage into lacy cells: fresh, full foam covers
 /// almost everything; thinning foam survives only on the pattern's highs.
@@ -1851,6 +1874,12 @@ fn ocean_surface_fft(
     if OCEAN_SWIRL_ENABLED && !vertex_stage {
         ocean_fft_swirl_albedo = ocean_swirl_albedo(local);
     }
+    if vertex_stage && ocean_fft_view.gust.z > 0.0 {
+        ocean_fft_vertex_gust = ocean_fft_view.gust.z
+            * gust_field(gust_coordinate(ocean_fft_view.gust.xy, local));
+    }
+    let gust = select(ocean_fft_gust, 0.0, vertex_stage);
+    let gust_roughen = max(1.0 + OCEAN_GUST_ROUGHEN * gust, 0.3);
     let broad = ocean_fft_cascade(0u, local, geometry_filter);
     let broad_mean_square = ocean_fft_last_mean_square_slope;
     let broad_jacobian = ocean_fft_last_jacobian;
@@ -1884,7 +1913,7 @@ fn ocean_surface_fft(
         + max(mid_mean_square - mid_weight * mid_weight * dot(mid.yz, mid.yz), 0.0)
         + max(fine_mean_square - fine_weight * fine_weight * dot(fine.yz, fine.yz), 0.0)
         + swell_scale * swell_scale * max(swell_mean_square - dot(swell.yz, swell.yz), 0.0);
-    ocean_fft_unresolved_slope_variance = unresolved * gain * gain;
+    ocean_fft_unresolved_slope_variance = unresolved * gain * gain * gust_roughen * gust_roughen;
     let core = broad + swell * swell_scale;
     let core_jacobian = broad_jacobian + swell_jacobian * swell_scale;
     let core_displacement = broad_displacement + swell_displacement * swell_scale;
@@ -1903,7 +1932,8 @@ fn ocean_surface_fft(
     // Scaled by the choppiness up to 1: gentler crests fold less and foam
     // less, while above 1 the fold foam would whiten whole crests.
     ocean_fft_fold_foam = ocean_fft_fold_amount(
-        label_jacobian * (gain * min(ocean_fft_view.gain.y, 1.0)),
+        label_jacobian * (gain * min(ocean_fft_view.gain.y, 1.0)
+            * (1.0 + OCEAN_GUST_FOAM * gust)),
     ) * foam_resolution;
     // Heights are stored per wave-label position, but choppy displacement moves
     // each label sideways; the surface slope at the drawn position is the label
@@ -1948,7 +1978,7 @@ fn ocean_surface_fft(
     let ripple_uv = vec2<f32>(
         mid.y * mid_weight + fine.y * fine_weight,
         mid.z * mid_weight + fine.z * fine_weight,
-    ) * gain;
+    ) * (gain * gust_roughen);
     let drawn_u = (1.0 + drawn_jacobian.y);
     let drawn_v = (1.0 + drawn_jacobian.x);
     let broad_drawn = vec2<f32>(
@@ -4427,6 +4457,7 @@ fn ocean_lighting_sot(
     let specular = ocean_sot_specular(normal_view, view_direction, sun_direction_view, roughness);
     return diffuse + transmission
         + reflected_color * fresnel * daylight * OCEAN_REFLECTION_SCALE
+            * (1.0 - OCEAN_GUST_DULLING * ocean_fft_gust)
         + sun * specular * fresnel
             * (OCEAN_SUN_GLINT_SCALE * SURFACE_SUNLIGHT_SCALE);
 }

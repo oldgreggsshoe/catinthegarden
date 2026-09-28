@@ -6,6 +6,10 @@ struct Exposure {
     exposure: f32,
     hdr_effect_enabled: u32,
     presentation_size: vec2<f32>,
+    // x: share of the final frame's brightness taken away (a storm darkens the
+    // whole picture, main.rs `storm_frame_darkening`); y: 1 when the output
+    // target encodes sRGB, so the darkening applies to the displayed values.
+    output: vec4<f32>,
 }
 
 @group(0) @binding(0)
@@ -28,6 +32,36 @@ fn aces_filmic(color: vec3<f32>) -> vec3<f32> {
     let d = 0.59;
     let e = 0.14;
     return clamp((color * (a * color + vec3<f32>(b))) / (color * (c * color + vec3<f32>(d)) + vec3<f32>(e)), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+fn srgb_encode(linear: vec3<f32>) -> vec3<f32> {
+    return select(
+        1.055 * pow(linear, vec3<f32>(1.0 / 2.4)) - vec3<f32>(0.055),
+        linear * 12.92,
+        linear <= vec3<f32>(0.0031308),
+    );
+}
+
+fn srgb_decode(encoded: vec3<f32>) -> vec3<f32> {
+    return select(
+        pow((encoded + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4)),
+        encoded / 12.92,
+        encoded <= vec3<f32>(0.04045),
+    );
+}
+
+// Darkens the finished frame by `exposure.output.x` of its displayed value:
+// 40% darker means every on-screen pixel value at 60%, which in linear light
+// is far more than 40%.
+fn darken_output(color: vec3<f32>) -> vec3<f32> {
+    let keep = 1.0 - clamp(exposure.output.x, 0.0, 1.0);
+    if keep >= 1.0 {
+        return color;
+    }
+    if exposure.output.y < 0.5 {
+        return color * keep;
+    }
+    return srgb_decode(srgb_encode(clamp(color, vec3<f32>(0.0), vec3<f32>(1.0))) * keep);
 }
 
 @vertex
@@ -92,9 +126,9 @@ fn tone_map(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     if (exposure.hdr_effect_enabled == 0u) {
         // HDR-off is a display-curve toggle, not an exposure toggle. Preserve
         // auto-exposure so dim atmospheric haze remains visible.
-        return vec4<f32>(hdr_color * exposure.exposure, 1.0);
+        return vec4<f32>(darken_output(hdr_color * exposure.exposure), 1.0);
     }
-    return vec4<f32>(aces_filmic(hdr_color * exposure.exposure), 1.0);
+    return vec4<f32>(darken_output(aces_filmic(hdr_color * exposure.exposure)), 1.0);
 }
 
 // FXAA-style edge-aware anti-aliasing (replaces the old box blur). Edges are

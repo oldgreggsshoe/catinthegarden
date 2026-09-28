@@ -226,7 +226,15 @@ fn cs_foam(@builtin(global_invocation_id) id: vec3<u32>) {
         );
         // 2m texels average away the finer cascades' sharpest folds, so the
         // atlas births foam at a gentler Jacobian than the per-pixel rule.
-        let scaled = jacobian * (foam_fft_view.gain.x * min(foam_fft_view.gain.y, 1.0));
+        // A storm gust breaks more crests (OCEAN_GUST_FOAM, as the per-pixel
+        // fold foam in ocean_surface_fft).
+        var gust = 0.0;
+        if foam_fft_view.gust.z > 0.0 {
+            gust = foam_fft_view.gust.z
+                * gust_field(gust_coordinate(foam_fft_view.gust.xy, local));
+        }
+        let scaled = jacobian * (foam_fft_view.gain.x * min(foam_fft_view.gain.y, 1.0)
+            * (1.0 + OCEAN_GUST_FOAM * gust));
         // Drawn surface is x0 - D, so it folds where I - grad D does: crests.
         let j = (1.0 - scaled.x) * (1.0 - scaled.y) - scaled.z * scaled.w;
         born = smoothstep(FOAM_FFT_ATLAS_JACOBIAN_ONSET, FOAM_FFT_ATLAS_JACOBIAN_FULL, j);

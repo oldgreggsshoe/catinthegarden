@@ -42,6 +42,9 @@ struct SprayFrame {
     // Altitude of the water against the hull at the same stations.
     ship_port_water: vec4<f32>,
     ship_starboard_water: vec4<f32>,
+    // Storm gusts: the camera's gust-field coordinate, gustiness, mean wind
+    // speed (gust.rs `Gust::uniform`).
+    gust: vec4<f32>,
 }
 
 struct OceanFftView {
@@ -83,6 +86,9 @@ const CREST_LIFETIME_SPREAD_SECONDS: f32 = 0.45;
 // Spray is born only where the drawn surface is close to folding over.
 const SPRAY_JACOBIAN_ONSET: f32 = 0.40;
 const SPRAY_JACOBIAN_FULL: f32 = 0.0;
+// A full gust tears three times as much spray off the crests as the mean wind;
+// a lull a quarter as much.
+const SPRAY_GUST_BIRTHS: f32 = 2.0;
 
 struct SprayField {
     height: f32,
@@ -94,6 +100,19 @@ struct SprayField {
     stokes: f32,
     // Height of the wind sea alone (every cascade but the swell).
     wind_height: f32,
+}
+
+// The storm gust where a particle is (gust.wgsl), scaled by gustiness.
+fn spray_gust(local: vec2<f32>) -> f32 {
+    if frame.gust.z <= 0.0 {
+        return 0.0;
+    }
+    return frame.gust.z * gust_field(gust_coordinate(frame.gust.xy, local));
+}
+
+// The wind there: the mean wind, faster and veered in a gust.
+fn spray_wind(local: vec2<f32>) -> vec2<f32> {
+    return gust_wind(frame.wind.xy, frame.wind.z, spray_gust(local));
 }
 
 fn hash(value: u32) -> u32 {
@@ -176,7 +195,7 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
     let dt = frame.shift_dt.z;
     let alive = particle.velocity.w > 0.0 && particle.position.w < particle.velocity.w;
     if alive {
-        let wind_velocity = frame.wind.xy * frame.wind.z;
+        let wind_velocity = spray_wind(particle.position.xy);
         let from_ship = index < SHIP_SPRAY_SLOTS;
         let wind_drag = select(CREST_WIND_DRAG, WIND_DRAG, from_ship);
         let vertical_drag = select(CREST_VERTICAL_DRAG, VERTICAL_DRAG, from_ship);
@@ -258,7 +277,7 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
         let struck = impact > slam;
         let speed = select(3.0 + 8.0 * intensity * r3, 1.0 + 2.5 * impact * r3, struck) * froude;
         let horizontal = outward * speed + frame.ship_velocity.xy
-            + frame.wind.xy * frame.wind.z * select(0.15, 0.3, struck);
+            + spray_wind(place) * select(0.15, 0.3, struck);
         // Up to ~17m/s on the tuned hull: storm bow spray clears its 6m
         // freeboard and the deck.
         let lift = frame.ship_velocity.z * 0.5
@@ -298,7 +317,8 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
     // sea's height spread, about 1.26m.
     let wind_spread = 1.26 * fft_view.gain.x;
     let crest = smoothstep(0.2 * wind_spread, 1.0 * wind_spread, field.wind_height * fft_view.gain.x);
-    let chance = fold * crest * frame.params.y * dt;
+    let gust = spray_gust(local);
+    let chance = fold * crest * frame.params.y * dt * max(1.0 + SPRAY_GUST_BIRTHS * gust, 0.25);
     if frame.params.y <= 0.0 || unit_random(seed ^ 0x2545f491u) >= chance {
         particle.velocity.w = 0.0;
         particles[index] = particle;
@@ -317,7 +337,7 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
     // the wind.
     let lift = 2.0 + 6.0 * fold * r1;
     let sideways = (vec2<f32>(r2, r3) - 0.5) * 0.8;
-    let horizontal = frame.wind.xy * frame.wind.z * (0.5 + 0.3 * r2) + sideways;
+    let horizontal = gust_wind(frame.wind.xy, frame.wind.z, gust) * (0.5 + 0.3 * r2) + sideways;
     particle.position = vec4<f32>(drawn, height, 0.0);
     particle.extra = vec4<f32>(1.0e3, 0.0, 0.0, 0.0);
     particle.velocity = vec4<f32>(

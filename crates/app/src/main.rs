@@ -11,6 +11,7 @@ mod debug;
 mod flock_marker;
 mod forest;
 mod foveated;
+mod gust;
 mod haze;
 mod hdr;
 mod moon;
@@ -21,6 +22,7 @@ mod ocean_transmission;
 mod outmap;
 mod planet;
 mod probe;
+mod rain;
 #[cfg(test)]
 mod relief_survey;
 mod scenario;
@@ -86,6 +88,28 @@ fn should_start_interactive_fullscreen(scenario_active: bool) -> bool {
 
 fn movement_key_latch_expired(released_for: Duration) -> bool {
     released_for >= MOVEMENT_KEY_LATCH
+}
+
+/// Turn and tilt (yaw, pitch radians) from the held look keys, in the order
+/// `State::look_keys` stores them: Q left, E right, Z up, X down.
+fn key_look_delta(keys: [bool; 4], seconds: f64) -> (f64, f64) {
+    let axis = |negative: bool, positive: bool| {
+        f64::from(u8::from(positive)) - f64::from(u8::from(negative))
+    };
+    let step = KEY_LOOK_RADIANS_PER_SECOND * seconds.clamp(0.0, KEY_LOOK_MAX_STEP_SECONDS);
+    (axis(keys[0], keys[1]) * step, axis(keys[3], keys[2]) * step)
+}
+
+/// The bridge camera's view: the ship's own forward, turned and tilted by
+/// the look angles about the ship's own up, so looking around goes with the
+/// hull as it rolls and pitches.
+fn ship_bridge_look_direction(
+    ship_forward: glam::DVec3,
+    ship_up: glam::DVec3,
+    yaw_radians: f64,
+    pitch_radians: f64,
+) -> glam::DVec3 {
+    flight_view_direction(ship_up, ship_forward, yaw_radians, pitch_radians)
 }
 
 /// The movement keys in the order `State::movement_release_times` stores them.
@@ -206,6 +230,11 @@ const TIME_SPEED_LADDER: [f64; 21] = [
 ];
 const DEFAULT_TIME_SPEED_INDEX: usize = 3;
 const MOUSE_LOOK_RADIANS_PER_PIXEL: f64 = 0.0006;
+/// Q/E turn the view left/right and Z/X tilt it up/down at this rate while
+/// held (a full turn in about five seconds), for playing without a mouse.
+const KEY_LOOK_RADIANS_PER_SECOND: f64 = 1.2;
+/// Longest frame a held look key turns the view for: a hitch does not spin it.
+const KEY_LOOK_MAX_STEP_SECONDS: f64 = 0.1;
 /// F4 enters close inspection at roughly 2m above the resident surface so
 /// mountain walls can be judged from the ground rather than from the former
 /// tens-of-metres collision envelope.
@@ -374,6 +403,15 @@ const STORM_OVERCAST_FULL: f64 = 0.5;
 /// Seconds (ocean clock) for the overcast to follow the weather, so flying
 /// into or out of a storm fades rather than switches.
 const STORM_OVERCAST_EASE_SECONDS: f64 = 4.0;
+/// A full storm darkens the whole finished frame by this share of its
+/// displayed brightness, in step with the overcast that greys it.
+const STORM_FRAME_DARKENING: f32 = 0.4;
+
+/// How much the finished frame is darkened under this storm overcast: linear
+/// in the overcast, as the sky, fog and sea go grey with it.
+fn storm_frame_darkening(storm_overcast: f32) -> f32 {
+    STORM_FRAME_DARKENING * storm_overcast.clamp(0.0, 1.0)
+}
 
 fn storm_overcast_override() -> Option<f32> {
     static VALUE: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
@@ -1155,7 +1193,9 @@ struct State {
     stars: stars::StarRenderer,
     weather: weather::WeatherState,
     weather_clouds: weather_render::WeatherCloudRenderer,
-    rain: weather_render::RainRenderer,
+    rain: rain::Rain,
+    /// Storm gusts at the camera this frame (`update_rain_and_gusts`).
+    gust: gust::Gust,
     local_cloud_impostors: weather_render::LocalCloudImpostorRenderer,
     forest: forest::ForestRenderer,
     villages: village_render::VillageRenderer,
@@ -1211,6 +1251,9 @@ struct State {
     flight_movement: FlightMovementInput,
     /// When each movement key was released, until its latch expires.
     movement_release_times: [Option<Instant>; 5],
+    /// Q, E, Z, X held (turn left, right, look up, down), with the same latch.
+    look_keys: [bool; 4],
+    look_release_times: [Option<Instant>; 4],
     /// M: hold the eye where it is and keep the nearest flock in view.
     flock_watch_enabled: bool,
     flight_speed: FlightSpeedState,
@@ -1501,12 +1544,6 @@ impl State {
                     .expect("interactive weather surface target must be prepared before rendering"),
             );
         }
-        let rain = weather_render::RainRenderer::new(
-            &device,
-            hdr::HdrRenderer::SCENE_FORMAT,
-            &camera_bind_group_layout,
-            weather_clouds.field_bind_group_layout(),
-        );
         let local_cloud_impostors = weather_render::LocalCloudImpostorRenderer::new(
             &device,
             hdr::HdrRenderer::SCENE_FORMAT,
@@ -1570,6 +1607,12 @@ impl State {
         let ship_renderer = ship_render::ShipRenderer::new(
             &device,
             &queue,
+            hdr::HdrRenderer::SCENE_FORMAT,
+            &camera_bind_group_layout,
+            terrain.shared_bind_group_layout(),
+        );
+        let rain = rain::Rain::new(
+            &device,
             hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
             terrain.shared_bind_group_layout(),
@@ -1684,6 +1727,8 @@ impl State {
             flight_look_pitch_radians: 0.0,
             flight_movement: FlightMovementInput::default(),
             movement_release_times: [None; 5],
+            look_keys: [false; 4],
+            look_release_times: [None; 4],
             flock_watch_enabled: false,
             flight_speed: FlightSpeedState::default(),
             flight_speed_scale: 1.0,
@@ -1735,6 +1780,7 @@ impl State {
             scaled_clock_seconds: 0.0,
             storm_overcast: 0.0,
             storm_overcast_time: f64::NAN,
+            gust: gust::Gust::CALM,
             last_real_clock_seconds: 0.0,
             time_speed_index: DEFAULT_TIME_SPEED_INDEX,
             interactive_scene_time_offset_seconds: 0.0,
@@ -1803,6 +1849,10 @@ impl State {
         self.toggle_camera_mode();
         if body::has_ocean() && self.position_storm_ocean_start() {
             self.camera_mode = CameraMode::Boat;
+            // Look angles on the bridge are relative to the hull: start
+            // looking straight ahead over the bow.
+            self.flight_look_yaw_radians = 0.0;
+            self.flight_look_pitch_radians = 0.0;
             self.camera.set_vertical_fov_degrees_for_viewport(
                 LOW_FLIGHT_VERTICAL_FOV_DEGREES,
                 self.size.height,
@@ -1949,7 +1999,7 @@ impl State {
         }
         if matches!(
             self.camera_mode,
-            CameraMode::LowFlight | CameraMode::Surface
+            CameraMode::LowFlight | CameraMode::Surface | CameraMode::Boat
         ) {
             let sensitivity = self.camera.look_sensitivity_scale();
             self.flight_look_yaw_radians += yaw_delta * sensitivity;
@@ -1978,6 +2028,8 @@ impl State {
         } else {
             self.flight_movement = FlightMovementInput::default();
             self.movement_release_times = [None; 5];
+            self.look_keys = [false; 4];
+            self.look_release_times = [None; 4];
             self.surface_jump_requested = false;
             let _ = window.set_cursor_grab(CursorGrabMode::None);
             window.set_cursor_visible(true);
@@ -2118,8 +2170,27 @@ impl State {
         true
     }
 
-    /// Clears movement keys whose release has outlived the latch. Called once
-    /// per frame before the camera reads them.
+    /// Q/E turn the view, Z/X tilt it; held keys, latched like WASD.
+    fn set_look_key(&mut self, key_code: KeyCode, pressed: bool) -> bool {
+        let index = match key_code {
+            KeyCode::KeyQ => 0,
+            KeyCode::KeyE => 1,
+            KeyCode::KeyZ => 2,
+            KeyCode::KeyX => 3,
+            _ => return false,
+        };
+        if pressed {
+            self.look_release_times[index] = None;
+            self.look_keys[index] = true;
+        } else {
+            // Not cleared here: see `MOVEMENT_KEY_LATCH`.
+            self.look_release_times[index] = Some(Instant::now());
+        }
+        true
+    }
+
+    /// Clears movement and look keys whose release has outlived the latch.
+    /// Called once per frame before the camera reads them.
     fn expire_movement_latches(&mut self, now: Instant) {
         for index in 0..self.movement_release_times.len() {
             if let Some(released_at) = self.movement_release_times[index]
@@ -2127,6 +2198,14 @@ impl State {
             {
                 *movement_flag(&mut self.flight_movement, index) = false;
                 self.movement_release_times[index] = None;
+            }
+        }
+        for index in 0..self.look_release_times.len() {
+            if let Some(released_at) = self.look_release_times[index]
+                && movement_key_latch_expired(now.saturating_duration_since(released_at))
+            {
+                self.look_keys[index] = false;
+                self.look_release_times[index] = None;
             }
         }
     }
@@ -2744,12 +2823,64 @@ impl State {
         self.storm_overcast_time = ocean_time_seconds;
     }
 
+    /// Storm gusts at the camera, and the rain they drive. After the camera is
+    /// settled for the frame: the rain is uploaded in view axes, and the sea
+    /// and spray read the gusts when they are encoded.
+    fn update_rain_and_gusts(&mut self, planet_rotation_radians: f64, ocean_time_seconds: f64) {
+        let camera_position = self
+            .camera
+            .planet_frame_world_position(planet_rotation_radians);
+        self.gust = gust::Gust::at_camera(camera_position, ocean_time_seconds, self.storm_overcast);
+        let direction = camera_position.normalize();
+        let altitude = camera_position.length() - planet::planet_radius_meters();
+        // The sea can stand over the eye only near sea level.
+        let water = if altitude < ocean::MAXIMUM_WAVE_HEIGHT_METERS + 50.0 {
+            ocean::global_wave_height_meters(
+                direction,
+                ocean_time_seconds,
+                SHIP_FALLBACK_DEPTH_METERS,
+            )
+        } else {
+            f64::NEG_INFINITY
+        };
+        let intensity = if rain::reaches_the_eye(altitude, water) {
+            rain::intensity_for(self.storm_overcast, self.gust.value)
+        } else {
+            0.0
+        };
+        let (u, v) = ocean_fft::anchor_axes(direction.to_array());
+        let [wind_u, wind_v] = self.gust.wind_uv();
+        let wind = glam::DVec3::from_array(u) * wind_u + glam::DVec3::from_array(v) * wind_v;
+        self.rain.update(
+            &self.queue,
+            rain::RainFrame {
+                camera_position,
+                basis: planet::CameraViewBasis::from_forward_and_up(
+                    self.camera
+                        .planet_frame_direction_dvec3(planet_rotation_radians),
+                    self.camera.planet_frame_view_up(planet_rotation_radians),
+                ),
+                time_seconds: ocean_time_seconds,
+                intensity,
+                wind: wind - direction * wind.dot(direction),
+                viewport: [self.size.width, self.size.height],
+                vertical_fov_radians: self.camera.vertical_fov_radians(),
+            },
+        );
+    }
+
     fn update_bridge_camera(&mut self, planet_rotation_radians: f64) {
         if self.player_camera_is_suppressed() {
             return;
         }
-        let (eye_local, forward_local, up_local) =
+        let (eye_local, ship_forward_local, up_local) =
             ship_bridge_camera_planet_pose(&self.ship_body, &self.ship_hull);
+        let forward_local = ship_bridge_look_direction(
+            ship_forward_local,
+            up_local,
+            self.flight_look_yaw_radians,
+            self.flight_look_pitch_radians,
+        );
         let eye = planet::planet_world_vector(eye_local, planet_rotation_radians);
         let forward = planet::planet_world_vector(forward_local, planet_rotation_radians);
         let up = planet::planet_world_vector(up_local, planet_rotation_radians);
@@ -3547,6 +3678,11 @@ impl State {
                 ocean_wave_min_meters: ocean_wave_stats.minimum_meters,
                 ocean_wave_max_meters: ocean_wave_stats.maximum_meters,
                 village_sited_houses: self.villages.sited_houses(),
+                rain_intensity: self.rain.intensity(),
+                gust_wind_meters_per_second: {
+                    let [u, v] = self.gust.wind_uv();
+                    u.hypot(v) as f32
+                },
             });
     }
 
@@ -3622,6 +3758,13 @@ impl State {
         let terrain_stats = self.terrain_stats.clone();
         let forest_snapshot = self.forest.stats();
         let weather_snapshot = self.weather.debug_snapshot();
+        let storm_overcast = self.storm_overcast;
+        let rain_intensity = self.rain.intensity();
+        let gust_value = self.gust.value;
+        let gust_wind_speed = {
+            let [u, v] = self.gust.wind_uv();
+            u.hypot(v)
+        };
         let minimum_lod_level = terrain_stats
             .level_histogram
             .iter()
@@ -3826,12 +3969,15 @@ impl State {
                         ui.label(format!("Ocean Gerstner range: {ocean_wave_range:.2} m"));
                         ui.label(format!("Sea state: {ocean_storm_intensity:.2} (0 calm, 1 storm)"));
                         ui.label(format!(
+                            "Storm: overcast {storm_overcast:.2}  |  rain {rain_intensity:.2}  |  gust {gust_value:+.2}, wind {gust_wind_speed:.1} m/s"
+                        ));
+                        ui.label(format!(
                             "Bird cam: {bird_camera}  |  {flock_count} flocks, {airborne_birds} airborne"
                         ));
                         ui.label(format!("Bird watch: {bird_watch}"));
                         ui.label(format!("Villages: {village_beams}"));
                         ui.label(
-                            "F: fullscreen  |  F3: overlay  |  , / .: time speed  |  F4: orbit/flight  |  G: surface camera  |  WASD: move  |  Space: jump/swim thrust  |  [ / ]: speed  |  F5: render path  |  O: triangle outlines  |  B: ride a bird  |  N: watch birds that are down  |  M: track the nearest flock from here  |  V: village beams  |  F6: anti-aliasing  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
+                            "F: fullscreen  |  F3: overlay  |  , / .: time speed  |  F4: orbit/flight  |  G: surface camera  |  WASD: move  |  Q/E: turn  |  Z/X: look up/down  |  Space: jump/swim thrust  |  [ / ]: speed  |  F5: render path  |  O: triangle outlines  |  B: ride a bird  |  N: watch birds that are down  |  M: track the nearest flock from here  |  V: village beams  |  F6: anti-aliasing  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
                         );
                         ui.label("Default: fullscreen, HUD hidden, auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc twice: quit");
                     });
@@ -4123,6 +4269,10 @@ impl State {
                 }
             }
             self.expire_movement_latches(now);
+            let (key_yaw, key_pitch) = key_look_delta(self.look_keys, f64::from(frame_time));
+            if key_yaw != 0.0 || key_pitch != 0.0 {
+                self.look_camera(key_yaw, key_pitch);
+            }
             self.aim_at_nearest_flock();
             match self.camera_mode {
                 CameraMode::Orbit => self.camera.advance_inclined_orbit(
@@ -4182,6 +4332,7 @@ impl State {
         // The camera is settled for this frame from here on, so anything that
         // bakes the camera basis into an upload belongs below this line.
         self.upload_ship_transform(planet_rotation_radians);
+        self.update_rain_and_gusts(planet_rotation_radians, ocean_time_seconds);
         let ship_spray = self.ship_spray_emitter(ocean_time_seconds);
         self.terrain.set_ship_spray(Some(ship_spray));
         if !self
@@ -4519,6 +4670,8 @@ impl State {
         // closes in and greys the distance fog, and swaps the sea's sky
         // reflection and sun glitter for overcast light.
         camera_uniform.sun_direction[3] = self.storm_overcast;
+        self.hdr
+            .set_output_darkening(&self.queue, storm_frame_darkening(self.storm_overcast));
         // Spare basis-vector lanes: local ocean column and signed eye clearance.
         // Fill background waterline pixels missed by the finite raster shell.
         camera_uniform.camera_forward[3] = ocean_water_depth_meters as f32;
@@ -4818,6 +4971,7 @@ impl State {
                 &mut encoder,
                 camera_planet_frame_position,
                 ocean_time_seconds as f32,
+                &self.gust,
             );
         }
         if !solid_color_screen
@@ -4840,6 +4994,7 @@ impl State {
                 &mut encoder,
                 camera_direction,
                 ocean_time_seconds as f32,
+                &self.gust,
             );
         }
         if !solid_color_screen {
@@ -5175,7 +5330,7 @@ impl State {
                     self.rain.draw(
                         &mut render_pass,
                         &self.camera_bind_group,
-                        self.weather_clouds.field_bind_group(),
+                        self.terrain.shared_bind_group(),
                     );
                 }
             }
@@ -5769,7 +5924,8 @@ impl ApplicationHandler for App {
         }
         if let WindowEvent::KeyboardInput { event, .. } = &event
             && let PhysicalKey::Code(key_code) = event.physical_key
-            && state.set_flight_movement_key(key_code, event.state.is_pressed())
+            && (state.set_flight_movement_key(key_code, event.state.is_pressed())
+                || state.set_look_key(key_code, event.state.is_pressed()))
         {
             window.request_redraw();
         }
@@ -6294,10 +6450,10 @@ mod tests {
         advance_flight_position_on_sphere, advance_flight_speed, device_mouse_look_enabled,
         find_default_outmap, flight_look_angles_toward, flight_movement_direction,
         flight_view_direction, focus_of_expansion_ndc, initial_flight_tangent,
-        interactive_camera_delta_seconds, low_flight_clearance_radius, movement_key_latch_expired,
-        projected_planet_coverage, render_size_for_surface_resize, retimed_planet_rotation,
-        ship_bridge_camera_planet_pose, should_enter_fullscreen,
-        should_start_interactive_fullscreen, surface_movement_direction,
+        interactive_camera_delta_seconds, key_look_delta, low_flight_clearance_radius,
+        movement_key_latch_expired, projected_planet_coverage, render_size_for_surface_resize,
+        retimed_planet_rotation, ship_bridge_camera_planet_pose, ship_bridge_look_direction,
+        should_enter_fullscreen, should_start_interactive_fullscreen, surface_movement_direction,
         swept_flight_clearance_lift, transport_flight_tangent, waterline_scenario_pose,
     };
     use crate::planet::{
@@ -6700,6 +6856,59 @@ mod tests {
 
     /// Sunshine/Moonlight repeats a held key as press/release pairs about 30ms
     /// apart, so a release must not clear a movement key immediately.
+    #[test]
+    fn a_full_storm_darkens_the_frame_by_forty_percent_in_step_with_the_overcast() {
+        use super::storm_frame_darkening;
+        assert_eq!(storm_frame_darkening(0.0), 0.0);
+        assert!((storm_frame_darkening(1.0) - 0.4).abs() < 1.0e-6);
+        assert!((storm_frame_darkening(0.5) - 0.2).abs() < 1.0e-6);
+        assert_eq!(storm_frame_darkening(3.0), storm_frame_darkening(1.0));
+    }
+
+    #[test]
+    fn q_and_e_turn_the_view_and_z_and_x_tilt_it() {
+        let frame = 0.05;
+        let step = super::KEY_LOOK_RADIANS_PER_SECOND * frame;
+        // Q left, E right, Z up, X down; positive yaw turns right and
+        // positive pitch looks up, as the mouse does.
+        assert_eq!(
+            key_look_delta([true, false, false, false], frame),
+            (-step, 0.0)
+        );
+        assert_eq!(
+            key_look_delta([false, true, false, false], frame),
+            (step, 0.0)
+        );
+        assert_eq!(
+            key_look_delta([false, false, true, false], frame),
+            (0.0, step)
+        );
+        assert_eq!(
+            key_look_delta([false, false, false, true], frame),
+            (0.0, -step)
+        );
+        assert_eq!(key_look_delta([true, true, true, true], frame), (0.0, 0.0));
+        assert_eq!(key_look_delta([false; 4], frame), (0.0, 0.0));
+        // A hitch does not spin the view.
+        let longest = super::KEY_LOOK_RADIANS_PER_SECOND * super::KEY_LOOK_MAX_STEP_SECONDS;
+        assert_eq!(
+            key_look_delta([false, true, false, false], 5.0),
+            (longest, 0.0)
+        );
+    }
+
+    #[test]
+    fn looking_around_on_the_bridge_is_relative_to_the_hull() {
+        let forward = glam::DVec3::new(0.0, 1.0, 0.0);
+        let up = glam::DVec3::new(0.0, 0.0, 1.0);
+        assert!((ship_bridge_look_direction(forward, up, 0.0, 0.0) - forward).length() < 1.0e-12);
+        let raised = ship_bridge_look_direction(forward, up, 0.0, 0.4);
+        assert!((raised.dot(up) - 0.4_f64.sin()).abs() < 1.0e-12);
+        // Turning right goes the way the flight camera turns right.
+        let right = ship_bridge_look_direction(forward, up, std::f64::consts::FRAC_PI_2, 0.0);
+        assert!((right - forward.cross(up)).length() < 1.0e-12);
+    }
+
     #[test]
     fn a_repeated_key_release_keeps_a_movement_key_held_for_the_latch() {
         assert!(!movement_key_latch_expired(
