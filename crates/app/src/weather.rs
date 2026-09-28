@@ -3295,3 +3295,87 @@ mod rundown_probe {
         }
     }
 }
+
+#[cfg(test)]
+mod storm_climate {
+    use super::*;
+
+    /// How long the sea stays calm between storms at the interactive start
+    /// point, on the real baked planet: the weather's storm strength there over
+    /// thirty simulated days, reported in weather time and in real seconds at
+    /// the interactive 3,600x clock. The overcast (fog and grey) starts at 0.1
+    /// and is full at 0.5 (`STORM_OVERCAST_*` in main.rs).
+    #[test]
+    #[ignore = "instrument: ~2 minutes; run explicitly"]
+    fn storm_spells_at_the_start_point() {
+        let root = [
+            "../../assets/outmaps/test-planet",
+            "assets/outmaps/test-planet",
+        ]
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .find(|path| path.exists())
+        .expect("baked planet");
+        let samples =
+            crate::terrain::terrain_startup_samples(&crate::terrain::TerrainSource::Outmap(root))
+                .expect("terrain samples")
+                .expect("outmap samples");
+        let mut weather = WeatherState::new_with_terrain_samples(Some(samples.climate.as_slice()));
+        // STORM_OCEAN_START_DIRECTION in main.rs.
+        let start = DVec3::new(
+            0.836_442_275_001_636,
+            0.503_727_905_284_262,
+            0.215_922_481_525_239,
+        )
+        .normalize();
+        let days = 30.0;
+        let steps = (days * 86_400.0 / WEATHER_TIMESTEP_SECONDS) as usize;
+        let mut storm = Vec::with_capacity(steps);
+        let mut wind = Vec::with_capacity(steps);
+        for step in 1..=steps {
+            weather.advance_to(step as f64 * WEATHER_TIMESTEP_SECONDS);
+            storm.push(weather.storm_intensity_at(start));
+            wind.push(weather.wind_velocity_at(start).length());
+        }
+        let hours = |count: usize| count as f64 * WEATHER_TIMESTEP_SECONDS / 3600.0;
+        for threshold in [0.1_f32, 0.3, 0.5] {
+            let above = storm.iter().filter(|value| **value >= threshold).count();
+            // Lengths of calm spells between storm spells.
+            let mut calm = Vec::new();
+            let mut run = 0;
+            let mut seen_storm = false;
+            for value in &storm {
+                if *value >= threshold {
+                    if seen_storm && run > 0 {
+                        calm.push(run);
+                    }
+                    seen_storm = true;
+                    run = 0;
+                } else {
+                    run += 1;
+                }
+            }
+            calm.sort_unstable();
+            let median = calm.get(calm.len() / 2).copied().unwrap_or(0);
+            let longest = calm.last().copied().unwrap_or(0);
+            eprintln!(
+                "storm >= {threshold}: {:.1}% of the time; {} calm spells between storms, median {:.1} h ({:.0} s real), longest {:.1} h ({:.0} s real)",
+                100.0 * above as f64 / steps as f64,
+                calm.len(),
+                hours(median),
+                hours(median),
+                hours(longest),
+                hours(longest),
+            );
+        }
+        let mean_wind = wind.iter().sum::<f64>() / wind.len() as f64;
+        let max_storm = storm.iter().cloned().fold(0.0_f32, f32::max);
+        eprintln!("max storm {max_storm:.2}, mean wind {mean_wind:.1} m/s");
+        // First time the overcast would begin, from the calm start.
+        let first = storm.iter().position(|value| *value >= 0.1);
+        eprintln!(
+            "first storm >= 0.1 after {:?} h (real seconds the same number)",
+            first.map(hours)
+        );
+    }
+}

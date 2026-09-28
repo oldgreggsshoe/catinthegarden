@@ -23,6 +23,11 @@ sky-through-the-sea pixel count is 0 with terrain switched off (was 8,215) and 4
 seam. See "FFT sea seams closed" at the end of this file for the causes, the method, the
 rejected approaches and the measured cost.
 
+**Storm on demand and hull caustics (28 September):** `CATINGARDEN_STORM_APPROACH=<seconds>` starts
+calm and brings a full storm in (fog, grey, desaturated sea, swell); replay `ocean_storm_approach`.
+At the interactive start the live weather never reaches a storm (measured). The hull now has
+underwater and reflected caustics. See "Caustics on the hull, and a storm on demand".
+
 **Underwater colour (28 September):** under the FFT sea the water is `OCEAN_SOT_WATER_ALBEDO` (or
 the swirl), lit as the sea is from above; see "Underwater water is the sea's own colour".
 
@@ -11477,3 +11482,33 @@ Ian: under the water it should be the same colour as the one set for the surface
 - `ocean_seafloor_hole`, underwater, 31s: four pairs all faster, about -1.9ms (55.8 -> 53.9). The old fog colour ran a sky-view lookup per pixel.
 
 **Tests.** `the_fft_sea_takes_over_the_sky_pass_water_fill` validates both display-shader variants and pins the two coverage functions to identical text. 581 app tests and the 12 ocean GPU tests pass.
+
+## 28 September - Caustics on the hull, and a storm on demand
+
+**Hull caustics.** The ship shader is now composed after `shared_planet.wgsl` and binds the terrain's shared group(2), so it can read the FFT sea (`ship.wgsl`, `ship_render.rs`).
+- *Below the waterline:* sun and sky are dimmed through the water, and the sun is focused by the waves overhead with the sea bed's `ocean_fft_caustics`.
+- *Above it, up to 6m:* sunlight bounced off the moving surface plays on the sides that face the sun's reflection (`ocean_fft_reflected_caustics`). A mirror turns rays by twice the slope, so troughs gather and crests scatter, the reverse of refraction; brightness is Schlick Fresnel times that lens term. Physically that is 2-6% of the sun and invisible on the dark hull, so `SHIP_REFLECTED_LIGHT_GAIN` is 4 (stylised, as Sea of Thieves does).
+
+The drawn waterline needed care. Reading the sea height straight under a hull point put caustics on hull the water had already left, because the drawn sea is the label point moved by the choppy D, metres in a rough sea. `ship_water_depth` finds the label by three fixed-point steps (label = point - D, the CPU buoyancy's inverse) and filters the sea as the mesh near the ship is (1m vertex spacing).
+
+The curvature read is now `ocean_fft_lens_curvature`, shared by both kinds of caustic. The first name, `ocean_fft_curvature`, clashed with the ray-march shader and killed startup; the unit tests do not compose that shader, only a launch does.
+
+Cost in `ocean_ship_float`, four pairs: +0.10/+0.29/-0.05/+0.26ms.
+
+**Storm strength at the start point, measured** (ignored instrument `storm_spells_at_the_start_point`, weather.rs): on the real baked planet, 30 simulated days at the interactive start direction. The weather's storm strength sat between 0.1 and 0.3 for 98% of the time and peaked at 0.32. The overcast is full at 0.5, so a proper storm never arrives there: a faint permanent overcast and a slightly raised sea. Mean wind was 5.8 m/s. At the interactive 3,600x clock those 30 days are about 12 real minutes.
+
+**Storm on demand.** `CATINGARDEN_STORM_APPROACH=<seconds>`, or `storm_approach_seconds` in a replay, selects `SeaStateMode::Approach`: flat calm at launch, a full storm after that many seconds of the ocean clock (smoothstep), then held. It drives both the sea state (swell boost, whitecaps) and the storm overcast; `ocean::approaching_storm_at` feeds `update_storm_overcast`, so the fog closes to 5km, the sky and its reflection go grey and the sun dims together. `CATINGARDEN_STORM_OVERCAST` still wins when set.
+
+**Storm-greyed water.** The FFT sea's own colour now also loses saturation under the overcast (`STORM_SEA_DESATURATION` 0.75, luminance kept), on the surface and in the underwater colour alike.
+
+**Replay `ocean_storm_approach`.** The deck-height reference view with a 20-second approach, captures at 0.5/5/10/15/20/22s. Measured on the FFT sea:
+
+| | 0.5s | 20s |
+|---|---|---|
+| Near-sea saturation | 0.91 | 0.14 |
+| Sky saturation | 0.27 | 0.03 |
+| Sky mean | 0.66 | 0.48 |
+
+The horizon fades into grey haze and whitecaps build.
+
+**Tests.** The approach's calm start, full end and continuity are added to the sea-state test. 581 app tests and the 12 ocean GPU tests pass; the scenario count is 117.

@@ -179,6 +179,10 @@ pub struct ScenarioDefinition {
     /// Exercise the real weather response rather than a fixed sea endpoint.
     #[serde(default)]
     pub ocean_weather_response: bool,
+    /// Start calm and bring a full storm in over this many seconds (sea state
+    /// and storm overcast together), as `CATINGARDEN_STORM_APPROACH` does.
+    #[serde(default)]
+    pub storm_approach_seconds: Option<f64>,
     /// Rides the eye this far above the ocean surface at the waypoint's own
     /// ground track, instead of using the waypoint's radius. A waterline
     /// diagnostic authored as a fixed radius stops framing the waterline the
@@ -332,6 +336,7 @@ scenarios! {
     "ocean_swell_shards" => "../scenarios/ocean_swell_shards.json",
     "ocean_ship_foam_plan" => "../scenarios/ocean_ship_foam_plan.json",
     "ocean_spray_sequence" => "../scenarios/ocean_spray_sequence.json",
+    "ocean_storm_approach" => "../scenarios/ocean_storm_approach.json",
     "land_chunk_seams" => "../scenarios/land_chunk_seams.json",
     "coast_waters_edge" => "../scenarios/coast_waters_edge.json",
     "ocean_grey_foreground" => "../scenarios/ocean_grey_foreground.json",
@@ -692,6 +697,10 @@ impl ScenarioRunner {
 
     pub fn uses_weather_sea(&self) -> bool {
         self.definition.ocean_weather_response
+    }
+
+    pub fn storm_approach_seconds(&self) -> Option<f64> {
+        self.definition.storm_approach_seconds
     }
 
     pub fn ocean_storm_intensity_override(&self) -> Option<f32> {
@@ -1107,7 +1116,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 116);
+        assert_eq!(SCENARIO_NAMES.len(), 117);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));

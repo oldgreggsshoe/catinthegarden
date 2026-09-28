@@ -8,8 +8,14 @@ use glam::{DMat3, DVec3};
 
 use crate::ship::{self, ShipVertex};
 
+/// Composed after the shared planet source, so the hull can read the FFT sea
+/// it floats in (for the caustics under the waterline).
 pub fn ship_shader_source() -> String {
-    include_str!("ship.wgsl").to_string()
+    format!(
+        "{}\n{}",
+        crate::planet::shared_planet_shader_source(),
+        include_str!("ship.wgsl")
+    )
 }
 
 #[repr(C)]
@@ -50,6 +56,7 @@ impl ShipRenderer {
         queue: &wgpu::Queue,
         hdr_format: wgpu::TextureFormat,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
+        shared_bind_group_layout: &wgpu::BindGroupLayout,
     ) -> Self {
         let mesh = ship::build_mesh();
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -90,7 +97,11 @@ impl ShipRenderer {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("ship pipeline layout"),
-            bind_group_layouts: &[Some(camera_bind_group_layout), Some(&bind_group_layout)],
+            bind_group_layouts: &[
+                Some(camera_bind_group_layout),
+                Some(&bind_group_layout),
+                Some(shared_bind_group_layout),
+            ],
             immediate_size: 0,
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -173,10 +184,12 @@ impl ShipRenderer {
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 
+    /// `shared_bind_group` is the terrain's group(2), which carries the sea.
     pub fn draw(
         &self,
         render_pass: &mut wgpu::RenderPass<'_>,
         camera_bind_group: &wgpu::BindGroup,
+        shared_bind_group: &wgpu::BindGroup,
     ) {
         if !self.visible || self.vertex_count == 0 {
             return;
@@ -184,6 +197,7 @@ impl ShipRenderer {
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, camera_bind_group, &[]);
         render_pass.set_bind_group(1, &self.bind_group, &[]);
+        render_pass.set_bind_group(2, shared_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.draw(0..self.vertex_count, 0..1);
     }
@@ -209,5 +223,14 @@ mod tests {
         // Facets, not smooth shading.
         assert!(shader.contains("@location(0) @interpolate(flat) normal: vec3<f32>"));
         assert!(shader.contains("@location(1) @interpolate(flat) colour: vec3<f32>"));
+        // Under the waterline the sun reaches the hull through the waves, with
+        // the sea bed's own caustics; the sky only through the water.
+        assert!(shader.contains("let caustics = ocean_fft_caustics("));
+        assert!(shader.contains("(sunlight * (sun_lambert * sea.x + sea.z) + sky_light * sea.y)"));
+        // Above it, sun bounced off the moving surface.
+        assert!(
+            shader
+                .contains("ocean_fft_reflected_caustics(planet_offset, up, sun_direction, -depth")
+        );
     }
 }

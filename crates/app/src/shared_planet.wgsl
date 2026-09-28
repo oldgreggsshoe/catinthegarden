@@ -1685,6 +1685,71 @@ fn ocean_caustic_brightness(spread: f32) -> f32 {
     );
 }
 
+// Curvature (height Laplacian, 1/m) of the sea surface at `entry`, tangent-
+// plane metres from the camera: the two short cascades, waves under ~50m, as
+// longer ones barely curve. Each fades out as `blur` passes its texel, so a
+// blurred view of the pattern goes flat rather than aliasing.
+fn ocean_fft_lens_curvature(entry: vec2<f32>, blur: f32) -> f32 {
+    let mid_weight = ocean_caustic_band_weight(1u, blur);
+    let fine_weight = ocean_caustic_band_weight(2u, blur);
+    var curvature = 0.0;
+    if mid_weight > 0.0 {
+        curvature += mid_weight * ocean_fft_laplacian(1u, entry);
+    }
+    if fine_weight > 0.0 {
+        curvature += fine_weight * ocean_fft_laplacian(2u, entry);
+    }
+    return curvature * ocean_fft_view.gain.x;
+}
+
+// Sunlight bounced off the sea onto something `height_meters` above it: the
+// dancing light on a hull's side at the waterline. A mirror turns a ray by
+// twice the slope, and a trough (curvature L > 0) is a concave mirror, so the
+// light off a patch lands on 1 - 2 s L of the area after a path s -- troughs
+// gather it, crests scatter it, the opposite of refraction. Read at the patch
+// that reflects the sun towards this point, up-sun of it by the height times
+// the tangent of the sun's zenith angle. Returns the reflected irradiance as a
+// share of the direct sun's (Schlick Fresnel for water, times the lens term),
+// arriving along `ocean_reflected_sun_direction`. 0 with no FFT sea, at
+// night, or out of reach.
+const OCEAN_REFLECTED_CAUSTIC_REACH_METERS: f32 = 6.0;
+
+fn ocean_reflected_sun_direction(up: vec3<f32>, sun: vec3<f32>) -> vec3<f32> {
+    // Towards where the light comes from: the sun's mirror image in the sea.
+    return sun - up * (2.0 * dot(sun, up));
+}
+
+fn ocean_fft_reflected_caustics(
+    planet_offset: vec3<f32>,
+    up: vec3<f32>,
+    sun: vec3<f32>,
+    height_meters: f32,
+    pixel_meters: f32,
+) -> f32 {
+    if !OCEAN_FFT_ENABLED || height_meters < 0.0
+        || height_meters >= OCEAN_REFLECTED_CAUSTIC_REACH_METERS {
+        return 0.0;
+    }
+    let cos_sun = dot(sun, up);
+    if cos_sun <= 0.02 {
+        return 0.0;
+    }
+    let axis_u = ocean_fft_view.axis_u.xyz;
+    let axis_v = ocean_fft_view.axis_v.xyz;
+    let sin_sun = sqrt(max(1.0 - cos_sun * cos_sun, 0.0));
+    let toward_sun = sun - up * cos_sun;
+    let toward_sun_uv = vec2<f32>(dot(toward_sun, axis_u), dot(toward_sun, axis_v));
+    let entry = vec2<f32>(dot(planet_offset, axis_u), dot(planet_offset, axis_v))
+        + toward_sun_uv / max(length(toward_sun_uv), 1.0e-6)
+            * (height_meters * sin_sun / cos_sun);
+    let path = height_meters / cos_sun;
+    let curvature = ocean_fft_lens_curvature(entry, max(pixel_meters, path * OCEAN_CAUSTIC_SUN_BLUR));
+    let lens = ocean_caustic_brightness(1.0 - 2.0 * path * curvature);
+    let fresnel = 0.02 + 0.98 * pow(1.0 - cos_sun, 5.0);
+    return fresnel * lens
+        * (1.0 - smoothstep(0.5 * OCEAN_REFLECTED_CAUSTIC_REACH_METERS, OCEAN_REFLECTED_CAUSTIC_REACH_METERS, height_meters));
+}
+
 // Multiplier for direct sunlight on a sea bed `depth_meters` under the water:
 // the FFT sea's own short waves, read where the refracted sun ray crossed the
 // surface. 1 with no FFT sea, at night, or out of range.
@@ -1715,21 +1780,7 @@ fn ocean_fft_caustics(
         + toward_sun_uv / max(length(toward_sun_uv), 1.0e-6)
             * (depth_meters * sin_water / cos_water);
     let path = depth_meters / cos_water;
-    let blur = max(pixel_meters, path * OCEAN_CAUSTIC_SUN_BLUR);
-    // The two short cascades (waves under ~50m): longer ones barely curve.
-    let mid_weight = ocean_caustic_band_weight(1u, blur);
-    let fine_weight = ocean_caustic_band_weight(2u, blur);
-    if mid_weight + fine_weight <= 0.0 {
-        return 1.0;
-    }
-    var curvature = 0.0;
-    if mid_weight > 0.0 {
-        curvature += mid_weight * ocean_fft_laplacian(1u, entry);
-    }
-    if fine_weight > 0.0 {
-        curvature += fine_weight * ocean_fft_laplacian(2u, entry);
-    }
-    curvature *= ocean_fft_view.gain.x;
+    let curvature = ocean_fft_lens_curvature(entry, max(pixel_meters, path * OCEAN_CAUSTIC_SUN_BLUR));
     let gathered = ocean_caustic_brightness(
         1.0 + path * OCEAN_CAUSTIC_REFRACTION * curvature,
     );
@@ -4296,13 +4347,23 @@ fn ocean_sot_body_light(sun_transmittance: vec3<f32>, sky_diffuse: vec3<f32>) ->
     return storm_overcast_colour(sky_diffuse) + sun * (0.4 * SURFACE_SUNLIGHT_SCALE);
 }
 
+// How much of its colour the sea loses under a full storm overcast: under a
+// grey sky the water goes grey-green rather than holding its clear-day hue.
+// Luminance is kept, so the storm's darkness comes from the light, not here.
+const STORM_SEA_DESATURATION: f32 = 0.75;
+
+fn ocean_storm_water_albedo(albedo: vec3<f32>) -> vec3<f32> {
+    let luminance = dot(albedo, vec3<f32>(0.2126, 0.7152, 0.0722));
+    return mix(albedo, vec3<f32>(luminance), STORM_SEA_DESATURATION * storm_overcast());
+}
+
 // The sea's water colour at a tangent-plane offset from the camera: the swirl
-// there when those are on, otherwise OCEAN_SOT_WATER_ALBEDO.
+// there when those are on, otherwise OCEAN_SOT_WATER_ALBEDO; greyed by storm.
 fn ocean_water_albedo_at(local: vec2<f32>) -> vec3<f32> {
     if OCEAN_SWIRL_ENABLED {
-        return ocean_swirl_albedo(local);
+        return ocean_storm_water_albedo(ocean_swirl_albedo(local));
     }
-    return OCEAN_SOT_WATER_ALBEDO;
+    return ocean_storm_water_albedo(OCEAN_SOT_WATER_ALBEDO);
 }
 
 fn ocean_lighting_sot(
@@ -4330,7 +4391,9 @@ fn ocean_lighting_sot(
     let daylight = max(max(sun_transmittance.x, sun_transmittance.y), sun_transmittance.z);
     let sun = sun_transmittance * (1.0 - STORM_SUN_BLOCK * storm_overcast());
     // Set by ocean_surface_fft for this pixel when swirling colours are on.
-    let water_albedo = select(OCEAN_SOT_WATER_ALBEDO, ocean_fft_swirl_albedo, OCEAN_SWIRL_ENABLED);
+    let water_albedo = ocean_storm_water_albedo(
+        select(OCEAN_SOT_WATER_ALBEDO, ocean_fft_swirl_albedo, OCEAN_SWIRL_ENABLED),
+    );
     let peak_linear = clamp(
         (crest_sharpness - OCEAN_SOT_PEAK_ONSET) / (OCEAN_SOT_PEAK_FULL - OCEAN_SOT_PEAK_ONSET),
         0.0,

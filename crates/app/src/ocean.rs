@@ -319,6 +319,10 @@ pub enum SeaStateMode {
     Fixed(f32),
     Cycle,
     Weather,
+    /// A storm arriving: flat calm at time zero, full storm after this many
+    /// seconds of the ocean clock, then held. The storm overcast follows it
+    /// too (`approaching_storm_at`), so fog, grey and sea rise together.
+    Approach(f64),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -338,6 +342,17 @@ impl SeaStateMode {
                 .lock()
                 .expect("weather sea response")
                 .sample(time),
+            Self::Approach(seconds) => {
+                let t = (time / seconds).clamp(0.0, 1.0);
+                SeaState {
+                    intensity: (t * t * (3.0 - 2.0 * t)) as f32,
+                    intensity_rate: if t > 0.0 && t < 1.0 {
+                        6.0 * t * (1.0 - t) / seconds
+                    } else {
+                        0.0
+                    },
+                }
+            }
             Self::Cycle => {
                 let frequency = std::f64::consts::TAU / 600.0;
                 let phase = time * frequency;
@@ -356,6 +371,34 @@ fn fixed_sea_override(value: &str) -> Option<f32> {
         .parse::<f32>()
         .ok()
         .filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
+}
+
+/// `CATINGARDEN_STORM_APPROACH=<seconds>`: start in a flat calm and bring a
+/// full storm in over that many seconds, then hold it. Nothing else brings one
+/// on demand: at the interactive start point the weather's storm strength sits
+/// between 0.1 and 0.3 for weeks on end and never reaches a storm
+/// (`storm_spells_at_the_start_point`).
+fn storm_approach_from_environment() -> Option<SeaStateMode> {
+    std::env::var("CATINGARDEN_STORM_APPROACH")
+        .ok()
+        .map(|value| {
+            let seconds = value
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
+                .expect("CATINGARDEN_STORM_APPROACH must be a positive number of seconds");
+            SeaStateMode::Approach(seconds)
+        })
+}
+
+/// How far an approaching storm has come by `time` (0 calm, 1 full), when one
+/// is running; `None` otherwise, leaving the overcast to the weather.
+pub fn approaching_storm_at(time: f64) -> Option<f32> {
+    match SEA_STATE_MODE.get() {
+        Some(mode @ SeaStateMode::Approach(_)) => Some(mode.sample(time).intensity),
+        _ => None,
+    }
 }
 
 fn sea_override_from_environment() -> Option<SeaStateMode> {
@@ -663,6 +706,8 @@ pub fn initialize_sea_state(replay_mode: Option<SeaStateMode>) {
         if let SeaStateMode::Fixed(intensity) = mode {
             assert!(intensity.is_finite() && (0.0..=1.0).contains(&intensity));
         }
+        mode
+    } else if let Some(mode) = storm_approach_from_environment() {
         mode
     } else if let Some(mode) = sea_override_from_environment() {
         mode
@@ -1733,6 +1778,14 @@ mod tests {
             assert!(state.intensity_rate.abs() <= std::f64::consts::PI / 600.0);
             assert_eq!(state.intensity, SeaStateMode::Cycle.sample(time).intensity);
             assert_eq!(SeaStateMode::Fixed(0.5).sample(time).intensity_rate, 0.0);
+            // An approach starts calm, ends a full storm, and never jumps.
+            let approach = SeaStateMode::Approach(60.0);
+            assert_eq!(approach.sample(0.0).intensity, 0.0);
+            assert_eq!(approach.sample(60.0).intensity, 1.0);
+            assert_eq!(approach.sample(600.0).intensity, 1.0);
+            let a = approach.sample(time.min(60.0)).intensity;
+            let b = approach.sample(time.min(60.0) + 0.01).intensity;
+            assert!(b >= a && b - a < 0.001);
         }
         for value in ["NaN", "inf", "-0.1", "1.1", ""] {
             assert!(super::fixed_sea_override(value).is_none());

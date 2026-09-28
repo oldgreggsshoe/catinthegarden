@@ -1296,7 +1296,9 @@ impl State {
         debug::init_tracing(log_writer.clone());
         tracing::info!(scenario = artifact_name, ?terrain_source, "run started");
         ocean::initialize_sea_state(scenario.as_ref().map(|scenario| {
-            if scenario.uses_weather_sea() {
+            if let Some(seconds) = scenario.storm_approach_seconds() {
+                ocean::SeaStateMode::Approach(seconds)
+            } else if scenario.uses_weather_sea() {
                 ocean::SeaStateMode::Weather
             } else {
                 ocean::SeaStateMode::Fixed(
@@ -1570,6 +1572,7 @@ impl State {
             &queue,
             hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
+            terrain.shared_bind_group_layout(),
         );
         let bird_renderer = birds_render::BirdRenderer::new(
             &device,
@@ -2710,22 +2713,27 @@ impl State {
     /// condensation), not the sea state, which also rises with wind alone and
     /// would grey a clear windy day. It fades above the lower cloud shell,
     /// where the camera looks down on the storm rather than out from under it.
-    /// `CATINGARDEN_STORM_OVERCAST` (0-1) fixes it, for comparisons.
+    /// `CATINGARDEN_STORM_OVERCAST` (0-1) fixes it, for comparisons; an
+    /// approaching storm (`CATINGARDEN_STORM_APPROACH`) drives it directly.
     fn update_storm_overcast(&mut self, planet_rotation_radians: f64, ocean_time_seconds: f64) {
-        let target = storm_overcast_override().unwrap_or_else(|| {
-            let direction = planet::planet_local_vector(
-                self.camera.world_position().normalize(),
-                planet_rotation_radians,
-            );
-            let storm = f64::from(self.weather.storm_intensity_at(direction));
-            let altitude = self.camera.world_position().length() - planet::planet_radius_meters();
-            let smoothstep = |low: f64, high: f64, x: f64| {
-                let t = ((x - low) / (high - low)).clamp(0.0, 1.0);
-                t * t * (3.0 - 2.0 * t)
-            };
-            (smoothstep(STORM_OVERCAST_ONSET, STORM_OVERCAST_FULL, storm)
-                * (1.0 - smoothstep(60_000.0, 90_000.0, altitude))) as f32
-        });
+        let approaching = ocean::approaching_storm_at(ocean_time_seconds);
+        let target = storm_overcast_override()
+            .or(approaching)
+            .unwrap_or_else(|| {
+                let direction = planet::planet_local_vector(
+                    self.camera.world_position().normalize(),
+                    planet_rotation_radians,
+                );
+                let storm = f64::from(self.weather.storm_intensity_at(direction));
+                let altitude =
+                    self.camera.world_position().length() - planet::planet_radius_meters();
+                let smoothstep = |low: f64, high: f64, x: f64| {
+                    let t = ((x - low) / (high - low)).clamp(0.0, 1.0);
+                    t * t * (3.0 - 2.0 * t)
+                };
+                (smoothstep(STORM_OVERCAST_ONSET, STORM_OVERCAST_FULL, storm)
+                    * (1.0 - smoothstep(60_000.0, 90_000.0, altitude))) as f32
+            });
         let elapsed = ocean_time_seconds - self.storm_overcast_time;
         self.storm_overcast = if elapsed.is_finite() && elapsed >= 0.0 {
             let weight = 1.0 - (-elapsed / STORM_OVERCAST_EASE_SECONDS).exp();
@@ -5123,8 +5131,11 @@ impl State {
                 );
             }
             if subsystem_enabled("ship") {
-                self.ship_renderer
-                    .draw(&mut render_pass, &self.camera_bind_group);
+                self.ship_renderer.draw(
+                    &mut render_pass,
+                    &self.camera_bind_group,
+                    self.terrain.shared_bind_group(),
+                );
             }
             if subsystem_enabled("birds") {
                 self.bird_renderer

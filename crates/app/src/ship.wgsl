@@ -1,21 +1,6 @@
-// Flat-shaded low-poly ship. A standalone pass: it redeclares the camera
-// struct rather than including shared_planet.wgsl, whose group(2) terrain and
-// atmosphere bindings this pass has no use for.
-
-struct Camera {
-    projection_matrix: mat4x4<f32>,
-    camera_forward: vec4<f32>,
-    camera_right: vec4<f32>,
-    camera_up: vec4<f32>,
-    camera_planet_direction_view_altitude: vec4<f32>,
-    sun_direction: vec4<f32>,
-    sun_direction_view: vec4<f32>,
-    projection: vec4<f32>,
-    flat_triangle_options: vec4<f32>,
-}
-
-@group(0) @binding(0)
-var<uniform> camera: Camera;
+// Flat-shaded low-poly ship. Composed after shared_planet.wgsl (camera,
+// `planet_to_view` and the sea come from there), with the terrain's shared
+// group(2) bound so the hull can see the FFT sea it floats in.
 
 struct ShipUniform {
     // The hull's local origin relative to the camera, already rotated into
@@ -45,20 +30,76 @@ struct VertexOutput {
     // would round the low-poly silhouette's shading back off.
     @location(0) @interpolate(flat) normal: vec3<f32>,
     @location(1) @interpolate(flat) colour: vec3<f32>,
-}
-
-fn planet_to_view(vector: vec3<f32>) -> vec3<f32> {
-    return vec3<f32>(
-        dot(vector, camera.camera_right.xyz),
-        dot(vector, camera.camera_up.xyz),
-        -dot(vector, camera.camera_forward.xyz),
-    );
+    // Where on the hull, relative to the camera in view axes: to tell which
+    // part is under the waves, and where their caustics fall on it.
+    @location(2) view_position: vec3<f32>,
 }
 
 fn ship_to_planet(vector: vec3<f32>) -> vec3<f32> {
     return ship.orientation_x.xyz * vector.x
         + ship.orientation_y.xyz * vector.y
         + ship.orientation_z.xyz * vector.z;
+}
+
+// Water under the hull is deep enough never to break or shoal the waves.
+const SHIP_WATER_DEPTH_METERS: f32 = 1000.0;
+// Vertex spacing of the sea mesh near the ship (L17-L18 chunks). The waterline
+// on the hull is where that mesh meets it, so the water height here is filtered
+// the way the mesh is rather than to the pixel.
+const SHIP_WATERLINE_SPACING_METERS: f32 = 1.0;
+// Reflected sun is Fresnel-weak at most elevations (2-6% of the direct sun),
+// which on a dark hull is barely visible; stylised up, as Sea of Thieves does.
+// Physical is 1.
+const SHIP_REFLECTED_LIGHT_GAIN: f32 = 4.0;
+
+// How far below the drawn sea surface this point of the hull is (negative
+// above it). The sea is drawn displaced sideways by its choppy D, several
+// metres in a rough sea, so the water standing over a point came from a label
+// up to that far away: find it by fixed-point iteration, label = point - D,
+// as the CPU buoyancy's Newton inverse does. Reading the height straight
+// under the point instead put caustics on hull the drawn water had left.
+fn ship_water_depth(view_position: vec3<f32>) -> f32 {
+    let up = normalize(ship.up.xyz);
+    ocean_fft_vertex_spacing_meters = SHIP_WATERLINE_SPACING_METERS;
+    var label = view_position;
+    var height = 0.0;
+    for (var step = 0u; step < 3u; step += 1u) {
+        ocean_fft_view_position = label;
+        let surface = ocean_surface(up, camera.projection.z, length(label), SHIP_WATER_DEPTH_METERS);
+        height = surface.vertical_displacement;
+        label = view_position - planet_to_view(surface.horizontal_displacement);
+    }
+    ocean_fft_vertex_spacing_meters = 0.0;
+    return height - local_view_altitude_meters(view_position);
+}
+
+// Light the sea puts on the hull, as (direct sun, sky, reflected sun)
+// multipliers. Below the waterline both the sun and the sky come through the
+// water, and the sun is gathered and spread by the waves overhead exactly as on
+// the sea bed (`ocean_fft_caustics`). Above it, sunlight bounced off the moving
+// surface dances on the sides facing it (`ocean_fft_reflected_caustics`).
+fn ship_sea_light(view_position: vec3<f32>, normal: vec3<f32>, sun_direction: vec3<f32>) -> vec3<f32> {
+    if !OCEAN_FFT_ENABLED {
+        return vec3<f32>(1.0, 1.0, 0.0);
+    }
+    // Deck and superstructure well clear of any crest: nothing to do.
+    let reach = 1.5 * ocean_fft_view.gain.z + 10.0 + OCEAN_REFLECTED_CAUSTIC_REACH_METERS;
+    if local_view_altitude_meters(view_position) > reach {
+        return vec3<f32>(1.0, 1.0, 0.0);
+    }
+    let up = normalize(ship.up.xyz);
+    let depth = ship_water_depth(view_position);
+    let pixel_meters = length(view_position) * (2.0 * camera.projection.y / 720.0);
+    let planet_offset = view_to_planet(view_position);
+    if depth > 0.0 {
+        let through_water = ocean_water_transmittance(depth);
+        let caustics = ocean_fft_caustics(planet_offset, up, sun_direction, depth, pixel_meters);
+        return vec3<f32>(through_water * caustics, through_water, 0.0);
+    }
+    let bounce = ocean_fft_reflected_caustics(planet_offset, up, sun_direction, -depth, pixel_meters)
+        * max(dot(normal, ocean_reflected_sun_direction(up, sun_direction)), 0.0)
+        * SHIP_REFLECTED_LIGHT_GAIN;
+    return vec3<f32>(1.0, 1.0, bounce);
 }
 
 @vertex
@@ -69,6 +110,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     output.position = camera.projection_matrix * vec4<f32>(view_position, 1.0);
     output.normal = normalize(ship_to_planet(input.normal));
     output.colour = input.colour;
+    output.view_position = view_position;
     return output;
 }
 
@@ -88,6 +130,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         vec3<f32>(0.26, 0.32, 0.40),
         sky_facing,
     ) * (0.25 + 0.75 * sun_elevation);
-    let lit = input.colour * (sunlight * sun_lambert + sky_light);
+    let sea = ship_sea_light(input.view_position, normal, sun_direction);
+    let lit = input.colour
+        * (sunlight * (sun_lambert * sea.x + sea.z) + sky_light * sea.y);
     return vec4<f32>(lit, 1.0);
 }
