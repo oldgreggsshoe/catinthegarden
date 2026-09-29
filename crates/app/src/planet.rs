@@ -2945,6 +2945,8 @@ pub struct CameraUniform {
     pub sun_direction_view: [f32; 4],
     pub projection: [f32; 4],
     pub flat_triangle_options: [f32; 4],
+    /// View-space flash direction and fog brightness (zero between strikes).
+    pub lightning: [f32; 4],
 }
 
 #[repr(u32)]
@@ -3097,6 +3099,7 @@ impl CameraUniform {
                 render_debug_mode as u32 as f32,
             ],
             flat_triangle_options: [flat_triangle_outline_mode as u32 as f32, 0.0, 0.0, 0.0],
+            lightning: [0.0; 4],
         }
     }
 }
@@ -3142,6 +3145,19 @@ mod tests {
         projected_error_pixels_with_height_range, scaled_outmap_macro_height_meters,
         terrain_detail_meters, terrain_detail_value_noise, unbalanced_coarse_neighbors,
     };
+
+    #[test]
+    fn lightning_extends_the_camera_uniform_without_moving_existing_lanes() {
+        assert_eq!(std::mem::offset_of!(CameraUniform, projection), 160);
+        assert_eq!(std::mem::offset_of!(CameraUniform, flat_triangle_options), 176);
+        assert_eq!(std::mem::offset_of!(CameraUniform, lightning), 192);
+        for shader in [include_str!("shared_planet.wgsl"), include_str!("atmosphere.wgsl")] {
+            let projection = shader.find("projection: vec4<f32>").unwrap();
+            let options = shader.find("flat_triangle_options: vec4<f32>").unwrap();
+            let lightning = shader.find("lightning: vec4<f32>").unwrap();
+            assert!(projection < options && options < lightning);
+        }
+    }
 
     #[test]
     fn planet_local_and_world_vectors_are_inverses() {

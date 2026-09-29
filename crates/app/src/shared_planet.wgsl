@@ -203,6 +203,17 @@ fn storm_overcast() -> f32 {
     return clamp(camera.sun_direction.w, 0.0, 1.0);
 }
 
+// A cloud flash illuminates only fog along rays near its planet-fixed strike,
+// rather than painting a bolt or turning the entire sky white.
+fn storm_lightning_fog(ray_view: vec3<f32>) -> vec3<f32> {
+    if camera.lightning.w <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let toward_strike = dot(normalize(ray_view), normalize(camera.lightning.xyz));
+    let glow = smoothstep(0.35, 0.9, toward_strike);
+    return vec3<f32>(0.72, 0.78, 0.9) * camera.lightning.w * glow;
+}
+
 fn storm_fog_e_fold_meters() -> f32 {
     return exp(mix(
         log(TERRAIN_FOG_AIR_PATH_E_FOLD_METERS),
@@ -331,6 +342,7 @@ struct Camera {
     sun_direction_view: vec4<f32>,
     projection: vec4<f32>,
     flat_triangle_options: vec4<f32>,
+    lightning: vec4<f32>,
 }
 
 @group(0) @binding(0)
@@ -3087,7 +3099,10 @@ fn terrain_fog(
         physical_camera_horizon_sky_radiance(camera_to_surface_ray_view),
         storm_overcast(),
     );
-    return TerrainFog(fog_amount, storm_overcast_colour(fog_colour));
+    return TerrainFog(
+        fog_amount,
+        storm_overcast_colour(fog_colour) + storm_lightning_fog(camera_to_surface_ray_view),
+    );
 }
 
 fn terrain_distance_fog(

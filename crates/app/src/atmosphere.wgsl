@@ -32,6 +32,7 @@ struct Camera {
     sun_direction_view: vec4<f32>,
     projection: vec4<f32>,
     flat_triangle_options: vec4<f32>,
+    lightning: vec4<f32>,
 }
 
 @group(0) @binding(0)
@@ -300,7 +301,17 @@ fn displayed_sky_radiance(ray: vec3<f32>) -> vec3<f32> {
         horizon_radiance,
         orbital_blend,
     );
-    return storm_overcast_colour(mix(visible_radiance, horizon_fog_radiance, fog_amount), overcast);
+    return storm_overcast_colour(mix(visible_radiance, horizon_fog_radiance, fog_amount), overcast)
+        + storm_lightning_fog(ray) * fog_amount;
+}
+
+fn storm_lightning_fog(ray_view: vec3<f32>) -> vec3<f32> {
+    if camera.lightning.w <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let toward_strike = dot(normalize(ray_view), normalize(camera.lightning.xyz));
+    let glow = smoothstep(0.35, 0.9, toward_strike);
+    return vec3<f32>(0.72, 0.78, 0.9) * camera.lightning.w * glow;
 }
 
 fn storm_overcast_colour(radiance: vec3<f32>, overcast: f32) -> vec3<f32> {

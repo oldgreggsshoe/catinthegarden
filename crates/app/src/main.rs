@@ -14,6 +14,7 @@ mod foveated;
 mod gust;
 mod haze;
 mod hdr;
+mod lightning;
 mod moon;
 mod moon_markings;
 mod ocean;
@@ -1204,6 +1205,8 @@ struct State {
     rain: rain::Rain,
     /// The sea's sound, fed each frame by `update_rain_and_gusts`.
     sea_sound: sea_sound::SeaSound,
+    lightning: lightning::Lightning,
+    lightning_view: [f32; 4],
     /// Storm gusts at the camera this frame (`update_rain_and_gusts`).
     gust: gust::Gust,
     local_cloud_impostors: weather_render::LocalCloudImpostorRenderer,
@@ -1703,6 +1706,8 @@ impl State {
             weather_clouds,
             rain,
             sea_sound,
+            lightning: lightning::Lightning::new(),
+            lightning_view: [0.0; 4],
             local_cloud_impostors,
             forest,
             villages,
@@ -2820,8 +2825,10 @@ impl State {
             self.camera.world_position().normalize(),
             planet_rotation_radians,
         );
-        let centre = *self.approach_storm_centre.get_or_insert(direction);
-        ocean::set_approaching_storm_weight(ocean::approaching_storm_weight(centre, direction));
+        if ocean::has_approaching_storm() {
+            let centre = *self.approach_storm_centre.get_or_insert(direction);
+            ocean::set_approaching_storm_weight(ocean::approaching_storm_weight(centre, direction));
+        }
         let approaching = ocean::approaching_storm_at(ocean_time_seconds);
         let weather_overcast = {
             let storm = f64::from(self.weather.storm_intensity_at(direction));
@@ -4383,6 +4390,25 @@ impl State {
         // bakes the camera basis into an upload belongs below this line.
         self.upload_ship_transform(planet_rotation_radians);
         self.update_rain_and_gusts(planet_rotation_radians, ocean_time_seconds);
+        let lightning_eye = self.camera.planet_frame_world_position(planet_rotation_radians);
+        let lightning_basis = planet::CameraViewBasis::from_forward_and_up(
+            self.camera.planet_frame_direction_dvec3(planet_rotation_radians),
+            self.camera.planet_frame_view_up(planet_rotation_radians),
+        );
+        if let Some((gain, pan)) = self.lightning.update(
+            sim_time,
+            self.storm_overcast,
+            self.approach_storm_centre.unwrap_or(lightning_eye),
+            lightning_eye,
+            lightning_basis.view_to_world(glam::DVec3::X),
+        ) {
+            self.sea_sound.thunder(gain, pan);
+        }
+        let flash = self.lightning.flash(sim_time, lightning_eye);
+        let view = lightning_basis.world_to_view(glam::DVec3::new(
+            f64::from(flash[0]), f64::from(flash[1]), f64::from(flash[2]),
+        ));
+        self.lightning_view = [view.x as f32, view.y as f32, view.z as f32, flash[3]];
         let ship_spray = self.ship_spray_emitter(ocean_time_seconds);
         self.terrain.set_ship_spray(Some(ship_spray));
         if !self
@@ -4720,6 +4746,7 @@ impl State {
         // closes in and greys the distance fog, and swaps the sea's sky
         // reflection and sun glitter for overcast light.
         camera_uniform.sun_direction[3] = self.storm_overcast;
+        camera_uniform.lightning = self.lightning_view;
         self.hdr
             .set_output_darkening(&self.queue, storm_frame_darkening(self.storm_overcast));
         // Spare basis-vector lanes: local ocean column and signed eye clearance.

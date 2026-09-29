@@ -84,6 +84,9 @@ struct Shared {
     muffle: AtomicU32,
     wind: AtomicU32,
     clock_rate: AtomicU32,
+    thunder_gain: AtomicU32,
+    thunder_pan: AtomicU32,
+    thunder_sequence: AtomicU32,
 }
 
 fn store(slot: &AtomicU32, value: f32) {
@@ -141,6 +144,14 @@ impl SeaSound {
         store(&self.shared.wind, wind.clamp(0.0, 1.0));
         store(&self.shared.clock_rate, clock_rate.max(0.0));
     }
+
+    /// One delayed thunder arrival. The sequence is published last so the
+    /// audio callback sees the gain and stereo direction together.
+    pub fn thunder(&self, gain: f32, pan: f32) {
+        store(&self.shared.thunder_gain, gain.clamp(0.0, 1.0));
+        store(&self.shared.thunder_pan, pan.clamp(0.0, 1.0));
+        self.shared.thunder_sequence.fetch_add(1, Ordering::Release);
+    }
 }
 
 fn open_stream(shared: Arc<Shared>) -> Result<cpal::Stream, String> {
@@ -176,6 +187,7 @@ where
     let channels = usize::from(config.channels).max(1);
     let mut synth = SeaSynth::new(config.sample_rate as f32, 0x5ea5_0001);
     synth.volume = volume();
+    let mut last_thunder_sequence = 0;
     device
         .build_output_stream(
             config,
@@ -187,6 +199,11 @@ where
                     load(&shared.wind),
                 );
                 synth.clock_rate = load(&shared.clock_rate);
+                let sequence = shared.thunder_sequence.load(Ordering::Acquire);
+                if sequence != last_thunder_sequence {
+                    synth.trigger_thunder(load(&shared.thunder_gain), load(&shared.thunder_pan));
+                    last_thunder_sequence = sequence;
+                }
                 let gains: Vec<[f32; 2]> = (0..channels)
                     .map(|channel| channel_gains(channels, channel))
                     .collect();
@@ -448,6 +465,10 @@ pub(crate) struct SeaSynth {
     breaks: Vec<Burst>,
     laps: Vec<Burst>,
     muffled: [[f32; 2]; 2],
+    thunder_age: f32,
+    thunder_gain: f32,
+    thunder_pan: f32,
+    thunder_low: f32,
 }
 
 impl SeaSynth {
@@ -470,6 +491,10 @@ impl SeaSynth {
             breaks: Vec::with_capacity(MAX_BREAKS),
             laps: Vec::with_capacity(MAX_LAPS),
             muffled: [[0.0; 2]; 2],
+            thunder_age: f32::INFINITY,
+            thunder_gain: 0.0,
+            thunder_pan: 0.5,
+            thunder_low: 0.0,
         }
     }
 
@@ -483,6 +508,12 @@ impl SeaSynth {
 
     pub(crate) fn set_targets(&mut self, roughness: f32, level: f32, muffle: f32, wind: f32) {
         self.targets = [roughness, level, muffle, wind];
+    }
+
+    fn trigger_thunder(&mut self, gain: f32, pan: f32) {
+        self.thunder_age = 0.0;
+        self.thunder_gain = gain;
+        self.thunder_pan = pan;
     }
 
     /// xorshift32: enough for noise, and the same on every run.
@@ -601,11 +632,29 @@ impl SeaSynth {
             [0.0; 2]
         };
         let wind_level = 1.0 - 0.95 * self.muffle;
+        let thunder = if self.thunder_age < 5.0 {
+            let noise = self.white();
+            let a = one_pole(90.0, sample_rate);
+            self.thunder_low += a * (noise - self.thunder_low);
+            let envelope =
+                (1.0 - (-self.thunder_age / 0.08).exp()) * (-self.thunder_age / 1.5).exp();
+            self.thunder_age += self.clock_rate / sample_rate;
+            self.thunder_low * envelope * self.thunder_gain * 3.0
+        } else {
+            0.0
+        };
         // Under the water: everything dull and low.
         let muffle_a = one_pole(16_000.0 + (320.0 - 16_000.0) * self.muffle, sample_rate);
         let muffle_gain = 1.0 - 0.3 * self.muffle;
         for ear in 0..2 {
-            let mixed = out[ear] * self.level + wind[ear] * wind_level;
+            let side = if ear == 0 {
+                1.0 - self.thunder_pan
+            } else {
+                self.thunder_pan
+            };
+            let mixed = out[ear] * self.level
+                + wind[ear] * wind_level
+                + thunder * (0.5 + side) * (1.0 - 0.8 * self.muffle);
             self.muffled[ear][0] += muffle_a * (mixed - self.muffled[ear][0]);
             self.muffled[ear][1] += muffle_a * (self.muffled[ear][0] - self.muffled[ear][1]);
             out[ear] = soft_clip(self.muffled[ear][1] * muffle_gain * self.volume);
@@ -731,6 +780,26 @@ mod tests {
                 .map(|burst| burst.age)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn thunder_is_a_delayed_sound_independent_of_the_sea() {
+        let mut synth = SeaSynth::new(RATE, 53);
+        synth.jump_to(0.0, 0.0, 0.0, 0.0);
+        assert!((0..1000).all(|_| synth.next_frame() == [0.0, 0.0]));
+        synth.trigger_thunder(1.0, 0.75);
+        let peak = (0..RATE as usize)
+            .map(|_| {
+                let [left, right] = synth.next_frame();
+                assert!(right.abs() <= 1.0 && left.abs() <= 1.0);
+                right.abs().max(left.abs())
+            })
+            .fold(0.0_f32, f32::max);
+        assert!(peak > 0.01, "thunder peak {peak}");
+        synth.clock_rate = 0.0;
+        let age = synth.thunder_age;
+        assert!((0..1000).all(|_| synth.next_frame() == [0.0, 0.0]));
+        assert_eq!(synth.thunder_age, age);
     }
 
     #[test]

@@ -403,6 +403,10 @@ pub fn approaching_storm_at(time: f64) -> Option<f32> {
     }
 }
 
+pub fn has_approaching_storm() -> bool {
+    matches!(SEA_STATE_MODE.get(), Some(SeaStateMode::Approach(_)))
+}
+
 fn sea_override_from_environment() -> Option<SeaStateMode> {
     std::env::var("CATINGARDEN_OCEAN_STORM").ok().map(|value| {
         if value.trim() == "cycle" {

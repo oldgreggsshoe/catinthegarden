@@ -10,10 +10,10 @@ surface appearance and crest geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Latest phase (29 September):** a 5 km approach footprint and 16 m calm / 24 m
-storm swell follow the earlier sound-clock/hidden-sun changes. Lightning/thunder,
-beach/forest storm contrast and sound retuning remain open; see the dated section
-below for the footprint's camera-uniform sea limitation and validation gap.
+**Latest phase (29 September):** local fog lightning and speed-of-sound thunder
+follow the 5 km approach footprint and 16 m calm / 24 m storm swell. Beach/forest
+storm contrast and sound retuning remain open; neither the storm nor lightning
+has a live visual sign-off here because the X display could not be opened.
 
 **Startup WGSL parse panic repaired (29 September):** an uncommitted edit mangled the
 `ocean_underside_colour` `if` brace and foam comment in `shared_planet.wgsl`. The text is restored
@@ -11748,3 +11748,30 @@ The existing `CATINGARDEN_OCEAN_FFT_SWELL` override (0-30m) remains unchanged;
 only its unset default went from 8m to 16m. The existing bounded 8m local
 storm boost reaches 24m, avoiding the 16m + 80% = 28.8m overshoot. No
 frame-time or live appearance claim is made.
+
+## 29 September - Fog lightning and travel-time thunder
+
+`lightning.rs` schedules reproducible strikes while local overcast exceeds
+0.65. For the forced approach they sit in a planet-fixed cloud 3 km above the
+storm centre, within 2 km horizontally; for natural weather the strike area
+follows the stormy camera region. A two-pulse flash (<0.4 s) supplies a
+view-space direction and brightness in an appended `CameraUniform` lane.
+`atmosphere.wgsl` and `shared_planet.wgsl` add a broad, cool flash **only to
+fog colour**, weighted by fog density and ray direction; no visible bolt, no
+whole-screen exposure change, and no per-fragment work when idle beyond the
+uniform zero check. Appending the lane preserves every previous camera
+uniform offset for shaders with their own prefix struct; a regression pins
+these offsets and both updated WGSL orders.
+
+Each strike queues its planet-space distance to the listener at strike time.
+Thunder is released at `distance / 343` seconds on the simulation clock, so
+four-times time also shortens the real wait fourfold, while F10 freezes it.
+`SeaSound` receives one atomic sequence trigger and synthesises a decaying
+low rumble that remains audible on land, panned toward the strike. Strike
+location, 1- and 10-second travel-time examples, audible thunder without sea,
+freeze behavior, camera layout, and atmosphere/terrain shader parsing all
+pass. The release build passes. The renderer could not be captured live in
+this environment (`XNotSupported(XOpenDisplayFailed)`), so flash appearance,
+spatial transition in motion and GPU frame cost are **not signed off**. The
+pre-existing whole-sky fog flash report remains separate; these intended
+localized flashes should not be mistaken for its diagnosis.
