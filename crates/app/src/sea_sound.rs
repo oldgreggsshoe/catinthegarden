@@ -1,4 +1,4 @@
-//! The sound of the sea, synthesised: no recordings.
+//! The sound of the sea and the wind, synthesised: no recordings.
 //!
 //! Three layers of filtered noise. Breaking waves are bursts that start bright
 //! (the crash) and sweep down into a hiss (the wash), arriving at random and
@@ -8,9 +8,15 @@
 //! and louder and the roar rises, until in a storm they overlap into one
 //! nearly stable roar.
 //!
-//! The game sets three numbers each frame (`SeaSound::set`): how rough the sea
-//! is, how near the water the listener is, and how far under it. The audio
-//! thread eases toward them, so nothing clicks.
+//! The wind is separate, and heard wherever there is air, however high: a
+//! rushing roar that rises with its speed, resonant howls that drift in pitch
+//! and swell in and out once it blows hard, and a thin whistle in the
+//! strongest gusts.
+//!
+//! The game sets four numbers each frame (`SeaSound::set`): how rough the sea
+//! is, how near the water the listener is, how far under it, and how hard the
+//! air is moving past them. The audio thread eases toward them, so nothing
+//! clicks.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -18,7 +24,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 /// Overall loudness; `CATINGARDEN_SOUND_VOLUME` scales it (0-2).
-const VOLUME: f32 = 0.5;
+const VOLUME: f32 = 0.4;
 /// Seconds the audio thread takes to follow a change in the sea.
 const PARAMETER_EASE_SECONDS: f32 = 0.6;
 /// Breaking waves per second in a slight sea and in a full storm.
@@ -32,6 +38,17 @@ const MAX_LAPS: usize = 8;
 /// Loudness of the low roar at full storm; in a calm it is a faint floor.
 const ROAR_GAIN: f32 = 1.1;
 const ROAR_FLOOR: f32 = 0.06;
+/// Wind: the roar at full wind, the howls (from WIND_HOWL_ONSET), the whistle
+/// (from WIND_WHISTLE_ONSET), as shares of full wind (`SeaSound::set`).
+const WIND_ROAR_GAIN: f32 = 0.9;
+const WIND_HOWL_GAIN: f32 = 0.45;
+const WIND_WHISTLE_GAIN: f32 = 0.08;
+const WIND_HOWL_ONSET: f32 = 0.35;
+const WIND_WHISTLE_ONSET: f32 = 0.6;
+/// The howls' resonances at full wind (Hz), and how sharp they are.
+const WIND_HOWL_PITCHES: [f32; 3] = [330.0, 480.0, 700.0];
+const WIND_HOWL_Q: f32 = 12.0;
+const WIND_WHISTLE_Q: f32 = 30.0;
 /// Distance above the water (m) at which the sea is half as loud.
 pub const HALF_LOUDNESS_HEIGHT_METERS: f64 = 40.0;
 
@@ -66,6 +83,7 @@ struct Shared {
     roughness: AtomicU32,
     level: AtomicU32,
     muffle: AtomicU32,
+    wind: AtomicU32,
 }
 
 fn store(slot: &AtomicU32, value: f32) {
@@ -113,11 +131,13 @@ impl SeaSound {
 
     /// `roughness` 0 (slight sea) to 1 (storm); `level` 0-1 how near the water
     /// the listener is (`loudness_at_height`, 0 away from the sea); `muffle`
-    /// 0 in air, 1 under the water.
-    pub fn set(&self, roughness: f32, level: f32, muffle: f32) {
+    /// 0 in air, 1 under the water; `wind` 0 (still air) to 1 (a full gale
+    /// past the listener).
+    pub fn set(&self, roughness: f32, level: f32, muffle: f32, wind: f32) {
         store(&self.shared.roughness, roughness.clamp(0.0, 1.0));
         store(&self.shared.level, level.clamp(0.0, 1.0));
         store(&self.shared.muffle, muffle.clamp(0.0, 1.0));
+        store(&self.shared.wind, wind.clamp(0.0, 1.0));
     }
 }
 
@@ -153,15 +173,16 @@ where
 {
     let channels = usize::from(config.channels).max(1);
     let mut synth = SeaSynth::new(config.sample_rate as f32, 0x5ea5_0001);
-    let volume = volume();
+    synth.volume = volume();
     device
         .build_output_stream(
             config,
             move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
                 synth.set_targets(
                     load(&shared.roughness),
-                    load(&shared.level) * volume,
+                    load(&shared.level),
                     load(&shared.muffle),
+                    load(&shared.wind),
                 );
                 for frame in data.chunks_mut(channels) {
                     let [left, right] = synth.next_frame();
@@ -232,15 +253,174 @@ fn one_pole(cutoff_hz: f32, sample_rate: f32) -> f32 {
     1.0 - (-std::f32::consts::TAU * cutoff_hz / sample_rate).exp()
 }
 
+fn xorshift(state: &mut u32) -> f32 {
+    *state ^= *state << 13;
+    *state ^= *state >> 17;
+    *state ^= *state << 5;
+    (*state >> 8) as f32 / 16_777_216.0
+}
+
+/// A resonant band-pass (Chamberlin state-variable filter): the howls and the
+/// whistle are white noise rung through one.
+#[derive(Clone, Copy, Debug, Default)]
+struct Resonator {
+    low: f32,
+    band: f32,
+}
+
+impl Resonator {
+    fn next(&mut self, input: f32, centre_hz: f32, q: f32, sample_rate: f32) -> f32 {
+        let f = 2.0 * (std::f32::consts::PI * centre_hz.min(sample_rate / 7.0) / sample_rate).sin();
+        let high = input - self.low - self.band / q;
+        self.band += f * high;
+        self.low += f * self.band;
+        // Scaled so a sharper resonance does not ring louder.
+        self.band / q.sqrt()
+    }
+}
+
+/// A value wandering smoothly between random points in -1..1, a new one every
+/// `period` seconds: the wind's gusting, and the howls' drift and swell.
+#[derive(Clone, Copy, Debug)]
+struct Wander {
+    from: f32,
+    to: f32,
+    t: f32,
+    period: f32,
+}
+
+impl Wander {
+    fn new(period: f32) -> Self {
+        Self {
+            from: 0.0,
+            to: 0.0,
+            t: 0.0,
+            period,
+        }
+    }
+
+    fn next(&mut self, dt: f32, rng: &mut u32) -> f32 {
+        self.t += dt / self.period;
+        if self.t >= 1.0 {
+            self.t -= 1.0;
+            self.from = self.to;
+            self.to = 2.0 * xorshift(rng) - 1.0;
+        }
+        let s = self.t * self.t * (3.0 - 2.0 * self.t);
+        self.from + (self.to - self.from) * s
+    }
+}
+
+fn smoothstep(low: f32, high: f32, x: f32) -> f32 {
+    let t = ((x - low) / (high - low)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// The wind: a roar of pink noise per ear, three howls and a whistle.
+struct Wind {
+    pink: [[f32; 3]; 2],
+    roar_low_pass: [[f32; 2]; 2],
+    roar_high_pass: [[f32; 2]; 2],
+    gusting: Wander,
+    howls: [Resonator; 3],
+    howl_pitch: [Wander; 3],
+    howl_swell: [Wander; 3],
+    whistle: Resonator,
+    whistle_pitch: Wander,
+    whistle_swell: Wander,
+}
+
+impl Wind {
+    fn new() -> Self {
+        Self {
+            pink: [[0.0; 3]; 2],
+            roar_low_pass: [[0.0; 2]; 2],
+            roar_high_pass: [[0.0; 2]; 2],
+            gusting: Wander::new(0.7),
+            howls: [Resonator::default(); 3],
+            howl_pitch: [Wander::new(2.3), Wander::new(3.1), Wander::new(1.9)],
+            howl_swell: [Wander::new(1.7), Wander::new(2.6), Wander::new(2.1)],
+            whistle: Resonator::default(),
+            whistle_pitch: Wander::new(1.3),
+            whistle_swell: Wander::new(0.9),
+        }
+    }
+
+    /// `strength` 0-1: how hard the air moves past the listener.
+    fn next(&mut self, strength: f32, rng: &mut u32, sample_rate: f32) -> [f32; 2] {
+        let dt = 1.0 / sample_rate;
+        let gust = self.gusting.next(dt, rng);
+        let mut out = [0.0_f32; 2];
+        // Roar: pink noise (Kellet's filter), 90Hz up to a cutoff that rises
+        // with the wind, flickering with its turbulence.
+        let roar_gain = WIND_ROAR_GAIN * strength * strength * (1.0 + 0.45 * strength * gust);
+        let low_a = one_pole(350.0 + 1300.0 * strength, sample_rate);
+        for ear in 0..2 {
+            let white = 2.0 * xorshift(rng) - 1.0;
+            let p = &mut self.pink[ear];
+            p[0] = 0.99765 * p[0] + white * 0.099_046;
+            p[1] = 0.963 * p[1] + white * 0.296_516_4;
+            p[2] = 0.57 * p[2] + white * 1.052_691_3;
+            let pink = 0.25 * (p[0] + p[1] + p[2] + white * 0.1848);
+            let [low_1, low_2] = &mut self.roar_low_pass[ear];
+            *low_1 += low_a * (pink - *low_1);
+            *low_2 += low_a * (*low_1 - *low_2);
+            let [high, previous] = &mut self.roar_high_pass[ear];
+            *high = 0.988 * (*high + *low_2 - *previous);
+            *previous = *low_2;
+            out[ear] += *high * roar_gain;
+        }
+        // Howls: resonances rung by the wind, higher as it strengthens,
+        // drifting in pitch and swelling in and out.
+        let howling =
+            WIND_HOWL_GAIN * smoothstep(WIND_HOWL_ONSET, 0.85, strength) * (0.7 + 0.3 * gust);
+        if howling > 0.0 {
+            for index in 0..3 {
+                let white = 2.0 * xorshift(rng) - 1.0;
+                let pitch = WIND_HOWL_PITCHES[index]
+                    * (0.55 + 0.45 * strength)
+                    * (1.0 + 0.12 * self.howl_pitch[index].next(dt, rng));
+                let swell = 0.5 + 0.5 * self.howl_swell[index].next(dt, rng);
+                let value = self.howls[index].next(white, pitch, WIND_HOWL_Q, sample_rate)
+                    * howling
+                    * swell
+                    * swell;
+                let pan = [0.25, 0.5, 0.75][index];
+                out[0] += value * (1.0 - pan);
+                out[1] += value * pan;
+            }
+        }
+        // Whistle: thin and high, in the strongest gusts only.
+        let whistling = WIND_WHISTLE_GAIN
+            * smoothstep(WIND_WHISTLE_ONSET, 0.95, strength)
+            * smoothstep(-0.2, 0.8, gust);
+        if whistling > 0.0 {
+            let white = 2.0 * xorshift(rng) - 1.0;
+            let pitch =
+                (1500.0 + 1100.0 * strength) * (1.0 + 0.08 * self.whistle_pitch.next(dt, rng));
+            let swell = 0.5 + 0.5 * self.whistle_swell.next(dt, rng);
+            let value =
+                self.whistle.next(white, pitch, WIND_WHISTLE_Q, sample_rate) * whistling * swell;
+            out[0] += value;
+            out[1] += value;
+        }
+        out
+    }
+}
+
 /// The synthesiser. Pure and deterministic for a seed, so it can be tested
 /// without an audio device.
 pub(crate) struct SeaSynth {
     sample_rate: f32,
     rng: u32,
-    targets: [f32; 3],
+    /// Overall loudness (`volume`).
+    pub(crate) volume: f32,
+    targets: [f32; 4],
     roughness: f32,
     level: f32,
     muffle: f32,
+    wind_strength: f32,
+    wind: Wind,
     ease: f32,
     brown: [f32; 2],
     roar: [[f32; 2]; 2],
@@ -255,10 +435,13 @@ impl SeaSynth {
         Self {
             sample_rate,
             rng: seed.max(1),
-            targets: [0.0; 3],
+            volume: 1.0,
+            targets: [0.0; 4],
             roughness: 0.0,
             level: 0.0,
             muffle: 0.0,
+            wind_strength: 0.0,
+            wind: Wind::new(),
             ease: 1.0 - (-1.0 / (PARAMETER_EASE_SECONDS * sample_rate)).exp(),
             brown: [0.0; 2],
             roar: [[0.0; 2]; 2],
@@ -271,21 +454,19 @@ impl SeaSynth {
 
     /// Starts at these values without easing in (for tests and the demo).
     #[cfg(test)]
-    pub(crate) fn jump_to(&mut self, roughness: f32, level: f32, muffle: f32) {
-        self.set_targets(roughness, level, muffle);
-        (self.roughness, self.level, self.muffle) = (roughness, level, muffle);
+    pub(crate) fn jump_to(&mut self, roughness: f32, level: f32, muffle: f32, wind: f32) {
+        self.set_targets(roughness, level, muffle, wind);
+        (self.roughness, self.level, self.muffle, self.wind_strength) =
+            (roughness, level, muffle, wind);
     }
 
-    pub(crate) fn set_targets(&mut self, roughness: f32, level: f32, muffle: f32) {
-        self.targets = [roughness, level, muffle];
+    pub(crate) fn set_targets(&mut self, roughness: f32, level: f32, muffle: f32, wind: f32) {
+        self.targets = [roughness, level, muffle, wind];
     }
 
+    /// xorshift32: enough for noise, and the same on every run.
     fn random(&mut self) -> f32 {
-        // xorshift32: enough for noise, and the same on every run.
-        self.rng ^= self.rng << 13;
-        self.rng ^= self.rng >> 17;
-        self.rng ^= self.rng << 5;
-        (self.rng >> 8) as f32 / 16_777_216.0
+        xorshift(&mut self.rng)
     }
 
     fn white(&mut self) -> f32 {
@@ -302,10 +483,11 @@ impl SeaSynth {
         let dt = 1.0 / self.sample_rate;
         let break_rate = BREAK_RATE_CALM + (BREAK_RATE_STORM - BREAK_RATE_CALM) * r;
         if self.breaks.len() < MAX_BREAKS && self.random() < break_rate * dt {
-            let attack = (0.2 + 0.5 * self.random()) * (1.0 + 0.5 * r);
+            // A quick rise, so each break lands as a crash before its wash.
+            let attack = (0.08 + 0.3 * self.random()) * (1.0 + 0.5 * r);
             let decay = (0.9 + 2.2 * self.random()) * (1.0 + 1.2 * r);
             let gain = (0.35 + 0.45 * self.random()) * (0.45 + 0.55 * r);
-            let start_hz = 1800.0 + 1600.0 * self.random();
+            let start_hz = 2400.0 + 2200.0 * self.random();
             let end_hz = (380.0 + 380.0 * self.random()) * (1.0 - 0.35 * r);
             let pan = self.pan();
             self.breaks.push(Burst {
@@ -348,6 +530,7 @@ impl SeaSynth {
         self.roughness += (self.targets[0] - self.roughness) * self.ease;
         self.level += (self.targets[1] - self.level) * self.ease;
         self.muffle += (self.targets[2] - self.muffle) * self.ease;
+        self.wind_strength += (self.targets[3] - self.wind_strength) * self.ease;
         self.spawn();
         let r = self.roughness;
         let sample_rate = self.sample_rate;
@@ -382,13 +565,23 @@ impl SeaSynth {
         }
         self.laps.retain(|burst| !burst.finished());
 
+        // The sea fades with height above it; the wind does not. Under the
+        // water there is almost none.
+        let wind = if self.wind_strength > 0.0 {
+            self.wind
+                .next(self.wind_strength, &mut self.rng, sample_rate)
+        } else {
+            [0.0; 2]
+        };
+        let wind_level = 1.0 - 0.95 * self.muffle;
         // Under the water: everything dull and low.
         let muffle_a = one_pole(16_000.0 + (320.0 - 16_000.0) * self.muffle, sample_rate);
         let muffle_gain = 1.0 - 0.3 * self.muffle;
         for ear in 0..2 {
-            self.muffled[ear][0] += muffle_a * (out[ear] - self.muffled[ear][0]);
+            let mixed = out[ear] * self.level + wind[ear] * wind_level;
+            self.muffled[ear][0] += muffle_a * (mixed - self.muffled[ear][0]);
             self.muffled[ear][1] += muffle_a * (self.muffled[ear][0] - self.muffled[ear][1]);
-            out[ear] = soft_clip(self.muffled[ear][1] * muffle_gain * self.level);
+            out[ear] = soft_clip(self.muffled[ear][1] * muffle_gain * self.volume);
         }
         out
     }
@@ -409,7 +602,7 @@ mod tests {
     /// Loudness (RMS) in 100ms windows over `seconds`.
     fn window_loudness(roughness: f32, seconds: f32, seed: u32) -> Vec<f32> {
         let mut synth = SeaSynth::new(RATE, seed);
-        synth.jump_to(roughness, 1.0, 0.0);
+        synth.jump_to(roughness, 1.0, 0.0, 0.0);
         // Let the sea get going before listening.
         for _ in 0..(RATE as usize * 4) {
             synth.next_frame();
@@ -461,7 +654,7 @@ mod tests {
     #[test]
     fn the_sea_never_clips_and_is_silent_away_from_the_water() {
         let mut synth = SeaSynth::new(RATE, 3);
-        synth.jump_to(1.0, 1.0, 0.0);
+        synth.jump_to(1.0, 1.0, 0.0, 1.0);
         let peak = (0..(RATE as usize * 10))
             .map(|_| {
                 let [l, r] = synth.next_frame();
@@ -470,7 +663,7 @@ mod tests {
             .fold(0.0_f32, f32::max);
         assert!(peak < 1.0, "peak {peak}");
         let mut away = SeaSynth::new(RATE, 3);
-        away.jump_to(1.0, 0.0, 0.0);
+        away.jump_to(1.0, 0.0, 0.0, 0.0);
         assert!((0..4800).all(|_| away.next_frame() == [0.0, 0.0]));
     }
 
@@ -479,7 +672,7 @@ mod tests {
         // Share of the loudness above 2kHz, in air and under water.
         let brightness = |muffle: f32| {
             let mut synth = SeaSynth::new(RATE, 11);
-            synth.jump_to(0.3, 1.0, muffle);
+            synth.jump_to(0.3, 1.0, muffle, 0.0);
             let mut previous = 0.0_f32;
             let (mut total, mut high) = (0.0_f32, 0.0_f32);
             for _ in 0..(RATE as usize * 10) {
@@ -494,12 +687,63 @@ mod tests {
         assert!(brightness(1.0) < 0.2 * brightness(0.0));
     }
 
+    fn loudness(roughness: f32, level: f32, muffle: f32, wind: f32) -> f32 {
+        let mut synth = SeaSynth::new(RATE, 21);
+        synth.jump_to(roughness, level, muffle, wind);
+        for _ in 0..(RATE as usize * 2) {
+            synth.next_frame();
+        }
+        let frames = RATE as usize * 10;
+        let sum: f32 = (0..frames)
+            .map(|_| {
+                let [l, r] = synth.next_frame();
+                0.5 * (l * l + r * r)
+            })
+            .sum();
+        (sum / frames as f32).sqrt()
+    }
+
+    #[test]
+    fn the_wind_is_heard_high_above_the_sea_and_rises_with_its_strength() {
+        // Away from the water (level 0) the sea is silent but the wind is not.
+        assert_eq!(loudness(1.0, 0.0, 0.0, 0.0), 0.0);
+        let breeze = loudness(0.0, 0.0, 0.0, 0.3);
+        let wind = loudness(0.0, 0.0, 0.0, 0.6);
+        let gale = loudness(0.0, 0.0, 0.0, 1.0);
+        assert!(
+            breeze > 0.0 && breeze < wind && wind < gale,
+            "{breeze} {wind} {gale}"
+        );
+        // And almost none of it reaches under the water.
+        assert!(loudness(0.0, 0.0, 1.0, 1.0) < 0.1 * gale);
+    }
+
     #[test]
     fn the_sea_is_quieter_higher_above_it() {
         assert!((loudness_at_height(0.0) - 1.0).abs() < 1.0e-6);
         assert!((loudness_at_height(HALF_LOUDNESS_HEIGHT_METERS) - 0.5).abs() < 1.0e-6);
         assert!(loudness_at_height(2_000.0) < 0.05);
         assert_eq!(loudness_at_height(-3.0), 1.0);
+    }
+
+    /// Loudness of each layer on its own, for balancing them:
+    /// `cargo test --release -p catinthegarden-app sea_and_wind_loudness -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "instrument: prints loudness in dBFS"]
+    fn sea_and_wind_loudness() {
+        let db = |value: f32| 20.0 * value.max(1.0e-9).log10();
+        for roughness in [0.0, 0.5, 1.0] {
+            println!(
+                "sea {roughness:.1}: {:6.1} dBFS",
+                db(loudness(roughness, 1.0, 0.0, 0.0))
+            );
+        }
+        for wind in [0.2, 0.45, 0.7, 1.0] {
+            println!(
+                "wind {wind:.2}: {:6.1} dBFS",
+                db(loudness(0.0, 0.0, 0.0, wind))
+            );
+        }
     }
 
     /// Writes a 30-second calm-to-storm sample to listen to:
@@ -510,14 +754,18 @@ mod tests {
         let rate = 44_100_u32;
         let seconds = 30.0_f32;
         let mut synth = SeaSynth::new(rate as f32, 5);
-        synth.jump_to(0.0, 1.0, 0.0);
+        synth.volume = VOLUME;
+        synth.jump_to(0.0, 1.0, 0.0, 0.45);
         let frames = (rate as f32 * seconds) as usize;
         let mut pcm = Vec::with_capacity(frames * 4);
         for frame in 0..frames {
             let t = frame as f32 / (rate as f32 * seconds);
             // Hold calm, build over the middle, hold the storm.
             let r = ((t - 0.15) / 0.6).clamp(0.0, 1.0);
-            synth.set_targets(r * r * (3.0 - 2.0 * r), 1.0, 0.0);
+            let storm = r * r * (3.0 - 2.0 * r);
+            // The wind builds with the storm, gusting every few seconds.
+            let gust = 0.08 * (frame as f32 / rate as f32 * 0.9).sin();
+            synth.set_targets(storm, 1.0, 0.0, 0.45 + 0.45 * storm + gust * storm);
             for value in synth.next_frame() {
                 pcm.extend_from_slice(&((value * 32_767.0) as i16).to_le_bytes());
             }

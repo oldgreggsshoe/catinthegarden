@@ -407,6 +407,10 @@ const STORM_OVERCAST_EASE_SECONDS: f64 = 4.0;
 /// How much louder and rougher the sea sounds in a full gust, as a share of
 /// the whole calm-to-storm range.
 const SEA_SOUND_GUST_SHARE: f32 = 0.3;
+/// The wind as heard: a full storm blows this much harder than the sea's own
+/// wind, and the sound is at full strength at this speed of air past the eye.
+const WIND_SOUND_STORM_BOOST: f64 = 0.6;
+const WIND_SOUND_FULL_SPEED_METERS_PER_SECOND: f64 = 32.0;
 /// A full storm darkens the whole finished frame by this share of its
 /// displayed brightness, in step with the overcast that greys it.
 const STORM_FRAME_DARKENING: f32 = 0.4;
@@ -2872,7 +2876,6 @@ impl State {
             0.0
         };
         let muffle = if altitude < water { 1.0 } else { 0.0 };
-        self.sea_sound.set(roughness, level, muffle);
         let (u, v) = ocean_fft::anchor_axes(direction.to_array());
         let [wind_u, wind_v] = self.gust.wind_uv();
         let wind = glam::DVec3::from_array(u) * wind_u + glam::DVec3::from_array(v) * wind_v;
@@ -2892,6 +2895,13 @@ impl State {
                 vertical_fov_radians: self.camera.vertical_fov_radians(),
             },
         );
+        // The wind heard is the air moving past the eye: the wind (raised by
+        // a storm, whose wind the sea's fixed spectrum does not show) less the
+        // eye's own motion, so flying fast rushes too.
+        let air = wind * (1.0 + WIND_SOUND_STORM_BOOST * f64::from(self.storm_overcast))
+            - self.rain.camera_velocity();
+        let wind_strength = (air.length() / WIND_SOUND_FULL_SPEED_METERS_PER_SECOND) as f32;
+        self.sea_sound.set(roughness, level, muffle, wind_strength);
     }
 
     fn update_bridge_camera(&mut self, planet_rotation_radians: f64) {

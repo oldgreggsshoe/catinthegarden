@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Wind in the sound, 29 September: a wind layer heard at any height and over land (pink-noise roar, three drifting resonant howls from 0.35 strength, a thin whistle from 0.6), driven by the gusting wind at the camera raised up to 60% by the storm, less the eye's own motion (full at 32 m/s); breaking waves now land as a sharper crash; master volume 0.4.
+
 - Sea sound, 29 September: synthesised live (`sea_sound.rs`, `cpal` 0.18, no recordings): breaking-wave noise bursts that sweep from crash to hiss, hull laps in a slight sea, and a low roar; as the sea state (plus gusts) rises the breaks come faster, longer and louder and the roar grows until it is a steady roar. Loudness halves at 40m above the water, silent away from open ocean, muffled under water; interactive only; `CATINGARDEN_SOUND=0` off, `CATINGARDEN_SOUND_VOLUME` 0-2.
 
 - Hull caustics limited, 29 September: full to 2m from the water surface and gone by 3m (above: `OCEAN_REFLECTED_CAUSTIC_FULL_METERS`/`FADE_METERS`, was 3-6m; below: the pattern fades to the plain sun), only on faces steeper than |n.up| 0.5-0.8 (not the deck or roofs), and fading with the sun's visibility: the sun shader's own cloud-and-storm-fog test runs once per frame before the scene (`sun.wgsl cs_sun_visibility` -> shared binding 20 `sun_visible_fraction`), which also fades the sea-bed caustics.

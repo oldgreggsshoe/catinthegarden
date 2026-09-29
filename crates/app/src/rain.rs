@@ -272,6 +272,12 @@ impl Rain {
         self.intensity
     }
 
+    /// The camera's own velocity (planet frame, m/s), smoothed: what the air
+    /// rushes past it with, besides the wind.
+    pub fn camera_velocity(&self) -> DVec3 {
+        self.drift.camera_velocity
+    }
+
     /// Call once per frame, after the camera is settled: the box is uploaded
     /// in view axes.
     pub fn update(&mut self, queue: &wgpu::Queue, frame: RainFrame) {

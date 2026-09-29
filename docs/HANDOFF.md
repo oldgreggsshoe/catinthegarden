@@ -29,8 +29,8 @@ At the interactive start the live weather never reaches a storm (measured). The 
 underwater and reflected caustics. See "Caustics on the hull, and a storm on demand".
 
 **Sea sound (29 September):** synthesised surf that grows from separate breaks and hull laps in a
-slight sea to a steady roar in a storm (`sea_sound.rs`, via `cpal`); interactive only. See "The
-sound of the sea".
+slight sea to a steady roar in a storm, and wind (roar, howls, whistle) heard at any height
+(`sea_sound.rs`, via `cpal`); interactive only. See "The sound of the sea" and "Wind in the sound".
 
 **Hull caustics limited (29 September):** full to 2m from the water and gone by 3m, only on side
 faces, and fading with the sun's visibility (the sun shader's own cloud-and-fog test, now also
@@ -11599,3 +11599,14 @@ Inputs, set once a frame in `update_rain_and_gusts` and eased over 0.6s on the a
 Measured on the 30s calm-to-storm demo (100ms windows): calm -32 dBFS with its loudness varying by 0.39 (breaks with quiet between), mid -20 dBFS / 0.23, storm -14 dBFS / 0.22 (steady), peak -2 dBFS. Tests pin louder-and-steadier with roughness, no clipping, silence away from the sea, muffling under water. The demo WAV: `cargo test --release -p catinthegarden-app write_sea_sound_demo -- --ignored` writes `/tmp/sea_sound_calm_to_storm.wav`. A zero-volume launch showed the stream alive in PulseAudio for the run (one ALSA I/O warning at startup, harmless).
 
 600 app tests pass.
+
+## 29 September - Wind in the sound, and a sharper crash
+
+Ian: there should be a wind component (roaring, howling, whistling) and a crashing-waves one, and the wind persists high above the sea where the waves' sound does not.
+
+- **Wind** (`sea_sound.rs` `Wind`), heard wherever there is air: it is not faded with height above the water, nor silenced over land; almost none reaches under the water. A roar of pink noise per ear, 90Hz up to a cutoff that rises with the wind (350-1650Hz), flickering with its turbulence; from 0.35 of full strength, three howls (white noise rung through resonances at 330/480/700Hz at full wind, Q 12) that drift in pitch and swell in and out; from 0.6, a thin whistle (1.5-2.6kHz, Q 30) in the gusts.
+- **What drives it** (`update_rain_and_gusts`): the air moving past the eye, the gusting wind at the camera (`gust::Gust`) raised by up to 60% by the storm overcast (the sea's own spectrum keeps a fixed 14 m/s, so a storm otherwise would not blow harder), less the eye's own smoothed velocity (from the rain's drift), so flying fast rushes too. Full strength at 32 m/s. The sea's steady 14 m/s is 0.44.
+- **Crash**: each breaking wave now rises in 0.08-0.38s (was 0.2-0.7) from a brighter start (2.4-4.6kHz), so it lands as a crash before its wash.
+- Master volume 0.4 (was 0.5), for headroom now the layers stack.
+
+Loudness of each layer alone (`sea_and_wind_loudness`, before the master volume): sea -30.5/-16.7/-10.8 dBFS at roughness 0/0.5/1; wind -44/-29/-20/-14 dBFS at 0.2/0.45/0.7/1. The calm-to-storm demo at game volume: calm -36 dBFS, storm -20 dBFS peaking at -4.8. 601 app tests pass.
