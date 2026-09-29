@@ -1296,6 +1296,8 @@ struct State {
     /// and the ocean-clock time it was last eased at.
     storm_overcast: f32,
     storm_overcast_time: f64,
+    /// Planet-fixed centre of the optional approaching storm.
+    approach_storm_centre: Option<glam::DVec3>,
     last_real_clock_seconds: f64,
     time_speed_index: usize,
     interactive_scene_time_offset_seconds: f64,
@@ -1798,6 +1800,7 @@ impl State {
             scaled_clock_seconds: 0.0,
             storm_overcast: 0.0,
             storm_overcast_time: f64::NAN,
+            approach_storm_centre: None,
             gust: gust::Gust::CALM,
             last_real_clock_seconds: 0.0,
             time_speed_index: DEFAULT_TIME_SPEED_INDEX,
@@ -2813,24 +2816,26 @@ impl State {
     /// `CATINGARDEN_STORM_OVERCAST` (0-1) fixes it, for comparisons; an
     /// approaching storm (`CATINGARDEN_STORM_APPROACH`) drives it directly.
     fn update_storm_overcast(&mut self, planet_rotation_radians: f64, ocean_time_seconds: f64) {
+        let direction = planet::planet_local_vector(
+            self.camera.world_position().normalize(),
+            planet_rotation_radians,
+        );
+        let centre = *self.approach_storm_centre.get_or_insert(direction);
+        ocean::set_approaching_storm_weight(ocean::approaching_storm_weight(centre, direction));
         let approaching = ocean::approaching_storm_at(ocean_time_seconds);
-        let target = storm_overcast_override()
-            .or(approaching)
-            .unwrap_or_else(|| {
-                let direction = planet::planet_local_vector(
-                    self.camera.world_position().normalize(),
-                    planet_rotation_radians,
-                );
-                let storm = f64::from(self.weather.storm_intensity_at(direction));
-                let altitude =
-                    self.camera.world_position().length() - planet::planet_radius_meters();
-                let smoothstep = |low: f64, high: f64, x: f64| {
-                    let t = ((x - low) / (high - low)).clamp(0.0, 1.0);
-                    t * t * (3.0 - 2.0 * t)
-                };
-                (smoothstep(STORM_OVERCAST_ONSET, STORM_OVERCAST_FULL, storm)
-                    * (1.0 - smoothstep(60_000.0, 90_000.0, altitude))) as f32
-            });
+        let weather_overcast = {
+            let storm = f64::from(self.weather.storm_intensity_at(direction));
+            let altitude = self.camera.world_position().length() - planet::planet_radius_meters();
+            let smoothstep = |low: f64, high: f64, x: f64| {
+                let t = ((x - low) / (high - low)).clamp(0.0, 1.0);
+                t * t * (3.0 - 2.0 * t)
+            };
+            (smoothstep(STORM_OVERCAST_ONSET, STORM_OVERCAST_FULL, storm)
+                * (1.0 - smoothstep(60_000.0, 90_000.0, altitude))) as f32
+        };
+        let target = storm_overcast_override().unwrap_or_else(|| {
+            approaching.map_or(weather_overcast, |value| value.max(weather_overcast))
+        });
         let elapsed = ocean_time_seconds - self.storm_overcast_time;
         self.storm_overcast = if elapsed.is_finite() && elapsed >= 0.0 {
             let weight = 1.0 - (-elapsed / STORM_OVERCAST_EASE_SECONDS).exp();

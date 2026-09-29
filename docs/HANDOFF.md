@@ -10,9 +10,10 @@ surface appearance and crest geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Latest phase (29 September):** game-clock sound pause/rate and hidden-sun underwater
-lighting are implemented below. Local storms, lightning/thunder, larger swell, and
-beach/forest storm contrast remain open; do not treat this phase as completing them.
+**Latest phase (29 September):** a 5 km approach footprint and 16 m calm / 24 m
+storm swell follow the earlier sound-clock/hidden-sun changes. Lightning/thunder,
+beach/forest storm contrast and sound retuning remain open; see the dated section
+below for the footprint's camera-uniform sea limitation and validation gap.
 
 **Startup WGSL parse panic repaired (29 September):** an uncommitted edit mangled the
 `ocean_underside_colour` `if` brace and foam comment in `shared_planet.wgsl`. The text is restored
@@ -11720,3 +11721,30 @@ means changing both the sea-state driver and weather/overcast field rather than
 adding a camera-only mask. Lightning location, fog flash and sound-delayed
 thunder have not been implemented in this phase. Swell amplitude is also
 unchanged.
+
+## 29 September - A five-kilometre approach footprint; sixteen-metre swell
+
+Ian chose a **5 km radius** and **16 m calm / 24 m full-storm** significant
+swell height. `approaching_storm_weight` fixes the forced storm to the
+planet-frame position of the first viewpoint: full to 2.5 km, cubic falloff
+between 2.5 and 5 km, absent beyond 5 km. `update_storm_overcast` uses the
+same location for fog/rain/sky, falling back to actual local weather outside;
+`sea_state_at` weights the approach mode for buoyancy and the FFT uniform.
+The footprint does not query terrain, so starting on land is allowed. The
+regression visits centre, full-radius edge, halfway, outside, then centre
+again. It passes, as do the swell 16/24 anchors and 93 serial ocean tests
+(22 ignored). A parallel ocean run had one known timing-sensitive CPU query
+benchmark fail under contention; the serial rerun passes.
+
+**Limit:** the current ocean renderer and CPU sea state use one camera-driven
+intensity for the frame. Thus moving the eye out and back changes the sea,
+but a distant part of the visible sea does not retain its own storm state.
+A fully spatial sea would need a position-dependent FFT/CPU sea-state query,
+not a camera mask. Do not describe this as a physically spatial ocean storm.
+A release build passes, but `ocean_storm_approach` could not be captured in
+this sandbox: winit panicked with `XNotSupported(XOpenDisplayFailed)`.
+
+The existing `CATINGARDEN_OCEAN_FFT_SWELL` override (0-30m) remains unchanged;
+only its unset default went from 8m to 16m. The existing bounded 8m local
+storm boost reaches 24m, avoiding the 16m + 80% = 28.8m overshoot. No
+frame-time or live appearance claim is made.
