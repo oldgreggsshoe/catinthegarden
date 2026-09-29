@@ -35,6 +35,7 @@ struct FoamFrame {
 // Displacement (Du, Dv) of the cascade foam_fft_jacobian last read: the
 // average of its four taps, as ocean_fft_cascade takes it.
 var<private> foam_fft_last_displacement: vec2<f32>;
+var<private> foam_fft_last_slope: vec2<f32>;
 
 // Fold-Jacobian parts (dDu/du, dDv/dv, dDu/dv, dDv/du) of one cascade at
 // tangent-plane offset `local` metres from the camera, filtered to `width`.
@@ -51,6 +52,7 @@ fn foam_fft_jacobian(cascade_index: u32, local: vec2<f32>, width: f32) -> vec4<f
     let sn = textureSampleLevel(foam_fft_map, foam_fft_sampler, uv + vec2<f32>(0.0, half), cascade_index, lod);
     let ss = textureSampleLevel(foam_fft_map, foam_fft_sampler, uv - vec2<f32>(0.0, half), cascade_index, lod);
     foam_fft_last_displacement = 0.25 * (se.yz + sw.yz + sn.yz + ss.yz);
+    foam_fft_last_slope = vec2<f32>(se.x - sw.x, sn.x - ss.x) / (entry.z * texel);
     return vec4<f32>(se.y - sw.y, sn.z - ss.z, sn.y - ss.y, se.z - sw.z) / (entry.z * texel);
 }
 
@@ -198,12 +200,16 @@ fn cs_foam(@builtin(global_invocation_id) id: vec3<u32>) {
         let texel_meters = 512.0 / f32(dimensions.x);
         let broad = foam_fft_jacobian(0u, local, texel_meters);
         let broad_displacement = foam_fft_last_displacement;
+        let broad_slope = foam_fft_last_slope;
         let mid = foam_fft_jacobian(1u, local, texel_meters);
         let mid_displacement = foam_fft_last_displacement;
+        let mid_slope = foam_fft_last_slope;
         let fine = foam_fft_jacobian(2u, local, texel_meters);
         let fine_displacement = foam_fft_last_displacement;
+        let fine_slope = foam_fft_last_slope;
         let swell = foam_fft_jacobian(3u, local, texel_meters);
         let swell_displacement = foam_fft_last_displacement;
+        let swell_slope = foam_fft_last_slope;
         let jacobian = broad + mid + fine + swell * foam_fft_view.gain.z;
         // The drawn surface is x0 - D, weighted and fold-limited as
         // ocean_surface_fft does (distance from the camera's foot stands in
@@ -213,11 +219,16 @@ fn cs_foam(@builtin(global_invocation_id) id: vec3<u32>) {
         let mid_weight = 1.0 - smoothstep(600.0, 3000.0, distance);
         let fine_weight = 1.0 - smoothstep(150.0, 700.0, distance);
         let chop_gain = foam_fft_view.gain.x * foam_fft_view.gain.y;
-        let drawn_jacobian = (broad + swell * foam_fft_view.gain.z
-            + mid * mid_weight + fine * fine_weight) * (-chop_gain);
-        let displacement = (broad_displacement + swell_displacement * foam_fft_view.gain.z
-            + mid_displacement * mid_weight + fine_displacement * fine_weight)
-            * (chop_gain * ocean_fft_fold_scale(drawn_jacobian));
+        let chop_scales = ocean_fft_chop_scales(vec4<f32>(
+            ocean_fft_chop_envelope(broad, broad_slope),
+            ocean_fft_chop_envelope(mid, mid_slope) * mid_weight,
+            ocean_fft_chop_envelope(fine, fine_slope) * fine_weight,
+            ocean_fft_chop_envelope(swell, swell_slope) * foam_fft_view.gain.z,
+        ) * chop_gain);
+        let displacement = (broad_displacement * chop_scales.x
+            + mid_displacement * (mid_weight * chop_scales.y)
+            + fine_displacement * (fine_weight * chop_scales.z)
+            + swell_displacement * (foam_fft_view.gain.z * chop_scales.w)) * chop_gain;
         let displacement_world = foam_fft_view.axis_u.xyz * displacement.x
             + foam_fft_view.axis_v.xyz * displacement.y;
         drawn_offset = offset - vec2<f32>(

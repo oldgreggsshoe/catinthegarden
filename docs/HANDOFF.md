@@ -5,17 +5,18 @@
 almost every time it was read -- a header cannot name the commit that carries it -- so it does not
 any more; `git log -1` is authoritative. The name is historical: the branch was
 opened for the ocean, moved to **a second body**, and the ocean is the active subject again -- its
-surface appearance rather than its geometry.
+surface appearance and crest geometry.
 
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current crest-shard diagnosis (27 September):** `--scenario ocean_swell_shards` with
-`CATINGARDEN_OCEAN_FFT=1 CATINGARDEN_OCEAN_FFT_SWELL=30` reproduces bright wedges on a large
-crest. Spray-off / foam-off / back-face / instant-foam captures isolate the white to foam,
-especially retained FFT foam history, not flipped GPU triangles. **No fix has passed visual
-acceptance yet.** See the latest dated section for measurements. Ocean mesh seams are a separate
-problem; do not conflate them with the shards.
+**Crest shards fixed (29 September):** the fixed-floor limiter scaled the entire swell by a
+short-wave-dependent factor. At SWELL 30 / CHOP 2 it stretched and inverted real GPU triangles;
+the earlier CHOP 1 foam-only conclusion was incomplete. Per-band phase-envelope limiting removes
+the blades in matched captures while retaining pointed crests. The actual-WGSL mesh regression
+measures 20,446 inverted / 14,600 over-3x-stretched triangles before, zero of each after (387,096
+triangles). See the newest dated section for reproduction, validation, performance and limits.
+Ocean seams and Ian's uncommitted water colours are separate and untouched.
 
 **Ocean mesh seams (28 September):** closed. Over 18 open-ocean scenarios (88 captures) the
 sky-through-the-sea pixel count is 0 with terrain switched off (was 8,215) and 4 with it drawn
@@ -11610,3 +11611,43 @@ Ian: there should be a wind component (roaring, howling, whistling) and a crashi
 - Master volume 0.4 (was 0.5), for headroom now the layers stack.
 
 Loudness of each layer alone (`sea_and_wind_loudness`, before the master volume): sea -30.5/-16.7/-10.8 dBFS at roughness 0/0.5/1; wind -44/-29/-20/-14 dBFS at 0.2/0.45/0.7/1. The calm-to-storm demo at game volume: calm -36 dBFS, storm -20 dBFS peaking at -4.8. 601 app tests pass.
+
+## 29 September - Sideways crest blades: the fixed-floor limiter moved the whole swell
+
+**Correction to the 27 September foam diagnosis.** That CHOP 1 replay exposed broad pointed foam patches, not the severe blades. Its small back-face count did not rule out geometry at stronger chop. Claude's settings investigation (`response/claude.txt`, 5d4bef8) cannot recover the manual binary's exact environment: SWELL 30 is supported, CHOP is unknown. The valid reference remains `manual/1790525174-746683`, after the slope-floor revert; the earlier `1790520906-735221` is **not evidence for this fix**.
+
+**Reproducer, on the current fixed-0.1-floor code:**
+
+```sh
+CATINGARDEN_OCEAN_FFT=1 CATINGARDEN_OCEAN_FFT_SWELL=30 \
+CATINGARDEN_OCEAN_FFT_CHOP=2 CATINGARDEN_OCEAN_FFT_SPRAY=0 \
+CATINGARDEN_PRESENT_MODE=immediate target/release/catinthegarden-app --scenario ocean_swell_shards
+```
+
+The existing ~29m-eye, 12s view now takes its last capture at 11.333333s, where the blades are especially clear. No wind, wavelength or peaks overrides. CHOP 2 is an explicit stress reproducer, **not a claim about Ian's unknown original setting**. Baseline 5d4bef8 `1790624816-1508881`, fixed `1790625562-1511693`, capture 6: the former has long horizontal saw-tooth blades along both faces; the latter retains the pointed crest silhouette and substantial white foam without the blades. These and the evidence paths below live in `/home/dad/catingard-shard-verify/test-runs/`, not the main checkout.
+
+**Cause, measured on the GPU.** The old `fold_scale(total_J)` multiplied the *entire* displacement, including a swell displaced tens of metres. A short wave changing that scalar dragged the swell sideways. For `x = label - f D`, the derivative contains `-D (x) grad(f)`; checking `det(I - f J)` with f held fixed misses that term. A constant determinant *floor* does not make f spatially constant. This is related to, but survives the revert of, the previous slope-aware floor. Coarse sampling is not the sole cause: actual GPU vertices fail at 0.5m as well as 2m/8m. Removing the fine cascade did not remove the blades. Foam makes the warped faces white; changing its atlas resolution/retention is not the repair.
+
+The temporary GPU image diagnostic measured horizontal orientation and over-3x principal stretch from screen derivatives of label/drawn position. At CHOP 2, frame 3 had **40,029 inverted pixels and 41,896 stretched pixels**, including respectively 37,841 and 35,467 white pixels (`1790604207-1326961`; normal `1790604097-1322980`). Separate per-band pointwise determinant limits removed large expansion but still left many inversions. The envelope prototype removed both diagnostic colours. Temporary probes were removed from production; their source is preserved in `shard-precision/rejected-probes-and-envelope-trial.patch`.
+
+**Fix.** Each band gets the phase envelope `sqrt(|J|^2 + |grad(h)|^2)` from already fetched samples. For one wave it is `k*a` at every phase, rather than a crest/flank-dependent determinant. Allocate a **0.85 compression budget from swell to broad to mid to fine**: short waves may limit their own displacement, never that of the swell carrying them. The budget includes empirical headroom for packet-envelope gradients: 0.9 still produced small inverted triangles in the broader GPU census. This is **not** a new slope-dependent determinant floor or a proof that every possible sea is fold-free. At WIND 20/40 the expanded stress probe still found rare small inversions (26/79 of 387,096), but no over-3x triangles; the committed regression pins the reproducing WIND 14 field.
+
+Mirrored in CPU inverse buoyancy and horizontal orbital velocity (difference the *limited* displacements, including changing scales), hull-foam placement and spray birth placement. Height, per-band Stokes peaks, raw foam-birth thresholds and foam history/retention are unchanged. CPU still omits the sub-3m fine cascade as before; the GPU regression explicitly includes it. The inverse and shading normals retain their existing frozen-scale Jacobian approximation; tests measure vertex differences, not that approximation. `MIN_JACOBIAN=0.1` remains only as an inverse/normal denominator floor. No new texture samples, render passes, vertex attributes or runtime diagnostic branches.
+
+**Actual-cause regression.** `gpu_big_swell_chop_does_not_make_sideways_triangles` evolves the real GPU FFT and mips, calls production `ocean_surface_fft` with its vertex-stage filtering in a readback compute harness, and measures both triangles between neighbouring returned vertices. Four times (9.65, 10.433333, 11.333333, 47.9), three spacings (0.5/2/8m), 128x128 vertices per grid: **387,096 triangles**. Before: **20,446 inverted, 14,600 stretched over 3x**. After: **0 / 0**. This fails on the unmodified fixed-floor renderer (also reconfirmed on 371de37), rather than just on a synthetic per-point estimate. `chop_limiter_is_phase_independent_for_a_single_wave` separately pins the phase-invariance mechanism. Historical `fold_scale` is retained only under `cfg(test)`, with its test renamed to stop claiming it proves drawn-mesh orientation.
+
+```sh
+CATINGARDEN_OCEAN_FFT_SWELL=30 CARGO_TARGET_DIR=/dev/shm/catingard-shard-verify-target \
+cargo test -p catinthegarden-app --release gpu_big_swell_chop_does_not_make_sideways_triangles -- --ignored --nocapture
+CATINGARDEN_OCEAN_FFT_SWELL=30 CATINGARDEN_OCEAN_FFT_CHOP=2 \
+CARGO_TARGET_DIR=/dev/shm/catingard-shard-verify-target \
+cargo test -p catinthegarden-app --release the_drawn_sea_almost_never_turns_inside_out -- --nocapture
+```
+
+The existing CPU drawn-sea test passes at default and SWELL 30 / CHOP 2: **0 / 268,203 cells**. The initial full serial app suite on 5d4bef8 plus the fix passed **582 tests, 36 ignored**. A prior parallel run's wall-clock CPU-query benchmark failed under contention; serial rerun passed. `ocean_swell_ship` at SWELL 30 / CHOP 2 (`1790671211-1914746`) and ordinary `ocean_deck_reference` (`1790671234-1915716`) pass; opened captures show no new blades/needles. Human motion/appearance approval is not implied by stills.
+
+**Timing method correction.** Quadro M1000M, Vulkan, Immediate, 1280x720, quiet interleaved runs, immutable baseline/candidate binaries. The half-second log's `frame_time_ms` samples the *previous* frame and is phase-biased (15-20ms while average throughput is ~33ms); its apparently large gain is **not** a valid FPS claim. Use elapsed log timestamps from sim time >=2 through the end, divided by the corresponding fixed-step frame count. `shard-precision/summarize.py` and `timing-summary.json` retain all runs. Three initial spray-off pairs: 32.496/32.486/32.656ms before, 32.826/32.641/32.683ms after. Four ordinary spray-on pairs: 33.098/32.862/33.334/32.985ms before, 32.979/32.857/33.094/32.938ms after. Two additional runs contained wall-time stalls, one baseline (37.291ms) and one candidate (34.745ms); both remain in the raw data, not used to claim a speed-up. A further spray-off pair was 32.625 -> 32.627ms. Together these show no established frame-time regression or FPS improvement. CPU-side `--profile-render` also covers spray-on rendering; direct GPU timestamps remain unsafe on this card, so there is **no isolated GPU-millisecond claim**.
+
+**Latest integration (371de37 plus this fix).** Release build; **602 app tests pass, 38 ignored**, run serially; all **13 ocean GPU tests pass**, including the new mesh regression and Claude's shared-edge/filter checks. The failing-before GPU counts above are identical on this baseline. Spray-on captures `1790671747-1927971` before / `1790671789-1929215` after confirm the same blade removal with the latest renderer. Two balanced Immediate pairs give **33.401 -> 33.474ms** and **33.708 -> 33.466ms** whole-frame throughput: no measurable regression. Logs: `shard-precision/{app-tests-371de37,gpu-before-371de37,gpu-after-371de37,gpu-suite-371de37}.log`, `latest-timing-pairs.txt`.
+
+Verification checkout: `/home/dad/catingard-shard-verify`, with its own `CARGO_TARGET_DIR=/dev/shm/catingard-shard-verify-target`; never share the main target directory. Ian's local `OCEAN_SOT_WATER_ALBEDO` / `OCEAN_REFLECTION_SCALE` and Claude's seam, gust, caustic and audio work are preserved. Only the limiter, mirrored placement, regressions, replay capture time and these docs belong to this fix.

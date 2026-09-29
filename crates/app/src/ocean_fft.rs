@@ -275,9 +275,12 @@ const LATTICE_SECONDS: f64 = 0.1;
 /// Birds look ahead 3s; this keeps every lattice step they revisit.
 const LATTICE_SLOTS: usize = 40;
 const INVERSE_ITERATIONS: usize = 6;
-/// How far a crest may pinch (drawn-surface Jacobian determinant) before the
-/// choppy displacement is held back; the shader's OCEAN_FFT_MIN_JACOBIAN.
+/// Denominator floor for the frozen-scale normal/inverse approximation.
+/// Displacement is limited by CHOP_STEEPNESS_BUDGET, not a pointwise Jacobian.
 pub const MIN_JACOBIAN: f64 = 0.1;
+/// Phase-envelope compression budget; includes headroom for envelope gradients.
+/// Chosen against drawn GPU triangles, not the frozen-scale determinant.
+pub const CHOP_STEEPNESS_BUDGET: f64 = 0.85;
 /// Lattice steps the background worker builds ahead of the frontier.
 const PREFETCH_STEPS: i64 = 3;
 
@@ -757,14 +760,45 @@ fn prefetch_worker(shared: std::sync::Weak<SurfaceShared>) {
     }
 }
 
+/// Horizontal displacement and its frozen-scale Jacobian. Allocate a
+/// phase-insensitive steepness envelope from swell to broad to mid, so the
+/// short waves cannot jerk the entire swell sideways by changing its limiter.
+/// For one wave, sqrt(|J|^2 + |grad(h)|^2) = k a throughout its phase. The
+/// envelope still varies across wave packets: test the drawn mesh, not just
+/// this Jacobian (which, like the old inverse, neglects scale gradients).
+/// Mirrored by ocean_fft_chop_envelope / ocean_fft_chop_scales in WGSL.
+fn limited_chop(bands: &[FieldSample; 3], chop: f64, budget: f64) -> FieldSample {
+    let mut remaining = budget;
+    let mut result = FieldSample::default();
+    for i in [2, 0, 1] {
+        let band = &bands[i];
+        let j2 = band.jacobian.iter().map(|x| x * x).sum::<f64>();
+        let slope2 = band.slope.iter().map(|x| x * x).sum::<f64>();
+        let envelope = chop * (j2 + slope2).sqrt();
+        let scale = (remaining / envelope.max(1.0e-6)).min(1.0);
+        remaining = (remaining - envelope * scale).max(0.0);
+        for axis in 0..2 {
+            result.displacement[axis] += band.displacement[axis] * (chop * scale);
+        }
+        for axis in 0..4 {
+            result.jacobian[axis] += band.jacobian[axis] * (chop * scale);
+        }
+    }
+    result
+}
+
+// The old pointwise limiter remains only as a regression reference: its
+// per-point determinant is NOT the determinant of the drawn mesh.
+#[cfg(test)]
 /// Largest scale f in [0, 1] on a choppy offset with Jacobian `j` (dDu/du,
 /// dDv/dv, dDu/dv, dDv/du of the drawn offset) keeping det(I + f J) at or above
-/// `MIN_JACOBIAN`. The shader's `ocean_fft_fold_scale`.
+/// `MIN_JACOBIAN`. Historical shader formula, retained for regression tests.
 fn fold_scale(j: [f64; 4]) -> f64 {
     fold_scale_to(j, MIN_JACOBIAN)
 }
 
 /// `fold_scale` held at an arbitrary `floor` (for measuring alternatives).
+#[cfg(test)]
 fn fold_scale_to(j: [f64; 4], floor: f64) -> f64 {
     let trace = j[0] + j[1];
     let det = j[0] * j[1] - j[2] * j[3];
@@ -855,18 +889,21 @@ impl CpuSurface {
         let key = (time / LATTICE_SECONDS).floor() as i64;
         let scales = [1.0, 1.0, swell_height_meters(storm_intensity) as f64];
         let field = |key: i64| {
-            let mut total = FieldSample::default();
-            for (cascade, scale) in self.cascades().iter().zip(scales) {
-                total.add_scaled(&sample_slot(&cascade.slot(key), cascade.tile_meters, label, 0.0), scale);
-            }
-            total
+            let bands = std::array::from_fn(|i| {
+                let cascade = &self.cascades()[i];
+                let mut band = FieldSample::default();
+                band.add_scaled(
+                    &sample_slot(&cascade.slot(key), cascade.tile_meters, label, 0.0),
+                    scales[i],
+                );
+                band
+            });
+            limited_chop(&bands, choppiness() as f64, CHOP_STEEPNESS_BUDGET)
         };
         let (now, next) = (field(key), field(key + 1));
-        let chop = choppiness() as f64;
-        let c = chop * fold_scale(now.jacobian.map(|value| -chop * value));
         let rate = [
-            -c * (next.displacement[0] - now.displacement[0]) / LATTICE_SECONDS,
-            -c * (next.displacement[1] - now.displacement[1]) / LATTICE_SECONDS,
+            -(next.displacement[0] - now.displacement[0]) / LATTICE_SECONDS,
+            -(next.displacement[1] - now.displacement[1]) / LATTICE_SECONDS,
         ];
         std::array::from_fn(|i| u[i] * rate[0] + v[i] * rate[1])
     }
@@ -904,23 +941,19 @@ impl CpuSurface {
                     }
                     (total, bands)
                 };
-                // Mirrors the shader's fold limiter: displacement eases off
-                // where the surface would otherwise turn inside out.
-                let limited = |sample: &FieldSample| {
-                    let j = sample.jacobian.map(|value| -chop * value);
-                    chop * fold_scale(j)
-                };
+                let limited =
+                    |bands: &[FieldSample; 3]| limited_chop(bands, chop, CHOP_STEEPNESS_BUDGET);
                 let mut label = target;
                 let (mut sample, mut bands) = field(label);
                 for _ in 0..INVERSE_ITERATIONS {
-                    let c = limited(&sample);
+                    let horizontal = limited(&bands);
                     let residual = [
-                        label[0] - c * sample.displacement[0] - target[0],
-                        label[1] - c * sample.displacement[1] - target[1],
+                        label[0] - horizontal.displacement[0] - target[0],
+                        label[1] - horizontal.displacement[1] - target[1],
                     ];
-                    let j = sample.jacobian;
-                    // d(label - cD)/d(label), rows u and v.
-                    let (a, b, cc, d) = (1.0 - c * j[0], -c * j[2], -c * j[3], 1.0 - c * j[1]);
+                    let j = horizontal.jacobian;
+                    // Frozen-scale inverse approximation, rows u and v.
+                    let (a, b, cc, d) = (1.0 - j[0], -j[2], -j[3], 1.0 - j[1]);
                     // Within a millimetre: the sample in hand is the answer.
                     if residual[0].abs() + residual[1].abs() < 1.0e-3 {
                         break;
@@ -930,9 +963,9 @@ impl CpuSurface {
                     label[1] -= (-cc * residual[0] + a * residual[1]) / det;
                     (sample, bands) = field(label);
                 }
-                let c = limited(&sample);
-                let j = sample.jacobian;
-                let (a, b, cc, d) = (1.0 - c * j[0], -c * j[2], -c * j[3], 1.0 - c * j[1]);
+                let horizontal = limited(&bands);
+                let j = horizontal.jacobian;
+                let (a, b, cc, d) = (1.0 - j[0], -j[2], -j[3], 1.0 - j[1]);
                 let det = (a * d - b * cc).max(MIN_JACOBIAN);
                 // Second-order crest term, band by band, as the shader adds it.
                 let k = self.wavenumbers;
@@ -1588,14 +1621,25 @@ pub(crate) mod tests {
                 total
             };
             let field = at(label);
-            let j = field.jacobian;
-            let c = chop * fold_scale(j.map(|value| -chop * value));
-            let target = [label[0] - c * field.displacement[0], label[1] - c * field.displacement[1]];
+            let forward_bands = std::array::from_fn(|i| {
+                let cascade = &cpu.cascades()[i];
+                let mut band = FieldSample::default();
+                band.add_scaled(
+                    &sample_slot(&cascade.slot(key), cascade.tile_meters, label, delta),
+                    [1.0, 1.0, scale][i],
+                );
+                band
+            });
+            let horizontal = limited_chop(&forward_bands, chop, CHOP_STEEPNESS_BUDGET);
+            let target = [
+                label[0] - horizontal.displacement[0],
+                label[1] - horizontal.displacement[1],
+            ];
             let (sample, found) = cpu.sample_at(target, time, storm);
             let miss = ((found[0] - label[0]).powi(2) + (found[1] - label[1]).powi(2)).sqrt();
             eprintln!(
                 "label {label:?}: displaced {:.2} m, recovered within {miss:.4} m, height {:.3} vs {:.3}",
-                (c * c * (field.displacement[0].powi(2) + field.displacement[1].powi(2))).sqrt(),
+                (horizontal.displacement[0].powi(2) + horizontal.displacement[1].powi(2)).sqrt(),
                 sample.height,
                 field.height
             );
@@ -1702,14 +1746,14 @@ pub(crate) mod tests {
 
     /// The drawn mesh, as the vertex shader places it: label points on a
     /// `side` x `side` grid `spacing` apart moved to x0 - cD, with the fold
-    /// limiter held at `floor` (as a function of the label slope), plus
+    /// envelope budget held at `budget` (as a function of the label slope), plus
     /// their heights.
     fn drawn_mesh(
         cpu: &CpuSurface,
         time: f64,
         side: usize,
         spacing: f64,
-        floor: &dyn Fn([f64; 2]) -> f64,
+        budget: &dyn Fn([f64; 2]) -> f64,
     ) -> Vec<[f64; 3]> {
         let chop = choppiness() as f64;
         let scale = swell_height_meters(0.22) as f64;
@@ -1718,12 +1762,25 @@ pub(crate) mod tests {
         (0..side * side)
             .map(|n| {
                 let p = [(n % side) as f64 * spacing, (n / side) as f64 * spacing];
+                let bands = std::array::from_fn(|i| {
+                    let cascade = &cpu.cascades()[i];
+                    let mut band = FieldSample::default();
+                    band.add_scaled(
+                        &sample_slot(&cascade.slot(key), cascade.tile_meters, p, delta),
+                        [1.0, 1.0, scale][i],
+                    );
+                    band
+                });
                 let mut f = FieldSample::default();
-                for (cascade, w) in cpu.cascades().iter().zip([1.0, 1.0, scale]) {
-                    f.add_scaled(&sample_slot(&cascade.slot(key), cascade.tile_meters, p, delta), w);
+                for band in &bands {
+                    f.add_scaled(band, 1.0);
                 }
-                let c = chop * fold_scale_to(f.jacobian.map(|v| -chop * v), floor(f.slope));
-                [p[0] - c * f.displacement[0], p[1] - c * f.displacement[1], f.height]
+                let horizontal = limited_chop(&bands, chop, budget(f.slope));
+                [
+                    p[0] - horizontal.displacement[0],
+                    p[1] - horizontal.displacement[1],
+                    f.height,
+                ]
             })
             .collect()
     }
@@ -1754,16 +1811,17 @@ pub(crate) mod tests {
 
     #[test]
     fn the_drawn_sea_almost_never_turns_inside_out() {
-        // Measured on the mesh itself, so the limiter's variation from point
-        // to point counts, not just each point's own pinch. The fixed 0.1
-        // floor turns 0.0004% of 0.5m cells inside out. A slope-dependent
-        // floor tried on 27 September looked better point by point but
-        // sheared neighbouring vertices past each other: 0.049% of cells,
-        // seen as sideways shards along big crests.
+        // Measure the mesh itself, including changes in the limiter. The
+        // former slope-dependent floor failed this default-chop census;
+        // the subsequent fixed floor passed but still made shards at chop 2.
+        // The new GPU regression covers that high-chop, filtered field too.
         let cpu = CpuSurface::new(&default_h0());
         let (mut cells, mut inverted) = (0usize, 0usize);
         for time in [12.3, 47.9, 96.1] {
-            for cell in drawn_cells(&drawn_mesh(&cpu, time, 300, 0.5, &|_| MIN_JACOBIAN), 300) {
+            for cell in drawn_cells(
+                &drawn_mesh(&cpu, time, 300, 0.5, &|_| CHOP_STEEPNESS_BUDGET),
+                300,
+            ) {
                 cells += 1;
                 inverted += usize::from(cell.is_none());
             }
@@ -1774,15 +1832,15 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[ignore = "instrument: drawn-mesh fold-overs and steepness at several limiter floors"]
+    #[ignore = "instrument: drawn-mesh fold-overs and steepness at several envelope budgets"]
     fn drawn_fold_census() {
         let cpu = CpuSurface::new(&default_h0());
-        for floor in [0.10, 0.15, 0.20, 0.30] {
+        for budget in [0.90, 0.85, 0.80, 0.70] {
             let (mut total, mut inverted) = (0usize, 0usize);
             let mut slopes = Vec::new();
             for step in 0..20 {
                 let time = 5.0 + step as f64 * 7.3;
-                for cell in drawn_cells(&drawn_mesh(&cpu, time, 400, 0.5, &|_| floor), 400) {
+                for cell in drawn_cells(&drawn_mesh(&cpu, time, 400, 0.5, &|_| budget), 400) {
                     total += 1;
                     match cell {
                         None => inverted += 1,
@@ -1797,14 +1855,14 @@ pub(crate) mod tests {
                 100.0 * slopes.iter().filter(|&&s| s > t).count() as f64 / slopes.len() as f64
             };
             eprintln!(
-                "floor {floor:.2}: inverted {:.4}% | slope p50 {:.1} p99 {:.1} p99.99 {:.1} deg, over 45 {:.4}%, over 60 {:.5}%",
+                "budget {budget:.2}: inverted {:.4}% | slope p50 {:.1} p99 {:.1} p99.99 {:.1} deg, over 45 {:.4}%, over 60 {:.5}%",
                 100.0 * inverted as f64 / total as f64, q(0.5), q(0.99), q(0.9999), over(45.0), over(60.0)
             );
         }
     }
 
     #[test]
-    fn fold_scale_never_lets_the_surface_turn_inside_out() {
+    fn legacy_fold_scale_bounds_the_frozen_scale_determinant() {
         let det = |j: [f64; 4], f: f64| (1.0 + f * j[0]) * (1.0 + f * j[1]) - f * f * j[2] * j[3];
         // Gentle, one-axis cusp, crossing crests compressing both ways, shear.
         for j in [[-0.3, -0.1, 0.0, 0.0], [-1.6, 0.2, 0.1, 0.1], [-1.2, -1.2, 0.3, 0.3], [-0.9, -0.9, -0.8, 0.8]] {
@@ -1820,9 +1878,33 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn chop_limiter_is_phase_independent_for_a_single_wave() {
+        // A 20m amplitude, 200m long wave at chop 2 exceeds the budget.
+        // Its limiter must not change between its tip and flanks: doing so
+        // introduces the D * grad(scale) term that made the sideways blades.
+        let (amplitude, k, chop) = (20.0, std::f64::consts::TAU / 200.0, 2.0);
+        let scale = CHOP_STEEPNESS_BUDGET / (chop * k * amplitude);
+        for step in 0..256 {
+            let phase = std::f64::consts::TAU * step as f64 / 256.0;
+            let swell = FieldSample {
+                slope: [-k * amplitude * phase.sin(), 0.0],
+                displacement: [amplitude * phase.sin(), 0.0],
+                jacobian: [k * amplitude * phase.cos(), 0.0, 0.0, 0.0],
+                ..Default::default()
+            };
+            let bands = [FieldSample::default(), FieldSample::default(), swell];
+            let drawn = limited_chop(&bands, chop, CHOP_STEEPNESS_BUDGET);
+            assert!((drawn.displacement[0] - chop * scale * swell.displacement[0]).abs() < 1.0e-12);
+        }
+    }
+
+    #[test]
     fn the_shader_holds_crests_at_the_same_pinch() {
         let shader = include_str!("shared_planet.wgsl");
         assert!(shader.contains(&format!("const OCEAN_FFT_MIN_JACOBIAN: f32 = {MIN_JACOBIAN:?};")));
+        let budget = format!("const OCEAN_FFT_CHOP_BUDGET: f32 = {CHOP_STEEPNESS_BUDGET:?};");
+        assert!(shader.contains(&budget));
+        assert!(include_str!("ocean_spray_update.wgsl").contains(&budget));
     }
 
     #[test]

@@ -947,3 +947,201 @@ fn test_edge(@builtin(global_invocation_id) id: vec3<u32>) {{
         assert!((pair[0] - pair[1]).abs() < 0.12, "{pair:?}");
     }
 }
+
+#[test]
+#[ignore = "requires Vulkan and CATINGARDEN_OCEAN_FFT_SWELL=30; reads actual FFT WGSL vertices"]
+fn gpu_big_swell_chop_does_not_make_sideways_triangles() {
+    use crate::ocean_fft::{self, OceanFft, ViewParams};
+    assert_eq!(
+        ocean_fft::swell_base_height_meters(),
+        30.0,
+        "run with CATINGARDEN_OCEAN_FFT_SWELL=30"
+    );
+    // CHOP=2 exposes the white blades in ocean_swell_shards. CHOP=1 did not:
+    // a fine CPU grid at that setting was the wrong regression for this bug.
+    // Evaluate the production vertex field, including its mip filtering and
+    // fine cascade, then measure triangles BETWEEN samples, not det(I-cJ)
+    // at individual points (which misses D times the limiter's gradient).
+    const SIDE: usize = 128;
+    const SPACINGS: [f32; 3] = [0.5, 2.0, 8.0];
+    let count = SIDE * SIDE * SPACINGS.len();
+    let source = format!(
+        r#"{}
+@group(0) @binding(1) var<storage, read_write> mesh_results: array<vec4<f32>>;
+@compute @workgroup_size(64)
+fn test_mesh(@builtin(global_invocation_id) id: vec3<u32>) {{
+    if id.x >= {count}u {{ return; }}
+    let spacing = array<f32, 3>(0.5, 2.0, 8.0)[id.x / {plane}u];
+    let index = id.x % {plane}u;
+    let label = (vec2<f32>(f32(index % {side}u), f32(index / {side}u)) - 64.0) * spacing;
+    ocean_fft_view_position = vec3<f32>(label.x, -30.0, label.y);
+    ocean_fft_vertex_spacing_meters = spacing;
+    let surface = ocean_surface_fft(vec3<f32>(0.0, 1.0, 0.0), length(ocean_fft_view_position), 4000.0);
+    mesh_results[id.x] = vec4<f32>(label.x + surface.horizontal_displacement.x,
+        surface.vertical_displacement, label.y + surface.horizontal_displacement.z, 1.0);
+}}
+"#,
+        crate::planet::shared_planet_shader_source(),
+        plane = SIDE * SIDE,
+        side = SIDE
+    );
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::VULKAN,
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    });
+    let adapter =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+            .unwrap();
+    let (device, queue) =
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+    let h0 = ocean_fft::generate_h0(1, 14.0, ocean_fft::WIND_DIRECTION, 80_000.0);
+    let fft = OceanFft::new(&device, &h0);
+    let wavenumbers = ocean_fft::band_wavenumbers(&h0);
+    let mut view = ViewParams::zeroed();
+    view.axis_u = [1.0, 0.0, 0.0, 0.0];
+    view.axis_v = [0.0, 0.0, 1.0, 0.0];
+    view.gain = [1.0, 2.0, 30.0, 0.0];
+    view.second_order[0] = 1.0;
+    for (i, entry) in view.cascade.iter_mut().enumerate() {
+        let length = ocean_fft::tile_meters(i);
+        *entry = [
+            (-102.93 / length).rem_euclid(1.0),
+            4.20 / length,
+            length,
+            wavenumbers[i] as f32,
+        ];
+    }
+    queue.write_buffer(&fft.view_params, 0, bytemuck::bytes_of(&view));
+    let mut camera = crate::planet::CameraUniform::zeroed();
+    camera.camera_right[0] = 1.0;
+    camera.camera_up[1] = 1.0;
+    camera.camera_forward[2] = -1.0;
+    camera.projection[1] = 0.57735026;
+    let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("FFT mesh regression camera"),
+        contents: bytemuck::bytes_of(&camera),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("production FFT mesh regression"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("FFT mesh regression"),
+        layout: None,
+        module: &module,
+        entry_point: Some("test_mesh"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
+    let bytes = (count * size_of::<[f32; 4]>()) as u64;
+    let output = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: bytes,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: bytes,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let camera_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &pipeline.get_bind_group_layout(0),
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: output.as_entire_binding(),
+            },
+        ],
+    });
+    let fft_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &pipeline.get_bind_group_layout(2),
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 16,
+                resource: wgpu::BindingResource::TextureView(&fft.field_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 17,
+                resource: wgpu::BindingResource::Sampler(&fft.sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 18,
+                resource: fft.view_params.as_entire_binding(),
+            },
+        ],
+    });
+    let mut failures = Vec::new();
+    for time in [9.65, 10.433333, 11.333333, 47.9] {
+        fft.set_time(&queue, time);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        fft.encode(&mut encoder);
+        {
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &camera_group, &[]);
+            pass.set_bind_group(2, &fft_group, &[]);
+            pass.dispatch_workgroups(count as u32 / 64, 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, bytes);
+        queue.submit(Some(encoder.finish()));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                sender.send(result).unwrap()
+            });
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .unwrap();
+        receiver.recv().unwrap().unwrap();
+        let data = readback.slice(..).get_mapped_range();
+        let vertices: &[[f32; 4]] = bytemuck::cast_slice(&data);
+        for (grid, spacing) in SPACINGS.into_iter().enumerate() {
+            let (mut inverted, mut stretched, mut triangles) = (0, 0, 0);
+            for y in 0..SIDE - 1 {
+                for x in 0..SIDE - 1 {
+                    let i = grid * SIDE * SIDE + y * SIDE + x;
+                    for [a, b, c] in [[i, i + 1, i + SIDE], [i + SIDE + 1, i + SIDE, i + 1]] {
+                        let edge = |end: usize| {
+                            [
+                                (vertices[end][0] - vertices[a][0]) / spacing,
+                                (vertices[end][2] - vertices[a][2]) / spacing,
+                            ]
+                        };
+                        let (u, v) = (edge(b), edge(c));
+                        assert!(u.into_iter().chain(v).all(f32::is_finite));
+                        let det = u[0] * v[1] - u[1] * v[0];
+                        let trace = u[0] * u[0] + u[1] * u[1] + v[0] * v[0] + v[1] * v[1];
+                        let stretch = (0.5
+                            * (trace + (trace * trace - 4.0 * det * det).max(0.0).sqrt()))
+                        .sqrt();
+                        inverted += usize::from(det <= 0.0);
+                        stretched += usize::from(stretch > 3.0);
+                        triangles += 1;
+                    }
+                }
+            }
+            eprintln!(
+                "FFT mesh t={time} spacing={spacing}: {inverted} inverted, {stretched} stretched / {triangles} triangles"
+            );
+            if inverted as f64 / triangles as f64 > 0.0001 || stretched > 0 {
+                failures.push((time, spacing, inverted, stretched));
+            }
+        }
+        drop(data);
+        readback.unmap();
+    }
+    assert!(failures.is_empty(), "sideways FFT triangles: {failures:?}");
+}

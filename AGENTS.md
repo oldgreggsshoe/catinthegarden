@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Sideways FFT crest blades fixed, 29 September: the fixed-floor limiter still let short-wave changes scale the entire swell sideways. A per-band, phase-envelope compression budget now limits swell before shorter waves, mirrored in CPU buoyancy, hull foam and spray placement. Actual GPU vertices at SWELL 30 / CHOP 2: 20,446 inverted and 14,600 over-3x-stretched triangles -> 0 of each across 387,096 triangles; matched captures retain pointed crests without blades. The earlier CHOP 1 foam-only diagnosis was incomplete. All 602 app tests and 13 ocean GPU tests pass; existing drawn-sea and new actual-WGSL regression pass. Colours, foam retention and seam handling are unchanged; full evidence and timing in HANDOFF.
+
 - Wind in the sound, 29 September: a wind layer heard at any height and over land (pink-noise roar, three drifting resonant howls from 0.35 strength, a thin whistle from 0.6), driven by the gusting wind at the camera raised up to 60% by the storm, less the eye's own motion (full at 32 m/s); breaking waves now land as a sharper crash; master volume 0.4.
 
 - Sea sound, 29 September: synthesised live (`sea_sound.rs`, `cpal` 0.18, no recordings): breaking-wave noise bursts that sweep from crash to hiss, hull laps in a slight sea, and a low roar; as the sea state (plus gusts) rises the breaks come faster, longer and louder and the roar grows until it is a steady roar. Loudness halves at 40m above the water, silent away from open ocean, muffled under water; interactive only; `CATINGARDEN_SOUND=0` off, `CATINGARDEN_SOUND_VOLUME` 0-2.

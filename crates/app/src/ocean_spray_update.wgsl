@@ -89,6 +89,8 @@ const SPRAY_JACOBIAN_FULL: f32 = 0.0;
 // A full gust tears three times as much spray off the crests as the mean wind;
 // a lull a quarter as much.
 const SPRAY_GUST_BIRTHS: f32 = 2.0;
+// Same long-to-short envelope budget as the rendered sea and CPU buoyancy.
+const OCEAN_FFT_CHOP_BUDGET: f32 = 0.85;
 
 struct SprayField {
     height: f32,
@@ -100,6 +102,7 @@ struct SprayField {
     stokes: f32,
     // Height of the wind sea alone (every cascade but the swell).
     wind_height: f32,
+    chop_budget: f32,
 }
 
 // The storm gust where a particle is (gust.wgsl), scaled by gustiness.
@@ -145,9 +148,15 @@ fn spray_cascade(index: u32, local: vec2<f32>, weight: f32, geometry: bool, fiel
     if index != 3u {
         (*field).wind_height += s0.x * weight;
     }
-    (*field).displacement += s0.yz * weight;
-    (*field).jacobian += vec4<f32>(se.y - sw.y, sn.z - ss.z, sn.y - ss.y, se.z - sw.z)
-        * (weight / step);
+    let j = vec4<f32>(se.y - sw.y, sn.z - ss.z, sn.y - ss.y, se.z - sw.z) * (weight / step);
+    let slope = vec2<f32>(se.x - sw.x, sn.x - ss.x) * (weight / step);
+    // Keep births on the limited drawn crest, not its unbounded label map.
+    // Jacobian/height for the birth mask and the Stokes term stay unchanged.
+    let envelope = sqrt(dot(j, j) + dot(slope, slope)) * (frame.params.z * fft_view.gain.x);
+    let scale = min(1.0, (*field).chop_budget / max(envelope, 1.0e-6));
+    (*field).chop_budget = max((*field).chop_budget - envelope * scale, 0.0);
+    (*field).displacement += s0.yz * (weight * scale);
+    (*field).jacobian += j;
     if geometry {
         // This band's own second-order term, at its mean wavenumber (entry.w).
         let h = s0.x * weight;
@@ -157,11 +166,11 @@ fn spray_cascade(index: u32, local: vec2<f32>, weight: f32, geometry: bool, fiel
 }
 
 fn spray_field(local: vec2<f32>) -> SprayField {
-    var field = SprayField(0.0, vec2<f32>(0.0), vec4<f32>(0.0), 0.0, 0.0);
+    var field = SprayField(0.0, vec2<f32>(0.0), vec4<f32>(0.0), 0.0, 0.0, OCEAN_FFT_CHOP_BUDGET);
+    spray_cascade(3u, local, frame.params.w, true, &field);
     spray_cascade(0u, local, 1.0, true, &field);
     spray_cascade(1u, local, 1.0, true, &field);
     spray_cascade(2u, local, 1.0, false, &field);
-    spray_cascade(3u, local, frame.params.w, true, &field);
     return field;
 }
 

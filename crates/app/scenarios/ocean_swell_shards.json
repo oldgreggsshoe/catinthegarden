@@ -9,7 +9,7 @@
   "planet_rotation_time_scale": 0.0,
   "fixed_exposure": true,
   "ocean_storm_intensity_override": 0.0,
-  "screenshot_times_seconds": [2.0, 4.0, 6.0, 8.0, 10.0, 12.0],
+  "screenshot_times_seconds": [2.0, 4.0, 6.0, 8.0, 10.0, 11.3333333333],
   "waypoints": [
     {
       "time_s": 0.0,

@@ -456,9 +456,12 @@ var<private> ocean_fft_foam_pattern: f32;
 var<private> ocean_fft_foam_pattern_strength: f32;
 // Height standard deviations of cascades 1 and 2 on the 14m/s spectrum.
 const OCEAN_FFT_MID_HEIGHT_STD: f32 = 0.218;
-// How far a crest may pinch (drawn-surface Jacobian determinant) before the
-// choppy displacement is held back; mirrored in ocean_fft.rs.
+// Denominator floor for the frozen-scale normal approximation, not a bound
+// on the drawn mesh; displacement uses the envelope budget below.
 const OCEAN_FFT_MIN_JACOBIAN: f32 = 0.1;
+// Leave headroom for spatial changes in the envelope. 0.9 still inverted
+// small triangles; 0.85 passes the actual GPU mesh census at 0.5/2/8m.
+const OCEAN_FFT_CHOP_BUDGET: f32 = 0.85;
 // Measured height std of the wind-sea geometry cascade (jacobian_study).
 const OCEAN_FFT_BROAD_HEIGHT_STD: f32 = 1.264;
 // Surface height in units of the local sea's height std, set by
@@ -1592,33 +1595,34 @@ fn shoreline_water_albedo(open_water: vec3<f32>, still_depth_meters: f32, foam: 
     return mix(albedo, OCEAN_SURF_COLOUR, foam);
 }
 
-// (height, dh/du, dh/dv, div D) for one cascade at planet-plane offset `local`.
-// Largest scale f in [0, 1] on the choppy offset whose Jacobian J keeps
-// det(I + f J) = 1 + f tr(J) + f^2 det(J) at or above OCEAN_FFT_MIN_JACOBIAN.
-// Exact for crests compressed along both axes (where two crests cross), which
-// a one-axis estimate under-corrected into fold-overs. Mirrored in
-// ocean_fft.rs `fold_scale`.
-fn ocean_fft_fold_scale(j: vec4<f32>) -> f32 {
-    let trace = j.x + j.y;
-    let det = j.x * j.y - j.z * j.w;
-    let margin = 1.0 - OCEAN_FFT_MIN_JACOBIAN;
-    if 1.0 + trace + det >= OCEAN_FFT_MIN_JACOBIAN {
-        return 1.0;
-    }
-    // g(f) = det f^2 + trace f + margin: positive at 0, negative at 1, so
-    // exactly one root lies in (0, 1).
-    if abs(det) < 1.0e-6 {
-        return clamp(-margin / trace, 0.0, 1.0);
-    }
-    let root = sqrt(max(trace * trace - 4.0 * det * margin, 0.0));
-    let a = (-trace - root) / (2.0 * det);
-    let b = (-trace + root) / (2.0 * det);
-    var f = 1.0;
-    if a > 0.0 { f = min(f, a); }
-    if b > 0.0 { f = min(f, b); }
-    return clamp(f, 0.0, 1.0);
+// A phase-insensitive steepness envelope for one band. For a single wave,
+// J = k a cos(theta) uu^T and grad(h) = -k a sin(theta) u: this is k a,
+// constant across its tip and flanks. The old pointwise det(I-fJ) limiter
+// scaled the ENTIRE displacement by a rapidly varying f: short waves moved
+// a large swell sideways through D * grad(f), stretching/inverting triangles
+// even while the per-point determinant stayed positive. See the GPU mesh test.
+fn ocean_fft_chop_envelope(j: vec4<f32>, slope: vec2<f32>) -> f32 {
+    return sqrt(dot(j, j) + dot(slope, slope));
 }
 
+// Spend compression from long waves to short: a short wave can limit its own
+// displacement, never the swell carrying it. x/y/z/w = broad/mid/fine/swell.
+// The envelope is a local estimate, not a proof about the drawn Jacobian:
+// regressions measure neighbouring GPU vertices, including scale gradients.
+// Mirrored by ocean_fft.rs::limited_chop and the standalone spray shader.
+fn ocean_fft_chop_scales(envelope: vec4<f32>) -> vec4<f32> {
+    var remaining = OCEAN_FFT_CHOP_BUDGET;
+    let swell = min(1.0, remaining / max(envelope.w, 1.0e-6));
+    remaining = max(remaining - envelope.w * swell, 0.0);
+    let broad = min(1.0, remaining / max(envelope.x, 1.0e-6));
+    remaining = max(remaining - envelope.x * broad, 0.0);
+    let mid = min(1.0, remaining / max(envelope.y, 1.0e-6));
+    remaining = max(remaining - envelope.y * mid, 0.0);
+    let fine = min(1.0, remaining / max(envelope.z, 1.0e-6));
+    return vec4<f32>(broad, mid, fine, swell);
+}
+
+// (height, dh/du, dh/dv, div D) for one cascade at planet-plane offset `local`.
 fn ocean_fft_cascade(cascade_index: u32, local: vec2<f32>, filter_width_meters: f32) -> vec4<f32> {
     let entry = ocean_fft_view.cascade[cascade_index];
     let uv = entry.xy + local / entry.z;
@@ -1935,7 +1939,6 @@ fn ocean_surface_fft(
     ocean_fft_unresolved_slope_variance = unresolved * gain * gain * gust_roughen * gust_roughen;
     let core = broad + swell * swell_scale;
     let core_jacobian = broad_jacobian + swell_jacobian * swell_scale;
-    let core_displacement = broad_displacement + swell_displacement * swell_scale;
     let pattern = (fine.x / OCEAN_FFT_FINE_HEIGHT_STD) * fine_weight
         + (mid.x / OCEAN_FFT_MID_HEIGHT_STD) * (1.0 - fine_weight) * mid_weight;
     ocean_fft_foam_pattern = clamp(0.5 + 0.25 * pattern, 0.0, 1.0);
@@ -1963,15 +1966,16 @@ fn ocean_surface_fft(
     let full_jacobian = label_jacobian * (-gain * chop_strength);
     let raw_determinant =
         (1.0 + full_jacobian.x) * (1.0 + full_jacobian.y) - full_jacobian.z * full_jacobian.w;
-    // Where crests pinch past a cusp the surface folds over itself and, with
-    // per-frame changes, boils. A floor, not a ramp: displacement is left
-    // alone until the surface would pinch past OCEAN_FFT_MIN_JACOBIAN, then
-    // scaled back just enough to hold it there, so crests can come to an
-    // acute point (which is also where spray and foam are born) but never
-    // turn inside out. The old ramp eased off from 0.6 and rounded every
-    // crest. The CPU surface (ocean_fft::CpuSurface::sample) applies the same.
-    let fold_limit = ocean_fft_fold_scale(full_jacobian);
-    let drawn_jacobian = full_jacobian * fold_limit;
+    let chop_scales = ocean_fft_chop_scales(vec4<f32>(
+        ocean_fft_chop_envelope(broad_jacobian, broad.yz),
+        ocean_fft_chop_envelope(mid_jacobian, mid.yz) * mid_weight,
+        ocean_fft_chop_envelope(fine_jacobian, fine.yz) * fine_weight,
+        ocean_fft_chop_envelope(swell_jacobian, swell.yz) * swell_scale,
+    ) * (gain * chop_strength));
+    let drawn_jacobian = (broad_jacobian * chop_scales.x
+        + mid_jacobian * (mid_weight * chop_scales.y)
+        + fine_jacobian * (fine_weight * chop_scales.z)
+        + swell_jacobian * (swell_scale * chop_scales.w)) * (-gain * chop_strength);
     let drawn_determinant = max(
         (1.0 + drawn_jacobian.x) * (1.0 + drawn_jacobian.y) - drawn_jacobian.z * drawn_jacobian.w,
         OCEAN_FFT_MIN_JACOBIAN,
@@ -2037,12 +2041,12 @@ fn ocean_surface_fft(
     // crest-ward move is -D; +D pinches the troughs into downward spikes.
     // Cascades are already box-filtered to the mesh spacing, so this only
     // carries what the mesh can represent.
-    let chop_tangent = (
-        axis_u * (core_displacement.x + mid_displacement.x * mid_weight
-            + fine_displacement.x * fine_weight)
-        + axis_v * (core_displacement.y + mid_displacement.y * mid_weight
-            + fine_displacement.y * fine_weight)
-    ) * (gain * ocean_fft_view.gain.y * geometry_weight * breaking_weight * fold_limit);
+    let displacement = broad_displacement * chop_scales.x
+        + mid_displacement * (mid_weight * chop_scales.y)
+        + fine_displacement * (fine_weight * chop_scales.z)
+        + swell_displacement * (swell_scale * chop_scales.w);
+    let chop_tangent = (axis_u * displacement.x + axis_v * displacement.y)
+        * (gain * chop_strength * breaking_weight);
     let chop = -(chop_tangent - direction * dot(chop_tangent, direction));
     return OceanSurface(
         breaking_ratio,
