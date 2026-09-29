@@ -37,6 +37,10 @@ slight sea to a steady roar in a storm, and wind (roar, howls, whistle) heard at
 faces, and fading with the sun's visibility (the sun shader's own cloud-and-fog test, now also
 run before the scene). See "Hull caustics: near the water, on the sides, and only in sunshine".
 
+**The sea gets the storm's fog (29 September):** the transmitting sea pipeline never applied the
+distance mist, so no storm fog ever reached the water; it does now, toward the sky's own horizon
+colour so sea and sky meet without a step. See "The sea gets the storm's fog at last".
+
 **Storm fog and a default-sea fix (29 September):** a full storm's fog is now complete (99%) at
 100m (was 500m earlier the same day), and the hull, spray and sun go through it; the storm sky no
 longer shows a wedge of light hanging from the zenith (see "A storm sky without the light wedge"). The default (Gerstner, non-FFT) sea had been torn
@@ -11660,3 +11664,15 @@ Verification checkout: `/home/dad/catingard-shard-verify`, with its own `CARGO_T
 **Storm fog complete at 100m** (Ian): `STORM_FOG_FULL_METERS` 500 -> 100 in all three shaders, so the storm e-fold is 21.7m: at full storm 37% fog at 10m, 60% at 20m, 90% at 50m, 99% at 100m. The ship's bow from the bridge is about half fogged.
 
 602 app tests pass; the scenario count is 119.
+
+## 29 September - The sea gets the storm's fog at last; surround-safe sound
+
+**No fog on the sea.** Ian: "you said the fog is very dense but if you look at my screenshot, i don't see any fog" (`manual/1790672017-1933184`, full rain): dark water and whitecaps to a sharp horizon. He was right. The sea is drawn by the transmitting pipeline (`ocean_fragment_with_transmission_mode`), which applied aerial perspective only; the distance mist, and with it every storm's fog, was applied to land, sky, ship and spray but never to the sea. Checked by forcing full overcast in `ocean_storm_gusts` (40m up): with 100m fog the sea from 120m out still showed every wave and a hard horizon. The path now ends with `terrain_distance_fog` like the rest. In clear weather the mist is a few percent at sea level, so the familiar sea barely changes.
+- Fogged, the sea then came out brighter than the sky above it: its fog colour was the sky along the ray, while the sky pass fogs toward the sky at the ground horizon (a narrow bright band of the sky-view LUT sits between). Toward a storm, `terrain_fog` now takes `physical_camera_horizon_sky_radiance` (the same horizon row, this azimuth) and blends back to the ray colour as the overcast clears. Across the horizon rows of the forced-storm gust capture the sky and sea now both read 55.6.
+- In `ocean_storm_approach` the far crests now fade into the grey over the last seconds and the horizon goes.
+
+This also explains the earlier "fog at 500m" and "100m" claims: they were true of the sky, land, ship and spray, not the sea.
+
+**Surround-safe sound.** `channel_gains`: stereo to the front pair; in quad, 5.1 and 7.1 the surround pairs take a 0.7 copy of their side; the centre and the LFE nothing; mono both mixed. It used to alternate left and right over every channel, putting the right side's noise in a subwoofer. (Windows: `cpal` uses WASAPI with no extra libraries, and 0.18 initialises COM as STA, so it does not fight winit's drag and drop.) A zero-volume launch shows the stream in PulseAudio from about 15s (after loading).
+
+603 app tests and 13 ocean GPU tests pass (Codex's `gpu_big_swell_chop_does_not_make_sideways_triangles` needs `CATINGARDEN_OCEAN_FFT_SWELL=30 CATINGARDEN_OCEAN_FFT_CHOP=2`).

@@ -2610,6 +2610,27 @@ fn perceptual_physical_sky_radiance(radiance: vec3<f32>) -> vec3<f32> {
     return radiance * gain;
 }
 
+// The sky exactly at the ground horizon in this ray's azimuth: the row the sky
+// pass fogs its low rays toward (atmosphere.wgsl ground_horizon_sky_view_v,
+// below orbital heights).
+fn physical_camera_horizon_sky_radiance(ray_view: vec3<f32>) -> vec3<f32> {
+    let camera_altitude = max(
+        camera.camera_planet_direction_view_altitude.w,
+        SKY_VIEW_MINIMUM_CAMERA_ALTITUDE_METERS,
+    );
+    let horizon_v = 0.5 * (1.0 - physical_sky_sphere_horizon_cosine(
+        PLANET_RADIUS_METERS + camera_altitude,
+        PLANET_RADIUS_METERS,
+    ));
+    let radiance = textureSampleLevel(
+        atmosphere_sky_view_lut,
+        atmosphere_sky_view_sampler,
+        vec2<f32>(physical_sky_view_uv(ray_view).x, horizon_v),
+        0.0,
+    ).rgb;
+    return perceptual_physical_sky_radiance(radiance);
+}
+
 fn physical_camera_sky_radiance(ray_view: vec3<f32>) -> vec3<f32> {
     let radiance = textureSampleLevel(
         atmosphere_sky_view_lut,
@@ -3057,10 +3078,16 @@ fn terrain_fog(
     // camera toward this terrain fragment; the opposite direction above is
     // retained only for the terrain horizon-angle test.
     let camera_to_surface_ray_view = normalize(camera_relative_view_position);
-    return TerrainFog(
-        fog_amount,
-        storm_overcast_colour(physical_camera_sky_radiance(camera_to_surface_ray_view)),
+    // A storm's fog is the overcast's grey at the horizon, the colour the sky
+    // pass fogs its own low rays to (atmosphere.wgsl): toward the storm, take
+    // the sky at the horizon in this azimuth rather than along the ray, so the
+    // fogged sea meets the fogged sky without a step.
+    let fog_colour = mix(
+        physical_camera_sky_radiance(camera_to_surface_ray_view),
+        physical_camera_horizon_sky_radiance(camera_to_surface_ray_view),
+        storm_overcast(),
     );
+    return TerrainFog(fog_amount, storm_overcast_colour(fog_colour));
 }
 
 fn terrain_distance_fog(

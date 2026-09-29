@@ -184,15 +184,13 @@ where
                     load(&shared.muffle),
                     load(&shared.wind),
                 );
+                let gains: Vec<[f32; 2]> = (0..channels)
+                    .map(|channel| channel_gains(channels, channel))
+                    .collect();
                 for frame in data.chunks_mut(channels) {
                     let [left, right] = synth.next_frame();
-                    for (channel, sample) in frame.iter_mut().enumerate() {
-                        let value = match (channels, channel % 2) {
-                            (1, _) => 0.5 * (left + right),
-                            (_, 0) => left,
-                            _ => right,
-                        };
-                        *sample = T::from_sample(value);
+                    for (sample, [from_left, from_right]) in frame.iter_mut().zip(&gains) {
+                        *sample = T::from_sample(left * from_left + right * from_right);
                     }
                 }
             },
@@ -200,6 +198,24 @@ where
             None,
         )
         .map_err(|error| error.to_string())
+}
+
+/// Share of the synthesised left and right that goes to output channel
+/// `channel` of `channels`. The front pair takes them; in the standard quad,
+/// 5.1 and 7.1 orders (front L/R, then centre and LFE, then back and side
+/// pairs) the surround pairs take a softer copy so the sea still surrounds the
+/// listener; the centre and the subwoofer take nothing (a sea of noise in the
+/// LFE is a boom). Mono takes both sides mixed.
+fn channel_gains(channels: usize, channel: usize) -> [f32; 2] {
+    const SURROUND: f32 = 0.7;
+    match (channels, channel) {
+        (1, _) => [0.5, 0.5],
+        (_, 0) => [1.0, 0.0],
+        (_, 1) => [0.0, 1.0],
+        (4, 2) | (6, 4) | (8, 4) | (8, 6) => [SURROUND, 0.0],
+        (4, 3) | (6, 5) | (8, 5) | (8, 7) => [0.0, SURROUND],
+        _ => [0.0, 0.0],
+    }
 }
 
 /// One breaking wave, or one lap against the hull: noise through a low-pass
@@ -716,6 +732,27 @@ mod tests {
         );
         // And almost none of it reaches under the water.
         assert!(loudness(0.0, 0.0, 1.0, 1.0) < 0.1 * gale);
+    }
+
+    #[test]
+    fn surround_outputs_keep_the_sea_off_the_centre_and_the_subwoofer() {
+        // Stereo and mono as expected.
+        assert_eq!(channel_gains(2, 0), [1.0, 0.0]);
+        assert_eq!(channel_gains(2, 1), [0.0, 1.0]);
+        assert_eq!(channel_gains(1, 0), [0.5, 0.5]);
+        // 5.1 (FL FR FC LFE BL BR): fronts full, centre and LFE silent, backs
+        // a softer copy of their own side.
+        let five_one: Vec<_> = (0..6).map(|channel| channel_gains(6, channel)).collect();
+        assert_eq!(five_one[2], [0.0, 0.0]);
+        assert_eq!(five_one[3], [0.0, 0.0]);
+        assert!(five_one[4][0] > 0.0 && five_one[4][1] == 0.0);
+        assert!(five_one[5][1] > 0.0 && five_one[5][0] == 0.0);
+        // 7.1 adds the side pair; quad has only a back pair.
+        assert_eq!(channel_gains(8, 3), [0.0, 0.0]);
+        assert!(channel_gains(8, 6)[0] > 0.0 && channel_gains(8, 7)[1] > 0.0);
+        assert!(channel_gains(4, 2)[0] > 0.0 && channel_gains(4, 3)[1] > 0.0);
+        // An unknown layout gets the front pair only.
+        assert_eq!(channel_gains(3, 2), [0.0, 0.0]);
     }
 
     #[test]

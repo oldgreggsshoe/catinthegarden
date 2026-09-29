@@ -2535,7 +2535,17 @@ fn ocean_fragment_with_transmission_mode(input: OceanVertexOutput, bed: vec4<f32
         );
     }
     let shoreline_alpha = select(1.0, 1.0 - smoothstep(0.0, 100000.0, max(input.terrain_height_hint, 0.0)), shoreline);
-    return vec4<f32>(water_aerial_color, shoreline_alpha);
+    // Through the same distance mist, and a storm's fog, as the land, ship and
+    // sky. This path applied aerial perspective only, so a storm's fog never
+    // reached the water: the sea kept its detail and a sharp horizon under a
+    // fog that hid everything else.
+    let misted_water_color = terrain_distance_fog(
+        water_aerial_color,
+        input.camera_relative_view_position,
+        direction,
+        surface.vertical_displacement,
+    );
+    return vec4<f32>(misted_water_color, shoreline_alpha);
 }
 
 fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
