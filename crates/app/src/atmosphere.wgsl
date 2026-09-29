@@ -8,7 +8,8 @@ const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 122000.0;
 const TERRAIN_FOG_AIR_PATH_E_FOLD_METERS: f32 = 500000.0;
 // Storm overcast: the sky side of shared_planet.wgsl's storm_overcast, with the
 // same constants, so sky and terrain mist still meet at the horizon.
-const STORM_FOG_AIR_PATH_E_FOLD_METERS: f32 = 5000.0;
+const STORM_FOG_FULL_METERS: f32 = 500.0;
+const STORM_FOG_AIR_PATH_E_FOLD_METERS: f32 = STORM_FOG_FULL_METERS / 4.6051702;
 const STORM_OVERCAST_BRIGHTNESS: f32 = 0.45;
 // Presentation-only gain for the visible sky. Keep this outside the physical
 // LUTs so surface lighting, extinction, and exposure remain unchanged.

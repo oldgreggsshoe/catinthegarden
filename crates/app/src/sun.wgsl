@@ -154,6 +154,34 @@ fn cloud_density_on_camera_ray(
     return cloudDensityWithOctaves(cloud_direction, shell_index, 3u);
 }
 
+// The storm's fog over the sun's own line of sight, so the disc and its glare
+// go as the sky around them fogs over. The sky pass (atmosphere.wgsl
+// sky_fog_air_path_meters) fogs this ray by the same air path and e-fold; only
+// the storm's share is applied here, so clear weather is unchanged. Constants
+// mirrored from atmosphere.wgsl, pinned by a test.
+const SUN_FOG_RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 122000.0;
+const TERRAIN_FOG_AIR_PATH_E_FOLD_METERS: f32 = 500000.0;
+const STORM_FOG_FULL_METERS: f32 = 500.0;
+const STORM_FOG_AIR_PATH_E_FOLD_METERS: f32 = STORM_FOG_FULL_METERS / 4.6051702;
+
+fn storm_sun_fog_visibility(ray_view: vec3<f32>) -> f32 {
+    let overcast = clamp(camera.sun_direction.w, 0.0, 1.0);
+    if overcast <= 0.0 {
+        return 1.0;
+    }
+    let up = normalize(camera.camera_planet_direction_view_altitude.xyz);
+    let altitude = max(camera.camera_planet_direction_view_altitude.w, 0.0);
+    let air_mass = min(1.0 / max(dot(ray_view, up), 0.08), 12.0);
+    let air_path = exp(-altitude / SUN_FOG_RAYLEIGH_SCALE_HEIGHT_METERS)
+        * SUN_FOG_RAYLEIGH_SCALE_HEIGHT_METERS * air_mass;
+    let storm_e_fold = exp(mix(
+        log(TERRAIN_FOG_AIR_PATH_E_FOLD_METERS),
+        log(STORM_FOG_AIR_PATH_E_FOLD_METERS),
+        overcast,
+    ));
+    return exp(-air_path * (1.0 / storm_e_fold - 1.0 / TERRAIN_FOG_AIR_PATH_E_FOLD_METERS));
+}
+
 fn cloud_sun_visibility(ray_view: vec3<f32>) -> f32 {
     let lower_density = cloud_density_on_camera_ray(
         ray_view,
@@ -475,7 +503,7 @@ fn sun_radiance(input: VertexOutput, draw_disc: bool) -> vec4<f32> {
     // while the saturated core appeared unchanged. Share the already-steep
     // value so moving beneath thin cloud cannot cyclically erase the halo;
     // genuinely opaque cloud still returns exactly zero above.
-    let cloud_visibility = cloud_sun_visibility(sun);
+    let cloud_visibility = cloud_sun_visibility(sun) * storm_sun_fog_visibility(sun);
     let glare_cloud_visibility = cloud_visibility;
     let radiance = SUN_VISUAL_RADIANCE_SCALE * select(
         atmospheric_glare * glare_cloud_visibility,

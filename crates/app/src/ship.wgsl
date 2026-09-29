@@ -133,5 +133,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let sea = ship_sea_light(input.view_position, normal, sun_direction);
     let lit = input.colour
         * (sunlight * (sun_lambert * sea.x + sea.z) + sky_light * sea.y);
-    return vec4<f32>(lit, 1.0);
+    // Through the same distance fog as the sea it floats in (or the water, from
+    // under it): in a storm's closing fog the hull greys with the waves.
+    let fog = terrain_fog(
+        input.view_position,
+        normalize(ship.up.xyz),
+        local_view_altitude_meters(input.view_position),
+    );
+    return vec4<f32>(mix(lit, fog.color, fog.amount), 1.0);
 }

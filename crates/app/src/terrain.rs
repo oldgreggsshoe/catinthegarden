@@ -6449,18 +6449,47 @@ mod tests {
     }
 
     #[test]
+    fn only_the_fft_sea_places_chunk_edges_through_its_shared_reference_point() {
+        // The reference point is written by the FFT sea's view update alone.
+        // The Gerstner sea read it as zero and threw every chunk-edge vertex a
+        // planet radius away, tearing the default sea into vertical streaks
+        // (sun_horizon_visibility, 28-29 September).
+        let shader = include_str!("planet.wgsl");
+        assert!(shader.contains(
+            "let on_edge = OCEAN_FFT_ENABLED && ocean_vertex_on_chunk_edge(projected.tile_uv);"
+        ));
+    }
+
+    #[test]
     fn storm_overcast_greys_sky_and_ground_fog_alike() {
         // Sky and terrain mist must close in and grey at the same rate, or a
         // storm would draw a seam at the horizon.
         let terrain = include_str!("shared_planet.wgsl");
         let sky = include_str!("atmosphere.wgsl");
+        let sun = include_str!("sun.wgsl");
+        let e_fold =
+            "const STORM_FOG_AIR_PATH_E_FOLD_METERS: f32 = STORM_FOG_FULL_METERS / 4.6051702;";
         for declaration in [
-            "const STORM_FOG_AIR_PATH_E_FOLD_METERS: f32 = 5000.0;",
+            "const STORM_FOG_FULL_METERS: f32 = 500.0;",
+            e_fold,
             "const STORM_OVERCAST_BRIGHTNESS: f32 = 0.45;",
         ] {
             assert!(terrain.contains(declaration), "shared_planet.wgsl lacks {declaration}");
             assert!(sky.contains(declaration), "atmosphere.wgsl lacks {declaration}");
         }
+        // The sun is hidden by the same fog over its own line of sight.
+        for declaration in [
+            "const STORM_FOG_FULL_METERS: f32 = 500.0;",
+            e_fold,
+            "const TERRAIN_FOG_AIR_PATH_E_FOLD_METERS: f32 = 500000.0;",
+            "const SUN_FOG_RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 122000.0;",
+        ] {
+            assert!(sun.contains(declaration), "sun.wgsl lacks {declaration}");
+        }
+        assert!(sky.contains("const TERRAIN_FOG_AIR_PATH_E_FOLD_METERS: f32 = 500000.0;"));
+        assert!(sky.contains("const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 122000.0;"));
+        // ln(100) e-folds: 99% fogged at STORM_FOG_FULL_METERS.
+        assert!((1.0 - (-4.6051702_f64).exp() - 0.99).abs() < 1.0e-6);
         for shader in [terrain, sky] {
             assert!(shader.contains("camera.sun_direction.w"));
             assert!(shader.contains("log(STORM_FOG_AIR_PATH_E_FOLD_METERS)"));

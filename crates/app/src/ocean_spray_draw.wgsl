@@ -82,6 +82,7 @@ fn vs_spray(
         + spray_frame.axis_v.xyz * particle.position.y
         + up * (particle.position.z - camera.camera_planet_direction_view_altitude.w);
     var view_position = planet_to_view(offset);
+    let centre_view_position = view_position;
     let age = particle.position.w / lifetime;
     let seed = fract(f32(instance_index) * 0.61803398875);
     let distance = length(view_position);
@@ -133,8 +134,15 @@ fn vs_spray(
     // Droplets scatter strongly forward: backlit spray glows.
     let view_direction = normalize(view_position);
     let forward = pow(max(dot(view_direction, normalize(camera.sun_direction_view.xyz)), 0.0), 6.0);
-    out.colour = ocean_foam_radiance(sun_transmittance, sky_diffuse)
-        + sun_transmittance * (0.6 * forward * SURFACE_SUNLIGHT_SCALE);
+    // Through the same distance fog as the sea behind it, so storm fog swallows
+    // spray and water together.
+    let fog = terrain_fog(centre_view_position, up, height);
+    out.colour = mix(
+        ocean_foam_radiance(sun_transmittance, sky_diffuse)
+            + sun_transmittance * (0.6 * forward * SURFACE_SUNLIGHT_SCALE),
+        fog.color,
+        fog.amount,
+    );
     out.seed = seed;
     out.kind = select(0.0, 1.0, from_ship);
     return out;

@@ -1041,7 +1041,10 @@ fn vs_ocean(input: VertexInput) -> OceanVertexOutput {
         scaled_terrain_macro_height(macro_height_meters),
         outmap,
     );
-    let on_edge = ocean_vertex_on_chunk_edge(projected.tile_uv);
+    // The shared reference point is the FFT sea's (`ViewParams.edge_reference_*`,
+    // written only while it runs). The Gerstner sea never fills it, and reading
+    // it as zero threw every chunk-edge vertex a planet radius away.
+    let on_edge = OCEAN_FFT_ENABLED && ocean_vertex_on_chunk_edge(projected.tile_uv);
     let edge_planet_offset = ocean_edge_planet_offset(projected.direction);
     let flat_camera_relative_view_position = select(
         input.anchor_view_position + planet_to_view(projected.anchor_relative_position),

@@ -187,12 +187,15 @@ const TWILIGHT_SHADOW_TRANSITION_METERS: f32 = 72000.0;
 // cross many. There is deliberately no authored camera-altitude fade.
 const TERRAIN_FOG_AIR_PATH_E_FOLD_METERS: f32 = 500000.0;
 // Storm overcast, 0-1, from the weather at the camera (camera.sun_direction.w;
-// main.rs update_storm_overcast). Under it the distance fog closes in to this
-// sea-level e-fold (from TERRAIN_FOG_AIR_PATH_E_FOLD_METERS, geometrically) and
-// greys, the sky and its reflection go to a grey of STORM_OVERCAST_BRIGHTNESS
-// times their own luminance (so night stays dark), and direct sun on the sea
-// is cut by STORM_SUN_BLOCK. Mirrored in atmosphere.wgsl.
-const STORM_FOG_AIR_PATH_E_FOLD_METERS: f32 = 5000.0;
+// main.rs update_storm_overcast). Under it the distance fog closes in (its
+// e-fold moving geometrically from TERRAIN_FOG_AIR_PATH_E_FOLD_METERS) until a
+// full storm's fog is complete -- 99% of the view, ln(100) e-folds -- at
+// STORM_FOG_FULL_METERS through sea-level air, and greys; the sky and its
+// reflection go to a grey of STORM_OVERCAST_BRIGHTNESS times their own
+// luminance (so night stays dark), and direct sun on the sea is cut by
+// STORM_SUN_BLOCK. Mirrored in atmosphere.wgsl and (the fog) sun.wgsl.
+const STORM_FOG_FULL_METERS: f32 = 500.0;
+const STORM_FOG_AIR_PATH_E_FOLD_METERS: f32 = STORM_FOG_FULL_METERS / 4.6051702;
 const STORM_OVERCAST_BRIGHTNESS: f32 = 0.45;
 const STORM_SUN_BLOCK: f32 = 0.85;
 

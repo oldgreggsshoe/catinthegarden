@@ -28,6 +28,10 @@ calm and brings a full storm in (fog, grey, desaturated sea, swell); replay `oce
 At the interactive start the live weather never reaches a storm (measured). The hull now has
 underwater and reflected caustics. See "Caustics on the hull, and a storm on demand".
 
+**Storm fog and a default-sea fix (29 September):** a full storm's fog is now complete (99%) at
+500m, and the hull, spray and sun go through it. The default (Gerstner, non-FFT) sea had been torn
+into vertical streaks since the 28 September seam fix; fixed. See "Storm fog complete at 500m".
+
 **Rain, gusts, a darker storm, keyboard look (29 September):** storms now bring rain (streaks around
 the camera slanted by the wind) and gusts (patches of stronger, veered wind running downwind, with
 rougher water, more whitecaps and spray, tilting the rain as they pass); the finished frame darkens
@@ -11550,3 +11554,15 @@ The sea evaluates the gust field once per mesh vertex (`ocean_fft_vertex_gust`, 
 **Tests.** 595 app tests and the 12 ocean GPU tests pass; the scenario count is 118. `sunset_blue_hour` fails its two blue-hour assertions, identically on the previous commit's binary (d9235a4), so that is not from this work.
 
 **Not done.** No splashes or rings where drops hit the sea or deck; no rain on the lens; no sound. Gusts do not push the ship. The weather at the start point still never makes a storm on its own (see the previous section), so `CATINGARDEN_STORM_APPROACH` is the way to see this.
+
+## 29 September - Storm fog complete at 500m; the default sea's torn chunk edges
+
+**Storm fog.** Ian: fog in a full storm should reach full effect at 500m. The fog is exponential, so "full" is taken as 99% of the view (ln 100 e-folds): `STORM_FOG_FULL_METERS` 500, and the storm's air-path e-fold is derived from it (108.6m, was 5km), in `shared_planet.wgsl` and `atmosphere.wgsl` alike. At full storm: 17% fog at 20m, 37% at 50m, 60% at 100m, 90% at 250m, 99% at 500m. The e-fold still moves geometrically with the overcast from the clear 500km, so half storm is about 7.4km and 0.8 overcast about 590m.
+- Fog that thick shows up anything drawn without it. The ship's hull (`ship.wgsl`) and the spray (`ocean_spray_draw.wgsl`) now go through `terrain_fog` like the sea; from underwater that is the water's own fog, which the hull never had either. Rain (within 12m) and birds are not fogged.
+- The camera-only sun disc and glare were hidden only by cloud density, so they shone through storm fog. `sun.wgsl` `storm_sun_fog_visibility` applies the storm's share of the sky pass's fog over the sun's own line of sight (same air path and e-folds, mirrored constants pinned by `storm_overcast_greys_sky_and_ground_fog_alike`); clear weather is unchanged and above the air there is none.
+
+**The default sea was torn into vertical streaks.** Found while checking the sun change: `sun_horizon_visibility` rendered a sea of vertical streaks. The 28 September seam fix (`3305a04`) places chunk-edge vertices through a reference point in `ViewParams.edge_reference_*`, which only the FFT sea's view update writes; the Gerstner (default) sea read it as zero, which puts each edge vertex a planet radius from the camera. Every FFT test and replay passed, and nobody runs the default sea interactively. Fixed by taking that path only when `OCEAN_FFT_ENABLED`; `ocean_flyover` is now pixel-identical to a 27 September build and `sun_horizon_visibility` passes again. Test `only_the_fft_sea_places_chunk_edges_through_its_shared_reference_point`. Lesson: ocean shader changes need at least one default-sea replay, not only FFT ones.
+
+`sunset_blue_hour`'s two blue-hour failures reproduce on the 27 September build too, so they are older than all of this.
+
+**Tests.** 596 app tests and the 12 ocean GPU tests pass (run the GPU tests without `CATINGARDEN_OCEAN_FFT`: `gpu_ocean_normals_match_cpu_buoyancy_in_deep_and_breaking_water` checks the Gerstner sea and panics when the FFT sea is composed in).
