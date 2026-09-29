@@ -28,6 +28,10 @@ calm and brings a full storm in (fog, grey, desaturated sea, swell); replay `oce
 At the interactive start the live weather never reaches a storm (measured). The hull now has
 underwater and reflected caustics. See "Caustics on the hull, and a storm on demand".
 
+**Sea sound (29 September):** synthesised surf that grows from separate breaks and hull laps in a
+slight sea to a steady roar in a storm (`sea_sound.rs`, via `cpal`); interactive only. See "The
+sound of the sea".
+
 **Hull caustics limited (29 September):** full to 2m from the water and gone by 3m, only on side
 faces, and fading with the sun's visibility (the sun shader's own cloud-and-fog test, now also
 run before the scene). See "Hull caustics: near the water, on the sides, and only in sunshine".
@@ -11580,3 +11584,18 @@ Ian: caustics should reach only about 2m from the water surface and fade to noth
 - **Sun visibility.** The sun shader's own test (cloud along its line of sight times the storm fog over it, the product that hides the disc) now also runs once per frame before the scene as a one-thread compute pass, `sun.wgsl cs_sun_visibility`, and is copied into a shared uniform (binding 20, `sun_visible_fraction`, 1 until first written). The hull's caustic pattern and shimmer and the sea-bed caustics fade with it, back to the plain sun. The weather field layout gains COMPUTE visibility for this. Checked by painting the value on the hull in a throwaway build: 0.8 in the clear `ocean_ship_float` sky (some cloud there), 0 at overcast 0.5 and 1 (the storm fog over the sun path is complete well before full storm, as the sky pass's is). Cost not measured: one thread and a few cloud samples.
 
 596 app tests and the 12 ocean GPU tests pass.
+
+## 29 September - The sound of the sea
+
+Ian: water sounds that change as the waves get bigger, until it is almost a stable roar.
+
+`sea_sound.rs`, synthesised live on the audio thread through `cpal` 0.18 (default ALSA backend, which reaches PulseAudio here); no recordings. Three layers of filtered noise:
+- **Breaking waves**: noise bursts through a two-pole low-pass whose cutoff falls from 1.8-3.4kHz to about 400-750Hz as each dies, so it starts as a crash and settles into a hiss; random pan. 0.35 per second in a slight sea up to 4 per second in a storm, longer and louder as the sea builds, so in a storm they overlap into one sound.
+- **Hull laps**: short bright splashes, 2.5 per second in a flat calm, none in a storm.
+- **Roar**: brown noise per ear, low-passed at 260-620Hz, from a faint floor to the loudest layer at full storm, with a slow swell in it.
+
+Inputs, set once a frame in `update_rain_and_gusts` and eased over 0.6s on the audio thread: roughness is the sea state (`ocean::sea_state_at`) plus 0.3 of a full gust; level is 1 at the water, half at 40m above it (`loudness_at_height`), and 0 away from open ocean (`open_ocean_at`; so no surf on a coast yet); under the water everything is low-passed to about 320Hz. Played only in the interactive game (replays and tests are silent); no output device just logs a warning. `CATINGARDEN_SOUND=0` turns it off, `CATINGARDEN_SOUND_VOLUME` (0-2) scales it.
+
+Measured on the 30s calm-to-storm demo (100ms windows): calm -32 dBFS with its loudness varying by 0.39 (breaks with quiet between), mid -20 dBFS / 0.23, storm -14 dBFS / 0.22 (steady), peak -2 dBFS. Tests pin louder-and-steadier with roughness, no clipping, silence away from the sea, muffling under water. The demo WAV: `cargo test --release -p catinthegarden-app write_sea_sound_demo -- --ignored` writes `/tmp/sea_sound_calm_to_storm.wav`. A zero-volume launch showed the stream alive in PulseAudio for the run (one ALSA I/O warning at startup, harmless).
+
+600 app tests pass.

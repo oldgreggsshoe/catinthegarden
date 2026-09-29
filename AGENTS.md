@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Sea sound, 29 September: synthesised live (`sea_sound.rs`, `cpal` 0.18, no recordings): breaking-wave noise bursts that sweep from crash to hiss, hull laps in a slight sea, and a low roar; as the sea state (plus gusts) rises the breaks come faster, longer and louder and the roar grows until it is a steady roar. Loudness halves at 40m above the water, silent away from open ocean, muffled under water; interactive only; `CATINGARDEN_SOUND=0` off, `CATINGARDEN_SOUND_VOLUME` 0-2.
+
 - Hull caustics limited, 29 September: full to 2m from the water surface and gone by 3m (above: `OCEAN_REFLECTED_CAUSTIC_FULL_METERS`/`FADE_METERS`, was 3-6m; below: the pattern fades to the plain sun), only on faces steeper than |n.up| 0.5-0.8 (not the deck or roofs), and fading with the sun's visibility: the sun shader's own cloud-and-storm-fog test runs once per frame before the scene (`sun.wgsl cs_sun_visibility` -> shared binding 20 `sun_visible_fraction`), which also fades the sea-bed caustics.
 
 - Storm fog at 500m and a default-sea fix, 29 September: a full storm's fog is complete (99%) at `STORM_FOG_FULL_METERS` 500m (e-fold 108.6m, was 5km), still easing in geometrically with the overcast; the hull and spray now go through the same fog and the camera-only sun is hidden by the storm's fog along its own line of sight. The 28 September seam fix had torn the default (non-FFT) sea into vertical streaks by reading an FFT-only reference point as zero; the edge path is now FFT-only and `ocean_flyover` is pixel-identical to a 27 September build.

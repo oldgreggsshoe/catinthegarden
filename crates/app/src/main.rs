@@ -26,6 +26,7 @@ mod rain;
 #[cfg(test)]
 mod relief_survey;
 mod scenario;
+mod sea_sound;
 mod ship;
 mod ship_render;
 mod stars;
@@ -403,6 +404,9 @@ const STORM_OVERCAST_FULL: f64 = 0.5;
 /// Seconds (ocean clock) for the overcast to follow the weather, so flying
 /// into or out of a storm fades rather than switches.
 const STORM_OVERCAST_EASE_SECONDS: f64 = 4.0;
+/// How much louder and rougher the sea sounds in a full gust, as a share of
+/// the whole calm-to-storm range.
+const SEA_SOUND_GUST_SHARE: f32 = 0.3;
 /// A full storm darkens the whole finished frame by this share of its
 /// displayed brightness, in step with the overcast that greys it.
 const STORM_FRAME_DARKENING: f32 = 0.4;
@@ -1194,6 +1198,8 @@ struct State {
     weather: weather::WeatherState,
     weather_clouds: weather_render::WeatherCloudRenderer,
     rain: rain::Rain,
+    /// The sea's sound, fed each frame by `update_rain_and_gusts`.
+    sea_sound: sea_sound::SeaSound,
     /// Storm gusts at the camera this frame (`update_rain_and_gusts`).
     gust: gust::Gust,
     local_cloud_impostors: weather_render::LocalCloudImpostorRenderer,
@@ -1611,6 +1617,13 @@ impl State {
             &camera_bind_group_layout,
             terrain.shared_bind_group_layout(),
         );
+        // The sea's sound plays only in the interactive game: replays run
+        // headless and must not depend on an audio device.
+        let sea_sound = if scenario.is_some() {
+            sea_sound::SeaSound::silent()
+        } else {
+            sea_sound::SeaSound::start()
+        };
         let rain = rain::Rain::new(
             &device,
             hdr::HdrRenderer::SCENE_FORMAT,
@@ -1683,6 +1696,7 @@ impl State {
             weather,
             weather_clouds,
             rain,
+            sea_sound,
             local_cloud_impostors,
             forest,
             villages,
@@ -2823,9 +2837,9 @@ impl State {
         self.storm_overcast_time = ocean_time_seconds;
     }
 
-    /// Storm gusts at the camera, and the rain they drive. After the camera is
-    /// settled for the frame: the rain is uploaded in view axes, and the sea
-    /// and spray read the gusts when they are encoded.
+    /// Storm gusts at the camera, the rain they drive, and the sea's sound.
+    /// After the camera is settled for the frame: the rain is uploaded in view
+    /// axes, and the sea and spray read the gusts when they are encoded.
     fn update_rain_and_gusts(&mut self, planet_rotation_radians: f64, ocean_time_seconds: f64) {
         let camera_position = self
             .camera
@@ -2848,6 +2862,17 @@ impl State {
         } else {
             0.0
         };
+        // The sea is as rough as its state, and louder in a gust; heard over
+        // open water only, fading with height above it, dull under it.
+        let roughness = ocean::sea_state_at(ocean_time_seconds).intensity
+            + SEA_SOUND_GUST_SHARE * self.gust.value.max(0.0);
+        let level = if self.terrain.open_ocean_at(direction) == Some(true) {
+            sea_sound::loudness_at_height(altitude - water)
+        } else {
+            0.0
+        };
+        let muffle = if altitude < water { 1.0 } else { 0.0 };
+        self.sea_sound.set(roughness, level, muffle);
         let (u, v) = ocean_fft::anchor_axes(direction.to_array());
         let [wind_u, wind_v] = self.gust.wind_uv();
         let wind = glam::DVec3::from_array(u) * wind_u + glam::DVec3::from_array(v) * wind_v;
