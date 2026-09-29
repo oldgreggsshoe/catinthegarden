@@ -2901,7 +2901,17 @@ impl State {
         let air = wind * (1.0 + WIND_SOUND_STORM_BOOST * f64::from(self.storm_overcast))
             - self.rain.camera_velocity();
         let wind_strength = (air.length() / WIND_SOUND_FULL_SPEED_METERS_PER_SECOND) as f32;
-        self.sea_sound.set(roughness, level, muffle, wind_strength);
+        self.sea_sound.set(
+            roughness,
+            level,
+            muffle,
+            wind_strength,
+            if self.animation_frozen {
+                0.0
+            } else {
+                self.time_speed() as f32
+            },
+        );
     }
 
     fn update_bridge_camera(&mut self, planet_rotation_radians: f64) {

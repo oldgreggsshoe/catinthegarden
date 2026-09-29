@@ -3003,7 +3003,7 @@ fn ocean_underwater_medium_colour() -> vec3<f32> {
     let up = normalize(view_to_planet(camera.camera_planet_direction_view_altitude.xyz));
     let sun_direction = normalize(camera.sun_direction.xyz);
     return ocean_water_albedo_at(vec2<f32>(0.0)) * ocean_sot_body_light(
-        surface_direct_sun_transmittance(up, 0.0, sun_direction),
+        surface_direct_sun_transmittance(up, 0.0, sun_direction) * sun_visible_fraction(),
         sky_diffuse_irradiance(up, up, 0.0, sun_direction),
     );
 }

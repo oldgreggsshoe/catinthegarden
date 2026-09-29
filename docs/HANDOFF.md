@@ -10,6 +10,10 @@ surface appearance and crest geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
+**Latest phase (29 September):** game-clock sound pause/rate and hidden-sun underwater
+lighting are implemented below. Local storms, lightning/thunder, larger swell, and
+beach/forest storm contrast remain open; do not treat this phase as completing them.
+
 **Startup WGSL parse panic repaired (29 September):** an uncommitted edit mangled the
 `ocean_underside_colour` `if` brace and foam comment in `shared_planet.wgsl`. The text is restored
 to committed source; local water-colour edits are still uncommitted. The shader-parse test and
@@ -11690,3 +11694,29 @@ Ian's `cargo build --release -p catinthegarden-app && CATINGARDEN_OCEAN_FFT=1 CA
 `git diff` exposed the cause in `shared_planet.wgsl`: an uncommitted text edit moved `// Use the same breaking/whitecap coverage as the top face. Foam is air in` into `if refraction.w > 0.0 { ... }`, removing its opening brace and leaving `}m is air in`. Restoring the three original lines makes this source region byte-for-byte equivalent to HEAD. Ian's uncommitted `OCEAN_REFLECTION_SCALE` and `OCEAN_SOT_WATER_ALBEDO` values are untouched and **not staged**. There is no source change to commit for this repair.
 
 The existing `terrain::tests::planet_shader_validates_with_filtered_runtime_detail_noise` failed before with the same parser error and passed after. A fresh release build and `CATINGARDEN_OCEAN_FFT=1 CATINGARDEN_STORM_APPROACH=10 CATINGARDEN_PRESENT_MODE=immediate target/release/catinthegarden-app --scenario ocean_storm_look_up` passed (`test-runs/ocean_storm_look_up/1790679285-1999518`), exercising runtime pipeline creation; that scenario authors its own storm timing, so this is startup validation, **not** a claim that the separate interactive sky-fog flash is fixed. The user reports that only the sky flashes, not the sea; deterministic one-second storm replays showed smooth sky changes and an isolated Xvfb interactive run could not present (no DRI3). Await paired F12 captures from the interactive run before editing sky/cloud passes.
+
+## 29 September - Sound follows game time; hidden sun no longer lights FFT water
+
+The sound synthesiser ran on real time even with F10 freezing the scene. `SeaSound::set`
+now carries the game-clock rate. Zero outputs silence without aging any active burst;
+nonzero rates scale breaking-wave and hull-lap arrivals, their envelopes, and the low
+roar's slow modulation. A deterministic 60-second regression counts break arrivals
+at 1x and 4x and checks frozen output and burst ages. All seven active sound tests
+pass (two instruments ignored). This does not yet retune the metallic crash timbre
+or add ship creaks.
+
+`ocean_underwater_medium_colour` on the FFT path used direct-sun transmittance
+without the existing GPU `sun_visible_fraction`, so a hidden sun could continue
+lighting the water. It now multiplies the direct term by the same visibility
+value already used for ship and seabed caustics. The existing runtime WGSL
+validation test passes. A paired visual capture under cloud is still needed;
+shader validation alone is not a visual sign-off.
+
+The recent manual coast captures (`test-runs/manual/1790681207-2037558`) show the
+beach's bright sand edge against dark storm sea and dark forest. The approach
+mode currently drives a **global** `SeaStateMode::Approach` and directly overrides
+camera overcast, so it cannot be escaped spatially. Implementing a local storm
+means changing both the sea-state driver and weather/overcast field rather than
+adding a camera-only mask. Lightning location, fog flash and sound-delayed
+thunder have not been implemented in this phase. Swell amplitude is also
+unchanged.

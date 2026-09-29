@@ -13,10 +13,9 @@
 //! and swell in and out once it blows hard, and a thin whistle in the
 //! strongest gusts.
 //!
-//! The game sets four numbers each frame (`SeaSound::set`): how rough the sea
-//! is, how near the water the listener is, how far under it, and how hard the
-//! air is moving past them. The audio thread eases toward them, so nothing
-//! clicks.
+//! The game sets roughness, listener level, submersion, wind and game-clock
+//! rate each frame (`SeaSound::set`). The audio thread eases the first four;
+//! the clock rate controls break frequency and duration, and zero silences it.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -84,6 +83,7 @@ struct Shared {
     level: AtomicU32,
     muffle: AtomicU32,
     wind: AtomicU32,
+    clock_rate: AtomicU32,
 }
 
 fn store(slot: &AtomicU32, value: f32) {
@@ -132,12 +132,14 @@ impl SeaSound {
     /// `roughness` 0 (slight sea) to 1 (storm); `level` 0-1 how near the water
     /// the listener is (`loudness_at_height`, 0 away from the sea); `muffle`
     /// 0 in air, 1 under the water; `wind` 0 (still air) to 1 (a full gale
-    /// past the listener).
-    pub fn set(&self, roughness: f32, level: f32, muffle: f32, wind: f32) {
+    /// past the listener); `clock_rate` is game time per real second, or zero
+    /// while the scene is frozen.
+    pub fn set(&self, roughness: f32, level: f32, muffle: f32, wind: f32, clock_rate: f32) {
         store(&self.shared.roughness, roughness.clamp(0.0, 1.0));
         store(&self.shared.level, level.clamp(0.0, 1.0));
         store(&self.shared.muffle, muffle.clamp(0.0, 1.0));
         store(&self.shared.wind, wind.clamp(0.0, 1.0));
+        store(&self.shared.clock_rate, clock_rate.max(0.0));
     }
 }
 
@@ -184,6 +186,7 @@ where
                     load(&shared.muffle),
                     load(&shared.wind),
                 );
+                synth.clock_rate = load(&shared.clock_rate);
                 let gains: Vec<[f32; 2]> = (0..channels)
                     .map(|channel| channel_gains(channels, channel))
                     .collect();
@@ -249,7 +252,7 @@ impl Burst {
         self.age > self.attack + 6.0 * self.decay
     }
 
-    fn next(&mut self, white: f32, sample_rate: f32) -> [f32; 2] {
+    fn next(&mut self, white: f32, sample_rate: f32, clock_rate: f32) -> [f32; 2] {
         let cutoff = self.end_hz
             + (self.start_hz - self.end_hz) * (-self.age / (0.4 * self.decay + self.attack)).exp();
         let a = one_pole(cutoff, sample_rate);
@@ -260,7 +263,7 @@ impl Burst {
         self.high_pass = 0.98 * (self.high_pass + filtered - self.previous);
         self.previous = filtered;
         let value = self.high_pass * self.envelope() * self.gain;
-        self.age += 1.0 / sample_rate;
+        self.age += clock_rate / sample_rate;
         [value * self.pan[0], value * self.pan[1]]
     }
 }
@@ -436,6 +439,7 @@ pub(crate) struct SeaSynth {
     level: f32,
     muffle: f32,
     wind_strength: f32,
+    clock_rate: f32,
     wind: Wind,
     ease: f32,
     brown: [f32; 2],
@@ -457,6 +461,7 @@ impl SeaSynth {
             level: 0.0,
             muffle: 0.0,
             wind_strength: 0.0,
+            clock_rate: 1.0,
             wind: Wind::new(),
             ease: 1.0 - (-1.0 / (PARAMETER_EASE_SECONDS * sample_rate)).exp(),
             brown: [0.0; 2],
@@ -497,7 +502,8 @@ impl SeaSynth {
     fn spawn(&mut self) {
         let r = self.roughness;
         let dt = 1.0 / self.sample_rate;
-        let break_rate = BREAK_RATE_CALM + (BREAK_RATE_STORM - BREAK_RATE_CALM) * r;
+        let break_rate =
+            (BREAK_RATE_CALM + (BREAK_RATE_STORM - BREAK_RATE_CALM) * r) * self.clock_rate;
         if self.breaks.len() < MAX_BREAKS && self.random() < break_rate * dt {
             // A quick rise, so each break lands as a crash before its wash.
             let attack = (0.08 + 0.3 * self.random()) * (1.0 + 0.5 * r);
@@ -519,7 +525,7 @@ impl SeaSynth {
                 previous: 0.0,
             });
         }
-        let lap_rate = LAP_RATE_CALM * (1.0 - r) * (1.0 - r);
+        let lap_rate = LAP_RATE_CALM * (1.0 - r) * (1.0 - r) * self.clock_rate;
         if self.laps.len() < MAX_LAPS && self.random() < lap_rate * dt {
             let attack = 0.015 + 0.03 * self.random();
             let decay = 0.06 + 0.18 * self.random();
@@ -543,6 +549,11 @@ impl SeaSynth {
     }
 
     pub(crate) fn next_frame(&mut self) -> [f32; 2] {
+        // Freeze the acoustic scene along with the game clock. Do not age
+        // active breaks while paused, so they resume rather than restart.
+        if self.clock_rate == 0.0 {
+            return [0.0; 2];
+        }
         self.roughness += (self.targets[0] - self.roughness) * self.ease;
         self.level += (self.targets[1] - self.level) * self.ease;
         self.muffle += (self.targets[2] - self.muffle) * self.ease;
@@ -554,7 +565,7 @@ impl SeaSynth {
 
         // The roar: brown noise, separate per ear for width, low-passed lower
         // and louder as the sea builds, with a slow swell in it.
-        self.wobble = (self.wobble + 0.13 / sample_rate) % 1.0;
+        self.wobble = (self.wobble + 0.13 * self.clock_rate / sample_rate) % 1.0;
         let swell = 1.0 + 0.12 * (std::f32::consts::TAU * self.wobble).sin();
         let roar_gain = (ROAR_FLOOR + (ROAR_GAIN - ROAR_FLOOR) * r.powf(1.3)) * swell;
         let roar_a = one_pole(260.0 + 360.0 * r, sample_rate);
@@ -568,14 +579,14 @@ impl SeaSynth {
 
         for index in 0..self.breaks.len() {
             let white = self.white();
-            let [left, right] = self.breaks[index].next(white, sample_rate);
+            let [left, right] = self.breaks[index].next(white, sample_rate, self.clock_rate);
             out[0] += left;
             out[1] += right;
         }
         self.breaks.retain(|burst| !burst.finished());
         for index in 0..self.laps.len() {
             let white = self.white();
-            let [left, right] = self.laps[index].next(white, sample_rate);
+            let [left, right] = self.laps[index].next(white, sample_rate, self.clock_rate);
             out[0] += left;
             out[1] += right;
         }
@@ -681,6 +692,45 @@ mod tests {
         let mut away = SeaSynth::new(RATE, 3);
         away.jump_to(1.0, 0.0, 0.0, 0.0);
         assert!((0..4800).all(|_| away.next_frame() == [0.0, 0.0]));
+    }
+
+    #[test]
+    fn wave_breaks_follow_game_speed_and_all_sound_stops_when_frozen() {
+        let break_count = |speed: f32| {
+            let mut synth = SeaSynth::new(RATE, 31);
+            synth.jump_to(0.0, 1.0, 0.0, 0.0);
+            synth.clock_rate = speed;
+            let mut births = 0;
+            let mut previous = 0;
+            for _ in 0..(RATE as usize * 60) {
+                synth.next_frame();
+                if synth.breaks.len() > previous {
+                    births += synth.breaks.len() - previous;
+                }
+                previous = synth.breaks.len();
+            }
+            births
+        };
+        let normal = break_count(1.0);
+        let fast = break_count(4.0);
+        assert!(fast > 3 * normal && fast < 5 * normal, "{normal} {fast}");
+
+        let mut synth = SeaSynth::new(RATE, 31);
+        synth.jump_to(1.0, 1.0, 0.0, 1.0);
+        for _ in 0..RATE as usize {
+            synth.next_frame();
+        }
+        let ages: Vec<_> = synth.breaks.iter().map(|burst| burst.age).collect();
+        synth.clock_rate = 0.0;
+        assert!((0..RATE as usize).all(|_| synth.next_frame() == [0.0, 0.0]));
+        assert_eq!(
+            ages,
+            synth
+                .breaks
+                .iter()
+                .map(|burst| burst.age)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
