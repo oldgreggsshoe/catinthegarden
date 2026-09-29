@@ -10,11 +10,12 @@ surface appearance and crest geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Latest phase (29 September):** wave-break noise is less high-passed and ship
-creaks track hull motion, after local fog lightning and delayed thunder. Beach/
-forest storm contrast remains open. Neither the storm visuals nor the new sound
-has human sign-off here; the X display could not be opened and audio timbre
-still needs a listening check.
+**Latest phase (29 September):** forest billboards now receive the storm's
+distance fog and shoreline sand darkens continuously into wet storm sand.
+Matched forced-storm captures show the distant trees blending into grey fog
+and the sand/fog contrast falling 69% in the coast trial. The optimized tree
+fog has no detectable frame-time change in one seven-sample pair. Human visual
+sign-off, wave/creak listening, and the separate sky-only fog glitch remain open.
 
 **Startup WGSL parse panic repaired (29 September):** an uncommitted edit mangled the
 `ocean_underside_colour` `if` brace and foam comment in `shared_planet.wgsl`. The text is restored
@@ -11808,3 +11809,44 @@ at distances where the terrain/sea have converged to grey storm fog. Fixing
 that pass needs its fog endpoint to match the sky/terrain, not an arbitrary
 constant grey. This environment still cannot render (`XOpenDisplayFailed`),
 so no unverified beach/forest colour tweak was promoted.
+
+## 29 September - Trees and shore sand in storm fog
+
+The earlier diagnosis was confirmed in live forced-storm captures; this run's
+X display did open. `forest.wgsl` had no distance fog, so its dark-green
+billboards stayed hard silhouettes behind terrain whose fog is 99% complete
+by 100m. The forest pass now samples the same atmosphere sky-view LUT as the
+terrain and takes its ground-horizon row at the tree's azimuth, applies the
+storm's 100m air-path e-fold and overcast greying, and includes fog lightning.
+The sky lookup runs only on each billboard triangle's first vertex: WGSL flat
+interpolation takes that value for the whole card. A matched `forest_startup`
+replay at `CATINGARDEN_STORM_OVERCAST=1`, with only tree fog disabled for the
+baseline, changes 80,307 distant dark-green pixels in the measured
+220:390 x 250:920 region from mean RGB (3.7, 23.9, 4.8) to
+(40.4, 40.9, 40.4). The optimized capture is pixel-identical to the initial
+three-vertex fog version. Seven spatial-frame samples from 2-5s have median
+53.247ms fog disabled and 53.249ms enabled on the Quadro M1000M; that short
+pair detects no frame-time regression, not a broad performance guarantee.
+Captures: `test-runs/forest_startup/1790710502-2071212` (fog disabled) and
+`test-runs/forest_startup/1790710643-2071495` (final).
+
+The other mismatch was the raised shoreline's independent sand lighting:
+forced overcast did not wet it, and the adjacent terrain beach mix separately
+used dry cream sand. Both now call `beach_sand_albedo`, which leaves all clear
+weather values unchanged but blends to dark, desaturated wet sand at full
+storm on both sides of sea level. A GPU regression evaluates the production
+WGSL at six shoreline heights with `sun_direction.w=1`, confirming the wet
+colour and continuity; the existing clear-weather join regression also passes.
+In matched `coastal_spawn_view` captures at full forced overcast, the first
+wet-sand trial still left a pale edge. Darkening the full-storm target brings
+the same 89,421 sand pixels' mean display luminance 113.2 -> 73.2 against an
+unchanged grey-fog background of 55.6: excess contrast 57.5 -> 17.6 (-69%).
+These captures compare two wet-sand trials, not the original dry baseline.
+Final capture: `test-runs/coastal_spawn_view/1790710825-2071853`. The older
+`beach_sand_join` and coast replay poses show narrow wedge-like shoreline
+geometry; that silhouette is unchanged, not part of this material/fog fix.
+
+`forest_shader_is_a_depth_writing_procedural_billboard`, terrain WGSL parse,
+both clear/storm GPU sand tests, release build and forced-storm forest/coast
+replays pass. The separate intermittent whole-sky fog flash is still
+undiagnosed. Ian's uncommitted sea-colour edits are not part of this phase.

@@ -9,6 +9,7 @@ struct Camera {
     sun_direction_view: vec4<f32>,
     projection: vec4<f32>,
     flat_triangle_options: vec4<f32>,
+    lightning: vec4<f32>,
 }
 
 @group(0) @binding(0)
@@ -20,6 +21,12 @@ struct ForestUniform {
 
 @group(1) @binding(0)
 var<uniform> forest: ForestUniform;
+
+@group(1) @binding(1)
+var sky_view_lut: texture_2d<f32>;
+
+@group(1) @binding(2)
+var sky_view_sampler: sampler;
 
 @group(2) @binding(0)
 var cloud_field_current: texture_cube<f32>;
@@ -55,6 +62,7 @@ struct VertexOutput {
     @location(2) @interpolate(flat) seed: f32,
     @location(3) @interpolate(flat) lighting: f32,
     @location(4) @interpolate(flat) valid: f32,
+    @location(5) @interpolate(flat, first) fog: vec4<f32>,
 }
 
 fn planet_to_view(vector: vec3<f32>) -> vec3<f32> {
@@ -69,6 +77,54 @@ fn srgb_to_linear(color: vec3<f32>) -> vec3<f32> {
     let low = color / 12.92;
     let high = pow((color + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
     return select(high, low, color <= vec3<f32>(0.04045));
+}
+
+// Match the terrain fog's horizon sky lookup and 100m full-storm air path.
+// This runs once per billboard vertex, not for every covered fragment.
+fn tree_storm_fog(centre: vec3<f32>, view_position: vec3<f32>) -> vec4<f32> {
+    let overcast = clamp(camera.sun_direction.w, 0.0, 1.0);
+    if overcast <= 0.0 { return vec4<f32>(0.0); }
+    let distance = length(view_position);
+    if distance <= 1.0e-3 { return vec4<f32>(0.0); }
+    let camera_altitude = max(camera.camera_planet_direction_view_altitude.w, 0.0);
+    let tree_altitude = max(length(centre) - PLANET_RADIUS_METERS, 0.0);
+    let mean_density = 0.5 * (exp(-camera_altitude / 122000.0)
+        + exp(-tree_altitude / 122000.0));
+    let e_fold = exp(mix(log(500000.0), log(100.0 / 4.6051702), overcast));
+    let amount = 1.0 - exp(-distance * mean_density / e_fold);
+    if amount <= 1.0e-4 { return vec4<f32>(0.0); }
+
+    let up = normalize(camera.camera_planet_direction_view_altitude.xyz);
+    let sun = normalize(camera.sun_direction_view.xyz);
+    var toward_sun = sun - up * dot(up, sun);
+    if dot(toward_sun, toward_sun) < 1.0e-6 {
+        toward_sun = normalize(camera.camera_right.xyz);
+    } else {
+        toward_sun = normalize(toward_sun);
+    }
+    let ray = normalize(view_position);
+    let horizontal = ray - up * dot(ray, up);
+    var azimuth = 0.0;
+    if dot(horizontal, horizontal) > 1.0e-8 {
+        let direction = normalize(horizontal);
+        azimuth = atan2(dot(direction, cross(up, toward_sun)), dot(direction, toward_sun));
+    }
+    let radius = PLANET_RADIUS_METERS + max(camera_altitude, 200.0);
+    let horizon_cosine = -sqrt(max(1.0 - pow(PLANET_RADIUS_METERS / radius, 2.0), 0.0));
+    let uv = vec2<f32>(fract(azimuth / (2.0 * 3.141592653589793) + 0.5),
+        0.5 * (1.0 - horizon_cosine));
+    let radiance = textureSampleLevel(sky_view_lut, sky_view_sampler, uv, 0.0).rgb;
+    let luminance = dot(radiance, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let perceived = 0.22 * pow(luminance, 0.42);
+    let gain = clamp(perceived / max(luminance, 1.0e-8), 0.35, 80.0);
+    let sky = radiance * gain;
+    let grey = dot(sky, vec3<f32>(0.2126, 0.7152, 0.0722)) * 0.45;
+    var lightning_glow = vec3<f32>(0.0);
+    if camera.lightning.w > 0.0 {
+        lightning_glow = vec3<f32>(0.72, 0.78, 0.9) * camera.lightning.w
+            * smoothstep(0.35, 0.9, dot(ray, normalize(camera.lightning.xyz)));
+    }
+    return vec4<f32>(mix(sky, vec3<f32>(grey), overcast) + lightning_glow, amount);
 }
 
 fn cloud_shadow_density_at_shell(
@@ -138,6 +194,7 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vertex_index: u32) -> Vert
             0.0,
             0.0,
             0.0,
+            vec4<f32>(0.0),
         );
     }
     // One oversized triangle covers the same unit billboard rectangle as two
@@ -177,6 +234,12 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vertex_index: u32) -> Vert
     let broadleaf = srgb_to_linear(vec3<f32>(0.05, 0.17, 0.06));
     let conifer = srgb_to_linear(vec3<f32>(0.035, 0.125, 0.05));
     let colour = mix(broadleaf, conifer, species_kind) * lighting;
+    var fog = vec4<f32>(0.0);
+    // A billboard is one triangle. Flat interpolation takes its first vertex,
+    // so the other two must not repeat the sky lookup and fog calculation.
+    if vertex_index == 0u {
+        fog = tree_storm_fog(centre, planet_to_view(centre - forest.camera_planet_position.xyz));
+    }
     return VertexOutput(
         camera.projection_matrix * vec4<f32>(view_position, 1.0),
         vec2<f32>(corner.x * 0.5 + 0.5, corner.y),
@@ -184,6 +247,7 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vertex_index: u32) -> Vert
         input.width_shade_kind_seed.w,
         lighting,
         1.0,
+        fog,
     );
 }
 
@@ -237,5 +301,5 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
     let trunk_colour = srgb_to_linear(vec3<f32>(0.22, 0.12, 0.055));
     let colour = select(trunk_colour * 0.75 * input.lighting, input.colour_and_kind.rgb, canopy);
-    return vec4<f32>(colour, 1.0);
+    return vec4<f32>(mix(colour, input.fog.rgb, input.fog.w), 1.0);
 }

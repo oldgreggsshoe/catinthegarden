@@ -1602,6 +1602,7 @@ impl State {
             &camera_bind_group_layout,
             weather_clouds.field_bind_group_layout(),
             &terrain,
+            atmosphere.surface_lighting_resources(),
         );
         let villages = village_render::VillageRenderer::new(
             &device,

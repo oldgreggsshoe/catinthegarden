@@ -217,6 +217,12 @@ fn gpu_beach_sand_is_continuous_at_the_dry_land_join() {
 
 #[test]
 #[ignore = "requires a Vulkan GPU"]
+fn gpu_storm_beach_wets_both_sides_of_the_shoreline() {
+    check_ocean_optics(OpticsCase::StormBeachSand);
+}
+
+#[test]
+#[ignore = "requires a Vulkan GPU"]
 fn gpu_ocean_underside_reflection_retains_bounded_skylight() {
     check_ocean_optics(OpticsCase::UndersideSkylight);
 }
@@ -253,6 +259,7 @@ enum OpticsCase {
     LeavingWater,
     EnteringWater,
     BeachSand,
+    StormBeachSand,
     UndersideSkylight,
     DepthExtinction,
     UndersideFoam,
@@ -262,7 +269,7 @@ enum OpticsCase {
 
 fn check_ocean_optics(case: OpticsCase) {
     let entering_water = matches!(case, OpticsCase::EnteringWater);
-    let beach_sand = matches!(case, OpticsCase::BeachSand);
+    let beach_sand = matches!(case, OpticsCase::BeachSand | OpticsCase::StormBeachSand);
     let underside_skylight = matches!(case, OpticsCase::UndersideSkylight);
     let depth_extinction = matches!(case, OpticsCase::DepthExtinction);
     let underside_foam = matches!(case, OpticsCase::UndersideFoam);
@@ -370,6 +377,9 @@ fn check_ocean_optics(case: OpticsCase) {
     let mut camera = crate::planet::CameraUniform::zeroed();
     camera.flat_triangle_options[1] = sea_state_at(0.0).intensity;
     camera.flat_triangle_options[2] = 1.0; // actual radial geometry; no shading-only ripples
+    if matches!(case, OpticsCase::StormBeachSand) {
+        camera.sun_direction[3] = 1.0;
+    }
     if local_altitude {
         // Radial straight up the view-space Y axis, eye 5m under the datum.
         camera.camera_planet_direction_view_altitude = [0.0, 1.0, 0.0, -5.0];
@@ -522,6 +532,15 @@ fn check_ocean_optics(case: OpticsCase) {
             let srgb = |v: f64| ((v + 0.055) / 1.055).powf(2.4);
             let dry = [srgb(0.94), srgb(0.89), srgb(0.70)];
             for channel in 0..3 {
+                if matches!(case, OpticsCase::StormBeachSand) {
+                    let expected = [srgb(0.40), srgb(0.38), srgb(0.33)][channel];
+                    assert!(
+                        (actual[channel] as f64 - expected).abs() < 0.0001,
+                        "storm sand sample {index} channel {channel}: {} vs {expected}",
+                        actual[channel]
+                    );
+                    continue;
+                }
                 if index == 3 {
                     assert!(
                         (actual[channel] as f64 - dry[channel]).abs() > 0.05,

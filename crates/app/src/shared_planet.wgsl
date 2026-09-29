@@ -646,15 +646,16 @@ const BEACH_SAND_COLOUR_SRGB: vec3<f32> = vec3<f32>(0.94, 0.89, 0.70);
 // Ground material only: neither water ownership nor wave geometry uses this.
 fn beach_sand_albedo(height_meters: f32) -> vec3<f32> {
     let dry_sand = srgb_to_linear(BEACH_SAND_COLOUR_SRGB);
-    if height_meters <= 0.0 { return dry_sand; }
     let wet_sand = srgb_to_linear(vec3<f32>(0.62, 0.53, 0.35));
-    // The submerged beach reaches sea level with the full cream palette.
-    // Start the land's darker wet-sand treatment continuously from that same
-    // colour, then retain the existing treatment from 4m inland height onward.
+    // The submerged beach and raised shoreline share one colour at sea level.
+    // Clear weather keeps the cream palette; a forced storm wets both sides
+    // continuously, even before the surface-weather wetness has caught up.
     // These are height metres, not a fixed horizontal beach width.
     let wet_band = smoothstep(0.0, 4.0, height_meters)
         * (1.0 - smoothstep(0.0, 20.0, height_meters));
-    return mix(dry_sand, wet_sand, wet_band * 0.38);
+    let storm_sand = srgb_to_linear(vec3<f32>(0.40, 0.38, 0.33));
+    return mix(mix(dry_sand, wet_sand, wet_band * 0.38),
+        storm_sand, storm_overcast());
 }
 
 // How fast the bed's turquoise contribution falls off with the water standing
@@ -3824,7 +3825,7 @@ fn terrain_material_color(
     // judged from the blended palette so the exclusion has no texel edges.
     let beach = (1.0 - smoothstep(20.0, 220.0, macro_height_meters))
         * (1.0 - smoothstep(0.55, 0.80, dot(base_color, vec3<f32>(0.2126, 0.7152, 0.0722))));
-    color = mix(color, srgb_to_linear(BEACH_SAND_COLOUR_SRGB), beach * 0.65);
+    color = mix(color, beach_sand_albedo(macro_height_meters), beach * 0.65);
     // Break up a coarse ancestor material tile at flight altitude without
     // changing its biome or coastline. Correlating this with the bounded
     // relief keeps ridges readable under both direct and aerial lighting.

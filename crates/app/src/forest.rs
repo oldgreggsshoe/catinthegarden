@@ -10,6 +10,7 @@ use glam::DVec3;
 use wgpu::util::DeviceExt;
 
 use crate::{
+    atmosphere::SurfaceLightingResources,
     planet::planet_radius_meters,
     terrain::{TerrainRenderer, forest_biome_requires_evergreen, forest_surface_is_eligible},
 };
@@ -347,6 +348,7 @@ impl ForestRenderer {
         camera_bind_group_layout: &wgpu::BindGroupLayout,
         weather_field_bind_group_layout: &wgpu::BindGroupLayout,
         terrain: &TerrainRenderer,
+        atmosphere: SurfaceLightingResources<'_>,
     ) -> Self {
         let initial_key = forest_cell_key(FOREST_CENTRE_DIRECTION);
         let enabled = forest_rendering_from_env();
@@ -366,24 +368,52 @@ impl ForestRenderer {
         });
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("forest bind group layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("forest bind group"),
             layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(atmosphere.sky_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(atmosphere.sky_view_sampler),
+                },
+            ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("forest pipeline layout"),
@@ -2118,7 +2148,11 @@ mod tests {
         assert!(shader.contains("centre_and_height: vec4<f32>"));
         assert!(shader.contains("if !trunk && !canopy"));
         assert!(shader.contains("let proxy = input.colour_and_kind.w >= 2.0;"));
-        assert!(!shader.contains("texture_2d"));
+        assert!(shader.contains("var sky_view_lut: texture_2d<f32>;"));
+        assert!(shader.contains("tree_storm_fog(centre"));
+        assert!(shader.contains("@interpolate(flat, first) fog"));
+        assert!(shader.contains("if vertex_index == 0u"));
+        assert!(shader.contains("mix(colour, input.fog.rgb, input.fog.w)"));
     }
 
     #[test]
