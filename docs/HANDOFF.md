@@ -10,6 +10,12 @@ surface appearance and crest geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
+**Startup WGSL parse panic repaired (29 September):** an uncommitted edit mangled the
+`ocean_underside_colour` `if` brace and foam comment in `shared_planet.wgsl`. The text is restored
+to committed source; local water-colour edits are still uncommitted. The shader-parse test and
+release scenario launch pass. The separate intermittent **sky-only** storm-fog flash is still
+unreproduced and unfixed; await paired F12 captures rather than guessing at the sky pass.
+
 **Crest shards fixed (29 September):** the fixed-floor limiter scaled the entire swell by a
 short-wave-dependent factor. At SWELL 30 / CHOP 2 it stretched and inverted real GPU triangles;
 the earlier CHOP 1 foam-only conclusion was incomplete. Per-band phase-envelope limiting removes
@@ -11676,3 +11682,11 @@ This also explains the earlier "fog at 500m" and "100m" claims: they were true o
 **Surround-safe sound.** `channel_gains`: stereo to the front pair; in quad, 5.1 and 7.1 the surround pairs take a 0.7 copy of their side; the centre and the LFE nothing; mono both mixed. It used to alternate left and right over every channel, putting the right side's noise in a subwoofer. (Windows: `cpal` uses WASAPI with no extra libraries, and 0.18 initialises COM as STA, so it does not fight winit's drag and drop.) A zero-volume launch shows the stream in PulseAudio from about 15s (after loading).
 
 603 app tests and 13 ocean GPU tests pass (Codex's `gpu_big_swell_chop_does_not_make_sideways_triangles` needs `CATINGARDEN_OCEAN_FFT_SWELL=30 CATINGARDEN_OCEAN_FFT_CHOP=2`).
+
+## 29 September - Uncommitted WGSL typo stopped startup, repaired
+
+Ian's `cargo build --release -p catinthegarden-app && CATINGARDEN_OCEAN_FFT=1 CATINGARDEN_STORM_APPROACH=10 target/release/catinthegarden-app` built successfully but panicked while wgpu parsed the full-resolution terrain raymarch shader: `expected '{', found "let"` at the underside-refraction code. Cargo compiles the shader source as a string; wgpu validates the composed WGSL when the app starts.
+
+`git diff` exposed the cause in `shared_planet.wgsl`: an uncommitted text edit moved `// Use the same breaking/whitecap coverage as the top face. Foam is air in` into `if refraction.w > 0.0 { ... }`, removing its opening brace and leaving `}m is air in`. Restoring the three original lines makes this source region byte-for-byte equivalent to HEAD. Ian's uncommitted `OCEAN_REFLECTION_SCALE` and `OCEAN_SOT_WATER_ALBEDO` values are untouched and **not staged**. There is no source change to commit for this repair.
+
+The existing `terrain::tests::planet_shader_validates_with_filtered_runtime_detail_noise` failed before with the same parser error and passed after. A fresh release build and `CATINGARDEN_OCEAN_FFT=1 CATINGARDEN_STORM_APPROACH=10 CATINGARDEN_PRESENT_MODE=immediate target/release/catinthegarden-app --scenario ocean_storm_look_up` passed (`test-runs/ocean_storm_look_up/1790679285-1999518`), exercising runtime pipeline creation; that scenario authors its own storm timing, so this is startup validation, **not** a claim that the separate interactive sky-fog flash is fixed. The user reports that only the sky flashes, not the sea; deterministic one-second storm replays showed smooth sky changes and an isolated Xvfb interactive run could not present (no DRI3). Await paired F12 captures from the interactive run before editing sky/cloud passes.
