@@ -897,6 +897,9 @@ pub struct TerrainRenderer {
     shared_bind_group_layout: wgpu::BindGroupLayout,
     raster_near_field_bind_group: wgpu::BindGroup,
     shared_bind_groups: [wgpu::BindGroup; 2],
+    /// How much of the sun is visible, for the caustics (shared binding 20),
+    /// filled each frame by `sun::SunRenderer::encode_visibility`.
+    sun_visibility_buffer: wgpu::Buffer,
     foam_history: ocean_foam::OceanFoamHistory,
     foam_history_enabled: bool,
     ocean_spray: Option<ocean_spray::OceanSpray>,
@@ -1288,6 +1291,13 @@ impl TerrainRenderer {
                 surface_format,
             )
         });
+        // Fully visible until the sun's test first runs, and wherever it never
+        // does (a body without weather).
+        let sun_visibility_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("sun visibility for caustics"),
+            contents: bytemuck::cast_slice(&[1.0_f32, 0.0, 0.0, 0.0]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
         let shared_bind_groups = std::array::from_fn(|index| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("shared planet bind group"),
@@ -1361,6 +1371,10 @@ impl TerrainRenderer {
                         binding: 19,
                         resource: wgpu::BindingResource::TextureView(&ocean_fft.curvature_view),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 20,
+                        resource: sun_visibility_buffer.as_entire_binding(),
+                    },
                 ],
             })
         });
@@ -1417,6 +1431,7 @@ impl TerrainRenderer {
             shared_bind_group_layout,
             raster_near_field_bind_group,
             shared_bind_groups,
+            sun_visibility_buffer,
             foam_history,
             foam_history_enabled: crate::planet::ocean_foam_history_enabled(),
             ocean_spray,
@@ -1607,6 +1622,11 @@ impl TerrainRenderer {
             gust.uniform(),
         );
         self.ocean_fft.encode(encoder);
+    }
+
+    /// The caustics' sun-visibility uniform (`sun_visible_fraction`).
+    pub(crate) fn sun_visibility_buffer(&self) -> &wgpu::Buffer {
+        &self.sun_visibility_buffer
     }
 
     pub(crate) fn shared_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
@@ -3652,6 +3672,16 @@ pub fn create_shared_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroup
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 20,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     })
 }
@@ -5090,7 +5120,9 @@ mod tests {
             .split("let bottom_height = input.surface_height_and_fog_color.x;")
             .nth(1)
             .expect("bathymetry branch is present");
-        assert!(bed.contains("let caustics = ocean_fft_caustics("));
+        // Faded to the plain sun as cloud and storm hide it.
+        assert!(bed.contains("let caustics = mix(1.0, ocean_fft_caustics("));
+        assert!(bed.contains("), sun_visible_fraction());"));
         assert!(bed.contains(
             "bottom_sky + bottom_sun * SURFACE_SUNLIGHT_SCALE * caustics"
         ));

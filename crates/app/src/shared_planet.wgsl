@@ -419,6 +419,17 @@ struct OceanFftView {
 @group(2) @binding(18)
 var<uniform> ocean_fft_view: OceanFftView;
 
+// How much of the sun the camera can see this frame, 0-1 (x): the sun shader's
+// own test (sun.wgsl cs_sun_visibility -- cloud along its line of sight and
+// storm fog), written on the GPU before the scene is drawn. Caustics are the
+// direct sun focused by the waves, so they fade with it.
+@group(2) @binding(20)
+var<uniform> sun_visibility_state: vec4<f32>;
+
+fn sun_visible_fraction() -> f32 {
+    return clamp(sun_visibility_state.x, 0.0, 1.0);
+}
+
 // Camera-relative view-space position of the surface point being evaluated,
 // set by the caller: it keeps wave coordinates precise where the unit
 // direction alone would quantise to about 0.25m on this planet.
@@ -1738,7 +1749,12 @@ fn ocean_fft_lens_curvature(entry: vec2<f32>, blur: f32) -> f32 {
 // share of the direct sun's (Schlick Fresnel for water, times the lens term),
 // arriving along `ocean_reflected_sun_direction`. 0 with no FFT sea, at
 // night, or out of reach.
-const OCEAN_REFLECTED_CAUSTIC_REACH_METERS: f32 = 6.0;
+// Reflected sun plays on a surface at full strength up to this height above
+// the water, and fades to nothing over the next OCEAN_REFLECTED_CAUSTIC_FADE_METERS.
+const OCEAN_REFLECTED_CAUSTIC_FULL_METERS: f32 = 2.0;
+const OCEAN_REFLECTED_CAUSTIC_FADE_METERS: f32 = 1.0;
+const OCEAN_REFLECTED_CAUSTIC_REACH_METERS: f32 =
+    OCEAN_REFLECTED_CAUSTIC_FULL_METERS + OCEAN_REFLECTED_CAUSTIC_FADE_METERS;
 
 fn ocean_reflected_sun_direction(up: vec3<f32>, sun: vec3<f32>) -> vec3<f32> {
     // Towards where the light comes from: the sun's mirror image in the sea.
@@ -1773,7 +1789,7 @@ fn ocean_fft_reflected_caustics(
     let lens = ocean_caustic_brightness(1.0 - 2.0 * path * curvature);
     let fresnel = 0.02 + 0.98 * pow(1.0 - cos_sun, 5.0);
     return fresnel * lens
-        * (1.0 - smoothstep(0.5 * OCEAN_REFLECTED_CAUSTIC_REACH_METERS, OCEAN_REFLECTED_CAUSTIC_REACH_METERS, height_meters));
+        * (1.0 - smoothstep(OCEAN_REFLECTED_CAUSTIC_FULL_METERS, OCEAN_REFLECTED_CAUSTIC_REACH_METERS, height_meters));
 }
 
 // Multiplier for direct sunlight on a sea bed `depth_meters` under the water:

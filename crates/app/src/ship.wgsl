@@ -51,6 +51,16 @@ const SHIP_WATERLINE_SPACING_METERS: f32 = 1.0;
 // which on a dark hull is barely visible; stylised up, as Sea of Thieves does.
 // Physical is 1.
 const SHIP_REFLECTED_LIGHT_GAIN: f32 = 4.0;
+// Caustics play only on the hull's sides: faces steeper than this (|normal.up|
+// below the first value) take them fully, flatter ones (deck, roofs, the flat
+// of the bottom) not at all past the second.
+const SHIP_CAUSTIC_SIDE_FULL: f32 = 0.5;
+const SHIP_CAUSTIC_SIDE_NONE: f32 = 0.8;
+
+// How much of the caustic pattern a face takes for its steepness.
+fn ship_caustic_side_weight(normal: vec3<f32>, up: vec3<f32>) -> f32 {
+    return 1.0 - smoothstep(SHIP_CAUSTIC_SIDE_FULL, SHIP_CAUSTIC_SIDE_NONE, abs(dot(normal, up)));
+}
 
 // How far below the drawn sea surface this point of the hull is (negative
 // above it). The sea is drawn displaced sideways by its choppy D, several
@@ -88,17 +98,29 @@ fn ship_sea_light(view_position: vec3<f32>, normal: vec3<f32>, sun_direction: ve
         return vec3<f32>(1.0, 1.0, 0.0);
     }
     let up = normalize(ship.up.xyz);
+    let side = ship_caustic_side_weight(normal, up);
     let depth = ship_water_depth(view_position);
     let pixel_meters = length(view_position) * (2.0 * camera.projection.y / 720.0);
     let planet_offset = view_to_planet(view_position);
     if depth > 0.0 {
         let through_water = ocean_water_transmittance(depth);
-        let caustics = ocean_fft_caustics(planet_offset, up, sun_direction, depth, pixel_meters);
+        // Within the same 2m of the surface as the reflected shimmer, fading
+        // over the next metre to the plain (unfocused) sun.
+        let near_surface = 1.0 - smoothstep(
+            OCEAN_REFLECTED_CAUSTIC_FULL_METERS,
+            OCEAN_REFLECTED_CAUSTIC_REACH_METERS,
+            depth,
+        );
+        let caustics = mix(
+            1.0,
+            ocean_fft_caustics(planet_offset, up, sun_direction, depth, pixel_meters),
+            side * near_surface * sun_visible_fraction(),
+        );
         return vec3<f32>(through_water * caustics, through_water, 0.0);
     }
     let bounce = ocean_fft_reflected_caustics(planet_offset, up, sun_direction, -depth, pixel_meters)
         * max(dot(normal, ocean_reflected_sun_direction(up, sun_direction)), 0.0)
-        * SHIP_REFLECTED_LIGHT_GAIN;
+        * side * sun_visible_fraction() * SHIP_REFLECTED_LIGHT_GAIN;
     return vec3<f32>(1.0, 1.0, bounce);
 }
 

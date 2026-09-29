@@ -28,6 +28,10 @@ calm and brings a full storm in (fog, grey, desaturated sea, swell); replay `oce
 At the interactive start the live weather never reaches a storm (measured). The hull now has
 underwater and reflected caustics. See "Caustics on the hull, and a storm on demand".
 
+**Hull caustics limited (29 September):** full to 2m from the water and gone by 3m, only on side
+faces, and fading with the sun's visibility (the sun shader's own cloud-and-fog test, now also
+run before the scene). See "Hull caustics: near the water, on the sides, and only in sunshine".
+
 **Storm fog and a default-sea fix (29 September):** a full storm's fog is now complete (99%) at
 500m, and the hull, spray and sun go through it. The default (Gerstner, non-FFT) sea had been torn
 into vertical streaks since the 28 September seam fix; fixed. See "Storm fog complete at 500m".
@@ -11566,3 +11570,13 @@ The sea evaluates the gust field once per mesh vertex (`ocean_fft_vertex_gust`, 
 `sunset_blue_hour`'s two blue-hour failures reproduce on the 27 September build too, so they are older than all of this.
 
 **Tests.** 596 app tests and the 12 ocean GPU tests pass (run the GPU tests without `CATINGARDEN_OCEAN_FFT`: `gpu_ocean_normals_match_cpu_buoyancy_in_deep_and_breaking_water` checks the Gerstner sea and panics when the FFT sea is composed in).
+
+## 29 September - Hull caustics: near the water, on the sides, and only in sunshine
+
+Ian: caustics should reach only about 2m from the water surface and fade to nothing over the next metre; only the boat's sides should get them, not flat surfaces like the deck; and they depend on the sun, so under cloud they should fade as less sun is visible.
+
+- **Height.** `OCEAN_REFLECTED_CAUSTIC_FULL_METERS` 2 and `OCEAN_REFLECTED_CAUSTIC_FADE_METERS` 1 (the reflected shimmer used to fade from 3m to 6m, up the deckhouse and funnel). Under the waterline the same 2m-then-1m rule fades the focused pattern to the plain transmitted sun. Diffing `ocean_ship_float` capture 2 against the previous build, on ship pixels only: the shimmer is gone from the deckhouse, its upper tier and the funnel, and the hull side near the water is unchanged.
+- **Sides only.** `ship_caustic_side_weight`: full on faces steeper than |normal . up| 0.5, none past 0.8. The deck never took reflected light (the sun's mirror image is below the water, so an upward face cannot see it); what it could take was the underwater pattern where a crest stood over it, which this now removes.
+- **Sun visibility.** The sun shader's own test (cloud along its line of sight times the storm fog over it, the product that hides the disc) now also runs once per frame before the scene as a one-thread compute pass, `sun.wgsl cs_sun_visibility`, and is copied into a shared uniform (binding 20, `sun_visible_fraction`, 1 until first written). The hull's caustic pattern and shimmer and the sea-bed caustics fade with it, back to the plain sun. The weather field layout gains COMPUTE visibility for this. Checked by painting the value on the hull in a throwaway build: 0.8 in the clear `ocean_ship_float` sky (some cloud there), 0 at overcast 0.5 and 1 (the storm fog over the sun path is complete well before full storm, as the sky pass's is). Cost not measured: one thread and a few cloud samples.
+
+596 app tests and the 12 ocean GPU tests pass.

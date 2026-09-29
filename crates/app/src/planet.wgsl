@@ -2571,13 +2571,14 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         let depth_transmittance = exp(
             min(bottom_height, 0.0) * log(50.0) / OCEAN_UNDERWATER_VISIBILITY_METERS,
         );
-        let caustics = ocean_fft_caustics(
+        // Faded toward the plain sun as cloud and storm hide the sun.
+        let caustics = mix(1.0, ocean_fft_caustics(
             view_to_planet(input.camera_relative_view_position),
             direction,
             sun_direction,
             -bottom_height,
             length(input.camera_relative_view_position) * (2.0 * camera.projection.y / 720.0),
-        );
+        ), sun_visible_fraction());
         let bottom_light = sediment * depth_transmittance * (
             bottom_sky + bottom_sun * SURFACE_SUNLIGHT_SCALE * caustics
                 * max(dot(input.world_normal, sun_direction), 0.0)

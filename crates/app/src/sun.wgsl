@@ -79,6 +79,15 @@ var atmosphere_transmittance_lut: texture_2d<f32>;
 @group(2) @binding(1)
 var atmosphere_physical_sampler: sampler;
 
+// How much of the sun is visible from the camera, for the scene's caustics
+// (shared_planet.wgsl sun_visible_fraction). Written by cs_sun_visibility.
+struct SunVisibilityOutput {
+    value: vec4<f32>,
+}
+
+@group(2) @binding(8)
+var<storage, read_write> sun_visibility_output: SunVisibilityOutput;
+
 // The optical flare is composited without a depth attachment so it can keep
 // its complete camera-response shape when only part of the source is visible.
 // Sample the already-rendered solid depth here to answer the separate binary
@@ -180,6 +189,19 @@ fn storm_sun_fog_visibility(ray_view: vec3<f32>) -> f32 {
         overcast,
     ));
     return exp(-air_path * (1.0 / storm_e_fold - 1.0 / TERRAIN_FOG_AIR_PATH_E_FOLD_METERS));
+}
+
+// The same test that hides the disc and its glare, run once per frame before
+// the scene so the caustics can fade with the sun they focus.
+@compute @workgroup_size(1)
+fn cs_sun_visibility() {
+    let sun = normalize(camera.sun_direction_view.xyz);
+    sun_visibility_output.value = vec4<f32>(
+        cloud_sun_visibility(sun) * storm_sun_fog_visibility(sun),
+        0.0,
+        0.0,
+        0.0,
+    );
 }
 
 fn cloud_sun_visibility(ray_view: vec3<f32>) -> f32 {

@@ -5001,6 +5001,16 @@ impl State {
             self.atmosphere
                 .update(&mut encoder, &self.camera_bind_group);
         }
+        // The sun's own visibility test, before the scene: caustics fade as
+        // cloud and storm fog hide the sun they focus.
+        if body::has_atmosphere() {
+            self.sun.encode_visibility(
+                &mut encoder,
+                &self.camera_bind_group,
+                self.weather_clouds.field_bind_group(),
+                self.terrain.sun_visibility_buffer(),
+            );
+        }
         if let Some(moon) = &mut self.sky_moon {
             moon.encode(&mut encoder, self.weather_clouds.field_bind_group());
         }

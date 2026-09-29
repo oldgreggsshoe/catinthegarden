@@ -4,7 +4,15 @@ pub struct SunRenderer {
     atmosphere_bind_group: wgpu::BindGroup,
     depth_bind_group_layout: wgpu::BindGroupLayout,
     depth_bind_group: wgpu::BindGroup,
+    /// `cs_sun_visibility`: the disc's visibility test, run before the scene
+    /// for the caustics (`encode_visibility`).
+    visibility_pipeline: wgpu::ComputePipeline,
+    visibility_bind_group: wgpu::BindGroup,
+    visibility_output: wgpu::Buffer,
 }
+
+/// Bytes of the visibility answer: one vec4<f32>, x the visible fraction.
+const SUN_VISIBILITY_BYTES: u64 = 16;
 
 pub(crate) fn sun_shader_source() -> String {
     format!(
@@ -162,13 +170,92 @@ impl SunRenderer {
             "fs_flare",
             None,
         );
+        let visibility_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("sun visibility output layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+        let visibility_output = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("sun visibility output"),
+            size: SUN_VISIBILITY_BYTES,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let visibility_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("sun visibility output bind group"),
+            layout: &visibility_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 8,
+                resource: visibility_output.as_entire_binding(),
+            }],
+        });
+        let visibility_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("sun visibility pipeline layout"),
+                bind_group_layouts: &[
+                    Some(camera_bind_group_layout),
+                    Some(weather_field_bind_group_layout),
+                    Some(&visibility_bind_group_layout),
+                ],
+                immediate_size: 0,
+            });
+        let visibility_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("sun visibility"),
+            layout: Some(&visibility_pipeline_layout),
+            module: &shader,
+            entry_point: Some("cs_sun_visibility"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
         Self {
             disc_pipeline,
             flare_pipeline,
             atmosphere_bind_group,
             depth_bind_group_layout,
             depth_bind_group,
+            visibility_pipeline,
+            visibility_bind_group,
+            visibility_output,
         }
+    }
+
+    /// Runs the disc's own visibility test (cloud along the line of sight,
+    /// storm fog) once, before the scene, and copies the answer into `target`,
+    /// the shared `sun_visibility_state` uniform the caustics read.
+    pub fn encode_visibility(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        camera_bind_group: &wgpu::BindGroup,
+        weather_field_bind_group: &wgpu::BindGroup,
+        target: &wgpu::Buffer,
+    ) {
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("sun visibility"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.visibility_pipeline);
+            pass.set_bind_group(0, camera_bind_group, &[]);
+            pass.set_bind_group(1, weather_field_bind_group, &[]);
+            pass.set_bind_group(2, &self.visibility_bind_group, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(
+            &self.visibility_output,
+            0,
+            target,
+            0,
+            SUN_VISIBILITY_BYTES,
+        );
     }
 
     pub fn resize_depth(&mut self, device: &wgpu::Device, depth_view: &wgpu::TextureView) {

@@ -225,12 +225,19 @@ mod tests {
         assert!(shader.contains("@location(1) @interpolate(flat) colour: vec3<f32>"));
         // Under the waterline the sun reaches the hull through the waves, with
         // the sea bed's own caustics; the sky only through the water.
-        assert!(shader.contains("let caustics = ocean_fft_caustics("));
+        assert!(shader.contains("ocean_fft_caustics(planet_offset, up, sun_direction, depth, pixel_meters)"));
         assert!(shader.contains("(sunlight * (sun_lambert * sea.x + sea.z) + sky_light * sea.y)"));
         // Above it, sun bounced off the moving surface.
         assert!(
             shader
                 .contains("ocean_fft_reflected_caustics(planet_offset, up, sun_direction, -depth")
         );
+        // Both only on the hull's sides (not the deck or roofs), and only near
+        // the water: full to 2m from the surface, gone by 3m.
+        // And they fade as cloud and storm hide the sun.
+        assert!(shader.contains("side * sun_visible_fraction() * SHIP_REFLECTED_LIGHT_GAIN"));
+        assert!(shader.contains("side * near_surface * sun_visible_fraction()"));
+        assert!(shader.contains("const OCEAN_REFLECTED_CAUSTIC_FULL_METERS: f32 = 2.0;"));
+        assert!(shader.contains("const OCEAN_REFLECTED_CAUSTIC_FADE_METERS: f32 = 1.0;"));
     }
 }
