@@ -408,6 +408,13 @@ const STORM_OVERCAST_EASE_SECONDS: f64 = 4.0;
 /// How much louder and rougher the sea sounds in a full gust, as a share of
 /// the whole calm-to-storm range.
 const SEA_SOUND_GUST_SHARE: f32 = 0.3;
+/// Hull sounds are local to the ship, not a blanket storm ambience.
+fn ship_creak_stress(swell_height_meters: f32, angular_speed: f64, distance_meters: f64) -> f32 {
+    let waves = ((swell_height_meters - 8.0) / 16.0).clamp(0.0, 1.0);
+    let motion = ((angular_speed - 0.025) / 0.225).clamp(0.0, 1.0) as f32;
+    let near = (1.0 - distance_meters / 250.0).clamp(0.0, 1.0) as f32;
+    waves * motion * near * near
+}
 /// The wind as heard: a full storm blows this much harder than the sea's own
 /// wind, and the sound is at full strength at this speed of air past the eye.
 const WIND_SOUND_STORM_BOOST: f64 = 0.6;
@@ -2913,6 +2920,11 @@ impl State {
         let air = wind * (1.0 + WIND_SOUND_STORM_BOOST * f64::from(self.storm_overcast))
             - self.rain.camera_velocity();
         let wind_strength = (air.length() / WIND_SOUND_FULL_SPEED_METERS_PER_SECOND) as f32;
+        let creak_stress = ship_creak_stress(
+            ocean_fft::swell_height_meters(ocean::sea_state_at(ocean_time_seconds).intensity),
+            self.ship_body.angular_velocity.length(),
+            camera_position.distance(self.ship_body.position),
+        );
         self.sea_sound.set(
             roughness,
             level,
@@ -2923,6 +2935,7 @@ impl State {
             } else {
                 self.time_speed() as f32
             },
+            creak_stress,
         );
     }
 
@@ -6523,6 +6536,17 @@ fn create_depth_texture(
 #[cfg(test)]
 mod tests {
     use glam::DVec3;
+
+    #[test]
+    fn ship_creaks_require_large_waves_real_motion_and_a_near_listener() {
+        let stress = super::ship_creak_stress;
+        assert_eq!(stress(24.0, 0.25, 0.0), 1.0);
+        assert_eq!(stress(8.0, 0.25, 0.0), 0.0);
+        assert_eq!(stress(24.0, 0.0, 0.0), 0.0);
+        assert_eq!(stress(24.0, 0.25, 250.0), 0.0);
+        assert!(stress(16.0, 0.15, 10.0) > 0.0);
+        assert!(stress(16.0, 0.15, 10.0) < stress(24.0, 0.15, 10.0));
+    }
 
     use super::{
         ACTIVE_HIGHEST_PROMINENCE_DIRECTION, ACTIVE_HIGHEST_PROMINENCE_METERS,

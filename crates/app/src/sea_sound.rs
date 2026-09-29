@@ -34,6 +34,7 @@ const LAP_RATE_CALM: f32 = 2.5;
 /// Most sounds at once; a storm's overlapping breaks sit well under it.
 const MAX_BREAKS: usize = 24;
 const MAX_LAPS: usize = 8;
+const MAX_CREAKS: usize = 4;
 /// Loudness of the low roar at full storm; in a calm it is a faint floor.
 const ROAR_GAIN: f32 = 1.1;
 const ROAR_FLOOR: f32 = 0.06;
@@ -87,6 +88,7 @@ struct Shared {
     thunder_gain: AtomicU32,
     thunder_pan: AtomicU32,
     thunder_sequence: AtomicU32,
+    creak_stress: AtomicU32,
 }
 
 fn store(slot: &AtomicU32, value: f32) {
@@ -137,12 +139,21 @@ impl SeaSound {
     /// 0 in air, 1 under the water; `wind` 0 (still air) to 1 (a full gale
     /// past the listener); `clock_rate` is game time per real second, or zero
     /// while the scene is frozen.
-    pub fn set(&self, roughness: f32, level: f32, muffle: f32, wind: f32, clock_rate: f32) {
+    pub fn set(
+        &self,
+        roughness: f32,
+        level: f32,
+        muffle: f32,
+        wind: f32,
+        clock_rate: f32,
+        creak_stress: f32,
+    ) {
         store(&self.shared.roughness, roughness.clamp(0.0, 1.0));
         store(&self.shared.level, level.clamp(0.0, 1.0));
         store(&self.shared.muffle, muffle.clamp(0.0, 1.0));
         store(&self.shared.wind, wind.clamp(0.0, 1.0));
         store(&self.shared.clock_rate, clock_rate.max(0.0));
+        store(&self.shared.creak_stress, creak_stress.clamp(0.0, 1.0));
     }
 
     /// One delayed thunder arrival. The sequence is published last so the
@@ -199,6 +210,7 @@ where
                     load(&shared.wind),
                 );
                 synth.clock_rate = load(&shared.clock_rate);
+                synth.creak_target = load(&shared.creak_stress);
                 let sequence = shared.thunder_sequence.load(Ordering::Acquire);
                 if sequence != last_thunder_sequence {
                     synth.trigger_thunder(load(&shared.thunder_gain), load(&shared.thunder_pan));
@@ -275,11 +287,39 @@ impl Burst {
         let a = one_pole(cutoff, sample_rate);
         self.low_pass[0] += a * (white - self.low_pass[0]);
         self.low_pass[1] += a * (self.low_pass[0] - self.low_pass[1]);
-        // Take out the rumble below ~150 Hz: the roar layer owns that.
+        // Keep the body of a crashing wave. The former ~150 Hz high-pass and
+        // 2.4-4.6 kHz onset made each break a thin, hard metallic clatter.
         let filtered = self.low_pass[1];
-        self.high_pass = 0.98 * (self.high_pass + filtered - self.previous);
+        self.high_pass = 0.995 * (self.high_pass + filtered - self.previous);
         self.previous = filtered;
         let value = self.high_pass * self.envelope() * self.gain;
+        self.age += clock_rate / sample_rate;
+        [value * self.pan[0], value * self.pan[1]]
+    }
+}
+
+/// A low, sliding wood groan with a little friction noise. No narrow bandpass
+/// resonance: that turns hull movement into another metallic ringing sound.
+struct Creak {
+    age: f32,
+    duration: f32,
+    pitch: f32,
+    glide: f32,
+    phase: f32,
+    gain: f32,
+    pan: [f32; 2],
+    friction: f32,
+}
+
+impl Creak {
+    fn next(&mut self, white: f32, sample_rate: f32, clock_rate: f32) -> [f32; 2] {
+        let t = (self.age / self.duration).min(1.0);
+        self.phase += std::f32::consts::TAU * self.pitch * (1.0 + self.glide * t) / sample_rate;
+        self.friction += one_pole(600.0, sample_rate) * (white - self.friction);
+        let envelope = smoothstep(0.0, 0.15, self.age)
+            * (1.0 - smoothstep(self.duration - 0.3, self.duration, self.age));
+        let groan = self.phase.sin() + 0.28 * (2.0 * self.phase).sin();
+        let value = (0.75 * groan + 0.25 * self.friction) * envelope * self.gain;
         self.age += clock_rate / sample_rate;
         [value * self.pan[0], value * self.pan[1]]
     }
@@ -465,6 +505,9 @@ pub(crate) struct SeaSynth {
     breaks: Vec<Burst>,
     laps: Vec<Burst>,
     muffled: [[f32; 2]; 2],
+    creak_target: f32,
+    creak_stress: f32,
+    creaks: Vec<Creak>,
     thunder_age: f32,
     thunder_gain: f32,
     thunder_pan: f32,
@@ -491,6 +534,9 @@ impl SeaSynth {
             breaks: Vec::with_capacity(MAX_BREAKS),
             laps: Vec::with_capacity(MAX_LAPS),
             muffled: [[0.0; 2]; 2],
+            creak_target: 0.0,
+            creak_stress: 0.0,
+            creaks: Vec::with_capacity(MAX_CREAKS),
             thunder_age: f32::INFINITY,
             thunder_gain: 0.0,
             thunder_pan: 0.5,
@@ -537,11 +583,11 @@ impl SeaSynth {
             (BREAK_RATE_CALM + (BREAK_RATE_STORM - BREAK_RATE_CALM) * r) * self.clock_rate;
         if self.breaks.len() < MAX_BREAKS && self.random() < break_rate * dt {
             // A quick rise, so each break lands as a crash before its wash.
-            let attack = (0.08 + 0.3 * self.random()) * (1.0 + 0.5 * r);
+            let attack = (0.10 + 0.35 * self.random()) * (1.0 + 0.5 * r);
             let decay = (0.9 + 2.2 * self.random()) * (1.0 + 1.2 * r);
             let gain = (0.35 + 0.45 * self.random()) * (0.45 + 0.55 * r);
-            let start_hz = 2400.0 + 2200.0 * self.random();
-            let end_hz = (380.0 + 380.0 * self.random()) * (1.0 - 0.35 * r);
+            let start_hz = 900.0 + 1500.0 * self.random();
+            let end_hz = (250.0 + 300.0 * self.random()) * (1.0 - 0.25 * r);
             let pan = self.pan();
             self.breaks.push(Burst {
                 age: 0.0,
@@ -577,6 +623,25 @@ impl SeaSynth {
                 previous: 0.0,
             });
         }
+        if self.creak_stress > 0.0 && self.creaks.len() < MAX_CREAKS
+            && self.random() < 0.8 * self.creak_stress * self.clock_rate * dt
+        {
+            let duration = 0.65 + 1.1 * self.random();
+            let pitch = 70.0 + 65.0 * self.random();
+            let glide = 0.15 + 0.35 * self.random();
+            let gain = 0.12 + 0.16 * self.random();
+            let pan = self.pan();
+            self.creaks.push(Creak {
+                age: 0.0,
+                duration,
+                pitch,
+                glide,
+                phase: 0.0,
+                gain,
+                pan,
+                friction: 0.0,
+            });
+        }
     }
 
     pub(crate) fn next_frame(&mut self) -> [f32; 2] {
@@ -589,6 +654,7 @@ impl SeaSynth {
         self.level += (self.targets[1] - self.level) * self.ease;
         self.muffle += (self.targets[2] - self.muffle) * self.ease;
         self.wind_strength += (self.targets[3] - self.wind_strength) * self.ease;
+        self.creak_stress += (self.creak_target - self.creak_stress) * self.ease;
         self.spawn();
         let r = self.roughness;
         let sample_rate = self.sample_rate;
@@ -622,6 +688,14 @@ impl SeaSynth {
             out[1] += right;
         }
         self.laps.retain(|burst| !burst.finished());
+        let mut creak = [0.0_f32; 2];
+        for index in 0..self.creaks.len() {
+            let white = self.white();
+            let sound = self.creaks[index].next(white, sample_rate, self.clock_rate);
+            creak[0] += sound[0];
+            creak[1] += sound[1];
+        }
+        self.creaks.retain(|sound| sound.age < sound.duration);
 
         // The sea fades with height above it; the wind does not. Under the
         // water there is almost none.
@@ -654,6 +728,7 @@ impl SeaSynth {
             };
             let mixed = out[ear] * self.level
                 + wind[ear] * wind_level
+                + creak[ear] * (1.0 - 0.8 * self.muffle)
                 + thunder * (0.5 + side) * (1.0 - 0.8 * self.muffle);
             self.muffled[ear][0] += muffle_a * (mixed - self.muffled[ear][0]);
             self.muffled[ear][1] += muffle_a * (self.muffled[ear][0] - self.muffled[ear][1]);
@@ -800,6 +875,32 @@ mod tests {
         let age = synth.thunder_age;
         assert!((0..1000).all(|_| synth.next_frame() == [0.0, 0.0]));
         assert_eq!(synth.thunder_age, age);
+    }
+
+    #[test]
+    fn hull_creaks_rise_with_stress_even_when_the_sea_layer_is_silent() {
+        let mut synth = SeaSynth::new(RATE, 71);
+        synth.jump_to(0.0, 0.0, 0.0, 0.0);
+        assert!((0..RATE as usize).all(|_| synth.next_frame() == [0.0, 0.0]));
+        synth.creak_target = 1.0;
+        let peak = (0..(RATE as usize * 12))
+            .map(|_| {
+                let [left, right] = synth.next_frame();
+                left.abs().max(right.abs())
+            })
+            .fold(0.0_f32, f32::max);
+        assert!(peak > 0.01 && peak < 1.0, "creak peak {peak}");
+        synth.clock_rate = 0.0;
+        let ages: Vec<_> = synth.creaks.iter().map(|creak| creak.age).collect();
+        assert!((0..1000).all(|_| synth.next_frame() == [0.0, 0.0]));
+        assert_eq!(
+            ages,
+            synth
+                .creaks
+                .iter()
+                .map(|creak| creak.age)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

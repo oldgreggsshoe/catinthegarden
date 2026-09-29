@@ -10,10 +10,11 @@ surface appearance and crest geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Latest phase (29 September):** local fog lightning and speed-of-sound thunder
-follow the 5 km approach footprint and 16 m calm / 24 m storm swell. Beach/forest
-storm contrast and sound retuning remain open; neither the storm nor lightning
-has a live visual sign-off here because the X display could not be opened.
+**Latest phase (29 September):** wave-break noise is less high-passed and ship
+creaks track hull motion, after local fog lightning and delayed thunder. Beach/
+forest storm contrast remains open. Neither the storm visuals nor the new sound
+has human sign-off here; the X display could not be opened and audio timbre
+still needs a listening check.
 
 **Startup WGSL parse panic repaired (29 September):** an uncommitted edit mangled the
 `ocean_underside_colour` `if` brace and foam comment in `shared_planet.wgsl`. The text is restored
@@ -11775,3 +11776,35 @@ this environment (`XNotSupported(XOpenDisplayFailed)`), so flash appearance,
 spatial transition in motion and GPU frame cost are **not signed off**. The
 pre-existing whole-sky fog flash report remains separate; these intended
 localized flashes should not be mistaken for its diagnosis.
+
+## 29 September - Crash body and ship-under-stress creaks
+
+Ian described the breaking-wave sound as metallic loose cargo. Its old break
+noise started with a two-pole 2.4-4.6 kHz low-pass **and** a roughly 150 Hz
+high-pass, leaving a narrow, bright transient. The new break onset sweeps
+0.9-2.4 kHz, ends at 250-550 Hz, keeps content down to roughly 38 Hz and
+has a slightly softer attack. The independent low roar and wind are unchanged.
+At synthesis volume 1 the existing loudness instrument reads sea calm -30.8,
+mid -17.2, storm -11.0 dBFS; production volume is 0.4. This is a DSP change,
+not a claim that it sounds right without listening.
+
+`ship_creak_stress` uses three real signals: FFT swell height (zero at 8m,
+full at 24m), the ship's rigid-body angular speed (zero below 0.025 rad/s,
+full at 0.25), and listener distance (gone by 250m). A low, pitch-sliding
+oscillator with friction noise makes irregular wood groans, independent of the
+sea level so a listener near the ship hears them even over land. It is not a
+narrow bandpass resonance. The audio thread eases stress, scales creak events
+and duration with game time, and pauses them with F10. Tests check no creaks
+with small waves, still hull, or a far listener; audible creaks when stressed;
+no clipping; and frozen output/age. Nine active sound tests pass, two
+instruments ignored. Release build passes. Human listening is still required.
+
+**Storm contrast diagnosis, not yet edited:** the bright shoreline uses
+`beach_sand_albedo` / the beach mix, which keep cream dry sand even while
+`CATINGARDEN_STORM_APPROACH` rains: forced overcast does not update the
+weather-surface wetness texture. The separate billboard `forest.wgsl` pass
+returns lit dark green without any distance fog; hence black trees can remain
+at distances where the terrain/sea have converged to grey storm fog. Fixing
+that pass needs its fog endpoint to match the sky/terrain, not an arbitrary
+constant grey. This environment still cannot render (`XOpenDisplayFailed`),
+so no unverified beach/forest colour tweak was promoted.
