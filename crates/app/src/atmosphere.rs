@@ -670,7 +670,11 @@ mod tests {
             display.contains("let closest_altitude = max(closest_radius - PLANET_RADIUS_METERS")
         );
         assert!(display.contains("let descent_amount = 1.0 - exp("));
-        assert!(display.contains("let horizon_radiance = textureSampleLevel("));
+        assert!(display.contains("var horizon_radiance = textureSampleLevel("));
+        // In a storm, overhead rays take the horizon averaged over every
+        // azimuth, not their own: all azimuths meet at the zenith, and the
+        // bright sun-side horizon hung there as a wedge of light.
+        assert!(display.contains("let overhead = smoothstep(0.0, 0.5, dot(ray, up)) * overcast;"));
         assert!(display.contains("let fog_amount = 1.0 - exp("));
         assert!(display.contains("mix(visible_radiance, horizon_fog_radiance, fog_amount)"));
     }

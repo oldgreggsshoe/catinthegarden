@@ -170,7 +170,7 @@ fn cloud_density_on_camera_ray(
 // mirrored from atmosphere.wgsl, pinned by a test.
 const SUN_FOG_RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 122000.0;
 const TERRAIN_FOG_AIR_PATH_E_FOLD_METERS: f32 = 500000.0;
-const STORM_FOG_FULL_METERS: f32 = 500.0;
+const STORM_FOG_FULL_METERS: f32 = 100.0;
 const STORM_FOG_AIR_PATH_E_FOLD_METERS: f32 = STORM_FOG_FULL_METERS / 4.6051702;
 
 fn storm_sun_fog_visibility(ray_view: vec3<f32>) -> f32 {

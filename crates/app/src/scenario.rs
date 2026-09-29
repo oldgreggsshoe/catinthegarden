@@ -344,6 +344,7 @@ scenarios! {
     "ocean_spray_sequence" => "../scenarios/ocean_spray_sequence.json",
     "ocean_storm_approach" => "../scenarios/ocean_storm_approach.json",
     "ocean_storm_gusts" => "../scenarios/ocean_storm_gusts.json",
+    "ocean_storm_look_up" => "../scenarios/ocean_storm_look_up.json",
     "land_chunk_seams" => "../scenarios/land_chunk_seams.json",
     "coast_waters_edge" => "../scenarios/coast_waters_edge.json",
     "ocean_grey_foreground" => "../scenarios/ocean_grey_foreground.json",
@@ -1131,7 +1132,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 118);
+        assert_eq!(SCENARIO_NAMES.len(), 119);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));

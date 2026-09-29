@@ -194,7 +194,7 @@ const TERRAIN_FOG_AIR_PATH_E_FOLD_METERS: f32 = 500000.0;
 // reflection go to a grey of STORM_OVERCAST_BRIGHTNESS times their own
 // luminance (so night stays dark), and direct sun on the sea is cut by
 // STORM_SUN_BLOCK. Mirrored in atmosphere.wgsl and (the fog) sun.wgsl.
-const STORM_FOG_FULL_METERS: f32 = 500.0;
+const STORM_FOG_FULL_METERS: f32 = 100.0;
 const STORM_FOG_AIR_PATH_E_FOLD_METERS: f32 = STORM_FOG_FULL_METERS / 4.6051702;
 const STORM_OVERCAST_BRIGHTNESS: f32 = 0.45;
 const STORM_SUN_BLOCK: f32 = 0.85;

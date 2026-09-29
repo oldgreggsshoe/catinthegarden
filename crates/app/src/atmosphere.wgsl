@@ -8,9 +8,11 @@ const RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 122000.0;
 const TERRAIN_FOG_AIR_PATH_E_FOLD_METERS: f32 = 500000.0;
 // Storm overcast: the sky side of shared_planet.wgsl's storm_overcast, with the
 // same constants, so sky and terrain mist still meet at the horizon.
-const STORM_FOG_FULL_METERS: f32 = 500.0;
+const STORM_FOG_FULL_METERS: f32 = 100.0;
 const STORM_FOG_AIR_PATH_E_FOLD_METERS: f32 = STORM_FOG_FULL_METERS / 4.6051702;
 const STORM_OVERCAST_BRIGHTNESS: f32 = 0.45;
+// Azimuths the storm sky's overhead fog colour is averaged over.
+const STORM_HORIZON_AVERAGE_SAMPLES: u32 = 8u;
 // Presentation-only gain for the visible sky. Keep this outside the physical
 // LUTs so surface lighting, extinction, and exposure remain unchanged.
 const VISIBLE_SKY_RADIANCE_SCALE: f32 = 2.0;
@@ -262,15 +264,33 @@ fn displayed_sky_radiance(ray: vec3<f32>) -> vec3<f32> {
         SKY_VIEW_MINIMUM_CAMERA_ALTITUDE_METERS,
     );
     let camera_radius = PLANET_RADIUS_METERS + camera_altitude;
-    let horizon_radiance = textureSampleLevel(
+    let horizon_v = ground_horizon_sky_view_v(camera_radius, camera_altitude);
+    var horizon_radiance = textureSampleLevel(
         sky_view_lut,
         sky_view_sampler,
-        vec2<f32>(
-            sky_uv.x,
-            ground_horizon_sky_view_v(camera_radius, camera_altitude),
-        ),
+        vec2<f32>(sky_uv.x, horizon_v),
         0.0,
     ).rgb;
+    // A storm's fog takes every sky ray to the horizon's colour in its own
+    // azimuth, and all azimuths meet overhead: the bright sun-side horizon was
+    // drawn up the sky as a wedge of light hanging from the zenith. Going up,
+    // blend toward the horizon averaged over every azimuth, which an overcast
+    // spreads across the whole sky. Low rays keep their own azimuth, so the
+    // sky still meets the fogged sea at the horizon; clear weather unchanged.
+    if overcast > 0.0 {
+        var around = vec3<f32>(0.0);
+        for (var index = 0u; index < STORM_HORIZON_AVERAGE_SAMPLES; index += 1u) {
+            let u = (f32(index) + 0.5) / f32(STORM_HORIZON_AVERAGE_SAMPLES);
+            around += textureSampleLevel(sky_view_lut, sky_view_sampler, vec2<f32>(u, horizon_v), 0.0).rgb;
+        }
+        let up = normalize(camera.camera_planet_direction_view_altitude.xyz);
+        let overhead = smoothstep(0.0, 0.5, dot(ray, up)) * overcast;
+        horizon_radiance = mix(
+            horizon_radiance,
+            around / f32(STORM_HORIZON_AVERAGE_SAMPLES),
+            overhead,
+        );
+    }
     // The terrain mist converges on the unboosted physical sky. Use its
     // longest same-azimuth grazing ray as the background endpoint too: rays
     // through dense horizon air converge strongly while overhead rays retain

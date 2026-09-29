@@ -6502,7 +6502,7 @@ mod tests {
         let e_fold =
             "const STORM_FOG_AIR_PATH_E_FOLD_METERS: f32 = STORM_FOG_FULL_METERS / 4.6051702;";
         for declaration in [
-            "const STORM_FOG_FULL_METERS: f32 = 500.0;",
+            "const STORM_FOG_FULL_METERS: f32 = 100.0;",
             e_fold,
             "const STORM_OVERCAST_BRIGHTNESS: f32 = 0.45;",
         ] {
@@ -6511,7 +6511,7 @@ mod tests {
         }
         // The sun is hidden by the same fog over its own line of sight.
         for declaration in [
-            "const STORM_FOG_FULL_METERS: f32 = 500.0;",
+            "const STORM_FOG_FULL_METERS: f32 = 100.0;",
             e_fold,
             "const TERRAIN_FOG_AIR_PATH_E_FOLD_METERS: f32 = 500000.0;",
             "const SUN_FOG_RAYLEIGH_SCALE_HEIGHT_METERS: f32 = 122000.0;",

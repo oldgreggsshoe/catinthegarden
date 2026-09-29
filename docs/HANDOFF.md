@@ -38,7 +38,8 @@ faces, and fading with the sun's visibility (the sun shader's own cloud-and-fog 
 run before the scene). See "Hull caustics: near the water, on the sides, and only in sunshine".
 
 **Storm fog and a default-sea fix (29 September):** a full storm's fog is now complete (99%) at
-500m, and the hull, spray and sun go through it. The default (Gerstner, non-FFT) sea had been torn
+100m (was 500m earlier the same day), and the hull, spray and sun go through it; the storm sky no
+longer shows a wedge of light hanging from the zenith (see "A storm sky without the light wedge"). The default (Gerstner, non-FFT) sea had been torn
 into vertical streaks since the 28 September seam fix; fixed. See "Storm fog complete at 500m".
 
 **Rain, gusts, a darker storm, keyboard look (29 September):** storms now bring rain (streaks around
@@ -11651,3 +11652,11 @@ The existing CPU drawn-sea test passes at default and SWELL 30 / CHOP 2: **0 / 2
 **Latest integration (371de37 plus this fix).** Release build; **602 app tests pass, 38 ignored**, run serially; all **13 ocean GPU tests pass**, including the new mesh regression and Claude's shared-edge/filter checks. The failing-before GPU counts above are identical on this baseline. Spray-on captures `1790671747-1927971` before / `1790671789-1929215` after confirm the same blade removal with the latest renderer. Two balanced Immediate pairs give **33.401 -> 33.474ms** and **33.708 -> 33.466ms** whole-frame throughput: no measurable regression. Logs: `shard-precision/{app-tests-371de37,gpu-before-371de37,gpu-after-371de37,gpu-suite-371de37}.log`, `latest-timing-pairs.txt`.
 
 Verification checkout: `/home/dad/catingard-shard-verify`, with its own `CARGO_TARGET_DIR=/dev/shm/catingard-shard-verify-target`; never share the main target directory. Ian's local `OCEAN_SOT_WATER_ALBEDO` / `OCEAN_REFLECTION_SCALE` and Claude's seam, gust, caustic and audio work are preserved. Only the limiter, mirrored placement, regressions, replay capture time and these docs belong to this fix.
+
+## 29 September - A storm sky without the light wedge; storm fog complete at 100m
+
+**The light wedge.** Ian's `manual/1790672131-1940766` capture 1, on the bridge looking about 60 degrees up in a full storm: a pale cone hung from the top of the frame, which was the zenith. It was not the rain (`CATINGARDEN_DISABLE=rain` kept it). In a full storm every sky ray is fully fogged, and the sky pass's fog colour is the horizon's colour in that ray's own azimuth (`horizon_fog_radiance`); all azimuths meet at the zenith, so the brighter sun-side horizon was drawn up the sky as a wedge converging overhead. It has been there since the storm fog; the thicker fog made it plain. `displayed_sky_radiance` now blends, as a ray rises (smoothstep of its elevation sine 0-0.5) and in proportion to the overcast, toward the horizon averaged over eight azimuths (`STORM_HORIZON_AVERAGE_SAMPLES`). Low rays keep their own azimuth, so the sky still meets the fogged sea at the horizon, and clear weather is untouched. New replay `ocean_storm_look_up` (the approach's pose looking 60 degrees up, full storm by its 12s capture): the strip under the zenith was 8.1 levels brighter than the sky either side, now 0.2.
+
+**Storm fog complete at 100m** (Ian): `STORM_FOG_FULL_METERS` 500 -> 100 in all three shaders, so the storm e-fold is 21.7m: at full storm 37% fog at 10m, 60% at 20m, 90% at 50m, 99% at 100m. The ship's bow from the bridge is about half fogged.
+
+602 app tests pass; the scenario count is 119.
