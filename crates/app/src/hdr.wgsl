@@ -113,6 +113,18 @@ fn luminance_downsample(@builtin(position) position: vec4<f32>) -> @location(0) 
     );
 }
 
+// The frame ends in an 8-bit sRGB surface, and a slow gradient (a storm's grey,
+// already darkened to about level 60) steps one level at a time across wide
+// bands. Triangular dither of +-1 displayed level, added in the encoded space
+// the surface quantises in, trades the bands for invisible noise.
+fn dither_output(color: vec3<f32>, position: vec2<f32>) -> vec3<f32> {
+    let first = fract(52.9829189 * fract(dot(position, vec2<f32>(0.06711056, 0.00583715))));
+    let second = fract(52.9829189 * fract(dot(position + vec2<f32>(5.3, 2.1), vec2<f32>(0.06711056, 0.00583715))));
+    let noise = (first + second - 1.0) / 255.0;
+    let encoded = srgb_encode(clamp(color, vec3<f32>(0.0), vec3<f32>(1.0)));
+    return srgb_decode(clamp(encoded + vec3<f32>(noise), vec3<f32>(0.0), vec3<f32>(1.0)));
+}
+
 @fragment
 fn tone_map(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let source_size = vec2<f32>(textureDimensions(source_texture));
@@ -126,9 +138,9 @@ fn tone_map(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     if (exposure.hdr_effect_enabled == 0u) {
         // HDR-off is a display-curve toggle, not an exposure toggle. Preserve
         // auto-exposure so dim atmospheric haze remains visible.
-        return vec4<f32>(darken_output(hdr_color * exposure.exposure), 1.0);
+        return vec4<f32>(dither_output(darken_output(hdr_color * exposure.exposure), position.xy), 1.0);
     }
-    return vec4<f32>(darken_output(aces_filmic(hdr_color * exposure.exposure)), 1.0);
+    return vec4<f32>(dither_output(darken_output(aces_filmic(hdr_color * exposure.exposure)), position.xy), 1.0);
 }
 
 // FXAA-style edge-aware anti-aliasing (replaces the old box blur). Edges are
