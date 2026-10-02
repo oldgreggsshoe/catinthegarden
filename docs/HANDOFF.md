@@ -11850,3 +11850,6 @@ geometry; that silhouette is unchanged, not part of this material/fog fix.
 both clear/storm GPU sand tests, release build and forced-storm forest/coast
 replays pass. The separate intermittent whole-sky fog flash is still
 undiagnosed. Ian's uncommitted sea-colour edits are not part of this phase.
+
+## 2 October - Sky fog "flash" is the lightning
+A dense 0.2s replay of the 10s storm ramp (`test-runs/ocean_storm_look_up/1790939347-14506`) shows upper-frame luminance falling smoothly 151.5 -> 77 with one single-frame spike at t=10.0s (90.3 -> 132.7 -> 87.3), brighter on the strike side (right quarter 154 vs left 92). That matches `lightning.rs` (first strike once strength >= 0.65, 0.4s flash), so the previously undiagnosed intermittent whole-sky flash is the intended fog lightning, not a compositing fault. No renderer change. Open question for Ian: whether the flash should be dimmer or more local. Uncommitted sea-colour edits remain untouched.
