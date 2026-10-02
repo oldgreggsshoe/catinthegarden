@@ -11,6 +11,8 @@ const TERRAIN_FOG_AIR_PATH_E_FOLD_METERS: f32 = 500000.0;
 const STORM_FOG_FULL_METERS: f32 = 100.0;
 const STORM_FOG_AIR_PATH_E_FOLD_METERS: f32 = STORM_FOG_FULL_METERS / 4.6051702;
 const STORM_OVERCAST_BRIGHTNESS: f32 = 0.45;
+const SKY_LIGHTNING_GLOW_OUTER_COSINE: f32 = 0.75;
+const SKY_LIGHTNING_GLOW_INNER_COSINE: f32 = 0.97;
 // Azimuths the storm sky's overhead fog colour is averaged over.
 const STORM_HORIZON_AVERAGE_SAMPLES: u32 = 8u;
 // Presentation-only gain for the visible sky. Keep this outside the physical
@@ -310,7 +312,12 @@ fn storm_lightning_fog(ray_view: vec3<f32>) -> vec3<f32> {
         return vec3<f32>(0.0);
     }
     let toward_strike = dot(normalize(ray_view), normalize(camera.lightning.xyz));
-    let glow = smoothstep(0.35, 0.9, toward_strike);
+    // Keep a nearby strike from brightening every ray in a wide, upward view.
+    let glow = smoothstep(
+        SKY_LIGHTNING_GLOW_OUTER_COSINE,
+        SKY_LIGHTNING_GLOW_INNER_COSINE,
+        toward_strike,
+    );
     return vec3<f32>(0.72, 0.78, 0.9) * camera.lightning.w * glow;
 }
 

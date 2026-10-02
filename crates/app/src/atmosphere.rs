@@ -515,6 +515,35 @@ fn display_shader_source(fft_sea: bool) -> String {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn sky_lightning_glow_cannot_cover_the_full_wide_view() {
+        let display = include_str!("atmosphere.wgsl");
+        let cosine = |name: &str| {
+            display
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix(&format!("const {name}: f32 = "))
+                        .and_then(|value| value.strip_suffix(';'))
+                })
+                .unwrap_or_else(|| panic!("{name} must be declared"))
+                .parse::<f32>()
+                .expect("lightning cone cosine is numeric")
+        };
+        let outer_half_angle = cosine("SKY_LIGHTNING_GLOW_OUTER_COSINE").acos();
+        let inner_half_angle = cosine("SKY_LIGHTNING_GLOW_INNER_COSINE").acos();
+        assert!(inner_half_angle < outer_half_angle);
+        // At the app's 16:9, 66-degree vertical reference view, two opposite
+        // horizontal edge rays are farther apart than the entire glow cone.
+        let half_horizontal_fov = ((66.0_f32.to_radians() * 0.5).tan() * (16.0 / 9.0)).atan();
+        assert!(
+            outer_half_angle < half_horizontal_fov,
+            "a single lightning glow must not include both horizontal edges"
+        );
+        assert!(display.contains(
+            "smoothstep(\n        SKY_LIGHTNING_GLOW_OUTER_COSINE,\n        SKY_LIGHTNING_GLOW_INNER_COSINE,\n        toward_strike,\n    )"
+        ));
+    }
+
+    #[test]
     fn the_fft_sea_takes_over_the_sky_pass_water_fill() {
         let gerstner = super::display_shader_source(false);
         let fft = super::display_shader_source(true);

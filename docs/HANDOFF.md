@@ -10,18 +10,21 @@ surface appearance and crest geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Latest phase (29 September):** forest billboards now receive the storm's
-distance fog and shoreline sand darkens continuously into wet storm sand.
-Matched forced-storm captures show the distant trees blending into grey fog
-and the sand/fog contrast falling 69% in the coast trial. The optimized tree
-fog has no detectable frame-time change in one seven-sample pair. Human visual
-sign-off, wave/creak listening, and the separate sky-only fog glitch remain open.
+**Latest phase (2 October):** the broad whole-view storm-sky pulse in the
+10-second approach replay is the lightning fog glow, not an overcast/cloud
+transition. Its sky-only angular cone is narrowed: in the strike frame the
+sky ROI pixels changing by more than four display levels fell from 69.5% to
+25.3%; disabling lightning leaves 4.6%. Terrain and sea lightning are
+unchanged. The earlier report predates lightning and still needs live retest;
+see the dated follow-up below. The 29 September forest and beach fix, visual
+sign-off and wave/creak listening remain as recorded below.
 
 **Startup WGSL parse panic repaired (29 September):** an uncommitted edit mangled the
 `ocean_underside_colour` `if` brace and foam comment in `shared_planet.wgsl`. The text is restored
 to committed source; local water-colour edits are still uncommitted. The shader-parse test and
-release scenario launch pass. The separate intermittent **sky-only** storm-fog flash is still
-unreproduced and unfixed; await paired F12 captures rather than guessing at the sky pass.
+release scenario launch pass. A 2 October follow-up reproduced the 10-second replay's sky pulse
+as the new lightning contribution and narrowed that sky-only glow; the earlier report predates
+lightning and still needs a live retest before calling it resolved.
 
 **Crest shards fixed (29 September):** the fixed-floor limiter scaled the entire swell by a
 short-wave-dependent factor. At SWELL 30 / CHOP 2 it stretched and inverted real GPU triangles;
@@ -11853,3 +11856,32 @@ undiagnosed. Ian's uncommitted sea-colour edits are not part of this phase.
 
 ## 2 October - Sky fog "flash" is the lightning
 A dense 0.2s replay of the 10s storm ramp (`test-runs/ocean_storm_look_up/1790939347-14506`) shows upper-frame luminance falling smoothly 151.5 -> 77 with one single-frame spike at t=10.0s (90.3 -> 132.7 -> 87.3), brighter on the strike side (right quarter 154 vs left 92). That matches `lightning.rs` (first strike once strength >= 0.65, 0.4s flash), so the previously undiagnosed intermittent whole-sky flash is the intended fog lightning, not a compositing fault. No renderer change. Open question for Ian: whether the flash should be dimmer or more local. Uncommitted sea-colour edits remain untouched.
+
+## 2 October - Localize lightning's sky glow
+
+The first dense replay above showed that the broad lightning cone could light
+most of an upward-looking sky at once. In a matched 60-capture, 0.2-second
+`ocean_storm_look_up` replay with the 10-second approach, the sky ROI median at
+9.8 / 10.0 / 10.2 seconds jumped from RGB (86, 92, 96) to (125, 130, 135) and
+back to (83, 89, 92). For the 9.8-to-10.0 transition, 358,115 of 515,200 ROI
+pixels (69.5%) changed by more than four display levels. Suppressing only the
+lightning uniform left 23,723 pixels (4.6%) changing, confirming the flash
+source.
+
+The atmosphere sky shader now uses a narrower view-space falloff (outer/inner
+dot thresholds 0.75/0.97, about 41/14 degrees), leaving the terrain and sea
+fog-lighting functions unchanged. The matched strike frame keeps its localized
+light but only 130,473 ROI pixels (25.3%) change by more than four levels;
+46.1% of the right half changes versus 4.6% of the left. Median sky RGB stays
+at (86, 92, 95), rather than flashing brighter across the view. Captures:
+`1790939067-12262` (broad baseline), `1790959777-29062` (lightning suppressed),
+`1790965818-35599` (localized sky glow).
+
+`atmosphere::tests::sky_lightning_glow_cannot_cover_the_full_wide_view`, the
+runtime composed-planet shader validation, release build and all three
+60-capture scenario runs pass. The shader performs the same single `smoothstep`
+as before; GPU cost was not separately timed. This explains and fixes the
+wide lightning flash in this ramp replay. Ian's original sky-only report
+predated the lightning implementation, so it still needs a live retest to
+establish whether it was the same visual issue. Local ocean colour edits remain
+untouched.
