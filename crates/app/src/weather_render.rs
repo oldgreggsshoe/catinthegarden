@@ -814,7 +814,11 @@ mod tests {
         assert!(shader.contains("fn cloudDensity"));
         assert!(shader.contains("let edge_faded = smoothstep(0.025, 0.40, density);"));
         assert!(shader.contains("smoothstep(0.05, 0.32, field.g)"));
-        assert!(shader.contains("let alpha = density * mix(0.50, 0.78, density);"));
+        assert!(
+            shader
+                .contains("let alpha = density * mix(0.50, 0.78, density) * storm_fog_visibility;")
+        );
+        assert!(shader.contains("let storm_fog_visibility = exp("));
         assert!(shader.contains("smoothstep(0.10, 0.30, cloud.storm)"));
         assert!(shader.contains("let storm_darkening = 1.0 - 0.72 * storm_weight;"));
         assert!(shader.contains("fn henyey_greenstein"));

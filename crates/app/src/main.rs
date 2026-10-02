@@ -30,10 +30,10 @@ mod scenario;
 mod sea_sound;
 mod ship;
 mod ship_render;
+mod sky_moon;
 mod stars;
 mod sun;
 mod surface_camera;
-mod sky_moon;
 mod system_flight;
 mod terrain;
 mod village;
@@ -172,6 +172,10 @@ fn disabled_subsystems() -> &'static std::collections::HashSet<String> {
             .collect()
     })
 }
+
+/// Birds and their red flock marker are switched off for now: no flocks spawn,
+/// nothing draws, and the reticle/badge never appear.
+const BIRDS_ENABLED: bool = false;
 
 /// Whether a named scene subsystem should draw this frame.
 fn subsystem_enabled(name: &str) -> bool {
@@ -1898,7 +1902,10 @@ impl State {
         }
         self.toggle_animation_freeze();
         let anti_aliasing = !matches!(
-            std::env::var("CATINGARDEN_AA").ok().as_deref().map(str::trim),
+            std::env::var("CATINGARDEN_AA")
+                .ok()
+                .as_deref()
+                .map(str::trim),
             Some("0" | "false" | "off")
         );
         self.hdr
@@ -2621,8 +2628,8 @@ impl State {
     /// surface the ocean mesh is displaced by and the ship floats on, so birds
     /// clear the crests that are drawn and sit on the water that is there.
     fn advance_birds(&mut self, ocean_time_seconds: f64, planet_rotation_radians: f64) {
-        if !body::has_atmosphere() {
-            // Nothing flies in vacuum.
+        if !BIRDS_ENABLED || !body::has_atmosphere() {
+            // Nothing flies in vacuum, and birds are currently off.
             return;
         }
         let camera_local = self
@@ -2712,7 +2719,10 @@ impl State {
             let local = glam::DVec3::new(t * half_length, side * ship::half_beam_meters(t), 0.0);
             let point = origin + self.ship_body.orientation * local;
             let point_velocity = self.ship_body.linear_velocity
-                + self.ship_body.angular_velocity.cross(point - self.ship_body.position);
+                + self
+                    .ship_body
+                    .angular_velocity
+                    .cross(point - self.ship_body.position);
             let radial = point.normalize();
             let waterline_altitude = point.length() - planet::planet_radius_meters();
             let water_up = ocean::global_wave_vertical_velocity_meters_per_second(
@@ -2720,8 +2730,11 @@ impl State {
                 ocean_time_seconds,
                 SHIP_FALLBACK_DEPTH_METERS,
             );
-            let water_height =
-                ocean::global_wave_height_meters(radial, ocean_time_seconds, SHIP_FALLBACK_DEPTH_METERS);
+            let water_height = ocean::global_wave_height_meters(
+                radial,
+                ocean_time_seconds,
+                SHIP_FALLBACK_DEPTH_METERS,
+            );
             let immersion = water_height - waterline_altitude;
             // Is the water surface against the hull side here, between keel
             // and deck? A hull thrown clear of the water, or buried under it,
@@ -2748,10 +2761,14 @@ impl State {
                 ocean_time_seconds,
                 SHIP_FALLBACK_DEPTH_METERS,
             );
-            let slope = ocean::global_wave_slope(outside, ocean_time_seconds, SHIP_FALLBACK_DEPTH_METERS);
+            let slope =
+                ocean::global_wave_slope(outside, ocean_time_seconds, SHIP_FALLBACK_DEPTH_METERS);
             let fold = ocean::global_wave_fold(outside, ocean_time_seconds);
-            let crest =
-                ocean::global_wave_height_meters(outside, ocean_time_seconds, SHIP_FALLBACK_DEPTH_METERS);
+            let crest = ocean::global_wave_height_meters(
+                outside,
+                ocean_time_seconds,
+                SHIP_FALLBACK_DEPTH_METERS,
+            );
             let steepness = slope.length();
             let travel = if steepness > 1.0e-4 {
                 -slope / steepness * rise.signum()
@@ -2765,7 +2782,12 @@ impl State {
                 * ramp(0.3 * speed, 2.0 * speed, rise)
                 * ramp(-1.0 * size, 1.0 * size, crest - waterline_altitude)
                 * below_deck;
-            (slam as f32, impact as f32, contact as f32, water_height as f32)
+            (
+                slam as f32,
+                impact as f32,
+                contact as f32,
+                water_height as f32,
+            )
         };
         let port = terrain::SHIP_STATIONS.map(|t| station(t, 1.0));
         let starboard = terrain::SHIP_STATIONS.map(|t| station(t, -1.0));
@@ -3750,6 +3772,7 @@ impl State {
                 ocean_wave_max_meters: ocean_wave_stats.maximum_meters,
                 village_sited_houses: self.villages.sited_houses(),
                 rain_intensity: self.rain.intensity(),
+                storm_overcast: self.storm_overcast,
                 gust_wind_meters_per_second: {
                     let [u, v] = self.gust.wind_uv();
                     u.hypot(v) as f32
@@ -4404,9 +4427,12 @@ impl State {
         // bakes the camera basis into an upload belongs below this line.
         self.upload_ship_transform(planet_rotation_radians);
         self.update_rain_and_gusts(planet_rotation_radians, ocean_time_seconds);
-        let lightning_eye = self.camera.planet_frame_world_position(planet_rotation_radians);
+        let lightning_eye = self
+            .camera
+            .planet_frame_world_position(planet_rotation_radians);
         let lightning_basis = planet::CameraViewBasis::from_forward_and_up(
-            self.camera.planet_frame_direction_dvec3(planet_rotation_radians),
+            self.camera
+                .planet_frame_direction_dvec3(planet_rotation_radians),
             self.camera.planet_frame_view_up(planet_rotation_radians),
         );
         if let Some((gain, pan)) = self.lightning.update(
@@ -4420,7 +4446,9 @@ impl State {
         }
         let flash = self.lightning.flash(sim_time, lightning_eye);
         let view = lightning_basis.world_to_view(glam::DVec3::new(
-            f64::from(flash[0]), f64::from(flash[1]), f64::from(flash[2]),
+            f64::from(flash[0]),
+            f64::from(flash[1]),
+            f64::from(flash[2]),
         ));
         self.lightning_view = [view.x as f32, view.y as f32, view.z as f32, flash[3]];
         let ship_spray = self.ship_spray_emitter(ocean_time_seconds);
@@ -4607,8 +4635,10 @@ impl State {
         }
         let simulation_ms = profile_started.elapsed().as_secs_f32() * 1_000.0;
 
-        self.flock_marker
-            .update_badge(&self.queue, [self.size.width, self.size.height]);
+        if BIRDS_ENABLED {
+            self.flock_marker
+                .update_badge(&self.queue, [self.size.width, self.size.height]);
+        }
         let mut textures_to_free = Vec::new();
         let render_egui = !solid_color_screen && !hide_overlay && self.debug_overlay_visible;
         let refresh_egui = render_egui && (self.hud_dirty || now >= self.next_hud_update);
@@ -5393,7 +5423,7 @@ impl State {
                     self.terrain.shared_bind_group(),
                 );
             }
-            if subsystem_enabled("birds") {
+            if BIRDS_ENABLED && subsystem_enabled("birds") {
                 self.bird_renderer
                     .draw(&mut render_pass, &self.camera_bind_group);
             }
@@ -5438,8 +5468,10 @@ impl State {
             // Last in the pass, so the reticle sits over the finished scene.
             // It is not depth-tested, but it can still be painted over by
             // anything that draws after it.
-            self.flock_marker
-                .draw(&mut render_pass, &self.camera_bind_group);
+            if BIRDS_ENABLED {
+                self.flock_marker
+                    .draw(&mut render_pass, &self.camera_bind_group);
+            }
         }
         // The haze probe asks the opposite question -- whether distance reads on
         // whatever is actually in front of the camera -- and bins each pixel's
@@ -6649,8 +6681,8 @@ mod tests {
             percentages,
             vec![
                 10.0, 25.0, 50.0, 100.0, 200.0, 400.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
-                32000.0, 64000.0, 128000.0, 256000.0, 512000.0, 1024000.0, 2048000.0,
-                4096000.0, 8192000.0, 16384000.0,
+                32000.0, 64000.0, 128000.0, 256000.0, 512000.0, 1024000.0, 2048000.0, 4096000.0,
+                8192000.0, 16384000.0,
             ]
         );
         // Up to 40x the weather keeps pace at a sane frame rate: twelve steps
@@ -6700,7 +6732,10 @@ mod tests {
             .split("\n    fn ")
             .next()
             .expect("the function body ends at the next method");
-        assert!(body.contains("set_effects"), "startup no longer enables AA:\n{body}");
+        assert!(
+            body.contains("set_effects"),
+            "startup no longer enables AA:\n{body}"
+        );
         assert!(body.contains("CATINGARDEN_AA"));
         assert!(!body.contains("toggle_blur"));
     }
@@ -6709,8 +6744,14 @@ mod tests {
     fn a_lone_escape_does_not_quit_but_a_second_press_does() {
         let now = std::time::Instant::now();
         assert!(!super::escape_quits(None, now), "first press only arms");
-        assert!(super::escape_quits(Some(now), now + std::time::Duration::from_millis(400)));
-        assert!(!super::escape_quits(Some(now), now + std::time::Duration::from_secs(3)));
+        assert!(super::escape_quits(
+            Some(now),
+            now + std::time::Duration::from_millis(400)
+        ));
+        assert!(!super::escape_quits(
+            Some(now),
+            now + std::time::Duration::from_secs(3)
+        ));
     }
 
     #[test]

@@ -473,6 +473,7 @@ impl SystemFlight {
                     ocean_wave_max_meters: 0.0,
                     village_sited_houses: 0,
                     rain_intensity: 0.0,
+                    storm_overcast: 0.0,
                     gust_wind_meters_per_second: 0.0,
                 });
             tracing::info!(target: "catinthegarden::system_flight", time, phase, wall_ms, nearest_only = self.nearest_only, ?planet_clearance, ?moon_clearance,
@@ -605,7 +606,11 @@ pub(super) struct Composite {
 impl Composite {
     /// Adds the offscreen body to the scene through the planet atmosphere,
     /// writing its depth. Needs the planet camera at group 0.
-    pub(super) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, camera_bind_group: &wgpu::BindGroup) {
+    pub(super) fn draw(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        camera_bind_group: &wgpu::BindGroup,
+    ) {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, camera_bind_group, &[]);
         pass.set_bind_group(1, &self.sky_group, &[]);

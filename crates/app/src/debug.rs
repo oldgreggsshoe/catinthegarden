@@ -55,6 +55,7 @@ pub struct SpatialLogSample {
     pub village_sited_houses: u32,
     /// How hard it is raining at the camera, 0-1 (`rain::intensity_for`).
     pub rain_intensity: f32,
+    pub storm_overcast: f32,
     /// Wind speed at the camera with the storm's gusts (m/s).
     pub gust_wind_meters_per_second: f32,
 }
@@ -1196,6 +1197,7 @@ impl RunArtifacts {
             ocean_wave_max_meters: 0.0,
             village_sited_houses: 0,
             rain_intensity: 0.0,
+            storm_overcast: 0.0,
             gust_wind_meters_per_second: 0.0,
         });
     }
@@ -1257,6 +1259,7 @@ impl RunArtifacts {
             ocean_wave_max_meters = sample.ocean_wave_max_meters,
             village_sited_houses = sample.village_sited_houses,
             rain_intensity = sample.rain_intensity,
+            storm_overcast = sample.storm_overcast,
             gust_wind_meters_per_second = sample.gust_wind_meters_per_second,
             "spatial frame"
         );
@@ -1837,6 +1840,7 @@ mod tests {
             ocean_wave_max_meters: 0.0,
             village_sited_houses: 0,
             rain_intensity: 0.0,
+            storm_overcast: 0.0,
             gust_wind_meters_per_second: 0.0,
         }
     }

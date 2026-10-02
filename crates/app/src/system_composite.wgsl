@@ -50,7 +50,22 @@ fn fs_system(input: VertexOutput) -> SystemOutput {
     }
     output.colour = vec4<f32>(radiance, 1.0);
     if crosses_air {
-        output.colour = vec4<f32>(displayed_sky_radiance(ray) + radiance * system_extinction(ray), 1.0);
+        // The sky pass fogs itself toward the storm's grey; the body behind it
+        // must be fogged by the same air path, or it shines through a fog thick
+        // enough to hide the horizon. Relative to the clear-weather fog, so a
+        // clear sky is unchanged.
+        let overcast = clamp(camera.sun_direction.w, 0.0, 1.0);
+        let storm_e_fold = exp(mix(
+            log(TERRAIN_FOG_AIR_PATH_E_FOLD_METERS),
+            log(STORM_FOG_AIR_PATH_E_FOLD_METERS),
+            overcast,
+        ));
+        let storm_fog = exp(-sky_fog_air_path_meters(ray)
+            * (1.0 / storm_e_fold - 1.0 / TERRAIN_FOG_AIR_PATH_E_FOLD_METERS));
+        output.colour = vec4<f32>(
+            displayed_sky_radiance(ray) + radiance * system_extinction(ray) * storm_fog,
+            1.0,
+        );
     }
     output.depth = depth;
     return output;

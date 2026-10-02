@@ -227,7 +227,26 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // repeatedly desaturates the physical sunset as the camera moves beneath
     // it. Dense storm cloud still reaches the established 0.78 ceiling, so
     // overcast regions retain their contrast and shadow strength.
-    let alpha = density * mix(0.50, 0.78, density);
+    // Storm fog hides the shell the way it hides the sky: the air path to a
+    // shell tens of kilometres away is many e-folds of a storm's 22m fog, so a
+    // cloud that shows through a fogged sky would read as the fog switching
+    // off. The path is the sky pass's own (atmosphere.wgsl
+    // sky_fog_air_path_meters, straight-up and above-horizon part), and the
+    // fog is taken relative to clear weather so clear skies are unchanged.
+    let overcast = clamp(camera.sun_direction.w, 0.0, 1.0);
+    let storm_e_fold = exp(mix(log(500000.0), log(100.0 / 4.6051702), overcast));
+    let cloud_ray = normalize(cloud_position_view - camera_position_view);
+    let ray_up = clamp(
+        dot(normalize(planet_to_view(normalize(camera.camera_planet_direction_view_altitude.xyz))), cloud_ray),
+        0.0,
+        1.0,
+    );
+    // The fog uses the 122km Rayleigh scale height (atmosphere.wgsl).
+    let fog_scale_height = 122000.0;
+    let shell_air_path = exp(-max(camera.camera_planet_direction_view_altitude.w, 0.0) / fog_scale_height)
+        * fog_scale_height * min(1.0 / max(ray_up, 0.08), 12.0);
+    let storm_fog_visibility = exp(-shell_air_path * (1.0 / storm_e_fold - 1.0 / 500000.0));
+    let alpha = density * mix(0.50, 0.78, density) * storm_fog_visibility;
     if alpha < 0.002 {
         discard;
     }
