@@ -93,6 +93,9 @@ const SPRAY_JACOBIAN_FULL: f32 = 0.0;
 // A full gust tears three times as much spray off the crests as the mean wind;
 // a lull a quarter as much.
 const SPRAY_GUST_BIRTHS: f32 = 2.0;
+// Crest droplets are about 0.6x the former size, so births rise to keep the
+// same coverage (about 1/0.6^2 in area; the 16,384-slot pool is not the limit).
+const CREST_BIRTH_GAIN: f32 = 2.0;
 // Same long-to-short envelope budget as the rendered sea and CPU buoyancy.
 const OCEAN_FFT_CHOP_BUDGET: f32 = 0.85;
 
@@ -335,7 +338,7 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
     // Births also need the point to sit on rendered fold foam, using the
     // renderer's own thresholds.
     let on_surf = smoothstep(0.62, 0.32, jacobian);
-    let chance = fold * crest * on_surf * on_surf * frame.params.y * dt * max(1.0 + SPRAY_GUST_BIRTHS * gust, 0.25);
+    let chance = CREST_BIRTH_GAIN * fold * crest * on_surf * on_surf * frame.params.y * dt * max(1.0 + SPRAY_GUST_BIRTHS * gust, 0.25);
     if frame.params.y <= 0.0 || unit_random(seed ^ 0x2545f491u) >= chance {
         particle.velocity.w = 0.0;
         particles[index] = particle;

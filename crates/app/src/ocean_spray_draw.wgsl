@@ -143,8 +143,12 @@ fn vs_spray(
     let ship_size = spray_frame.ship_axes.z / 42.0;
     // Crest mist is sheet-sized from birth, so a crest's worth of it reads as
     // one torn curtain rather than separate specks.
-    let grown = select(mix(0.3, 1.1, sqrt(age)), mix(0.8, 3.5, sqrt(age)) * ship_size, from_ship);
-    let size = min(grown * (0.7 + 0.6 * seed), distance * select(0.03, 0.06, from_ship));
+    // Crest mist is many small droplets rather than a few big cards: about
+    // 0.6x the former size, with a wider per-particle spread (0.45-1.55x) so
+    // the field has fine and coarse specks together.
+    let grown = select(mix(0.18, 0.66, sqrt(age)), mix(0.8, 3.5, sqrt(age)) * ship_size, from_ship);
+    let size_spread = select(0.45 + 1.1 * seed * seed, 0.7 + 0.6 * seed, from_ship);
+    let size = min(grown * size_spread, distance * select(0.02, 0.06, from_ship));
     // Stretched along the droplets' motion: spray streaks downwind.
     let velocity_view = planet_to_view(spray_frame.axis_u.xyz * particle.velocity.x
         + spray_frame.axis_v.xyz * particle.velocity.y + up * particle.velocity.z);
@@ -163,7 +167,8 @@ fn vs_spray(
     let streak_limit = select(size * 1.2 * (1.0 - age), distance * 0.06, from_ship);
     let streak = min(length(screen_velocity) * streak_seconds, streak_limit);
     view_position = vec3<f32>(
-        view_position.xy + along * corner.x * (size + streak) + across * corner.y * size,
+        view_position.xy + along * corner.x * (size + streak)
+            + across * corner.y * size * select(0.75 + 0.5 * fract(seed * 3.77), 1.0, from_ship),
         view_position.z,
     );
     out.clip_position = camera.projection_matrix * vec4<f32>(view_position, 1.0);
@@ -177,7 +182,11 @@ fn vs_spray(
     // the surface). Rising spray keeps its hard edge at the source.
     let settle_meters = select(1.0, ship_size, from_ship);
     let settling = select(1.0, smoothstep(0.0, settle_meters, particle.extra.x), particle.velocity.z < 0.0);
-    out.alpha = fade * (1.0 - age) * smoothstep(3.0, 10.0, distance) * settling
+    // Per-particle opacity (0.55-1.0), from a second hash of the instance so
+    // it is independent of the size spread.
+    let opacity = select(0.55 + 0.45 * fract(seed * 7.31 + 0.37), 1.0, from_ship);
+    // Per-particle across-width (0.75-1.25x) so droplets are not one shape.
+    out.alpha = fade * opacity * (1.0 - age) * smoothstep(3.0, 10.0, distance) * settling
         * select(1.0, ship_spray_near_hull(particle.position.xy), from_ship);
     let sun_direction = normalize(camera.sun_direction.xyz);
     let height = max(particle.position.z, 0.0);
