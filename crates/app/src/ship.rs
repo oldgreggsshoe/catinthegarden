@@ -31,10 +31,10 @@ use crate::surface_camera::GRAVITY_METERS_PER_SECOND_SQUARED;
 /// for anything the hull's size sets, and scaled with the rest it let a
 /// twice-size hull drift 51m in 50s on the real sea against 36m at scale 1.
 /// Figures quoted in the comments below were measured at scale 1.
-pub const SHIP_SCALE: f64 = 0.5;
+pub const SHIP_SCALE: f64 = 0.25;
 /// `sqrt(SHIP_SCALE)`, the factor Froude similarity stretches time by. Spelt out
 /// because `sqrt` is not const; the assertion keeps the two in step.
-const SHIP_TIME_SCALE: f64 = std::f64::consts::FRAC_1_SQRT_2;
+const SHIP_TIME_SCALE: f64 = 0.5;
 const _: () = assert!(
     (SHIP_TIME_SCALE * SHIP_TIME_SCALE - SHIP_SCALE).abs() < 1.0e-12,
     "SHIP_TIME_SCALE must be the square root of SHIP_SCALE"

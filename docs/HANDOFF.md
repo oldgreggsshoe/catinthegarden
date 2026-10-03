@@ -11894,3 +11894,6 @@ Manual run `1791033235-5994` (`PLANET_STORM_APPROACH=60`) logged `storm_overcast
 
 ## 3 October - Sea fog colour matches the sky at partial overcast
 User screenshots (`manual/1791033906-16387`, overcast 0.76-0.82) showed a horizon step and ghostly distant waves. `shared_planet.wgsl terrain_fog` mixed the along-ray sky into the horizon colour with weight `1 - overcast`; the ray points below the horizon, so 22% of a darker colour remained. Weight is now `smoothstep(0, 0.3, overcast)`. With the fog output replaced by its colour alone (temporary probe, reverted) the sea reads 82 everywhere, equal to the sky; `ocean_rough_horizon/1791035355-21476` (overcast 0.78) shows a smooth horizon. Not verified live.
+
+## 3 October - Ship halved
+`SHIP_SCALE` 0.5 -> 0.25 at Ian's request (hull ~10.5m); `SHIP_TIME_SCALE` 0.5. Ship tests pass; not viewed in a replay. Uncommitted `OCEAN_SOT_WATER_ALBEDO` edit untouched.
