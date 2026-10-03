@@ -6475,7 +6475,10 @@ mod tests {
         assert!(shader.contains("let view_interval = atmosphere_interval("));
         assert!(shader.contains("let bounded_path_length = min("));
         assert!(shader.contains("let average_density = 0.5"));
-        assert!(shader.contains("-air_path_meters / storm_fog_e_fold_meters()"));
+        assert!(shader.contains("-storm_path_meters / storm_fog_e_fold_meters()"));
+        // A storm's fog is the plain view distance, not air density along it,
+        // so its distance does not change with the camera's altitude.
+        assert!(shader.contains("length(camera_relative_view_position),\n        storm_overcast(),"));
         assert!(!shader.contains("near_surface_amount"));
         assert!(!shader.contains("TERRAIN_FOG_MAX_CAMERA_CLEARANCE_METERS"));
     }

@@ -3082,7 +3082,15 @@ fn terrain_fog(
         surface_direction,
         surface_altitude_meters,
     );
-    let fog_amount = 1.0 - exp(-air_path_meters / storm_fog_e_fold_meters());
+    // A storm's fog is a distance, not an amount of air: toward full overcast
+    // the path is the plain view distance, so STORM_FOG_FULL_METERS holds at
+    // any altitude, rather than thinning with the air density on a mountain.
+    let storm_path_meters = mix(
+        air_path_meters,
+        length(camera_relative_view_position),
+        storm_overcast(),
+    );
+    let fog_amount = 1.0 - exp(-storm_path_meters / storm_fog_e_fold_meters());
     if fog_amount <= 1.0e-4 {
         return TerrainFog(0.0, vec3<f32>(0.0));
     }

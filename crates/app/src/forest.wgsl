@@ -88,8 +88,10 @@ fn tree_storm_fog(centre: vec3<f32>, view_position: vec3<f32>) -> vec4<f32> {
     if distance <= 1.0e-3 { return vec4<f32>(0.0); }
     let camera_altitude = max(camera.camera_planet_direction_view_altitude.w, 0.0);
     let tree_altitude = max(length(centre) - PLANET_RADIUS_METERS, 0.0);
-    let mean_density = 0.5 * (exp(-camera_altitude / 122000.0)
-        + exp(-tree_altitude / 122000.0));
+    // Full storm fog is a plain distance (see terrain_distance fog in
+    // shared_planet.wgsl), so air density drops out as the overcast rises.
+    let mean_density = mix(0.5 * (exp(-camera_altitude / 122000.0)
+        + exp(-tree_altitude / 122000.0)), 1.0, overcast);
     let e_fold = exp(mix(log(500000.0), log(100.0 / 4.6051702), overcast));
     let amount = 1.0 - exp(-distance * mean_density / e_fold);
     if amount <= 1.0e-4 { return vec4<f32>(0.0); }
