@@ -939,6 +939,19 @@ fn advance_surface_position_on_sphere(
     glam::DQuat::from_axis_angle(axis, distance_meters / radius).mul_vec3(radial) * radius
 }
 
+/// `position` carried along the sphere by the water's horizontal velocity
+/// `current` for `seconds`; its radial part is ignored (altitude is resolved
+/// elsewhere).
+fn carried_by_current(position: glam::DVec3, current: glam::DVec3, seconds: f64) -> glam::DVec3 {
+    let radial = position.normalize();
+    let tangential = current - radial * current.dot(radial);
+    let speed = tangential.length();
+    if speed <= f64::EPSILON || seconds <= 0.0 {
+        return position;
+    }
+    advance_surface_position_on_sphere(position, tangential / speed, speed * seconds)
+}
+
 fn swept_flight_clearance_lift(
     start: glam::DVec3,
     end: glam::DVec3,
@@ -2525,6 +2538,21 @@ impl State {
                     self.flight_travel_direction = movement_direction;
                     self.flight_speed.speed_meters_per_second = movement_speed;
                 }
+            }
+
+            // A swimmer is carried round the waves' orbital loop, as the ship is:
+            // the water's own horizontal velocity, not just its height. Without
+            // it the ship, which follows that velocity, swept back and forth past
+            // a camera that stayed put. Zero on the Gerstner sea.
+            if environment.open_ocean {
+                let before = self.flight_local_position.normalize();
+                let current =
+                    ocean::global_wave_horizontal_velocity(before, ocean_time_seconds);
+                self.flight_local_position =
+                    carried_by_current(self.flight_local_position, current, step_seconds);
+                let after = self.flight_local_position.normalize();
+                self.flight_local_tangent =
+                    transport_flight_tangent(self.flight_local_tangent, before, after);
             }
 
             let moved_radial = self.flight_local_position.normalize();
@@ -6614,6 +6642,21 @@ mod tests {
         CameraUniform, FlatTriangleOutlineMode, OrbitCamera, PLANET_ROTATION_PERIOD_SECONDS,
         RenderDebugMode, default_sun_direction, geographic_longitude_degrees,
     };
+
+    #[test]
+    fn a_swimmer_is_carried_by_the_waters_horizontal_velocity_and_nothing_else() {
+        let radius = crate::planet::planet_radius_meters();
+        let position = DVec3::new(radius, 0.0, 0.0);
+        // 4 m/s along +y for 2.5s is 10m of ground, with altitude untouched.
+        let moved = super::carried_by_current(position, DVec3::new(9.0, 4.0, 0.0), 2.5);
+        assert!((moved.length() - radius).abs() < 1.0e-6);
+        let travelled = (moved - position).length();
+        assert!((travelled - 10.0).abs() < 0.001, "{travelled}");
+        assert!(moved.y > 0.0 && moved.z.abs() < 1.0e-9);
+        // No current, no motion.
+        assert_eq!(super::carried_by_current(position, DVec3::ZERO, 1.0), position);
+        assert_eq!(super::carried_by_current(position, DVec3::X * 5.0, 1.0), position);
+    }
 
     #[test]
     fn bridge_camera_stands_on_the_poop_and_faces_the_bow() {

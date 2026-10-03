@@ -11975,3 +11975,6 @@ and all composed shaders are validated, not visually sampled during a strike.
 The app suite reports 613 passed, 3 failed (FOV/orbital-zoom checks impacted by
 the user's uncommitted `MAX_VERTICAL_FOV_DEGREES` 75-to-85 change), and 39
 ignored. That local FOV edit and water-albedo edit were left untouched.
+
+## 3 October - Ship track measured; swimmer carried by the orbital current
+`ship::tests::ship_track_on_the_real_sea` (ignored instrument) steps the hull on the FFT sea as `advance_ship` does: default sea (16m swell, 14 m/s wind) the hull follows the water velocity within ~1 m/s, loops ~+-15m, peaks at 9 m/s and drifts 64m in 300s; swell 30 / wind 40 / chop 2 capsizes it (tilt 150-170 degrees for ~140s), reaching 20 m/s and 160m drift. The start transient (hull at rest in 5-20 m/s water) whips it ~29m in 8s; not changed. `advance_surface_camera` now adds `carried_by_current` for open-ocean swimmers so the camera moves with the water as the ship does. Local uncommitted edits left alone: FOV max 85, water albedo, ground_to_orbit.json, scenario.rs, ocean_far_gap.json.
