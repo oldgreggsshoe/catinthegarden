@@ -29,6 +29,7 @@ mod relief_survey;
 mod scenario;
 mod sea_sound;
 mod ship;
+mod ship_model;
 mod ship_render;
 mod sky_moon;
 mod stars;
@@ -443,14 +444,10 @@ fn storm_overcast_override() -> Option<f32> {
             .map(|v| v.clamp(0.0, 1.0))
     })
 }
-/// Place the eye just outside the bow-facing bridge wall, where the windows
-/// would be, with a forward view over the foredeck. The wall and windows scale
-/// with the ship; the eye's 0.4m standoff is a person's, so it does not.
-const BRIDGE_CAMERA_LOCAL_POSITION: glam::DVec3 = glam::DVec3::new(
-    (-8.0 + 3.4) * ship::SHIP_SCALE + 0.4,
-    0.0,
-    ship::HULL_FREEBOARD_METERS + 4.0 * ship::SHIP_SCALE,
-);
+/// The bridge camera stands on the galleon's poop, aft of the mizzen and off
+/// the centreline, an eye height above the deck
+/// (`ship_model::BRIDGE_EYE_LOCAL`).
+const BRIDGE_CAMERA_LOCAL_POSITION: glam::DVec3 = ship_model::BRIDGE_EYE_LOCAL;
 const PLANET_ROTATION_SCALE_STEP: f64 = 2.0;
 const MINIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE: f64 =
     INTERACTIVE_PLANET_ROTATION_TIME_SCALE / 32.0;
@@ -6608,16 +6605,24 @@ mod tests {
     };
 
     #[test]
-    fn bridge_camera_sits_just_forward_of_the_bridge_and_faces_the_bow() {
+    fn bridge_camera_stands_on_the_poop_and_faces_the_bow() {
         let hull = crate::ship::ShipHull::new();
         let body = crate::ship::ShipBody::afloat_at(&hull, DVec3::Y, DVec3::X, 0.0);
         let (eye, forward, up) = ship_bridge_camera_planet_pose(&body, &hull);
         let hull_origin = body.position - body.orientation * hull.centre_of_mass_local();
         let eye_ship_local = body.orientation.inverse() * (eye - hull_origin);
-        let bridge_bow_wall_x = (-8.0 + 3.4) * crate::ship::SHIP_SCALE;
+        let scale = crate::ship::SHIP_SCALE;
 
         assert!((eye_ship_local - BRIDGE_CAMERA_LOCAL_POSITION).length() < 1.0e-9);
-        assert!((eye_ship_local.x - bridge_bow_wall_x - 0.4).abs() < 1.0e-9);
+        // Aft of midships, forward of the stern, over the hull and off the
+        // centreline (the mainmast is not dead ahead), an eye height above
+        // the poop.
+        assert!(eye_ship_local.x < 0.0 && eye_ship_local.x > -0.5 * crate::ship::HULL_LENGTH_METERS);
+        assert!(eye_ship_local.y.abs() > 0.5 * scale);
+        assert!(eye_ship_local.y.abs() < 0.5 * crate::ship::HULL_BEAM_METERS);
+        let deck = crate::ship::sheer_height_meters(eye_ship_local.x / (0.5 * crate::ship::HULL_LENGTH_METERS));
+        let above_poop = eye_ship_local.z - deck - 4.6 * scale;
+        assert!((above_poop - 4.0 * scale).abs() < 0.05 * scale, "{above_poop}");
         assert!((forward - body.orientation * DVec3::X).length() < 1.0e-12);
         assert!((up - body.orientation * DVec3::Z).length() < 1.0e-12);
     }

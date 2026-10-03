@@ -1,14 +1,1 @@
-Implemented the draw-only crest-spray pass. The birth point, breaking mask, and update logic are unchanged, so spray still originates at crest tops. Crest puffs now use deterministic, age-drifting warped noise for softer, irregular billows, with sub-pixel breakup filtered out, slightly more spread, and a gentler fade. The ship-splash clump texture, size and fade are preserved.
-
-Validation: all 4 `terrain::ocean_spray` tests pass; the release build passes; and `ocean_spray_sequence` captured all 10 frames. The opened color-matched baseline/intermediate frames show the regular hatch marks softened into broken wisps. The final capture also passes, but your uncommitted red water-albedo edit in `shared_planet.wgsl` changed during the runs, so it is not a fully color-matched comparison; I left it untouched and excluded from the commit. No paired frame-time result or live-motion sign-off.
-
-Updated `AGENTS.md` and `docs/HANDOFF.md`; the renderer and notes are committed and pushed.
-
-<oai-mem-citation>
-<citation_entries>
-MEMORY.md:153-166|note=[renderer visual acceptance is described from opened captures without claiming motion sign-off]
-</citation_entries>
-<rollout_ids>
-01a07103-79ca-7e92-99b9-5da47619e658
-</rollout_ids>
-</oai-mem-citation>
+New galleon model (ship_model.rs) and the bridge camera on its poop. Seen in ocean_ship_float replay; bridge view checked by test only. Pushed.

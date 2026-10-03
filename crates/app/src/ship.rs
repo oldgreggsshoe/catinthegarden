@@ -510,16 +510,7 @@ pub struct ShipVertex {
     pub _padding: f32,
 }
 
-const HULL_BELOW_WATERLINE_COLOUR: [f32; 3] = [0.32, 0.09, 0.07];
-const HULL_TOPSIDE_COLOUR: [f32; 3] = [0.10, 0.13, 0.18];
-const DECK_COLOUR: [f32; 3] = [0.46, 0.35, 0.22];
-const CABIN_COLOUR: [f32; 3] = [0.72, 0.71, 0.68];
-const FUNNEL_COLOUR: [f32; 3] = [0.55, 0.16, 0.12];
-
-/// Mesh stations. Coarse on purpose: the facets are the presentation.
-const MESH_STATIONS: usize = 10;
-
-fn push_triangle(vertices: &mut Vec<ShipVertex>, a: DVec3, b: DVec3, c: DVec3, colour: [f32; 3]) {
+pub(crate) fn push_triangle(vertices: &mut Vec<ShipVertex>, a: DVec3, b: DVec3, c: DVec3, colour: [f32; 3]) {
     let normal = (b - a).cross(c - a);
     if normal.length_squared() <= 0.0 {
         return;
@@ -535,7 +526,7 @@ fn push_triangle(vertices: &mut Vec<ShipVertex>, a: DVec3, b: DVec3, c: DVec3, c
     }
 }
 
-fn push_quad(
+pub(crate) fn push_quad(
     vertices: &mut Vec<ShipVertex>,
     a: DVec3,
     b: DVec3,
@@ -547,7 +538,7 @@ fn push_quad(
     push_triangle(vertices, a, c, d, colour);
 }
 
-fn push_box(vertices: &mut Vec<ShipVertex>, centre: DVec3, half_extents: DVec3, colour: [f32; 3]) {
+pub(crate) fn push_box(vertices: &mut Vec<ShipVertex>, centre: DVec3, half_extents: DVec3, colour: [f32; 3]) {
     let (x, y, z) = (half_extents.x, half_extents.y, half_extents.z);
     let corner = |sx: f64, sy: f64, sz: f64| centre + DVec3::new(sx * x, sy * y, sz * z);
     // Wound counter-clockwise seen from outside, so the face normals point out.
@@ -601,138 +592,14 @@ fn push_box(vertices: &mut Vec<ShipVertex>, centre: DVec3, half_extents: DVec3, 
     );
 }
 
-/// Builds the hull, deck, cabin and funnel as a flat-shaded triangle list in
-/// ship-local metres. Faces are wound counter-clockwise from outside.
+/// The ship as a flat-shaded triangle list in ship-local metres: the hull body
+/// followed by the fittings (`ship_model`). Faces are wound counter-clockwise
+/// from outside; sails and flags carry both windings.
 pub fn build_mesh() -> Vec<ShipVertex> {
-    let mut vertices = Vec::new();
-
-    // Mesh stations are the section *edges*, -1 at the transom to +1 at the
-    // stem. (Buoyancy takes the half-station offset because it samples
-    // section midpoints; copied here it put the transom 4.7m forward of the
-    // hull that floats, and foam and spray drew off the end of the boat.)
-    let station = |index: usize| {
-        let t = station_parameter(index, MESH_STATIONS - 1);
-        let t = t.clamp(-1.0, 1.0);
-        let x = 0.5 * HULL_LENGTH_METERS * t;
-        (
-            x,
-            half_beam_meters(t),
-            keel_depth_meters(t),
-            sheer_height_meters(t),
-        )
-    };
-
-    for index in 0..MESH_STATIONS - 1 {
-        let (x0, beam0, keel0, sheer0) = station(index);
-        let (x1, beam1, keel1, sheer1) = station(index + 1);
-
-        // Bottom, from the keel line out to the chine at half draft.
-        let keel_aft = DVec3::new(x0, 0.0, -keel0);
-        let keel_fwd = DVec3::new(x1, 0.0, -keel1);
-        for side in [1.0, -1.0] {
-            let chine_aft = DVec3::new(x0, side * beam0, -0.5 * keel0);
-            let chine_fwd = DVec3::new(x1, side * beam1, -0.5 * keel1);
-            let sheer_aft = DVec3::new(x0, side * beam0, sheer0);
-            let sheer_fwd = DVec3::new(x1, side * beam1, sheer1);
-            if side > 0.0 {
-                push_quad(
-                    &mut vertices,
-                    keel_aft,
-                    chine_aft,
-                    chine_fwd,
-                    keel_fwd,
-                    HULL_BELOW_WATERLINE_COLOUR,
-                );
-                push_quad(
-                    &mut vertices,
-                    chine_aft,
-                    sheer_aft,
-                    sheer_fwd,
-                    chine_fwd,
-                    HULL_TOPSIDE_COLOUR,
-                );
-            } else {
-                push_quad(
-                    &mut vertices,
-                    keel_aft,
-                    keel_fwd,
-                    chine_fwd,
-                    chine_aft,
-                    HULL_BELOW_WATERLINE_COLOUR,
-                );
-                push_quad(
-                    &mut vertices,
-                    chine_aft,
-                    chine_fwd,
-                    sheer_fwd,
-                    sheer_aft,
-                    HULL_TOPSIDE_COLOUR,
-                );
-            }
-        }
-
-        // Deck, closing the two sheer lines across the centreline.
-        push_quad(
-            &mut vertices,
-            DVec3::new(x0, beam0, sheer0),
-            DVec3::new(x0, -beam0, sheer0),
-            DVec3::new(x1, -beam1, sheer1),
-            DVec3::new(x1, beam1, sheer1),
-            DECK_COLOUR,
-        );
-    }
-
-    // Transom, closing the open stern.
-    let (x_aft, beam_aft, keel_aft, sheer_aft) = station(0);
-    push_quad(
-        &mut vertices,
-        DVec3::new(x_aft, beam_aft, sheer_aft),
-        DVec3::new(x_aft, beam_aft, -0.5 * keel_aft),
-        DVec3::new(x_aft, -beam_aft, -0.5 * keel_aft),
-        DVec3::new(x_aft, -beam_aft, sheer_aft),
-        HULL_TOPSIDE_COLOUR,
-    );
-    push_triangle(
-        &mut vertices,
-        DVec3::new(x_aft, beam_aft, -0.5 * keel_aft),
-        DVec3::new(x_aft, 0.0, -keel_aft),
-        DVec3::new(x_aft, -beam_aft, -0.5 * keel_aft),
-        HULL_BELOW_WATERLINE_COLOUR,
-    );
-
-    // Superstructure: a two-tier deckhouse set aft, and a funnel.
-    push_box(
-        &mut vertices,
-        DVec3::new(
-            -6.0 * SHIP_SCALE,
-            0.0,
-            HULL_FREEBOARD_METERS + 1.6 * SHIP_SCALE,
-        ),
-        DVec3::new(6.0, 3.6, 1.6) * SHIP_SCALE,
-        CABIN_COLOUR,
-    );
-    push_box(
-        &mut vertices,
-        DVec3::new(
-            -8.0 * SHIP_SCALE,
-            0.0,
-            HULL_FREEBOARD_METERS + 4.0 * SHIP_SCALE,
-        ),
-        DVec3::new(3.4, 2.8, 1.0) * SHIP_SCALE,
-        CABIN_COLOUR,
-    );
-    push_box(
-        &mut vertices,
-        DVec3::new(
-            -10.5 * SHIP_SCALE,
-            0.0,
-            HULL_FREEBOARD_METERS + 6.2 * SHIP_SCALE,
-        ),
-        DVec3::new(1.3, 1.3, 1.4) * SHIP_SCALE,
-        FUNNEL_COLOUR,
-    );
-
-    vertices
+    let model = crate::ship_model::build();
+    let mut mesh = model.hull;
+    mesh.extend(model.fittings);
+    mesh
 }
 
 #[cfg(test)]
@@ -744,7 +611,7 @@ mod tests {
     use super::{
         HULL_BEAM_METERS, HULL_DRAFT_METERS, HULL_FREEBOARD_METERS, HULL_LENGTH_METERS, SHIP_SCALE,
         SHIP_TIME_SCALE, ShipBody, ShipHull, WaterSample, build_mesh, half_beam_meters,
-        keel_depth_meters,
+        keel_depth_meters, sheer_height_meters,
     };
     use crate::planet::planet_radius_meters;
 
@@ -1105,36 +972,66 @@ mod tests {
     }
 
     #[test]
-    fn the_mesh_is_low_poly_closed_and_within_the_hull_envelope() {
+    fn the_hull_body_stays_in_the_float_envelope_and_the_model_is_detailed() {
+        let model = crate::ship_model::build();
         let mesh = build_mesh();
+        assert_eq!(mesh.len(), model.hull.len() + model.fittings.len());
         assert_eq!(mesh.len() % 3, 0);
         let triangles = mesh.len() / 3;
-        // Low poly is a requirement here, not an accident of the generator.
         assert!(
-            (80..=400).contains(&triangles),
-            "{triangles} triangles is not a low-poly hull"
+            (1_500..=12_000).contains(&triangles),
+            "{triangles} triangles is not a detailed galleon"
         );
-        for vertex in &mesh {
+        // The hull body is what the float, foam and spray are tuned to.
+        for vertex in &model.hull {
             let [x, y, z] = vertex.position;
             assert!(x.abs() <= 0.5 * HULL_LENGTH_METERS as f32 + 0.01);
             assert!(y.abs() <= 0.5 * HULL_BEAM_METERS as f32 + 0.01);
             assert!(z >= -(HULL_DRAFT_METERS as f32) - 0.01);
             assert!(z <= (HULL_FREEBOARD_METERS + 9.0 * SHIP_SCALE) as f32);
+        }
+        // Masts stand tall over the deck and nothing is below the keel.
+        let top = mesh.iter().map(|v| v.position[2]).fold(f32::MIN, f32::max);
+        let bottom = mesh.iter().map(|v| v.position[2]).fold(f32::MAX, f32::min);
+        assert!(top > (30.0 * SHIP_SCALE) as f32, "mast top {top}m");
+        assert!(bottom >= -(HULL_DRAFT_METERS as f32) - 0.01, "keel {bottom}m");
+        for vertex in &mesh {
             let normal = glam::Vec3::from(vertex.normal);
             assert!((normal.length() - 1.0).abs() < 1.0e-4);
         }
-        // And it fills that envelope end to end: the drawn transom and stem are
-        // where buoyancy, foam and spray put them.
-        let aft = mesh.iter().map(|v| v.position[0]).fold(f32::MAX, f32::min);
-        let fore = mesh.iter().map(|v| v.position[0]).fold(f32::MIN, f32::max);
+        // The hull body fills its envelope end to end: the drawn transom and
+        // stem are where buoyancy, foam and spray put them.
+        let aft = model.hull.iter().map(|v| v.position[0]).fold(f32::MAX, f32::min);
+        let fore = model.hull.iter().map(|v| v.position[0]).fold(f32::MIN, f32::max);
         let half_length = 0.5 * HULL_LENGTH_METERS as f32;
         assert!((aft + half_length).abs() < 0.01, "transom drawn at {aft}m, not -{half_length}m");
         assert!((fore - half_length).abs() < 0.01, "stem drawn at {fore}m, not {half_length}m");
-        // Every triangle is flat-shaded, so its three vertices share a normal.
+        // Flat-shaded: three vertices share a normal.
         for triangle in mesh.chunks_exact(3) {
             assert_eq!(triangle[0].normal, triangle[1].normal);
             assert_eq!(triangle[1].normal, triangle[2].normal);
         }
+    }
+
+    #[test]
+    fn hull_sides_face_outward_and_the_deck_faces_up() {
+        let model = crate::ship_model::build();
+        // Every hull face below the sheer on the sides points away from the
+        // centreline (the bulwarks' inner faces above it point in, by design).
+        let mut checked = 0;
+        for triangle in model.hull.chunks_exact(3) {
+            let normal = glam::Vec3::from(triangle[0].normal);
+            let centre = (glam::Vec3::from(triangle[0].position)
+                + glam::Vec3::from(triangle[1].position)
+                + glam::Vec3::from(triangle[2].position))
+                / 3.0;
+            let below_deck = centre.z < sheer_height_meters(centre.x as f64 / (0.5 * HULL_LENGTH_METERS)) as f32 - 0.01;
+            if below_deck && normal.z.abs() < 0.5 && normal.y.abs() > 0.5 && centre.y.abs() > 0.05 {
+                assert!(normal.y * centre.y > 0.0, "side face points inward at {centre:?}");
+                checked += 1;
+            }
+        }
+        assert!(checked > 200, "{checked} side faces checked");
     }
 
     #[test]
