@@ -1306,6 +1306,9 @@ fn node_is_above_horizon_with_height_range(
     ) >= occluder_radius * occluder_radius
 }
 
+const NEAR_SURFACE_FRUSTUM_ALTITUDE_METERS: f64 = 5_000.0;
+const NEAR_SURFACE_FRUSTUM_MARGIN: f64 = 1.35;
+
 fn node_is_in_view_frustum(
     node: QuadtreeNode,
     camera_world: DVec3,
@@ -1320,7 +1323,18 @@ fn node_is_in_view_frustum(
         return false;
     }
 
-    let vertical_tangent = (vertical_fov_radians * 0.5).tan();
+    // The sea's swell and chop displace water 30m or more, vertically and
+    // sideways, into view from nodes the plain frustum rejects; near the
+    // surface that culled wedges of sea at the frame edges (a 1.15x margin
+    // closed most of them, 1.5x all). Orbital views keep the exact frustum.
+    let margin = if camera_world.length() - planet_radius_meters()
+        < NEAR_SURFACE_FRUSTUM_ALTITUDE_METERS
+    {
+        NEAR_SURFACE_FRUSTUM_MARGIN
+    } else {
+        1.0
+    };
+    let vertical_tangent = (vertical_fov_radians * 0.5).tan() * margin;
     let horizontal_tangent = vertical_tangent * aspect_ratio;
 
     // Test the node's angular/radial volume against all four side planes.
