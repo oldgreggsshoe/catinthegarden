@@ -1,4 +1,4 @@
-# Cat in the Garden: Foveated Raytrace Render Mode
+# PLANET THING: Foveated Raytrace Render Mode
 
 A build guide to go from the current raster planet renderer to a second,
 toggleable rendering path: a low-resolution foveated raymarcher. The raster

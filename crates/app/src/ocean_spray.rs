@@ -89,12 +89,12 @@ pub(super) fn wind_direction_uv() -> [f32; 2] {
     [x / length, y / length]
 }
 
-/// Spray strength multiplier, `CATINGARDEN_OCEAN_FFT_SPRAY` (default 1, 0 off,
+/// Spray strength multiplier, `PLANET_OCEAN_FFT_SPRAY` (default 1, 0 off,
 /// up to 5); scales the birth rate. FFT ocean only.
 pub(super) fn spray_strength() -> f32 {
     static VALUE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
     *VALUE.get_or_init(|| {
-        std::env::var("CATINGARDEN_OCEAN_FFT_SPRAY")
+        std::env::var("PLANET_OCEAN_FFT_SPRAY")
             .ok()
             .and_then(|value| value.trim().parse::<f32>().ok())
             .map_or(1.0, |value| value.clamp(0.0, 5.0))

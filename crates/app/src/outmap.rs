@@ -4,7 +4,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use catinthegarden_coretypes::{BiomeId, OutmapManifest, TILE_STORED_SIZE, TileKey};
+use planet_coretypes::{BiomeId, OutmapManifest, TILE_STORED_SIZE, TileKey};
 
 const TILE_SAMPLE_COUNT: usize = TILE_STORED_SIZE as usize * TILE_STORED_SIZE as usize;
 const HEIGHT_BYTES_PER_SAMPLE: usize = size_of::<f32>();
@@ -378,7 +378,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use catinthegarden_coretypes::{
+    use planet_coretypes::{
         BiomeId, BiomeManifestEntry, ChannelManifest, CubeFace, OUTMAP_SCHEMA_VERSION,
         OutmapManifest, PLANET_RADIUS_METERS, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE,
         TileKey,
@@ -398,7 +398,7 @@ mod tests {
                 .as_nanos();
             let sequence = NEXT_TEST_DIRECTORY.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!(
-                "catinthegarden-outmap-{name}-{}-{nonce}-{sequence}",
+                "planet-outmap-{name}-{}-{nonce}-{sequence}",
                 std::process::id()
             ));
             fs::create_dir_all(&path).expect("create test directory");

@@ -13,7 +13,7 @@
 //! blankets, around 9 million cell writes. A test holds the two against each
 //! other, because the fast one is only worth having if it is the same field.
 
-use catinthegarden_coretypes::{
+use planet_coretypes::{
     BiomeId,
     moon::{Catalogue, Crater, MOON_DATUM_METERS, MOON_RADIUS_METERS, profile},
 };
@@ -336,7 +336,7 @@ fn splat(grid: &SphericalGrid, crater: &Crater, raw: &mut [f64]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use catinthegarden_coretypes::moon::{CatalogueSpec, MOON_RADIUS_METERS};
+    use planet_coretypes::moon::{CatalogueSpec, MOON_RADIUS_METERS};
 
     fn small_catalogue() -> Catalogue {
         Catalogue::new(CatalogueSpec {
@@ -503,7 +503,7 @@ mod tests {
     }
 
     fn catalogue_for_test() -> &'static Catalogue {
-        catinthegarden_coretypes::moon::baked()
+        planet_coretypes::moon::baked()
     }
 
     /// A size-frequency law is only doing its job if most craters are small.

@@ -19,4 +19,4 @@ On a clean rebuild of 3e190ee, interactive launch, FFT=1:
 
 Neither baseline matches a clean build, and no single WIND/CHOP/PEAKS/WAVELENGTH value restores -3.5403. So the binary Ian ran then differed from clean 3e190ee (probably uncommitted changes in the shared checkout at the time), and an exact fingerprint match is not possible.
 
-Recommendation: keep CATINGARDEN_OCEAN_FFT=1 CATINGARDEN_OCEAN_FFT_SWELL=30 with no other overrides. Judge the replay against 1790525174-746683, not 1790520906-735221.
+Recommendation: keep PLANET_OCEAN_FFT=1 PLANET_OCEAN_FFT_SWELL=30 with no other overrides. Judge the replay against 1790525174-746683, not 1790520906-735221.

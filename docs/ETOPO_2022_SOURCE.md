@@ -48,7 +48,7 @@ Bake to staging; never write a new source directly over the active outmap:
 
 ```bash
 RAYON_NUM_THREADS=1 nice -n 10 \
-  /home/dad/catingard-target/release/catinthegarden-baker \
+  /home/dad/catingard-target/release/planet-baker \
   --output assets/outmaps/test-planet.etopo-staging-YYYYMMDD-HHMMSS \
   --etopo assets/source-data/etopo-2022/ETOPO_2022_v1_60s_N90W180_surface.tif \
   --width 4096 --height 2048 --dense-level 4 --max-level 18

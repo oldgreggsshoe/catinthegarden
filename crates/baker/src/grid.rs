@@ -1,6 +1,6 @@
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
-use catinthegarden_coretypes::PLANET_RADIUS_METERS;
+use planet_coretypes::PLANET_RADIUS_METERS;
 use glam::DVec3;
 
 pub const NEIGHBOR_OFFSETS: [(isize, isize); 8] = [

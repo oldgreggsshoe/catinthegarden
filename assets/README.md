@@ -4,7 +4,7 @@
 planet with:
 
 ```bash
-cargo run --release -p catinthegarden-baker
+cargo run --release -p planet-baker
 ```
 
 The default bake writes `assets/outmaps/test-planet/manifest.json`, three
@@ -18,7 +18,7 @@ Each tile contains a 129x129 logical grid stored as 131x131 samples with a one
 sample gutter on every side:
 
 - `height.r32f`: little-endian signed `f32` meters;
-- `biome.r8`: `BiomeId` values from `catinthegarden-coretypes`;
+- `biome.r8`: `BiomeId` values from `planet-coretypes`;
 - `moisture.r8`: normalized 0-255 moisture.
 
 Normals are intentionally absent and must be derived from height samples on
@@ -36,6 +36,6 @@ zero at the selected centre and is applied before the parent-border constraint.
 Validate an existing bake with:
 
 ```bash
-cargo run --release -p catinthegarden-baker -- \
+cargo run --release -p planet-baker -- \
   --validate assets/outmaps/test-planet
 ```

@@ -4,8 +4,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use catinthegarden_baker::{BakeConfig, bake, refine_existing_outmap, validate_output};
-use catinthegarden_coretypes::{
+use planet_baker::{BakeConfig, bake, refine_existing_outmap, validate_output};
+use planet_coretypes::{
     CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey, tile_key_for_direction,
 };
 use image::{ColorType, ImageReader};
@@ -31,7 +31,7 @@ impl TemporaryOutput {
     fn new(name: &str) -> Self {
         Self {
             path: std::env::temp_dir().join(format!(
-                "catinthegarden-baker-{name}-{}-{}",
+                "planet-baker-{name}-{}-{}",
                 std::process::id(),
                 NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed)
             )),
@@ -130,7 +130,7 @@ fn etopo_bake_preserves_observed_relief_and_attributes_the_source() {
         ..BakeConfig::default()
     };
 
-    let terrain = catinthegarden_baker::Terrain::try_generate(&config).unwrap();
+    let terrain = planet_baker::Terrain::try_generate(&config).unwrap();
     assert_eq!(
         terrain
             .height_meters

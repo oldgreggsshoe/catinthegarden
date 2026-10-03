@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-/// Overall loudness; `CATINGARDEN_SOUND_VOLUME` scales it (0-2).
+/// Overall loudness; `PLANET_SOUND_VOLUME` scales it (0-2).
 const VOLUME: f32 = 0.4;
 /// Seconds the audio thread takes to follow a change in the sea.
 const PARAMETER_EASE_SECONDS: f32 = 0.6;
@@ -59,7 +59,7 @@ pub fn loudness_at_height(height_meters: f64) -> f32 {
 }
 
 fn volume() -> f32 {
-    std::env::var("CATINGARDEN_SOUND_VOLUME")
+    std::env::var("PLANET_SOUND_VOLUME")
         .ok()
         .and_then(|value| value.trim().parse::<f32>().ok())
         .filter(|value| value.is_finite())
@@ -67,10 +67,10 @@ fn volume() -> f32 {
         * VOLUME
 }
 
-/// `CATINGARDEN_SOUND=0` keeps the game silent.
+/// `PLANET_SOUND=0` keeps the game silent.
 fn enabled() -> bool {
     !matches!(
-        std::env::var("CATINGARDEN_SOUND")
+        std::env::var("PLANET_SOUND")
             .ok()
             .as_deref()
             .map(str::trim),
@@ -114,14 +114,14 @@ impl SeaSound {
     }
 
     /// Opens the default output device. Without one (or with
-    /// `CATINGARDEN_SOUND=0`) the game carries on silently.
+    /// `PLANET_SOUND=0`) the game carries on silently.
     pub fn start() -> Self {
         let shared = Arc::new(Shared::default());
         let stream = if enabled() {
             match open_stream(Arc::clone(&shared)) {
                 Ok(stream) => Some(stream),
                 Err(error) => {
-                    tracing::warn!(target: "catinthegarden::sound", %error, "no sea sound");
+                    tracing::warn!(target: "planet::sound", %error, "no sea sound");
                     None
                 }
             }
@@ -183,7 +183,7 @@ fn open_stream(shared: Arc<Shared>) -> Result<cpal::Stream, String> {
         other => Err(format!("unsupported sample format {other}")),
     }?;
     stream.play().map_err(|error| error.to_string())?;
-    tracing::info!(target: "catinthegarden::sound", "sea sound playing");
+    tracing::info!(target: "planet::sound", "sea sound playing");
     Ok(stream)
 }
 
@@ -226,7 +226,7 @@ where
                     }
                 }
             },
-            |error| tracing::warn!(target: "catinthegarden::sound", %error, "sea sound stream"),
+            |error| tracing::warn!(target: "planet::sound", %error, "sea sound stream"),
             None,
         )
         .map_err(|error| error.to_string())
@@ -984,7 +984,7 @@ mod tests {
     }
 
     /// Loudness of each layer on its own, for balancing them:
-    /// `cargo test --release -p catinthegarden-app sea_and_wind_loudness -- --ignored --nocapture`.
+    /// `cargo test --release -p planet-app sea_and_wind_loudness -- --ignored --nocapture`.
     #[test]
     #[ignore = "instrument: prints loudness in dBFS"]
     fn sea_and_wind_loudness() {
@@ -1004,7 +1004,7 @@ mod tests {
     }
 
     /// Writes a 30-second calm-to-storm sample to listen to:
-    /// `cargo test --release -p catinthegarden-app write_sea_sound_demo -- --ignored`.
+    /// `cargo test --release -p planet-app write_sea_sound_demo -- --ignored`.
     #[test]
     #[ignore = "writes a WAV to listen to"]
     fn write_sea_sound_demo() {

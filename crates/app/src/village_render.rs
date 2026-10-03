@@ -226,7 +226,7 @@ pub struct VillageRenderer {
     sited_houses: u32,
     max_ground_disagreement_meters: f64,
     nearest_site_macro_height_meters: f64,
-    nearest_site_biome: Option<catinthegarden_coretypes::BiomeId>,
+    nearest_site_biome: Option<planet_coretypes::BiomeId>,
     nearest_site_moisture: f32,
     enabled: bool,
 }
@@ -437,7 +437,7 @@ impl VillageRenderer {
             beam_instance_buffer,
             beam_count: 0,
             beam_world_positions: Vec::new(),
-            beams_enabled: std::env::var("CATINGARDEN_VILLAGE_BEAMS").as_deref() == Ok("1"),
+            beams_enabled: std::env::var("PLANET_VILLAGE_BEAMS").as_deref() == Ok("1"),
             ground_shadow_vertex_buffer,
             ground_shadow_vertex_count: shadow_mesh.len() as u32,
             vertex_buffer,
@@ -453,10 +453,10 @@ impl VillageRenderer {
             nearest_site_macro_height_meters: f64::NAN,
             nearest_site_biome: None,
             nearest_site_moisture: f32::NAN,
-            // `CATINGARDEN_VILLAGES=off` disables the pass so its frame cost can
+            // `PLANET_VILLAGES=off` disables the pass so its frame cost can
             // be measured against the same scenario without a rebuild. Measured
             // this way: 74.07ms with villages against 74.61ms without.
-            enabled: std::env::var("CATINGARDEN_VILLAGES").as_deref() != Ok("off"),
+            enabled: std::env::var("PLANET_VILLAGES").as_deref() != Ok("off"),
         }
     }
 
@@ -662,7 +662,7 @@ impl VillageRenderer {
     }
 
     /// What siting saw at the house nearest the camera.
-    pub fn nearest_site_ground(&self) -> (f64, Option<catinthegarden_coretypes::BiomeId>, f32) {
+    pub fn nearest_site_ground(&self) -> (f64, Option<planet_coretypes::BiomeId>, f32) {
         (
             self.nearest_site_macro_height_meters,
             self.nearest_site_biome,
@@ -743,7 +743,7 @@ mod tests {
         // A locator is a debug overlay: it must not be on for someone who
         // never asked for it.
         assert!(
-            std::env::var("CATINGARDEN_VILLAGE_BEAMS").is_err(),
+            std::env::var("PLANET_VILLAGE_BEAMS").is_err(),
             "this test describes the default, so the override must be unset"
         );
     }

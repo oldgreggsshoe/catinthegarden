@@ -1,10 +1,10 @@
 use std::{env, path::PathBuf, process::ExitCode};
 
-use catinthegarden_baker::{
+use planet_baker::{
     BakeConfig, BakeProgress, bake_with_progress, refine_existing_outmap_with_progress,
     sparse_radius_for_level, validate_output_with_progress,
 };
-use catinthegarden_coretypes::TILE_LOGICAL_SIZE;
+use planet_coretypes::TILE_LOGICAL_SIZE;
 
 fn main() -> ExitCode {
     match run() {
@@ -94,7 +94,7 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         println!("macro source: procedural continents + mountain regions + erosion");
     }
     if config.moon {
-        let catalogue = catinthegarden_coretypes::moon::baked();
+        let catalogue = planet_coretypes::moon::baked();
         println!(
             "macro source: {} impact craters, no erosion or hydrology",
             catalogue.len()
@@ -252,7 +252,7 @@ fn parse_u32(value: &str) -> Result<u32, String> {
 
 fn print_help() {
     println!(
-        "catinthegarden-baker [OUTPUT] [OPTIONS]\n\
+        "planet-baker [OUTPUT] [OPTIONS]\n\
          \n\
          Options:\n\
            --output PATH              Output root (default assets/outmaps/test-planet)\n\
@@ -322,7 +322,7 @@ mod tests {
         );
         assert_eq!(
             config.radius_meters,
-            catinthegarden_coretypes::moon::MOON_RADIUS_METERS
+            planet_coretypes::moon::MOON_RADIUS_METERS
         );
         assert_eq!(config.output, PathBuf::from("assets/outmaps/test-moon"));
         assert!(config.validate().is_ok());

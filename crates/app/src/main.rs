@@ -152,7 +152,7 @@ fn create_offscreen_present_texture(
     })
 }
 
-/// Subsystems the frame may be asked to skip, as `CATINGARDEN_DISABLE=a,b,c`.
+/// Subsystems the frame may be asked to skip, as `PLANET_DISABLE=a,b,c`.
 ///
 /// Per-subsystem GPU attribution needs either timestamps, which break this
 /// Quadro outright, or matched A/B runs. Toggles existed for a few systems and
@@ -164,7 +164,7 @@ fn disabled_subsystems() -> &'static std::collections::HashSet<String> {
     static DISABLED: std::sync::OnceLock<std::collections::HashSet<String>> =
         std::sync::OnceLock::new();
     DISABLED.get_or_init(|| {
-        std::env::var("CATINGARDEN_DISABLE")
+        std::env::var("PLANET_DISABLE")
             .unwrap_or_default()
             .split(',')
             .map(|name| name.trim().to_ascii_lowercase())
@@ -198,7 +198,7 @@ const DEFAULT_VIEWPORT_HEIGHT: u32 = 720;
 /// cannot reproduce what the player is looking at. Without this, a defect that
 /// only appears at the player's resolution has no deterministic repro.
 fn viewport_from_env() -> (u32, u32) {
-    let Ok(value) = std::env::var("CATINGARDEN_VIEWPORT") else {
+    let Ok(value) = std::env::var("PLANET_VIEWPORT") else {
         return (DEFAULT_VIEWPORT_WIDTH, DEFAULT_VIEWPORT_HEIGHT);
     };
     let parsed = value
@@ -436,7 +436,7 @@ fn storm_frame_darkening(storm_overcast: f32) -> f32 {
 fn storm_overcast_override() -> Option<f32> {
     static VALUE: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     *VALUE.get_or_init(|| {
-        std::env::var("CATINGARDEN_STORM_OVERCAST")
+        std::env::var("PLANET_STORM_OVERCAST")
             .ok()
             .and_then(|v| v.trim().parse::<f32>().ok())
             .filter(|v| v.is_finite())
@@ -520,7 +520,7 @@ async fn select_render_adapter(
             return adapters.swap_remove(index);
         }
         tracing::warn!(
-            target: "catinthegarden::adapter",
+            target: "planet::adapter",
             requested_name,
             "requested WGPU adapter is unavailable; using the best compatible adapter"
         );
@@ -1229,7 +1229,7 @@ struct State {
     birds: birds::BirdFlocks,
     bird_renderer: birds_render::BirdRenderer,
     /// Bird cam: B rides a bird in the nearest flock instead of the authored
-    /// pose, and `CATINGARDEN_BIRD_CAM` starts a replay already riding. The
+    /// pose, and `PLANET_BIRD_CAM` starts a replay already riding. The
     /// target is held here so the shot stays on one bird rather than cutting
     /// between them every frame.
     bird_camera_enabled: bool,
@@ -1390,7 +1390,7 @@ impl State {
             adapter_info.name, adapter_info.device_type, adapter_info.backend
         );
         tracing::info!(
-            target: "catinthegarden::adapter",
+            target: "planet::adapter",
             name = adapter_info.name,
             vendor = adapter_info.vendor,
             device = adapter_info.device,
@@ -1402,7 +1402,7 @@ impl State {
         );
         if adapter_info.device_type != wgpu::DeviceType::DiscreteGpu {
             tracing::warn!(
-                target: "catinthegarden::adapter",
+                target: "planet::adapter",
                 name = adapter_info.name,
                 "no compatible discrete GPU is available; rendering on a non-discrete adapter"
             );
@@ -1467,7 +1467,7 @@ impl State {
             format: surface_format,
             width: size.width.max(1),
             height: size.height.max(1),
-            present_mode: match std::env::var("CATINGARDEN_PRESENT_MODE").as_deref() {
+            present_mode: match std::env::var("PLANET_PRESENT_MODE").as_deref() {
                 Ok("immediate") => wgpu::PresentMode::Immediate,
                 Ok("mailbox") => wgpu::PresentMode::Mailbox,
                 Ok("fifo_relaxed") => wgpu::PresentMode::FifoRelaxed,
@@ -1477,13 +1477,13 @@ impl State {
             },
             alpha_mode: surface_capabilities.alpha_modes[0],
             view_formats: vec![],
-            desired_maximum_frame_latency: std::env::var("CATINGARDEN_FRAME_LATENCY")
+            desired_maximum_frame_latency: std::env::var("PLANET_FRAME_LATENCY")
                 .ok()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(2),
         };
         tracing::info!(
-            target: "catinthegarden::adapter",
+            target: "planet::adapter",
             supported_present_modes = ?surface_capabilities.present_modes,
             selected_present_mode = ?config.present_mode,
             surface_usage = ?config.usage,
@@ -1727,12 +1727,12 @@ impl State {
             ship_body,
             ship_renderer,
             // One planet seed, so a scenario replay lands on the same flocks.
-            // CATINGARDEN_BIRD_SPAWN_METERS="min,max" brings the spawn shell in
+            // PLANET_BIRD_SPAWN_METERS="min,max" brings the spawn shell in
             // for a demo or a close-range diagnostic; malformed values are
             // ignored by `with_spawn_shell` rather than honoured.
             birds: birds::BirdFlocks::new(0x62_69_72_64_73).with_spawn_shell_from_env(),
             bird_renderer,
-            bird_camera_enabled: std::env::var("CATINGARDEN_BIRD_CAM")
+            bird_camera_enabled: std::env::var("PLANET_BIRD_CAM")
                 .is_ok_and(|value| !matches!(value.trim(), "" | "0" | "false" | "off")),
             bird_camera_target: None,
             bird_camera_riding: false,
@@ -1784,7 +1784,7 @@ impl State {
             fps: 0.0,
             debug_overlay_visible: false,
             render_path: RenderPath::default(),
-            render_debug_mode: match std::env::var("CATINGARDEN_DEBUG_MODE")
+            render_debug_mode: match std::env::var("PLANET_DEBUG_MODE")
                 .unwrap_or_default()
                 .trim()
             {
@@ -1875,7 +1875,7 @@ impl State {
     /// storm, then apply the existing F10 presentation default.
     /// The F6 stage is now edge-aware anti-aliasing, and at Ian's request
     /// (25 September 2026) interactive launches start with it on;
-    /// `CATINGARDEN_AA=0` opts out and F6 still toggles it. It is not the old
+    /// `PLANET_AA=0` opts out and F6 still toggles it. It is not the old
     /// blur that was switched off on 20 September. Scenarios keep the
     /// `BLUR_ENABLED` default so their captures stay unchanged.
     /// Scenarios retain their authored camera, post-processing, and clock.
@@ -1902,7 +1902,7 @@ impl State {
         }
         self.toggle_animation_freeze();
         let anti_aliasing = !matches!(
-            std::env::var("CATINGARDEN_AA")
+            std::env::var("PLANET_AA")
                 .ok()
                 .as_deref()
                 .map(str::trim),
@@ -1911,7 +1911,7 @@ impl State {
         self.hdr
             .set_effects(&self.device, anti_aliasing, self.hdr.bloom_enabled());
         tracing::info!(
-            target: "catinthegarden::startup",
+            target: "planet::startup",
             camera_mode = self.camera_mode.label(),
             boat_camera_attached = self.camera_mode == CameraMode::Boat,
             blur_enabled = self.hdr.blur_enabled(),
@@ -1931,14 +1931,14 @@ impl State {
             .prepare_flight_start_surface_height_meters(local_radial, altitude_meters)
         else {
             tracing::warn!(
-                target: "catinthegarden::startup",
+                target: "planet::startup",
                 "storm-ocean startup terrain sample unavailable; retaining coastal pose"
             );
             return false;
         };
         if self.terrain.open_ocean_at(local_radial) != Some(true) {
             tracing::warn!(
-                target: "catinthegarden::startup",
+                target: "planet::startup",
                 "storm-ocean startup direction is not open ocean; retaining coastal pose"
             );
             return false;
@@ -1960,10 +1960,10 @@ impl State {
     /// helpers the key handlers use, and the resulting state is logged so every
     /// run records which configuration produced its samples.
     fn apply_startup_experiment_overrides(&mut self) {
-        if std::env::var("CATINGARDEN_RENDER_PATH").as_deref() == Ok("ray") {
+        if std::env::var("PLANET_RENDER_PATH").as_deref() == Ok("ray") {
             self.toggle_render_path();
         }
-        if let Ok(experiments) = std::env::var("CATINGARDEN_RAY_EXPERIMENTS") {
+        if let Ok(experiments) = std::env::var("PLANET_RAY_EXPERIMENTS") {
             for index in experiments
                 .split(',')
                 .filter_map(|value| value.trim().parse::<u8>().ok())
@@ -1975,7 +1975,7 @@ impl State {
             .filter(|index| self.foveated.experiment_enabled(*index))
             .collect();
         tracing::info!(
-            target: "catinthegarden::experiment",
+            target: "planet::experiment",
             render_path = self.render_path.label(),
             render_debug_mode = self.render_debug_mode.label(),
             enabled_experiments = ?enabled,
@@ -2264,7 +2264,7 @@ impl State {
         self.flight_speed_scale =
             adjusted_flight_speed_scale(self.flight_speed_scale, scale_factor);
         tracing::info!(
-            target: "catinthegarden::controls",
+            target: "planet::controls",
             flight_speed_scale = self.flight_speed_scale,
             "flight movement speed scale changed"
         );
@@ -2650,8 +2650,8 @@ impl State {
                     // strip where the rendered water would swallow it.
                     walkable: !matches!(
                         sample.biome,
-                        catinthegarden_coretypes::BiomeId::Ocean
-                            | catinthegarden_coretypes::BiomeId::Lake
+                        planet_coretypes::BiomeId::Ocean
+                            | planet_coretypes::BiomeId::Lake
                     ) && sample.height_meters > 0.5,
                     // The same baked depth the renderer and the ship limit their
                     // waves by, so shoaling crests are the ones a bird sees.
@@ -2848,8 +2848,8 @@ impl State {
     /// condensation), not the sea state, which also rises with wind alone and
     /// would grey a clear windy day. It fades above the lower cloud shell,
     /// where the camera looks down on the storm rather than out from under it.
-    /// `CATINGARDEN_STORM_OVERCAST` (0-1) fixes it, for comparisons; an
-    /// approaching storm (`CATINGARDEN_STORM_APPROACH`) drives it directly.
+    /// `PLANET_STORM_OVERCAST` (0-1) fixes it, for comparisons; an
+    /// approaching storm (`PLANET_STORM_APPROACH`) drives it directly.
     fn update_storm_overcast(&mut self, planet_rotation_radians: f64, ocean_time_seconds: f64) {
         let direction = planet::planet_local_vector(
             self.camera.world_position().normalize(),
@@ -3617,7 +3617,7 @@ impl State {
         self.interactive_planet_rotation_time_scale = new_scale;
         self.interactive_planet_rotation_time_offset_seconds = new_offset;
         tracing::info!(
-            target: "catinthegarden::controls",
+            target: "planet::controls",
             rotation_time_scale = new_scale,
             "interactive planet rotation speed changed"
         );
@@ -3878,7 +3878,7 @@ impl State {
         let full_output = self.egui_context.run_ui(raw_input, |ui| {
             if show_debug_overlay {
                 let context = ui.ctx().clone();
-                egui::Window::new("Cat in the Garden")
+                egui::Window::new("PLANET THING")
                     .default_pos([12.0, 12.0])
                     .show(&context, |ui| {
                         ui.label("Quadtree terrain renderer");
@@ -4861,7 +4861,7 @@ impl State {
             // screenshot cannot tell a wave-following ship from one welded to
             // sea level; these numbers can.
             tracing::info!(
-                target: "catinthegarden::ship",
+                target: "planet::ship",
                 message = "ship float",
                 sim_time,
                 waterline_altitude_meters =
@@ -4941,7 +4941,7 @@ impl State {
             );
             let forest = self.forest.stats();
             tracing::info!(
-                target: "catinthegarden::forest",
+                target: "planet::forest",
                 patch_count = forest.patch_count,
                 proxy_patch_count = forest.proxy_patch_count,
                 instances = forest.instances,
@@ -5982,7 +5982,7 @@ impl ApplicationHandler for App {
             event_loop
                 .create_window(
                     WindowAttributes::default()
-                        .with_title("Cat in the Garden")
+                        .with_title("PLANET THING")
                         .with_inner_size({
                             let (width, height) = viewport_from_env();
                             winit::dpi::PhysicalSize::new(width, height)
@@ -6001,7 +6001,7 @@ impl ApplicationHandler for App {
         if should_start_interactive_fullscreen(self.launch_options.scenario_name.is_some()) {
             self.startup_fullscreen_pending = true;
             tracing::info!(
-                target: "catinthegarden::startup",
+                target: "planet::startup",
                 "deferring fullscreen until the first surface frame"
             );
         }
@@ -6046,11 +6046,11 @@ impl ApplicationHandler for App {
         ) {
             let now = Instant::now();
             if escape_quits(self.last_escape, now) {
-                tracing::info!(target: "catinthegarden::exit", "Escape pressed twice: quitting");
+                tracing::info!(target: "planet::exit", "Escape pressed twice: quitting");
                 let _ = state.log_writer.flush();
                 event_loop.exit();
             } else {
-                tracing::info!(target: "catinthegarden::exit", "Escape pressed: press again to quit");
+                tracing::info!(target: "planet::exit", "Escape pressed: press again to quit");
                 self.last_escape = Some(now);
             }
             return;
@@ -6088,7 +6088,7 @@ impl ApplicationHandler for App {
         if !egui_response.consumed {
             match event {
                 WindowEvent::CloseRequested => {
-                    tracing::info!(target: "catinthegarden::exit", "window close requested: quitting");
+                    tracing::info!(target: "planet::exit", "window close requested: quitting");
                     let _ = state.log_writer.flush();
                     event_loop.exit();
                 }
@@ -6385,7 +6385,7 @@ impl ApplicationHandler for App {
             self.startup_redraw_seen = false;
             state.toggle_fullscreen(window);
             tracing::info!(
-                target: "catinthegarden::startup",
+                target: "planet::startup",
                 "entered fullscreen after the first surface frame"
             );
             window.request_redraw();
@@ -6720,7 +6720,7 @@ mod tests {
     }
 
     /// Interactive startup turns the F6 anti-aliasing stage on through
-    /// `set_effects` (not the F6 toggle), honouring `CATINGARDEN_AA=0`.
+    /// `set_effects` (not the F6 toggle), honouring `PLANET_AA=0`.
     #[test]
     fn interactive_startup_enables_anti_aliasing() {
         let source = include_str!("main.rs");
@@ -6736,7 +6736,7 @@ mod tests {
             body.contains("set_effects"),
             "startup no longer enables AA:\n{body}"
         );
-        assert!(body.contains("CATINGARDEN_AA"));
+        assert!(body.contains("PLANET_AA"));
         assert!(!body.contains("toggle_blur"));
     }
 

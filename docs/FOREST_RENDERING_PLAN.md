@@ -7,7 +7,7 @@ Branch: `experiment/billboard-forest`
 
 The Quadro M1000M driver must not be run with `--profile-render`: enabling timestamp queries is a
 known `present()` hang. The forest was therefore measured by five balanced ON/OFF pairs of the
-capture-free `forest_performance` scenario in Immediate present mode. `CATINGARDEN_FOREST=0`
+capture-free `forest_performance` scenario in Immediate present mode. `PLANET_FOREST=0`
 suppresses only the draw; instance construction, grounding, upload, and per-frame uniform work stay
 active in both cases.
 
@@ -196,7 +196,7 @@ All locator geometry is uploaded once into one immutable buffer. Every locator i
 camera-facing quad with an approximately constant screen width and still runs from terrain to the
 2,880km atmosphere top, uses terrain depth, and draws before weather. This keeps orbital markers
 legible without making near markers kilometre-wide. The toggle remains off by default;
-`CATINGARDEN_FOREST_BEAMS=1` is the explicit scenario/automation override.
+`PLANET_FOREST_BEAMS=1` is the explicit scenario/automation override.
 
 Tree geometry remains capped at 8km and 128 renderable cells. A separate 12km, 256-cell cache now
 builds deterministic patches before they can draw and retains completed patches after they leave the

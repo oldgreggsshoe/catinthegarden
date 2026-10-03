@@ -1,6 +1,6 @@
 use std::{error::Error, fmt};
 
-use catinthegarden_coretypes::{
+use planet_coretypes::{
     CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
 };
 
@@ -1437,7 +1437,7 @@ mod tests {
         raymarch_shader_source, warp_size_for,
     };
     use crate::planet::planet_radius_meters;
-    use catinthegarden_coretypes::{TILE_LOGICAL_SIZE, TILE_STORED_SIZE};
+    use planet_coretypes::{TILE_LOGICAL_SIZE, TILE_STORED_SIZE};
 
     fn warp_axis(value: f32) -> f32 {
         let core = 0.5_f32;

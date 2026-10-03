@@ -186,7 +186,7 @@ pub struct ScenarioDefinition {
     #[serde(default)]
     pub ocean_weather_response: bool,
     /// Start calm and bring a full storm in over this many seconds (sea state
-    /// and storm overcast together), as `CATINGARDEN_STORM_APPROACH` does.
+    /// and storm overcast together), as `PLANET_STORM_APPROACH` does.
     #[serde(default)]
     pub storm_approach_seconds: Option<f64>,
     /// Rides the eye this far above the ocean surface at the waypoint's own

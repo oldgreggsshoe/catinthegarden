@@ -19,13 +19,13 @@ pub const TILE_METERS: [f32; CASCADES] = [1000.0, 237.0, 53.0, 2170.0];
 /// the spectra are built on `TILE_METERS` and the tiles are laid out
 /// `OCEAN_WAVELENGTH_SCALE` times larger, so longer waves travel slower (deep-
 /// water dispersion from the stretched wavenumbers) and are gentler in the
-/// same proportion. `CATINGARDEN_OCEAN_FFT_WAVELENGTH` overrides it (0.25-4).
+/// same proportion. `PLANET_OCEAN_FFT_WAVELENGTH` overrides it (0.25-4).
 pub const OCEAN_WAVELENGTH_SCALE: f32 = 1.0;
 
 pub fn wavelength_scale() -> f32 {
     static VALUE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
     *VALUE.get_or_init(|| {
-        std::env::var("CATINGARDEN_OCEAN_FFT_WAVELENGTH")
+        std::env::var("PLANET_OCEAN_FFT_WAVELENGTH")
             .ok()
             .and_then(|v| v.trim().parse::<f32>().ok())
             .filter(|v| v.is_finite())
@@ -215,7 +215,7 @@ fn swell_h0(seed: u32, dk: f32, swell_angle: f32) -> Vec<[f32; 4]> {
 pub const MIN_WIND_SEA_METERS_PER_SECOND: f32 = 0.5;
 
 pub fn wind_speed_from_environment() -> f32 {
-    std::env::var("CATINGARDEN_OCEAN_FFT_WIND")
+    std::env::var("PLANET_OCEAN_FFT_WIND")
         .ok()
         .and_then(|value| value.trim().parse::<f32>().ok())
         .filter(|value| value.is_finite())
@@ -285,11 +285,11 @@ pub const CHOP_STEEPNESS_BUDGET: f64 = 0.85;
 const PREFETCH_STEPS: i64 = 3;
 
 /// Horizontal (choppy) displacement strength; 1.0 is the Tessendorf field the
-/// fold Jacobian is computed from, 0 disables it. `CATINGARDEN_OCEAN_FFT_CHOP`.
+/// fold Jacobian is computed from, 0 disables it. `PLANET_OCEAN_FFT_CHOP`.
 pub fn choppiness() -> f32 {
     static VALUE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
     *VALUE.get_or_init(|| {
-        std::env::var("CATINGARDEN_OCEAN_FFT_CHOP")
+        std::env::var("PLANET_OCEAN_FFT_CHOP")
             .ok()
             .and_then(|v| v.parse::<f32>().ok())
             .map_or(1.0, |v| v.clamp(0.0, 2.0))
@@ -298,7 +298,7 @@ pub fn choppiness() -> f32 {
 
 /// Significant wave height (metres) of the swell cascade. Swell is generated
 /// by distant storms, so it is present in calm local weather; the local storm
-/// raises it by up to 80%, at most 8m. Base from `CATINGARDEN_OCEAN_FFT_SWELL` (default 16, max 30).
+/// raises it by up to 80%, at most 8m. Base from `PLANET_OCEAN_FFT_SWELL` (default 16, max 30).
 pub fn swell_height_meters(storm_intensity: f32) -> f32 {
     stormed_swell_height(swell_base_height_meters(), storm_intensity)
 }
@@ -317,12 +317,12 @@ fn stormed_swell_height(base: f32, storm_intensity: f32) -> f32 {
     base + (0.8 * base).min(SWELL_STORM_BOOST_MAX_METERS) * blend
 }
 
-/// `CATINGARDEN_OCEAN_FFT_SWELL` (default 16m, up to 30m): the swell's
+/// `PLANET_OCEAN_FFT_SWELL` (default 16m, up to 30m): the swell's
 /// significant height before the local storm raises it.
 pub fn swell_base_height_meters() -> f32 {
     static BASE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
     *BASE.get_or_init(|| {
-        std::env::var("CATINGARDEN_OCEAN_FFT_SWELL")
+        std::env::var("PLANET_OCEAN_FFT_SWELL")
             .ok()
             .and_then(|v| v.trim().parse::<f32>().ok())
             .filter(|v| v.is_finite())
@@ -330,25 +330,25 @@ pub fn swell_base_height_meters() -> f32 {
     })
 }
 
-/// `CATINGARDEN_OCEAN_SWIRL=<seed>`: swirling dark sea colours from that seed
+/// `PLANET_OCEAN_SWIRL=<seed>`: swirling dark sea colours from that seed
 /// (shared_planet.wgsl `ocean_swirl_albedo`); unset, the ordinary water colour.
 pub fn swirl_seed() -> Option<u32> {
     static SEED: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
     *SEED.get_or_init(|| {
-        std::env::var("CATINGARDEN_OCEAN_SWIRL")
+        std::env::var("PLANET_OCEAN_SWIRL")
             .ok()
             .and_then(|v| v.trim().parse::<u32>().ok())
     })
 }
 
-/// Strength of the second-order (Stokes) crest term, `CATINGARDEN_OCEAN_FFT_PEAKS`
+/// Strength of the second-order (Stokes) crest term, `PLANET_OCEAN_FFT_PEAKS`
 /// (default 1, 0-3). 1 is second-order Stokes for a single wave: crests rise
 /// and troughs flatten by k a^2 / 2. Where crests of one band cross it adds
 /// more than that, which is what piles colliding crests into higher peaks.
 pub fn second_order_strength() -> f32 {
     static VALUE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
     *VALUE.get_or_init(|| {
-        std::env::var("CATINGARDEN_OCEAN_FFT_PEAKS")
+        std::env::var("PLANET_OCEAN_FFT_PEAKS")
             .ok()
             .and_then(|v| v.trim().parse::<f32>().ok())
             .map_or(1.0, |v| v.clamp(0.0, 3.0))

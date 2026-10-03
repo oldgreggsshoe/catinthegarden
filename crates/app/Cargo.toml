@@ -1,12 +1,12 @@
 [package]
-name = "catinthegarden-app"
+name = "planet-app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
 bytemuck.workspace = true
-catinthegarden-coretypes = { path = "../coretypes" }
+planet-coretypes = { path = "../coretypes" }
 cpal = "0.18.2"
 egui.workspace = true
 egui-wgpu.workspace = true

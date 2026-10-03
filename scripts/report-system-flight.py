@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Report sequential planet_to_moon replays; run with an awake display, no builds.
 
-CATINGARDEN_SYSTEM_CONTROL=nearest removes only the more distant terrain body.
+PLANET_SYSTEM_CONTROL=nearest removes only the more distant terrain body.
 It retains the common atmosphere/cloud/star/post work, so the measured delta is
 incremental distant terrain cost, not a standalone --body moon comparison.
 """

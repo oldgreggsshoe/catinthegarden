@@ -1,6 +1,6 @@
 //! Emitting the moon's crater catalogue into the shader.
 //!
-//! The catalogue itself lives in `catinthegarden_coretypes::moon`, because the
+//! The catalogue itself lives in `planet_coretypes::moon`, because the
 //! baker needs the same one: a moon with a bake and a moon without must be the
 //! same body, and two copies of the profile would be a divergence waiting to
 //! happen. What is here is only the part the renderer owns — turning the
@@ -15,7 +15,7 @@
 //! craters, which is not a shader constant — it is tiles. The shader's copy is
 //! the placeholder terrain shown when the moon has no bake.
 
-use catinthegarden_coretypes::moon::{
+use planet_coretypes::moon::{
     Crater, EJECTA_EXTENT, MOON_DATUM_METERS, MOON_PLANET_SKY_DIRECTION, MOON_PLANETSHINE_COLOUR,
     MOON_PLANETSHINE_FRACTION, baked, runtime,
 };

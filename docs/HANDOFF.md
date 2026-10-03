@@ -40,7 +40,7 @@ sky-through-the-sea pixel count is 0 with terrain switched off (was 8,215) and 4
 seam. See "FFT sea seams closed" at the end of this file for the causes, the method, the
 rejected approaches and the measured cost.
 
-**Storm on demand and hull caustics (28 September):** `CATINGARDEN_STORM_APPROACH=<seconds>` starts
+**Storm on demand and hull caustics (28 September):** `PLANET_STORM_APPROACH=<seconds>` starts
 calm and brings a full storm in (fog, grey, desaturated sea, swell); replay `ocean_storm_approach`.
 At the interactive start the live weather never reaches a storm (measured). The hull now has
 underwater and reflected caustics. See "Caustics on the hull, and a storm on demand".
@@ -112,7 +112,7 @@ it, whereas the earlier low-view ripple comparison used 1.0. Evidence, rejected
 patches, and validation logs: `test-runs/ocean_sot_detail_2026-09-23/`.
 
 **Opt-in compressed-wave cusp trial (23 September, based on `49a9994`):**
-`CATINGARDEN_OCEAN_TRANSPORT=1` enables the forward surface map and inverse CPU
+`PLANET_OCEAN_TRANSPORT=1` enables the forward surface map and inverse CPU
 query in `ocean_transport.rs`; `shared_planet.wgsl` carries its matching horizontal
 Jacobian and geometric normal. Raster vertices remain surface parameters. Foveated
 ray sampling and the world-direction shading helper solve back to the parameter
@@ -172,7 +172,7 @@ replay cameras are re-authored at a quarter of their old offsets.
 interactive startup now attaches the eye 0.4m beyond the bow-facing bridge wall,
 at bridge height, and updates it from the ship's current position/orientation each
 frame; F4 detaches to low flight at the same eye pose. The previous 40x40
-all-ocean grid selector is restored behind `CATINGARDEN_OCEAN_DENSE_GRID=1` so it
+all-ocean grid selector is restored behind `PLANET_OCEAN_DENSE_GRID=1` so it
 can be watched without imposing its measured ~54% ocean-triangle increase on
 ordinary launches. Four-frame same-resolution steep-view replay passes with the
 flag; capture sequence `test-runs/ocean_steep_cusp/1790160596-760717/screenshots/`
@@ -197,7 +197,7 @@ disagree by metres if the mesh slides sideways; implementing it requires an inve
 query, ray/raster consistency, non-folding bounds, mesh LOD checks, and matched performance plus
 motion captures. Do not turn it on with just a shader flag.
 
-**Opt-in foam-history implementation (23 September):** `CATINGARDEN_OCEAN_FOAM_HISTORY=1`
+**Opt-in foam-history implementation (23 September):** `PLANET_OCEAN_FOAM_HISTORY=1`
 enables `ocean_foam.rs`/`.wgsl`: a 128² ping-pong atlas over a 512m camera-tangent square. A
 compute pass evaluates only the six shortest existing Gerstner components, makes spatially
 scattered births at their convergent crests, reprojects the previous atlas from its planet-frame
@@ -332,7 +332,7 @@ spectral tilt takes tonal spread 0.499 to 0.586 against the photographs' 0.898, 
 `test-runs/peak_judging_2026-09-15/round15/RESULTS.md`.
 
 **Current peak judging (20 September, round 14):** crevasse shading exists and is **off by
-default** (`CATINGARDEN_CREVASSES=1`); the shipped picture is unchanged to the pixel. It occludes
+default** (`PLANET_CREVASSES=1`); the shipped picture is unchanged to the pixel. It occludes
 the beam rather than painting a line, so it inverts with the sun, but it reads as hairlines at the
 judging camera and costs 2.75ms. The blocker is scale, not technique: one pixel is 2.2m of ground at
 1.5km, the near glacier is a flat basin, and the nearest baked crevasse texel is 18km away.
@@ -405,23 +405,23 @@ section. **B** was verified by counts and by eye in `bird_demo/1789327323-459268
 
 **Forest beams removed (13 September):** the opt-in forest beam overlay and its
 whole supporting path are gone at the user's request, and **B** now belongs to
-the bird cam. Sections below describing beams, `CATINGARDEN_FOREST_BEAMS` and
+the bird cam. Sections below describing beams, `PLANET_FOREST_BEAMS` and
 global forest locators are historical.
 
 **Current sea-state variety (14 September):** normal launches now follow the
 camera region's filtered weather wind/storm field and estimated upwind fetch
 through a slow, continuous sea response, replacing the authored cycle. Explicit storm/wind startup overrides
-and legacy replay endpoints remain fixed; `CATINGARDEN_OCEAN_STORM=cycle`
+and legacy replay endpoints remain fixed; `PLANET_OCEAN_STORM=cycle`
 restores the old demonstration loop. This is a scalar storm-energy response,
 with a bounded fetch estimate, not a directional spectrum solver. See the latest
 section for validation.
 
 **Current ocean default (10 September):** spawn-coast shoreward waves are now enabled
-for normal launches at the user's request. `CATINGARDEN_SPAWN_COAST_WAVES=0`
+for normal launches at the user's request. `PLANET_SPAWN_COAST_WAVES=0`
 opts out. Earlier opt-in-only notes below are historical. Coverage remains local
 and the measured ~5ms cost is unchanged; global steering is still outstanding.
 
-**Wind experiment (13 September):** `CATINGARDEN_OCEAN_WIND=speed,x,y,z`
+**Wind experiment (13 September):** `PLANET_OCEAN_WIND=speed,x,y,z`
 now controls a fixed startup wind-sea spectrum with CPU/GPU parity. Normal
 launches are unchanged. This is not live weather coupling or the completed
 Sea of Thieves-style ocean; see the latest wind-sea section.
@@ -736,7 +736,7 @@ See the latest section for the failing-before/passing-after evidence. No terrain
 **Build convention.** Benchmarks and parity runs build to `CARGO_TARGET_DIR=/home/dad/catingard-target`,
 not the in-repo `target/`. Give every temporary or staged checkout its own `CARGO_TARGET_DIR`
 (`AGENTS.md`); never share the worktree's. Note that
-`catingard/.git` is a 46-byte pointer file — the real object database lives at
+`planet/.git` is a 46-byte pointer file — the real object database lives at
 `/home/dad/catingard-tmp/catingard-git`, so `catingard-tmp` is **not** scratch and must never be
 swept by a disk cleanup.
 
@@ -834,7 +834,7 @@ shows the enlarged half-visible disc with the complete centred flare across the 
 The global raster frontier is now fixed at **L4**, two levels finer than the working L2 baseline.
 The default active-leaf budget is raised from 256 to 1,536 for this trial: leaving it at 256 reached
 L4 near the camera but forced a visible L0-L4 mixture and therefore did not test the requested
-uniform-detail cost. `CATINGARDEN_MAX_ACTIVE_CHUNKS` can still override the trial budget.
+uniform-detail cost. `PLANET_MAX_ACTIVE_CHUNKS` can still override the trial budget.
 
 The identical release `orbit_once` measurement changes as follows:
 
@@ -934,8 +934,8 @@ cycle dark per-triangle outlines, outlines off, and a black-fill/bright-red-edge
 outlines start enabled and the HUD reports the current state. The first two modes only change the
 edge mask; the third deliberately replaces the presented land/ocean colour for topology inspection.
 Geometric normals and fixed-L7 geometry remain unchanged. Set
-`CATINGARDEN_FLAT_TRIANGLES=0`/`false`/`off` to restore normal LOD selection, or set
-`CATINGARDEN_DEBUG_MODE=final` to inspect the normal material shader while keeping the branch's
+`PLANET_FLAT_TRIANGLES=0`/`false`/`off` to restore normal LOD selection, or set
+`PLANET_DEBUG_MODE=final` to inspect the normal material shader while keeping the branch's
 fixed-L7 policy. The ray renderer is not replaced by this raster-only presentation experiment.
 
 The L3 baseline and L4 follow-up used identical release settings and four deterministic camera
@@ -1255,12 +1255,12 @@ polar land, which explains the large ice percentage and is not new to this bake.
 Reproduce into a staging path and validate before promotion:
 
 ```bash
-CARGO_TARGET_DIR=/home/dad/catingard-target cargo build --release -p catinthegarden-baker
-RAYON_NUM_THREADS=1 nice -n 10 /home/dad/catingard-target/release/catinthegarden-baker \
+CARGO_TARGET_DIR=/home/dad/catingard-target cargo build --release -p planet-baker
+RAYON_NUM_THREADS=1 nice -n 10 /home/dad/catingard-target/release/planet-baker \
   --output assets/outmaps/test-planet.etopo-staging-YYYYMMDD-HHMMSS \
   --etopo assets/source-data/etopo-2022/ETOPO_2022_v1_60s_N90W180_surface.tif \
   --width 4096 --height 2048 --dense-level 4 --max-level 18
-/home/dad/catingard-target/release/catinthegarden-baker \
+/home/dad/catingard-target/release/planet-baker \
   --validate assets/outmaps/test-planet.etopo-staging-YYYYMMDD-HHMMSS
 ```
 
@@ -1407,7 +1407,7 @@ triangles and remains on its existing height-field normal path. Raster skirts an
 vertical gap-closing faces retain the displaced fallback normal rather than presenting filler
 geometry as authored cliffs.
 
-Current Quadro raster runs, release binary and `CATINGARDEN_PRESENT_MODE=immediate`:
+Current Quadro raster runs, release binary and `PLANET_PRESENT_MODE=immediate`:
 
 | scenario | run | result | visual finding |
 |---|---|---|---|
@@ -1850,13 +1850,13 @@ floor — a run that saw only sky would otherwise pass on no evidence.
 cargo test --workspace
 
 # A scenario, raster path
-target/release/catinthegarden-app --scenario stand_on_ground
+target/release/planet-app --scenario stand_on_ground
 
 # The same scenario, raymarch path
-CATINGARDEN_RENDER_PATH=ray target/release/catinthegarden-app --scenario stand_on_ground
+PLANET_RENDER_PATH=ray target/release/planet-app --scenario stand_on_ground
 
 # Real frame times (Fifo pins everything to 16.67 ms and hides the truth)
-CATINGARDEN_PRESENT_MODE=immediate target/release/catinthegarden-app --scenario tour_mountains
+PLANET_PRESENT_MODE=immediate target/release/planet-app --scenario tour_mountains
 
 # Deterministic paired raster/ray composition and hit-status matrix
 CARGO_TARGET_DIR=/home/dad/catingard-target scripts/run-render-path-parity.sh
@@ -1867,23 +1867,23 @@ Results land in `test-runs/<scenario>/<unix>-<id>/{manifest.json,log.jsonl,scree
 
 - **Never pass `--profile-render` on the Quadro.** It enables `TIMESTAMP_QUERY`, which makes
   `present()` block forever on frame ~3 on driver 550.163.01. Days were lost blaming PRIME for this.
-- **Measure frame times only on an idle machine.** `pgrep -f catinthegarden-app` first — Ian often
+- **Measure frame times only on an idle machine.** `pgrep -f planet-app` first — Ian often
   has his own instance running, and contended readings run 2–10× high. A 3.9 ms figure quoted to him
   was contaminated this way; the clean number was 2.5 ms.
-- **`CATINGARDEN_PRESENT_MODE=immediate` is not optional for any timing measurement.** The default
+- **`PLANET_PRESENT_MODE=immediate` is not optional for any timing measurement.** The default
   `Fifo` pins to the 60 Hz refresh (~16.7 ms floor, hiding anything cheaper) **and throttles to ~1 Hz
   when the window is not visible** — a blanked screen or an unfocused window turns every frame into
   a flat ~1000 ms. That reads exactly like a catastrophic regression. If you see suspiciously round
   frame times near 1000 ms with `nvidia-smi` showing 0% util and P8, it is the throttle, not the
   renderer. Confirm by re-running with `immediate` before reporting anything.
 - Benchmarks build to `/home/dad/catingard-target`, not the in-repo `target/`.
-- **`CATINGARDEN_DEBUG_MODE=albedo|lighting|aerial|sky|ray_hit`** selects a render debug mode for a
+- **`PLANET_DEBUG_MODE=albedo|lighting|aerial|sky|ray_hit`** selects a render debug mode for a
   scenario. `albedo` is how you tell a material problem from a lighting one; `ray_hit` is an
   env-only ray diagnostic where green is a bracketed detail hit, red is macro fallback, yellow is
   no local relief, blue is ocean, and black is no hit.
 - Other flags: `--terrain placeholder|outmap`, `--outmap <path>`, `--vertical-fov-degrees`,
-  `CATINGARDEN_RAY_EXPERIMENTS`, `WGPU_ADAPTER_NAME`.
-- **`CATINGARDEN_MAX_ACTIVE_CHUNKS` lifts the chunk budget** (selector and instance buffer together)
+  `PLANET_RAY_EXPERIMENTS`, `WGPU_ADAPTER_NAME`.
+- **`PLANET_MAX_ACTIVE_CHUNKS` lifts the chunk budget** (selector and instance buffer together)
   so a run can show what the selector actually wants rather than what the cap allows. `budget_limited`
   going to 0 is how you know demand is satisfied and the number is real. Do not read a demand
   reduction as a frame-time saving without checking this: at the default 256 the cap binds on every
@@ -1903,9 +1903,9 @@ raster fault:
 and transitions to settle, and captures at 3.0 and 7.5 seconds:
 
 ```bash
-CARGO_TARGET_DIR=/home/dad/catingard-target cargo build --release -p catinthegarden-app
-CATINGARDEN_PRESENT_MODE=immediate \
-  /home/dad/catingard-target/release/catinthegarden-app --scenario manual_render_faults
+CARGO_TARGET_DIR=/home/dad/catingard-target cargo build --release -p planet-app
+PLANET_PRESENT_MODE=immediate \
+  /home/dad/catingard-target/release/planet-app --scenario manual_render_faults
 ```
 
 The fault was **not** horizon/frustum culling, edge stitching, a lake predicate, or an LOD
@@ -2079,7 +2079,7 @@ deserves its own investigation; see §9 on not reading a single statistic as a v
 
 ### 1b. The measurement hook this needed
 
-`CATINGARDEN_MAX_ACTIVE_CHUNKS` overrides `DEFAULT_MAX_ACTIVE_CHUNKS` and the instance buffer
+`PLANET_MAX_ACTIVE_CHUNKS` overrides `DEFAULT_MAX_ACTIVE_CHUNKS` and the instance buffer
 together, so "is the cap binding, and by how much" is now one run rather than an edited constant and
 a rebuild. The two have to move together or a lifted budget silently draws only the first 256 chunks.
 
@@ -2088,7 +2088,7 @@ a rebuild. The two have to move together or a lifted budget silently draws only 
 `planet.rs:30` — `DEFAULT_MAX_ACTIVE_CHUNKS = 256`. `budget_limited` is true on every
 `tour_mountains` and `low_flight_performance` frame, so the selector is permanently suppressed. It is
 tempting to read that as a ceiling to lift. **It is not. It is the only thing holding the mountains
-at 38 ms instead of 59 ms.** Measured on an idle machine, `CATINGARDEN_PRESENT_MODE=immediate`,
+at 38 ms instead of 59 ms.** Measured on an idle machine, `PLANET_PRESENT_MODE=immediate`,
 raster, cap 256 vs a temporary 1024:
 
 | | cap 256 | cap 1024 (demand satisfied) |
@@ -2208,7 +2208,7 @@ already forces `rock_amount = max(rock_amount, 0.78)` and biome 9 forces `snow_a
 regardless of slope. The site was fully rock-and-snow before the mountain work and still is. The
 inverted slope distribution matters on *ordinary* land, which is where it should now be checked.
 
-**What the site actually renders is not what the final image suggests.** `CATINGARDEN_DEBUG_MODE=albedo`
+**What the site actually renders is not what the final image suggests.** `PLANET_DEBUG_MODE=albedo`
 shows the ground as pale desaturated blue-white — saturation p50 0.100, p99 0.183, nothing above
 0.25, against earth's palette saturation of ~0.61. The warm yellow-tan of the final image is
 therefore **lighting and atmosphere, not ground albedo**. Any attempt to fix the monotony by moving
@@ -2219,7 +2219,7 @@ coastline patches elsewhere are water or ice was not re-checked and should not b
 
 ### 2c. The mountains are flat because there is no aerial perspective, not because of materials
 
-Following §2b's finding to the lighting, with `CATINGARDEN_DEBUG_MODE` at the `tour_mountains`
+Following §2b's finding to the lighting, with `PLANET_DEBUG_MODE` at the `tour_mountains`
 mid-tour frame, sampled in three distance bands so near ground cannot mask the horizon:
 
 | band | albedo hue | lit hue | aerial contribution (lum) | `final` vs `lighting` |
@@ -2378,7 +2378,7 @@ reason. The bands above are the measurement that means something.*
 ### 2e. Colours and textures: the fine scale is missing, the coarse scale is not
 
 First measurement of the material system across the biomes §6.2 said to check and nobody had.
-Rendered with `CATINGARDEN_DEBUG_MODE=albedo` so lighting is excluded; `fine` is mean
+Rendered with `PLANET_DEBUG_MODE=albedo` so lighting is excluded; `fine` is mean
 adjacent-pixel luminance difference, `coarse sd` is the spread between 32x32 block means.
 
 | scene (albedo) | sat sd | hue sd | fine | coarse sd |
@@ -2589,7 +2589,7 @@ Three calculations were paid after their contribution was mathematically zero:
 
 Those are now explicit early/conditional paths in `shared_planet.wgsl`, `planet.wgsl`, and
 `foveated_debug.wgsl`. Three-run Quadro means, raster, idle GPU,
-`CATINGARDEN_PRESENT_MODE=immediate`, same release target:
+`PLANET_PRESENT_MODE=immediate`, same release target:
 
 | scenario | before | after | change |
 |---|---:|---:|---:|
@@ -3018,7 +3018,7 @@ a resolvable foothill field, while retaining the narrow and local peak threshold
 manifest SHA-256 `3e1d773bcbc1d2050d84db30bbdc0c1417d3bd14c8bcd63cfab95355f66126e`; the immediately
 prior active directory is preserved at `assets/outmaps/test-planet.pre-foothills-backup-20260806-192315`.
 Sampled dense-L4 coverage is now 17.723% above 1,000m, 3.376% above 2,000m, and 0.611% above
-3,000m (previously 5.012%, 0.745%, and 0.098%). `cargo test -p catinthegarden-baker
+3,000m (previously 5.012%, 0.745%, and 0.098%). `cargo test -p planet-baker
 procedural_game_shape_is_deterministic_asymmetric_and_varied` and baker `--validate` pass. A fresh
 GPU/manual capture remains the final visual check.
 ## Performance report P0 pass — 6 August 2026
@@ -3034,7 +3034,7 @@ the existing spatial cadence; logs use a buffered writer and flush after capture
 state drop. Terrain edge-neighbour stitching, mixed incoming/outgoing surface probes, and resident
 tile fallback now probe dyadic level indexes, retaining a full-scan fallback at ambiguous boundaries.
 A frontier-index regression covers mixed-level containment. `cargo fmt --all`, `cargo check -p
-catinthegarden-app`, all 197 app tests (6 ignored), and all baker tests (44) pass. Headless Xvfb
+planet-app`, all 197 app tests (6 ignored), and all baker tests (44) pass. Headless Xvfb
 cannot provide a valid DRI3 presentation surface, so a Quadro A/B GPU timing comparison is still
 pending; P1 atmosphere/background and low-density water experiments remain intentionally deferred
 until that measurement identifies a bound.
@@ -3050,7 +3050,7 @@ at least **2,000m** range; this avoids passing on a single close noisy triangle.
 
 ```bash
 TMPDIR=/home/dad/catingard/tmp-rust CARGO_TARGET_DIR=/home/dad/catingard/.target-metric \
-  cargo test -p catinthegarden-app --bin catinthegarden-app \
+  cargo test -p planet-app --bin planet-app \
   relief_survey::tests::mountain_visibility_metric -- --ignored --nocapture
 ```
 
@@ -3103,7 +3103,7 @@ was gone, but exposed the remaining cause of the broad vertical walls: positive 
 whose coarse categorical owner was water were still being flattened to sea level. The flat vertex
 path now applies that flattening only when the sampled macro height is non-positive, keeping
 positive mixed shoreline/ancestor-fallback samples continuous with adjacent land. The focused
-terrain suite remains green (48 tests) and `cargo check -p catinthegarden-app` passes; a fresh GPU
+terrain suite remains green (48 tests) and `cargo check -p planet-app` passes; a fresh GPU
 capture is still required to verify the wall reduction visually.
 
 The next manual run `test-runs/manual/1786051770-106236` logged the fixed-L7 view while the
@@ -3606,7 +3606,7 @@ authored camera, post-processing, and simulation time.
 Debug Xvfb smoke run `manual/1786704906-526933` logs low-flight camera mode, blur enabled, and
 animation frozen on startup, then keeps simulation time fixed across spatial samples. Control run
 `still_5s/1786704929-527139` passes and contains no interactive-startup toggle event. Formatting,
-`cargo check -p catinthegarden-app`, and the focused fullscreen/frozen-flight tests pass. The full app
+`cargo check -p planet-app`, and the focused fullscreen/frozen-flight tests pass. The full app
 suite remains at 207 passed and seven ignored with the two unrelated dirty-worktree LOD-transition
 timing failures.
 
@@ -4395,7 +4395,7 @@ It is depth-tested against the scene, disabled above 20km camera altitude, and u
 streaks rather than a second weather simulation. The shared cloud-density source remains the sole field
 lookup for visible clouds and future consumers. Forty-three focused weather tests (including snow melt,
 texture packing, and rain-shader parsing), seven weather-render tests, and `cargo check -p
-catinthegarden-app` pass. Fresh Quadro visual tuning of rain opacity and snow palette is still required
+planet-app` pass. Fresh Quadro visual tuning of rain opacity and snow palette is still required
 before promoting milestone 15 polish.
 
 ## Experimental weather milestone 15 seasons - 24 August 2026
@@ -4427,7 +4427,7 @@ controls grey/darker albedo and direct sun controls brightness; reversed-Z depth
 behind terrain without writing transparent depth. Above 22km the pass is vertex-suppressed, leaving
 orbital shell rendering unchanged. The cloud-field sampler visibility was widened to vertex+fragment so
 rain and impostor vertex sampling are valid on wgpu. Ten focused weather-render tests, including
-composed shared-density validation, pass; `cargo check -p catinthegarden-app` passes with only the
+composed shared-density validation, pass; `cargo check -p planet-app` passes with only the
 existing unused fallback-constructor warning. Fresh Quadro captures are still needed to tune local puff
 opacity/coverage by eye.
 
@@ -4444,7 +4444,7 @@ clock-keyed sunset tint was added. The fullscreen atmosphere already uses the si
 continues to produce the red/orange horizon and blue upper sky as the sun descends.
 
 The composed WGSL parser/validator suite (10 weather-render tests), `cargo build -p
-catinthegarden-app`, and deterministic `sunset_blue_hour` plus `sunset_sweep` Quadro/Vulkan replays
+planet-app`, and deterministic `sunset_blue_hour` plus `sunset_sweep` Quadro/Vulkan replays
 pass. The latest blue-hour capture shows neutral daylight clouds, warm gold/red sunset clouds, and
 dark post-sunset remnants; fresh interactive/manual tuning of cloud coverage remains optional.
 
@@ -4495,7 +4495,7 @@ Five focused sun tests, ten weather-render tests, release Vulkan `stare_at_sun`,
 `sunset_blue_hour`, and `sun_horizon_visibility` replays pass. Fresh captures are under
 `test-runs/stare_at_sun/1787600080-1166721`, `test-runs/sunset_blue_hour/1787600147-1167550`, and
 `test-runs/sun_horizon_visibility/1787600107-1167227`. FIFO presentation was anomalously slow in
-this headless replay; the same release scenarios pass with `CATINGARDEN_PRESENT_MODE=immediate`.
+this headless replay; the same release scenarios pass with `PLANET_PRESENT_MODE=immediate`.
 
 ## Solar flare tail boundary repair - 24 August 2026
 
@@ -4579,7 +4579,7 @@ measures 1.21% radial sky mist and 82.24% on the ground-horizon ray. Controlled 
 are `atmospheric_mist_paths/1787822221-928441/capture-001.png` and
 `atmospheric_mist_paths/1787823114-936359/capture-001.png`; the fixed sky grades continuously toward
 the already-misted horizon without a local-horizontal edge. All eight atmosphere tests, composed
-fullscreen WGSL parse/validation, and `cargo check -p catinthegarden-app` pass with the pre-existing
+fullscreen WGSL parse/validation, and `cargo check -p planet-app` pass with the pre-existing
 unused weather constructor warning.
 
 ## Restrained procedural-terrain smoothing - 27 August 2026
@@ -4731,7 +4731,7 @@ to exactly zero once the sun is sufficiently below the local horizon. Fixed-expo
 `forest_night/1787914120-48539` remains useful because it exposed the otherwise missed glowing
 trunks.
 
-`CATINGARDEN_FOREST=0` is a render-only measurement switch, and `forest_performance` is a
+`PLANET_FOREST=0` is a render-only measurement switch, and `forest_performance` is a
 capture-free fixed-pose benchmark. Five alternating-order Quadro/Immediate ON/OFF pairs measure a
 median 0.201ms forest cost (0.148-0.292ms range): 27.223ms/36.73 FPS on versus
 27.011ms/37.02 FPS off.
@@ -4830,7 +4830,7 @@ outmap samples alongside weather climate data in the same I/O pass. Moist sample
 active bake yields 122. Their immutable vertex buffer is created once, and **B** submits all shafts
 at every camera distance. The vertex shader expands each shaft to constant screen width, retaining
 terrain depth testing, weather veiling, and the 2,880km atmosphere-top endpoint. **B** remains off by
-default; `CATINGARDEN_FOREST_BEAMS=1` exists for deterministic captures.
+default; `PLANET_FOREST_BEAMS=1` exists for deterministic captures.
 
 The return-only continuity fault had a separate cause: construction began at the same boundary as
 rendering, while an already-built retreating patch remained resident until it crossed that boundary.
@@ -4978,8 +4978,8 @@ Branch `experiment/instant-global-forests` preserves the prior queued/proxy impl
 each visible canonical L12 cell uploads one 64-byte descriptor, then a GPU compute pass evaluates
 the same L4 height/biome/moisture, procedural detail, slope, species and density rules directly
 into the existing tree instance buffer. Stable candidate subsets retain all 12,288 candidates
-inside 1.5km, 768 from 1.5-4km and 64 beyond 4km. `CATINGARDEN_GPU_FOREST=0` retains the old path
-for comparison; `CATINGARDEN_FOREST=0` remains the matched render-cost control.
+inside 1.5km, 768 from 1.5-4km and 64 beyond 4km. `PLANET_GPU_FOREST=0` retains the old path
+for comparison; `PLANET_FOREST=0` remains the matched render-cost control.
 
 The first frame of release `forest_startup/1788124782-538155` reports 128 cells, 76,800 bounded
 candidates, L4 sources, zero pending candidates and transition progress 1.0; both captures show the
@@ -5054,7 +5054,7 @@ shadow radius is 14m with a bounded 55% additive maximum, and the broad orbital 
 only beyond 7km. Release `forest_ground_eligibility/1788171417-575191` passes; `capture-002.png`
 shows the repaired transition rather than the former broad black field.
 
-Validation: `cargo check -p catinthegarden-app`, 41 focused forest tests, focused ocean/shader
+Validation: `cargo check -p planet-app`, 41 focused forest tests, focused ocean/shader
 tests, both release scenarios above, and `git diff --check` pass.
 
 The formerly failing sun regression now validates the same composed WGSL source used by the
@@ -5776,7 +5776,7 @@ Measured on `coast_waters_edge`, raster, at three configurations of the same fra
 | run | compared | median | p90 | max | `detail_correlation` | `detail_slope` |
 |---|---|---|---|---|---|---|
 | before, forest on | 36 | 2.255 | 35.092 | 43.578 | 0.3222 | 1.5162 |
-| before, `CATINGARDEN_FOREST=0` | 36 | 0.560 | 1.835 | 2.277 | 0.9586 | 0.9255 |
+| before, `PLANET_FOREST=0` | 36 | 0.560 | 1.835 | 2.277 | 0.9586 | 0.9255 |
 | after the fix, forest on | 36 | 0.560 | 1.835 | 2.277 | 0.9586 | 0.9255 |
 
 The middle row is the control and the third is the fix reproducing it exactly. Between the first two
@@ -5790,7 +5790,7 @@ canopy height set against a ground height. With trees out of the depth the two l
 0.9586 with slope 0.9255. They were never the two unrelated fields.
 
 The raymarch path had the same defect and the same fix: `coast_waters_edge` under
-`CATINGARDEN_RENDER_PATH=ray` now returns identical numbers with the forest on and off, 70 and 71
+`PLANET_RENDER_PATH=ray` now returns identical numbers with the forest on and off, 70 and 71
 directions shared and 0.000000m apart (median 1.293m/1.172m, p90 3.880m/4.308m). Its CPU truth is
 `surface_height_breakdown_at`, the continuous field with no node, so its residual is not comparable
 with raster's.
@@ -5911,7 +5911,7 @@ blue wavy ocean beyond it and the ship floating on the slab.
 gradates; a cleared buffer does not change colour with camera altitude, and this does. What produces
 exactly this is a **single flat-shaded ocean triangle covering hundreds of pixels**, which is what
 the ocean looks like when its LOD is starved and the composition mode is the default flat-triangle
-one. Setting `CATINGARDEN_MAX_ACTIVE_CHUNKS=24` on the repro scenario reproduces it outright: the
+one. Setting `PLANET_MAX_ACTIVE_CHUNKS=24` on the repro scenario reproduces it outright: the
 ocean becomes a handful of enormous constant-colour facets with straight polygon edges, constant runs
 of 164 and 319 rows down the centre column.
 
@@ -5929,7 +5929,7 @@ part: it says what the trigger is *not*.
 
 - the pose and view direction themselves;
 - weather maturity -- matured to `t 1800s / 3 steps` with 600s timesteps, matching his HUD exactly;
-- viewport -- `CATINGARDEN_VIEWPORT=1920x1080` (added this session, since LOD demand is screen-space
+- viewport -- `PLANET_VIEWPORT=1920x1080` (added this session, since LOD demand is screen-space
   error in *pixels* and a 1280x720 scenario cannot reproduce what the player sees at 1920x1080);
 - fast flight -- 6km at 2,000 m/s into the pose, then holding, to provoke a streaming shortfall.
 
@@ -5941,7 +5941,7 @@ than a chunk-budget one, which is the same shape as open thread 5, where `descen
 are.
 
 Worth noting for whoever picks this up: the default composition mode is `FlatTriangles`
-(`main.rs`, the `_ =>` arm of the `CATINGARDEN_DEBUG_MODE` match), so every interactive launch runs
+(`main.rs`, the `_ =>` arm of the `PLANET_DEBUG_MODE` match), so every interactive launch runs
 the flat-shaded presentation. That is what turns a coarse ocean patch into a featureless slab instead
 of a merely low-poly sea, and it is why this reads as a catastrophic artefact rather than a
 resolution drop.
@@ -6436,7 +6436,7 @@ measurement of the thing itself. Worth checking from the surface, where phase do
 ## 5 September 2026 — the moon was not dark, it was not being drawn
 
 **The previous section's reading was wrong.** It closed by guessing that the dark half of the moon
-was "largely the lunar phase in that particular frame". It was not. `CATINGARDEN_DEBUG_MODE=albedo`
+was "largely the lunar phase in that particular frame". It was not. `PLANET_DEBUG_MODE=albedo`
 on `--body moon --scenario orbit_once` showed the disc black except for thin rings, and counting
 pixels settled it: 5,392 non-black inside a 189x188 bounding box, a fill fraction of **0.15** against
 the **0.785** (pi/4) a solid disc gives. The rings were crater rims. Everything else was the clear
@@ -6644,7 +6644,7 @@ is untouched. The next open terrain issue is the summit survey/app disagreement,
 
 `RenderDebugMode`'s fallback arm was `FlatTriangles` with `FlatTriangleOutlineMode::Dark`. Not an
 opt-in: **every capture in this repo was one flat colour per triangle with a dark outline drawn round
-it**, unless `CATINGARDEN_DEBUG_MODE=final` was set explicitly. That includes every moon screenshot in
+it**, unless `PLANET_DEBUG_MODE=final` was set explicitly. That includes every moon screenshot in
 the previous two sections, and everything I said about them. The default is now `Final` on
 interpolated vertex normals (`world_normal`, a `@location(1)` vertex output), outlines off. Both modes
 stay reachable, because telling a presentation artifact from a terrain one needs to switch between
@@ -6782,8 +6782,8 @@ at 2/4/8-cell distances, with a small local-slope penalty. Flatness is a footing
 the entire objective. The synthetic rim-versus-empty-hemisphere regression fails with the old
 score and passes with the new one; selection is deterministic.
 
-Command: `CARGO_TARGET_DIR=/home/dad/catingard-target cargo build --release -p catinthegarden-baker`,
-then `/home/dad/catingard-target/release/catinthegarden-baker --moon --output assets/outmaps/test-moon-rim-landing`.
+Command: `CARGO_TARGET_DIR=/home/dad/catingard-target cargo build --release -p planet-baker`,
+then `/home/dad/catingard-target/release/planet-baker --moon --output assets/outmaps/test-moon-rim-landing`.
 The completed, validated 8192x4096 / 3,252-tile / 600,176-crater output was promoted to
 `assets/outmaps/test-moon`. Previous data is preserved at
 `assets/outmaps/test-moon.pre-rim-landing-20260906` (manifest SHA-256
@@ -7315,13 +7315,13 @@ or `crates.tar.gz` were changed here.
 ### Reproduce / compare
 
 ```sh
-cargo build --release -p catinthegarden-app
+cargo build --release -p planet-app
 # Check Monitor is On; never measure with a build/bake running.
 DISPLAY=:0 xset -q
 DISPLAY=:0 WGPU_BACKEND=vulkan WGPU_ADAPTER_NAME=Quadro \
-  CATINGARDEN_PRESENT_MODE=immediate \
-  target/release/catinthegarden-app --scenario planet_to_moon
-# Repeat sequentially with CATINGARDEN_SYSTEM_CONTROL=nearest for the control.
+  PLANET_PRESENT_MODE=immediate \
+  target/release/planet-app --scenario planet_to_moon
+# Repeat sequentially with PLANET_SYSTEM_CONTROL=nearest for the control.
 python3 scripts/report-system-flight.py test-runs/planet_to_moon/<run-id> [...]
 ```
 
@@ -7391,7 +7391,7 @@ geometry is 5-6 chunks against 256 for the near body, which is the "56-60 down t
 last capture is an earthrise: the planet with oceans, cloud and an atmospheric limb, **partially
 occluded by a lunar ridge**, stars behind it. Inter-body depth is correct.
 
-**The second body costs nothing measurable.** Its own `CATINGARDEN_SYSTEM_CONTROL=nearest` control
+**The second body costs nothing measurable.** Its own `PLANET_SYSTEM_CONTROL=nearest` control
 removes the distant body and leaves the common atmosphere/star/post work, so the delta is incremental
 distant-terrain cost:
 
@@ -7596,7 +7596,7 @@ so the walking test uses real surface physics and post-stream correction, not an
 interpolated camera. Existing scenarios default to free flight. The actual fix
 is shared by interactive walking and flight, not confined to these replays.
 
-Reproduce with `target/release/catinthegarden-app --body moon --scenario
+Reproduce with `target/release/planet-app --body moon --scenario
 moon_camera_clearance` or `moon_flight_clearance`. Fresh human walking/flying over
 other lunar terrain remains useful; no claim is made here to have repaired all
 terrain seams, geomorphing or source-window discrepancies. Bakes and the user's
@@ -7653,7 +7653,7 @@ On the Quadro M1000M it **fails before and passes after**:
   after. Production height expressions were not edited.
 - Non-finite normals/heights also fail the test. The normal tolerance is 0.002,
   height tolerance 0.02m. The GPU test is explicit/ignored in ordinary CI:
-  `cargo test -p catinthegarden-app gpu_ocean_normals -- --ignored --nocapture`.
+  `cargo test -p planet-app gpu_ocean_normals -- --ignored --nocapture`.
 - 481 ordinary workspace tests pass, 13 ignored (including this new GPU test);
   explicit GPU test, workspace/all-target clippy `-D warnings`, fmt and diff
   checks pass. Release executable rebuilt from this worktree.
@@ -8583,7 +8583,7 @@ check passes. No GPU replay or performance claim: runtime code is unchanged.
 
 ## 10 September — opt-in spawn-coast travelling-wave prototype
 
-Runtime flag `CATINGARDEN_SPAWN_COAST_WAVES=1` enables a **local experiment only**.
+Runtime flag `PLANET_SPAWN_COAST_WAVES=1` enables a **local experiment only**.
 Default remains disabled. This is not automatic steering on arbitrary coastlines.
 At `wavedir_spawn`, the surveyed L4 raw bed is -18.19m; a 4km central difference
 points toward increasing height along `(0.48197104,-0.86880293,0.11351380)`.
@@ -8636,7 +8636,7 @@ maximum normal error 0.000001093, height error 0.000023876m).
 
 Reproduce the local prototype after a release build:
 ```
-CATINGARDEN_SPAWN_COAST_WAVES=1 target/release/catinthegarden-app --scenario wavedir_spawn
+PLANET_SPAWN_COAST_WAVES=1 target/release/planet-app --scenario wavedir_spawn
 ```
 Omit `--scenario wavedir_spawn` for interactive use; only the surveyed spawn
 coastal patch is changed. The environment variable must be set before launch.
@@ -8653,7 +8653,7 @@ prototype. `crates.tar.gz` and terrain/tree implementation files are untouched.
 
 ## 10 September — enable spawn-coast waves in normal gameplay
 
-At the user's request, an unset `CATINGARDEN_SPAWN_COAST_WAVES` now enables the
+At the user's request, an unset `PLANET_SPAWN_COAST_WAVES` now enables the
 validated local prototype. Explicit `1` enables and `0` disables; other explicit
 values retain their previous disabled behaviour. CPU and generated WGSL still
 share the same setting. No wave maths, patch extent, terrain, or tree changes.
@@ -8663,7 +8663,7 @@ Validation: 20 ocean unit tests pass (one separately enabled-only test ignored);
 the explicit component-transport regression also passes. With the environment
 variable unset, the actual-WGSL 48-case GPU normal/height test passes with the
 same enabled-prototype errors as before. Formatting/diff checks and the release
-build pass. The normal runnable is `target/release/catinthegarden-app`; no launch
+build pass. The normal runnable is `target/release/planet-app`; no launch
 parameter is needed. The two historical terrain source-string failures were not
 changed or reclassified by this small default-setting change.
 
@@ -8781,9 +8781,9 @@ Three launch-only diagnostic modes now isolate the optical terms without enterin
 the normal F9 cycle:
 
 ```
-CATINGARDEN_DEBUG_MODE=underside_transmission
-CATINGARDEN_DEBUG_MODE=underside_sky
-CATINGARDEN_DEBUG_MODE=underside_reflection
+PLANET_DEBUG_MODE=underside_transmission
+PLANET_DEBUG_MODE=underside_sky
+PLANET_DEBUG_MODE=underside_reflection
 ```
 
 At the existing near-horizontal `ocean_underside_shallows` pose, the transmission
@@ -9089,12 +9089,12 @@ user was asked to close it for an uncontended comparison. No FPS improvement or
 visual parity claim is justified yet; retain this only if the measurements pass.
 
 Baseline is `201601a`. Preserved, independently named release binaries in the
-same worktree: `target/release/catinthegarden-sky-before` (baseline) and
-`target/release/catinthegarden-sky-after` (candidate). The main release executable
+same worktree: `target/release/planet-sky-before` (baseline) and
+`target/release/planet-sky-after` (candidate). The main release executable
 is also the candidate. No separate checkout shares the target directory.
 
 Next steps once the live game is closed:
-1. `python3 /tmp/catingard-sky-benchmark-201601a.py stand_on_ground 2` runs two
+1. `python3 /tmp/planet-sky-benchmark-201601a.py stand_on_ground 2` runs two
    interleaved Quadro Immediate-present pairs, sampling spatial frames from 2s.
    The harness refuses to run while the live app exists. It appends raw samples,
    medians and run paths under `test-runs/performance/sky-occlusion-201601a/`.
@@ -9112,7 +9112,7 @@ hole remains open independently of this candidate.
 ## 12 September — sky-overdraw measurement complete; candidate retained
 
 Baseline `201601a` and candidate `2429540` were rebuilt/saved separately as
-`target/release/catinthegarden-sky-before` and `-after`. The change is confined
+`target/release/planet-sky-before` and `-after`. The change is confined
 to raster draw order, the sky's depth comparison and invariant vertex position;
 no atmosphere sampling, image resolution or terrain/ocean quality reduction.
 
@@ -9504,7 +9504,7 @@ The current L4 macro source changes by only 1.53m over its 650m S-curve, with
 a maximum 0.44% grade between 10m samples; the runtime detail field is **not**
 covered by that number, so there is no 8% road-grade guarantee.
 
-With `CATINGARDEN_ROAD_EXPERIMENT=1`, raster terrain shades a roughly 9m
+With `PLANET_ROAD_EXPERIMENT=1`, raster terrain shades a roughly 9m
 asphalt centre with gravel shoulders feathering into the existing material by
 14m. Its centreline is a bounded two-stage smooth S-curve in planet-local
 metres. It changes no terrain vertex, collision height, draw call, depth,
@@ -9513,7 +9513,7 @@ cut/fill mesh or a tunnel. The shader source selects a constant at startup;
 with the environment variable absent or 0, the road branch is compiled out.
 The moon and ray path are unaffected. Run the fixed pose with:
 
-`CATINGARDEN_ROAD_EXPERIMENT=1 /home/dad/catingard-target/release/catinthegarden-app --scenario road_surface_trial`
+`PLANET_ROAD_EXPERIMENT=1 /home/dad/catingard-target/release/planet-app --scenario road_surface_trial`
 
 At 1280x720 on the Quadro M1000M, Immediate present, fixed exposure, four
 interleaved off/on pairs alternate order. Each run contributes the median of
@@ -9639,7 +9639,7 @@ its first capture; this is a separate performance issue, not evidence that the
 road shader or camera path is slow. The new flag defaults false, so normal play
 and every other scenario still simulates birds.
 
-Run with `CATINGARDEN_ROAD_EXPERIMENT=1 /home/dad/catingard-target/release/catinthegarden-app --scenario road_surface_trial`.
+Run with `PLANET_ROAD_EXPERIMENT=1 /home/dad/catingard-target/release/planet-app --scenario road_surface_trial`.
 Quadro Immediate-present replay
 `test-runs/road_surface_trial/1789295599-342703` passes finite metrics,
 seven captures and 2.000m clearance at all seven captures (allowed
@@ -9654,7 +9654,7 @@ network.
 Road work was already pushed (`f8461ca`, response `61f2e5b`) before this phase.
 Concurrent bird/marker/main changes and `crates.tar.gz` were left alone.
 
-`CATINGARDEN_OCEAN_WIND="30,-0.3,0.75,-0.6"` enables reproducible startup
+`PLANET_OCEAN_WIND="30,-0.3,0.75,-0.6"` enables reproducible startup
 wind controls: speed in 0–30m/s, followed by a nonzero planet-frame propagation
 axis (towards, not meteorological from). Invalid settings fail explicitly.
 Absent settings preserve the previous sea. Long waves at >=1000m retain their
@@ -9669,7 +9669,7 @@ CPU height, slope and vertical velocity use the same weights/signs as the GPU.
 Weights are generated into WGSL constants once, avoiding per-fragment
 normalisation, dot products or square roots for wind. The spawn-coast
 shoreward override remains and accounts for the selected propagation sign;
-use `CATINGARDEN_SPAWN_COAST_WAVES=0` to inspect the unsteered wind response.
+use `PLANET_SPAWN_COAST_WAVES=0` to inspect the unsteered wind response.
 The ripple layer also receives paired weights/signs but remains non-geometric.
 
 Validation: 22 focused ocean tests pass (one ignored instrument); 549 workspace
@@ -9697,7 +9697,7 @@ the top 200 sky rows are identical. These establish a rendered response, not
 an FPS improvement or subjective visual sign-off. No matched performance
 claim is made (tests/build activity overlapped some captures).
 
-Run: `CATINGARDEN_SPAWN_COAST_WAVES=0 CATINGARDEN_OCEAN_WIND='30,-0.3,0.75,-0.6' /home/dad/catingard-target/release/catinthegarden-app --scenario ocean_wind_trial`.
+Run: `PLANET_SPAWN_COAST_WAVES=0 PLANET_OCEAN_WIND='30,-0.3,0.75,-0.6' /home/dad/catingard-target/release/planet-app --scenario ocean_wind_trial`.
 
 Still outstanding: this is an authored finite-spectrum steady-wind experiment,
 not a fetch/duration model, continuously turning wind, or the simulated local
@@ -9710,7 +9710,7 @@ phases. Do not describe this as Sea of Thieves-level completion.
 
 ### Why the bird cam never worked for the user
 
-The bird cam was reached through `CATINGARDEN_BIRD_CAM`, decided once at launch.
+The bird cam was reached through `PLANET_BIRD_CAM`, decided once at launch.
 The user could not get it to do anything, and was right about the cause before I
 was: **the game starts with the scene clock frozen and nothing spawns until F10
 starts it**, so at the moment the launch-time choice is made there are no birds
@@ -9740,7 +9740,7 @@ rebuild the pose from `flight_local_position` every frame, so the player returns
 to exactly where they were standing. The target is dropped on the way out, so
 the next press picks afresh rather than resuming a bird that may be a kilometre
 away. While riding, the target is *held* until that bird is retired, because
-re-picking each frame cuts between birds continuously. `CATINGARDEN_BIRD_CAM`
+re-picking each frame cuts between birds continuously. `PLANET_BIRD_CAM`
 still starts a replay already riding.
 
 ### Which bird, and why it is measured
@@ -9894,11 +9894,11 @@ Validation:
 - 553 workspace tests passed, 23 ignored; formatting, diff check and clippy pass.
 - Actual Quadro GPU parity, 48 cases each: default max height error .000123m,
   max normal error .00003082; 15m/s wind max height .000106m, normal .00000134.
-- Release rebuilt at `/home/dad/catingard-target/release/catinthegarden-app`.
+- Release rebuilt at `/home/dad/catingard-target/release/planet-app`.
 - NVIDIA Vulkan/Xvfb `ocean_wind_trial/1789336777-489406` passes, two captures;
   inspected `screenshots/capture-002.png`. Broad intersecting ridges are visible,
   but static capture is not motion acceptance or Sea of Thieves visual parity.
-  Replay used `CATINGARDEN_SPAWN_COAST_WAVES=0` and no wind override to isolate
+  Replay used `PLANET_SPAWN_COAST_WAVES=0` and no wind override to isolate
   the global spectrum. Normal launches include the crossing swell automatically,
   with the existing spawn-coast steering still enabled by default.
 - No matched timing run: one added analytic component, no extra draw/mesh, but
@@ -9922,8 +9922,8 @@ This is deliberately an authored, repeatable demonstration cycle, **not** a
 weather-driven wind/fetch/duration model. The calm column retains large remote
 swells; it is not glass-flat or a physically calibrated Beaufort-zero sea.
 
-- `CATINGARDEN_OCEAN_STORM=0` fixes calm, `.5` intermediate, `1` the old storm.
-- Without that override, `CATINGARDEN_OCEAN_WIND=speed,x,y,z` selects fixed
+- `PLANET_OCEAN_STORM=0` fixes calm, `.5` intermediate, `1` the old storm.
+- Without that override, `PLANET_OCEAN_WIND=speed,x,y,z` selects fixed
   intensity `speed/30`, alongside its existing directional spectrum filtering.
 - Scenario `ocean_storm_intensity_override` is now honored, ahead of environment
   intensity. Scenarios without it retain legacy fixed storm for compatibility.
@@ -10002,8 +10002,8 @@ spatial derivatives in CPU/GPU surface queries. Storm intensity is used, not a
 wind-speed/direction/fetch/duration spectrum. Wind axes and weights are still
 startup-only. The calm amplitude column still retains large remote swells.
 
-**Controls:** numeric `CATINGARDEN_OCEAN_STORM=0..1` and explicit startup wind
-remain fixed overrides. `CATINGARDEN_OCEAN_STORM=cycle` retains the former
+**Controls:** numeric `PLANET_OCEAN_STORM=0..1` and explicit startup wind
+remain fixed overrides. `PLANET_OCEAN_STORM=cycle` retains the former
 600-second loop. Legacy scenarios retain their fixed endpoints; the new
 `ocean_weather_response: true` flag explicitly chooses Weather mode, taking
 precedence over numeric scenario/environment endpoints. The ocean follows its
@@ -10293,7 +10293,7 @@ barely helping and broke two other invariants, so it stays.
 
 On exactly this change -- HEAD plus the staged files, built in a separate
 worktree -- 501 app tests pass, 0 fail, 20 ignored, and
-`cargo clippy -p catinthegarden-app --all-targets` is clean. The working tree,
+`cargo clippy -p planet-app --all-targets` is clean. The working tree,
 which also carries Codex's uncommitted fetch diff, reads 504 passed and 3 failed:
 the two fetch tests drafted to fail on that diff, and `every_listed_scenario_loads`,
 which asserts 96 scenarios and finds the uncommitted `ocean_weather_dry_landing`
@@ -10776,7 +10776,7 @@ village pass rather than restored. One shaft per village, not per house, and
 emitted from the *sited* set rather than the drawn one, so settlements too far
 away to draw still show. Width is applied in NDC, so a beam stays the same
 thickness whether its village is 200m or 2,000km away. Off by default, with
-`CATINGARDEN_VILLAGE_BEAMS=1` for captures.
+`PLANET_VILLAGE_BEAMS=1` for captures.
 
 **Verification.** 533 app tests, 606 workspace, fmt and clippy pass; the one
 clippy warning is the pre-existing constant assertion at `village.rs:890`.
@@ -10792,7 +10792,7 @@ Neither is a number to quote; a clean measurement needs an idle machine.
 
 ## 20 September — `--profile-render` works again, and what still does not
 
-**Resolution.** `CATINGARDEN_VIEWPORT=WIDTHxHEIGHT` sets the internal render
+**Resolution.** `PLANET_VIEWPORT=WIDTHxHEIGHT` sets the internal render
 size, default 1280x720, minimum 64 per axis. Fullscreen keeps whatever that was:
 `toggle_fullscreen` pins `fullscreen_render_size` to the current internal size
 and only the presented surface grows to the monitor, so the env var is the
@@ -10836,7 +10836,7 @@ run-to-run drift seen today.
 
 ## 20 September — where the frame actually goes
 
-`CATINGARDEN_DISABLE=a,b,c` skips any named scene draw. It exists because
+`PLANET_DISABLE=a,b,c` skips any named scene draw. It exists because
 per-subsystem GPU attribution needs either timestamps, which break this card,
 or matched A/B runs, and the toggles that existed covered a few systems under
 inconsistent names. Skipping a system leaves the frame wrong on purpose.
@@ -10904,13 +10904,13 @@ cost on fragments and the rest per-vertex.
 sample, four more for central-difference normals, geomorph blending and
 per-vertex aerial perspective, on a canonical 33x33 grid that is 2,304 triangles
 per chunk at *every* LOD. Ablate those terms one at a time with the same
-`CATINGARDEN_DISABLE`-style harness before changing anything. The candidate
+`PLANET_DISABLE`-style harness before changing anything. The candidate
 fixes are a coarser grid for distant chunks, cheaper normals, and moving aerial
 perspective off the vertex, but which one is worth doing is not yet measured.
 
 ## 20 September — every terrain shader term priced, and the two cheapest wins taken
 
-`CATINGARDEN_ABLATE=normals,detail,aerial,fog,skylight,material,tint,weather`
+`PLANET_ABLATE=normals,detail,aerial,fog,skylight,material,tint,weather`
 compiles named terms out of the terrain shader. Each was confirmed to change the
 rendered image before being timed: an ablation that silently does nothing reads
 as "this term is free", which is the most expensive mistake available here.
@@ -10948,7 +10948,7 @@ At Ian's request, `crates/app/src/planet.rs::cloud_shadow_enabled` now returns
 false by default and emits `TERRAIN_CLOUD_SHADOW_ENABLED` into both the terrain
 and forest shaders. **One constant for both** is load-bearing: the trees have
 their own `cloud_shadow_visibility` call, so disabling only terrain would shadow
-a tree standing on unshadowed ground. `CATINGARDEN_CLOUD_SHADOW=1` restores it
+a tree standing on unshadowed ground. `PLANET_CLOUD_SHADOW=1` restores it
 with no rebuild; making it permanent is a one-word change in that function,
 which carries a comment saying whose request it was and when.
 
@@ -10974,7 +10974,7 @@ F6 still toggles it and scenarios, which set their own post state, are
 unaffected. `interactive_startup_does_not_enable_blur` reads the function's own
 source and fails if the call comes back — mutation-checked by restoring the line.
 
-**Village locator beams are on `V`**, or `CATINGARDEN_VILLAGE_BEAMS=1` at launch
+**Village locator beams are on `V`**, or `PLANET_VILLAGE_BEAMS=1` at launch
 for captures. They are drawn from the *sited* set, not the drawn one, so
 settlements past the 8km house-draw cutoff still show; the level-10 search ring
 covers roughly 12km around the camera. `V` is now listed in the HUD control line.
@@ -11055,7 +11055,7 @@ adding hue. `neutralize_snow_surface_lighting_blend` deliberately takes 55% of
 the remaining hue so low sun cannot paint the icecap orange; removing it doubles
 saturation to 0.038 and reads the same. Exposure moves both metrics honestly, the
 snow being deep in the ACES shoulder at 1.0, but 0.041 against 0.176 is not a
-different picture. All reverted. `CATINGARDEN_EXPOSURE` is kept as a diagnostic,
+different picture. All reverted. `PLANET_EXPOSURE` is kept as a diagnostic,
 default 1.0, pinned by `the_fixed_presentation_exposure_defaults_to_one`.
 
 ### What the eye says, attributed by ablation
@@ -11100,7 +11100,7 @@ byte-mirrored. This is intended to reduce the corduroy/repeated-line character w
 samples, bind groups, branches, or texture work. It is not yet a scored visual win.
 
 Validation: `CARGO_TARGET_DIR=/home/dad/catingard/target-ocean-spectrum cargo test -p
-catinthegarden-app ocean --release` passes, 62 passed and 12 ignored; the actual-WGSL ocean normal
+planet-app ocean --release` passes, 62 passed and 12 ignored; the actual-WGSL ocean normal
 parity test `ocean::gpu_tests::gpu_ocean_normals_match_cpu_buoyancy_in_deep_and_breaking_water`
 passes under the same target; release build passes; `ocean_wind_trial` release replay passes at
 `test-runs/ocean_wind_trial/1789946830-288902` with two expected captures. Against an older
@@ -11120,7 +11120,7 @@ unchanged, the ramp is cubed instead of squared, and the backlight gate is tight
 unchanged.
 
 Validation: `CARGO_TARGET_DIR=/home/dad/catingard/target-ocean-spectrum cargo test -p
-catinthegarden-app --release ocean` passes, 62 passed and 12 ignored; the focused terrain guard
+planet-app --release ocean` passes, 62 passed and 12 ignored; the focused terrain guard
 `ocean_shader_transmits_sunlight_and_retains_submerged_bathymetry` and ocean guard
 `crest_transmission_tracks_the_sea_state_uniform` pass; release build passes; `ocean_hybrid_close`
 release replay passes at `test-runs/ocean_hybrid_close/1789975619-330460` with four captures. The
@@ -11181,22 +11181,22 @@ New `crates/app/src/ocean_fft.rs` + `ocean_fft.wgsl`, standalone (not wired into
 
 Measured on the Quadro M1000M (wall-clock, submit+wait, 100-frame batches, dedicated run): **0.81-0.84ms/frame** for the whole field, inside the 1.0ms budget. Pass split (before halving, 12 FFTs): evolve 0.16, rows 0.71, cols 0.76, assemble 0.22ms; halving to 6 FFTs took 1.53 -> 0.82ms. A shared twiddle table was slower (1.74ms) and was reverted. Correctness: single-mode test matches the analytic standing wave (h, Dx, Dz) to 3e-6.
 
-Run: `cargo test -p catinthegarden-app --release ocean_fft -- --ignored --nocapture --test-threads=1`.
+Run: `cargo test -p planet-app --release ocean_fft -- --ignored --nocapture --test-threads=1`.
 Not done: texture output with mips, wiring into the camera-local patch, CPU 64x64 parity (phase C), weather-driven wind/fetch, time wrapping (f32 phase over long runs). This is standalone cost, not a total-ocean-cost claim.
 
 ## 25 September - Ocean FFT plan, Phase B step 2 (FFT field drives the raster ocean, opt-in)
 
-`CATINGARDEN_OCEAN_FFT=1` (optionally `CATINGARDEN_OCEAN_FFT_WIND=<m/s>`, default 14) routes `ocean_surface` in the raster path through the GPU FFT field instead of the 18 Gerstner waves + 3 ripples. Default is off and the default shader is unchanged (the FFT call is stripped from the source in `shared_planet_shader_source`, so auto-layout tests keep working; the 6 `gpu_ocean_*` tests pass with it off).
+`PLANET_OCEAN_FFT=1` (optionally `PLANET_OCEAN_FFT_WIND=<m/s>`, default 14) routes `ocean_surface` in the raster path through the GPU FFT field instead of the 18 Gerstner waves + 3 ripples. Default is off and the default shader is unchanged (the FFT call is stripped from the source in `shared_planet_shader_source`, so auto-layout tests keep working; the 6 `gpu_ocean_*` tests pass with it off).
 
 Design: assemble writes a 256x256x3 rgba16f storage-texture array (h, Dx, Dz); shared bind group(2) gets bindings 16 (map), 17 (repeat/linear sampler), 18 (`OceanFftView`: fixed tangent-plane axes + per-cascade camera fractional tile coords). Tile coords = camera fraction (f64 on the CPU) + tangent-plane projection of the camera-relative view position, set through `var<private> ocean_fft_view_position` by `vs_ocean`, `ocean_raster_surface`, `flat_ocean_colour`. Cascade 0 (wavelengths >~12m) is mesh geometry and normal; cascades 1-2 only feed `ripple_slope`/`ripple_height`, faded by camera distance (no mips yet). Slopes and div(D) (as `convergence`) are forward finite differences of the texture. The same depth-based breaking limiter is applied. `max_sampled_textures_per_shader_stage` is raised to 20 (the ray-field pipeline was already at 16).
 
 Result on `ocean_manual_grid` (overhead lattice view), lattice metric, four captures: Gerstner 140-188 -> FFT 30-38 (white noise ~19). Captures: `test-runs/ocean_manual_grid/1790294496-11868` (FFT) vs `1790294468-11777` (control). Visually an irregular wind sea with foam patches and no diagonal hatching.
 
-NOT done / known: horizontal displacement is not applied (phase C); **CPU buoyancy, ship, and camera clearance still use the Gerstner sea, so low cameras will clip FFT waves** until phase C; ray/foveated path and `ocean_surface_world_direction` callers (planet.wgsl:387 etc.) don't set the view position so they are not FFT-correct; wind/fetch not coupled to weather; no mips; no frame-time comparison of the whole frame yet; f32 time. Note the game binary is at `target/release/catinthegarden-app` (the `/home/dad/catingard-target/release` binary is stale, 14 Sept).
+NOT done / known: horizontal displacement is not applied (phase C); **CPU buoyancy, ship, and camera clearance still use the Gerstner sea, so low cameras will clip FFT waves** until phase C; ray/foveated path and `ocean_surface_world_direction` callers (planet.wgsl:387 etc.) don't set the view position so they are not FFT-correct; wind/fetch not coupled to weather; no mips; no frame-time comparison of the whole frame yet; f32 time. Note the game binary is at `target/release/planet-app` (the `/home/dad/catingard-target/release` binary is stale, 14 Sept).
 
 ## 25 September - Ocean FFT plan, Phase C (CPU buoyancy/collision parity, opt-in)
 
-With `CATINGARDEN_OCEAN_FFT=1`, `ocean.rs` height/slope/velocity entry points (`global_wave_height_meters`, `local_wave_height_meters`, `global_wave_slope`, both vertical-velocity functions) use `ocean_fft::CpuSurface` instead of the Gerstner sum. It is the same spectrum (`default_h0`, seed 1, `CATINGARDEN_OCEAN_FFT_WIND`) inverse-FFT'd on the CPU (radix-2, cascade 0 only, the geometry cascade), height and vertical velocity packed into one complex FFT, bilinear + forward-difference slope exactly as the shader does, shared tangent-plane anchor (`anchor_axes`, first camera direction). Depth limiter reuses `breaking_weight` / `breaking_rate_weight`. Finer cascades are shading-only, so local == global.
+With `PLANET_OCEAN_FFT=1`, `ocean.rs` height/slope/velocity entry points (`global_wave_height_meters`, `local_wave_height_meters`, `global_wave_slope`, both vertical-velocity functions) use `ocean_fft::CpuSurface` instead of the Gerstner sum. It is the same spectrum (`default_h0`, seed 1, `PLANET_OCEAN_FFT_WIND`) inverse-FFT'd on the CPU (radix-2, cascade 0 only, the geometry cascade), height and vertical velocity packed into one complex FFT, bilinear + forward-difference slope exactly as the shader does, shared tangent-plane anchor (`anchor_axes`, first camera direction). Depth limiter reuses `breaking_weight` / `breaking_rate_weight`. Finer cascades are shading-only, so local == global.
 
 Measured: CPU grid vs the actual GPU texture max error 0.26mm (height range 1.9m); velocity matches a numeric derivative to 5e-3; holding the grid up to 0.03s and advancing by velocity errs 0.27mm. A full CPU refresh costs ~2.3ms but happens at most once per 0.03s of ocean time (not yet threaded; watch frame cost with fast time scales). Removing truncation was necessary: direct mode summation was 6.5ms/sample and top-N modes kept only 90% variance at 2.7k modes.
 
@@ -11205,9 +11205,9 @@ Not done: horizontal choppiness/transport with inverse lookup (needed for cusps)
 
 ## 25 September - Blur stage converted to edge-aware anti-aliasing (FXAA-style)
 
-`blur_scene` in `hdr.wgsl` (the 5x5 box blur behind F6) is now an FXAA-style filter: edge detection on tone-compressed luma (threshold max(0.0312, 12.5% of local max)), horizontal/vertical edge classification, a 0.5-0.75 luma-weighted blend toward the neighbour across the edge (sub-pixel term for isolated pixels); flat areas and fine texture pass through untouched. It still runs on the HDR scene before tonemapping and reuses the same pipeline, toggle (F6) and default (`BLUR_ENABLED` = off, per Ian's 20 Sept request). HUD/help now say "AA". New `CATINGARDEN_AA=1` starts with it on (also how scenarios can capture it). Evidence: `orbit_once/1790297588-16123` (off) vs `1790297603-16165` (on): 16.1% of pixels move by >2 levels (flat-triangle planet full of edges), mean gradient 8.61 -> 7.34, and a 4x crop shows smoothed stair-steps with colours intact. Not FXAA 3.11's edge-end search (no long-edge blending), so long near-horizontal edges get the half-pixel treatment only. Cost not measured (one pass, ~9 taps versus the old 25).
+`blur_scene` in `hdr.wgsl` (the 5x5 box blur behind F6) is now an FXAA-style filter: edge detection on tone-compressed luma (threshold max(0.0312, 12.5% of local max)), horizontal/vertical edge classification, a 0.5-0.75 luma-weighted blend toward the neighbour across the edge (sub-pixel term for isolated pixels); flat areas and fine texture pass through untouched. It still runs on the HDR scene before tonemapping and reuses the same pipeline, toggle (F6) and default (`BLUR_ENABLED` = off, per Ian's 20 Sept request). HUD/help now say "AA". New `PLANET_AA=1` starts with it on (also how scenarios can capture it). Evidence: `orbit_once/1790297588-16123` (off) vs `1790297603-16165` (on): 16.1% of pixels move by >2 levels (flat-triangle planet full of edges), mean gradient 8.61 -> 7.34, and a 4x crop shows smoothed stair-steps with colours intact. Not FXAA 3.11's edge-end search (no long-edge blending), so long near-horizontal edges get the half-pixel treatment only. Cost not measured (one pass, ~9 taps versus the old 25).
 
-Follow-up (25 Sept): interactive launches now start with the F6 anti-aliasing on (`apply_interactive_startup_controls` calls `set_effects`, not the toggle; `CATINGARDEN_AA=0` opts out). Scenarios still use the `BLUR_ENABLED` default (off), so scenario captures and baselines are unchanged. Test `interactive_startup_enables_anti_aliasing` replaces `interactive_startup_does_not_enable_blur`.
+Follow-up (25 Sept): interactive launches now start with the F6 anti-aliasing on (`apply_interactive_startup_controls` calls `set_effects`, not the toggle; `PLANET_AA=0` opts out). Scenarios still use the `BLUR_ENABLED` default (off), so scenario captures and baselines are unchanged. Test `interactive_startup_enables_anti_aliasing` replaces `interactive_startup_does_not_enable_blur`.
 
 ## 25 September - Ocean FFT plan, Phase D (revised: band-limit the mesh, not densify it)
 
@@ -11215,7 +11215,7 @@ Measurement changed the phase. In the deck-level FFT run (`ocean_deck_reference`
 
 ## 25 September - Ocean FFT plan, Phase E (Sea of Thieves shading, FFT ocean only)
 
-Under `CATINGARDEN_OCEAN_FFT=1`, `ocean_lighting` delegates to new `ocean_lighting_sot` (default lighting untouched). Model, after Rare's SIGGRAPH 2018 talk: body colour = the existing sun-facing deep/teal ramp (`ocean_body_albedo`, 85% weight against `OCEAN_SOT_DEEP_COLOUR`) blended toward `OCEAN_SOT_SUBSURFACE_COLOUR` by a weight from the wave-peak mask (FFT convergence, i.e. bunching of the displacement field; smoothstep 0.20-0.65), backlight (view toward sun) and sun-facing/grazing terms, plus a subsurface glow on backlit peaks. Sun specular is a peak-normalised GGX lobe using Karis's representative point on an artificial sun sphere (tan radius 0.06 vs the real 0.0046) with roughness rising 0.08 -> 0.5 from 30m to 1.5km range, energy-normalised, faded out at grazing view angles (else a white line drew along the horizon). Existing Fresnel, cubemap reflection and foam composition are unchanged; the old crest-transmission layers are bypassed in this mode only.
+Under `PLANET_OCEAN_FFT=1`, `ocean_lighting` delegates to new `ocean_lighting_sot` (default lighting untouched). Model, after Rare's SIGGRAPH 2018 talk: body colour = the existing sun-facing deep/teal ramp (`ocean_body_albedo`, 85% weight against `OCEAN_SOT_DEEP_COLOUR`) blended toward `OCEAN_SOT_SUBSURFACE_COLOUR` by a weight from the wave-peak mask (FFT convergence, i.e. bunching of the displacement field; smoothstep 0.20-0.65), backlight (view toward sun) and sun-facing/grazing terms, plus a subsurface glow on backlit peaks. Sun specular is a peak-normalised GGX lobe using Karis's representative point on an artificial sun sphere (tan radius 0.06 vs the real 0.0046) with roughness rising 0.08 -> 0.5 from 30m to 1.5km range, energy-normalised, faded out at grazing view angles (else a white line drew along the horizon). Existing Fresnel, cubemap reflection and foam composition are unchanged; the old crest-transmission layers are bypassed in this mode only.
 
 Evidence: `ocean_deck_reference/1790316777-24052` (vivid teal, lighter thin peaks); `ocean_low_sun_stability/1790317319-24599` vs the first SoT pass `1790317159-24372`: glitter road width (pixels above local warm baseline) 63/37/23/21 -> 132/126/63/21 at rows 230/300/400/550. All scenarios pass. Full app suite: 551 pass, 4 fail, none from this change (the two long-standing ones, plus the time-speed ladder and atmosphere mist-declaration tests, which follow uncommitted edits in `main.rs` and `atmosphere.*`).
 Constants are eyeballed against one reference frame each; Phase H (art direction against Ian's reference shots, which have not been supplied) is where they get tuned. No frame-time measurement (xvfb).
@@ -11226,7 +11226,7 @@ After Phases D/E the overhead FFT score rose 36 -> 86, which looked like a new p
 
 ## 25 September - Ocean FFT plan, Phase F (temporal fold foam, FFT ocean only)
 
-Under `CATINGARDEN_OCEAN_FFT=1` the existing world-reprojected foam history atlas (`ocean_foam.rs`/`.wgsl`, formerly opt-in via `CATINGARDEN_OCEAN_FOAM_HISTORY`) is always on and is fed by the Tessendorf fold Jacobian J = (1+dDu/du)(1+dDv/dv) - dDu/dv dDv/du of all three FFT cascades, instead of Gerstner convergence plus random flecks. Atlas: 256x256 over 512m (2m texels; the Gerstner trial keeps 128), birth smoothstep(J 0.66 -> 0.36), 2.5s decay, small feedback blur so foam spreads as it ages. The texel's camera offset comes from exact atlas metres, not an f32 planet-radius subtraction. The FFT update now runs before the foam pass (main.rs) so the atlas reads the current field.
+Under `PLANET_OCEAN_FFT=1` the existing world-reprojected foam history atlas (`ocean_foam.rs`/`.wgsl`, formerly opt-in via `PLANET_OCEAN_FOAM_HISTORY`) is always on and is fed by the Tessendorf fold Jacobian J = (1+dDu/du)(1+dDv/dv) - dDu/dv dDv/du of all three FFT cascades, instead of Gerstner convergence plus random flecks. Atlas: 256x256 over 512m (2m texels; the Gerstner trial keeps 128), birth smoothstep(J 0.66 -> 0.36), 2.5s decay, small feedback blur so foam spreads as it ages. The texel's camera offset comes from exact atlas metres, not an f32 planet-radius subtraction. The FFT update now runs before the foam pass (main.rs) so the atlas reads the current field.
 
 Per pixel, `ocean_surface_fft` also computes J (free: same three samples) as `ocean_fft_fold_foam`; beyond the atlas that instantaneous fold is used, inside it the smooth history only (the per-pixel J is forward differences of 3.9m texels, piecewise flat, which drew polygonal white chips near the camera). The fold replaces the slope/height whitecap rule in FFT mode; surf and shoreline wash are unchanged. Foam is broken into lace by a pattern made from the finer cascades' own heights (normalised by their measured std, 0.056m / 0.218m), standing in for Rare's authored foam texture; thin foam stays partly translucent.
 
@@ -11235,15 +11235,15 @@ Not done: object/hull intersection foam (Rare's depth-compare ring), wind/sea-st
 
 ## 25 September - FFT CPU surface: F10 freeze (birds) made the game crawl
 
-Ian pressed F10 (which starts time, and with it the birds) with `CATINGARDEN_OCEAN_FFT=1` and got ~1 frame per 20s. Cause: `CpuSurface` cached one grid and refreshed (2.3ms inverse FFT) whenever a query was more than 0.03s from it. `sea_avoidance` in `birds.rs` samples the water at `time + {0,0.5,1,1.5,2,3}s` for every bird, so each call missed the cache: ~100 birds x 6 x 2.3ms x up to 15 catch-up steps. Fix: 8-slot grid cache keyed by time (`GRID_SLOTS`); test `interleaved_query_times_do_not_refresh_every_call` (1200 interleaved samples must take <0.5s; a single slot takes ~2.8s). Not measured in the live game; needs Ian to press F10 again with FFT on. Also: `response/codex.txt` was overwritten with a status note (AGENTS.md relay), replacing the old Codex transcript (still in git history).
+Ian pressed F10 (which starts time, and with it the birds) with `PLANET_OCEAN_FFT=1` and got ~1 frame per 20s. Cause: `CpuSurface` cached one grid and refreshed (2.3ms inverse FFT) whenever a query was more than 0.03s from it. `sea_avoidance` in `birds.rs` samples the water at `time + {0,0.5,1,1.5,2,3}s` for every bird, so each call missed the cache: ~100 birds x 6 x 2.3ms x up to 15 catch-up steps. Fix: 8-slot grid cache keyed by time (`GRID_SLOTS`); test `interleaved_query_times_do_not_refresh_every_call` (1200 interleaved samples must take <0.5s; a single slot takes ~2.8s). Not measured in the live game; needs Ian to press F10 again with FFT on. Also: `response/codex.txt` was overwritten with a status note (AGENTS.md relay), replacing the old Codex transcript (still in git history).
 
 ## 25 September - FFT choppy horizontal displacement (first pass toward cusps)
 
-Ian: water and foam good, but no cusps / small peaks. `ocean_surface_fft` now fills `horizontal_displacement` from the Dx/Dz of all three cascades (mid/fine by their existing distance weights, scaled by `geometry_weight` and the depth breaking weight), and corrects the shading slope by the inverse displacement Jacobian (M^-T applied to label-space slope, determinant clamped at 0.2) so pinched crests steepen. Strength `CATINGARDEN_OCEAN_FFT_CHOP` (default 1.0, 0-2), carried in `ViewParams.gain.y`. Foam still uses the unscaled (chop=1) Jacobian. Evidence: `ocean_rough_horizon` chop 0/1/2 pre-slope-correction were nearly identical; with slope correction chop 2 (`1790336024-48581`, assuming that dir is chop 2) shows sharper, more streaked crest faces but silhouettes are still rounded -- NOT convincing cusps. Known gap: CPU buoyancy/collision does not include the displacement (no inverse lookup yet), so the drawn surface differs from the CPU one by slope x displacement (unmeasured, likely cm to tens of cm). No frame-time measurement.
+Ian: water and foam good, but no cusps / small peaks. `ocean_surface_fft` now fills `horizontal_displacement` from the Dx/Dz of all three cascades (mid/fine by their existing distance weights, scaled by `geometry_weight` and the depth breaking weight), and corrects the shading slope by the inverse displacement Jacobian (M^-T applied to label-space slope, determinant clamped at 0.2) so pinched crests steepen. Strength `PLANET_OCEAN_FFT_CHOP` (default 1.0, 0-2), carried in `ViewParams.gain.y`. Foam still uses the unscaled (chop=1) Jacobian. Evidence: `ocean_rough_horizon` chop 0/1/2 pre-slope-correction were nearly identical; with slope correction chop 2 (`1790336024-48581`, assuming that dir is chop 2) shows sharper, more streaked crest faces but silhouettes are still rounded -- NOT convincing cusps. Known gap: CPU buoyancy/collision does not include the displacement (no inverse lookup yet), so the drawn surface differs from the CPU one by slope x displacement (unmeasured, likely cm to tens of cm). No frame-time measurement.
 
 ## 25 September - "FFT OCEAN" mode badge
 
-With `CATINGARDEN_OCEAN_FFT=1` a plain white "FFT OCEAN" pixel-font label is drawn in the scene pass at the top centre (part of `flock_marker`, separate pipeline/uniform, depth-test off, HDR 4.0 white). It is in the rendered frame, so it shows with the debug overlay hidden and in scenario captures (checked in `orbit_once`; `still_5s` does not draw the scene pass). Absent when FFT is off.
+With `PLANET_OCEAN_FFT=1` a plain white "FFT OCEAN" pixel-font label is drawn in the scene pass at the top centre (part of `flock_marker`, separate pipeline/uniform, depth-test off, HDR 4.0 white). It is in the rendered frame, so it shows with the debug overlay hidden and in scenario captures (checked in `orbit_once`; `still_5s` does not draw the scene pass). Absent when FFT is off.
 
 ## 25 September - FFT ocean: choppy sign fix, fold limiter, swell cascade, CPU lattice cache
 
@@ -11251,7 +11251,7 @@ Ian: "negative peak thing that looks like boiling water"; FPS drops going 100% -
 
 1. **Choppy sign was inverted.** The FFT stores D = +k^ a sin where h = a cos (checked by `single_mode_produces_the_analytic_standing_wave`), so the crest-ward surface is x0 - D. The shader drew x0 + D, pinching troughs into downward spikes and broadening crests. The same sign error put fold foam (Jacobian with 1+dD) and the SoT peak mask (convergence = -div D) on troughs. All four now use x0 - D: `chop = -(...)`, `ocean_fft_fold_amount` and the foam atlas use (1 - dDu/du)(1 - dDv/dv) - ..., convergence = +div D, slope correction through I - grad D. Foam now lies as streaks along crests (`ocean_manual_grid/1790355817-80387` vs `1790332752-42089`).
 2. **Fold limiter**: displacement and the slope correction scale by mix(0.25, 1, smoothstep(0.1, 0.6, det)) so the mesh never turns inside out; determinant clamp 0.35.
-3. **Swell cascade** (cascade 3, 2,170m tile, 8.5m texels): narrow-band Gaussian-in-frequency spectrum, 170m peak wavelength, 10% frequency spread, cos^16 spreading, 30 degrees off the wind so crests cross; normalised to Hs = 1m (test) and scaled by `ViewParams.gain.z = swell_height_meters(storm)` = `CATINGARDEN_OCEAN_FFT_SWELL` (default 8m) x (1 + 0.8 smoothstep storm). Swell is non-local, so it is present in calm local weather (interactive weather mode starts near zero storm). Height/slope/displacement/Jacobian/divergence add to cascade 0; foam atlas includes it. GPU FFT: 1.15ms/frame for 4 cascades vs ~0.88 for 3 (ignored benchmark, Quadro, wall clock). Replays: `ocean_deck_reference/1790355860-80743` (9m) shows a swell rising above the horizon; `ocean_ship_float/1790355913-81352` (8m) hull seated, pitching/rolling. No whole-frame timing (xvfb).
+3. **Swell cascade** (cascade 3, 2,170m tile, 8.5m texels): narrow-band Gaussian-in-frequency spectrum, 170m peak wavelength, 10% frequency spread, cos^16 spreading, 30 degrees off the wind so crests cross; normalised to Hs = 1m (test) and scaled by `ViewParams.gain.z = swell_height_meters(storm)` = `PLANET_OCEAN_FFT_SWELL` (default 8m) x (1 + 0.8 smoothstep storm). Swell is non-local, so it is present in calm local weather (interactive weather mode starts near zero storm). Height/slope/displacement/Jacobian/divergence add to cascade 0; foam atlas includes it. GPU FFT: 1.15ms/frame for 4 cascades vs ~0.88 for 3 (ignored benchmark, Quadro, wall clock). Replays: `ocean_deck_reference/1790355860-80743` (9m) shows a swell rising above the horizon; `ocean_ship_float/1790355913-81352` (8m) hull seated, pitching/rolling. No whole-frame timing (xvfb).
 4. **CPU surface rewritten** (`ocean_fft::CpuSurface`): mirrors wind cascade 0 and swell with h, v, Dx, Dz grids (two packed complex FFTs per cascade, rows/cols with the horizontal pack on a scoped thread); **Newton inverse** of x0 - c D(x0) = p with the same fold limiter, slope through (I - c grad D)^-T. Tests: labels recovered within 0.5mm, heights within 5mm; CPU vs GPU texel 0.26mm (wind) / 0.11mm (swell). **Time lattice**: grids at 0.1s steps, extrapolated by velocity (worst height error 1.5mm), 40-slot LRU (~80MB), and a `ocean-cpu-fft` worker prefetches 3 steps past the highest key requested. This fixes the time-speed FPS drop: the old 0.03s refresh window rebuilt a 2.3ms transform for every bird look-ahead time, so cost scaled with birds x time speed. One wind+swell transform is ~7ms, now normally off the render thread. Not measured in the live game. Vertical velocity ignores dD/dt (drag only).
 
 Colour question (turquoise with dark specks, looking down): at normal incidence Fresnel is 2%, so the SoT body colour dominates; it is 85% `ocean_body_albedo`, a sun-facing ramp, so sun-facing faces are teal and faces tilted away are dark blue. Real deep water seen from above is dark navy. Proposed (not done): make body colour depend on view angle (navy looking down, teal only through thin backlit crests). Also not done: splash/spray particles, wind-advected foam.
@@ -11259,13 +11259,13 @@ Colour question (turquoise with dark specks, looking down): at normal incidence 
 ## 25 September - FFT ocean step 2: collision peaks (geometric 3-12m waves + second-order crests)
 
 - Cascade 1 (237m tile, 3-12.6m waves) is now vertical geometry too (weighted by its existing 600-3000m fade; the vertex mip filter already band-limits it to the mesh), so short crests rise instead of only tilting normals. The CPU mirror adds it (CPU/GPU texel 0.15mm).
-- Second-order (Stokes) term: height += s * h_lin * clamp(div D, +-0.6) - mean, slope and velocity scaled by (1 + 2 s div). For one wave it is exactly (k a^2/2) cos 2theta; where crests cross, h and div D are both large and the peak piles up (crossing equal waves: +3ka^2 vs +ka^2/2). The mean (Parseval sum |k||h~|^2 per cascade, swell scaled by Hs^2) is subtracted so sea level stays put. `CATINGARDEN_OCEAN_FFT_PEAKS` (default 1, 0-3), in `ViewParams.second_order`. CPU Newton inverse now 6 iterations (5.5mm miss at 4 with the steeper field).
+- Second-order (Stokes) term: height += s * h_lin * clamp(div D, +-0.6) - mean, slope and velocity scaled by (1 + 2 s div). For one wave it is exactly (k a^2/2) cos 2theta; where crests cross, h and div D are both large and the peak piles up (crossing equal waves: +3ka^2 vs +ka^2/2). The mean (Parseval sum |k||h~|^2 per cascade, swell scaled by Hs^2) is subtracted so sea level stays put. `PLANET_OCEAN_FFT_PEAKS` (default 1, 0-3), in `ViewParams.second_order`. CPU Newton inverse now 6 iterations (5.5mm miss at 4 with the steeper field).
 - Replay `ocean_deck_reference/1790356554-102556`: pointed whitecapped crests above the horizon line. GPU ocean parity tests (6) and FFT GPU tests pass.
 - Also answered (not implemented): distant-water aliasing. Plan = Bruneton 2010 geometry->normals->BRDF: store slope^2 in the FFT mips (spare 4th channel), add unresolved slope variance to specular roughness, anisotropic (sampleGrad) wave sampling at grazing angles, foam as filtered coverage, TAA later. Driven by pixel footprint (FOV-aware), so zoom keeps detail.
 
 ## 25 September - FFT ocean step 3: wind-blown spray and wind-streaked foam
 
-- **Spray** (`ocean_spray.rs`, `ocean_spray_update.wgsl`, `ocean_spray_draw.wgsl`, owned by `TerrainRenderer`): 8,192 GPU particles in the FFT tangent plane relative to the camera (u, v, height above sea level), shifted by the camera's own tangent-plane motion each frame (f64 on the CPU). A compute pass (after the FFT update) integrates wind drag (1.2/s toward the 14m/s spectrum wind), vertical drag and gravity, and respawns each dead particle with one random attempt within 300m (density 1/r, toward the camera), born with probability ~ smoothstep(J 0.40 -> 0.0) of the displaced-surface Jacobian (all four cascades, choppiness, swell scale) at the drawn crest height (with the second-order term), thrown up 1-4.5m/s and 20-50% of wind speed downwind, living 1-2.6s. Drawn in the transmitting-ocean pass after the water (depth-tested, no depth write, premultiplied alpha): camera-facing puffs stretched along screen velocity, size 0.3-1.3m capped at 5% of distance, faded near the eye (3-10m), lit with `ocean_foam_radiance` from the shared sun/sky LUTs plus a forward-scatter glow. `CATINGARDEN_OCEAN_FFT_SPRAY` = strength multiplier (default 1, 0 off). No readback. Replay `ocean_deck_reference/1790357476-115410` shows spray puffs along crest tops; first tuning (`1790357308-113700`) was a smoke-cloud blob from a near-eye particle, fixed by the screen-size cap.
+- **Spray** (`ocean_spray.rs`, `ocean_spray_update.wgsl`, `ocean_spray_draw.wgsl`, owned by `TerrainRenderer`): 8,192 GPU particles in the FFT tangent plane relative to the camera (u, v, height above sea level), shifted by the camera's own tangent-plane motion each frame (f64 on the CPU). A compute pass (after the FFT update) integrates wind drag (1.2/s toward the 14m/s spectrum wind), vertical drag and gravity, and respawns each dead particle with one random attempt within 300m (density 1/r, toward the camera), born with probability ~ smoothstep(J 0.40 -> 0.0) of the displaced-surface Jacobian (all four cascades, choppiness, swell scale) at the drawn crest height (with the second-order term), thrown up 1-4.5m/s and 20-50% of wind speed downwind, living 1-2.6s. Drawn in the transmitting-ocean pass after the water (depth-tested, no depth write, premultiplied alpha): camera-facing puffs stretched along screen velocity, size 0.3-1.3m capped at 5% of distance, faded near the eye (3-10m), lit with `ocean_foam_radiance` from the shared sun/sky LUTs plus a forward-scatter glow. `PLANET_OCEAN_FFT_SPRAY` = strength multiplier (default 1, 0 off). No readback. Replay `ocean_deck_reference/1790357476-115410` shows spray puffs along crest tops; first tuning (`1790357308-113700`) was a smoke-cloud blob from a near-eye particle, fixed by the screen-size cap.
 - **Wind-streaked foam**: the fold-foam history reprojects with a 0.8m/s downwind drift and its feedback blur is 0.35/0.35 along the wind, 0.15/0.15 across (was isotropic), so foam trails into streaks. Wind (u, v) passed in `FoamFrame.timing.zw`; `ocean_fft::WIND_DIRECTION` is now the single source.
 - Not done: hull/object-intersection spray and foam; spray timing (no whole-frame measurement); spray is not weather-coupled (fixed wind).
 
@@ -11275,9 +11275,9 @@ Ian asked to see the moon from the planet surface, as a first step toward the pl
 
 - **Placement**: fixed in inertial space at the replay's 40,000km centre distance (angular diameter ~3.1 degrees, about 6x our Moon). Placed on the first rendered frame 20 degrees above the horizon, choosing the best-lit of azimuths 0/+-15/+-30 degrees from the view so it starts in shot; its baked landing site faces the planet. It rises and sets as the planet turns; the phase follows the sun. No orbit, earthshine or eclipses yet.
 - **Rendering**: each frame the planet-local camera is transformed into the moon body frame (f64), the moon camera uniform copies the planet's projection (same reversed-Z mapping, so depths compare across bodies) with body-frame basis, radial and sun. Offscreen pass before the main pass, then `Composite::draw` in the main pass after opaque ground and before the sky (the sky only fills depth 0), adding planet-atmosphere in-scatter and extinction and writing depth: terrain, trees, clouds, the ocean and the sun disc occlude correctly. Skipped when outside the view cone or wholly below the geometric horizon. Logs `sky moon placed` and visibility changes.
-- **Switch**: on by default for ordinary planet launches on the raster path; `CATINGARDEN_MOON=0` off; scenarios only with `CATINGARDEN_MOON=1`, so existing captures are unchanged. Setup adds ~1.0s to startup; per-frame cost not measured (xvfb).
+- **Switch**: on by default for ordinary planet launches on the raster path; `PLANET_MOON=0` off; scenarios only with `PLANET_MOON=1`, so existing captures are unchanged. Setup adds ~1.0s to startup; per-frame cost not measured (xvfb).
 - **Moon outmap had stopped loading** (so `--body moon` and `planet_to_moon` were broken too): the bake predates the GlacialMoraine/CrevasseField biome ids and both manifest validators demanded the full table. Biome ids are only appended, so both (`coretypes` `OutmapManifest::validate` and `outmap.rs`) now accept a table that is a matching prefix of `BiomeId::ALL`; mismatched, empty or longer tables are still rejected (tests added).
-- Evidence: daytime crescent `ocean_deck_reference/1790359575-122210` (moon top right, dark limb filled with sky); night gibbous with crater rims `forest_night/1790360408-124912` (with `CATINGARDEN_DISABLE=forest`; with the forest on, a tree correctly occludes it, which cost a debugging detour: black trees on a black sky).
+- Evidence: daytime crescent `ocean_deck_reference/1790359575-122210` (moon top right, dark limb filled with sky); night gibbous with crater rims `forest_night/1790360408-124912` (with `PLANET_DISABLE=forest`; with the forest on, a tree correctly occludes it, which cost a debugging detour: black trees on a black sky).
 
 ## 25 September - Sea of Thieves water colour: one hue, translucency brightens
 
@@ -11338,7 +11338,7 @@ Ian saw ~10 fps. His slowest session (manual/1790434224, median 95ms) overlapped
 
 ## 27 September - "It keeps quitting after startup": NoMachine sends Escape
 
-Not a crash (exit code 0, no core, no panic). Logging every window event on Ian's display (:0 over NoMachine) showed Focused(false) -> Occluded(false) -> Focused(true) -> KeyboardInput Escape pressed right after the startup fullscreen switch, with nobody at the keyboard; a lone Escape quit the game. Quitting now takes two Escape presses within 1.5s (`ESCAPE_QUIT_WINDOW`, `escape_quits`, test `a_lone_escape_does_not_quit_but_a_second_press_does`; a held key's repeat also counts). Both exit paths (Escape, window close) now log their reason under `catinthegarden::exit`. Verified on :0: the synthetic Escape logs "press again to quit" and the game keeps running. HUD help text says "Esc twice: quit".
+Not a crash (exit code 0, no core, no panic). Logging every window event on Ian's display (:0 over NoMachine) showed Focused(false) -> Occluded(false) -> Focused(true) -> KeyboardInput Escape pressed right after the startup fullscreen switch, with nobody at the keyboard; a lone Escape quit the game. Quitting now takes two Escape presses within 1.5s (`ESCAPE_QUIT_WINDOW`, `escape_quits`, test `a_lone_escape_does_not_quit_but_a_second_press_does`; a held key's repeat also counts). Both exit paths (Escape, window close) now log their reason under `planet::exit`. Verified on :0: the synthetic Escape logs "press again to quit" and the game keeps running. HUD help text says "Esc twice: quit".
 
 ## 27 September - Splashes when a steep or breaking wave hits the ship
 
@@ -11350,16 +11350,16 @@ Ian: spray persisted below the water surface. Droplets flew on for their whole l
 
 ## 27 September - WIND=0 panicked at startup
 
-`CATINGARDEN_OCEAN_FFT_WIND=0` crashed with `assertion failed: position.is_finite() && look_at.is_finite()` (planet.rs): the JONSWAP peak frequency divides by the wind speed, so every wind-sea mode became NaN, the CPU water heights NaN, and the boat camera placed on them NaN. Below `MIN_WIND_SEA_METERS_PER_SECOND` (0.5) there is now no wind sea at all (a glassy swell); the wind value is clamped to 0-40 m/s and non-finite values fall back to 14. Test `no_wind_leaves_a_finite_glassy_swell`. Ian's command (WIND 0, SWELL 40, CHOP 0) now starts; note SWELL is clamped to 15 (x1.8 at full local storm).
+`PLANET_OCEAN_FFT_WIND=0` crashed with `assertion failed: position.is_finite() && look_at.is_finite()` (planet.rs): the JONSWAP peak frequency divides by the wind speed, so every wind-sea mode became NaN, the CPU water heights NaN, and the boat camera placed on them NaN. Below `MIN_WIND_SEA_METERS_PER_SECOND` (0.5) there is now no wind sea at all (a glassy swell); the wind value is clamped to 0-40 m/s and non-finite values fall back to 14. Test `no_wind_leaves_a_finite_glassy_swell`. Ian's command (WIND 0, SWELL 40, CHOP 0) now starts; note SWELL is clamped to 15 (x1.8 at full local storm).
 
 ## 27 September - Bigger swell (up to 30m) that gets longer as it gets taller
 
-`CATINGARDEN_OCEAN_FFT_SWELL` cap 15 -> 30m (significant height, before the local-storm boost of up to 1.8x). The swell's peak wavelength now scales with it, `max(170m, 12 x SWELL)` (`swell_peak_wavelength_meters`, test `bigger_swell_is_longer_swell`): 8m keeps 170m, 15m -> 180m, 20m -> 240m, 30m -> 360m (six waves per 2,170m swell tile), so big swells roll as long, slow ridges instead of pinching past the breaking steepness. Nothing else in the renderer bounds wave height (culling/LOD do not assume a maximum). New calm-weather replays `ocean_swell_ship` and `ocean_swell_deck` (storm override 0, so the swell is exactly the value set): 15/20/30m at WIND 14, CHOP 1.0 in `ocean_swell_ship/1790500870-496129`, `1790500935-497833`, `1790501000-499571` show the 84m ship riding crests with the water falling away beneath it at 20-30m. Open question for Ian: at full local storm 30m becomes 54m (wavelength stays 360m, so ~1/7 steepness, the breaking limit); proposed capping the stormed value.
+`PLANET_OCEAN_FFT_SWELL` cap 15 -> 30m (significant height, before the local-storm boost of up to 1.8x). The swell's peak wavelength now scales with it, `max(170m, 12 x SWELL)` (`swell_peak_wavelength_meters`, test `bigger_swell_is_longer_swell`): 8m keeps 170m, 15m -> 180m, 20m -> 240m, 30m -> 360m (six waves per 2,170m swell tile), so big swells roll as long, slow ridges instead of pinching past the breaking steepness. Nothing else in the renderer bounds wave height (culling/LOD do not assume a maximum). New calm-weather replays `ocean_swell_ship` and `ocean_swell_deck` (storm override 0, so the swell is exactly the value set): 15/20/30m at WIND 14, CHOP 1.0 in `ocean_swell_ship/1790500870-496129`, `1790500935-497833`, `1790501000-499571` show the 84m ship riding crests with the water falling away beneath it at 20-30m. Open question for Ian: at full local storm 30m becomes 54m (wavelength stays 360m, so ~1/7 steepness, the breaking limit); proposed capping the stormed value.
 - Follow-up (Ian chose option 1): the local storm now adds up to 80% of the swell but never more than 8m (`SWELL_STORM_BOOST_MAX_METERS`, `stormed_swell_height`, test `a_storm_adds_at_most_eight_metres_of_swell`): default 8m -> 14.4m as before, 5m -> 9m, 30m -> 38m (was 54m). Full-storm ship replay at SWELL 30 passes.
 
 ## 27 September - Global wavelength modifier
 
-`OCEAN_WAVELENGTH_SCALE` (ocean_fft.rs, default 1.0; `CATINGARDEN_OCEAN_FFT_WAVELENGTH` overrides, 0.25-4): every wave, wind sea and swell, is that many times longer at the same height. Implemented as a spatial stretch of the whole field: the spectra are still built on `TILE_METERS`, but every consumer lays the tiles out through `tile_meters(c)` = `TILE_METERS[c]` x scale (GPU evolve/params, view entries used by the shader, foam atlas and spray, the CPU mirror, the second-order means), so deep-water dispersion follows the stretched wavenumbers (longer is slower) and steepness falls in proportion. CPU/GPU texel parity 0.26/0.15/0.11 mm at 1.0 and 0.39/0.28/0.22 mm at 2.0 (all FFT tests pass with the variable set to 2). Sheet: calm `ocean_swell_ship` / `ocean_swell_deck` at 0.75/1.0/1.5/2.0 (WIND 14, SWELL 8, CHOP 1.0), e.g. `ocean_swell_ship/1790502425-530458` .. `1790502608-535461`: 0.75 busier and choppier, 1.5-2.0 the same heights over longer, gentler rollers.
+`OCEAN_WAVELENGTH_SCALE` (ocean_fft.rs, default 1.0; `PLANET_OCEAN_FFT_WAVELENGTH` overrides, 0.25-4): every wave, wind sea and swell, is that many times longer at the same height. Implemented as a spatial stretch of the whole field: the spectra are still built on `TILE_METERS`, but every consumer lays the tiles out through `tile_meters(c)` = `TILE_METERS[c]` x scale (GPU evolve/params, view entries used by the shader, foam atlas and spray, the CPU mirror, the second-order means), so deep-water dispersion follows the stretched wavenumbers (longer is slower) and steepness falls in proportion. CPU/GPU texel parity 0.26/0.15/0.11 mm at 1.0 and 0.39/0.28/0.22 mm at 2.0 (all FFT tests pass with the variable set to 2). Sheet: calm `ocean_swell_ship` / `ocean_swell_deck` at 0.75/1.0/1.5/2.0 (WIND 14, SWELL 8, CHOP 1.0), e.g. `ocean_swell_ship/1790502425-530458` .. `1790502608-535461`: 0.75 busier and choppier, 1.5-2.0 the same heights over longer, gentler rollers.
 
 ## 27 September - Ship splashes ran past the bow and stern; ship at a quarter size
 
@@ -11367,13 +11367,13 @@ Ian: the splash outline around the ship extended past the bow and stern where th
 
 - **The drawn hull was 4.7m short at the stern.** `build_mesh` copied buoyancy's half-station midpoint offset, so the transom was drawn at t = -0.889 while buoyancy, foam and spray all put it at -1. Mesh stations are now section edges; `the_mesh_is_low_poly_closed_and_within_the_hull_envelope` asserts the drawn transom and stem sit at -/+ half the hull length (fails on the old mesh).
 - **Not the cause (kept as correctness fixes, pixel change small):** the hull foam band was born at the water's rest position but the sea is drawn displaced by the choppy -D, so it is now tested at the texel's drawn position (same cascade weights and fold limit as `ocean_surface_fft`). The foam history atlas was 8-bit, where the per-frame decay at 60 fps is under one step below ~0.29, so faint foam never faded; it is now `Rgba16Float` (`FOAM_ATLAS_FORMAT`).
-- **The cause was ship spray** (with `CATINGARDEN_OCEAN_FFT_SPRAY=0` the foam hugged the hull in all four captures, before/after `1790503593-544150` / `1790503644-545429`). The ship surges only 0.6m in 8s, so it is not a wake: spray thrown off the raked bow and the transom, and blown along the hull by the unscaled wind, drew white 10-20m past the ends (5-6m after the resize). Hull spray now fades out over one half-beam beyond the waterline outline (`ship_spray_near_hull`, draw shader): strong where it leaves the hull, gone before it can sit off the ends. Overhead, quarter-size, no fade vs fade: `1790504102-548634` / `1790504223-549788` (stern overshoot about 6m -> 3m, the same margin as the sides).
+- **The cause was ship spray** (with `PLANET_OCEAN_FFT_SPRAY=0` the foam hugged the hull in all four captures, before/after `1790503593-544150` / `1790503644-545429`). The ship surges only 0.6m in 8s, so it is not a wake: spray thrown off the raked bow and the transom, and blown along the hull by the unscaled wind, drew white 10-20m past the ends (5-6m after the resize). Hull spray now fades out over one half-beam beyond the waterline outline (`ship_spray_near_hull`, draw shader): strong where it leaves the hull, gone before it can sit off the ends. Overhead, quarter-size, no fade vs fade: `1790504102-548634` / `1790504223-549788` (stern overshoot about 6m -> 3m, the same margin as the sides).
 
 Ian then asked for the ship at 0.25 of its size with everything to do with it scaled. `SHIP_SCALE` 2.0 -> 0.5 (hull 21m x 5.5m, draft and freeboard 1.5m; mass, metacentric height and damping already follow it). Spray, foam and slam thresholds scale from the 84m hull they were tuned on by Froude similarity: lengths by `SPLASH_LENGTH_SCALE` (0.25), speeds and times by its root (0.5). That is the spray's outward speed, lift, lifetime, spawn offsets, sheet size, streak and settling fade; the spawn rate rises by 1/root so the same number of particles make the smaller sheet; the foam band width (drawn a texel wide at its share of the texel's area when it is narrower than the 2m atlas texels); and the emitter's slam speed, immersion, 2m impact sample, rise and crest thresholds. The shaders read the ratio from the hull half-length they are sent over a tuned 42m, pinned to `ship::SPLASH_TUNED_HALF_LENGTH_METERS` by `ship_splashes_scale_from_the_same_tuned_hull_everywhere`. The wind and the sea are not scaled, so the small hull now rides a proportionally rougher sea. The bridge eye stays 0.4m off the scaled bridge wall (a person's standoff). `ocean_ship_float`, `ocean_ship_impacts`, `ocean_swell_ship` and `ocean_ship_foam_plan` cameras are re-authored at a quarter of their offsets from the ship (eye 3.5m); calm and storm replays `ocean_swell_ship/1790504286-551076`, `ocean_ship_impacts/1790504322-551981`, `ocean_ship_float/1790504365-553141` pass.
 
 ## 27 September - Spiky "mountain" sea with any wind: the crest term scaled the chop by the swell
 
-Ian: with any wind or chop the sea went spiky and faceted, and at WIND 50 / SWELL 30 / CHOP 0 / WAVELENGTH 0.6 it was a range of pointed mountains (`manual/1790505542-564068`, `1790505745-570710`, `1790505799-573654`); he suspected the small waves were being scaled too hard. They were. The second-order crest term (`CATINGARDEN_OCEAN_FFT_PEAKS`) was h(total) x div D(total). div D is dominated by the short waves and h by the swell, so every short wave was multiplied by about (1 + k_short x swell height), clamped at 0.6 x h: on a 5m swell crest a 6m wave grew up to six-fold (3m of spike), and in the trough it turned upside down. It is independent of CHOP, which is why CHOP 0 was still spiky. Deck replay A/B at Ian's settings: PEAKS=1 `ocean_swell_deck/1790515564-643899` (blocky pillars) vs PEAKS=0 `1790515594-644626` (smooth).
+Ian: with any wind or chop the sea went spiky and faceted, and at WIND 50 / SWELL 30 / CHOP 0 / WAVELENGTH 0.6 it was a range of pointed mountains (`manual/1790505542-564068`, `1790505745-570710`, `1790505799-573654`); he suspected the small waves were being scaled too hard. They were. The second-order crest term (`PLANET_OCEAN_FFT_PEAKS`) was h(total) x div D(total). div D is dominated by the short waves and h by the swell, so every short wave was multiplied by about (1 + k_short x swell height), clamped at 0.6 x h: on a 5m swell crest a 6m wave grew up to six-fold (3m of spike), and in the trough it turned upside down. It is independent of CHOP, which is why CHOP 0 was still spiky. Deck replay A/B at Ian's settings: PEAKS=1 `ocean_swell_deck/1790515564-643899` (blocky pillars) vs PEAKS=0 `1790515594-644626` (smooth).
 
 The term is now taken band by band in the narrow-band (Tayfun) form, (k/2)(h^2 - |D|^2), at each geometry band's own mean wavenumber (`band_wavenumbers`: sum |k||h~|^2 / sum |h~|^2, carried to the shaders in the unused `.w` of each cascade's view entry). For one wave it is exactly Stokes' (k a^2 / 2) cos 2theta; crossing crests within a band still pile higher; it averages to zero by Parseval, so the old mean-offset machinery (`second_order_means`, `second_order.y`) is gone; the gradient is analytic, k (h grad h - Du grad Du - Dv grad Dv). A short wave on a swell is carried, not amplified. Mirrored in `ocean_surface_fft` (shared_planet.wgsl, helper `ocean_fft_band_stokes`), the CPU surface (`second_order`, used by buoyancy/camera; rate approximated with D.dD/dt ~ -h dh/dt, exact for one wave), and the spray's water height. New test `a_swell_carries_the_chop_without_scaling_it` (fails on the old formula: the chop's second-order part swings 6.4m against its own 0.13m Stokes term); the single-wave test now checks the Stokes shape, slope and zero mean directly.
 
@@ -11411,13 +11411,13 @@ So the slope floor made both fold-overs and steep cells worse, and raising a fix
 
 Ian: in big waves the boat is launched far too high, then plunges completely under, and its hull splashes keep appearing on the water (or above the boat) while the hull is not there. His float log (`manual/1790525069-745220`, a ~30m swell) shows the water at the ship rising 43m in 7.5s: the hull lagged 6.3m under, left at 13 m/s, and the crest ran on beneath it, leaving it 20.8m above the water before it fell back at 22 m/s and went 7.8m under at 61 degrees of heel.
 
-- **Drag relative to the water.** Surge damping pulled the hull's horizontal velocity toward zero, holding it still while a 23 m/s crest swept under it. It now pulls toward the water's own horizontal (orbital) velocity, as strongly as the hull is wet (submerged volume over design displacement; none when airborne). The FFT CPU surface gains `horizontal_velocity`: the drawn water is x0 - cD(x0, t), so at its label it moves at -c dD/dt, taken across the 0.1s lattice; `ocean::global_wave_horizontal_velocity` (zero on the Gerstner sea, which moves radially); `WaterSample::horizontal_velocity`, queried once per ship step at the hull. With `CATINGARDEN_OCEAN_FFT_SWELL=30`, `ocean_ship_impacts` (storm, 38m swell): waterline max 26.3m above the water -> 3.0m (`1790525847-759276` -> `1790526191-763066`); `ocean_swell_ship`: 3.5m -> 1.1m. Deepest submersion unchanged (~1.3m); heel still reaches 57 degrees in the storm replay. Test `a_floating_hull_is_carried_by_the_water_and_not_held_still`. The deep plunges Ian liked as "sinking in big storms" came mostly from the fall after the launch, so they are gone too; deliberate swamping would be a separate feature.
+- **Drag relative to the water.** Surge damping pulled the hull's horizontal velocity toward zero, holding it still while a 23 m/s crest swept under it. It now pulls toward the water's own horizontal (orbital) velocity, as strongly as the hull is wet (submerged volume over design displacement; none when airborne). The FFT CPU surface gains `horizontal_velocity`: the drawn water is x0 - cD(x0, t), so at its label it moves at -c dD/dt, taken across the 0.1s lattice; `ocean::global_wave_horizontal_velocity` (zero on the Gerstner sea, which moves radially); `WaterSample::horizontal_velocity`, queried once per ship step at the hull. With `PLANET_OCEAN_FFT_SWELL=30`, `ocean_ship_impacts` (storm, 38m swell): waterline max 26.3m above the water -> 3.0m (`1790525847-759276` -> `1790526191-763066`); `ocean_swell_ship`: 3.5m -> 1.1m. Deepest submersion unchanged (~1.3m); heel still reaches 57 degrees in the storm replay. Test `a_floating_hull_is_carried_by_the_water_and_not_held_still`. The deep plunges Ian liked as "sinking in big storms" came mostly from the fall after the launch, so they are gone too; deliberate swamping would be a separate feature.
 - **Splashes only where the water meets the hull.** `ship::hull_water_contact(t, immersion)` is 1 while the water surface at a station lies between keel and deck and fades to 0 past either. Slam and impact spray are multiplied by its below-deck part (no spray at the surface over a buried hull), and the hull foam band by the contact itself (none round a hull clear of the water or under it; before, a 0.45 base band was drawn regardless). Test `splashes_need_the_water_against_the_hull_side`.
 - **Spray starts at the station's own waterline.** Ship spray spawned at max(midship waterline + 0.3, water + 0.2), the water sampled at the undisplaced label point, which could be a nearby crest's height: spray appeared above the boat. The CPU now sends each station's drawn water altitude (`SprayFrame` ship_port_water / ship_starboard_water, 224 bytes), and spray starts 0.2 (scaled) above it.
 
 ## 27 September - Storm overcast: grey sky, closer grey fog, grey sea reflection
 
-Ian: approaching a storm the sky should fade to dark grey, as a grey fog that closes in; and since much of the sea's blue is sky reflection, that should go grey too. One value drives it all: `storm_overcast` (0-1) in the camera uniform's unused `sun_direction.w`, set by `update_storm_overcast` (main.rs) from the weather's own storm strength at the camera (`weather.storm_intensity_at`: cloud water, uplift, condensation; not the sea state, which also rises with wind alone), smoothstep 0.1 -> 0.5, faded out between 60 and 90km altitude (above the lower cloud shell), eased over 4s of ocean clock. `CATINGARDEN_STORM_OVERCAST` (0-1) fixes it for comparisons. Under it: the distance-fog e-fold goes geometrically from 500km to `STORM_FOG_AIR_PATH_E_FOLD_METERS` (5km of sea-level air) and the fog, the visible sky and the sea's sky reflection and skylight go to a grey of `STORM_OVERCAST_BRIGHTNESS` (0.45) times their own luminance (so night stays dark); direct sun on the sea (body lighting, glow through thin tops, glitter) is cut by `STORM_SUN_BLOCK` (0.85). Sky and terrain mist share the constants (test `storm_overcast_greys_sky_and_ground_fog_alike`). Terrain direct lighting is not dimmed (the weather cloud shadow is still off by default for cost).
+Ian: approaching a storm the sky should fade to dark grey, as a grey fog that closes in; and since much of the sea's blue is sky reflection, that should go grey too. One value drives it all: `storm_overcast` (0-1) in the camera uniform's unused `sun_direction.w`, set by `update_storm_overcast` (main.rs) from the weather's own storm strength at the camera (`weather.storm_intensity_at`: cloud water, uplift, condensation; not the sea state, which also rises with wind alone), smoothstep 0.1 -> 0.5, faded out between 60 and 90km altitude (above the lower cloud shell), eased over 4s of ocean clock. `PLANET_STORM_OVERCAST` (0-1) fixes it for comparisons. Under it: the distance-fog e-fold goes geometrically from 500km to `STORM_FOG_AIR_PATH_E_FOLD_METERS` (5km of sea-level air) and the fog, the visible sky and the sea's sky reflection and skylight go to a grey of `STORM_OVERCAST_BRIGHTNESS` (0.45) times their own luminance (so night stays dark); direct sun on the sea (body lighting, glow through thin tops, glitter) is cut by `STORM_SUN_BLOCK` (0.85). Sky and terrain mist share the constants (test `storm_overcast_greys_sky_and_ground_fog_alike`). Terrain direct lighting is not dimmed (the weather cloud shadow is still off by default for cost).
 
 ## 27 September - Spray no longer blinks out the frame after it appears
 
@@ -11425,14 +11425,14 @@ Spray is retired when it falls below the water, but the water height the GPU spr
 
 ## 27 September - Sideways white shards on big FFT crests: foam diagnosis, not fixed
 
-Reproducer: `CATINGARDEN_OCEAN_FFT=1 CATINGARDEN_OCEAN_FFT_SWELL=30 CATINGARDEN_OCEAN_FFT_SPRAY=0 CATINGARDEN_PRESENT_MODE=immediate target/release/catinthegarden-app --scenario ocean_swell_shards`. This holds a ~29m-eye view across a crest for 12s with six captures. The scenario reconstructs the view near `manual/1790525174-746683`; **do not** use `manual/1790520906-735221`, which predates the slope-floor revert. Baseline: `ocean_swell_shards/1790531472-816468`. The same white wedges reproduce in the separate clean-commit worktree with normal blue water: `ocean_swell_shards/1790533266-831875`. The local, uncommitted red-water colour experiment in `shared_planet.wgsl` made white pixels easy to count; the colour change is not part of this diagnosis or commit. Pixel counts below use RGB minimum >170 and channel range <60, rows 220-719, 1280x720 captures; this is a bright-foam proxy, not a perceptual shard score.
+Reproducer: `PLANET_OCEAN_FFT=1 PLANET_OCEAN_FFT_SWELL=30 PLANET_OCEAN_FFT_SPRAY=0 PLANET_PRESENT_MODE=immediate target/release/planet-app --scenario ocean_swell_shards`. This holds a ~29m-eye view across a crest for 12s with six captures. The scenario reconstructs the view near `manual/1790525174-746683`; **do not** use `manual/1790520906-735221`, which predates the slope-floor revert. Baseline: `ocean_swell_shards/1790531472-816468`. The same white wedges reproduce in the separate clean-commit worktree with normal blue water: `ocean_swell_shards/1790533266-831875`. The local, uncommitted red-water colour experiment in `shared_planet.wgsl` made white pixels easy to count; the colour change is not part of this diagnosis or commit. Pixel counts below use RGB minimum >170 and channel range <60, rows 220-719, 1280x720 captures; this is a bright-foam proxy, not a perceptual shard score.
 
-- `CATINGARDEN_DEBUG_MODE=ocean_no_foam` (`1790530013-796233`) gives zero white ocean pixels in all six frames. With spray already off, the wedges are foam shading, not white geometry or specular. A separate test disabling ship foam birth was pixel-identical to the candidate control, so ship foam is not responsible.
+- `PLANET_DEBUG_MODE=ocean_no_foam` (`1790530013-796233`) gives zero white ocean pixels in all six frames. With spray already off, the wedges are foam shading, not white geometry or specular. A separate test disabling ship foam birth was pixel-identical to the candidate control, so ship foam is not responsible.
 - `ocean_backfaces` (`1790529982-794731`) marks only about 449 magenta back-face pixels in the 10s frame, versus 87,482 white baseline pixels; only three white-mask pixels overlap. The shader's top-shaded back faces do not account for the white wedges.
-- `CATINGARDEN_OCEAN_DENSE_GRID=1` (`1790531498-817675`) adds about 54% triangles yet changes the white mask by only 0.12-1.24% of ocean-region pixels across frames; at 10s the white count is 87,305 versus 87,482. Coarse vertex spacing is not the main cause of this white artifact. This says nothing about the distinct sea seams.
+- `PLANET_OCEAN_DENSE_GRID=1` (`1790531498-817675`) adds about 54% triangles yet changes the white mask by only 0.12-1.24% of ocean-region pixels across frames; at 10s the white count is 87,305 versus 87,482. Coarse vertex spacing is not the main cause of this white artifact. This says nothing about the distinct sea seams.
 - `ocean_instant_foam` (`1790530167-800059`) bypasses history inside the atlas and leaves only current per-pixel fold foam. It still makes smaller angular white patches, but loses the broad solid sheet; at 12s the baseline has 359,211 white pixels (largest connected component 341,759), versus 100,875 white pixels with instantaneous foam. An experimental birth-only atlas at 12s yielded 53,517 white pixels (largest component 34,802). Thus temporal retention and its 2m label-space atlas substantially enlarge/merge the angular fold foam. This is the image-space cause isolated so far, not evidence of mesh inversion.
 
-Rejected trials, all reverted: a higher/faster foam decay, limiting retained foam by instantaneous fold, alternate atlas lookup in drawn coordinates without changing birth coordinates, narrower atlas coverage, a swell-height birth gate, a fine/mid-height foam pattern, and a flat-position fragment lookup. Each either left obvious white sheets, worsened them or stripped crest foam without a validated improvement. No fixed-Jacobian-floor or crest-geometry change was made; the acute tips and CPU regression remain as before. Only the scenario is retained: the temporary `CATINGARDEN_DEBUG_MODE` values `ocean_backfaces`, `ocean_no_foam`, `ocean_instant_foam` were used for captures and reverted rather than leaving unmeasured per-pixel branches in the normal renderer.
+Rejected trials, all reverted: a higher/faster foam decay, limiting retained foam by instantaneous fold, alternate atlas lookup in drawn coordinates without changing birth coordinates, narrower atlas coverage, a swell-height birth gate, a fine/mid-height foam pattern, and a flat-position fragment lookup. Each either left obvious white sheets, worsened them or stripped crest foam without a validated improvement. No fixed-Jacobian-floor or crest-geometry change was made; the acute tips and CPU regression remain as before. Only the scenario is retained: the temporary `PLANET_DEBUG_MODE` values `ocean_backfaces`, `ocean_no_foam`, `ocean_instant_foam` were used for captures and reverted rather than leaving unmeasured per-pixel branches in the normal renderer.
 
 **Outstanding:** design a foam-history mapping/birth rule that retains narrow crest foam but cannot paint huge sideways wedges on pinched swell faces; compare matched captures with an automated image-space component/shape metric and measure GPU cost. Run `the_drawn_sea_almost_never_turns_inside_out` and add a regression for the accepted image-space failure before claiming a fix. The image regression and before/after fix metric requested in the brief are **not yet met**. Ian says Claude is handling the separate visible sea seams, so do not alter that work here.
 
@@ -11448,13 +11448,13 @@ Crest spray only (the ship's sheets are unchanged): drag 4/s toward the wind and
 
 ## 27 September - Swirling dark sea colours (opt-in, seeded)
 
-Ian: a deterministic, seeded field of swirly colours in the sea, not synced with the waves, very dark (no channel above 0.05). `CATINGARDEN_OCEAN_SWIRL=<seed>` (u32; unset = off, the ordinary `OCEAN_SOT_WATER_ALBEDO`) replaces the FFT sea's water albedo, in both its body light and the light through thin wave tops, with `ocean_swirl_albedo`: seeded, domain-warped value noise on the FFT tangent plane in absolute coordinates (the camera's plane position comes in `ViewParams.second_order.zw`), so the pattern is fixed to the sea and churns slowly (`OCEAN_SWIRL_SECONDS` 60) independently of the waves, coloured by a cosine palette whose phase is set by the seed, each channel in 0..`OCEAN_SWIRL_MAX` (0.05). Swirl size `OCEAN_SWIRL_SCALE_METERS` 250, warp strength `OCEAN_SWIRL_WARP` 3. Evaluated per pixel inside `ocean_surface_fft` (not per vertex) and handed to the lighting through a private variable, so the non-FFT sea never references the FFT bindings (its pipeline was checked to still start). Cost, three interleaved `ocean_deck_reference` pairs: a warp of a warp at three octaves (15 noise lookups a pixel) added 5.5ms (56.9 -> 62.3); the shipped single warp at two octaves (6 lookups) adds about 1ms (56.5/56.9/53.9 -> 57.5/57.8/57.3), with broader, oil-slick bands rather than fine curls. A camera-centred compute texture (like the foam atlas) would allow the richer version cheaply if wanted. Seeds 7 and 42 overhead: `ocean_manual_grid` runs of 27 September.
+Ian: a deterministic, seeded field of swirly colours in the sea, not synced with the waves, very dark (no channel above 0.05). `PLANET_OCEAN_SWIRL=<seed>` (u32; unset = off, the ordinary `OCEAN_SOT_WATER_ALBEDO`) replaces the FFT sea's water albedo, in both its body light and the light through thin wave tops, with `ocean_swirl_albedo`: seeded, domain-warped value noise on the FFT tangent plane in absolute coordinates (the camera's plane position comes in `ViewParams.second_order.zw`), so the pattern is fixed to the sea and churns slowly (`OCEAN_SWIRL_SECONDS` 60) independently of the waves, coloured by a cosine palette whose phase is set by the seed, each channel in 0..`OCEAN_SWIRL_MAX` (0.05). Swirl size `OCEAN_SWIRL_SCALE_METERS` 250, warp strength `OCEAN_SWIRL_WARP` 3. Evaluated per pixel inside `ocean_surface_fft` (not per vertex) and handed to the lighting through a private variable, so the non-FFT sea never references the FFT bindings (its pipeline was checked to still start). Cost, three interleaved `ocean_deck_reference` pairs: a warp of a warp at three octaves (15 noise lookups a pixel) added 5.5ms (56.9 -> 62.3); the shipped single warp at two octaves (6 lookups) adds about 1ms (56.5/56.9/53.9 -> 57.5/57.8/57.3), with broader, oil-slick bands rather than fine curls. A camera-centred compute texture (like the foam atlas) would allow the richer version cheaply if wanted. Seeds 7 and 42 overhead: `ocean_manual_grid` runs of 27 September.
 
 ## 28 September - FFT sea seams closed: corner neighbours and bit-identical edge vertices
 
 Ian: "with the seams we really should be aiming for no pixels." After `5616dc7` the steep view still showed a thin crack and lone pixels of sky.
 
-**Method.** Count, don't look. Render with `CATINGARDEN_DISABLE=terrain,sky,stars,clouds,cloud_impostors,rain,forest,villages,birds,ship CATINGARDEN_OCEAN_FFT=1`, so anything the sea fails to cover is the flat clear grey (85,85,92), then count grey pixels with water both within 40 rows above and 40 below in the same column. The sea is a height field seen from above, so sky can never legitimately appear inside it. The earlier bright-pixel heuristic, and a plain grey count, were both fooled (by foam, by the sky above the horizon, and by the crosshair). With terrain switched off, pixels the sea correctly hands to land also read as holes, so a second pass keeps the terrain and turns off only the sky. Debug colours read back exactly because the pipeline is ACES then sRGB and invertible: chunk level, edge and corner stitch codes and tile UV encode as bytes. The scripts are in the session notes; the metric is the few lines above.
+**Method.** Count, don't look. Render with `PLANET_DISABLE=terrain,sky,stars,clouds,cloud_impostors,rain,forest,villages,birds,ship PLANET_OCEAN_FFT=1`, so anything the sea fails to cover is the flat clear grey (85,85,92), then count grey pixels with water both within 40 rows above and 40 below in the same column. The sea is a height field seen from above, so sky can never legitimately appear inside it. The earlier bright-pixel heuristic, and a plain grey count, were both fooled (by foam, by the sky above the horizon, and by the crosshair). With terrain switched off, pixels the sea correctly hands to land also read as holes, so a second pass keeps the terrain and turns off only the sky. Debug colours read back exactly because the pipeline is ACES then sRGB and invertible: chunk level, edge and corner stitch codes and tile UV encode as bytes. The scripts are in the session notes; the metric is the few lines above.
 
 **Causes, in the order found.**
 1. *A coarser node touching a chunk only at a corner* (same-level chunks along both edges). The chunks that border it along an edge filter the sea to its spacing at the shared corner vertex; this one had no way to know and used its own, and a wedge opened. The stitch word now carries corner deltas too (bits 20 + 3c, 3 bits each; the terrain's 5-bit edge fields are unchanged and it ignores them). `ocean_edge_vertex_spacing` is now a function of the point alone: the largest of the chunk's own spacing and each coarser neighbour's, which fades out over one of that neighbour's quads with distance from it. Every chunk sharing a vertex sees the same coarse neighbours at the same distance, so they agree to the bit. The corner distance is the larger axis offset rather than Euclidean: on the edges through the corner, the only shared vertices it reaches, the two are equal and this one is exact, where a GPU sqrt need not be.
@@ -11468,7 +11468,7 @@ Ian: "with the seams we really should be aiming for no pixels." After `5616dc7` 
 
 **Result.** Same 18 open-ocean scenarios, 88 captures, baseline `0146d2a` against this change. Terrain off: 8,215 hole pixels became 0. Terrain drawn: 694 became 4. By scenario, with terrain drawn: steep_cusp 360, swell_shards 187, eye_level_facets 95, low_sun_stability 29, hybrid_close 9, calm_trial 6, moderate_trial 4, wind_trial 3, manual_grid 1. The 4 left are in `ocean_low_sun_stability` (captures 1 and 3) where the sea meets a distant coast at the horizon: the ownership sliver above, not a seam. Coastal full renders (`ocean_coastline`, `ocean_shore_ascent`, `ocean_clear_shallows`) change at most a few hundred pixels by at most 26 levels, apart from single-pixel waterline flips where flat sand and calm water sit at the same height. Pass/fail is unchanged: `ocean_clear_shallows` fails in both, as before.
 
-**Cost.** None measurable, slightly the other way. Six balanced Immediate-present pairs of `ocean_swell_shards` with `CATINGARDEN_OCEAN_FFT=1` (the GPU otherwise idle), median frame time over each 12s run: baseline 50.75ms, this change 50.42ms, a mean paired difference of -0.23ms, with four pairs faster and two within 0.06ms. The corner probes cost CPU; the faster lookup more than repays them. Along the way, one earlier form that also carried the kept-water fragment path measured +1.7ms, consistent in all six pairs and both orders. That is the evidence for leaving it out.
+**Cost.** None measurable, slightly the other way. Six balanced Immediate-present pairs of `ocean_swell_shards` with `PLANET_OCEAN_FFT=1` (the GPU otherwise idle), median frame time over each 12s run: baseline 50.75ms, this change 50.42ms, a mean paired difference of -0.23ms, with four pairs faster and two within 0.06ms. The corner probes cost CPU; the faster lookup more than repays them. Along the way, one earlier form that also carried the kept-water fragment path measured +1.7ms, consistent in all six pairs and both orders. That is the evidence for leaving it out.
 
 **Tests.** `a_coarser_node_touching_only_a_corner_is_recorded`, `coarser_lookup_agrees_with_the_full_walk`, and GPU `gpu_ocean_shared_vertices_get_one_filter_from_every_side` (opt-in, real WGSL). The last one pairs each shared vertex as two chunks see it, for a diagonal corner and a three-level corner, and demands identical bits. With the corner term removed it fails on the corner vertex, 3 against 6. 579 app tests pass.
 
@@ -11538,7 +11538,7 @@ Cost in `ocean_ship_float`, four pairs: +0.10/+0.29/-0.05/+0.26ms.
 
 **Storm strength at the start point, measured** (ignored instrument `storm_spells_at_the_start_point`, weather.rs): on the real baked planet, 30 simulated days at the interactive start direction. The weather's storm strength sat between 0.1 and 0.3 for 98% of the time and peaked at 0.32. The overcast is full at 0.5, so a proper storm never arrives there: a faint permanent overcast and a slightly raised sea. Mean wind was 5.8 m/s. At the interactive 3,600x clock those 30 days are about 12 real minutes.
 
-**Storm on demand.** `CATINGARDEN_STORM_APPROACH=<seconds>`, or `storm_approach_seconds` in a replay, selects `SeaStateMode::Approach`: flat calm at launch, a full storm after that many seconds of the ocean clock (smoothstep), then held. It drives both the sea state (swell boost, whitecaps) and the storm overcast; `ocean::approaching_storm_at` feeds `update_storm_overcast`, so the fog closes to 5km, the sky and its reflection go grey and the sun dims together. `CATINGARDEN_STORM_OVERCAST` still wins when set.
+**Storm on demand.** `PLANET_STORM_APPROACH=<seconds>`, or `storm_approach_seconds` in a replay, selects `SeaStateMode::Approach`: flat calm at launch, a full storm after that many seconds of the ocean clock (smoothstep), then held. It drives both the sea state (swell boost, whitecaps) and the storm overcast; `ocean::approaching_storm_at` feeds `update_storm_overcast`, so the fog closes to 5km, the sky and its reflection go grey and the sun dims together. `PLANET_STORM_OVERCAST` still wins when set.
 
 **Storm-greyed water.** The FFT sea's own colour now also loses saturation under the overcast (`STORM_SEA_DESATURATION` 0.75, luminance kept), on the surface and in the underwater colour alike.
 
@@ -11561,11 +11561,11 @@ The horizon fades into grey haze and whitecaps build.
 - *How hard:* `rain::intensity_for` = smoothstep(0.3, 0.8) of the storm overcast (the same eased storm strength that closes in the fog), times 1 +/- 0.3 with the gust at the camera (bursts in gusts, easing in lulls). Nothing above 20km or with the eye under the sea. The weather's own precipitation field no longer draws rain; only storms do.
 - *Colour:* the horizon sky in the drop's own direction, greyed by the overcast, x1.25, plus forward-scattered sun toward a sunward eye. A storm's sky is mostly its fog, which is the horizon sky, so rain is pale against the dark sea and all but vanishes against the sky. The first try used the zenith sky and drew dark streaks on the sky: the sky pass shows the sky at 2x its physical radiance and the fog at the horizon's.
 
-**Gusts** (`gust.rs`, `gust.wgsl`). Frozen turbulence (Taylor's hypothesis): one 2D value-noise field (two octaves, 240m along the wind by 140m across, standard deviation 0.5), slid downwind at the mean wind. A gust is up to 45% over the mean wind and veers it 12 degrees; a lull is as far under and backs it. Gustiness is smoothstep(0.2, 0.9) of the storm overcast, so calm weather has none. The mean wind is the FFT sea's own (`WIND_DIRECTION`, `CATINGARDEN_OCEAN_FFT_WIND`, 14 m/s default).
+**Gusts** (`gust.rs`, `gust.wgsl`). Frozen turbulence (Taylor's hypothesis): one 2D value-noise field (two octaves, 240m along the wind by 140m across, standard deviation 0.5), slid downwind at the mean wind. A gust is up to 45% over the mean wind and veers it 12 degrees; a lull is as far under and backs it. Gustiness is smoothstep(0.2, 0.9) of the storm overcast, so calm weather has none. The mean wind is the FFT sea's own (`WIND_DIRECTION`, `PLANET_OCEAN_FFT_WIND`, 14 m/s default).
 - The field is evaluated on the CPU at the camera (rain slant and bursts) and on the GPU wherever the sea and spray need it. They agree because the camera's field coordinate is formed in f64 and handed over reduced to the field's 256-cell period (`ViewParams.gust`, `SprayFrame.gust`), where f32 is exact to millimetres. Test `a_gust_is_carried_downwind_at_the_mean_wind`.
 - *On the sea:* in shading only (the mesh and the CPU buoyancy never see it), a gust roughens the short waves (slope x1.6 at a full gust, x0.4 in a lull; roughness likewise), dulls the sky reflection by up to 35% (dark cat's paws; no effect while `OCEAN_REFLECTION_SCALE` is 0), and steepens the fold Jacobian by up to 30% so more crests break, both in the per-pixel fold foam and in the foam history atlas's births (`ocean_foam.wgsl`), which is what carries the foam near the camera. In `ocean_storm_gusts` the gust patch reads as a crest covered in whitecaps that is mostly dark water with gusts off.
 - *Spray* follows the gust where each particle is, and a full gust tears three times as much off the crests as the mean wind (a lull a quarter).
-- `CATINGARDEN_GUSTS=0` keeps the storm wind steady, for comparisons.
+- `PLANET_GUSTS=0` keeps the storm wind steady, for comparisons.
 
 The sea evaluates the gust field once per mesh vertex (`ocean_fft_vertex_gust`, carried to the fragment as `OceanVertexOutput.gust`) rather than per pixel: per pixel it cost 1.09-1.45ms in four pairs (1.93ms with spray off, so it was the sea shader, not the extra spray). Gust patches are hundreds of metres across, far coarser than the mesh.
 
@@ -11576,14 +11576,14 @@ The sea evaluates the gust field once per mesh vertex (`ocean_fft_vertex_gust`, 
 **Replays.** `ocean_storm_approach` now also asserts rain reaches 0.7 and gusts swing the wind by 1 m/s: measured rain 0.81 (the run ends in a lull, wind 9.8 m/s, which is why not 1.0) and wind 9.7-14.0 m/s. New `ocean_storm_gusts`: 40m up, looking crosswind, full storm in 1s, captures 6-16s; rain 0.84, wind 8.9-14.0 m/s. The spatial log gains `rain_intensity` and `gust_wind_meters_per_second`; the HUD shows overcast, rain, gust and wind speed.
 
 **Cost** (`ocean_storm_gusts`, full storm, frame about 53ms; four interleaved Immediate-present pairs each, same binary, environment switches):
-- Rain against `CATINGARDEN_DISABLE=rain`: +0.39/+0.06/+0.17/+0.46ms.
-- Gusts against `CATINGARDEN_GUSTS=0`, evaluated per vertex: +0.02/+0.82/+0.29/+0.77ms (mean 0.47). The remainder is likely the extra spray and whitecaps the gusts add, which is the point of them.
+- Rain against `PLANET_DISABLE=rain`: +0.39/+0.06/+0.17/+0.46ms.
+- Gusts against `PLANET_GUSTS=0`, evaluated per vertex: +0.02/+0.82/+0.29/+0.77ms (mean 0.47). The remainder is likely the extra spray and whitecaps the gusts add, which is the point of them.
 - The frame darkening is a few operations per pixel in the tone-map pass; not timed separately.
 - In calm weather: no streaks are drawn and the gust branches are skipped (gustiness 0), so nothing.
 
 **Tests.** 595 app tests and the 12 ocean GPU tests pass; the scenario count is 118. `sunset_blue_hour` fails its two blue-hour assertions, identically on the previous commit's binary (d9235a4), so that is not from this work.
 
-**Not done.** No splashes or rings where drops hit the sea or deck; no rain on the lens; no sound. Gusts do not push the ship. The weather at the start point still never makes a storm on its own (see the previous section), so `CATINGARDEN_STORM_APPROACH` is the way to see this.
+**Not done.** No splashes or rings where drops hit the sea or deck; no rain on the lens; no sound. Gusts do not push the ship. The weather at the start point still never makes a storm on its own (see the previous section), so `PLANET_STORM_APPROACH` is the way to see this.
 
 ## 29 September - Storm fog complete at 500m; the default sea's torn chunk edges
 
@@ -11595,7 +11595,7 @@ The sea evaluates the gust field once per mesh vertex (`ocean_fft_vertex_gust`, 
 
 `sunset_blue_hour`'s two blue-hour failures reproduce on the 27 September build too, so they are older than all of this.
 
-**Tests.** 596 app tests and the 12 ocean GPU tests pass (run the GPU tests without `CATINGARDEN_OCEAN_FFT`: `gpu_ocean_normals_match_cpu_buoyancy_in_deep_and_breaking_water` checks the Gerstner sea and panics when the FFT sea is composed in).
+**Tests.** 596 app tests and the 12 ocean GPU tests pass (run the GPU tests without `PLANET_OCEAN_FFT`: `gpu_ocean_normals_match_cpu_buoyancy_in_deep_and_breaking_water` checks the Gerstner sea and panics when the FFT sea is composed in).
 
 ## 29 September - Hull caustics: near the water, on the sides, and only in sunshine
 
@@ -11616,9 +11616,9 @@ Ian: water sounds that change as the waves get bigger, until it is almost a stab
 - **Hull laps**: short bright splashes, 2.5 per second in a flat calm, none in a storm.
 - **Roar**: brown noise per ear, low-passed at 260-620Hz, from a faint floor to the loudest layer at full storm, with a slow swell in it.
 
-Inputs, set once a frame in `update_rain_and_gusts` and eased over 0.6s on the audio thread: roughness is the sea state (`ocean::sea_state_at`) plus 0.3 of a full gust; level is 1 at the water, half at 40m above it (`loudness_at_height`), and 0 away from open ocean (`open_ocean_at`; so no surf on a coast yet); under the water everything is low-passed to about 320Hz. Played only in the interactive game (replays and tests are silent); no output device just logs a warning. `CATINGARDEN_SOUND=0` turns it off, `CATINGARDEN_SOUND_VOLUME` (0-2) scales it.
+Inputs, set once a frame in `update_rain_and_gusts` and eased over 0.6s on the audio thread: roughness is the sea state (`ocean::sea_state_at`) plus 0.3 of a full gust; level is 1 at the water, half at 40m above it (`loudness_at_height`), and 0 away from open ocean (`open_ocean_at`; so no surf on a coast yet); under the water everything is low-passed to about 320Hz. Played only in the interactive game (replays and tests are silent); no output device just logs a warning. `PLANET_SOUND=0` turns it off, `PLANET_SOUND_VOLUME` (0-2) scales it.
 
-Measured on the 30s calm-to-storm demo (100ms windows): calm -32 dBFS with its loudness varying by 0.39 (breaks with quiet between), mid -20 dBFS / 0.23, storm -14 dBFS / 0.22 (steady), peak -2 dBFS. Tests pin louder-and-steadier with roughness, no clipping, silence away from the sea, muffling under water. The demo WAV: `cargo test --release -p catinthegarden-app write_sea_sound_demo -- --ignored` writes `/tmp/sea_sound_calm_to_storm.wav`. A zero-volume launch showed the stream alive in PulseAudio for the run (one ALSA I/O warning at startup, harmless).
+Measured on the 30s calm-to-storm demo (100ms windows): calm -32 dBFS with its loudness varying by 0.39 (breaks with quiet between), mid -20 dBFS / 0.23, storm -14 dBFS / 0.22 (steady), peak -2 dBFS. Tests pin louder-and-steadier with roughness, no clipping, silence away from the sea, muffling under water. The demo WAV: `cargo test --release -p planet-app write_sea_sound_demo -- --ignored` writes `/tmp/sea_sound_calm_to_storm.wav`. A zero-volume launch showed the stream alive in PulseAudio for the run (one ALSA I/O warning at startup, harmless).
 
 600 app tests pass.
 
@@ -11640,9 +11640,9 @@ Loudness of each layer alone (`sea_and_wind_loudness`, before the master volume)
 **Reproducer, on the current fixed-0.1-floor code:**
 
 ```sh
-CATINGARDEN_OCEAN_FFT=1 CATINGARDEN_OCEAN_FFT_SWELL=30 \
-CATINGARDEN_OCEAN_FFT_CHOP=2 CATINGARDEN_OCEAN_FFT_SPRAY=0 \
-CATINGARDEN_PRESENT_MODE=immediate target/release/catinthegarden-app --scenario ocean_swell_shards
+PLANET_OCEAN_FFT=1 PLANET_OCEAN_FFT_SWELL=30 \
+PLANET_OCEAN_FFT_CHOP=2 PLANET_OCEAN_FFT_SPRAY=0 \
+PLANET_PRESENT_MODE=immediate target/release/planet-app --scenario ocean_swell_shards
 ```
 
 The existing ~29m-eye, 12s view now takes its last capture at 11.333333s, where the blades are especially clear. No wind, wavelength or peaks overrides. CHOP 2 is an explicit stress reproducer, **not a claim about Ian's unknown original setting**. Baseline 5d4bef8 `1790624816-1508881`, fixed `1790625562-1511693`, capture 6: the former has long horizontal saw-tooth blades along both faces; the latter retains the pointed crest silhouette and substantial white foam without the blades. These and the evidence paths below live in `/home/dad/catingard-shard-verify/test-runs/`, not the main checkout.
@@ -11658,11 +11658,11 @@ Mirrored in CPU inverse buoyancy and horizontal orbital velocity (difference the
 **Actual-cause regression.** `gpu_big_swell_chop_does_not_make_sideways_triangles` evolves the real GPU FFT and mips, calls production `ocean_surface_fft` with its vertex-stage filtering in a readback compute harness, and measures both triangles between neighbouring returned vertices. Four times (9.65, 10.433333, 11.333333, 47.9), three spacings (0.5/2/8m), 128x128 vertices per grid: **387,096 triangles**. Before: **20,446 inverted, 14,600 stretched over 3x**. After: **0 / 0**. This fails on the unmodified fixed-floor renderer (also reconfirmed on 371de37), rather than just on a synthetic per-point estimate. `chop_limiter_is_phase_independent_for_a_single_wave` separately pins the phase-invariance mechanism. Historical `fold_scale` is retained only under `cfg(test)`, with its test renamed to stop claiming it proves drawn-mesh orientation.
 
 ```sh
-CATINGARDEN_OCEAN_FFT_SWELL=30 CARGO_TARGET_DIR=/dev/shm/catingard-shard-verify-target \
-cargo test -p catinthegarden-app --release gpu_big_swell_chop_does_not_make_sideways_triangles -- --ignored --nocapture
-CATINGARDEN_OCEAN_FFT_SWELL=30 CATINGARDEN_OCEAN_FFT_CHOP=2 \
+PLANET_OCEAN_FFT_SWELL=30 CARGO_TARGET_DIR=/dev/shm/catingard-shard-verify-target \
+cargo test -p planet-app --release gpu_big_swell_chop_does_not_make_sideways_triangles -- --ignored --nocapture
+PLANET_OCEAN_FFT_SWELL=30 PLANET_OCEAN_FFT_CHOP=2 \
 CARGO_TARGET_DIR=/dev/shm/catingard-shard-verify-target \
-cargo test -p catinthegarden-app --release the_drawn_sea_almost_never_turns_inside_out -- --nocapture
+cargo test -p planet-app --release the_drawn_sea_almost_never_turns_inside_out -- --nocapture
 ```
 
 The existing CPU drawn-sea test passes at default and SWELL 30 / CHOP 2: **0 / 268,203 cells**. The initial full serial app suite on 5d4bef8 plus the fix passed **582 tests, 36 ignored**. A prior parallel run's wall-clock CPU-query benchmark failed under contention; serial rerun passed. `ocean_swell_ship` at SWELL 30 / CHOP 2 (`1790671211-1914746`) and ordinary `ocean_deck_reference` (`1790671234-1915716`) pass; opened captures show no new blades/needles. Human motion/appearance approval is not implied by stills.
@@ -11675,7 +11675,7 @@ Verification checkout: `/home/dad/catingard-shard-verify`, with its own `CARGO_T
 
 ## 29 September - A storm sky without the light wedge; storm fog complete at 100m
 
-**The light wedge.** Ian's `manual/1790672131-1940766` capture 1, on the bridge looking about 60 degrees up in a full storm: a pale cone hung from the top of the frame, which was the zenith. It was not the rain (`CATINGARDEN_DISABLE=rain` kept it). In a full storm every sky ray is fully fogged, and the sky pass's fog colour is the horizon's colour in that ray's own azimuth (`horizon_fog_radiance`); all azimuths meet at the zenith, so the brighter sun-side horizon was drawn up the sky as a wedge converging overhead. It has been there since the storm fog; the thicker fog made it plain. `displayed_sky_radiance` now blends, as a ray rises (smoothstep of its elevation sine 0-0.5) and in proportion to the overcast, toward the horizon averaged over eight azimuths (`STORM_HORIZON_AVERAGE_SAMPLES`). Low rays keep their own azimuth, so the sky still meets the fogged sea at the horizon, and clear weather is untouched. New replay `ocean_storm_look_up` (the approach's pose looking 60 degrees up, full storm by its 12s capture): the strip under the zenith was 8.1 levels brighter than the sky either side, now 0.2.
+**The light wedge.** Ian's `manual/1790672131-1940766` capture 1, on the bridge looking about 60 degrees up in a full storm: a pale cone hung from the top of the frame, which was the zenith. It was not the rain (`PLANET_DISABLE=rain` kept it). In a full storm every sky ray is fully fogged, and the sky pass's fog colour is the horizon's colour in that ray's own azimuth (`horizon_fog_radiance`); all azimuths meet at the zenith, so the brighter sun-side horizon was drawn up the sky as a wedge converging overhead. It has been there since the storm fog; the thicker fog made it plain. `displayed_sky_radiance` now blends, as a ray rises (smoothstep of its elevation sine 0-0.5) and in proportion to the overcast, toward the horizon averaged over eight azimuths (`STORM_HORIZON_AVERAGE_SAMPLES`). Low rays keep their own azimuth, so the sky still meets the fogged sea at the horizon, and clear weather is untouched. New replay `ocean_storm_look_up` (the approach's pose looking 60 degrees up, full storm by its 12s capture): the strip under the zenith was 8.1 levels brighter than the sky either side, now 0.2.
 
 **Storm fog complete at 100m** (Ian): `STORM_FOG_FULL_METERS` 500 -> 100 in all three shaders, so the storm e-fold is 21.7m: at full storm 37% fog at 10m, 60% at 20m, 90% at 50m, 99% at 100m. The ship's bow from the bridge is about half fogged.
 
@@ -11691,15 +11691,15 @@ This also explains the earlier "fog at 500m" and "100m" claims: they were true o
 
 **Surround-safe sound.** `channel_gains`: stereo to the front pair; in quad, 5.1 and 7.1 the surround pairs take a 0.7 copy of their side; the centre and the LFE nothing; mono both mixed. It used to alternate left and right over every channel, putting the right side's noise in a subwoofer. (Windows: `cpal` uses WASAPI with no extra libraries, and 0.18 initialises COM as STA, so it does not fight winit's drag and drop.) A zero-volume launch shows the stream in PulseAudio from about 15s (after loading).
 
-603 app tests and 13 ocean GPU tests pass (Codex's `gpu_big_swell_chop_does_not_make_sideways_triangles` needs `CATINGARDEN_OCEAN_FFT_SWELL=30 CATINGARDEN_OCEAN_FFT_CHOP=2`).
+603 app tests and 13 ocean GPU tests pass (Codex's `gpu_big_swell_chop_does_not_make_sideways_triangles` needs `PLANET_OCEAN_FFT_SWELL=30 PLANET_OCEAN_FFT_CHOP=2`).
 
 ## 29 September - Uncommitted WGSL typo stopped startup, repaired
 
-Ian's `cargo build --release -p catinthegarden-app && CATINGARDEN_OCEAN_FFT=1 CATINGARDEN_STORM_APPROACH=10 target/release/catinthegarden-app` built successfully but panicked while wgpu parsed the full-resolution terrain raymarch shader: `expected '{', found "let"` at the underside-refraction code. Cargo compiles the shader source as a string; wgpu validates the composed WGSL when the app starts.
+Ian's `cargo build --release -p planet-app && PLANET_OCEAN_FFT=1 PLANET_STORM_APPROACH=10 target/release/planet-app` built successfully but panicked while wgpu parsed the full-resolution terrain raymarch shader: `expected '{', found "let"` at the underside-refraction code. Cargo compiles the shader source as a string; wgpu validates the composed WGSL when the app starts.
 
 `git diff` exposed the cause in `shared_planet.wgsl`: an uncommitted text edit moved `// Use the same breaking/whitecap coverage as the top face. Foam is air in` into `if refraction.w > 0.0 { ... }`, removing its opening brace and leaving `}m is air in`. Restoring the three original lines makes this source region byte-for-byte equivalent to HEAD. Ian's uncommitted `OCEAN_REFLECTION_SCALE` and `OCEAN_SOT_WATER_ALBEDO` values are untouched and **not staged**. There is no source change to commit for this repair.
 
-The existing `terrain::tests::planet_shader_validates_with_filtered_runtime_detail_noise` failed before with the same parser error and passed after. A fresh release build and `CATINGARDEN_OCEAN_FFT=1 CATINGARDEN_STORM_APPROACH=10 CATINGARDEN_PRESENT_MODE=immediate target/release/catinthegarden-app --scenario ocean_storm_look_up` passed (`test-runs/ocean_storm_look_up/1790679285-1999518`), exercising runtime pipeline creation; that scenario authors its own storm timing, so this is startup validation, **not** a claim that the separate interactive sky-fog flash is fixed. The user reports that only the sky flashes, not the sea; deterministic one-second storm replays showed smooth sky changes and an isolated Xvfb interactive run could not present (no DRI3). Await paired F12 captures from the interactive run before editing sky/cloud passes.
+The existing `terrain::tests::planet_shader_validates_with_filtered_runtime_detail_noise` failed before with the same parser error and passed after. A fresh release build and `PLANET_OCEAN_FFT=1 PLANET_STORM_APPROACH=10 PLANET_PRESENT_MODE=immediate target/release/planet-app --scenario ocean_storm_look_up` passed (`test-runs/ocean_storm_look_up/1790679285-1999518`), exercising runtime pipeline creation; that scenario authors its own storm timing, so this is startup validation, **not** a claim that the separate interactive sky-fog flash is fixed. The user reports that only the sky flashes, not the sea; deterministic one-second storm replays showed smooth sky changes and an isolated Xvfb interactive run could not present (no DRI3). Await paired F12 captures from the interactive run before editing sky/cloud passes.
 
 ## 29 September - Sound follows game time; hidden sun no longer lights FFT water
 
@@ -11749,7 +11749,7 @@ not a camera mask. Do not describe this as a physically spatial ocean storm.
 A release build passes, but `ocean_storm_approach` could not be captured in
 this sandbox: winit panicked with `XNotSupported(XOpenDisplayFailed)`.
 
-The existing `CATINGARDEN_OCEAN_FFT_SWELL` override (0-30m) remains unchanged;
+The existing `PLANET_OCEAN_FFT_SWELL` override (0-30m) remains unchanged;
 only its unset default went from 8m to 16m. The existing bounded 8m local
 storm boost reaches 24m, avoiding the 16m + 80% = 28.8m overshoot. No
 frame-time or live appearance claim is made.
@@ -11805,7 +11805,7 @@ instruments ignored. Release build passes. Human listening is still required.
 
 **Storm contrast diagnosis, not yet edited:** the bright shoreline uses
 `beach_sand_albedo` / the beach mix, which keep cream dry sand even while
-`CATINGARDEN_STORM_APPROACH` rains: forced overcast does not update the
+`PLANET_STORM_APPROACH` rains: forced overcast does not update the
 weather-surface wetness texture. The separate billboard `forest.wgsl` pass
 returns lit dark green without any distance fog; hence black trees can remain
 at distances where the terrain/sea have converged to grey storm fog. Fixing
@@ -11823,7 +11823,7 @@ terrain and takes its ground-horizon row at the tree's azimuth, applies the
 storm's 100m air-path e-fold and overcast greying, and includes fog lightning.
 The sky lookup runs only on each billboard triangle's first vertex: WGSL flat
 interpolation takes that value for the whole card. A matched `forest_startup`
-replay at `CATINGARDEN_STORM_OVERCAST=1`, with only tree fog disabled for the
+replay at `PLANET_STORM_OVERCAST=1`, with only tree fog disabled for the
 baseline, changes 80,307 distant dark-green pixels in the measured
 220:390 x 250:920 region from mean RGB (3.7, 23.9, 4.8) to
 (40.4, 40.9, 40.4). The optimized capture is pixel-identical to the initial
@@ -11887,4 +11887,4 @@ establish whether it was the same visual issue. Local ocean colour edits remain
 untouched.
 
 ## 3 October - Cloud-shell flicker, moon through fog, birds off
-Correction to 2 October: the user's live "fog switches on and off" was not lightning. `CATINGARDEN_DISABLE=clouds,cloud_impostors` removed it; `cloud_impostors` alone did not, so the weather shells (`weather_render.wgsl`) were showing through the storm-fogged sky as the weather field evolved at the interactive clock (manual run `1790975165-46967`, capture 003). Overcast itself was a clean 1.0 (replay logs it now as `storm_overcast`), and the camera stayed within 15m of the storm centre. Fix: shell alpha is multiplied by `exp(-air_path * (1/storm_e_fold - 1/clear_e_fold))`, so clear weather is unchanged (pixel-identical `weather_contrast`) and a storm hides the shell. The moon composite (`system_composite.wgsl`) uses the same factor; matched replay with the camera aimed at the moon shows it gone in a full storm and unchanged when clear. Birds, the red reticle and the badge are off via `BIRDS_ENABLED` (main.rs); `bird_demo` and bird scenarios will not show birds. Open: `cloud_impostors` still ignore storm fog; the shell fix was not reproduced on the exact live frame.
+Correction to 2 October: the user's live "fog switches on and off" was not lightning. `PLANET_DISABLE=clouds,cloud_impostors` removed it; `cloud_impostors` alone did not, so the weather shells (`weather_render.wgsl`) were showing through the storm-fogged sky as the weather field evolved at the interactive clock (manual run `1790975165-46967`, capture 003). Overcast itself was a clean 1.0 (replay logs it now as `storm_overcast`), and the camera stayed within 15m of the storm centre. Fix: shell alpha is multiplied by `exp(-air_path * (1/storm_e_fold - 1/clear_e_fold))`, so clear weather is unchanged (pixel-identical `weather_contrast`) and a storm hides the shell. The moon composite (`system_composite.wgsl`) uses the same factor; matched replay with the camera aimed at the moon shows it gone in a full storm and unchanged when clear. Birds, the red reticle and the badge are off via `BIRDS_ENABLED` (main.rs); `bird_demo` and bird scenarios will not show birds. Open: `cloud_impostors` still ignore storm fog; the shell fix was not reproduced on the exact live frame.

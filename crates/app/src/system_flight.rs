@@ -185,7 +185,7 @@ impl SystemFlight {
             route: Route::new(planet_height, moon_height, direction),
             frame: 0,
             failed: false,
-            nearest_only: std::env::var("CATINGARDEN_SYSTEM_CONTROL").is_ok_and(|v| v == "nearest"),
+            nearest_only: std::env::var("PLANET_SYSTEM_CONTROL").is_ok_and(|v| v == "nearest"),
             size: state.size,
             composite,
         }
@@ -476,7 +476,7 @@ impl SystemFlight {
                     storm_overcast: 0.0,
                     gust_wind_meters_per_second: 0.0,
                 });
-            tracing::info!(target: "catinthegarden::system_flight", time, phase, wall_ms, nearest_only = self.nearest_only, ?planet_clearance, ?moon_clearance,
+            tracing::info!(target: "planet::system_flight", time, phase, wall_ms, nearest_only = self.nearest_only, ?planet_clearance, ?moon_clearance,
                 planet_chunks = planet_stats.drawn_chunks, moon_chunks = moon_stats.drawn_chunks,
                 planet_triangles = planet_stats.terrain_triangles, moon_triangles = moon_stats.terrain_triangles,
                 planet_fallbacks = planet_stats.fallback_chunks, moon_fallbacks = moon_stats.fallback_chunks,

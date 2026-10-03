@@ -24,7 +24,7 @@
 
 use glam::DVec3;
 
-use catinthegarden_coretypes::{BiomeId, TileKey, face_uv_to_direction, tile_key_for_direction};
+use planet_coretypes::{BiomeId, TileKey, face_uv_to_direction, tile_key_for_direction};
 
 use crate::planet::{
     GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS,
@@ -1159,11 +1159,11 @@ mod tests {
     fn find_village_ground() {
         use crate::outmap::Outmap;
         use crate::planet::cube_face_direction;
-        use catinthegarden_coretypes::{TILE_LOGICAL_SIZE, TileKey};
+        use planet_coretypes::{TILE_LOGICAL_SIZE, TileKey};
 
         // Tests run with the crate as the working directory, so the repo's
         // own outmap has to be reached from the manifest, not from `.`.
-        let root = std::env::var("CATINGARDEN_OUTMAP").unwrap_or_else(|_| {
+        let root = std::env::var("PLANET_OUTMAP").unwrap_or_else(|_| {
             format!(
                 "{}/../../assets/outmaps/test-planet",
                 env!("CARGO_MANIFEST_DIR")
@@ -1180,7 +1180,7 @@ mod tests {
             for ty in 0..side {
                 for tx in 0..side {
                     let key = TileKey {
-                        face: catinthegarden_coretypes::CubeFace::ALL[face as usize],
+                        face: planet_coretypes::CubeFace::ALL[face as usize],
                         level: dense,
                         x: tx,
                         y: ty,
@@ -1192,7 +1192,7 @@ mod tests {
                         for x in (2..stored - 2).step_by(7) {
                             let i = y * stored + x;
                             let biome =
-                                catinthegarden_coretypes::BiomeId::try_from(tile.biome_ids[i]);
+                                planet_coretypes::BiomeId::try_from(tile.biome_ids[i]);
                             let Ok(biome) = biome else { continue };
                             if !village_biome_is_habitable(biome) {
                                 continue;
@@ -1301,7 +1301,7 @@ mod tests {
             moisture: 0.5,
             slope_radians,
             source_key: TileKey {
-                face: catinthegarden_coretypes::CubeFace::PositiveX,
+                face: planet_coretypes::CubeFace::PositiveX,
                 level: 4,
                 x: 0,
                 y: 0,

@@ -178,7 +178,7 @@ const SKY_VIEW_MINIMUM_CAMERA_ALTITUDE_METERS: f32 = 200.0;
 // A full atmospheric in-scatter term is correct for bare distant haze, but it
 // overwhelms grass/forest albedo long before the land should read as blue.
 const VEGETATION_AERIAL_IN_SCATTER_SCALE: f32 = 0.42;
-const OCEAN_REFLECTION_SCALE: f32 = 0.35;
+const OCEAN_REFLECTION_SCALE: f32 = 0.0;
 const OCEAN_SUN_GLINT_SCALE: f32 = 3.0;
 const TWILIGHT_SHADOW_TRANSITION_METERS: f32 = 72000.0;
 // Extra distance mist is driven by the sea-level-equivalent air column along
@@ -4314,7 +4314,8 @@ fn ocean_underside_colour(
 // throughout, and down one wave face the top is ~25% brighter than the base.
 // Translucency brightens; it does not tint. Linear albedo in that hue, the
 // overall level calibrated against the deck-height replay.
-const OCEAN_SOT_WATER_ALBEDO: vec3<f32> = vec3<f32>(0.0018, 0.24, 0.30);
+const OCEAN_SOT_WATER_ALBEDO: vec3<f32> = vec3<f32>(0.2, 0.2, 0.35);
+//const OCEAN_SOT_WATER_ALBEDO: vec3<f32> = vec3<f32>(0.0018, 0.24, 0.30);
 // Body brightness gain for thin water (high on a wave).
 const OCEAN_SOT_THIN_BRIGHTENING: f32 = 0.9;
 // Looking steeply down into deep water returns less scattered light than a
@@ -4330,7 +4331,7 @@ const OCEAN_SOT_PEAK_FULL: f32 = 1.0;
 const OCEAN_SOT_SUBSURFACE_COLOUR_V1: vec3<f32> = vec3<f32>(0.020, 0.300, 0.330);
 const OCEAN_SOT_PEAK_ONSET_V1: f32 = 0.20;
 const OCEAN_SOT_PEAK_FULL_V1: f32 = 0.65;
-// Swirling dark sea colour (CATINGARDEN_OCEAN_SWIRL=<seed>): a slowly churning,
+// Swirling dark sea colour (PLANET_OCEAN_SWIRL=<seed>): a slowly churning,
 // seeded, deterministic field of hues fixed to the sea (not to the camera, and
 // not tied to the waves), replacing OCEAN_SOT_WATER_ALBEDO. Domain-warped value
 // noise makes the swirls (one warp, two octaves: 6 lookups a pixel; a warp of
@@ -4454,7 +4455,7 @@ fn ocean_sot_body_light(sun_transmittance: vec3<f32>, sky_diffuse: vec3<f32>) ->
 // How much of its colour the sea loses under a full storm overcast: under a
 // grey sky the water goes grey-green rather than holding its clear-day hue.
 // Luminance is kept, so the storm's darkness comes from the light, not here.
-const STORM_SEA_DESATURATION: f32 = 0.75;
+const STORM_SEA_DESATURATION: f32 = 0.25;
 
 fn ocean_storm_water_albedo(albedo: vec3<f32>) -> vec3<f32> {
     let luminance = dot(albedo, vec3<f32>(0.2126, 0.7152, 0.0722));

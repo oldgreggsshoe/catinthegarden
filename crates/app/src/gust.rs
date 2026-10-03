@@ -44,12 +44,12 @@ pub fn gustiness(storm_overcast: f32) -> f32 {
     smoothstep(GUSTINESS_ONSET, GUSTINESS_FULL, storm_overcast)
 }
 
-/// `CATINGARDEN_GUSTS=0` keeps the storm wind steady, for comparisons.
+/// `PLANET_GUSTS=0` keeps the storm wind steady, for comparisons.
 pub fn enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
         !matches!(
-            std::env::var("CATINGARDEN_GUSTS")
+            std::env::var("PLANET_GUSTS")
                 .ok()
                 .as_deref()
                 .map(str::trim),

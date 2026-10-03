@@ -11,7 +11,7 @@ use std::{
     thread,
 };
 
-use catinthegarden_coretypes::{
+use planet_coretypes::{
     BiomeId, CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
     tile_key_for_direction,
 };
@@ -62,7 +62,7 @@ const VIEW_FOCUS_MAX_DISTANCE_METERS: f64 = 500_000.0;
 const FOREST_SLOPE_SAMPLE_METERS: f64 = 8.0;
 
 fn flat_triangle_experiment_from_env() -> bool {
-    match std::env::var("CATINGARDEN_FLAT_TRIANGLES") {
+    match std::env::var("PLANET_FLAT_TRIANGLES") {
         Ok(value) => !matches!(
             value.trim().to_ascii_lowercase().as_str(),
             "0" | "false" | "off"
@@ -130,7 +130,7 @@ fn viewed_surface_direction(
 
 pub(crate) fn planet_shader_source() -> String {
     let road_surface_trial = matches!(
-        std::env::var("CATINGARDEN_ROAD_EXPERIMENT")
+        std::env::var("PLANET_ROAD_EXPERIMENT")
             .ok()
             .as_deref()
             .map(str::trim),
@@ -145,7 +145,7 @@ pub(crate) fn planet_shader_source() -> String {
     // these compiles the named term out. They are diagnostics: the picture is
     // wrong with any of them set, and that is the point.
     let ablate = |name: &str| {
-        std::env::var("CATINGARDEN_ABLATE")
+        std::env::var("PLANET_ABLATE")
             .unwrap_or_default()
             .split(',')
             .any(|term| term.trim().eq_ignore_ascii_case(name))
@@ -195,7 +195,7 @@ fn ocean_dense_grid_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
         matches!(
-            std::env::var("CATINGARDEN_OCEAN_DENSE_GRID")
+            std::env::var("PLANET_OCEAN_DENSE_GRID")
                 .ok()
                 .as_deref()
                 .map(str::trim),
@@ -5035,7 +5035,7 @@ mod tests {
         TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS, build_chunk_mesh, cube_face_direction,
         planet_radius_meters,
     };
-    use catinthegarden_coretypes::{
+    use planet_coretypes::{
         BiomeId, CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
     };
 
@@ -6249,7 +6249,7 @@ mod tests {
 
         assert_eq!(
             crate::planet::planet_radius_meters(),
-            catinthegarden_coretypes::PLANET_RADIUS_METERS,
+            planet_coretypes::PLANET_RADIUS_METERS,
             "the default body is the planet the outmap was baked against",
         );
     }

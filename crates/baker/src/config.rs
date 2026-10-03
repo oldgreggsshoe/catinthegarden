@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use catinthegarden_coretypes::{
+use planet_coretypes::{
     MAX_DENSE_LEVEL, PLANET_RADIUS_METERS, QUADTREE_MAX_LEVEL, moon::MOON_RADIUS_METERS,
 };
 

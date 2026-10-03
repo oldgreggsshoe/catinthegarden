@@ -1,6 +1,6 @@
 #!/bin/bash
   TMPDIR=/home/dad/catingard/tmp-rust \
-  .target-baker-triple/release/catinthegarden-baker \
+  .target-baker-triple/release/planet-baker \
     --output assets/outmaps/test-planet \
     --procedural-terrain \
     --mountain-coverage \

@@ -32,10 +32,10 @@ const SKY_EARTHSHINE_EXTRA_GAIN: f32 = 5.0;
 /// Where the moon is placed on the first frame: this far above the horizon.
 const PLACEMENT_ELEVATION_DEGREES: f64 = 20.0;
 
-/// On by default for ordinary launches; `CATINGARDEN_MOON=0` turns it off.
-/// Scenarios keep their captures unchanged unless `CATINGARDEN_MOON=1`.
+/// On by default for ordinary launches; `PLANET_MOON=0` turns it off.
+/// Scenarios keep their captures unchanged unless `PLANET_MOON=1`.
 pub(super) fn enabled(is_scenario: bool) -> bool {
-    match std::env::var("CATINGARDEN_MOON").ok().as_deref().map(str::trim) {
+    match std::env::var("PLANET_MOON").ok().as_deref().map(str::trim) {
         Some("0" | "false" | "off") => false,
         Some("1" | "true" | "on") => true,
         _ => !is_scenario,
@@ -106,7 +106,7 @@ impl SkyMoon {
         });
         let composite = system_flight::Composite::new(state, camera_layout);
         tracing::info!(
-            target: "catinthegarden::startup",
+            target: "planet::startup",
             setup_ms = started.elapsed().as_secs_f64() * 1000.0,
             "sky moon enabled"
         );
@@ -158,7 +158,7 @@ impl SkyMoon {
                 orbit_angle,
             );
             tracing::info!(
-                target: "catinthegarden::startup",
+                target: "planet::startup",
                 moon_direction = ?orbit.start_position.normalize().to_array(),
                 inclination_degrees = orbit.normal.dot(DVec3::Y).clamp(-1.0, 1.0).acos().to_degrees(),
                 period_days = orbital_period_days(),
@@ -192,7 +192,7 @@ impl SkyMoon {
         let visible = in_frustum && !below_horizon;
         if visible != self.was_visible {
             tracing::info!(
-                target: "catinthegarden::sky_moon",
+                target: "planet::sky_moon",
                 visible,
                 off_axis_degrees = off_axis.to_degrees(),
                 elevation_degrees = from_nadir.to_degrees() - 90.0,
@@ -365,7 +365,7 @@ fn place(
         })
         .max_by(|a, b| lit_fraction(*a, camera, sun).total_cmp(&lit_fraction(*b, camera, sun)))
         .expect("candidates");
-    let facing = DVec3::from_array(catinthegarden_coretypes::moon::MOON_PLANET_SKY_DIRECTION).normalize();
+    let facing = DVec3::from_array(planet_coretypes::moon::MOON_PLANET_SKY_DIRECTION).normalize();
     let rotation = DQuat::from_rotation_arc(facing, -best.normalize());
     (best, rotation)
 }
@@ -376,8 +376,8 @@ mod tests {
 
     #[test]
     fn scenarios_need_an_explicit_opt_in() {
-        // Reads the environment; only meaningful when CATINGARDEN_MOON is unset.
-        if std::env::var("CATINGARDEN_MOON").is_err() {
+        // Reads the environment; only meaningful when PLANET_MOON is unset.
+        if std::env::var("PLANET_MOON").is_err() {
             assert!(enabled(false));
             assert!(!enabled(true));
         }
@@ -398,7 +398,7 @@ mod tests {
     #[test]
     fn the_orbit_is_prograde_keeps_distance_and_stays_tidally_locked() {
         let start = DVec3::new(2.0e7, 1.5e7, -3.0e7).normalize() * MOON_DISTANCE_METERS;
-        let facing = DVec3::from_array(catinthegarden_coretypes::moon::MOON_PLANET_SKY_DIRECTION).normalize();
+        let facing = DVec3::from_array(planet_coretypes::moon::MOON_PLANET_SKY_DIRECTION).normalize();
         let rotation = DQuat::from_rotation_arc(facing, -start.normalize());
         let orbit = Orbit::new(start, rotation, 1.0);
         for angle in [1.3, 2.7, 4.0, 6.5] {

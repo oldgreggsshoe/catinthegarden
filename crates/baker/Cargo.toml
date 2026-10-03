@@ -1,11 +1,11 @@
 [package]
-name = "catinthegarden-baker"
+name = "planet-baker"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-catinthegarden-coretypes = { path = "../coretypes" }
+planet-coretypes = { path = "../coretypes" }
 glam.workspace = true
 image.workspace = true
 noise.workspace = true

@@ -68,11 +68,11 @@ impl OceanWind {
 fn ocean_wind() -> Option<OceanWind> {
     static WIND: std::sync::OnceLock<Option<OceanWind>> = std::sync::OnceLock::new();
     *WIND.get_or_init(|| {
-        std::env::var("CATINGARDEN_OCEAN_WIND")
+        std::env::var("PLANET_OCEAN_WIND")
             .ok()
             .map(|value| {
                 let wind = OceanWind::parse(&value).expect(
-                    "CATINGARDEN_OCEAN_WIND must be speed,x,y,z: speed 0..30 m/s and a nonzero finite axis",
+                    "PLANET_OCEAN_WIND must be speed,x,y,z: speed 0..30 m/s and a nonzero finite axis",
                 );
                 tracing::info!(speed_meters_per_second = wind.speed_meters_per_second,
                     propagation_axis = ?wind.direction, "fixed ocean wind experiment");
@@ -373,13 +373,13 @@ fn fixed_sea_override(value: &str) -> Option<f32> {
         .filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
 }
 
-/// `CATINGARDEN_STORM_APPROACH=<seconds>`: start in a flat calm and bring a
+/// `PLANET_STORM_APPROACH=<seconds>`: start in a flat calm and bring a
 /// full storm in over that many seconds, then hold it. Nothing else brings one
 /// on demand: at the interactive start point the weather's storm strength sits
 /// between 0.1 and 0.3 for weeks on end and never reaches a storm
 /// (`storm_spells_at_the_start_point`).
 fn storm_approach_from_environment() -> Option<SeaStateMode> {
-    std::env::var("CATINGARDEN_STORM_APPROACH")
+    std::env::var("PLANET_STORM_APPROACH")
         .ok()
         .map(|value| {
             let seconds = value
@@ -387,7 +387,7 @@ fn storm_approach_from_environment() -> Option<SeaStateMode> {
                 .parse::<f64>()
                 .ok()
                 .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
-                .expect("CATINGARDEN_STORM_APPROACH must be a positive number of seconds");
+                .expect("PLANET_STORM_APPROACH must be a positive number of seconds");
             SeaStateMode::Approach(seconds)
         })
 }
@@ -408,13 +408,13 @@ pub fn has_approaching_storm() -> bool {
 }
 
 fn sea_override_from_environment() -> Option<SeaStateMode> {
-    std::env::var("CATINGARDEN_OCEAN_STORM").ok().map(|value| {
+    std::env::var("PLANET_OCEAN_STORM").ok().map(|value| {
         if value.trim() == "cycle" {
             SeaStateMode::Cycle
         } else {
             SeaStateMode::Fixed(
                 fixed_sea_override(&value)
-                    .expect("CATINGARDEN_OCEAN_STORM must be an intensity in 0..1 or cycle"),
+                    .expect("PLANET_OCEAN_STORM must be an intensity in 0..1 or cycle"),
             )
         }
     })
@@ -784,7 +784,7 @@ fn amplitude_change_velocity(wave: &GerstnerWave, state: SeaState) -> f64 {
 }
 
 /// Shipped/default setting. The unpromoted transport trial is separately gated
-/// by `CATINGARDEN_OCEAN_TRANSPORT=1`, with paired CPU, raster and ray queries.
+/// by `PLANET_OCEAN_TRANSPORT=1`, with paired CPU, raster and ray queries.
 pub const OCEAN_HORIZONTAL_TRANSPORT_ENABLED: bool = false;
 
 /// Opt in only while validating compressed-surface GPU/query parity.
@@ -792,7 +792,7 @@ pub fn horizontal_transport_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
         let enabled = OCEAN_HORIZONTAL_TRANSPORT_ENABLED
-            || std::env::var("CATINGARDEN_OCEAN_TRANSPORT").is_ok_and(|value| value == "1");
+            || std::env::var("PLANET_OCEAN_TRANSPORT").is_ok_and(|value| value == "1");
         if enabled {
             tracing::warn!("experimental compressed ocean transport enabled");
         }
@@ -1173,7 +1173,7 @@ pub(crate) fn spawn_coast_waves_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
         let enabled = spawn_coast_waves_setting(
-            std::env::var("CATINGARDEN_SPAWN_COAST_WAVES").ok().as_deref(),
+            std::env::var("PLANET_SPAWN_COAST_WAVES").ok().as_deref(),
         );
         if enabled {
             tracing::info!("spawn-coast wave prototype enabled: 8 km interior, 16 km exterior; not global steering");
@@ -1336,7 +1336,7 @@ pub fn breaking_fraction(water_depth_meters: f64, raw_height_meters: f64) -> f64
     (raw_height_meters.max(0.0) / limit).min(1.0)
 }
 
-/// FFT sea (`CATINGARDEN_OCEAN_FFT=1`): the CPU surface mirrors the GPU's
+/// FFT sea (`PLANET_OCEAN_FFT=1`): the CPU surface mirrors the GPU's
 /// geometry cascades (wind sea and swell, with their horizontal displacement),
 /// so buoyancy and collision follow the drawn water.
 fn fft_surface() -> Option<&'static crate::ocean_fft::CpuSurface> {
@@ -2315,7 +2315,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires enabled spawn coast waves; set CATINGARDEN_SPAWN_COAST_WAVES=1"]
+    #[ignore = "requires enabled spawn coast waves; set PLANET_SPAWN_COAST_WAVES=1"]
     fn spawn_coast_components_transport_wave_energy_toward_land() {
         assert!(super::spawn_coast_waves_enabled());
         let radial = super::SPAWN_COAST_CENTER.normalize();

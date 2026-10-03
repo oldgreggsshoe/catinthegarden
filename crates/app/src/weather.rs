@@ -3167,7 +3167,7 @@ mod rundown_probe {
     }
 
     /// Instrument, not an assertion. Attributes the run-down to a stage.
-    /// `cargo test -p catinthegarden-app -- --ignored --nocapture weather_rundown`
+    /// `cargo test -p planet-app -- --ignored --nocapture weather_rundown`
     #[test]
     #[ignore = "instrument, not an assertion"]
     fn weather_rundown_by_stage() {

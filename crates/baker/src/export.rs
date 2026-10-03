@@ -5,7 +5,7 @@ use std::{
     path::Path,
 };
 
-use catinthegarden_coretypes::{
+use planet_coretypes::{
     BiomeId, BiomeManifestEntry, ChannelManifest, CubeFace, OUTMAP_SCHEMA_VERSION, OutmapManifest,
     PLANET_RADIUS_METERS, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
     direction_to_face_uv, face_uv_to_direction, tile_key_for_direction,
@@ -417,7 +417,7 @@ fn build_manifest(
                 ""
             };
             format!(
-                "catinthegarden-baker {}; {source}{profile}",
+                "planet-baker {}; {source}{profile}",
                 env!("CARGO_PKG_VERSION")
             )
         },

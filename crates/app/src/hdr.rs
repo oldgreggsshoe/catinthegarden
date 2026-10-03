@@ -17,11 +17,11 @@ const READBACK_RING_SIZE: usize = 3;
 /// photographs needs the scene placed on the tone curve deliberately, and at
 /// 1.0 the alpine survey's snow sits at luminance 0.88-0.93, hard into the ACES
 /// shoulder where the curve compresses what little colour the ground has.
-/// `CATINGARDEN_EXPOSURE=0.6` moves it without a rebuild.
+/// `PLANET_EXPOSURE=0.6` moves it without a rebuild.
 fn fixed_presentation_exposure() -> f32 {
     static EXPOSURE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
     *EXPOSURE.get_or_init(|| {
-        std::env::var("CATINGARDEN_EXPOSURE")
+        std::env::var("PLANET_EXPOSURE")
             .ok()
             .and_then(|value| value.trim().parse::<f32>().ok())
             .filter(|exposure| exposure.is_finite() && *exposure > 0.0)
@@ -363,7 +363,7 @@ impl HdrRenderer {
             exposure: 1.0,
             blur_enabled: BLUR_ENABLED
                 || matches!(
-                    std::env::var("CATINGARDEN_AA").ok().as_deref().map(str::trim),
+                    std::env::var("PLANET_AA").ok().as_deref().map(str::trim),
                     Some("1" | "true" | "on")
                 ),
             bloom_enabled: BLOOM_ENABLED,

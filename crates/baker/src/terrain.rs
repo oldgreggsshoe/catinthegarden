@@ -3,7 +3,7 @@ use std::{
     collections::{BinaryHeap, VecDeque},
 };
 
-use catinthegarden_coretypes::{BiomeId, direction_to_face_uv};
+use planet_coretypes::{BiomeId, direction_to_face_uv};
 use noise::{NoiseFn, Perlin};
 use rayon::prelude::*;
 
@@ -110,7 +110,7 @@ impl Terrain {
         // biome rules -- the catalogue decides the shape and the two materials
         // outright, which is the whole reason a moon needs no pipeline.
         if config.moon {
-            let surface = crate::moon::generate(&grid, catinthegarden_coretypes::moon::baked());
+            let surface = crate::moon::generate(&grid, planet_coretypes::moon::baked());
             let len = grid.len();
             return Ok(Self {
                 grid,
@@ -710,7 +710,7 @@ impl Terrain {
             // Highest visible elevation in eight directions, at 2/4/8 source
             // cells (~1.6-9km at production resolution). Project onto the local
             // tangent so curvature cannot promote a distant below-horizon hill.
-            let radius = catinthegarden_coretypes::moon::MOON_RADIUS_METERS;
+            let radius = planet_coretypes::moon::MOON_RADIUS_METERS;
             let mut visible_slope: f64 = 0.0;
             for step in [2, 4, 8] {
                 for (dx, dy) in [
@@ -768,7 +768,7 @@ impl Terrain {
                     for distance in DISTANCES_METERS {
                         let target = (base
                             + tangent
-                                * (distance / catinthegarden_coretypes::PLANET_RADIUS_METERS))
+                                * (distance / planet_coretypes::PLANET_RADIUS_METERS))
                             .normalize();
                         let target_height = self.grid.sample_f64(&self.height_meters, target);
                         let elevation =
@@ -1494,7 +1494,7 @@ impl PartialOrd for FloodCell {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use catinthegarden_coretypes::moon::MOON_DATUM_METERS;
+    use planet_coretypes::moon::MOON_DATUM_METERS;
 
     #[test]
     fn moon_landing_prefers_walkable_ground_near_relief_over_pristine_plain() {
@@ -1527,7 +1527,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "instrument: cargo test -p catinthegarden-baker --lib terrain::tests::mountain_visibility_throughput -- --ignored --nocapture"]
+    #[ignore = "instrument: cargo test -p planet-baker --lib terrain::tests::mountain_visibility_throughput -- --ignored --nocapture"]
     fn mountain_visibility_throughput() {
         use std::{hint::black_box, time::Instant};
 
@@ -1565,7 +1565,7 @@ mod tests {
                 let tangent = east * azimuth.cos() + north * azimuth.sin();
                 for distance in DISTANCES_METERS {
                     let target = (base
-                        + tangent * (distance / catinthegarden_coretypes::PLANET_RADIUS_METERS))
+                        + tangent * (distance / planet_coretypes::PLANET_RADIUS_METERS))
                         .normalize();
                     let target_height = grid.sample_f64(&heights, target);
                     checksum += (target_height - camera_height).atan2(distance).to_degrees();
@@ -1585,7 +1585,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "instrument: cargo test -p catinthegarden-baker --lib terrain::tests::procedural_mountain_coverage_snapshot -- --ignored --nocapture"]
+    #[ignore = "instrument: cargo test -p planet-baker --lib terrain::tests::procedural_mountain_coverage_snapshot -- --ignored --nocapture"]
     fn procedural_mountain_coverage_snapshot() {
         let config = BakeConfig {
             width: 1024,

@@ -1,3 +1,1 @@
-2 October - whole-sky fog flash diagnosed: it is the new fog lightning, not a renderer bug.
-Evidence: ocean_storm_look_up with a 10s storm ramp and 60 captures at 0.2s (test-runs/ocean_storm_look_up/1790939347-14506). Upper-frame mean luminance falls smoothly 151.5 -> 77 except capture 050 (t=10.0s): 90.3 -> 132.7 -> 87.3. The flash is directional (left quarter 92, right quarter 154) and lasts one 0.2s frame, matching lightning.rs: first strike when strength >= 0.65 at/after t=5s, flash age < 0.4s, brightness-pulsed from the strike direction.
-No shader change made. If the flash is too strong or too wide, tune lightning brightness/spread. Scenario file restored; no code changed.
+3 October - birds off; storm fog now hides cloud shells and the moon. See AGENTS.md and docs/HANDOFF.md (3 October). Not reproduced on the exact live frame; Ian to confirm.

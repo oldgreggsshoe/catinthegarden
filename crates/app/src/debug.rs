@@ -1221,7 +1221,7 @@ impl RunArtifacts {
         self.spatial_log_count += 1;
         self.assertion_tracker.observe(&sample);
         tracing::info!(
-            target: "catinthegarden::spatial",
+            target: "planet::spatial",
             sim_time = sample.sim_time,
             camera_world_x = sample.camera_world_position[0],
             camera_world_y = sample.camera_world_position[1],
@@ -1294,7 +1294,7 @@ impl RunArtifacts {
             return;
         }
         tracing::info!(
-            target: "catinthegarden::exposure",
+            target: "planet::exposure",
             sim_time,
             exposure,
             target_exposure,
@@ -1329,7 +1329,7 @@ impl RunArtifacts {
         total_render_ms: f32,
     ) {
         tracing::info!(
-            target: "catinthegarden::render_profile",
+            target: "planet::render_profile",
             sim_time,
             simulation_ms,
             egui_ms,
@@ -1350,7 +1350,7 @@ impl RunArtifacts {
 
     pub fn record_gpu_timestamps(&self, sim_time: f64, timings: crate::GpuStageTimings) {
         tracing::info!(
-            target: "catinthegarden::gpu_profile",
+            target: "planet::gpu_profile",
             sim_time,
             gpu_scene_ms = timings.scene_ms,
             gpu_raymarch_ms = timings.raymarch_ms,

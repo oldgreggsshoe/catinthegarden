@@ -281,10 +281,10 @@ impl StarRenderer {
             usage: wgpu::BufferUsages::VERTEX,
         });
         let enabled = !matches!(
-            std::env::var("CATINGARDEN_STARS").as_deref(),
+            std::env::var("PLANET_STARS").as_deref(),
             Ok("0" | "false" | "off")
         );
-        tracing::info!(target: "catinthegarden::stars", enabled, points = FIELD_STARS + DISC_STARS, diffuse_objects = GALAXY_PATCHES + NEBULA_PATCHES, "configured celestial catalogue");
+        tracing::info!(target: "planet::stars", enabled, points = FIELD_STARS + DISC_STARS, diffuse_objects = GALAXY_PATCHES + NEBULA_PATCHES, "configured celestial catalogue");
         Self {
             pipeline,
             objects,

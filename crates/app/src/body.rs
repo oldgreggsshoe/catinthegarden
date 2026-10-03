@@ -49,11 +49,11 @@ pub struct Body {
 
 /// The baked planet. Its radius is the one the outmap under
 /// `assets/outmaps/test-planet` was generated against, so it is not free to
-/// change without a rebake — `catinthegarden_coretypes::PLANET_RADIUS_METERS`
+/// change without a rebake — `planet_coretypes::PLANET_RADIUS_METERS`
 /// remains the baker's copy and the two are asserted equal.
 pub const PLANET: Body = Body {
     name: "planet",
-    radius_meters: catinthegarden_coretypes::PLANET_RADIUS_METERS,
+    radius_meters: planet_coretypes::PLANET_RADIUS_METERS,
     rotation_period_seconds: 15.0,
     has_ocean: true,
     has_atmosphere: true,
@@ -68,7 +68,7 @@ pub const PLANET: Body = Body {
 /// it needs no outmap of its own.
 pub const MOON: Body = Body {
     name: "moon",
-    radius_meters: catinthegarden_coretypes::moon::MOON_RADIUS_METERS,
+    radius_meters: planet_coretypes::moon::MOON_RADIUS_METERS,
     // Tidally locked bodies turn once per orbit. Until an orbit exists this is
     // simply slower than the planet, so a standing observer sees the sky move.
     rotation_period_seconds: 60.0,
@@ -212,7 +212,7 @@ mod tests {
     fn the_planet_matches_the_radius_its_outmap_was_baked_against() {
         const {
             assert!(
-                PLANET.radius_meters == catinthegarden_coretypes::PLANET_RADIUS_METERS,
+                PLANET.radius_meters == planet_coretypes::PLANET_RADIUS_METERS,
                 "the planet's radius must match the one its outmap was baked against",
             );
         }

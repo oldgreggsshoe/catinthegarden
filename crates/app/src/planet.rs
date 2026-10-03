@@ -3,7 +3,7 @@ use std::{
     collections::{BinaryHeap, HashMap, HashSet},
 };
 
-use catinthegarden_coretypes::TILE_LOGICAL_SIZE;
+use planet_coretypes::TILE_LOGICAL_SIZE;
 use glam::{DQuat, DVec3, IVec3, Mat4, Vec3, Vec4};
 
 /// Re-exported rather than restated. The baker writes outmap tiles against the
@@ -76,7 +76,7 @@ const LOD_VIEW_FOCUS_PRIORITY_BOOST: f64 = 16.0;
 /// Answering that needs a run with the budget lifted clear of demand, and
 /// rebuilding with an edited constant makes that a different binary each time.
 pub fn max_active_chunks_from_env() -> usize {
-    std::env::var("CATINGARDEN_MAX_ACTIVE_CHUNKS")
+    std::env::var("PLANET_MAX_ACTIVE_CHUNKS")
         .ok()
         .and_then(|value| value.trim().parse::<usize>().ok())
         .map(|value| value.max(FACE_COUNT as usize))
@@ -404,11 +404,11 @@ pub fn cube_face_direction(face: u8, u: f64, v: f64) -> DVec3 {
 /// shells toward the sun at a three-octave budget and returns 1.0. Turning it
 /// off is a 5% frame saving that only shows under actual cloud.
 ///
-/// `CATINGARDEN_CLOUD_SHADOW=1` puts it back without a rebuild. Restoring the
+/// `PLANET_CLOUD_SHADOW=1` puts it back without a rebuild. Restoring the
 /// default is a one-word change here.
 pub(crate) fn cloud_shadow_enabled() -> bool {
     matches!(
-        std::env::var("CATINGARDEN_CLOUD_SHADOW")
+        std::env::var("PLANET_CLOUD_SHADOW")
             .as_deref()
             .map(str::trim),
         Ok("1" | "true" | "on")
@@ -429,10 +429,10 @@ pub(crate) fn cloud_shadow_enabled() -> bool {
 /// enough to crack is three to eight kilometres away, where a metre-scale crack
 /// is sub-pixel. What would read at that range is icefall-scale structure, tens
 /// of metres across. Kept opt-in so the next attempt starts from here rather
-/// than from nothing: `CATINGARDEN_CREVASSES=1`.
+/// than from nothing: `PLANET_CREVASSES=1`.
 pub(crate) fn crevasses_enabled() -> bool {
     matches!(
-        std::env::var("CATINGARDEN_CREVASSES")
+        std::env::var("PLANET_CREVASSES")
             .as_deref()
             .map(str::trim),
         Ok("1" | "true" | "on")
@@ -467,12 +467,12 @@ pub(crate) fn render_feature_constants() -> String {
 /// stands in 33% of sea-level density by one path and 11% by the other, where
 /// Jungfraujoch is at 66%.
 ///
-/// `CATINGARDEN_AIR_SCALE_HEIGHT_KM=179` sets both to the same target. Unset,
+/// `PLANET_AIR_SCALE_HEIGHT_KM=179` sets both to the same target. Unset,
 /// every constant is left exactly as written.
 pub(crate) fn air_scale_height_override_meters() -> Option<f32> {
     static OVERRIDE: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     *OVERRIDE.get_or_init(|| {
-        std::env::var("CATINGARDEN_AIR_SCALE_HEIGHT_KM")
+        std::env::var("PLANET_AIR_SCALE_HEIGHT_KM")
             .ok()
             .and_then(|value| value.trim().parse::<f32>().ok())
             .filter(|km| km.is_finite() && *km > 1.0 && *km < 4000.0)
@@ -492,11 +492,11 @@ pub(crate) fn retune_air_scale_heights(source: String, optical_divisor: f32) -> 
     };
     // The two paths can be moved separately, because they fail in opposite
     // directions: thicker air is what the ground wants and a thicker limb is
-    // what orbit does not. `CATINGARDEN_AIR_SKY_UNCHANGED=1` thickens only the
+    // what orbit does not. `PLANET_AIR_SKY_UNCHANGED=1` thickens only the
     // terrain fog and aerial perspective and leaves the sky, the sun and the
     // skylight LUTs exactly as shipped.
     let sky_unchanged = matches!(
-        std::env::var("CATINGARDEN_AIR_SKY_UNCHANGED")
+        std::env::var("PLANET_AIR_SKY_UNCHANGED")
             .as_deref()
             .map(str::trim),
         Ok("1" | "true" | "on")
@@ -560,10 +560,10 @@ pub(crate) fn shared_planet_shader_source() -> String {
     )
 }
 
-/// Experimental FFT wave field (`CATINGARDEN_OCEAN_FFT=1`); default off.
+/// Experimental FFT wave field (`PLANET_OCEAN_FFT=1`); default off.
 pub(crate) fn ocean_fft_enabled() -> bool {
     matches!(
-        std::env::var("CATINGARDEN_OCEAN_FFT").ok().as_deref().map(str::trim),
+        std::env::var("PLANET_OCEAN_FFT").ok().as_deref().map(str::trim),
         Some("1" | "true" | "on")
     )
 }
@@ -572,7 +572,7 @@ pub(crate) fn ocean_fft_enabled() -> bool {
 pub(crate) fn ocean_foam_history_enabled() -> bool {
     ocean_fft_enabled()
         || matches!(
-        std::env::var("CATINGARDEN_OCEAN_FOAM_HISTORY")
+        std::env::var("PLANET_OCEAN_FOAM_HISTORY")
             .ok()
             .as_deref()
             .map(str::trim),
@@ -612,7 +612,7 @@ pub fn placeholder_height_meters(direction: DVec3) -> f64 {
     // takes a crater field where the placeholder planet takes sine octaves.
     // Both are the *macro* surface; the detail ladder runs on top of either.
     if crate::body::active().name == crate::body::MOON.name {
-        return catinthegarden_coretypes::moon::runtime().surface_height_meters(direction);
+        return planet_coretypes::moon::runtime().surface_height_meters(direction);
     }
     PLACEHOLDER_HEIGHT_OCTAVES
         .iter()

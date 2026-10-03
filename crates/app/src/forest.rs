@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use catinthegarden_coretypes::{TileKey, face_uv_to_direction, tile_key_for_direction};
+use planet_coretypes::{TileKey, face_uv_to_direction, tile_key_for_direction};
 use glam::DVec3;
 use wgpu::util::DeviceExt;
 
@@ -64,7 +64,7 @@ const TREE_LOD_PLACEHOLDER_SCALE: f32 = 0.10;
 const FOREST_PLANET_SEED: u32 = 0x6d2b_79f5;
 
 fn forest_rendering_from_env() -> bool {
-    match std::env::var("CATINGARDEN_FOREST") {
+    match std::env::var("PLANET_FOREST") {
         Ok(value) => !matches!(
             value.trim().to_ascii_lowercase().as_str(),
             "0" | "false" | "off"
@@ -74,7 +74,7 @@ fn forest_rendering_from_env() -> bool {
 }
 
 fn gpu_resident_forests_from_env() -> bool {
-    match std::env::var("CATINGARDEN_GPU_FOREST") {
+    match std::env::var("PLANET_GPU_FOREST") {
         Ok(value) => !matches!(
             value.trim().to_ascii_lowercase().as_str(),
             "0" | "false" | "off"
@@ -353,7 +353,7 @@ impl ForestRenderer {
         let initial_key = forest_cell_key(FOREST_CENTRE_DIRECTION);
         let enabled = forest_rendering_from_env();
         tracing::info!(
-            target: "catinthegarden::forest",
+            target: "planet::forest",
             enabled,
             maximum_renderable_patches = FOREST_MAX_RENDERABLE_PATCHES,
             maximum_cached_patches = FOREST_MAX_CACHED_PATCHES,
@@ -783,7 +783,7 @@ impl ForestRenderer {
                 self.rebuild_count += 1;
             }
             tracing::info!(
-                target: "catinthegarden::forest",
+                target: "planet::forest",
                 face = ?patch_key.face,
                 level = patch_key.level,
                 x = patch_key.x,
@@ -1866,7 +1866,7 @@ mod tests {
     #[test]
     fn procedural_patch_cells_have_canonical_half_open_tree_ownership() {
         let key = TileKey {
-            face: catinthegarden_coretypes::CubeFace::PositiveX,
+            face: planet_coretypes::CubeFace::PositiveX,
             level: FOREST_CELL_LEVEL,
             x: 1_234,
             y: 2_345,
@@ -2212,7 +2212,7 @@ mod tests {
     #[test]
     fn forest_has_a_render_only_performance_switch() {
         let source = include_str!("forest.rs");
-        assert!(source.contains("CATINGARDEN_FOREST"));
+        assert!(source.contains("PLANET_FOREST"));
         assert!(source.contains("if !self.enabled"));
     }
 }

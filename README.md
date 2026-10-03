@@ -1,4 +1,4 @@
-# catinthegarden
+# planet
 
 A planet renderer in Rust and WGSL: a 4,000 km-radius cube-sphere with baked
 macro terrain, quadtree LOD, analytic atmospheric scattering, Gerstner-wave
@@ -26,8 +26,8 @@ Requires a GPU with Vulkan/Metal/DX12 support via `wgpu`, and a baked outmap at
 `assets/outmaps/test-planet` (found from the working directory or any parent).
 
 ```sh
-cargo run -p catinthegarden-app                    # interactive, fullscreen
-cargo run -p catinthegarden-app -- --terrain placeholder   # no outmap needed
+cargo run -p planet-app                    # interactive, fullscreen
+cargo run -p planet-app -- --terrain placeholder   # no outmap needed
 ```
 
 Without an outmap the app falls back to procedural placeholder height
@@ -71,8 +71,8 @@ bounded procedural microrelief.
 
 ```sh
 ./scripts/rebake-test-planet.sh          # bake, validate, install (keeps a backup)
-cargo run --release -p catinthegarden-baker -- --help
-cargo run --release -p catinthegarden-baker -- --validate assets/outmaps/test-planet
+cargo run --release -p planet-baker -- --help
+cargo run --release -p planet-baker -- --validate assets/outmaps/test-planet
 ```
 
 Baking at full resolution is slow; `--quick` trades resolution for turnaround.
@@ -102,13 +102,13 @@ Render-path parity across raster and ray needs a display:
 
 | Variable | Effect |
 |---|---|
-| `CATINGARDEN_RENDER_PATH` | `raster` or `ray` |
-| `CATINGARDEN_DEBUG_MODE` | `final`, `albedo`, `lighting`, `aerial`, `ray_hit` |
-| `CATINGARDEN_MAX_ACTIVE_CHUNKS` | Lift or lower the quadtree leaf budget |
-| `CATINGARDEN_FLAT_TRIANGLES` | Flat-triangle experiment (`0`/`false`/`off` disables) |
-| `CATINGARDEN_RAY_EXPERIMENTS` | Raymarch experiment bitmask |
-| `CATINGARDEN_PRESENT_MODE` | `immediate` to bypass vsync when measuring |
-| `CATINGARDEN_FRAME_LATENCY` | Desired frame latency |
+| `PLANET_RENDER_PATH` | `raster` or `ray` |
+| `PLANET_DEBUG_MODE` | `final`, `albedo`, `lighting`, `aerial`, `ray_hit` |
+| `PLANET_MAX_ACTIVE_CHUNKS` | Lift or lower the quadtree leaf budget |
+| `PLANET_FLAT_TRIANGLES` | Flat-triangle experiment (`0`/`false`/`off` disables) |
+| `PLANET_RAY_EXPERIMENTS` | Raymarch experiment bitmask |
+| `PLANET_PRESENT_MODE` | `immediate` to bypass vsync when measuring |
+| `PLANET_FRAME_LATENCY` | Desired frame latency |
 
 ## Build trees
 

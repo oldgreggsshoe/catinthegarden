@@ -717,7 +717,7 @@ impl BirdFlocks {
         self
     }
 
-    /// Applies `CATINGARDEN_BIRD_SPAWN_METERS`, written as `min,max` in metres.
+    /// Applies `PLANET_BIRD_SPAWN_METERS`, written as `min,max` in metres.
     /// Anything unparseable leaves the shipping shell alone.
     ///
     /// `allow(dead_code)` because the only caller is the binary's own
@@ -725,7 +725,7 @@ impl BirdFlocks {
     /// for the hook, and the alternative is a warning that says nothing.
     #[allow(dead_code)]
     pub fn with_spawn_shell_from_env(self) -> Self {
-        let Ok(value) = std::env::var("CATINGARDEN_BIRD_SPAWN_METERS") else {
+        let Ok(value) = std::env::var("PLANET_BIRD_SPAWN_METERS") else {
             return self;
         };
         let Some((min, max)) = value.split_once(',') else {

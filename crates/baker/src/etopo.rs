@@ -230,7 +230,7 @@ mod tests {
     #[test]
     fn imports_north_up_west_to_east_relief_into_engine_geographic_grid() {
         let path = std::env::temp_dir().join(format!(
-            "catinthegarden-etopo-{}-orientation.tif",
+            "planet-etopo-{}-orientation.tif",
             std::process::id()
         ));
         let width = 8_u32;
@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn preserves_observed_land_peak_when_downsampling() {
         let path = std::env::temp_dir().join(format!(
-            "catinthegarden-etopo-{}-peak.tif",
+            "planet-etopo-{}-peak.tif",
             std::process::id()
         ));
         let width = 16_u32;

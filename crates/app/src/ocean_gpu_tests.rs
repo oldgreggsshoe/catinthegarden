@@ -456,7 +456,7 @@ fn check_ocean_optics(case: OpticsCase) {
             continue;
         }
         if local_altitude {
-            let radius = catinthegarden_coretypes::PLANET_RADIUS_METERS;
+            let radius = planet_coretypes::PLANET_RADIUS_METERS;
             let points = [
                 [0.0_f64, 0.0, 0.0],
                 [0.0, -10.0, 0.0],
@@ -968,13 +968,13 @@ fn test_edge(@builtin(global_invocation_id) id: vec3<u32>) {{
 }
 
 #[test]
-#[ignore = "requires Vulkan and CATINGARDEN_OCEAN_FFT_SWELL=30; reads actual FFT WGSL vertices"]
+#[ignore = "requires Vulkan and PLANET_OCEAN_FFT_SWELL=30; reads actual FFT WGSL vertices"]
 fn gpu_big_swell_chop_does_not_make_sideways_triangles() {
     use crate::ocean_fft::{self, OceanFft, ViewParams};
     assert_eq!(
         ocean_fft::swell_base_height_meters(),
         30.0,
-        "run with CATINGARDEN_OCEAN_FFT_SWELL=30"
+        "run with PLANET_OCEAN_FFT_SWELL=30"
     );
     // CHOP=2 exposes the white blades in ocean_swell_shards. CHOP=1 did not:
     // a fine CPU grid at that setting was the wrong regression for this bug.

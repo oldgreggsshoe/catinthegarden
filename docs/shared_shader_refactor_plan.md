@@ -450,7 +450,7 @@ internal render size, and scenario data that will be used after every stage.
 export CARGO_TARGET_DIR=/home/dad/catingard-target
 
 # Baseline before Stage 1, then repeat after every stage.
-cargo run --release -p catinthegarden-app -- \
+cargo run --release -p planet-app -- \
     --scenario polar_ice_cap
 ```
 

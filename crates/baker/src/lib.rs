@@ -7,7 +7,7 @@ pub mod terrain;
 
 use std::{io::Write, time::Instant};
 
-use catinthegarden_coretypes::OutmapManifest;
+use planet_coretypes::OutmapManifest;
 
 pub use config::BakeConfig;
 pub use export::{
@@ -138,7 +138,7 @@ fn bake_internal(
     // moraine is a stripe or a rash. Area-weighted, because an equirectangular
     // grid over-samples the poles badly enough to flatter any polar biome.
     {
-        use catinthegarden_coretypes::BiomeId;
+        use planet_coretypes::BiomeId;
         let mut weights = [0.0_f64; BiomeId::ALL.len()];
         let mut total = 0.0_f64;
         for index in 0..terrain.grid.len() {

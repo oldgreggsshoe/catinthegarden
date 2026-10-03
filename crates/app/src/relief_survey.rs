@@ -31,7 +31,7 @@ mod tests {
     }
 
     fn sample_active_macro(outmap: &crate::outmap::Outmap, direction: DVec3) -> Option<f64> {
-        use catinthegarden_coretypes::TileKey;
+        use planet_coretypes::TileKey;
 
         let (face, face_uv) = crate::terrain::cube_face_uv_for_survey(direction)?;
         for level in (0..=18_u8).rev() {
@@ -366,7 +366,7 @@ mod tests {
     #[ignore = "instrument: cargo test -- --ignored --nocapture baked_macro_relief"]
     fn baked_macro_relief_at_the_mountains() {
         use crate::outmap::Outmap;
-        use catinthegarden_coretypes::TileKey;
+        use planet_coretypes::TileKey;
 
         let outmap = Outmap::open(std::path::Path::new("../../assets/outmaps/test-planet"))
             .or_else(|_| Outmap::open(std::path::Path::new("assets/outmaps/test-planet")))
@@ -407,11 +407,11 @@ mod tests {
                         let tiles_per_side = f64::from(1_u32 << key.level);
                         let u = (face_uv[0] * 0.5 + 0.5) * tiles_per_side - f64::from(key.x);
                         let v = (face_uv[1] * 0.5 + 0.5) * tiles_per_side - f64::from(key.y);
-                        let logical = catinthegarden_coretypes::TILE_LOGICAL_SIZE as f64 - 1.0;
+                        let logical = planet_coretypes::TILE_LOGICAL_SIZE as f64 - 1.0;
                         let sx = (u.clamp(0.0, 1.0) * logical).round() as usize;
                         let sy = (v.clamp(0.0, 1.0) * logical).round() as usize;
-                        let stored = catinthegarden_coretypes::TILE_STORED_SIZE as usize;
-                        let gutter = catinthegarden_coretypes::TILE_GUTTER as usize;
+                        let stored = planet_coretypes::TILE_STORED_SIZE as usize;
+                        let gutter = planet_coretypes::TILE_GUTTER as usize;
                         biomes.push(data.biome_ids[(sy + gutter) * stored + sx + gutter]);
                         break sample_tile_height(&data, key, face_uv);
                     }
@@ -454,17 +454,17 @@ mod tests {
 
     fn sample_tile_height(
         data: &crate::outmap::TileData,
-        key: catinthegarden_coretypes::TileKey,
+        key: planet_coretypes::TileKey,
         face_uv: [f64; 2],
     ) -> f64 {
         let tiles_per_side = f64::from(1_u32 << key.level);
         let u = (face_uv[0] * 0.5 + 0.5) * tiles_per_side - f64::from(key.x);
         let v = (face_uv[1] * 0.5 + 0.5) * tiles_per_side - f64::from(key.y);
-        let logical = catinthegarden_coretypes::TILE_LOGICAL_SIZE as f64 - 1.0;
+        let logical = planet_coretypes::TILE_LOGICAL_SIZE as f64 - 1.0;
         let sx = (u.clamp(0.0, 1.0) * logical).round() as usize;
         let sy = (v.clamp(0.0, 1.0) * logical).round() as usize;
-        let stored = catinthegarden_coretypes::TILE_STORED_SIZE as usize;
-        let gutter = catinthegarden_coretypes::TILE_GUTTER as usize;
+        let stored = planet_coretypes::TILE_STORED_SIZE as usize;
+        let gutter = planet_coretypes::TILE_GUTTER as usize;
         f64::from(data.heights_meters[(sy + gutter) * stored + sx + gutter])
     }
 
@@ -476,7 +476,7 @@ mod tests {
     /// `tour_mountains` sits over ocean and `mountain_render_faults` is buried
     /// inside terrain -- so the survey site has to come from the bake itself.
     /// What the whole planet is made of, by biome, at the globally dense level.
-    /// `CATINGARDEN_SURVEY_OUTMAP` picks which bake to count.
+    /// `PLANET_SURVEY_OUTMAP` picks which bake to count.
     /// The slope distribution of the baked macro field, in degrees. The biome
     /// classifier's steep-rock threshold has to come from this: at 4096x2048 a
     /// cell spans roughly 5km, so a "mountain" angle in the render is a very
@@ -485,11 +485,11 @@ mod tests {
     #[ignore = "instrument: cargo test -- --ignored --nocapture baked_slopes"]
     fn baked_slopes() {
         use crate::outmap::Outmap;
-        use catinthegarden_coretypes::{
+        use planet_coretypes::{
             CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
         };
 
-        let root = std::env::var("CATINGARDEN_SURVEY_OUTMAP")
+        let root = std::env::var("PLANET_SURVEY_OUTMAP")
             .unwrap_or_else(|_| "assets/outmaps/test-planet".to_string());
         let outmap = Outmap::open(std::path::Path::new(&format!("../../{root}")))
             .or_else(|_| Outmap::open(std::path::Path::new(&root)))
@@ -574,11 +574,11 @@ mod tests {
     #[ignore = "instrument: cargo test -- --ignored --nocapture biome_census"]
     fn biome_census() {
         use crate::outmap::Outmap;
-        use catinthegarden_coretypes::{
+        use planet_coretypes::{
             CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
         };
 
-        let root = std::env::var("CATINGARDEN_SURVEY_OUTMAP")
+        let root = std::env::var("PLANET_SURVEY_OUTMAP")
             .unwrap_or_else(|_| "assets/outmaps/test-planet".to_string());
         let outmap = Outmap::open(std::path::Path::new(&format!("../../{root}")))
             .or_else(|_| Outmap::open(std::path::Path::new(&root)))
@@ -670,12 +670,12 @@ mod tests {
     #[ignore = "instrument: cargo test -- --ignored --nocapture mountain_survey_sites"]
     fn mountain_survey_sites() {
         use crate::outmap::Outmap;
-        use catinthegarden_coretypes::{
+        use planet_coretypes::{
             CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
             face_uv_to_direction,
         };
 
-        let root = std::env::var("CATINGARDEN_SURVEY_OUTMAP")
+        let root = std::env::var("PLANET_SURVEY_OUTMAP")
             .unwrap_or_else(|_| "assets/outmaps/test-planet".to_string());
         let outmap = Outmap::open(std::path::Path::new(&format!("../../{root}")))
             .or_else(|_| Outmap::open(std::path::Path::new(&root)))
@@ -787,7 +787,7 @@ mod tests {
     #[test]
     #[ignore = "instrument: cargo test -- --ignored --nocapture global_highest_summit"]
     fn global_highest_summit() {
-        use catinthegarden_coretypes::{
+        use planet_coretypes::{
             TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey, face_uv_to_direction,
         };
 

@@ -14,8 +14,8 @@ if [[ -e "$staging" ]]; then
     exit 1
 fi
 
-cargo run --release -p catinthegarden-baker -- --output "$staging"
-cargo run --release -p catinthegarden-baker -- --validate "$staging"
+cargo run --release -p planet-baker -- --output "$staging"
+cargo run --release -p planet-baker -- --validate "$staging"
 
 if [[ -e "$output" ]]; then
     mv "$output" "$backup"
@@ -24,4 +24,4 @@ fi
 mv "$staging" "$output"
 
 echo "Installed rebaked coastal outmap at $output"
-echo "Run: cargo run -p catinthegarden-app"
+echo "Run: cargo run -p planet-app"

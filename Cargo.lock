@@ -308,49 +308,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "catinthegarden-app"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "catinthegarden-coretypes",
- "cpal",
- "egui",
- "egui-wgpu",
- "egui-winit",
- "glam",
- "image",
- "pollster",
- "serde",
- "serde_json",
- "tracing",
- "tracing-subscriber",
- "wgpu",
- "winit",
-]
-
-[[package]]
-name = "catinthegarden-baker"
-version = "0.1.0"
-dependencies = [
- "catinthegarden-coretypes",
- "glam",
- "image",
- "noise",
- "rayon",
- "serde",
- "serde_json",
- "tiff",
-]
-
-[[package]]
-name = "catinthegarden-coretypes"
-version = "0.1.0"
-dependencies = [
- "glam",
- "serde",
-]
-
-[[package]]
 name = "cc"
 version = "1.2.67"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2079,6 +2036,49 @@ name = "plain"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
+
+[[package]]
+name = "planet-app"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "cpal",
+ "egui",
+ "egui-wgpu",
+ "egui-winit",
+ "glam",
+ "image",
+ "planet-coretypes",
+ "pollster",
+ "serde",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
+name = "planet-baker"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "image",
+ "noise",
+ "planet-coretypes",
+ "rayon",
+ "serde",
+ "serde_json",
+ "tiff",
+]
+
+[[package]]
+name = "planet-coretypes"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "serde",
+]
 
 [[package]]
 name = "png"
