@@ -20,9 +20,14 @@ compared with `1791047330-67409`, its globe is lit normally instead of being
 covered in storm-grey shading. The six-capture storm replay
 (`1791048153-68524`) passes. The complete app test run has 613 passing, three
 failing and 39 ignored: the failures are the orbital zoom/FOV assertions under
-the user's uncommitted 75-to-85-degree FOV change. No active orbital lightning
-flash was captured; the cone's projected width is covered by a regression and
-the terrain, forest, sky and rain shaders validate.
+the user's uncommitted 75-to-85-degree FOV change. A temporary rapid-ascent
+capture (`ground_to_orbit`, `1791059717-148692`) caught the second flash at
+about 330km as a localized oval near the frame edge, but the dark, off-centre
+planet does not allow a useful disc-scale judgement. That run fails its seam
+and fallback assertions (1146m / 252 against 0.1m / 192), so it is diagnostic
+only; the temporary scenario edit was restored. An active flash at 15.9Mm
+remains visually unverified. The cone's projected width is covered by a
+regression and the terrain, forest, sky and rain shaders validate.
 
 Crest spray's draw shader now turns the regular
 crest streaks into soft, irregular wisps with a screen-footprint-filtered
