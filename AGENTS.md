@@ -1,6 +1,6 @@
 # AGENTS.md
 
-every time you respond, put your response in a file /home/dad/catingard/response/codex.txt and whenever I say 'ok ready', look for a file at /home/dad/catingard/response/codex.txt and use that as your next prompt
+every time you respond, put your response in a file /home/dad/stuff/response/codex.txt and whenever I say 'ok ready', look for a file at /home/dad/stuff/response/codex.txt and use that as your next prompt
 
 Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the whole architecture in one page so you don't need the full design doc pasted in every session.
 
@@ -436,10 +436,9 @@ If a `cargo add` resolves something newer, that's fine — these are floors, not
 /docs/HANDOFF.md  canonical current-state and next-session handoff
 ```
 
-**The repository is a worktree.** `planet/.git` is a 46-byte pointer file; the real object
-database lives at `/home/dad/catingard-tmp/catingard-git`. Despite the name,
-`/home/dad/catingard-tmp` is **not** scratch and must never be swept by a disk cleanup —
-deleting it destroys all history. Stale build output is safe to remove; that directory is not
+**The repository is a worktree.** `/home/dad/stuff/.git` is a 46-byte pointer file; the real object
+database lives at `/home/dad/planet-git` (formerly `/home/dad/catingard-tmp/catingard-git`).
+It must never be swept by a disk cleanup — deleting it destroys all history. Stale build output is safe to remove; that directory is not
 build output. `git worktree list` shows the live checkouts before you delete anything.
 
 ## Terrain gen pipeline (baker crate only)

@@ -737,7 +737,7 @@ See the latest section for the failing-before/passing-after evidence. No terrain
 not the in-repo `target/`. Give every temporary or staged checkout its own `CARGO_TARGET_DIR`
 (`AGENTS.md`); never share the worktree's. Note that
 `planet/.git` is a 46-byte pointer file — the real object database lives at
-`/home/dad/catingard-tmp/catingard-git`, so `catingard-tmp` is **not** scratch and must never be
+`/home/dad/planet-git`, so `catingard-tmp` is **not** scratch and must never be
 swept by a disk cleanup.
 
 ### Experimental weather — pressure diagnostics (25 August 2026)
@@ -3125,7 +3125,7 @@ pass; another rebuilt capture is required.
 ## Checkout metadata relocation and flat frontier skirt repair — 7 August 2026
 
 The checkout's `.git` directory was still the old 67MB metadata store at `fe24c5b` after the
-active 69MB metadata directory moved to `/home/dad/catingard-tmp/catingard-git`. The old directory
+active 69MB metadata directory moved to `/home/dad/planet-git`. The old directory
 is preserved at `/home/dad/catingard-tmp/catingard-dotgit-stale-20260807`; the checkout now uses a
 `.git` file pointing at the relocated store and default `git status` resolves to `101c433`.
 Manual capture `test-runs/manual/1786098424-478229` still showed stippled mixed-L3/L7 frontier
