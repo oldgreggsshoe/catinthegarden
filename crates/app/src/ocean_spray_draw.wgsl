@@ -67,14 +67,14 @@ fn spray_noise(point: vec2<f32>, seed: u32) -> f32 {
 
 fn crest_mist_mask(corner: vec2<f32>, age: f32, seed: f32) -> f32 {
     let noise_seed = u32(seed * 16777215.0);
-    // The quad's x axis follows particle motion: slower variation along it
-    // leaves wind-combed filaments; the age drift keeps their shape breathing.
-    let point = corner * vec2<f32>(2.8, 6.5) + vec2<f32>(age * 1.1, age * 0.25);
+    // Isotropic noise in the quad's own frame: the quad is already only mildly
+    // stretched along the motion, and strand-like anisotropy read as boards.
+    let point = corner * 2.6 + vec2<f32>(age * 1.1, age * 0.25);
     let warp_sample = spray_noise(point * 0.55 + vec2<f32>(3.1, 7.7), noise_seed) - 0.5;
     let warp = vec2<f32>(warp_sample, -0.65 * warp_sample);
     let warped = point + warp * 1.6;
     let billow = spray_noise(warped * 0.8, noise_seed);
-    let breakup = spray_noise(warped * vec2<f32>(1.7, 3.2) + vec2<f32>(4.7, 2.3), noise_seed ^ 0x85ebca6bu);
+    let breakup = spray_noise(warped * 2.1 + vec2<f32>(4.7, 2.3), noise_seed ^ 0x85ebca6bu);
     // Suppress sub-pixel breakup as these small puffs recede; otherwise the
     // noise aliases into the same hard speckles the mask is meant to remove.
     let footprint = max(fwidth(warped.x), fwidth(warped.y));
@@ -157,7 +157,11 @@ fn vs_spray(
     let across = vec2<f32>(-along.y, along.x);
     // A streak is velocity times a time, and time scales with the hull's root.
     let streak_seconds = 0.12 * select(1.0, sqrt(ship_size), from_ship);
-    let streak = min(length(screen_velocity) * streak_seconds, distance * 0.06);
+    // Crest mist is capped at about 2:1 and relaxes toward round as it ages;
+    // longer streaks of upright cards read as vertical boards. Ship sheets
+    // keep their longer streak.
+    let streak_limit = select(size * 1.2 * (1.0 - age), distance * 0.06, from_ship);
+    let streak = min(length(screen_velocity) * streak_seconds, streak_limit);
     view_position = vec3<f32>(
         view_position.xy + along * corner.x * (size + streak) + across * corner.y * size,
         view_position.z,
