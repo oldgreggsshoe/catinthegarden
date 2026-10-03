@@ -1,12 +1,16 @@
-I looked at the latest stormy ocean captures, especially `test-runs/ocean_rough_horizon/1791035355-21476`, and the manual storm view.
+I’d keep the crest-top birth point and the existing fold/breaking mask exactly as they are. The main issue is the *rendered shape*: the current crest spray is made from camera-facing quads with a small, repeated sine-strand pattern, so it reads as separate sprite flecks.
 
-Right now the airborne spray reads as little pale grey-white flecks: compact oval/teardrop puffs close by, and repeated tiny upright streaks along distant crests. They sit as separate marks rather than joining into a continuous cloud. The repeated size/shape and fairly bright centers make them feel like particles or foam specks, not a volume of water vapour. The white patches on the wave faces are surface foam; the long blue diagonal lines in these storm views are rain, not spray.
+I’d make it feel like a thin, torn veil of water droplets that breaks into vapour downwind:
 
-Overall, it looks sparse and particle-like, without the soft layered billow, irregular density, and gradual wind-drift/dissipation that would make it read as steam or smoke. I have not changed the renderer yet.
+- Replace the regular stripe pattern with an irregular, soft-edged density mask: a broad warped billow for the body, eroded into smaller wisps and fine breakup. Give particles varied aspect/shape so they don’t stamp out identical ovals.
+- Keep a denser, brighter root right at the crest, but make the edges and trailing part translucent. Let each wisp spread slightly, shear with the wind, lose density, and dissolve quickly. Aim for connected wisps near the crest—not big cottony smoke balls.
+- Make lighting less uniformly white: soft sky fill, restrained backlit scattering, and some depth/occlusion from the wave and existing fog. That gives the plume volume without making it look like foam pasted above the water.
+
+I’d start with the draw shader only—shape, alpha, and size variation—and leave spawning, origin, and birth timing untouched. Then compare the fixed-pose spray sequence in motion. I wouldn’t raise the particle count or broaden the plume unless that pass showed a real coverage gap. No renderer edits yet.
 
 <oai-mem-citation>
 <citation_entries>
-MEMORY.md:153-166|note=[ocean visual evidence preference kept the assessment limited to opened still captures]
+MEMORY.md:153-166|note=[ocean visual work should be evaluated from captured motion rather than a still alone]
 </citation_entries>
 <rollout_ids>
 01a07103-79ca-7e92-99b9-5da47619e658
