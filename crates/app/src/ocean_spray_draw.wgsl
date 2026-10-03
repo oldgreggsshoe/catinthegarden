@@ -37,6 +37,54 @@ struct SprayVertexOutput {
     @location(3) seed: f32,
     // 1 for the ship's sheets of water, 0 for crest mist.
     @location(4) kind: f32,
+    @location(5) age: f32,
+}
+
+// A small deterministic value-noise field gives every crest puff a distinct
+// torn edge without a texture lookup. Keep the ship's splash clumps separate.
+fn spray_hash(cell: vec2<i32>, seed: u32) -> f32 {
+    var hash = bitcast<u32>(cell.x) * 0x8da6b343u
+        ^ bitcast<u32>(cell.y) * 0xd8163841u
+        ^ seed * 0xcb1ab31fu;
+    hash ^= hash >> 16u;
+    hash *= 0x7feb352du;
+    hash ^= hash >> 15u;
+    hash *= 0x846ca68bu;
+    hash ^= hash >> 16u;
+    return f32(hash & 0x00ffffffu) * (1.0 / 16777216.0);
+}
+
+fn spray_noise(point: vec2<f32>, seed: u32) -> f32 {
+    let cell = vec2<i32>(floor(point));
+    let local = fract(point);
+    let eased = local * local * (3.0 - 2.0 * local);
+    let a = spray_hash(cell, seed);
+    let b = spray_hash(cell + vec2<i32>(1, 0), seed);
+    let c = spray_hash(cell + vec2<i32>(0, 1), seed);
+    let d = spray_hash(cell + vec2<i32>(1, 1), seed);
+    return mix(mix(a, b, eased.x), mix(c, d, eased.x), eased.y);
+}
+
+fn crest_mist_mask(corner: vec2<f32>, age: f32, seed: f32) -> f32 {
+    let noise_seed = u32(seed * 16777215.0);
+    // The quad's x axis follows particle motion: slower variation along it
+    // leaves wind-combed filaments; the age drift keeps their shape breathing.
+    let point = corner * vec2<f32>(2.8, 6.5) + vec2<f32>(age * 1.1, age * 0.25);
+    let warp_sample = spray_noise(point * 0.55 + vec2<f32>(3.1, 7.7), noise_seed) - 0.5;
+    let warp = vec2<f32>(warp_sample, -0.65 * warp_sample);
+    let warped = point + warp * 1.6;
+    let billow = spray_noise(warped * 0.8, noise_seed);
+    let breakup = spray_noise(warped * vec2<f32>(1.7, 3.2) + vec2<f32>(4.7, 2.3), noise_seed ^ 0x85ebca6bu);
+    // Suppress sub-pixel breakup as these small puffs recede; otherwise the
+    // noise aliases into the same hard speckles the mask is meant to remove.
+    let footprint = max(fwidth(warped.x), fwidth(warped.y));
+    let detail = 1.0 - smoothstep(0.12, 0.5, footprint * 3.8);
+    let density = billow * 0.64 + mix(0.5, breakup, detail) * 0.36;
+    let ragged_edge = length(corner + warp * 0.16);
+    let envelope = 1.0 - smoothstep(0.5, 1.0, ragged_edge);
+    let threshold_width = max(fwidth(density), 0.025);
+    let wisps = smoothstep(0.25 - threshold_width, 0.62 + threshold_width, density);
+    return envelope * mix(0.12, 0.78, wisps);
 }
 
 // Hull spray is strongest where it leaves the hull and fades as it travels:
@@ -95,7 +143,7 @@ fn vs_spray(
     let ship_size = spray_frame.ship_axes.z / 42.0;
     // Crest mist is sheet-sized from birth, so a crest's worth of it reads as
     // one torn curtain rather than separate specks.
-    let grown = select(mix(0.25, 0.9, sqrt(age)), mix(0.8, 3.5, sqrt(age)) * ship_size, from_ship);
+    let grown = select(mix(0.3, 1.1, sqrt(age)), mix(0.8, 3.5, sqrt(age)) * ship_size, from_ship);
     let size = min(grown * (0.7 + 0.6 * seed), distance * select(0.03, 0.06, from_ship));
     // Stretched along the droplets' motion: spray streaks downwind.
     let velocity_view = planet_to_view(spray_frame.axis_u.xyz * particle.velocity.x
@@ -119,7 +167,7 @@ fn vs_spray(
     // source reads as a hard edge (the crest or the hull), the mist as a fast
     // fade downwind. No fade-in, so there is no soft start.
     // Bow sheets are denser water and hang longer than wind-torn crest mist.
-    let fade = select(0.7 * exp(-5.0 * age), 0.9 * exp(-2.5 * age), from_ship);
+    let fade = select(0.55 * exp(-3.4 * age), 0.9 * exp(-2.5 * age), from_ship);
     // Falling back to the sea, it thins over its last metre above the
     // surface instead of sitting on the water as a blob (it is retired at
     // the surface). Rising spray keeps its hard edge at the source.
@@ -145,23 +193,23 @@ fn vs_spray(
     );
     out.seed = seed;
     out.kind = select(0.0, 1.0, from_ship);
+    out.age = age;
     return out;
 }
 
 @fragment
 fn fs_spray(input: SprayVertexOutput) -> @location(0) vec4<f32> {
     let radius = length(input.corner);
-    let s = input.seed * 40.0;
-    // Ship sheets: a soft puff broken into a few droplet clumps. Crest mist:
-    // fine strands combed along its motion (the quad's long axis), the
-    // wind-torn look of spray leaving a crest.
-    let clumps = 0.55 + 0.45 * sin(input.corner.x * 5.3 + s) * sin(input.corner.y * 4.7 + s * 1.7);
-    // Irregular and low-contrast: regular stripes read as a hatched patch.
-    let strands = 0.72 + 0.28 * sin(
-        input.corner.y * 17.0 + s + 2.3 * sin(input.corner.x * 2.7 + s * 1.3),
-    );
-    let texture = select(strands, clumps, input.kind > 0.5);
-    let alpha = input.alpha * smoothstep(1.0, 0.15, radius) * clamp(texture, 0.0, 1.0);
+    // Keep the ship's existing clumps and only pay for noise on crest puffs.
+    var texture = 1.0;
+    if input.kind > 0.5 {
+        let s = input.seed * 40.0;
+        texture = 0.55 + 0.45 * sin(input.corner.x * 5.3 + s) * sin(input.corner.y * 4.7 + s * 1.7);
+    } else {
+        texture = crest_mist_mask(input.corner, input.age, input.seed);
+    }
+    let soft_edge = 1.0 - smoothstep(0.15, 1.0, radius);
+    let alpha = input.alpha * soft_edge * clamp(texture, 0.0, 1.0);
     if alpha <= 0.002 {
         discard;
     }

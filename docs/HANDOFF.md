@@ -10,14 +10,19 @@ surface appearance and crest geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Latest phase (2 October):** the broad whole-view storm-sky pulse in the
-10-second approach replay is the lightning fog glow, not an overcast/cloud
-transition. Its sky-only angular cone is narrowed: in the strike frame the
-sky ROI pixels changing by more than four display levels fell from 69.5% to
-25.3%; disabling lightning leaves 4.6%. Terrain and sea lightning are
-unchanged. The earlier report predates lightning and still needs live retest;
-see the dated follow-up below. The 29 September forest and beach fix, visual
-sign-off and wave/creak listening remain as recorded below.
+**Latest phase (3 October):** crest spray's draw shader now turns the regular
+crest streaks into soft, irregular wisps with a screen-footprint-filtered
+noise mask. Crest-top births are unchanged. The ship's clump texture, scale
+and fade remain as before; only the shared radial edge now uses an ordered smoothstep. The
+fixed-pose `ocean_spray_sequence` captures pass; the earlier color-matched
+pair shows the hatch marks softened, but user motion review and a paired
+frame-time check remain open. Details and capture IDs are in the dated
+section at the end. The 2 October whole-view storm-sky pulse was lightning
+fog glow, not an overcast/cloud transition; its narrowed sky-only cone reduced
+the strike-frame ROI changing by more than four display levels from 69.5% to
+25.3% (4.6% with lightning suppressed). The earlier report still needs live
+retest. The 29 September forest and beach fix, visual sign-off and
+wave/creak listening remain as recorded below.
 
 **Startup WGSL parse panic repaired (29 September):** an uncommitted edit mangled the
 `ocean_underside_colour` `if` brace and foam comment in `shared_planet.wgsl`. The text is restored
@@ -11897,3 +11902,26 @@ User screenshots (`manual/1791033906-16387`, overcast 0.76-0.82) showed a horizo
 
 ## 3 October - Ship halved
 `SHIP_SCALE` 0.5 -> 0.25 at Ian's request (hull ~10.5m); `SHIP_TIME_SCALE` 0.5. Ship tests pass; not viewed in a replay. Uncommitted `OCEAN_SOT_WATER_ALBEDO` edit untouched.
+
+## 3 October - Crest spray rendered as soft, torn wisps
+The crest-top origin, fold/breaking spawn mask, particle update, and ship
+clump texture/scale/fade stay unchanged. The shared radial edge is written
+with an ordered smoothstep. `ocean_spray_draw.wgsl` replaces the periodic crest
+strand pattern with a deterministic age-drifting domain-warped value-noise
+mask: a soft billow plus lower-contrast breakup, irregular edge, and
+derivative-filtered detail so it does not alias into distant speckles. Crest
+puffs grow slightly and thin more gradually; the ship's clump mask is kept
+behind a per-particle branch so it does not pay for the new noise.
+
+The fixed sequence was run at `PLANET_OCEAN_FFT_WIND=32`, `SWELL=20`,
+`CHOP=2` with Immediate present. Baseline (`ocean_spray_sequence/1791036965-37608`)
+and candidate (`ocean_spray_sequence/1791038142-41022`) both capture ten
+frames and pass scenario assertions. A color-matched intermediate candidate
+(`1791037637-39867`) showed the foreground's repeated parallel hatching
+softened into a cloudy, irregular mask; the final candidate further filters
+sub-pixel breakup. The user's uncommitted `OCEAN_SOT_WATER_ALBEDO` override
+changed while this work was in progress and remains untouched/uncommitted, so
+the final capture's water is red and is not a fully color-matched A/B. The
+sequence was opened as still frames, not approved in live motion. Four
+`terrain::ocean_spray` tests and the release build pass; no paired frame-time
+claim. The user's local `shared_planet.wgsl` edit was excluded from the commit.

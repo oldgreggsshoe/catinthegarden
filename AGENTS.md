@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Crest spray softened, 3 October: `ocean_spray_draw.wgsl` now renders crest-born spray with deterministic, age-drifting, domain-warped noise, screen-footprint-filtered breakup, softer edges and a gentler size/fade envelope; crest-top spawn and update logic are unchanged. Ship splash texture, scale and fade are unchanged; the shared radial edge now uses an ordered smoothstep. Four focused spray tests, release build, and all 10 `ocean_spray_sequence` captures pass. Opened before/after frames show the repeated hatch pattern softened into irregular pale wisps; no paired performance sign-off. Ian's uncommitted `shared_planet.wgsl` albedo override was left untouched and excluded.
+
 - Ship at an eighth the volume, 3 October: `SHIP_SCALE` 0.25 (about 10.5m hull, was 21m), `SHIP_TIME_SCALE` 0.5; everything derives from the constant. 27 ship tests pass, no visual replay.
 
 - Sea fog colour at partial overcast, 3 October: the sea/terrain fog colour mixed `(1 - overcast)` of the below-horizon ray's darker sky into the horizon colour, so at overcast 0.78 the fully fogged sea sat darker than the sky (a visible horizon step with distant waves reading as ghosts). It now takes the horizon colour fully by overcast 0.3 (`smoothstep(0,0.3,overcast)` in `terrain_fog`). Debug probe: fog colour alone is 82 across the whole frame, matching the sky's 82; the `ocean_rough_horizon` frame at forced overcast 0.78 shows no hard horizon. 612 app tests pass. Not checked live; the dark band of sea within about 1km is the genuine fog gradient and is unchanged.

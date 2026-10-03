@@ -1,16 +1,12 @@
-I’d keep the crest-top birth point and the existing fold/breaking mask exactly as they are. The main issue is the *rendered shape*: the current crest spray is made from camera-facing quads with a small, repeated sine-strand pattern, so it reads as separate sprite flecks.
+Implemented the draw-only crest-spray pass. The birth point, breaking mask, and update logic are unchanged, so spray still originates at crest tops. Crest puffs now use deterministic, age-drifting warped noise for softer, irregular billows, with sub-pixel breakup filtered out, slightly more spread, and a gentler fade. The ship-splash clump texture, size and fade are preserved.
 
-I’d make it feel like a thin, torn veil of water droplets that breaks into vapour downwind:
+Validation: all 4 `terrain::ocean_spray` tests pass; the release build passes; and `ocean_spray_sequence` captured all 10 frames. The opened color-matched baseline/intermediate frames show the regular hatch marks softened into broken wisps. The final capture also passes, but your uncommitted red water-albedo edit in `shared_planet.wgsl` changed during the runs, so it is not a fully color-matched comparison; I left it untouched and excluded from the commit. No paired frame-time result or live-motion sign-off.
 
-- Replace the regular stripe pattern with an irregular, soft-edged density mask: a broad warped billow for the body, eroded into smaller wisps and fine breakup. Give particles varied aspect/shape so they don’t stamp out identical ovals.
-- Keep a denser, brighter root right at the crest, but make the edges and trailing part translucent. Let each wisp spread slightly, shear with the wind, lose density, and dissolve quickly. Aim for connected wisps near the crest—not big cottony smoke balls.
-- Make lighting less uniformly white: soft sky fill, restrained backlit scattering, and some depth/occlusion from the wave and existing fog. That gives the plume volume without making it look like foam pasted above the water.
-
-I’d start with the draw shader only—shape, alpha, and size variation—and leave spawning, origin, and birth timing untouched. Then compare the fixed-pose spray sequence in motion. I wouldn’t raise the particle count or broaden the plume unless that pass showed a real coverage gap. No renderer edits yet.
+Updated `AGENTS.md` and `docs/HANDOFF.md`; the renderer and notes are committed and pushed.
 
 <oai-mem-citation>
 <citation_entries>
-MEMORY.md:153-166|note=[ocean visual work should be evaluated from captured motion rather than a still alone]
+MEMORY.md:153-166|note=[renderer visual acceptance is described from opened captures without claiming motion sign-off]
 </citation_entries>
 <rollout_ids>
 01a07103-79ca-7e92-99b9-5da47619e658
