@@ -959,6 +959,64 @@ mod tests {
         assert_eq!(single.linear_velocity, chunked.linear_velocity);
     }
 
+    /// Instrument, not a regression: the ship's track on the FFT sea, stepped
+    /// the way `advance_ship` steps it (one orbital-velocity query per step).
+    /// `PLANET_OCEAN_FFT=1 cargo test --release -p planet-app ship_track --
+    /// --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn ship_track_on_the_real_sea() {
+        let hull = ShipHull::new();
+        let start = DVec3::new(3_345_724.0, 2_014_892.0, 863_825.0).normalize();
+        let east = start.cross(DVec3::Y).normalize();
+        let north = start.cross(east).normalize();
+        let mut body = ShipBody::afloat_at(&hull, start, east, 0.0);
+        let origin = body.position;
+        let (mut elapsed, step) = (0.0, super::FIXED_STEP_SECONDS);
+        let (mut max_speed, mut max_gap, mut speed_sum, mut samples) = (0.0f64, 0.0f64, 0.0, 0.0);
+        for index in 0..(300.0 / step) as usize {
+            let water_horizontal = ocean::global_wave_horizontal_velocity(
+                body.position.normalize(),
+                elapsed,
+            );
+            let time = elapsed;
+            body.advance(&hull, step, |direction| WaterSample {
+                height_meters: ocean::global_wave_height_meters(direction, time, 250.0),
+                vertical_velocity_meters_per_second:
+                    ocean::global_wave_vertical_velocity_meters_per_second(direction, time, 4000.0),
+                slope: ocean::global_wave_slope(direction, time, 4000.0),
+                horizontal_velocity: water_horizontal,
+            });
+            elapsed += step;
+            let up = body.position.normalize();
+            let horizontal = |v: DVec3| v - up * v.dot(up);
+            let speed = horizontal(body.linear_velocity).length();
+            let gap = (horizontal(body.linear_velocity) - horizontal(water_horizontal)).length();
+            max_speed = max_speed.max(speed);
+            max_gap = max_gap.max(gap);
+            speed_sum += speed;
+            samples += 1.0;
+            if index % 240 == 0 {
+                let offset = body.position - origin;
+                println!(
+                    "t={elapsed:6.1} east={:8.1} north={:8.1} speed={speed:5.2} water={:5.2} gap={gap:5.2} tilt={:5.1}",
+                    offset.dot(east),
+                    offset.dot(north),
+                    horizontal(water_horizontal).length(),
+                    body.tilt_radians().to_degrees(),
+                );
+            }
+        }
+        let offset = body.position - origin;
+        println!(
+            "after 300s: net {:.1}m (east {:.1}, north {:.1}); max speed {max_speed:.2} m/s, mean {:.2}, max |ship - water| {max_gap:.2}",
+            offset.length(),
+            offset.dot(east),
+            offset.dot(north),
+            speed_sum / samples,
+        );
+    }
+
     #[test]
     fn the_float_is_deterministic() {
         let (hull, mut first) = afloat();
