@@ -11930,9 +11930,9 @@ claim. The user's local `shared_planet.wgsl` edit was excluded from the commit.
 The particles were visually racing away from the breaking wave, making the
 10.5m ship read smaller. Crest-mist horizontal velocity is now scaled to 60%
 both at birth and while being dragged toward local wind; over an unchanged
-lifetime this shortens its drift and velocity-stretched sprite axis by 40%.
-The crest-top spawn, lifetime, vertical motion, density, and ship spray are
-unchanged. `ocean_spray_sequence` at 14m/s passed its 10-capture assertions
+lifetime this shortens its drift and velocity-based streak component by 40%
+(the base sprite width is unchanged). The crest-top spawn, lifetime, vertical
+motion, density, and ship spray are unchanged. `ocean_spray_sequence` at 14m/s passed its 10-capture assertions
 before and after (`1791044989-56435` baseline, `1791045190-56836` candidate).
 Captures are still frames, not live-motion approval. The local water-albedo
 override remains untouched.
