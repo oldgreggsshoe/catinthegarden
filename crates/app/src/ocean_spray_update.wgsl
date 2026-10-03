@@ -84,8 +84,11 @@ const CREST_VERTICAL_DRAG: f32 = 3.0;
 const CREST_WIND_DRIFT_SCALE: f32 = 0.6;
 const CREST_LIFETIME_SECONDS: f32 = 0.35;
 const CREST_LIFETIME_SPREAD_SECONDS: f32 = 0.45;
-// Spray is born only where the drawn surface is close to folding over.
-const SPRAY_JACOBIAN_ONSET: f32 = 0.40;
+// Spray is born only where the drawn surface is folding over hard enough to be
+// white. The sea's fold foam starts at 0.62 and is full at 0.32
+// (OCEAN_FFT_FOAM_JACOBIAN_*); births start inside that, at 0.28, so they come
+// only from the solid core of visible surf and never from calm-looking water.
+const SPRAY_JACOBIAN_ONSET: f32 = 0.28;
 const SPRAY_JACOBIAN_FULL: f32 = 0.0;
 // A full gust tears three times as much spray off the crests as the mean wind;
 // a lull a quarter as much.
@@ -329,7 +332,10 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
     let wind_spread = 1.26 * fft_view.gain.x;
     let crest = smoothstep(0.2 * wind_spread, 1.0 * wind_spread, field.wind_height * fft_view.gain.x);
     let gust = spray_gust(local);
-    let chance = fold * crest * frame.params.y * dt * max(1.0 + SPRAY_GUST_BIRTHS * gust, 0.25);
+    // Births also need the point to sit on rendered fold foam, using the
+    // renderer's own thresholds.
+    let on_surf = smoothstep(0.62, 0.32, jacobian);
+    let chance = fold * crest * on_surf * on_surf * frame.params.y * dt * max(1.0 + SPRAY_GUST_BIRTHS * gust, 0.25);
     if frame.params.y <= 0.0 || unit_random(seed ^ 0x2545f491u) >= chance {
         particle.velocity.w = 0.0;
         particles[index] = particle;
