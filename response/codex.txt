@@ -1,1 +1,5 @@
-Fixed the horizon step: sea fog colour now matches the sky horizon from overcast 0.3 up. Replay at overcast 0.78 shows a smooth horizon; not checked live. Pushed.
+I looked at the latest stormy ocean captures, especially `test-runs/ocean_rough_horizon/1791035355-21476`, and the manual storm view.
+
+Right now the airborne spray reads as little pale grey-white flecks: compact oval/teardrop puffs close by, and repeated tiny upright streaks along distant crests. They sit as separate marks rather than joining into a continuous cloud. The repeated size/shape and fairly bright centers make them feel like particles or foam specks, not a volume of water vapour. The white patches on the wave faces are surface foam; the long blue diagonal lines in these storm views are rain, not spray.
+
+Overall, it looks sparse and particle-like, without the soft layered billow, irregular density, and gradual wind-drift/dissipation that would make it read as steam or smoke. I have not changed the renderer yet.
