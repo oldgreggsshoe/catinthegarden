@@ -539,8 +539,46 @@ mod tests {
             "a single lightning glow must not include both horizontal edges"
         );
         assert!(display.contains(
-            "smoothstep(\n        SKY_LIGHTNING_GLOW_OUTER_COSINE,\n        SKY_LIGHTNING_GLOW_INNER_COSINE,\n        toward_strike,\n    )"
+            "max(SKY_LIGHTNING_GLOW_OUTER_COSINE, outer_cosine),"
         ));
+        assert!(display.contains(
+            "max(SKY_LIGHTNING_GLOW_INNER_COSINE, inner_cosine),"
+        ));
+    }
+
+    #[test]
+    fn orbital_lightning_glow_stays_smaller_than_the_planet_disc() {
+        let display = include_str!("atmosphere.wgsl");
+        let radius = |name: &str| {
+            display
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix(&format!("const {name}: f32 = "))
+                        .and_then(|value| value.strip_suffix(';'))
+                })
+                .unwrap_or_else(|| panic!("{name} must be declared"))
+                .parse::<f32>()
+                .expect("lightning cone radius is numeric")
+        };
+        let outer_radius = radius("SKY_LIGHTNING_GLOW_OUTER_RADIUS_METERS");
+        let inner_radius = radius("SKY_LIGHTNING_GLOW_INNER_RADIUS_METERS");
+        let altitude = 15_913_960.0_f32;
+        let apparent_cone = |feature_radius: f32| {
+            (altitude / (altitude * altitude + feature_radius * feature_radius).sqrt()).acos()
+        };
+        let outer_half_angle = apparent_cone(outer_radius);
+        let inner_half_angle = apparent_cone(inner_radius);
+        let planet_radius = crate::planet::planet_radius_meters() as f32;
+        let planet_half_angle = (planet_radius / (planet_radius + altitude)).asin();
+
+        assert!(inner_half_angle < outer_half_angle);
+        assert!(
+            outer_half_angle < planet_half_angle,
+            "orbital flash cone ({outer_half_angle} rad) must not span the planet disc ({planet_half_angle} rad)"
+        );
+        assert!(display.contains("max(SKY_LIGHTNING_GLOW_OUTER_COSINE, outer_cosine)"));
+        assert!(display.contains("max(SKY_LIGHTNING_GLOW_INNER_COSINE, inner_cosine)"));
+        assert!(display.contains("camera.camera_planet_direction_view_altitude.w"));
     }
 
     #[test]

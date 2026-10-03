@@ -123,8 +123,15 @@ fn tree_storm_fog(centre: vec3<f32>, view_position: vec3<f32>) -> vec4<f32> {
     let grey = dot(sky, vec3<f32>(0.2126, 0.7152, 0.0722)) * 0.45;
     var lightning_glow = vec3<f32>(0.0);
     if camera.lightning.w > 0.0 {
+        let altitude = max(camera.camera_planet_direction_view_altitude.w, 0.0);
+        let outer_cosine = altitude / sqrt(altitude * altitude + 50000.0 * 50000.0);
+        let inner_cosine = altitude / sqrt(altitude * altitude + 15000.0 * 15000.0);
         lightning_glow = vec3<f32>(0.72, 0.78, 0.9) * camera.lightning.w
-            * smoothstep(0.35, 0.9, dot(ray, normalize(camera.lightning.xyz)));
+            * smoothstep(
+                max(0.35, outer_cosine),
+                max(0.9, inner_cosine),
+                dot(ray, normalize(camera.lightning.xyz)),
+            );
     }
     return vec4<f32>(mix(sky, vec3<f32>(grey), overcast) + lightning_glow, amount);
 }

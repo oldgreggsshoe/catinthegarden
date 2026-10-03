@@ -89,7 +89,9 @@ fn rain_light(direction_view: vec3<f32>) -> vec3<f32> {
         max(dot(direction_view, normalize(camera.sun_direction_view.xyz)), 0.0),
         12.0,
     );
-    return sky + sun * (RAIN_SUN_GLINT * SURFACE_SUNLIGHT_SCALE) * toward_sun;
+    let radiance = sky + sun * (RAIN_SUN_GLINT * SURFACE_SUNLIGHT_SCALE) * toward_sun;
+    let luminance = dot(radiance, vec3<f32>(0.2126, 0.7152, 0.0722));
+    return vec3<f32>(luminance);
 }
 
 @vertex

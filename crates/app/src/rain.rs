@@ -423,4 +423,13 @@ mod tests {
         .expect("rain shader must validate");
         assert_eq!(std::mem::size_of::<RainUniform>(), 7 * 16);
     }
+
+    #[test]
+    fn rain_lighting_is_luminance_matched_greyscale() {
+        let shader = include_str!("rain.wgsl");
+        assert!(shader.contains(
+            "let luminance = dot(radiance, vec3<f32>(0.2126, 0.7152, 0.0722));"
+        ));
+        assert!(shader.contains("return vec3<f32>(luminance);"));
+    }
 }

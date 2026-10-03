@@ -198,6 +198,8 @@ const STORM_FOG_FULL_METERS: f32 = 100.0;
 const STORM_FOG_AIR_PATH_E_FOLD_METERS: f32 = STORM_FOG_FULL_METERS / 4.6051702;
 const STORM_OVERCAST_BRIGHTNESS: f32 = 0.45;
 const STORM_SUN_BLOCK: f32 = 0.85;
+const STORM_LIGHTNING_OUTER_RADIUS_METERS: f32 = 50000.0;
+const STORM_LIGHTNING_INNER_RADIUS_METERS: f32 = 15000.0;
 
 fn storm_overcast() -> f32 {
     return clamp(camera.sun_direction.w, 0.0, 1.0);
@@ -205,12 +207,26 @@ fn storm_overcast() -> f32 {
 
 // A cloud flash illuminates only fog along rays near its planet-fixed strike,
 // rather than painting a bolt or turning the entire sky white.
+fn storm_lightning_glow_cone(base_outer: f32, base_inner: f32) -> vec2<f32> {
+    let altitude = max(camera.camera_planet_direction_view_altitude.w, 0.0);
+    let outer_cosine = altitude / sqrt(
+        altitude * altitude
+            + STORM_LIGHTNING_OUTER_RADIUS_METERS * STORM_LIGHTNING_OUTER_RADIUS_METERS,
+    );
+    let inner_cosine = altitude / sqrt(
+        altitude * altitude
+            + STORM_LIGHTNING_INNER_RADIUS_METERS * STORM_LIGHTNING_INNER_RADIUS_METERS,
+    );
+    return vec2(max(base_outer, outer_cosine), max(base_inner, inner_cosine));
+}
+
 fn storm_lightning_fog(ray_view: vec3<f32>) -> vec3<f32> {
     if camera.lightning.w <= 0.0 {
         return vec3<f32>(0.0);
     }
     let toward_strike = dot(normalize(ray_view), normalize(camera.lightning.xyz));
-    let glow = smoothstep(0.35, 0.9, toward_strike);
+    let cone = storm_lightning_glow_cone(0.35, 0.9);
+    let glow = smoothstep(cone.x, cone.y, toward_strike);
     return vec3<f32>(0.72, 0.78, 0.9) * camera.lightning.w * glow;
 }
 

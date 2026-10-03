@@ -10,7 +10,21 @@ surface appearance and crest geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Latest phase (3 October):** crest spray's draw shader now turns the regular
+**Latest phases (3 October):** storm overcast from weather, forced approach,
+and `PLANET_STORM_OVERCAST` now fades out with the camera between 60-90km,
+and the forced approach's sea state fades with it. Orbital lightning cones
+shrink with distance, while their close-range widths remain unchanged. Rain
+drop lighting is now zero-saturation greyscale at matched luminance. The
+forced-overcast orbital replay (`1791048033-68400`) passes all 12 captures;
+compared with `1791047330-67409`, its globe is lit normally instead of being
+covered in storm-grey shading. The six-capture storm replay
+(`1791048153-68524`) passes. The complete app test run has 613 passing, three
+failing and 39 ignored: the failures are the orbital zoom/FOV assertions under
+the user's uncommitted 75-to-85-degree FOV change. No active orbital lightning
+flash was captured; the cone's projected width is covered by a regression and
+the terrain, forest, sky and rain shaders validate.
+
+Crest spray's draw shader now turns the regular
 crest streaks into soft, irregular wisps with a screen-footprint-filtered
 noise mask. Crest-top births are unchanged. The ship's clump texture, scale
 and fade remain as before; only the shared radial edge now uses an ordered smoothstep. The
@@ -11939,3 +11953,25 @@ override remains untouched.
 
 ## 3 October - Galleon model, bridge on the poop
 `crates/app/src/ship_model.rs` builds the drawn ship (hull body + fittings); `ship::build_mesh` concatenates them. Hull rings per station follow `half_beam_meters`/`keel_depth_meters`/`sheer_height_meters`; raised decks are per-segment (`raise`): poop segments 0-3 (4.6m design), quarterdeck 4-6 (2.4m), forecastle 15-17 (2.4m). Sails and flags carry both windings (pipeline culls back faces). Tests: `the_hull_body_stays_in_the_float_envelope_and_the_model_is_detailed`, `hull_sides_face_outward_and_the_deck_faces_up`, `bridge_camera_stands_on_the_poop_and_faces_the_bow`. Replay `ocean_ship_float/1791043382-52446`. Not done: a bridge-view capture (no scenario places the camera on the bridge; interactive F12 only), and cost of the larger mesh was not timed. Local uncommitted edits (FOV max 85, water albedo) were left alone.
+
+## 3 October - Storm appearance above the atmosphere; neutral rain
+`update_storm_overcast` already faded natural weather out from 60-90km, but
+forced approach and the `PLANET_STORM_OVERCAST` comparison override skipped
+that altitude factor. They now share it, and the approach storm's sea-state
+weight follows it, so a camera outside the cloud layer no longer applies one
+storm-grey scalar to the whole visible planet. Lightning's terrain/sea, sky,
+and forest fog cones retain their original lower-altitude thresholds, then
+tighten with apparent 50km outer / 15km inner feature radii; at the reproduced
+15.9Mm altitude the sky cone is narrower than the planet's apparent disc.
+Rain illumination converts its linear radiance to matched-luminance grey, so
+the drop source color has zero saturation without changing brightness.
+
+Validation: the forced-overcast orbital comparison passes 12 captures
+(`1791047330-67409` before, `1791048033-68400` after), and the six-capture
+storm replay passes (`1791048153-68524`). The latter shows pale neutral rain
+streaks, though no pixelwise drop-only saturation metric was made. The orbital
+replay has no active flash, so apparent-size cone behavior is math-regressed
+and all composed shaders are validated, not visually sampled during a strike.
+The app suite reports 613 passed, 3 failed (FOV/orbital-zoom checks impacted by
+the user's uncommitted `MAX_VERTICAL_FOV_DEGREES` 75-to-85 change), and 39
+ignored. That local FOV edit and water-albedo edit were left untouched.

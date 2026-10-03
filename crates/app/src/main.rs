@@ -407,6 +407,8 @@ const SHIP_VISIBLE_DISTANCE_METERS: f64 = 30_000.0;
 /// sky starts to cloud over, and where it is fully overcast.
 const STORM_OVERCAST_ONSET: f64 = 0.1;
 const STORM_OVERCAST_FULL: f64 = 0.5;
+const STORM_OVERCAST_ALTITUDE_FADE_START_METERS: f64 = 60_000.0;
+const STORM_OVERCAST_ALTITUDE_FADE_END_METERS: f64 = 90_000.0;
 /// Seconds (ocean clock) for the overcast to follow the weather, so flying
 /// into or out of a storm fades rather than switches.
 const STORM_OVERCAST_EASE_SECONDS: f64 = 4.0;
@@ -432,6 +434,13 @@ const STORM_FRAME_DARKENING: f32 = 0.4;
 /// in the overcast, as the sky, fog and sea go grey with it.
 fn storm_frame_darkening(storm_overcast: f32) -> f32 {
     STORM_FRAME_DARKENING * storm_overcast.clamp(0.0, 1.0)
+}
+
+fn storm_overcast_altitude_weight(altitude_meters: f64) -> f32 {
+    let t = ((altitude_meters - STORM_OVERCAST_ALTITUDE_FADE_START_METERS)
+        / (STORM_OVERCAST_ALTITUDE_FADE_END_METERS - STORM_OVERCAST_ALTITUDE_FADE_START_METERS))
+        .clamp(0.0, 1.0);
+    (1.0 - t * t * (3.0 - 2.0 * t)) as f32
 }
 
 fn storm_overcast_override() -> Option<f32> {
@@ -2840,14 +2849,16 @@ impl State {
         );
     }
 
-    /// Eases the storm overcast toward the weather's storm strength at the
-    /// camera. Storm here is the weather's own (cloud water, uplift,
-    /// condensation), not the sea state, which also rises with wind alone and
-    /// would grey a clear windy day. It fades above the lower cloud shell,
-    /// where the camera looks down on the storm rather than out from under it.
-    /// `PLANET_STORM_OVERCAST` (0-1) fixes it, for comparisons; an
-    /// approaching storm (`PLANET_STORM_APPROACH`) drives it directly.
+/// Eases the storm overcast toward the weather's storm strength at the
+/// camera. Storm here is the weather's own (cloud water, uplift,
+/// condensation), not the sea state, which also rises with wind alone and
+/// would grey a clear windy day. Every source fades above the lower cloud
+/// shell, where the camera looks down on the storm rather than out from under
+/// it. `PLANET_STORM_OVERCAST` (0-1) fixes the surface value for comparisons;
+/// an approaching storm (`PLANET_STORM_APPROACH`) drives it directly.
     fn update_storm_overcast(&mut self, planet_rotation_radians: f64, ocean_time_seconds: f64) {
+        let altitude = self.camera.world_position().length() - planet::planet_radius_meters();
+        let altitude_weight = storm_overcast_altitude_weight(altitude);
         let direction = planet::planet_local_vector(
             self.camera.world_position().normalize(),
             planet_rotation_radians,
@@ -2855,23 +2866,23 @@ impl State {
         if ocean::has_approaching_storm() {
             // The storm keeps its place over the camera: leaving a planet-fixed
             // footprint (the ship drifts) dropped a forced storm to ordinary weather.
+            // Its sea state also fades as the camera leaves the atmosphere.
             self.approach_storm_centre = Some(direction);
-            ocean::set_approaching_storm_weight(1.0);
+            ocean::set_approaching_storm_weight(altitude_weight);
         }
         let approaching = ocean::approaching_storm_at(ocean_time_seconds);
+        let storm = f64::from(self.weather.storm_intensity_at(direction));
         let weather_overcast = {
-            let storm = f64::from(self.weather.storm_intensity_at(direction));
-            let altitude = self.camera.world_position().length() - planet::planet_radius_meters();
-            let smoothstep = |low: f64, high: f64, x: f64| {
-                let t = ((x - low) / (high - low)).clamp(0.0, 1.0);
-                t * t * (3.0 - 2.0 * t)
-            };
-            (smoothstep(STORM_OVERCAST_ONSET, STORM_OVERCAST_FULL, storm)
-                * (1.0 - smoothstep(60_000.0, 90_000.0, altitude))) as f32
+            let t = ((storm - STORM_OVERCAST_ONSET)
+                / (STORM_OVERCAST_FULL - STORM_OVERCAST_ONSET))
+                .clamp(0.0, 1.0);
+            (t * t * (3.0 - 2.0 * t)) as f32 * altitude_weight
         };
-        let target = storm_overcast_override().unwrap_or_else(|| {
-            approaching.map_or(weather_overcast, |value| value.max(weather_overcast))
-        });
+        let target = storm_overcast_override()
+            .map(|value| value * altitude_weight)
+            .unwrap_or_else(|| {
+                approaching.map_or(weather_overcast, |value| value.max(weather_overcast))
+            });
         let elapsed = ocean_time_seconds - self.storm_overcast_time;
         self.storm_overcast = if elapsed.is_finite() && elapsed >= 0.0 {
             let weight = 1.0 - (-elapsed / STORM_OVERCAST_EASE_SECONDS).exp();
@@ -7023,6 +7034,16 @@ mod tests {
         assert!((storm_frame_darkening(1.0) - 0.4).abs() < 1.0e-6);
         assert!((storm_frame_darkening(0.5) - 0.2).abs() < 1.0e-6);
         assert_eq!(storm_frame_darkening(3.0), storm_frame_darkening(1.0));
+    }
+
+    #[test]
+    fn forced_storm_overcast_fades_out_above_the_atmosphere() {
+        let weight = super::storm_overcast_altitude_weight;
+        assert_eq!(weight(0.0), 1.0);
+        assert_eq!(weight(60_000.0), 1.0);
+        assert!((weight(75_000.0) - 0.5).abs() < 1.0e-6);
+        assert_eq!(weight(90_000.0), 0.0);
+        assert_eq!(weight(15_000_000.0), 0.0);
     }
 
     #[test]
