@@ -11926,5 +11926,16 @@ sequence was opened as still frames, not approved in live motion. Four
 `terrain::ocean_spray` tests and the release build pass; no paired frame-time
 claim. The user's local `shared_planet.wgsl` edit was excluded from the commit.
 
+## 3 October - Crest spray travels less far
+The particles were visually racing away from the breaking wave, making the
+10.5m ship read smaller. Crest-mist horizontal velocity is now scaled to 60%
+both at birth and while being dragged toward local wind; over an unchanged
+lifetime this shortens its drift and velocity-stretched sprite axis by 40%.
+The crest-top spawn, lifetime, vertical motion, density, and ship spray are
+unchanged. `ocean_spray_sequence` at 14m/s passed its 10-capture assertions
+before and after (`1791044989-56435` baseline, `1791045190-56836` candidate).
+Captures are still frames, not live-motion approval. The local water-albedo
+override remains untouched.
+
 ## 3 October - Galleon model, bridge on the poop
 `crates/app/src/ship_model.rs` builds the drawn ship (hull body + fittings); `ship::build_mesh` concatenates them. Hull rings per station follow `half_beam_meters`/`keel_depth_meters`/`sheer_height_meters`; raised decks are per-segment (`raise`): poop segments 0-3 (4.6m design), quarterdeck 4-6 (2.4m), forecastle 15-17 (2.4m). Sails and flags carry both windings (pipeline culls back faces). Tests: `the_hull_body_stays_in_the_float_envelope_and_the_model_is_detailed`, `hull_sides_face_outward_and_the_deck_faces_up`, `bridge_camera_stands_on_the_poop_and_faces_the_bow`. Replay `ocean_ship_float/1791043382-52446`. Not done: a bridge-view capture (no scenario places the camera on the bridge; interactive F12 only), and cost of the larger mesh was not timed. Local uncommitted edits (FOV max 85, water albedo) were left alone.

@@ -1,1 +1,5 @@
-New galleon model (ship_model.rs) and the bridge camera on its poop. Seen in ocean_ship_float replay; bridge view checked by test only. Pushed.
+Yes—the wind was carrying each crest sprite too far relative to the 10.5m ship. I changed crest mist to drift at 60% of local wind speed, applied both at birth and during wind drag; its horizontal travel and velocity-stretched streak are about 40% shorter. The crest-top origin, lifetime, vertical fall, density, and ship spray are unchanged.
+
+For scale: a crest sprite's un-stretched width is roughly 0.4–2.9m (about 4–27% of the ship's length); its motion can stretch it farther. At the default 14m/s wind, the mean horizontal travel estimate falls from about 7m to about 4m, from roughly two-thirds to two-fifths of the hull length. This is approximate uniform-wind math, not a measured per-particle replay metric.
+
+The four spray shader tests pass, and the 14m/s sequence passes all 10 captures before and after. The captures are stills, so I haven't claimed visual motion approval; the live-motion look remains to be checked.

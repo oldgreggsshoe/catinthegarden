@@ -76,11 +76,12 @@ const WIND_DRAG: f32 = 1.2;
 const VERTICAL_DRAG: f32 = 0.6;
 // Crest spray, after Sea of Thieves: a thin sheet of mist torn off the crest
 // line, brightest where it leaves the water, combed downwind and gone within
-// a second. Fine mist follows the air: it is at the wind's speed within a
-// quarter second and falls at ~3 m/s, rather than flying on ballistically
-// and falling at 16 m/s as a streak for a frame before it hit the water.
+// a second. The coherent sheet drifts at 60% of local wind speed so it stays
+// close to its wave instead of racing across several ship lengths; its fine
+// droplets still settle at ~3 m/s rather than flying ballistically.
 const CREST_WIND_DRAG: f32 = 4.0;
 const CREST_VERTICAL_DRAG: f32 = 3.0;
+const CREST_WIND_DRIFT_SCALE: f32 = 0.6;
 const CREST_LIFETIME_SECONDS: f32 = 0.35;
 const CREST_LIFETIME_SPREAD_SECONDS: f32 = 0.45;
 // Spray is born only where the drawn surface is close to folding over.
@@ -204,8 +205,9 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
     let dt = frame.shift_dt.z;
     let alive = particle.velocity.w > 0.0 && particle.position.w < particle.velocity.w;
     if alive {
-        let wind_velocity = spray_wind(particle.position.xy);
         let from_ship = index < SHIP_SPRAY_SLOTS;
+        let wind_speed_scale = select(CREST_WIND_DRIFT_SCALE, 1.0, from_ship);
+        let wind_velocity = spray_wind(particle.position.xy) * wind_speed_scale;
         let wind_drag = select(CREST_WIND_DRAG, WIND_DRAG, from_ship);
         let vertical_drag = select(CREST_VERTICAL_DRAG, VERTICAL_DRAG, from_ship);
         var velocity = particle.velocity.xyz;
@@ -346,7 +348,9 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
     // the wind.
     let lift = 2.0 + 6.0 * fold * r1;
     let sideways = (vec2<f32>(r2, r3) - 0.5) * 0.8;
-    let horizontal = gust_wind(frame.wind.xy, frame.wind.z, gust) * (0.5 + 0.3 * r2) + sideways;
+    let horizontal =
+        (gust_wind(frame.wind.xy, frame.wind.z, gust) * (0.5 + 0.3 * r2) + sideways)
+            * CREST_WIND_DRIFT_SCALE;
     particle.position = vec4<f32>(drawn, height, 0.0);
     particle.extra = vec4<f32>(1.0e3, 0.0, 0.0, 0.0);
     particle.velocity = vec4<f32>(
