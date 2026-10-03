@@ -287,7 +287,10 @@ fn displayed_sky_radiance(ray: vec3<f32>) -> vec3<f32> {
             around += textureSampleLevel(sky_view_lut, sky_view_sampler, vec2<f32>(u, horizon_v), 0.0).rgb;
         }
         let up = normalize(camera.camera_planet_direction_view_altitude.xyz);
-        let overhead = smoothstep(0.0, 0.5, dot(ray, up)) * overcast;
+        // The wedge's strength is the fog's own (`fog_amount`), already scaled by the
+        // overcast, so the average must not be scaled by it a second time: at a
+        // partial overcast a linear weight left most of the wedge (the pillar).
+        let overhead = smoothstep(0.0, 0.5, dot(ray, up)) * smoothstep(0.0, 0.1, overcast);
         horizon_radiance = mix(
             horizon_radiance,
             around / f32(STORM_HORIZON_AVERAGE_SAMPLES),

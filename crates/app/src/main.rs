@@ -2856,8 +2856,10 @@ impl State {
             planet_rotation_radians,
         );
         if ocean::has_approaching_storm() {
-            let centre = *self.approach_storm_centre.get_or_insert(direction);
-            ocean::set_approaching_storm_weight(ocean::approaching_storm_weight(centre, direction));
+            // The storm keeps its place over the camera: leaving a planet-fixed
+            // footprint (the ship drifts) dropped a forced storm to ordinary weather.
+            self.approach_storm_centre = Some(direction);
+            ocean::set_approaching_storm_weight(1.0);
         }
         let approaching = ocean::approaching_storm_at(ocean_time_seconds);
         let weather_overcast = {
