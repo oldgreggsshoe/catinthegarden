@@ -1,1 +1,1 @@
-PLANET_OCEAN_FFT=1 PLANET_STORM_APPROACH=60 PLANET_OCEAN_FFT_SWELL=30 PLANET_OCEAN_FFT_WIND=40 PLANET_OCEAN_FFT_CHOP=2 cargo run --release --bin planet-app
+Fixed the horizon step: sea fog colour now matches the sky horizon from overcast 0.3 up. Replay at overcast 0.78 shows a smooth horizon; not checked live. Pushed.
