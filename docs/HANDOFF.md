@@ -11891,3 +11891,6 @@ Correction to 2 October: the user's live "fog switches on and off" was not light
 
 ## 3 October - Forced storm follows the camera; pillar at partial overcast
 Manual run `1791033235-5994` (`PLANET_STORM_APPROACH=60`) logged `storm_overcast` 0.195 at both screenshots: the 5km planet-fixed footprint had been left. `main.rs update_storm_overcast` now re-centres the approach storm on the camera each frame with weight 1. The orange pillar was the sun-side horizon wedge: `atmosphere.wgsl` averaged the horizon with weight `overcast`, on top of the fog amount already scaled by it; the weight is now `smoothstep(0, 0.1, overcast)`. Tests: 612 app tests, `ocean_storm_approach/1791033609-13897`. Not verified on a matched live capture.
+
+## 3 October - Sea fog colour matches the sky at partial overcast
+User screenshots (`manual/1791033906-16387`, overcast 0.76-0.82) showed a horizon step and ghostly distant waves. `shared_planet.wgsl terrain_fog` mixed the along-ray sky into the horizon colour with weight `1 - overcast`; the ray points below the horizon, so 22% of a darker colour remained. Weight is now `smoothstep(0, 0.3, overcast)`. With the fog output replaced by its colour alone (temporary probe, reverted) the sea reads 82 everywhere, equal to the sky; `ocean_rough_horizon/1791035355-21476` (overcast 0.78) shows a smooth horizon. Not verified live.

@@ -3106,7 +3106,11 @@ fn terrain_fog(
     let fog_colour = mix(
         physical_camera_sky_radiance(camera_to_surface_ray_view),
         physical_camera_horizon_sky_radiance(camera_to_surface_ray_view),
-        storm_overcast(),
+        // Fully the horizon's colour well before a full storm: the sky pass's
+        // low rays are completely fogged by then, and a linear mix left
+        // (1 - overcast) of the below-horizon ray's darker sky in the sea's
+        // fog, a visible step at the horizon (overcast 0.78 measured 70 vs 79).
+        smoothstep(0.0, 0.3, storm_overcast()),
     );
     return TerrainFog(
         fog_amount,
@@ -4314,7 +4318,7 @@ fn ocean_underside_colour(
 // throughout, and down one wave face the top is ~25% brighter than the base.
 // Translucency brightens; it does not tint. Linear albedo in that hue, the
 // overall level calibrated against the deck-height replay.
-const OCEAN_SOT_WATER_ALBEDO: vec3<f32> = vec3<f32>(0.2, 0.2, 0.35);
+const OCEAN_SOT_WATER_ALBEDO: vec3<f32> = vec3<f32>(0.2, 0.2, 0.2);
 //const OCEAN_SOT_WATER_ALBEDO: vec3<f32> = vec3<f32>(0.0018, 0.24, 0.30);
 // Body brightness gain for thin water (high on a wave).
 const OCEAN_SOT_THIN_BRIGHTENING: f32 = 0.9;
