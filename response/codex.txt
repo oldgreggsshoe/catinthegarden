@@ -3,3 +3,12 @@ I looked at the latest stormy ocean captures, especially `test-runs/ocean_rough_
 Right now the airborne spray reads as little pale grey-white flecks: compact oval/teardrop puffs close by, and repeated tiny upright streaks along distant crests. They sit as separate marks rather than joining into a continuous cloud. The repeated size/shape and fairly bright centers make them feel like particles or foam specks, not a volume of water vapour. The white patches on the wave faces are surface foam; the long blue diagonal lines in these storm views are rain, not spray.
 
 Overall, it looks sparse and particle-like, without the soft layered billow, irregular density, and gradual wind-drift/dissipation that would make it read as steam or smoke. I have not changed the renderer yet.
+
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:153-166|note=[ocean visual evidence preference kept the assessment limited to opened still captures]
+</citation_entries>
+<rollout_ids>
+01a07103-79ca-7e92-99b9-5da47619e658
+</rollout_ids>
+</oai-mem-citation>
