@@ -57,6 +57,11 @@ const SHIP_REFLECTED_LIGHT_GAIN: f32 = 4.0;
 // Caustics play only on the hull's sides: faces steeper than this (|normal.up|
 // below the first value) take them fully, flatter ones (deck, roofs, the flat
 // of the bottom) not at all past the second.
+// How fast daylight is absorbed on its way down to the hull, per channel, per
+// metre: red is gone in a few metres (e-fold 6m), green lasts to about 17m and
+// blue to about 29m, so a hull dims and goes blue-green, then black, as it sinks
+// (a fifth of the light at 10m, a thousandth at 50m).
+const SHIP_DEPTH_ABSORPTION: vec3<f32> = vec3<f32>(0.17, 0.06, 0.035);
 const SHIP_CAUSTIC_SIDE_FULL: f32 = 0.5;
 const SHIP_CAUSTIC_SIDE_NONE: f32 = 0.8;
 
@@ -91,14 +96,14 @@ fn ship_water_depth(view_position: vec3<f32>) -> f32 {
 // water, and the sun is gathered and spread by the waves overhead exactly as on
 // the sea bed (`ocean_fft_caustics`). Above it, sunlight bounced off the moving
 // surface dances on the sides facing it (`ocean_fft_reflected_caustics`).
-fn ship_sea_light(view_position: vec3<f32>, normal: vec3<f32>, sun_direction: vec3<f32>) -> vec3<f32> {
+fn ship_sea_light(view_position: vec3<f32>, normal: vec3<f32>, sun_direction: vec3<f32>) -> vec4<f32> {
     if !OCEAN_FFT_ENABLED {
-        return vec3<f32>(1.0, 1.0, 0.0);
+        return vec4<f32>(1.0, 1.0, 0.0, 0.0);
     }
     // Deck and superstructure well clear of any crest: nothing to do.
     let reach = 1.5 * ocean_fft_view.gain.z + 10.0 + OCEAN_REFLECTED_CAUSTIC_REACH_METERS;
     if local_view_altitude_meters(view_position) > reach {
-        return vec3<f32>(1.0, 1.0, 0.0);
+        return vec4<f32>(1.0, 1.0, 0.0, 0.0);
     }
     let up = normalize(ship.up.xyz);
     let side = ship_caustic_side_weight(normal, up);
@@ -106,7 +111,6 @@ fn ship_sea_light(view_position: vec3<f32>, normal: vec3<f32>, sun_direction: ve
     let pixel_meters = length(view_position) * (2.0 * camera.projection.y / 720.0);
     let planet_offset = view_to_planet(view_position);
     if depth > 0.0 {
-        let through_water = ocean_water_transmittance(depth);
         // Within the same 2m of the surface as the reflected shimmer, fading
         // over the next metre to the plain (unfocused) sun.
         let near_surface = 1.0 - smoothstep(
@@ -119,12 +123,14 @@ fn ship_sea_light(view_position: vec3<f32>, normal: vec3<f32>, sun_direction: ve
             ocean_fft_caustics(planet_offset, up, sun_direction, depth, pixel_meters),
             side * near_surface * sun_visible_fraction(),
         );
-        return vec3<f32>(through_water * caustics, through_water, 0.0);
+        // The depth rides along as w: the light that reaches this far down has
+        // lost its red first and then its green, per channel (`fs_main`).
+        return vec4<f32>(caustics, 1.0, 0.0, depth);
     }
     let bounce = ocean_fft_reflected_caustics(planet_offset, up, sun_direction, -depth, pixel_meters)
         * max(dot(normal, ocean_reflected_sun_direction(up, sun_direction)), 0.0)
         * side * sun_visible_fraction() * SHIP_REFLECTED_LIGHT_GAIN;
-    return vec3<f32>(1.0, 1.0, bounce);
+    return vec4<f32>(1.0, 1.0, bounce, 0.0);
 }
 
 @vertex
@@ -173,7 +179,8 @@ fn ship_shaded(input: VertexOutput) -> vec3<f32> {
     ) * (0.25 + 0.75 * sun_elevation);
     let sea = ship_sea_light(input.view_position, normal, sun_direction);
     let lit = input.colour
-        * (sunlight * (sun_lambert * sea.x + sea.z) + sky_light * sea.y);
+        * (sunlight * (sun_lambert * sea.x + sea.z) + sky_light * sea.y)
+        * exp(-sea.w * SHIP_DEPTH_ABSORPTION);
     // Through the same distance fog as the sea it floats in (or the water, from
     // under it): in a storm's closing fog the hull greys with the waves.
     let fog = terrain_fog(
