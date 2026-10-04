@@ -35,6 +35,14 @@ const LAP_RATE_CALM: f32 = 2.5;
 const MAX_BREAKS: usize = 24;
 const MAX_LAPS: usize = 8;
 const MAX_CREAKS: usize = 4;
+const MAX_IMPACTS: usize = 6;
+/// Metres of water over the listener at which the surface sounds (the sea's
+/// roar and breaking waves, the wind, thunder, the hull's creaks above the
+/// waves) have fallen to 1/e; a few times this and they are gone, and the
+/// deep takes over.
+const SURFACE_SOUND_DEPTH_EFOLD_METERS: f32 = 5.0;
+/// Gain of the deep-water rumble heard once the surface sounds are gone.
+const DEEP_RUMBLE_GAIN: f32 = 0.1;
 /// Loudness of the low roar at full storm; in a calm it is a faint floor.
 const ROAR_GAIN: f32 = 1.1;
 const ROAR_FLOOR: f32 = 0.06;
@@ -89,6 +97,11 @@ struct Shared {
     thunder_pan: AtomicU32,
     thunder_sequence: AtomicU32,
     creak_stress: AtomicU32,
+    depth: AtomicU32,
+    scrape: AtomicU32,
+    tumble: AtomicU32,
+    impact_gain: AtomicU32,
+    impact_sequence: AtomicU32,
 }
 
 fn store(slot: &AtomicU32, value: f32) {
@@ -156,6 +169,22 @@ impl SeaSound {
         store(&self.shared.creak_stress, creak_stress.clamp(0.0, 1.0));
     }
 
+    /// What is under the water. `depth` is how far below the surface the
+    /// listener is (m): the surface sounds fade out with it and the deep
+    /// rumble fades in. `scrape` and `tumble` (0-1) are a hull sliding and
+    /// rolling along the seabed near the listener.
+    pub fn set_underwater(&self, depth: f32, scrape: f32, tumble: f32) {
+        store(&self.shared.depth, depth.max(0.0));
+        store(&self.shared.scrape, scrape.clamp(0.0, 1.0));
+        store(&self.shared.tumble, tumble.clamp(0.0, 1.0));
+    }
+
+    /// A hull striking the seabed, `gain` 0-1 for how hard.
+    pub fn seabed_impact(&self, gain: f32) {
+        store(&self.shared.impact_gain, gain.clamp(0.0, 1.0));
+        self.shared.impact_sequence.fetch_add(1, Ordering::Release);
+    }
+
     /// One delayed thunder arrival. The sequence is published last so the
     /// audio callback sees the gain and stereo direction together.
     pub fn thunder(&self, gain: f32, pan: f32) {
@@ -199,6 +228,7 @@ where
     let mut synth = SeaSynth::new(config.sample_rate as f32, 0x5ea5_0001);
     synth.volume = volume();
     let mut last_thunder_sequence = 0;
+    let mut last_impact_sequence = 0;
     device
         .build_output_stream(
             config,
@@ -211,6 +241,16 @@ where
                 );
                 synth.clock_rate = load(&shared.clock_rate);
                 synth.creak_target = load(&shared.creak_stress);
+                synth.set_underwater(
+                    load(&shared.depth),
+                    load(&shared.scrape),
+                    load(&shared.tumble),
+                );
+                let impacts = shared.impact_sequence.load(Ordering::Acquire);
+                if impacts != last_impact_sequence {
+                    synth.trigger_impact(load(&shared.impact_gain));
+                    last_impact_sequence = impacts;
+                }
                 let sequence = shared.thunder_sequence.load(Ordering::Acquire);
                 if sequence != last_thunder_sequence {
                     synth.trigger_thunder(load(&shared.thunder_gain), load(&shared.thunder_pan));
@@ -320,6 +360,34 @@ impl Creak {
             * (1.0 - smoothstep(self.duration - 0.3, self.duration, self.age));
         let groan = self.phase.sin() + 0.28 * (2.0 * self.phase).sin();
         let value = (0.75 * groan + 0.25 * self.friction) * envelope * self.gain;
+        self.age += clock_rate / sample_rate;
+        [value * self.pan[0], value * self.pan[1]]
+    }
+}
+
+/// A hull striking the seabed: a low thump that sags in pitch, a duller
+/// crunch of timber and sediment, and a brief knock of wood.
+struct Impact {
+    age: f32,
+    gain: f32,
+    phase: f32,
+    crunch: f32,
+    pan: [f32; 2],
+}
+
+impl Impact {
+    const DURATION: f32 = 2.5;
+
+    fn next(&mut self, white: f32, sample_rate: f32, clock_rate: f32) -> [f32; 2] {
+        let pitch = 28.0 + 40.0 * (-self.age / 0.2).exp();
+        self.phase += std::f32::consts::TAU * pitch / sample_rate;
+        let thump = self.phase.sin() * (-self.age / 0.3).exp();
+        self.crunch += one_pole(240.0, sample_rate) * (white - self.crunch);
+        let crunch = self.crunch * (-self.age / 0.1).exp();
+        let knock = white * (-self.age / 0.012).exp() * 0.3;
+        let value = (1.1 * thump + 1.4 * crunch + knock)
+            * self.gain
+            * smoothstep(0.0, 0.004, self.age);
         self.age += clock_rate / sample_rate;
         [value * self.pan[0], value * self.pan[1]]
     }
@@ -512,6 +580,21 @@ pub(crate) struct SeaSynth {
     thunder_gain: f32,
     thunder_pan: f32,
     thunder_low: f32,
+    /// How far under the water the listener is, and the hull on the seabed:
+    /// sliding, rolling, and the thumps of its landings.
+    depth: f32,
+    scrape: f32,
+    tumble: f32,
+    underwater_targets: [f32; 3],
+    impacts: Vec<Impact>,
+    scrape_phase: f32,
+    scrape_bands: [f32; 2],
+    tumble_brown: f32,
+    tumble_low: f32,
+    tumble_phase: f32,
+    tumble_wander: f32,
+    deep_brown: f32,
+    deep_low: [f32; 2],
 }
 
 impl SeaSynth {
@@ -541,6 +624,19 @@ impl SeaSynth {
             thunder_gain: 0.0,
             thunder_pan: 0.5,
             thunder_low: 0.0,
+            depth: 0.0,
+            scrape: 0.0,
+            tumble: 0.0,
+            underwater_targets: [0.0; 3],
+            impacts: Vec::with_capacity(MAX_IMPACTS),
+            scrape_phase: 0.0,
+            scrape_bands: [0.0; 2],
+            tumble_brown: 0.0,
+            tumble_low: 0.0,
+            tumble_phase: 0.0,
+            tumble_wander: 0.0,
+            deep_brown: 0.0,
+            deep_low: [0.0; 2],
         }
     }
 
@@ -554,6 +650,24 @@ impl SeaSynth {
 
     pub(crate) fn set_targets(&mut self, roughness: f32, level: f32, muffle: f32, wind: f32) {
         self.targets = [roughness, level, muffle, wind];
+    }
+
+    pub(crate) fn set_underwater(&mut self, depth: f32, scrape: f32, tumble: f32) {
+        self.underwater_targets = [depth.max(0.0), scrape.clamp(0.0, 1.0), tumble.clamp(0.0, 1.0)];
+    }
+
+    pub(crate) fn trigger_impact(&mut self, gain: f32) {
+        if self.impacts.len() >= MAX_IMPACTS {
+            self.impacts.remove(0);
+        }
+        let pan = self.pan();
+        self.impacts.push(Impact {
+            age: 0.0,
+            gain: gain.clamp(0.0, 1.0) * 1.6,
+            phase: 0.0,
+            crunch: 0.0,
+            pan,
+        });
     }
 
     fn trigger_thunder(&mut self, gain: f32, pan: f32) {
@@ -655,6 +769,9 @@ impl SeaSynth {
         self.muffle += (self.targets[2] - self.muffle) * self.ease;
         self.wind_strength += (self.targets[3] - self.wind_strength) * self.ease;
         self.creak_stress += (self.creak_target - self.creak_stress) * self.ease;
+        self.depth += (self.underwater_targets[0] - self.depth) * self.ease;
+        self.scrape += (self.underwater_targets[1] - self.scrape) * self.ease;
+        self.tumble += (self.underwater_targets[2] - self.tumble) * self.ease;
         self.spawn();
         let r = self.roughness;
         let sample_rate = self.sample_rate;
@@ -717,6 +834,60 @@ impl SeaSynth {
         } else {
             0.0
         };
+        // The surface sounds die away with depth: a listener under the waves
+        // hears none of the sea's crashing, the wind, the thunder or the
+        // hull's creaks above them -- only the deep.
+        let surface = (-self.depth / SURFACE_SOUND_DEPTH_EFOLD_METERS).exp();
+        let mut under = [0.0_f32; 2];
+        // The deep: a low rumble that grows as the surface lets go.
+        for ear in 0..2 {
+            let white = self.white();
+            self.deep_brown = 0.998 * self.deep_brown + 0.03 * white;
+            self.deep_low[ear] += one_pole(90.0, sample_rate) * (self.deep_brown - self.deep_low[ear]);
+            under[ear] += self.deep_low[ear] * DEEP_RUMBLE_GAIN * (1.0 - surface);
+        }
+        // The hull on the bottom. Thumps first.
+        for index in 0..self.impacts.len() {
+            let white = self.white();
+            let sound = self.impacts[index].next(white, sample_rate, self.clock_rate);
+            under[0] += sound[0];
+            under[1] += sound[1];
+        }
+        self.impacts.retain(|impact| impact.age < Impact::DURATION);
+        // Sliding: gritty stick-slip noise between about 120 and 700 Hz,
+        // juddering faster the faster it slides.
+        if self.scrape > 0.001 {
+            let white = self.white();
+            let jitter = 0.4 * (self.random() - 0.5);
+            self.scrape_phase = (self.scrape_phase
+                + (5.0 + 9.0 * self.scrape + jitter) * self.clock_rate / sample_rate)
+                .rem_euclid(1.0);
+            let stick = smoothstep(0.0, 0.15, self.scrape_phase)
+                * (1.0 - smoothstep(0.6, 1.0, self.scrape_phase));
+            let grit = white * white.abs();
+            self.scrape_bands[0] += one_pole(700.0, sample_rate) * (grit - self.scrape_bands[0]);
+            self.scrape_bands[1] += one_pole(120.0, sample_rate) * (grit - self.scrape_bands[1]);
+            let band = self.scrape_bands[0] - self.scrape_bands[1];
+            let value = band * (0.35 + 0.65 * stick) * self.scrape * 7.0;
+            under[0] += value;
+            under[1] += value;
+        }
+        // Rolling: a rumble with a slow wooden groan in it.
+        if self.tumble > 0.001 {
+            let white = self.white();
+            self.tumble_brown = 0.999 * self.tumble_brown + 0.02 * white;
+            self.tumble_low += one_pole(80.0, sample_rate) * (self.tumble_brown - self.tumble_low);
+            self.tumble_wander = (self.tumble_wander + 0.4 * self.clock_rate / sample_rate) % 1.0;
+            let wander = (std::f32::consts::TAU * self.tumble_wander).sin();
+            self.tumble_phase = (self.tumble_phase
+                + std::f32::consts::TAU * (55.0 + 25.0 * wander) / sample_rate)
+                .rem_euclid(std::f32::consts::TAU);
+            let groan = self.tumble_phase.sin() + 0.3 * (2.0 * self.tumble_phase).sin();
+            let value = self.tumble
+                * (0.7 * self.tumble_low + 0.1 * groan * (0.5 + 0.5 * wander));
+            under[0] += value;
+            under[1] += value;
+        }
         // Under the water: everything dull and low.
         let muffle_a = one_pole(16_000.0 + (320.0 - 16_000.0) * self.muffle, sample_rate);
         let muffle_gain = 1.0 - 0.3 * self.muffle;
@@ -726,10 +897,12 @@ impl SeaSynth {
             } else {
                 self.thunder_pan
             };
-            let mixed = out[ear] * self.level
-                + wind[ear] * wind_level
-                + creak[ear] * (1.0 - 0.8 * self.muffle)
-                + thunder * (0.5 + side) * (1.0 - 0.8 * self.muffle);
+            let mixed = surface
+                * (out[ear] * self.level
+                    + wind[ear] * wind_level
+                    + creak[ear] * (1.0 - 0.8 * self.muffle)
+                    + thunder * (0.5 + side) * (1.0 - 0.8 * self.muffle))
+                + under[ear];
             self.muffled[ear][0] += muffle_a * (mixed - self.muffled[ear][0]);
             self.muffled[ear][1] += muffle_a * (self.muffled[ear][0] - self.muffled[ear][1]);
             out[ear] = soft_clip(self.muffled[ear][1] * muffle_gain * self.volume);
@@ -875,6 +1048,79 @@ mod tests {
         let age = synth.thunder_age;
         assert!((0..1000).all(|_| synth.next_frame() == [0.0, 0.0]));
         assert_eq!(synth.thunder_age, age);
+    }
+
+    /// RMS of `seconds` of output after letting the parameters settle.
+    fn settled_rms(synth: &mut SeaSynth, seconds: f32) -> f32 {
+        for _ in 0..(RATE as usize * 6) {
+            synth.next_frame();
+        }
+        let frames = (RATE * seconds) as usize;
+        let sum: f32 = (0..frames)
+            .map(|_| {
+                let [l, r] = synth.next_frame();
+                0.5 * (l * l + r * r)
+            })
+            .sum();
+        (sum / frames as f32).sqrt()
+    }
+
+    #[test]
+    fn the_surface_sounds_stop_under_the_waves() {
+        let storm = |depth: f32| {
+            let mut synth = SeaSynth::new(RATE, 11);
+            synth.jump_to(1.0, 1.0, if depth > 0.0 { 1.0 } else { 0.0 }, 1.0);
+            synth.creak_target = 1.0;
+            synth.set_underwater(depth, 0.0, 0.0);
+            // The depth eases in; start from it.
+            synth.depth = depth;
+            settled_rms(&mut synth, 2.0)
+        };
+        let above = storm(0.0);
+        let shallow = storm(3.0);
+        let deep = storm(40.0);
+        assert!(above > 0.02, "storm above the water {above}");
+        assert!(shallow < above, "{shallow} {above}");
+        // At depth the storm is gone: what is left is the quiet deep.
+        assert!(deep < 0.2 * above, "deep {deep} vs above {above}");
+    }
+
+    #[test]
+    fn a_hull_landing_on_the_seabed_thumps_low_and_dies_away() {
+        let mut synth = SeaSynth::new(RATE, 5);
+        synth.jump_to(0.0, 0.0, 1.0, 0.0);
+        synth.depth = 40.0;
+        synth.set_underwater(40.0, 0.0, 0.0);
+        let quiet = settled_rms(&mut synth, 1.0);
+        synth.trigger_impact(1.0);
+        let burst: Vec<f32> = (0..(RATE * 0.4) as usize).map(|_| synth.next_frame()[0]).collect();
+        let peak = burst.iter().fold(0.0_f32, |m, v| m.max(v.abs()));
+        assert!(peak > 0.05 && peak < 1.0, "thump peak {peak}");
+        // Low: few zero crossings per second (a 28-70 Hz thump, not a click).
+        let crossings = burst.windows(2).filter(|w| w[0].signum() != w[1].signum()).count();
+        assert!((crossings as f32 / 0.4) < 400.0, "{crossings} crossings in 0.4s");
+        // And it dies away to the deep's quiet.
+        let tail = settled_rms(&mut synth, 1.0);
+        assert!(tail < 3.0 * quiet.max(0.005), "tail {tail} quiet {quiet}");
+    }
+
+    #[test]
+    fn scraping_and_tumbling_on_the_seabed_are_heard_only_while_they_happen() {
+        let level = |scrape: f32, tumble: f32| {
+            let mut synth = SeaSynth::new(RATE, 9);
+            synth.jump_to(0.0, 0.0, 1.0, 0.0);
+            synth.depth = 40.0;
+            synth.scrape = scrape;
+            synth.tumble = tumble;
+            synth.set_underwater(40.0, scrape, tumble);
+            settled_rms(&mut synth, 2.0)
+        };
+        let still = level(0.0, 0.0);
+        let sliding = level(1.0, 0.0);
+        let rolling = level(0.0, 1.0);
+        println!("seabed levels: still {still:.4} sliding {sliding:.4} rolling {rolling:.4}");
+        assert!(sliding > 2.0 * still, "{sliding} vs {still}");
+        assert!(rolling > 2.0 * still, "{rolling} vs {still}");
     }
 
     #[test]

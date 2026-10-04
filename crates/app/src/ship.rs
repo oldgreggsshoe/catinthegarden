@@ -417,6 +417,9 @@ pub struct ShipBody {
     pub seabed_altitude_meters: f64,
     /// Whether the hull is resting on the seabed.
     pub on_seabed: bool,
+    /// The hardest downward speed (m/s) the hull has struck the seabed at
+    /// since `take_seabed_impact` last read it.
+    seabed_impact_speed: f64,
 }
 
 impl ShipBody {
@@ -442,7 +445,14 @@ impl ShipBody {
             flood_kg: 0.0,
             seabed_altitude_meters: f64::NEG_INFINITY,
             on_seabed: false,
+            seabed_impact_speed: 0.0,
         }
+    }
+
+    /// The hardest strike of the seabed (m/s) since the last call, and resets
+    /// it: what the sound of a hull landing is made from.
+    pub fn take_seabed_impact(&mut self) -> f64 {
+        std::mem::take(&mut self.seabed_impact_speed)
     }
 
     /// Altitude of the ship-local origin: the point on the hull that should sit
@@ -659,6 +669,7 @@ impl ShipBody {
         self.position += radial * (self.seabed_altitude_meters - lowest);
         let radial_speed = self.linear_velocity.dot(radial);
         if radial_speed < 0.0 {
+            self.seabed_impact_speed = self.seabed_impact_speed.max(-radial_speed);
             self.linear_velocity -= radial * radial_speed;
         }
         let sliding = self.linear_velocity - radial * self.linear_velocity.dot(radial);
@@ -1201,6 +1212,10 @@ mod tests {
         let waterline = body.waterline_altitude_meters(&hull);
         assert!(waterline < -25.0 && waterline > -45.0, "waterline {waterline}m");
         assert!(body.linear_velocity.length() < 0.2, "{} m/s", body.linear_velocity.length());
+        // It landed at a real speed, and the strike is read once.
+        let impact = body.take_seabed_impact();
+        assert!(impact > 0.3, "landed at {impact} m/s");
+        assert_eq!(body.take_seabed_impact(), 0.0);
     }
 
     /// Instrument, not a regression: the ship's track on the FFT sea, stepped

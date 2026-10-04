@@ -422,6 +422,34 @@ fn ship_creak_stress(swell_height_meters: f32, angular_speed: f64, distance_mete
     let near = (1.0 - distance_meters / 250.0).clamp(0.0, 1.0) as f32;
     waves * motion * near * near
 }
+/// What a hull on the seabed sounds like at distance `distance_meters`:
+/// (scrape level 0-1 from its sliding speed, tumble level 0-1 from its spin,
+/// impact gain 0-1 from the strike speed, zero if none). Sound carries far
+/// under water, so these fade over 400m, not the 250m of the hull's creaks
+/// above it.
+fn ship_seabed_sounds(
+    on_seabed: bool,
+    velocity: glam::DVec3,
+    angular_velocity: glam::DVec3,
+    radial: glam::DVec3,
+    impact_speed: f64,
+    distance_meters: f64,
+) -> (f32, f32, f32) {
+    let near = (1.0 - distance_meters / 400.0).clamp(0.0, 1.0) as f32;
+    let near = near * near;
+    let impact = if impact_speed > 0.3 {
+        ((impact_speed / 6.0).clamp(0.0, 1.0) as f32) * near
+    } else {
+        0.0
+    };
+    if !on_seabed {
+        return (0.0, 0.0, impact);
+    }
+    let sliding = (velocity - radial * velocity.dot(radial)).length();
+    let scrape = ((sliding - 0.05) / 2.0).clamp(0.0, 1.0) as f32 * near;
+    let tumble = ((angular_velocity.length() - 0.03) / 0.4).clamp(0.0, 1.0) as f32 * near;
+    (scrape, tumble, impact)
+}
 /// The wind as heard: a full storm blows this much harder than the sea's own
 /// wind, and the sound is at full strength at this speed of air past the eye.
 const WIND_SOUND_STORM_BOOST: f64 = 0.6;
@@ -2989,6 +3017,9 @@ impl State {
             0.0
         };
         let muffle = if altitude < water { 1.0 } else { 0.0 };
+        // How far under the surface the listener is: the surface sounds fade
+        // out with it, and the deep takes over.
+        let depth = (water - altitude).max(0.0) as f32;
         let (u, v) = ocean_fft::anchor_axes(direction.to_array());
         let [wind_u, wind_v] = self.gust.wind_uv();
         let wind = glam::DVec3::from_array(u) * wind_u + glam::DVec3::from_array(v) * wind_v;
@@ -3014,11 +3045,28 @@ impl State {
         let air = wind * (1.0 + WIND_SOUND_STORM_BOOST * f64::from(self.storm_overcast))
             - self.rain.camera_velocity();
         let wind_strength = (air.length() / WIND_SOUND_FULL_SPEED_METERS_PER_SECOND) as f32;
-        let creak_stress = ship_creak_stress(
-            ocean_fft::swell_height_meters(ocean::sea_state_at(ocean_time_seconds).intensity),
-            self.ship_body.angular_velocity.length(),
+        // A hull on the seabed no longer creaks to the waves above it.
+        let creak_stress = if self.ship_body.on_seabed {
+            0.0
+        } else {
+            ship_creak_stress(
+                ocean_fft::swell_height_meters(ocean::sea_state_at(ocean_time_seconds).intensity),
+                self.ship_body.angular_velocity.length(),
+                camera_position.distance(self.ship_body.position),
+            )
+        };
+        let (scrape, tumble, impact) = ship_seabed_sounds(
+            self.ship_body.on_seabed,
+            self.ship_body.linear_velocity,
+            self.ship_body.angular_velocity,
+            self.ship_body.position.normalize(),
+            self.ship_body.take_seabed_impact(),
             camera_position.distance(self.ship_body.position),
         );
+        self.sea_sound.set_underwater(depth, scrape, tumble);
+        if impact > 0.0 {
+            self.sea_sound.seabed_impact(impact);
+        }
         self.sea_sound.set(
             roughness,
             level,
@@ -6644,6 +6692,31 @@ fn create_depth_texture(
 #[cfg(test)]
 mod tests {
     use glam::DVec3;
+
+    #[test]
+    fn a_hull_on_the_seabed_scrapes_and_tumbles_only_while_it_moves_and_is_near() {
+        let radial = glam::DVec3::X;
+        let slide = glam::DVec3::new(0.0, 1.5, 0.0);
+        let spin = glam::DVec3::new(0.0, 0.0, 0.3);
+        let at = |on, v, w, impact, distance| {
+            super::ship_seabed_sounds(on, v, w, radial, impact, distance)
+        };
+        // At rest on the bottom: silence. Off it: no scraping or rolling.
+        assert_eq!(at(true, glam::DVec3::ZERO, glam::DVec3::ZERO, 0.0, 5.0), (0.0, 0.0, 0.0));
+        assert_eq!(at(false, slide, spin, 0.0, 5.0), (0.0, 0.0, 0.0));
+        // Sliding and spinning on the bottom are heard, and fade with distance.
+        let (scrape, tumble, _) = at(true, slide, spin, 0.0, 5.0);
+        assert!(scrape > 0.5 && tumble > 0.4, "{scrape} {tumble}");
+        let (far_scrape, far_tumble, _) = at(true, slide, spin, 0.0, 300.0);
+        assert!(far_scrape < 0.2 * scrape && far_tumble < 0.2 * tumble);
+        assert_eq!(at(true, slide, spin, 0.0, 500.0), (0.0, 0.0, 0.0));
+        // A landing is heard once it is hard enough, harder is louder, even
+        // while still falling (not yet on the bottom).
+        assert_eq!(at(false, glam::DVec3::ZERO, glam::DVec3::ZERO, 0.2, 5.0).2, 0.0);
+        let soft = at(false, glam::DVec3::ZERO, glam::DVec3::ZERO, 1.0, 5.0).2;
+        let hard = at(false, glam::DVec3::ZERO, glam::DVec3::ZERO, 5.0, 5.0).2;
+        assert!(soft > 0.0 && hard > soft);
+    }
 
     #[test]
     fn ship_creaks_require_large_waves_real_motion_and_a_near_listener() {

@@ -11992,3 +11992,6 @@ The 3 October swimmer carry was stepped on real time with the sea's velocity at 
 
 ## 4 October - Flooding and sinking rule
 See AGENTS.md. Sweep (240 s tracks, deck opening x gunport open fraction): at 0.004/0.1 (shipped) default 14.2 t, swell 30 / no wind 3.6 t, extreme 186.9 t (sinking, still falling at 240 s because the bed was 250 m down); 0.001/0.0 would leave the extreme sea at 52 t, floating. Replay `ocean_ship_float/1791121485-579655` passes with at most 0.5 t aboard. Open: how a sunk ship should look and sound (spray/foam/creaks still run from the hull's contact), what the bridge camera sees on the bottom, salvage/refloat, and wrecks persisting.
+
+## 4 October - Underwater and seabed sound
+`sea_sound.rs`: `surface = exp(-depth/5m)` multiplies the roar, breaks, laps, wind, creaks and thunder; `under` carries the deep rumble (1 - surface), `Impact` thumps, scrape and tumble. `main.rs ship_seabed_sounds` maps `on_seabed`, slide speed, spin and the strike speed (`ShipBody::take_seabed_impact`) to levels; `ship_creak_stress` is zero on the seabed. Untested by ear. Still open: bubbles/air escaping and structural groans while the hull sinks (before it lands), distance-dependent muffling of a wreck heard from far, sound of the sinking hull passing the camera.
