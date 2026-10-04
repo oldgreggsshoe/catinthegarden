@@ -1401,6 +1401,9 @@ struct State {
     surface_pending_seconds: f64,
     /// Ocean-clock time the swimmer has been carried up to (NaN: not swimming).
     swimmer_carry_time_seconds: f64,
+    /// The piece of sea (rest position, tangent-plane metres) the ship floats
+    /// with; the foam is indexed by the same coordinate. `None` while sunk.
+    ship_label: Option<[f64; 2]>,
     /// Distance from the camera to the ship (m), refreshed with the sound.
     ship_distance_meters: f64,
     saved_orbit_camera_pose: Option<(glam::DVec3, glam::DVec3, f64)>,
@@ -1909,6 +1912,7 @@ impl State {
             surface_jump_requested: false,
             surface_pending_seconds: 0.0,
             swimmer_carry_time_seconds: f64::NAN,
+            ship_label: None,
             ship_distance_meters: f64::INFINITY,
             saved_orbit_camera_pose: None,
             camera_buffer,
@@ -2763,10 +2767,31 @@ impl State {
             let ocean_time_seconds = step_time_seconds;
             // One orbital-velocity query per step, at the hull: it varies over
             // the swell's scale, not the hull's.
-            let water_horizontal = ocean::global_wave_horizontal_velocity(
-                self.ship_body.position.normalize(),
-                ocean_time_seconds,
-            );
+            // Afloat, the hull rides one piece of the sea -- the water whose rest
+            // position (label) it started on, which the foam is indexed by too --
+            // so it moves with the foam, not slowly off it. Sunk, it is held
+            // by the seabed and the surface no longer pulls on it.
+            let direction = self.ship_body.position.normalize();
+            let afloat = !self.ship_body.foundering && !self.ship_body.on_seabed;
+            let mut water_horizontal =
+                ocean::global_wave_horizontal_velocity(direction, ocean_time_seconds);
+            self.ship_body.anchor_gap_meters = glam::DVec3::ZERO;
+            if afloat {
+                let label = *self.ship_label.get_or_insert_with(|| {
+                    ocean::global_wave_label_meters(direction, ocean_time_seconds)
+                });
+                let (velocity, gap) =
+                    ocean::global_wave_follow_label(label, direction, ocean_time_seconds);
+                if gap.length() > ship::ANCHOR_MAXIMUM_GAP_METERS {
+                    // Moved some other way: take up the water beneath it now.
+                    self.ship_label = None;
+                } else {
+                    water_horizontal = velocity;
+                    self.ship_body.anchor_gap_meters = gap;
+                }
+            } else {
+                self.ship_label = None;
+            }
             self.ship_body
                 .advance(&self.ship_hull, ship::FIXED_STEP_SECONDS, |direction| {
                     ship::WaterSample {

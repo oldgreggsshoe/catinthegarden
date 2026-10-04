@@ -909,6 +909,76 @@ impl CpuSurface {
         std::array::from_fn(|i| u[i] * rate[0] + v[i] * rate[1])
     }
 
+    /// The rest position (label), in tangent-plane metres along `anchor_axes`,
+    /// of the water drawn at `direction`: the coordinate the foam atlas is
+    /// indexed by, so a float that holds this fixed rides with the foam.
+    pub fn label_meters(
+        &self,
+        direction: [f64; 3],
+        radius_meters: f64,
+        time: f64,
+        storm_intensity: f32,
+    ) -> [f64; 2] {
+        let (u, v) = anchor_axes(direction);
+        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let target = [radius_meters * dot(u, direction), radius_meters * dot(v, direction)];
+        self.sample_at(target, time, storm_intensity).1
+    }
+
+    /// A float held to one piece of the sea: the water whose rest position
+    /// (label) is `label`, in the tangent-plane metres of `label_meters`.
+    /// Returns that water's velocity (planet frame, m/s) and the vector from
+    /// `direction` (at `radius_meters`) to where that water is drawn, so a
+    /// float that follows the first and closes the second stays with the
+    /// water -- and with the foam, which is indexed by the same label --
+    /// instead of slowly sliding off it.
+    pub fn follow_label(
+        &self,
+        label: [f64; 2],
+        direction: [f64; 3],
+        radius_meters: f64,
+        time: f64,
+        storm_intensity: f32,
+    ) -> ([f64; 3], [f64; 3]) {
+        let (u, v) = anchor_axes(direction);
+        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let key = (time / LATTICE_SECONDS).round() as i64;
+        let delta = time - key as f64 * LATTICE_SECONDS;
+        let previous = self.shared.frontier.fetch_max(key, std::sync::atomic::Ordering::Relaxed);
+        if key > previous {
+            let (flag, condvar) = &self.shared.wake;
+            *flag.lock().unwrap() = true;
+            condvar.notify_one();
+        }
+        let scales = [1.0, 1.0, swell_height_meters(storm_intensity) as f64];
+        let cascades = self.cascades();
+        let slots: Vec<_> = cascades.iter().map(|cascade| cascade.slot(key)).collect();
+        // The sea's horizontal displacement D at this label, `offset` seconds
+        // from the query time.
+        let displacement = |offset: f64| {
+            let bands: [FieldSample; 3] = std::array::from_fn(|i| {
+                let mut band = FieldSample::default();
+                band.add_scaled(
+                    &sample_slot(&slots[i], cascades[i].tile_meters, label, delta + offset),
+                    scales[i],
+                );
+                band
+            });
+            limited_chop(&bands, choppiness() as f64, CHOP_STEEPNESS_BUDGET).displacement
+        };
+        const SPAN: f64 = 0.025;
+        let (before, now, after) = (displacement(-SPAN), displacement(0.0), displacement(SPAN));
+        let rate = [-(after[0] - before[0]) / (2.0 * SPAN), -(after[1] - before[1]) / (2.0 * SPAN)];
+        // The drawn surface is label - D.
+        let drawn = [label[0] - now[0], label[1] - now[1]];
+        let here = [radius_meters * dot(u, direction), radius_meters * dot(v, direction)];
+        let gap = [drawn[0] - here[0], drawn[1] - here[1]];
+        (
+            std::array::from_fn(|i| u[i] * rate[0] + v[i] * rate[1]),
+            std::array::from_fn(|i| u[i] * gap[0] + v[i] * gap[1]),
+        )
+    }
+
     /// `sample` at tangent-plane metres `target`; also returns the label point.
     fn sample_at(&self, target: [f64; 2], time: f64, storm_intensity: f32) -> (CpuSample, [f64; 2]) {
         let key = (time / LATTICE_SECONDS).round() as i64;

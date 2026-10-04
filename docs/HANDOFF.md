@@ -12004,3 +12004,6 @@ See AGENTS.md. Files: `ship.rs` (`update_deck_water`, `interior_water_plane`, `c
 
 ## 4 October - Foundering latch
 `ShipBody::swamped_seconds`/`foundering` (ship.rs advance_step): deck share under the sea >= 90% for 3 s latches foundering; inflow is then at least capacity/20 s and drains stop. Tests: capsized hull founders and reaches the seabed; a 1 s swamping recovers. The breaking-limit test clears the latch and flood (it checks righting). Open: a way to refloat/reset (none; the latch is permanent), whether 3 s / 90% suits a hull that is only knocked down and rights itself in a gust.
+
+## 4 October - Ship held to its water label
+See AGENTS.md. `follow_label` evaluates the sea's displacement at a held label (drawn position = label - D, velocity = -dD/dt by a +-25 ms difference) and returns velocity and the gap to the hull. The hull's horizontal damping target gains `anchor_gap * 1.5`. Open: windage (the ship has none, the foam drifts at 0.8 m/s), the same fix for the swimming camera, and whether a ship that never leaves its water should be allowed to sail at all (it now holds station on its water until something re-seats the label).

@@ -1372,6 +1372,36 @@ pub fn global_wave_horizontal_velocity(direction: DVec3, sim_time: f64) -> DVec3
     })
 }
 
+/// The rest position (label) of the water drawn here, tangent-plane metres
+/// along the FFT anchor axes; the foam atlas is indexed by it. Zero on the
+/// Gerstner sea.
+pub fn global_wave_label_meters(direction: DVec3, sim_time: f64) -> [f64; 2] {
+    fft_surface().map_or([0.0; 2], |surface| {
+        surface.label_meters(
+            direction.normalize().to_array(),
+            planet_radius_meters(),
+            sim_time,
+            sea_state_at(sim_time).intensity,
+        )
+    })
+}
+
+/// A float held to the sea's water at `label` (see `global_wave_label_meters`):
+/// that water's velocity and the vector from `direction` to where it is drawn.
+/// Zero on the Gerstner sea, which has no horizontal motion.
+pub fn global_wave_follow_label(label: [f64; 2], direction: DVec3, sim_time: f64) -> (DVec3, DVec3) {
+    fft_surface().map_or((DVec3::ZERO, DVec3::ZERO), |surface| {
+        let (velocity, gap) = surface.follow_label(
+            label,
+            direction.normalize().to_array(),
+            planet_radius_meters(),
+            sim_time,
+            sea_state_at(sim_time).intensity,
+        );
+        (DVec3::from_array(velocity), DVec3::from_array(gap))
+    })
+}
+
 /// How folded (pinched, breaking) the drawn surface is here: the determinant of
 /// its horizontal Jacobian, 1 on flat water and approaching
 /// `ocean_fft::MIN_JACOBIAN` at a breaking crest. Always 1 on the Gerstner sea,

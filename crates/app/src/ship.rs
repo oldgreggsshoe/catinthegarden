@@ -178,6 +178,13 @@ const DECK_FLOW_PER_SECOND: f64 = 2.5;
 const DECK_OVERBOARD_PER_SECOND: f64 = 1.4;
 const DECK_END_OVERBOARD_PER_SECOND: f64 = 0.5;
 pub const DECK_CELLS: usize = BUOYANCY_STATIONS * BUOYANCY_COLUMNS;
+/// How hard a hull is drawn back to the piece of sea it floats with (1/s): its
+/// horizontal velocity aims at the water's own plus this times the gap to where
+/// that water is drawn.
+const ANCHOR_GAIN_PER_SECOND: f64 = 1.5;
+/// Past this gap the hull has been moved some other way (aground, thrown), and
+/// the caller should re-seat the anchor rather than drag it back.
+pub const ANCHOR_MAXIMUM_GAP_METERS: f64 = 60.0;
 const WAVE_DECAY_PER_METER: f64 = 2.0 * std::f64::consts::PI / 360.0;
 /// A hull on the bottom loses horizontal speed and spin to the seabed.
 const SEABED_FRICTION_PER_SECOND: f64 = 4.0;
@@ -453,6 +460,11 @@ pub struct ShipBody {
     pub seabed_altitude_meters: f64,
     /// Whether the hull is resting on the seabed.
     pub on_seabed: bool,
+    /// The vector (planet frame) from the hull to where the water it floats
+    /// with is drawn, set by the caller each step: the hull is drawn toward it
+    /// at `ANCHOR_GAIN_PER_SECOND`, so it rides the sea's own motion, foam and
+    /// all, with no slow slide of its own. Zero leaves the old behaviour.
+    pub anchor_gap_meters: DVec3,
     /// The hardest downward speed (m/s) the hull has struck the seabed at
     /// since `take_seabed_impact` last read it.
     seabed_impact_speed: f64,
@@ -488,6 +500,7 @@ impl ShipBody {
             flood_kg: 0.0,
             seabed_altitude_meters: f64::NEG_INFINITY,
             on_seabed: false,
+            anchor_gap_meters: DVec3::ZERO,
             seabed_impact_speed: 0.0,
             swamped_seconds: 0.0,
             foundering: false,
@@ -687,7 +700,9 @@ impl ShipBody {
         let wetted = (submerged_volume / hull.displaced_volume_cubic_meters()).min(1.0);
         let current = if submerged_volume > 0.0 {
             let mean = water_horizontal / submerged_volume;
-            mean - radial * mean.dot(radial)
+            let anchor = self.anchor_gap_meters * ANCHOR_GAIN_PER_SECOND;
+            let target = mean + anchor;
+            target - radial * target.dot(radial)
         } else {
             DVec3::ZERO
         };
@@ -1530,6 +1545,22 @@ mod tests {
         assert!(body.flood_kg < 0.4 * hull.flood_capacity_kg());
     }
 
+    #[test]
+    fn a_hull_is_drawn_toward_the_water_it_floats_with() {
+        let (hull, mut body) = afloat();
+        let up = body.position.normalize();
+        let east = up.cross(DVec3::Y).normalize();
+        // The water it rides is drawn 2m east of it: it heads that way, at the
+        // anchor gain times the gap, and stops when the gap is closed.
+        body.anchor_gap_meters = east * 2.0;
+        body.advance(&hull, 1.0, still_water(0.0));
+        let speed = body.linear_velocity.dot(east);
+        assert!(speed > 1.0 && speed < 4.0, "{speed} m/s toward the water");
+        body.anchor_gap_meters = DVec3::ZERO;
+        body.advance(&hull, 5.0, still_water(0.0));
+        assert!(body.linear_velocity.dot(east).abs() < 0.2);
+    }
+
     /// Instrument, not a regression: the ship's track on the FFT sea, stepped
     /// the way `advance_ship` steps it (one orbital-velocity query per step).
     /// `PLANET_OCEAN_FFT=1 cargo test --release -p planet-app ship_track --
@@ -1545,6 +1576,9 @@ mod tests {
         // Start moving with the water, as the game now does.
         body.linear_velocity = ocean::global_wave_horizontal_velocity(start, 0.0);
         let origin = body.position;
+        let label_start = ocean::global_wave_label_meters(start, 0.0);
+        let mut held_label: Option<[f64; 2]> = None;
+        let mut label_now = label_start;
         let seconds: f64 = std::env::var("PLANET_SHIP_TRACK_SECONDS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -1553,10 +1587,11 @@ mod tests {
         let (mut max_speed, mut max_gap, mut speed_sum, mut samples) = (0.0f64, 0.0f64, 0.0, 0.0);
         let mut settled_speeds: Vec<f64> = Vec::new();
         for index in 0..(seconds / step) as usize {
-            let water_horizontal = ocean::global_wave_horizontal_velocity(
-                body.position.normalize(),
-                elapsed,
-            );
+            // As `advance_ship`: ride the water at the label the hull started on.
+            let direction = body.position.normalize();
+            let label = *held_label.get_or_insert_with(|| ocean::global_wave_label_meters(direction, elapsed));
+            let (water_horizontal, gap) = ocean::global_wave_follow_label(label, direction, elapsed);
+            body.anchor_gap_meters = gap;
             let time = elapsed;
             body.seabed_altitude_meters = -250.0;
             body.advance(&hull, step, |direction| WaterSample {
@@ -1567,6 +1602,9 @@ mod tests {
                 horizontal_velocity: water_horizontal,
             });
             elapsed += step;
+            if index % 120 == 0 {
+                label_now = ocean::global_wave_label_meters(body.position.normalize(), elapsed);
+            }
             let up = body.position.normalize();
             let horizontal = |v: DVec3| v - up * v.dot(up);
             let speed = horizontal(body.linear_velocity).length();
@@ -1601,6 +1639,12 @@ mod tests {
             (hull.maximum_buoyancy_kg() - hull.mass_kg()) / 1000.0,
             body.foundering,
             body.on_seabed,
+        );
+        println!(
+            "label (the foam's coordinate) moved {:.1}m east-ish, {:.1}m north-ish in {seconds:.0}s ({:.3} m/s)",
+            label_now[0] - label_start[0],
+            label_now[1] - label_start[1],
+            ((label_now[0] - label_start[0]).hypot(label_now[1] - label_start[1])) / seconds,
         );
         let offset = body.position - origin;
         println!(
