@@ -73,6 +73,10 @@ const HUD_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
 /// arrive far inside this window; a real release costs this much glide.
 const MOVEMENT_KEY_LATCH: Duration = Duration::from_millis(120);
 const HIDDEN_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
+/// The water-aboard counter at the top of the screen (interactive game, near
+/// the ship), and how often it refreshes while the overlay is hidden.
+const WATER_DISPLAY_RANGE_METERS: f64 = 1_000.0;
+const WATER_DISPLAY_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 const GPU_PROFILE_RING_SIZE: usize = 3;
 const GPU_TIMESTAMP_COUNT: u32 = 14;
 const DEFAULT_OUTMAP_PATH: &str = "assets/outmaps/test-planet";
@@ -422,6 +426,36 @@ fn ship_creak_stress(swell_height_meters: f32, angular_speed: f64, distance_mete
     let near = (1.0 - distance_meters / 250.0).clamp(0.0, 1.0) as f32;
     waves * motion * near * near
 }
+/// The water-aboard counter: "flooded/sinking" in tonnes ("SUNK" once it is on
+/// the seabed), white while the hull is safe, then amber, orange and red as
+/// the water aboard nears the amount that sinks it.
+fn water_aboard_text(
+    flooded_tonnes: f64,
+    sinking_tonnes: f64,
+    on_seabed: bool,
+) -> (String, egui::Color32) {
+    let share = if sinking_tonnes > 0.0 {
+        flooded_tonnes / sinking_tonnes
+    } else {
+        0.0
+    };
+    let colour = if share >= 1.0 {
+        egui::Color32::from_rgb(255, 70, 60)
+    } else if share >= 0.75 {
+        egui::Color32::from_rgb(255, 150, 60)
+    } else if share >= 0.4 {
+        egui::Color32::from_rgb(255, 215, 90)
+    } else {
+        egui::Color32::WHITE
+    };
+    let label = if on_seabed {
+        format!("{flooded_tonnes:.0}/{sinking_tonnes:.0}  SUNK")
+    } else {
+        format!("{flooded_tonnes:.0}/{sinking_tonnes:.0}")
+    };
+    (label, colour)
+}
+
 /// What a hull on the seabed sounds like at distance `distance_meters`:
 /// (scrape level 0-1 from its sliding speed, tumble level 0-1 from its spin,
 /// impact gain 0-1 from the strike speed, zero if none). Sound carries far
@@ -1337,6 +1371,8 @@ struct State {
     surface_pending_seconds: f64,
     /// Ocean-clock time the swimmer has been carried up to (NaN: not swimming).
     swimmer_carry_time_seconds: f64,
+    /// Distance from the camera to the ship (m), refreshed with the sound.
+    ship_distance_meters: f64,
     saved_orbit_camera_pose: Option<(glam::DVec3, glam::DVec3, f64)>,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
@@ -1833,6 +1869,7 @@ impl State {
             surface_jump_requested: false,
             surface_pending_seconds: 0.0,
             swimmer_carry_time_seconds: f64::NAN,
+            ship_distance_meters: f64::INFINITY,
             saved_orbit_camera_pose: None,
             camera_buffer,
             camera_bind_group,
@@ -2145,8 +2182,9 @@ impl State {
     fn toggle_debug_overlay(&mut self) {
         self.debug_overlay_visible = !self.debug_overlay_visible;
         self.cached_paint_jobs.clear();
-        self.egui_buffers_dirty = self.debug_overlay_visible;
-        self.hud_dirty = self.debug_overlay_visible;
+        // The water-aboard counter outlives the overlay, so rebuild either way.
+        self.egui_buffers_dirty = true;
+        self.hud_dirty = true;
         self.next_hud_update = Instant::now()
             + if self.debug_overlay_visible {
                 Duration::ZERO
@@ -3055,6 +3093,7 @@ impl State {
                 camera_position.distance(self.ship_body.position),
             )
         };
+        self.ship_distance_meters = camera_position.distance(self.ship_body.position);
         let (scrape, tumble, impact) = ship_seabed_sounds(
             self.ship_body.on_seabed,
             self.ship_body.linear_velocity,
@@ -3994,7 +4033,45 @@ impl State {
         } else {
             format!("{camera_altitude:.0}")
         };
+        // Tonnes of water aboard over the tonnes that would sink the hull.
+        let water_aboard = (self.scenario.is_none()
+            && self.ship_distance_meters < WATER_DISPLAY_RANGE_METERS)
+            .then(|| {
+                (
+                    self.ship_body.flood_kg / 1000.0,
+                    (self.ship_hull.maximum_buoyancy_kg() - self.ship_hull.mass_kg()) / 1000.0,
+                    self.ship_body.on_seabed,
+                )
+            });
         let full_output = self.egui_context.run_ui(raw_input, |ui| {
+            if let Some((flooded_tonnes, sinking_tonnes, on_seabed)) = water_aboard {
+                let (label, colour) = water_aboard_text(flooded_tonnes, sinking_tonnes, on_seabed);
+                let context = ui.ctx().clone();
+                egui::Area::new(egui::Id::new("water_aboard"))
+                    .anchor(egui::Align2::CENTER_TOP, [0.0, 10.0])
+                    .interactable(false)
+                    .show(&context, |ui| {
+                        egui::Frame::new()
+                            .fill(egui::Color32::from_black_alpha(150))
+                            .corner_radius(6.0)
+                            .inner_margin(egui::Margin::symmetric(14, 6))
+                            .show(ui, |ui| {
+                                ui.vertical_centered(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("WATER ABOARD (tonnes)")
+                                            .size(11.0)
+                                            .color(egui::Color32::from_gray(190)),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(label)
+                                            .size(26.0)
+                                            .strong()
+                                            .color(colour),
+                                    );
+                                });
+                            });
+                    });
+            }
             if show_debug_overlay {
                 let context = ui.ctx().clone();
                 egui::Window::new("PLANET THING")
@@ -4759,7 +4836,13 @@ impl State {
                 .update_badge(&self.queue, [self.size.width, self.size.height]);
         }
         let mut textures_to_free = Vec::new();
-        let render_egui = !solid_color_screen && !hide_overlay && self.debug_overlay_visible;
+        // The water-aboard counter shows near the ship, overlay or not, in the
+        // interactive game only (replays' captures stay as authored).
+        let water_display = self.scenario.is_none()
+            && self.ship_distance_meters < WATER_DISPLAY_RANGE_METERS;
+        let render_egui = !solid_color_screen
+            && !hide_overlay
+            && (self.debug_overlay_visible || water_display);
         let refresh_egui = render_egui && (self.hud_dirty || now >= self.next_hud_update);
         if refresh_egui {
             textures_to_free = self.refresh_hud(HudInputs {
@@ -4772,8 +4855,13 @@ impl State {
                 ocean_storm_intensity: local_storm_intensity,
             });
         }
+        if refresh_egui && !self.debug_overlay_visible {
+            // Only a counter to keep current: refresh it at a quarter of the
+            // overlay's rate.
+            self.next_hud_update = now + WATER_DISPLAY_REFRESH_INTERVAL;
+        }
         let paint_jobs = render_egui.then_some(&self.cached_paint_jobs);
-        if !self.debug_overlay_visible {
+        if !self.debug_overlay_visible && !water_display {
             self.hud_dirty = false;
             self.next_hud_update = now + HIDDEN_REFRESH_INTERVAL;
         }
@@ -6692,6 +6780,19 @@ fn create_depth_texture(
 #[cfg(test)]
 mod tests {
     use glam::DVec3;
+
+    #[test]
+    fn the_water_aboard_counter_reads_flooded_over_sinking_and_warns_as_it_nears() {
+        let limit = crate::ship::ShipHull::new();
+        let sinking = (limit.maximum_buoyancy_kg() - limit.mass_kg()) / 1000.0;
+        let (label, colour) = super::water_aboard_text(124.4, sinking, false);
+        assert_eq!(label, format!("124/{sinking:.0}"));
+        assert_eq!(colour, egui::Color32::from_rgb(255, 215, 90));
+        assert_eq!(super::water_aboard_text(140.0, sinking, false).1, egui::Color32::from_rgb(255, 150, 60));
+        assert_eq!(super::water_aboard_text(0.0, sinking, false).1, egui::Color32::WHITE);
+        assert_eq!(super::water_aboard_text(sinking, sinking, true).1, egui::Color32::from_rgb(255, 70, 60));
+        assert!(super::water_aboard_text(sinking, sinking, true).0.ends_with("SUNK"));
+    }
 
     #[test]
     fn a_hull_on_the_seabed_scrapes_and_tumbles_only_while_it_moves_and_is_near() {
