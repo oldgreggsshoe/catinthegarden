@@ -974,6 +974,7 @@ mod tests {
         let origin = body.position;
         let (mut elapsed, step) = (0.0, super::FIXED_STEP_SECONDS);
         let (mut max_speed, mut max_gap, mut speed_sum, mut samples) = (0.0f64, 0.0f64, 0.0, 0.0);
+        let mut settled_speeds: Vec<f64> = Vec::new();
         for index in 0..(300.0 / step) as usize {
             let water_horizontal = ocean::global_wave_horizontal_velocity(
                 body.position.normalize(),
@@ -996,6 +997,10 @@ mod tests {
             max_gap = max_gap.max(gap);
             speed_sum += speed;
             samples += 1.0;
+            // The first 20s hold the spawn transient (hull at rest in moving water).
+            if elapsed > 20.0 {
+                settled_speeds.push(speed);
+            }
             if index % 240 == 0 {
                 let offset = body.position - origin;
                 println!(
@@ -1015,6 +1020,48 @@ mod tests {
             offset.dot(north),
             speed_sum / samples,
         );
+        settled_speeds.sort_by(|a, b| a.total_cmp(b));
+        let at = |q: f64| settled_speeds[((settled_speeds.len() - 1) as f64 * q) as usize];
+        println!(
+            "settled (t>20s) horizontal speed over the planet-fixed frame: max {:.2} m/s, p99 {:.2}, p90 {:.2}, median {:.2}",
+            settled_speeds.last().unwrap(),
+            at(0.99),
+            at(0.90),
+            at(0.5),
+        );
+    }
+
+    /// Silhouette areas of the drawn model, for an air-drag estimate: the union
+    /// of its triangles projected head-on (onto the y-z plane) and broadside.
+    #[test]
+    #[ignore]
+    fn ship_silhouette_areas() {
+        let mesh = build_mesh();
+        let area = |a: usize, b: usize| {
+            let cell = 0.02f32;
+            let mut covered = std::collections::HashSet::new();
+            for tri in mesh.chunks_exact(3) {
+                let p: Vec<[f32; 2]> = tri.iter().map(|v| [v.position[a], v.position[b]]).collect();
+                let (min_x, max_x) = (p.iter().map(|q| q[0]).fold(f32::MAX, f32::min), p.iter().map(|q| q[0]).fold(f32::MIN, f32::max));
+                let (min_y, max_y) = (p.iter().map(|q| q[1]).fold(f32::MAX, f32::min), p.iter().map(|q| q[1]).fold(f32::MIN, f32::max));
+                let edge = |u: [f32; 2], v: [f32; 2], w: [f32; 2]| (v[0] - u[0]) * (w[1] - u[1]) - (v[1] - u[1]) * (w[0] - u[0]);
+                let mut x = (min_x / cell).floor() * cell;
+                while x <= max_x {
+                    let mut y = (min_y / cell).floor() * cell;
+                    while y <= max_y {
+                        let c = [x + 0.5 * cell, y + 0.5 * cell];
+                        let (e0, e1, e2) = (edge(p[0], p[1], c), edge(p[1], p[2], c), edge(p[2], p[0], c));
+                        if (e0 >= 0.0 && e1 >= 0.0 && e2 >= 0.0) || (e0 <= 0.0 && e1 <= 0.0 && e2 <= 0.0) {
+                            covered.insert(((x / cell).round() as i32, (y / cell).round() as i32));
+                        }
+                        y += cell;
+                    }
+                    x += cell;
+                }
+            }
+            covered.len() as f32 * cell * cell
+        };
+        println!("head-on (y-z) silhouette {:.2} m2, broadside (x-z) {:.2} m2, mass {:.0} kg", area(1, 2), area(0, 2), ShipHull::new().mass_kg());
     }
 
     #[test]

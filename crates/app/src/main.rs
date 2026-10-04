@@ -1307,6 +1307,8 @@ struct State {
     /// Simulated time the surface camera still owes, kept so it integrates
     /// whole steps and does not depend on where frame boundaries fell.
     surface_pending_seconds: f64,
+    /// Ocean-clock time the swimmer has been carried up to (NaN: not swimming).
+    swimmer_carry_time_seconds: f64,
     saved_orbit_camera_pose: Option<(glam::DVec3, glam::DVec3, f64)>,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
@@ -1792,6 +1794,7 @@ impl State {
             surface_physics: surface_camera::SurfacePhysicsState::default(),
             surface_jump_requested: false,
             surface_pending_seconds: 0.0,
+            swimmer_carry_time_seconds: f64::NAN,
             saved_orbit_camera_pose: None,
             camera_buffer,
             camera_bind_group,
@@ -2450,6 +2453,38 @@ impl State {
         );
     }
 
+    /// An open-ocean swimmer is carried round the waves' orbital loop, as the
+    /// ship is: by the water's own horizontal velocity, not just its height.
+    /// Stepped on the ocean's clock exactly like the ship (whole fixed steps,
+    /// bounded backlog), so it stops when time stops and runs at the same rate
+    /// as the waves at any time speed. Zero on the Gerstner sea.
+    fn carry_swimmer(&mut self, ocean_time_seconds: f64) {
+        let radial = self.flight_local_position.normalize();
+        let altitude = self.flight_local_position.length() - planet::planet_radius_meters();
+        let swimming = self
+            .surface_environment_at(radial, altitude, ocean_time_seconds)
+            .is_some_and(|environment| environment.open_ocean);
+        if !swimming || !self.swimmer_carry_time_seconds.is_finite() {
+            self.swimmer_carry_time_seconds = ocean_time_seconds;
+            return;
+        }
+        let mut time = self.swimmer_carry_time_seconds.min(ocean_time_seconds);
+        if ocean_time_seconds - time > MAXIMUM_SHIP_BACKLOG_SECONDS {
+            time = ocean_time_seconds - MAXIMUM_SHIP_BACKLOG_SECONDS;
+        }
+        while time + ship::FIXED_STEP_SECONDS <= ocean_time_seconds {
+            time += ship::FIXED_STEP_SECONDS;
+            let before = self.flight_local_position.normalize();
+            let current = ocean::global_wave_horizontal_velocity(before, time);
+            self.flight_local_position =
+                carried_by_current(self.flight_local_position, current, ship::FIXED_STEP_SECONDS);
+            let after = self.flight_local_position.normalize();
+            self.flight_local_tangent =
+                transport_flight_tangent(self.flight_local_tangent, before, after);
+        }
+        self.swimmer_carry_time_seconds = time;
+    }
+
     fn advance_surface_camera(
         &mut self,
         delta_seconds: f64,
@@ -2462,6 +2497,7 @@ impl State {
         // one enormous catch-up.
         self.surface_pending_seconds = (self.surface_pending_seconds + delta_seconds.max(0.0))
             .min(SURFACE_CAMERA_MAX_BACKLOG_SECONDS);
+        self.carry_swimmer(ocean_time_seconds);
         let mut jump_requested = std::mem::take(&mut self.surface_jump_requested);
         self.flight_travel_direction = glam::DVec3::ZERO;
         self.flight_speed = FlightSpeedState::default();
@@ -2538,21 +2574,6 @@ impl State {
                     self.flight_travel_direction = movement_direction;
                     self.flight_speed.speed_meters_per_second = movement_speed;
                 }
-            }
-
-            // A swimmer is carried round the waves' orbital loop, as the ship is:
-            // the water's own horizontal velocity, not just its height. Without
-            // it the ship, which follows that velocity, swept back and forth past
-            // a camera that stayed put. Zero on the Gerstner sea.
-            if environment.open_ocean {
-                let before = self.flight_local_position.normalize();
-                let current =
-                    ocean::global_wave_horizontal_velocity(before, ocean_time_seconds);
-                self.flight_local_position =
-                    carried_by_current(self.flight_local_position, current, step_seconds);
-                let after = self.flight_local_position.normalize();
-                self.flight_local_tangent =
-                    transport_flight_tangent(self.flight_local_tangent, before, after);
             }
 
             let moved_radial = self.flight_local_position.normalize();
