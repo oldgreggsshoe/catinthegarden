@@ -12001,3 +12001,6 @@ See AGENTS.md. Sweep (240 s tracks, deck opening x gunport open fraction): at 0.
 
 ## 4 October - Water on deck and in the hull (visual)
 See AGENTS.md. Files: `ship.rs` (`update_deck_water`, `interior_water_plane`, `column_footprints`, `DECK_CELLS`, vertex `alpha`), `ship_model.rs` (`build_water`, `hatch_coaming_and_hold`, hatch cells skipped in the deck planking), `ship_render.rs` (`water_pipeline`, `update_water`), `ship.wgsl` (`fs_water`, `ship_shaded`), `main.rs upload_ship_transform` rebuilds the water mesh each frame (<= ~700 vertices). Live capture needed a debug hook that held the deck water up (removed): without one the deck drains in about 3 s, so a still of it needs a wave to wash it. Open: gunport water, inverted-hull interior, splashes where a wave breaks over the rail, bilge water audio, timing of the extra pass (not measured).
+
+## 4 October - Foundering latch
+`ShipBody::swamped_seconds`/`foundering` (ship.rs advance_step): deck share under the sea >= 90% for 3 s latches foundering; inflow is then at least capacity/20 s and drains stop. Tests: capsized hull founders and reaches the seabed; a 1 s swamping recovers. The breaking-limit test clears the latch and flood (it checks righting). Open: a way to refloat/reset (none; the latch is permanent), whether 3 s / 90% suits a hull that is only knocked down and rights itself in a gust.

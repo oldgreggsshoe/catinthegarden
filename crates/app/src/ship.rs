@@ -164,6 +164,15 @@ const DRAIN_PER_SECOND: f64 = 0.01;
 /// downhill, runs off over the side and through the freeing ports, and goes
 /// down the hatches. Depths are metres, cap at `DECK_WATER_MAX_METERS`.
 const DECK_WATER_MAX_METERS: f64 = 1.2 * SHIP_SCALE;
+/// The point of no return. A hull whose whole deck (this share of it) has been
+/// under the sea for this long -- knocked down on its side, capsized and
+/// floating inverted, or driven under -- founders: every opening is open to
+/// the sea and the air in it escapes, so it fills at a rate that fills the
+/// whole interior in `FOUNDERING_FILL_SECONDS` and nothing drains out again.
+/// Brief swamping by a wave does not count (`SWAMPED_LATCH_SECONDS`).
+const SWAMPED_DECK_SHARE: f64 = 0.9;
+const SWAMPED_LATCH_SECONDS: f64 = 3.0;
+const FOUNDERING_FILL_SECONDS: f64 = 20.0;
 const DECK_WASH_PER_SECOND: f64 = 8.0;
 const DECK_FLOW_PER_SECOND: f64 = 2.5;
 const DECK_OVERBOARD_PER_SECOND: f64 = 1.4;
@@ -447,6 +456,10 @@ pub struct ShipBody {
     /// The hardest downward speed (m/s) the hull has struck the seabed at
     /// since `take_seabed_impact` last read it.
     seabed_impact_speed: f64,
+    /// Seconds the deck has been (almost) wholly under the sea, and whether
+    /// that has gone on long enough for the hull to founder, for good.
+    pub swamped_seconds: f64,
+    pub foundering: bool,
     /// Depth (m) of water standing on the deck over each buoyancy column,
     /// station by station from the transom, lane by lane across the beam.
     pub deck_water_meters: [f32; DECK_CELLS],
@@ -476,6 +489,8 @@ impl ShipBody {
             seabed_altitude_meters: f64::NEG_INFINITY,
             on_seabed: false,
             seabed_impact_speed: 0.0,
+            swamped_seconds: 0.0,
+            foundering: false,
             deck_water_meters: [0.0; DECK_CELLS],
         }
     }
@@ -639,6 +654,21 @@ impl ShipBody {
             torque += centroid_offset.cross(column_force);
         }
 
+        // The point of no return: a deck wholly under the sea for long enough.
+        let swamped = deck_heads.iter().filter(|head| **head > 0.0).count() as f64
+            >= SWAMPED_DECK_SHARE * DECK_CELLS as f64;
+        self.swamped_seconds = if swamped {
+            self.swamped_seconds + step_seconds
+        } else {
+            (self.swamped_seconds - 0.5 * step_seconds).max(0.0)
+        };
+        if self.swamped_seconds >= SWAMPED_LATCH_SECONDS {
+            self.foundering = true;
+        }
+        if self.foundering {
+            inflow_kg_per_second = inflow_kg_per_second
+                .max(hull.flood_capacity_kg / FOUNDERING_FILL_SECONDS);
+        }
         // Water in, or drained out while no opening is under the sea.
         if inflow_kg_per_second > 0.0 {
             self.flood_kg += inflow_kg_per_second * step_seconds;
@@ -1134,6 +1164,8 @@ mod tests {
             // This test is about righting, not flooding (a 12m sea over a 21m
             // hull floods it; see the floating-and-sinking tests below).
             body.flood_kg = 0.0;
+            body.foundering = false;
+            body.swamped_seconds = 0.0;
             peak_tilt_degrees = peak_tilt_degrees.max(body.tilt_radians().to_degrees());
             assert!(body.position.is_finite() && body.orientation.is_finite());
             // A hull driven near its roll period answers with more heel than
@@ -1163,6 +1195,9 @@ mod tests {
         );
         // The real proof of stability is that a minute of that sea leaves the
         // hull able to stand back up, rather than merely bounded while driven.
+        body.flood_kg = 0.0;
+        body.foundering = false;
+        body.swamped_seconds = 0.0;
         body.advance(&hull, 120.0, still_water(0.0));
         assert!(
             body.tilt_radians().to_degrees() < 1.0,
@@ -1433,6 +1468,37 @@ mod tests {
         assert!((normal.z - 30.0_f64.to_radians().cos()).abs() < 1.0e-6, "{normal:?}");
     }
 
+    #[test]
+    fn a_capsized_hull_with_its_deck_under_the_sea_founders_and_does_not_come_back() {
+        let (hull, mut body) = afloat();
+        // Turned turtle: the deck is under the water by the hull's draft.
+        body.orientation = glam::DQuat::from_axis_angle(body.forward(), std::f64::consts::PI)
+            * body.orientation;
+        body.seabed_altitude_meters = -60.0;
+        body.advance(&hull, 2.0, still_water(0.0));
+        assert!(!body.foundering, "latched after 2s");
+        body.advance(&hull, 60.0, still_water(0.0));
+        assert!(body.foundering);
+        assert!(
+            body.flood_kg > hull.maximum_buoyancy_kg() - hull.mass_kg(),
+            "{} kg aboard",
+            body.flood_kg
+        );
+        body.advance(&hull, 120.0, still_water(0.0));
+        assert!(body.on_seabed, "waterline {}m", body.waterline_altitude_meters(&hull));
+    }
+
+    #[test]
+    fn a_hull_swamped_for_a_moment_recovers() {
+        let (hull, mut body) = afloat();
+        // A sea over the whole deck for a second, then calm.
+        body.advance(&hull, 1.0, still_water(HULL_FREEBOARD_METERS + 2.0));
+        assert!(!body.foundering);
+        body.advance(&hull, 60.0, still_water(0.0));
+        assert!(!body.foundering);
+        assert!(body.flood_kg < 0.4 * hull.flood_capacity_kg());
+    }
+
     /// Instrument, not a regression: the ship's track on the FFT sea, stepped
     /// the way `advance_ship` steps it (one orbital-velocity query per step).
     /// `PLANET_OCEAN_FFT=1 cargo test --release -p planet-app ship_track --
@@ -1497,11 +1563,12 @@ mod tests {
             }
         }
         println!(
-            "flooded {:.1} t of a {:.1} t hull (can take {:.1} t; sinks past {:.1} t); on seabed: {}",
+            "flooded {:.1} t of a {:.1} t hull (can take {:.1} t; sinks past {:.1} t); foundering: {}; on seabed: {}",
             body.flood_kg / 1000.0,
             hull.mass_kg() / 1000.0,
             hull.flood_capacity_kg() / 1000.0,
             (hull.maximum_buoyancy_kg() - hull.mass_kg()) / 1000.0,
+            body.foundering,
             body.on_seabed,
         );
         let offset = body.position - origin;

@@ -433,13 +433,14 @@ fn water_aboard_text(
     flooded_tonnes: f64,
     sinking_tonnes: f64,
     on_seabed: bool,
+    foundering: bool,
 ) -> (String, egui::Color32) {
     let share = if sinking_tonnes > 0.0 {
         flooded_tonnes / sinking_tonnes
     } else {
         0.0
     };
-    let colour = if share >= 1.0 {
+    let colour = if share >= 1.0 || foundering {
         egui::Color32::from_rgb(255, 70, 60)
     } else if share >= 0.75 {
         egui::Color32::from_rgb(255, 150, 60)
@@ -450,6 +451,8 @@ fn water_aboard_text(
     };
     let label = if on_seabed {
         format!("{flooded_tonnes:.0}/{sinking_tonnes:.0}  SUNK")
+    } else if foundering {
+        format!("{flooded_tonnes:.0}/{sinking_tonnes:.0}  FOUNDERING")
     } else {
         format!("{flooded_tonnes:.0}/{sinking_tonnes:.0}")
     };
@@ -4059,11 +4062,12 @@ impl State {
                     self.ship_body.flood_kg / 1000.0,
                     (self.ship_hull.maximum_buoyancy_kg() - self.ship_hull.mass_kg()) / 1000.0,
                     self.ship_body.on_seabed,
+                    self.ship_body.foundering,
                 )
             });
         let full_output = self.egui_context.run_ui(raw_input, |ui| {
-            if let Some((flooded_tonnes, sinking_tonnes, on_seabed)) = water_aboard {
-                let (label, colour) = water_aboard_text(flooded_tonnes, sinking_tonnes, on_seabed);
+            if let Some((flooded_tonnes, sinking_tonnes, on_seabed, foundering)) = water_aboard {
+                let (label, colour) = water_aboard_text(flooded_tonnes, sinking_tonnes, on_seabed, foundering);
                 let context = ui.ctx().clone();
                 egui::Area::new(egui::Id::new("water_aboard"))
                     .anchor(egui::Align2::CENTER_TOP, [0.0, 10.0])
@@ -6803,13 +6807,16 @@ mod tests {
     fn the_water_aboard_counter_reads_flooded_over_sinking_and_warns_as_it_nears() {
         let limit = crate::ship::ShipHull::new();
         let sinking = (limit.maximum_buoyancy_kg() - limit.mass_kg()) / 1000.0;
-        let (label, colour) = super::water_aboard_text(124.4, sinking, false);
+        let (label, colour) = super::water_aboard_text(124.4, sinking, false, false);
         assert_eq!(label, format!("124/{sinking:.0}"));
         assert_eq!(colour, egui::Color32::from_rgb(255, 215, 90));
-        assert_eq!(super::water_aboard_text(140.0, sinking, false).1, egui::Color32::from_rgb(255, 150, 60));
-        assert_eq!(super::water_aboard_text(0.0, sinking, false).1, egui::Color32::WHITE);
-        assert_eq!(super::water_aboard_text(sinking, sinking, true).1, egui::Color32::from_rgb(255, 70, 60));
-        assert!(super::water_aboard_text(sinking, sinking, true).0.ends_with("SUNK"));
+        assert_eq!(super::water_aboard_text(140.0, sinking, false, false).1, egui::Color32::from_rgb(255, 150, 60));
+        assert_eq!(super::water_aboard_text(0.0, sinking, false, false).1, egui::Color32::WHITE);
+        assert_eq!(super::water_aboard_text(sinking, sinking, true, false).1, egui::Color32::from_rgb(255, 70, 60));
+        assert!(super::water_aboard_text(sinking, sinking, true, false).0.ends_with("SUNK"));
+        let (label, colour) = super::water_aboard_text(20.0, sinking, false, true);
+        assert!(label.ends_with("FOUNDERING"), "{label}");
+        assert_eq!(colour, egui::Color32::from_rgb(255, 70, 60));
     }
 
     #[test]
