@@ -182,9 +182,24 @@ pub const DECK_CELLS: usize = BUOYANCY_STATIONS * BUOYANCY_COLUMNS;
 /// horizontal velocity aims at the water's own plus this times the gap to where
 /// that water is drawn.
 const ANCHOR_GAIN_PER_SECOND: f64 = 1.5;
+
+/// `PLANET_SHIP_ANCHOR_GAIN` overrides `ANCHOR_GAIN_PER_SECOND` (tuning).
+fn anchor_gain() -> f64 {
+    static GAIN: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *GAIN.get_or_init(|| {
+        std::env::var("PLANET_SHIP_ANCHOR_GAIN")
+            .ok()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .unwrap_or(ANCHOR_GAIN_PER_SECOND)
+    })
+}
 /// Past this gap the hull has been moved some other way (aground, thrown), and
 /// the caller should re-seat the anchor rather than drag it back.
 pub const ANCHOR_MAXIMUM_GAP_METERS: f64 = 60.0;
+/// Drag coefficient of a fully submerged hull moving vertically through the
+/// water, on its plan area.
+const SUBMERGED_DRAG_COEFFICIENT: f64 = 1.0;
 const WAVE_DECAY_PER_METER: f64 = 2.0 * std::f64::consts::PI / 360.0;
 /// A hull on the bottom loses horizontal speed and spin to the seabed.
 const SEABED_FRICTION_PER_SECOND: f64 = 4.0;
@@ -657,11 +672,27 @@ impl ShipBody {
             let relative_vertical =
                 column_velocity.dot(column_direction) - sample.vertical_velocity_meters_per_second;
             let drag_fade = (immersion / DRAG_IMMERSION_FADE_METERS).min(1.0);
+            // The heave damping is a wave-making (radiation) damping: it needs
+            // the surface at the hull and dies away as the deck goes under, the
+            // way a sinking hull stops raising waves. What is left is ordinary
+            // drag, quadratic in speed, so a flooded hull falls at several m/s
+            // (about 3 for 45 t of excess weight) instead of the 0.8 m/s the
+            // linear damping alone allowed, which looked like hovering.
+            let submerged_deck = deck_heads[index];
+            let wave_making = (-submerged_deck / HULL_DRAFT_METERS).exp();
             column_force -= column_direction
                 * (HEAVE_DRAG_KG_PER_SQUARE_METER_SECOND
                     * column.plan_area_square_meters
                     * drag_fade
-                    * relative_vertical);
+                    * wave_making
+                    * relative_vertical
+                    + 0.5
+                        * SEAWATER_DENSITY_KG_PER_CUBIC_METER
+                        * SUBMERGED_DRAG_COEFFICIENT
+                        * column.plan_area_square_meters
+                        * (1.0 - wave_making)
+                        * relative_vertical.abs()
+                        * relative_vertical);
 
             force += column_force;
             torque += centroid_offset.cross(column_force);
@@ -700,7 +731,7 @@ impl ShipBody {
         let wetted = (submerged_volume / hull.displaced_volume_cubic_meters()).min(1.0);
         let current = if submerged_volume > 0.0 {
             let mean = water_horizontal / submerged_volume;
-            let anchor = self.anchor_gap_meters * ANCHOR_GAIN_PER_SECOND;
+            let anchor = self.anchor_gap_meters * anchor_gain();
             let target = mean + anchor;
             target - radial * target.dot(radial)
         } else {
@@ -1561,6 +1592,22 @@ mod tests {
         assert!(body.linear_velocity.dot(east).abs() < 0.2);
     }
 
+    #[test]
+    #[ignore]
+    fn sinking_speed_probe() {
+        let (hull, mut body) = afloat();
+        body.flood_kg = hull.flood_capacity_kg();
+        body.foundering = true;
+        body.seabed_altitude_meters = -250.0;
+        for second in 0..400 {
+            body.advance(&hull, 1.0, still_water(0.0));
+            body.flood_kg = hull.flood_capacity_kg();
+            if second % 20 == 0 {
+                println!("t={second:3} altitude {:7.1} m  speed {:5.2} m/s  seabed {}", body.waterline_altitude_meters(&hull), body.linear_velocity.dot(body.position.normalize()), body.on_seabed);
+            }
+        }
+    }
+
     /// Instrument, not a regression: the ship's track on the FFT sea, stepped
     /// the way `advance_ship` steps it (one orbital-velocity query per step).
     /// `PLANET_OCEAN_FFT=1 cargo test --release -p planet-app ship_track --
@@ -1590,7 +1637,11 @@ mod tests {
             // As `advance_ship`: ride the water at the label the hull started on.
             let direction = body.position.normalize();
             let label = *held_label.get_or_insert_with(|| ocean::global_wave_label_meters(direction, elapsed));
-            let (water_horizontal, gap) = ocean::global_wave_follow_label(label, direction, elapsed);
+            let (mut water_horizontal, mut gap) = ocean::global_wave_follow_label(label, direction, elapsed);
+            if std::env::var("PLANET_SHIP_NO_ANCHOR").is_ok() {
+                water_horizontal = ocean::global_wave_horizontal_velocity(direction, elapsed);
+                gap = DVec3::ZERO;
+            }
             body.anchor_gap_meters = gap;
             let time = elapsed;
             body.seabed_altitude_meters = -250.0;

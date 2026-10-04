@@ -952,23 +952,31 @@ impl CpuSurface {
         }
         let scales = [1.0, 1.0, swell_height_meters(storm_intensity) as f64];
         let cascades = self.cascades();
-        let slots: Vec<_> = cascades.iter().map(|cascade| cascade.slot(key)).collect();
-        // The sea's horizontal displacement D at this label, `offset` seconds
-        // from the query time.
-        let displacement = |offset: f64| {
+        let slots_at = |key: i64| {
+            cascades.iter().map(|cascade| cascade.slot(key)).collect::<Vec<_>>()
+        };
+        // The sea's horizontal displacement D at this label, from the grids of
+        // one lattice step, `delta` seconds past it.
+        let displacement = |slots: &[std::sync::Arc<SlotData>], delta: f64| {
             let bands: [FieldSample; 3] = std::array::from_fn(|i| {
                 let mut band = FieldSample::default();
                 band.add_scaled(
-                    &sample_slot(&slots[i], cascades[i].tile_meters, label, delta + offset),
+                    &sample_slot(&slots[i], cascades[i].tile_meters, label, delta),
                     scales[i],
                 );
                 band
             });
             limited_chop(&bands, choppiness() as f64, CHOP_STEEPNESS_BUDGET).displacement
         };
-        const SPAN: f64 = 0.025;
-        let (before, now, after) = (displacement(-SPAN), displacement(0.0), displacement(SPAN));
-        let rate = [-(after[0] - before[0]) / (2.0 * SPAN), -(after[1] - before[1]) / (2.0 * SPAN)];
+        let now_slots = slots_at(key);
+        let now = displacement(&now_slots, delta);
+        // Its rate across the lattice step, as `horizontal_velocity` takes it
+        // (the grids only advance the height by velocity within a step, not D).
+        let (here_key, next_key) = (displacement(&now_slots, 0.0), displacement(&slots_at(key + 1), 0.0));
+        let rate = [
+            -(next_key[0] - here_key[0]) / LATTICE_SECONDS,
+            -(next_key[1] - here_key[1]) / LATTICE_SECONDS,
+        ];
         // The drawn surface is label - D.
         let drawn = [label[0] - now[0], label[1] - now[1]];
         let here = [radius_meters * dot(u, direction), radius_meters * dot(v, direction)];
