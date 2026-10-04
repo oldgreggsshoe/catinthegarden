@@ -703,7 +703,7 @@ impl ShipBody {
         }
         // Downhill in the world: between lanes of a station and between
         // neighbouring stations, by the difference in surface height.
-        let mut flow = |from: usize, to: usize, depth: &mut [f64; DECK_CELLS]| {
+        let flow = |from: usize, to: usize, depth: &mut [f64; DECK_CELLS]| {
             let surface_difference = (altitudes[from] + depth[from]) - (altitudes[to] + depth[to]);
             let amount = DECK_FLOW_PER_SECOND * surface_difference * step_seconds;
             let amount = if amount > 0.0 {

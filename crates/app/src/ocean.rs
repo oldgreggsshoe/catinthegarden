@@ -707,24 +707,6 @@ static SEA_STATE_MODE: std::sync::OnceLock<SeaStateMode> = std::sync::OnceLock::
 static APPROACH_LOCAL_FACTOR: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(1.0_f32.to_bits());
 
-/// A fixed footprint around the camera's starting point. The middle 2.5 km is
-/// fully stormy and the next 2.5 km tapers smoothly to the ordinary weather.
-const APPROACH_FULL_RADIUS_METERS: f64 = 2_500.0;
-const APPROACH_OUTER_RADIUS_METERS: f64 = 5_000.0;
-
-pub fn approaching_storm_weight(centre: DVec3, position: DVec3) -> f32 {
-    let angle = centre
-        .normalize()
-        .dot(position.normalize())
-        .clamp(-1.0, 1.0)
-        .acos();
-    let distance = angle * planet_radius_meters();
-    let t = ((distance - APPROACH_FULL_RADIUS_METERS)
-        / (APPROACH_OUTER_RADIUS_METERS - APPROACH_FULL_RADIUS_METERS))
-        .clamp(0.0, 1.0);
-    (1.0 - t * t * (3.0 - 2.0 * t)) as f32
-}
-
 pub fn set_approaching_storm_weight(weight: f32) {
     APPROACH_LOCAL_FACTOR.store(
         weight.clamp(0.0, 1.0).to_bits(),
@@ -1569,22 +1551,6 @@ mod tests {
         global_wave_height_meters, global_wave_vertical_velocity_meters_per_second,
         maximum_wave_height_meters, wave_height_stats,
     };
-
-    #[test]
-    fn an_approaching_storm_can_be_left_and_reentered_on_land_or_sea() {
-        let centre = DVec3::X;
-        let radius = crate::planet::planet_radius_meters();
-        let point = |meters: f64| {
-            glam::DQuat::from_axis_angle(DVec3::Z, meters / radius).mul_vec3(centre)
-        };
-        assert_eq!(super::approaching_storm_weight(centre, centre), 1.0);
-        assert_eq!(super::approaching_storm_weight(centre, point(2_500.0)), 1.0);
-        let edge = super::approaching_storm_weight(centre, point(3_750.0));
-        assert!((edge - 0.5).abs() < 0.001, "{edge}");
-        assert_eq!(super::approaching_storm_weight(centre, point(5_000.0)), 0.0);
-        assert_eq!(super::approaching_storm_weight(centre, point(10_000.0)), 0.0);
-        assert_eq!(super::approaching_storm_weight(centre, centre), 1.0);
-    }
 
     #[test]
     fn fetch_uses_upwind_land_and_is_bounded_without_loading_tiles() {
