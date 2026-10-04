@@ -5650,7 +5650,7 @@ mod tests {
         assert!(optics.contains("ocean_water_to_air(view_ray, normal_view)"));
         assert!(optics.contains("physical_camera_sky_radiance(normalize(refraction.xyz))"));
         assert!(optics.contains("ocean_underside_reflection_with_skylight("));
-        assert!(optics.contains("ocean_underside_with_foam(clear_interface, skylight, storm_foam)"));
+        assert!(optics.contains("ocean_underside_with_foam(clear_interface, skylight, max(storm_foam, aeration))"));
         // A storm greys the sky seen through the window and spreads the foam.
         assert!(optics.contains("storm_overcast_colour(physical_camera_sky_radiance(up_view))"));
         assert!(optics.contains("let overcast_grey = vec3<f32>("));

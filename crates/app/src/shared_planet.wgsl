@@ -784,7 +784,16 @@ const OCEAN_UNDERSIDE_SKYLIGHT_BLEND: f32 = 0.25;
 // Aerated crests are a diffuse layer, not a clear water-air interface. From
 // below they replace the directional sky/reflection with softer, paler light.
 const OCEAN_UNDERSIDE_FOAM_NEUTRALISATION: f32 = 0.55;
-const OCEAN_UNDERSIDE_FOAM_RADIANCE_SCALE: f32 = 0.80;
+// Seen against the sky from below, aerated water is the dark thing: it blocks
+// the bright window and returns only a dim share of the skylight. (It was 0.80,
+// pale against everything.)
+const OCEAN_UNDERSIDE_FOAM_RADIANCE_SCALE: f32 = 0.30;
+// Bubble clouds trapped under a stormy surface: patches of aeration with this
+// noise scale (metres) that drift with the sea, reaching this share of the way
+// to solid foam at the thickest of a full storm.
+const STORM_AERATION_SCALE_METERS: f32 = 5.0;
+const STORM_AERATION_DRIFT_METERS_PER_SECOND: f32 = 0.35;
+const STORM_AERATION_STRENGTH: f32 = 0.85;
 
 // Whitecaps. A crest that is steep enough spills and goes white wherever it is,
 // with no shore involved -- which is the whole difference from the surf above,
@@ -4344,7 +4353,24 @@ fn ocean_underside_colour(
     // And far more of it is whitewater and bubbles: foam seen from beneath, the
     // same coverage as the top face but spread wider as the storm builds.
     let storm_foam = clamp(foam * (1.0 + STORM_UNDERSIDE_FOAM_GAIN * storm), 0.0, 1.0);
-    return ocean_underside_with_foam(clear_interface, skylight, storm_foam);
+    // Plus the bubble clouds under a storm's surface, fixed to the sea (the
+    // tangent-plane position, as the water swirl uses), drifting slowly.
+    var aeration = 0.0;
+    if storm > 0.0 {
+        let view = camera_relative_view_position;
+        let planet_offset = view.x * camera.camera_right.xyz
+            + view.y * camera.camera_up.xyz
+            - view.z * camera.camera_forward.xyz;
+        let local = vec2<f32>(
+            dot(planet_offset, ocean_fft_view.axis_u.xyz),
+            dot(planet_offset, ocean_fft_view.axis_v.xyz),
+        );
+        let drift = vec2<f32>(0.6, 0.8) * (STORM_AERATION_DRIFT_METERS_PER_SECOND * camera.projection.z);
+        let p = (ocean_fft_view.second_order.zw + local + drift) / STORM_AERATION_SCALE_METERS;
+        let cloud = smoothstep(0.42, 0.78, ocean_swirl_fbm(p, 31u));
+        aeration = storm * STORM_AERATION_STRENGTH * cloud;
+    }
+    return ocean_underside_with_foam(clear_interface, skylight, max(storm_foam, aeration));
 }
 
 // Sea of Thieves-style water shading (FFT ocean only), after Rare's SIGGRAPH
