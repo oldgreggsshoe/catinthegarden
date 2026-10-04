@@ -17,8 +17,8 @@
 use glam::DVec3;
 
 use crate::ship::{
-    HULL_LENGTH_METERS, SHIP_SCALE, ShipVertex, half_beam_meters, keel_depth_meters, push_box,
-    push_quad, push_triangle, sheer_height_meters,
+    DECK_CELLS, HULL_LENGTH_METERS, SHIP_SCALE, ShipBody, ShipHull, ShipVertex, half_beam_meters,
+    keel_depth_meters, push_box, push_quad, push_triangle, sheer_height_meters,
 };
 
 const S: f64 = SHIP_SCALE;
@@ -73,6 +73,38 @@ const BRIDGE_EYE_HEIGHT: f64 = 4.0;
 const QUARTERDECK_RAISE: f64 = 2.4;
 const POOP_RAISE: f64 = 4.6;
 const FORECASTLE_RAISE: f64 = 2.4;
+
+/// The main hatch is a hole in the deck planking: two hull segments long and
+/// two planks wide, with a coaming round it and a dark hold below, where the
+/// water inside the hull shows.
+const HATCH_FIRST_SEGMENT: usize = 9;
+const HATCH_SEGMENTS: usize = 2;
+const HATCH_PLANKS: std::ops::Range<usize> = 3..5;
+const PLANKS: usize = 8;
+/// Floor of the hold under the hatch, and height of the coaming, at design
+/// size.
+const HATCH_FLOOR_Z: f64 = -2.4;
+const COAMING_HEIGHT: f64 = 0.3;
+
+/// The hatch's four corners on the deck, ordered round the rim:
+/// (x, y, deck z).
+fn hatch_corners() -> [DVec3; 4] {
+    let first = station_t(HATCH_FIRST_SEGMENT);
+    let last = station_t(HATCH_FIRST_SEGMENT + HATCH_SEGMENTS);
+    let half = |t: f64| {
+        let f = -SIDE_INNER + 2.0 * SIDE_INNER * HATCH_PLANKS.end as f64 / PLANKS as f64;
+        f * half_beam_meters(t)
+    };
+    let (x0, x1) = (station_x(first), station_x(last));
+    let (w0, w1) = (half(first), half(last));
+    let (z0, z1) = (sheer_height_meters(first), sheer_height_meters(last));
+    [
+        DVec3::new(x0, w0, z0),
+        DVec3::new(x1, w1, z1),
+        DVec3::new(x1, -w1, z1),
+        DVec3::new(x0, -w0, z0),
+    ]
+}
 
 /// Raised deck height (design metres) over hull segment `i`: the poop and
 /// quarterdeck aft, the forecastle forward, the waist level between.
@@ -307,8 +339,11 @@ fn build_hull(v: &mut Vec<ShipVertex>) {
                 -hint,
             );
         }
-        const PLANKS: usize = 8;
+        let in_hatch_run = (HATCH_FIRST_SEGMENT..HATCH_FIRST_SEGMENT + HATCH_SEGMENTS).contains(&segment);
         for plank in 0..PLANKS {
+            if in_hatch_run && HATCH_PLANKS.contains(&plank) {
+                continue;
+            }
             let (f0, f1) = (
                 -SIDE_INNER + 2.0 * SIDE_INNER * plank as f64 / PLANKS as f64,
                 -SIDE_INNER + 2.0 * SIDE_INNER * (plank + 1) as f64 / PLANKS as f64,
@@ -485,7 +520,7 @@ fn stem_beakhead_and_rudder(v: &mut Vec<ShipVertex>) {
 fn deck_furniture(v: &mut Vec<ShipVertex>) {
     let waist = deck_z(5.0 * S);
     // Main hatch with its grating, a capstan, a longboat chocked on the waist.
-    push_box(v, p(-1.5, 0.0, 0.0) + DVec3::new(0.0, 0.0, waist + 0.2 * S), p(1.6, 1.4, 0.2), DARK_OPENING);
+    hatch_coaming_and_hold(v);
     prism(v, DVec3::new(6.0 * S, 0.0, waist), DVec3::new(6.0 * S, 0.0, waist + 1.4 * S), 0.8 * S, 0.7 * S, 8, WOOD, true);
     let boat_z = deck_z(7.5 * S);
     push_box(v, p(7.5, 0.0, 0.0) + DVec3::new(0.0, 0.0, boat_z + 0.7 * S), p(3.2, 1.3, 0.7), TOPSIDE);
@@ -494,6 +529,25 @@ fn deck_furniture(v: &mut Vec<ShipVertex>) {
     let poop = deck_z(-15.5 * S) + POOP_RAISE * S;
     push_box(v, p(-15.5, -1.6, 0.0) + DVec3::new(0.0, 0.0, poop + 0.6 * S), p(0.6, 0.6, 0.6), WOOD);
     push_box(v, p(-15.5, -1.6, 0.0) + DVec3::new(0.0, 0.0, poop + 1.35 * S), p(0.35, 0.35, 0.15), GOLD);
+}
+
+/// Coaming above the hatch, pit walls and a dark floor below it.
+fn hatch_coaming_and_hold(v: &mut Vec<ShipVertex>) {
+    let corners = hatch_corners();
+    let rise = DVec3::Z * COAMING_HEIGHT * S;
+    let centre = (corners[0] + corners[1] + corners[2] + corners[3]) / 4.0;
+    let floor = |c: DVec3| DVec3::new(c.x, c.y, HATCH_FLOOR_Z * S);
+    for edge in 0..4 {
+        let (a, b) = (corners[edge], corners[(edge + 1) % 4]);
+        let outward = DVec3::new((a.x + b.x) * 0.5 - centre.x, (a.y + b.y) * 0.5 - centre.y, 0.0);
+        // Coaming outside face, and the pit wall facing in.
+        quad_facing(v, a, b, b + rise, a + rise, DECK_B, outward);
+        quad_facing(v, a + rise, b + rise, floor(b), floor(a), TOPSIDE_DARK, -outward);
+        // The rim on top, 0.12m wide.
+        let inset = |c: DVec3| c + rise - (DVec3::new(c.x - centre.x, c.y - centre.y, 0.0).normalize()) * 0.12 * S;
+        quad_facing(v, a + rise, b + rise, inset(b), inset(a), RAIL_CAP, DVec3::Z);
+    }
+    quad_facing(v, floor(corners[0]), floor(corners[1]), floor(corners[2]), floor(corners[3]), DARK_OPENING, DVec3::Z);
 }
 
 fn stern_details(v: &mut Vec<ShipVertex>) {
@@ -669,5 +723,140 @@ fn stays_and_pennants(v: &mut Vec<ShipVertex>) {
     for mast in MASTS {
         let (x, z) = (mast.x, mast.top);
         triangle_both_sides(v, p(x, 0.0, z), p(x, 0.0, z - 1.3), p(x - 6.0, 0.0, z - 0.65), RED, DVec3::Y);
+    }
+}
+
+const WATER_TINT: [f32; 3] = [0.05, 0.20, 0.26];
+const SPRAY_TINT: [f32; 3] = [0.72, 0.86, 0.92];
+
+fn water_vertex(position: DVec3, normal: DVec3, colour: [f32; 3], alpha: f32) -> ShipVertex {
+    ShipVertex {
+        position: position.as_vec3().to_array(),
+        normal: normal.normalize().as_vec3().to_array(),
+        colour,
+        alpha,
+    }
+}
+
+fn push_water_quad(
+    vertices: &mut Vec<ShipVertex>,
+    corners: [DVec3; 4],
+    normal: DVec3,
+    colour: [f32; 3],
+    alphas: [f32; 4],
+) {
+    for index in [0, 1, 2, 0, 2, 3] {
+        vertices.push(water_vertex(corners[index], normal, colour, alphas[index]));
+    }
+}
+
+/// The translucent water on and in the ship, rebuilt every frame from its
+/// state: the sheet standing on the open deck (running downhill, depth
+/// following the washes), a thin streak off the side where it runs overboard,
+/// and the floodwater's level seen down the hatch. Ship-local metres,
+/// camera-relative upload by the ship renderer; drawn double-sided, blended.
+pub fn build_water(body: &ShipBody, hull: &ShipHull) -> Vec<ShipVertex> {
+    let mut vertices = Vec::new();
+    let footprints = hull.column_footprints();
+    for (index, (keel, length, width)) in footprints.iter().enumerate().take(DECK_CELLS) {
+        let depth = f64::from(body.deck_water_meters[index]);
+        if depth < 0.004 {
+            continue;
+        }
+        let t = (keel.x / (0.5 * HULL_LENGTH_METERS)).clamp(-1.0, 1.0);
+        let segment = (((t + 1.0) * 0.5 * SEGMENTS as f64) as usize).min(SEGMENTS - 1);
+        let half_beam = half_beam_meters(t);
+        let deck = sheer_height_meters(t);
+        let (x0, x1) = (keel.x - 0.5 * length, keel.x + 0.5 * length);
+        // Sheets lie on the open waist; the raised decks run theirs off.
+        if raise(segment) == 0.0 {
+            let lane_lo = (keel.y - 0.5 * width).max(-SIDE_INNER * half_beam);
+            let lane_hi = (keel.y + 0.5 * width).min(SIDE_INNER * half_beam);
+            if lane_lo < lane_hi {
+                let z = deck + depth;
+                let alpha = (0.30 + 1.2 * depth / S).clamp(0.30, 0.78) as f32;
+                push_water_quad(
+                    &mut vertices,
+                    [
+                        DVec3::new(x0, lane_lo, z),
+                        DVec3::new(x1, lane_lo, z),
+                        DVec3::new(x1, lane_hi, z),
+                        DVec3::new(x0, lane_hi, z),
+                    ],
+                    DVec3::Z,
+                    WATER_TINT,
+                    [alpha; 4],
+                );
+            }
+        }
+        // Running off over the side: a streak down the planking from the
+        // outer lanes, fading as it falls.
+        let outer = if index % 5 == 0 {
+            Some(-1.0)
+        } else if index % 5 == 4 {
+            Some(1.0)
+        } else {
+            None
+        };
+        if let Some(side) = outer {
+            if depth > 0.01 {
+                let y = side * (SIDE_OUTER * half_beam + 0.006);
+                let fall = 0.45 * S * (0.4 + (depth / (0.15 * S)).min(1.0));
+                let alpha = (0.25 + 1.5 * depth / S).clamp(0.25, 0.6) as f32;
+                push_water_quad(
+                    &mut vertices,
+                    [
+                        DVec3::new(x0, y, deck),
+                        DVec3::new(x1, y, deck),
+                        DVec3::new(x1, y, deck - fall),
+                        DVec3::new(x0, y, deck - fall),
+                    ],
+                    DVec3::new(0.0, side, 0.0),
+                    SPRAY_TINT,
+                    [alpha, alpha, 0.0, 0.0],
+                );
+            }
+        }
+    }
+    // The floodwater's level in the hold, at the hatch: a plane kept level in
+    // the world however the hull heels, visible once it rises above the floor.
+    if let Some((normal, level)) = body.interior_water_plane(hull) {
+        if normal.z > 0.2 {
+            let corners = hatch_corners();
+            let floor = HATCH_FLOOR_Z * S;
+            let coaming_top = COAMING_HEIGHT * S;
+            let at = |c: DVec3| {
+                let z = (level - normal.x * c.x - normal.y * c.y) / normal.z;
+                DVec3::new(c.x, c.y, z.min(c.z + coaming_top))
+            };
+            let water = corners.map(at);
+            if water.iter().any(|c| c.z > floor + 0.01) {
+                let lifted = water.map(|c| DVec3::new(c.x, c.y, c.z.max(floor + 0.01)));
+                push_water_quad(&mut vertices, lifted, normal, WATER_TINT, [0.9; 4]);
+            }
+        }
+    }
+    vertices
+}
+
+#[cfg(test)]
+mod water_tests {
+    use super::*;
+
+    #[test]
+    fn dry_decks_draw_no_water_and_wet_decks_stay_in_the_hull() {
+        let hull = ShipHull::new();
+        let mut body = ShipBody::afloat_at(&hull, DVec3::X, DVec3::Y, 0.0);
+        assert!(build_water(&body, &hull).is_empty());
+        for cell in 0..DECK_CELLS {
+            body.deck_water_meters[cell] = 0.1;
+        }
+        body.flood_kg = 40_000.0;
+        let water = build_water(&body, &hull);
+        assert!(water.len() > 60 && water.len() < 1_000, "{} vertices", water.len());
+        for vertex in &water {
+            assert!((0.0..=1.0).contains(&vertex.alpha));
+            assert!(vertex.position[1].abs() <= 0.5 * crate::ship::HULL_BEAM_METERS as f32 + 0.05);
+        }
     }
 }

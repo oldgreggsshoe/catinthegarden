@@ -22,6 +22,8 @@ struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) colour: vec3<f32>,
+    // 1 for the solid hull; the water on and in the ship varies it.
+    @location(3) alpha: f32,
 }
 
 struct VertexOutput {
@@ -33,6 +35,7 @@ struct VertexOutput {
     // Where on the hull, relative to the camera in view axes: to tell which
     // part is under the waves, and where their caustics fall on it.
     @location(2) view_position: vec3<f32>,
+    @location(3) alpha: f32,
 }
 
 fn ship_to_planet(vector: vec3<f32>) -> vec3<f32> {
@@ -133,11 +136,27 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     output.normal = normalize(ship_to_planet(input.normal));
     output.colour = input.colour;
     output.view_position = view_position;
+    output.alpha = input.alpha;
     return output;
 }
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    return vec4<f32>(ship_shaded(input), 1.0);
+}
+
+// The water on and in the ship: lit and fogged like the hull, blended by its
+// own alpha, with the sky's sheen on the surface.
+@fragment
+fn fs_water(input: VertexOutput) -> @location(0) vec4<f32> {
+    let view_direction = normalize(input.view_position);
+    let normal = normalize(input.normal);
+    let sheen = pow(1.0 - abs(dot(normal, view_direction)), 3.0);
+    let base = ship_shaded(input);
+    return vec4<f32>(base + vec3<f32>(0.10, 0.14, 0.18) * sheen, clamp(input.alpha + 0.2 * sheen, 0.0, 1.0));
+}
+
+fn ship_shaded(input: VertexOutput) -> vec3<f32> {
     let sun_direction = normalize(camera.sun_direction.xyz);
     let normal = normalize(input.normal);
     let sun_lambert = max(dot(normal, sun_direction), 0.0);
@@ -162,5 +181,5 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         normalize(ship.up.xyz),
         local_view_altitude_meters(input.view_position),
     );
-    return vec4<f32>(mix(lit, fog.color, fog.amount), 1.0);
+    return mix(lit, fog.color, fog.amount);
 }

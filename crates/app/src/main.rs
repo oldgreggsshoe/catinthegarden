@@ -1716,6 +1716,16 @@ impl State {
                 .cross(glam::DVec3::Y),
             ocean::global_wave_height_meters(ship_direction, 0.0, SHIP_FALLBACK_DEPTH_METERS),
         );
+        // `PLANET_SHIP_START_FLOOD=<tonnes>` starts it already holding that much
+        // water, with the open deck awash, to look at the water on and in it.
+        if let Some(tonnes) = std::env::var("PLANET_SHIP_START_FLOOD")
+            .ok()
+            .and_then(|value| value.trim().parse::<f64>().ok())
+            .filter(|tonnes| tonnes.is_finite() && *tonnes > 0.0)
+        {
+            ship_body.flood_kg = (tonnes * 1000.0).min(ship_hull.flood_capacity_kg());
+            ship_body.deck_water_meters = [0.1 * ship::SHIP_SCALE as f32 * 2.0; ship::DECK_CELLS];
+        }
         // Start moving with the water it floats in. Left at rest, a hull set
         // down in a 5-20 m/s orbital current was whipped sideways and heeled
         // 30 degrees in the first seconds.
@@ -2967,13 +2977,21 @@ impl State {
         let hull_origin_local = self.ship_body.position
             + self.ship_body.orientation * -self.ship_hull.centre_of_mass_local();
         let camera_offset = hull_origin_local - camera_local;
+        let visible = camera_offset.length() < SHIP_VISIBLE_DISTANCE_METERS;
         self.ship_renderer.update(
             &self.queue,
             basis.world_to_view(camera_offset),
             glam::DMat3::from_quat(self.ship_body.orientation),
             self.ship_body.position.normalize(),
-            camera_offset.length() < SHIP_VISIBLE_DISTANCE_METERS,
+            visible,
         );
+        // The water on and in the hull, from its state.
+        let water = if visible {
+            ship_model::build_water(&self.ship_body, &self.ship_hull)
+        } else {
+            Vec::new()
+        };
+        self.ship_renderer.update_water(&self.queue, &water);
     }
 
 /// Eases the storm overcast toward the weather's storm strength at the

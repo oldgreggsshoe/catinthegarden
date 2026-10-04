@@ -29,8 +29,8 @@ struct ShipUniform {
 }
 
 impl ShipVertex {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 3] =
-        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3];
+    const ATTRIBUTES: [wgpu::VertexAttribute; 4] =
+        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32];
 
     fn layout() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
@@ -41,8 +41,15 @@ impl ShipVertex {
     }
 }
 
+/// Room for the water mesh (`ship_model::build_water`): 80 deck cells of two
+/// triangles, 32 overboard streaks, the hatch.
+const WATER_VERTEX_CAPACITY: usize = 1_536;
+
 pub struct ShipRenderer {
     pipeline: wgpu::RenderPipeline,
+    water_pipeline: wgpu::RenderPipeline,
+    water_buffer: wgpu::Buffer,
+    water_vertex_count: u32,
     vertex_buffer: wgpu::Buffer,
     vertex_count: u32,
     uniform_buffer: wgpu::Buffer,
@@ -145,13 +152,69 @@ impl ShipRenderer {
             cache: None,
         });
 
+        let water_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("ship water pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[ShipVertex::layout()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_water"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: hdr_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            // Sheets seen from above and below.
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Greater),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let water_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ship water vertices"),
+            size: (WATER_VERTEX_CAPACITY * size_of::<ShipVertex>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Self {
             pipeline,
+            water_pipeline,
+            water_buffer,
+            water_vertex_count: 0,
             vertex_buffer,
             vertex_count: mesh.len() as u32,
             uniform_buffer,
             bind_group,
             visible: false,
+        }
+    }
+
+    /// Uploads this frame's water on and in the ship (ship-local, like the
+    /// hull); empty clears it.
+    pub fn update_water(&mut self, queue: &wgpu::Queue, vertices: &[ShipVertex]) {
+        let count = vertices.len().min(WATER_VERTEX_CAPACITY);
+        self.water_vertex_count = count as u32;
+        if count > 0 {
+            queue.write_buffer(&self.water_buffer, 0, bytemuck::cast_slice(&vertices[..count]));
         }
     }
 
@@ -200,6 +263,15 @@ impl ShipRenderer {
         render_pass.set_bind_group(2, shared_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.draw(0..self.vertex_count, 0..1);
+        // The water on and in it, blended over the solid hull.
+        if self.water_vertex_count > 0 {
+            render_pass.set_pipeline(&self.water_pipeline);
+            render_pass.set_bind_group(0, camera_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.bind_group, &[]);
+            render_pass.set_bind_group(2, shared_bind_group, &[]);
+            render_pass.set_vertex_buffer(0, self.water_buffer.slice(..));
+            render_pass.draw(0..self.water_vertex_count, 0..1);
+        }
     }
 }
 

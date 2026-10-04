@@ -159,6 +159,16 @@ const DRAIN_PER_SECOND: f64 = 0.01;
 /// The waves' orbital motion, slope and heave die away with depth as
 /// exp(-k z), k = 2 pi / wavelength of the dominant 360m swell. A hull that
 /// has sunk must not be shaken by a surface sea it is no longer in.
+/// Water on the open deck (a visual state fed by waves that wash over it): how
+/// fast it rises toward the sea's head over the deck, runs between cells
+/// downhill, runs off over the side and through the freeing ports, and goes
+/// down the hatches. Depths are metres, cap at `DECK_WATER_MAX_METERS`.
+const DECK_WATER_MAX_METERS: f64 = 1.2 * SHIP_SCALE;
+const DECK_WASH_PER_SECOND: f64 = 8.0;
+const DECK_FLOW_PER_SECOND: f64 = 2.5;
+const DECK_OVERBOARD_PER_SECOND: f64 = 1.4;
+const DECK_END_OVERBOARD_PER_SECOND: f64 = 0.5;
+pub const DECK_CELLS: usize = BUOYANCY_STATIONS * BUOYANCY_COLUMNS;
 const WAVE_DECAY_PER_METER: f64 = 2.0 * std::f64::consts::PI / 360.0;
 /// A hull on the bottom loses horizontal speed and spin to the seabed.
 const SEABED_FRICTION_PER_SECOND: f64 = 4.0;
@@ -360,6 +370,23 @@ impl ShipHull {
         self.mass_kg
     }
 
+    /// Where each buoyancy column stands, for drawing water over it: its
+    /// keel-level centre in ship-local metres, and its plan length and width.
+    /// Indexed like `ShipBody::deck_water_meters`.
+    pub fn column_footprints(&self) -> Vec<(DVec3, f64, f64)> {
+        let length = HULL_LENGTH_METERS / BUOYANCY_STATIONS as f64;
+        self.columns
+            .iter()
+            .map(|column| {
+                (
+                    column.keel_local,
+                    length,
+                    column.plan_area_square_meters / length,
+                )
+            })
+            .collect()
+    }
+
     /// The most water the hull can take on.
     pub fn flood_capacity_kg(&self) -> f64 {
         self.flood_capacity_kg
@@ -420,6 +447,9 @@ pub struct ShipBody {
     /// The hardest downward speed (m/s) the hull has struck the seabed at
     /// since `take_seabed_impact` last read it.
     seabed_impact_speed: f64,
+    /// Depth (m) of water standing on the deck over each buoyancy column,
+    /// station by station from the transom, lane by lane across the beam.
+    pub deck_water_meters: [f32; DECK_CELLS],
 }
 
 impl ShipBody {
@@ -446,6 +476,7 @@ impl ShipBody {
             seabed_altitude_meters: f64::NEG_INFINITY,
             on_seabed: false,
             seabed_impact_speed: 0.0,
+            deck_water_meters: [0.0; DECK_CELLS],
         }
     }
 
@@ -517,12 +548,23 @@ impl ShipBody {
         let mut water_horizontal = DVec3::ZERO;
         let mut inflow_kg_per_second = 0.0;
 
-        for column in &hull.columns {
+        let mut deck_altitudes = [0.0_f64; DECK_CELLS];
+        let mut deck_heads = [0.0_f64; DECK_CELLS];
+        for (index, column) in hull.columns.iter().enumerate() {
             let keel_offset = rotation * (column.keel_local - hull.centre_of_mass_local);
             let keel_world = self.position + keel_offset;
             let column_direction = keel_world.normalize();
             let keel_altitude = keel_world.length() - planet_radius_meters();
             let mut sample = water(column_direction);
+            let deck_altitude = (keel_world + ship_up * column.height_meters).length()
+                - planet_radius_meters();
+            if let (Some(altitude), Some(head)) = (
+                deck_altitudes.get_mut(index),
+                deck_heads.get_mut(index),
+            ) {
+                *altitude = deck_altitude;
+                *head = (sample.height_meters - deck_altitude).max(0.0);
+            }
             let vertical_depth = sample.height_meters - keel_altitude;
             if vertical_depth <= 0.0 {
                 continue;
@@ -604,6 +646,7 @@ impl ShipBody {
             self.flood_kg -= self.flood_kg * DRAIN_PER_SECOND * step_seconds;
         }
         self.flood_kg = self.flood_kg.clamp(0.0, hull.flood_capacity_kg);
+        self.update_deck_water(&deck_altitudes, &deck_heads, step_seconds);
         self.linear_velocity += force / mass_kg * step_seconds;
         // Surge damping is horizontal only: vertical resistance already comes
         // from the columns, and damping it twice would sink the hull into a
@@ -640,6 +683,118 @@ impl ShipBody {
             self.orientation = (self.orientation + spin).normalize();
         }
         self.rest_on_seabed(hull, step_seconds);
+    }
+
+    /// Water on the deck: washed on by the sea over it, run downhill between
+    /// neighbouring cells, off over the side and the ends, and down the hatches.
+    fn update_deck_water(
+        &mut self,
+        altitudes: &[f64; DECK_CELLS],
+        heads: &[f64; DECK_CELLS],
+        step_seconds: f64,
+    ) {
+        let mut depth = self.deck_water_meters.map(f64::from);
+        let wash = 1.0 - (-DECK_WASH_PER_SECOND * step_seconds).exp();
+        for (depth, head) in depth.iter_mut().zip(heads) {
+            if *head > *depth {
+                *depth += (*head - *depth) * wash;
+            }
+            *depth = depth.min(DECK_WATER_MAX_METERS);
+        }
+        // Downhill in the world: between lanes of a station and between
+        // neighbouring stations, by the difference in surface height.
+        let mut flow = |from: usize, to: usize, depth: &mut [f64; DECK_CELLS]| {
+            let surface_difference = (altitudes[from] + depth[from]) - (altitudes[to] + depth[to]);
+            let amount = DECK_FLOW_PER_SECOND * surface_difference * step_seconds;
+            let amount = if amount > 0.0 {
+                amount.min(0.5 * depth[from])
+            } else {
+                amount.max(-0.5 * depth[to])
+            };
+            depth[from] -= amount;
+            depth[to] += amount;
+        };
+        for station in 0..BUOYANCY_STATIONS {
+            for lane in 0..BUOYANCY_COLUMNS {
+                let index = station * BUOYANCY_COLUMNS + lane;
+                if lane + 1 < BUOYANCY_COLUMNS {
+                    flow(index, index + 1, &mut depth);
+                }
+                if station + 1 < BUOYANCY_STATIONS {
+                    flow(index, index + BUOYANCY_COLUMNS, &mut depth);
+                }
+            }
+        }
+        for station in 0..BUOYANCY_STATIONS {
+            for lane in 0..BUOYANCY_COLUMNS {
+                let index = station * BUOYANCY_COLUMNS + lane;
+                let mut run_off = 0.0;
+                if lane == 0 || lane == BUOYANCY_COLUMNS - 1 {
+                    run_off += DECK_OVERBOARD_PER_SECOND;
+                }
+                if station == 0 || station == BUOYANCY_STATIONS - 1 {
+                    run_off += DECK_END_OVERBOARD_PER_SECOND;
+                }
+                depth[index] -= depth[index] * (run_off * step_seconds).min(1.0);
+                // And down the hatches, at the speed of the head over them.
+                let down = DECK_OPENING_FRACTION
+                    * OPENING_DISCHARGE_COEFFICIENT
+                    * (2.0 * GRAVITY_METERS_PER_SECOND_SQUARED * depth[index]).sqrt()
+                    * step_seconds;
+                depth[index] = (depth[index] - down).max(0.0);
+            }
+        }
+        for (stored, value) in self.deck_water_meters.iter_mut().zip(depth) {
+            *stored = if value > 1.0e-5 { value as f32 } else { 0.0 };
+        }
+    }
+
+    /// The level of the floodwater inside the hull as a plane in ship-local
+    /// axes: points `p` with `normal . p == offset`. Level in the world, not
+    /// in the hull (it stays flat as the hull heels), holding the volume of
+    /// `flood_kg` in the hull's floodable interior. `None` while dry.
+    pub fn interior_water_plane(&self, hull: &ShipHull) -> Option<(DVec3, f64)> {
+        if self.flood_kg <= 0.0 {
+            return None;
+        }
+        let normal = self.orientation.inverse() * self.position.normalize();
+        let wanted = self.flood_kg
+            / SEAWATER_DENSITY_KG_PER_CUBIC_METER
+            / FLOODABLE_VOLUME_FRACTION;
+        // Wet volume of the hull's columns below the plane `normal . p = level`.
+        let wet = |level: f64| -> f64 {
+            hull.columns
+                .iter()
+                .map(|column| {
+                    let bottom = normal.dot(column.keel_local);
+                    let top = bottom + normal.z * column.height_meters;
+                    let fraction = if (top - bottom).abs() < 1.0e-9 {
+                        if level >= bottom { 1.0 } else { 0.0 }
+                    } else if top > bottom {
+                        ((level - bottom) / (top - bottom)).clamp(0.0, 1.0)
+                    } else {
+                        ((level - top) / (bottom - top)).clamp(0.0, 1.0)
+                    };
+                    column.plan_area_square_meters * column.height_meters * fraction
+                })
+                .sum()
+        };
+        let (mut low, mut high) = (f64::MAX, f64::MIN);
+        for column in &hull.columns {
+            let bottom = normal.dot(column.keel_local);
+            let top = bottom + normal.z * column.height_meters;
+            low = low.min(bottom.min(top));
+            high = high.max(bottom.max(top));
+        }
+        for _ in 0..40 {
+            let middle = 0.5 * (low + high);
+            if wet(middle) < wanted {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        Some((normal, 0.5 * (low + high)))
     }
 
     /// A hull cannot go below the seabed: lift it back out, take the downward
@@ -687,7 +842,9 @@ pub struct ShipVertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
     pub colour: [f32; 3],
-    pub _padding: f32,
+    /// Opacity: 1 for the solid hull; the water mesh (`ship_model::build_water`)
+    /// varies it.
+    pub alpha: f32,
 }
 
 pub(crate) fn push_triangle(vertices: &mut Vec<ShipVertex>, a: DVec3, b: DVec3, c: DVec3, colour: [f32; 3]) {
@@ -701,7 +858,7 @@ pub(crate) fn push_triangle(vertices: &mut Vec<ShipVertex>, a: DVec3, b: DVec3, 
             position: point.as_vec3().to_array(),
             normal,
             colour,
-            _padding: 0.0,
+            alpha: 1.0,
         });
     }
 }
@@ -1216,6 +1373,64 @@ mod tests {
         let impact = body.take_seabed_impact();
         assert!(impact > 0.3, "landed at {impact} m/s");
         assert_eq!(body.take_seabed_impact(), 0.0);
+    }
+
+    #[test]
+    fn deck_water_washes_on_runs_downhill_and_drains_off() {
+        let (hull, mut body) = afloat();
+        assert_eq!(body.deck_water_meters, [0.0; super::DECK_CELLS]);
+        // A sea 0.3m over the deck washes it on.
+        let deck_over = HULL_FREEBOARD_METERS + 0.3;
+        body.advance(&hull, 0.5, still_water(deck_over));
+        let wet = body.deck_water_meters.iter().filter(|d| **d > 0.02).count();
+        assert!(wet > 20, "{wet} cells wet after the sea washed over");
+        assert!(body.deck_water_meters.iter().all(|d| f64::from(*d) <= 1.2 * SHIP_SCALE + 1.0e-6));
+        // Back in calm water it runs off over the side and the ends.
+        body.advance(&hull, 20.0, still_water(0.0));
+        let left: f32 = body.deck_water_meters.iter().sum();
+        assert!(left < 0.05, "{left} m of depth still on deck after 20s");
+    }
+
+    #[test]
+    fn a_heeled_deck_runs_its_water_to_the_low_side() {
+        let (hull, mut body) = afloat();
+        body.orientation = glam::DQuat::from_axis_angle(body.forward(), 15.0_f64.to_radians())
+            * body.orientation;
+        // Water on every cell, equal; the low lanes must end deeper than the
+        // high ones after it has run for a second.
+        for cell in &mut body.deck_water_meters {
+            *cell = 0.2;
+        }
+        body.advance(&hull, 1.0, still_water(-1.0));
+        let lane = |l: usize| -> f32 {
+            (0..16).map(|station| body.deck_water_meters[station * 5 + l]).sum()
+        };
+        let (a, b) = (lane(0), lane(4));
+        assert!((a - b).abs() > 0.05, "lanes {a} {b}: the water did not choose a side");
+    }
+
+    #[test]
+    fn the_floodwater_level_inside_holds_the_flooded_volume_and_rises_with_it() {
+        let (hull, mut body) = afloat();
+        assert!(body.interior_water_plane(&hull).is_none());
+        let level_for = |body: &mut ShipBody, flood: f64| {
+            body.flood_kg = flood;
+            let (normal, offset) = body.interior_water_plane(&hull).unwrap();
+            // Upright: the plane is level and its height is its offset.
+            assert!(normal.z > 0.999, "{normal:?}");
+            offset / normal.z
+        };
+        let a = level_for(&mut body, 10_000.0);
+        let b = level_for(&mut body, 60_000.0);
+        let c = level_for(&mut body, 160_000.0);
+        assert!(a < b && b < c, "{a} {b} {c}");
+        // All the interior is under the deck at the sink limit.
+        assert!(c < HULL_FREEBOARD_METERS * 1.45, "{c}");
+        // Heeled, the level stays flat in the world: in ship axes its normal tilts.
+        body.orientation = glam::DQuat::from_axis_angle(body.forward(), 30.0_f64.to_radians())
+            * body.orientation;
+        let (normal, _) = body.interior_water_plane(&hull).unwrap();
+        assert!((normal.z - 30.0_f64.to_radians().cos()).abs() < 1.0e-6, "{normal:?}");
     }
 
     /// Instrument, not a regression: the ship's track on the FFT sea, stepped
