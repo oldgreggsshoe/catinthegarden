@@ -546,7 +546,7 @@ pub(crate) fn shared_planet_shader_source() -> String {
     }
     retune_air_scale_heights(
         format!(
-            "{}\n{}\n{}\nconst OCEAN_FOAM_HISTORY_ENABLED: bool = {};\nconst OCEAN_FFT_ENABLED: bool = {};\nconst OCEAN_SWIRL_ENABLED: bool = {};\nconst OCEAN_SWIRL_SEED: u32 = {}u;\n{}",
+            "{}\n{}\n{}\nconst OCEAN_FOAM_HISTORY_ENABLED: bool = {};\nconst OCEAN_FFT_ENABLED: bool = {};\nconst OCEAN_SWIRL_ENABLED: bool = {};\nconst OCEAN_SWIRL_SEED: u32 = {}u;\nconst OCEAN_FFT_WIND_SPEED: f32 = {:?};\n{}",
             crate::body::wgsl_constants(),
             crate::ocean::wgsl_constants(),
             crate::gust::wgsl_source(),
@@ -554,6 +554,7 @@ pub(crate) fn shared_planet_shader_source() -> String {
             ocean_fft_enabled(),
             crate::ocean_fft::swirl_seed().is_some(),
             crate::ocean_fft::swirl_seed().unwrap_or(0),
+            crate::ocean_fft::wind_speed_from_environment(),
             shared
         ),
         1.0,

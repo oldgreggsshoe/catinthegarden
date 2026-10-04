@@ -4383,7 +4383,8 @@ fn ocean_underside_colour(
 // throughout, and down one wave face the top is ~25% brighter than the base.
 // Translucency brightens; it does not tint. Linear albedo in that hue, the
 // overall level calibrated against the deck-height replay.
-const OCEAN_SOT_WATER_ALBEDO: vec3<f32> = vec3<f32>(0.2, 0.2, 0.2);
+const OCEAN_SOT_WATER_ALBEDO: vec3<f32> = vec3<f32>(0.000, 0.01, 0.02);
+//const OCEAN_SOT_WATER_ALBEDO: vec3<f32> = vec3<f32>(0.2, 0.2, 0.2);
 //const OCEAN_SOT_WATER_ALBEDO: vec3<f32> = vec3<f32>(0.0018, 0.24, 0.30);
 // Body brightness gain for thin water (high on a wave).
 const OCEAN_SOT_THIN_BRIGHTENING: f32 = 0.9;
@@ -4540,6 +4541,28 @@ fn ocean_water_albedo_at(local: vec2<f32>) -> vec3<f32> {
     return ocean_storm_water_albedo(OCEAN_SOT_WATER_ALBEDO);
 }
 
+// Frosted water. The sea's mean-square slope grows with the wind (Cox & Munk:
+// 0.003 + 0.00512 W, W in m/s), and a rougher sea is not just a wider sun glint:
+// its reflection of the sky goes soft and low-contrast, its grazing reflectance
+// falls, and a pale haze of spray and microbubbles lifts over it. `frost` is 0
+// up to a fresh breeze and 1 in a gale (about 40 m/s), read from the FFT sea's
+// wind plus the gust at this pixel.
+const OCEAN_FROST_SLOPE_ONSET: f32 = 0.09;
+const OCEAN_FROST_SLOPE_FULL: f32 = 0.21;
+// Extra isotropic roughness a fully frosted sea adds to the sun glint, how far
+// the mirrored sky is pulled to its own average, how much grazing reflectance
+// is lost, and the pale haze (a share of the sky's light) at grazing angles.
+const OCEAN_FROST_ROUGHNESS: f32 = 0.22;
+const OCEAN_FROST_SKY_BLUR: f32 = 0.6;
+const OCEAN_FROST_FRESNEL_LOSS: f32 = 0.4;
+const OCEAN_FROST_HAZE: f32 = 0.35;
+
+fn ocean_frost() -> f32 {
+    let wind = OCEAN_FFT_WIND_SPEED * (1.0 + OCEAN_GUST_ROUGHEN * max(ocean_fft_gust, 0.0));
+    let mean_square_slope = 0.003 + 0.00512 * wind;
+    return smoothstep(OCEAN_FROST_SLOPE_ONSET, OCEAN_FROST_SLOPE_FULL, mean_square_slope);
+}
+
 fn ocean_lighting_sot(
     normal: vec3<f32>,
     crest_sharpness: f32,
@@ -4561,7 +4584,16 @@ fn ocean_lighting_sot(
         0.0,
     ).rgb);
     let facing = max(dot(normal_view, view_direction), 0.0);
-    let fresnel = vec3<f32>(0.02) + vec3<f32>(0.98) * pow(1.0 - facing, 5.0);
+    let frost = ocean_frost();
+    // A frosted sea reflects a softened sky, with less at grazing angles.
+    let mirrored_luminance = dot(reflected_color, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let reflected_color_frosted = mix(
+        reflected_color,
+        mix(reflected_color, vec3<f32>(mirrored_luminance), 0.5),
+        OCEAN_FROST_SKY_BLUR * frost,
+    );
+    let fresnel_clear = vec3<f32>(0.02) + vec3<f32>(0.98) * pow(1.0 - facing, 5.0);
+    let fresnel = fresnel_clear * (1.0 - OCEAN_FROST_FRESNEL_LOSS * frost);
     let daylight = max(max(sun_transmittance.x, sun_transmittance.y), sun_transmittance.z);
     let sun = sun_transmittance * (1.0 - STORM_SUN_BLOCK * storm_overcast());
     // Set by ocean_surface_fft for this pixel when swirling colours are on.
@@ -4583,7 +4615,12 @@ fn ocean_lighting_sot(
     let view_depth = mix(OCEAN_SOT_STEEP_VIEW_BRIGHTNESS, 1.0, smoothstep(0.1, 0.8, 1.0 - facing));
     let body = water_albedo * view_depth
         * (1.0 + OCEAN_SOT_THIN_BRIGHTENING * thin + 0.4 * peak);
-    let diffuse = body * ocean_sot_body_light(sun_transmittance, sky_diffuse);
+    let body_light = ocean_sot_body_light(sun_transmittance, sky_diffuse);
+    // Spray and microbubbles over a gale's surface, pale and strongest where
+    // the view is grazing.
+    let frost_haze = vec3<f32>(0.060, 0.066, 0.072) * body_light
+        * (OCEAN_FROST_HAZE * frost * (1.0 - facing) * (1.0 - facing));
+    let diffuse = body * body_light + frost_haze;
     let toward_sun = pow(max(dot(-view_direction, sun_direction_view), 0.0), 4.0);
     let transmission = water_albedo * sun
         * (OCEAN_SOT_TRANSMISSION * SURFACE_SUNLIGHT_SCALE) * toward_sun
@@ -4595,12 +4632,13 @@ fn ocean_lighting_sot(
     // old distance ramp. At 14m/s the total is ~0.07, as Cox-Munk measured.
     let roughness = min(
         sqrt(OCEAN_SOT_ROUGHNESS_NEAR * OCEAN_SOT_ROUGHNESS_NEAR
-            + ocean_fft_unresolved_slope_variance),
+            + ocean_fft_unresolved_slope_variance
+            + OCEAN_FROST_ROUGHNESS * OCEAN_FROST_ROUGHNESS * frost * frost),
         OCEAN_SOT_ROUGHNESS_MAX,
     );
     let specular = ocean_sot_specular(normal_view, view_direction, sun_direction_view, roughness);
     return diffuse + transmission
-        + reflected_color * fresnel * daylight * OCEAN_REFLECTION_SCALE
+        + reflected_color_frosted * fresnel * daylight * OCEAN_REFLECTION_SCALE
             * (1.0 - OCEAN_GUST_DULLING * ocean_fft_gust)
         + sun * specular * fresnel
             * (OCEAN_SUN_GLINT_SCALE * SURFACE_SUNLIGHT_SCALE);
