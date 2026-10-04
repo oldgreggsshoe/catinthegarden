@@ -459,6 +459,33 @@ fn water_aboard_text(
     (label, colour)
 }
 
+/// The seabed-clearance readout beside the water counter: metres from the
+/// hull's lowest point to the bottom (one decimal under 100 m, ">1000 m" past
+/// that or when the bottom is not known), amber near the bottom, red on it.
+fn seabed_clearance_text(clearance_meters: Option<f64>, on_seabed: bool) -> (String, egui::Color32) {
+    match clearance_meters {
+        None => ("--".to_owned(), egui::Color32::from_gray(190)),
+        Some(_) if on_seabed => ("ON SEABED".to_owned(), egui::Color32::from_rgb(255, 70, 60)),
+        Some(clearance) if clearance >= 1000.0 => (">1000 m".to_owned(), egui::Color32::WHITE),
+        Some(clearance) => {
+            let clearance = clearance.max(0.0);
+            let label = if clearance < 100.0 {
+                format!("{clearance:.1} m")
+            } else {
+                format!("{clearance:.0} m")
+            };
+            let colour = if clearance < 3.0 {
+                egui::Color32::from_rgb(255, 150, 60)
+            } else if clearance < 10.0 {
+                egui::Color32::from_rgb(255, 215, 90)
+            } else {
+                egui::Color32::WHITE
+            };
+            (label, colour)
+        }
+    }
+}
+
 /// What a hull on the seabed sounds like at distance `distance_meters`:
 /// (scrape level 0-1 from its sliding speed, tumble level 0-1 from its spin,
 /// impact gain 0-1 from the strike speed, zero if none). Sound carries far
@@ -2724,6 +2751,9 @@ impl State {
         // the remainder left on the clock for next frame. A partial final
         // substep made the trajectory depend on where the frame boundaries
         // fell, which is the thing time acceleration makes worst.
+        // The hull rests on the bottom if it sinks, and the clearance readout
+        // needs it even while time is stopped and no step runs.
+        self.ship_body.seabed_altitude_meters = -ship_depth_meters;
         if ocean_time_seconds - self.ship_sim_time_seconds > MAXIMUM_SHIP_BACKLOG_SECONDS {
             self.ship_sim_time_seconds = ocean_time_seconds - MAXIMUM_SHIP_BACKLOG_SECONDS;
         }
@@ -2737,8 +2767,6 @@ impl State {
                 self.ship_body.position.normalize(),
                 ocean_time_seconds,
             );
-            // The hull rests on the bottom if it sinks.
-            self.ship_body.seabed_altitude_meters = -ship_depth_meters;
             self.ship_body
                 .advance(&self.ship_hull, ship::FIXED_STEP_SECONDS, |direction| {
                     ship::WaterSample {
@@ -4063,11 +4091,13 @@ impl State {
                     (self.ship_hull.maximum_buoyancy_kg() - self.ship_hull.mass_kg()) / 1000.0,
                     self.ship_body.on_seabed,
                     self.ship_body.foundering,
+                    self.ship_body.seabed_clearance_meters(&self.ship_hull),
                 )
             });
         let full_output = self.egui_context.run_ui(raw_input, |ui| {
-            if let Some((flooded_tonnes, sinking_tonnes, on_seabed, foundering)) = water_aboard {
+            if let Some((flooded_tonnes, sinking_tonnes, on_seabed, foundering, clearance)) = water_aboard {
                 let (label, colour) = water_aboard_text(flooded_tonnes, sinking_tonnes, on_seabed, foundering);
+                let (clearance_label, clearance_colour) = seabed_clearance_text(clearance, on_seabed);
                 let context = ui.ctx().clone();
                 egui::Area::new(egui::Id::new("water_aboard"))
                     .anchor(egui::Align2::CENTER_TOP, [0.0, 10.0])
@@ -4078,19 +4108,33 @@ impl State {
                             .corner_radius(6.0)
                             .inner_margin(egui::Margin::symmetric(14, 6))
                             .show(ui, |ui| {
-                                ui.vertical_centered(|ui| {
-                                    ui.label(
-                                        egui::RichText::new("WATER ABOARD (tonnes)")
-                                            .size(11.0)
-                                            .color(egui::Color32::from_gray(190)),
-                                    );
-                                    ui.label(
-                                        egui::RichText::new(label)
-                                            .size(26.0)
-                                            .strong()
-                                            .color(colour),
-                                    );
-                                });
+                                // A grid, not nested centred layouts: those
+                                // claim all the width and height there is.
+                                egui::Grid::new("water_aboard_grid")
+                                    .spacing([26.0, 2.0])
+                                    .show(ui, |ui| {
+                                        let heading = |text: &str| {
+                                            egui::RichText::new(text)
+                                                .size(11.0)
+                                                .color(egui::Color32::from_gray(190))
+                                        };
+                                        ui.label(heading("WATER ABOARD (tonnes)"));
+                                        ui.label(heading("ABOVE SEABED"));
+                                        ui.end_row();
+                                        ui.label(
+                                            egui::RichText::new(label)
+                                                .size(26.0)
+                                                .strong()
+                                                .color(colour),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(clearance_label)
+                                                .size(26.0)
+                                                .strong()
+                                                .color(clearance_colour),
+                                        );
+                                        ui.end_row();
+                                    });
                             });
                     });
             }
@@ -6817,6 +6861,18 @@ mod tests {
         let (label, colour) = super::water_aboard_text(20.0, sinking, false, true);
         assert!(label.ends_with("FOUNDERING"), "{label}");
         assert_eq!(colour, egui::Color32::from_rgb(255, 70, 60));
+    }
+
+    #[test]
+    fn the_seabed_readout_shows_metres_above_the_bottom_and_warns_near_it() {
+        let text = |c, on| super::seabed_clearance_text(c, on);
+        assert_eq!(text(None, false).0, "--");
+        assert_eq!(text(Some(63.24), false), ("63.2 m".to_owned(), egui::Color32::WHITE));
+        assert_eq!(text(Some(250.4), false).0, "250 m");
+        assert_eq!(text(Some(4000.0), false).0, ">1000 m");
+        assert_eq!(text(Some(6.0), false).1, egui::Color32::from_rgb(255, 215, 90));
+        assert_eq!(text(Some(1.0), false).1, egui::Color32::from_rgb(255, 150, 60));
+        assert_eq!(text(Some(0.0), true), ("ON SEABED".to_owned(), egui::Color32::from_rgb(255, 70, 60)));
     }
 
     #[test]

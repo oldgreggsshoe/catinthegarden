@@ -827,16 +827,11 @@ impl ShipBody {
         Some((normal, 0.5 * (low + high)))
     }
 
-    /// A hull cannot go below the seabed: lift it back out, take the downward
-    /// speed, and let the bottom's friction slow its slide and spin.
-    fn rest_on_seabed(&mut self, hull: &ShipHull, step_seconds: f64) {
-        self.on_seabed = false;
-        if !self.seabed_altitude_meters.is_finite() {
-            return;
-        }
+    /// Altitude of the hull's lowest point (keel, or deck when turned over),
+    /// from the buoyancy columns' ends.
+    fn lowest_point_altitude_meters(&self, hull: &ShipHull) -> f64 {
         let rotation = DMat3::from_quat(self.orientation);
-        let lowest = hull
-            .columns
+        hull.columns
             .iter()
             .flat_map(|column| {
                 let keel = column.keel_local;
@@ -846,7 +841,25 @@ impl ShipBody {
                 (self.position + rotation * (point - hull.centre_of_mass_local)).length()
                     - planet_radius_meters()
             })
-            .fold(f64::MAX, f64::min);
+            .fold(f64::MAX, f64::min)
+    }
+
+    /// How far the hull's lowest point is above the seabed (m), or `None`
+    /// before the seabed is known.
+    pub fn seabed_clearance_meters(&self, hull: &ShipHull) -> Option<f64> {
+        self.seabed_altitude_meters
+            .is_finite()
+            .then(|| self.lowest_point_altitude_meters(hull) - self.seabed_altitude_meters)
+    }
+
+    /// A hull cannot go below the seabed: lift it back out, take the downward
+    /// speed, and let the bottom's friction slow its slide and spin.
+    fn rest_on_seabed(&mut self, hull: &ShipHull, step_seconds: f64) {
+        self.on_seabed = false;
+        if !self.seabed_altitude_meters.is_finite() {
+            return;
+        }
+        let lowest = self.lowest_point_altitude_meters(hull);
         if lowest >= self.seabed_altitude_meters {
             return;
         }
@@ -1382,6 +1395,24 @@ mod tests {
             waterline < -0.2 * HULL_FREEBOARD_METERS && waterline > -HULL_FREEBOARD_METERS,
             "waterline {waterline}m"
         );
+    }
+
+    #[test]
+    fn the_clearance_over_the_seabed_is_the_lowest_point_above_it() {
+        let (hull, mut body) = afloat();
+        assert_eq!(body.seabed_clearance_meters(&hull), None);
+        body.seabed_altitude_meters = -40.0;
+        // Afloat, the keel is a draft under the waterline.
+        let clearance = body.seabed_clearance_meters(&hull).unwrap();
+        assert!((clearance - (40.0 - HULL_DRAFT_METERS)).abs() < 0.2, "{clearance}");
+        // On the bottom it is zero.
+        body.flood_kg = 1.05 * (hull.maximum_buoyancy_kg() - hull.mass_kg());
+        for _ in 0..240 {
+            body.advance(&hull, 1.0, still_water(0.0));
+            body.flood_kg = 1.05 * (hull.maximum_buoyancy_kg() - hull.mass_kg());
+        }
+        assert!(body.on_seabed);
+        assert!(body.seabed_clearance_meters(&hull).unwrap().abs() < 0.05);
     }
 
     #[test]
