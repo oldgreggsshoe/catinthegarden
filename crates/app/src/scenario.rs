@@ -354,6 +354,7 @@ scenarios! {
     "wavedir_spawn" => "../scenarios/wavedir_spawn.json",
     "ocean_underside_shallows" => "../scenarios/ocean_underside_shallows.json",
     "ocean_underside_snell_window" => "../scenarios/ocean_underside_snell_window.json",
+    "ocean_storm_underside" => "../scenarios/ocean_storm_underside.json",
     "ocean_seafloor_hole" => "../scenarios/ocean_seafloor_hole.json",
     "wavedir_0" => "../scenarios/wavedir_0.json",
     "wavedir_1" => "../scenarios/wavedir_1.json",
@@ -1132,7 +1133,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 119);
+        assert_eq!(SCENARIO_NAMES.len(), 120);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));

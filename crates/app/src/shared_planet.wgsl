@@ -4240,6 +4240,13 @@ fn ocean_underside_reflection_with_skylight(
     return mix(reflected, skylight, OCEAN_UNDERSIDE_SKYLIGHT_BLEND);
 }
 
+// How much more the ripples bend the view up through a stormy surface, and how
+// much further the foam seen from beneath spreads, at full overcast.
+const STORM_UNDERSIDE_RIPPLE_GAIN: f32 = 3.0;
+const STORM_UNDERSIDE_FOAM_GAIN: f32 = 2.5;
+// The overcast sky through the window, as a share of the clear sky's luminance.
+const STORM_WINDOW_SKY_BRIGHTNESS: f32 = 1.5;
+
 fn ocean_underside_with_foam(
     clear_interface: vec3<f32>,
     skylight: vec3<f32>,
@@ -4282,7 +4289,13 @@ fn ocean_underside_colour(
     // window is only about 2.3m across there and the shortest wave in the
     // spectrum is 7m, so a smooth boundary is the correct answer. It is depth
     // that widens the window enough for waves to distort it.
-    let normal_view = normalize(planet_to_view(normalize(surface_normal - ripple_slope)));
+    // In a storm the surface is a churn of short steep waves: the ripple layer
+    // counts for more, which breaks the window's edge and what is seen through
+    // it into the broken, shifting ceiling of a rough sea.
+    let storm = storm_overcast();
+    let normal_view = normalize(planet_to_view(normalize(
+        surface_normal - ripple_slope * (1.0 + STORM_UNDERSIDE_RIPPLE_GAIN * storm),
+    )));
     // The old path sampled view_ray unchanged and used the normal only for a
     // soft window mask. It therefore painted the same sky through every wave.
     // Bend the sky lookup with the local wave normal, with the physical
@@ -4293,7 +4306,8 @@ fn ocean_underside_colour(
         return vec3<f32>(refraction.w);
     }
     let up_view = normalize(planet_to_view(surface_direction));
-    let skylight = physical_camera_sky_radiance(up_view);
+    // Under a storm the sky above is the overcast's grey, not blue.
+    let skylight = storm_overcast_colour(physical_camera_sky_radiance(up_view));
     // A reflection that finds nothing has found deep water: on the FFT sea,
     // the water's own colour, as everywhere else under it.
     let fallback = select(
@@ -4315,13 +4329,22 @@ fn ocean_underside_colour(
     }
     var clear_interface = below;
     if refraction.w > 0.0 {
-        let above = physical_camera_sky_radiance(normalize(refraction.xyz));
+        // An overcast sky seen from beneath is a bright, even grey: as bright
+        // as the clear sky's own luminance, with the blue taken out.
+        let clear_sky = physical_camera_sky_radiance(normalize(refraction.xyz));
+        let overcast_grey = vec3<f32>(
+            dot(clear_sky, vec3<f32>(0.2126, 0.7152, 0.0722)) * STORM_WINDOW_SKY_BRIGHTNESS,
+        );
+        let above = mix(clear_sky, overcast_grey, storm);
         clear_interface = mix(below, above, refraction.w);
     }
     // Use the same breaking/whitecap coverage as the top face. Foam is air in
     // water, so it blocks the directional sky and bed reflection while
     // returning diffuse pale skylight instead of behaving like white paint.
-    return ocean_underside_with_foam(clear_interface, skylight, foam);
+    // And far more of it is whitewater and bubbles: foam seen from beneath, the
+    // same coverage as the top face but spread wider as the storm builds.
+    let storm_foam = clamp(foam * (1.0 + STORM_UNDERSIDE_FOAM_GAIN * storm), 0.0, 1.0);
+    return ocean_underside_with_foam(clear_interface, skylight, storm_foam);
 }
 
 // Sea of Thieves-style water shading (FFT ocean only), after Rare's SIGGRAPH

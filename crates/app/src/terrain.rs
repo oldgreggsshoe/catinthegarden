@@ -5650,7 +5650,10 @@ mod tests {
         assert!(optics.contains("ocean_water_to_air(view_ray, normal_view)"));
         assert!(optics.contains("physical_camera_sky_radiance(normalize(refraction.xyz))"));
         assert!(optics.contains("ocean_underside_reflection_with_skylight("));
-        assert!(optics.contains("ocean_underside_with_foam(clear_interface, skylight, foam)"));
+        assert!(optics.contains("ocean_underside_with_foam(clear_interface, skylight, storm_foam)"));
+        // A storm greys the sky seen through the window and spreads the foam.
+        assert!(optics.contains("storm_overcast_colour(physical_camera_sky_radiance(up_view))"));
+        assert!(optics.contains("let overcast_grey = vec3<f32>("));
         // The recovery leg must invert with the resolved point's own depth.
         // Reaching for `water_depth_meters` here is the fragment doing the
         // reflecting, which is a different pixel and does not invert.

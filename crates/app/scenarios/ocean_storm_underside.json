@@ -1,0 +1,51 @@
+{
+  "name": "ocean_storm_underside",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 4,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0.0,
+  "fixed_exposure": true,
+  "ocean_storm_intensity_override": 1.0,
+  "screenshot_times_seconds": [
+    0.5,
+    3.5
+  ],
+  "waypoints": [
+    {
+      "time_s": 0,
+      "position": [
+        3372357.7466151044,
+        1978745.957028483,
+        843611.0872371997
+      ],
+      "look_at": [
+        3372457.05579062,
+        1978795.425813448,
+        843632.177572379
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        0.508927519,
+        0.397776994,
+        0.763391278
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 60.0
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 2
+  }
+}
