@@ -1644,7 +1644,7 @@ impl State {
             (radial + tangent * (SHIP_START_OFFSET_METERS / planet::planet_radius_meters()))
                 .normalize()
         };
-        let ship_body = ship::ShipBody::afloat_at(
+        let mut ship_body = ship::ShipBody::afloat_at(
             &ship_hull,
             ship_direction,
             STORM_OCEAN_START_DIRECTION
@@ -1652,6 +1652,16 @@ impl State {
                 .cross(glam::DVec3::Y),
             ocean::global_wave_height_meters(ship_direction, 0.0, SHIP_FALLBACK_DEPTH_METERS),
         );
+        // Start moving with the water it floats in. Left at rest, a hull set
+        // down in a 5-20 m/s orbital current was whipped sideways and heeled
+        // 30 degrees in the first seconds.
+        ship_body.linear_velocity = ocean::global_wave_horizontal_velocity(ship_direction, 0.0)
+            + ship_direction
+                * ocean::global_wave_vertical_velocity_meters_per_second(
+                    ship_direction,
+                    0.0,
+                    SHIP_FALLBACK_DEPTH_METERS,
+                );
         let ship_renderer = ship_render::ShipRenderer::new(
             &device,
             &queue,
@@ -2648,6 +2658,8 @@ impl State {
                 self.ship_body.position.normalize(),
                 ocean_time_seconds,
             );
+            // The hull rests on the bottom if it sinks.
+            self.ship_body.seabed_altitude_meters = -ship_depth_meters;
             self.ship_body
                 .advance(&self.ship_hull, ship::FIXED_STEP_SECONDS, |direction| {
                     ship::WaterSample {
@@ -4966,6 +4978,10 @@ impl State {
                 marker_visible = self.flock_marker.debug_state().0,
                 marker_view_z = self.flock_marker.debug_state().1,
                 mass_tonnes = self.ship_hull.mass_kg() / 1000.0,
+                // Floodwater taken on through the hull's openings, and whether
+                // the hull has sunk to the seabed.
+                flooded_tonnes = self.ship_body.flood_kg / 1000.0,
+                on_seabed = self.ship_body.on_seabed,
                 // The depth the hull is floating in. It has to be the depth
                 // the renderer uses, or the two are on different seas.
                 water_depth_meters = self

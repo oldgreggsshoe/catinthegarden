@@ -11989,3 +11989,6 @@ The 3 October swimmer carry was stepped on real time with the sea's velocity at 
 
 ## 4 October - SHIP_SCALE back to 0.5
 `ship::SHIP_SCALE` 0.25 -> 0.5 at the user's request (density unchanged: 142 t, 8x the mass; hull 21 m). Horizontal speed over the planet-fixed frame is unchanged (11.98 m/s max at swell 30, no wind sea), since `advance_step` relaxes the hull's horizontal velocity to the water's at 3/s irrespective of mass or size. Not done: a mass- and wetted-area-dependent lag so a heavy hull moves less than the water (a real 1000 t ship lags roughly 9 s at 1 m/s relative speed; proposed, not requested).
+
+## 4 October - Flooding and sinking rule
+See AGENTS.md. Sweep (240 s tracks, deck opening x gunport open fraction): at 0.004/0.1 (shipped) default 14.2 t, swell 30 / no wind 3.6 t, extreme 186.9 t (sinking, still falling at 240 s because the bed was 250 m down); 0.001/0.0 would leave the extreme sea at 52 t, floating. Replay `ocean_ship_float/1791121485-579655` passes with at most 0.5 t aboard. Open: how a sunk ship should look and sound (spray/foam/creaks still run from the hull's contact), what the bridge camera sees on the bottom, salvage/refloat, and wrecks persisting.

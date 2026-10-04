@@ -118,6 +118,52 @@ const MINIMUM_COLUMN_TILT_COSINE: f64 = 0.2;
 /// does not depend on how a frame happened to be chopped up.
 pub const FIXED_STEP_SECONDS: f64 = 1.0 / 120.0;
 
+// Floating and sinking. The hull floats while its weight, the structure plus
+// any water it has taken on (`ShipBody::flood_kg`), is less than the water it
+// can displace; it takes on water through openings the sea reaches, and sinks
+// to the seabed once that weight passes the most the hull can displace.
+//
+// Openings: hatches and companionways in the deck (a small fraction of every
+// column's plan area, at deck height) and one gunport per outer column along
+// the waist (the Vasa's mistake: lower ports that the sea reached at a small
+// heel). Water enters at the speed of a head of water over the opening
+// (Torricelli) times a discharge coefficient.
+const DECK_OPENING_FRACTION: f64 = 0.004;
+/// Share of a gunport's area left open to the sea (lids shut and caulked in a
+/// seaway, a little leaking round them).
+const GUNPORT_OPEN_FRACTION: f64 = 0.1;
+
+/// `PLANET_SHIP_DECK_OPENING` and `PLANET_SHIP_GUNPORT_OPEN` override the two
+/// fractions above, for tuning how readily the hull floods.
+fn flooding_fraction(variable: &str, default: f64) -> f64 {
+    std::env::var(variable)
+        .ok()
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .unwrap_or(default)
+}
+/// A gunport at the 42m design size: 0.9m wide, 0.7m high, its centre at 65% of
+/// the sheer height above the waterline. Area scales as the square of
+/// `SHIP_SCALE`.
+const GUNPORT_AREA_SQUARE_METERS: f64 = 0.63 * SHIP_SCALE * SHIP_SCALE;
+const GUNPORT_CENTRE_SHEER_FRACTION: f64 = 0.65;
+/// The waist, as the station parameter range that carries gunports.
+const GUNPORT_STATION_RANGE: std::ops::RangeInclusive<f64> = -0.3..=0.75;
+const OPENING_DISCHARGE_COEFFICIENT: f64 = 0.6;
+/// The share of the hull's volume that is interior the sea can fill; the rest
+/// is structure, stores and ballast.
+const FLOODABLE_VOLUME_FRACTION: f64 = 0.6;
+/// Water drains out (freeing ports, pumps) at this fraction of what the hull
+/// holds per second while no opening is under the sea.
+const DRAIN_PER_SECOND: f64 = 0.01;
+/// The waves' orbital motion, slope and heave die away with depth as
+/// exp(-k z), k = 2 pi / wavelength of the dominant 360m swell. A hull that
+/// has sunk must not be shaken by a surface sea it is no longer in.
+const WAVE_DECAY_PER_METER: f64 = 2.0 * std::f64::consts::PI / 360.0;
+/// A hull on the bottom loses horizontal speed and spin to the seabed.
+const SEABED_FRICTION_PER_SECOND: f64 = 4.0;
+const SEABED_SPIN_FRICTION_PER_SECOND: f64 = 2.0;
+
 /// Water at one sample point: surface altitude relative to sea level, and how
 /// fast that surface is itself rising.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -184,6 +230,11 @@ struct BuoyancyColumn {
     keel_local: DVec3,
     plan_area_square_meters: f64,
     height_meters: f64,
+    /// Opening area at deck height (hatches), and a gunport's area and height
+    /// above the keel (zero where the column has none).
+    deck_opening_square_meters: f64,
+    gunport_square_meters: f64,
+    gunport_height_meters: f64,
 }
 
 /// The hull's mass properties and buoyancy discretisation, built once.
@@ -195,6 +246,8 @@ pub struct ShipHull {
     metacentric_height_meters: f64,
     /// Diagonal of the inertia tensor in ship-local axes.
     inertia_local: DVec3,
+    /// The most water the hull's interior can take on.
+    flood_capacity_kg: f64,
 }
 
 impl Default for ShipHull {
@@ -205,6 +258,8 @@ impl Default for ShipHull {
 
 impl ShipHull {
     pub fn new() -> Self {
+        let deck_fraction = flooding_fraction("PLANET_SHIP_DECK_OPENING", DECK_OPENING_FRACTION);
+        let port_fraction = flooding_fraction("PLANET_SHIP_GUNPORT_OPEN", GUNPORT_OPEN_FRACTION);
         let mut columns = Vec::with_capacity(BUOYANCY_STATIONS * BUOYANCY_COLUMNS);
         let station_length = HULL_LENGTH_METERS / BUOYANCY_STATIONS as f64;
         for station in 0..BUOYANCY_STATIONS {
@@ -221,10 +276,16 @@ impl ShipHull {
             let sheer = sheer_height_meters(t);
             for column in 0..BUOYANCY_COLUMNS {
                 let y = -half_beam + column_width * (column as f64 + 0.5);
+                let outer = column == 0 || column == BUOYANCY_COLUMNS - 1;
+                let has_gunport = outer && GUNPORT_STATION_RANGE.contains(&t);
+                let plan_area = station_length * column_width;
                 columns.push(BuoyancyColumn {
                     keel_local: DVec3::new(x, y, -keel_depth),
-                    plan_area_square_meters: station_length * column_width,
+                    plan_area_square_meters: plan_area,
                     height_meters: keel_depth + sheer,
+                    deck_opening_square_meters: deck_fraction * plan_area,
+                    gunport_square_meters: if has_gunport { GUNPORT_AREA_SQUARE_METERS * port_fraction } else { 0.0 },
+                    gunport_height_meters: keel_depth + GUNPORT_CENTRE_SHEER_FRACTION * sheer,
                 });
             }
         }
@@ -278,17 +339,41 @@ impl ShipHull {
                 / 12.0,
         );
 
+        let flood_capacity_kg = SEAWATER_DENSITY_KG_PER_CUBIC_METER
+            * FLOODABLE_VOLUME_FRACTION
+            * columns
+                .iter()
+                .map(|column| column.plan_area_square_meters * column.height_meters)
+                .sum::<f64>();
+
         Self {
             columns,
             mass_kg,
             centre_of_mass_local,
             metacentric_height_meters,
             inertia_local,
+            flood_capacity_kg,
         }
     }
 
     pub fn mass_kg(&self) -> f64 {
         self.mass_kg
+    }
+
+    /// The most water the hull can take on.
+    pub fn flood_capacity_kg(&self) -> f64 {
+        self.flood_capacity_kg
+    }
+
+    /// The most the hull can displace, fully submerged to the deck: the weight
+    /// (structure plus floodwater) above which nothing keeps it afloat.
+    pub fn maximum_buoyancy_kg(&self) -> f64 {
+        SEAWATER_DENSITY_KG_PER_CUBIC_METER
+            * self
+                .columns
+                .iter()
+                .map(|column| column.plan_area_square_meters * column.height_meters)
+                .sum::<f64>()
     }
 
     /// Offset from the ship-local origin, which sits on the design waterline
@@ -324,6 +409,14 @@ pub struct ShipBody {
     pub orientation: DQuat,
     pub linear_velocity: DVec3,
     pub angular_velocity: DVec3,
+    /// Seawater inside the hull, kg. Adds to the weight; see the floating and
+    /// sinking notes above.
+    pub flood_kg: f64,
+    /// Altitude of the seabed under the hull (negative below sea level); the
+    /// hull rests on it. Infinite below: no floor.
+    pub seabed_altitude_meters: f64,
+    /// Whether the hull is resting on the seabed.
+    pub on_seabed: bool,
 }
 
 impl ShipBody {
@@ -346,6 +439,9 @@ impl ShipBody {
             orientation: DQuat::from_mat3(&DMat3::from_cols(forward, port, up)),
             linear_velocity: DVec3::ZERO,
             angular_velocity: DVec3::ZERO,
+            flood_kg: 0.0,
+            seabed_altitude_meters: f64::NEG_INFINITY,
+            on_seabed: false,
         }
     }
 
@@ -402,20 +498,42 @@ impl ShipBody {
         let radial = self.position.normalize();
         let rotation = DMat3::from_quat(self.orientation);
         let ship_up = rotation * DVec3::Z;
-        let mut force = radial * (-GRAVITY_METERS_PER_SECOND_SQUARED * hull.mass_kg);
+        // Structure plus floodwater (placed at the centre of mass, which keeps
+        // the hull's stability as designed).
+        let mass_kg = hull.mass_kg + self.flood_kg;
+        let mut force = radial * (-GRAVITY_METERS_PER_SECOND_SQUARED * mass_kg);
         let mut torque = DVec3::ZERO;
         let mut submerged_volume = 0.0;
         let mut water_horizontal = DVec3::ZERO;
+        let mut inflow_kg_per_second = 0.0;
 
         for column in &hull.columns {
             let keel_offset = rotation * (column.keel_local - hull.centre_of_mass_local);
             let keel_world = self.position + keel_offset;
             let column_direction = keel_world.normalize();
             let keel_altitude = keel_world.length() - planet_radius_meters();
-            let sample = water(column_direction);
+            let mut sample = water(column_direction);
             let vertical_depth = sample.height_meters - keel_altitude;
             if vertical_depth <= 0.0 {
                 continue;
+            }
+            // Water over the openings this column carries floods the hull.
+            let opening_head = |height_above_keel: f64| {
+                let altitude = (keel_world + ship_up * height_above_keel).length()
+                    - planet_radius_meters();
+                (sample.height_meters - altitude).max(0.0)
+            };
+            for (area, height) in [
+                (column.deck_opening_square_meters, column.height_meters),
+                (column.gunport_square_meters, column.gunport_height_meters),
+            ] {
+                let head = opening_head(height);
+                if area > 0.0 && head > 0.0 {
+                    inflow_kg_per_second += SEAWATER_DENSITY_KG_PER_CUBIC_METER
+                        * OPENING_DISCHARGE_COEFFICIENT
+                        * area
+                        * (2.0 * GRAVITY_METERS_PER_SECOND_SQUARED * head).sqrt();
+                }
             }
             // The column is a prism fixed in the hull, so once the hull heels
             // its axis no longer points at the surface. Its submerged length is
@@ -429,6 +547,12 @@ impl ShipBody {
                 .max(MINIMUM_COLUMN_TILT_COSINE);
             let immersion = (vertical_depth / axis_tilt_cosine).min(column.height_meters);
             let volume = column.plan_area_square_meters * immersion;
+            // The waves' motion fades with depth below the surface.
+            let depth_of_centre = (sample.height_meters - (keel_altitude + 0.5 * immersion)).max(0.0);
+            let decay = (-WAVE_DECAY_PER_METER * depth_of_centre).exp();
+            sample.slope *= decay;
+            sample.horizontal_velocity *= decay;
+            sample.vertical_velocity_meters_per_second *= decay;
             submerged_volume += volume;
             water_horizontal += sample.horizontal_velocity * volume;
 
@@ -463,7 +587,14 @@ impl ShipBody {
             torque += centroid_offset.cross(column_force);
         }
 
-        self.linear_velocity += force / hull.mass_kg * step_seconds;
+        // Water in, or drained out while no opening is under the sea.
+        if inflow_kg_per_second > 0.0 {
+            self.flood_kg += inflow_kg_per_second * step_seconds;
+        } else {
+            self.flood_kg -= self.flood_kg * DRAIN_PER_SECOND * step_seconds;
+        }
+        self.flood_kg = self.flood_kg.clamp(0.0, hull.flood_capacity_kg);
+        self.linear_velocity += force / mass_kg * step_seconds;
         // Surge damping is horizontal only: vertical resistance already comes
         // from the columns, and damping it twice would sink the hull into a
         // rising crest. It pulls toward the water's own horizontal motion,
@@ -483,8 +614,9 @@ impl ShipBody {
                 * (1.0 - SURGE_DAMPING_PER_SECOND * wetted * step_seconds).max(0.0);
         self.position += self.linear_velocity * step_seconds;
 
+        let inertia = hull.inertia_local * (mass_kg / hull.mass_kg);
         let inverse_inertia =
-            rotation * DMat3::from_diagonal(DVec3::ONE / hull.inertia_local) * rotation.transpose();
+            rotation * DMat3::from_diagonal(DVec3::ONE / inertia) * rotation.transpose();
         self.angular_velocity += inverse_inertia * torque * step_seconds;
         let yaw_velocity = radial * self.angular_velocity.dot(radial);
         self.angular_velocity -= yaw_velocity * (YAW_DAMPING_PER_SECOND * step_seconds).min(1.0);
@@ -497,6 +629,43 @@ impl ShipBody {
                 * self.orientation;
             self.orientation = (self.orientation + spin).normalize();
         }
+        self.rest_on_seabed(hull, step_seconds);
+    }
+
+    /// A hull cannot go below the seabed: lift it back out, take the downward
+    /// speed, and let the bottom's friction slow its slide and spin.
+    fn rest_on_seabed(&mut self, hull: &ShipHull, step_seconds: f64) {
+        self.on_seabed = false;
+        if !self.seabed_altitude_meters.is_finite() {
+            return;
+        }
+        let rotation = DMat3::from_quat(self.orientation);
+        let lowest = hull
+            .columns
+            .iter()
+            .flat_map(|column| {
+                let keel = column.keel_local;
+                [keel, keel + DVec3::Z * column.height_meters]
+            })
+            .map(|point| {
+                (self.position + rotation * (point - hull.centre_of_mass_local)).length()
+                    - planet_radius_meters()
+            })
+            .fold(f64::MAX, f64::min);
+        if lowest >= self.seabed_altitude_meters {
+            return;
+        }
+        let radial = self.position.normalize();
+        self.position += radial * (self.seabed_altitude_meters - lowest);
+        let radial_speed = self.linear_velocity.dot(radial);
+        if radial_speed < 0.0 {
+            self.linear_velocity -= radial * radial_speed;
+        }
+        let sliding = self.linear_velocity - radial * self.linear_velocity.dot(radial);
+        self.linear_velocity -= sliding * (SEABED_FRICTION_PER_SECOND * step_seconds).min(1.0);
+        self.angular_velocity -=
+            self.angular_velocity * (SEABED_SPIN_FRICTION_PER_SECOND * step_seconds).min(1.0);
+        self.on_seabed = true;
     }
 }
 
@@ -794,6 +963,9 @@ mod tests {
                 }
             });
             elapsed += 1.0 / 60.0;
+            // This test is about righting, not flooding (a 12m sea over a 21m
+            // hull floods it; see the floating-and-sinking tests below).
+            body.flood_kg = 0.0;
             peak_tilt_degrees = peak_tilt_degrees.max(body.tilt_radians().to_degrees());
             assert!(body.position.is_finite() && body.orientation.is_finite());
             // A hull driven near its roll period answers with more heel than
@@ -959,6 +1131,78 @@ mod tests {
         assert_eq!(single.linear_velocity, chunked.linear_velocity);
     }
 
+    #[test]
+    fn a_hull_in_calm_water_takes_on_no_water() {
+        let (hull, mut body) = afloat();
+        body.advance(&hull, 120.0, still_water(0.0));
+        assert_eq!(body.flood_kg, 0.0);
+        assert!(!body.on_seabed);
+    }
+
+    #[test]
+    fn a_hull_heeled_so_its_openings_are_under_the_sea_floods() {
+        let (hull, mut body) = afloat();
+        // Knocked down 70 degrees about its length: the gunports on the low
+        // side and the deck are under water.
+        body.orientation = glam::DQuat::from_axis_angle(body.forward(), 70.0_f64.to_radians())
+            * body.orientation;
+        body.advance(&hull, 5.0, still_water(0.0));
+        assert!(
+            body.flood_kg > 500.0,
+            "{} kg of water after 5s on its beam ends",
+            body.flood_kg
+        );
+    }
+
+    #[test]
+    fn floodwater_drains_while_no_opening_is_under_the_sea() {
+        let (hull, mut body) = afloat();
+        body.flood_kg = 30_000.0;
+        body.advance(&hull, 300.0, still_water(0.0));
+        assert!(body.flood_kg < 3_000.0, "{} kg still aboard", body.flood_kg);
+    }
+
+    #[test]
+    fn a_hull_below_its_flood_limit_floats_lower_but_does_not_sink() {
+        let (hull, mut body) = afloat();
+        let limit = hull.maximum_buoyancy_kg() - hull.mass_kg();
+        body.flood_kg = 0.5 * limit;
+        body.seabed_altitude_meters = -60.0;
+        // Hold the load: no drain, no further inflow.
+        for _ in 0..60 {
+            body.advance(&hull, 1.0, still_water(0.0));
+            body.flood_kg = 0.5 * limit;
+        }
+        assert!(!body.on_seabed);
+        let waterline = body.waterline_altitude_meters(&hull);
+        assert!(
+            waterline < -0.2 * HULL_FREEBOARD_METERS && waterline > -HULL_FREEBOARD_METERS,
+            "waterline {waterline}m"
+        );
+    }
+
+    #[test]
+    fn a_hull_that_takes_on_more_than_it_can_displace_sinks_to_the_seabed() {
+        let (hull, mut body) = afloat();
+        let limit = hull.maximum_buoyancy_kg() - hull.mass_kg();
+        assert!(
+            hull.flood_capacity_kg() > limit,
+            "a fully flooded hull ({} kg) must be able to sink ({limit} kg)",
+            hull.flood_capacity_kg()
+        );
+        body.flood_kg = 1.05 * limit;
+        body.seabed_altitude_meters = -40.0;
+        for _ in 0..240 {
+            body.advance(&hull, 1.0, still_water(0.0));
+            body.flood_kg = 1.05 * limit;
+        }
+        assert!(body.on_seabed, "waterline {}m", body.waterline_altitude_meters(&hull));
+        // It rests on the bottom, not through it, and has stopped.
+        let waterline = body.waterline_altitude_meters(&hull);
+        assert!(waterline < -25.0 && waterline > -45.0, "waterline {waterline}m");
+        assert!(body.linear_velocity.length() < 0.2, "{} m/s", body.linear_velocity.length());
+    }
+
     /// Instrument, not a regression: the ship's track on the FFT sea, stepped
     /// the way `advance_ship` steps it (one orbital-velocity query per step).
     /// `PLANET_OCEAN_FFT=1 cargo test --release -p planet-app ship_track --
@@ -971,16 +1215,23 @@ mod tests {
         let east = start.cross(DVec3::Y).normalize();
         let north = start.cross(east).normalize();
         let mut body = ShipBody::afloat_at(&hull, start, east, 0.0);
+        // Start moving with the water, as the game now does.
+        body.linear_velocity = ocean::global_wave_horizontal_velocity(start, 0.0);
         let origin = body.position;
+        let seconds: f64 = std::env::var("PLANET_SHIP_TRACK_SECONDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(300.0);
         let (mut elapsed, step) = (0.0, super::FIXED_STEP_SECONDS);
         let (mut max_speed, mut max_gap, mut speed_sum, mut samples) = (0.0f64, 0.0f64, 0.0, 0.0);
         let mut settled_speeds: Vec<f64> = Vec::new();
-        for index in 0..(300.0 / step) as usize {
+        for index in 0..(seconds / step) as usize {
             let water_horizontal = ocean::global_wave_horizontal_velocity(
                 body.position.normalize(),
                 elapsed,
             );
             let time = elapsed;
+            body.seabed_altitude_meters = -250.0;
             body.advance(&hull, step, |direction| WaterSample {
                 height_meters: ocean::global_wave_height_meters(direction, time, 250.0),
                 vertical_velocity_meters_per_second:
@@ -1004,14 +1255,25 @@ mod tests {
             if index % 240 == 0 {
                 let offset = body.position - origin;
                 println!(
-                    "t={elapsed:6.1} east={:8.1} north={:8.1} speed={speed:5.2} water={:5.2} gap={gap:5.2} tilt={:5.1}",
+                    "t={elapsed:6.1} east={:8.1} north={:8.1} speed={speed:5.2} water={:5.2} gap={gap:5.2} tilt={:5.1} flood={:6.1}t alt={:7.1} bed={}",
                     offset.dot(east),
                     offset.dot(north),
                     horizontal(water_horizontal).length(),
                     body.tilt_radians().to_degrees(),
+                    body.flood_kg / 1000.0,
+                    body.waterline_altitude_meters(&hull),
+                    body.on_seabed,
                 );
             }
         }
+        println!(
+            "flooded {:.1} t of a {:.1} t hull (can take {:.1} t; sinks past {:.1} t); on seabed: {}",
+            body.flood_kg / 1000.0,
+            hull.mass_kg() / 1000.0,
+            hull.flood_capacity_kg() / 1000.0,
+            (hull.maximum_buoyancy_kg() - hull.mass_kg()) / 1000.0,
+            body.on_seabed,
+        );
         let offset = body.position - origin;
         println!(
             "after 300s: net {:.1}m (east {:.1}, north {:.1}); max speed {max_speed:.2} m/s, mean {:.2}, max |ship - water| {max_gap:.2}",
