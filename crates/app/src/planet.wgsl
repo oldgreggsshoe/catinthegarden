@@ -2513,7 +2513,12 @@ fn ocean_fragment_with_transmission_mode(input: OceanVertexOutput, bed: vec4<f32
     let shallow_column_transmittance = exp(
         -instantaneous_column_meters / OCEAN_SHALLOW_TINT_EFOLD_METERS,
     );
-    let shallow_mix = bed.w * 0.82 * shallow_column_transmittance;
+    // Where the water is only centimetres deep the refracted bed lookup can
+    // miss (bed.w = 0) and foam is off (no still depth), which left the
+    // near-black body colour as dark patches at the very edge of the beach.
+    // Thin water takes the shallow tint whether or not the bed resolved.
+    let thin_water = 1.0 - smoothstep(0.0, 0.6, instantaneous_column_meters);
+    let shallow_mix = max(bed.w * shallow_column_transmittance, thin_water) * 0.82;
     let water_surface_color = mix(
         mix(base_water, shallow_turquoise, shallow_mix) + transmission,
         ocean_foam_radiance(sun_transmittance, sky_diffuse),

@@ -1,14 +1,1 @@
-Yes—the wind was carrying each crest sprite too far relative to the 10.5m ship. I changed crest mist to drift at 60% of local wind speed, applied both at birth and during wind drag; its horizontal travel and velocity-stretched streak are about 40% shorter. The crest-top origin, lifetime, vertical fall, density, and ship spray are unchanged.
-
-For scale: a crest sprite's un-stretched width is roughly 0.4–2.9m (about 4–27% of the ship's length); its motion can stretch it farther. At the default 14m/s wind, the mean horizontal travel estimate falls from about 7m to about 4m, from roughly two-thirds to two-fifths of the hull length. This is approximate uniform-wind math, not a measured per-particle replay metric.
-
-The four spray shader tests pass, and the 14m/s sequence passes all 10 captures before and after. The captures are stills, so I haven't claimed visual motion approval; the live-motion look remains to be checked.
-
-<oai-mem-citation>
-<citation_entries>
-MEMORY.md:153-166|note=[visual ocean changes need motion review before acceptance]
-</citation_entries>
-<rollout_ids>
-01a07103-79ca-7e92-99b9-5da47619e658
-</rollout_ids>
-</oai-mem-citation>
+Black surf patches at the beach edge: the captured pixels are the near-black navy water body colour (albedo 0/0.01/0.02), not foam. In centimetre-deep water the refracted-bed lookup misses (bed.w = 0) and foam is off (no still depth), so nothing lifts the body colour. planet.wgsl now forces the shallow turquoise tint on water thinner than ~0.6 m regardless of bed.w. Release build passes and ocean_shore_ascent passes, but that replay does not show this beach, so the fix is unconfirmed: please re-shoot the same spot.
