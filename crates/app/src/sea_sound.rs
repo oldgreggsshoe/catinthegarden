@@ -58,7 +58,7 @@ const WIND_HOWL_PITCHES: [f32; 3] = [330.0, 480.0, 700.0];
 const WIND_HOWL_Q: f32 = 12.0;
 const WIND_WHISTLE_Q: f32 = 30.0;
 /// Distance above the water (m) at which the sea is half as loud.
-pub const HALF_LOUDNESS_HEIGHT_METERS: f64 = 40.0;
+pub const HALF_LOUDNESS_HEIGHT_METERS: f64 = 20.0;
 
 /// Loudness of the sea for a listener this far above the water (m): full at
 /// the surface, half at `HALF_LOUDNESS_HEIGHT_METERS`, faint from the air.
@@ -73,6 +73,18 @@ fn volume() -> f32 {
         .filter(|value| value.is_finite())
         .map_or(1.0, |value| value.clamp(0.0, 2.0))
         * VOLUME
+}
+
+/// `PLANET_SOUND_SEA=0` mutes the sea (roar, breaks, laps) and leaves the
+/// wind, thunder and the rest, to hear them on their own.
+fn sea_enabled() -> bool {
+    !matches!(
+        std::env::var("PLANET_SOUND_SEA")
+            .ok()
+            .as_deref()
+            .map(str::trim),
+        Some("0" | "off" | "false")
+    )
 }
 
 /// `PLANET_SOUND=0` keeps the game silent.
@@ -113,6 +125,7 @@ fn load(slot: &AtomicU32) -> f32 {
 }
 
 pub struct SeaSound {
+    sea_on: bool,
     shared: Arc<Shared>,
     _stream: Option<cpal::Stream>,
 }
@@ -121,6 +134,7 @@ impl SeaSound {
     /// No output at all: replays and tests.
     pub fn silent() -> Self {
         Self {
+            sea_on: true,
             shared: Arc::new(Shared::default()),
             _stream: None,
         }
@@ -142,6 +156,7 @@ impl SeaSound {
             None
         };
         Self {
+            sea_on: sea_enabled(),
             shared,
             _stream: stream,
         }
@@ -162,7 +177,10 @@ impl SeaSound {
         creak_stress: f32,
     ) {
         store(&self.shared.roughness, roughness.clamp(0.0, 1.0));
-        store(&self.shared.level, level.clamp(0.0, 1.0));
+        store(
+            &self.shared.level,
+            if self.sea_on { level.clamp(0.0, 1.0) } else { 0.0 },
+        );
         store(&self.shared.muffle, muffle.clamp(0.0, 1.0));
         store(&self.shared.wind, wind.clamp(0.0, 1.0));
         store(&self.shared.clock_rate, clock_rate.max(0.0));
@@ -783,12 +801,13 @@ impl SeaSynth {
         let swell = 1.0 + 0.12 * (std::f32::consts::TAU * self.wobble).sin();
         let roar_gain = (ROAR_FLOOR + (ROAR_GAIN - ROAR_FLOOR) * r.powf(1.3)) * swell;
         let roar_a = one_pole(260.0 + 360.0 * r, sample_rate);
+        let mut roar = [0.0_f32; 2];
         for ear in 0..2 {
             let white = self.white();
             self.brown[ear] = 0.998 * self.brown[ear] + 0.03 * white;
             self.roar[ear][0] += roar_a * (self.brown[ear] - self.roar[ear][0]);
             self.roar[ear][1] += roar_a * (self.roar[ear][0] - self.roar[ear][1]);
-            out[ear] += self.roar[ear][1] * roar_gain;
+            roar[ear] = self.roar[ear][1] * roar_gain;
         }
 
         for index in 0..self.breaks.len() {
@@ -898,7 +917,8 @@ impl SeaSynth {
                 self.thunder_pan
             };
             let mixed = surface
-                * (out[ear] * self.level
+                * (roar[ear] * self.level
+                    + out[ear] * self.level * self.level
                     + wind[ear] * wind_level
                     + creak[ear] * (1.0 - 0.8 * self.muffle)
                     + thunder * (0.5 + side) * (1.0 - 0.8 * self.muffle))
