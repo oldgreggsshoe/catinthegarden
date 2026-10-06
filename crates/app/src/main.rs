@@ -5058,7 +5058,10 @@ impl State {
         }
         .unwrap_or(0.0);
         let mut ocean_water_depth_meters = 0.0;
-        let mut ocean_eye_clearance_meters = 0.0;
+        // Over land there is no open sea to be under, so the eye is clear of it.
+        // Zero here made the shader read every folded (back-facing) sea triangle
+        // at a beach as the sea's underside, drawing black patches at the surf.
+        let mut ocean_eye_clearance_meters = 1000.0;
         if let Some((bathymetry, water_height, _)) = self.open_ocean_environment_at(
             camera_direction,
             camera_sea_level_altitude_meters,
