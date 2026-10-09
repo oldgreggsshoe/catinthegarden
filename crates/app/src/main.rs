@@ -528,6 +528,20 @@ fn storm_frame_darkening(storm_overcast: f32) -> f32 {
     STORM_FRAME_DARKENING * storm_overcast.clamp(0.0, 1.0)
 }
 
+/// Radiance of the lit fog at the centre of a lightning flash, as a multiple
+/// of the shaders' (0.72, 0.78, 0.9) glow colour. Above 1 the middle of the
+/// flash clips to white and the cone's edges brighten with it.
+const LIGHTNING_FOG_BRIGHTNESS: f32 = 4.0;
+/// Share of the storm's frame darkening lifted at the peak of a flash. The
+/// darkening scales the displayed (already clipped) frame, so without this a
+/// flash in a full storm could never be brighter than 60% grey.
+const LIGHTNING_DARKENING_LIFT: f32 = 0.75;
+
+/// `storm_frame_darkening`, relaxed while a flash (`pulse` 0-1) is lit.
+fn storm_frame_darkening_with_flash(storm_overcast: f32, pulse: f32) -> f32 {
+    storm_frame_darkening(storm_overcast) * (1.0 - LIGHTNING_DARKENING_LIFT * pulse.clamp(0.0, 1.0))
+}
+
 fn storm_overcast_altitude_weight(altitude_meters: f64) -> f32 {
     let t = ((altitude_meters - STORM_OVERCAST_ALTITUDE_FADE_START_METERS)
         / (STORM_OVERCAST_ALTITUDE_FADE_END_METERS - STORM_OVERCAST_ALTITUDE_FADE_START_METERS))
@@ -1329,6 +1343,8 @@ struct State {
     sea_sound: sea_sound::SeaSound,
     lightning: lightning::Lightning,
     lightning_view: [f32; 4],
+    /// The current flash, 0-1, before `LIGHTNING_FOG_BRIGHTNESS`.
+    lightning_pulse: f32,
     /// Storm gusts at the camera this frame (`update_rain_and_gusts`).
     gust: gust::Gust,
     local_cloud_impostors: weather_render::LocalCloudImpostorRenderer,
@@ -1858,6 +1874,7 @@ impl State {
             sea_sound,
             lightning: lightning::Lightning::new(),
             lightning_view: [0.0; 4],
+            lightning_pulse: 0.0,
             local_cloud_impostors,
             forest,
             villages,
@@ -4737,7 +4754,13 @@ impl State {
             f64::from(flash[1]),
             f64::from(flash[2]),
         ));
-        self.lightning_view = [view.x as f32, view.y as f32, view.z as f32, flash[3]];
+        self.lightning_pulse = flash[3];
+        self.lightning_view = [
+            view.x as f32,
+            view.y as f32,
+            view.z as f32,
+            flash[3] * LIGHTNING_FOG_BRIGHTNESS,
+        ];
         let ship_spray = self.ship_spray_emitter(ocean_time_seconds);
         self.terrain.set_ship_spray(Some(ship_spray));
         if !self
@@ -5093,7 +5116,10 @@ impl State {
         camera_uniform.sun_direction[3] = self.storm_overcast;
         camera_uniform.lightning = self.lightning_view;
         self.hdr
-            .set_output_darkening(&self.queue, storm_frame_darkening(self.storm_overcast));
+            .set_output_darkening(
+                &self.queue,
+                storm_frame_darkening_with_flash(self.storm_overcast, self.lightning_pulse),
+            );
         // Spare basis-vector lanes: local ocean column and signed eye clearance.
         // Fill background waterline pixels missed by the finite raster shell.
         camera_uniform.camera_forward[3] = ocean_water_depth_meters as f32;
@@ -7392,11 +7418,14 @@ mod tests {
     /// apart, so a release must not clear a movement key immediately.
     #[test]
     fn a_full_storm_darkens_the_frame_by_forty_percent_in_step_with_the_overcast() {
-        use super::storm_frame_darkening;
+        use super::{storm_frame_darkening, storm_frame_darkening_with_flash};
         assert_eq!(storm_frame_darkening(0.0), 0.0);
         assert!((storm_frame_darkening(1.0) - 0.4).abs() < 1.0e-6);
         assert!((storm_frame_darkening(0.5) - 0.2).abs() < 1.0e-6);
         assert_eq!(storm_frame_darkening(3.0), storm_frame_darkening(1.0));
+        // A flash lifts most of it at its peak, and none once it has gone.
+        assert_eq!(storm_frame_darkening_with_flash(1.0, 0.0), storm_frame_darkening(1.0));
+        assert!((storm_frame_darkening_with_flash(1.0, 1.0) - 0.1).abs() < 1.0e-6);
     }
 
     #[test]

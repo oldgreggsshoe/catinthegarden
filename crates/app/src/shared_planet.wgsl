@@ -200,6 +200,10 @@ const STORM_OVERCAST_BRIGHTNESS: f32 = 0.45;
 const STORM_SUN_BLOCK: f32 = 0.85;
 const STORM_LIGHTNING_OUTER_RADIUS_METERS: f32 = 50000.0;
 const STORM_LIGHTNING_INNER_RADIUS_METERS: f32 = 15000.0;
+// Share of a flash's light that reaches the fog in every direction, not just
+// towards the strike: the whole storm cloud lights up. Mirrored in
+// atmosphere.wgsl (SKY_LIGHTNING_AMBIENT) and forest.wgsl (literal).
+const STORM_LIGHTNING_AMBIENT: f32 = 0.15;
 
 fn storm_overcast() -> f32 {
     return clamp(camera.sun_direction.w, 0.0, 1.0);
@@ -226,7 +230,7 @@ fn storm_lightning_fog(ray_view: vec3<f32>) -> vec3<f32> {
     }
     let toward_strike = dot(normalize(ray_view), normalize(camera.lightning.xyz));
     let cone = storm_lightning_glow_cone(0.35, 0.9);
-    let glow = smoothstep(cone.x, cone.y, toward_strike);
+    let glow = mix(STORM_LIGHTNING_AMBIENT, 1.0, smoothstep(cone.x, cone.y, toward_strike));
     return vec3<f32>(0.72, 0.78, 0.9) * camera.lightning.w * glow;
 }
 

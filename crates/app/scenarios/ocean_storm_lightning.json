@@ -1,0 +1,53 @@
+{
+  "name": "ocean_storm_lightning",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 5.5,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0.0,
+  "fixed_exposure": true,
+  "storm_approach_seconds": 1.0,
+  "screenshot_times_seconds": [
+    4.9,
+    5.02,
+    5.08,
+    5.2
+  ],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [
+        3354101.368088272,
+        2006939.8849295645,
+        850009.5955148307
+      ],
+      "look_at": [
+        3354003.455432042,
+        2007019.2408937472,
+        850020.3538928974
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        0.5089275188,
+        0.397776994,
+        0.7633912782
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 60.0
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 4
+  }
+}

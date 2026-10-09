@@ -15,6 +15,9 @@ const SKY_LIGHTNING_GLOW_OUTER_COSINE: f32 = 0.75;
 const SKY_LIGHTNING_GLOW_INNER_COSINE: f32 = 0.97;
 const SKY_LIGHTNING_GLOW_OUTER_RADIUS_METERS: f32 = 50000.0;
 const SKY_LIGHTNING_GLOW_INNER_RADIUS_METERS: f32 = 15000.0;
+// Share of a flash reaching the fog in every direction (shared_planet.wgsl
+// STORM_LIGHTNING_AMBIENT).
+const SKY_LIGHTNING_AMBIENT: f32 = 0.15;
 // Azimuths the storm sky's overhead fog colour is averaged over.
 const STORM_HORIZON_AVERAGE_SAMPLES: u32 = 8u;
 // Presentation-only gain for the visible sky. Keep this outside the physical
@@ -327,11 +330,11 @@ fn storm_lightning_fog(ray_view: vec3<f32>) -> vec3<f32> {
         altitude * altitude
             + SKY_LIGHTNING_GLOW_INNER_RADIUS_METERS * SKY_LIGHTNING_GLOW_INNER_RADIUS_METERS,
     );
-    let glow = smoothstep(
+    let glow = mix(SKY_LIGHTNING_AMBIENT, 1.0, smoothstep(
         max(SKY_LIGHTNING_GLOW_OUTER_COSINE, outer_cosine),
         max(SKY_LIGHTNING_GLOW_INNER_COSINE, inner_cosine),
         toward_strike,
-    );
+    ));
     return vec3<f32>(0.72, 0.78, 0.9) * camera.lightning.w * glow;
 }
 

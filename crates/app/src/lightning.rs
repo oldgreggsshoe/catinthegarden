@@ -4,6 +4,14 @@ use glam::DVec3;
 
 const SOUND_SPEED_METERS_PER_SECOND: f64 = 343.0;
 const CLOUD_ALTITUDE_METERS: f64 = 3_000.0;
+/// Strikes land between these horizontal distances from the storm centre,
+/// spread evenly over the area between them. They used to stay within 2 km
+/// of it, so every bolt was about 3 km away overhead and every thunder came
+/// about 9-10 s after its flash -- about when the next flash (7-14 s apart)
+/// went off, so the thunder seemed to come with the light. Now a close strike
+/// cracks within a second or two and a far one rumbles in up to ~26 s later.
+const STRIKE_MIN_RADIUS_METERS: f64 = 300.0;
+const STRIKE_MAX_RADIUS_METERS: f64 = 9_000.0;
 
 #[derive(Clone, Copy)]
 struct Strike {
@@ -47,9 +55,11 @@ impl Lightning {
                 position: strike_position(centre, self.sequence),
                 time,
             };
-            let offset = strike.position - eye;
+            // Thunder starts with the sound from the nearest part of the bolt,
+            // which runs from the cloud down to the ground below it.
+            let offset = nearest_point_of_bolt(strike.position, eye) - eye;
             let distance = offset.length();
-            let pan = (0.5 + 0.45 * offset.normalize().dot(right)).clamp(0.05, 0.95) as f32;
+            let pan = (0.5 + 0.45 * offset.normalize_or_zero().dot(right)).clamp(0.05, 0.95) as f32;
             let gain = (1.0 / (1.0 + distance / 8_000.0)) as f32;
             self.thunder
                 .push((time + thunder_delay_seconds(distance), gain, pan));
@@ -92,11 +102,25 @@ fn thunder_delay_seconds(distance_meters: f64) -> f64 {
     distance_meters / SOUND_SPEED_METERS_PER_SECOND
 }
 
+/// The point of a bolt (a vertical channel from sea level up to the cloud at
+/// `top`) closest to `eye`.
+fn nearest_point_of_bolt(top: DVec3, eye: DVec3) -> DVec3 {
+    let up = top.normalize();
+    let ground = up * crate::planet::planet_radius_meters();
+    let along = (eye - ground).dot(up).clamp(0.0, (top - ground).length());
+    ground + up * along
+}
+
+/// A full two-round integer hash (as in the spray shader). The single round
+/// this replaced gave nearly evenly stepped values for consecutive indices, so
+/// strike positions and intervals walked round in a pattern.
 fn random01(index: u32) -> f64 {
     let mut x = index.wrapping_add(0x9e37_79b9);
     x ^= x >> 16;
     x = x.wrapping_mul(0x7feb_352d);
     x ^= x >> 15;
+    x = x.wrapping_mul(0x846c_a68b);
+    x ^= x >> 16;
     f64::from(x) / f64::from(u32::MAX)
 }
 
@@ -107,7 +131,8 @@ fn strike_position(centre: DVec3, index: u32) -> DVec3 {
         .normalize();
     let north = up.cross(east);
     let angle = std::f64::consts::TAU * random01(index);
-    let radius = 2_000.0 * random01(index.wrapping_add(17)).sqrt();
+    let (inner, outer) = (STRIKE_MIN_RADIUS_METERS, STRIKE_MAX_RADIUS_METERS);
+    let radius = (inner * inner + (outer * outer - inner * inner) * random01(index.wrapping_add(17))).sqrt();
     up * (crate::planet::planet_radius_meters() + CLOUD_ALTITUDE_METERS)
         + radius * (east * angle.cos() + north * angle.sin())
 }
@@ -126,7 +151,28 @@ mod tests {
         assert!(storm.update(5.0, 1.0, centre, centre, DVec3::Y).is_none());
         assert!(storm.flash(5.0, centre)[3] > 0.0);
         assert!(storm.update(5.5, 1.0, centre, centre, DVec3::Y).is_none());
-        assert!(storm.update(30.0, 0.0, centre, centre, DVec3::Y).is_some());
+        assert!(storm.update(60.0, 0.0, centre, centre, DVec3::Y).is_some());
+    }
+
+    /// Standing under the storm, some thunder comes within a couple of seconds
+    /// of its flash and some long after, so it can be told from the next one.
+    #[test]
+    fn thunder_delays_range_from_near_to_far_strikes() {
+        let eye = DVec3::X * crate::planet::planet_radius_meters();
+        let delays: Vec<f64> = (0..200)
+            .map(|index| {
+                let bolt = nearest_point_of_bolt(strike_position(DVec3::X, index), eye);
+                thunder_delay_seconds((bolt - eye).length())
+            })
+            .collect();
+        let shortest = delays.iter().cloned().fold(f64::INFINITY, f64::min);
+        let longest = delays.iter().cloned().fold(0.0, f64::max);
+        assert!(shortest < 3.0, "{shortest}");
+        assert!(longest > 20.0, "{longest}");
+        // From the ground the nearest point is the bolt's foot, not the cloud.
+        let top = strike_position(DVec3::X, 3);
+        let foot = top.normalize() * crate::planet::planet_radius_meters();
+        assert!((nearest_point_of_bolt(top, eye) - foot).length() < 1.0e-6);
     }
 
     #[test]
@@ -138,7 +184,8 @@ mod tests {
                 assert!(
                     (strike.dot(up) - crate::planet::planet_radius_meters() - 3_000.0).abs() < 0.01
                 );
-                assert!((strike - up * strike.dot(up)).length() <= 2_000.1);
+                let horizontal = (strike - up * strike.dot(up)).length();
+                assert!((299.9..=9_000.1).contains(&horizontal), "{horizontal}");
             }
         }
     }
