@@ -309,6 +309,45 @@ pub fn swell_height_meters(storm_intensity: f32) -> f32 {
 const SWELL_STORM_BOOST_MAX_METERS: f32 = 8.0;
 const DEFAULT_SWELL_HEIGHT_METERS: f32 = 16.0;
 
+/// Giant swell groups. The swell's height is multiplied by an envelope that
+/// depends on where (tangent-plane label metres) and when: 1 most of the time,
+/// rising to `GIANT_WAVE_GAIN` in slow travelling patches that cover about a
+/// tenth of the sea and pass a fixed point in a minute or so. The envelope is
+/// four drifting cosines, whose sum has a standard deviation of sqrt 2; its
+/// top 10% (n above 1.85) is the full gain and it starts to rise at 1.35.
+/// Mirrored by `ocean_giant_envelope` in shared_planet.wgsl and the spray shader.
+pub const GIANT_WAVE_GAIN: f64 = 3.0;
+const GIANT_RAMP_LOW: f64 = 1.35;
+const GIANT_RAMP_HIGH: f64 = 1.85;
+/// (wavelength m, direction radians, phase speed m/s, phase radians).
+const GIANT_TERMS: [(f64, f64, f64, f64); 4] = [
+    (2600.0, 0.3, 7.0, 0.7),
+    (3700.0, 1.9, 9.0, 2.1),
+    (5100.0, 3.6, 6.0, 4.4),
+    (1900.0, 5.0, 8.0, 5.8),
+];
+
+/// Swell height multiplier (1 to `GIANT_WAVE_GAIN`) at tangent-plane metres
+/// `position` and time `seconds`. `PLANET_OCEAN_GIANT_WAVES=0` turns it off.
+pub fn giant_wave_envelope(position: [f64; 2], seconds: f64) -> f64 {
+    if !giant_waves_enabled() {
+        return 1.0;
+    }
+    let n: f64 = GIANT_TERMS
+        .iter()
+        .map(|&(wavelength, angle, speed, phase)| {
+            let k = std::f64::consts::TAU / wavelength;
+            (k * (position[0] * angle.cos() + position[1] * angle.sin()) - k * speed * seconds + phase).cos()
+        })
+        .sum();
+    1.0 + (GIANT_WAVE_GAIN - 1.0) * smoothstep(GIANT_RAMP_LOW, GIANT_RAMP_HIGH, n)
+}
+
+fn giant_waves_enabled() -> bool {
+    static VALUE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| std::env::var("PLANET_OCEAN_GIANT_WAVES").map_or(true, |v| v.trim() != "0"))
+}
+
 /// Swell height with the local storm's boost: up to 80% more, capped at
 /// `SWELL_STORM_BOOST_MAX_METERS` (the default 16m swell reaches 24m).
 fn stormed_swell_height(base: f32, storm_intensity: f32) -> f32 {
@@ -888,7 +927,11 @@ impl CpuSurface {
         let target = [radius_meters * dot(u, direction), radius_meters * dot(v, direction)];
         let (_, label) = self.sample_at(target, time, storm_intensity);
         let key = (time / LATTICE_SECONDS).floor() as i64;
-        let scales = [1.0, 1.0, swell_height_meters(storm_intensity) as f64];
+        let scales = [
+            1.0,
+            1.0,
+            swell_height_meters(storm_intensity) as f64 * giant_wave_envelope(label, time),
+        ];
         let field = |key: i64| {
             let bands = std::array::from_fn(|i| {
                 let cascade = &self.cascades()[i];
@@ -950,7 +993,11 @@ impl CpuSurface {
             *flag.lock().unwrap() = true;
             condvar.notify_one();
         }
-        let scales = [1.0, 1.0, swell_height_meters(storm_intensity) as f64];
+        let scales = [
+            1.0,
+            1.0,
+            swell_height_meters(storm_intensity) as f64 * giant_wave_envelope(label, time),
+        ];
         let cascades = self.cascades();
         let slots_at = |key: i64| {
             cascades.iter().map(|cascade| cascade.slot(key)).collect::<Vec<_>>()
@@ -994,7 +1041,6 @@ impl CpuSurface {
         let swell_height = swell_height_meters(storm_intensity) as f64;
         // Wind (0) and mid (1) cascades at unit gain; the mid cascade's
         // distance fade is 1 within 600m of the camera, where CPU queries are.
-        let scales = [1.0, 1.0, swell_height];
         let chop = choppiness() as f64;
         let cascades = self.cascades();
         let previous = self.shared.frontier.fetch_max(key, std::sync::atomic::Ordering::Relaxed);
@@ -1008,6 +1054,9 @@ impl CpuSurface {
             {
                 // The sum, and each cascade scaled (for the per-band term).
                 let field = |position: [f64; 2]| {
+                    // The giant-wave envelope is read at the label, and its
+                    // gradient (km scale) is neglected, as the limiter's is.
+                    let scales = [1.0, 1.0, swell_height * giant_wave_envelope(position, time)];
                     let bands: [FieldSample; 3] = std::array::from_fn(|i| {
                         let mut band = FieldSample::default();
                         let sample = sample_slot(&slots[i], cascades[i].tile_meters, position, delta);
@@ -1091,7 +1140,8 @@ pub struct ViewParams {
     pub axis_u: [f32; 4],
     pub axis_v: [f32; 4],
     pub cascade: [[f32; 4]; CASCADES],
-    /// x: overall gain, y: choppiness, z: swell height (m), w: unused.
+    /// x: overall gain, y: choppiness, z: swell height (m), w: ocean time (s),
+    /// for the giant-wave envelope.
     pub gain: [f32; 4],
     /// x: second-order strength; y unused; z, w: the camera's absolute
     /// tangent-plane position (u, v metres), for patterns fixed to the sea
@@ -1129,6 +1179,8 @@ pub struct OceanFft {
     assemble: wgpu::ComputePipeline,
     curvature: wgpu::ComputePipeline,
     wavenumbers: [f64; CASCADES],
+    /// Last `set_time`, as f32 bits, for the giant-wave envelope in `update_view`.
+    time: std::sync::atomic::AtomicU32,
 }
 
 impl OceanFft {
@@ -1358,6 +1410,7 @@ impl OceanFft {
             assemble: pipeline("assemble"),
             curvature: pipeline("curvature_bands"),
             wavenumbers,
+            time: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
@@ -1402,7 +1455,7 @@ impl OceanFft {
             axis_u: [u[0] as f32, u[1] as f32, u[2] as f32, 0.0],
             axis_v: [v[0] as f32, v[1] as f32, v[2] as f32, 0.0],
             cascade,
-            gain: [gain, choppiness(), swell_height_meters(storm_intensity), 0.0],
+            gain: [gain, choppiness(), swell_height_meters(storm_intensity), f32::from_bits(self.time.load(std::sync::atomic::Ordering::Relaxed))],
             second_order: [second_order_strength(), 0.0, cu as f32, cv as f32],
             edge_reference_direction: [
                 reference_direction[0],
@@ -1417,6 +1470,7 @@ impl OceanFft {
     }
 
     pub fn set_time(&self, queue: &wgpu::Queue, time: f32) {
+        self.time.store(time.to_bits(), std::sync::atomic::Ordering::Relaxed);
         queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&time));
     }
 
@@ -2069,6 +2123,54 @@ pub(crate) mod tests {
 mod jacobian_study {
     use super::tests_support::*;
     use super::*;
+
+    /// About a tenth of the sea, at a given moment and over time at one spot,
+    /// carries the full 3x swell; the rest is between 1x and 3x, mostly 1x.
+    #[test]
+    fn giant_waves_reach_triple_height_about_a_tenth_of_the_time() {
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let (mut full, mut calm, mut over_time_full) = (0, 0, 0);
+        let total = 200_000;
+        for _ in 0..total {
+            let g = giant_wave_envelope([next() * 2.0e5, next() * 2.0e5], next() * 3600.0);
+            assert!((1.0..=GIANT_WAVE_GAIN + 1.0e-9).contains(&g));
+            full += (g >= GIANT_WAVE_GAIN - 0.01) as u32;
+            calm += (g <= 1.01) as u32;
+        }
+        // One spot, an hour in one-second steps.
+        for t in 0..3600 {
+            over_time_full += (giant_wave_envelope([1234.0, -5678.0], t as f64) >= GIANT_WAVE_GAIN - 0.01) as u32;
+        }
+        let fraction = full as f64 / total as f64;
+        assert!((0.08..0.12).contains(&fraction), "full-gain fraction {fraction}");
+        assert!(calm as f64 / total as f64 > 0.8);
+        // A single spot over an hour is few samples of slow patches: loose bound.
+        assert!((0.02..0.25).contains(&(over_time_full as f64 / 3600.0)), "{over_time_full}");
+    }
+
+    /// The WGSL envelope carries the same constants as the Rust one.
+    #[test]
+    fn giant_wave_envelope_constants_are_mirrored_in_the_shaders() {
+        for source in [
+            include_str!("shared_planet.wgsl"),
+            include_str!("ocean_spray_update.wgsl"),
+        ] {
+            assert!(source.contains("smoothstep(1.35, 1.85, n)"));
+            assert!(source.contains("1.0 + 2.0 * smoothstep"));
+            for (wavelength, _, speed, phase) in GIANT_TERMS {
+                let k = std::f64::consts::TAU / wavelength;
+                assert!(source.contains(&format!("{:.9e} * dot(position", k)), "{wavelength}");
+                assert!(source.contains(&format!("{:.9e} * seconds + {phase}", k * speed)), "{wavelength}");
+            }
+        }
+        assert_eq!((GIANT_RAMP_LOW, GIANT_RAMP_HIGH, GIANT_WAVE_GAIN), (1.35, 1.85, 3.0));
+    }
 
     #[test]
     #[ignore = "requires a Vulkan GPU; prints the fold Jacobian distribution"]

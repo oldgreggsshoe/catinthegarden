@@ -1660,6 +1660,19 @@ fn ocean_fft_chop_scales(envelope: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(broad, mid, fine, swell);
 }
 
+// Giant swell groups: the swell height is multiplied by 1 to 3 in slow
+// travelling patches covering about a tenth of the sea. Four drifting cosines
+// summed, ramped over their top 10%. Mirrored by ocean_fft.rs
+// `giant_wave_envelope` (constants and all); position is tangent-plane metres.
+fn ocean_giant_envelope(position: vec2<f32>, seconds: f32) -> f32 {
+    var n = 0.0;
+    n += cos(2.416609734e-3 * dot(position, vec2<f32>(0.955336489, 0.295520207)) - 1.691626813e-2 * seconds + 0.7);
+    n += cos(1.698158191e-3 * dot(position, vec2<f32>(-0.323289567, 0.946300088)) - 1.528342372e-2 * seconds + 2.1);
+    n += cos(1.231997119e-3 * dot(position, vec2<f32>(-0.896758416, -0.442520443)) - 7.391982714e-3 * seconds + 4.4);
+    n += cos(3.306939635e-3 * dot(position, vec2<f32>(0.283662185, -0.958924275)) - 2.645551708e-2 * seconds + 5.8);
+    return 1.0 + 2.0 * smoothstep(1.35, 1.85, n);
+}
+
 // (height, dh/du, dh/dv, div D) for one cascade at planet-plane offset `local`.
 fn ocean_fft_cascade(cascade_index: u32, local: vec2<f32>, filter_width_meters: f32) -> vec4<f32> {
     let entry = ocean_fft_view.cascade[cascade_index];
@@ -1947,7 +1960,8 @@ fn ocean_surface_fft(
     let broad_displacement = ocean_fft_last_displacement;
     // Swell (cascade 3) is geometry like cascade 0, normalised to 1m
     // significant height and scaled by gain.z (metres).
-    let swell_scale = ocean_fft_view.gain.z;
+    let swell_scale = ocean_fft_view.gain.z
+        * ocean_giant_envelope(ocean_fft_view.second_order.zw + local, ocean_fft_view.gain.w);
     let swell = ocean_fft_cascade(3u, local, geometry_filter);
     let swell_mean_square = ocean_fft_last_mean_square_slope;
     let swell_jacobian = ocean_fft_last_jacobian;

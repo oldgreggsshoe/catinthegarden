@@ -210,7 +210,9 @@ fn cs_foam(@builtin(global_invocation_id) id: vec3<u32>) {
         let swell = foam_fft_jacobian(3u, local, texel_meters);
         let swell_displacement = foam_fft_last_displacement;
         let swell_slope = foam_fft_last_slope;
-        let jacobian = broad + mid + fine + swell * foam_fft_view.gain.z;
+        let swell_height = foam_fft_view.gain.z
+            * ocean_giant_envelope(foam_fft_view.second_order.zw + local, foam_fft_view.gain.w);
+        let jacobian = broad + mid + fine + swell * swell_height;
         // The drawn surface is x0 - D, weighted and fold-limited as
         // ocean_surface_fft does (distance from the camera's foot stands in
         // for camera distance; the atlas is well inside geometry range, and
@@ -223,12 +225,12 @@ fn cs_foam(@builtin(global_invocation_id) id: vec3<u32>) {
             ocean_fft_chop_envelope(broad, broad_slope),
             ocean_fft_chop_envelope(mid, mid_slope) * mid_weight,
             ocean_fft_chop_envelope(fine, fine_slope) * fine_weight,
-            ocean_fft_chop_envelope(swell, swell_slope) * foam_fft_view.gain.z,
+            ocean_fft_chop_envelope(swell, swell_slope) * swell_height,
         ) * chop_gain);
         let displacement = (broad_displacement * chop_scales.x
             + mid_displacement * (mid_weight * chop_scales.y)
             + fine_displacement * (fine_weight * chop_scales.z)
-            + swell_displacement * (foam_fft_view.gain.z * chop_scales.w)) * chop_gain;
+            + swell_displacement * (swell_height * chop_scales.w)) * chop_gain;
         let displacement_world = foam_fft_view.axis_u.xyz * displacement.x
             + foam_fft_view.axis_v.xyz * displacement.y;
         drawn_offset = offset - vec2<f32>(

@@ -12007,3 +12007,7 @@ See AGENTS.md. Files: `ship.rs` (`update_deck_water`, `interior_water_plane`, `c
 
 ## 4 October - Ship held to its water label
 See AGENTS.md. `follow_label` evaluates the sea's displacement at a held label (drawn position = label - D, velocity = -dD/dt by a +-25 ms difference) and returns velocity and the gap to the hull. The hull's horizontal damping target gains `anchor_gap * 1.5`. Open: windage (the ship has none, the foam drifts at 0.8 m/s), the same fix for the swimming camera, and whether a ship that never leaves its water should be allowed to sail at all (it now holds station on its water until something re-seats the label).
+
+## 9 October 2026 - giant swell groups
+
+Swell height is multiplied by `ocean_fft::giant_wave_envelope` (1x to 3x, full 3x over the top ~10% of space and time, patches pass a point in about a minute). Mirrored in `shared_planet.wgsl`, `ocean_spray_update.wgsl`, foam atlas and every CPU sampler; time is in `ViewParams.gain.w`. `PLANET_OCEAN_GIANT_WAVES=0` disables. Unit tests pass; `ocean_rough_horizon` passes. Not yet seen: an actual giant wave on screen, ship behaviour in 3x swell, foam/sound retune, frame cost. Same-day housekeeping: test-runs images moved flat to /home/dad/screenshots, tracked files under test-runs were deleted from the working tree (restore with `git checkout -- test-runs` if wanted), stale target dirs removed.

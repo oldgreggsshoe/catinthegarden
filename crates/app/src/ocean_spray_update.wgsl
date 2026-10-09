@@ -172,9 +172,28 @@ fn spray_cascade(index: u32, local: vec2<f32>, weight: f32, geometry: bool, fiel
     }
 }
 
+// Giant swell groups: the swell height is multiplied by 1 to 3 in slow
+// travelling patches covering about a tenth of the sea. Four drifting cosines
+// summed, ramped over their top 10%. Mirrored by ocean_fft.rs
+// `giant_wave_envelope` (constants and all); position is tangent-plane metres.
+fn ocean_giant_envelope(position: vec2<f32>, seconds: f32) -> f32 {
+    var n = 0.0;
+    n += cos(2.416609734e-3 * dot(position, vec2<f32>(0.955336489, 0.295520207)) - 1.691626813e-2 * seconds + 0.7);
+    n += cos(1.698158191e-3 * dot(position, vec2<f32>(-0.323289567, 0.946300088)) - 1.528342372e-2 * seconds + 2.1);
+    n += cos(1.231997119e-3 * dot(position, vec2<f32>(-0.896758416, -0.442520443)) - 7.391982714e-3 * seconds + 4.4);
+    n += cos(3.306939635e-3 * dot(position, vec2<f32>(0.283662185, -0.958924275)) - 2.645551708e-2 * seconds + 5.8);
+    return 1.0 + 2.0 * smoothstep(1.35, 1.85, n);
+}
+
 fn spray_field(local: vec2<f32>) -> SprayField {
     var field = SprayField(0.0, vec2<f32>(0.0), vec4<f32>(0.0), 0.0, 0.0, OCEAN_FFT_CHOP_BUDGET);
-    spray_cascade(3u, local, frame.params.w, true, &field);
+    spray_cascade(
+        3u,
+        local,
+        frame.params.w * ocean_giant_envelope(fft_view.second_order.zw + local, fft_view.gain.w),
+        true,
+        &field,
+    );
     spray_cascade(0u, local, 1.0, true, &field);
     spray_cascade(1u, local, 1.0, true, &field);
     spray_cascade(2u, local, 1.0, false, &field);
