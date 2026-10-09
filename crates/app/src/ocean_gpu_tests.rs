@@ -994,6 +994,7 @@ fn test_mesh(@builtin(global_invocation_id) id: vec3<u32>) {{
     let index = id.x % {plane}u;
     let label = (vec2<f32>(f32(index % {side}u), f32(index / {side}u)) - 64.0) * spacing;
     ocean_fft_view_position = vec3<f32>(label.x, -30.0, label.y);
+    ocean_fft_label_view_position = ocean_fft_view_position;
     ocean_fft_vertex_spacing_meters = spacing;
     let surface = ocean_surface_fft(vec3<f32>(0.0, 1.0, 0.0), length(ocean_fft_view_position), 4000.0);
     mesh_results[id.x] = vec4<f32>(label.x + surface.horizontal_displacement.x,

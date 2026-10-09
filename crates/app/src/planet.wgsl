@@ -132,6 +132,10 @@ struct OceanVertexOutput {
     @location(10) vertical_and_breaking: vec2<f32>,
     // Storm gust here (ocean_fft_gust), evaluated per vertex.
     @location(11) gust: f32,
+    // Where this water rests before the waves' sideways displacement (its
+    // label): the fragment samples the wave field here, so ripples ride the
+    // swell with the water instead of staying fixed in space.
+    @location(12) label_view_position: vec3<f32>,
 }
 
 fn uses_outmap(terrain_info: u32) -> bool {
@@ -1052,6 +1056,7 @@ fn vs_ocean(input: VertexInput) -> OceanVertexOutput {
         on_edge,
     );
     ocean_fft_view_position = flat_camera_relative_view_position;
+    ocean_fft_label_view_position = flat_camera_relative_view_position;
     ocean_fft_vertex_gust = 0.0;
     // Cube-face UV span of the chunk over 32 quads, about 0.7 planet radii per unit.
     ocean_fft_vertex_spacing_meters = ocean_edge_vertex_spacing(
@@ -1087,6 +1092,7 @@ fn vs_ocean(input: VertexInput) -> OceanVertexOutput {
         surface.ripple_slope,
         vec2<f32>(surface.vertical_displacement, surface.breaking_ratio),
         ocean_fft_vertex_gust,
+        flat_camera_relative_view_position,
     );
 }
 
@@ -1778,6 +1784,7 @@ fn flat_triangle_colour(
 fn flat_ocean_colour(input: OceanVertexOutput, macro_height_meters: f32) -> vec4<f32> {
     let direction = normalize(input.surface_direction);
     ocean_fft_view_position = input.camera_relative_view_position;
+    ocean_fft_label_view_position = input.label_view_position;
     let surface = ocean_surface(
         direction,
         camera.projection.z,
@@ -2393,6 +2400,7 @@ fn ocean_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
 fn ocean_raster_surface(input: OceanVertexOutput, height: f32) -> OceanSurface {
     let direction = normalize(input.surface_direction);
     ocean_fft_view_position = input.camera_relative_view_position;
+    ocean_fft_label_view_position = input.label_view_position;
     ocean_fft_gust = input.gust;
     return ocean_surface(direction, camera.projection.z,
         length(input.camera_relative_view_position), max(-height, 0.0));

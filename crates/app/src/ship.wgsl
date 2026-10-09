@@ -83,6 +83,7 @@ fn ship_water_depth(view_position: vec3<f32>) -> f32 {
     var height = 0.0;
     for (var step = 0u; step < 3u; step += 1u) {
         ocean_fft_view_position = label;
+        ocean_fft_label_view_position = label;
         let surface = ocean_surface(up, camera.projection.z, length(label), SHIP_WATER_DEPTH_METERS);
         height = surface.vertical_displacement;
         label = view_position - planet_to_view(surface.horizontal_displacement);

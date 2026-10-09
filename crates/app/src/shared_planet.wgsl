@@ -466,6 +466,14 @@ fn sun_visible_fraction() -> f32 {
 // set by the caller: it keeps wave coordinates precise where the unit
 // direction alone would quantise to about 0.25m on this planet.
 var<private> ocean_fft_view_position: vec3<f32>;
+// Where the water drawn at `ocean_fft_view_position` rests (its label: the
+// drawn surface is label - D). The waves are stored by label, so every
+// cascade is sampled here; the drawn position only gives the view ray. In the
+// vertex stage the two are the same point. The fragment stage used to sample
+// at the drawn position, which pinned every ripple in space instead of letting
+// the swell carry it: a ship riding the swell's orbital motion (several m/s
+// in a big swell) watched the ripples stream past as if it were under way.
+var<private> ocean_fft_label_view_position: vec3<f32>;
 // Metres between adjacent mesh vertices, set only by the vertex stage. Zero in
 // the fragment stage, which filters to its pixel footprint instead.
 var<private> ocean_fft_vertex_spacing_meters: f32;
@@ -1924,9 +1932,13 @@ fn ocean_surface_fft(
     let planet_offset = view.x * camera.camera_right.xyz
         + view.y * camera.camera_up.xyz
         - view.z * camera.camera_forward.xyz;
+    let label_view = ocean_fft_label_view_position;
+    let label_offset = label_view.x * camera.camera_right.xyz
+        + label_view.y * camera.camera_up.xyz
+        - label_view.z * camera.camera_forward.xyz;
     let axis_u = ocean_fft_view.axis_u.xyz;
     let axis_v = ocean_fft_view.axis_v.xyz;
-    let local = vec2<f32>(dot(planet_offset, axis_u), dot(planet_offset, axis_v));
+    let local = vec2<f32>(dot(label_offset, axis_u), dot(label_offset, axis_v));
     let gain = ocean_fft_view.gain.x;
     // Cascade 0 (wavelengths above ~12m) is mesh geometry; the two finer
     // cascades only shade, fading out before they alias at range.

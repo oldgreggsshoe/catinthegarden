@@ -1447,6 +1447,8 @@ struct State {
     storm_overcast_time: f64,
     /// Planet-fixed centre of the optional approaching storm.
     approach_storm_centre: Option<glam::DVec3>,
+    /// The water a `ride_with_the_water` scenario eye is held over (label).
+    scenario_water_label: Option<[f64; 2]>,
     last_real_clock_seconds: f64,
     time_speed_index: usize,
     interactive_scene_time_offset_seconds: f64,
@@ -1977,6 +1979,7 @@ impl State {
             storm_overcast: 0.0,
             storm_overcast_time: f64::NAN,
             approach_storm_centre: None,
+            scenario_water_label: None,
             gust: gust::Gust::CALM,
             last_real_clock_seconds: 0.0,
             time_speed_index: DEFAULT_TIME_SPEED_INDEX,
@@ -3962,6 +3965,27 @@ impl State {
         }
     }
 
+    /// A scenario eye held over one bit of water (`ride_with_the_water`): the
+    /// water under `position` at time 0, wherever the waves have carried it
+    /// now, the way the ship holds its label. The view direction is kept.
+    fn carried_by_the_water(
+        &mut self,
+        position: glam::DVec3,
+        look_at: glam::DVec3,
+        ocean_time_seconds: f64,
+        planet_rotation_radians: f64,
+    ) -> (glam::DVec3, glam::DVec3) {
+        let local = planet::planet_local_vector(position.normalize(), planet_rotation_radians);
+        let label = *self
+            .scenario_water_label
+            .get_or_insert_with(|| ocean::global_wave_label_meters(local, 0.0));
+        let (_, gap) = ocean::global_wave_follow_label(label, local, ocean_time_seconds);
+        let carried_local = (local * planet::planet_radius_meters() + gap).normalize();
+        let carried =
+            planet::planet_world_vector(carried_local, planet_rotation_radians) * position.length();
+        (carried, carried + (look_at - position))
+    }
+
     fn record_spatial_log_sample(&mut self, inputs: SpatialLogInputs) {
         let SpatialLogInputs {
             sim_time,
@@ -4449,13 +4473,25 @@ impl State {
             // A waterline scenario authors where to stand and which way to
             // look; how high the water is there is the spectrum's business.
             let (position, look_at) = match scenario_waterline_eye_height_meters {
-                Some(eye_height_meters) => waterline_scenario_pose(
-                    position,
-                    look_at,
-                    eye_height_meters,
-                    ocean_animation_time_seconds(sim_time, presentation_time),
-                    planet_rotation_radians,
-                ),
+                Some(eye_height_meters) => {
+                    let ocean_time = ocean_animation_time_seconds(sim_time, presentation_time);
+                    let (position, look_at) = if self
+                        .scenario
+                        .as_ref()
+                        .is_some_and(|scenario| scenario.ride_with_the_water())
+                    {
+                        self.carried_by_the_water(position, look_at, ocean_time, planet_rotation_radians)
+                    } else {
+                        (position, look_at)
+                    };
+                    waterline_scenario_pose(
+                        position,
+                        look_at,
+                        eye_height_meters,
+                        ocean_time,
+                        planet_rotation_radians,
+                    )
+                }
                 None => (position, look_at),
             };
             let (position, look_at) = match scenario_terrain_eye_height_meters {

@@ -197,6 +197,12 @@ pub struct ScenarioDefinition {
     /// showed the underside of the water shell rather than the horizon.
     #[serde(default)]
     pub waterline_eye_height_meters: Option<f64>,
+    /// With `waterline_eye_height_meters`: the eye stays over the water that
+    /// was under the first waypoint at time 0, carried with it by the waves
+    /// as the ship is, instead of standing at a fixed point the water flows
+    /// past. FFT sea only.
+    #[serde(default)]
+    pub ride_with_the_water: bool,
     /// Follow the raster ground while waypoint positions supply the ground track.
     #[serde(default)]
     pub terrain_eye_height_meters: Option<f64>,
@@ -346,6 +352,7 @@ scenarios! {
     "ocean_storm_gusts" => "../scenarios/ocean_storm_gusts.json",
     "ocean_storm_look_up" => "../scenarios/ocean_storm_look_up.json",
     "ocean_storm_lightning" => "../scenarios/ocean_storm_lightning.json",
+    "ocean_ripples_ride_the_swell" => "../scenarios/ocean_ripples_ride_the_swell.json",
     "land_chunk_seams" => "../scenarios/land_chunk_seams.json",
     "coast_waters_edge" => "../scenarios/coast_waters_edge.json",
     "ocean_grey_foreground" => "../scenarios/ocean_grey_foreground.json",
@@ -720,6 +727,10 @@ impl ScenarioRunner {
 
     pub fn waterline_eye_height_meters(&self) -> Option<f64> {
         self.definition.waterline_eye_height_meters
+    }
+
+    pub fn ride_with_the_water(&self) -> bool {
+        self.definition.ride_with_the_water
     }
 
     pub fn terrain_eye_height_meters(&self) -> Option<f64> {
@@ -1135,7 +1146,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 122);
+        assert_eq!(SCENARIO_NAMES.len(), 123);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));

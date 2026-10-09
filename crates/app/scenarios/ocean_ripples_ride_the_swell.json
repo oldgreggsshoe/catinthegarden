@@ -1,0 +1,59 @@
+{
+  "name": "ocean_ripples_ride_the_swell",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 3.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0.0,
+  "fixed_exposure": true,
+  "waterline_eye_height_meters": 3.5,
+  "ride_with_the_water": true,
+  "ocean_storm_intensity_override": 1.0,
+  "screenshot_times_seconds": [
+    1.0,
+    1.0667,
+    1.1333,
+    1.2,
+    2.4,
+    2.4667,
+    2.5333,
+    2.6
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        0.5089275188,
+        0.397776994,
+        0.7633912782
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 60.0
+    }
+  ],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [
+        3354072.0199947827,
+        2006922.3243811773,
+        850002.158005245
+      ],
+      "look_at": [
+        3354051.5063720937,
+        2006913.7765580986,
+        850022.3105734382
+      ]
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 8
+  }
+}
