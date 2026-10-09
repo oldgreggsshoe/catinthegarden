@@ -2072,11 +2072,19 @@ impl State {
         );
         self.hdr
             .set_effects(&self.device, anti_aliasing, self.hdr.bloom_enabled());
+        // Then exactly as if F6, F8 and F10 were pressed once the game is up,
+        // which is how Ian starts every session: F6 turns the blur (the
+        // anti-aliasing above) back off, F8 switches the HDR curve on, and
+        // F10 starts the clock that the freeze above stopped.
+        self.toggle_blur();
+        self.toggle_hdr_effect();
+        self.toggle_animation_freeze();
         tracing::info!(
             target: "planet::startup",
             camera_mode = self.camera_mode.label(),
             boat_camera_attached = self.camera_mode == CameraMode::Boat,
             blur_enabled = self.hdr.blur_enabled(),
+            hdr_curve = self.hdr.hdr_effect_enabled(),
             animation_frozen = self.animation_frozen,
             "interactive startup controls applied"
         );
@@ -7166,7 +7174,7 @@ mod tests {
     /// Interactive startup turns the F6 anti-aliasing stage on through
     /// `set_effects` (not the F6 toggle), honouring `PLANET_AA=0`.
     #[test]
-    fn interactive_startup_enables_anti_aliasing() {
+    fn interactive_startup_enables_anti_aliasing_then_presses_f6_f8_f10() {
         let source = include_str!("main.rs");
         let after = source
             .split("fn apply_interactive_startup_controls")
@@ -7181,7 +7189,11 @@ mod tests {
             "startup no longer enables AA:\n{body}"
         );
         assert!(body.contains("PLANET_AA"));
-        assert!(!body.contains("toggle_blur"));
+        // Startup ends as if F6, F8 and F10 were pressed, in that order.
+        let presses = ["self.toggle_blur();", "self.toggle_hdr_effect();", "self.toggle_animation_freeze();"];
+        let at = |text: &str| body.rfind(text).unwrap_or_else(|| panic!("startup does not {text}"));
+        assert!(at(presses[0]) > body.find("set_effects").unwrap());
+        assert!(at(presses[0]) < at(presses[1]) && at(presses[1]) < at(presses[2]));
     }
 
     #[test]
