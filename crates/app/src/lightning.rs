@@ -12,6 +12,10 @@ const CLOUD_ALTITUDE_METERS: f64 = 3_000.0;
 /// cracks within a second or two and a far one rumbles in up to ~26 s later.
 const STRIKE_MIN_RADIUS_METERS: f64 = 300.0;
 const STRIKE_MAX_RADIUS_METERS: f64 = 9_000.0;
+/// Thunder from this far away is heard at half the loudness of a strike
+/// overhead: a close strike is far louder than a full storm's sea and wind,
+/// a far roll about level with them.
+const THUNDER_HALF_GAIN_METERS: f64 = 3_000.0;
 
 #[derive(Clone, Copy)]
 struct Strike {
@@ -23,7 +27,8 @@ pub struct Lightning {
     next_time: f64,
     sequence: u32,
     active: Option<Strike>,
-    thunder: Vec<(f64, f32, f32)>,
+    /// Arrival time, gain, pan and distance (m) of thunder still in the air.
+    thunder: Vec<(f64, f32, f32, f32)>,
 }
 
 impl Lightning {
@@ -37,8 +42,8 @@ impl Lightning {
     }
 
     /// `centre` is fixed to the planet for a forced storm; natural storms
-    /// choose a nearby location each time. Returns thunder gain and pan when
-    /// the delayed sound reaches the eye.
+    /// choose a nearby location each time. Returns thunder gain, pan and the
+    /// distance it came from when the delayed sound reaches the eye.
     pub fn update(
         &mut self,
         time: f64,
@@ -46,7 +51,7 @@ impl Lightning {
         centre: DVec3,
         eye: DVec3,
         right: DVec3,
-    ) -> Option<(f32, f32)> {
+    ) -> Option<(f32, f32, f32)> {
         if !self.next_time.is_finite() || time < self.next_time - 60.0 {
             self.next_time = time + 5.0;
         }
@@ -60,16 +65,16 @@ impl Lightning {
             let offset = nearest_point_of_bolt(strike.position, eye) - eye;
             let distance = offset.length();
             let pan = (0.5 + 0.45 * offset.normalize_or_zero().dot(right)).clamp(0.05, 0.95) as f32;
-            let gain = (1.0 / (1.0 + distance / 8_000.0)) as f32;
+            let gain = (1.0 / (1.0 + distance / THUNDER_HALF_GAIN_METERS)) as f32;
             self.thunder
-                .push((time + thunder_delay_seconds(distance), gain, pan));
+                .push((time + thunder_delay_seconds(distance), gain, pan, distance as f32));
             self.active = Some(strike);
             self.sequence = self.sequence.wrapping_add(1);
             self.next_time = time + 7.0 + 7.0 * random01(self.sequence);
         }
         if let Some(index) = self.thunder.iter().position(|event| time >= event.0) {
-            let (_, gain, pan) = self.thunder.remove(index);
-            Some((gain, pan))
+            let (_, gain, pan, distance) = self.thunder.remove(index);
+            Some((gain, pan, distance))
         } else {
             None
         }

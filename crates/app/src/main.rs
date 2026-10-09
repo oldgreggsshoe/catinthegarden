@@ -28,6 +28,7 @@ mod rain;
 mod relief_survey;
 mod scenario;
 mod sea_sound;
+mod thunder_clips;
 mod ship;
 mod ship_model;
 mod ship_render;
@@ -4739,14 +4740,14 @@ impl State {
                 .planet_frame_direction_dvec3(planet_rotation_radians),
             self.camera.planet_frame_view_up(planet_rotation_radians),
         );
-        if let Some((gain, pan)) = self.lightning.update(
+        if let Some((gain, pan, distance)) = self.lightning.update(
             sim_time,
             self.storm_overcast,
             self.approach_storm_centre.unwrap_or(lightning_eye),
             lightning_eye,
             lightning_basis.view_to_world(glam::DVec3::X),
         ) {
-            self.sea_sound.thunder(gain, pan);
+            self.sea_sound.thunder(gain, pan, distance);
         }
         let flash = self.lightning.flash(sim_time, lightning_eye);
         let view = lightning_basis.world_to_view(glam::DVec3::new(

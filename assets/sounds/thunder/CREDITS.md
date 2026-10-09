@@ -27,3 +27,30 @@ login to download; fetch them from the page if better quality is needed.
 Not taken: most other Wikimedia Commons thunder recordings are CC BY or
 CC BY-SA (royalty-free, but they need credit, and BY-SA requires sharing
 edits under the same licence).
+
+## clips/
+
+What the game plays (`crates/app/src/thunder_clips.rs`): eleven single
+thunder events cut from the files above, with a 30 ms fade in and a 1.5 s
+fade out, mono 44.1 kHz, peak 0.9, Ogg Vorbis q5. Sorted by how fast each
+rises to its loudest: `crack_*` (within 0.5 s: close strikes), `mid_*`
+(0.5-1.25 s), `roll_*` (slower: far strikes). The game evens out their
+loudness when it loads them.
+
+| Clip | Cut from | At (s) |
+|---|---|---|
+| crack_01 | closeup_thunder_strike_01 (loganzsound) | 0.55 |
+| crack_02 | three_mighty_thunders (Nimlos) | 60.7 |
+| mid_01 | short_thunder_mid (SholeColtis) | 0.15 |
+| mid_02 | thunder_12 (LukaCafuka) | 0.9 |
+| mid_03 | three_mighty_thunders (Nimlos) | 27.7 |
+| mid_04 | thunder_triple_layer (AppleCorey) | 24.65 |
+| mid_05 | thunder_5_dry (elmoustachio) | 5.3 |
+| roll_01 | three_mighty_thunders (Nimlos) | 95.0 |
+| roll_02 | three_mighty_thunders (Nimlos) | 127.35 |
+| roll_03 | thunder_strike (AyaDrevis) | 2.0 |
+| roll_04 | rain_long_thunder (WuxiaScrub) | 22.7 |
+
+Left out: peal_of_thunder_distant, high_thunder_suburb_08 and
+rolling_distant_thunder_heavy_rain (thunder under 20 dB above their rain or
+traffic), and light_rain_distant_thunder_2016 (thunder too faint to cut).

@@ -1,4 +1,6 @@
-//! The sound of the sea and the wind, synthesised: no recordings.
+//! The sound of the sea and the wind, synthesised. The one recording is the
+//! thunder (`thunder_clips`): a CC0 clip per strike, falling back to a
+//! synthesised low thump if the clips are missing.
 //!
 //! Three layers of filtered noise. Breaking waves are bursts that start bright
 //! (the crash) and sweep down into a hiss (the wash), arriving at random and
@@ -22,6 +24,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
+use crate::thunder_clips::{ThunderClips, thunder_cutoff_hz};
+
 /// Overall loudness; `PLANET_SOUND_VOLUME` scales it (0-2).
 const VOLUME: f32 = 0.4;
 /// Seconds the audio thread takes to follow a change in the sea.
@@ -36,6 +40,13 @@ const MAX_BREAKS: usize = 24;
 const MAX_LAPS: usize = 8;
 const MAX_CREAKS: usize = 4;
 const MAX_IMPACTS: usize = 6;
+/// Thunder clips playing at once; a new strike past this replaces the oldest.
+const MAX_THUNDER_VOICES: usize = 4;
+/// Level of a recorded thunder clip (loudness-matched by `thunder_clips`)
+/// before the strike's own gain. Set against a full storm's sea and wind on
+/// deck: a close strike stands well over them (peaks rounded by the soft
+/// clip), a far roll a little over them.
+const THUNDER_CLIP_GAIN: f32 = 5.0;
 /// Metres of water over the listener at which the surface sounds (the sea's
 /// roar and breaking waves, the wind, thunder, the hull's creaks above the
 /// waves) have fallen to 1/e; a few times this and they are gone, and the
@@ -107,7 +118,10 @@ struct Shared {
     clock_rate: AtomicU32,
     thunder_gain: AtomicU32,
     thunder_pan: AtomicU32,
+    thunder_distance: AtomicU32,
     thunder_sequence: AtomicU32,
+    /// Recorded thunder, decoded off the audio thread after the stream opens.
+    thunder_clips: std::sync::OnceLock<Arc<ThunderClips>>,
     creak_stress: AtomicU32,
     depth: AtomicU32,
     scrape: AtomicU32,
@@ -146,7 +160,27 @@ impl SeaSound {
         let shared = Arc::new(Shared::default());
         let stream = if enabled() {
             match open_stream(Arc::clone(&shared)) {
-                Ok(stream) => Some(stream),
+                Ok(stream) => {
+                    let loading = Arc::clone(&shared);
+                    std::thread::Builder::new()
+                        .name("thunder-clips".into())
+                        .spawn(move || match ThunderClips::load() {
+                            Some(clips) => {
+                                tracing::info!(
+                                    target: "planet::sound",
+                                    clips = clips.clips.len(),
+                                    "thunder clips loaded"
+                                );
+                                let _ = loading.thunder_clips.set(Arc::new(clips));
+                            }
+                            None => tracing::warn!(
+                                target: "planet::sound",
+                                "no thunder clips; using the synthesised thump"
+                            ),
+                        })
+                        .ok();
+                    Some(stream)
+                }
                 Err(error) => {
                     tracing::warn!(target: "planet::sound", %error, "no sea sound");
                     None
@@ -203,11 +237,13 @@ impl SeaSound {
         self.shared.impact_sequence.fetch_add(1, Ordering::Release);
     }
 
-    /// One delayed thunder arrival. The sequence is published last so the
-    /// audio callback sees the gain and stereo direction together.
-    pub fn thunder(&self, gain: f32, pan: f32) {
+    /// One delayed thunder arrival from a strike `distance_meters` away. The
+    /// sequence is published last so the audio callback sees the gain, stereo
+    /// direction and distance together.
+    pub fn thunder(&self, gain: f32, pan: f32, distance_meters: f32) {
         store(&self.shared.thunder_gain, gain.clamp(0.0, 1.0));
         store(&self.shared.thunder_pan, pan.clamp(0.0, 1.0));
+        store(&self.shared.thunder_distance, distance_meters.max(0.0));
         self.shared.thunder_sequence.fetch_add(1, Ordering::Release);
     }
 }
@@ -269,9 +305,16 @@ where
                     synth.trigger_impact(load(&shared.impact_gain));
                     last_impact_sequence = impacts;
                 }
+                if synth.thunder_clips.is_none() {
+                    synth.thunder_clips = shared.thunder_clips.get().cloned();
+                }
                 let sequence = shared.thunder_sequence.load(Ordering::Acquire);
                 if sequence != last_thunder_sequence {
-                    synth.trigger_thunder(load(&shared.thunder_gain), load(&shared.thunder_pan));
+                    synth.trigger_thunder(
+                        load(&shared.thunder_gain),
+                        load(&shared.thunder_pan),
+                        load(&shared.thunder_distance),
+                    );
                     last_thunder_sequence = sequence;
                 }
                 let gains: Vec<[f32; 2]> = (0..channels)
@@ -570,6 +613,19 @@ impl Wind {
     }
 }
 
+/// One recorded thunder playing: where in its clip (in clip samples, stepped
+/// by the clip's rate over the output's), its level, pan (0 left, 1 right),
+/// and a two-pole low-pass for the air between.
+struct ThunderVoice {
+    clip: usize,
+    position: f64,
+    step: f64,
+    gain: f32,
+    pan: f32,
+    lowpass: f32,
+    low: [f32; 2],
+}
+
 /// The synthesiser. Pure and deterministic for a seed, so it can be tested
 /// without an audio device.
 pub(crate) struct SeaSynth {
@@ -598,6 +654,11 @@ pub(crate) struct SeaSynth {
     thunder_gain: f32,
     thunder_pan: f32,
     thunder_low: f32,
+    /// Recorded thunder, once loaded, the clips playing, and the last one
+    /// started (not repeated next).
+    pub(crate) thunder_clips: Option<Arc<ThunderClips>>,
+    thunder_voices: Vec<ThunderVoice>,
+    last_thunder_clip: Option<usize>,
     /// How far under the water the listener is, and the hull on the seabed:
     /// sliding, rolling, and the thumps of its landings.
     depth: f32,
@@ -642,6 +703,9 @@ impl SeaSynth {
             thunder_gain: 0.0,
             thunder_pan: 0.5,
             thunder_low: 0.0,
+            thunder_clips: None,
+            thunder_voices: Vec::with_capacity(MAX_THUNDER_VOICES),
+            last_thunder_clip: None,
             depth: 0.0,
             scrape: 0.0,
             tumble: 0.0,
@@ -688,10 +752,59 @@ impl SeaSynth {
         });
     }
 
-    fn trigger_thunder(&mut self, gain: f32, pan: f32) {
-        self.thunder_age = 0.0;
-        self.thunder_gain = gain;
-        self.thunder_pan = pan;
+    /// A thunder arrival: a recorded clip chosen for the distance (a crack
+    /// close by, a low roll far off) and dulled by it, or without clips the
+    /// synthesised thump.
+    fn trigger_thunder(&mut self, gain: f32, pan: f32, distance_meters: f32) {
+        let Some(clips) = self.thunder_clips.clone() else {
+            self.thunder_age = 0.0;
+            self.thunder_gain = gain;
+            self.thunder_pan = pan;
+            return;
+        };
+        let (jitter, pick) = (self.random(), self.random());
+        let index = clips.choose(distance_meters, jitter, pick, self.last_thunder_clip);
+        self.last_thunder_clip = Some(index);
+        if self.thunder_voices.len() >= MAX_THUNDER_VOICES {
+            self.thunder_voices.remove(0);
+        }
+        self.thunder_voices.push(ThunderVoice {
+            clip: index,
+            position: 0.0,
+            step: f64::from(clips.clips[index].rate / self.sample_rate),
+            gain: gain * THUNDER_CLIP_GAIN * clips.clips[index].level,
+            pan,
+            lowpass: one_pole(thunder_cutoff_hz(distance_meters), self.sample_rate),
+            low: [0.0; 2],
+        });
+    }
+
+    /// The thunder clips playing, mixed to left and right by their pans,
+    /// advanced one output sample at real speed (thunder does not change
+    /// pitch with the game clock), finished ones dropped.
+    fn thunder_clip_frame(&mut self) -> [f32; 2] {
+        let Some(clips) = self.thunder_clips.as_ref() else {
+            return [0.0; 2];
+        };
+        let mut out = [0.0_f32; 2];
+        for voice in &mut self.thunder_voices {
+            let samples = &clips.clips[voice.clip].samples;
+            let index = voice.position as usize;
+            if index + 1 >= samples.len() {
+                voice.position = f64::INFINITY;
+                continue;
+            }
+            let fraction = (voice.position - index as f64) as f32;
+            let value = samples[index] + (samples[index + 1] - samples[index]) * fraction;
+            voice.low[0] += voice.lowpass * (value - voice.low[0]);
+            voice.low[1] += voice.lowpass * (voice.low[0] - voice.low[1]);
+            let heard = voice.low[1] * voice.gain;
+            out[0] += heard * (1.5 - voice.pan);
+            out[1] += heard * (0.5 + voice.pan);
+            voice.position += voice.step;
+        }
+        self.thunder_voices.retain(|voice| voice.position.is_finite());
+        out
     }
 
     /// xorshift32: enough for noise, and the same on every run.
@@ -842,6 +955,7 @@ impl SeaSynth {
             [0.0; 2]
         };
         let wind_level = 1.0 - 0.95 * self.muffle;
+        let thunder_clips = self.thunder_clip_frame();
         let thunder = if self.thunder_age < 5.0 {
             let noise = self.white();
             let a = one_pole(90.0, sample_rate);
@@ -921,7 +1035,7 @@ impl SeaSynth {
                     + out[ear] * self.level * self.level
                     + wind[ear] * wind_level
                     + creak[ear] * (1.0 - 0.8 * self.muffle)
-                    + thunder * (0.5 + side) * (1.0 - 0.8 * self.muffle))
+                    + (thunder * (0.5 + side) + thunder_clips[ear]) * (1.0 - 0.8 * self.muffle))
                 + under[ear];
             self.muffled[ear][0] += muffle_a * (mixed - self.muffled[ear][0]);
             self.muffled[ear][1] += muffle_a * (self.muffled[ear][0] - self.muffled[ear][1]);
@@ -1055,7 +1169,7 @@ mod tests {
         let mut synth = SeaSynth::new(RATE, 53);
         synth.jump_to(0.0, 0.0, 0.0, 0.0);
         assert!((0..1000).all(|_| synth.next_frame() == [0.0, 0.0]));
-        synth.trigger_thunder(1.0, 0.75);
+        synth.trigger_thunder(1.0, 0.75, 3_000.0);
         let peak = (0..RATE as usize)
             .map(|_| {
                 let [left, right] = synth.next_frame();
@@ -1068,6 +1182,35 @@ mod tests {
         let age = synth.thunder_age;
         assert!((0..1000).all(|_| synth.next_frame() == [0.0, 0.0]));
         assert_eq!(synth.thunder_age, age);
+    }
+
+    /// Recorded thunder plays when loaded, pauses with the game clock, and a
+    /// far strike comes through the air duller than a near one.
+    #[test]
+    fn recorded_thunder_plays_and_far_strikes_are_duller() {
+        let clips = Arc::new(ThunderClips::load().expect("clips are in the repository"));
+        let crossings = |distance: f32| {
+            let mut synth = SeaSynth::new(RATE, 7);
+            synth.jump_to(0.0, 0.0, 0.0, 0.0);
+            synth.thunder_clips = Some(Arc::clone(&clips));
+            synth.trigger_thunder(1.0, 0.5, distance);
+            let frames: Vec<f32> = (0..(RATE as usize * 4))
+                .map(|_| synth.next_frame()[0])
+                .collect();
+            let peak = frames.iter().fold(0.0_f32, |peak, value| peak.max(value.abs()));
+            assert!(peak > 0.02, "thunder at {distance} m peaks at {peak}");
+            synth.clock_rate = 0.0;
+            assert!((0..1000).all(|_| synth.next_frame() == [0.0, 0.0]));
+            let rms = (frames.iter().map(|v| v * v).sum::<f32>() / frames.len() as f32).sqrt();
+            let changes = frames
+                .windows(2)
+                .filter(|pair| (pair[0] > 0.0) != (pair[1] > 0.0))
+                .count();
+            (changes as f32 / frames.len() as f32, rms)
+        };
+        let (near, _) = crossings(400.0);
+        let (far, _) = crossings(8_500.0);
+        assert!(far < 0.7 * near, "far {far} near {near} zero-crossing rate");
     }
 
     /// RMS of `seconds` of output after letting the parameters settle.
@@ -1293,6 +1436,38 @@ mod tests {
                 pcm.extend_from_slice(&((value * 32_767.0) as i16).to_le_bytes());
             }
         }
+        write_wav("sea_sound_calm_to_storm.wav", rate, &pcm);
+    }
+
+    /// Four thunders in a full storm on deck, from strikes 0.4, 2.5, 5 and
+    /// 8.5 km away (a crack, two peals, a far roll), with the game's distance
+    /// gain and pan. `cargo test --release -p planet-app write_thunder_demo
+    /// -- --ignored`.
+    #[test]
+    #[ignore = "writes a WAV to listen to"]
+    fn write_thunder_demo() {
+        let rate = 44_100_u32;
+        let mut synth = SeaSynth::new(rate as f32, 11);
+        synth.volume = VOLUME;
+        synth.jump_to(1.0, 0.6, 0.0, 0.8);
+        synth.thunder_clips = Some(Arc::new(ThunderClips::load().expect("clips")));
+        let strikes = [(1.0, 400.0, 0.3), (10.0, 2_500.0, 0.7), (21.0, 5_000.0, 0.45), (33.0, 8_500.0, 0.2)];
+        let seconds = 52.0_f32;
+        let mut pcm = Vec::new();
+        for frame in 0..(rate as f32 * seconds) as usize {
+            for (at, distance, pan) in strikes {
+                if frame == (at * rate as f32) as usize {
+                    synth.trigger_thunder(1.0 / (1.0 + distance / 3_000.0), pan, distance);
+                }
+            }
+            for value in synth.next_frame() {
+                pcm.extend_from_slice(&((value * 32_767.0) as i16).to_le_bytes());
+            }
+        }
+        write_wav("thunder_in_a_storm.wav", rate, &pcm);
+    }
+
+    fn write_wav(name: &str, rate: u32, pcm: &[u8]) {
         let mut wav = Vec::new();
         let data = pcm.len() as u32;
         wav.extend_from_slice(b"RIFF");
@@ -1307,8 +1482,8 @@ mod tests {
         wav.extend_from_slice(&16_u16.to_le_bytes());
         wav.extend_from_slice(b"data");
         wav.extend_from_slice(&data.to_le_bytes());
-        wav.extend_from_slice(&pcm);
-        let path = std::env::temp_dir().join("sea_sound_calm_to_storm.wav");
+        wav.extend_from_slice(pcm);
+        let path = std::env::temp_dir().join(name);
         std::fs::write(&path, wav).expect("write demo");
         println!("wrote {}", path.display());
     }
