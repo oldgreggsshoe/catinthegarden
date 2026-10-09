@@ -1660,7 +1660,7 @@ fn ocean_fft_chop_scales(envelope: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(broad, mid, fine, swell);
 }
 
-// Giant swell groups: the swell height is multiplied by 1 to 3 in slow
+// Giant swell groups: the swell height is multiplied by 1 to 2 in slow
 // travelling patches covering about a tenth of the sea. Four drifting cosines
 // summed, ramped over their top 10%. Mirrored by ocean_fft.rs
 // `giant_wave_envelope` (constants and all); position is tangent-plane metres.
@@ -1670,7 +1670,7 @@ fn ocean_giant_envelope(position: vec2<f32>, seconds: f32) -> f32 {
     n += cos(1.698158191e-3 * dot(position, vec2<f32>(-0.323289567, 0.946300088)) - 1.528342372e-2 * seconds + 2.1);
     n += cos(1.231997119e-3 * dot(position, vec2<f32>(-0.896758416, -0.442520443)) - 7.391982714e-3 * seconds + 4.4);
     n += cos(3.306939635e-3 * dot(position, vec2<f32>(0.283662185, -0.958924275)) - 2.645551708e-2 * seconds + 5.8);
-    return 1.0 + 2.0 * smoothstep(1.35, 1.85, n);
+    return 1.0 + smoothstep(1.35, 1.85, n);
 }
 
 // (height, dh/du, dh/dv, div D) for one cascade at planet-plane offset `local`.

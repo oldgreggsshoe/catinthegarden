@@ -12,7 +12,7 @@ pub const SWELL_CASCADE: usize = 3;
 /// 256 down to 1 texel.
 pub const MIP_LEVELS: u32 = 9;
 /// Tile edge lengths in metres, chosen so the repeats do not line up.
-pub const TILE_METERS: [f32; CASCADES] = [1000.0, 237.0, 53.0, 2170.0];
+pub const TILE_METERS: [f32; CASCADES] = [1000.0, 237.0, 53.0, 7070.0];
 
 /// Global wavelength modifier: every wave (wind sea and swell) is this many
 /// times longer, at the same height. A spatial stretch of the whole field:
@@ -46,10 +46,16 @@ pub const BAND_EDGES: [f32; WIND_CASCADES + 1] = [0.0, 0.5, 2.0, 1.0e9];
 /// and scaled at run time by `swell_height_meters`.
 const SWELL_PEAK_WAVELENGTH_METERS: f32 = 170.0;
 /// Bigger swell is longer swell: the peak wavelength is at least this many
-/// times the (unstormed) significant height, so crests keep a sea's
-/// steepness instead of pinching into spikes. 15m -> 180m, 20m -> 240m,
-/// 30m -> 360m; the default 8m keeps 170m.
-const SWELL_WAVELENGTH_PER_HEIGHT: f32 = 12.0;
+/// times the (unstormed) significant height. 39 is a fully developed sea
+/// (Pierson-Moskowitz: Tp ~ 5 sqrt(Hs) s, so L = g Tp^2 / 2 pi ~ 39 Hs),
+/// steepness Hs/L ~ 1/39, which leaves room under the breaking limit (a wave
+/// breaks at H/L ~ 1/7) for giant groups (`giant_wave_envelope`). The default
+/// 16m is 624m long with a 20s period; 30m is 1170m. It was 12 (16m -> 192m,
+/// 11s, 1/12), three times steeper than any real sea, and a tripled swell
+/// on it was far past breaking. The spectrum is built once, so the storm
+/// boost raises the height but not the length: 24m on 624m is 1/26, a young
+/// storm sea's steepness.
+const SWELL_WAVELENGTH_PER_HEIGHT: f32 = 39.0;
 
 /// Swell peak wavelength for the configured swell height.
 pub fn swell_peak_wavelength_meters() -> f32 {
@@ -312,11 +318,14 @@ const DEFAULT_SWELL_HEIGHT_METERS: f32 = 16.0;
 /// Giant swell groups. The swell's height is multiplied by an envelope that
 /// depends on where (tangent-plane label metres) and when: 1 most of the time,
 /// rising to `GIANT_WAVE_GAIN` in slow travelling patches that cover about a
-/// tenth of the sea and pass a fixed point in a minute or so. The envelope is
+/// tenth of the sea and pass a fixed point in a minute or so. 2x, not 3x: it
+/// scales the whole swell in a patch, whose own largest crests are already
+/// ~1.9 Hs, so 2x puts them near 4 Hs (the recorded rogue waves are 2-3 Hs)
+/// and, on the 1/39 swell, near but under the breaking steepness. The envelope is
 /// four drifting cosines, whose sum has a standard deviation of sqrt 2; its
 /// top 10% (n above 1.85) is the full gain and it starts to rise at 1.35.
 /// Mirrored by `ocean_giant_envelope` in shared_planet.wgsl and the spray shader.
-pub const GIANT_WAVE_GAIN: f64 = 3.0;
+pub const GIANT_WAVE_GAIN: f64 = 2.0;
 const GIANT_RAMP_LOW: f64 = 1.35;
 const GIANT_RAMP_HIGH: f64 = 1.85;
 /// (wavelength m, direction radians, phase speed m/s, phase radians).
@@ -2054,9 +2063,11 @@ pub(crate) mod tests {
 
     #[test]
     fn bigger_swell_is_longer_swell() {
-        assert_eq!(swell_wavelength_for_height(8.0), 170.0, "default unchanged");
-        assert_eq!(swell_wavelength_for_height(20.0), 240.0);
-        assert_eq!(swell_wavelength_for_height(30.0), 360.0);
+        assert_eq!(swell_wavelength_for_height(4.0), 170.0, "small swell keeps the floor");
+        assert_eq!(swell_wavelength_for_height(16.0), 624.0);
+        assert_eq!(swell_wavelength_for_height(30.0), 1170.0);
+        // A fully developed sea's steepness, well under breaking (1/7).
+        assert!(DEFAULT_SWELL_HEIGHT_METERS / swell_wavelength_for_height(DEFAULT_SWELL_HEIGHT_METERS) < 1.0 / 35.0);
         // Several waves per swell tile even at the largest.
         assert!(TILE_METERS[SWELL_CASCADE] / swell_wavelength_for_height(30.0) > 5.0);
     }
@@ -2125,7 +2136,7 @@ mod jacobian_study {
     use super::*;
 
     /// About a tenth of the sea, at a given moment and over time at one spot,
-    /// carries the full 3x swell; the rest is between 1x and 3x, mostly 1x.
+    /// carries the full 2x swell; the rest is between 1x and 2x, mostly 1x.
     #[test]
     fn giant_waves_reach_triple_height_about_a_tenth_of_the_time() {
         let mut state = 0x2545_f491_4f6c_dd1du64;
@@ -2162,14 +2173,14 @@ mod jacobian_study {
             include_str!("ocean_spray_update.wgsl"),
         ] {
             assert!(source.contains("smoothstep(1.35, 1.85, n)"));
-            assert!(source.contains("1.0 + 2.0 * smoothstep"));
+            assert!(source.contains("return 1.0 + smoothstep(1.35, 1.85, n);"));
             for (wavelength, _, speed, phase) in GIANT_TERMS {
                 let k = std::f64::consts::TAU / wavelength;
                 assert!(source.contains(&format!("{:.9e} * dot(position", k)), "{wavelength}");
                 assert!(source.contains(&format!("{:.9e} * seconds + {phase}", k * speed)), "{wavelength}");
             }
         }
-        assert_eq!((GIANT_RAMP_LOW, GIANT_RAMP_HIGH, GIANT_WAVE_GAIN), (1.35, 1.85, 3.0));
+        assert_eq!((GIANT_RAMP_LOW, GIANT_RAMP_HIGH, GIANT_WAVE_GAIN), (1.35, 1.85, 2.0));
     }
 
     #[test]
