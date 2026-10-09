@@ -152,16 +152,43 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(ship_shaded(input), 1.0);
 }
 
-// The water on and in the ship: lit and fogged like the hull, blended by its
-// own alpha, with the sky's sheen on the surface.
+// The water on and in the ship. It is the sea's own water, so it takes the
+// sea's colour (`ocean_underwater_medium_colour`: the water albedo, or the
+// swirl, lit as the sea body is) rather than a painted blue, and it is thin:
+// mostly see-through (alpha from its depth, ship_model::build_water), with
+// the sky reflected off its surface by Fresnel, strongest at grazing angles.
+// Wherever the sea covers it -- a deck awash, a hull going down -- it is the
+// sea, and fades out over its first few centimetres under the surface.
 @fragment
 fn fs_water(input: VertexOutput) -> @location(0) vec4<f32> {
     let view_direction = normalize(input.view_position);
-    let normal = normalize(input.normal);
-    let sheen = pow(1.0 - abs(dot(normal, view_direction)), 3.0);
-    let base = ship_shaded(input);
-    return vec4<f32>(base + vec3<f32>(0.10, 0.14, 0.18) * sheen, clamp(input.alpha + 0.2 * sheen, 0.0, 1.0));
+    var normal = normalize(input.normal);
+    if dot(normal, view_direction) > 0.0 {
+        normal = -normal;
+    }
+    var submerged = 0.0;
+    let reach = 1.5 * ocean_fft_view.gain.z + 10.0;
+    if OCEAN_FFT_ENABLED && local_view_altitude_meters(input.view_position) < reach {
+        submerged = smoothstep(0.0, SHIP_WATER_SUBMERGED_FADE_METERS, ship_water_depth(input.view_position));
+    }
+    if submerged >= 1.0 {
+        discard;
+    }
+    let sea_colour = ocean_underwater_medium_colour();
+    let sky = storm_overcast_colour(physical_camera_sky_radiance(reflect(view_direction, normal)));
+    let fresnel = 0.02 + 0.98 * pow(1.0 - abs(dot(normal, view_direction)), 5.0);
+    let colour = mix(sea_colour, sky, fresnel);
+    let fog = terrain_fog(
+        input.view_position,
+        normalize(ship.up.xyz),
+        local_view_altitude_meters(input.view_position),
+    );
+    let alpha = clamp(input.alpha + 0.6 * fresnel, 0.0, 1.0) * (1.0 - submerged);
+    return vec4<f32>(mix(colour, fog.color, fog.amount), alpha);
 }
+
+// Water on or in the hull fades out over this depth under the sea surface.
+const SHIP_WATER_SUBMERGED_FADE_METERS: f32 = 0.05;
 
 fn ship_shaded(input: VertexOutput) -> vec3<f32> {
     let sun_direction = normalize(camera.sun_direction.xyz);

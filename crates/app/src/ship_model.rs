@@ -757,6 +757,12 @@ fn push_water_quad(
 /// camera-relative upload by the ship renderer; drawn double-sided, blended.
 pub fn build_water(body: &ShipBody, hull: &ShipHull) -> Vec<ShipVertex> {
     let mut vertices = Vec::new();
+    // Sunk: the hull is full of the sea and lies under it. There is no deck
+    // water or floodwater level of its own to show; the shader also hides any
+    // of it the sea covers while it goes down.
+    if body.on_seabed {
+        return vertices;
+    }
     let footprints = hull.column_footprints();
     for (index, (keel, length, width)) in footprints.iter().enumerate().take(DECK_CELLS) {
         let depth = f64::from(body.deck_water_meters[index]);
@@ -774,7 +780,9 @@ pub fn build_water(body: &ShipBody, hull: &ShipHull) -> Vec<ShipVertex> {
             let lane_hi = (keel.y + 0.5 * width).min(SIDE_INNER * half_beam);
             if lane_lo < lane_hi {
                 let z = deck + depth;
-                let alpha = (0.30 + 1.2 * depth / S).clamp(0.30, 0.78) as f32;
+                // Thin water is mostly see-through; the shader adds the sky's
+                // reflection on top.
+                let alpha = (0.15 + 1.0 * depth / S).clamp(0.15, 0.5) as f32;
                 push_water_quad(
                     &mut vertices,
                     [
@@ -832,7 +840,7 @@ pub fn build_water(body: &ShipBody, hull: &ShipHull) -> Vec<ShipVertex> {
             let water = corners.map(at);
             if water.iter().any(|c| c.z > floor + 0.01) {
                 let lifted = water.map(|c| DVec3::new(c.x, c.y, c.z.max(floor + 0.01)));
-                push_water_quad(&mut vertices, lifted, normal, WATER_TINT, [0.9; 4]);
+                push_water_quad(&mut vertices, lifted, normal, WATER_TINT, [0.85; 4]);
             }
         }
     }
@@ -858,5 +866,8 @@ mod water_tests {
             assert!((0.0..=1.0).contains(&vertex.alpha));
             assert!(vertex.position[1].abs() <= 0.5 * crate::ship::HULL_BEAM_METERS as f32 + 0.05);
         }
+        // Sunk: none of it is drawn, however wet the deck was left.
+        body.on_seabed = true;
+        assert!(build_water(&body, &hull).is_empty());
     }
 }
