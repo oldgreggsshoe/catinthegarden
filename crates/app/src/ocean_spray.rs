@@ -53,6 +53,10 @@ struct SprayFrame {
     /// Storm gusts (`gust::Gust::uniform`): the camera's gust-field
     /// coordinate, gustiness, mean wind speed.
     gust: [f32; 4],
+    /// The sea's foam history atlas: east (w 1 once written) and north (w its
+    /// width in metres), so crest spray is born only on foam the sea draws.
+    foam_east: [f32; 4],
+    foam_north: [f32; 4],
 }
 
 /// Where along the hull (-1 stern, +1 stem) the slam is measured, each side.
@@ -108,7 +112,7 @@ pub(super) fn spray_enabled() -> bool {
 pub(super) struct OceanSpray {
     _particles: wgpu::Buffer,
     uniform: wgpu::Buffer,
-    update_bind_group: wgpu::BindGroup,
+    update_bind_groups: [wgpu::BindGroup; 2],
     draw_bind_group: wgpu::BindGroup,
     update_pipeline: wgpu::ComputePipeline,
     draw_pipeline: wgpu::RenderPipeline,
@@ -123,6 +127,7 @@ impl OceanSpray {
         camera_layout: &wgpu::BindGroupLayout,
         shared_layout: &wgpu::BindGroupLayout,
         ocean_fft: &crate::ocean_fft::OceanFft,
+        foam_history: &super::ocean_foam::OceanFoamHistory,
         hdr_format: wgpu::TextureFormat,
     ) -> Self {
         let particles = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -178,9 +183,33 @@ impl OceanSpray {
                     count: None,
                 },
                 uniform_entry(4, compute),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: compute,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: compute,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
-        let update_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let foam_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("ocean spray foam history sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        // One per foam-history ping-pong texture: the update reads whichever
+        // the sea is drawing this frame.
+        let update_bind_groups = std::array::from_fn(|atlas| device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ocean spray update"),
             layout: &update_layout,
             entries: &[
@@ -198,8 +227,16 @@ impl OceanSpray {
                     binding: 4,
                     resource: ocean_fft.view_params.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(foam_history.view(atlas)),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::Sampler(&foam_sampler),
+                },
             ],
-        });
+        }));
         let update_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("ocean spray update"),
             source: wgpu::ShaderSource::Wgsl(update_shader_source().into()),
@@ -280,7 +317,7 @@ impl OceanSpray {
         Self {
             _particles: particles,
             uniform,
-            update_bind_group,
+            update_bind_groups,
             draw_bind_group,
             update_pipeline,
             draw_pipeline,
@@ -301,6 +338,7 @@ impl OceanSpray {
         storm_intensity: f32,
         ship: Option<&ShipSprayEmitter>,
         gust: &crate::gust::Gust,
+        foam: Option<(usize, [[f32; 3]; 3])>,
     ) {
         let (u, v) = crate::ocean_fft::anchor_axes(camera_direction.normalize().to_array());
         let radius = crate::planet::planet_radius_meters();
@@ -386,6 +424,10 @@ impl OceanSpray {
             ship_port_water,
             ship_starboard_water,
             gust: gust.uniform(),
+            foam_east: foam.map_or([0.0; 4], |(_, [_, east, _])| [east[0], east[1], east[2], 1.0]),
+            foam_north: foam.map_or([0.0; 4], |(_, [_, _, north])| {
+                [north[0], north[1], north[2], super::ocean_foam::OceanFoamHistory::WIDTH_METERS]
+            }),
         };
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&frame));
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -393,7 +435,7 @@ impl OceanSpray {
             timestamp_writes: None,
         });
         pass.set_pipeline(&self.update_pipeline);
-        pass.set_bind_group(0, &self.update_bind_group, &[]);
+        pass.set_bind_group(0, &self.update_bind_groups[foam.map_or(0, |(atlas, _)| atlas)], &[]);
         pass.dispatch_workgroups(SPRAY_PARTICLES.div_ceil(64), 1, 1);
     }
 
@@ -483,6 +525,6 @@ mod tests {
         for source in [include_str!("ocean_spray_update.wgsl"), include_str!("ocean_spray_draw.wgsl")] {
             assert!(source.contains("    extra: vec4<f32>,\n}"));
         }
-        assert_eq!(std::mem::size_of::<SprayFrame>(), 240);
+        assert_eq!(std::mem::size_of::<SprayFrame>(), 272);
     }
 }

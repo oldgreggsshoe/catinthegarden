@@ -45,6 +45,11 @@ struct SprayFrame {
     // Storm gusts: the camera's gust-field coordinate, gustiness, mean wind
     // speed (gust.rs `Gust::uniform`).
     gust: vec4<f32>,
+    // The sea's foam history atlas, centred under the camera: its east and
+    // north (planet frame, same as axis_u/v); w of east is 1 once the atlas
+    // has been written, w of north its width in metres.
+    foam_east: vec4<f32>,
+    foam_north: vec4<f32>,
 }
 
 struct OceanFftView {
@@ -60,6 +65,9 @@ struct OceanFftView {
 @group(0) @binding(2) var fft_map: texture_2d_array<f32>;
 @group(0) @binding(3) var fft_sampler: sampler;
 @group(0) @binding(4) var<uniform> fft_view: OceanFftView;
+// The same foam history the sea draws near the camera (ocean_foam.wgsl).
+@group(0) @binding(5) var foam_history_map: texture_2d<f32>;
+@group(0) @binding(6) var foam_sampler: sampler;
 
 const GRAVITY: f32 = 9.81;
 // The first particle slots belong to the ship's bow (ocean_spray.rs).
@@ -98,6 +106,17 @@ const SPRAY_GUST_BIRTHS: f32 = 2.0;
 const CREST_BIRTH_GAIN: f32 = 2.0;
 // Same long-to-short envelope budget as the rendered sea and CPU buoyancy.
 const OCEAN_FFT_CHOP_BUDGET: f32 = 0.85;
+// Crest spray is born only where the sea draws this much foam (the share of
+// surf white mixed into the water colour), rising to full by the second.
+const SPRAY_FOAM_ONSET: f32 = 0.2;
+const SPRAY_FOAM_FULL: f32 = 0.45;
+// Mirrors of the sea's foam rule (shared_planet.wgsl), for `spray_drawn_foam`.
+const OCEAN_FFT_MID_HEIGHT_STD: f32 = 0.218;
+const OCEAN_FFT_FINE_HEIGHT_STD: f32 = 0.056;
+const OCEAN_GUST_FOAM: f32 = 0.3;
+const OCEAN_BREAKING_FOAM_MAX: f32 = 0.82;
+const OCEAN_FFT_FOAM_JACOBIAN_ONSET: f32 = 0.62;
+const OCEAN_FFT_FOAM_JACOBIAN_FULL: f32 = 0.32;
 
 struct SprayField {
     height: f32,
@@ -110,6 +129,9 @@ struct SprayField {
     // Height of the wind sea alone (every cascade but the swell).
     wind_height: f32,
     chop_budget: f32,
+    // Heights of the mid and fine cascades alone: the foam's breakup pattern.
+    mid_height: f32,
+    fine_height: f32,
 }
 
 // The storm gust where a particle is (gust.wgsl), scaled by gustiness.
@@ -155,6 +177,12 @@ fn spray_cascade(index: u32, local: vec2<f32>, weight: f32, geometry: bool, fiel
     if index != 3u {
         (*field).wind_height += s0.x * weight;
     }
+    if index == 1u {
+        (*field).mid_height += s0.x * weight;
+    }
+    if index == 2u {
+        (*field).fine_height += s0.x * weight;
+    }
     let j = vec4<f32>(se.y - sw.y, sn.z - ss.z, sn.y - ss.y, se.z - sw.z) * (weight / step);
     let slope = vec2<f32>(se.x - sw.x, sn.x - ss.x) * (weight / step);
     // Keep births on the limited drawn crest, not its unbounded label map.
@@ -186,7 +214,7 @@ fn ocean_giant_envelope(position: vec2<f32>, seconds: f32) -> f32 {
 }
 
 fn spray_field(local: vec2<f32>) -> SprayField {
-    var field = SprayField(0.0, vec2<f32>(0.0), vec4<f32>(0.0), 0.0, 0.0, OCEAN_FFT_CHOP_BUDGET);
+    var field = SprayField(0.0, vec2<f32>(0.0), vec4<f32>(0.0), 0.0, 0.0, OCEAN_FFT_CHOP_BUDGET, 0.0, 0.0);
     spray_cascade(
         3u,
         local,
@@ -198,6 +226,45 @@ fn spray_field(local: vec2<f32>) -> SprayField {
     spray_cascade(1u, local, 1.0, true, &field);
     spray_cascade(2u, local, 1.0, false, &field);
     return field;
+}
+
+// The foam the sea draws over the water at `local` (u, v m from the camera),
+// following `ocean_foam_coverage` on the open sea: inside the foam history
+// atlas its filtered history, beyond it the instantaneous fold foam (at the
+// choppiness capped at 1, with the gust's extra), then broken up by the
+// fine-wave pattern as `ocean_fft_textured_foam` does. Spray is near the
+// camera; the pattern fades with distance as the sea's does.
+fn spray_drawn_foam(local: vec2<f32>, field: SprayField, gust: f32) -> f32 {
+    let c = fft_view.gain.x * min(frame.params.z, 1.0) * (1.0 + OCEAN_GUST_FOAM * gust);
+    let j = field.jacobian * c;
+    let determinant = (1.0 - j.x) * (1.0 - j.y) - j.z * j.w;
+    let fold = smoothstep(OCEAN_FFT_FOAM_JACOBIAN_ONSET, OCEAN_FFT_FOAM_JACOBIAN_FULL, determinant);
+    var coverage = fold;
+    if frame.foam_east.w > 0.5 {
+        let offset = frame.axis_u.xyz * local.x + frame.axis_v.xyz * local.y;
+        let uv = vec2<f32>(dot(offset, frame.foam_east.xyz), dot(offset, frame.foam_north.xyz))
+            / frame.foam_north.w + 0.5;
+        let edge = min(min(uv.x, uv.y), min(1.0 - uv.x, 1.0 - uv.y));
+        if edge > 0.0 {
+            let history = textureSampleLevel(foam_history_map, foam_sampler, uv, 0.0).r
+                * smoothstep(0.0, 0.04, edge);
+            coverage = mix(fold, history, smoothstep(0.0, 0.08, edge));
+        }
+    }
+    let distance = length(local);
+    let fine_weight = 1.0 - smoothstep(150.0, 700.0, distance);
+    let mid_weight = 1.0 - smoothstep(600.0, 3000.0, distance);
+    let pattern = clamp(
+        0.5 + 0.25 * ((field.fine_height / OCEAN_FFT_FINE_HEIGHT_STD) * fine_weight
+            + (field.mid_height / OCEAN_FFT_MID_HEIGHT_STD) * (1.0 - fine_weight) * mid_weight),
+        0.0,
+        1.0,
+    );
+    let threshold = 1.0 - 1.4 * coverage;
+    let lacy = smoothstep(threshold - 0.15, threshold + 0.25, pattern)
+        * smoothstep(0.0, 0.08, coverage)
+        * mix(0.5, 1.0, coverage);
+    return mix(coverage, lacy, max(fine_weight, mid_weight)) * OCEAN_BREAKING_FOAM_MAX;
 }
 
 // Water surface height (m above sea level) at a sampled field, with the
@@ -354,10 +421,13 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
     let wind_spread = 1.26 * fft_view.gain.x;
     let crest = smoothstep(0.2 * wind_spread, 1.0 * wind_spread, field.wind_height * fft_view.gain.x);
     let gust = spray_gust(local);
-    // Births also need the point to sit on rendered fold foam, using the
-    // renderer's own thresholds.
-    let on_surf = smoothstep(0.62, 0.32, jacobian);
-    let chance = CREST_BIRTH_GAIN * fold * crest * on_surf * on_surf * frame.params.y * dt * max(1.0 + SPRAY_GUST_BIRTHS * gust, 0.25);
+    // Flying foam comes only off foam: the point must show white water as the
+    // sea draws it (`spray_drawn_foam`). The fold and crest tests above, at
+    // the spray's own full choppiness, were not enough: the sea caps the
+    // choppiness its foam sees at 1, so at CHOP 2 spray tore off water the
+    // sea showed as plain colour.
+    let on_foam = smoothstep(SPRAY_FOAM_ONSET, SPRAY_FOAM_FULL, spray_drawn_foam(local, field, gust));
+    let chance = CREST_BIRTH_GAIN * fold * crest * on_foam * frame.params.y * dt * max(1.0 + SPRAY_GUST_BIRTHS * gust, 0.25);
     if frame.params.y <= 0.0 || unit_random(seed ^ 0x2545f491u) >= chance {
         particle.velocity.w = 0.0;
         particles[index] = particle;

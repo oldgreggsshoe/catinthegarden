@@ -263,6 +263,16 @@ impl OceanFoamHistory {
         self.current
     }
 
+    /// The atlas the sea reads this frame (`view(current())`) and its ground
+    /// frame (centre, east, north), once an update has written it.
+    pub(super) fn latest(&self) -> Option<(usize, [[f32; 3]; 3])> {
+        self.previous_basis
+            .map(|(center, east, north)| (self.current, [center, east, north]))
+    }
+
+    /// Width of the atlas on the ground, metres (`ocean_history_coverage`).
+    pub(super) const WIDTH_METERS: f32 = 512.0;
+
     pub(super) fn update(
         &mut self,
         queue: &wgpu::Queue,

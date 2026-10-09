@@ -12027,3 +12027,7 @@ Strikes play a CC0 clip (`thunder_clips.rs`, `assets/sounds/thunder/clips`, `lew
 ## 9 October 2026 - ripples sampled at the water rest position
 
 Fragment shading of the FFT sea now samples every cascade at the interpolated label (`label_view_position` varying, `ocean_fft_label_view_position`), not at the displaced drawn position; the drawn position is kept for the view ray. Before, ripples were fixed in space while the ship (label-held) rode the swell orbital motion, so they streamed past the hull. Scenario `ocean_ripples_ride_the_swell` with `ride_with_the_water`; 46-frame before/after at 1/30 s: sideways ripple drift 191 px -> 49 px over 1.5 s (band-passed cross-correlation of the near-water region). Possible follow-up: turn that measurement into a scenario assertion; check foam/spray/caustic lookups for the same drawn-vs-label mix-up (the foam atlas already uses the undisplaced direction).
+
+## 9 October 2026 - spray only from drawn foam
+
+Crest spray births multiply by smoothstep(0.2, 0.45, drawn foam), where drawn foam is the sea's own open-ocean foam value at the birth point (atlas history near the camera, capped-chop fold foam beyond, textured). Spray update gains bindings 5/6 (foam atlas, sampler) and two bind groups. Ship (bow/hull) spray is unchanged: it comes from water striking the hull, which also churns foam.

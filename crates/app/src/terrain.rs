@@ -1288,6 +1288,7 @@ impl TerrainRenderer {
                 camera_bind_group_layout,
                 &shared_bind_group_layout,
                 &ocean_fft,
+                &foam_history,
                 surface_format,
             )
         });
@@ -1587,6 +1588,9 @@ impl TerrainRenderer {
                 storm,
                 self.ship_spray.as_ref(),
                 gust,
+                self.foam_history_enabled
+                    .then(|| self.foam_history.latest())
+                    .flatten(),
             );
         }
     }
