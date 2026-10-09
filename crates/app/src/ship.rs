@@ -493,6 +493,27 @@ pub struct ShipBody {
 }
 
 impl ShipBody {
+    /// This state carried `seconds` further at its current velocity and spin,
+    /// integrated as `advance_step` does, with nothing else changed. The
+    /// physics runs in whole `FIXED_STEP_SECONDS` steps and leaves up to one
+    /// step of the frame's time on the clock; drawing the last step's pose
+    /// put the hull and the bridge camera up to that far behind the sea,
+    /// which is drawn at the frame's own time, by a different amount each
+    /// frame -- a fine judder against the water.
+    pub fn carried_forward(&self, seconds: f64) -> Self {
+        let mut body = *self;
+        if seconds <= 0.0 {
+            return body;
+        }
+        body.position += body.linear_velocity * seconds;
+        if body.angular_velocity.length_squared() > 0.0 {
+            let spin = DQuat::from_vec4((body.angular_velocity * 0.5 * seconds).extend(0.0))
+                * body.orientation;
+            body.orientation = (body.orientation + spin).normalize();
+        }
+        body
+    }
+
     /// Places the hull on its design waterline at `direction`, with its bow on
     /// the given heading. `water_height_meters` is the local surface altitude,
     /// so a hull spawned on a crest starts floating rather than falling to it.
@@ -1563,6 +1584,22 @@ mod tests {
         );
         body.advance(&hull, 120.0, still_water(0.0));
         assert!(body.on_seabed, "waterline {}m", body.waterline_altitude_meters(&hull));
+    }
+
+    /// The drawn ship is its last physics step carried forward by the part of
+    /// a step the frame is past it: moved by its velocity and turned by its
+    /// spin, nothing else.
+    #[test]
+    fn carried_forward_moves_and_turns_by_velocity_and_spin() {
+        let hull = ShipHull::new();
+        let mut body = ShipBody::afloat_at(&hull, START_DIRECTION, DVec3::new(0.0, 1.0, 0.0), 0.0);
+        body.linear_velocity = DVec3::new(0.0, 3.0, -1.0);
+        body.angular_velocity = DVec3::X * 0.5;
+        assert_eq!(body.carried_forward(0.0).position, body.position);
+        let later = body.carried_forward(0.008);
+        assert!((later.position - (body.position + body.linear_velocity * 0.008)).length() < 1e-9);
+        let turned = later.orientation * body.orientation.inverse();
+        assert!((turned.to_axis_angle().1 - 0.004).abs() < 1e-5, "{:?}", turned.to_axis_angle());
     }
 
     #[test]

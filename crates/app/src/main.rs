@@ -1372,6 +1372,8 @@ struct State {
     village_beam_note: String,
     flock_marker: flock_marker::FlockMarkerRenderer,
     ship_sim_time_seconds: f64,
+    /// Seconds of this frame past the ship's last physics step.
+    ship_presentation_lead_seconds: f64,
     sun: sun::SunRenderer,
     foveated: foveated::FoveatedRenderer,
     terrain: terrain::TerrainRenderer,
@@ -1898,6 +1900,7 @@ impl State {
             village_beam_note: "V marks every village with a beam".to_string(),
             flock_marker,
             ship_sim_time_seconds: 0.0,
+            ship_presentation_lead_seconds: 0.0,
             sun,
             foveated,
             terrain,
@@ -2604,7 +2607,7 @@ impl State {
 
     /// An open-ocean swimmer is carried round the waves' orbital loop, as the
     /// ship is: by the water's own horizontal velocity, not just its height.
-    /// Stepped on the ocean's clock exactly like the ship (whole fixed steps,
+    /// Stepped on the ocean's clock (fixed steps up to the frame's own time,
     /// bounded backlog), so it stops when time stops and runs at the same rate
     /// as the waves at any time speed. Zero on the Gerstner sea.
     fn carry_swimmer(&mut self, ocean_time_seconds: f64) {
@@ -2621,12 +2624,17 @@ impl State {
         if ocean_time_seconds - time > MAXIMUM_SHIP_BACKLOG_SECONDS {
             time = ocean_time_seconds - MAXIMUM_SHIP_BACKLOG_SECONDS;
         }
-        while time + ship::FIXED_STEP_SECONDS <= ocean_time_seconds {
-            time += ship::FIXED_STEP_SECONDS;
+        // Whole steps, then the part of a step that is left, so the swimmer
+        // is carried exactly to the time the sea is drawn at. Stopping at the
+        // last whole step left it up to a step behind the water, by a
+        // different amount each frame. A pure drift with the water does not
+        // care how its time is cut up the way the walker's physics does.
+        while time < ocean_time_seconds {
+            let step = ship::FIXED_STEP_SECONDS.min(ocean_time_seconds - time);
+            time += step;
             let before = self.flight_local_position.normalize();
             let current = ocean::global_wave_horizontal_velocity(before, time);
-            self.flight_local_position =
-                carried_by_current(self.flight_local_position, current, ship::FIXED_STEP_SECONDS);
+            self.flight_local_position = carried_by_current(self.flight_local_position, current, step);
             let after = self.flight_local_position.normalize();
             self.flight_local_tangent =
                 transport_flight_tangent(self.flight_local_tangent, before, after);
@@ -2844,6 +2852,16 @@ impl State {
                     }
                 });
         }
+        // What is left of this frame's time after the whole steps: the ship is
+        // drawn carried forward by it (`presented_ship_body`).
+        self.ship_presentation_lead_seconds =
+            (ocean_time_seconds - self.ship_sim_time_seconds).clamp(0.0, ship::FIXED_STEP_SECONDS);
+    }
+
+    /// The ship as drawn this frame: its last physics step carried forward to
+    /// the frame's own time, so it sits on the water the sea draws now.
+    fn presented_ship_body(&self) -> ship::ShipBody {
+        self.ship_body.carried_forward(self.ship_presentation_lead_seconds)
     }
 
     /// Advances the flock and uploads it, in that order and below the camera
@@ -3059,20 +3077,21 @@ impl State {
             .planet_frame_world_position(planet_rotation_radians);
         // The hull mesh is modelled about the waterline origin, but the body
         // tracks its centre of mass, so step back along the hull's own axes.
-        let hull_origin_local = self.ship_body.position
-            + self.ship_body.orientation * -self.ship_hull.centre_of_mass_local();
+        let ship_body = self.presented_ship_body();
+        let hull_origin_local = ship_body.position
+            + ship_body.orientation * -self.ship_hull.centre_of_mass_local();
         let camera_offset = hull_origin_local - camera_local;
         let visible = camera_offset.length() < SHIP_VISIBLE_DISTANCE_METERS;
         self.ship_renderer.update(
             &self.queue,
             basis.world_to_view(camera_offset),
-            glam::DMat3::from_quat(self.ship_body.orientation),
-            self.ship_body.position.normalize(),
+            glam::DMat3::from_quat(ship_body.orientation),
+            ship_body.position.normalize(),
             visible,
         );
         // The water on and in the hull, from its state.
         let water = if visible {
-            ship_model::build_water(&self.ship_body, &self.ship_hull)
+            ship_model::build_water(&ship_body, &self.ship_hull)
         } else {
             Vec::new()
         };
@@ -3228,7 +3247,7 @@ impl State {
             return;
         }
         let (eye_local, ship_forward_local, up_local) =
-            ship_bridge_camera_planet_pose(&self.ship_body, &self.ship_hull);
+            ship_bridge_camera_planet_pose(&self.presented_ship_body(), &self.ship_hull);
         let forward_local = ship_bridge_look_direction(
             ship_forward_local,
             up_local,

@@ -728,8 +728,8 @@ fn sample_slot(slot: &SlotData, tile_meters: f64, position: [f64; 2], delta_seco
 }
 
 /// The four half-texel taps (texel indices and bilinear weights) of a field
-/// lookup at `position`, shared by every grid of a slot and by both slots of
-/// `sample_slot_between`.
+/// lookup at `position`, shared by every grid of a slot and by all four slots
+/// of `sample_slots_smooth`.
 type SlotTaps = [([usize; 4], [f64; 4]); 4];
 
 fn slot_taps(tile_meters: f64, position: [f64; 2]) -> SlotTaps {
@@ -795,41 +795,54 @@ fn sample_slot_taps(slot: &SlotData, taps: &SlotTaps, tile_meters: f64, delta_se
     }
 }
 
-/// The field at `fraction` (0-1) of the way from lattice slot `now` to `next`.
-/// Height follows the cubic through both slots' heights and vertical rates,
-/// and everything else (slope, horizontal displacement and its Jacobian) is
-/// blended linearly. Reading one slot and advancing only its height by its
-/// rate, as `sample_slot` does, held the horizontal displacement still for a
-/// whole lattice step and then jumped it: anything placed on the drawn water
-/// (the ship, a camera riding it) lagged the smoothly moving GPU sea and
-/// snapped forward ten times a second -- smooth, then a step.
-fn sample_slot_between(
-    now: &SlotData,
-    next: &SlotData,
+/// The field at `fraction` (0-1) of the way from lattice slot `slots[1]` to
+/// `slots[2]`, with `slots[0]` and `slots[3]` the steps either side. Height
+/// follows the cubic through the middle two slots' heights and vertical
+/// rates; everything else (slope, horizontal displacement and its Jacobian)
+/// follows the Catmull-Rom cubic through all four, so both the water's
+/// position and its speed are continuous across lattice points.
+///
+/// History: reading one slot and advancing only its height held the
+/// horizontal displacement still for each 0.1 s step and then jumped it, so
+/// anything riding the drawn water (the ship, a camera) lagged the smoothly
+/// moving GPU sea and snapped forward ten times a second. A straight blend
+/// between two slots removed the jumps but left the speed changing abruptly
+/// at each step, a fainter 10 Hz rhythm.
+fn sample_slots_smooth(
+    slots: &[std::sync::Arc<SlotData>; 4],
     tile_meters: f64,
     position: [f64; 2],
     fraction: f64,
 ) -> FieldSample {
     let taps = slot_taps(tile_meters, position);
-    let a = sample_slot_taps(now, &taps, tile_meters, 0.0);
-    let b = sample_slot_taps(next, &taps, tile_meters, 0.0);
+    let [p0, p1, p2, p3]: [FieldSample; 4] =
+        std::array::from_fn(|i| sample_slot_taps(&slots[i], &taps, tile_meters, 0.0));
     let t = fraction.clamp(0.0, 1.0);
     let (t2, t3, dt) = (t * t, t * t * t, LATTICE_SECONDS);
-    let height = (2.0 * t3 - 3.0 * t2 + 1.0) * a.height
-        + (t3 - 2.0 * t2 + t) * dt * a.velocity
-        + (-2.0 * t3 + 3.0 * t2) * b.height
-        + (t3 - t2) * dt * b.velocity;
-    let velocity = (6.0 * t2 - 6.0 * t) / dt * a.height
-        + (3.0 * t2 - 4.0 * t + 1.0) * a.velocity
-        + (-6.0 * t2 + 6.0 * t) / dt * b.height
-        + (3.0 * t2 - 2.0 * t) * b.velocity;
-    let mix = |x: f64, y: f64| x + (y - x) * t;
+    let height = (2.0 * t3 - 3.0 * t2 + 1.0) * p1.height
+        + (t3 - 2.0 * t2 + t) * dt * p1.velocity
+        + (-2.0 * t3 + 3.0 * t2) * p2.height
+        + (t3 - t2) * dt * p2.velocity;
+    let velocity = (6.0 * t2 - 6.0 * t) / dt * p1.height
+        + (3.0 * t2 - 4.0 * t + 1.0) * p1.velocity
+        + (-6.0 * t2 + 6.0 * t) / dt * p2.height
+        + (3.0 * t2 - 2.0 * t) * p2.velocity;
+    let catmull_rom = |a: f64, b: f64, c: f64, d: f64| {
+        0.5 * (2.0 * b
+            + (c - a) * t
+            + (2.0 * a - 5.0 * b + 4.0 * c - d) * t2
+            + (-a + 3.0 * b - 3.0 * c + d) * t3)
+    };
     FieldSample {
         height,
-        slope: std::array::from_fn(|i| mix(a.slope[i], b.slope[i])),
+        slope: std::array::from_fn(|i| catmull_rom(p0.slope[i], p1.slope[i], p2.slope[i], p3.slope[i])),
         velocity,
-        displacement: std::array::from_fn(|i| mix(a.displacement[i], b.displacement[i])),
-        jacobian: std::array::from_fn(|i| mix(a.jacobian[i], b.jacobian[i])),
+        displacement: std::array::from_fn(|i| {
+            catmull_rom(p0.displacement[i], p1.displacement[i], p2.displacement[i], p3.displacement[i])
+        }),
+        jacobian: std::array::from_fn(|i| {
+            catmull_rom(p0.jacobian[i], p1.jacobian[i], p2.jacobian[i], p3.jacobian[i])
+        }),
     }
 }
 
@@ -948,6 +961,65 @@ impl CpuSurface {
         &self.shared.cascades
     }
 
+    /// Asks the prefetch worker for lattice steps up to `key`.
+    fn request(&self, key: i64) {
+        let previous = self.shared.frontier.fetch_max(key, std::sync::atomic::Ordering::Relaxed);
+        if key > previous {
+            let (flag, condvar) = &self.shared.wake;
+            *flag.lock().unwrap() = true;
+            condvar.notify_one();
+        }
+    }
+
+    /// For each CPU cascade, the four lattice slots around `time` (the step
+    /// it falls in and one either side, for `sample_slots_smooth`), and how
+    /// far past the step's start `time` is, 0-1.
+    fn slots_around(&self, time: f64) -> (Vec<[std::sync::Arc<SlotData>; 4]>, f64) {
+        let key = (time / LATTICE_SECONDS).floor() as i64;
+        let fraction = time / LATTICE_SECONDS - key as f64;
+        self.request(key + 2);
+        let slots = self
+            .cascades()
+            .iter()
+            .map(|cascade| std::array::from_fn(|i| cascade.slot(key - 1 + i as i64)))
+            .collect();
+        (slots, fraction)
+    }
+
+    /// Horizontal displacement D of the water labelled `label` at `time`
+    /// (the drawn water is label - D), from the smooth lattice field.
+    fn displacement_at(&self, label: [f64; 2], time: f64, scales: [f64; 3]) -> [f64; 2] {
+        let (slots, fraction) = self.slots_around(time);
+        let cascades = self.cascades();
+        let bands: [FieldSample; 3] = std::array::from_fn(|i| {
+            let mut band = FieldSample::default();
+            band.add_scaled(
+                &sample_slots_smooth(&slots[i], cascades[i].tile_meters, label, fraction),
+                scales[i],
+            );
+            band
+        });
+        limited_chop(&bands, choppiness() as f64, CHOP_STEEPNESS_BUDGET).displacement
+    }
+
+    /// D at `label` and `time`, and its rate dD/dt (the water's horizontal
+    /// velocity is -dD/dt), by a central difference across 4 ms of the
+    /// smooth field: continuous in time, so whatever follows it (the ship's
+    /// anchor, the swimmer's drift) neither steps nor kinks every 0.1 s.
+    fn displacement_and_rate(&self, label: [f64; 2], time: f64, storm_intensity: f32) -> ([f64; 2], [f64; 2]) {
+        const HALF_SPAN_SECONDS: f64 = 0.002;
+        let scales = [
+            1.0,
+            1.0,
+            swell_height_meters(storm_intensity) as f64 * giant_wave_envelope(label, time),
+        ];
+        let now = self.displacement_at(label, time, scales);
+        let before = self.displacement_at(label, time - HALF_SPAN_SECONDS, scales);
+        let after = self.displacement_at(label, time + HALF_SPAN_SECONDS, scales);
+        let rate = std::array::from_fn(|i| (after[i] - before[i]) / (2.0 * HALF_SPAN_SECONDS));
+        (now, rate)
+    }
+
     pub fn mode_count(&self) -> usize {
         self.cascades().iter().map(|c| c.modes.len()).sum()
     }
@@ -986,29 +1058,8 @@ impl CpuSurface {
         let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
         let target = [radius_meters * dot(u, direction), radius_meters * dot(v, direction)];
         let (_, label) = self.sample_at(target, time, storm_intensity);
-        let key = (time / LATTICE_SECONDS).floor() as i64;
-        let scales = [
-            1.0,
-            1.0,
-            swell_height_meters(storm_intensity) as f64 * giant_wave_envelope(label, time),
-        ];
-        let field = |key: i64| {
-            let bands = std::array::from_fn(|i| {
-                let cascade = &self.cascades()[i];
-                let mut band = FieldSample::default();
-                band.add_scaled(
-                    &sample_slot(&cascade.slot(key), cascade.tile_meters, label, 0.0),
-                    scales[i],
-                );
-                band
-            });
-            limited_chop(&bands, choppiness() as f64, CHOP_STEEPNESS_BUDGET)
-        };
-        let (now, next) = (field(key), field(key + 1));
-        let rate = [
-            -(next.displacement[0] - now.displacement[0]) / LATTICE_SECONDS,
-            -(next.displacement[1] - now.displacement[1]) / LATTICE_SECONDS,
-        ];
+        let (_, d_rate) = self.displacement_and_rate(label, time, storm_intensity);
+        let rate = [-d_rate[0], -d_rate[1]];
         std::array::from_fn(|i| u[i] * rate[0] + v[i] * rate[1])
     }
 
@@ -1045,48 +1096,8 @@ impl CpuSurface {
     ) -> ([f64; 3], [f64; 3]) {
         let (u, v) = anchor_axes(direction);
         let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-        let key = (time / LATTICE_SECONDS).floor() as i64;
-        let fraction = time / LATTICE_SECONDS - key as f64;
-        let previous = self.shared.frontier.fetch_max(key + 1, std::sync::atomic::Ordering::Relaxed);
-        if key + 1 > previous {
-            let (flag, condvar) = &self.shared.wake;
-            *flag.lock().unwrap() = true;
-            condvar.notify_one();
-        }
-        let scales = [
-            1.0,
-            1.0,
-            swell_height_meters(storm_intensity) as f64 * giant_wave_envelope(label, time),
-        ];
-        let cascades = self.cascades();
-        let slots_at = |key: i64| {
-            cascades.iter().map(|cascade| cascade.slot(key)).collect::<Vec<_>>()
-        };
-        // The sea's horizontal displacement D at this label, `fraction` of
-        // the way across the lattice step (`sample_slot_between`).
-        let displacement = |now: &[std::sync::Arc<SlotData>], next: &[std::sync::Arc<SlotData>], fraction: f64| {
-            let bands: [FieldSample; 3] = std::array::from_fn(|i| {
-                let mut band = FieldSample::default();
-                band.add_scaled(
-                    &sample_slot_between(&now[i], &next[i], cascades[i].tile_meters, label, fraction),
-                    scales[i],
-                );
-                band
-            });
-            limited_chop(&bands, choppiness() as f64, CHOP_STEEPNESS_BUDGET).displacement
-        };
-        let (now_slots, next_slots) = (slots_at(key), slots_at(key + 1));
-        let now = displacement(&now_slots, &next_slots, fraction);
-        // Its rate across the lattice step, as `horizontal_velocity` takes it:
-        // D is blended linearly across the step, so this is its exact rate.
-        let (here_key, next_key) = (
-            displacement(&now_slots, &next_slots, 0.0),
-            displacement(&now_slots, &next_slots, 1.0),
-        );
-        let rate = [
-            -(next_key[0] - here_key[0]) / LATTICE_SECONDS,
-            -(next_key[1] - here_key[1]) / LATTICE_SECONDS,
-        ];
+        let (now, d_rate) = self.displacement_and_rate(label, time, storm_intensity);
+        let rate = [-d_rate[0], -d_rate[1]];
         // The drawn surface is label - D.
         let drawn = [label[0] - now[0], label[1] - now[1]];
         let here = [radius_meters * dot(u, direction), radius_meters * dot(v, direction)];
@@ -1099,21 +1110,12 @@ impl CpuSurface {
 
     /// `sample` at tangent-plane metres `target`; also returns the label point.
     fn sample_at(&self, target: [f64; 2], time: f64, storm_intensity: f32) -> (CpuSample, [f64; 2]) {
-        let key = (time / LATTICE_SECONDS).floor() as i64;
-        let fraction = time / LATTICE_SECONDS - key as f64;
         let swell_height = swell_height_meters(storm_intensity) as f64;
         // Wind (0) and mid (1) cascades at unit gain; the mid cascade's
         // distance fade is 1 within 600m of the camera, where CPU queries are.
         let chop = choppiness() as f64;
         let cascades = self.cascades();
-        let previous = self.shared.frontier.fetch_max(key + 1, std::sync::atomic::Ordering::Relaxed);
-        if key + 1 > previous {
-            let (flag, condvar) = &self.shared.wake;
-            *flag.lock().unwrap() = true;
-            condvar.notify_one();
-        }
-        let slots: Vec<_> = cascades.iter().map(|cascade| cascade.slot(key)).collect();
-        let next_slots: Vec<_> = cascades.iter().map(|cascade| cascade.slot(key + 1)).collect();
+        let (slots, fraction) = self.slots_around(time);
         {
             {
                 // The sum, and each cascade scaled (for the per-band term).
@@ -1123,13 +1125,7 @@ impl CpuSurface {
                     let scales = [1.0, 1.0, swell_height * giant_wave_envelope(position, time)];
                     let bands: [FieldSample; 3] = std::array::from_fn(|i| {
                         let mut band = FieldSample::default();
-                        let sample = sample_slot_between(
-                            &slots[i],
-                            &next_slots[i],
-                            cascades[i].tile_meters,
-                            position,
-                            fraction,
-                        );
+                        let sample = sample_slots_smooth(&slots[i], cascades[i].tile_meters, position, fraction);
                         band.add_scaled(&sample, scales[i]);
                         band
                     });
@@ -1807,8 +1803,10 @@ pub(crate) mod tests {
     }
 
     /// Between lattice points the CPU field follows the exact transform,
-    /// horizontal displacement included, and does not jump at a lattice point
-    /// (it used to hold D for a whole step and then step it).
+    /// horizontal displacement included, and across a lattice point neither
+    /// the water's position nor its speed jumps (the first version held D for
+    /// a whole step and then stepped it; the second blended D straight
+    /// between two steps, so its speed changed abruptly at each).
     #[test]
     fn lattice_interpolation_is_continuous_and_tracks_an_exact_transform() {
         let cpu = CpuSurface::new(&default_h0());
@@ -1817,33 +1815,74 @@ pub(crate) mod tests {
         let positions = [(3usize, 7usize), (90, 12), (200, 150), (255, 0)]
             .map(|(i, j)| [(i as f64 + 0.3) * step, (j as f64 + 0.7) * step]);
         let key = 120_i64;
-        let (now, next) = (cascade.slot(key), cascade.slot(key + 1));
+        let window = |key: i64| -> [std::sync::Arc<SlotData>; 4] {
+            std::array::from_fn(|i| cascade.slot(key - 1 + i as i64))
+        };
+        let here = window(key);
         let (mut height_error, mut displacement_error) = (0.0f64, 0.0f64);
         for fraction in [0.25, 0.5, 0.75] {
             let [height, velocity, dx, dz] =
                 cascade.transform((key as f64 + fraction) * LATTICE_SECONDS);
             let exact = SlotData { height, velocity, dx, dz };
             for &position in &positions {
-                let blended = sample_slot_between(&now, &next, cascade.tile_meters, position, fraction);
+                let smooth = sample_slots_smooth(&here, cascade.tile_meters, position, fraction);
                 let fresh = sample_slot(&exact, cascade.tile_meters, position, 0.0);
-                height_error = height_error.max((blended.height - fresh.height).abs());
+                height_error = height_error.max((smooth.height - fresh.height).abs());
                 displacement_error = displacement_error.max(
-                    (blended.displacement[0] - fresh.displacement[0])
+                    (smooth.displacement[0] - fresh.displacement[0])
                         .abs()
-                        .max((blended.displacement[1] - fresh.displacement[1]).abs()),
+                        .max((smooth.displacement[1] - fresh.displacement[1]).abs()),
                 );
             }
         }
         assert!(height_error < 0.002, "height {height_error}");
-        assert!(displacement_error < 0.01, "displacement {displacement_error}");
-        // Across the lattice point: just before and just after agree.
-        let after = (cascade.slot(key + 1), cascade.slot(key + 2));
+        assert!(displacement_error < 0.005, "displacement {displacement_error}");
+        // Across the lattice point at key + 1: position and speed agree.
+        let next = window(key + 1);
+        let tiny = 1.0e-4;
         for &position in &positions {
-            let before = sample_slot_between(&now, &next, cascade.tile_meters, position, 1.0);
-            let at = sample_slot_between(&after.0, &after.1, cascade.tile_meters, position, 0.0);
-            assert!((before.displacement[0] - at.displacement[0]).abs() < 1e-9);
-            assert!((before.height - at.height).abs() < 1e-9);
+            let d = |slots: &[std::sync::Arc<SlotData>; 4], fraction: f64| {
+                sample_slots_smooth(slots, cascade.tile_meters, position, fraction).displacement[0]
+            };
+            assert!((d(&here, 1.0) - d(&next, 0.0)).abs() < 1e-9);
+            let rate_before = (d(&here, 1.0) - d(&here, 1.0 - tiny)) / (tiny * LATTICE_SECONDS);
+            let rate_after = (d(&next, tiny) - d(&next, 0.0)) / (tiny * LATTICE_SECONDS);
+            assert!(
+                (rate_before - rate_after).abs() < 1e-3 * (1.0 + rate_before.abs()),
+                "speed jumps {rate_before} -> {rate_after} m/s"
+            );
         }
+    }
+
+    /// What a float riding the water sees: where its water is drawn, sampled
+    /// every 1/120 s for 2 s. Its acceleration (second difference) must not
+    /// spike at the lattice points, which a stepped or kinked field does.
+    #[test]
+    fn water_followed_by_its_label_moves_without_lattice_steps() {
+        let cpu = CpuSurface::new(&default_h0());
+        let direction = {
+            let d = [0.6_f64, 0.8, 0.05];
+            let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            d.map(|x| x / l)
+        };
+        let radius = 4.0e6;
+        let label = cpu.label_meters(direction, radius, 30.0, 1.0);
+        let dt = 1.0 / 120.0;
+        let drawn: Vec<[f64; 3]> = (0..240)
+            .map(|i| cpu.follow_label(label, direction, radius, 30.0 + i as f64 * dt, 1.0).1)
+            .collect();
+        let accel: Vec<f64> = drawn
+            .windows(3)
+            .map(|w| {
+                let a: [f64; 3] = std::array::from_fn(|k| (w[2][k] - 2.0 * w[1][k] + w[0][k]) / (dt * dt));
+                (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
+            })
+            .collect();
+        let mut sorted = accel.clone();
+        sorted.sort_by(f64::total_cmp);
+        let median = sorted[sorted.len() / 2];
+        let worst = sorted[sorted.len() - 1];
+        assert!(worst < 3.0 * median.max(0.05), "acceleration spikes to {worst:.3} m/s2 against a median {median:.3}");
     }
 
     #[test]

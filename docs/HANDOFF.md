@@ -12035,3 +12035,7 @@ Crest spray births multiply by smoothstep(0.2, 0.45, drawn foam), where drawn fo
 ## 9 October 2026 - CPU sea blends lattice slots (no 10 Hz ratchet)
 
 `CpuSurface::sample_at`/`follow_label` sample `sample_slot_between(key, key+1, fraction)` instead of `sample_slot(round(key), delta)`. Before, D was held per 0.1 s step, so the ship/riding eye snapped every step against the smooth GPU sea. Measured in `ocean_ripples_ride_the_swell` (46 frames, 1/30 s): per-frame view motion +4/-7/+1 px repeating -> 0/-1/-2 px. Cost 5.0 -> 8.2 us per CPU sample. Remaining: `horizontal_velocity` is a per-step finite difference (piecewise constant), used for the swimmer and ship spawn.
+
+## 9 October 2026 - C1 water motion, ship/swimmer presented at frame time
+
+`sample_slots_smooth` (four slots, Catmull-Rom for D) replaces the two-slot straight blend; `displacement_and_rate` gives follow_label and horizontal_velocity a continuous rate. Ship hull/water/bridge camera use `presented_ship_body()` = last step carried forward by `ship_presentation_lead_seconds`; `carry_swimmer` ends each frame with a partial step. If the user still sees steps: check display frame pacing (FIFO present, uneven frame times) and the swimmer/walker vertical bobbing path, which still steps in whole fixed steps (`advance_surface_camera`).
