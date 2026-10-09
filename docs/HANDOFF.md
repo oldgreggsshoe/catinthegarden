@@ -12031,3 +12031,7 @@ Fragment shading of the FFT sea now samples every cascade at the interpolated la
 ## 9 October 2026 - spray only from drawn foam
 
 Crest spray births multiply by smoothstep(0.2, 0.45, drawn foam), where drawn foam is the sea's own open-ocean foam value at the birth point (atlas history near the camera, capped-chop fold foam beyond, textured). Spray update gains bindings 5/6 (foam atlas, sampler) and two bind groups. Ship (bow/hull) spray is unchanged: it comes from water striking the hull, which also churns foam.
+
+## 9 October 2026 - CPU sea blends lattice slots (no 10 Hz ratchet)
+
+`CpuSurface::sample_at`/`follow_label` sample `sample_slot_between(key, key+1, fraction)` instead of `sample_slot(round(key), delta)`. Before, D was held per 0.1 s step, so the ship/riding eye snapped every step against the smooth GPU sea. Measured in `ocean_ripples_ride_the_swell` (46 frames, 1/30 s): per-frame view motion +4/-7/+1 px repeating -> 0/-1/-2 px. Cost 5.0 -> 8.2 us per CPU sample. Remaining: `horizontal_velocity` is a per-step finite difference (piecewise constant), used for the swimmer and ship spawn.

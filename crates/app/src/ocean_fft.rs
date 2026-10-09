@@ -724,6 +724,15 @@ impl CpuCascade {
 /// side, the value their average and the derivatives their differences, so
 /// slopes are continuous instead of constant over each texel.
 fn sample_slot(slot: &SlotData, tile_meters: f64, position: [f64; 2], delta_seconds: f64) -> FieldSample {
+    sample_slot_taps(slot, &slot_taps(tile_meters, position), tile_meters, delta_seconds)
+}
+
+/// The four half-texel taps (texel indices and bilinear weights) of a field
+/// lookup at `position`, shared by every grid of a slot and by both slots of
+/// `sample_slot_between`.
+type SlotTaps = [([usize; 4], [f64; 4]); 4];
+
+fn slot_taps(tile_meters: f64, position: [f64; 2]) -> SlotTaps {
     const MASK: i64 = GRID as i64 - 1;
     let step = tile_meters / GRID as f64;
     let half = 0.5 * step;
@@ -748,12 +757,16 @@ fn sample_slot(slot: &SlotData, tile_meters: f64, position: [f64; 2], delta_seco
             [(1.0 - fx) * (1.0 - fy), fx * (1.0 - fy), (1.0 - fx) * fy, fx * fy],
         )
     };
-    let taps = [
+    [
         tap(position[0] + half, position[1]),
         tap(position[0] - half, position[1]),
         tap(position[0], position[1] + half),
         tap(position[0], position[1] - half),
-    ];
+    ]
+}
+
+fn sample_slot_taps(slot: &SlotData, taps: &SlotTaps, tile_meters: f64, delta_seconds: f64) -> FieldSample {
+    let step = tile_meters / GRID as f64;
     let read = |field: &[f32]| {
         taps.map(|(index, weight)| {
             field[index[0]] as f64 * weight[0]
@@ -779,6 +792,44 @@ fn sample_slot(slot: &SlotData, tile_meters: f64, position: [f64; 2], delta_seco
             (dx[2] - dx[3]) / step,
             (dz[0] - dz[1]) / step,
         ],
+    }
+}
+
+/// The field at `fraction` (0-1) of the way from lattice slot `now` to `next`.
+/// Height follows the cubic through both slots' heights and vertical rates,
+/// and everything else (slope, horizontal displacement and its Jacobian) is
+/// blended linearly. Reading one slot and advancing only its height by its
+/// rate, as `sample_slot` does, held the horizontal displacement still for a
+/// whole lattice step and then jumped it: anything placed on the drawn water
+/// (the ship, a camera riding it) lagged the smoothly moving GPU sea and
+/// snapped forward ten times a second -- smooth, then a step.
+fn sample_slot_between(
+    now: &SlotData,
+    next: &SlotData,
+    tile_meters: f64,
+    position: [f64; 2],
+    fraction: f64,
+) -> FieldSample {
+    let taps = slot_taps(tile_meters, position);
+    let a = sample_slot_taps(now, &taps, tile_meters, 0.0);
+    let b = sample_slot_taps(next, &taps, tile_meters, 0.0);
+    let t = fraction.clamp(0.0, 1.0);
+    let (t2, t3, dt) = (t * t, t * t * t, LATTICE_SECONDS);
+    let height = (2.0 * t3 - 3.0 * t2 + 1.0) * a.height
+        + (t3 - 2.0 * t2 + t) * dt * a.velocity
+        + (-2.0 * t3 + 3.0 * t2) * b.height
+        + (t3 - t2) * dt * b.velocity;
+    let velocity = (6.0 * t2 - 6.0 * t) / dt * a.height
+        + (3.0 * t2 - 4.0 * t + 1.0) * a.velocity
+        + (-6.0 * t2 + 6.0 * t) / dt * b.height
+        + (3.0 * t2 - 2.0 * t) * b.velocity;
+    let mix = |x: f64, y: f64| x + (y - x) * t;
+    FieldSample {
+        height,
+        slope: std::array::from_fn(|i| mix(a.slope[i], b.slope[i])),
+        velocity,
+        displacement: std::array::from_fn(|i| mix(a.displacement[i], b.displacement[i])),
+        jacobian: std::array::from_fn(|i| mix(a.jacobian[i], b.jacobian[i])),
     }
 }
 
@@ -994,10 +1045,10 @@ impl CpuSurface {
     ) -> ([f64; 3], [f64; 3]) {
         let (u, v) = anchor_axes(direction);
         let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-        let key = (time / LATTICE_SECONDS).round() as i64;
-        let delta = time - key as f64 * LATTICE_SECONDS;
-        let previous = self.shared.frontier.fetch_max(key, std::sync::atomic::Ordering::Relaxed);
-        if key > previous {
+        let key = (time / LATTICE_SECONDS).floor() as i64;
+        let fraction = time / LATTICE_SECONDS - key as f64;
+        let previous = self.shared.frontier.fetch_max(key + 1, std::sync::atomic::Ordering::Relaxed);
+        if key + 1 > previous {
             let (flag, condvar) = &self.shared.wake;
             *flag.lock().unwrap() = true;
             condvar.notify_one();
@@ -1011,24 +1062,27 @@ impl CpuSurface {
         let slots_at = |key: i64| {
             cascades.iter().map(|cascade| cascade.slot(key)).collect::<Vec<_>>()
         };
-        // The sea's horizontal displacement D at this label, from the grids of
-        // one lattice step, `delta` seconds past it.
-        let displacement = |slots: &[std::sync::Arc<SlotData>], delta: f64| {
+        // The sea's horizontal displacement D at this label, `fraction` of
+        // the way across the lattice step (`sample_slot_between`).
+        let displacement = |now: &[std::sync::Arc<SlotData>], next: &[std::sync::Arc<SlotData>], fraction: f64| {
             let bands: [FieldSample; 3] = std::array::from_fn(|i| {
                 let mut band = FieldSample::default();
                 band.add_scaled(
-                    &sample_slot(&slots[i], cascades[i].tile_meters, label, delta),
+                    &sample_slot_between(&now[i], &next[i], cascades[i].tile_meters, label, fraction),
                     scales[i],
                 );
                 band
             });
             limited_chop(&bands, choppiness() as f64, CHOP_STEEPNESS_BUDGET).displacement
         };
-        let now_slots = slots_at(key);
-        let now = displacement(&now_slots, delta);
-        // Its rate across the lattice step, as `horizontal_velocity` takes it
-        // (the grids only advance the height by velocity within a step, not D).
-        let (here_key, next_key) = (displacement(&now_slots, 0.0), displacement(&slots_at(key + 1), 0.0));
+        let (now_slots, next_slots) = (slots_at(key), slots_at(key + 1));
+        let now = displacement(&now_slots, &next_slots, fraction);
+        // Its rate across the lattice step, as `horizontal_velocity` takes it:
+        // D is blended linearly across the step, so this is its exact rate.
+        let (here_key, next_key) = (
+            displacement(&now_slots, &next_slots, 0.0),
+            displacement(&now_slots, &next_slots, 1.0),
+        );
         let rate = [
             -(next_key[0] - here_key[0]) / LATTICE_SECONDS,
             -(next_key[1] - here_key[1]) / LATTICE_SECONDS,
@@ -1045,20 +1099,21 @@ impl CpuSurface {
 
     /// `sample` at tangent-plane metres `target`; also returns the label point.
     fn sample_at(&self, target: [f64; 2], time: f64, storm_intensity: f32) -> (CpuSample, [f64; 2]) {
-        let key = (time / LATTICE_SECONDS).round() as i64;
-        let delta = time - key as f64 * LATTICE_SECONDS;
+        let key = (time / LATTICE_SECONDS).floor() as i64;
+        let fraction = time / LATTICE_SECONDS - key as f64;
         let swell_height = swell_height_meters(storm_intensity) as f64;
         // Wind (0) and mid (1) cascades at unit gain; the mid cascade's
         // distance fade is 1 within 600m of the camera, where CPU queries are.
         let chop = choppiness() as f64;
         let cascades = self.cascades();
-        let previous = self.shared.frontier.fetch_max(key, std::sync::atomic::Ordering::Relaxed);
-        if key > previous {
+        let previous = self.shared.frontier.fetch_max(key + 1, std::sync::atomic::Ordering::Relaxed);
+        if key + 1 > previous {
             let (flag, condvar) = &self.shared.wake;
             *flag.lock().unwrap() = true;
             condvar.notify_one();
         }
         let slots: Vec<_> = cascades.iter().map(|cascade| cascade.slot(key)).collect();
+        let next_slots: Vec<_> = cascades.iter().map(|cascade| cascade.slot(key + 1)).collect();
         {
             {
                 // The sum, and each cascade scaled (for the per-band term).
@@ -1068,7 +1123,13 @@ impl CpuSurface {
                     let scales = [1.0, 1.0, swell_height * giant_wave_envelope(position, time)];
                     let bands: [FieldSample; 3] = std::array::from_fn(|i| {
                         let mut band = FieldSample::default();
-                        let sample = sample_slot(&slots[i], cascades[i].tile_meters, position, delta);
+                        let sample = sample_slot_between(
+                            &slots[i],
+                            &next_slots[i],
+                            cascades[i].tile_meters,
+                            position,
+                            fraction,
+                        );
                         band.add_scaled(&sample, scales[i]);
                         band
                     });
@@ -1743,6 +1804,46 @@ pub(crate) mod tests {
         }
         eprintln!("lattice extrapolation worst height error {worst:.5} m");
         assert!(worst < 0.005, "{worst}");
+    }
+
+    /// Between lattice points the CPU field follows the exact transform,
+    /// horizontal displacement included, and does not jump at a lattice point
+    /// (it used to hold D for a whole step and then step it).
+    #[test]
+    fn lattice_interpolation_is_continuous_and_tracks_an_exact_transform() {
+        let cpu = CpuSurface::new(&default_h0());
+        let cascade = &cpu.cascades()[0];
+        let step = cascade.tile_meters / GRID as f64;
+        let positions = [(3usize, 7usize), (90, 12), (200, 150), (255, 0)]
+            .map(|(i, j)| [(i as f64 + 0.3) * step, (j as f64 + 0.7) * step]);
+        let key = 120_i64;
+        let (now, next) = (cascade.slot(key), cascade.slot(key + 1));
+        let (mut height_error, mut displacement_error) = (0.0f64, 0.0f64);
+        for fraction in [0.25, 0.5, 0.75] {
+            let [height, velocity, dx, dz] =
+                cascade.transform((key as f64 + fraction) * LATTICE_SECONDS);
+            let exact = SlotData { height, velocity, dx, dz };
+            for &position in &positions {
+                let blended = sample_slot_between(&now, &next, cascade.tile_meters, position, fraction);
+                let fresh = sample_slot(&exact, cascade.tile_meters, position, 0.0);
+                height_error = height_error.max((blended.height - fresh.height).abs());
+                displacement_error = displacement_error.max(
+                    (blended.displacement[0] - fresh.displacement[0])
+                        .abs()
+                        .max((blended.displacement[1] - fresh.displacement[1]).abs()),
+                );
+            }
+        }
+        assert!(height_error < 0.002, "height {height_error}");
+        assert!(displacement_error < 0.01, "displacement {displacement_error}");
+        // Across the lattice point: just before and just after agree.
+        let after = (cascade.slot(key + 1), cascade.slot(key + 2));
+        for &position in &positions {
+            let before = sample_slot_between(&now, &next, cascade.tile_meters, position, 1.0);
+            let at = sample_slot_between(&after.0, &after.1, cascade.tile_meters, position, 0.0);
+            assert!((before.displacement[0] - at.displacement[0]).abs() < 1e-9);
+            assert!((before.height - at.height).abs() < 1e-9);
+        }
     }
 
     #[test]
