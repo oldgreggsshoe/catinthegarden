@@ -1,0 +1,67 @@
+{
+  "name": "ocean_underwater_bubbles",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 2.5,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0.0,
+  "fixed_exposure": true,
+  "ocean_storm_intensity_override": 0.3,
+  "waterline_eye_height_meters": -4.0,
+  "screenshot_times_seconds": [
+    0.5,
+    1.0,
+    1.5,
+    2.0
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        0.5089275188,
+        0.397776994,
+        0.7633912782
+      ]
+    }
+  ],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [
+        3354072.0199947827,
+        2006922.3243811773,
+        850002.158005245
+      ],
+      "look_at": [
+        3354072.32785309,
+        2006914.0912845552,
+        850020.3822018878
+      ]
+    },
+    {
+      "time_s": 2.5,
+      "position": [
+        3354071.277151535,
+        2006922.3348299447,
+        850005.0645624408
+      ],
+      "look_at": [
+        3354071.585009842,
+        2006914.1017333225,
+        850023.2887590836
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 60.0
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 4
+  }
+}

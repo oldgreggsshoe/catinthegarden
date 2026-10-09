@@ -12039,3 +12039,7 @@ Crest spray births multiply by smoothstep(0.2, 0.45, drawn foam), where drawn fo
 ## 9 October 2026 - C1 water motion, ship/swimmer presented at frame time
 
 `sample_slots_smooth` (four slots, Catmull-Rom for D) replaces the two-slot straight blend; `displacement_and_rate` gives follow_label and horizontal_velocity a continuous rate. Ship hull/water/bridge camera use `presented_ship_body()` = last step carried forward by `ship_presentation_lead_seconds`; `carry_swimmer` ends each frame with a partial step. If the user still sees steps: check display frame pacing (FIFO present, uneven frame times) and the swimmer/walker vertical bobbing path, which still steps in whole fixed steps (`advance_surface_camera`).
+
+## 9 October 2026 - bubbles, knots, compass
+
+See AGENTS.md. Bubbles: `bubbles.rs` (Drift like rain: water velocity incl. heave, rise speeds) and `bubbles.wgsl`; updated in `update_rain_and_gusts`, drawn after rain in the scene pass (`subsystem_enabled("bubbles")`). HUD: `render_egui` now true in any interactive session for the compass; THROUGH WATER column in the water-aboard panel. Not verified on screen: compass/knots layout. Running `cargo test` with PLANET_OCEAN_FFT=1 in the environment fails six Gerstner-sea tests (they assume the default sea) -- unset it for the suite.

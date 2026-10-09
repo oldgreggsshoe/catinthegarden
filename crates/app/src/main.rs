@@ -24,6 +24,7 @@ mod outmap;
 mod planet;
 mod probe;
 mod rain;
+mod bubbles;
 #[cfg(test)]
 mod relief_survey;
 mod scenario;
@@ -430,6 +431,95 @@ fn ship_creak_stress(swell_height_meters: f32, angular_speed: f64, distance_mete
 /// The water-aboard counter: "flooded/sinking" in tonnes ("SUNK" once it is on
 /// the seabed), white while the hull is safe, then amber, orange and red as
 /// the water aboard nears the amount that sinks it.
+/// Knots in one metre per second.
+const KNOTS_PER_METER_PER_SECOND: f64 = 3600.0 / 1852.0;
+
+/// The ship's speed through the water in knots: its horizontal velocity less
+/// the water's at the hull (`up` is the local vertical). A hull drifting with
+/// the sea reads nought, however fast the swell carries it about.
+fn speed_through_water_knots(ship_velocity: glam::DVec3, water_velocity: glam::DVec3, up: glam::DVec3) -> f64 {
+    let relative = ship_velocity - water_velocity;
+    (relative - up * relative.dot(up)).length() * KNOTS_PER_METER_PER_SECOND
+}
+
+/// Compass heading (degrees clockwise from north, 0-360) of `forward` seen
+/// from planet-local `position`. North is toward the +Y pole; east is
+/// north x up, which is geographic east (-Z from +X, `geographic_longitude_degrees`).
+/// None straight up or down, or at a pole.
+fn compass_heading_degrees(forward: glam::DVec3, position: glam::DVec3) -> Option<f64> {
+    let up = position.normalize();
+    let north = glam::DVec3::Y - up * up.dot(glam::DVec3::Y);
+    let level = forward - up * forward.dot(up);
+    if north.length_squared() < 1.0e-12 || level.length_squared() < 1.0e-12 {
+        return None;
+    }
+    let north = north.normalize();
+    let east = north.cross(up);
+    Some(level.dot(east).atan2(level.dot(north)).to_degrees().rem_euclid(360.0))
+}
+
+/// Moving east from +X raises `planet::geographic_longitude_degrees`: the
+/// compass's east and the map's agree.
+#[cfg(test)]
+fn geographic_longitude_degrees_east_check() -> bool {
+    let at = glam::DVec3::X;
+    let east = glam::DVec3::Y.cross(at);
+    planet::geographic_longitude_degrees((at + east * 0.01).normalize())
+        > planet::geographic_longitude_degrees(at)
+}
+
+/// Draws the compass card: it turns so the heading is at the top under a
+/// fixed lubber mark, with the heading in degrees beneath.
+fn draw_compass(ui: &mut egui::Ui, heading_degrees: f64) {
+    const SIZE: f32 = 96.0;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(SIZE, SIZE + 24.0), egui::Sense::hover());
+    let painter = ui.painter();
+    let centre = rect.center_top() + egui::vec2(0.0, 0.5 * SIZE);
+    let radius = 0.5 * SIZE - 2.0;
+    painter.circle_filled(centre, radius, egui::Color32::from_black_alpha(150));
+    painter.circle_stroke(centre, radius, egui::Stroke::new(1.0, egui::Color32::from_gray(140)));
+    let at = |bearing: f64, distance: f32| {
+        let angle = (bearing - heading_degrees).to_radians() as f32;
+        centre + egui::vec2(angle.sin(), -angle.cos()) * distance
+    };
+    for tick in 0..36 {
+        let bearing = f64::from(tick) * 10.0;
+        let inner = if tick % 3 == 0 { radius - 9.0 } else { radius - 5.0 };
+        painter.line_segment(
+            [at(bearing, inner), at(bearing, radius - 1.0)],
+            egui::Stroke::new(1.0, egui::Color32::from_gray(170)),
+        );
+    }
+    for (bearing, letter) in [(0.0, "N"), (90.0, "E"), (180.0, "S"), (270.0, "W")] {
+        let colour = if letter == "N" {
+            egui::Color32::from_rgb(255, 80, 70)
+        } else {
+            egui::Color32::WHITE
+        };
+        painter.text(
+            at(bearing, radius - 21.0),
+            egui::Align2::CENTER_CENTER,
+            letter,
+            egui::FontId::proportional(16.0),
+            colour,
+        );
+    }
+    // The lubber mark: where the view points.
+    let top = centre - egui::vec2(0.0, radius + 1.0);
+    painter.add(egui::Shape::convex_polygon(
+        vec![top + egui::vec2(-6.0, -6.0), top + egui::vec2(6.0, -6.0), top + egui::vec2(0.0, 5.0)],
+        egui::Color32::from_rgb(255, 210, 90),
+        egui::Stroke::NONE,
+    ));
+    painter.text(
+        centre + egui::vec2(0.0, radius + 13.0),
+        egui::Align2::CENTER_CENTER,
+        format!("{:03.0}\u{b0}", heading_degrees.round().rem_euclid(360.0)),
+        egui::FontId::proportional(15.0),
+        egui::Color32::WHITE,
+    );
+}
+
 fn water_aboard_text(
     flooded_tonnes: f64,
     sinking_tonnes: f64,
@@ -1340,6 +1430,7 @@ struct State {
     weather: weather::WeatherState,
     weather_clouds: weather_render::WeatherCloudRenderer,
     rain: rain::Rain,
+    bubbles: bubbles::Bubbles,
     /// The sea's sound, fed each frame by `update_rain_and_gusts`.
     sea_sound: sea_sound::SeaSound,
     lightning: lightning::Lightning,
@@ -1451,6 +1542,12 @@ struct State {
     approach_storm_centre: Option<glam::DVec3>,
     /// The water a `ride_with_the_water` scenario eye is held over (label).
     scenario_water_label: Option<[f64; 2]>,
+    /// Planet-local velocity of the water at the hull, from the last physics
+    /// step: what the ship's speed through the water is measured against.
+    ship_water_velocity: glam::DVec3,
+    /// Compass heading of the view this frame, and the one last drawn.
+    compass_heading_degrees: Option<f64>,
+    compass_drawn_degrees: Option<f64>,
     last_real_clock_seconds: f64,
     time_speed_index: usize,
     interactive_scene_time_offset_seconds: f64,
@@ -1810,6 +1907,12 @@ impl State {
             &camera_bind_group_layout,
             terrain.shared_bind_group_layout(),
         );
+        let bubbles = bubbles::Bubbles::new(
+            &device,
+            hdr::HdrRenderer::SCENE_FORMAT,
+            &camera_bind_group_layout,
+            terrain.shared_bind_group_layout(),
+        );
         let bird_renderer = birds_render::BirdRenderer::new(
             &device,
             &queue,
@@ -1876,6 +1979,7 @@ impl State {
             weather,
             weather_clouds,
             rain,
+            bubbles,
             sea_sound,
             lightning: lightning::Lightning::new(),
             lightning_view: [0.0; 4],
@@ -1983,6 +2087,9 @@ impl State {
             storm_overcast_time: f64::NAN,
             approach_storm_centre: None,
             scenario_water_label: None,
+            ship_water_velocity: glam::DVec3::ZERO,
+            compass_heading_degrees: None,
+            compass_drawn_degrees: None,
             gust: gust::Gust::CALM,
             last_real_clock_seconds: 0.0,
             time_speed_index: DEFAULT_TIME_SPEED_INDEX,
@@ -2829,6 +2936,7 @@ impl State {
             } else {
                 self.ship_label = None;
             }
+            self.ship_water_velocity = water_horizontal;
             self.ship_body
                 .advance(&self.ship_hull, ship::FIXED_STEP_SECONDS, |direction| {
                     ship::WaterSample {
@@ -3195,6 +3303,51 @@ impl State {
                 time_seconds: ocean_time_seconds,
                 intensity,
                 wind: wind - direction * wind.dot(direction),
+                viewport: [self.size.width, self.size.height],
+                vertical_fov_radians: self.camera.vertical_fov_radians(),
+            },
+        );
+        // The compass, redrawn as soon as the heading moves half a degree so it
+        // turns smoothly rather than at the HUD's ten updates a second.
+        self.compass_heading_degrees = compass_heading_degrees(
+            self.camera.planet_frame_direction_dvec3(planet_rotation_radians),
+            camera_position,
+        );
+        let compass_moved = match (self.compass_heading_degrees, self.compass_drawn_degrees) {
+            (Some(now), Some(drawn)) => (now - drawn + 540.0).rem_euclid(360.0) - 180.0,
+            (None, None) => 0.0,
+            _ => 180.0,
+        };
+        if compass_moved.abs() > 0.5 {
+            self.mark_hud_dirty();
+        }
+        // Tiny bubbles in the water around an eye under the sea, riding the
+        // water's own motion there (the current that carries the swimmer).
+        let depth_under_surface = water - altitude;
+        self.bubbles.update(
+            &self.queue,
+            bubbles::BubbleFrame {
+                camera_position,
+                basis: planet::CameraViewBasis::from_forward_and_up(
+                    self.camera
+                        .planet_frame_direction_dvec3(planet_rotation_radians),
+                    self.camera.planet_frame_view_up(planet_rotation_radians),
+                ),
+                time_seconds: ocean_time_seconds,
+                depth_meters: depth_under_surface,
+                // Up and down as well as along: the eye rides the swell's
+                // heave, and so does the water around it.
+                water_velocity: if depth_under_surface > 0.0 {
+                    ocean::global_wave_horizontal_velocity(direction, ocean_time_seconds)
+                        + direction
+                            * ocean::global_wave_vertical_velocity_meters_per_second(
+                                direction,
+                                ocean_time_seconds,
+                                SHIP_FALLBACK_DEPTH_METERS,
+                            )
+                } else {
+                    glam::DVec3::ZERO
+                },
                 viewport: [self.size.width, self.size.height],
                 vertical_fov_radians: self.camera.vertical_fov_radians(),
             },
@@ -4186,10 +4339,26 @@ impl State {
                     self.ship_body.on_seabed,
                     self.ship_body.foundering,
                     self.ship_body.seabed_clearance_meters(&self.ship_hull),
+                    speed_through_water_knots(
+                        self.ship_body.linear_velocity,
+                        self.ship_water_velocity,
+                        self.ship_body.position.normalize(),
+                    ),
                 )
             });
+        let compass = self.scenario.is_none().then_some(self.compass_heading_degrees).flatten();
+        self.compass_drawn_degrees = compass;
         let full_output = self.egui_context.run_ui(raw_input, |ui| {
-            if let Some((flooded_tonnes, sinking_tonnes, on_seabed, foundering, clearance)) = water_aboard {
+            if let Some(heading) = compass {
+                let context = ui.ctx().clone();
+                egui::Area::new(egui::Id::new("compass"))
+                    .anchor(egui::Align2::RIGHT_TOP, [-14.0, 10.0])
+                    .interactable(false)
+                    .show(&context, |ui| draw_compass(ui, heading));
+            }
+            if let Some((flooded_tonnes, sinking_tonnes, on_seabed, foundering, clearance, knots)) =
+                water_aboard
+            {
                 let (label, colour) = water_aboard_text(flooded_tonnes, sinking_tonnes, on_seabed, foundering);
                 let (clearance_label, clearance_colour) = seabed_clearance_text(clearance, on_seabed);
                 let context = ui.ctx().clone();
@@ -4214,6 +4383,7 @@ impl State {
                                         };
                                         ui.label(heading("WATER ABOARD (tonnes)"));
                                         ui.label(heading("ABOVE SEABED"));
+                                        ui.label(heading("THROUGH WATER"));
                                         ui.end_row();
                                         ui.label(
                                             egui::RichText::new(label)
@@ -4226,6 +4396,12 @@ impl State {
                                                 .size(26.0)
                                                 .strong()
                                                 .color(clearance_colour),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(format!("{knots:.1} kn"))
+                                                .size(26.0)
+                                                .strong()
+                                                .color(egui::Color32::WHITE),
                                         );
                                         ui.end_row();
                                     });
@@ -5020,7 +5196,7 @@ impl State {
             && self.ship_distance_meters < WATER_DISPLAY_RANGE_METERS;
         let render_egui = !solid_color_screen
             && !hide_overlay
-            && (self.debug_overlay_visible || water_display);
+            && (self.debug_overlay_visible || water_display || self.scenario.is_none());
         let refresh_egui = render_egui && (self.hud_dirty || now >= self.next_hud_update);
         if refresh_egui {
             textures_to_free = self.refresh_hud(HudInputs {
@@ -5859,6 +6035,13 @@ impl State {
                         self.terrain.shared_bind_group(),
                     );
                 }
+            }
+            if subsystem_enabled("bubbles") {
+                self.bubbles.draw(
+                    &mut render_pass,
+                    &self.camera_bind_group,
+                    self.terrain.shared_bind_group(),
+                );
             }
             // Last in the pass, so the reticle sits over the finished scene.
             // It is not depth-tested, but it can still be painted over by
@@ -7213,6 +7396,35 @@ mod tests {
         let at = |text: &str| body.rfind(text).unwrap_or_else(|| panic!("startup does not {text}"));
         assert!(at(presses[0]) > body.find("set_effects").unwrap());
         assert!(at(presses[0]) < at(presses[1]) && at(presses[1]) < at(presses[2]));
+    }
+
+    /// North is toward the +Y pole and east is geographic east (-Z seen from
+    /// +X): the compass reads 0 looking north, 90 east, 270 west.
+    #[test]
+    fn the_compass_reads_geographic_bearings() {
+        use glam::DVec3;
+        let at = DVec3::X * 4.0e6;
+        let read = |forward: DVec3| super::compass_heading_degrees(forward, at).unwrap();
+        assert!(read(DVec3::Y).abs() < 1e-9);
+        assert!((read(-DVec3::Z) - 90.0).abs() < 1e-9);
+        assert!((read(-DVec3::Y) - 180.0).abs() < 1e-9);
+        assert!((read(DVec3::Z) - 270.0).abs() < 1e-9);
+        // Looking a little down still reads the bearing; straight down has none.
+        assert!((read(-DVec3::Z - DVec3::X) - 90.0).abs() < 1e-9);
+        assert!(super::compass_heading_degrees(-DVec3::X, at).is_none());
+        assert!(super::geographic_longitude_degrees_east_check());
+    }
+
+    /// Knots through the water: what the hull does over the water, not what
+    /// the swell carries it with; up and down does not count.
+    #[test]
+    fn speed_through_water_ignores_the_current_and_heave() {
+        use glam::DVec3;
+        let up = DVec3::X;
+        let water = DVec3::new(0.0, 3.0, 0.0);
+        assert_eq!(super::speed_through_water_knots(water + up * 2.0, water, up), 0.0);
+        let knots = super::speed_through_water_knots(water + DVec3::new(0.0, 0.0, 5.144_444), water, up);
+        assert!((knots - 10.0).abs() < 1e-3, "{knots}");
     }
 
     #[test]
