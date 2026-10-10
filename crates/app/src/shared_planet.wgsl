@@ -4588,7 +4588,9 @@ const OCEAN_FROST_FRESNEL_LOSS: f32 = 0.4;
 const OCEAN_FROST_HAZE: f32 = 0.35;
 
 fn ocean_frost() -> f32 {
-    let wind = OCEAN_FFT_WIND_SPEED * (1.0 + OCEAN_GUST_ROUGHEN * max(ocean_fft_gust, 0.0));
+    // The live mean wind (`Gust::uniform` w), not the startup constant, so
+    // the frost follows the wind keys.
+    let wind = ocean_fft_view.gust.w * (1.0 + OCEAN_GUST_ROUGHEN * max(ocean_fft_gust, 0.0));
     let mean_square_slope = 0.003 + 0.00512 * wind;
     return smoothstep(OCEAN_FROST_SLOPE_ONSET, OCEAN_FROST_SLOPE_FULL, mean_square_slope);
 }

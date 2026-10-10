@@ -431,6 +431,11 @@ fn ship_creak_stress(swell_height_meters: f32, angular_speed: f64, distance_mete
 /// The water-aboard counter: "flooded/sinking" in tonnes ("SUNK" once it is on
 /// the seabed), white while the hull is safe, then amber, orange and red as
 /// the water aboard nears the amount that sinks it.
+/// PageUp/PageDown move the swell's height by this much (m), Home/End the
+/// wind by this much (m/s).
+const SWELL_STEP_METERS: f32 = 2.0;
+const WIND_STEP_METERS_PER_SECOND: f32 = 2.0;
+
 /// Knots in one metre per second.
 const KNOTS_PER_METER_PER_SECOND: f64 = 3600.0 / 1852.0;
 
@@ -470,7 +475,7 @@ fn geographic_longitude_degrees_east_check() -> bool {
 
 /// Draws the compass card: it turns so the heading is at the top under a
 /// fixed lubber mark, with the heading in degrees beneath.
-fn draw_compass(ui: &mut egui::Ui, heading_degrees: f64) {
+fn draw_compass(ui: &mut egui::Ui, heading_degrees: f64, sea: Option<(f32, f32)>) {
     const SIZE: f32 = 96.0;
     let (rect, _) = ui.allocate_exact_size(egui::vec2(SIZE, SIZE + 24.0), egui::Sense::hover());
     let painter = ui.painter();
@@ -518,6 +523,15 @@ fn draw_compass(ui: &mut egui::Ui, heading_degrees: f64) {
         egui::FontId::proportional(15.0),
         egui::Color32::WHITE,
     );
+    // The live sea settings (PageUp/PageDown swell, Home/End wind).
+    if let Some((swell, wind)) = sea {
+        ui.label(
+            egui::RichText::new(format!("Swell {swell:.0} m\nWind {wind:.0} m/s"))
+                .size(13.0)
+                .color(egui::Color32::from_gray(220))
+                .background_color(egui::Color32::from_black_alpha(150)),
+        );
+    }
 }
 
 fn water_aboard_text(
@@ -2447,7 +2461,30 @@ impl State {
         self.last_real_clock_seconds = real_seconds;
         if !self.animation_frozen {
             self.scaled_clock_seconds += real_delta * self.time_speed();
+            // The live swell eases to its new height on the game clock.
+            ocean_fft::ease_swell((real_delta * self.time_speed()) as f32);
         }
+    }
+
+    /// PageUp/PageDown: the swell's height, eased in (`ocean_fft::ease_swell`).
+    fn adjust_swell(&mut self, step_meters: f32) {
+        if self.scenario.is_some() {
+            return;
+        }
+        ocean_fft::set_swell_target_meters(ocean_fft::swell_target_meters() + step_meters);
+        self.mark_hud_dirty();
+    }
+
+    /// Home/End: the wind, the wind sea's spectrum blended in over a few
+    /// seconds (`Terrain::set_ocean_wind`).
+    fn adjust_wind(&mut self, step_meters_per_second: f32) {
+        if self.scenario.is_some() {
+            return;
+        }
+        let speed = (ocean_fft::wind_speed_from_environment() + step_meters_per_second)
+            .clamp(0.0, ocean_fft::MAX_WIND_METERS_PER_SECOND);
+        self.terrain.set_ocean_wind(speed, self.scaled_clock_seconds);
+        self.mark_hud_dirty();
     }
 
     fn interactive_sim_time(&self) -> f64 {
@@ -4347,6 +4384,9 @@ impl State {
                 )
             });
         let compass = self.scenario.is_none().then_some(self.compass_heading_degrees).flatten();
+        let sea_settings = planet::ocean_fft_enabled().then(|| {
+            (ocean_fft::swell_target_meters(), ocean_fft::wind_speed_from_environment())
+        });
         self.compass_drawn_degrees = compass;
         let full_output = self.egui_context.run_ui(raw_input, |ui| {
             if let Some(heading) = compass {
@@ -4354,7 +4394,7 @@ impl State {
                 egui::Area::new(egui::Id::new("compass"))
                     .anchor(egui::Align2::RIGHT_TOP, [-14.0, 10.0])
                     .interactable(false)
-                    .show(&context, |ui| draw_compass(ui, heading));
+                    .show(&context, |ui| draw_compass(ui, heading, sea_settings));
             }
             if let Some((flooded_tonnes, sinking_tonnes, on_seabed, foundering, clearance, knots)) =
                 water_aboard
@@ -6733,6 +6773,34 @@ impl ApplicationHandler for App {
                         && event.physical_key == PhysicalKey::Code(KeyCode::BracketRight) =>
                 {
                     state.adjust_flight_speed_scale(FLIGHT_SPEED_SCALE_STEP);
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::PageUp) =>
+                {
+                    state.adjust_swell(SWELL_STEP_METERS);
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::PageDown) =>
+                {
+                    state.adjust_swell(-SWELL_STEP_METERS);
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::Home) =>
+                {
+                    state.adjust_wind(WIND_STEP_METERS_PER_SECOND);
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::End) =>
+                {
+                    state.adjust_wind(-WIND_STEP_METERS_PER_SECOND);
                     window.request_redraw();
                 }
                 WindowEvent::KeyboardInput { event, .. }

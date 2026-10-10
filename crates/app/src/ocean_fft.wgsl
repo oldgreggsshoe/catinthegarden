@@ -7,7 +7,8 @@ const GRAVITY: f32 = 9.81;
 
 struct Params {
     time: f32,
-    pad0: f32,
+    // Weight of h0 over h0_from: a live wind change blends the spectrum in.
+    blend: f32,
     pad1: f32,
     pad2: f32,
     tile: array<vec4<f32>, 4>,
@@ -23,6 +24,8 @@ struct Params {
 // Height Laplacian of every cascade at once, cascade c in channel c, for the
 // sea-bed caustics: curvature is what makes the surface a lens.
 @group(0) @binding(4) var curvature: texture_storage_2d<rgba16float, write>;
+// The spectrum being blended from (ocean_fft.rs SpectrumBlend).
+@group(0) @binding(5) var<storage, read> h0_from: array<vec4<f32>>;
 
 fn cmul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
@@ -36,7 +39,7 @@ fn times_i(v: vec2<f32>) -> vec2<f32> {
 fn evolve(@builtin(global_invocation_id) id: vec3<u32>) {
     let c = id.z;
     let cell = id.y * N + id.x;
-    let src = h0[c * N * N + cell];
+    let src = mix(h0_from[c * N * N + cell], h0[c * N * N + cell], params.blend);
     let length = params.tile[c].x;
     let kx = TAU * (f32(id.x) - HALF_N) / length;
     let kz = TAU * (f32(id.y) - HALF_N) / length;

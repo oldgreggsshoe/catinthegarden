@@ -107,7 +107,10 @@ pub fn origin(plane_uv: [f64; 2], time_seconds: f64) -> [f64; 2] {
     let along = mean_direction_uv();
     let across = [-along[1], along[0]];
     let period = f64::from(PERIOD_CELLS);
-    let a = plane_uv[0] * along[0] + plane_uv[1] * along[1] - mean_speed() * time_seconds;
+    // Travel, not speed x time: the live keys change the wind, and speed x
+    // time would jump the whole field by the change x the time so far.
+    let a = plane_uv[0] * along[0] + plane_uv[1] * along[1]
+        - crate::ocean_fft::wind_travel_meters(time_seconds);
     let c = plane_uv[0] * across[0] + plane_uv[1] * across[1];
     [
         (a / ALONG_METERS).rem_euclid(period),

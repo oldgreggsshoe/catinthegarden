@@ -59,7 +59,9 @@ const SWELL_WAVELENGTH_PER_HEIGHT: f32 = 39.0;
 
 /// Swell peak wavelength for the configured swell height.
 pub fn swell_peak_wavelength_meters() -> f32 {
-    swell_wavelength_for_height(swell_base_height_meters())
+    // Fixed at the startup height: the swell's length is part of its
+    // spectrum, built once, and the live keys change its height only.
+    swell_wavelength_for_height(startup_swell_base_height_meters())
 }
 
 fn swell_wavelength_for_height(height_meters: f32) -> f32 {
@@ -220,12 +222,87 @@ fn swell_h0(seed: u32, dk: f32, swell_angle: f32) -> Vec<[f32; 4]> {
 /// divides by the wind speed, and at zero every wave came out NaN.
 pub const MIN_WIND_SEA_METERS_PER_SECOND: f32 = 0.5;
 
+/// The FFT sea's wind speed (m/s) now: `PLANET_OCEAN_FFT_WIND` (default 14,
+/// 0-40) at startup, then whatever the live keys set (`set_wind_speed`).
 pub fn wind_speed_from_environment() -> f32 {
-    std::env::var("PLANET_OCEAN_FFT_WIND")
-        .ok()
-        .and_then(|value| value.trim().parse::<f32>().ok())
-        .filter(|value| value.is_finite())
-        .map_or(14.0, |value| value.clamp(0.0, 40.0))
+    f32::from_bits(live_sea().wind.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Strongest wind the live keys or the environment can set (m/s).
+pub const MAX_WIND_METERS_PER_SECOND: f32 = 40.0;
+/// Tallest swell the live keys or the environment can set (m).
+pub const MAX_SWELL_METERS: f32 = 30.0;
+/// The swell eases to a new height over about this long (its e-fold), so a
+/// key press grows or calms the sea rather than jumping it.
+const SWELL_EASE_SECONDS: f32 = 2.0;
+
+/// Sea time over which a live wind change blends the wind sea's spectrum in.
+pub const WIND_CHANGE_SECONDS: f64 = 4.0;
+
+/// Sea settings the keys change while the game runs.
+struct LiveSea {
+    wind: std::sync::atomic::AtomicU32,
+    swell: std::sync::atomic::AtomicU32,
+    swell_target: std::sync::atomic::AtomicU32,
+    /// Added to wind x time so the distance the gust field has travelled is
+    /// continuous when the wind changes (`wind_travel_meters`).
+    travel_offset: std::sync::Mutex<f64>,
+}
+
+fn live_sea() -> &'static LiveSea {
+    static LIVE: std::sync::OnceLock<LiveSea> = std::sync::OnceLock::new();
+    LIVE.get_or_init(|| {
+        let wind = std::env::var("PLANET_OCEAN_FFT_WIND")
+            .ok()
+            .and_then(|value| value.trim().parse::<f32>().ok())
+            .filter(|value| value.is_finite())
+            .map_or(14.0, |value| value.clamp(0.0, MAX_WIND_METERS_PER_SECOND));
+        let swell = startup_swell_base_height_meters();
+        LiveSea {
+            wind: std::sync::atomic::AtomicU32::new(wind.to_bits()),
+            swell: std::sync::atomic::AtomicU32::new(swell.to_bits()),
+            swell_target: std::sync::atomic::AtomicU32::new(swell.to_bits()),
+            travel_offset: std::sync::Mutex::new(0.0),
+        }
+    })
+}
+
+/// Sets the wind speed (m/s, clamped 0-40) from sea time `time_seconds` on,
+/// keeping the gust field's travel continuous. The wind sea's spectrum is
+/// rebuilt separately (`terrain::Terrain::set_ocean_wind`), blending in.
+pub fn set_wind_speed(speed: f32, time_seconds: f64) {
+    let speed = speed.clamp(0.0, MAX_WIND_METERS_PER_SECOND);
+    let live = live_sea();
+    let old = wind_speed_from_environment();
+    *live.travel_offset.lock().unwrap() += f64::from(old - speed) * time_seconds;
+    live.wind.store(speed.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How far the gust field has slid downwind by sea time `time_seconds`: wind
+/// x time, kept continuous across live wind changes.
+pub fn wind_travel_meters(time_seconds: f64) -> f64 {
+    f64::from(wind_speed_from_environment()) * time_seconds + *live_sea().travel_offset.lock().unwrap()
+}
+
+/// The swell height the keys are easing toward (m).
+pub fn swell_target_meters() -> f32 {
+    f32::from_bits(live_sea().swell_target.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+pub fn set_swell_target_meters(height: f32) {
+    live_sea()
+        .swell_target
+        .store(height.clamp(0.0, MAX_SWELL_METERS).to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Moves the swell `seconds` of real time toward its target.
+pub fn ease_swell(seconds: f32) {
+    let live = live_sea();
+    let now = swell_base_height_meters();
+    let target = swell_target_meters();
+    let next = now + (target - now) * (1.0 - (-seconds.max(0.0) / SWELL_EASE_SECONDS).exp());
+    let next = if (next - target).abs() < 0.005 { target } else { next };
+    live.swell.store(next.to_bits(), std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Wind direction of the FFT spectrum in the tangent-plane (u, v) axes.
@@ -365,16 +442,23 @@ fn stormed_swell_height(base: f32, storm_intensity: f32) -> f32 {
     base + (0.8 * base).min(SWELL_STORM_BOOST_MAX_METERS) * blend
 }
 
-/// `PLANET_OCEAN_FFT_SWELL` (default 16m, up to 30m): the swell's
-/// significant height before the local storm raises it.
+/// The swell's significant height before the local storm raises it: from
+/// `PLANET_OCEAN_FFT_SWELL` (default 16m, up to 30m) at startup, then eased
+/// toward whatever the live keys set (`set_swell_target_meters`).
 pub fn swell_base_height_meters() -> f32 {
+    f32::from_bits(live_sea().swell.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// `PLANET_OCEAN_FFT_SWELL` as the game started: what the swell's length
+/// (`swell_peak_wavelength_meters`) is built from.
+fn startup_swell_base_height_meters() -> f32 {
     static BASE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
     *BASE.get_or_init(|| {
         std::env::var("PLANET_OCEAN_FFT_SWELL")
             .ok()
             .and_then(|v| v.trim().parse::<f32>().ok())
             .filter(|v| v.is_finite())
-            .map_or(DEFAULT_SWELL_HEIGHT_METERS, |v| v.clamp(0.0, 30.0))
+            .map_or(DEFAULT_SWELL_HEIGHT_METERS, |v| v.clamp(0.0, MAX_SWELL_METERS))
     })
 }
 
@@ -455,10 +539,29 @@ fn second_order(bands: &[(f64, FieldSample)]) -> (f64, [f64; 2], f64) {
     (strength * height, gradient.map(|g| strength * g), strength * rate)
 }
 
+/// A change of the sea's spectrum (a live wind change), blended in over
+/// sea time: from `start` the amplitudes move to the new spectrum over
+/// `seconds`, eased. GPU (`OceanFft::set_spectrum`) and CPU follow the same
+/// function of time, so the ship stays on the drawn water through it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpectrumBlend {
+    pub start: f64,
+    pub seconds: f64,
+}
+
+impl SpectrumBlend {
+    pub fn weight(&self, time: f64) -> f64 {
+        let t = ((time - self.start) / self.seconds.max(1.0e-6)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    }
+}
+
 struct CpuCascade {
     tile_meters: f64,
     modes: Vec<Mode>,
     occupied_rows: Vec<bool>,
+    /// A spectrum change under way: each mode moves from `h0` to `h0_to`.
+    blend: Option<SpectrumBlend>,
     cache: std::sync::Mutex<SlotCache>,
 }
 
@@ -485,6 +588,10 @@ struct Mode {
     y: usize,
     h0: [f64; 2],
     h0m: [f64; 2],
+    /// The same mode in the spectrum being blended to (`SpectrumBlend`), or
+    /// equal to `h0`/`h0m` when there is no change under way.
+    h0_to: [f64; 2],
+    h0m_to: [f64; 2],
     omega: f64,
     /// Unit wave direction (kx/k, kz/k).
     unit: [f64; 2],
@@ -595,16 +702,18 @@ fn inverse_fft_2d(mut grid: Vec<[f64; 2]>, occupied_rows: &[bool]) -> Vec<[f64; 
 }
 
 impl CpuCascade {
-    fn new(h0: &[[f32; 4]], cascade: usize) -> Self {
+    fn new(h0: &[[f32; 4]], to: &[[f32; 4]], blend: Option<SpectrumBlend>, cascade: usize) -> Self {
         let half = GRID as i32 / 2;
         let tile_meters = tile_meters(cascade) as f64;
-        let layer = &h0[cascade * GRID * GRID..(cascade + 1) * GRID * GRID];
+        let range = cascade * GRID * GRID..(cascade + 1) * GRID * GRID;
+        let (layer, layer_to) = (&h0[range.clone()], &to[range]);
         let mut modes = Vec::new();
         let mut occupied_rows = vec![false; GRID];
         for y in 0..GRID {
             for x in 0..GRID {
                 let t = layer[y * GRID + x];
-                if t == [0.0; 4] {
+                let u = layer_to[y * GRID + x];
+                if t == [0.0; 4] && u == [0.0; 4] {
                     continue;
                 }
                 let n = (x as i32 - half) as f64;
@@ -617,6 +726,8 @@ impl CpuCascade {
                     y,
                     h0: [t[0] as f64, t[1] as f64],
                     h0m: [t[2] as f64, t[3] as f64],
+                    h0_to: [u[0] as f64, u[1] as f64],
+                    h0m_to: [u[2] as f64, u[3] as f64],
                     omega: (GRAVITY as f64 * k).sqrt(),
                     unit: if length > 0.0 { [n / length, m / length] } else { [0.0, 0.0] },
                 });
@@ -626,6 +737,7 @@ impl CpuCascade {
             tile_meters,
             modes,
             occupied_rows,
+            blend,
             cache: std::sync::Mutex::new(SlotCache { slots: Vec::new(), clock: 0 }),
         }
     }
@@ -636,10 +748,13 @@ impl CpuCascade {
         // so each complex inverse FFT returns two real grids.
         let mut vertical = vec![[0.0f64; 2]; GRID * GRID];
         let mut horizontal = vec![[0.0f64; 2]; GRID * GRID];
+        let w = self.blend.map_or(1.0, |blend| blend.weight(time));
+        let mix = |a: [f64; 2], b: [f64; 2]| [a[0] + (b[0] - a[0]) * w, a[1] + (b[1] - a[1]) * w];
         for mode in &self.modes {
             let (s, c) = (mode.omega * time).sin_cos();
-            let plus = cmul(mode.h0, [c, s]);
-            let minus = cmul([mode.h0m[0], -mode.h0m[1]], [c, -s]);
+            let (h0, h0m) = (mix(mode.h0, mode.h0_to), mix(mode.h0m, mode.h0m_to));
+            let plus = cmul(h0, [c, s]);
+            let minus = cmul([h0m[0], -h0m[1]], [c, -s]);
             let h = [plus[0] + minus[0], plus[1] + minus[1]];
             // d/dt: i*omega*plus - i*omega*minus.
             let v = [-mode.omega * (plus[1] - minus[1]), mode.omega * (plus[0] - minus[0])];
@@ -939,11 +1054,18 @@ fn smoothstep(edge0: f64, edge1: f64, x: f64) -> f64 {
 
 impl CpuSurface {
     pub fn new(h0: &[[f32; 4]]) -> Self {
+        Self::blending(h0, h0, None)
+    }
+
+    /// The surface while the spectrum changes from `from` to `to` over
+    /// `blend` (the live wind keys), the same blend the GPU evolves with.
+    pub fn blending(from: &[[f32; 4]], to: &[[f32; 4]], blend: Option<SpectrumBlend>) -> Self {
+        let h0 = to;
         let shared = std::sync::Arc::new(SurfaceShared {
             cascades: vec![
-                CpuCascade::new(h0, 0),
-                CpuCascade::new(h0, 1),
-                CpuCascade::new(h0, SWELL_CASCADE),
+                CpuCascade::new(from, to, blend, 0),
+                CpuCascade::new(from, to, blend, 1),
+                CpuCascade::new(from, to, blend, SWELL_CASCADE),
             ],
             frontier: std::sync::atomic::AtomicI64::new(i64::MIN),
             wake: (std::sync::Mutex::new(false), std::sync::Condvar::new()),
@@ -1193,8 +1315,24 @@ impl CpuSurface {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Params {
     time: f32,
-    pad: [f32; 3],
+    /// Weight of `h0` over `h0_from` (`SpectrumBlend`): 1 once a change is done.
+    blend: f32,
+    pad: [f32; 2],
     tile: [[f32; 4]; CASCADES],
+}
+
+/// The spectra on the GPU: `from` in `h0_from`, `to` in `h0`, and how far
+/// across the change the sea is (`SpectrumBlend`).
+struct SpectrumState {
+    from: Vec<[f32; 4]>,
+    to: Vec<[f32; 4]>,
+    blend: Option<SpectrumBlend>,
+}
+
+impl SpectrumState {
+    fn weight(&self, time: f64) -> f32 {
+        self.blend.map_or(1.0, |blend| blend.weight(time) as f32)
+    }
 }
 
 /// Uniform read by the ocean shaders: fixed tangent-plane axes plus, per
@@ -1244,7 +1382,10 @@ pub struct OceanFft {
     cols: wgpu::ComputePipeline,
     assemble: wgpu::ComputePipeline,
     curvature: wgpu::ComputePipeline,
-    wavenumbers: [f64; CASCADES],
+    /// The spectrum being blended from (`h0` holds the one blended to).
+    h0_from: wgpu::Buffer,
+    spectrum: std::sync::Mutex<SpectrumState>,
+    wavenumbers: std::sync::Mutex<[f64; CASCADES]>,
     /// Last `set_time`, as f32 bits, for the giant-wave envelope in `update_view`.
     time: std::sync::atomic::AtomicU32,
 }
@@ -1277,6 +1418,7 @@ impl OceanFft {
                 ),
                 entry(1, storage(true)),
                 entry(2, storage(false)),
+                entry(5, storage(true)),
                 entry(
                     3,
                     wgpu::BindingType::StorageTexture {
@@ -1320,13 +1462,19 @@ impl OceanFft {
         }
         let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("ocean fft params"),
-            contents: bytemuck::bytes_of(&Params { time: 0.0, pad: [0.0; 3], tile }),
+            contents: bytemuck::bytes_of(&Params { time: 0.0, blend: 1.0, pad: [0.0; 2], tile }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
+        let spectrum = SpectrumState { from: h0.to_vec(), to: h0.to_vec(), blend: None };
         let h0 = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("ocean fft h0"),
             contents: bytemuck::cast_slice(h0),
-            usage: wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+        let h0_from = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("ocean fft h0 blended from"),
+            contents: bytemuck::cast_slice(&spectrum.from),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
         let cells = (GRID * GRID) as u64;
         let spec = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1457,11 +1605,14 @@ impl OceanFft {
                 wgpu::BindGroupEntry { binding: 2, resource: spec.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&mip_view(&field, 0)) },
                 wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&curvature_view) },
+                wgpu::BindGroupEntry { binding: 5, resource: h0_from.as_entire_binding() },
             ],
         });
         Self {
             params,
             h0,
+            h0_from,
+            spectrum: std::sync::Mutex::new(spectrum),
             field,
             field_view,
             curvature_view,
@@ -1475,7 +1626,7 @@ impl OceanFft {
             cols: pipeline("fft_cols"),
             assemble: pipeline("assemble"),
             curvature: pipeline("curvature_bands"),
-            wavenumbers,
+            wavenumbers: std::sync::Mutex::new(wavenumbers),
             time: std::sync::atomic::AtomicU32::new(0),
         }
     }
@@ -1507,6 +1658,7 @@ impl OceanFft {
         let (u, v) = anchor_axes(camera_direction);
         let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
         let (cu, cv) = (radius_meters * dot(u, camera_direction), radius_meters * dot(v, camera_direction));
+        let wavenumbers = *self.wavenumbers.lock().unwrap();
         let mut cascade = [[0.0f32; 4]; CASCADES];
         for (c, entry) in cascade.iter_mut().enumerate() {
             let length = tile_meters(c) as f64;
@@ -1514,7 +1666,7 @@ impl OceanFft {
                 (cu / length).rem_euclid(1.0) as f32,
                 (cv / length).rem_euclid(1.0) as f32,
                 tile_meters(c),
-                self.wavenumbers[c] as f32,
+                wavenumbers[c] as f32,
             ];
         }
         let params = ViewParams {
@@ -1537,7 +1689,36 @@ impl OceanFft {
 
     pub fn set_time(&self, queue: &wgpu::Queue, time: f32) {
         self.time.store(time.to_bits(), std::sync::atomic::Ordering::Relaxed);
-        queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&time));
+        let blend = self.spectrum.lock().unwrap().weight(f64::from(time));
+        queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&[time, blend]));
+    }
+
+    /// Starts a change to spectrum `to` at sea time `time`, blended in over
+    /// `seconds` from wherever the sea is now (mid-way through an earlier
+    /// change, from that mix). Returns the from/to spectra and the blend for
+    /// the CPU sea (`CpuSurface::blending`), so both follow the same water.
+    pub fn set_spectrum(
+        &self,
+        queue: &wgpu::Queue,
+        to: Vec<[f32; 4]>,
+        time: f64,
+        seconds: f64,
+    ) -> (Vec<[f32; 4]>, Vec<[f32; 4]>, SpectrumBlend) {
+        assert_eq!(to.len(), CASCADES * GRID * GRID);
+        let mut state = self.spectrum.lock().unwrap();
+        let w = state.weight(time);
+        let from: Vec<[f32; 4]> = state
+            .from
+            .iter()
+            .zip(&state.to)
+            .map(|(a, b)| std::array::from_fn(|i| a[i] + (b[i] - a[i]) * w))
+            .collect();
+        let blend = SpectrumBlend { start: time, seconds };
+        queue.write_buffer(&self.h0_from, 0, bytemuck::cast_slice(&from));
+        queue.write_buffer(&self.h0, 0, bytemuck::cast_slice(&to));
+        *self.wavenumbers.lock().unwrap() = band_wavenumbers(&to);
+        *state = SpectrumState { from: from.clone(), to: to.clone(), blend: Some(blend) };
+        (from, to, blend)
     }
 
     pub fn encode(&self, encoder: &mut wgpu::CommandEncoder) {
@@ -1764,6 +1945,58 @@ pub(crate) mod tests {
                 max_h = max_h.max(gpu.abs());
             }
             eprintln!("layer {layer}: cpu vs gpu texel max error {max_err:.5} m (max height {max_h:.3})");
+            assert!(max_err < 0.02, "layer {layer} max error {max_err}");
+        }
+    }
+
+    /// A live wind change: before it the sea is the old spectrum's, after it
+    /// the new one's, and partway it is between the two, not either.
+    #[test]
+    fn a_wind_change_blends_the_cpu_sea_from_the_old_spectrum_to_the_new() {
+        let calm = generate_h0(1, 8.0, WIND_DIRECTION, 80_000.0);
+        let gale = generate_h0(1, 30.0, WIND_DIRECTION, 80_000.0);
+        let blend = SpectrumBlend { start: 10.0, seconds: 4.0 };
+        let changing = CpuSurface::blending(&calm, &gale, Some(blend));
+        let (before, after) = (CpuSurface::new(&calm), CpuSurface::new(&gale));
+        let texels = [(5usize, 9usize), (100, 200), (128, 64), (17, 240)];
+        for &(i, j) in &texels {
+            assert!((changing.texel(0, i, j, 9.0) - before.texel(0, i, j, 9.0)).abs() < 1e-9);
+            assert!((changing.texel(0, i, j, 15.0) - after.texel(0, i, j, 15.0)).abs() < 1e-9);
+        }
+        let differs = texels.iter().any(|&(i, j)| {
+            let mid = changing.texel(0, i, j, 12.0);
+            (mid - before.texel(0, i, j, 12.0)).abs() > 1e-3 && (mid - after.texel(0, i, j, 12.0)).abs() > 1e-3
+        });
+        assert!(differs, "half way the sea is neither spectrum");
+        assert_eq!(blend.weight(10.0), 0.0);
+        assert_eq!(blend.weight(14.0), 1.0);
+        assert!((blend.weight(12.0) - 0.5).abs() < 1e-12);
+    }
+
+    /// Half way through a live wind change the GPU field and the CPU sea
+    /// (which the ship floats on) are the same water.
+    #[test]
+    #[ignore = "requires a Vulkan GPU"]
+    fn cpu_and_gpu_agree_half_way_through_a_wind_change() {
+        let calm = generate_h0(1, 14.0, WIND_DIRECTION, 80_000.0);
+        let gale = generate_h0(1, 30.0, WIND_DIRECTION, 80_000.0);
+        let (device, queue) = device();
+        let fft = OceanFft::new(&device, &calm);
+        let (from, to, blend) = fft.set_spectrum(&queue, gale, 10.0, 4.0);
+        let cpu = CpuSurface::blending(&from, &to, Some(blend));
+        let time = 12.0;
+        fft.set_time(&queue, time as f32);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        fft.encode(&mut encoder);
+        queue.submit(Some(encoder.finish()));
+        let field = read_field(&device, &queue, &fft);
+        for (index, layer) in [(0usize, 0usize), (1, 1), (2, SWELL_CASCADE)] {
+            let mut max_err = 0.0f64;
+            for &(i, j) in &[(0usize, 0usize), (5, 9), (100, 200), (255, 255), (128, 64), (17, 240)] {
+                let gpu = field[layer * GRID * GRID + j * GRID + i][0] as f64;
+                max_err = max_err.max((gpu - cpu.texel(index, i, j, time)).abs());
+            }
+            eprintln!("layer {layer}: cpu vs gpu during the change, max error {max_err:.5} m");
             assert!(max_err < 0.02, "layer {layer} max error {max_err}");
         }
     }

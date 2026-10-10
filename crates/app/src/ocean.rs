@@ -1321,15 +1321,29 @@ pub fn breaking_fraction(water_depth_meters: f64, raw_height_meters: f64) -> f64
 /// FFT sea (`PLANET_OCEAN_FFT=1`): the CPU surface mirrors the GPU's
 /// geometry cascades (wind sea and swell, with their horizontal displacement),
 /// so buoyancy and collision follow the drawn water.
-fn fft_surface() -> Option<&'static crate::ocean_fft::CpuSurface> {
-    static SURFACE: std::sync::OnceLock<Option<crate::ocean_fft::CpuSurface>> =
-        std::sync::OnceLock::new();
-    SURFACE
-        .get_or_init(|| {
-            crate::planet::ocean_fft_enabled()
-                .then(|| crate::ocean_fft::CpuSurface::new(&crate::ocean_fft::default_h0()))
-        })
-        .as_ref()
+fn fft_surface() -> Option<std::sync::Arc<crate::ocean_fft::CpuSurface>> {
+    fft_surface_slot().read().unwrap().clone()
+}
+
+/// Replaced whole when the live wind keys change the spectrum
+/// (`replace_fft_surface`); callers hold the one they started with.
+fn fft_surface_slot() -> &'static std::sync::RwLock<Option<std::sync::Arc<crate::ocean_fft::CpuSurface>>> {
+    static SURFACE: std::sync::OnceLock<
+        std::sync::RwLock<Option<std::sync::Arc<crate::ocean_fft::CpuSurface>>>,
+    > = std::sync::OnceLock::new();
+    SURFACE.get_or_init(|| {
+        std::sync::RwLock::new(crate::planet::ocean_fft_enabled().then(|| {
+            std::sync::Arc::new(crate::ocean_fft::CpuSurface::new(&crate::ocean_fft::default_h0()))
+        }))
+    })
+}
+
+/// The CPU sea from now on (FFT sea only): the live wind keys install one
+/// that blends to the new spectrum exactly as the GPU does.
+pub fn replace_fft_surface(surface: crate::ocean_fft::CpuSurface) {
+    if crate::planet::ocean_fft_enabled() {
+        *fft_surface_slot().write().unwrap() = Some(std::sync::Arc::new(surface));
+    }
 }
 
 fn fft_sample(direction: DVec3, sim_time: f64) -> Option<crate::ocean_fft::CpuSample> {

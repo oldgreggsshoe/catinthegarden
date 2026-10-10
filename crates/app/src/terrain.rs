@@ -1606,6 +1606,25 @@ impl TerrainRenderer {
         }
     }
 
+    /// The live wind keys (FFT sea): the wind is `speed` from sea time
+    /// `ocean_time_seconds`, and the wind sea's spectrum is rebuilt for it
+    /// (same random phases) and blended in over
+    /// `ocean_fft::WIND_CHANGE_SECONDS`, on the GPU and in the CPU sea alike,
+    /// so the waves grow or calm rather than jump and the ship stays on them.
+    pub fn set_ocean_wind(&self, speed: f32, ocean_time_seconds: f64) {
+        crate::ocean_fft::set_wind_speed(speed, ocean_time_seconds);
+        if !self.ocean_fft_enabled {
+            return;
+        }
+        let (from, to, blend) = self.ocean_fft.set_spectrum(
+            &self.queue,
+            crate::ocean_fft::default_h0(),
+            ocean_time_seconds,
+            crate::ocean_fft::WIND_CHANGE_SECONDS,
+        );
+        crate::ocean::replace_fft_surface(crate::ocean_fft::CpuSurface::blending(&from, &to, Some(blend)));
+    }
+
     pub fn update_ocean_fft(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
