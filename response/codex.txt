@@ -1,1 +1,1 @@
-The lamp now lights the ship (faces turned toward it, SHIP_LAMP_GAIN 0.6, not dimmed by depth) and the underside of the surface (OCEAN_UNDERSIDE_LAMP_GAIN 0.25, a gentle patch where the beam hits the ceiling). Shaders validate; not seen rendered.
+Underwater fog now reaches 98% at 25 m (was 45 m): OCEAN_SUBMERGED_FOG_METERS in shared_planet.wgsl. The lamp cone fades out at 42 degrees (solid to 23). Tests pass; not seen rendered.

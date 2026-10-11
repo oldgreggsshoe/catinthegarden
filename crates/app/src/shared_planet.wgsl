@@ -787,7 +787,7 @@ const OCEAN_UNDERWATER_VISIBILITY_METERS: f32 = 100.0;
 // already a little at arm's length (8% at 1 m, a third at 5 m, 58% at 10 m,
 // 82% at 20 m). Only views from inside the water (`ocean_water_fog_amount`);
 // how deep the sea can be seen into from above keeps the 100 m above.
-const OCEAN_SUBMERGED_FOG_METERS: f32 = 45.0;
+const OCEAN_SUBMERGED_FOG_METERS: f32 = 25.0;
 // What the water itself looks like once everything else has been extinguished.
 // Blue-green rather than the sky's blue: water absorbs red first, then green,
 // which is why the far end of a flooded quarry is this colour and not navy.
@@ -3126,10 +3126,10 @@ fn underwater_eye_depth_meters() -> f32 {
 }
 
 // The swimmer's lamp (key L; camera.sun_direction_view.w): a narrow beam down
-// the view axis (view space looks down -Z), 23 degrees solid to 28 degrees out,
+// the view axis (view space looks down -Z), 23 degrees solid to 42 degrees out,
 // reaching about 60m. 0 with the lamp off or the eye out of the water.
 const LAMP_INNER_COSINE: f32 = 0.92050; // 23 degrees
-const LAMP_OUTER_COSINE: f32 = 0.88295; // 28 degrees
+const LAMP_OUTER_COSINE: f32 = 0.74314; // 42 degrees
 const LAMP_RANGE_METERS: f32 = 60.0;
 const LAMP_RADIANCE: vec3<f32> = vec3<f32>(2.0, 1.8, 1.4);
 fn lamp_beam(camera_relative_view_position: vec3<f32>) -> f32 {
