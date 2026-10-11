@@ -1,5 +1,1 @@
-Done: the lamp cone is now 23 degrees solid, fading out by 28 (was 3/8).
-
-- Bubbles inside the beam are lit by the lamp (BUBBLE_LAMP_GAIN 0.5).
-- A faint glow (LAMP_GLOW) is added to the water colour across the whole cone, so the beam area glows even when it hits nothing solid.
-- Shaders validate. I haven't seen it rendered; try L underwater. At 23 degrees the cone is wide, so the 60 m range and radiance may want turning down.
+The lamp now lights the ship (faces turned toward it, SHIP_LAMP_GAIN 0.6, not dimmed by depth) and the underside of the surface (OCEAN_UNDERSIDE_LAMP_GAIN 0.25, a gentle patch where the beam hits the ceiling). Shaders validate; not seen rendered.

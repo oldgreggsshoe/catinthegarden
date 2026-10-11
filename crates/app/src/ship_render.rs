@@ -302,7 +302,7 @@ mod tests {
         // And the deeper the fragment, the darker and bluer: absorbed per
         // channel by its depth under the drawn surface, down to the deep blue
         // that never goes out (shared_planet.wgsl).
-        assert!(shader.contains("* underwater_light(sunlight * (sun_lambert * sea.x + sea.z) + sky_light * sea.y, sea.w);"));
+        assert!(shader.contains("underwater_light(sunlight * (sun_lambert * sea.x + sea.z) + sky_light * sea.y, sea.w)"));
         // Above it, sun bounced off the moving surface.
         assert!(
             shader

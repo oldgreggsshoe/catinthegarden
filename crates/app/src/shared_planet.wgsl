@@ -4481,8 +4481,11 @@ fn ocean_underside_colour(
         let cloud = smoothstep(0.42, 0.78, ocean_swirl_fbm(p, 31u));
         aeration = storm * STORM_AERATION_STRENGTH * cloud;
     }
-    return ocean_underside_with_foam(clear_interface, skylight, max(storm_foam, aeration));
+    // The swimmer's lamp, on the underside of the surface it shines up at.
+    let lamp = LAMP_RADIANCE * lamp_beam(camera_relative_view_position) * OCEAN_UNDERSIDE_LAMP_GAIN;
+    return ocean_underside_with_foam(clear_interface, skylight, max(storm_foam, aeration)) + lamp;
 }
+const OCEAN_UNDERSIDE_LAMP_GAIN: f32 = 0.25;
 
 // Sea of Thieves-style water shading (FFT ocean only), after Rare's SIGGRAPH
 // 2018 talk and Ian's reference frame, plus an area-light sun specular (Karis

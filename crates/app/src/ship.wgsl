@@ -185,6 +185,9 @@ fn fs_water(input: VertexOutput) -> @location(0) vec4<f32> {
 // Water on or in the hull fades out over this depth under the sea surface.
 const SHIP_WATER_SUBMERGED_FADE_METERS: f32 = 0.05;
 
+// How much of the lamp's radiance a hull face squarely lit by it shows.
+const SHIP_LAMP_GAIN: f32 = 0.6;
+
 fn ship_shaded(input: VertexOutput) -> vec3<f32> {
     let sun_direction = normalize(camera.sun_direction.xyz);
     let normal = normalize(input.normal);
@@ -201,8 +204,13 @@ fn ship_shaded(input: VertexOutput) -> vec3<f32> {
         sky_facing,
     ) * (0.25 + 0.75 * sun_elevation);
     let sea = ship_sea_light(input.view_position, normal, sun_direction);
+    // The swimmer's lamp lights the faces it shines on, undimmed by depth.
+    let lamp_direction = normalize(view_to_planet(input.view_position));
+    let lamp = LAMP_RADIANCE * lamp_beam(input.view_position)
+        * max(dot(normal, -lamp_direction), 0.0) * SHIP_LAMP_GAIN;
     let lit = input.colour
-        * underwater_light(sunlight * (sun_lambert * sea.x + sea.z) + sky_light * sea.y, sea.w);
+        * (underwater_light(sunlight * (sun_lambert * sea.x + sea.z) + sky_light * sea.y, sea.w)
+            + lamp);
     // Through the same distance fog as the sea it floats in (or the water, from
     // under it): in a storm's closing fog the hull greys with the waves.
     let fog = terrain_fog(
