@@ -3122,6 +3122,23 @@ fn underwater_eye_depth_meters() -> f32 {
     return max(-camera.camera_right.w, 0.0);
 }
 
+// The swimmer's lamp (key L; camera.sun_direction_view.w): a narrow beam down
+// the view axis (view space looks down -Z), 3 degrees solid to 8 degrees out,
+// reaching about 60m. 0 with the lamp off or the eye out of the water.
+const LAMP_INNER_COSINE: f32 = 0.99863; // 3 degrees
+const LAMP_OUTER_COSINE: f32 = 0.99027; // 8 degrees
+const LAMP_RANGE_METERS: f32 = 60.0;
+const LAMP_RADIANCE: vec3<f32> = vec3<f32>(2.0, 1.8, 1.4);
+fn lamp_beam(camera_relative_view_position: vec3<f32>) -> f32 {
+    if camera.sun_direction_view.w < 0.5 || camera.flat_triangle_options.w < 0.5 {
+        return 0.0;
+    }
+    let distance = length(camera_relative_view_position);
+    let along = -camera_relative_view_position.z / max(distance, 1.0e-4);
+    return smoothstep(LAMP_OUTER_COSINE, LAMP_INNER_COSINE, along)
+        * (1.0 - smoothstep(0.3 * LAMP_RANGE_METERS, LAMP_RANGE_METERS, distance));
+}
+
 fn ocean_water_fog(camera_relative_view_position: vec3<f32>) -> TerrainFog {
     return ocean_water_fog_at_depth(
         camera_relative_view_position,
@@ -3170,10 +3187,13 @@ fn terrain_fog(
     // the sea bed and the coast beyond it were drawn at full contrast through
     // any depth of water at all.
     if camera.flat_triangle_options.w > 0.5 {
-        return ocean_water_fog_at_depth(
+        var water = ocean_water_fog_at_depth(
             camera_relative_view_position,
             max(-surface_altitude_meters, 0.0),
         );
+        // The lamp's beam clears most of the haze along it.
+        water.amount *= 1.0 - 0.9 * lamp_beam(camera_relative_view_position);
+        return water;
     }
     if !BODY_HAS_ATMOSPHERE {
         return TerrainFog(0.0, vec3<f32>(0.0));

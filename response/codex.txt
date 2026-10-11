@@ -1,5 +1,9 @@
-Understood on the planet size; I haven't changed anything there.
+The swimmer's lamp is in, but I have not seen it work.
 
-I think the 17 knots on the seabed is the THROUGH WATER readout, not the hull. A hull on the seabed loses its sideways speed to friction within about a second. The readout subtracted the water's speed at the surface, and the swell's orbital motion there is several m/s. That water speed is not faded with depth, though the hull's own forces fade it (1/e per 57 m). So a stationary wreck 240 m down read as moving through fast water. The readout now fades the water's speed with the hull's depth, so a sunk hull reads about 0. The hull's physics is unchanged.
+- L toggles it. It's a narrow beam down the view axis: solid within 3 degrees, fading by 8, reaching about 60 m, underwater only.
+- In the beam the seabed gets warm light, and 90% of the underwater haze is cleared, so the bed shows through the 45 m fog.
+- It lights the seabed only. The hull and bubbles ignore it, and the beam itself isn't visible in the water.
 
-I haven't run it live. If the hull itself visibly slides on the seabed, tell me and I'll look at the seabed friction.
+My capture attempts failed. Every frame came out black with the lamp both off and on (identical), so my test scene doesn't render the seabed, and that tells us nothing about the lamp. Please try it in the game: swim down and press L. Tune LAMP_RADIANCE, LAMP_RANGE_METERS and the cosines in shared_planet.wgsl.
+
+Shader and uniform tests pass. Three existing FOV tests in planet.rs still fail, from your 60/85 degree FOV edit.

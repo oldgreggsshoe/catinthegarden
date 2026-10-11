@@ -1475,6 +1475,8 @@ struct State {
     /// What N last did, for the overlay: where it went, or why it could not.
     bird_watch_note: String,
     village_beam_note: String,
+    /// The swimmer's lamp (key L): a narrow beam for seeing the seabed.
+    swim_lamp: bool,
     flock_marker: flock_marker::FlockMarkerRenderer,
     ship_sim_time_seconds: f64,
     /// Seconds of this frame past the ship's last physics step.
@@ -2016,6 +2018,7 @@ impl State {
             bird_camera_riding: false,
             bird_watch_note: "N goes to the nearest birds down on the ground or water".to_string(),
             village_beam_note: "V marks every village with a beam".to_string(),
+            swim_lamp: std::env::var("PLANET_SWIM_LAMP").is_ok_and(|v| v == "1"),
             flock_marker,
             ship_sim_time_seconds: 0.0,
             ship_presentation_lead_seconds: 0.0,
@@ -3735,6 +3738,11 @@ impl State {
 
     /// Locator beams over every village the siting search found, so a whole
     /// region's settlements can be seen at once from any altitude.
+    fn toggle_swim_lamp(&mut self) {
+        self.swim_lamp = !self.swim_lamp;
+        tracing::info!(swim_lamp = self.swim_lamp, "swimmer's lamp");
+    }
+
     fn toggle_village_beams(&mut self) {
         let enabled = self.villages.toggle_beams();
         self.village_beam_note = if enabled {
@@ -5400,6 +5408,8 @@ impl State {
         // reflection and sun glitter for overcast light.
         camera_uniform.sun_direction[3] = self.storm_overcast;
         camera_uniform.lightning = self.lightning_view;
+        // Unused lane: the swimmer's lamp (key L).
+        camera_uniform.sun_direction_view[3] = f32::from(self.swim_lamp);
         self.hdr
             .set_output_darkening(
                 &self.queue,
@@ -6870,6 +6880,14 @@ impl ApplicationHandler for App {
                         && event.physical_key == PhysicalKey::Code(KeyCode::KeyO) =>
                 {
                     state.cycle_flat_triangle_outline_mode();
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && !event.repeat
+                        && event.physical_key == PhysicalKey::Code(KeyCode::KeyL) =>
+                {
+                    state.toggle_swim_lamp();
                     window.request_redraw();
                 }
                 WindowEvent::KeyboardInput { event, .. }

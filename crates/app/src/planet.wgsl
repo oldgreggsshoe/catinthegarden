@@ -2612,7 +2612,9 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             ),
             underwater_deep_light(-bottom_height)
                 * (0.55 + 0.45 * max(dot(input.world_normal, direction), 0.0)),
-        );
+        ) + sediment * LAMP_RADIANCE
+            * lamp_beam(input.camera_relative_view_position)
+            * max(dot(input.world_normal, -normalize(view_to_planet(input.camera_relative_view_position))), 0.0);
         if camera.flat_triangle_options.w <= 0.5 {
             return vec4<f32>(bottom_light, 1.0);
         }
