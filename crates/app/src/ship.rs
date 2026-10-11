@@ -197,9 +197,15 @@ fn anchor_gain() -> f64 {
 /// Past this gap the hull has been moved some other way (aground, thrown), and
 /// the caller should re-seat the anchor rather than drag it back.
 pub const ANCHOR_MAXIMUM_GAP_METERS: f64 = 60.0;
-/// Drag coefficient of a fully submerged hull moving vertically through the
-/// water, on its plan area.
+/// Drag coefficient of a hull moving vertically through the water just under
+/// the surface, on its plan area: it falls flat, like a raft.
 const SUBMERGED_DRAG_COEFFICIENT: f64 = 1.0;
+/// The same once the deck is well under (`SINKING_PLUNGE_DRAFTS` drafts): a
+/// sinking hull tips and goes down end-first, presenting a fraction of its
+/// plan area. At 1.0 all the way down it fell at about 1.85 m/s, slow enough
+/// to read as hovering; at this, about 5 m/s (Titanic averaged about 4.4).
+const SINKING_DRAG_COEFFICIENT: f64 = 0.12;
+const SINKING_PLUNGE_DRAFTS: f64 = 3.0;
 const WAVE_DECAY_PER_METER: f64 = 2.0 * std::f64::consts::PI / 360.0;
 /// A hull on the bottom loses horizontal speed and spin to the seabed.
 const SEABED_FRICTION_PER_SECOND: f64 = 4.0;
@@ -701,6 +707,9 @@ impl ShipBody {
             // linear damping alone allowed, which looked like hovering.
             let submerged_deck = deck_heads[index];
             let wave_making = (-submerged_deck / HULL_DRAFT_METERS).exp();
+            let plunge = (submerged_deck / (SINKING_PLUNGE_DRAFTS * HULL_DRAFT_METERS)).clamp(0.0, 1.0);
+            let drag_coefficient = SUBMERGED_DRAG_COEFFICIENT
+                + (SINKING_DRAG_COEFFICIENT - SUBMERGED_DRAG_COEFFICIENT) * plunge * plunge * (3.0 - 2.0 * plunge);
             column_force -= column_direction
                 * (HEAVE_DRAG_KG_PER_SQUARE_METER_SECOND
                     * column.plan_area_square_meters
@@ -709,7 +718,7 @@ impl ShipBody {
                     * relative_vertical
                     + 0.5
                         * SEAWATER_DENSITY_KG_PER_CUBIC_METER
-                        * SUBMERGED_DRAG_COEFFICIENT
+                        * drag_coefficient
                         * column.plan_area_square_meters
                         * (1.0 - wave_making)
                         * relative_vertical.abs()

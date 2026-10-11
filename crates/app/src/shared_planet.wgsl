@@ -783,6 +783,11 @@ const OCEAN_SURF_COLOUR: vec3<f32> = vec3<f32>(0.92, 0.95, 0.96);
 // visibility: the range at which contrast is down to 2%, so the extinction
 // e-fold is this over ln(50) rather than this itself.
 const OCEAN_UNDERWATER_VISIBILITY_METERS: f32 = 100.0;
+// How far an eye under the water sees: 98% fogged at this distance, and
+// already a little at arm's length (8% at 1 m, a third at 5 m, 58% at 10 m,
+// 82% at 20 m). Only views from inside the water (`ocean_water_fog_amount`);
+// how deep the sea can be seen into from above keeps the 100 m above.
+const OCEAN_SUBMERGED_FOG_METERS: f32 = 45.0;
 // What the water itself looks like once everything else has been extinguished.
 // Blue-green rather than the sky's blue: water absorbs red first, then green,
 // which is why the far end of a flooded quarry is this colour and not navy.
@@ -3026,7 +3031,7 @@ fn ocean_water_fog_amount(
     camera_relative_view_position: vec3<f32>,
     water_depth_meters: f32,
 ) -> f32 {
-    let e_fold_meters = OCEAN_UNDERWATER_VISIBILITY_METERS / log(50.0);
+    let e_fold_meters = OCEAN_SUBMERGED_FOG_METERS / log(50.0);
     // A shallow shelf is continually relit by the nearby bright bed. Let its
     // long horizontal views retain that sand/turquoise contribution instead
     // of converging on the same dark blue as deep water. Below 2m the water is

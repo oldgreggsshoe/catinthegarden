@@ -138,16 +138,22 @@ fn vs_bubble(@builtin(vertex_index) vertex_index: u32) -> BubbleVertex {
         + axis * (select(-0.5, 0.5, at_head) * width)
         + side * (0.5 * across * width);
     let clip = select(tail_clip, head_clip, at_head);
+    // Through the same water fog as everything else the eye sees down here.
+    let fog = ocean_water_fog(centre);
     return BubbleVertex(
         vec4<f32>(end_pixels / half_viewport * clip.w, clip.z, clip.w),
         across,
         // Lit by what reaches its own depth: the eye's depth, less how far
         // above the eye the bubble is.
         vec4<f32>(
-            underwater_light(
-                bubble_light(),
-                underwater_eye_depth_meters() - dot(centre, bubbles.up.xyz),
-            ) * BUBBLE_BRIGHTNESS,
+            mix(
+                underwater_light(
+                    bubble_light(),
+                    underwater_eye_depth_meters() - dot(centre, bubbles.up.xyz),
+                ) * BUBBLE_BRIGHTNESS,
+                fog.color,
+                fog.amount,
+            ),
             min(opacity, 1.0),
         ),
     );
