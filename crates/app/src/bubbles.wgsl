@@ -33,6 +33,8 @@ const BUBBLE_DIAMETERS: vec4<f32> = vec4<f32>(0.0006, 0.001, 0.0015, 0.0022);
 // its share of the pixel as opacity instead, so distant ones thin out.
 const BUBBLE_MIN_WIDTH_PIXELS: f32 = 1.5;
 const BUBBLE_OPACITY: f32 = 0.9;
+// How much of the lamp's radiance a bubble in the beam throws back.
+const BUBBLE_LAMP_GAIN: f32 = 0.5;
 // A bubble's surface mirrors the light coming down into the water (it is
 // silvery, not the water's colour), so it reads as a pale speck against dark
 // open water and bright shallows alike: this share of that light.
@@ -150,7 +152,7 @@ fn vs_bubble(@builtin(vertex_index) vertex_index: u32) -> BubbleVertex {
                 underwater_light(
                     bubble_light(),
                     underwater_eye_depth_meters() - dot(centre, bubbles.up.xyz),
-                ) * BUBBLE_BRIGHTNESS,
+                ) * BUBBLE_BRIGHTNESS + LAMP_RADIANCE * lamp_beam(centre) * BUBBLE_LAMP_GAIN,
                 fog.color,
                 fog.amount,
             ),

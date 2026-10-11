@@ -3050,7 +3050,10 @@ fn ocean_water_fog_at_depth(
         camera_relative_view_position,
         water_depth_meters,
     );
-    return TerrainFog(amount, ocean_underwater_medium_colour());
+    return TerrainFog(
+        amount,
+        ocean_underwater_medium_colour() + lamp_glow(camera_relative_view_position),
+    );
 }
 
 // What the water itself looks like to an eye inside it, once everything else
@@ -3123,10 +3126,10 @@ fn underwater_eye_depth_meters() -> f32 {
 }
 
 // The swimmer's lamp (key L; camera.sun_direction_view.w): a narrow beam down
-// the view axis (view space looks down -Z), 3 degrees solid to 8 degrees out,
+// the view axis (view space looks down -Z), 23 degrees solid to 28 degrees out,
 // reaching about 60m. 0 with the lamp off or the eye out of the water.
-const LAMP_INNER_COSINE: f32 = 0.99863; // 3 degrees
-const LAMP_OUTER_COSINE: f32 = 0.99027; // 8 degrees
+const LAMP_INNER_COSINE: f32 = 0.92050; // 23 degrees
+const LAMP_OUTER_COSINE: f32 = 0.88295; // 28 degrees
 const LAMP_RANGE_METERS: f32 = 60.0;
 const LAMP_RADIANCE: vec3<f32> = vec3<f32>(2.0, 1.8, 1.4);
 fn lamp_beam(camera_relative_view_position: vec3<f32>) -> f32 {
@@ -3137,6 +3140,18 @@ fn lamp_beam(camera_relative_view_position: vec3<f32>) -> f32 {
     let along = -camera_relative_view_position.z / max(distance, 1.0e-4);
     return smoothstep(LAMP_OUTER_COSINE, LAMP_INNER_COSINE, along)
         * (1.0 - smoothstep(0.3 * LAMP_RANGE_METERS, LAMP_RANGE_METERS, distance));
+}
+
+// A faint glow of lit water through the beam's cone, with or without anything
+// solid in it, added to the haze colour.
+const LAMP_GLOW: vec3<f32> = vec3<f32>(0.05, 0.06, 0.05);
+fn lamp_glow(camera_relative_view_position: vec3<f32>) -> vec3<f32> {
+    if camera.sun_direction_view.w < 0.5 || camera.flat_triangle_options.w < 0.5 {
+        return vec3<f32>(0.0);
+    }
+    let along = -camera_relative_view_position.z
+        / max(length(camera_relative_view_position), 1.0e-4);
+    return LAMP_GLOW * smoothstep(LAMP_OUTER_COSINE, LAMP_INNER_COSINE, along);
 }
 
 fn ocean_water_fog(camera_relative_view_position: vec3<f32>) -> TerrainFog {

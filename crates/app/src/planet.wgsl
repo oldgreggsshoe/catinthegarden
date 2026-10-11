@@ -2019,7 +2019,7 @@ fn fs_underwater_background(input: UnderwaterBackgroundOutput) -> @location(0) v
         discard;
     }
     let behind = textureLoad(water_scene_color, pixel, 0).rgb;
-    return vec4<f32>(mix(behind, ocean_underwater_medium_colour(), coverage), 1.0);
+    return vec4<f32>(mix(behind, ocean_underwater_medium_colour() + lamp_glow(ray), coverage), 1.0);
 }
 
 fn ocean_transmitting_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
