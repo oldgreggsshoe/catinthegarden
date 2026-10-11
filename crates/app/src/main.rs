@@ -555,9 +555,9 @@ fn water_aboard_text(
         egui::Color32::WHITE
     };
     let label = if on_seabed {
-        format!("{flooded_tonnes:.0}/{sinking_tonnes:.0}  SUNK")
+        format!("{flooded_tonnes:.0}/{sinking_tonnes:.0} ")
     } else if foundering {
-        format!("{flooded_tonnes:.0}/{sinking_tonnes:.0}  FOUNDERING")
+        format!("{flooded_tonnes:.0}/{sinking_tonnes:.0} ")
     } else {
         format!("{flooded_tonnes:.0}/{sinking_tonnes:.0}")
     };

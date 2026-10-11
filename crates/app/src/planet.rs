@@ -127,11 +127,11 @@ pub const OUTMAP_TERRAIN_HEIGHT_BLEND_END_METERS: f64 = 1_000_000.0;
 /// Compatibility alias for conservative far-orbit bounds.
 #[cfg(test)]
 pub const OUTMAP_TERRAIN_HEIGHT_SCALE: f64 = OUTMAP_TERRAIN_FAR_HEIGHT_SCALE;
-const DEFAULT_VERTICAL_FOV_RADIANS: f64 = 45.0_f64.to_radians();
+const DEFAULT_VERTICAL_FOV_RADIANS: f64 = 60.0_f64.to_radians();
 /// The default 640px-high viewport needs roughly this optical field of view
 /// before screen-space error naturally requests L18 from a 6,000km orbit.
 pub const MIN_VERTICAL_FOV_DEGREES: f64 = 0.000_05;
-pub const MAX_VERTICAL_FOV_DEGREES: f64 = 75.0;
+pub const MAX_VERTICAL_FOV_DEGREES: f64 = 85.0;
 pub const REFERENCE_VERTICAL_FOV_VIEWPORT_HEIGHT: u32 = 640;
 const MIN_VERTICAL_FOV_RADIANS: f64 = MIN_VERTICAL_FOV_DEGREES.to_radians();
 const MAX_VERTICAL_FOV_RADIANS: f64 = MAX_VERTICAL_FOV_DEGREES.to_radians();

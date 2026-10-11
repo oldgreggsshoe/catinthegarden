@@ -206,6 +206,13 @@ const SUBMERGED_DRAG_COEFFICIENT: f64 = 1.0;
 /// to read as hovering; at this, about 5 m/s (Titanic averaged about 4.4).
 const SINKING_DRAG_COEFFICIENT: f64 = 0.12;
 const SINKING_PLUNGE_DRAFTS: f64 = 3.0;
+/// Once plunged the hull is dragged like a plate, in its own axes, on its plan
+/// area: broad faces (deck normal) resist hard, the sides fairly, and
+/// end-on travel hardly at all. A tilted wreck therefore slides off the way it
+/// leans instead of dropping straight down, and the water no longer drags its
+/// sideways speed back to the water's own.
+const GLIDE_NORMAL_DRAG_COEFFICIENT: f64 = 0.5;
+const GLIDE_BEAM_DRAG_COEFFICIENT: f64 = 0.3;
 const WAVE_DECAY_PER_METER: f64 = 2.0 * std::f64::consts::PI / 360.0;
 /// A hull on the bottom loses horizontal speed and spin to the seabed.
 const SEABED_FRICTION_PER_SECOND: f64 = 4.0;
@@ -617,6 +624,7 @@ impl ShipBody {
         let mut submerged_volume = 0.0;
         let mut water_horizontal = DVec3::ZERO;
         let mut inflow_kg_per_second = 0.0;
+        let mut plunge_sum = 0.0;
 
         let mut deck_altitudes = [0.0_f64; DECK_CELLS];
         let mut deck_heads = [0.0_f64; DECK_CELLS];
@@ -708,8 +716,10 @@ impl ShipBody {
             let submerged_deck = deck_heads[index];
             let wave_making = (-submerged_deck / HULL_DRAFT_METERS).exp();
             let plunge = (submerged_deck / (SINKING_PLUNGE_DRAFTS * HULL_DRAFT_METERS)).clamp(0.0, 1.0);
-            let drag_coefficient = SUBMERGED_DRAG_COEFFICIENT
-                + (SINKING_DRAG_COEFFICIENT - SUBMERGED_DRAG_COEFFICIENT) * plunge * plunge * (3.0 - 2.0 * plunge);
+            let plunge = plunge * plunge * (3.0 - 2.0 * plunge);
+            plunge_sum += plunge;
+            // The plunged share of the drag is the hull-frame plate drag below.
+            let drag_coefficient = SUBMERGED_DRAG_COEFFICIENT * (1.0 - plunge);
             column_force -= column_direction
                 * (HEAVE_DRAG_KG_PER_SQUARE_METER_SECOND
                     * column.plan_area_square_meters
@@ -726,6 +736,31 @@ impl ShipBody {
 
             force += column_force;
             torque += centroid_offset.cross(column_force);
+        }
+
+        // Plate drag on a plunged hull, at the centre of mass, in hull axes.
+        let glide = plunge_sum / hull.columns.len().max(1) as f64;
+        if glide > 0.0 && submerged_volume > 0.0 {
+            let plan_area: f64 = hull.columns.iter().map(|c| c.plan_area_square_meters).sum();
+            let relative = self.linear_velocity - water_horizontal / submerged_volume;
+            let forward = rotation * DVec3::X;
+            let beam = rotation * DVec3::Y;
+            let mut drag = DVec3::ZERO;
+            for (axis, coefficient) in [
+                (ship_up, GLIDE_NORMAL_DRAG_COEFFICIENT),
+                (beam, GLIDE_BEAM_DRAG_COEFFICIENT),
+                (forward, SINKING_DRAG_COEFFICIENT),
+            ] {
+                let speed = relative.dot(axis);
+                drag -= axis
+                    * (0.5
+                        * SEAWATER_DENSITY_KG_PER_CUBIC_METER
+                        * coefficient
+                        * plan_area
+                        * speed.abs()
+                        * speed);
+            }
+            force += drag * glide;
         }
 
         // The point of no return: a deck wholly under the sea for long enough.
@@ -770,7 +805,7 @@ impl ShipBody {
         self.linear_velocity = vertical_velocity
             + current
             + (horizontal_velocity - current)
-                * (1.0 - SURGE_DAMPING_PER_SECOND * wetted * step_seconds).max(0.0);
+                * (1.0 - SURGE_DAMPING_PER_SECOND * wetted * (1.0 - glide) * step_seconds).max(0.0);
         self.position += self.linear_velocity * step_seconds;
 
         let inertia = hull.inertia_local * (mass_kg / hull.mass_kg);
@@ -1638,10 +1673,17 @@ mod tests {
         assert!(body.linear_velocity.dot(east).abs() < 0.2);
     }
 
+    fn rotation_up(body: &ShipBody) -> f64 {
+        (glam::DMat3::from_quat(body.orientation) * DVec3::Z).dot(body.position.normalize())
+    }
+
     #[test]
     #[ignore]
     fn sinking_speed_probe() {
         let (hull, mut body) = afloat();
+        let tilt: f64 = std::env::var("PLANET_SINK_TILT_DEGREES").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        body.orientation = body.orientation * DQuat::from_axis_angle(DVec3::Y, tilt.to_radians());
+        let start = body.position;
         body.flood_kg = hull.flood_capacity_kg();
         body.foundering = true;
         body.seabed_altitude_meters = -250.0;
@@ -1649,7 +1691,7 @@ mod tests {
             body.advance(&hull, 1.0, still_water(0.0));
             body.flood_kg = hull.flood_capacity_kg();
             if second % 20 == 0 {
-                println!("t={second:3} altitude {:7.1} m  speed {:5.2} m/s  seabed {}", body.waterline_altitude_meters(&hull), body.linear_velocity.dot(body.position.normalize()), body.on_seabed);
+                println!("t={second:3} altitude {:7.1} m  speed {:5.2} m/s  drift {:6.1} m  tilt {:5.1}  seabed {}", body.waterline_altitude_meters(&hull), body.linear_velocity.dot(body.position.normalize()), { let d = body.position - start; let r = start.normalize(); (d - r * d.dot(r)).length() }, (rotation_up(&body)).acos().to_degrees(), body.on_seabed);
             }
         }
     }

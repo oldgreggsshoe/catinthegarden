@@ -4459,8 +4459,8 @@ fn ocean_underside_colour(
 // throughout, and down one wave face the top is ~25% brighter than the base.
 // Translucency brightens; it does not tint. Linear albedo in that hue, the
 // overall level calibrated against the deck-height replay.
-const OCEAN_SOT_WATER_ALBEDO: vec3<f32> = vec3<f32>(0.000, 0.01, 0.02);
-//const OCEAN_SOT_WATER_ALBEDO: vec3<f32> = vec3<f32>(0.2, 0.2, 0.2);
+const OCEAN_SOT_WATER_ALBEDO: vec3<f32> = vec3<f32>(0.0, 0.025, 0.0125);
+//const OCEAN_SOT_WATER_ALBEDO: vec3<f32> = vec3<f32>(0.005, 0.025, 0.05);
 //const OCEAN_SOT_WATER_ALBEDO: vec3<f32> = vec3<f32>(0.0018, 0.24, 0.30);
 // Body brightness gain for thin water (high on a wave).
 const OCEAN_SOT_THIN_BRIGHTENING: f32 = 0.9;
