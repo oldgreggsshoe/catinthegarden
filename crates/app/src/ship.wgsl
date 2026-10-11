@@ -57,11 +57,6 @@ const SHIP_REFLECTED_LIGHT_GAIN: f32 = 4.0;
 // Caustics play only on the hull's sides: faces steeper than this (|normal.up|
 // below the first value) take them fully, flatter ones (deck, roofs, the flat
 // of the bottom) not at all past the second.
-// How fast daylight is absorbed on its way down to the hull, per channel, per
-// metre: red is gone in a few metres (e-fold 6m), green lasts to about 17m and
-// blue to about 29m, so a hull dims and goes blue-green, then black, as it sinks
-// (a fifth of the light at 10m, a thousandth at 50m).
-const SHIP_DEPTH_ABSORPTION: vec3<f32> = vec3<f32>(0.17, 0.06, 0.035);
 const SHIP_CAUSTIC_SIDE_FULL: f32 = 0.5;
 const SHIP_CAUSTIC_SIDE_NONE: f32 = 0.8;
 
@@ -207,8 +202,7 @@ fn ship_shaded(input: VertexOutput) -> vec3<f32> {
     ) * (0.25 + 0.75 * sun_elevation);
     let sea = ship_sea_light(input.view_position, normal, sun_direction);
     let lit = input.colour
-        * (sunlight * (sun_lambert * sea.x + sea.z) + sky_light * sea.y)
-        * exp(-sea.w * SHIP_DEPTH_ABSORPTION);
+        * underwater_light(sunlight * (sun_lambert * sea.x + sea.z) + sky_light * sea.y, sea.w);
     // Through the same distance fog as the sea it floats in (or the water, from
     // under it): in a storm's closing fog the hull greys with the waves.
     let fog = terrain_fog(

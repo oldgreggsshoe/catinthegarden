@@ -2602,9 +2602,16 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             -bottom_height,
             length(input.camera_relative_view_position) * (2.0 * camera.projection.y / 720.0),
         ), sun_visible_fraction());
-        let bottom_light = sediment * depth_transmittance * (
-            bottom_sky + bottom_sun * SURFACE_SUNLIGHT_SCALE * caustics
-                * max(dot(input.world_normal, sun_direction), 0.0)
+        // Never darker than the deep blue every submerged thing keeps, so the
+        // seabed under a sunk hull can still be made out; shaded a little by
+        // its slope so its shape shows in that light too.
+        let bottom_light = sediment * max(
+            depth_transmittance * (
+                bottom_sky + bottom_sun * SURFACE_SUNLIGHT_SCALE * caustics
+                    * max(dot(input.world_normal, sun_direction), 0.0)
+            ),
+            underwater_deep_light(-bottom_height)
+                * (0.55 + 0.45 * max(dot(input.world_normal, direction), 0.0)),
         );
         if camera.flat_triangle_options.w <= 0.5 {
             return vec4<f32>(bottom_light, 1.0);

@@ -298,10 +298,11 @@ mod tests {
         // Under the waterline the sun reaches the hull through the waves, with
         // the sea bed's own caustics; the sky only through the water.
         assert!(shader.contains("ocean_fft_caustics(planet_offset, up, sun_direction, depth, pixel_meters)"));
-        assert!(shader.contains("(sunlight * (sun_lambert * sea.x + sea.z) + sky_light * sea.y)"));
+        assert!(shader.contains("sunlight * (sun_lambert * sea.x + sea.z) + sky_light * sea.y"));
         // And the deeper the fragment, the darker and bluer: absorbed per
-        // channel by its depth under the drawn surface.
-        assert!(shader.contains("* exp(-sea.w * SHIP_DEPTH_ABSORPTION)"));
+        // channel by its depth under the drawn surface, down to the deep blue
+        // that never goes out (shared_planet.wgsl).
+        assert!(shader.contains("* underwater_light(sunlight * (sun_lambert * sea.x + sea.z) + sky_light * sea.y, sea.w);"));
         // Above it, sun bounced off the moving surface.
         assert!(
             shader

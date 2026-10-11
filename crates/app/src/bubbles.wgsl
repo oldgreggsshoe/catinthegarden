@@ -141,7 +141,15 @@ fn vs_bubble(@builtin(vertex_index) vertex_index: u32) -> BubbleVertex {
     return BubbleVertex(
         vec4<f32>(end_pixels / half_viewport * clip.w, clip.z, clip.w),
         across,
-        vec4<f32>(bubble_light() * BUBBLE_BRIGHTNESS, min(opacity, 1.0)),
+        // Lit by what reaches its own depth: the eye's depth, less how far
+        // above the eye the bubble is.
+        vec4<f32>(
+            underwater_light(
+                bubble_light(),
+                underwater_eye_depth_meters() - dot(centre, bubbles.up.xyz),
+            ) * BUBBLE_BRIGHTNESS,
+            min(opacity, 1.0),
+        ),
     );
 }
 

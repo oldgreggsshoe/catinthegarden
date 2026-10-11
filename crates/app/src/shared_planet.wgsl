@@ -3065,15 +3065,56 @@ fn ocean_underwater_medium_colour() -> vec3<f32> {
         let up_view = normalize(
             planet_to_view(camera.camera_planet_direction_view_altitude.xyz),
         );
-        return physical_camera_sky_radiance(up_view) * OCEAN_UNDERWATER_TINT;
+        return underwater_light(
+            physical_camera_sky_radiance(up_view) * OCEAN_UNDERWATER_TINT,
+            underwater_eye_depth_meters(),
+        );
     }
     // Already a view-space radial (built by `world_to_view` on the CPU).
     let up = normalize(view_to_planet(camera.camera_planet_direction_view_altitude.xyz));
     let sun_direction = normalize(camera.sun_direction.xyz);
-    return ocean_water_albedo_at(vec2<f32>(0.0)) * ocean_sot_body_light(
-        surface_direct_sun_transmittance(up, 0.0, sun_direction) * sun_visible_fraction(),
-        sky_diffuse_irradiance(up, up, 0.0, sun_direction),
+    // The water around the eye is lit by what reaches its depth, so the
+    // haze goes dark blue as the eye goes down, as the hull does.
+    return ocean_water_albedo_at(vec2<f32>(0.0)) * underwater_light(
+        ocean_sot_body_light(
+            surface_direct_sun_transmittance(up, 0.0, sun_direction) * sun_visible_fraction(),
+            sky_diffuse_irradiance(up, up, 0.0, sun_direction),
+        ),
+        underwater_eye_depth_meters(),
     );
+}
+
+// How fast daylight is absorbed on its way down through the sea, per
+// channel, per metre: red is gone in a few metres (e-fold 6m), green lasts to
+// about 17m and blue to about 29m, so things go blue-green, then dark, as they
+// go down (a fifth of the light at 10m, a thousandth at 50m).
+const UNDERWATER_ABSORPTION: vec3<f32> = vec3<f32>(0.17, 0.06, 0.035);
+// The least light anything under the sea gets (linear radiance, multiplied by
+// its albedo): a dark blue that never goes out, so a sunk hull and the seabed
+// can still be made out at any depth, day or night. It is a level of light,
+// not a share of the daylight: as a share it vanished wherever the daylight
+// was already dim. Tune this for how dark the deep is.
+const UNDERWATER_DEEP_LIGHT: vec3<f32> = vec3<f32>(0.02, 0.08, 0.3);
+
+// The deep blue at `depth_meters` under the surface: nothing above the water
+// (so a hull or deck at night is not lit by it), all of it a metre down.
+fn underwater_deep_light(depth_meters: f32) -> vec3<f32> {
+    return UNDERWATER_DEEP_LIGHT * smoothstep(0.0, 1.0, depth_meters);
+}
+
+// The light at `depth_meters` under the sea surface, given `surface_light`
+// at the surface: absorbed per channel on the way down, but never darker than
+// the deep blue. The hull, the bubbles, the haze around a submerged eye and
+// the seabed under it all take their light from this.
+fn underwater_light(surface_light: vec3<f32>, depth_meters: f32) -> vec3<f32> {
+    let depth = max(depth_meters, 0.0);
+    return max(surface_light * exp(-depth * UNDERWATER_ABSORPTION), underwater_deep_light(depth));
+}
+
+// How far under the drawn sea surface the eye is (0 above it): the camera
+// uniform carries the eye's clearance above the water, negative under it.
+fn underwater_eye_depth_meters() -> f32 {
+    return max(-camera.camera_right.w, 0.0);
 }
 
 fn ocean_water_fog(camera_relative_view_position: vec3<f32>) -> TerrainFog {
