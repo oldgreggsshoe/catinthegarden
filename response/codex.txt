@@ -1,11 +1,5 @@
-Done. A sunk hull now glides instead of dropping straight down.
+Understood on the planet size; I haven't changed anything there.
 
-Once the deck is well under, the water drags the hull like a plate, in its own axes. The broad deck faces resist at Cd 0.5 and the sides at 0.3. End-on travel resists at 0.12, as before. A tilted wreck slides off the way it leans, and the water no longer pulls its sideways speed back to the water's own.
+I think the 17 knots on the seabed is the THROUGH WATER readout, not the hull. A hull on the seabed loses its sideways speed to friction within about a second. The readout subtracted the water's speed at the surface, and the swell's orbital motion there is several m/s. That water speed is not faded with depth, though the hull's own forces fade it (1/e per 57 m). So a stationary wreck 240 m down read as moving through fast water. The readout now fades the water's speed with the hull's depth, so a sunk hull reads about 0. The hull's physics is unchanged.
 
-In the sinking probe (hull tumbling as it goes), starting at three tilts:
-- It lands 20-46 m sideways from where it went down.
-- It falls at about 3-4.5 m/s, so the 240 m seabed takes 70-80 s (was about 50 s straight down).
-
-If you want it faster, lower GLIDE_NORMAL_DRAG_COEFFICIENT in ship.rs. All 43 ship tests pass. I haven't watched it live.
-
-I committed everything, including your edits: the FOV change (60 degrees default, 85 maximum), the new water albedo, and the counter text without SUNK/FOUNDERING.
+I haven't run it live. If the hull itself visibly slides on the seabed, tell me and I'll look at the seabed friction.

@@ -2973,7 +2973,12 @@ impl State {
             } else {
                 self.ship_label = None;
             }
-            self.ship_water_velocity = water_horizontal;
+            // The surface's orbital motion fades with depth (as the hull's own
+            // forces do), so a sunk hull reads still water, not the swell's.
+            let hull_depth = (-(self.ship_body.position.length() - planet::planet_radius_meters()))
+                .max(0.0);
+            self.ship_water_velocity =
+                water_horizontal * (-ship::WAVE_DECAY_PER_METER * hull_depth).exp();
             self.ship_body
                 .advance(&self.ship_hull, ship::FIXED_STEP_SECONDS, |direction| {
                     ship::WaterSample {

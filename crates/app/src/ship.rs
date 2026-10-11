@@ -213,7 +213,7 @@ const SINKING_PLUNGE_DRAFTS: f64 = 3.0;
 /// sideways speed back to the water's own.
 const GLIDE_NORMAL_DRAG_COEFFICIENT: f64 = 0.5;
 const GLIDE_BEAM_DRAG_COEFFICIENT: f64 = 0.3;
-const WAVE_DECAY_PER_METER: f64 = 2.0 * std::f64::consts::PI / 360.0;
+pub(crate) const WAVE_DECAY_PER_METER: f64 = 2.0 * std::f64::consts::PI / 360.0;
 /// A hull on the bottom loses horizontal speed and spin to the seabed.
 const SEABED_FRICTION_PER_SECOND: f64 = 4.0;
 const SEABED_SPIN_FRICTION_PER_SECOND: f64 = 2.0;
