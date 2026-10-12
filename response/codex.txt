@@ -1,1 +1,5 @@
-Underwater fog now reaches 98% at 25 m (was 45 m): OCEAN_SUBMERGED_FOG_METERS in shared_planet.wgsl. The lamp cone fades out at 42 degrees (solid to 23). Tests pass; not seen rendered.
+Clear-water mode: press K (or start with PLANET_CLEAR_WATER=1).
+- Underwater fog is off, so visibility is infinite.
+- The lamp has infinite range (L still turns it on).
+- The water surface is about 50% transparent, above and below, so the ship and seabed show through. It is a pixel checkerboard (half the water pixels are skipped), not a smooth blend, because the ship is drawn after the water and a normal alpha blend would not show it. A smooth version needs a separate blended water pipeline; say if you want that.
+Tests pass; not seen rendered.

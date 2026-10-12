@@ -3031,6 +3031,10 @@ fn ocean_water_fog_amount(
     camera_relative_view_position: vec3<f32>,
     water_depth_meters: f32,
 ) -> f32 {
+    // Clear water mode (K): no fog at all under the sea.
+    if clear_water_on() && camera.flat_triangle_options.w > 0.5 {
+        return 0.0;
+    }
     let e_fold_meters = OCEAN_SUBMERGED_FOG_METERS / log(50.0);
     // A shallow shelf is continually relit by the nearby bright bed. Let its
     // long horizontal views retain that sand/turquoise contribution instead
@@ -3132,21 +3136,32 @@ const LAMP_INNER_COSINE: f32 = 0.92050; // 23 degrees
 const LAMP_OUTER_COSINE: f32 = 0.74314; // 42 degrees
 const LAMP_RANGE_METERS: f32 = 60.0;
 const LAMP_RADIANCE: vec3<f32> = vec3<f32>(2.0, 1.8, 1.4);
+// camera.sun_direction_view.w is a bitfield: 1 = lamp (L), 2 = clear water (K).
+fn swim_lamp_on() -> bool {
+    return (u32(camera.sun_direction_view.w + 0.5) & 1u) != 0u;
+}
+fn clear_water_on() -> bool {
+    return (u32(camera.sun_direction_view.w + 0.5) & 2u) != 0u;
+}
 fn lamp_beam(camera_relative_view_position: vec3<f32>) -> f32 {
-    if camera.sun_direction_view.w < 0.5 || camera.flat_triangle_options.w < 0.5 {
+    if !swim_lamp_on() || camera.flat_triangle_options.w < 0.5 {
         return 0.0;
     }
     let distance = length(camera_relative_view_position);
     let along = -camera_relative_view_position.z / max(distance, 1.0e-4);
-    return smoothstep(LAMP_OUTER_COSINE, LAMP_INNER_COSINE, along)
-        * (1.0 - smoothstep(0.3 * LAMP_RANGE_METERS, LAMP_RANGE_METERS, distance));
+    let range_fade = select(
+        1.0 - smoothstep(0.3 * LAMP_RANGE_METERS, LAMP_RANGE_METERS, distance),
+        1.0,
+        clear_water_on(),
+    );
+    return smoothstep(LAMP_OUTER_COSINE, LAMP_INNER_COSINE, along) * range_fade;
 }
 
 // A faint glow of lit water through the beam's cone, with or without anything
 // solid in it, added to the haze colour.
 const LAMP_GLOW: vec3<f32> = vec3<f32>(0.05, 0.06, 0.05);
 fn lamp_glow(camera_relative_view_position: vec3<f32>) -> vec3<f32> {
-    if camera.sun_direction_view.w < 0.5 || camera.flat_triangle_options.w < 0.5 {
+    if !swim_lamp_on() || camera.flat_triangle_options.w < 0.5 {
         return vec3<f32>(0.0);
     }
     let along = -camera_relative_view_position.z

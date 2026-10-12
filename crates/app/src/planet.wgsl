@@ -1923,8 +1923,20 @@ fn fs_ocean_stable(
     return ocean_fragment_color(input);
 }
 
+// Clear-water mode: the surface is drawn on half the pixels, a checkerboard.
+// The pass is REPLACE-blended and writes depth, so a true 50% blend cannot be
+// done here; a discarded pixel keeps the pre-water scene already in the target
+// and writes no depth, so the seabed, terrain and the ship (drawn after this
+// pass, depth-tested against it) show through at full strength there.
+fn ocean_clear_water_discard(position: vec4<f32>) -> bool {
+    if !clear_water_on() { return false; }
+    let pixel = vec2<u32>(position.xy);
+    return ((pixel.x + pixel.y) & 1u) == 0u;
+}
+
 @fragment
 fn fs_ocean_transmission(input: OceanVertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    if ocean_clear_water_discard(input.position) { discard; }
     if !front && !ocean_back_face_is_fold() { return ocean_underside_reflecting_fragment(input); }
     if u32(camera.projection.w + 0.5) != RENDER_DEBUG_FLAT_TRIANGLES {
         let threshold = lod_dither_threshold(input.position);
@@ -1937,6 +1949,7 @@ fn fs_ocean_transmission(input: OceanVertexOutput, @builtin(front_facing) front:
 
 @fragment
 fn fs_ocean_transmission_stable(input: OceanVertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    if ocean_clear_water_discard(input.position) { discard; }
     if !front && !ocean_back_face_is_fold() { return ocean_underside_reflecting_fragment(input); }
     return ocean_transmitting_fragment_color(input);
 }
