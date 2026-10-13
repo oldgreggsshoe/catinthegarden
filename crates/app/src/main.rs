@@ -5470,20 +5470,21 @@ impl State {
             self.camera.vertical_fov_radians(),
             presentation_time,
         );
-        // Houses are placed in unrotated planet coordinates, so the camera
-        // position they are differenced against has to be in that same frame.
-        // `camera_planet_frame_position` is the rotating frame: identical while
-        // the planet is stopped, which is why every test scenario so far could
-        // not tell the two apart, and wrong by the rotation the moment it turns.
+        // Houses and beams are placed in the planet's own (rotating) local
+        // frame, the one the terrain and its camera basis live in, so the
+        // camera position they are differenced against must be the planet-frame
+        // one. `camera_world_position` is the inertial frame: identical while
+        // the planet is stopped (F10, the interactive default), but it made
+        // every village and beam swing with the planet's spin once time ran.
         // Villages are sited from the dense outmap level, not from whatever
         // the LOD selector has streamed, so those tiles have to be in hand
         // before the visible set is rebuilt.
         self.terrain
-            .prepare_village_siting_tiles(camera_world_position.normalize_or_zero());
+            .prepare_village_siting_tiles(camera_planet_frame_position.normalize_or_zero());
         self.villages.update(
             &self.queue,
             &self.terrain,
-            camera_world_position,
+            camera_planet_frame_position,
             camera_sea_level_altitude_meters,
         );
         if write_log {

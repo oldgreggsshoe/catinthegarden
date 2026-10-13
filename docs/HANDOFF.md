@@ -12047,3 +12047,7 @@ See AGENTS.md. Bubbles: `bubbles.rs` (Drift like rain: water velocity incl. heav
 ## 13 October — village locator beams fixed
 
 Causes: beams were emitted by `collect_house_instances` (2-cell ring, ~12 km), the whole village system is cleared above `VILLAGE_DRAW_ALTITUDE_METERS` (12 km) so beams vanished exactly where they were needed, the foot was the first surviving house, and the ribbon direction used a clamped clip w when the foot was behind the eye. Now `VillageRenderer::update_beams` runs before the altitude gate, searching cells with `village::village_beam_cells_around`/`village_beam_sites_in_cell` (same candidates and footprint test as houses), 24 cells a frame, ring grows with altitude (cap 40 cells, inside the nine-tile dense siting window ~390 km), cache cleared after ~100 km of travel. Shader foot clamp in `vs_beam`. `village_altitude_stability` with `PLANET_VILLAGE_BEAMS=1` shows many shafts. Not flown; reach beyond ~245 km is not covered.
+
+## 13 October (later) — villages/beams moved with planet rotation
+
+`main.rs` passed `camera_world_position` (inertial) to `VillageRenderer::update` and `prepare_village_siting_tiles`; sites and the camera uniform are in the planet-local rotating frame (`planet_local_vector`), so with rotation running everything drifted. Now `camera_planet_frame_position`. The old comment claimed the opposite; replaced. Not tested with rotation running live.
