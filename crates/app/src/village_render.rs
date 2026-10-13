@@ -4,7 +4,10 @@
 //! Split from `village` the way `ship_render` is split from `ship`, so the
 //! placement rules stay testable without a device.
 
+use std::collections::HashMap;
+
 use glam::DVec3;
+use planet_coretypes::TileKey;
 
 use crate::terrain::TerrainRenderer;
 use crate::village::{
@@ -69,6 +72,15 @@ fn ground_shadow_instance_layout() -> wgpu::VertexBufferLayout<'static> {
         attributes: &ATTRIBUTES,
     }
 }
+
+/// Cells of siting searched for beams per frame.
+const BEAM_CELLS_PER_FRAME: usize = 24;
+/// The search ring is two cells plus one per this much altitude, capped.
+const BEAM_RING_METERS_PER_CELL: f64 = 3_000.0;
+const BEAM_MAX_RING: i32 = 40;
+/// cos of the angle (about 100km on the ground) after which the found set is
+/// dropped and searched afresh around the camera.
+const BEAM_CACHE_REANCHOR_COSINE: f64 = 0.999_7;
 
 impl BeamInstance {
     const ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
@@ -199,6 +211,10 @@ pub struct VillageRenderer {
     /// Where each village stands, for re-anchoring the beams as the camera
     /// moves.
     beam_world_positions: Vec<DVec3>,
+    /// Village centres found so far, by siting cell. Static, so each cell is
+    /// searched once and then only re-differenced against the camera.
+    beam_cache: HashMap<TileKey, Vec<DVec3>>,
+    beam_cache_anchor: DVec3,
     /// Locator beams are a debug overlay, so they start off.
     beams_enabled: bool,
     ground_shadow_vertex_buffer: wgpu::Buffer,
@@ -437,6 +453,8 @@ impl VillageRenderer {
             beam_instance_buffer,
             beam_count: 0,
             beam_world_positions: Vec::new(),
+            beam_cache: HashMap::new(),
+            beam_cache_anchor: DVec3::ZERO,
             beams_enabled: std::env::var("PLANET_VILLAGE_BEAMS").as_deref() == Ok("1"),
             ground_shadow_vertex_buffer,
             ground_shadow_vertex_count: shadow_mesh.len() as u32,
@@ -473,14 +491,15 @@ impl VillageRenderer {
         if !self.enabled {
             return;
         }
+        // Beams are independent of the houses: they exist to show villages
+        // that are too far away, or too high below, to draw.
+        self.update_beams(queue, terrain, camera_world_position, camera_altitude_meters);
         if camera_altitude_meters >= draw_altitude_meters() {
             self.instance_count = 0;
             self.last_build_position = None;
             self.nearest_house_world = None;
             self.instances.clear();
             self.house_world_positions.clear();
-            self.beam_world_positions.clear();
-            self.beam_count = 0;
             self.sited_houses = 0;
             self.max_ground_disagreement_meters = 0.0;
             return;
@@ -497,7 +516,6 @@ impl VillageRenderer {
             // away. Which houses exist is still only recomputed on a real
             // rebuild; this just re-differences the ones already chosen.
             self.rewrite_camera_relative_positions(queue, camera_world_position);
-            self.upload_beams(queue, camera_world_position);
             return;
         }
         let direction = camera_world_position.normalize_or_zero();
@@ -532,10 +550,8 @@ impl VillageRenderer {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         self.instances = instances;
-        self.beam_world_positions = build.beam_sites;
         self.last_build_position = Some(camera_world_position);
         self.upload_instances(queue);
-        self.upload_beams(queue, camera_world_position);
     }
 
     /// Re-differences the built houses against the camera's current position.
@@ -558,6 +574,53 @@ impl VillageRenderer {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         self.upload_instances(queue);
+    }
+
+    /// Finds villages around the camera a few cells a frame, nearest first, out
+    /// to a radius that grows with altitude, then uploads every beam found.
+    fn update_beams(
+        &mut self,
+        queue: &wgpu::Queue,
+        terrain: &TerrainRenderer,
+        camera_world_position: DVec3,
+        camera_altitude_meters: f64,
+    ) {
+        if !self.beams_enabled {
+            self.beam_count = 0;
+            return;
+        }
+        let direction = camera_world_position.normalize_or_zero();
+        if direction.length_squared() <= f64::EPSILON {
+            return;
+        }
+        // Siting reads a nine-tile window of the dense level around the camera
+        // (about 390km each way), so what is found beyond it would be empty.
+        // Start over once the camera has moved a quarter of that.
+        if direction.dot(self.beam_cache_anchor) < BEAM_CACHE_REANCHOR_COSINE {
+            self.beam_cache.clear();
+            self.beam_cache_anchor = direction;
+        }
+        let ring = (2.0 + camera_altitude_meters.max(0.0) / BEAM_RING_METERS_PER_CELL)
+            .ceil()
+            .min(f64::from(BEAM_MAX_RING)) as i32;
+        let mut searched = 0;
+        let mut changed = false;
+        for key in village::beam_cells_around(direction, ring) {
+            if self.beam_cache.contains_key(&key) {
+                continue;
+            }
+            if searched >= BEAM_CELLS_PER_FRAME {
+                break;
+            }
+            searched += 1;
+            changed = true;
+            self.beam_cache
+                .insert(key, village::village_beam_sites_in_cell(terrain, key));
+        }
+        if changed || self.beam_world_positions.is_empty() {
+            self.beam_world_positions = self.beam_cache.values().flatten().copied().collect();
+        }
+        self.upload_beams(queue, camera_world_position);
     }
 
     /// Beams are re-differenced against the camera like the houses are, for

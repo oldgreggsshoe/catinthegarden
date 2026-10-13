@@ -624,9 +624,9 @@ pub const fn house_ground_shadow_strength() -> f32 {
 }
 
 /// Half the beam's width on screen, in NDC. Constant with distance.
-const VILLAGE_BEAM_SCREEN_HALF_WIDTH: f32 = 0.0075;
+const VILLAGE_BEAM_SCREEN_HALF_WIDTH: f32 = 0.009;
 /// How strongly a beam tints what is behind it.
-const VILLAGE_BEAM_ALPHA: f32 = 0.18;
+const VILLAGE_BEAM_ALPHA: f32 = 0.4;
 
 /// Half the beam's on-screen width, in NDC.
 pub const fn village_beam_screen_half_width() -> f32 {
@@ -705,7 +705,6 @@ pub fn collect_house_instances(
                 };
 
                 let layout = village_house_layout(site_seed);
-                let mut site_beam_base: Option<DVec3> = None;
                 for (index, &(offset_east, offset_north, facing)) in layout.iter().enumerate() {
                     if instances.len() >= VILLAGE_MAX_DRAW_INSTANCES {
                         return build;
@@ -770,13 +769,6 @@ pub fn collect_house_instances(
                     // the camera, and separating the two is what makes the
                     // stability claim measurable.
                     build.sited_houses += 1;
-                    // The first house to survive every test fixes where this
-                    // village's beam stands, so the beam cannot end up on
-                    // ground no house was allowed on.
-                    if site_beam_base.is_none() {
-                        site_beam_base =
-                            Some(house_direction * (planet_radius_meters() + drawn_height_meters));
-                    }
                     let site_distance_squared = (house_direction * planet_radius_meters()
                         - camera_world_position)
                         .length_squared();
@@ -819,16 +811,64 @@ pub fn collect_house_instances(
                         _pad3: 0.0,
                     });
                 }
-                // One beam per village, not per house, and emitted from the
-                // sited set rather than the drawn one: the point of a locator
-                // is to show settlements that are too far away to draw.
-                if let Some(base) = site_beam_base {
-                    build.beam_sites.push(base);
-                }
             }
         }
     }
     build
+}
+
+/// The cells within `ring` of the camera's, nearest first, for the locator
+/// beams. Cells off the camera's cube face are skipped, as for houses.
+pub fn beam_cells_around(camera_direction: DVec3, ring: i32) -> Vec<TileKey> {
+    let camera_direction = camera_direction.normalize_or_zero();
+    if camera_direction.length_squared() <= f64::EPSILON {
+        return Vec::new();
+    }
+    let centre = tile_key_for_direction(camera_direction, VILLAGE_CELL_LEVEL);
+    let side = 1_i64 << VILLAGE_CELL_LEVEL;
+    let mut cells = Vec::new();
+    for dy in -ring..=ring {
+        for dx in -ring..=ring {
+            let x = i64::from(centre.x) + i64::from(dx);
+            let y = i64::from(centre.y) + i64::from(dy);
+            if x < 0 || y < 0 || x >= side || y >= side {
+                continue;
+            }
+            cells.push((
+                dx * dx + dy * dy,
+                TileKey {
+                    face: centre.face,
+                    level: VILLAGE_CELL_LEVEL,
+                    x: x as u32,
+                    y: y as u32,
+                },
+            ));
+        }
+    }
+    cells.sort_by_key(|(distance, _)| *distance);
+    cells.into_iter().map(|(_, key)| key).collect()
+}
+
+/// Where the villages in one cell stand, in the planet frame, at their mean
+/// ground height. Uses the same candidates and footprint test as the houses,
+/// so a beam is on exactly the ground a village is sited on -- but it does not
+/// build or distance-cull houses, so it can run for cells far outside the
+/// drawing range. The village centre is the foot, not its first house.
+pub fn village_beam_sites_in_cell(terrain: &TerrainRenderer, key: TileKey) -> Vec<DVec3> {
+    let mut sites = Vec::new();
+    for candidate in 0..VILLAGE_SITE_CANDIDATES_PER_CELL {
+        let up = village_site_direction(key, candidate);
+        let reference = if up.y.abs() < 0.9 { DVec3::Y } else { DVec3::X };
+        let east = up.cross(reference).normalize_or_zero();
+        if east.length_squared() <= f64::EPSILON {
+            continue;
+        }
+        let north = east.cross(up);
+        if let Some(height) = village_footprint_height(terrain, up, east, north) {
+            sites.push(up * (planet_radius_meters() + height));
+        }
+    }
+    sites
 }
 
 /// What one village rebuild produced.
@@ -838,9 +878,6 @@ pub struct VillageBuild {
     /// Every house the search region sites, whether or not it is near enough
     /// to draw. This is the camera-independent number.
     pub sited_houses: u32,
-    /// Where each sited village stands, in the planet frame. One entry per
-    /// village, for the locator beams.
-    pub beam_sites: Vec<DVec3>,
     /// The worst gap between a house's drawn ground and its sited ground.
     /// Legitimately non-zero: the detail ladder displaces the drawn surface.
     pub max_ground_disagreement_meters: f64,
@@ -857,7 +894,6 @@ impl Default for VillageBuild {
         Self {
             instances: Vec::new(),
             sited_houses: 0,
-            beam_sites: Vec::new(),
             max_ground_disagreement_meters: 0.0,
             nearest_site_macro_height_meters: f64::NAN,
             nearest_site_biome: None,

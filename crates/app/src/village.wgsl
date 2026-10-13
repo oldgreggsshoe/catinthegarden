@@ -178,12 +178,22 @@ fn vs_beam(input: BeamVertexInput) -> BeamVertexOutput {
     let top_view = planet_to_view(input.camera_relative_base + up * BEAM_LENGTH_METERS);
     let bottom_clip = camera.projection_matrix * vec4<f32>(bottom_view, 1.0);
     let top_clip = camera.projection_matrix * vec4<f32>(top_view, 1.0);
-    // Behind the eye a clip w of zero sends the ribbon to infinity; clamping
-    // keeps the screen-space direction finite instead.
-    let bottom_w = select(bottom_clip.w, 1.0e-4, abs(bottom_clip.w) < 1.0e-4);
+    // The screen direction of the shaft comes from two points both in front of
+    // the eye. With the foot behind it (standing at or past a village, or
+    // looking up its shaft) a clamped w sent the ribbon sideways or to
+    // infinity, so the foot is slid up the shaft to just in front of the eye.
+    // View space looks down -Z.
+    let near_z = -0.5;
+    var line_bottom_view = bottom_view;
+    let climb = top_view.z - bottom_view.z;
+    if bottom_view.z > near_z && climb < -1.0e-3 {
+        line_bottom_view = mix(bottom_view, top_view, (near_z - bottom_view.z) / climb);
+    }
+    let line_bottom_clip = camera.projection_matrix * vec4<f32>(line_bottom_view, 1.0);
     let top_w = select(top_clip.w, 1.0e-4, abs(top_clip.w) < 1.0e-4);
+    let line_bottom_w = select(line_bottom_clip.w, 1.0e-4, abs(line_bottom_clip.w) < 1.0e-4);
     let screen_aspect = vec2<f32>(max(camera.projection.x, 1.0e-4), 1.0);
-    var line_screen = (top_clip.xy / top_w - bottom_clip.xy / bottom_w) * screen_aspect;
+    var line_screen = (top_clip.xy / top_w - line_bottom_clip.xy / line_bottom_w) * screen_aspect;
     if dot(line_screen, line_screen) < 1.0e-8 {
         line_screen = vec2<f32>(0.0, 1.0);
     }

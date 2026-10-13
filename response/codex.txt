@@ -1,5 +1,3 @@
-Clear-water mode: press K (or start with PLANET_CLEAR_WATER=1).
-- Underwater fog is off, so visibility is infinite.
-- The lamp has infinite range (L still turns it on).
-- The water surface is about 50% transparent, above and below, so the ship and seabed show through. It is a pixel checkerboard (half the water pixels are skipped), not a smooth blend, because the ship is drawn after the water and a normal alpha blend would not show it. A smooth version needs a separate blended water pipeline; say if you want that.
-Tests pass; not seen rendered.
+Village beams fixed (V toggles, or PLANET_VILLAGE_BEAMS=1).
+Why they failed: they came out of the house search, so they reached only ~12 km, were switched off above 12 km altitude (exactly when you need them), stood on the first house not the centre, and the ribbon broke when its foot was behind you.
+Now: separate beam search, nearest first, 24 cells a frame, reaching ~245 km at height; stands on the village centre; works at any altitude; brighter (alpha 0.4) and a bit wider. Tests pass; a replay shows many shafts, not flown live. Beyond ~245 km nothing is shown.
