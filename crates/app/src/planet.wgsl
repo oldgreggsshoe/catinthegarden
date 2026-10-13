@@ -1382,7 +1382,8 @@ fn flat_triangle_land_biome(primary: u32, first: u32, second: u32, third: u32) -
 // kilometre-scale source texels or cube-face cells. CPU billboard placement
 // mirrors this frequency; water, desert, and rock never enter this function.
 const FOREST_DENSITY_FREQUENCY: f32 = 8192.0;
-const FOREST_DISTANT_DENSITY_FREQUENCY: f32 = 512.0;
+const FOREST_DISTANT_DENSITY_FREQUENCY: f32 = 64.0;
+const FOREST_DISTANT_DETAIL_FREQUENCY: f32 = 256.0;
 
 fn forest_density_at_direction(direction: vec3<f32>) -> f32 {
     let position = normalize(direction) * FOREST_DENSITY_FREQUENCY;
@@ -1394,13 +1395,24 @@ fn forest_density_at_direction(direction: vec3<f32>) -> f32 {
     return mix(0.04, 1.0, cluster);
 }
 
-fn forest_distant_density_at_direction(direction: vec3<f32>) -> f32 {
-    let position = normalize(direction) * FOREST_DISTANT_DENSITY_FREQUENCY;
-    let noise = terrain_detail_value_noise(
-        vec3<i32>(floor(position)),
-        fract(position),
+fn forest_distant_density_at_direction(direction: vec3<f32>, camera_distance_meters: f32) -> f32 {
+    let unit = normalize(direction);
+    let broad_position = unit * FOREST_DISTANT_DENSITY_FREQUENCY;
+    let broad = terrain_detail_value_noise(
+        vec3<i32>(floor(broad_position)),
+        fract(broad_position),
     ).value * 0.5 + 0.5;
-    return smoothstep(0.30, 0.70, noise);
+    let detail_position = unit * FOREST_DISTANT_DETAIL_FREQUENCY;
+    let detail = terrain_detail_value_noise(
+        vec3<i32>(floor(detail_position)),
+        fract(detail_position),
+    ).value * 0.5 + 0.5;
+    // Coherent woodland regions survive at planetary scale; the smaller
+    // clearings and canopy gaps fade out as they become subpixel instead of
+    // resolving into a jagged camouflage stencil.
+    let detail_weight = 0.28 * (1.0 - smoothstep(12000.0, 80000.0, camera_distance_meters));
+    let coverage = mix(broad, broad * 0.78 + detail * 0.22, detail_weight);
+    return smoothstep(0.28, 0.72, coverage);
 }
 
 fn refine_flat_temperate_biome(
@@ -1576,7 +1588,8 @@ fn forest_canopy_albedo(
     // pretending a sub-pixel point sample remains meaningful.
     let distant_ground_darkening = min(
         FOREST_GROUND_DARKENING_MAX,
-        0.24 * canopy_weight * forest_distant_density_at_direction(direction),
+        0.24 * canopy_weight
+            * forest_distant_density_at_direction(direction, camera_distance_meters),
     );
     if camera_distance_meters >= 9000.0 {
         return base_albedo * (1.0 - distant_ground_darkening);
@@ -2834,6 +2847,10 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             direction,
         );
     }
+    // The baked palette owns the broad material identity. Keep the procedural
+    // slope/relief shading as a subdued overlay so snow and exposed rock do not
+    // break into harsh pocks at close range.
+    terrain_albedo = mix(base_biome_color, terrain_albedo, 0.34);
     // The close-range detail texture, domain-warped and triplanar like the
     // materials above it.
     var detail_tint = vec3<f32>(1.0);
@@ -2855,7 +2872,36 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         ),
     );
     }
+    // Let the material maps add subtle grain without turning their fine detail
+    // into high-contrast streaks from a close camera.
+    detail_tint = mix(vec3<f32>(1.0), detail_tint, 0.08);
     var textured_terrain_albedo = terrain_albedo * detail_tint;
+    if BODY_HAS_ATMOSPHERE && outmap {
+        let vegetation_share = clamp(
+            biome_blend_share(biome_blend, 4u)
+                + biome_blend_share(biome_blend, 5u)
+                + biome_blend_share(biome_blend, 6u),
+            0.0,
+            1.0,
+        );
+        let vegetation_luminance = dot(
+            textured_terrain_albedo,
+            vec3<f32>(0.2126, 0.7152, 0.0722),
+        );
+        let natural_vegetation = mix(
+            vec3<f32>(vegetation_luminance),
+            textured_terrain_albedo,
+            0.68,
+        ) * 0.92;
+        // The baked grass palette is intentionally vivid for biome ownership;
+        // the rendered ground is soil and vegetation, so keep its hue but
+        // remove the synthetic lime saturation before lighting and weather.
+        textured_terrain_albedo = mix(
+            textured_terrain_albedo,
+            natural_vegetation,
+            vegetation_share,
+        );
+    }
     // Rain darkens exposed ground; accumulated snow replaces the material only
     // where the coupled surface field says it has persisted. Ocean and lake
     // branches returned above, and non-ice land remains matte.
@@ -2875,10 +2921,26 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         let snow_cover = smoothstep(0.08, 0.70, weather_surface.g)
             * snow_slope_hold(terrain_slope, biome_id);
         textured_terrain_albedo *= 1.0 - 0.22 * wetness;
+        let snow_relief = clamp(
+            input.terrain_detail_meters_and_fog_amount.x / TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS,
+            -1.0,
+            1.0,
+        );
+        let snow_surface = mix(
+            vec3<f32>(0.70, 0.73, 0.76),
+            vec3<f32>(0.94, 0.96, 1.0),
+            snow_cover,
+        ) * (1.0 + snow_relief * 0.06);
+        // Snow remains the dominant surface, but does not erase the rendered
+        // relief and exposed mineral tones beneath it. The slight slope bias
+        // breaks broad painted-looking slabs where melt and wind scour steep
+        // faces first.
+        let snow_mix = snow_cover
+            * (1.0 - 0.18 * smoothstep(0.10, 0.30, terrain_slope));
         textured_terrain_albedo = mix(
             textured_terrain_albedo,
-            mix(vec3<f32>(0.70, 0.73, 0.76), vec3<f32>(0.94, 0.96, 1.0), snow_cover),
-            snow_cover,
+            snow_surface,
+            snow_mix,
         );
         textured_terrain_albedo = forest_canopy_albedo(
             textured_terrain_albedo,

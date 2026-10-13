@@ -7,6 +7,7 @@ mod atmosphere;
 mod birds;
 mod birds_render;
 mod body;
+mod bubbles;
 mod debug;
 mod flock_marker;
 mod forest;
@@ -24,12 +25,10 @@ mod outmap;
 mod planet;
 mod probe;
 mod rain;
-mod bubbles;
 #[cfg(test)]
 mod relief_survey;
 mod scenario;
 mod sea_sound;
-mod thunder_clips;
 mod ship;
 mod ship_model;
 mod ship_render;
@@ -39,6 +38,7 @@ mod sun;
 mod surface_camera;
 mod system_flight;
 mod terrain;
+mod thunder_clips;
 mod village;
 mod village_render;
 mod weather;
@@ -442,7 +442,11 @@ const KNOTS_PER_METER_PER_SECOND: f64 = 3600.0 / 1852.0;
 /// The ship's speed through the water in knots: its horizontal velocity less
 /// the water's at the hull (`up` is the local vertical). A hull drifting with
 /// the sea reads nought, however fast the swell carries it about.
-fn speed_through_water_knots(ship_velocity: glam::DVec3, water_velocity: glam::DVec3, up: glam::DVec3) -> f64 {
+fn speed_through_water_knots(
+    ship_velocity: glam::DVec3,
+    water_velocity: glam::DVec3,
+    up: glam::DVec3,
+) -> f64 {
     let relative = ship_velocity - water_velocity;
     (relative - up * relative.dot(up)).length() * KNOTS_PER_METER_PER_SECOND
 }
@@ -460,7 +464,13 @@ fn compass_heading_degrees(forward: glam::DVec3, position: glam::DVec3) -> Optio
     }
     let north = north.normalize();
     let east = north.cross(up);
-    Some(level.dot(east).atan2(level.dot(north)).to_degrees().rem_euclid(360.0))
+    Some(
+        level
+            .dot(east)
+            .atan2(level.dot(north))
+            .to_degrees()
+            .rem_euclid(360.0),
+    )
 }
 
 /// Moving east from +X raises `planet::geographic_longitude_degrees`: the
@@ -482,14 +492,22 @@ fn draw_compass(ui: &mut egui::Ui, heading_degrees: f64, sea: Option<(f32, f32)>
     let centre = rect.center_top() + egui::vec2(0.0, 0.5 * SIZE);
     let radius = 0.5 * SIZE - 2.0;
     painter.circle_filled(centre, radius, egui::Color32::from_black_alpha(150));
-    painter.circle_stroke(centre, radius, egui::Stroke::new(1.0, egui::Color32::from_gray(140)));
+    painter.circle_stroke(
+        centre,
+        radius,
+        egui::Stroke::new(1.0, egui::Color32::from_gray(140)),
+    );
     let at = |bearing: f64, distance: f32| {
         let angle = (bearing - heading_degrees).to_radians() as f32;
         centre + egui::vec2(angle.sin(), -angle.cos()) * distance
     };
     for tick in 0..36 {
         let bearing = f64::from(tick) * 10.0;
-        let inner = if tick % 3 == 0 { radius - 9.0 } else { radius - 5.0 };
+        let inner = if tick % 3 == 0 {
+            radius - 9.0
+        } else {
+            radius - 5.0
+        };
         painter.line_segment(
             [at(bearing, inner), at(bearing, radius - 1.0)],
             egui::Stroke::new(1.0, egui::Color32::from_gray(170)),
@@ -512,7 +530,11 @@ fn draw_compass(ui: &mut egui::Ui, heading_degrees: f64, sea: Option<(f32, f32)>
     // The lubber mark: where the view points.
     let top = centre - egui::vec2(0.0, radius + 1.0);
     painter.add(egui::Shape::convex_polygon(
-        vec![top + egui::vec2(-6.0, -6.0), top + egui::vec2(6.0, -6.0), top + egui::vec2(0.0, 5.0)],
+        vec![
+            top + egui::vec2(-6.0, -6.0),
+            top + egui::vec2(6.0, -6.0),
+            top + egui::vec2(0.0, 5.0),
+        ],
         egui::Color32::from_rgb(255, 210, 90),
         egui::Stroke::NONE,
     ));
@@ -567,7 +589,10 @@ fn water_aboard_text(
 /// The seabed-clearance readout beside the water counter: metres from the
 /// hull's lowest point to the bottom (one decimal under 100 m, ">1000 m" past
 /// that or when the bottom is not known), amber near the bottom, red on it.
-fn seabed_clearance_text(clearance_meters: Option<f64>, on_seabed: bool) -> (String, egui::Color32) {
+fn seabed_clearance_text(
+    clearance_meters: Option<f64>,
+    on_seabed: bool,
+) -> (String, egui::Color32) {
     match clearance_meters {
         None => ("--".to_owned(), egui::Color32::from_gray(190)),
         Some(_) if on_seabed => ("ON SEABED".to_owned(), egui::Color32::from_rgb(255, 70, 60)),
@@ -2193,10 +2218,7 @@ impl State {
         }
         self.toggle_animation_freeze();
         let anti_aliasing = !matches!(
-            std::env::var("PLANET_AA")
-                .ok()
-                .as_deref()
-                .map(str::trim),
+            std::env::var("PLANET_AA").ok().as_deref().map(str::trim),
             Some("0" | "false" | "off")
         );
         self.hdr
@@ -2488,7 +2510,8 @@ impl State {
         }
         let speed = (ocean_fft::wind_speed_from_environment() + step_meters_per_second)
             .clamp(0.0, ocean_fft::MAX_WIND_METERS_PER_SECOND);
-        self.terrain.set_ocean_wind(speed, self.scaled_clock_seconds);
+        self.terrain
+            .set_ocean_wind(speed, self.scaled_clock_seconds);
         self.mark_hud_dirty();
     }
 
@@ -2783,7 +2806,8 @@ impl State {
             time += step;
             let before = self.flight_local_position.normalize();
             let current = ocean::global_wave_horizontal_velocity(before, time);
-            self.flight_local_position = carried_by_current(self.flight_local_position, current, step);
+            self.flight_local_position =
+                carried_by_current(self.flight_local_position, current, step);
             let after = self.flight_local_position.normalize();
             self.flight_local_tangent =
                 transport_flight_tangent(self.flight_local_tangent, before, after);
@@ -2980,8 +3004,8 @@ impl State {
             }
             // The surface's orbital motion fades with depth (as the hull's own
             // forces do), so a sunk hull reads still water, not the swell's.
-            let hull_depth = (-(self.ship_body.position.length() - planet::planet_radius_meters()))
-                .max(0.0);
+            let hull_depth =
+                (-(self.ship_body.position.length() - planet::planet_radius_meters())).max(0.0);
             self.ship_water_velocity =
                 water_horizontal * (-ship::WAVE_DECAY_PER_METER * hull_depth).exp();
             self.ship_body
@@ -3016,7 +3040,8 @@ impl State {
     /// The ship as drawn this frame: its last physics step carried forward to
     /// the frame's own time, so it sits on the water the sea draws now.
     fn presented_ship_body(&self) -> ship::ShipBody {
-        self.ship_body.carried_forward(self.ship_presentation_lead_seconds)
+        self.ship_body
+            .carried_forward(self.ship_presentation_lead_seconds)
     }
 
     /// Advances the flock and uploads it, in that order and below the camera
@@ -3051,8 +3076,7 @@ impl State {
                     // strip where the rendered water would swallow it.
                     walkable: !matches!(
                         sample.biome,
-                        planet_coretypes::BiomeId::Ocean
-                            | planet_coretypes::BiomeId::Lake
+                        planet_coretypes::BiomeId::Ocean | planet_coretypes::BiomeId::Lake
                     ) && sample.height_meters > 0.5,
                     // The same baked depth the renderer and the ship limit their
                     // waves by, so shoaling crests are the ones a bird sees.
@@ -3233,8 +3257,8 @@ impl State {
         // The hull mesh is modelled about the waterline origin, but the body
         // tracks its centre of mass, so step back along the hull's own axes.
         let ship_body = self.presented_ship_body();
-        let hull_origin_local = ship_body.position
-            + ship_body.orientation * -self.ship_hull.centre_of_mass_local();
+        let hull_origin_local =
+            ship_body.position + ship_body.orientation * -self.ship_hull.centre_of_mass_local();
         let camera_offset = hull_origin_local - camera_local;
         let visible = camera_offset.length() < SHIP_VISIBLE_DISTANCE_METERS;
         self.ship_renderer.update(
@@ -3253,13 +3277,13 @@ impl State {
         self.ship_renderer.update_water(&self.queue, &water);
     }
 
-/// Eases the storm overcast toward the weather's storm strength at the
-/// camera. Storm here is the weather's own (cloud water, uplift,
-/// condensation), not the sea state, which also rises with wind alone and
-/// would grey a clear windy day. Every source fades above the lower cloud
-/// shell, where the camera looks down on the storm rather than out from under
-/// it. `PLANET_STORM_OVERCAST` (0-1) fixes the surface value for comparisons;
-/// an approaching storm (`PLANET_STORM_APPROACH`) drives it directly.
+    /// Eases the storm overcast toward the weather's storm strength at the
+    /// camera. Storm here is the weather's own (cloud water, uplift,
+    /// condensation), not the sea state, which also rises with wind alone and
+    /// would grey a clear windy day. Every source fades above the lower cloud
+    /// shell, where the camera looks down on the storm rather than out from under
+    /// it. `PLANET_STORM_OVERCAST` (0-1) fixes the surface value for comparisons;
+    /// an approaching storm (`PLANET_STORM_APPROACH`) drives it directly.
     fn update_storm_overcast(&mut self, planet_rotation_radians: f64, ocean_time_seconds: f64) {
         let altitude = self.camera.world_position().length() - planet::planet_radius_meters();
         let altitude_weight = storm_overcast_altitude_weight(altitude);
@@ -3277,8 +3301,7 @@ impl State {
         let approaching = ocean::approaching_storm_at(ocean_time_seconds);
         let storm = f64::from(self.weather.storm_intensity_at(direction));
         let weather_overcast = {
-            let t = ((storm - STORM_OVERCAST_ONSET)
-                / (STORM_OVERCAST_FULL - STORM_OVERCAST_ONSET))
+            let t = ((storm - STORM_OVERCAST_ONSET) / (STORM_OVERCAST_FULL - STORM_OVERCAST_ONSET))
                 .clamp(0.0, 1.0);
             (t * t * (3.0 - 2.0 * t)) as f32 * altitude_weight
         };
@@ -3357,7 +3380,8 @@ impl State {
         // The compass, redrawn as soon as the heading moves half a degree so it
         // turns smoothly rather than at the HUD's ten updates a second.
         self.compass_heading_degrees = compass_heading_degrees(
-            self.camera.planet_frame_direction_dvec3(planet_rotation_radians),
+            self.camera
+                .planet_frame_direction_dvec3(planet_rotation_radians),
             camera_position,
         );
         let compass_moved = match (self.compass_heading_degrees, self.compass_drawn_degrees) {
@@ -4403,9 +4427,16 @@ impl State {
                     ),
                 )
             });
-        let compass = self.scenario.is_none().then_some(self.compass_heading_degrees).flatten();
+        let compass = self
+            .scenario
+            .is_none()
+            .then_some(self.compass_heading_degrees)
+            .flatten();
         let sea_settings = planet::ocean_fft_enabled().then(|| {
-            (ocean_fft::swell_target_meters(), ocean_fft::wind_speed_from_environment())
+            (
+                ocean_fft::swell_target_meters(),
+                ocean_fft::wind_speed_from_environment(),
+            )
         });
         self.compass_drawn_degrees = compass;
         let full_output = self.egui_context.run_ui(raw_input, |ui| {
@@ -4743,7 +4774,12 @@ impl State {
                         .as_ref()
                         .is_some_and(|scenario| scenario.ride_with_the_water())
                     {
-                        self.carried_by_the_water(position, look_at, ocean_time, planet_rotation_radians)
+                        self.carried_by_the_water(
+                            position,
+                            look_at,
+                            ocean_time,
+                            planet_rotation_radians,
+                        )
                     } else {
                         (position, look_at)
                     };
@@ -5252,8 +5288,8 @@ impl State {
         let mut textures_to_free = Vec::new();
         // The water-aboard counter shows near the ship, overlay or not, in the
         // interactive game only (replays' captures stay as authored).
-        let water_display = self.scenario.is_none()
-            && self.ship_distance_meters < WATER_DISPLAY_RANGE_METERS;
+        let water_display =
+            self.scenario.is_none() && self.ship_distance_meters < WATER_DISPLAY_RANGE_METERS;
         let render_egui = !solid_color_screen
             && !hide_overlay
             && (self.debug_overlay_visible || water_display || self.scenario.is_none());
@@ -5418,11 +5454,10 @@ impl State {
         // Unused lane: the swimmer's lamp (key L).
         camera_uniform.sun_direction_view[3] =
             f32::from(self.swim_lamp) + 2.0 * f32::from(self.clear_water);
-        self.hdr
-            .set_output_darkening(
-                &self.queue,
-                storm_frame_darkening_with_flash(self.storm_overcast, self.lightning_pulse),
-            );
+        self.hdr.set_output_darkening(
+            &self.queue,
+            storm_frame_darkening_with_flash(self.storm_overcast, self.lightning_pulse),
+        );
         // Spare basis-vector lanes: local ocean column and signed eye clearance.
         // Fill background waterline pixels missed by the finite raster shell.
         camera_uniform.camera_forward[3] = ocean_water_depth_meters as f32;
@@ -5461,12 +5496,21 @@ impl State {
         );
         self.forest
             .update_camera(&self.queue, camera_planet_frame_position);
+        let forest_camera_forward = camera_planet_frame_direction.normalize_or_zero();
+        let forest_camera_right = forest_camera_forward
+            .cross(camera_planet_frame_up)
+            .normalize_or_zero();
+        let forest_camera_up = forest_camera_right
+            .cross(forest_camera_forward)
+            .normalize_or_zero();
         self.forest.update_patch(
             &self.queue,
             &self.terrain,
             camera_planet_frame_position,
+            forest_camera_forward,
+            forest_camera_up,
             camera_sea_level_altitude_meters,
-            self.size.height,
+            [self.size.width, self.size.height],
             self.camera.vertical_fov_radians(),
             presentation_time,
         );
@@ -7263,10 +7307,23 @@ mod tests {
         let (label, colour) = super::water_aboard_text(124.4, sinking, false, false);
         assert_eq!(label, format!("124/{sinking:.0}"));
         assert_eq!(colour, egui::Color32::from_rgb(255, 215, 90));
-        assert_eq!(super::water_aboard_text(140.0, sinking, false, false).1, egui::Color32::from_rgb(255, 150, 60));
-        assert_eq!(super::water_aboard_text(0.0, sinking, false, false).1, egui::Color32::WHITE);
-        assert_eq!(super::water_aboard_text(sinking, sinking, true, false).1, egui::Color32::from_rgb(255, 70, 60));
-        assert!(super::water_aboard_text(sinking, sinking, true, false).0.ends_with("SUNK"));
+        assert_eq!(
+            super::water_aboard_text(140.0, sinking, false, false).1,
+            egui::Color32::from_rgb(255, 150, 60)
+        );
+        assert_eq!(
+            super::water_aboard_text(0.0, sinking, false, false).1,
+            egui::Color32::WHITE
+        );
+        assert_eq!(
+            super::water_aboard_text(sinking, sinking, true, false).1,
+            egui::Color32::from_rgb(255, 70, 60)
+        );
+        assert!(
+            super::water_aboard_text(sinking, sinking, true, false)
+                .0
+                .ends_with("SUNK")
+        );
         let (label, colour) = super::water_aboard_text(20.0, sinking, false, true);
         assert!(label.ends_with("FOUNDERING"), "{label}");
         assert_eq!(colour, egui::Color32::from_rgb(255, 70, 60));
@@ -7276,12 +7333,24 @@ mod tests {
     fn the_seabed_readout_shows_metres_above_the_bottom_and_warns_near_it() {
         let text = |c, on| super::seabed_clearance_text(c, on);
         assert_eq!(text(None, false).0, "--");
-        assert_eq!(text(Some(63.24), false), ("63.2 m".to_owned(), egui::Color32::WHITE));
+        assert_eq!(
+            text(Some(63.24), false),
+            ("63.2 m".to_owned(), egui::Color32::WHITE)
+        );
         assert_eq!(text(Some(250.4), false).0, "250 m");
         assert_eq!(text(Some(4000.0), false).0, ">1000 m");
-        assert_eq!(text(Some(6.0), false).1, egui::Color32::from_rgb(255, 215, 90));
-        assert_eq!(text(Some(1.0), false).1, egui::Color32::from_rgb(255, 150, 60));
-        assert_eq!(text(Some(0.0), true), ("ON SEABED".to_owned(), egui::Color32::from_rgb(255, 70, 60)));
+        assert_eq!(
+            text(Some(6.0), false).1,
+            egui::Color32::from_rgb(255, 215, 90)
+        );
+        assert_eq!(
+            text(Some(1.0), false).1,
+            egui::Color32::from_rgb(255, 150, 60)
+        );
+        assert_eq!(
+            text(Some(0.0), true),
+            ("ON SEABED".to_owned(), egui::Color32::from_rgb(255, 70, 60))
+        );
     }
 
     #[test]
@@ -7293,7 +7362,10 @@ mod tests {
             super::ship_seabed_sounds(on, v, w, radial, impact, distance)
         };
         // At rest on the bottom: silence. Off it: no scraping or rolling.
-        assert_eq!(at(true, glam::DVec3::ZERO, glam::DVec3::ZERO, 0.0, 5.0), (0.0, 0.0, 0.0));
+        assert_eq!(
+            at(true, glam::DVec3::ZERO, glam::DVec3::ZERO, 0.0, 5.0),
+            (0.0, 0.0, 0.0)
+        );
         assert_eq!(at(false, slide, spin, 0.0, 5.0), (0.0, 0.0, 0.0));
         // Sliding and spinning on the bottom are heard, and fade with distance.
         let (scrape, tumble, _) = at(true, slide, spin, 0.0, 5.0);
@@ -7303,7 +7375,10 @@ mod tests {
         assert_eq!(at(true, slide, spin, 0.0, 500.0), (0.0, 0.0, 0.0));
         // A landing is heard once it is hard enough, harder is louder, even
         // while still falling (not yet on the bottom).
-        assert_eq!(at(false, glam::DVec3::ZERO, glam::DVec3::ZERO, 0.2, 5.0).2, 0.0);
+        assert_eq!(
+            at(false, glam::DVec3::ZERO, glam::DVec3::ZERO, 0.2, 5.0).2,
+            0.0
+        );
         let soft = at(false, glam::DVec3::ZERO, glam::DVec3::ZERO, 1.0, 5.0).2;
         let hard = at(false, glam::DVec3::ZERO, glam::DVec3::ZERO, 5.0, 5.0).2;
         assert!(soft > 0.0 && hard > soft);
@@ -7355,8 +7430,14 @@ mod tests {
         assert!((travelled - 10.0).abs() < 0.001, "{travelled}");
         assert!(moved.y > 0.0 && moved.z.abs() < 1.0e-9);
         // No current, no motion.
-        assert_eq!(super::carried_by_current(position, DVec3::ZERO, 1.0), position);
-        assert_eq!(super::carried_by_current(position, DVec3::X * 5.0, 1.0), position);
+        assert_eq!(
+            super::carried_by_current(position, DVec3::ZERO, 1.0),
+            position
+        );
+        assert_eq!(
+            super::carried_by_current(position, DVec3::X * 5.0, 1.0),
+            position
+        );
     }
 
     #[test]
@@ -7372,12 +7453,19 @@ mod tests {
         // Aft of midships, forward of the stern, over the hull and off the
         // centreline (the mainmast is not dead ahead), an eye height above
         // the poop.
-        assert!(eye_ship_local.x < 0.0 && eye_ship_local.x > -0.5 * crate::ship::HULL_LENGTH_METERS);
+        assert!(
+            eye_ship_local.x < 0.0 && eye_ship_local.x > -0.5 * crate::ship::HULL_LENGTH_METERS
+        );
         assert!(eye_ship_local.y.abs() > 0.5 * scale);
         assert!(eye_ship_local.y.abs() < 0.5 * crate::ship::HULL_BEAM_METERS);
-        let deck = crate::ship::sheer_height_meters(eye_ship_local.x / (0.5 * crate::ship::HULL_LENGTH_METERS));
+        let deck = crate::ship::sheer_height_meters(
+            eye_ship_local.x / (0.5 * crate::ship::HULL_LENGTH_METERS),
+        );
         let above_poop = eye_ship_local.z - deck - 4.6 * scale;
-        assert!((above_poop - 4.0 * scale).abs() < 0.05 * scale, "{above_poop}");
+        assert!(
+            (above_poop - 4.0 * scale).abs() < 0.05 * scale,
+            "{above_poop}"
+        );
         assert!((forward - body.orientation * DVec3::X).length() < 1.0e-12);
         assert!((up - body.orientation * DVec3::Z).length() < 1.0e-12);
     }
@@ -7500,8 +7588,15 @@ mod tests {
         );
         assert!(body.contains("PLANET_AA"));
         // Startup ends as if F6, F8 and F10 were pressed, in that order.
-        let presses = ["self.toggle_blur();", "self.toggle_hdr_effect();", "self.toggle_animation_freeze();"];
-        let at = |text: &str| body.rfind(text).unwrap_or_else(|| panic!("startup does not {text}"));
+        let presses = [
+            "self.toggle_blur();",
+            "self.toggle_hdr_effect();",
+            "self.toggle_animation_freeze();",
+        ];
+        let at = |text: &str| {
+            body.rfind(text)
+                .unwrap_or_else(|| panic!("startup does not {text}"))
+        };
         assert!(at(presses[0]) > body.find("set_effects").unwrap());
         assert!(at(presses[0]) < at(presses[1]) && at(presses[1]) < at(presses[2]));
     }
@@ -7530,8 +7625,12 @@ mod tests {
         use glam::DVec3;
         let up = DVec3::X;
         let water = DVec3::new(0.0, 3.0, 0.0);
-        assert_eq!(super::speed_through_water_knots(water + up * 2.0, water, up), 0.0);
-        let knots = super::speed_through_water_knots(water + DVec3::new(0.0, 0.0, 5.144_444), water, up);
+        assert_eq!(
+            super::speed_through_water_knots(water + up * 2.0, water, up),
+            0.0
+        );
+        let knots =
+            super::speed_through_water_knots(water + DVec3::new(0.0, 0.0, 5.144_444), water, up);
         assert!((knots - 10.0).abs() < 1e-3, "{knots}");
     }
 
@@ -7812,7 +7911,10 @@ mod tests {
         assert!((storm_frame_darkening(0.5) - 0.2).abs() < 1.0e-6);
         assert_eq!(storm_frame_darkening(3.0), storm_frame_darkening(1.0));
         // A flash lifts most of it at its peak, and none once it has gone.
-        assert_eq!(storm_frame_darkening_with_flash(1.0, 0.0), storm_frame_darkening(1.0));
+        assert_eq!(
+            storm_frame_darkening_with_flash(1.0, 0.0),
+            storm_frame_darkening(1.0)
+        );
         assert!((storm_frame_darkening_with_flash(1.0, 1.0) - 0.1).abs() < 1.0e-6);
     }
 

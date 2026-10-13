@@ -11,11 +11,11 @@ use std::{
     thread,
 };
 
+use glam::DVec3;
 use planet_coretypes::{
     BiomeId, CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
     tile_key_for_direction,
 };
-use glam::DVec3;
 use wgpu::util::DeviceExt;
 
 #[path = "ocean_foam.rs"]
@@ -1273,15 +1273,14 @@ impl TerrainRenderer {
         let ocean_fft_h0 = if ocean_fft_enabled {
             crate::ocean_fft::default_h0()
         } else {
-            vec![[0.0; 4]; crate::ocean_fft::CASCADES * crate::ocean_fft::GRID * crate::ocean_fft::GRID]
+            vec![
+                [0.0; 4];
+                crate::ocean_fft::CASCADES * crate::ocean_fft::GRID * crate::ocean_fft::GRID
+            ]
         };
         let ocean_fft = crate::ocean_fft::OceanFft::new(device, &ocean_fft_h0);
-        let foam_history = ocean_foam::OceanFoamHistory::new(
-            device,
-            queue,
-            camera_bind_group_layout,
-            &ocean_fft,
-        );
+        let foam_history =
+            ocean_foam::OceanFoamHistory::new(device, queue, camera_bind_group_layout, &ocean_fft);
         let ocean_spray = ocean_spray::spray_enabled().then(|| {
             ocean_spray::OceanSpray::new(
                 device,
@@ -1622,7 +1621,11 @@ impl TerrainRenderer {
             ocean_time_seconds,
             crate::ocean_fft::WIND_CHANGE_SECONDS,
         );
-        crate::ocean::replace_fft_surface(crate::ocean_fft::CpuSurface::blending(&from, &to, Some(blend)));
+        crate::ocean::replace_fft_surface(crate::ocean_fft::CpuSurface::blending(
+            &from,
+            &to,
+            Some(blend),
+        ));
     }
 
     pub fn update_ocean_fft(
@@ -5146,9 +5149,7 @@ mod tests {
         // Faded to the plain sun as cloud and storm hide it.
         assert!(bed.contains("let caustics = mix(1.0, ocean_fft_caustics("));
         assert!(bed.contains("), sun_visible_fraction());"));
-        assert!(bed.contains(
-            "bottom_sky + bottom_sun * SURFACE_SUNLIGHT_SCALE * caustics"
-        ));
+        assert!(bed.contains("bottom_sky + bottom_sun * SURFACE_SUNLIGHT_SCALE * caustics"));
         assert_eq!(fragment.matches("ocean_fft_caustics(").count(), 1);
         // No FFT sea, no caustics: the Gerstner path is left as it was.
         let caustics = shader
@@ -5658,6 +5659,8 @@ mod tests {
             .and_then(|source| source.split("\nfn ").next())
             .expect("detail function is present");
         assert!(detail.contains("smoothstep(filter_meters"));
+        assert!(shader.contains("terrain_albedo = mix(base_biome_color, terrain_albedo, 0.34);"));
+        assert!(shader.contains("detail_tint = mix(vec3<f32>(1.0), detail_tint, 0.08);"));
     }
 
     #[test]
@@ -5673,7 +5676,9 @@ mod tests {
         assert!(optics.contains("ocean_water_to_air(view_ray, normal_view)"));
         assert!(optics.contains("physical_camera_sky_radiance(normalize(refraction.xyz))"));
         assert!(optics.contains("ocean_underside_reflection_with_skylight("));
-        assert!(optics.contains("ocean_underside_with_foam(clear_interface, skylight, max(storm_foam, aeration))"));
+        assert!(optics.contains(
+            "ocean_underside_with_foam(clear_interface, skylight, max(storm_foam, aeration))"
+        ));
         // A storm greys the sky seen through the window and spreads the foam.
         assert!(optics.contains("storm_overcast_colour(physical_camera_sky_radiance(up_view))"));
         assert!(optics.contains("let overcast_grey = vec3<f32>("));
@@ -6504,7 +6509,9 @@ mod tests {
         assert!(shader.contains("-storm_path_meters / storm_fog_e_fold_meters()"));
         // A storm's fog is the plain view distance, not air density along it,
         // so its distance does not change with the camera's altitude.
-        assert!(shader.contains("length(camera_relative_view_position),\n        storm_overcast(),"));
+        assert!(
+            shader.contains("length(camera_relative_view_position),\n        storm_overcast(),")
+        );
         assert!(!shader.contains("near_surface_amount"));
         assert!(!shader.contains("TERRAIN_FOG_MAX_CAMERA_CLEARANCE_METERS"));
     }
@@ -6535,8 +6542,14 @@ mod tests {
             e_fold,
             "const STORM_OVERCAST_BRIGHTNESS: f32 = 0.45;",
         ] {
-            assert!(terrain.contains(declaration), "shared_planet.wgsl lacks {declaration}");
-            assert!(sky.contains(declaration), "atmosphere.wgsl lacks {declaration}");
+            assert!(
+                terrain.contains(declaration),
+                "shared_planet.wgsl lacks {declaration}"
+            );
+            assert!(
+                sky.contains(declaration),
+                "atmosphere.wgsl lacks {declaration}"
+            );
         }
         // The sun is hidden by the same fog over its own line of sight.
         for declaration in [

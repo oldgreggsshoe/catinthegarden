@@ -5,8 +5,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use planet_coretypes::{TileKey, face_uv_to_direction, tile_key_for_direction};
 use glam::DVec3;
+use planet_coretypes::{TileKey, face_uv_to_direction, tile_key_for_direction};
 use wgpu::util::DeviceExt;
 
 use crate::{
@@ -19,6 +19,11 @@ pub const FOREST_CENTRE_DIRECTION: DVec3 =
     DVec3::new(0.374_871_986_443, 0.737_334_908_710, 0.561_968_171_854);
 
 const TREE_COUNT: usize = 12_288;
+#[cfg(test)]
+const TREE_MESH_VERTEX_COUNT: u32 = 440;
+const TREE_MESH_INDEX_COUNT: u32 = 2340;
+const TREE_MESH_MEDIUM_INDEX_COUNT: u32 = 660;
+const TREE_MESH_SPARSE_INDEX_COUNT: u32 = 300;
 const TREE_BASE_SINK_METERS: f64 = 0.45;
 const TREE_HEIGHT_MIN_METERS: f32 = 22.0;
 const TREE_HEIGHT_RANGE_METERS: f32 = 26.0;
@@ -40,9 +45,10 @@ const FOREST_STARTUP_PATCH_COUNT: u64 = 3;
 const FOREST_MAX_RENDERABLE_PATCHES: usize = 128;
 const FOREST_MAX_CACHED_PATCHES: usize = 256;
 const FOREST_MAX_DRAW_INSTANCES: usize = 262_144;
+const FOREST_GPU_FULL_CANDIDATES: u32 = 8_192;
 const FOREST_GPU_MEDIUM_CANDIDATES: u32 = 768;
 const FOREST_GPU_SPARSE_CANDIDATES: u32 = 64;
-const FOREST_GPU_FULL_DISTANCE_METERS: f64 = 1_500.0;
+const FOREST_GPU_FULL_DISTANCE_METERS: f64 = 400.0;
 const FOREST_GPU_MEDIUM_DISTANCE_METERS: f64 = 4_000.0;
 // Terrain-grounded canopy cards make a cell read as forest before its complete
 // individual-tree population has finished resolving. They are built and
@@ -56,7 +62,7 @@ const TREE_LOD_FULL_PIXELS: f64 = 12.0;
 const TREE_LOD_MEDIUM_PIXELS: f64 = 3.0;
 const TREE_LOD_SPARSE_PIXELS: f64 = 1.0;
 // Keep a small, deterministic subset of trees alive below the normal sparse
-// threshold.  These are rendered as tiny billboards rather than being removed
+// threshold. These are rendered as tiny trees rather than being removed
 // outright, so entering/leaving a forest does not reveal a hard population
 // cutoff.  The subset remains bounded by the existing draw-instance budget.
 const TREE_LOD_PLACEHOLDER_DENSITY: f32 = 0.12;
@@ -149,7 +155,7 @@ enum GpuForestTier {
 impl GpuForestTier {
     fn candidates_per_cell(self) -> u32 {
         match self {
-            Self::Full => TREE_COUNT as u32,
+            Self::Full => FOREST_GPU_FULL_CANDIDATES,
             Self::Medium => FOREST_GPU_MEDIUM_CANDIDATES,
             Self::Sparse => FOREST_GPU_SPARSE_CANDIDATES,
         }
@@ -320,9 +326,13 @@ pub struct ForestRenderer {
     gpu_source_bind_groups: BTreeMap<TileKey, wgpu::BindGroup>,
     uniform_buffer: wgpu::Buffer,
     instance_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    medium_index_buffer: wgpu::Buffer,
+    sparse_index_buffer: wgpu::Buffer,
     gpu_cell_buffer: wgpu::Buffer,
     instance_count: u32,
     proxy_instance_count: u32,
+    draw_lod_counts: TreeLodCounts,
     patches: BTreeMap<TileKey, ForestPatch>,
     proxy_patches: BTreeMap<TileKey, ForestProxyPatch>,
     pending_patch: Option<PendingForestPatch>,
@@ -358,7 +368,7 @@ impl ForestRenderer {
             maximum_renderable_patches = FOREST_MAX_RENDERABLE_PATCHES,
             maximum_cached_patches = FOREST_MAX_CACHED_PATCHES,
             maximum_draw_instances = FOREST_MAX_DRAW_INSTANCES,
-            "configured billboard forest"
+            "configured instanced 3d forest"
         );
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("forest camera uniform"),
@@ -426,11 +436,11 @@ impl ForestRenderer {
         });
         let shader_source = forest_shader_source();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("forest billboard shader"),
+            label: Some("forest 3d tree shader"),
             source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("forest billboard pipeline"),
+            label: Some("forest 3d tree pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -576,6 +586,27 @@ impl ForestRenderer {
                 | wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST,
         });
+        let indices = tree_mesh_indices();
+        debug_assert_eq!(indices.len(), TREE_MESH_INDEX_COUNT as usize);
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("forest shared 3d tree mesh indices"),
+            contents: bytemuck::cast_slice(&indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        let medium_indices = tree_mesh_medium_indices();
+        debug_assert_eq!(medium_indices.len(), TREE_MESH_MEDIUM_INDEX_COUNT as usize);
+        let medium_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("forest shared medium 3d tree mesh indices"),
+            contents: bytemuck::cast_slice(&medium_indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        let sparse_indices = tree_mesh_sparse_indices();
+        debug_assert_eq!(sparse_indices.len(), TREE_MESH_SPARSE_INDEX_COUNT as usize);
+        let sparse_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("forest shared sparse 3d tree mesh indices"),
+            contents: bytemuck::cast_slice(&sparse_indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
         Self {
             pipeline,
             gpu_compute_pipelines,
@@ -584,9 +615,13 @@ impl ForestRenderer {
             gpu_source_bind_groups: BTreeMap::new(),
             uniform_buffer,
             instance_buffer,
+            index_buffer,
+            medium_index_buffer,
+            sparse_index_buffer,
             gpu_cell_buffer,
             instance_count: 0,
             proxy_instance_count: 0,
+            draw_lod_counts: TreeLodCounts::default(),
             patches: BTreeMap::new(),
             proxy_patches: BTreeMap::new(),
             pending_patch: Some(PendingForestPatch::new(initial_key)),
@@ -630,8 +665,10 @@ impl ForestRenderer {
         queue: &wgpu::Queue,
         terrain: &TerrainRenderer,
         camera_planet_position: DVec3,
+        camera_forward: DVec3,
+        camera_up_hint: DVec3,
         camera_altitude_meters: f64,
-        viewport_height: u32,
+        viewport_size: [u32; 2],
         vertical_fov_radians: f64,
         simulation_time_seconds: f64,
     ) {
@@ -646,6 +683,7 @@ impl ForestRenderer {
             self.pending_patch = None;
             self.instance_count = 0;
             self.proxy_instance_count = 0;
+            self.draw_lod_counts = TreeLodCounts::default();
             self.gpu_batches.clear();
             self.gpu_cell_count = 0;
             self.gpu_candidate_count = 0;
@@ -653,6 +691,9 @@ impl ForestRenderer {
         }
         if camera_altitude_meters >= FOREST_DRAW_ALTITUDE_METERS {
             self.pending_patch = None;
+            self.instance_count = 0;
+            self.proxy_instance_count = 0;
+            self.draw_lod_counts = TreeLodCounts::default();
             self.gpu_batches.clear();
             self.gpu_cell_count = 0;
             self.gpu_candidate_count = 0;
@@ -662,12 +703,19 @@ impl ForestRenderer {
             .surface_height_meters_at(camera_direction, camera_altitude_meters)
             .unwrap_or(0.0)
             .max(0.0);
-        let renderable_keys = forest_renderable_cell_keys(
+        let camera_forward = camera_forward.normalize_or_zero();
+        let camera_right = camera_forward.cross(camera_up_hint).normalize_or_zero();
+        let camera_up = camera_right.cross(camera_forward).normalize_or_zero();
+        let renderable_keys = forest_renderable_cell_keys_in_view(
             camera_planet_position,
-            viewport_height,
+            camera_forward,
+            camera_right,
+            camera_up,
+            viewport_size,
             vertical_fov_radians,
             local_surface_height_meters,
         );
+        let renderable_key_set = renderable_keys.iter().copied().collect::<BTreeSet<_>>();
         if self.gpu_resident {
             self.update_gpu_cells(queue, terrain, camera_planet_position, renderable_keys);
             return;
@@ -683,8 +731,9 @@ impl ForestRenderer {
             self.update_tree_lod(
                 queue,
                 camera_planet_position,
-                viewport_height,
+                viewport_size[1],
                 vertical_fov_radians,
+                &renderable_key_set,
             );
             return;
         }
@@ -692,7 +741,6 @@ impl ForestRenderer {
             .first()
             .or_else(|| cached_keys.first())
             .copied();
-        let renderable_key_set = renderable_keys.iter().copied().collect::<BTreeSet<_>>();
         let cached_key_set = cached_keys.iter().copied().collect::<BTreeSet<_>>();
         self.patches.retain(|key, _| cached_key_set.contains(key));
         self.proxy_patches
@@ -797,8 +845,9 @@ impl ForestRenderer {
         self.update_tree_lod(
             queue,
             camera_planet_position,
-            viewport_height,
+            viewport_size[1],
             vertical_fov_radians,
+            &renderable_key_set,
         );
     }
 
@@ -816,6 +865,7 @@ impl ForestRenderer {
         self.primary_patch_key = renderable_keys.first().copied();
 
         let mut grouped = BTreeMap::<(GpuForestTier, TileKey), Vec<GpuForestCell>>::new();
+        let mut nearest_resident_cell = true;
         for key in renderable_keys {
             let Some((source_key, source_uv_scale, source_uv_offset)) =
                 terrain.resident_forest_source(key)
@@ -825,13 +875,15 @@ impl ForestRenderer {
             let centre_direction = forest_cell_centre_direction(key);
             let centre_distance =
                 (centre_direction * planet_radius_meters() - camera_planet_position).length();
-            let tier = if centre_distance <= FOREST_GPU_FULL_DISTANCE_METERS {
-                GpuForestTier::Full
-            } else if centre_distance <= FOREST_GPU_MEDIUM_DISTANCE_METERS {
-                GpuForestTier::Medium
-            } else {
-                GpuForestTier::Sparse
-            };
+            let tier =
+                if nearest_resident_cell || centre_distance <= FOREST_GPU_FULL_DISTANCE_METERS {
+                    GpuForestTier::Full
+                } else if centre_distance <= FOREST_GPU_MEDIUM_DISTANCE_METERS {
+                    GpuForestTier::Medium
+                } else {
+                    GpuForestTier::Sparse
+                };
+            nearest_resident_cell = false;
             let cells_per_axis = f64::from(1_u32 << key.level);
             let cell_span = 2.0 / cells_per_axis;
             let u_min = -1.0 + f64::from(key.x) * cell_span;
@@ -937,6 +989,7 @@ impl ForestRenderer {
                 .sum(),
             zero: 0,
         };
+        self.draw_lod_counts = self.lod_counts;
         self.gpu_batches = batches;
     }
 
@@ -954,36 +1007,43 @@ impl ForestRenderer {
         camera_planet_position: DVec3,
         viewport_height: u32,
         vertical_fov_radians: f64,
+        renderable_keys: &BTreeSet<TileKey>,
     ) {
-        let mut patches = self.patches.values().collect::<Vec<_>>();
+        let mut patches = self
+            .patches
+            .values()
+            .filter(|patch| renderable_keys.contains(&patch.key))
+            .collect::<Vec<_>>();
         patches.sort_by(|left, right| {
             right
                 .centre_direction
                 .dot(camera_planet_position)
                 .total_cmp(&left.centre_direction.dot(camera_planet_position))
         });
-        let mut draw_instances = Vec::with_capacity(
-            // TREE_COUNT < FOREST_MAX_DRAW_INSTANCES, asserted by
-            // forest_capacities_admit_a_full_patch_ring, so this cannot invert.
-            self.draw_instances
-                .len()
-                .clamp(TREE_COUNT, FOREST_MAX_DRAW_INSTANCES),
-        );
+        let mut full_instances = Vec::new();
+        let mut medium_instances = Vec::new();
+        let mut sparse_instances = Vec::new();
         let mut lod_counts = TreeLodCounts::default();
+        let mut draw_lod_counts = TreeLodCounts::default();
         let mut proxy_instance_count = 0_u32;
         for (key, proxy) in &self.proxy_patches {
+            if !renderable_keys.contains(key) {
+                continue;
+            }
             let finished_population_is_visible = self.patches.get(key).is_some_and(|patch| {
                 patch_transition_progress(patch.visible_since.elapsed().as_secs_f64()) >= 1.0
             });
             if finished_population_is_visible {
                 continue;
             }
-            proxy_instance_count += append_forest_proxy_instances(
-                &mut draw_instances,
+            let proxy_count = append_forest_proxy_instances(
+                &mut medium_instances,
                 &proxy.trees,
                 camera_planet_position,
             );
-            if draw_instances.len() == FOREST_MAX_DRAW_INSTANCES {
+            proxy_instance_count += proxy_count;
+            draw_lod_counts.medium += proxy_count;
+            if medium_instances.len() >= FOREST_MAX_DRAW_INSTANCES {
                 break;
             }
         }
@@ -991,18 +1051,28 @@ impl ForestRenderer {
             let transition_progress =
                 patch_transition_progress(patch.visible_since.elapsed().as_secs_f64()) as f32;
             append_lodded_tree_instances(
-                &mut draw_instances,
+                &mut full_instances,
+                &mut medium_instances,
+                &mut sparse_instances,
                 &mut lod_counts,
+                &mut draw_lod_counts,
                 &patch.trees,
                 camera_planet_position,
                 viewport_height,
                 vertical_fov_radians,
                 transition_progress,
             );
-            if draw_instances.len() == FOREST_MAX_DRAW_INSTANCES {
+            if full_instances.len() + medium_instances.len() + sparse_instances.len()
+                >= FOREST_MAX_DRAW_INSTANCES
+            {
                 break 'patches;
             }
         }
+        let full_count = full_instances.len() as u32;
+        let medium_count = medium_instances.len() as u32;
+        let mut draw_instances = full_instances;
+        draw_instances.append(&mut medium_instances);
+        draw_instances.append(&mut sparse_instances);
         if self.draw_instances != draw_instances {
             debug_assert!(draw_instances.len() <= FOREST_MAX_DRAW_INSTANCES);
             if !draw_instances.is_empty() {
@@ -1017,6 +1087,9 @@ impl ForestRenderer {
         self.instance_count = self.draw_instances.len() as u32;
         self.proxy_instance_count = proxy_instance_count.min(self.instance_count);
         self.lod_counts = lod_counts;
+        draw_lod_counts.full = full_count;
+        draw_lod_counts.medium = medium_count;
+        self.draw_lod_counts = draw_lod_counts;
     }
 
     pub fn stats(&self) -> ForestStats {
@@ -1111,12 +1184,38 @@ impl ForestRenderer {
             return;
         }
         if self.gpu_resident {
+            let full_end = self.draw_lod_counts.full.min(self.gpu_candidate_count);
+            let medium_end = full_end
+                .saturating_add(self.draw_lod_counts.medium)
+                .min(self.gpu_candidate_count);
             render_pass.set_pipeline(&self.pipeline);
             render_pass.set_bind_group(0, camera_bind_group, &[]);
             render_pass.set_bind_group(1, &self.bind_group, &[]);
             render_pass.set_bind_group(2, weather_field_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
-            render_pass.draw(0..3, 0..self.gpu_candidate_count);
+            if full_end > 0 {
+                render_pass
+                    .set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                render_pass.draw_indexed(0..TREE_MESH_INDEX_COUNT, 0, 0..full_end);
+            }
+            if medium_end > full_end {
+                render_pass.set_index_buffer(
+                    self.medium_index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint16,
+                );
+                render_pass.draw_indexed(0..TREE_MESH_MEDIUM_INDEX_COUNT, 0, full_end..medium_end);
+            }
+            if self.gpu_candidate_count > medium_end {
+                render_pass.set_index_buffer(
+                    self.sparse_index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint16,
+                );
+                render_pass.draw_indexed(
+                    0..TREE_MESH_SPARSE_INDEX_COUNT,
+                    0,
+                    medium_end..self.gpu_candidate_count,
+                );
+            }
             return;
         }
         if self.instance_count == 0 {
@@ -1127,7 +1226,97 @@ impl ForestRenderer {
         render_pass.set_bind_group(1, &self.bind_group, &[]);
         render_pass.set_bind_group(2, weather_field_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
-        render_pass.draw(0..3, 0..self.instance_count);
+        let full_end = self.draw_lod_counts.full.min(self.instance_count);
+        let medium_end = full_end
+            .saturating_add(self.draw_lod_counts.medium)
+            .min(self.instance_count);
+        if full_end > 0 {
+            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            render_pass.draw_indexed(0..TREE_MESH_INDEX_COUNT, 0, 0..full_end);
+        }
+        if medium_end > full_end {
+            render_pass.set_index_buffer(
+                self.medium_index_buffer.slice(..),
+                wgpu::IndexFormat::Uint16,
+            );
+            render_pass.draw_indexed(0..TREE_MESH_MEDIUM_INDEX_COUNT, 0, full_end..medium_end);
+        }
+        if self.instance_count > medium_end {
+            render_pass.set_index_buffer(
+                self.sparse_index_buffer.slice(..),
+                wgpu::IndexFormat::Uint16,
+            );
+            render_pass.draw_indexed(
+                0..TREE_MESH_SPARSE_INDEX_COUNT,
+                0,
+                medium_end..self.instance_count,
+            );
+        }
+    }
+}
+
+fn tree_mesh_indices() -> Vec<u16> {
+    let mut indices = Vec::with_capacity(TREE_MESH_INDEX_COUNT as usize);
+    append_tree_wood_indices(&mut indices, 1);
+    append_tree_crown_indices(&mut indices, 1, 1);
+    indices
+}
+
+fn tree_mesh_medium_indices() -> Vec<u16> {
+    let mut indices = Vec::with_capacity(TREE_MESH_MEDIUM_INDEX_COUNT as usize);
+    append_tree_wood_indices(&mut indices, 1);
+    append_tree_crown_indices(&mut indices, 3, 2);
+    indices
+}
+
+fn tree_mesh_sparse_indices() -> Vec<u16> {
+    let mut indices = Vec::with_capacity(TREE_MESH_SPARSE_INDEX_COUNT as usize);
+    append_tree_wood_indices(&mut indices, 3);
+    append_tree_crown_indices(&mut indices, 6, 2);
+    indices
+}
+
+fn append_tree_wood_indices(indices: &mut Vec<u16>, side_step: u16) {
+    for side in (0_u16..6).step_by(usize::from(side_step)) {
+        let bottom = side * 2;
+        let top = bottom + 1;
+        let next_bottom = ((side + side_step) % 6) * 2;
+        let next_top = next_bottom + 1;
+        indices.extend_from_slice(&[bottom, next_bottom, next_top, bottom, next_top, top]);
+    }
+    for branch in 0_u16..4 {
+        let base = 12 + branch * 12;
+        for side in (0_u16..6).step_by(usize::from(side_step)) {
+            let start = base + side;
+            let next_start = base + (side + side_step) % 6;
+            let end = base + 6 + side;
+            let next_end = base + 6 + (side + side_step) % 6;
+            indices.extend_from_slice(&[start, next_start, next_end, start, next_end, end]);
+        }
+    }
+}
+
+fn append_tree_crown_indices(indices: &mut Vec<u16>, side_step: u16, ring_step: u16) {
+    for cluster in 0_u16..10 {
+        let crown_top = 60 + cluster * 38;
+        let first_ring = crown_top + 1;
+        let crown_bottom = crown_top + 37;
+        for side in (0_u16..12).step_by(usize::from(side_step)) {
+            let next_side = (side + side_step) % 12;
+            indices.extend_from_slice(&[crown_top, first_ring + side, first_ring + next_side]);
+            for ring in (0_u16..2).step_by(usize::from(ring_step)) {
+                let upper_ring_index = (ring + ring_step).min(2);
+                let lower_ring = first_ring + ring * 12;
+                let upper_ring = first_ring + upper_ring_index * 12;
+                let lower = lower_ring + side;
+                let next_lower = lower_ring + next_side;
+                let upper = upper_ring + side;
+                let next_upper = upper_ring + next_side;
+                indices.extend_from_slice(&[lower, next_lower, next_upper, lower, next_upper, upper]);
+            }
+            let last_ring = first_ring + 2 * 12;
+            indices.extend_from_slice(&[crown_bottom, last_ring + next_side, last_ring + side]);
+        }
     }
 }
 
@@ -1157,6 +1346,80 @@ fn forest_renderable_cell_keys(
         FOREST_MAX_RENDERABLE_PATCHES,
         local_surface_height_meters,
     )
+}
+
+fn forest_renderable_cell_keys_in_view(
+    camera_planet_position: DVec3,
+    camera_forward: DVec3,
+    camera_right: DVec3,
+    camera_up: DVec3,
+    viewport_size: [u32; 2],
+    vertical_fov_radians: f64,
+    local_surface_height_meters: f64,
+) -> Vec<TileKey> {
+    let keys = forest_renderable_cell_keys(
+        camera_planet_position,
+        viewport_size[1],
+        vertical_fov_radians,
+        local_surface_height_meters,
+    );
+    if viewport_size[0] == 0
+        || viewport_size[1] == 0
+        || !vertical_fov_radians.is_finite()
+        || vertical_fov_radians <= 0.0
+        || vertical_fov_radians >= std::f64::consts::PI
+        || camera_forward.length_squared() <= f64::EPSILON
+        || camera_right.length_squared() <= f64::EPSILON
+        || camera_up.length_squared() <= f64::EPSILON
+    {
+        return keys;
+    }
+    let half_vertical_tangent = (vertical_fov_radians * 0.5).tan();
+    let half_horizontal_tangent =
+        half_vertical_tangent * f64::from(viewport_size[0]) / f64::from(viewport_size[1]);
+    keys.into_iter()
+        .filter(|key| {
+            forest_cell_intersects_camera_frustum(
+                *key,
+                camera_planet_position,
+                camera_forward,
+                camera_right,
+                camera_up,
+                half_horizontal_tangent,
+                half_vertical_tangent,
+                local_surface_height_meters,
+            )
+        })
+        .collect()
+}
+
+fn forest_cell_intersects_camera_frustum(
+    key: TileKey,
+    camera_planet_position: DVec3,
+    camera_forward: DVec3,
+    camera_right: DVec3,
+    camera_up: DVec3,
+    half_horizontal_tangent: f64,
+    half_vertical_tangent: f64,
+    local_surface_height_meters: f64,
+) -> bool {
+    let centre = forest_cell_centre_direction(key)
+        * (planet_radius_meters() + local_surface_height_meters.max(0.0));
+    let relative = centre - camera_planet_position;
+    let cell_radius = planet_radius_meters() * forest_cell_angular_radius(key)
+        + f64::from(TREE_HEIGHT_MIN_METERS + TREE_HEIGHT_RANGE_METERS)
+        + 100.0;
+    let forward_distance = relative.dot(camera_forward);
+    if forward_distance + cell_radius < 0.0 {
+        return false;
+    }
+    let visible_depth = forward_distance.max(0.0);
+    let horizontal_extent = relative.dot(camera_right).abs();
+    if horizontal_extent > visible_depth * half_horizontal_tangent + cell_radius {
+        return false;
+    }
+    let vertical_extent = relative.dot(camera_up).abs();
+    vertical_extent <= visible_depth * half_vertical_tangent + cell_radius
 }
 
 fn forest_cell_keys_within_distance(
@@ -1604,8 +1867,11 @@ fn tree_lod_scale(projected_pixels: f64) -> f32 {
 }
 
 fn append_lodded_tree_instances(
-    draw_instances: &mut Vec<TreeInstance>,
+    full_instances: &mut Vec<TreeInstance>,
+    medium_instances: &mut Vec<TreeInstance>,
+    sparse_instances: &mut Vec<TreeInstance>,
     lod_counts: &mut TreeLodCounts,
+    draw_lod_counts: &mut TreeLodCounts,
     trees: &[TreeInstance],
     camera_planet_position: DVec3,
     viewport_height: u32,
@@ -1613,7 +1879,9 @@ fn append_lodded_tree_instances(
     population_scale: f32,
 ) {
     for tree in trees {
-        if draw_instances.len() == FOREST_MAX_DRAW_INSTANCES {
+        if full_instances.len() + medium_instances.len() + sparse_instances.len()
+            == FOREST_MAX_DRAW_INSTANCES
+        {
             break;
         }
         let distance_meters = tree_distance_meters(*tree, camera_planet_position);
@@ -1627,11 +1895,25 @@ fn append_lodded_tree_instances(
         } else {
             0.0
         };
-        lod_counts.add(tree_lod(projected_pixels));
+        let lod = tree_lod(projected_pixels);
+        lod_counts.add(lod);
         if let Some(tree) =
             lodded_tree_instance_with_scale(*tree, projected_pixels, population_scale)
         {
-            draw_instances.push(tree);
+            match lod {
+                TreeLod::Full => {
+                    full_instances.push(tree);
+                    draw_lod_counts.full += 1;
+                }
+                TreeLod::Medium => {
+                    medium_instances.push(tree);
+                    draw_lod_counts.medium += 1;
+                }
+                TreeLod::Sparse | TreeLod::Zero => {
+                    sparse_instances.push(tree);
+                    draw_lod_counts.sparse += 1;
+                }
+            }
         }
     }
 }
@@ -1762,7 +2044,7 @@ mod tests {
     }
 
     #[test]
-    fn trees_are_twice_the_original_billboard_size() {
+    fn tree_mesh_instances_keep_human_scale_variation() {
         let layouts = (0..256).map(tree_layout_from_seed).collect::<Vec<_>>();
         assert_eq!(TREE_HEIGHT_MIN_METERS, 22.0);
         assert_eq!(TREE_HEIGHT_MIN_METERS + TREE_HEIGHT_RANGE_METERS, 48.0);
@@ -1775,14 +2057,14 @@ mod tests {
     }
 
     #[test]
-    fn slope_sink_covers_the_complete_billboard_base() {
+    fn slope_sink_covers_the_complete_tree_base() {
         let width_meters = 24.0;
         let slope_radians = FOREST_MAXIMUM_SLOPE_RADIANS;
         let required_sink =
             TREE_BASE_SINK_METERS + f64::from(width_meters) * 0.5 * slope_radians.tan();
         assert!(
             tree_base_sink_meters(width_meters, slope_radians) >= required_sink,
-            "the downhill billboard edge must not hover"
+            "the downhill tree edge must not hover"
         );
         assert_eq!(
             tree_base_sink_meters(width_meters, 0.0),
@@ -2026,6 +2308,52 @@ mod tests {
     }
 
     #[test]
+    fn forest_renderable_view_culls_behind_camera_cells_conservatively() {
+        let direction = FOREST_CENTRE_DIRECTION;
+        let camera_position = direction * (planet_radius_meters() + 600.0);
+        let reference = if direction.y.abs() < 0.9 {
+            DVec3::Y
+        } else {
+            DVec3::X
+        };
+        let tangent = direction.cross(reference).normalize();
+        let forward = (tangent * 0.866 - direction * 0.5).normalize();
+        let right = forward.cross(direction).normalize();
+        let up = right.cross(forward).normalize();
+        let viewport = [1280, 720];
+        let fov = 60.0_f64.to_radians();
+        let all = forest_renderable_cell_keys(camera_position, viewport[1], fov, 0.0);
+        let visible = forest_renderable_cell_keys_in_view(
+            camera_position,
+            forward,
+            right,
+            up,
+            viewport,
+            fov,
+            0.0,
+        );
+        let all_set = all.iter().copied().collect::<BTreeSet<_>>();
+        assert!(!visible.is_empty());
+        assert!(visible.len() < all.len());
+        assert!(visible.iter().all(|key| all_set.contains(key)));
+        assert!(visible.contains(&forest_cell_key(direction)));
+
+        let behind_direction =
+            (direction - tangent * (6_000.0 / planet_radius_meters())).normalize();
+        let behind_key = forest_cell_key(behind_direction);
+        assert!(!forest_cell_intersects_camera_frustum(
+            behind_key,
+            camera_position,
+            forward,
+            right,
+            up,
+            (fov * 0.5).tan() * f64::from(viewport[0]) / f64::from(viewport[1]),
+            (fov * 0.5).tan(),
+            0.0,
+        ));
+    }
+
+    #[test]
     fn prefetch_range_contains_the_entire_draw_range_before_approach() {
         let camera_position = FOREST_CENTRE_DIRECTION * (planet_radius_meters() + 2.0);
         let renderable =
@@ -2136,7 +2464,7 @@ mod tests {
     }
 
     #[test]
-    fn forest_shader_is_a_depth_writing_procedural_billboard() {
+    fn forest_shader_is_a_depth_writing_three_dimensional_mesh() {
         let shader = forest_shader_source();
         let module = wgpu::naga::front::wgsl::parse_str(&shader).expect("forest shader parses");
         wgpu::naga::valid::Validator::new(
@@ -2146,13 +2474,52 @@ mod tests {
         .validate(&module)
         .expect("forest shader validates");
         assert!(shader.contains("centre_and_height: vec4<f32>"));
-        assert!(shader.contains("if !trunk && !canopy"));
-        assert!(shader.contains("let proxy = input.colour_and_kind.w >= 2.0;"));
+        assert!(shader.contains("fn tree_mesh_vertex("));
+        assert!(shader.contains("let foliage_index = vertex_index - 60u;"));
+        assert!(shader.contains("if vertex_index < 60u"));
+        assert!(shader.contains("let cluster_vertex_index = foliage_index % 38u;"));
+        assert!(shader.contains("let ring_index = (cluster_vertex_index - 1u) / 12u;"));
+        assert!(shader.contains("let tier_radius = width * 0.56"));
+        assert!(shader.contains("fn tree_foliage_noise("));
+        assert!(shader.contains("input.local_position * 4.5"));
+        assert!(!shader.contains("discard;"));
+        assert!(!shader.contains("fn circle("));
+        assert!(!shader.contains("let to_camera = forest.camera_planet_position.xyz - centre;"));
         assert!(shader.contains("var sky_view_lut: texture_2d<f32>;"));
-        assert!(shader.contains("tree_storm_fog(centre"));
+        assert!(shader.contains("tree_storm_fog("));
         assert!(shader.contains("@interpolate(flat, first) fog"));
-        assert!(shader.contains("if vertex_index == 0u"));
+        assert!(!shader.contains("if vertex_index % 3u == 0u"));
         assert!(shader.contains("mix(colour, input.fog.rgb, input.fog.w)"));
+        assert!(include_str!("forest.rs").contains("draw_indexed(0..TREE_MESH_INDEX_COUNT"));
+    }
+
+    #[test]
+    fn indexed_tree_mesh_references_its_compact_shared_vertex_set() {
+        let indices = tree_mesh_indices();
+        assert_eq!(indices.len(), TREE_MESH_INDEX_COUNT as usize);
+        let referenced = indices.into_iter().collect::<BTreeSet<_>>();
+        assert_eq!(referenced.len(), TREE_MESH_VERTEX_COUNT as usize);
+        assert!(referenced.contains(&0));
+        assert!(referenced.contains(&(TREE_MESH_VERTEX_COUNT as u16 - 1)));
+    }
+
+    #[test]
+    fn tree_lod_meshes_are_valid_and_reduce_triangle_work() {
+        let full = tree_mesh_indices();
+        let medium = tree_mesh_medium_indices();
+        let sparse = tree_mesh_sparse_indices();
+        assert_eq!(medium.len(), TREE_MESH_MEDIUM_INDEX_COUNT as usize);
+        assert_eq!(sparse.len(), TREE_MESH_SPARSE_INDEX_COUNT as usize);
+        for indices in [&medium, &sparse] {
+            assert!(
+                indices
+                    .iter()
+                    .all(|index| u32::from(*index) < TREE_MESH_VERTEX_COUNT)
+            );
+            assert!(indices.len() < full.len());
+        }
+        assert!(medium.len() * 4 < full.len() * 3);
+        assert!(sparse.len() < medium.len() / 2);
     }
 
     #[test]
@@ -2176,12 +2543,15 @@ mod tests {
     #[test]
     fn forest_shader_has_no_unconditional_night_light() {
         let shader = include_str!("forest.wgsl");
-        assert!(shader.contains(
-            "fn tree_lighting(solar_elevation_cosine: f32, cloud_visibility: f32) -> f32"
-        ));
-        assert!(shader.contains("smoothstep(-0.18, 0.02, solar_elevation_cosine) * 0.36"));
-        assert!(shader.contains("return direct * cloud_visibility + sky_ambient;"));
-        assert!(shader.contains("trunk_colour * 0.75 * input.lighting"));
+        assert!(
+            shader.contains(
+                "let sky_ambient = smoothstep(-0.18, 0.02, solar_elevation_cosine) * 0.36;"
+            )
+        );
+        assert!(shader.contains("* 1.24 * input.cloud_visibility;"));
+        assert!(
+            shader.contains("let lighting = (direct + sky_ambient + back_scatter) * input.shade;")
+        );
         assert!(!shader.contains("0.36 + sun_amount"));
     }
 
@@ -2196,7 +2566,7 @@ mod tests {
         );
         assert!(shader.contains("floor(combined_density * 4.0 + 0.5) / 4.0"));
         assert!(shader.contains("cloud_shadow_visibility("));
-        assert!(shader.contains("direct * cloud_visibility"));
+        assert!(shader.contains("* 1.24 * input.cloud_visibility;"));
         assert!(renderer.contains("weather_field_bind_group_layout"));
         assert!(renderer.contains("weather_field_bind_group"));
     }
