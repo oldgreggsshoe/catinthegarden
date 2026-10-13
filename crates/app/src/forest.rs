@@ -21,7 +21,7 @@ pub const FOREST_CENTRE_DIRECTION: DVec3 =
 const TREE_COUNT: usize = 12_288;
 #[cfg(test)]
 const TREE_MESH_VERTEX_COUNT: u32 = 440;
-const TREE_MESH_INDEX_COUNT: u32 = 2340;
+const TREE_MESH_INDEX_COUNT: u32 = 1260;
 const TREE_MESH_MEDIUM_INDEX_COUNT: u32 = 660;
 const TREE_MESH_SPARSE_INDEX_COUNT: u32 = 300;
 const TREE_BASE_SINK_METERS: f64 = 0.45;
@@ -45,10 +45,17 @@ const FOREST_STARTUP_PATCH_COUNT: u64 = 3;
 const FOREST_MAX_RENDERABLE_PATCHES: usize = 128;
 const FOREST_MAX_CACHED_PATCHES: usize = 256;
 const FOREST_MAX_DRAW_INSTANCES: usize = 262_144;
-const FOREST_GPU_FULL_CANDIDATES: u32 = 8_192;
+const FOREST_GPU_FULL_CANDIDATES: u32 = 4_096;
 const FOREST_GPU_MEDIUM_CANDIDATES: u32 = 768;
 const FOREST_GPU_SPARSE_CANDIDATES: u32 = 64;
 const FOREST_GPU_FULL_DISTANCE_METERS: f64 = 400.0;
+/// The nearest cell is drawn in full detail when no cell is within the full
+/// distance, but only if the camera is practically inside it: a cell is 1.5km
+/// across, and 8,192 full-mesh trees spread over it cost ~10ms.
+const FOREST_GPU_FORCED_FULL_DISTANCE_METERS: f64 = 1_400.0;
+/// ...and only while the camera is this close to the ground. Looking down from
+/// higher up, every tree in the cell is small and the medium mesh does.
+const FOREST_GPU_FORCED_FULL_HEIGHT_METERS: f64 = 300.0;
 const FOREST_GPU_MEDIUM_DISTANCE_METERS: f64 = 4_000.0;
 // Terrain-grounded canopy cards make a cell read as forest before its complete
 // individual-tree population has finished resolving. They are built and
@@ -865,6 +872,11 @@ impl ForestRenderer {
         self.primary_patch_key = renderable_keys.first().copied();
 
         let mut grouped = BTreeMap::<(GpuForestTier, TileKey), Vec<GpuForestCell>>::new();
+        let camera_altitude = camera_planet_position.length() - planet_radius_meters();
+        let camera_height_above_ground = terrain
+            .forest_surface_sample_at(camera_planet_position.normalize_or_zero(), camera_altitude)
+            .map_or(0.0, |ground| camera_altitude - ground.height_meters);
+        let force_nearest_full = camera_height_above_ground <= FOREST_GPU_FORCED_FULL_HEIGHT_METERS;
         let mut nearest_resident_cell = true;
         for key in renderable_keys {
             let Some((source_key, source_uv_scale, source_uv_offset)) =
@@ -876,7 +888,11 @@ impl ForestRenderer {
             let centre_distance =
                 (centre_direction * planet_radius_meters() - camera_planet_position).length();
             let tier =
-                if nearest_resident_cell || centre_distance <= FOREST_GPU_FULL_DISTANCE_METERS {
+                if (nearest_resident_cell
+                    && force_nearest_full
+                    && centre_distance <= FOREST_GPU_FORCED_FULL_DISTANCE_METERS)
+                    || centre_distance <= FOREST_GPU_FULL_DISTANCE_METERS
+                {
                     GpuForestTier::Full
                 } else if centre_distance <= FOREST_GPU_MEDIUM_DISTANCE_METERS {
                     GpuForestTier::Medium
@@ -1258,7 +1274,7 @@ impl ForestRenderer {
 fn tree_mesh_indices() -> Vec<u16> {
     let mut indices = Vec::with_capacity(TREE_MESH_INDEX_COUNT as usize);
     append_tree_wood_indices(&mut indices, 1);
-    append_tree_crown_indices(&mut indices, 1, 1);
+    append_tree_crown_indices(&mut indices, 2, 1);
     indices
 }
 
@@ -2498,9 +2514,11 @@ mod tests {
         let indices = tree_mesh_indices();
         assert_eq!(indices.len(), TREE_MESH_INDEX_COUNT as usize);
         let referenced = indices.into_iter().collect::<BTreeSet<_>>();
-        assert_eq!(referenced.len(), TREE_MESH_VERTEX_COUNT as usize);
+        // The full mesh draws every second crown sector (hexagonal crowns), so
+        // the odd-sector vertices are left unreferenced and never shaded.
+        assert!(referenced.len() < TREE_MESH_VERTEX_COUNT as usize);
+        assert!(referenced.iter().all(|index| u32::from(*index) < TREE_MESH_VERTEX_COUNT));
         assert!(referenced.contains(&0));
-        assert!(referenced.contains(&(TREE_MESH_VERTEX_COUNT as u16 - 1)));
     }
 
     #[test]
