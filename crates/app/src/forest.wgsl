@@ -262,32 +262,33 @@ fn tree_mesh_vertex(
     var radius_y = 0.0;
     var radius_z = 0.0;
     if broadleaf {
-        let centres = array<vec3<f32>, 10>(
-            vec3<f32>(0.0, 0.76, 0.0),
-            vec3<f32>(-0.23, 0.64, 0.0),
-            vec3<f32>(0.23, 0.64, 0.0),
-            vec3<f32>(0.0, 0.64, 0.23),
-            vec3<f32>(0.0, 0.64, -0.23),
-            vec3<f32>(-0.13, 0.57, 0.13),
-            vec3<f32>(0.13, 0.58, -0.13),
-            vec3<f32>(0.13, 0.57, 0.13),
-            vec3<f32>(-0.13, 0.58, -0.13),
-            vec3<f32>(0.0, 0.88, 0.0),
-        );
-        let radii = array<vec3<f32>, 10>(
-            vec3<f32>(0.24, 0.13, 0.24),
-            vec3<f32>(0.27, 0.11, 0.27),
-            vec3<f32>(0.27, 0.11, 0.27),
-            vec3<f32>(0.27, 0.11, 0.27),
-            vec3<f32>(0.27, 0.11, 0.27),
-            vec3<f32>(0.22, 0.10, 0.22),
-            vec3<f32>(0.22, 0.10, 0.22),
-            vec3<f32>(0.22, 0.10, 0.22),
-            vec3<f32>(0.22, 0.10, 0.22),
-            vec3<f32>(0.15, 0.09, 0.15),
-        );
-        let cluster_layout = centres[cluster_index];
-        let dimensions = radii[cluster_index];
+        // Written as branches rather than local arrays: a dynamically indexed
+        // array is copied into per-thread memory on every vertex.
+        var cluster_layout = vec3<f32>(0.0, 0.76, 0.0);
+        var dimensions = vec3<f32>(0.24, 0.13, 0.24);
+        if cluster_index == 9u {
+            cluster_layout = vec3<f32>(0.0, 0.88, 0.0);
+            dimensions = vec3<f32>(0.15, 0.09, 0.15);
+        } else if cluster_index >= 5u {
+            let diagonal = cluster_index - 5u;
+            let sign_x = select(-1.0, 1.0, diagonal == 1u || diagonal == 2u);
+            let sign_z = select(-1.0, 1.0, diagonal == 0u || diagonal == 2u);
+            cluster_layout = vec3<f32>(
+                0.13 * sign_x,
+                select(0.58, 0.57, diagonal == 0u || diagonal == 2u),
+                0.13 * sign_z,
+            );
+            dimensions = vec3<f32>(0.22, 0.10, 0.22);
+        } else if cluster_index >= 1u {
+            let axis = cluster_index - 1u;
+            let sign_value = select(-1.0, 1.0, axis == 1u || axis == 2u);
+            cluster_layout = vec3<f32>(
+                select(0.0, 0.23 * sign_value, axis < 2u),
+                0.64,
+                select(0.0, 0.23 * sign_value, axis >= 2u),
+            );
+            dimensions = vec3<f32>(0.27, 0.11, 0.27);
+        }
         let lean = vec2<f32>(seed - 0.5, fract(seed * 3.73) - 0.5) * width * 0.035;
         centre = vec3<f32>(
             cluster_layout.x * width + lean.x,
@@ -383,13 +384,8 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vertex_index: u32) -> Vert
     let reference = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(up.y) > 0.92);
     let base_right = normalize(cross(up, reference));
     let base_forward = normalize(cross(up, base_right));
-    let rotations = array<vec2<f32>, 8>(
-        vec2<f32>(1.0, 0.0), vec2<f32>(0.7071068, 0.7071068),
-        vec2<f32>(0.0, 1.0), vec2<f32>(-0.7071068, 0.7071068),
-        vec2<f32>(-1.0, 0.0), vec2<f32>(-0.7071068, -0.7071068),
-        vec2<f32>(0.0, -1.0), vec2<f32>(0.7071068, -0.7071068),
-    );
-    let rotation = rotations[u32(min(floor(seed * 8.0), 7.0))];
+    let rotation_angle = min(floor(seed * 8.0), 7.0) * 0.7853982;
+    let rotation = vec2<f32>(cos(rotation_angle), sin(rotation_angle));
     let right = base_right * rotation.x + base_forward * rotation.y;
     let forward = base_forward * rotation.x - base_right * rotation.y;
     let mesh = tree_mesh_vertex(vertex_index, height, width, species_kind, seed);
@@ -485,7 +481,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             max(fwidth(noise_position.x), fwidth(noise_position.y)),
             fwidth(noise_position.z),
         );
-        leaf_detail = 1.0 - smoothstep(0.35, 0.90, footprint);
+        leaf_detail = 1.0 - smoothstep(0.12, 0.40, footprint);
         if leaf_detail > 0.01 {
             leaf_noise = tree_foliage_noise(noise_position, input.seed);
         }

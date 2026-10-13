@@ -22,7 +22,7 @@ const TREE_COUNT: usize = 12_288;
 #[cfg(test)]
 const TREE_MESH_VERTEX_COUNT: u32 = 440;
 const TREE_MESH_INDEX_COUNT: u32 = 1260;
-const TREE_MESH_MEDIUM_INDEX_COUNT: u32 = 660;
+const TREE_MESH_MEDIUM_INDEX_COUNT: u32 = 420;
 const TREE_MESH_SPARSE_INDEX_COUNT: u32 = 300;
 const TREE_BASE_SINK_METERS: f64 = 0.45;
 const TREE_HEIGHT_MIN_METERS: f32 = 22.0;
@@ -46,8 +46,11 @@ const FOREST_MAX_RENDERABLE_PATCHES: usize = 128;
 const FOREST_MAX_CACHED_PATCHES: usize = 256;
 const FOREST_MAX_DRAW_INSTANCES: usize = 262_144;
 const FOREST_GPU_FULL_CANDIDATES: u32 = 4_096;
-const FOREST_GPU_MEDIUM_CANDIDATES: u32 = 768;
+const FOREST_GPU_MEDIUM_CANDIDATES: u32 = 512;
 const FOREST_GPU_SPARSE_CANDIDATES: u32 = 64;
+/// The camera may move this far before trees are regenerated: only their
+/// distance-filtered ground detail depends on it.
+const FOREST_GPU_REGENERATE_DISTANCE_METERS: f64 = 25.0;
 const FOREST_GPU_FULL_DISTANCE_METERS: f64 = 400.0;
 /// The nearest cell is drawn in full detail when no cell is within the full
 /// distance, but only if the camera is practically inside it: a cell is 1.5km
@@ -348,6 +351,12 @@ pub struct ForestRenderer {
     empty_patch_keys: BTreeSet<TileKey>,
     primary_patch_key: Option<TileKey>,
     gpu_batches: Vec<GpuForestBatch>,
+    /// What the instance buffer was last generated from. Trees are fixed to
+    /// the planet, so the compute pass is only rerun when the cells, their
+    /// tiers or the camera (the detail filter) have changed enough.
+    gpu_generated_signature: Option<u64>,
+    gpu_generated_camera: DVec3,
+    gpu_generation_needed: bool,
     gpu_cell_count: u32,
     gpu_candidate_count: u32,
     gpu_minimum_source_level: Option<u8>,
@@ -637,6 +646,9 @@ impl ForestRenderer {
             empty_patch_keys: BTreeSet::new(),
             primary_patch_key: Some(initial_key),
             gpu_batches: Vec::new(),
+            gpu_generated_signature: None,
+            gpu_generated_camera: DVec3::ZERO,
+            gpu_generation_needed: false,
             gpu_cell_count: 0,
             gpu_candidate_count: 0,
             gpu_minimum_source_level: None,
@@ -958,6 +970,24 @@ impl ForestRenderer {
         if !cells.is_empty() {
             queue.write_buffer(&self.gpu_cell_buffer, 0, bytemuck::cast_slice(&cells));
         }
+        let signature = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            bytemuck::cast_slice::<_, u8>(&cells).hash(&mut hasher);
+            for batch in &batches {
+                (batch.tier as u8, batch.source_key, batch.dynamic_offset, batch.cell_count)
+                    .hash(&mut hasher);
+            }
+            hasher.finish()
+        };
+        if self.gpu_generated_signature != Some(signature)
+            || (camera_planet_position - self.gpu_generated_camera).length()
+                > FOREST_GPU_REGENERATE_DISTANCE_METERS
+        {
+            self.gpu_generated_signature = Some(signature);
+            self.gpu_generated_camera = camera_planet_position;
+            self.gpu_generation_needed = true;
+        }
         self.gpu_minimum_source_level = batches.iter().map(|batch| batch.source_key.level).min();
         let active_sources = batches
             .iter()
@@ -1158,14 +1188,19 @@ impl ForestRenderer {
     }
 
     pub fn encode_gpu_generation(
-        &self,
+        &mut self,
         encoder: &mut wgpu::CommandEncoder,
         camera_bind_group: &wgpu::BindGroup,
         terrain: &TerrainRenderer,
     ) {
-        if !self.enabled || !self.gpu_resident || self.gpu_batches.is_empty() {
+        if !self.enabled
+            || !self.gpu_resident
+            || self.gpu_batches.is_empty()
+            || !self.gpu_generation_needed
+        {
             return;
         }
+        self.gpu_generation_needed = false;
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("immediate GPU forest generation"),
             timestamp_writes: None,
@@ -1280,8 +1315,8 @@ fn tree_mesh_indices() -> Vec<u16> {
 
 fn tree_mesh_medium_indices() -> Vec<u16> {
     let mut indices = Vec::with_capacity(TREE_MESH_MEDIUM_INDEX_COUNT as usize);
-    append_tree_wood_indices(&mut indices, 1);
-    append_tree_crown_indices(&mut indices, 3, 2);
+    append_tree_wood_indices(&mut indices, 3);
+    append_tree_crown_indices(&mut indices, 4, 2);
     indices
 }
 
@@ -2537,7 +2572,7 @@ mod tests {
             assert!(indices.len() < full.len());
         }
         assert!(medium.len() * 4 < full.len() * 3);
-        assert!(sparse.len() < medium.len() / 2);
+        assert!(sparse.len() < medium.len());
     }
 
     #[test]

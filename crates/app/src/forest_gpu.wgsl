@@ -177,7 +177,7 @@ fn forest_gpu_compute_full(@builtin(global_invocation_id) id: vec3<u32>) {
 
 @compute @workgroup_size(64)
 fn forest_gpu_compute_medium(@builtin(global_invocation_id) id: vec3<u32>) {
-    gpu_forest_generate(id.x, 768u, 16u);
+    gpu_forest_generate(id.x, 512u, 24u);
 }
 
 @compute @workgroup_size(64)
