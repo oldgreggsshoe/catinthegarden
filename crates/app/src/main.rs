@@ -195,8 +195,8 @@ fn render_size_for_surface_resize(
 ) -> winit::dpi::PhysicalSize<u32> {
     fullscreen_render_size.unwrap_or(surface_size)
 }
-const DEFAULT_VIEWPORT_WIDTH: u32 = 1280;
-const DEFAULT_VIEWPORT_HEIGHT: u32 = 720;
+const DEFAULT_VIEWPORT_WIDTH: u32 = 640;
+const DEFAULT_VIEWPORT_HEIGHT: u32 = 360;
 
 /// Scenario viewport override, as `WIDTHxHEIGHT`.
 ///
