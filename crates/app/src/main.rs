@@ -1527,6 +1527,9 @@ struct State {
     system_flight: Option<system_flight::SystemFlight>,
     /// The moon drawn in the sky during ordinary play; see `sky_moon`.
     sky_moon: Option<sky_moon::SkyMoon>,
+    /// Camera layout kept until the moon is built, a few frames after startup
+    /// (it costs over a second and the first frames do not need it).
+    sky_moon_pending_layout: Option<wgpu::BindGroupLayout>,
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -2162,6 +2165,7 @@ impl State {
         let mut state = Self {
             system_flight: None,
             sky_moon: None,
+            sky_moon_pending_layout: None,
             surface,
             device,
             queue,
@@ -2343,10 +2347,7 @@ impl State {
             && body::active() == body::PLANET
             && state.render_path == RenderPath::Raster
         {
-            startup_profile::set_prefix("moon: ");
-            state.sky_moon = sky_moon::SkyMoon::new(&mut state, &camera_bind_group_layout);
-            startup_profile::mark("sky moon setup (whole)");
-            startup_profile::set_prefix("");
+            state.sky_moon_pending_layout = Some(camera_bind_group_layout.clone());
         }
         state
     }
@@ -5529,6 +5530,10 @@ impl State {
             // Only a counter to keep current: refresh it at a quarter of the
             // overlay's rate.
             self.next_hud_update = now + WATER_DISPLAY_REFRESH_INTERVAL;
+        }
+        if self.sky_moon_pending_layout.is_some() && startup_profile::finished() {
+            let layout = self.sky_moon_pending_layout.take().unwrap();
+            self.sky_moon = sky_moon::SkyMoon::new(self, &layout);
         }
         let paint_jobs = render_egui.then_some(&self.cached_paint_jobs);
         if !self.debug_overlay_visible && !water_display {

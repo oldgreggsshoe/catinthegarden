@@ -130,3 +130,8 @@ fn report() {
     }
     tracing::info!(target: "planet::startup_profile", total_ms, "startup profile total");
 }
+
+/// True once the table has been reported (the first frames are done).
+pub fn finished() -> bool {
+    PROFILE.lock().unwrap().as_ref().is_none_or(|p| p.reported)
+}

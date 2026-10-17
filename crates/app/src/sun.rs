@@ -144,7 +144,7 @@ impl SunRenderer {
                 depth_stencil,
                 multisample: wgpu::MultisampleState::default(),
                 multiview_mask: None,
-                cache: None,
+                cache: crate::pipeline_cache::get(),
             })
         };
         // The visual disc keeps the original terrain/planet depth test.
@@ -208,14 +208,15 @@ impl SunRenderer {
                 ],
                 immediate_size: 0,
             });
-        let visibility_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("sun visibility"),
-            layout: Some(&visibility_pipeline_layout),
-            module: &shader,
-            entry_point: Some("cs_sun_visibility"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
+        let visibility_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("sun visibility"),
+                layout: Some(&visibility_pipeline_layout),
+                module: &shader,
+                entry_point: Some("cs_sun_visibility"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: crate::pipeline_cache::get(),
+            });
         Self {
             disc_pipeline,
             flare_pipeline,

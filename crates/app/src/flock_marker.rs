@@ -245,7 +245,7 @@ impl FlockMarkerRenderer {
             }),
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
-            cache: None,
+            cache: crate::pipeline_cache::get(),
         });
 
         let badge = crate::planet::ocean_fft_enabled().then(|| {
@@ -304,7 +304,7 @@ impl FlockMarkerRenderer {
                 }),
                 multisample: wgpu::MultisampleState::default(),
                 multiview_mask: None,
-                cache: None,
+                cache: crate::pipeline_cache::get(),
             });
             Badge {
                 pipeline,

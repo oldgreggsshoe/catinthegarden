@@ -758,7 +758,7 @@ impl Composite {
             }),
             multisample: Default::default(),
             multiview_mask: None,
-            cache: None,
+            cache: crate::pipeline_cache::get(),
         });
         Self {
             colour,

@@ -272,7 +272,7 @@ impl StarRenderer {
             }),
             multisample: Default::default(),
             multiview_mask: None,
-            cache: None,
+            cache: crate::pipeline_cache::get(),
         });
         let catalogue = catalogue();
         let objects = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

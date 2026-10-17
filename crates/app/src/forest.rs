@@ -488,7 +488,7 @@ impl ForestRenderer {
             }),
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
-            cache: None,
+            cache: crate::pipeline_cache::get(),
         });
         let gpu_cell_alignment = (device.limits().min_storage_buffer_offset_alignment as usize)
             .div_ceil(size_of::<GpuForestCell>());
@@ -585,7 +585,7 @@ impl ForestRenderer {
                 module: &gpu_shader,
                 entry_point: Some(entry_point),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                cache: None,
+                cache: crate::pipeline_cache::get(),
             })
         };
         let gpu_compute_pipelines = [

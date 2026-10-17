@@ -1453,7 +1453,7 @@ impl OceanFft {
                 module: &shader,
                 entry_point: Some(entry_point),
                 compilation_options: Default::default(),
-                cache: None,
+                cache: crate::pipeline_cache::get(),
             })
         };
         let mut tile = [[0.0; 4]; CASCADES];
@@ -1576,7 +1576,7 @@ impl OceanFft {
             module: &mip_shader,
             entry_point: Some("downsample"),
             compilation_options: Default::default(),
-            cache: None,
+            cache: crate::pipeline_cache::get(),
         });
         let mip_groups = (1..MIP_LEVELS)
             .map(|level| {

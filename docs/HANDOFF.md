@@ -12384,3 +12384,7 @@ Sub-marks added inside `FoveatedRenderer::new` and `TerrainRenderer::new` (the m
 ## 17 October: pipeline cache
 
 `pipeline_cache.rs`: disk wgpu pipeline cache (Vulkan), wired into terrain.rs and foveated.rs pipelines only. Measured to frame 4: 28.5 s cold, 15.2 s, 10.4 s warm. Remaining warm cost: foveated six-face upload 1.7 s, moon renderer textures/ocean ~1.3 s, atmosphere LUTs 0.6 s, ships 0.7 s. Next: pass the cache to the other `cache: None` pipelines, make moon/foveated lazy.
+
+## 17 October: deferred moon, cache everywhere
+
+Sky moon construction moved to the first frame after the startup profile reports; `cache: None` replaced with the pipeline cache in all renderers. Warm startup 5.1-5.9 s. Foveated stays eager (shadow_height_faces feeds terrain). Remaining: foveated face build/upload 0.85 s, atmosphere LUTs 0.6 s, ships 0.5 s, ocean FFT 0.4 s.

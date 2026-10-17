@@ -347,7 +347,7 @@ impl VillageRenderer {
             }),
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
-            cache: None,
+            cache: crate::pipeline_cache::get(),
         });
 
         let ground_shadow_pipeline =
@@ -399,7 +399,7 @@ impl VillageRenderer {
                 }),
                 multisample: wgpu::MultisampleState::default(),
                 multiview_mask: None,
-                cache: None,
+                cache: crate::pipeline_cache::get(),
             });
 
         let beam_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -442,7 +442,7 @@ impl VillageRenderer {
             }),
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
-            cache: None,
+            cache: crate::pipeline_cache::get(),
         });
 
         Self {

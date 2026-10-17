@@ -252,7 +252,7 @@ impl OceanSpray {
             module: &update_shader,
             entry_point: Some("cs_spray"),
             compilation_options: Default::default(),
-            cache: None,
+            cache: crate::pipeline_cache::get(),
         });
 
         let vertex_fragment = wgpu::ShaderStages::VERTEX_FRAGMENT;
@@ -312,7 +312,7 @@ impl OceanSpray {
             }),
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
-            cache: None,
+            cache: crate::pipeline_cache::get(),
         });
         Self {
             _particles: particles,

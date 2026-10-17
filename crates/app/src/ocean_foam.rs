@@ -239,7 +239,7 @@ impl OceanFoamHistory {
             module: &shader,
             entry_point: Some("cs_foam"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
+            cache: crate::pipeline_cache::get(),
         });
         Self {
             _textures: textures,

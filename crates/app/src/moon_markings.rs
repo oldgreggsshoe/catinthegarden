@@ -144,7 +144,7 @@ fn bake_faces(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Textur
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
         multiview_mask: None,
-        cache: None,
+        cache: crate::pipeline_cache::get(),
     });
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("moon marking bake encoder"),
