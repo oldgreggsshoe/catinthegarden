@@ -170,6 +170,14 @@ impl Viaduct {
             .filter(|height| eye_altitude >= *height - 0.25)
     }
 
+    /// Free exploration starts above the deck, looking along the first bend.
+    pub fn inspection_pose(&self) -> (DVec3, DVec3) {
+        (
+            world(point(40.0, 0.0, self.deck_height + 2.0)),
+            world(point(85.0, 0.0, self.deck_height + 2.0)),
+        )
+    }
+
     pub fn mesh(&self) -> Vec<Vertex> {
         let mut mesh = Vec::new();
         let concrete = [0.32, 0.31, 0.29];
@@ -316,6 +324,19 @@ fn box_mesh(mesh: &mut Vec<Vertex>, lo: DVec3, hi: DVec3, colour: [f32; 3]) {
 mod tests {
     use super::*;
     use glam::Vec3;
+
+    #[test]
+    fn road_inspection_starts_above_the_deck_facing_along_it() {
+        let plan = Viaduct::survey(|_| Some(1900.0)).unwrap();
+        let (eye, target) = plan.inspection_pose();
+        for position in [eye, target] {
+            let direction = position.normalize();
+            let altitude = position.length() - crate::planet::planet_radius_meters();
+            let deck = plan.walkable_height(direction, altitude).unwrap();
+            assert!((altitude - deck - 2.0).abs() < 1.0e-6);
+        }
+        assert!((target - eye).normalize().dot(forward()) > 0.95);
+    }
 
     #[test]
     fn viaduct_is_level_and_clears_an_uneven_survey() {

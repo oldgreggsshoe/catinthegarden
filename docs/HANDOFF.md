@@ -25,6 +25,25 @@ and near-clip height queries use the same tessellated deck footprint; a person
 beneath the deck remains on the terrain. `PLANET_DISABLE=roads` hides only
 the draw, retaining the plan/camera/collider for a fair timing comparison.
 
+Free-exploration follow-up (17 October): omit `--scenario` while keeping
+`PLANET_ROAD_EXPERIMENT=1`. Interactive startup uses `Viaduct::inspection_pose`
+(40 m along, eye 2 m above the deck, looking along the first bend) instead of
+the ocean/ship pose. Existing **G** switches flight/walking, WASD moves,
+click enables mouse-look, Shift accelerates, brackets change flight speed.
+No replay timer or automatic exit. Normal launches without the road and all
+scripted scenarios retain their previous startup. README gives the command.
+The changes are startup-only; the measured road renderer is unchanged.
+
+`cargo test -p planet-app --release road`: 8 matches pass (7 road-specific
+plus one existing ship test); `cargo test -p planet-app --release
+interactive_startup`: 3 pass; release build succeeds. Pose test checks deck
+clearance, footprint and forward view; startup regression checks road priority
+and the early scenario guard. Log: `/tmp/stuff-road-free-tests.log`. Not flown
+live in this follow-up; an existing interactive session was left untouched.
+A concurrent second-ship commit `a03ed3f` included the main.rs startup hooks;
+the road helper/test and docs are committed immediately after it. Preserve that
+history rather than amending/resetting the other actor's commit.
+
 Validation (all runs under `test-runs/`, X11 via `env -u WAYLAND_DISPLAY`,
 Immediate, 640x360):
 

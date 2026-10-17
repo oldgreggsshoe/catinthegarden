@@ -76,7 +76,19 @@ internal and display resolutions.
 
 The opt-in 650 m trial is a level viaduct on variable-height legs, not asphalt
 painted onto bumpy terrain. It is one cached local mesh; ordinary runs do not
-build it. Run the driving replay, or replace the scenario with
+build it. For **free exploration**, omit `--scenario`: this starts on the deck
+in free flight instead of on the ship.
+
+```sh
+env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 cargo run --release -p planet-app
+```
+
+Click to enable mouse-look; WASD moves, Shift accelerates, `[`/`]` adjust
+flight speed. Look up/down and move forward to climb/descend. **G** switches
+between walking and flying; Space jumps while walking. There is no replay
+timer or automatic exit in this mode.
+
+Run the driving replay, or replace the scenario with
 `road_viaduct_overview` to inspect the supports from the side:
 
 ```sh
