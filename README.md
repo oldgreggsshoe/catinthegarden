@@ -37,6 +37,22 @@ performance.
 Without an outmap the app falls back to procedural placeholder height
 automatically, so a fresh clone runs before it bakes.
 
+### Linux presentation workaround
+
+On this project's Quadro M1000M / KDE Wayland machine, matched fullscreen
+640x360 runs measured about 60 ms between frames with native Wayland versus
+33 ms using X11/XWayland. The extra wait is in the native presentation path;
+this is not a debug-build or internal-resolution mismatch. To use the verified
+faster path on this machine, with an X11 display available:
+
+```sh
+env -u WAYLAND_DISPLAY cargo run --release -p planet-app
+```
+
+This leaves resolution, shaders and quality settings unchanged. It is a
+hardware/session-specific workaround, not a global change of backend defaults.
+Switching native Wayland from FIFO to Mailbox did not remove the stall.
+
 ### Flags
 
 | Flag | Effect |

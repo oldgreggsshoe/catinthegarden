@@ -10,7 +10,39 @@ surface appearance and crest geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Latest phase (17 October): interactive launch audit.** The current release
+**Latest phase (17 October): local slow-run / backend gap reproduced.** Read
+`test-runs/manual/1792253961-312942/log.jsonl` directly after the user's prompt;
+there was no need to ask them to send a locally accessible file. It records
+release (`debug_assertions=false`), Quadro M1000M / NVIDIA 550.163.01, 640x360
+internal and 1920x1080 fullscreen, native Wayland surface modes, FIFO. Over
+100 settled samples the median render region is 62.245 ms, including 36.868 ms
+in `present()`. The debug-build/resolution explanations are ruled out here.
+
+Reproduced with unchanged source and default settings, changing only backend
+or present mode. At sim-time 8-28 seconds, excluding capture readbacks:
+
+| Run under `test-runs/manual/` | Mode | Samples | Render ms | Actual frame interval ms |
+|---|---|---:|---:|---:|
+| `1792254123-313343` | native Wayland FIFO | 37 | 59.027 | 60.314 |
+| `1792254185-313585` | native Wayland Mailbox | 38 | 58.469 | 61.508 |
+| `1792254271-314390` | X11 FIFO | 38 | 33.247 | 33.432 |
+| `1792254386-314805` | native FIFO + temporary pre-present notification | 31 | 57.971 | 66.641 |
+
+The callback experiment slightly lowered the render-only timer but worsened
+actual frame intervals, so it was removed. Native Mailbox did not fix the stall and
+that run also segfaulted in the native path. No unproven present-policy or
+shader change was retained. The normal release binary was rebuilt after
+restoring `main.rs`; its source has no retained diff from this phase.
+
+Verified workaround on this hardware/session (same resolution and quality):
+`env -u WAYLAND_DISPLAY cargo run --release -p planet-app`. This selects the
+X11/XWayland path while retaining FIFO; actual frame intervals improve from
+about 60 ms (~17 rendered fps) to 33 ms (~30 rendered fps). README documents
+it explicitly rather than forcing a backend globally. This isolates the
+native presentation-path cost, not the precise driver/compositor mechanism.
+No new request for a user-supplied log is needed; inspect the latest local run.
+
+**Earlier phase (17 October): interactive launch audit.** The current release
 ship-bridge startup also runs at roughly 30 fps; fixed-step replay timing is
 not the whole explanation. Matched X11 / FFT / Fifo launches with only
 `PLANET_VIEWPORT` changed measured 33.289 ms at 640x360 and 39.685 ms at
