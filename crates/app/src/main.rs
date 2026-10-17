@@ -26,7 +26,10 @@ mod planet;
 mod probe;
 mod rain;
 mod road;
+#[cfg(test)]
+mod road_gpu_tests;
 mod road_render;
+mod road_route;
 #[cfg(test)]
 mod relief_survey;
 mod scenario;
@@ -4923,6 +4926,24 @@ impl State {
         };
         let planet_rotation_radians = planet::planet_rotation_radians(planet_rotation_time);
         if let Some((position, look_at)) = scenario_pose {
+            let route_pose = self.road.as_ref().and_then(|road| {
+                self.scenario
+                    .as_ref()
+                    .filter(|s| road::is_replay(s.name()))
+                    .and_then(|s| road.plan.scenario_pose(s.name(), sim_time))
+            });
+            let (mut position, look_at) = route_pose.unwrap_or((position, look_at));
+            if route_pose.is_some()
+                && self.scenario.as_ref().is_some_and(|s| s.name() == "road_viaduct_overview")
+            {
+                // Side cameras may sit on a hillside higher than the cut.
+                let direction = position.normalize();
+                let altitude = position.length() - planet::planet_radius_meters();
+                if let Some(ground) = self.terrain.surface_height_meters_at(direction, altitude) {
+                    position = direction
+                        * (planet::planet_radius_meters() + altitude.max(ground + 60.0));
+                }
+            }
             // A waterline scenario authors where to stand and which way to
             // look; how high the water is there is the spectrum's business.
             let (position, look_at) = match scenario_waterline_eye_height_meters {
@@ -4952,28 +4973,18 @@ impl State {
                 }
                 None => (position, look_at),
             };
-            let (position, look_at) = match scenario_terrain_eye_height_meters {
+            let (position, look_at) = match scenario_terrain_eye_height_meters.filter(|_| route_pose.is_none()) {
                 Some(eye_height_meters) => {
                     let radial = position.normalize();
                     let local_radial = planet::planet_local_vector(radial, planet_rotation_radians);
                     let authored_altitude = position.length() - planet::planet_radius_meters();
-                    let deck = self
-                        .road
-                        .as_ref()
-                        .filter(|_| {
-                            self.scenario.as_ref().is_some_and(|s| road::is_replay(s.name()))
-                        })
-                        .map(|road| road.plan.plane_height_at(local_radial));
-                    let ground = deck.or_else(|| {
-                        self.terrain
-                            .raster_surface_height_meters_at(local_radial, authored_altitude)
-                            .and_then(|first| {
-                                self.terrain.raster_surface_height_meters_at(
-                                    local_radial,
-                                    first + eye_height_meters,
-                                )
-                            })
-                    });
+                    let ground = self.terrain
+                        .raster_surface_height_meters_at(local_radial, authored_altitude)
+                        .and_then(|first| {
+                            self.terrain.raster_surface_height_meters_at(
+                                local_radial, first + eye_height_meters,
+                            )
+                        });
                     if let Some(ground) = ground {
                         let eye =
                             radial * (planet::planet_radius_meters() + ground + eye_height_meters);
@@ -5704,7 +5715,11 @@ impl State {
             camera_sea_level_altitude_meters,
         );
         if let Some(road) = &mut self.road {
-            road.update(&self.queue, camera_planet_frame_position);
+            road.update(
+                &self.queue,
+                camera_planet_frame_position,
+                self.camera.planet_frame_direction_dvec3(planet_rotation_radians),
+            );
         }
         if write_log {
             // The float's own instrument. Judging a hull by eye from a

@@ -72,12 +72,16 @@ Logs are written to `test-runs/manual/<timestamp>-<pid>/log.jsonl`. Startup
 records whether debug assertions are enabled; startup and resize entries show
 internal and display resolutions.
 
-### Level-road experiment
+### Terrain-planned road experiment
 
-The opt-in 650 m trial is a level viaduct on variable-height legs, not asphalt
-painted onto bumpy terrain. It is one cached local mesh; ordinary runs do not
-build it. For **free exploration**, omit `--scenario`: this starts on the deck
-in free flight instead of on the ship.
+The opt-in trial is now approximately **30 km** of terrain-led bends on
+variable-height legs. A one-time corridor search penalises steep natural
+ground, route length and sharp turns; a fitted deck profile has a hard **10%
+maximum grade**. Local hillside cuts make room beneath the deck, with exposed
+earth on cut faces. Cuts are reversible runtime deformation, not edits to the
+baked outmap. Meshes/cuts are cached, with local batches and a distant deck LOD.
+Ordinary runs build none of this. For **free exploration**, omit `--scenario`:
+this starts on the deck in free flight instead of on the ship.
 
 ```sh
 env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 cargo run --release -p planet-app
@@ -89,7 +93,9 @@ between walking and flying; Space jumps while walking. There is no replay
 timer or automatic exit in this mode.
 
 Run the driving replay, or replace the scenario with
-`road_viaduct_overview` to inspect the supports from the side:
+`road_viaduct_overview` to inspect a deep cut, taller legs and an aerial view.
+`road_route_survey` captures six locations across the route, including the
+deepest cut:
 
 ```sh
 env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 cargo run --release -p planet-app -- --scenario road_surface_trial
@@ -100,6 +106,10 @@ environment `PLANET_PRESENT_MODE=immediate PLANET_VIEWPORT=640x360`, and
 CLI flag `--profile-render`.
 Keep `PLANET_ROAD_EXPERIMENT=1` in both runs and add `PLANET_DISABLE=roads`
 only to the hidden run: this retains the identical elevated camera/collider.
+To price the road **and terrain-cut rendering** together, use
+`PLANET_DISABLE=roads,road_cuts` for the hidden run. `road_cuts` is a shader
+ablation only; the surveyed plan/camera/collision field deliberately stays
+fixed for this diagnostic comparison.
 The pilot has no approach ramps, connected network, or pier/parapet collision.
 
 ### Controls

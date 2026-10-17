@@ -25,7 +25,6 @@
   ],
   "name": "road_viaduct_overview",
   "duration_seconds": 6,
-  "terrain_eye_height_meters": 20,
   "screenshot_times_seconds": [
     0.9,
     3.9,
@@ -100,6 +99,7 @@
   ],
   "assertions": {
     "require_finite_metrics": true,
-    "expected_screenshots": 3
+    "expected_screenshots": 3,
+    "min_camera_clearance_m": 10
   }
 }

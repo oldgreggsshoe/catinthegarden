@@ -1,5 +1,5 @@
-//! One cached, locally culled draw for the opt-in viaduct. No terrain shader
-//! evaluation or per-frame ground survey is needed after construction.
+//! Cached local viaduct batches with a distant deck-only LOD. Ground survey
+//! and route planning run once; camera updates never rebuild the geometry.
 
 use glam::DVec3;
 use wgpu::util::DeviceExt;
@@ -15,13 +15,49 @@ struct Instance {
     up: [f32; 4],
 }
 
+struct DrawChunk {
+    range: std::ops::Range<u32>,
+    far_range: std::ops::Range<u32>,
+    distant: bool,
+    centre: DVec3,
+    radius: f64,
+    visible: bool,
+}
+
+/// Adjacent visible chunks of the same LOD share a contiguous vertex range.
+/// Coalesce them without allocating or submitting one tiny draw per span.
+fn draw_ranges(
+    chunks: &[DrawChunk],
+    distant: bool,
+) -> impl Iterator<Item = std::ops::Range<u32>> + '_ {
+    let mut chunks = chunks.iter().peekable();
+    let range_of = move |chunk: &DrawChunk| {
+        if distant {
+            chunk.far_range.clone()
+        } else {
+            chunk.range.clone()
+        }
+    };
+    std::iter::from_fn(move || {
+        let first = chunks.find(|chunk| chunk.visible && chunk.distant == distant)?;
+        let mut range = range_of(first);
+        while let Some(next) = chunks.peek() {
+            if !next.visible || next.distant != distant || range_of(next).start != range.end {
+                break;
+            }
+            range.end = range_of(next).end;
+            chunks.next();
+        }
+        Some(range)
+    })
+}
+
 pub struct RoadRenderer {
     pub plan: road::Viaduct,
     pipeline: wgpu::RenderPipeline,
     vertices: wgpu::Buffer,
     instance: wgpu::Buffer,
-    vertex_count: u32,
-    visible: bool,
+    chunks: Vec<DrawChunk>,
 }
 
 impl RoadRenderer {
@@ -36,7 +72,31 @@ impl RoadRenderer {
             terrain.prepare_flight_start_surface_height_meters(direction, 0.0)
         })
         .expect("viaduct trial needs complete dry terrain at its surveyed site");
-        let mesh = plan.mesh();
+        terrain.set_road_cuts(plan.cuts.clone());
+        let mut mesh = Vec::new();
+        let mut far_mesh = Vec::new();
+        let mut chunks = Vec::new();
+        for chunk in plan.mesh() {
+            let start = mesh.len() as u32;
+            mesh.extend(chunk.vertices);
+            let near_end = mesh.len() as u32;
+            let far_start = far_mesh.len() as u32;
+            far_mesh.extend(chunk.far_vertices);
+            chunks.push(DrawChunk {
+                range: start..near_end,
+                far_range: far_start..far_mesh.len() as u32,
+                distant: false,
+                centre: road::world(chunk.centre),
+                radius: chunk.radius,
+                visible: false,
+            });
+        }
+        let far_base = mesh.len() as u32;
+        for chunk in &mut chunks {
+            chunk.far_range.start += far_base;
+            chunk.far_range.end += far_base;
+        }
+        mesh.extend(far_mesh);
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("viaduct static vertices"),
             contents: bytemuck::cast_slice(&mesh),
@@ -127,35 +187,54 @@ impl RoadRenderer {
             cache: None,
         });
         tracing::info!(
-            deck_height_meters = plan.deck_height,
+            route_length_meters = plan.route.length(),
+            planned_cut_volume_m3 = plan.route.cut_volume,
+            straight_cut_volume_m3 = plan.route.straight_cut_volume,
+            maximum_cut_meters = plan
+                .route
+                .ground
+                .iter()
+                .zip(&plan.route.points)
+                .map(|(g, p)| (g - p.z + road::CUT_FLOOR_DEPTH).max(0.0))
+                .fold(0.0_f64, f64::max),
+            lateral_range_meters = plan
+                .route
+                .points
+                .iter()
+                .map(|p| p.x.abs())
+                .fold(0.0_f64, f64::max),
             support_count = plan.piers.len(),
             maximum_support_meters = plan
                 .piers
                 .iter()
-                .map(|p| plan.deck_height - 1.0 - p.local_foot.z)
+                .map(|p| p.top - p.local_foot.z)
                 .fold(0.0_f64, f64::max),
             triangles = mesh.len() / 3,
             setup_ms = started.elapsed().as_secs_f64() * 1000.0,
-            "level viaduct built"
+            "graded viaduct route built"
         );
         Self {
             plan,
             pipeline,
             vertices,
             instance,
-            vertex_count: mesh.len() as u32,
-            visible: false,
+            chunks,
         }
     }
 
-    pub fn update(&mut self, queue: &wgpu::Queue, camera_planet_position: DVec3) {
-        let centre = road::world(DVec3::new(
-            road::centre_x(325.0),
-            325.0,
-            self.plan.deck_height,
-        ));
-        self.visible = camera_planet_position.distance(centre) < 5_000.0;
-        if self.visible {
+    pub fn update(
+        &mut self,
+        queue: &wgpu::Queue,
+        camera_planet_position: DVec3,
+        camera_forward: DVec3,
+    ) {
+        for chunk in &mut self.chunks {
+            let relative = chunk.centre - camera_planet_position;
+            chunk.distant = relative.length() > 4000.0;
+            chunk.visible = relative.length() < 25000.0 + chunk.radius
+                && relative.dot(camera_forward) > -chunk.radius;
+        }
+        if self.chunks.iter().any(|chunk| chunk.visible) {
             let vector = |v: DVec3| [v.x as f32, v.y as f32, v.z as f32, 0.0];
             let frame = Instance {
                 origin: vector(road::origin() - camera_planet_position),
@@ -168,18 +247,53 @@ impl RoadRenderer {
     }
 
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, camera: &'a wgpu::BindGroup) {
-        if self.visible {
+        if self.chunks.iter().any(|chunk| chunk.visible) {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, camera, &[]);
             pass.set_vertex_buffer(0, self.vertices.slice(..));
             pass.set_vertex_buffer(1, self.instance.slice(..));
-            pass.draw(0..self.vertex_count, 0..1);
+            for distant in [false, true] {
+                for range in draw_ranges(&self.chunks, distant) {
+                    pass.draw(range, 0..1);
+                }
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn merged_ranges_do_not_draw_hidden_or_wrong_lod_chunks() {
+        let chunks = [
+            (true, false),
+            (true, false),
+            (false, false),
+            (true, true),
+            (true, true),
+            (true, false),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, (visible, distant))| super::DrawChunk {
+            range: (i as u32) * 6..(i as u32 + 1) * 6,
+            far_range: 100 + (i as u32) * 6..100 + (i as u32 + 1) * 6,
+            centre: glam::DVec3::ZERO,
+            radius: 1.0,
+            visible,
+            distant,
+        })
+        .collect::<Vec<_>>();
+        assert_eq!(
+            super::draw_ranges(&chunks, false).collect::<Vec<_>>(),
+            [0..12, 30..36]
+        );
+        assert_eq!(
+            super::draw_ranges(&chunks, true).collect::<Vec<_>>(),
+            [118..130]
+        );
+    }
+
     #[test]
     fn road_shader_and_camera_relative_layout_validate() {
         let module = wgpu::naga::front::wgsl::parse_str(include_str!("road.wgsl")).unwrap();
@@ -188,6 +302,13 @@ mod tests {
             wgpu::naga::valid::Capabilities::all(),
         )
         .validate(&module)
+        .unwrap();
+        let cuts = wgpu::naga::front::wgsl::parse_str(&crate::road::cut_shader_source()).unwrap();
+        wgpu::naga::valid::Validator::new(
+            wgpu::naga::valid::ValidationFlags::all(),
+            wgpu::naga::valid::Capabilities::all(),
+        )
+        .validate(&cuts)
         .unwrap();
         assert_eq!(size_of::<super::Instance>(), 64);
         assert_eq!(std::mem::offset_of!(super::Instance, up), 48);

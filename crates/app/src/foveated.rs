@@ -974,6 +974,7 @@ fn dot3(left: [f32; 3], right: [f32; 3]) -> f32 {
 fn raymarch_shader_source() -> String {
     [
         crate::planet::shared_planet_shader_source(),
+        crate::road::cut_shader_source(),
         include_str!("foveated_debug.wgsl").to_string(),
     ]
     .join("\n")

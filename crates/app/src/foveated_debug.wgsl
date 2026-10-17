@@ -708,7 +708,7 @@ fn surface_function(
     let point_view = camera_position_view + ray * distance_meters;
     let surface_direction = normalize(view_to_planet(point_view));
     let surface_radius = PLANET_RADIUS_METERS
-        + scaled_terrain_macro_height(sample_height(surface_direction));
+        + road_terrain_cut(surface_direction, scaled_terrain_macro_height(sample_height(surface_direction))).height;
     return radius_at(distance_meters, radial_dot_ray) - surface_radius;
 }
 
@@ -731,7 +731,7 @@ fn detail_surface_function(
         footprint_radians,
     );
     return radius_at(distance_meters, radial_dot_ray)
-        - (PLANET_RADIUS_METERS + macro_height + detail.height_meters);
+        - (PLANET_RADIUS_METERS + road_terrain_cut(surface_direction, macro_height + detail.height_meters).height);
 }
 
 /// Finds the first detailed-surface entry around the macro hit.
@@ -1232,16 +1232,19 @@ fn shade_terrain(
         scaled_terrain_macro_height(macro_height_meters),
         footprint_radians,
     );
-    let detail_normal = terrain_detail_perturbed_normal(
+    var detail_normal = terrain_detail_perturbed_normal(
         normal,
         surface_direction,
         detail.slope,
     );
+    let cut = road_terrain_cut(surface_direction,
+        scaled_terrain_macro_height(macro_height_meters) + detail.height_meters);
+    if cut.lowered { detail_normal = cut.normal; }
     let biome = sample_biome(surface_direction);
     let biome_blend = sample_biome_blend(surface_direction);
     let moisture = sample_moisture(surface_direction);
     let base_biome_color = blended_biome_color(biome_blend);
-    let terrain_albedo = terrain_material_color(
+    var terrain_albedo = terrain_material_color(
         true,
         biome,
         moisture,
@@ -1251,6 +1254,8 @@ fn shade_terrain(
         detail_normal,
         surface_direction,
     );
+    terrain_albedo = road_cut_albedo(terrain_albedo,
+        scaled_terrain_macro_height(macro_height_meters) + detail.height_meters - cut.height);
     let detail_tint = terrain_material_tint(
         true,
         moisture,

@@ -163,6 +163,7 @@ const ABLATE_FRAGMENT_TINT: bool = {};",
     [
         crate::planet::shared_planet_shader_source(),
         crate::planet::render_feature_constants(),
+        crate::road::cut_shader_source(),
         ablation_settings,
         fragment_ablation_settings,
         material_ablation_setting,
@@ -891,6 +892,8 @@ pub struct TerrainRenderer {
     /// How much of the sun is visible, for the caustics (shared binding 20),
     /// filled each frame by `sun::SunRenderer::encode_visibility`.
     sun_visibility_buffer: wgpu::Buffer,
+    road_cut_buffer: wgpu::Buffer,
+    road_cuts: Option<std::sync::Arc<crate::road::CutField>>,
     foam_history: ocean_foam::OceanFoamHistory,
     foam_history_enabled: bool,
     ocean_spray: Option<ocean_spray::OceanSpray>,
@@ -1289,6 +1292,11 @@ impl TerrainRenderer {
             contents: bytemuck::cast_slice(&[1.0_f32, 0.0, 0.0, 0.0]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
+        let road_cut_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("cached road cut profile"),
+            contents: bytemuck::cast_slice(&vec![[0.0_f32; 4]; crate::road::CUT_BUFFER_FLOAT4S]),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
         let shared_bind_groups = std::array::from_fn(|index| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("shared planet bind group"),
@@ -1366,6 +1374,10 @@ impl TerrainRenderer {
                         binding: 20,
                         resource: sun_visibility_buffer.as_entire_binding(),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 21,
+                        resource: road_cut_buffer.as_entire_binding(),
+                    },
                 ],
             })
         });
@@ -1423,6 +1435,8 @@ impl TerrainRenderer {
             raster_near_field_bind_group,
             shared_bind_groups,
             sun_visibility_buffer,
+            road_cut_buffer,
+            road_cuts: None,
             foam_history,
             foam_history_enabled: crate::planet::ocean_foam_history_enabled(),
             ocean_spray,
@@ -1523,6 +1537,17 @@ impl TerrainRenderer {
         }
         self.tile_last_used.insert(source_key, self.tile_cache_tick);
         self.surface_height_meters_at(local_surface_direction, camera_altitude_meters)
+    }
+
+    pub fn set_road_cuts(&mut self, cuts: std::sync::Arc<crate::road::CutField>) {
+        self.queue.write_buffer(
+            &self.road_cut_buffer, 0, bytemuck::cast_slice(&cuts.gpu_data()),
+        );
+        self.road_cuts = Some(cuts);
+    }
+
+    fn cut_surface_height(&self, direction: DVec3, height: f64) -> f64 {
+        self.road_cuts.as_ref().map_or(height, |cuts| cuts.height(direction, height))
     }
 
     pub fn shared_bind_group(&self) -> &wgpu::BindGroup {
@@ -2071,6 +2096,15 @@ impl TerrainRenderer {
     /// looks exactly like one whose detail has the wrong amplitude, until the
     /// two terms are reported separately.
     pub fn surface_height_breakdown_at(
+        &self, direction: DVec3, altitude: f64,
+    ) -> Option<SurfaceHeightBreakdown> {
+        self.uncut_surface_height_breakdown_at(direction, altitude).map(|mut sample| {
+            sample.height_meters = self.cut_surface_height(direction, sample.height_meters);
+            sample
+        })
+    }
+
+    fn uncut_surface_height_breakdown_at(
         &self,
         local_surface_direction: DVec3,
         camera_altitude_meters: f64,
@@ -2153,6 +2187,15 @@ impl TerrainRenderer {
     /// runtime detail is signed, so neither the first patch nor the finest
     /// filter is a conservative collision surface.
     pub fn raster_surface_height_breakdown_at_distance(
+        &self, direction: DVec3, altitude: f64, distance: f64,
+    ) -> Option<SurfaceHeightBreakdown> {
+        self.uncut_raster_surface_height_breakdown_at_distance(direction, altitude, distance).map(|mut sample| {
+            sample.height_meters = self.cut_surface_height(direction, sample.height_meters);
+            sample
+        })
+    }
+
+    fn uncut_raster_surface_height_breakdown_at_distance(
         &self,
         local_surface_direction: DVec3,
         camera_altitude_meters: f64,
@@ -2428,6 +2471,7 @@ impl TerrainRenderer {
                     } else {
                         breakdown.height_meters
                     };
+                let height = self.cut_surface_height(direction, height);
                 Some(direction * (planet_radius_meters() + height))
             };
             let lower_left = vertex_position(cell_x, cell_y)?;
@@ -3694,6 +3738,16 @@ pub fn create_shared_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroup
                 visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 21,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
                     min_binding_size: None,
                 },

@@ -899,7 +899,8 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let water_owned = BODY_HAS_OCEAN
         && (biome_id == 0u || biome_id == 1u)
         && macro_height <= 0.0;
-    let surface_height = select(land_height, 0.0, flat_triangles && water_owned);
+    let cut = road_terrain_cut(direction, select(land_height, 0.0, flat_triangles && water_owned));
+    let surface_height = cut.height;
     let skirt_depth_meters = select(
         0.0,
         min(
@@ -943,6 +944,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
                 camera_relative_view_position,
             );
     }
+    if cut.lowered { normal = cut.normal; }
     // Flat-triangle mode keeps the categorical material and face lighting, but
     // still needs the ordinary aerial path so distant facets fade toward the
     // same atmosphere as the rest of the terrain.
@@ -2902,6 +2904,9 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             vegetation_share,
         );
     }
+    textured_terrain_albedo = road_cut_albedo(textured_terrain_albedo,
+        input.outmap_and_macro_height.y + input.terrain_detail_meters_and_fog_amount.x
+            - input.surface_height_and_fog_color.x);
     // Rain darkens exposed ground; accumulated snow replaces the material only
     // where the coupled surface field says it has persisted. Ocean and lake
     // branches returned above, and non-ice land remains matte.

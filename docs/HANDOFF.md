@@ -10,7 +10,101 @@ surface appearance and crest geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Latest phase (17 October): level viaduct road trial.** The user's new
+**Latest phase (17 October): terrain-planned 30 km graded viaduct and cuts.**
+The user's revised brief is to seek routes that minimise digging, permit up
+to 10% grade, keep the deck on legs, and extend the winding trial to 30 km.
+`road_route.rs` surveys a 30 km x 6 km dry corridor on a 100 m longitudinal /
+50 m lateral lattice. A directed dynamic-programming search tracks lateral
+heading, penalising length, climbing, grade excess and heading changes. The
+lattice route is rounded before a fresh 10 m survey and vertical-profile fit.
+The profile limits local grade to 9%, reserving room for planet curvature;
+`Viaduct::survey` checks every segment against the actual 10% radial/geographic
+grade and rejects an invalid plan. Valley-side height is capped before grade
+projection to avoid solving every hill with enormous piers. It is a bounded
+heuristic route planner, not a globally optimal civil-engineering solver.
+
+Actual route: 29,998.85 m horizontal length, 2.916 km maximum lateral detour,
+maximum physical grade 9.620%, 1,812 supports, maximum sampled support 29.15 m,
+and deepest centreline cut ~40.56 m. One-time setup measured ~0.3-0.4 s.
+The centreline cut-area integral is ~3.391 million m3 versus ~667.417 million
+for the straight alignment with the same vertical solver (~99.49% lower).
+These are **earthwork proxies**, using an 18 m floor / 1:1 bank section and
+centreline ground only, not true surveyed excavated volumes or global optima.
+
+`road.rs` now provides the graded mesh, exact deck-triangle radial collision,
+and immutable indexed `CutField`. `road_cuts.wgsl` caps actual displaced terrain
+at a floor 6 m below the deck with 1:1 side banks. Cut normals and exposed-earth
+albedo follow the new geometry. The compact ~48 KB profile is uploaded once
+at shared binding 21; lookups index nearby stations, never loop over the road.
+Raster terrain vertices, CPU continuous/mesh collision/probes and the raymarch
+height/shading paths use the same corridor field. No outmap data is rewritten.
+CPU/GPU parity uses the production WGSL: 52 bend/bank/end/underpass samples,
+maximum difference 0.221 m at real planet radius (buried footings tolerate this).
+
+`road_render.rs` caches ~104,656 near/far triangles in ~500 m batches: full
+slab/parapets/legs within 4 km, deck-only LOD farther out, 25 km distance cull
+plus conservative rear-hemisphere rejection. Camera updates only the 64-byte
+frame and visibility; no terrain survey, route search or mesh rebuild per frame.
+The old flag / free flight / G walking toggle remain unchanged. Scenario poses
+now derive from the generated route, not the obsolete short S-curve waypoints.
+`road_route_survey` covers six route sites including the deepest cut. Overview
+cameras are lifted clear of adjacent terrain: the rejected initial capture
+was 7 m underground, not evidence of a failed cut mesh.
+
+Validation (X11, Immediate, 640x360; all captures opened, including full-size
+cut/side/aerial views and route/driving contact sheets):
+
+- `road_viaduct_overview/1792260855-340905`: all 3 pass. Deep earth cut,
+  shorter legs and winding aerial route; camera clearance at least 59 m.
+- `road_route_survey/1792260881-340945`: all 6 pass across the route,
+  including the deepest cut; deck-eye clearance 1.998-2.001 m.
+- `road_surface_trial/1792260933-341104`: all 7 driving captures pass,
+  clearance 1.999-2.002 m. Not a continuous full-30-km motion review.
+- `cargo test -p planet-app --release road`: focused geometry, grade,
+  route-search, shader/layout, replay and draw-range tests pass. Final full
+  suite: **660 passed, 6 failed, 45 ignored**. The six are the same previous
+  optical-zoom/FOV, scenario-FOV-range, shallow-turquoise source-string and
+  SUNK-HUD failures, not road regressions. Logs:
+  `/tmp/stuff-road-route-full-tests.log`, `/tmp/stuff-road-merged-tests.log`.
+- Explicit ignored GPU test passes, 52 samples, max CPU/GPU height error
+  0.2208 m: `/tmp/stuff-road-route-gpu-final.log`. Release builds without
+  warnings. No unsafe GPU timestamp profiling was used.
+
+Matched render cost: keep `PLANET_ROAD_EXPERIMENT=1` in both runs. Visible is
+normal; hidden uses `PLANET_DISABLE=roads,road_cuts`, hiding road geometry and
+shader cuts but retaining the surveyed route/camera/collision for a fixed pose.
+CPU-only `--profile-render`, 2 < sim-time < 8 s, no capture readbacks, 12 settled
+samples/run. Camera XYZ/FOV are identical; no build/test/other renderer ran
+alongside timing. All timing manifests pass. Final merged-batch binary SHA256:
+`370ceb7c9e5d35c04a0e0e8744a9f4d1cabeb78e89c83701c711b85c1f91e4a9`.
+
+| Hidden run | Visible run | Hidden render ms | Visible render ms | Extra ms |
+|---|---|---:|---:|---:|
+| `1792261304-342195` | `1792261332-342284` | 30.565 | 32.581 | 2.016 |
+| `1792261397-342448` | `1792261365-342360` | 30.484 | 32.536 | 2.052 |
+
+Run prefix `test-runs/road_viaduct_performance/`. Pooled medians (24 samples per
+state): render **30.517 hidden / 32.566 visible**, +2.049 ms (+6.7%); actual
+frame interval **30.482 / 32.608 ms**, ~32.8 / **30.7 fps**. This is a measured
+rendering overhead, not a zero-cost or FPS-improvement claim. Planning and
+collision retained in both conditions are not priced by this draw ablation.
+
+Four earlier pairs before draw-range coalescing measured 30.539 / 32.595 ms
+(48 samples/state); coalescing adjacent visible LOD ranges reduces draw commands
+but has no material FPS gain here. Final capture versus pre-coalescing capture
+`1792261204-341836`: **0 changed pixels**. Thus geometry/material acceptance
+captures above remain valid after the buffer/draw reordering. Local summaries:
+`test-runs/performance/road-route-2026-10-17/summary.json` and
+`test-runs/performance/road-route-merged-2026-10-17/summary.json`.
+The previous 650 m measurements use a different camera/profile and are not
+before/after FPS evidence for this extension.
+Scope: one complete dry corridor; no endpoint picker, network connections,
+approach ramps, tunnels, arbitrary missing-data routing, pier/parapet collision,
+vegetation clearing, or structural/load simulation. Raymarch integration builds
+and uses the same height function, but has no separate visual sign-off here.
+Do not infer planet-wide road cost from this pilot.
+
+**Earlier phase (17 October): level viaduct road trial.** The user's new
 requirement is a road on legs so the deck stays level. Replaced the old
 terrain-fragment asphalt/gravel paint with an opt-in, 650 m S-curve viaduct:
 `road.rs` surveys dense terrain once, fixes one tangent-plane deck elevation,
@@ -490,12 +584,13 @@ changing source elevations or shared-edge projection. See the newest section;
 manual swim-path acceptance is still pending.
 
 **Current road experiment (17 October):** `PLANET_ROAD_EXPERIMENT=1` builds
-one 650 m level viaduct on variable-height legs, replacing the terrain-painted
-road. One cached, locally culled batch (2,674 triangles); no global terrain
-fragment mask. `road_surface_trial` drives along the deck;
-`road_viaduct_overview` shows the supports; `road_viaduct_performance` pins a
-fixed pose for visible/hidden timing. See the latest phase for evidence and
-remaining pilot limitations; dated September road sections are historical.
+an approximately 30 km terrain-led graded viaduct with a hard 10% grade ceiling,
+shorter variable-height legs and runtime hillside cuts. One-time planning,
+cached local mesh batches and far deck LOD; indexed cut lookups, no global road
+fragment search. No-scenario launches allow free flight / G walking. Driving,
+deep-cut/side/aerial, route-wide survey and fixed-camera performance replays
+are available. See the latest phase for evidence and limitations; the 650 m
+flat-deck and September terrain-painted versions below are historical.
 
 **Current shallow-water colour and refraction (13 September):** the turquoise a
 bed puts into the water above it is weighted by an extinction falloff over the

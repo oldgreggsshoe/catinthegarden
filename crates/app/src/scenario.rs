@@ -362,6 +362,7 @@ scenarios! {
     "road_surface_trial" => "../scenarios/road_surface_trial.json",
     "road_viaduct_overview" => "../scenarios/road_viaduct_overview.json",
     "road_viaduct_performance" => "../scenarios/road_viaduct_performance.json",
+    "road_route_survey" => "../scenarios/road_route_survey.json",
     "wavedir_spawn" => "../scenarios/wavedir_spawn.json",
     "ocean_underside_shallows" => "../scenarios/ocean_underside_shallows.json",
     "ocean_underside_snell_window" => "../scenarios/ocean_underside_snell_window.json",
@@ -1149,7 +1150,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 126);
+        assert_eq!(SCENARIO_NAMES.len(), 127);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));
@@ -1399,29 +1400,16 @@ mod tests {
     }
 
     #[test]
-    fn road_surface_trial_drives_forward_along_the_viaduct_corridor() {
-        let scenario = ScenarioRunner::load("road_surface_trial").expect("road replay parses");
-        let anchor = DVec3::new(0.94919006, 0.28950297, 0.12339471);
-        let forward = DVec3::new(-0.11802703, -0.03599824, 0.99235767);
-        let across = DVec3::new(0.29173249, -0.95649995, 0.0);
-        let radius = crate::planet::planet_radius_meters();
-
+    fn road_surface_trial_uses_the_planned_deck_drive() {
+        let scenario = ScenarioRunner::load("road_surface_trial").unwrap();
         assert_eq!(scenario.expected_screenshots(), 7);
         assert!(scenario.skips_birds());
         assert_eq!(scenario.terrain_eye_height_meters(), Some(2.0));
-        assert_eq!(scenario.definition.waypoints.len(), 21);
-        for waypoint in &scenario.definition.waypoints {
-            let eye = DVec3::from_array(waypoint.position);
-            let target = DVec3::from_array(waypoint.look_at);
-            let road_local = (eye.normalize() - anchor) * radius;
-            let along = road_local.dot(forward);
-            let centre = 30.0 * smoothstep_test(along / 220.0)
-                - 50.0 * smoothstep_test((along - 260.0) / 360.0);
-            assert!((along - waypoint.time_s * 14.0).abs() < 0.2);
-            assert!((road_local.dot(across) - centre).abs() < 0.2);
-            assert!((eye.length() - radius - 1902.0).abs() < 0.01);
-            assert!((target - eye).dot(forward) > 40.0);
-        }
+        assert!(crate::road::is_replay(scenario.name()));
+        let survey = ScenarioRunner::load("road_route_survey").unwrap();
+        assert_eq!(survey.expected_screenshots(), 6);
+        assert!(survey.uses_fixed_exposure());
+        assert!(crate::road::is_replay(survey.name()));
     }
 
     #[test]
@@ -1434,14 +1422,10 @@ mod tests {
         assert_eq!(performance.expected_screenshots(), 1);
         let overview = ScenarioRunner::load("road_viaduct_overview").unwrap();
         assert_eq!(overview.expected_screenshots(), 3);
-        assert_eq!(overview.terrain_eye_height_meters(), Some(20.0));
+        assert_eq!(overview.terrain_eye_height_meters(), None);
+        assert_eq!(overview.assertions().min_camera_clearance_m, Some(10.0));
         assert!(crate::road::is_replay(performance.name()));
         assert!(crate::road::is_replay(overview.name()));
-    }
-
-    fn smoothstep_test(value: f64) -> f64 {
-        let value = value.clamp(0.0, 1.0);
-        value * value * (3.0 - 2.0 * value)
     }
 
     #[test]
