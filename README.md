@@ -26,9 +26,13 @@ Requires a GPU with Vulkan/Metal/DX12 support via `wgpu`, and a baked outmap at
 `assets/outmaps/test-planet` (found from the working directory or any parent).
 
 ```sh
-cargo run -p planet-app                    # interactive, fullscreen
-cargo run -p planet-app -- --terrain placeholder   # no outmap needed
+cargo run --release -p planet-app                    # interactive, fullscreen
+cargo run --release -p planet-app -- --terrain placeholder   # no outmap needed
 ```
+
+Use `--release` for interactive play and performance measurements. A plain
+`cargo run` builds unoptimised debug code and is not representative of renderer
+performance.
 
 Without an outmap the app falls back to procedural placeholder height
 automatically, so a fresh clone runs before it bakes.
@@ -40,8 +44,17 @@ automatically, so a fresh clone runs before it bakes.
 | `--scenario NAME` | Run a scripted camera path from `crates/app/scenarios/`, capture screenshots, exit |
 | `--outmap PATH` | Use a specific baked outmap |
 | `--terrain placeholder\|outmap` | Choose the terrain source |
-| `--profile-render` | Record per-stage GPU timings |
+| `--profile-render` | Record CPU-side frame-stage timings, without GPU timestamp queries |
 | `--vertical-fov-degrees N` | Override the vertical field of view |
+
+GPU timestamp queries require the separate `--profile-gpu` flag. Do not use
+that flag on the Quadro M1000M: timestamp queries can hang its driver. The
+CPU-only `--profile-render` path does not request them.
+
+For an interactive timing log, run `cargo run --release -p planet-app -- --profile-render`.
+Logs are written to `test-runs/manual/<timestamp>-<pid>/log.jsonl`. Startup
+records whether debug assertions are enabled; startup and resize entries show
+internal and display resolutions.
 
 ### Controls
 

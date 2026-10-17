@@ -1765,6 +1765,11 @@ impl State {
             supported_present_modes = ?surface_capabilities.present_modes,
             selected_present_mode = ?config.present_mode,
             surface_usage = ?config.usage,
+            debug_assertions = cfg!(debug_assertions),
+            surface_width = config.width,
+            surface_height = config.height,
+            render_width = size.width,
+            render_height = size.height,
             "configured surface"
         );
         surface.configure(&device, &config);
@@ -2327,6 +2332,15 @@ impl State {
         }
         self.egui_buffers_dirty = true;
         self.mark_hud_dirty();
+        tracing::info!(
+            target: "planet::adapter",
+            surface_width = size.width,
+            surface_height = size.height,
+            render_width = self.size.width,
+            render_height = self.size.height,
+            fixed_render_resolution = self.fullscreen_render_size.is_some(),
+            "resized render surface"
+        );
     }
 
     fn resize_render_targets(&mut self, size: winit::dpi::PhysicalSize<u32>) {

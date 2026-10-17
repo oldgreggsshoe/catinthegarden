@@ -10,7 +10,35 @@ surface appearance and crest geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Latest phase (17 October): CPU terrain-selection cost.** Resumed the
+**Latest phase (17 October): interactive launch audit.** The current release
+ship-bridge startup also runs at roughly 30 fps; fixed-step replay timing is
+not the whole explanation. Matched X11 / FFT / Fifo launches with only
+`PLANET_VIEWPORT` changed measured 33.289 ms at 640x360 and 39.685 ms at
+1280x720. Each median uses 31 CPU profile samples at sim-time 8-24 seconds,
+excluding capture readbacks. Runs: `test-runs/manual/1792253635-310880` (640)
+and `1792253559-309188` (1280). These are scene/configuration measurements,
+not a before/after FPS gain from the diagnostic patch.
+
+New startup logs show `debug_assertions=false`; resize logs confirm the
+1920x1080 fullscreen surface retains the requested 640x360 or 1280x720 internal
+resolution. The 640 capture was opened; the 1280 timeout preceded its requested
+capture, so there is no paired visual claim. The older manual run
+`1792153312-56908` (16 October 13:21:52) really does contain ~100 ms frames,
+before the 13:29:33 resolution-default change, but has no logged build/resolution
+context and used different supported surface modes. Neither resolution nor
+a debug build has been established as its cause. The user's slow view/launch
+still needs identification.
+
+README interactive examples now use `--release`; its incorrect GPU-profiling
+label is corrected: `--profile-render` is CPU-only, while `--profile-gpu`
+requests timestamps and can hang this Quadro. Existing startup/resize log events
+now report actual internal/display dimensions, with the debug-assertions flag
+at startup. Four fullscreen-related tests pass and release builds successfully.
+No rendering settings or behaviour changed. For a useful slow-session record,
+launch with `--profile-render`, reproduce the slow view, and keep that run's
+`test-runs/manual/<timestamp>-<pid>/log.jsonl`.
+
+**Earlier phase (17 October): CPU terrain-selection cost.** Resumed the
 frame-rate handoff from `response/codex.txt`, not the older forest redesign.
 At 640x360 on the Quadro M1000M, X11 / Immediate / FFT, a fresh
 `ocean_ship_float --profile-render` replay took about 32 ms per frame, not the
