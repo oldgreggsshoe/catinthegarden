@@ -1401,15 +1401,30 @@ fn unbalanced_coarse_neighbors_touching(
 ) -> Vec<QuadtreeNode> {
     let mut coarse = HashSet::new();
     for node in added_nodes {
+        let Some(coarse_level) = node.level.checked_sub(MAX_ADJACENT_LOD_LEVEL_DELTA + 1) else {
+            continue;
+        };
         for edge in 0..4 {
             let direction = direction_across_node_edge(*node, edge);
-            let Some(neighbor) = leaves.iter().copied().find(|candidate| {
-                *candidate != *node && node_contains_direction(*candidate, direction)
-            }) else {
-                continue;
+            // Only a leaf more than the supported stitch delta coarser can
+            // need splitting. Probe its dyadic ancestors instead of scanning
+            // every leaf; the direction mapping also handles cube-face edges.
+            let key = planet_coretypes::tile_key_for_direction(direction, coarse_level);
+            let mut candidate = QuadtreeNode {
+                face: key.face.index() as u8,
+                level: key.level,
+                x: key.x,
+                y: key.y,
             };
-            if node.level > neighbor.level.saturating_add(MAX_ADJACENT_LOD_LEVEL_DELTA) {
-                coarse.insert(neighbor);
+            loop {
+                if leaves.contains(&candidate) {
+                    coarse.insert(candidate);
+                    break;
+                }
+                let Some(parent) = candidate.parent() else {
+                    break;
+                };
+                candidate = parent;
             }
         }
     }
@@ -4706,6 +4721,66 @@ mod tests {
                         neighbor.level,
                     );
                 }
+            }
+        }
+    }
+
+    // Reference the original all-leaf scan so lookup optimisations cannot
+    // silently change balancing at cube edges, deep levels or culled holes.
+    fn scanned_coarse_neighbors(
+        added: &[QuadtreeNode],
+        leaves: &std::collections::HashSet<QuadtreeNode>,
+    ) -> Vec<QuadtreeNode> {
+        let mut coarse = std::collections::HashSet::new();
+        for node in added {
+            for edge in 0..4 {
+                let direction = super::direction_across_node_edge(*node, edge);
+                if let Some(neighbor) = leaves.iter().copied().find(|candidate| {
+                    *candidate != *node && super::node_contains_direction(*candidate, direction)
+                }) && node.level > neighbor.level.saturating_add(super::MAX_ADJACENT_LOD_LEVEL_DELTA)
+                {
+                    coarse.insert(neighbor);
+                }
+            }
+        }
+        let mut coarse: Vec<_> = coarse.into_iter().collect();
+        coarse.sort_unstable();
+        coarse
+    }
+
+    #[test]
+    fn coarse_neighbor_lookup_matches_scan_across_cube_edges_and_culled_holes() {
+        for branch in 0..4 {
+            let mut leaves: std::collections::HashSet<_> =
+                (0..6).map(QuadtreeNode::root).collect();
+            for face in 0..6 {
+                let mut node = QuadtreeNode::root(face);
+                for _ in 0..MAX_LOD_LEVEL {
+                    leaves.remove(&node);
+                    let children = node.children();
+                    leaves.extend(children);
+                    node = children[branch];
+                }
+            }
+            for culled in [false, true] {
+                if culled {
+                    leaves.retain(|node| (u32::from(node.face) + node.x + node.y) % 3 != 0);
+                }
+                let mut added: Vec<_> = leaves.iter().copied().collect();
+                added.sort_unstable();
+                let expected = scanned_coarse_neighbors(&added, &leaves);
+                assert!(!expected.is_empty(), "fixture must exercise balancing");
+                assert_eq!(
+                    super::unbalanced_coarse_neighbors_touching(&added, &leaves),
+                    expected,
+                    "branch {branch}, culled {culled}",
+                );
+                added.retain(|node| node.x % 2 == 0);
+                assert_eq!(
+                    super::unbalanced_coarse_neighbors_touching(&added, &leaves),
+                    scanned_coarse_neighbors(&added, &leaves),
+                    "partial split frontier, branch {branch}, culled {culled}",
+                );
             }
         }
     }

@@ -10,7 +10,48 @@ surface appearance and crest geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Latest phases (3 October):** storm overcast from weather, forced approach,
+**Latest phase (17 October): CPU terrain-selection cost.** Resumed the
+frame-rate handoff from `response/codex.txt`, not the older forest redesign.
+At 640x360 on the Quadro M1000M, X11 / Immediate / FFT, a fresh
+`ocean_ship_float --profile-render` replay took about 32 ms per frame, not the
+reported 8-10 fps. The broad `simulation_ms` region includes terrain streaming
+and queue uploads, not just ship physics. Temporary CPU phase timings isolated
+LOD selection: 7.784 ms median before, 3.963 ms after (12 settled phase samples
+each). Its balancing lookup scanned every active leaf for each neighbouring
+edge; it now probes the possible coarse quadtree ancestors in the existing
+membership set. No LOD thresholds, geometry budget or drawing settings changed.
+
+Instrumented control `test-runs/ocean_ship_float/1792239809-234740` and candidate
+`1792240056-236784` pass; all three corresponding captures are pixel-identical.
+Total frame medians were 31.645 and 31.828 ms: this saves CPU work, **not a
+measured FPS gain**. Earlier 1 Hz diagnostic runs were dominated by ~986 ms
+inside `present`, so do not use them as simulation throughput measurements.
+The user's 8-10 fps is still unexplained; asked for the scene and launch method.
+All temporary `[DEBUG-perf17]` timings were removed. The regression compares
+balancing against the original scan at cube-face boundaries, maximum depth,
+partial split frontiers and culled holes. The clean release ship run
+`1792240153-237431` passes at 31.765 ms/frame median (11 settled non-capture
+profile samples), with `simulation_ms` 12.005 ms. `forest_startup`
+`1792240174-237811` and `mountain_ground` `1792240193-238019` pass their
+assertions; opened forest captures still show the existing low-poly crowns,
+and the mountain capture is cloud-grey, not useful terrain visual evidence.
+The new regression passes; focused planet tests report 55 passed, three
+zoom/FOV failures and one ignored. The remaining suite reports 649 passed,
+three failures, 44 ignored (the three planet failures filtered out).
+Re-running the unmodified lookup and tests confirms the same six failures:
+648 passed, six failed, 44 ignored. Besides the three planet zoom tests, these
+are scenario FOV validation, shallow-water shader source expectations and the
+water-aboard `SUNK` label. None was introduced by this lookup change. The
+optimised lookup was restored and the normal release binary rebuilt afterward.
+
+Reproduce without unsafe GPU timestamps:
+```
+env -u WAYLAND_DISPLAY PLANET_VIEWPORT=640x360 PLANET_PRESENT_MODE=immediate \
+  PLANET_OCEAN_FFT=1 target/release/planet-app \
+  --scenario ocean_ship_float --profile-render
+```
+
+**Earlier phases (3 October):** storm overcast from weather, forced approach,
 and `PLANET_STORM_OVERCAST` now fades out with the camera between 60-90km,
 and the forced approach's sea state fades with it. Orbital lightning cones
 shrink with distance, while their close-range widths remain unchanged. Rain
