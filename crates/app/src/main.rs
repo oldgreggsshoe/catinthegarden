@@ -386,7 +386,7 @@ const STORM_OCEAN_START_PITCH_RADIANS: f64 = -4.0_f64.to_radians();
 /// it is in shot from the interactive spawn without sitting on top of it.
 const SHIP_START_OFFSET_METERS: f64 = 140.0;
 /// Where the second ship starts, along the same tangent beyond the first.
-const SECOND_SHIP_OFFSET_METERS: f64 = 45.0;
+const SECOND_SHIP_OFFSET_METERS: f64 = 26.0;
 /// Fallback depth for the hull's wave queries before the sea bed under it has
 /// streamed in. The real bathymetry is used whenever it is resident: assuming
 /// open ocean floated the hull on an unlimited sea while the camera and the
@@ -2307,8 +2307,8 @@ impl State {
         state
     }
 
-    /// Start interactive launches floating in the maximum-intensity ocean
-    /// storm, then apply the existing F10 presentation default.
+    /// Start interactive launches at the road trial when enabled, otherwise
+    /// floating in the ocean storm, then apply the F10 presentation default.
     /// The F6 stage is now edge-aware anti-aliasing, and at Ian's request
     /// (25 September 2026) interactive launches start with it on;
     /// `PLANET_AA=0` opts out and F6 still toggles it. It is not the old
@@ -2321,7 +2321,7 @@ impl State {
         }
 
         self.toggle_camera_mode();
-        if body::has_ocean() && self.position_storm_ocean_start() {
+        if !self.position_road_start() && body::has_ocean() && self.position_storm_ocean_start() {
             self.camera_mode = CameraMode::Boat;
             // Look angles on the bridge are relative to the hull: start
             // looking straight ahead over the bow.
@@ -2359,6 +2359,30 @@ impl State {
             animation_frozen = self.animation_frozen,
             "interactive startup controls applied"
         );
+    }
+
+    /// Only interactive startup calls this; scripted replays retain their poses.
+    fn position_road_start(&mut self) -> bool {
+        let Some(road) = &self.road else {
+            return false;
+        };
+        let (position, target) = road.plan.inspection_pose();
+        let radial = position.normalize();
+        self.flight_local_position = position;
+        self.flight_surface_height_meters = road.plan.plane_height_at(radial);
+        self.flight_local_tangent = initial_flight_tangent(radial);
+        (self.flight_look_yaw_radians, self.flight_look_pitch_radians) = flight_look_angles_toward(
+            radial,
+            self.flight_local_tangent,
+            (target - position).normalize(),
+        );
+        self.camera_mode = CameraMode::LowFlight;
+        self.update_low_flight_camera(None, 0.0, self.scaled_clock_seconds);
+        self.previous_camera_world_position = self.camera.world_position();
+        self.previous_camera_planet_frame_position = self.camera.world_position();
+        self.camera_velocity_baseline_stale = true;
+        tracing::info!(target: "planet::startup", "interactive road free flight ready; G toggles walking");
+        true
     }
 
     /// Move the freshly-created low-flight pose to a known open-ocean point
@@ -7745,6 +7769,9 @@ mod tests {
             .split("\n    fn ")
             .next()
             .expect("the function body ends at the next method");
+        let road_start = body.find("self.position_road_start()").unwrap();
+        assert!(body.find("if self.scenario.is_some()").unwrap() < road_start);
+        assert!(road_start < body.find("self.position_storm_ocean_start()").unwrap());
         assert!(
             body.contains("set_effects"),
             "startup no longer enables AA:\n{body}"
