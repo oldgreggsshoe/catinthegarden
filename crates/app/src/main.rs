@@ -35,6 +35,7 @@ mod relief_survey;
 mod scenario;
 mod sea_sound;
 mod ship;
+mod startup_profile;
 mod ship_model;
 mod ship_render;
 mod sky_moon;
@@ -1733,6 +1734,7 @@ impl State {
             }
         }));
 
+        startup_profile::mark("scenario load, run artifacts, tracing, sea state");
         let size = window.inner_size();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = instance
@@ -1740,6 +1742,7 @@ impl State {
             .expect("the window must provide a compatible surface");
         let adapter = select_render_adapter(&instance, &surface).await;
         let adapter_info = adapter.get_info();
+        startup_profile::mark("instance, surface, adapter selection");
         let adapter_label = format!(
             "{} ({:?}, {:?})",
             adapter_info.name, adapter_info.device_type, adapter_info.backend
@@ -1800,6 +1803,7 @@ impl State {
             .contains(wgpu::Features::TIMESTAMP_QUERY)
             .then(|| GpuProfiler::new(&device, &queue));
 
+        startup_profile::mark("device and queue request");
         let surface_capabilities = surface.get_capabilities(&adapter);
         let surface_format = surface_capabilities
             .formats
@@ -1850,9 +1854,11 @@ impl State {
             "configured surface"
         );
         surface.configure(&device, &config);
+        startup_profile::mark("surface configuration");
         let (depth_texture, depth_view) = create_depth_texture(&device, size);
         let hdr = hdr::HdrRenderer::new(&device, size, config.format);
 
+        startup_profile::mark("depth texture and HDR renderer");
         let mut camera = planet::OrbitCamera::default();
         if let Some(vertical_fov_degrees) = vertical_fov_degrees {
             camera.set_vertical_fov_degrees_for_viewport(vertical_fov_degrees, size.height);
@@ -1888,15 +1894,19 @@ impl State {
                 resource: camera_buffer.as_entire_binding(),
             }],
         });
+        startup_profile::mark("camera buffer and bind groups");
         let shared_planet_bind_group_layout = terrain::create_shared_bind_group_layout(&device);
+        startup_profile::mark("shared bind group layout");
         let atmosphere = atmosphere::AtmosphereRenderer::new(
             &device,
             &queue,
             hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
         );
+        startup_profile::mark("atmosphere renderer (LUTs)");
         let terrain_startup_samples = terrain::terrain_startup_samples(&terrain_source)
             .expect("active terrain startup samples must load");
+        startup_profile::mark("terrain startup samples (outmap reads)");
         let mut weather = weather::WeatherState::new_with_terrain_samples(
             terrain_startup_samples
                 .as_ref()
@@ -1905,6 +1915,7 @@ impl State {
         if scenario.is_none() {
             weather.enable_background_prediction(planet::default_sun_direction());
         }
+        startup_profile::mark("weather simulation init");
         let mut weather_clouds = weather_render::WeatherCloudRenderer::new(
             &device,
             &queue,
@@ -1912,6 +1923,7 @@ impl State {
             &camera_bind_group_layout,
             atmosphere.surface_lighting_resources(),
         );
+        startup_profile::mark("weather cloud renderer");
         weather_clouds.initialize_fields(
             &device,
             &queue,
@@ -1930,6 +1942,7 @@ impl State {
                     .expect("interactive weather surface target must be prepared before rendering"),
             );
         }
+        startup_profile::mark("weather cloud field upload");
         let local_cloud_impostors = weather_render::LocalCloudImpostorRenderer::new(
             &device,
             hdr::HdrRenderer::SCENE_FORMAT,
@@ -1937,6 +1950,7 @@ impl State {
             weather_clouds.field_bind_group_layout(),
             atmosphere.surface_lighting_resources(),
         );
+        startup_profile::mark("local cloud impostors");
         let foveated = foveated::FoveatedRenderer::new(
             &device,
             &queue,
@@ -1947,7 +1961,9 @@ impl State {
             terrain_source.clone(),
         )
         .expect("foveated renderer must initialize");
+        startup_profile::mark("foveated renderer");
         let (shadow_height_view, shadow_face_quads) = foveated.shadow_height_faces();
+        startup_profile::mark("foveated shadow faces");
         let mut terrain = terrain::TerrainRenderer::new(
             &device,
             &queue,
@@ -1960,6 +1976,7 @@ impl State {
             Some((&shadow_height_view, shadow_face_quads)),
         )
         .expect("terrain renderer must initialize");
+        startup_profile::mark("terrain renderer");
         let road = (road::enabled() && body::active() == body::PLANET).then(|| {
             road_render::RoadRenderer::new(
                 &device,
@@ -1968,6 +1985,7 @@ impl State {
                 &mut terrain,
             )
         });
+        startup_profile::mark("road");
         let forest = forest::ForestRenderer::new(
             &device,
             hdr::HdrRenderer::SCENE_FORMAT,
@@ -1976,12 +1994,14 @@ impl State {
             &terrain,
             atmosphere.surface_lighting_resources(),
         );
+        startup_profile::mark("forest renderer");
         let villages = village_render::VillageRenderer::new(
             &device,
             &queue,
             hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
         );
+        startup_profile::mark("villages");
         let ship_hull = ship::ShipHull::new();
         // Offset along a tangent so the hull sits beside the spawn rather than
         // under it. The ocean is deep here, so it starts on its waterline.
@@ -2059,29 +2079,34 @@ impl State {
         });
         // The sea's sound plays only in the interactive game: replays run
         // headless and must not depend on an audio device.
+        startup_profile::mark("ships (hulls, bodies, renderers)");
         let sea_sound = if scenario.is_some() {
             sea_sound::SeaSound::silent()
         } else {
             sea_sound::SeaSound::start()
         };
+        startup_profile::mark("sea sound");
         let rain = rain::Rain::new(
             &device,
             hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
             terrain.shared_bind_group_layout(),
         );
+        startup_profile::mark("rain");
         let bubbles = bubbles::Bubbles::new(
             &device,
             hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
             terrain.shared_bind_group_layout(),
         );
+        startup_profile::mark("bubbles");
         let bird_renderer = birds_render::BirdRenderer::new(
             &device,
             &queue,
             hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
         );
+        startup_profile::mark("bird renderer");
         let flock_marker = flock_marker::FlockMarkerRenderer::new(
             &device,
             &queue,
@@ -2093,6 +2118,7 @@ impl State {
         {
             scenario.retarget_sparse_landing_direction(landing_direction);
         }
+        startup_profile::mark("flock marker");
         let sun = sun::SunRenderer::new(
             &device,
             hdr::HdrRenderer::SCENE_FORMAT,
@@ -2101,6 +2127,7 @@ impl State {
             atmosphere.surface_lighting_resources(),
             &depth_view,
         );
+        startup_profile::mark("sun renderer");
         let stars = stars::StarRenderer::new(
             &device,
             hdr::HdrRenderer::SCENE_FORMAT,
@@ -2109,6 +2136,7 @@ impl State {
             atmosphere.surface_lighting_resources(),
         );
 
+        startup_profile::mark("star renderer");
         let egui_context = egui::Context::default();
         let egui_state = egui_winit::State::new(
             egui_context.clone(),
@@ -2124,6 +2152,7 @@ impl State {
             egui_wgpu::RendererOptions::default(),
         );
 
+        startup_profile::mark("egui setup");
         let mut state = Self {
             system_flight: None,
             sky_moon: None,
@@ -2294,8 +2323,11 @@ impl State {
         if scenario_uses_fixed_exposure {
             state.hdr.set_auto_exposure_enabled(&state.queue, false);
         }
+        startup_profile::mark("State struct build and post-construction setup");
         state.apply_startup_experiment_overrides();
+        startup_profile::mark("startup experiment overrides");
         state.apply_interactive_startup_controls();
+        startup_profile::mark("interactive startup controls");
         if scenario_name.as_deref() == Some("planet_to_moon") {
             state.system_flight = Some(system_flight::SystemFlight::new(
                 &mut state,
@@ -4884,6 +4916,7 @@ impl State {
             self.system_flight = Some(flight);
             return result;
         }
+        startup_profile::frame_started();
         let profile_started = Instant::now();
         let now = Instant::now();
         let completed_gpu_samples = self
@@ -6786,6 +6819,7 @@ impl Drop for State {
 }
 
 fn main() {
+    startup_profile::begin();
     let launch_options = launch_options().unwrap_or_else(|error| panic!("{error}"));
     // Both of these produce a picture that looks like a different, much worse
     // renderer, and neither used to say anything at all about why.
@@ -6878,6 +6912,7 @@ impl ApplicationHandler for App {
                 )
                 .expect("failed to create window"),
         );
+        startup_profile::mark("process start to window created (args, outmap lookup, event loop)");
         let mut state = pollster::block_on(State::new(
             window.clone(),
             self.launch_options.scenario_name.clone(),
@@ -6886,6 +6921,7 @@ impl ApplicationHandler for App {
             self.launch_options.vertical_fov_degrees,
             self.launch_options.terrain_source.clone(),
         ));
+        startup_profile::mark("State::new tail and return");
         if should_start_interactive_fullscreen(self.launch_options.scenario_name.is_some()) {
             self.startup_fullscreen_pending = true;
             tracing::info!(
