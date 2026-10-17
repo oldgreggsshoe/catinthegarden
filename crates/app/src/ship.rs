@@ -1111,8 +1111,202 @@ mod tests {
     fn still_water(height_meters: f64) -> impl Fn(DVec3) -> WaterSample {
         move |_| WaterSample {
             height_meters,
+/// How much of the closing speed a hull-to-hull hit gives back.
+const HULL_COLLISION_RESTITUTION: f64 = 0.15;
+/// Share of the overlap pushed out per contact per step.
+const HULL_COLLISION_PUSH_OUT: f64 = 0.2;
+
+struct HullContact {
+    point: DVec3,
+    /// Outward normal of the hull that was struck, planet frame.
+    normal: DVec3,
+    depth: f64,
+}
+
+impl ShipBody {
+    fn hull_origin(&self, hull: &ShipHull) -> DVec3 {
+        self.position - self.orientation * hull.centre_of_mass_local
+    }
+
+    fn total_mass_kg(&self, hull: &ShipHull) -> f64 {
+        hull.mass_kg + self.flood_kg
+    }
+
+    fn inverse_inertia_world(&self, hull: &ShipHull) -> DMat3 {
+        let inertia = hull.inertia_local * (self.total_mass_kg(hull) / hull.mass_kg);
+        let rotation = DMat3::from_quat(self.orientation);
+        rotation * DMat3::from_diagonal(DVec3::ONE / inertia) * rotation.transpose()
+    }
+
+    fn velocity_at(&self, point: DVec3) -> DVec3 {
+        self.linear_velocity + self.angular_velocity.cross(point - self.position)
+    }
+}
+
+/// Points on `body`'s hull at the waterline and half way up the topsides, as
+/// planet-frame positions.
+fn hull_probe_points(hull: &ShipHull, body: &ShipBody) -> Vec<DVec3> {
+    let origin = body.hull_origin(hull);
+    let mut points = Vec::new();
+    for index in 0..=10 {
+        let t = (-0.98 + 1.96 * index as f64 / 10.0).clamp(-0.98, 0.98);
+        let x = 0.5 * HULL_LENGTH_METERS * t;
+        let beam = half_beam_meters(t) * 0.98;
+        for z in [0.0, 0.5 * sheer_height_meters(t)] {
+            for y in [-beam, beam, 0.0] {
+                points.push(origin + body.orientation * DVec3::new(x, y, z));
+            }
+        }
+    }
+    points
+}
+
+/// Probe points of `inner` that lie inside `outer`'s hull.
+fn hull_contacts(hull: &ShipHull, inner: &ShipBody, outer: &ShipBody) -> Vec<HullContact> {
+    let origin = outer.hull_origin(hull);
+    let inverse = outer.orientation.inverse();
+    let half_length = 0.5 * HULL_LENGTH_METERS;
+    let mut contacts = Vec::new();
+    for point in hull_probe_points(hull, inner) {
+        let local = inverse * (point - origin);
+        let t = local.x / half_length;
+        if t.abs() >= 1.0 {
+            continue;
+        }
+        let beam = half_beam_meters(t);
+        if local.y.abs() >= beam
+            || local.z < -keel_depth_meters(t)
+            || local.z > sheer_height_meters(t)
+        {
+            continue;
+        }
+        let lateral = beam - local.y.abs();
+        let end = half_length * (1.0 - t.abs());
+        let (normal_local, depth) = if lateral <= end && local.y.abs() > 0.5 * beam {
+            // Outward normal of the tapering side at this station, so a bow
+            // struck head-on is pushed back along the hull, not sideways.
+            let slope = (half_beam_meters((t + 1e-3).min(1.0))
+                - half_beam_meters((t - 1e-3).max(-1.0)))
+                / (2e-3 * half_length);
+            let normal = DVec3::new(-slope, local.y.signum(), 0.0).normalize();
+            (normal, lateral * normal.y)
+        } else {
+            (DVec3::X * local.x.signum(), end)
+        };
+        contacts.push(HullContact {
+            point,
+            normal: outer.orientation * normal_local,
+            depth,
+        });
+    }
+    contacts
+}
+
+/// Resolves overlap between two hulls, in place: probe points of each that lie
+/// inside the other get a restitution impulse at the contact (so an off-centre
+/// hit spins the pair) and a gentle push apart. Horizontal only; the water
+/// holds them up. Returns whether they touched. No damage.
+pub fn collide_hulls(hull: &ShipHull, a: &mut ShipBody, b: &mut ShipBody) -> bool {
+    if a.position.distance(b.position) > HULL_LENGTH_METERS {
+        return false;
+    }
+    let mut touched = false;
+    for pass in 0..2 {
+        let contacts = if pass == 0 {
+            hull_contacts(hull, a, b)
+        } else {
+            hull_contacts(hull, b, a)
+        };
+        for contact in contacts {
+            let (inner, outer) = if pass == 0 {
+                (&mut *a, &mut *b)
+            } else {
+                (&mut *b, &mut *a)
+            };
+            let up = contact.point.normalize();
+            let normal = contact.normal - up * contact.normal.dot(up);
+            if normal.length_squared() < 1e-12 {
+                continue;
+            }
+            let normal = normal.normalize();
+            touched = true;
+            let (mass_i, mass_o) = (inner.total_mass_kg(hull), outer.total_mass_kg(hull));
+            let (inv_i, inv_o) = (
+                inner.inverse_inertia_world(hull),
+                outer.inverse_inertia_world(hull),
+            );
+            let (r_i, r_o) = (
+                contact.point - inner.position,
+                contact.point - outer.position,
+            );
+            let closing =
+                (inner.velocity_at(contact.point) - outer.velocity_at(contact.point)).dot(normal);
+            if closing < 0.0 {
+                let denominator = 1.0 / mass_i
+                    + 1.0 / mass_o
+                    + normal.dot((inv_i * r_i.cross(normal)).cross(r_i))
+                    + normal.dot((inv_o * r_o.cross(normal)).cross(r_o));
+                let impulse =
+                    normal * (-(1.0 + HULL_COLLISION_RESTITUTION) * closing / denominator);
+                inner.linear_velocity += impulse / mass_i;
+                inner.angular_velocity += inv_i * r_i.cross(impulse);
+                outer.linear_velocity -= impulse / mass_o;
+                outer.angular_velocity -= inv_o * r_o.cross(impulse);
+            }
+            let push = normal * (contact.depth * HULL_COLLISION_PUSH_OUT);
+            let share_i = mass_o / (mass_i + mass_o);
+            inner.position += push * share_i;
+            outer.position -= push * (1.0 - share_i);
+        }
+    }
+    touched
+}
+
             vertical_velocity_meters_per_second: 0.0,
             slope: DVec3::ZERO,
+    use super::collide_hulls;
+    #[test]
+    fn two_drifting_hulls_bounce_apart_without_gaining_energy() {
+        let hull = ShipHull::new();
+        let direction = DVec3::new(0.838, 0.502, 0.2125).normalize();
+        let heading = direction.cross(DVec3::Y).normalize();
+        let tangent = heading;
+        let mut a = ShipBody::afloat_at(&hull, direction, heading, 0.0);
+        let mut b = ShipBody::afloat_at(&hull, direction, -heading, 0.0);
+        // Bows meeting head-on, 3 m of overlap.
+        b.position = a.position + tangent * (HULL_LENGTH_METERS - 3.0);
+        a.linear_velocity = tangent * 3.0;
+        b.linear_velocity = -tangent * 3.0;
+        let energy =
+            |s: &ShipBody| 0.5 * s.total_mass_kg(&hull) * s.linear_velocity.length_squared();
+        let before = energy(&a) + energy(&b);
+        let mut touched = false;
+        for _ in 0..200 {
+            touched |= collide_hulls(&hull, &mut a, &mut b);
+            a.position += a.linear_velocity / 120.0;
+            b.position += b.linear_velocity / 120.0;
+        }
+        assert!(touched);
+        assert!(
+            (b.position - a.position).dot(tangent) > 0.0,
+            "stayed on own side"
+        );
+        assert!(a.linear_velocity.dot(tangent) < 0.0, "a recoils");
+        assert!(b.linear_velocity.dot(tangent) > 0.0, "b recoils");
+        assert!(energy(&a) + energy(&b) < before);
+    }
+
+    #[test]
+    fn distant_hulls_do_not_touch() {
+        let hull = ShipHull::new();
+        let direction = DVec3::new(0.838, 0.502, 0.2125).normalize();
+        let heading = direction.cross(DVec3::Y).normalize();
+        let mut a = ShipBody::afloat_at(&hull, direction, heading, 0.0);
+        let mut b = a.clone();
+        b.position += heading * 3.0 * HULL_LENGTH_METERS;
+        assert!(!collide_hulls(&hull, &mut a, &mut b));
+    }
+
             horizontal_velocity: DVec3::ZERO,
         }
     }

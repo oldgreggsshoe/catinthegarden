@@ -383,6 +383,8 @@ const STORM_OCEAN_START_PITCH_RADIANS: f64 = -4.0_f64.to_radians();
 /// The floating ship rides at anchor a short way off the storm-ocean start, so
 /// it is in shot from the interactive spawn without sitting on top of it.
 const SHIP_START_OFFSET_METERS: f64 = 140.0;
+/// Where the second ship starts, along the same tangent beyond the first.
+const SECOND_SHIP_OFFSET_METERS: f64 = 45.0;
 /// Fallback depth for the hull's wave queries before the sea bed under it has
 /// streamed in. The real bathymetry is used whenever it is resident: assuming
 /// open ocean floated the hull on an unlimited sea while the camera and the
@@ -1448,6 +1450,72 @@ struct SpatialLogInputs {
     ocean_wave_stats: ocean::WaveHeightStats,
 }
 
+/// One fixed physics step of a hull in the sea: it rides the piece of water it
+/// started on (its label, which the foam is indexed by) while afloat, and is
+/// held by the seabed once sunk. Returns the water's horizontal velocity at
+/// the hull, faded with depth.
+fn step_ship_in_water(
+    hull: &ship::ShipHull,
+    body: &mut ship::ShipBody,
+    label: &mut Option<[f64; 2]>,
+    depth_meters: f64,
+    ocean_time_seconds: f64,
+) -> glam::DVec3 {
+    // One orbital-velocity query per step, at the hull: it varies over the
+    // swell's scale, not the hull's.
+    let direction = body.position.normalize();
+    let afloat = !body.foundering && !body.on_seabed;
+    let mut water_horizontal =
+        ocean::global_wave_horizontal_velocity(direction, ocean_time_seconds);
+    body.anchor_gap_meters = glam::DVec3::ZERO;
+    if afloat {
+        let held = *label
+            .get_or_insert_with(|| ocean::global_wave_label_meters(direction, ocean_time_seconds));
+        let (velocity, gap) = ocean::global_wave_follow_label(held, direction, ocean_time_seconds);
+        if gap.length() > ship::ANCHOR_MAXIMUM_GAP_METERS {
+            // Moved some other way: take up the water beneath it now.
+            *label = None;
+        } else {
+            water_horizontal = velocity;
+            body.anchor_gap_meters = gap;
+        }
+    } else {
+        *label = None;
+    }
+    // The surface's orbital motion fades with depth (as the hull's own forces
+    // do), so a sunk hull reads still water, not the swell's.
+    let hull_depth = (-(body.position.length() - planet::planet_radius_meters())).max(0.0);
+    let water_velocity = water_horizontal * (-ship::WAVE_DECAY_PER_METER * hull_depth).exp();
+    body.advance(hull, ship::FIXED_STEP_SECONDS, |direction| {
+        ship::WaterSample {
+            height_meters: ocean::global_wave_height_meters(
+                direction,
+                ocean_time_seconds,
+                depth_meters,
+            ),
+            vertical_velocity_meters_per_second:
+                ocean::global_wave_vertical_velocity_meters_per_second(
+                    direction,
+                    ocean_time_seconds,
+                    SHIP_FALLBACK_DEPTH_METERS,
+                ),
+            slope: ocean::global_wave_slope(
+                direction,
+                ocean_time_seconds,
+                SHIP_FALLBACK_DEPTH_METERS,
+            ),
+            horizontal_velocity: water_horizontal,
+        }
+    });
+    water_velocity
+}
+
+struct SecondShip {
+    body: ship::ShipBody,
+    label: Option<[f64; 2]>,
+    renderer: ship_render::ShipRenderer,
+}
+
 struct State {
     system_flight: Option<system_flight::SystemFlight>,
     /// The moon drawn in the sky during ordinary play; see `sky_moon`.
@@ -1484,6 +1552,9 @@ struct State {
     ship_hull: ship::ShipHull,
     ship_body: ship::ShipBody,
     ship_renderer: ship_render::ShipRenderer,
+    /// A second, drifting hull (`PLANET_SECOND_SHIP=0` removes it): same hull
+    /// design, own body, water label and renderer; collides with the first.
+    second_ship: Option<SecondShip>,
     birds: birds::BirdFlocks,
     bird_renderer: birds_render::BirdRenderer,
     /// Bird cam: B rides a bird in the nearest flock instead of the authored
@@ -1941,6 +2012,37 @@ impl State {
             &camera_bind_group_layout,
             terrain.shared_bind_group_layout(),
         );
+        let second_ship = (std::env::var("PLANET_SECOND_SHIP").as_deref() != Ok("0")).then(|| {
+            let radial = STORM_OCEAN_START_DIRECTION.normalize();
+            let tangent = radial.cross(glam::DVec3::Y).normalize();
+            let direction = (ship_direction
+                + tangent * (SECOND_SHIP_OFFSET_METERS / planet::planet_radius_meters()))
+            .normalize();
+            let mut body = ship::ShipBody::afloat_at(
+                &ship_hull,
+                direction,
+                -radial.cross(glam::DVec3::Y),
+                ocean::global_wave_height_meters(direction, 0.0, SHIP_FALLBACK_DEPTH_METERS),
+            );
+            body.linear_velocity = ocean::global_wave_horizontal_velocity(direction, 0.0)
+                + direction
+                    * ocean::global_wave_vertical_velocity_meters_per_second(
+                        direction,
+                        0.0,
+                        SHIP_FALLBACK_DEPTH_METERS,
+                    );
+            SecondShip {
+                body,
+                label: None,
+                renderer: ship_render::ShipRenderer::new(
+                    &device,
+                    &queue,
+                    hdr::HdrRenderer::SCENE_FORMAT,
+                    &camera_bind_group_layout,
+                    terrain.shared_bind_group_layout(),
+                ),
+            }
+        });
         // The sea's sound plays only in the interactive game: replays run
         // headless and must not depend on an audio device.
         let sea_sound = if scenario.is_some() {
@@ -2037,6 +2139,7 @@ impl State {
             ship_hull,
             ship_body,
             ship_renderer,
+            second_ship,
             // One planet seed, so a scenario replay lands on the same flocks.
             // PLANET_BIRD_SPAWN_METERS="min,max" brings the spawn shell in
             // for a demo or a close-range diagnostic; malformed values are
@@ -2982,6 +3085,15 @@ impl State {
         // The hull rests on the bottom if it sinks, and the clearance readout
         // needs it even while time is stopped and no step runs.
         self.ship_body.seabed_altitude_meters = -ship_depth_meters;
+        let second_depth_meters = self
+            .second_ship
+            .as_ref()
+            .and_then(|second| {
+                self.terrain
+                    .bathymetry_height_meters_at(second.body.position.normalize())
+            })
+            .map(|height| (-height).max(0.0))
+            .unwrap_or(SHIP_FALLBACK_DEPTH_METERS);
         if ocean_time_seconds - self.ship_sim_time_seconds > MAXIMUM_SHIP_BACKLOG_SECONDS {
             self.ship_sim_time_seconds = ocean_time_seconds - MAXIMUM_SHIP_BACKLOG_SECONDS;
         }
@@ -2989,61 +3101,30 @@ impl State {
             let step_time_seconds = self.ship_sim_time_seconds + ship::FIXED_STEP_SECONDS;
             self.ship_sim_time_seconds = step_time_seconds;
             let ocean_time_seconds = step_time_seconds;
-            // One orbital-velocity query per step, at the hull: it varies over
-            // the swell's scale, not the hull's.
-            // Afloat, the hull rides one piece of the sea -- the water whose rest
-            // position (label) it started on, which the foam is indexed by too --
-            // so it moves with the foam, not slowly off it. Sunk, it is held
-            // by the seabed and the surface no longer pulls on it.
-            let direction = self.ship_body.position.normalize();
-            let afloat = !self.ship_body.foundering && !self.ship_body.on_seabed;
-            let mut water_horizontal =
-                ocean::global_wave_horizontal_velocity(direction, ocean_time_seconds);
-            self.ship_body.anchor_gap_meters = glam::DVec3::ZERO;
-            if afloat {
-                let label = *self.ship_label.get_or_insert_with(|| {
-                    ocean::global_wave_label_meters(direction, ocean_time_seconds)
-                });
-                let (velocity, gap) =
-                    ocean::global_wave_follow_label(label, direction, ocean_time_seconds);
-                if gap.length() > ship::ANCHOR_MAXIMUM_GAP_METERS {
-                    // Moved some other way: take up the water beneath it now.
+            self.ship_water_velocity = step_ship_in_water(
+                &self.ship_hull,
+                &mut self.ship_body,
+                &mut self.ship_label,
+                ship_depth_meters,
+                ocean_time_seconds,
+            );
+            if let Some(second) = self.second_ship.as_mut() {
+                second.body.seabed_altitude_meters = second_depth_meters;
+                step_ship_in_water(
+                    &self.ship_hull,
+                    &mut second.body,
+                    &mut second.label,
+                    second_depth_meters,
+                    ocean_time_seconds,
+                );
+                // Touching hulls: the water anchors would drag them back
+                // together, so let go of them and take up the water again
+                // where the impact leaves them.
+                if ship::collide_hulls(&self.ship_hull, &mut self.ship_body, &mut second.body) {
                     self.ship_label = None;
-                } else {
-                    water_horizontal = velocity;
-                    self.ship_body.anchor_gap_meters = gap;
+                    second.label = None;
                 }
-            } else {
-                self.ship_label = None;
             }
-            // The surface's orbital motion fades with depth (as the hull's own
-            // forces do), so a sunk hull reads still water, not the swell's.
-            let hull_depth =
-                (-(self.ship_body.position.length() - planet::planet_radius_meters())).max(0.0);
-            self.ship_water_velocity =
-                water_horizontal * (-ship::WAVE_DECAY_PER_METER * hull_depth).exp();
-            self.ship_body
-                .advance(&self.ship_hull, ship::FIXED_STEP_SECONDS, |direction| {
-                    ship::WaterSample {
-                        height_meters: ocean::global_wave_height_meters(
-                            direction,
-                            ocean_time_seconds,
-                            ship_depth_meters,
-                        ),
-                        vertical_velocity_meters_per_second:
-                            ocean::global_wave_vertical_velocity_meters_per_second(
-                                direction,
-                                ocean_time_seconds,
-                                SHIP_FALLBACK_DEPTH_METERS,
-                            ),
-                        slope: ocean::global_wave_slope(
-                            direction,
-                            ocean_time_seconds,
-                            SHIP_FALLBACK_DEPTH_METERS,
-                        ),
-                        horizontal_velocity: water_horizontal,
-                    }
-                });
         }
         // What is left of this frame's time after the whole steps: the ship is
         // drawn carried forward by it (`presented_ship_body`).
@@ -3289,6 +3370,27 @@ impl State {
             Vec::new()
         };
         self.ship_renderer.update_water(&self.queue, &water);
+        if let Some(second) = self.second_ship.as_mut() {
+            let body = second
+                .body
+                .carried_forward(self.ship_presentation_lead_seconds);
+            let origin = body.position + body.orientation * -self.ship_hull.centre_of_mass_local();
+            let offset = origin - camera_local;
+            let visible = offset.length() < SHIP_VISIBLE_DISTANCE_METERS;
+            second.renderer.update(
+                &self.queue,
+                basis.world_to_view(offset),
+                glam::DMat3::from_quat(body.orientation),
+                body.position.normalize(),
+                visible,
+            );
+            let water = if visible {
+                ship_model::build_water(&body, &self.ship_hull)
+            } else {
+                Vec::new()
+            };
+            second.renderer.update_water(&self.queue, &water);
+        }
     }
 
     /// Eases the storm overcast toward the weather's storm strength at the
@@ -6115,6 +6217,13 @@ impl State {
                     &self.camera_bind_group,
                     self.terrain.shared_bind_group(),
                 );
+                if let Some(second) = &self.second_ship {
+                    second.renderer.draw(
+                        &mut render_pass,
+                        &self.camera_bind_group,
+                        self.terrain.shared_bind_group(),
+                    );
+                }
             }
             if BIRDS_ENABLED && subsystem_enabled("birds") {
                 self.bird_renderer
