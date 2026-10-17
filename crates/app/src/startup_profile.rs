@@ -105,6 +105,7 @@ fn report() {
         return;
     };
     profile.reported = true;
+    crate::pipeline_cache::save();
     let total_ms = (Instant::now() - profile.started).as_secs_f64() * 1e3;
     let mut ranked: Vec<&(String, f64)> = profile.phases.iter().collect();
     ranked.sort_by(|a, b| b.1.total_cmp(&a.1));

@@ -412,7 +412,7 @@ impl FoveatedRenderer {
             }),
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
-            cache: None,
+            cache: crate::pipeline_cache::get(),
         });
 
         crate::startup_profile::mark("  foveated: direct pipeline");
@@ -449,7 +449,7 @@ impl FoveatedRenderer {
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
-            cache: None,
+            cache: crate::pipeline_cache::get(),
         });
 
         let unwarp_bind_group_layout =
@@ -522,7 +522,7 @@ impl FoveatedRenderer {
             }),
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
-            cache: None,
+            cache: crate::pipeline_cache::get(),
         });
         let warp_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("foveated warp sampler"),

@@ -12380,3 +12380,7 @@ Causes: beams were emitted by `collect_house_instances` (2-cell ring, ~12 km), t
 ## 17 October: startup sub-profile
 
 Sub-marks added inside `FoveatedRenderer::new` and `TerrainRenderer::new` (the moon's copy is labelled `moon: `, via `startup_profile::set_prefix`). `startup_profile::note` records loop totals shown under the table. Result: ~16 s of a 28.5 s startup is render-pipeline compilation; the sky moon builds a second full TerrainRenderer (~6 s). Next options: wgpu pipeline cache on disk, lazy moon, lazy foveated (F5-only) renderer. Nothing optimised yet.
+
+## 17 October: pipeline cache
+
+`pipeline_cache.rs`: disk wgpu pipeline cache (Vulkan), wired into terrain.rs and foveated.rs pipelines only. Measured to frame 4: 28.5 s cold, 15.2 s, 10.4 s warm. Remaining warm cost: foveated six-face upload 1.7 s, moon renderer textures/ocean ~1.3 s, atmosphere LUTs 0.6 s, ships 0.7 s. Next: pass the cache to the other `cache: None` pipelines, make moon/foveated lazy.

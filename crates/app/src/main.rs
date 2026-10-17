@@ -38,6 +38,7 @@ mod ship;
 mod startup_profile;
 mod ship_model;
 mod ship_render;
+mod pipeline_cache;
 mod sky_moon;
 mod stars;
 mod sun;
@@ -1776,12 +1777,16 @@ impl State {
         // per-stage CPU breakdown, was unreachable here as well. `--profile-gpu`
         // asks for the broken half deliberately.
         let timestamp_features = wgpu::Features::TIMESTAMP_QUERY;
-        let requested_features =
+        let mut requested_features =
             if profile_gpu_timestamps && adapter.features().contains(timestamp_features) {
                 timestamp_features
             } else {
                 wgpu::Features::empty()
             };
+        if pipeline_cache::enabled() && adapter.features().contains(wgpu::Features::PIPELINE_CACHE)
+        {
+            requested_features |= wgpu::Features::PIPELINE_CACHE;
+        }
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("render device"),
@@ -1803,6 +1808,7 @@ impl State {
             .contains(wgpu::Features::TIMESTAMP_QUERY)
             .then(|| GpuProfiler::new(&device, &queue));
 
+        pipeline_cache::init(&device, &adapter_info);
         startup_profile::mark("device and queue request");
         let surface_capabilities = surface.get_capabilities(&adapter);
         let surface_format = surface_capabilities
