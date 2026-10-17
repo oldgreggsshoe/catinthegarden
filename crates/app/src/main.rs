@@ -3109,7 +3109,7 @@ impl State {
                 ocean_time_seconds,
             );
             if let Some(second) = self.second_ship.as_mut() {
-                second.body.seabed_altitude_meters = second_depth_meters;
+                second.body.seabed_altitude_meters = -second_depth_meters;
                 step_ship_in_water(
                     &self.ship_hull,
                     &mut second.body,
