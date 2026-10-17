@@ -5752,6 +5752,7 @@ impl State {
                 &self.queue,
                 camera_planet_frame_position,
                 self.camera.planet_frame_direction_dvec3(planet_rotation_radians),
+                [self.size.width, self.size.height],
             );
         }
         if write_log {
@@ -6362,6 +6363,11 @@ impl State {
                     &self.camera_bind_group,
                     camera_sea_level_altitude_meters,
                 );
+            }
+            if subsystem_enabled("roads")
+                && let Some(road) = &self.road
+            {
+                road.draw_far(&mut render_pass, &self.camera_bind_group);
             }
             if body::has_atmosphere() {
                 if subsystem_enabled("cloud_impostors") {

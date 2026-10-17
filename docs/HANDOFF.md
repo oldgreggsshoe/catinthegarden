@@ -10,7 +10,37 @@ surface appearance and crest geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Latest phase (17 October): terrain-planned 30 km graded viaduct and cuts.**
+**Latest phase (17 October): analytic coverage AA for distant roads.**
+The far road previously used opaque single-sample triangles; F6 post-AA cannot
+recover a road that rasterisation misses. `road.rs::far_segment` now encodes
+centreline, half-width tangent and side (signed red) in the existing 36-byte
+far vertices. Shared endpoint tangents keep adjacent ribbons joined.
+`road.wgsl::vs_far` projects the physical width, expanding its raster envelope
+by a pixel per side. `fs_far` integrates the projected pixel-square box filter
+across the physical strip, conserving darkness across pixel phases and angles.
+It uses premultiplied alpha, tests existing depth without writing fringe depth,
+and draws after opaque forest/villages, before local weather. The close mesh
+and collider are unchanged. No full-scene MSAA, supersampling or new textures.
+Viewport dimensions occupy unused lanes in the existing 64-byte road instance.
+
+Regression: `cargo test -p planet-app --release road_ -- --include-ignored
+--nocapture` passes 12 tests, including two production-pipeline Vulkan tests.
+The new AA test pans a real 10 m deck across eight pixel phases at three angles,
+including a shared segment seam and a foreground-depth occlusion check. At
+0.2 px width, the baseline vanished in 7/8 vertical phases and darkened the
+remaining phase by 0.902. AA retains 0.1804 darkness per row at every vertical
+phase (physical expectation 0.1807); diagonal peak darkness stays below 0.24.
+`PLANET_ROAD_AA_TEST_CAPTURES=/tmp/stuff-road-aa-fixtures` optionally saves
+24 native-resolution PPM fixtures; their phase contact sheet was opened.
+Full app suite: 660 pass, the same six pre-existing failures listed below,
+46 ignored. Live terrain screenshots and matched FPS are **not yet validated**:
+the user's renderer (PID 348413 when checked) remains running; do not stop it.
+Baseline executable copied to `/tmp/stuff-road-aa-before` (SHA256
+`b9a14c264d33ffc23141fd6aa3899513db8bf5068b599f0d2d6b733b3ea58c10`).
+Before/after timing needs an otherwise idle GPU; recheck source/binary provenance
+because unrelated startup and ship work is active in the same checkout.
+
+**Previous phase (17 October): terrain-planned 30 km graded viaduct and cuts.**
 The user's revised brief is to seek routes that minimise digging, permit up
 to 10% grade, keep the deck on legs, and extend the winding trial to 30 km.
 `road_route.rs` surveys a 30 km x 6 km dry corridor on a 100 m longitudinal /

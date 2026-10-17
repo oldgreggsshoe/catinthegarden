@@ -55,6 +55,7 @@ fn draw_ranges(
 pub struct RoadRenderer {
     pub plan: road::Viaduct,
     pipeline: wgpu::RenderPipeline,
+    far_pipeline: wgpu::RenderPipeline,
     vertices: wgpu::Buffer,
     instance: wgpu::Buffer,
     chunks: Vec<DrawChunk>,
@@ -108,84 +109,8 @@ impl RoadRenderer {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("viaduct shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("road.wgsl").into()),
-        });
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("viaduct pipeline layout"),
-            bind_group_layouts: &[Some(camera_layout)],
-            immediate_size: 0,
-        });
-        const VERTEX: [wgpu::VertexAttribute; 3] =
-            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3];
-        const FRAME: [wgpu::VertexAttribute; 4] = [
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x3,
-                offset: 0,
-                shader_location: 3,
-            },
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x3,
-                offset: 16,
-                shader_location: 4,
-            },
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x3,
-                offset: 32,
-                shader_location: 5,
-            },
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x3,
-                offset: 48,
-                shader_location: 6,
-            },
-        ];
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("viaduct single batch"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[
-                    wgpu::VertexBufferLayout {
-                        array_stride: size_of::<road::Vertex>() as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &VERTEX,
-                    },
-                    wgpu::VertexBufferLayout {
-                        array_stride: size_of::<Instance>() as u64,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &FRAME,
-                    },
-                ],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                cull_mode: Some(wgpu::Face::Back),
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Greater),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let pipeline = create_pipeline(device, format, camera_layout, false);
+        let far_pipeline = create_pipeline(device, format, camera_layout, true);
         tracing::info!(
             route_length_meters = plan.route.length(),
             planned_cut_volume_m3 = plan.route.cut_volume,
@@ -216,6 +141,7 @@ impl RoadRenderer {
         Self {
             plan,
             pipeline,
+            far_pipeline,
             vertices,
             instance,
             chunks,
@@ -227,6 +153,7 @@ impl RoadRenderer {
         queue: &wgpu::Queue,
         camera_planet_position: DVec3,
         camera_forward: DVec3,
+        viewport: [u32; 2],
     ) {
         for chunk in &mut self.chunks {
             let relative = chunk.centre - camera_planet_position;
@@ -236,29 +163,138 @@ impl RoadRenderer {
         }
         if self.chunks.iter().any(|chunk| chunk.visible) {
             let vector = |v: DVec3| [v.x as f32, v.y as f32, v.z as f32, 0.0];
-            let frame = Instance {
+            let mut frame = Instance {
                 origin: vector(road::origin() - camera_planet_position),
                 across: vector(road::across()),
                 forward: vector(road::forward()),
                 up: vector(road::up()),
             };
+            frame.origin[3] = viewport[0] as f32;
+            frame.across[3] = viewport[1] as f32;
             queue.write_buffer(&self.instance, 0, bytemuck::bytes_of(&frame));
         }
     }
 
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, camera: &'a wgpu::BindGroup) {
-        if self.chunks.iter().any(|chunk| chunk.visible) {
-            pass.set_pipeline(&self.pipeline);
+        self.draw_lod(pass, camera, false);
+    }
+
+    /// Coverage-blended decks draw after opaque objects, before local weather.
+    pub fn draw_far<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, camera: &'a wgpu::BindGroup) {
+        self.draw_lod(pass, camera, true);
+    }
+
+    fn draw_lod<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        camera: &'a wgpu::BindGroup,
+        distant: bool,
+    ) {
+        if self
+            .chunks
+            .iter()
+            .any(|chunk| chunk.visible && chunk.distant == distant)
+        {
+            pass.set_pipeline(if distant {
+                &self.far_pipeline
+            } else {
+                &self.pipeline
+            });
             pass.set_bind_group(0, camera, &[]);
             pass.set_vertex_buffer(0, self.vertices.slice(..));
             pass.set_vertex_buffer(1, self.instance.slice(..));
-            for distant in [false, true] {
-                for range in draw_ranges(&self.chunks, distant) {
-                    pass.draw(range, 0..1);
-                }
+            for range in draw_ranges(&self.chunks, distant) {
+                pass.draw(range, 0..1);
             }
         }
     }
+}
+
+pub(crate) fn create_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    camera_layout: &wgpu::BindGroupLayout,
+    far: bool,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("viaduct shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("road.wgsl").into()),
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("viaduct pipeline layout"),
+        bind_group_layouts: &[Some(camera_layout)],
+        immediate_size: 0,
+    });
+    const VERTEX: [wgpu::VertexAttribute; 3] =
+        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3];
+    const FRAME: [wgpu::VertexAttribute; 4] = [
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x4,
+            offset: 0,
+            shader_location: 3,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x4,
+            offset: 16,
+            shader_location: 4,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: 32,
+            shader_location: 5,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: 48,
+            shader_location: 6,
+        },
+    ];
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("viaduct single batch"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some(if far { "vs_far" } else { "vs_main" }),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[
+                wgpu::VertexBufferLayout {
+                    array_stride: size_of::<road::Vertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &VERTEX,
+                },
+                wgpu::VertexBufferLayout {
+                    array_stride: size_of::<Instance>() as u64,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &FRAME,
+                },
+            ],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some(if far { "fs_far" } else { "fs_main" }),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: far.then_some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState {
+            cull_mode: Some(wgpu::Face::Back),
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: Some(!far),
+            depth_compare: Some(wgpu::CompareFunction::Greater),
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        multiview_mask: None,
+        cache: None,
+    });
+    pipeline
 }
 
 #[cfg(test)]

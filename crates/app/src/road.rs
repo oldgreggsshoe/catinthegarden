@@ -374,13 +374,12 @@ impl Viaduct {
                 let j = (i + 4).min(end);
                 let a = self.route.points[i];
                 let b = self.route.points[j];
-                let l = lateral(&self.route.points, i) * HALF_WIDTH;
-                let m = lateral(&self.route.points, j) * HALF_WIDTH;
-                quad(
-                    &mut far_vertices,
-                    [a - l, a + l, b + m, b - m],
-                    [0.045, 0.048, 0.05],
-                );
+                let tangent = |index: usize| {
+                    let d = self.route.points[(index + 1).min(self.route.points.len() - 1)]
+                        - self.route.points[index.saturating_sub(1)];
+                    d / d.truncate().length() * HALF_WIDTH
+                };
+                far_segment(&mut far_vertices, a, b, tangent(i), tangent(j));
             }
             chunks.push(MeshChunk {
                 vertices,
@@ -413,6 +412,31 @@ fn radial_triangle_height(direction: DVec3, [a, b, c]: [DVec3; 3]) -> Option<f64
         Some(radius - r)
     } else {
         None
+    }
+}
+
+/// Far ribbon: centreline, half-width tangent, and signed red encode its sides.
+/// Shared endpoint tangents keep expanded neighbouring segments joined.
+pub(crate) fn far_segment(
+    mesh: &mut Vec<Vertex>,
+    a: DVec3,
+    b: DVec3,
+    tangent_a: DVec3,
+    tangent_b: DVec3,
+) {
+    for (position, tangent, side) in [
+        (a, tangent_a, -1.0),
+        (a, tangent_a, 1.0),
+        (b, tangent_b, 1.0),
+        (a, tangent_a, -1.0),
+        (b, tangent_b, 1.0),
+        (b, tangent_b, -1.0),
+    ] {
+        mesh.push(Vertex {
+            position: position.as_vec3().to_array(),
+            normal: tangent.as_vec3().to_array(),
+            colour: [side * 0.045, 0.048, 0.05],
+        });
     }
 }
 

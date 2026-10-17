@@ -80,6 +80,9 @@ ground, route length and sharp turns; a fitted deck profile has a hard **10%
 maximum grade**. Local hillside cuts make room beneath the deck, with exposed
 earth on cut faces. Cuts are reversible runtime deformation, not edits to the
 baked outmap. Meshes/cuts are cached, with local batches and a distant deck LOD.
+Distant decks use analytic pixel coverage: a sub-pixel road contributes a faint
+line instead of flickering solid pixels. This works independently of F6 post-AA;
+close geometry is unchanged and foreground terrain still occludes the road.
 Ordinary runs build none of this. For **free exploration**, omit `--scenario`:
 this starts on the deck in free flight instead of on the ship.
 
