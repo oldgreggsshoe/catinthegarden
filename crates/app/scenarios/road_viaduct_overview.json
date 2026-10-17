@@ -1,0 +1,105 @@
+{
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "skip_birds": true,
+  "planet_rotation_time_scale": 0,
+  "fixed_exposure": true,
+  "sun_waypoints": [
+    {
+      "time_s": 0,
+      "direction": [
+        0.9,
+        0.3,
+        0.2
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0,
+      "vertical_fov_degrees": 70
+    }
+  ],
+  "name": "road_viaduct_overview",
+  "duration_seconds": 6,
+  "terrain_eye_height_meters": 20,
+  "screenshot_times_seconds": [
+    0.9,
+    3.9,
+    6
+  ],
+  "waypoints": [
+    {
+      "time_s": 0,
+      "position": [
+        3798750.44845949,
+        1157887.058733172,
+        494138.52233565587
+      ],
+      "look_at": [
+        3798520.511174742,
+        1158521.895413645,
+        494134.20351800165
+      ]
+    },
+    {
+      "time_s": 2,
+      "position": [
+        3798750.44845949,
+        1157887.058733172,
+        494138.52233565587
+      ],
+      "look_at": [
+        3798520.511174742,
+        1158521.895413645,
+        494134.20351800165
+      ]
+    },
+    {
+      "time_s": 3,
+      "position": [
+        3798604.19218735,
+        1158427.9184508384,
+        493994.6304711696
+      ],
+      "look_at": [
+        3798538.1172050503,
+        1158525.5016828247,
+        493990.31165584066
+      ]
+    },
+    {
+      "time_s": 4,
+      "position": [
+        3798604.19218735,
+        1158427.9184508384,
+        493994.6304711696
+      ],
+      "look_at": [
+        3798538.1172050503,
+        1158525.5016828247,
+        493990.31165584066
+      ]
+    },
+    {
+      "time_s": 6,
+      "position": [
+        3798652.5165699013,
+        1158421.7478188346,
+        493637.38171000767
+      ],
+      "look_at": [
+        3798543.946107472,
+        1158544.4580188922,
+        493900.9994654614
+      ]
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 3
+  }
+}

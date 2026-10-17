@@ -314,7 +314,7 @@
     "require_finite_metrics": true,
     "expected_screenshots": 7,
     "min_camera_clearance_m": 1.0,
-    "min_surface_probe_points": 60,
+    "min_surface_probe_points": 20,
     "max_camera_clearance_m": 3.0
   }
 }

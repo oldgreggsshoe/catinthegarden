@@ -1,0 +1,54 @@
+{
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "skip_birds": true,
+  "planet_rotation_time_scale": 0,
+  "fixed_exposure": true,
+  "sun_waypoints": [
+    {
+      "time_s": 0,
+      "direction": [
+        0.9,
+        0.3,
+        0.2
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0,
+      "vertical_fov_degrees": 70
+    }
+  ],
+  "name": "road_viaduct_performance",
+  "duration_seconds": 8,
+  "terrain_eye_height_meters": 2,
+  "screenshot_times_seconds": [
+    8
+  ],
+  "waypoints": [
+    {
+      "time_s": 0,
+      "position": [
+        3798555.208698812,
+        1158537.4069065554,
+        493952.4682696646
+      ],
+      "look_at": [
+        3798550.0352430535,
+        1158528.5321077309,
+        493996.8775754284
+      ]
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 1,
+    "min_camera_clearance_m": 1,
+    "max_camera_clearance_m": 3,
+    "min_surface_probe_points": 20
+  }
+}

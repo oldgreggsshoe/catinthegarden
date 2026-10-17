@@ -72,6 +72,24 @@ Logs are written to `test-runs/manual/<timestamp>-<pid>/log.jsonl`. Startup
 records whether debug assertions are enabled; startup and resize entries show
 internal and display resolutions.
 
+### Level-road experiment
+
+The opt-in 650 m trial is a level viaduct on variable-height legs, not asphalt
+painted onto bumpy terrain. It is one cached local mesh; ordinary runs do not
+build it. Run the driving replay, or replace the scenario with
+`road_viaduct_overview` to inspect the supports from the side:
+
+```sh
+env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 cargo run --release -p planet-app -- --scenario road_surface_trial
+```
+
+For matched cost measurements use scenario `road_viaduct_performance`,
+environment `PLANET_PRESENT_MODE=immediate PLANET_VIEWPORT=640x360`, and
+CLI flag `--profile-render`.
+Keep `PLANET_ROAD_EXPERIMENT=1` in both runs and add `PLANET_DISABLE=roads`
+only to the hidden run: this retains the identical elevated camera/collider.
+The pilot has no approach ramps, connected network, or pier/parapet collision.
+
 ### Controls
 
 `W`/`A`/`S`/`D` move, mouse looks, `Shift` accelerates. `Esc` or `Q` quits.

@@ -360,6 +360,8 @@ scenarios! {
     "coastal_spawn_view" => "../scenarios/coastal_spawn_view.json",
     "mountain_ground" => "../scenarios/mountain_ground.json",
     "road_surface_trial" => "../scenarios/road_surface_trial.json",
+    "road_viaduct_overview" => "../scenarios/road_viaduct_overview.json",
+    "road_viaduct_performance" => "../scenarios/road_viaduct_performance.json",
     "wavedir_spawn" => "../scenarios/wavedir_spawn.json",
     "ocean_underside_shallows" => "../scenarios/ocean_underside_shallows.json",
     "ocean_underside_snell_window" => "../scenarios/ocean_underside_snell_window.json",
@@ -1147,7 +1149,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 124);
+        assert_eq!(SCENARIO_NAMES.len(), 126);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));
@@ -1397,7 +1399,7 @@ mod tests {
     }
 
     #[test]
-    fn road_surface_trial_drives_forward_along_the_painted_corridor() {
+    fn road_surface_trial_drives_forward_along_the_viaduct_corridor() {
         let scenario = ScenarioRunner::load("road_surface_trial").expect("road replay parses");
         let anchor = DVec3::new(0.94919006, 0.28950297, 0.12339471);
         let forward = DVec3::new(-0.11802703, -0.03599824, 0.99235767);
@@ -1420,6 +1422,21 @@ mod tests {
             assert!((eye.length() - radius - 1902.0).abs() < 0.01);
             assert!((target - eye).dot(forward) > 40.0);
         }
+    }
+
+    #[test]
+    fn road_viaduct_diagnostics_keep_performance_pose_fixed_and_show_supports() {
+        let performance = ScenarioRunner::load("road_viaduct_performance").unwrap();
+        assert_eq!(performance.definition.waypoints.len(), 1);
+        assert_eq!(performance.terrain_eye_height_meters(), Some(2.0));
+        assert!(performance.uses_fixed_exposure());
+        assert!(performance.skips_birds());
+        assert_eq!(performance.expected_screenshots(), 1);
+        let overview = ScenarioRunner::load("road_viaduct_overview").unwrap();
+        assert_eq!(overview.expected_screenshots(), 3);
+        assert_eq!(overview.terrain_eye_height_meters(), Some(20.0));
+        assert!(crate::road::is_replay(performance.name()));
+        assert!(crate::road::is_replay(overview.name()));
     }
 
     fn smoothstep_test(value: f64) -> f64 {

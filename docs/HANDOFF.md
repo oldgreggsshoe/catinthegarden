@@ -10,7 +10,78 @@ surface appearance and crest geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Latest phase (17 October): local slow-run / backend gap reproduced.** Read
+**Latest phase (17 October): level viaduct road trial.** The user's new
+requirement is a road on legs so the deck stays level. Replaced the old
+terrain-fragment asphalt/gravel paint with an opt-in, 650 m S-curve viaduct:
+`road.rs` surveys dense terrain once, fixes one tangent-plane deck elevation,
+and builds the slab, parapets, centre markings, cross-beams and 54 variable
+legs. `road_render.rs` / `road.wgsl` cache 2,674 triangles in one static batch,
+update only a 64-byte camera-relative frame, and cull beyond 5 km. No road
+fragment search remains in the terrain shader. Ordinary runs build no road.
+
+`PLANET_ROAD_EXPERIMENT=1` enables it on the main planet. The existing
+`road_surface_trial` replay now follows the deck at a 2 m eye height. Walking
+and near-clip height queries use the same tessellated deck footprint; a person
+beneath the deck remains on the terrain. `PLANET_DISABLE=roads` hides only
+the draw, retaining the plan/camera/collider for a fair timing comparison.
+
+Validation (all runs under `test-runs/`, X11 via `env -u WAYLAND_DISPLAY`,
+Immediate, 640x360):
+
+- Old paint baseline: `road_surface_trial/1792255946-320130` passes; its
+  bumpy terrain-following road was opened. Its camera differs from the new
+  elevated replay, so it is not a valid FPS comparison with the new deck.
+- Driving: `road_surface_trial/1792256837-322407` passes all seven captures;
+  first/last images opened, clearance 2.000 m. The surveyed local deck height
+  is 1,956.185 m, maximum support length 65.83 m, one-time setup ~20 ms.
+- Side/oblique views: `road_viaduct_overview/1792257261-323473` passes all
+  three captures, all opened: level deck and variable legs meeting the ground.
+  Earlier overview `1792256994-322729` was too distant/poorly aimed and is
+  superseded, not acceptance evidence.
+- The driving replay's minimum terrain-only probe count is now 20 (observed
+  45), rather than 60: the elevated eye sees less ground. Object geometry is
+  intentionally absent from the terrain probe pass; those probes do not
+  validate the bridge. Mesh/collider tests and opened images cover it.
+
+Matched performance: four interleaved visible/hidden pairs, all eight manifests
+pass, same release binary SHA256
+`e98bf621fd5280d2077519d584ec58dfc254a6cd60f53d2906fec885b447545a`.
+Fixed camera XYZ/FOV verified identical in all settled samples. CPU-only
+`--profile-render`, sim-time 2-8 s excluding capture readbacks, 12 samples/run
+(48/state), no concurrent build/test/renderer during measurement:
+
+| Hidden run | Visible run | Hidden render ms | Visible render ms | Visible minus hidden ms |
+|---|---|---:|---:|---:|
+| `1792257441-323843` | `1792257474-323967` | 31.500 | 31.540 | +0.040 |
+| `1792257539-324179` | `1792257507-324063` | 31.349 | 31.507 | +0.158 |
+| `1792257572-324282` | `1792257605-324379` | 31.554 | 31.395 | -0.159 |
+| `1792257670-324539` | `1792257637-324462` | 31.463 | 31.565 | +0.102 |
+
+Run prefix: `test-runs/road_viaduct_performance/`. Pooled median render time
+31.459 ms hidden versus 31.524 ms visible (+0.065 ms, +0.21%); actual frame
+intervals 31.516 versus 31.422 ms (~31.7 versus ~31.8 fps). Mixed pair signs
+and opposite render/frame deltas are noise, not an established FPS gain or
+regression. Both final captures were opened: differences are confined to the
+road region below row 161; sky/terrain viewpoint is unchanged. Detailed local
+summary: `test-runs/performance/road-viaduct-2026-10-17/summary.json`.
+No performance claim about a future planet-wide network follows from this.
+
+Tests: all six road geometry/collider/shader/scenario tests pass. The full
+release app suite finishes 656 passed, 6 failed, 44 ignored; the six failures
+are the previously reproduced unrelated three optical-zoom/FOV tests, scenario
+FOV-range assertion, shallow-turquoise source-string assertion, and SUNK HUD
+text assertion. The scenario registry count was updated from 124 to 126 and
+its load-all test passes. Release build succeeds. Test logs are
+`/tmp/stuff-road-tests.log` and `/tmp/stuff-road-full-tests-final.log`.
+
+Scope: one bounded pilot, not a planet-wide road network. There are no approach
+ramps, cut/fill, tunnels, structural simulation, pier/parapet collision, or
+weather-aware road shading yet. The level contract is one local horizontal
+plane; terrain clearance is sampled every 5 m across the centre/edges plus
+pier feet, not a proof against arbitrary unsampled terrain spikes. README has
+replay commands. Preserve all unrelated dirty renderer/ocean/ship edits.
+
+**Earlier phase (17 October): local slow-run / backend gap reproduced.** Read
 `test-runs/manual/1792253961-312942/log.jsonl` directly after the user's prompt;
 there was no need to ask them to send a locally accessible file. It records
 release (`debug_assertions=false`), Quadro M1000M / NVIDIA 550.163.01, 640x360
@@ -399,12 +470,13 @@ the near plane. A per-instance correction restores full bed coverage without
 changing source elevations or shared-edge projection. See the newest section;
 manual swim-path acceptance is still pending.
 
-**Current road experiment (13 September):** a single opt-in, terrain-conforming
-surface section is visible in `road_surface_trial`, which now automatically
-drives a surface-following POV along it. It does not yet grade,
-cut/fill, clear trees, stitch dedicated geometry, or tunnel. The measured test
-shader costs about 1ms on the Quadro; the default shader compiles it out. See
-the newest section for captures and paired timing.
+**Current road experiment (17 October):** `PLANET_ROAD_EXPERIMENT=1` builds
+one 650 m level viaduct on variable-height legs, replacing the terrain-painted
+road. One cached, locally culled batch (2,674 triangles); no global terrain
+fragment mask. `road_surface_trial` drives along the deck;
+`road_viaduct_overview` shows the supports; `road_viaduct_performance` pins a
+fixed pose for visible/hidden timing. See the latest phase for evidence and
+remaining pilot limitations; dated September road sections are historical.
 
 **Current shallow-water colour and refraction (13 September):** the turquoise a
 bed puts into the water above it is weighted by an extinction falloff over the

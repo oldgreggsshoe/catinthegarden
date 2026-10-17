@@ -129,14 +129,6 @@ fn viewed_surface_direction(
 }
 
 pub(crate) fn planet_shader_source() -> String {
-    let road_surface_trial = matches!(
-        std::env::var("PLANET_ROAD_EXPERIMENT")
-            .ok()
-            .as_deref()
-            .map(str::trim),
-        Some("1" | "true" | "on")
-    );
-    let road_setting = format!("const ROAD_SURFACE_TRIAL: bool = {road_surface_trial};");
     // Terrain vertex ablations, for attributing per-vertex cost.
     //
     // Chunk count was measured costing geometry rather than fragments -- about
@@ -171,7 +163,6 @@ const ABLATE_FRAGMENT_TINT: bool = {};",
     [
         crate::planet::shared_planet_shader_source(),
         crate::planet::render_feature_constants(),
-        road_setting,
         ablation_settings,
         fragment_ablation_settings,
         material_ablation_setting,

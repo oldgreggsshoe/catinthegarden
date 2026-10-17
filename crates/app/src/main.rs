@@ -25,6 +25,8 @@ mod outmap;
 mod planet;
 mod probe;
 mod rain;
+mod road;
+mod road_render;
 #[cfg(test)]
 mod relief_survey;
 mod scenario;
@@ -1549,6 +1551,7 @@ struct State {
     local_cloud_impostors: weather_render::LocalCloudImpostorRenderer,
     forest: forest::ForestRenderer,
     villages: village_render::VillageRenderer,
+    road: Option<road_render::RoadRenderer>,
     ship_hull: ship::ShipHull,
     ship_body: ship::ShipBody,
     ship_renderer: ship_render::ShipRenderer,
@@ -1942,7 +1945,7 @@ impl State {
         )
         .expect("foveated renderer must initialize");
         let (shadow_height_view, shadow_face_quads) = foveated.shadow_height_faces();
-        let terrain = terrain::TerrainRenderer::new(
+        let mut terrain = terrain::TerrainRenderer::new(
             &device,
             &queue,
             hdr::HdrRenderer::SCENE_FORMAT,
@@ -1954,6 +1957,14 @@ impl State {
             Some((&shadow_height_view, shadow_face_quads)),
         )
         .expect("terrain renderer must initialize");
+        let road = (road::enabled() && body::active() == body::PLANET).then(|| {
+            road_render::RoadRenderer::new(
+                &device,
+                hdr::HdrRenderer::SCENE_FORMAT,
+                &camera_bind_group_layout,
+                &mut terrain,
+            )
+        });
         let forest = forest::ForestRenderer::new(
             &device,
             hdr::HdrRenderer::SCENE_FORMAT,
@@ -2136,6 +2147,7 @@ impl State {
             local_cloud_impostors,
             forest,
             villages,
+            road,
             ship_hull,
             ship_body,
             ship_renderer,
@@ -2841,6 +2853,13 @@ impl State {
                 .terrain
                 .surface_height_meters_at(local_radial, camera_altitude_meters),
         }?;
+        let sampled_terrain_height_meters = self
+            .road
+            .as_ref()
+            .and_then(|road| road.plan.walkable_height(local_radial, camera_altitude_meters))
+            .map_or(sampled_terrain_height_meters, |deck| {
+                deck.max(sampled_terrain_height_meters)
+            });
         let ocean_environment = self.open_ocean_environment_at(
             local_radial,
             camera_altitude_meters,
@@ -4914,14 +4933,22 @@ impl State {
                     let radial = position.normalize();
                     let local_radial = planet::planet_local_vector(radial, planet_rotation_radians);
                     let authored_altitude = position.length() - planet::planet_radius_meters();
-                    let ground = self
-                        .terrain
-                        .raster_surface_height_meters_at(local_radial, authored_altitude);
-                    let ground = ground.and_then(|first| {
-                        self.terrain.raster_surface_height_meters_at(
-                            local_radial,
-                            first + eye_height_meters,
-                        )
+                    let deck = self
+                        .road
+                        .as_ref()
+                        .filter(|_| {
+                            self.scenario.as_ref().is_some_and(|s| road::is_replay(s.name()))
+                        })
+                        .map(|road| road.plan.plane_height_at(local_radial));
+                    let ground = deck.or_else(|| {
+                        self.terrain
+                            .raster_surface_height_meters_at(local_radial, authored_altitude)
+                            .and_then(|first| {
+                                self.terrain.raster_surface_height_meters_at(
+                                    local_radial,
+                                    first + eye_height_meters,
+                                )
+                            })
                     });
                     if let Some(ground) = ground {
                         let eye =
@@ -5532,6 +5559,11 @@ impl State {
                 .surface_height_meters_at(camera_direction, camera_sea_level_altitude_meters),
         }
         .unwrap_or(0.0);
+        if let Some(deck) = self.road.as_ref().and_then(|road| {
+            road.plan.walkable_height(camera_direction, camera_sea_level_altitude_meters)
+        }) {
+            camera_surface_height_meters = camera_surface_height_meters.max(deck);
+        }
         let mut ocean_water_depth_meters = 0.0;
         // Over land there is no open sea to be under, so the eye is clear of it.
         // Zero here made the shader read every folded (back-facing) sea triangle
@@ -5647,6 +5679,9 @@ impl State {
             camera_planet_frame_position,
             camera_sea_level_altitude_meters,
         );
+        if let Some(road) = &mut self.road {
+            road.update(&self.queue, camera_planet_frame_position);
+        }
         if write_log {
             // The float's own instrument. Judging a hull by eye from a
             // screenshot cannot tell a wave-following ship from one welded to
@@ -6235,6 +6270,11 @@ impl State {
             if body::has_atmosphere() && subsystem_enabled("clouds") {
                 self.weather_clouds
                     .draw(&mut render_pass, &self.camera_bind_group);
+            }
+            if subsystem_enabled("roads")
+                && let Some(road) = &self.road
+            {
+                road.draw(&mut render_pass, &self.camera_bind_group);
             }
             if subsystem_enabled("forest") {
                 self.forest.draw(
