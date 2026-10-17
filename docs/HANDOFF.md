@@ -12388,3 +12388,7 @@ Sub-marks added inside `FoveatedRenderer::new` and `TerrainRenderer::new` (the m
 ## 17 October: deferred moon, cache everywhere
 
 Sky moon construction moved to the first frame after the startup profile reports; `cache: None` replaced with the pipeline cache in all renderers. Warm startup 5.1-5.9 s. Foveated stays eager (shadow_height_faces feeds terrain). Remaining: foveated face build/upload 0.85 s, atmosphere LUTs 0.6 s, ships 0.5 s, ocean FFT 0.4 s.
+
+## 18 October: parallel foveated faces
+
+FoveatedRenderer::new builds the six faces on `std::thread::scope` threads. Foveated tests pass (16). Not done: skipping OceanFft/foam/spray for the moon (needs Option plumbing), atmosphere LUT setup, ships.

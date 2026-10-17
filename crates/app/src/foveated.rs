@@ -178,13 +178,31 @@ impl FoveatedRenderer {
 
         crate::startup_profile::mark("  foveated: create face textures");
         let (mut build_ms, mut mip_ms, mut upload_ms) = (0.0, 0.0, 0.0);
-        for face in CubeFace::ALL {
-            let timer = std::time::Instant::now();
-            let fields = source.build_face(face)?;
-            build_ms += timer.elapsed().as_secs_f64() * 1e3;
-            let timer = std::time::Instant::now();
-            let mips = max_height_mips(&fields.heights_meters, extent);
-            mip_ms += timer.elapsed().as_secs_f64() * 1e3;
+        // The six faces are stitched (and their max-height mips built) on
+        // threads of their own; only the texture writes stay on this one.
+        let timer = std::time::Instant::now();
+        let built: Vec<Result<(CubeFace, FaceFields, Vec<Vec<f32>>), FoveatedError>> =
+            std::thread::scope(|scope| {
+                let source = &source;
+                CubeFace::ALL
+                    .map(|face| {
+                        scope.spawn(move || {
+                            let fields = source.build_face(face)?;
+                            let mips = max_height_mips(&fields.heights_meters, extent);
+                            Ok((face, fields, mips))
+                        })
+                    })
+                    .into_iter()
+                    .map(|handle| handle.join().expect("face build thread panicked"))
+                    .collect()
+            });
+        crate::startup_profile::note(
+            "  foveated: stitch + mips, six faces in parallel",
+            timer.elapsed().as_secs_f64() * 1e3,
+        );
+        let mut upload_ms = 0.0;
+        for built_face in built {
+            let (face, fields, mips) = built_face?;
             let timer = std::time::Instant::now();
             upload_face_layer(
                 queue,
@@ -227,8 +245,6 @@ impl FoveatedRenderer {
             );
             upload_ms += timer.elapsed().as_secs_f64() * 1e3;
         }
-        crate::startup_profile::note("  foveated: build_face x6 (CPU stitch)", build_ms);
-        crate::startup_profile::note("  foveated: max-height mips x6 (CPU)", mip_ms);
         crate::startup_profile::note("  foveated: queue.write_texture x6", upload_ms);
         crate::startup_profile::mark("  foveated: build and upload six faces");
 
