@@ -1014,6 +1014,7 @@ impl TerrainRenderer {
                 (Some(request_sender), Some(result_receiver))
             }
         };
+        crate::startup_profile::mark("  terrain: open outmap, bounds, loader thread");
         let terrain_settings_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("terrain settings"),
@@ -1074,6 +1075,7 @@ impl TerrainRenderer {
                 },
             ],
         });
+        crate::startup_profile::mark("  terrain: settings, layouts, near-field textures");
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("terrain pipeline layout"),
             bind_group_layouts: &[
@@ -1102,11 +1104,13 @@ impl TerrainRenderer {
             ],
             immediate_size: 0,
         });
+        crate::startup_profile::mark("  terrain: pipeline layouts and ocean transmission");
         let shader_source = planet_shader_source();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("planet raster shader"),
             source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
+        crate::startup_profile::mark("  terrain: planet shader module");
         let create_pipeline_with_culling =
             |label, vertex_entry_point, fragment_entry_point, cull_mode, shoreline| {
                 device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1224,6 +1228,7 @@ impl TerrainRenderer {
             None,
             true,
         );
+        crate::startup_profile::mark("  terrain: render pipelines");
         let topology = build_chunk_mesh(QuadtreeNode::root(0));
         // Every quadtree leaf has the same 33x33 topology. Node bounds now
         // arrive through the instance stream and the vertex shader projects
@@ -1255,6 +1260,7 @@ impl TerrainRenderer {
             });
         // The selector's budget and the instance buffer have to be the same
         // number, or a lifted budget silently draws only the first 256 chunks.
+        crate::startup_profile::mark("  terrain: chunk meshes and buffers");
         let instance_capacity = max_active_chunks_from_env();
         let instance_buffer = create_instance_buffer(device, instance_capacity);
         let (environment_cubemap, environment_view, environment_sampler) =
@@ -1263,6 +1269,7 @@ impl TerrainRenderer {
             create_terrain_material_texture(device, queue);
         let (moon_marking_texture, moon_marking_view, moon_marking_sampler) =
             crate::moon_markings::create(device, queue);
+        crate::startup_profile::mark("  terrain: instance buffer, cubemap, material textures");
         let ocean_fft_enabled = crate::planet::ocean_fft_enabled();
         let ocean_fft_h0 = if ocean_fft_enabled {
             crate::ocean_fft::default_h0()
@@ -1272,6 +1279,7 @@ impl TerrainRenderer {
                 crate::ocean_fft::CASCADES * crate::ocean_fft::GRID * crate::ocean_fft::GRID
             ]
         };
+        crate::startup_profile::mark("  terrain: ocean FFT spectrum (h0)");
         let ocean_fft = crate::ocean_fft::OceanFft::new(device, &ocean_fft_h0);
         let foam_history =
             ocean_foam::OceanFoamHistory::new(device, queue, camera_bind_group_layout, &ocean_fft);
@@ -1287,6 +1295,7 @@ impl TerrainRenderer {
         });
         // Fully visible until the sun's test first runs, and wherever it never
         // does (a body without weather).
+        crate::startup_profile::mark("  terrain: ocean FFT, foam, spray");
         let sun_visibility_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("sun visibility for caustics"),
             contents: bytemuck::cast_slice(&[1.0_f32, 0.0, 0.0, 0.0]),
@@ -1381,6 +1390,7 @@ impl TerrainRenderer {
                 ],
             })
         });
+        crate::startup_profile::mark("  terrain: shared bind groups");
         let placeholder_tile = create_gpu_tile(
             device,
             queue,
@@ -1416,6 +1426,7 @@ impl TerrainRenderer {
         }
         let initial_tile_last_used = initial_tile_cache.keys().map(|key| (*key, 0)).collect();
 
+        crate::startup_profile::mark("  terrain: root tiles (6 outmap reads)");
         let mut lod = PlanetLod::default();
         lod.set_terrain_height_range(terrain_height_range);
         let renderer = Self {

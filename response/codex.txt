@@ -1,3 +1,19 @@
-Village beams fixed (V toggles, or PLANET_VILLAGE_BEAMS=1).
-Why they failed: they came out of the house search, so they reached only ~12 km, were switched off above 12 km altitude (exactly when you need them), stood on the first house not the centre, and the ribbon broke when its foot was behind you.
-Now: separate beam search, nearest first, 24 cells a frame, reaching ~245 km at height; stands on the village centre; works at any altitude; brighter (alpha 0.4) and a bit wider. Tests pass; a replay shows many shafts, not flown live. Beyond ~245 km nothing is shown.
+Startup breakdown (28.5 s to frame 4 on this run; the earlier 34.7 s run varied by a few seconds):
+
+Shader/pipeline compilation is the bulk:
+  terrain: render pipelines            4.99 s   (ground planet)
+  moon:   terrain: render pipelines    4.00 s   (the sky moon builds a whole second TerrainRenderer)
+  foveated: direct pipeline            2.03 s
+  foveated: remaining tail (warp/unwarp pipelines etc.)  4.81 s (phase "foveated renderer")
+  => roughly 16 s of ~28 s is the driver compiling pipelines.
+
+Data work:
+  foveated: build and upload six faces  2.17 s  (CPU stitch 0.91 s, queue.write_texture 1.08 s, max mips 0.14 s)
+  terrain: ocean FFT/foam/spray         0.72 s (+0.57 s for the moon's copy)
+  terrain: cubemap + material textures  0.53 s (+0.81 s for the moon's copy)
+  terrain: root tile reads              0.27 s (+0.29 s moon)
+
+Ideas, biggest first:
+ 1. wgpu pipeline cache (disk) so compiled shaders are reused on the next launch.
+ 2. Don't build a full TerrainRenderer for the moon at startup (build it lazily or share pipelines/shader module): saves about 6 s.
+ 3. Build the foveated ray renderer lazily on first F5 (about 7-9 s with its pipelines); it is off by default.

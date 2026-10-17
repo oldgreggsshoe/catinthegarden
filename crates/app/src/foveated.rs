@@ -1,8 +1,6 @@
 use std::{error::Error, fmt};
 
-use planet_coretypes::{
-    CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey,
-};
+use planet_coretypes::{CubeFace, TILE_GUTTER, TILE_LOGICAL_SIZE, TILE_STORED_SIZE, TileKey};
 
 use crate::{
     outmap::{Outmap, OutmapError, TileData},
@@ -140,6 +138,7 @@ impl FoveatedRenderer {
         terrain_source: TerrainSource,
     ) -> Result<Self, FoveatedError> {
         let source = FieldSource::new(terrain_source)?;
+        crate::startup_profile::mark("  foveated: FieldSource::new (read/stitch source)");
         let face_quads = source.face_quads();
         let extent = face_quads + TILE_GUTTER * 2;
         let texture_extent = wgpu::Extent3d {
@@ -177,8 +176,16 @@ impl FoveatedRenderer {
             1,
         );
 
+        crate::startup_profile::mark("  foveated: create face textures");
+        let (mut build_ms, mut mip_ms, mut upload_ms) = (0.0, 0.0, 0.0);
         for face in CubeFace::ALL {
+            let timer = std::time::Instant::now();
             let fields = source.build_face(face)?;
+            build_ms += timer.elapsed().as_secs_f64() * 1e3;
+            let timer = std::time::Instant::now();
+            let mips = max_height_mips(&fields.heights_meters, extent);
+            mip_ms += timer.elapsed().as_secs_f64() * 1e3;
+            let timer = std::time::Instant::now();
             upload_face_layer(
                 queue,
                 &height_texture,
@@ -188,10 +195,7 @@ impl FoveatedRenderer {
                 bytemuck::cast_slice(&fields.heights_meters),
                 size_of::<f32>() as u32,
             );
-            for (mip_level, mip) in max_height_mips(&fields.heights_meters, extent)
-                .into_iter()
-                .enumerate()
-            {
+            for (mip_level, mip) in mips.into_iter().enumerate() {
                 let mip_extent = (extent >> mip_level).max(1);
                 upload_face_layer(
                     queue,
@@ -221,7 +225,12 @@ impl FoveatedRenderer {
                 &fields.moisture,
                 size_of::<u8>() as u32,
             );
+            upload_ms += timer.elapsed().as_secs_f64() * 1e3;
         }
+        crate::startup_profile::note("  foveated: build_face x6 (CPU stitch)", build_ms);
+        crate::startup_profile::note("  foveated: max-height mips x6 (CPU)", mip_ms);
+        crate::startup_profile::note("  foveated: queue.write_texture x6", upload_ms);
+        crate::startup_profile::mark("  foveated: build and upload six faces");
 
         // The near-field window starts empty and stays unused until a camera
         // low enough to need it uploads one; `near_field_enabled` gates it.
@@ -364,11 +373,13 @@ impl FoveatedRenderer {
             ],
             immediate_size: 0,
         });
+        crate::startup_profile::mark("  foveated: bind groups and layouts");
         let shader_source = raymarch_shader_source();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("full-resolution terrain raymarch shader"),
             source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
+        crate::startup_profile::mark("  foveated: shader module");
         let direct_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("full-resolution terrain raymarch pipeline"),
             layout: Some(&pipeline_layout),
@@ -404,6 +415,7 @@ impl FoveatedRenderer {
             cache: None,
         });
 
+        crate::startup_profile::mark("  foveated: direct pipeline");
         let warp_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("warped terrain raymarch pipeline"),
             layout: Some(&pipeline_layout),

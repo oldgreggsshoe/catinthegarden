@@ -12,8 +12,16 @@ struct Profile {
     last: Instant,
     started: Instant,
     phases: Vec<(String, f64)>,
+    notes: Vec<(String, f64)>,
     frames_started: u32,
     reported: bool,
+}
+
+static PREFIX: Mutex<String> = Mutex::new(String::new());
+
+/// Text put in front of every label from now on (e.g. "moon: ").
+pub fn set_prefix(prefix: &str) {
+    *PREFIX.lock().unwrap() = prefix.to_string();
 }
 
 static PROFILE: Mutex<Option<Profile>> = Mutex::new(None);
@@ -25,6 +33,7 @@ pub fn begin() {
         last: now,
         started: now,
         phases: Vec::new(),
+        notes: Vec::new(),
         frames_started: 0,
         reported: false,
     });
@@ -32,6 +41,7 @@ pub fn begin() {
 
 /// Closes the phase `label`, which began at the previous mark.
 pub fn mark(label: &str) {
+    let label = &format!("{}{label}", PREFIX.lock().unwrap());
     if let Some(profile) = PROFILE.lock().unwrap().as_mut() {
         if profile.reported {
             return;
@@ -50,6 +60,17 @@ pub fn mark(label: &str) {
         {
             let (label, ms) = profile.phases.last().unwrap();
             let _ = writeln!(file, "{ms:9.1} ms  {label}");
+        }
+    }
+}
+
+/// Records a total spent inside a phase (summed over a loop, say) without
+/// closing it; shown after the table as detail already counted above.
+pub fn note(label: &str, ms: f64) {
+    let label = &format!("{}{label}", PREFIX.lock().unwrap());
+    if let Some(profile) = PROFILE.lock().unwrap().as_mut() {
+        if !profile.reported {
+            profile.notes.push((label.to_string(), ms));
         }
     }
 }
@@ -93,6 +114,12 @@ fn report() {
             "  {ms:9.1} ms  {:5.1}%  {label}\n",
             100.0 * ms / total_ms
         ));
+    }
+    if !profile.notes.is_empty() {
+        text.push_str("detail already counted in the phases above:\n");
+        for (label, ms) in &profile.notes {
+            text.push_str(&format!("  {ms:9.1} ms  {label}\n"));
+        }
     }
     // The app redirects stderr, so keep the table where it can be read.
     let _ = std::fs::write("test-runs/startup_profile_latest.txt", &text);

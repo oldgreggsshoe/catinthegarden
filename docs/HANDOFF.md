@@ -12376,3 +12376,7 @@ Causes: beams were emitted by `collect_house_instances` (2-cell ring, ~12 km), t
 ## 17 October: startup profiling
 
 `crates/app/src/startup_profile.rs`: `mark("phase")` closes a phase that began at the previous mark; marks are in `State::new`, `App::resumed`, and `frame_started()` runs at the start of each frame. After frame 4 starts it writes `test-runs/startup_profile_latest.txt` (ranked table). First measurement (interactive, X11, FFT sea): 34.7 s total; foveated renderer 14.3 s, terrain renderer 8.0 s, State::new tail (sky moon etc.) 6.5 s. Next: break those three down (foveated stitches the dense L4 outmap level into arrays; the tail builds the moon). Note the binary is `target/release/planet-app`.
+
+## 17 October: startup sub-profile
+
+Sub-marks added inside `FoveatedRenderer::new` and `TerrainRenderer::new` (the moon's copy is labelled `moon: `, via `startup_profile::set_prefix`). `startup_profile::note` records loop totals shown under the table. Result: ~16 s of a 28.5 s startup is render-pipeline compilation; the sky moon builds a second full TerrainRenderer (~6 s). Next options: wgpu pipeline cache on disk, lazy moon, lazy foveated (F5-only) renderer. Nothing optimised yet.

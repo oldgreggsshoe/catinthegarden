@@ -2337,7 +2337,10 @@ impl State {
             && body::active() == body::PLANET
             && state.render_path == RenderPath::Raster
         {
+            startup_profile::set_prefix("moon: ");
             state.sky_moon = sky_moon::SkyMoon::new(&mut state, &camera_bind_group_layout);
+            startup_profile::mark("sky moon setup (whole)");
+            startup_profile::set_prefix("");
         }
         state
     }
