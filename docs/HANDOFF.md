@@ -10,7 +10,57 @@ surface appearance and crest geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Latest phase (18 October): whole-planet road-network planning and profile checks.**
+**Current priority (18 October): road-enabled downward-turn jitter.**
+
+User reports back-and-forth whole-scene jumps away from the road, looking down
+over green terrain, with either Q/E or mouse; level/upward and blue-terrain
+views appear stable. Do not treat the earlier level road-start tests as a repro.
+Investigation used the recorded planet-frame eye
+`(1958253.256, 2100769.448, 2797795.660)`, yaw -2.30639, pitch -0.68028.
+CPU final camera and uploaded terrain basis agree; fixed-input view-focus drift
+was below 0.000001 m after loading. Camera-reprojected GPU captures do not show
+a confirmed whole-scene reversal. **The reported symptom is not yet reliably
+reproduced or fixed.** Capture readbacks wait for GPU completion and can mask a
+presentation synchronization issue; they cannot validate compositor frame order.
+
+Installed NVIDIA Vulkan driver is 550.163.01; the KDE Wayland compositor renders
+on Intel HD 530, with the app running via Xwayland when WAYLAND_DISPLAY is unset.
+NVIDIA documents a rendering/presentation synchronization limitation for this
+stack: https://download.nvidia.com/XFree86/Linux-x86_64/550.163.01/README/wayland-issues.html
+This is a lead, not a proven cause. `PLANET_SYNC_PRESENT=1` is now an **opt-in
+diagnostic/workaround** for the main planet renderer: wait for the submitted GPU
+frame before `present()`. It defaults off, does not fence offscreen profiling,
+and can reduce FPS by removing CPU/GPU overlap. Wait failures are logged and the
+incomplete frame is not presented. Add the flag to the user's existing road
+launch and compare the same green/downward turn with it on/off. Live symptom
+confirmation remains necessary. No driver or persistent system setting changed.
+
+Validation: explicit opt-in parsing test passes; full working-tree suite has
+682 pass / the same 6 known failures / 47 ignored (includes the 6 uncommitted
+routing tests). Release build passes. Matched X11/Immediate 640x360
+`road_viaduct_performance` runs pass with sync off/on and their final captures
+are pixel-identical. One pair, 12 non-capture samples each: 34.20 ms off versus
+48.16 ms on (~29 versus ~21 FPS); the measured wait is in `present_ms`. This is
+why the fence is diagnostic and defaults OFF, not an accepted performance fix.
+Results: `test-runs/road-turn-jitter/present-sync-comparison.json`;
+logs: `/tmp/stuff-present-sync-{green,full-tests,final-build}.log`.
+
+Evidence: `test-runs/manual/1792329110-915842` (fixed/rotating green-terrain GPU
+captures), `test-runs/road-turn-jitter/before-fixed-residual.json`, and the
+`fixed-green-before-cameras.json` probe trace there. Temporary pose overrides,
+camera/focus logs and screen barcode were removed; the pre-existing
+`PLANET_DEBUG_TURN` logger remains. Physical-screen capture/recording attempts
+were inconclusive, so do not claim displayed-frame ordering has been measured.
+
+Uncommitted height-aware network rerouting work from before this bug report
+remains in `road_network_route.rs`, `road_network_profile.rs`,
+`road_network_survey.rs`, `road_network.rs` and its main.rs module declaration.
+Six new routing tests pass, including the sea-aware heuristic's island fixture;
+the final sea-aware version still needs a fresh real CLI survey and review.
+Do not stage this unfinished work with the presentation diagnostic or confuse
+it with a rendered network.
+
+**Previous phase (18 October): whole-planet road-network planning and profile checks.**
 
 User scope is all villages worldwide, with shared trunks/junctions; island
 links MUST use tunnels under the seabed, not ferries or surface bridges.

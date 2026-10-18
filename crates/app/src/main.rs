@@ -106,6 +106,10 @@ fn should_start_interactive_fullscreen(scenario_active: bool) -> bool {
     !scenario_active
 }
 
+fn presentation_sync_enabled(value: Option<&str>) -> bool {
+    matches!(value.map(str::trim), Some("1" | "true" | "on"))
+}
+
 fn movement_key_latch_expired(released_for: Duration) -> bool {
     released_for >= MOVEMENT_KEY_LATCH
 }
@@ -1538,6 +1542,8 @@ struct State {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    /// Opt-in diagnostic for unsynchronised compositor presentation.
+    sync_present: bool,
     /// Internal HDR/depth/LOD resolution. This remains fixed while fullscreen.
     size: winit::dpi::PhysicalSize<u32>,
     /// Native swapchain size, which can be larger than the internal scene.
@@ -1854,10 +1860,13 @@ impl State {
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(2),
         };
+        let sync_present =
+            presentation_sync_enabled(std::env::var("PLANET_SYNC_PRESENT").ok().as_deref());
         tracing::info!(
             target: "planet::adapter",
             supported_present_modes = ?surface_capabilities.present_modes,
             selected_present_mode = ?config.present_mode,
+            sync_present,
             surface_usage = ?config.usage,
             debug_assertions = cfg!(debug_assertions),
             surface_width = config.width,
@@ -2174,6 +2183,7 @@ impl State {
             device,
             queue,
             config,
+            sync_present,
             size,
             surface_size: size,
             fullscreen_render_size: None,
@@ -6667,7 +6677,7 @@ impl State {
         }
 
         let submit_started = Instant::now();
-        self.queue.submit(Some(encoder.finish()));
+        let submission_index = self.queue.submit(Some(encoder.finish()));
         let submit_ms = submit_started.elapsed().as_secs_f32() * 1_000.0;
         if let Some(slot_index) = hdr_luminance_readback_slot {
             self.hdr.begin_luminance_readback(slot_index);
@@ -6687,6 +6697,19 @@ impl State {
         let gpu_timestamp_readback_ms = gpu_readback_started.elapsed().as_secs_f32() * 1_000.0;
         let present_started = Instant::now();
         if let Some(output) = output {
+            // Xwayland on older NVIDIA drivers can display a buffer before
+            // rendering completes. Keep this diagnostic opt-in: waiting here
+            // removes CPU/GPU overlap and can reduce FPS. Offscreen profiling
+            // has no presentation and must not pay for this fence.
+            if self.sync_present
+                && let Err(error) = self.device.poll(wgpu::PollType::Wait {
+                    submission_index: Some(submission_index),
+                    timeout: Some(Duration::from_secs(5)),
+                })
+            {
+                tracing::error!(%error, "presentation sync failed; skipping incomplete frame");
+                return None;
+            }
             output.present();
         }
         let present_ms = present_started.elapsed().as_secs_f32() * 1_000.0;
@@ -7994,6 +8017,16 @@ mod tests {
     #[test]
     fn ocean_animation_keeps_advancing_while_scene_time_is_frozen() {
         assert_eq!(super::ocean_animation_time_seconds(2.0, 7.5), 7.5);
+    }
+
+    #[test]
+    fn presentation_sync_is_explicitly_opt_in() {
+        for value in [None, Some(""), Some("0"), Some("false"), Some("off")] {
+            assert!(!super::presentation_sync_enabled(value));
+        }
+        for value in ["1", "true", "on", " 1 "] {
+            assert!(super::presentation_sync_enabled(Some(value)));
+        }
     }
 
     #[test]
