@@ -1788,94 +1788,11 @@ impl TerrainRenderer {
         let TerrainDataSource::Outmap(outmap) = &self.source else {
             return None;
         };
-        let direction = local_surface_direction.normalize_or_zero();
-        if direction.length_squared() <= f64::EPSILON {
-            return None;
-        }
-        let dense_level = outmap.manifest().dense_level;
-        let (face, face_uv) = cube_face_uv(direction)?;
-        let source_key = tile_key_for_direction(direction, dense_level);
-        if source_key.face != face {
-            return None;
-        }
-        let source_uv = source_tile_uv(source_key, face, face_uv)?;
-        let tile = self.village_siting_tiles.get(&source_key)?;
-        let baked_meters = f64::from(sample_height_cpu(&tile.heights_meters, source_uv));
-        // The altitude argument is inert -- `outmap_terrain_height_scale`
-        // ignores it -- but it is threaded through the shared height helpers,
-        // so a fixed value is passed to make the independence explicit rather
-        // than smuggling the camera in.
-        let siting_altitude_meters = 0.0;
-        let macro_height_meters = if baked_meters <= 0.0 {
-            0.0
-        } else {
-            scaled_outmap_macro_height_meters(baked_meters, siting_altitude_meters)
-        };
-        // Macro geography plus the runtime detail ladder at a fixed scale.
-        //
-        // The ladder cannot be left out: it is the only thing that varies at
-        // village scale, and without it the footprint flatness test compares
-        // five samples inside one 3km bilinear cell and rejects 0.07% of
-        // habitable land. It cannot be taken at its default filter either --
-        // at the dense level's spacing that returned 2,213m for ground that
-        // renders at 174m. Fixing the filter makes it deterministic and
-        // camera-independent, which is the whole point, and an offset common
-        // to the whole footprint cancels out of a spread test. Nothing may
-        // stand on this height; placement uses the drawn surface.
-        let height_meters = detailed_outmap_land_height_meters_with_filter(
-            baked_meters,
-            direction,
-            siting_altitude_meters,
-            continuous_baked_sample_spacing_meters(face_uv, dense_level, dense_level),
-            VILLAGE_SITING_DETAIL_FILTER_METERS,
-        );
-        let biome = BiomeId::try_from(sample_biome_cpu(&tile.biome_ids, source_uv)).ok()?;
-        let moisture = f32::from(sample_moisture_cpu(&tile.moisture, source_uv)) / 255.0;
-        let (tangent_u, tangent_v) = forest_tangent_basis(direction)?;
-        let slope = forest_slope_radians(
-            |offset| self.dense_level_height_meters_at((direction + offset).normalize_or_zero()),
-            tangent_u,
-            tangent_v,
-        )?;
-        Some(ForestSurfaceSample {
-            height_meters,
-            macro_height_meters,
-            biome,
-            moisture,
-            slope_radians: slope,
-            source_key,
-            source_level: dense_level,
-        })
-    }
-
-    /// Dense-level height alone, for the slope stencil above. Kept separate so
-    /// the stencil cannot quietly fall back to a finer resident tile and give
-    /// the centre sample and its neighbours different sources.
-    fn dense_level_height_meters_at(&self, local_surface_direction: DVec3) -> Option<f64> {
-        let TerrainDataSource::Outmap(outmap) = &self.source else {
-            return None;
-        };
-        let direction = local_surface_direction.normalize_or_zero();
-        if direction.length_squared() <= f64::EPSILON {
-            return None;
-        }
-        let dense_level = outmap.manifest().dense_level;
-        let (face, face_uv) = cube_face_uv(direction)?;
-        let source_key = tile_key_for_direction(direction, dense_level);
-        if source_key.face != face {
-            return None;
-        }
-        let source_uv = source_tile_uv(source_key, face, face_uv)?;
-        let tile = self.village_siting_tiles.get(&source_key)?;
-        let baked_meters = f64::from(sample_height_cpu(&tile.heights_meters, source_uv));
-        // Macro only: this is the slope stencil, and it is meant to answer the
-        // 3km-scale grade of the ground. Folding metre-scale relief into it
-        // would make every site read as a cliff.
-        Some(if baked_meters <= 0.0 {
-            0.0
-        } else {
-            scaled_outmap_macro_height_meters(baked_meters, 0.0)
-        })
+        dense_siting_surface_sample(
+            local_surface_direction,
+            outmap.manifest().dense_level,
+            &self.village_siting_tiles,
+        )
     }
 
     /// Open-ocean ownership at the dense level, for the same reason as
@@ -4753,6 +4670,103 @@ fn source_tile_uv_at_direction(key: TileKey, direction: DVec3) -> Option<[f32; 2
     source_tile_uv(key, face, face_uv)
 }
 
+/// The exact camera-independent village sampler, shared with CPU road workers.
+pub(crate) fn dense_siting_surface_sample(
+    local_surface_direction: DVec3,
+    dense_level: u8,
+    tiles: &HashMap<TileKey, TileData>,
+) -> Option<ForestSurfaceSample> {
+    let direction = local_surface_direction.normalize_or_zero();
+    if direction.length_squared() <= f64::EPSILON {
+        return None;
+    }
+    let (face, face_uv) = cube_face_uv(direction)?;
+    let source_key = tile_key_for_direction(direction, dense_level);
+    if source_key.face != face {
+        return None;
+    }
+    let source_uv = source_tile_uv(source_key, face, face_uv)?;
+    let tile = tiles.get(&source_key)?;
+    let baked_meters = f64::from(sample_height_cpu(&tile.heights_meters, source_uv));
+    // The altitude argument is inert -- `outmap_terrain_height_scale`
+    // ignores it -- but it is threaded through the shared height helpers,
+    // so a fixed value is passed to make the independence explicit rather
+    // than smuggling the camera in.
+    let siting_altitude_meters = 0.0;
+    let macro_height_meters = if baked_meters <= 0.0 {
+        0.0
+    } else {
+        scaled_outmap_macro_height_meters(baked_meters, siting_altitude_meters)
+    };
+    // Macro geography plus the runtime detail ladder at a fixed scale.
+    //
+    // The ladder cannot be left out: it is the only thing that varies at
+    // village scale, and without it the footprint flatness test compares
+    // five samples inside one 3km bilinear cell and rejects 0.07% of
+    // habitable land. It cannot be taken at its default filter either --
+    // at the dense level's spacing that returned 2,213m for ground that
+    // renders at 174m. Fixing the filter makes it deterministic and
+    // camera-independent, which is the whole point, and an offset common
+    // to the whole footprint cancels out of a spread test. Nothing may
+    // stand on this height; placement uses the drawn surface.
+    let height_meters = detailed_outmap_land_height_meters_with_filter(
+        baked_meters,
+        direction,
+        siting_altitude_meters,
+        continuous_baked_sample_spacing_meters(face_uv, dense_level, dense_level),
+        VILLAGE_SITING_DETAIL_FILTER_METERS,
+    );
+    let biome = BiomeId::try_from(sample_biome_cpu(&tile.biome_ids, source_uv)).ok()?;
+    let moisture = f32::from(sample_moisture_cpu(&tile.moisture, source_uv)) / 255.0;
+    let (tangent_u, tangent_v) = forest_tangent_basis(direction)?;
+    let slope = forest_slope_radians(
+        |offset| {
+            dense_siting_macro_height((direction + offset).normalize_or_zero(), dense_level, tiles)
+        },
+        tangent_u,
+        tangent_v,
+    )?;
+    Some(ForestSurfaceSample {
+        height_meters,
+        macro_height_meters,
+        biome,
+        moisture,
+        slope_radians: slope,
+        source_key,
+        source_level: dense_level,
+    })
+}
+
+/// Dense-level height alone, for the slope stencil above. Kept separate so
+/// the stencil cannot quietly fall back to a finer resident tile and give
+/// the centre sample and its neighbours different sources.
+fn dense_siting_macro_height(
+    local_surface_direction: DVec3,
+    dense_level: u8,
+    tiles: &HashMap<TileKey, TileData>,
+) -> Option<f64> {
+    let direction = local_surface_direction.normalize_or_zero();
+    if direction.length_squared() <= f64::EPSILON {
+        return None;
+    }
+    let (face, face_uv) = cube_face_uv(direction)?;
+    let source_key = tile_key_for_direction(direction, dense_level);
+    if source_key.face != face {
+        return None;
+    }
+    let source_uv = source_tile_uv(source_key, face, face_uv)?;
+    let tile = tiles.get(&source_key)?;
+    let baked_meters = f64::from(sample_height_cpu(&tile.heights_meters, source_uv));
+    // Macro only: this is the slope stencil, and it is meant to answer the
+    // 3km-scale grade of the ground. Folding metre-scale relief into it
+    // would make every site read as a cliff.
+    Some(if baked_meters <= 0.0 {
+        0.0
+    } else {
+        scaled_outmap_macro_height_meters(baked_meters, 0.0)
+    })
+}
+
 /// Where a face coordinate falls inside a tile, clamped rather than rejected.
 ///
 /// The near-field window walks tile blocks and needs the shared edge sample at
@@ -4765,7 +4779,7 @@ fn source_tile_local_uv(key: TileKey, face_uv: [f64; 2]) -> [f32; 2] {
     ]
 }
 
-fn source_tile_uv(key: TileKey, face: CubeFace, face_uv: [f64; 2]) -> Option<[f32; 2]> {
+pub(crate) fn source_tile_uv(key: TileKey, face: CubeFace, face_uv: [f64; 2]) -> Option<[f32; 2]> {
     (key.face == face).then_some(())?;
 
     let tiles_per_side = 1_u32 << key.level;
@@ -4934,7 +4948,7 @@ fn max_outmap_seam_delta(
     maximum
 }
 
-fn sample_height_cpu(heights: &[f32], uv: [f32; 2]) -> f32 {
+pub(crate) fn sample_height_cpu(heights: &[f32], uv: [f32; 2]) -> f32 {
     let coordinate = tile_sample_coordinate(uv);
     let lower = [
         coordinate[0].floor() as usize,
@@ -4963,7 +4977,7 @@ fn tile_sample_coordinate(uv: [f32; 2]) -> [f32; 2] {
     ]
 }
 
-fn sample_biome_cpu(biome_ids: &[u8], uv: [f32; 2]) -> u8 {
+pub(crate) fn sample_biome_cpu(biome_ids: &[u8], uv: [f32; 2]) -> u8 {
     let coordinate = tile_sample_coordinate(uv);
     let x = coordinate[0].round() as usize;
     let y = coordinate[1].round() as usize;
@@ -5035,7 +5049,7 @@ fn forest_slope_radians(
 /// material filtering, but the rendered analytic ocean owns every non-ice,
 /// non-lake sample at or below sea level. Camera collision and buoyancy must
 /// use that same ownership rule rather than requiring the Ocean biome id.
-fn is_open_ocean_sample(height_meters: f32, biome: BiomeId) -> bool {
+pub(crate) fn is_open_ocean_sample(height_meters: f32, biome: BiomeId) -> bool {
     height_meters <= 0.0 && !matches!(biome, BiomeId::Ice | BiomeId::Lake)
 }
 

@@ -10,7 +10,45 @@ surface appearance and crest geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Latest phase (18 October): mountain-road tunnels.**
+**Latest phase (18 October): whole-planet road-network planning and profile checks.**
+
+User scope is all villages worldwide, with shared trunks/junctions; island
+links MUST use tunnels under the seabed, not ferries or surface bridges.
+`road_network.rs`, `road_network_profile.rs`, `road_network_survey.rs` implement
+an opt-in **headless survey only**, not live roads/streaming. Command:
+`cargo run --release -p planet-app -- --road-network-survey test-runs/road-network-new.json`
+(new output filename; existing files are refused). No GPU, display or audio.
+The current `PLANET_ROAD_EXPERIMENT=1` mountain pilot remains unchanged.
+
+Read `docs/ROAD_NETWORK.md` for architecture, exact evidence and the next steps.
+Global six-face level-8 tree: 393,216 surveyed cells, 143,802 retained,
+143,801 links / 2,666 coarse undersea links after conservative empty-leaf
+pruning. Exact local siting shares the existing village footprint and dense
+sampler, independent of camera/visible-house limits. Local trees reuse paths
+and real shared graph nodes; reciprocal cube-seam gateways are tested.
+Profile checks fit shared heights at <=9.9% physical grade, 32 m deck-clearance
+cap, sampled undersea roof cover; impossible routes are explicitly rejected.
+
+**Not ready for meshing:** the 39-village/10-junction/68.71 km region still has
+an infeasible graded alignment, as does one sampled coastal approach. The
+6-village mountain region and another undersea alignment pass sampled profile
+checks. Next: engineering-led rerouting (do not relax grade or detach villages),
+finest-source/render-grounding reconciliation, curves, village approaches,
+junction/tunnel meshes, spatial cut/void/collision index and bounded background
+streaming/cache/uploads. Undersea tunnels must suppress water medium/terrain
+inside while keeping the seabed/sea above. No screenshot or FPS acceptance is
+claimed for this new network. Do not confuse it with the validated pilot below.
+
+Evidence: `test-runs/road-network-survey-final-2026-10-18.json`,
+`/tmp/stuff-network-cli-final.log` (~6.68 s / 277 MiB standalone).
+12 focused tests including the asset-backed occupancy instrument pass
+(`/tmp/stuff-network-tests-verified.log`; 681 accepted villages retained,
+104 empty regions checked); village filter 24 pass/2 ignored. Full standard
+suite 675 pass/same 6 existing failures/47 ignored. Source helper extraction
+preserves existing village rules. Preserve the unrelated renderer edits and
+village test formatting hunk when staging; response history is also dirty.
+
+**Previous phase (18 October): mountain-road tunnels.**
 
 `road_tunnel.rs` selects sustained >=25 m open-cut depth over >=100 m,
 expanding a qualifying core toward portal cover. Five transverse samples at

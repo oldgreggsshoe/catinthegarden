@@ -17,3 +17,17 @@ Ideas, biggest first:
  1. wgpu pipeline cache (disk) so compiled shaders are reused on the next launch.
  2. Don't build a full TerrainRenderer for the moon at startup (build it lazily or share pipelines/shader module): saves about 6 s.
  3. Build the foveated ray renderer lazily on first F5 (about 7-9 s with its pipelines); it is off by default.
+
+I’ll make it planet-wide, generated and cached as you explore. I’ll first add shared routes and junctions, then integrate terrain cuts, tunnels and road LOD, and test connectivity and FPS. I’ll avoid inventing roads across oceans; islands will need separate networks unless we add ferries or major bridges.
+
+Understood—sea crossings will be tunnels beneath the seabed. I’ll make the global plan favour land routes and shorter crossings, with shared tunnel links where possible rather than a separate crossing for every village.
+
+The existing planner handles only one corridor, so I’m separating network planning from road geometry. First I’ll add a seam-safe global backbone, local village branches and shared junctions, with island links marked for undersea tunnels. I’ll test that graph before connecting it to the mesh and terrain-cut code.
+
+The first global survey is working. It finds shared routes across all six planet faces and prunes empty dead-end branches; one sampled region connects 39 villages with 10 junctions. This is still topology, not drivable geometry. Next are shared-height junctions, 10% grade checks, tunnel profiles and streamed meshes.
+
+Island connections are planned as undersea tunnels.
+
+Implemented the global network/junction planner and grade/cover checks; 12 focused tests pass.
+
+**Not visible yet:** some routes need rerouting, and meshes, terrain/collision integration and streaming remain.

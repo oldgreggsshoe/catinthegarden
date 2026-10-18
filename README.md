@@ -72,6 +72,21 @@ Logs are written to `test-runs/manual/<timestamp>-<pid>/log.jsonl`. Startup
 records whether debug assertions are enabled; startup and resize entries show
 internal and display resolutions.
 
+### Planet-wide village road network (planning phase)
+
+The new headless planner builds a shared planet-wide backbone and local village
+junction trees, with island links designated as **undersea tunnels**. It also
+checks shared elevations, physical grade and sampled seabed cover. This is
+**not yet a visible/drivable network**: rejected alignments need rerouting,
+followed by mesh/cut/collision and background-streaming integration. The current
+single-road experiment below is unchanged. See [implementation status](docs/ROAD_NETWORK.md).
+
+Run the CPU-only survey with a new output filename (no display/GPU required):
+
+```sh
+cargo run --release -p planet-app -- --road-network-survey test-runs/road-network-new.json
+```
+
 ### Terrain-planned road experiment
 
 The opt-in trial is now approximately **30 km** of terrain-led bends on

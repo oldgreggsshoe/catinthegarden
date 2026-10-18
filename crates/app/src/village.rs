@@ -41,7 +41,7 @@ use crate::terrain::{ForestSurfaceSample, TerrainRenderer};
 /// as you can", putting settlements roughly six kilometres apart -- close
 /// enough that the planet reads as inhabited rather than as empty country with
 /// the occasional hamlet.
-const VILLAGE_CELL_LEVEL: u8 = 10;
+pub(crate) const VILLAGE_CELL_LEVEL: u8 = 10;
 /// Candidate sites tried per cell. Most are rejected by ground or biome, so
 /// this is an upper bound on villages per cell rather than a count.
 ///
@@ -197,6 +197,22 @@ pub fn village_biome_is_habitable(biome: BiomeId) -> bool {
     )
 }
 
+/// Camera-independent siting interface shared by villages and road planning.
+/// Road workers can use baked CPU tiles without a device or resident render LOD.
+pub(crate) trait VillageSurface {
+    fn village_sample(&self, direction: DVec3) -> Option<ForestSurfaceSample>;
+    fn village_open_ocean(&self, direction: DVec3) -> Option<bool>;
+}
+
+impl VillageSurface for TerrainRenderer {
+    fn village_sample(&self, direction: DVec3) -> Option<ForestSurfaceSample> {
+        self.dense_level_surface_sample_at(direction)
+    }
+    fn village_open_ocean(&self, direction: DVec3) -> Option<bool> {
+        self.dense_level_open_ocean_at(direction)
+    }
+}
+
 /// Ground a village could stand on at all: the right biome, clear of the water,
 /// and a usable height. Deliberately says nothing about slope -- see
 /// `VILLAGE_FOOTPRINT_HEIGHT_SPREAD_METERS`.
@@ -207,10 +223,16 @@ pub fn village_biome_is_habitable(biome: BiomeId) -> bool {
 /// elsewhere -- the same scale mismatch that made a pointwise slope gate reject
 /// every site.
 fn village_surface_is_eligible(sample: ForestSurfaceSample) -> bool {
-    village_biome_is_habitable(sample.biome)
-        && sample.macro_height_meters >= village_min_macro_height_meters()
+    village_macro_site_is_possible(sample.biome, sample.macro_height_meters)
         && sample.height_meters.is_finite()
         && sample.slope_radians <= village_max_site_slope_radians()
+}
+
+/// Conservative, cheap prerequisite for siting. A failed footprint can still
+/// pass this, but no accepted village may fail it. The global road survey uses
+/// it to prune empty transit leaves without evaluating millions of footprints.
+pub(crate) fn village_macro_site_is_possible(biome: BiomeId, macro_height: f64) -> bool {
+    village_biome_is_habitable(biome) && macro_height >= village_min_macro_height_meters()
 }
 
 /// Where the fragment shader stops mixing sand into the ground, in raw baked
@@ -261,8 +283,8 @@ fn village_max_site_slope_radians() -> f64 {
 /// `open_ocean_at` is the CPU mirror of the shader's `is_open_ocean_surface`,
 /// so it cannot disagree with what is drawn. Ask it, rather than inventing a
 /// fifth threshold on a fourth field.
-fn village_ground_is_dry(terrain: &TerrainRenderer, direction: DVec3) -> bool {
-    terrain.dense_level_open_ocean_at(direction) == Some(false)
+fn village_ground_is_dry(terrain: &impl VillageSurface, direction: DVec3) -> bool {
+    terrain.village_open_ocean(direction) == Some(false)
 }
 
 /// Is this site level enough, across its own footprint, to hold a village?
@@ -278,7 +300,7 @@ fn village_ground_is_dry(terrain: &TerrainRenderer, direction: DVec3) -> bool {
 /// villages at 150m and at 1.5km, because climbing changed which tiles were
 /// resident and so changed the biome and height the tests read.
 fn village_footprint_height(
-    terrain: &TerrainRenderer,
+    terrain: &impl VillageSurface,
     site_direction: DVec3,
     east: DVec3,
     north: DVec3,
@@ -299,7 +321,7 @@ fn village_footprint_height(
         if direction.length_squared() <= f64::EPSILON {
             return None;
         }
-        let sample = terrain.dense_level_surface_sample_at(direction)?;
+        let sample = terrain.village_sample(direction)?;
         if !village_surface_is_eligible(sample) || !village_ground_is_dry(terrain, direction) {
             return None;
         }
@@ -407,6 +429,12 @@ fn village_site_direction(key: TileKey, index: u32) -> DVec3 {
     let v =
         v_min + (inset + unit_hash(seed ^ index ^ 0xbb67_ae85) * (1.0 - 2.0 * inset)) * cell_span;
     face_uv_to_direction(key.face, u, v)
+}
+
+/// Stable candidates, including rejected ones; shared by conservative global
+/// occupancy and the exact local siting pass. Do not invent a second scatter.
+pub(crate) fn village_candidates_in_cell(key: TileKey) -> impl Iterator<Item = DVec3> {
+    (0..VILLAGE_SITE_CANDIDATES_PER_CELL).map(move |i| village_site_direction(key, i))
 }
 
 /// House positions around a village centre, as tangential offsets in metres,
@@ -854,10 +882,12 @@ pub fn beam_cells_around(camera_direction: DVec3, ring: i32) -> Vec<TileKey> {
 /// so a beam is on exactly the ground a village is sited on -- but it does not
 /// build or distance-cull houses, so it can run for cells far outside the
 /// drawing range. The village centre is the foot, not its first house.
-pub fn village_beam_sites_in_cell(terrain: &TerrainRenderer, key: TileKey) -> Vec<DVec3> {
+pub fn village_beam_sites_in_cell(
+    terrain: &impl VillageSurface,
+    key: TileKey,
+) -> Vec<DVec3> {
     let mut sites = Vec::new();
-    for candidate in 0..VILLAGE_SITE_CANDIDATES_PER_CELL {
-        let up = village_site_direction(key, candidate);
+    for up in village_candidates_in_cell(key) {
         let reference = if up.y.abs() < 0.9 { DVec3::Y } else { DVec3::X };
         let east = up.cross(reference).normalize_or_zero();
         if east.length_squared() <= f64::EPSILON {
