@@ -4967,6 +4967,36 @@ impl State {
         }
         let frame_time = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
+        // PLANET_DEBUG_TURN=1: one line a frame to test-runs/turn_debug.txt (for
+        // chasing camera jitter while turning).
+        if std::env::var_os("PLANET_DEBUG_TURN").is_some() {
+            use std::io::Write;
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("test-runs/turn_debug.txt")
+            {
+                let _ = writeln!(
+                    file,
+                    "{:.4} dt_ms={:.1} mode={} yaw={:.5} pitch={:.5} alt={:.3} surf={:.3} pos=({:.3},{:.3},{:.3}) splits={} merges={} drawn={} fallback={} loaded={}",
+                    self.started_at.elapsed().as_secs_f64(),
+                    frame_time * 1000.0,
+                    self.camera_mode.label(),
+                    self.flight_look_yaw_radians,
+                    self.flight_look_pitch_radians,
+                    self.flight_local_position.length() - planet::planet_radius_meters(),
+                    self.flight_surface_height_meters,
+                    self.flight_local_position.x,
+                    self.flight_local_position.y,
+                    self.flight_local_position.z,
+                    self.terrain_stats.splits,
+                    self.terrain_stats.merges,
+                    self.terrain_stats.drawn_chunks,
+                    self.terrain_stats.fallback_chunks,
+                    self.terrain_stats.chunks_loaded,
+                );
+            }
+        }
         if frame_time > 0.0 {
             self.fps = 1.0 / frame_time;
         }

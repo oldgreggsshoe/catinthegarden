@@ -12530,3 +12530,7 @@ Sky moon construction moved to the first frame after the startup profile reports
 ## 18 October: parallel foveated faces
 
 FoveatedRenderer::new builds the six faces on `std::thread::scope` threads. Foveated tests pass (16). Not done: skipping OceanFft/foam/spray for the moon (needs Option plumbing), atmosphere LUT setup, ships.
+
+## 18 October: camera-jitter diagnostic
+
+User reports the view jitters back and forth while turning over land (not near the ships; ship contacts were zero over a 70 s run, so the second ship is not the cause). `PLANET_DEBUG_TURN=1` appends one line per frame to `test-runs/turn_debug.txt` (dt, mode, yaw, pitch, altitude, surface height, flight position, LOD splits/merges/drawn/fallback/loaded). Next: read a user run to see whether yaw reverses, the eye bobs with terrain height, or LOD churn coincides.
