@@ -67,6 +67,16 @@ Do not claim an FPS result for road-network rendering before it exists.
   Search/memory limits reject explicitly; a failed branch is never accepted as
   a complete network. The weighted search is not a global optimality claim.
 
+- `road_network_field.rs` and network mode in `road_cuts.wgsl`: bounded hashed
+  excavation for arbitrary orientations and branching bore unions, with CPU and
+  production GPU lookups. A query reads one local cell, at most 32 hash probes
+  and 64 candidate segments. Capacity/probe overflow rejects the entire field;
+  it never silently discards a road. Finite banks blend out before their index
+  footprint ends, avoiding a sharp edge under radius-sized f32 rounding.
+  `TerrainRenderer::set_network_road_cuts` is the upload/CPU-query hook.
+  **No live network producer calls this hook yet.** The pilot retains its own
+  original corridor field; this is tested integration plumbing, not live roads.
+
 The MST minimises a sampled cost proxy **on the candidate cell/lattice graph**,
 not worldwide engineering cost or a globally optimal Steiner tree. The coarse
 MST initially spans all cells, then is pruned. Conservative occupancy can keep
@@ -105,6 +115,21 @@ five covered tunnels totalling ~1.567 km, with the 25% cap checked physically.
 Opened pilot captures: `road_viaduct_overview/1792339098-938892`,
 `road_tunnel_trial/1792339309-939529`, `road_surface_trial/1792339344-939615`.
 The first overview views the roof rather than exposing the buried road.
+
+Network excavation validation: six CPU tests; 26,460 production Vulkan samples
+across three planet-frame orientations (maximum cut-height difference 0.260 m),
+plus the existing 77-sample pilot GPU regression (maximum 0.349 m). All 42 shader
+checks pass. Full app suite: 694 pass / same six unrelated failures / 50 ignored.
+Release build passes. Logs `/tmp/stuff-road-network-field-{tests,gpu,pilot-gpu,shaders,full-tests,build}.log`.
+This tests cut heights and bore sign/roof retention, not meshed tunnel junctions,
+walking, continuous source cover or actual undersea rendering.
+
+Matched pilot regression (network mode remains inactive): two X11/Immediate
+640x360 synchronized pairs,12 non-capture samples/run:41.678/41.693ms before
+versus41.995/42.001ms after (~0.31ms plumbing cost,about0.75%;~24fps at this
+heavier mountain site). All four final captures are byte-identical. Evidence:
+`test-runs/road-network-field-pilot-timings.json`. This is NOT a measurement of
+rendered planetary network cost.
 
 Earlier 10% evidence (historical):
 
@@ -154,9 +179,10 @@ and placeholder-source rejection. Binary SHA256:
    `road_render.rs` coverage-AA pipeline should be reused; do not duplicate
    pipelines per road. A subterranean junction cannot be several closed
    overlapping tunnel liners.
-4. Replace the pilot-only monotonic-y cut buffer with a bounded spatial index
-   for active network segments. CPU/GPU cuts, bore voids and collision must
-   share the same field. Never loop through the global network per pixel.
+4. Feed actual engineered resident segments into the implemented bounded
+   network field, atomically with their meshes. Add matching deck/wall collision;
+   the current field only supplies terrain heights and bore air queries. Never
+   loop through the global network per pixel.
 5. Undersea integration must exclude the tunnel interior from sea/water fog,
    bathymetry and underwater-camera corrections; simply drawing a liner below
    water is not sufficient. Preserve both the seabed and the sea above its roof.

@@ -2,7 +2,7 @@
 // centre/profile samples. No loop over the route, and no fragment-stage search.
 @group(2) @binding(21) var<storage, read> road_cut_data: array<vec4<f32>>;
 struct RoadTerrainCut { height: f32, normal: vec3<f32>, lowered: bool }
-fn road_terrain_cut(direction: vec3<f32>, uncut_height: f32) -> RoadTerrainCut {
+fn road_pilot_terrain_cut(direction: vec3<f32>, uncut_height: f32) -> RoadTerrainCut {
     var result = RoadTerrainCut(uncut_height, direction, false);
     if !ROAD_CUTS_ENABLED { return result; }
     let settings = road_cut_data[0];
@@ -54,7 +54,7 @@ fn road_cut_albedo(colour: vec3<f32>, removed: f32) -> vec3<f32> {
 // Positive in tunnel air, negative in rock. Only the portal-height fragments
 // are removed; the hillside above the roof is retained. The half-metre bore
 // allowance buries the lining and absorbs planet-radius float rounding.
-fn road_tunnel_void(direction: vec3<f32>, height: f32) -> f32 {
+fn road_pilot_tunnel_void(direction: vec3<f32>, height: f32) -> f32 {
     if !ROAD_CUTS_ENABLED { return -1000000.0; }
     let settings=road_cut_data[0];
     if settings.w < 0.5 { return -1000000.0; }
@@ -80,4 +80,101 @@ fn road_tunnel_void(direction: vec3<f32>, height: f32) -> f32 {
 // Ray terrain must not author a competing inner surface in that shell.
 fn road_tunnel_lining_owns(direction: vec3<f32>, height: f32) -> bool {
     return road_tunnel_void(direction,height)>-0.25;
+}
+
+// Network mode: fixed-capacity open-addressed grid, built with the CPU field.
+// A query reads one local cell (<=64 segments), never the planetary network.
+const NETWORK_BUCKETS: u32 = 32768u;
+const NETWORK_REFS: u32 = 32772u;
+const NETWORK_SEGMENTS: u32 = 98308u;
+fn road_network_cell(xy: vec2<f32>) -> vec2<u32> {
+    let cell = vec2<i32>(floor(xy / road_cut_data[0].y));
+    let hash = (bitcast<u32>(cell.x)*73856093u) ^ (bitcast<u32>(cell.y)*19349663u);
+    for (var probe=0u; probe<32u; probe+=1u) {
+        let entry=road_cut_data[4u+((hash+probe)&(NETWORK_BUCKETS-1u))];
+        if entry.w<0.5 { break; }
+        if all(vec2<i32>(entry.xy)==cell) { return vec2<u32>(entry.zw); }
+    }
+    return vec2<u32>(0u);
+}
+fn road_network_segment(reference: u32) -> u32 {
+    let index=u32(road_cut_data[NETWORK_REFS+reference/4u][reference%4u]);
+    return NETWORK_SEGMENTS+index*2u;
+}
+fn road_network_local(direction: vec3<f32>, height: f32) -> vec3<f32> {
+    let radius=road_cut_data[0].x;
+    let cosine=dot(direction,road_cut_data[3].xyz);
+    return vec3<f32>(vec2<f32>(dot(direction,road_cut_data[1].xyz),
+        dot(direction,road_cut_data[2].xyz))*(radius+height),
+        (cosine-1.0)*radius+cosine*height);
+}
+fn road_network_terrain_cut(direction: vec3<f32>, uncut: f32) -> RoadTerrainCut {
+    var result=RoadTerrainCut(uncut,direction,false);
+    let up=road_cut_data[3].xyz;
+    let cosine=dot(direction,up);
+    if cosine<0.99 { return result; }
+    for (var iteration=0u; iteration<2u; iteration+=1u) {
+        let p=road_network_local(direction,result.height);
+        let list=road_network_cell(p.xy);
+        result=RoadTerrainCut(uncut,direction,false);
+        for (var j=0u; j<min(list.y,64u); j+=1u) {
+            let index=road_network_segment(list.x+j);
+            let a=road_cut_data[index];
+            let b=road_cut_data[index+1u];
+            if b.w>0.5 { continue; }
+            let delta=b.xyz-a.xyz;
+            let t=clamp(dot(p.xy-a.xy,delta.xy)/dot(delta.xy,delta.xy),0.0,1.0);
+            let centre=mix(a.xyz,b.xyz,t);
+            let displacement=p.xy-centre.xy;
+            let offset=length(displacement);
+            if offset>a.w { continue; }
+            let cap=centre.z-6.0+max(offset-9.0,0.0);
+            let raw_height=(cap-(cosine-1.0)*road_cut_data[0].x)/cosine;
+            // A finite bank blends out before its index footprint ends. No
+            // hard cut at a cell/reach boundary, even with f32 radius rounding.
+            let fade=clamp((a.w-offset)/8.0,0.0,1.0);
+            let weight=fade*fade*(3.0-2.0*fade);
+            let height=mix(uncut,raw_height,weight);
+            if height>=result.height { continue; }
+            result.height=height;
+            result.lowered=true;
+            var gradient=vec2<f32>(0.0);
+            if t>0.0 && t<1.0 { gradient=delta.xy*delta.z/dot(delta.xy,delta.xy); }
+            if offset>9.0 { gradient+=displacement/max(offset,0.00001); }
+            gradient=gradient*weight-(raw_height-uncut)*cosine
+                *6.0*fade*(1.0-fade)/8.0*displacement/max(offset,0.00001);
+            result.normal=normalize(up-road_cut_data[1].xyz*gradient.x-road_cut_data[2].xyz*gradient.y);
+        }
+    }
+    return result;
+}
+fn road_network_tunnel_void(direction: vec3<f32>, height: f32) -> f32 {
+    if dot(direction,road_cut_data[3].xyz)<0.99 { return -1000000.0; }
+    let p=road_network_local(direction,height);
+    let list=road_network_cell(p.xy);
+    var result=-1000000.0;
+    for (var j=0u; j<min(list.y,64u); j+=1u) {
+        let index=road_network_segment(list.x+j);
+        let a=road_cut_data[index];
+        let b=road_cut_data[index+1u];
+        if b.w<0.5 { continue; }
+        let delta=b.xyz-a.xyz;
+        let t=clamp(dot(p.xy-a.xy,delta.xy)/dot(delta.xy,delta.xy),0.0,1.0);
+        let centre=mix(a.xyz,b.xyz,t);
+        let offset=length(p.xy-centre.xy);
+        let z=p.z-centre.z;
+        let roof=min(9.0-0.25*offset,12.8-1.2*offset);
+        result=max(result,min(min(7.0-offset,z+6.5),roof+0.5-z));
+    }
+    return result;
+}
+fn road_terrain_cut(direction: vec3<f32>, uncut_height: f32) -> RoadTerrainCut {
+    if !ROAD_CUTS_ENABLED { return RoadTerrainCut(uncut_height,direction,false); }
+    if road_cut_data[0].w>1.5 { return road_network_terrain_cut(direction,uncut_height); }
+    return road_pilot_terrain_cut(direction,uncut_height);
+}
+fn road_tunnel_void(direction: vec3<f32>, height: f32) -> f32 {
+    if !ROAD_CUTS_ENABLED { return -1000000.0; }
+    if road_cut_data[0].w>1.5 { return road_network_tunnel_void(direction,height); }
+    return road_pilot_tunnel_void(direction,height);
 }

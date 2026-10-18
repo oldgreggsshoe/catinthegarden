@@ -894,6 +894,7 @@ pub struct TerrainRenderer {
     sun_visibility_buffer: wgpu::Buffer,
     road_cut_buffer: wgpu::Buffer,
     road_cuts: Option<std::sync::Arc<crate::road::CutField>>,
+    network_road_cuts: Option<std::sync::Arc<crate::road_network_field::Field>>,
     foam_history: ocean_foam::OceanFoamHistory,
     foam_history_enabled: bool,
     ocean_spray: Option<ocean_spray::OceanSpray>,
@@ -1303,7 +1304,10 @@ impl TerrainRenderer {
         });
         let road_cut_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("cached road cut profile"),
-            contents: bytemuck::cast_slice(&vec![[0.0_f32; 4]; crate::road::CUT_BUFFER_FLOAT4S]),
+            contents: bytemuck::cast_slice(&vec![
+                [0.0_f32; 4];
+                crate::road::CUT_BUFFER_FLOAT4S.max(crate::road_network_field::BUFFER_FLOAT4S)
+            ]),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
         let shared_bind_groups = std::array::from_fn(|index| {
@@ -1448,6 +1452,7 @@ impl TerrainRenderer {
             sun_visibility_buffer,
             road_cut_buffer,
             road_cuts: None,
+            network_road_cuts: None,
             foam_history,
             foam_history_enabled: crate::planet::ocean_foam_history_enabled(),
             ocean_spray,
@@ -1555,10 +1560,23 @@ impl TerrainRenderer {
             &self.road_cut_buffer, 0, bytemuck::cast_slice(&cuts.gpu_data()),
         );
         self.road_cuts = Some(cuts);
+        self.network_road_cuts = None;
+    }
+
+    pub fn set_network_road_cuts(&mut self, cuts: std::sync::Arc<crate::road_network_field::Field>) {
+        self.queue.write_buffer(
+            &self.road_cut_buffer, 0, bytemuck::cast_slice(cuts.gpu_data()),
+        );
+        self.network_road_cuts = Some(cuts);
+        self.road_cuts = None;
     }
 
     fn cut_surface_height(&self, direction: DVec3, height: f64) -> f64 {
-        self.road_cuts.as_ref().map_or(height, |cuts| cuts.height(direction, height))
+        if let Some(cuts) = &self.network_road_cuts {
+            cuts.height(direction, height)
+        } else {
+            self.road_cuts.as_ref().map_or(height, |cuts| cuts.height(direction, height))
+        }
     }
 
     pub fn shared_bind_group(&self) -> &wgpu::BindGroup {

@@ -16,6 +16,31 @@ Shared junctions and tunnel-only island connections still apply. Implement in
 stages; the network below remains headless until its mesh/cut/collision/streaming
 integration is actually implemented and validated.
 
+**Completed network-field groundwork (18 October), not a live network.**
+`road_network_field.rs` builds one bounded local tangent-frame excavation index:
+32768 hash buckets,262144 references,32768 segment cap,64 candidates/cell,
+32 probes;overflow rejects atomically. Fixed GPU buffer2.62MB;CPU/GPU share
+headers/hash/reference packing. Bore queries union nearby segments and retain
+roof; finite banks smoothly taper over final8m of reach (GPU parity caught an
+otherwise4m hard-reach discontinuity). `road_cuts.wgsl` mode1 retains pilot,
+mode2 queries arbitrary network;terrain has mutually-exclusive field setters.
+No live producer calls `set_network_road_cuts` yet. `Frame`/segment reach must be
+supplied from validated engineered residents;the field does not itself choose
+portals,mesh junction linings,resolve village access,or implement walking.
+Six CPU regressions,26,460 Vulkan samples over3 up axes (max height error0.260m),
+77 legacy pilot GPU samples (0.349m),42 shader checks pass. Full app suite694
+pass/same6 baseline failures/50ignored;release builds. Relevant logs:
+`/tmp/stuff-road-network-field-{tests,gpu,pilot-gpu,shaders,full-tests,build}.log`.
+Matched pilot ABBA:41.678/41.693ms before,41.995/42.001ms after,12 noncapture
+samples/run,all PNGs byte-identical (~0.31ms/0.75% plumbing cost).Evidence:
+`test-runs/road-network-field-pilot-timings.json`;candidate capture opened.
+This is inactive network-mode pilot regression,not actual network FPS.
+Next: reconcile engineering with finest baked/render sources;cache near/far
+meshes with open junctions and unioned bore lining;source/version-keyed bounded
+background streaming and atomic mesh/field publication;deck/wall collision and
+undersea air exclusions;then opened transition captures and actual network FPS.
+Do not call the whole-planet network finished based on these groundwork tests.
+
 **Completed road engineering phase (18 October): steeper site and 25% grades.**
 Pilot now uses up=(0.45242405006232295,0.5402686479569877,0.7095225626855942),
 heading270 degrees. Actual dry route:29.993km,6.414km ground relief,5 bores

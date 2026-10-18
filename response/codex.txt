@@ -75,3 +75,7 @@ I’m checking resize and low-latency behaviour next, then moving on to the stee
 The new 30 km route crosses about 6.4 km of natural relief and includes five covered tunnels. I’ve inspected the driving, tunnel-entry, interior and exit captures; the route stays on dry terrain and within the 25% grade limit.
 
 All four sampled network profiles now pass engineering checks. I’m still working on live network integration—that result alone doesn’t mean the whole network is finished.
+
+Moved the 30 km test to steeper mountains, allowed 25% gradients, and retained five tunnels.
+
+Network routing and bounded excavation are tested and pushed. Planet-wide live meshes, streaming and undersea traversal are still unfinished.

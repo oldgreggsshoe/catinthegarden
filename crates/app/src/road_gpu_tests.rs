@@ -57,6 +57,42 @@ fn gpu_road_cuts_match_cpu_at_bends_banks_ends_and_underpasses() {
             ]);
         }
     }
+    let heights = execute_cut_samples(&plan.cuts.gpu_data(), &cases);
+    let mut maximum = 0.0_f64;
+    for (c, h) in cases.iter().zip(&heights) {
+        let expected = plan.cuts.height(
+            DVec3::new(c[0] as f64, c[1] as f64, c[2] as f64),
+            c[3] as f64,
+        );
+        let error = (h[0] as f64 - expected).abs();
+        maximum = maximum.max(error);
+        assert!(
+            error < 0.75,
+            "CPU {expected}, GPU {h:?}, error {error}, case {c:?}"
+        );
+        assert!(h[0] <= c[3] + 0.001);
+        let void = plan.cuts.tunnel_void(
+            DVec3::new(c[0] as f64, c[1] as f64, c[2] as f64),
+            c[3] as f64,
+        );
+        assert_eq!(
+            h[2] > 0.5,
+            void > -0.25,
+            "lining ownership mismatch at {c:?}"
+        );
+        assert!(
+            (f64::from(h[1]) - void).abs() < 0.75,
+            "bore mismatch CPU {void}, GPU {}, case {c:?}",
+            h[1]
+        );
+    }
+    eprintln!(
+        "{} production cut samples, max CPU/GPU difference {maximum:.4} m",
+        cases.len()
+    );
+}
+
+fn execute_cut_samples(profile_data: &[[f32; 4]], cases: &[[f32; 4]]) -> Vec<[f32; 4]> {
     let source = format!(
         "const ROAD_CUTS_ENABLED: bool = true;\n{}\n{}",
         include_str!("road_cuts.wgsl").replace("@group(2) @binding(21)", "@group(0) @binding(1)"),
@@ -85,12 +121,12 @@ fn gpu_road_cuts_match_cpu_at_bends_banks_ends_and_underpasses() {
     });
     let profile = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("road profile"),
-        contents: bytemuck::cast_slice(&plan.cuts.gpu_data()),
+        contents: bytemuck::cast_slice(profile_data),
         usage: wgpu::BufferUsages::STORAGE,
     });
     let input = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("cut samples"),
-        contents: bytemuck::cast_slice(&cases),
+        contents: bytemuck::cast_slice(cases),
         usage: wgpu::BufferUsages::STORAGE,
     });
     let size = (cases.len() * 16) as u64;
@@ -147,39 +183,7 @@ fn gpu_road_cuts_match_cpu_at_bends_banks_ends_and_underpasses() {
         .unwrap();
     receiver.recv().unwrap().unwrap();
     let data = readback.slice(..).get_mapped_range();
-    let heights = bytemuck::cast_slice::<u8, [f32; 4]>(&data);
-    let mut maximum = 0.0_f64;
-    for (c, h) in cases.iter().zip(heights) {
-        let expected = plan.cuts.height(
-            DVec3::new(c[0] as f64, c[1] as f64, c[2] as f64),
-            c[3] as f64,
-        );
-        let error = (h[0] as f64 - expected).abs();
-        maximum = maximum.max(error);
-        assert!(
-            error < 0.75,
-            "CPU {expected}, GPU {h:?}, error {error}, case {c:?}"
-        );
-        assert!(h[0] <= c[3] + 0.001);
-        let void = plan.cuts.tunnel_void(
-            DVec3::new(c[0] as f64, c[1] as f64, c[2] as f64),
-            c[3] as f64,
-        );
-        assert_eq!(
-            h[2] > 0.5,
-            void > -0.25,
-            "lining ownership mismatch at {c:?}"
-        );
-        assert!(
-            (f64::from(h[1]) - void).abs() < 0.75,
-            "bore mismatch CPU {void}, GPU {}, case {c:?}",
-            h[1]
-        );
-    }
-    eprintln!(
-        "{} production cut samples, max CPU/GPU difference {maximum:.4} m",
-        cases.len()
-    );
+    bytemuck::cast_slice::<u8, [f32; 4]>(&data).to_vec()
 }
 
 #[test]
@@ -406,4 +410,70 @@ fn gpu_far_road_retains_subpixel_coverage_without_black_specks() {
         hidden.chunks_exact(4).all(|p| p[0] == 255),
         "road painted over closer depth"
     );
+}
+
+#[test]
+#[ignore = "requires Vulkan; production arbitrary-network excavation lookup"]
+fn gpu_network_field_matches_cpu_for_negative_cells_bends_and_branching_bores() {
+    use crate::road_network_field::{Field, Frame, Segment};
+    for up in [DVec3::X, DVec3::new(1.0, 2.0, 3.0).normalize(), DVec3::Z] {
+        let frame = Frame::new(up, crate::planet::planet_radius_meters()).unwrap();
+        let segment = |a: [f64; 3], b: [f64; 3], tunnel| Segment {
+            a: a.into(),
+            b: b.into(),
+            tunnel,
+            reach: 48.0,
+        };
+        let field = Field::build(
+            frame,
+            vec![
+                segment([-210.0, -75.0, 1200.0], [210.0, 75.0, 1220.0], false),
+                segment([-120.0, 160.0, 1180.0], [0.0, 160.0, 1190.0], true),
+                segment([0.0, 160.0, 1190.0], [120.0, 300.0, 1200.0], true),
+                segment([0.0, 160.0, 1190.0], [180.0, 100.0, 1200.0], true),
+            ],
+        )
+        .unwrap();
+        let mut cases = Vec::new();
+        for x in -24..=24 {
+            for y in -12..=32 {
+                for z in [1184.0, 1192.0, 1204.0, 1240.0] {
+                    // Avoid exact cell and surface boundaries: radius-sized f32
+                    // direction rounding otherwise changes the queried column.
+                    let p = frame.world(DVec3::new(
+                        x as f64 * 10.0 + 0.31,
+                        y as f64 * 10.0 + 0.41,
+                        z,
+                    ));
+                    let d = p.normalize().as_vec3();
+                    cases.push([d.x, d.y, d.z, (p.length() - frame.radius) as f32]);
+                }
+            }
+        }
+        let results = execute_cut_samples(field.gpu_data(), &cases);
+        let mut maximum = 0.0_f64;
+        for (c, result) in cases.iter().zip(results) {
+            let d = DVec3::new(c[0] as f64, c[1] as f64, c[2] as f64);
+            let height = field.height(d, c[3] as f64);
+            let void = field.tunnel_void(d, c[3] as f64);
+            maximum = maximum.max((height - result[0] as f64).abs());
+            assert!(
+                (height - result[0] as f64).abs() < 0.8,
+                "cut CPU {height} GPU {result:?} case {c:?}"
+            );
+            // Outside indexed cells both use the negative sentinel; elsewhere
+            // compare signs away from the sub-metre f32 precision boundary.
+            if void.abs() > 0.8 && result[1].abs() > 0.8 {
+                assert_eq!(
+                    void > 0.0,
+                    result[1] > 0.0,
+                    "bore CPU {void} GPU {result:?} case {c:?}"
+                );
+            }
+        }
+        eprintln!(
+            "network up={up:?}: {} GPU samples, max cut error {maximum:.4}m",
+            cases.len()
+        );
+    }
 }
