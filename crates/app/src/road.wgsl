@@ -28,6 +28,7 @@ struct Output {
     @location(1) @interpolate(flat) colour: vec3<f32>,
     @location(2) @interpolate(flat) up: vec3<f32>,
     @location(3) @interpolate(linear) coverage: vec4<f32>,
+    @location(4) @interpolate(flat) sheltered: f32,
 }
 
 fn project_vertex(input: Input) -> Output {
@@ -39,7 +40,10 @@ fn project_vertex(input: Input) -> Output {
     output.position = camera.projection_matrix * vec4<f32>(view, 1.0);
     output.normal = normalize(input.across.xyz * input.normal.x
         + input.forward * input.normal.y + input.up * input.normal.z);
-    output.colour = input.colour;
+    output.colour = abs(input.colour);
+    // Signed colour lanes avoid increasing the cached vertex stride:
+    // negative blue = sheltered; negative red = emissive marker (near mesh).
+    output.sheltered = select(select(0.0, 1.0, input.colour.z < 0.0), 2.0, input.colour.x < 0.0);
     output.up = input.up;
     output.coverage = vec4<f32>(0.0);
     return output;
@@ -51,7 +55,11 @@ fn lit_colour(input: Output) -> vec3<f32> {
     let direct = vec3<f32>(1.9, 1.78, 1.6) * elevation * max(dot(input.normal, sun), 0.0);
     let ambient = mix(vec3<f32>(0.05, 0.055, 0.06), vec3<f32>(0.24, 0.29, 0.36),
         0.5 + 0.5 * dot(input.normal, input.up)) * (0.25 + 0.75 * elevation);
-    return input.colour * (direct + ambient);
+    if input.sheltered > 1.5 { return input.colour; }
+    let vertical = dot(input.normal,input.up);
+    let interior = (0.10 + 0.04*(1.0-abs(vertical)) + 0.12*max(vertical,0.0))
+        * vec3<f32>(1.0,0.96,0.90);
+    return input.colour * mix(direct + ambient, interior, input.sheltered);
 }
 
 @vertex
@@ -98,6 +106,7 @@ fn vs_far(input: Input) -> Output {
     }
     output.normal = normalize(cross(across, tangent));
     output.colour = abs(input.colour);
+    output.sheltered = 0.0;
     return output;
 }
 

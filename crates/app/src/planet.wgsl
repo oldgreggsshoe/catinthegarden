@@ -2661,6 +2661,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     {
         discard;
     }
+    if road_tunnel_void(direction, input.surface_height_and_fog_color.x) > 0.0 { discard; }
     if render_debug_mode == RENDER_DEBUG_FLAT_TRIANGLES {
         return flat_triangle_colour(input);
     }

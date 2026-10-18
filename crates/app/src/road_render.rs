@@ -18,6 +18,7 @@ struct Instance {
 struct DrawChunk {
     range: std::ops::Range<u32>,
     far_range: std::ops::Range<u32>,
+    structure_range: std::ops::Range<u32>,
     distant: bool,
     centre: DVec3,
     radius: f64,
@@ -73,9 +74,20 @@ impl RoadRenderer {
             terrain.prepare_flight_start_surface_height_meters(direction, 0.0)
         })
         .expect("viaduct trial needs complete dry terrain at its surveyed site");
+        for tunnel in &plan.tunnels {
+            tracing::info!(
+                entry_meters = plan.route.distances[tunnel.start.saturating_sub(1)],
+                exit_meters = plan.route.distances[tunnel.end],
+                exit_local_x = plan.route.points[tunnel.end].x,
+                exit_local_y = plan.route.points[tunnel.end].y,
+                exit_local_z = plan.route.points[tunnel.end].z,
+                "road tunnel portals"
+            );
+        }
         terrain.set_road_cuts(plan.cuts.clone());
         let mut mesh = Vec::new();
         let mut far_mesh = Vec::new();
+        let mut structures = Vec::new();
         let mut chunks = Vec::new();
         for chunk in plan.mesh() {
             let start = mesh.len() as u32;
@@ -83,12 +95,19 @@ impl RoadRenderer {
             let near_end = mesh.len() as u32;
             let far_start = far_mesh.len() as u32;
             far_mesh.extend(chunk.far_vertices);
+            let structure_start = structures.len() as u32;
+            structures.extend(chunk.structure_vertices);
+            let structure_radius = structures[structure_start as usize..]
+                .iter()
+                .map(|v| DVec3::from_array(v.position.map(f64::from)).distance(chunk.centre))
+                .fold(chunk.radius, f64::max);
             chunks.push(DrawChunk {
+                structure_range: structure_start..structures.len() as u32,
                 range: start..near_end,
                 far_range: far_start..far_mesh.len() as u32,
                 distant: false,
                 centre: road::world(chunk.centre),
-                radius: chunk.radius,
+                radius: structure_radius,
                 visible: false,
             });
         }
@@ -98,6 +117,12 @@ impl RoadRenderer {
             chunk.far_range.end += far_base;
         }
         mesh.extend(far_mesh);
+        let structure_base = mesh.len() as u32;
+        for chunk in &mut chunks {
+            chunk.structure_range.start += structure_base;
+            chunk.structure_range.end += structure_base;
+        }
+        mesh.extend(structures);
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("viaduct static vertices"),
             contents: bytemuck::cast_slice(&mesh),
@@ -113,7 +138,16 @@ impl RoadRenderer {
         let far_pipeline = create_pipeline(device, format, camera_layout, true);
         tracing::info!(
             route_length_meters = plan.route.length(),
-            planned_cut_volume_m3 = plan.route.cut_volume,
+            tunnel_count = plan.tunnels.len(),
+            start_cover_meters = plan.route.ground[0] - plan.route.points[0].z,
+            end_cover_meters =
+                plan.route.ground.last().unwrap() - plan.route.points.last().unwrap().z,
+            tunnel_length_meters = plan
+                .tunnels
+                .iter()
+                .map(|t| plan.route.distances[t.end] - plan.route.distances[t.start])
+                .sum::<f64>(),
+            open_cut_only_volume_proxy_m3 = plan.route.cut_volume,
             straight_cut_volume_m3 = plan.route.straight_cut_volume,
             maximum_cut_meters = plan
                 .route
@@ -177,6 +211,25 @@ impl RoadRenderer {
 
     pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, camera: &'a wgpu::BindGroup) {
         self.draw_lod(pass, camera, false);
+        // Lining/portals remain opaque at the far LOD as well. Otherwise the
+        // clipped portal would expose sky when the deck switches to a ribbon.
+        if self
+            .chunks
+            .iter()
+            .any(|c| c.visible && !c.structure_range.is_empty())
+        {
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, camera, &[]);
+            pass.set_vertex_buffer(0, self.vertices.slice(..));
+            pass.set_vertex_buffer(1, self.instance.slice(..));
+            for chunk in self
+                .chunks
+                .iter()
+                .filter(|c| c.visible && !c.structure_range.is_empty())
+            {
+                pass.draw(chunk.structure_range.clone(), 0..1);
+            }
+        }
     }
 
     /// Coverage-blended decks draw after opaque objects, before local weather.
@@ -312,6 +365,7 @@ mod tests {
         .into_iter()
         .enumerate()
         .map(|(i, (visible, distant))| super::DrawChunk {
+            structure_range: 0..0,
             range: (i as u32) * 6..(i as u32 + 1) * 6,
             far_range: 100 + (i as u32) * 6..100 + (i as u32 + 1) * 6,
             centre: glam::DVec3::ZERO,

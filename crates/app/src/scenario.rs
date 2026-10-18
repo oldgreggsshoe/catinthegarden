@@ -363,6 +363,9 @@ scenarios! {
     "road_viaduct_overview" => "../scenarios/road_viaduct_overview.json",
     "road_viaduct_performance" => "../scenarios/road_viaduct_performance.json",
     "road_route_survey" => "../scenarios/road_route_survey.json",
+    "road_tunnel_trial" => "../scenarios/road_tunnel_trial.json",
+    "road_tunnel_walk" => "../scenarios/road_tunnel_walk.json",
+    "road_tunnel_performance" => "../scenarios/road_tunnel_performance.json",
     "wavedir_spawn" => "../scenarios/wavedir_spawn.json",
     "ocean_underside_shallows" => "../scenarios/ocean_underside_shallows.json",
     "ocean_underside_snell_window" => "../scenarios/ocean_underside_snell_window.json",
@@ -1150,7 +1153,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 127);
+        assert_eq!(SCENARIO_NAMES.len(), 130);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));
@@ -1410,6 +1413,23 @@ mod tests {
         assert_eq!(survey.expected_screenshots(), 6);
         assert!(survey.uses_fixed_exposure());
         assert!(crate::road::is_replay(survey.name()));
+    }
+
+    #[test]
+    fn road_tunnel_replays_cover_portals_walking_and_a_fixed_performance_pose() {
+        for name in ["road_tunnel_trial","road_tunnel_walk","road_tunnel_performance"] {
+            let replay=ScenarioRunner::load(name).unwrap();
+            assert!(crate::road::is_replay(name));
+            assert!(replay.uses_fixed_exposure());
+        }
+        let walk=ScenarioRunner::load("road_tunnel_walk").unwrap();
+        assert!(walk.replays_surface_walk() && walk.replays_forward_flight());
+        assert_eq!(walk.expected_screenshots(),3);
+        // The interior is lining, not exposed terrain; the generic terrain
+        // comparison-point count is not a meaningful performance assertion.
+        let performance=ScenarioRunner::load("road_tunnel_performance").unwrap();
+        assert_eq!(performance.assertions().min_surface_probe_points,None);
+
     }
 
     #[test]

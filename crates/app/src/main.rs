@@ -30,6 +30,7 @@ mod road;
 mod road_gpu_tests;
 mod road_render;
 mod road_route;
+mod road_tunnel;
 #[cfg(test)]
 mod relief_survey;
 mod scenario;
@@ -2922,13 +2923,12 @@ impl State {
                 .terrain
                 .surface_height_meters_at(local_radial, camera_altitude_meters),
         }?;
-        let sampled_terrain_height_meters = self
-            .road
-            .as_ref()
-            .and_then(|road| road.plan.walkable_height(local_radial, camera_altitude_meters))
-            .map_or(sampled_terrain_height_meters, |deck| {
-                deck.max(sampled_terrain_height_meters)
-            });
+        let sampled_terrain_height_meters = self.road.as_ref().map_or(
+            sampled_terrain_height_meters,
+            |road| road.plan.camera_surface_height(
+                local_radial, camera_altitude_meters, sampled_terrain_height_meters,
+            ),
+        );
         let ocean_environment = self.open_ocean_environment_at(
             local_radial,
             camera_altitude_meters,
@@ -3039,6 +3039,7 @@ impl State {
 
         while self.surface_pending_seconds >= SURFACE_CAMERA_STEP_SECONDS {
             let step_seconds = SURFACE_CAMERA_STEP_SECONDS;
+            let previous_tunnel_position = self.flight_local_position;
             self.surface_pending_seconds -= step_seconds;
             let local_radial = self.flight_local_position.normalize();
             let eye_altitude_meters =
@@ -3141,6 +3142,15 @@ impl State {
             jump_requested = false;
             self.flight_local_position =
                 moved_radial * (planet::planet_radius_meters() + resolved_eye_altitude);
+            if let Some(road) = &self.road {
+                let constrained = road.plan.constrain_tunnel_motion(
+                    previous_tunnel_position, self.flight_local_position,
+                );
+                if constrained.distance(self.flight_local_position) > 1.0e-6 {
+                    self.surface_physics.vertical_velocity_meters_per_second = 0.0;
+                    self.flight_local_position = constrained;
+                }
+            }
             self.flight_surface_height_meters = environment.visible_surface_height_meters();
             // The step is already deducted from the pending backlog above.
         }
@@ -3795,6 +3805,13 @@ impl State {
         planet_rotation_radians: f64,
         ocean_time_seconds: f64,
     ) {
+        if let Some(road) = &self.road
+            && let Some(start) = movement_start_position
+        {
+            self.flight_local_position = road.plan.constrain_tunnel_motion(
+                start, self.flight_local_position,
+            );
+        }
         if self.render_path == RenderPath::Raster
             && let Some(start) = movement_start_position
             && start.distance_squared(self.flight_local_position) > f64::EPSILON
@@ -3807,6 +3824,9 @@ impl State {
                     let terrain_height = self
                         .terrain
                         .raster_surface_height_meters_at(direction, altitude_meters)?;
+                    let terrain_height = self.road.as_ref().map_or(terrain_height, |road| {
+                        road.plan.camera_surface_height(direction, altitude_meters, terrain_height)
+                    });
                     Some(
                         if let Some((bathymetry, water_height, _)) = self.open_ocean_environment_at(
                             direction,
@@ -3851,6 +3871,11 @@ impl State {
                 .terrain
                 .surface_height_meters_at(local_radial, camera_altitude_meters),
         };
+        let surface_height_meters = surface_height_meters.map(|height| {
+            self.road.as_ref().map_or(height, |road| {
+                road.plan.camera_surface_height(local_radial, camera_altitude_meters, height)
+            })
+        });
         let ocean_environment = surface_height_meters.and_then(|terrain_height| {
             self.open_ocean_environment_at(
                 local_radial,
@@ -4977,7 +5002,8 @@ impl State {
             });
             let (mut position, look_at) = route_pose.unwrap_or((position, look_at));
             if route_pose.is_some()
-                && self.scenario.as_ref().is_some_and(|s| s.name() == "road_viaduct_overview")
+                && self.scenario.as_ref().is_some_and(|s| s.name() == "road_viaduct_overview"
+                    || (s.name() == "road_tunnel_trial" && sim_time >= 13.0))
             {
                 // Side cameras may sit on a hillside higher than the cut.
                 let direction = position.normalize();
@@ -5641,10 +5667,12 @@ impl State {
                 .surface_height_meters_at(camera_direction, camera_sea_level_altitude_meters),
         }
         .unwrap_or(0.0);
-        if let Some(deck) = self.road.as_ref().and_then(|road| {
-            road.plan.walkable_height(camera_direction, camera_sea_level_altitude_meters)
-        }) {
-            camera_surface_height_meters = camera_surface_height_meters.max(deck);
+        if let Some(road) = &self.road {
+            camera_surface_height_meters = road.plan.camera_surface_height(
+                camera_direction,
+                camera_sea_level_altitude_meters,
+                camera_surface_height_meters,
+            );
         }
         let mut ocean_water_depth_meters = 0.0;
         // Over land there is no open sea to be under, so the eye is clear of it.

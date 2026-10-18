@@ -83,6 +83,21 @@ baked outmap. Meshes/cuts are cached, with local batches and a distant deck LOD.
 Distant decks use analytic pixel coverage: a sub-pixel road contributes a faint
 line instead of flickering solid pixels. This works independently of F6 post-AA;
 close geometry is unchanged and foreground terrain still occludes the road.
+
+The trial now starts in a **mountain valley**. Sustained cuts deeper than 25 m
+for at least 100 m become tunnels where a five-point cross-road survey confirms
+at least 5 m of cover above the 9 m crown. Portals extend toward the hillside;
+sections still buried at a survey endpoint are not given false portals. The
+current ~30 km route includes a ~1.76 km portal-to-portal tunnel. Its deck stays
+on legs, with cached lining, portal collars and small marker strips; walking
+uses the deck beneath the hill, with swept wall/roof collision.
+`road_tunnel_trial` shows entry/interior/exit/roof views; `road_tunnel_walk`
+walks through the entrance. `PLANET_ROAD_TUNNELS=0` keeps the same route but
+uses the previous open-cut treatment, for comparisons. `PLANET_ROAD_HEADING`
+rotates the local survey corridor in degrees (default 0); other alignments
+are experimental and may not produce a tunnel.
+Use the default **raster** renderer for exploration: the alternate ray path
+still has exterior terrain issues at this mountain site, even with tunnels off.
 Ordinary runs build none of this. For **free exploration**, omit `--scenario`:
 this starts on the deck in free flight instead of on the ship.
 
@@ -107,6 +122,10 @@ env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 cargo run --release -p planet-ap
 For matched cost measurements use scenario `road_viaduct_performance`,
 environment `PLANET_PRESENT_MODE=immediate PLANET_VIEWPORT=640x360`, and
 CLI flag `--profile-render`.
+Use `road_tunnel_performance` for a fixed camera in the tunnel, with
+`PLANET_ROAD_TUNNELS=0` versus `1` to compare open-cut and tunnel versions.
+This measures the complete change of terrain treatment, not lining draw cost
+alone. Keep other flags, binary and camera identical, and the GPU otherwise idle.
 Keep `PLANET_ROAD_EXPERIMENT=1` in both runs and add `PLANET_DISABLE=roads`
 only to the hidden run: this retains the identical elevated camera/collider.
 To price the road **and terrain-cut rendering** together, use

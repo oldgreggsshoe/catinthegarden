@@ -34,14 +34,27 @@ pub fn is_replay(name: &str) -> bool {
             | "road_viaduct_overview"
             | "road_viaduct_performance"
             | "road_route_survey"
+            | "road_tunnel_trial"
+            | "road_tunnel_walk"
+            | "road_tunnel_performance"
     )
 }
 pub fn up() -> DVec3 {
-    DVec3::new(0.94919006, 0.28950297, 0.12339471).normalize()
+    // Mountain foothills, below the summit: a 30 km graded alpine corridor.
+    DVec3::new(0.48836709668686046, 0.5231724814861347, 0.6984183083863758).normalize()
 }
 pub fn forward() -> DVec3 {
-    let f = DVec3::new(-0.11802703, -0.03599824, 0.99235767);
-    (f - up() * f.dot(up())).normalize()
+    static HEADING: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    let heading = *HEADING.get_or_init(|| {
+        std::env::var("PLANET_ROAD_HEADING")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .filter(|v| v.is_finite())
+            .unwrap_or(0.0)
+            .to_radians()
+    });
+    let north = (DVec3::Z - up() * up().z).normalize();
+    glam::DQuat::from_axis_angle(up(), heading) * north
 }
 pub fn across() -> DVec3 {
     forward().cross(up())
@@ -60,6 +73,7 @@ pub fn local(position: DVec3) -> DVec3 {
 #[derive(Clone)]
 pub struct CutField {
     pub points: Vec<DVec3>,
+    pub tunnel_segments: Vec<bool>,
 }
 impl CutField {
     /// Uniform y indexing makes this O(1), independent of road length.
@@ -78,6 +92,9 @@ impl CutField {
             }
             let at = (p.y / SAMPLE_STEP).clamp(0.0, (self.points.len() - 1) as f64 - 1.0e-9);
             let i = at.floor() as usize;
+            if self.tunnel_segments[i] {
+                return uncut_height;
+            }
             let a = self.points[i];
             let b = self.points[i + 1];
             let centre = a.lerp(b, at.fract());
@@ -89,6 +106,40 @@ impl CutField {
             height = uncut_height.min((radius + cap) / cosine - radius);
         }
         height
+    }
+    /// Local bore frame, including the one-station portal approach. The
+    /// outside hillside remains the ordinary heightfield above the roof.
+    pub fn tunnel_frame(&self, p: DVec3) -> Option<(DVec3, f64)> {
+        if p.x.abs() > 3600.0 || p.y < 0.0 || p.y >= self.points.last()?.y {
+            return None;
+        }
+        let station = p.y / SAMPLE_STEP;
+        let i = station.floor() as usize;
+        if !self.tunnel_segments.get(i).copied().unwrap_or(false)
+            && !self.tunnel_segments.get(i + 1).copied().unwrap_or(false)
+        {
+            return None;
+        }
+        let a = self.points[i];
+        let b = self.points[i + 1];
+        let centre = a.lerp(b, station.fract());
+        let slope = (b.x - a.x) / (b.y - a.y);
+        Some((centre, (p.x - centre.x) / (1.0 + slope * slope).sqrt()))
+    }
+    /// Positive inside the excavated air volume; matching WGSL CSG operation.
+    pub fn tunnel_void(&self, direction: DVec3, height: f64) -> f64 {
+        self.local_tunnel_void(
+            local(direction * (crate::planet::planet_radius_meters() + height)),
+            0.5,
+        )
+    }
+    fn local_tunnel_void(&self, p: DVec3, margin: f64) -> f64 {
+        let Some((centre, offset)) = self.tunnel_frame(p) else {
+            return -1.0e6;
+        };
+        (crate::road_tunnel::HALF_WIDTH + margin - offset.abs())
+            .min(p.z - centre.z - crate::road_tunnel::FLOOR + margin)
+            .min(crate::road_tunnel::roof(offset) + margin - (p.z - centre.z))
     }
     pub fn gpu_data(&self) -> Vec<[f32; 4]> {
         let v = |p: DVec3| [p.x as f32, p.y as f32, p.z as f32, 0.0];
@@ -103,7 +154,11 @@ impl CutField {
             v(forward()),
             v(up()),
         ];
-        data.extend(self.points.iter().copied().map(v));
+        data.extend(self.points.iter().copied().enumerate().map(|(i, p)| {
+            let mut sample = v(p);
+            sample[3] = f32::from(self.tunnel_segments.get(i).copied().unwrap_or(false));
+            sample
+        }));
         data.resize(CUT_BUFFER_FLOAT4S, [0.0; 4]);
         data
     }
@@ -117,6 +172,7 @@ pub struct Pier {
 pub struct MeshChunk {
     pub vertices: Vec<Vertex>,
     pub far_vertices: Vec<Vertex>,
+    pub structure_vertices: Vec<Vertex>,
     pub centre: DVec3,
     pub radius: f64,
 }
@@ -124,6 +180,7 @@ pub struct Viaduct {
     pub route: Route,
     pub cuts: Arc<CutField>,
     pub piers: Vec<Pier>,
+    pub tunnels: Vec<crate::road_tunnel::Tunnel>,
     deepest_cut: usize,
     tallest_pier: usize,
 }
@@ -157,8 +214,18 @@ impl Viaduct {
             return None;
         }
         tracing::info!(maximum_grade, "road route grade checked on planet");
+        let tunnels = if std::env::var("PLANET_ROAD_TUNNELS").as_deref() == Ok("0") {
+            Vec::new()
+        } else {
+            crate::road_tunnel::select(&route, &mut ground)
+        };
+        let mut tunnel_segments = vec![false; route.points.len() - 1];
+        for tunnel in &tunnels {
+            tunnel_segments[tunnel.start..tunnel.end].fill(true);
+        }
         let cuts = Arc::new(CutField {
             points: route.points.clone(),
+            tunnel_segments,
         });
         let mut piers = Vec::new();
         for i in (0..route.points.len()).step_by(3) {
@@ -194,6 +261,7 @@ impl Viaduct {
             route,
             cuts,
             piers,
+            tunnels,
             deepest_cut,
             tallest_pier,
         })
@@ -240,6 +308,64 @@ impl Viaduct {
         self.deck_height_at(direction)
             .filter(|h| eye_altitude >= *h - 0.25)
     }
+    /// Camera floor inside a bore is the deck, never the hillside roof.
+    pub fn camera_surface_height(&self, direction: DVec3, eye: f64, terrain: f64) -> f64 {
+        if self.cuts.tunnel_void(direction, eye) > 0.0 {
+            if let Some(deck) = self.walkable_height(direction, eye) {
+                return deck;
+            }
+            let p = local(direction * (crate::planet::planet_radius_meters() + eye));
+            if let Some((centre, _)) = self.cuts.tunnel_frame(p) {
+                let floor = world(DVec3::new(p.x, p.y, centre.z + crate::road_tunnel::FLOOR));
+                return floor.length() - crate::planet::planet_radius_meters();
+            }
+        }
+        self.walkable_height(direction, eye)
+            .map_or(terrain, |deck| terrain.max(deck))
+    }
+    /// Sweep both entering and leaving cameras against the physical lining.
+    /// Only longitudinal portal crossings are open; retain a 20cm eye margin.
+    pub fn constrain_tunnel_motion(&self, from: DVec3, to: DVec3) -> DVec3 {
+        if self.tunnels.is_empty() {
+            return to;
+        }
+        let a = local(from);
+        let b = local(to);
+        if a.x.min(b.x) > 3600.0
+            || a.x.max(b.x) < -3600.0
+            || a.y.max(b.y) < 0.0
+            || a.y.min(b.y) > self.route.points.last().unwrap().y
+        {
+            return to;
+        }
+        let steps = ((a.distance(b) / 0.5).ceil() as usize).clamp(1, 512);
+        let mut previous = a;
+        let mut previous_air = self.cuts.local_tunnel_void(previous, 0.0) > 0.0;
+        for step in 1..=steps {
+            let candidate = a.lerp(b, step as f64 / steps as f64);
+            let air = self.cuts.local_tunnel_void(candidate, 0.0) > 0.0;
+            if air != previous_air
+                && self.cuts.tunnel_frame(previous).is_some()
+                && self.cuts.tunnel_frame(candidate).is_some()
+            {
+                let mut low = previous;
+                let mut high = candidate;
+                for _ in 0..20 {
+                    let mid = (low + high) * 0.5;
+                    if (self.cuts.local_tunnel_void(mid, 0.0) > 0.0) == previous_air {
+                        low = mid;
+                    } else {
+                        high = mid;
+                    }
+                }
+                let retreat = 0.2_f64.min(low.distance(a));
+                return world(low - (b - a).normalize_or_zero() * retreat);
+            }
+            previous = candidate;
+            previous_air = air;
+        }
+        to
+    }
     pub fn inspection_pose(&self) -> (DVec3, DVec3) {
         self.drive_pose(40.0, 2.0)
     }
@@ -254,6 +380,56 @@ impl Viaduct {
     }
     pub fn scenario_pose(&self, name: &str, time: f64) -> Option<(DVec3, DVec3)> {
         match name {
+            "road_tunnel_trial" => {
+                let tunnel = self
+                    .tunnels
+                    .first()
+                    .expect("tunnel replay needs a covered deep-cut section");
+                let entry = self.route.distances[tunnel.start.saturating_sub(1)];
+                let exit = self.route.distances[tunnel.end];
+                if time <= 10.0 {
+                    // Separate short, normal-speed entry/interior/exit shots;
+                    // do not race through a many-kilometre bore in ten seconds.
+                    let distance = if time < 3.0 {
+                        entry - 35.0 + 14.0 * time
+                    } else if time < 6.0 {
+                        (entry + exit) * 0.5 - 21.0 + 14.0 * (time - 3.0)
+                    } else {
+                        exit - 35.0 + 14.0 * (time - 6.0)
+                    };
+                    Some(self.drive_pose(distance, 2.0))
+                } else {
+                    let i = if time < 13.0 {
+                        tunnel.start.saturating_sub(1)
+                    } else {
+                        (tunnel.start + tunnel.end) / 2
+                    };
+                    let target = self.route.points[i] + DVec3::Z * 4.0;
+                    let offset = if time < 13.0 {
+                        let d = self.route.points[(i + 1).min(self.route.points.len() - 1)]
+                            - self.route.points[i];
+                        -d.normalize() * 60.0 + DVec3::Z * 12.0
+                    } else {
+                        lateral(&self.route.points, i) * -130.0 + DVec3::Z * 190.0
+                    };
+                    Some((world(target + offset), world(target)))
+                }
+            }
+            "road_tunnel_walk" => {
+                let t = self
+                    .tunnels
+                    .first()
+                    .expect("tunnel walk replay needs a covered deep-cut section");
+                Some(self.drive_pose(
+                    (self.route.distances[t.start.saturating_sub(1)] - 15.0).max(0.0),
+                    1.7,
+                ))
+            }
+            // This pose depends on the route, not tunnel classification, so
+            // PLANET_ROAD_TUNNELS=0 keeps the before/after camera identical.
+            "road_tunnel_performance" => {
+                Some(self.drive_pose(self.route.distances[self.deepest_cut], 2.0))
+            }
             "road_surface_trial" => Some(self.drive_pose(14.0 * time, 2.0)),
             "road_viaduct_performance" => Some(self.drive_pose(140.0, 2.0)),
             "road_route_survey" => {
@@ -381,7 +557,23 @@ impl Viaduct {
                 };
                 far_segment(&mut far_vertices, a, b, tangent(i), tangent(j));
             }
+            let structure_vertices =
+                crate::road_tunnel::mesh(&self.route, &self.tunnels, start, end);
+            for triangle in vertices.chunks_exact_mut(3) {
+                let y = triangle
+                    .iter()
+                    .map(|v| f64::from(v.position[1]))
+                    .sum::<f64>()
+                    / 3.0;
+                let i = (y / SAMPLE_STEP).floor().max(0.0) as usize;
+                if self.cuts.tunnel_segments.get(i).copied().unwrap_or(false) {
+                    for v in triangle {
+                        v.colour[2] = -v.colour[2].abs();
+                    }
+                }
+            }
             chunks.push(MeshChunk {
+                structure_vertices,
                 vertices,
                 far_vertices,
                 centre,
@@ -391,7 +583,7 @@ impl Viaduct {
         chunks
     }
 }
-fn lateral(points: &[DVec3], i: usize) -> DVec3 {
+pub(crate) fn lateral(points: &[DVec3], i: usize) -> DVec3 {
     let d = points[(i + 1).min(points.len() - 1)] - points[i.saturating_sub(1)];
     DVec3::new(d.y, -d.x, 0.0).normalize()
 }
@@ -448,7 +640,7 @@ pub struct Vertex {
     pub colour: [f32; 3],
 }
 
-fn quad(mesh: &mut Vec<Vertex>, points: [DVec3; 4], colour: [f32; 3]) {
+pub(crate) fn quad(mesh: &mut Vec<Vertex>, points: [DVec3; 4], colour: [f32; 3]) {
     let normal = (points[1] - points[0])
         .cross(points[2] - points[0])
         .normalize()
@@ -558,6 +750,53 @@ mod tests {
             assert_eq!(p.cuts.height(outside, h + 30.0), h + 30.0);
         }
         assert_eq!(p.cuts.gpu_data().len(), CUT_BUFFER_FLOAT4S);
+    }
+    #[test]
+    fn tunnel_retains_roof_and_camera_stays_on_deck_without_escaping_walls() {
+        let points: Vec<_> = (0..101)
+            .map(|i| DVec3::new(0.0, i as f64 * 10.0, 100.0))
+            .collect();
+        let mut flags = vec![false; 100];
+        flags[20..80].fill(true);
+        let plan = Viaduct {
+            cuts: Arc::new(CutField {
+                points: points.clone(),
+                tunnel_segments: flags,
+            }),
+            route: Route {
+                points,
+                ground: vec![140.0; 101],
+                distances: (0..101).map(|i| i as f64 * 10.0).collect(),
+                cut_volume: 0.0,
+                straight_cut_volume: 0.0,
+            },
+            piers: Vec::new(),
+            tunnels: vec![crate::road_tunnel::Tunnel { start: 20, end: 80 }],
+            deepest_cut: 50,
+            tallest_pier: 0,
+        };
+        let eye = world(DVec3::new(0.0, 500.0, 102.0));
+        let direction = eye.normalize();
+        let h = eye.length() - crate::planet::planet_radius_meters();
+        let deck = plan.deck_height_at(direction).unwrap();
+        assert!((plan.camera_surface_height(direction, h, h + 40.0) - deck).abs() < 0.001);
+        assert_eq!(plan.cuts.height(direction, h + 40.0), h + 40.0);
+        assert_eq!(
+            plan.camera_surface_height(direction, h + 40.0, h + 38.0),
+            h + 38.0
+        );
+        let wall = plan.constrain_tunnel_motion(eye, world(DVec3::new(20.0, 500.0, 102.0)));
+        assert!((local(wall).x - 6.3).abs() < 0.001);
+        let outside = world(DVec3::new(20.0, 500.0, 102.0));
+        let entry = plan.constrain_tunnel_motion(outside, eye);
+        assert!((local(entry).x - 6.7).abs() < 0.001);
+
+        let ceiling = plan.constrain_tunnel_motion(eye, world(DVec3::new(0.0, 500.0, 130.0)));
+        assert!((local(ceiling).z - 108.8).abs() < 0.001);
+        let exit = world(DVec3::new(0.0, 820.0, 102.0));
+        assert!(plan.constrain_tunnel_motion(eye, exit).distance(exit) < 1e-6);
+        assert!(plan.cuts.tunnel_void(direction, h) > 0.0);
+        assert!(plan.cuts.tunnel_void(direction, h + 20.0) < 0.0);
     }
     #[test]
     fn road_mesh_and_collider_match_with_bounded_local_batches() {

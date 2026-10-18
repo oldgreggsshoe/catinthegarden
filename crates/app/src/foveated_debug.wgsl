@@ -709,7 +709,9 @@ fn surface_function(
     let surface_direction = normalize(view_to_planet(point_view));
     let surface_radius = PLANET_RADIUS_METERS
         + road_terrain_cut(surface_direction, scaled_terrain_macro_height(sample_height(surface_direction))).height;
-    return radius_at(distance_meters, radial_dot_ray) - surface_radius;
+    let height = radius_at(distance_meters, radial_dot_ray) - PLANET_RADIUS_METERS;
+    return max(radius_at(distance_meters, radial_dot_ray) - surface_radius,
+        road_tunnel_void(surface_direction, height));
 }
 
 /// The macro surface plus synthesised detail, as a signed distance along the ray.
@@ -730,8 +732,9 @@ fn detail_surface_function(
         macro_height,
         footprint_radians,
     );
-    return radius_at(distance_meters, radial_dot_ray)
-        - (PLANET_RADIUS_METERS + road_terrain_cut(surface_direction, macro_height + detail.height_meters).height);
+    let height = radius_at(distance_meters, radial_dot_ray) - PLANET_RADIUS_METERS;
+    return max(height - road_terrain_cut(surface_direction, macro_height + detail.height_meters).height,
+        road_tunnel_void(surface_direction, height));
 }
 
 /// Finds the first detailed-surface entry around the macro hit.
@@ -1561,6 +1564,13 @@ fn trace_ray(ray: vec3<f32>, detail: f32, footprint_radians: f32) -> RayResult {
 
     let hit_view = camera_position_view + ray * hit_distance;
     let surface_direction = normalize(view_to_planet(hit_view));
+    // Excavation boundaries belong to the cached lining, not a second skin
+    // of heightfield material/depth. The finite ray refiner can undershoot
+    // into the void; do not let that competing depth cover the lining.
+    if road_tunnel_lining_owns(surface_direction,
+        radius_at(hit_distance, radial_dot_ray) - PLANET_RADIUS_METERS) {
+        return RayResult(vec4<f32>(0.0, 0.0, 0.0, 1.0), -1.0);
+    }
     let normal = terrain_normal(surface_direction, ray * hit_distance);
     let macro_height = sample_height(surface_direction);
     let biome = sample_biome(surface_direction);

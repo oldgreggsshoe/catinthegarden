@@ -10,7 +10,107 @@ surface appearance and crest geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Latest phase (17 October): analytic coverage AA for distant roads.**
+**Latest phase (18 October): mountain-road tunnels.**
+
+`road_tunnel.rs` selects sustained >=25 m open-cut depth over >=100 m,
+expanding a qualifying core toward portal cover. Five transverse samples at
+each 10 m station must retain >=5 m of ground above the 9 m crown. Nearby cores
+merge only within continuous cover. A section still buried at a survey endpoint
+is rejected, not presented as a hillside portal. This is a sampled pilot, not a
+geotechnical survey or jointly optimised route/tunnel construction solver.
+
+The trial moved to a surveyed mountain-valley approach, direction
+`[0.48836709668686046, 0.5231724814861347, 0.6984183083863758]`.
+`PLANET_ROAD_HEADING` rotates the local corridor (default 0, read once).
+The initial summit/north alignments were rejected after inspection because
+some bores terminated underground; their old captures are not final evidence.
+The final road is 29,989.88 m long, with one ~1,761.95 m portal-to-portal bore
+(~1,751.57 m covered profile plus the approach), from chainage 1,941.53 to
+3,703.48 m. Maximum physical grade 9.111%; maximum support ~33.02 m; cached near/far/structure mesh ~113,732
+triangles; one-time survey/mesh setup ~0.3 s. The logged open-cut volume remains
+an **open-cut-only proxy**, before substitution of tunnels; not tunnel earthwork.
+
+The unchanged 48 KB `CutField` profile uses sample.w for tunnel segments.
+Open-cut displacement is suppressed inside enclosed sections; raster fragments
+inside the bore are clipped while the hill above the roof remains. Ray terrain
+uses the same CSG void. Its computed inner-boundary material/depth must be
+suppressed (`road_tunnel_lining_owns`), because actual opaque lining owns that
+surface. Without that ownership, ray captures showed cyan terrain through
+parapets (3,736 pixels); the matched fixed capture after the correction has 0.
+Changing secant refinement or disabling the warp did not solve it; those
+experiments were removed. No global ray refinement budget or warp policy changed.
+
+Cached inward lining, outward shell, closed floor, portal rings and marker
+strips share the road vertex buffer and existing opaque pipeline. Structures
+remain drawn at the distant road LOD so portal holes do not expose sky.
+Negative blue marks sheltered material; negative red marks emissive strips in
+the near mesh; far-ribbon red still encodes its side. No new textures or lights.
+Camera surface/near clip, walking, streamed-terrain corrections and flight
+clearance now select the deck within the bore, not the roof. A bounded sweep
+blocks entering/exiting through side walls or the ceiling, permitting portal
+crossings. This is eye-motion collision; no general cave or vehicle-body solver.
+The previous pilot's lack of parapet/pier collision and approach ramps remains.
+
+Replays: `road_tunnel_trial` uses short normal-speed entry/interior/exit shots
+and static portal/roof views (not a continuous full-bore traversal);
+`road_tunnel_walk` exercises the real walking controller through the entrance;
+`road_tunnel_performance` fixes its pose from the route's deepest cut so the
+same camera is retained with `PLANET_ROAD_TUNNELS=0` (open cut) or `1`.
+
+Validation: 15 focused road tests pass, including the production Vulkan
+cut/void/lining-ownership lookup (77 samples, maximum CPU/GPU height delta
+0.357 m) and the existing sub-pixel road coverage regression. All 37 shader
+checks pass with the road experiment enabled. Full release suite: 664 passed,
+the same six unrelated failures, 46 ignored; focused replay assertions were
+rerun after removing an invalid generic terrain-point-count assertion from
+the *lining-interior* performance replay (camera/finite/capture assertions stay).
+
+Opened final mountain raster captures:
+- `road_tunnel_trial/1792280643-794337`: 7 captures, portal/interior/exit/roof.
+- `road_tunnel_walk/1792280675-794435`: 3 captures, actual walking entry;
+  deck clearance ~1.7 m, not a scripted through-terrain camera.
+- `road_viaduct_overview/1792280711-794628`: 3 captures, preserved roof,
+  valley supports and distant road. Existing terrain colours were preserved.
+- Fixed ray interior: `road_tunnel_performance/1792281500-798194`, no cyan
+  competing terrain patches after the ownership fix (before: `1792280732-795839`).
+- **Ray exterior limitation:** `road_tunnel_trial/1792281771-799966` passes
+  numeric assertions and its interiors are clean, but the opened exterior
+  views still show incorrect terrain/sky surfaces. Do not call that tour
+  visually accepted. The normal raster path is the validated exploration mode;
+  exterior ray terrain/cut integration needs a separate follow-up.
+
+The exterior ray issue also reproduces with tunnels disabled:
+`road_viaduct_performance/1792282141-801080` (`PLANET_ROAD_TUNNELS=0`),
+opened after the matched raster runs. It is not solved by the lining fix.
+
+Matched raster timing (CPU `--profile-render`, **no GPU timestamp profiling**):
+X11, Immediate, 640x360, same frozen route-derived XYZ/FOV in each state;
+settled 2 < sim-time < 8 s, no capture readbacks in the timing samples, no
+other renderer/build running. Binary SHA256:
+`0dd0a67699ef18591217550647d1ca2c9195bc37d5529cbd7607117775924c62`.
+`target/release/planet-app` was checked against this measured executable.
+
+- Interior, two pairs in OFF/ON/ON/OFF order, 24 samples/state: tunnel
+  **27.710 ms render / 27.719 ms actual frame (~36.08 fps)**; open-cut
+  **35.808 / 35.831 ms (~27.91 fps)**. Paths under `road_tunnel_performance`:
+  `1792281976-800587` OFF, `1792281997-800671` ON,
+  `1792282015-800712` ON, `1792282032-800784` OFF. All manifests pass.
+- Outdoor, one ON/OFF pair, 12 samples/state: tunnel **34.111 ms render /
+  33.938 ms frame (~29.47 fps)** vs open-cut **34.155 / 33.974 ms
+  (~29.43 fps)**. Difference ~0.04 ms is noise, not a measured improvement.
+  Paths under `road_viaduct_performance`: `1792282099-800943` ON,
+  `1792282120-800987` OFF. Both manifests pass.
+
+These compare the whole tunnel versus open-cut treatment at fixed poses, not
+lining draw cost alone or a planet-wide FPS gain: enclosing the interior hides
+more of the scene. Raw samples/camera equality/SHA are in ignored files
+`test-runs/performance/road-tunnels-2026-10-18/summary.json` and `outdoor.json`.
+Final suite log `/tmp/stuff-tunnel-all-final.log`; focused Vulkan/shader logs
+`/tmp/stuff-tunnel-gpu-delivery.log`, `/tmp/stuff-tunnel-shaders-delivery.log`.
+Free exploration still uses `PLANET_ROAD_EXPERIMENT=1` without `--scenario`;
+WASD/mouse/speed keys and G walking/flying are unchanged.
+
+**Previous phase (17 October): analytic coverage AA for distant roads.**
 The far road previously used opaque single-sample triangles; F6 post-AA cannot
 recover a road that rasterisation misses. `road.rs::far_segment` now encodes
 centreline, half-width tangent and side (signed red) in the existing 36-byte

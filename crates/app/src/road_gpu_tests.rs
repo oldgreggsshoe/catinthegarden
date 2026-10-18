@@ -5,13 +5,20 @@ use wgpu::util::DeviceExt;
 #[test]
 #[ignore = "requires Vulkan; run explicitly when the road cut field changes"]
 fn gpu_road_cuts_match_cpu_at_bends_banks_ends_and_underpasses() {
-    let plan = crate::road::Viaduct::survey(|d| {
+    let mut plan = crate::road::Viaduct::survey(|d| {
         let x = d.dot(crate::road::across()) * crate::planet::planet_radius_meters();
         let y = d.dot(crate::road::forward()) * crate::planet::planet_radius_meters();
         Some(1900.0 + 200.0 * (-(x / 350.0).powi(2) - ((y - 8000.0) / 400.0).powi(2)).exp())
     })
     .unwrap();
     assert!(plan.route.points.iter().any(|p| p.x.abs() > 300.0));
+    // Force a known bore into the fixture so parity does not depend on the
+    // optimiser choosing a tunnel in this otherwise gently rolling survey.
+    std::sync::Arc::get_mut(&mut plan.cuts)
+        .unwrap()
+        .tunnel_segments[1000..1020]
+        .fill(true);
+
     let mut cases = Vec::new();
     for distance in [0.0, 100.0, 8000.0, 10000.0, 29000.0] {
         for offset in [0.0, 4.0, 12.0, 30.0, 1000.0] {
@@ -37,10 +44,23 @@ fn gpu_road_cuts_match_cpu_at_bends_banks_ends_and_underpasses() {
             (p.length() - crate::planet::planet_radius_meters()) as f32 + 40.0,
         ]);
     }
+    for y in [9985.0, 10005.0, 10100.0, 10195.0, 10205.0] {
+        let centre = plan.route.at_y(y);
+        for (offset, z) in [(0.0, 2.0), (0.0, 20.0), (6.0, 2.0), (8.0, 2.0), (0.0, -8.0)] {
+            let p = crate::road::world(centre + DVec3::new(offset, 0.0, z));
+            let d = p.normalize().as_vec3();
+            cases.push([
+                d.x,
+                d.y,
+                d.z,
+                (p.length() - crate::planet::planet_radius_meters()) as f32,
+            ]);
+        }
+    }
     let source = format!(
         "const ROAD_CUTS_ENABLED: bool = true;\n{}\n{}",
         include_str!("road_cuts.wgsl").replace("@group(2) @binding(21)", "@group(0) @binding(1)"),
-        "@group(0) @binding(0) var<storage,read_write> results: array<f32>;\n@group(0) @binding(2) var<storage,read> cases: array<vec4<f32>>;\n@compute @workgroup_size(1) fn test_cut(@builtin(global_invocation_id) id: vec3<u32>) { let c=cases[id.x]; results[id.x]=road_terrain_cut(c.xyz,c.w).height; }"
+        "@group(0) @binding(0) var<storage,read_write> results: array<vec4<f32>>;\n@group(0) @binding(2) var<storage,read> cases: array<vec4<f32>>;\n@compute @workgroup_size(1) fn test_cut(@builtin(global_invocation_id) id: vec3<u32>) { let c=cases[id.x]; results[id.x]=vec4<f32>(road_terrain_cut(c.xyz,c.w).height,road_tunnel_void(c.xyz,c.w),select(0.0,1.0,road_tunnel_lining_owns(c.xyz,c.w)),0.0); }"
     );
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::VULKAN,
@@ -73,7 +93,7 @@ fn gpu_road_cuts_match_cpu_at_bends_banks_ends_and_underpasses() {
         contents: bytemuck::cast_slice(&cases),
         usage: wgpu::BufferUsages::STORAGE,
     });
-    let size = (cases.len() * 4) as u64;
+    let size = (cases.len() * 16) as u64;
     let output = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("cut results"),
         size,
@@ -127,20 +147,34 @@ fn gpu_road_cuts_match_cpu_at_bends_banks_ends_and_underpasses() {
         .unwrap();
     receiver.recv().unwrap().unwrap();
     let data = readback.slice(..).get_mapped_range();
-    let heights = bytemuck::cast_slice::<u8, f32>(&data);
+    let heights = bytemuck::cast_slice::<u8, [f32; 4]>(&data);
     let mut maximum = 0.0_f64;
     for (c, h) in cases.iter().zip(heights) {
         let expected = plan.cuts.height(
             DVec3::new(c[0] as f64, c[1] as f64, c[2] as f64),
             c[3] as f64,
         );
-        let error = (*h as f64 - expected).abs();
+        let error = (h[0] as f64 - expected).abs();
         maximum = maximum.max(error);
         assert!(
             error < 0.75,
-            "CPU {expected}, GPU {h}, error {error}, case {c:?}"
+            "CPU {expected}, GPU {h:?}, error {error}, case {c:?}"
         );
-        assert!(*h <= c[3] + 0.001);
+        assert!(h[0] <= c[3] + 0.001);
+        let void = plan.cuts.tunnel_void(
+            DVec3::new(c[0] as f64, c[1] as f64, c[2] as f64),
+            c[3] as f64,
+        );
+        assert_eq!(
+            h[2] > 0.5,
+            void > -0.25,
+            "lining ownership mismatch at {c:?}"
+        );
+        assert!(
+            (f64::from(h[1]) - void).abs() < 0.75,
+            "bore mismatch CPU {void}, GPU {}, case {c:?}",
+            h[1]
+        );
     }
     eprintln!(
         "{} production cut samples, max CPU/GPU difference {maximum:.4} m",
