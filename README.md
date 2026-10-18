@@ -86,9 +86,39 @@ Run the CPU-only survey with a new output filename (no display/GPU required):
 cargo run --release -p planet-app -- --road-network-survey test-runs/road-network-new.json
 ```
 
-### Terrain-planned road experiment
+### Planet-wide village road network
 
-The opt-in trial is now approximately **30 km** of terrain-led bends on
+`PLANET_ROAD_EXPERIMENT=1` now starts the **streamed village network**. Every
+accepted village belongs to the global graph, independently of visible houses
+or render distance; shared trunks and junctions avoid all-to-all road building.
+Nearby regions are engineered off-thread as you explore. Island crossings use
+covered seabed tunnels, not surface bridges. Roads retain legs, local cuts,
+coverage-AA at distance and the **25% maximum grade**. Village approaches meet
+the ground outside the houses. Trees are excluded from decks, shoulders and
+open cuts; trees over covered tunnels remain.
+
+```sh
+env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 cargo run --release -p planet-app
+```
+
+Omit `--scenario` for ordinary walking/free flight. Mouse/WASD and **G** work as
+below. The default start is mountainous; `PLANET_ROAD_NETWORK_SITE=village` or
+`undersea` selects the other inspection starts. `road_network_trial`,
+`road_network_overview` and `road_network_walk` are automated replays.
+`PLANET_ROAD_NETWORK=1` also enables the network directly. Set
+`PLANET_ROAD_NETWORK=0` to retain the old single-road interactive experiment;
+its existing replay names select the pilot automatically.
+
+Only nearby geometry is resident: at most nine requested regions, a 32-region
+CPU plan cache and staged vertex uploads. This is on-demand world generation,
+not an exhaustive engineering bake of every planetary region. A failed search
+or capacity check is logged explicitly and retains the previous complete set;
+it never silently claims a missing village was connected. See
+[`docs/ROAD_NETWORK.md`](docs/ROAD_NETWORK.md) for limits and validation.
+
+### Original 30 km terrain-planned road pilot
+
+The original opt-in pilot is approximately **30 km** of terrain-led bends on
 variable-height legs. A one-time corridor search penalises steep natural
 ground, route length and sharp turns; a fitted deck profile has a hard **25%
 maximum grade**. Local hillside cuts make room beneath the deck, with exposed
@@ -117,7 +147,7 @@ Ordinary runs build none of this. For **free exploration**, omit `--scenario`:
 this starts on the deck in free flight instead of on the ship.
 
 ```sh
-env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 cargo run --release -p planet-app
+env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 PLANET_ROAD_NETWORK=0 cargo run --release -p planet-app
 ```
 
 Click to enable mouse-look; WASD moves, Shift accelerates, `[`/`]` adjust
@@ -128,8 +158,9 @@ timer or automatic exit in this mode.
 Road launches automatically enable the synchronized-presentation workaround
 previously used for scene jitter, retaining CPU/GPU preparation overlap.
 `PLANET_SYNC_PRESENT=0` explicitly disables it for comparisons; `=1` forces it
-on even without roads. The startup log records `sync_present`. Live visual
-acceptance of the optimized path remains to be confirmed.
+on even without roads. The startup log records `sync_present`. The user has
+confirmed the default workaround resolves the reported jitter; its scheduling
+is unchanged by the network integration.
 
 Run the driving replay, or replace the scenario with
 `road_viaduct_overview` to inspect a deep cut, taller legs and an aerial view.

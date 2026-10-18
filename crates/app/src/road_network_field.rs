@@ -1,7 +1,7 @@
 //! Bounded excavation index for arbitrary roads, including shared junctions.
 //! Built off-thread with the meshes; queries never visit the planetary graph.
 //! A full index is rejected atomically, never published with missing segments.
-use glam::{DVec2, DVec3};
+use glam::{DVec2, DVec3, DVec4};
 use std::collections::BTreeMap;
 
 const CELL: f64 = 64.0;
@@ -63,13 +63,43 @@ pub struct Segment {
     pub tunnel: bool,
     /// Explicit bounded excavation footprint; engineering must survey its banks.
     pub reach: f64,
+    pub floor_depth: f64,
+    pub junction_a: bool,
+    pub junction_b: bool,
 }
 impl Segment {
-    fn nearest(self, p: DVec2) -> (DVec3, f64) {
+    pub(crate) fn nearest(self, p: DVec2) -> (DVec3, f64) {
         let delta = (self.b - self.a).truncate();
         let t = ((p - self.a.truncate()).dot(delta) / delta.length_squared()).clamp(0.0, 1.0);
         let centre = self.a.lerp(self.b, t);
         (centre, p.distance(centre.truncate()))
+    }
+    pub(crate) fn planes(self, margin: f64) -> [DVec4; 9] {
+        let d = (self.b - self.a).truncate();
+        let length = d.length();
+        let u = d.extend(0.0) / length;
+        let v = DVec3::new(u.y, -u.x, 0.0);
+        let z = DVec3::Z - u * ((self.b.z - self.a.z) / length);
+        let plane = |n: DVec3, c: f64| n.extend(c - n.dot(self.a));
+        [
+            plane(v, 6.5 + margin),
+            plane(-v, 6.5 + margin),
+            plane(z, 6.0 + margin),
+            plane(-z - v * 0.25, 9.0 + margin),
+            plane(-z + v * 0.25, 9.0 + margin),
+            plane(-z - v * 1.2, 12.8 + margin),
+            plane(-z + v * 1.2, 12.8 + margin),
+            // Shrink walls/roof for the eye, never the longitudinal joins.
+            // Adjacent stations must keep overlapping air, not collision caps.
+            plane(u, 0.5),
+            plane(-u, length + 0.5),
+        ]
+    }
+    fn void(self, p: DVec3, margin: f64) -> f64 {
+        self.planes(margin)
+            .iter()
+            .map(|plane| plane.dot(p.extend(1.0)))
+            .fold(f64::INFINITY, f64::min)
     }
 }
 
@@ -93,16 +123,25 @@ impl Field {
             if !s.a.is_finite()
                 || !s.b.is_finite()
                 || !s.reach.is_finite()
+                || !s.floor_depth.is_finite()
+                || !(0.0..=6.0).contains(&s.floor_depth)
                 || s.reach < 10.0
                 || s.reach > 512.0
                 || (s.b - s.a).truncate().length_squared() < 1e-6
                 || s.a.abs().max_element() > 1e6
                 || s.b.abs().max_element() > 1e6
             {
-                return Err("invalid network excavation segment".into());
+                return Err(format!(
+                    "invalid network excavation segment {i}: a={:?} b={:?} reach={} floor={}",
+                    s.a, s.b, s.reach, s.floor_depth
+                ));
             }
-            let low = (s.a.min(s.b).truncate() - DVec2::splat(s.reach)) / CELL;
-            let high = (s.a.max(s.b).truncate() + DVec2::splat(s.reach)) / CELL;
+            let low = (s.a.min(s.b).truncate()
+                - DVec2::splat(s.reach.max(crate::road::TREE_CLEARANCE_METERS)))
+                / CELL;
+            let high = (s.a.max(s.b).truncate()
+                + DVec2::splat(s.reach.max(crate::road::TREE_CLEARANCE_METERS)))
+                / CELL;
             for y in low.y.floor() as i32..=high.y.floor() as i32 {
                 for x in low.x.floor() as i32..=high.x.floor() as i32 {
                     let list = cells.entry((x, y)).or_default();
@@ -119,7 +158,12 @@ impl Field {
         }
         let mut data = vec![[0.0; 4]; BUFFER_FLOAT4S];
         let v = |p: DVec3| [p.x as f32, p.y as f32, p.z as f32, 0.0];
-        data[0] = [frame.radius as f32, CELL as f32, segments.len() as f32, 2.0];
+        data[0] = [
+            frame.radius as f32,
+            CELL as f32,
+            segments.iter().filter(|s| s.tunnel).count() as f32,
+            2.0,
+        ];
         data[1] = v(frame.across);
         data[2] = v(frame.forward);
         data[3] = v(frame.up);
@@ -129,7 +173,21 @@ impl Field {
                 .map(|p| 4 + ((hash(x, y) + p) & (BUCKETS - 1)))
                 .find(|&b| data[b][3] == 0.0)
                 .ok_or("network excavation hash probe budget exceeded")?;
-            data[bucket] = [x as f32, y as f32, reference as f32, list.len() as f32];
+            // Fractional metadata preserves the integer reference count and
+            // existing buffer size. Most road cells contain no tunnel at all:
+            // terrain fragments need not walk their open-road references just
+            // to discover that fact on every pixel.
+            let bore_flag = if list.iter().any(|&i| segments[i].tunnel) {
+                0.25
+            } else {
+                0.0
+            };
+            data[bucket] = [
+                x as f32,
+                y as f32,
+                reference as f32,
+                list.len() as f32 + bore_flag,
+            ];
             for &i in list {
                 data[REFS + reference / 4][reference % 4] = i as f32;
                 reference += 1;
@@ -141,7 +199,11 @@ impl Field {
                 s.b.x as f32,
                 s.b.y as f32,
                 s.b.z as f32,
-                f32::from(s.tunnel),
+                if s.tunnel {
+                    1.0
+                } else {
+                    -(s.floor_depth as f32 + 1.0)
+                },
             ];
         }
         Ok(Self {
@@ -150,6 +212,11 @@ impl Field {
             cells,
             data,
         })
+    }
+    pub fn set_geometry_window(&mut self, centre: DVec2, radius: f64) {
+        self.data[1][3] = centre.x as f32;
+        self.data[2][3] = centre.y as f32;
+        self.data[3][3] = radius as f32;
     }
     pub fn gpu_data(&self) -> &[[f32; 4]] {
         &self.data
@@ -171,12 +238,17 @@ impl Field {
             let p = self.frame.radial_local(d, height);
             let mut next = uncut;
             for s in self.candidates(p.truncate()).filter(|s| !s.tunnel) {
+                let delta = (s.b - s.a).truncate();
+                let along = (p - s.a).truncate().dot(delta) / delta.length();
+                if along < -1.0 || along > delta.length() + 1.0 {
+                    continue;
+                }
                 let (centre, offset) = s.nearest(p.truncate());
                 if offset > s.reach {
                     continue;
                 }
-                let cap = centre.z - crate::road::CUT_FLOOR_DEPTH
-                    + (offset - crate::road::CUT_HALF_WIDTH).max(0.0);
+                let cap =
+                    centre.z - s.floor_depth + (offset - crate::road::CUT_HALF_WIDTH).max(0.0);
                 let t = ((s.reach - offset) / 8.0).clamp(0.0, 1.0);
                 let weight = t * t * (3.0 - 2.0 * t);
                 let cut = (cap - (cosine - 1.0) * self.frame.radius) / cosine;
@@ -185,6 +257,120 @@ impl Field {
             height = next;
         }
         height
+    }
+    pub fn clears_tree(&self, d: DVec3, uncut: f64) -> bool {
+        if d.dot(self.frame.up) < 0.99 {
+            return false;
+        }
+        let p = self.frame.radial_local(d, uncut);
+        self.candidates(p.truncate())
+            .filter(|s| !s.tunnel)
+            .any(|s| {
+                let delta = (s.b - s.a).truncate();
+                let along = (p - s.a).truncate().dot(delta) / delta.length();
+                along
+                    >= -if s.floor_depth <= 1.0 {
+                        crate::road::TREE_CLEARANCE_METERS
+                    } else {
+                        1.0
+                    }
+                    && along
+                        <= delta.length()
+                            + if s.floor_depth <= 1.0 {
+                                crate::road::TREE_CLEARANCE_METERS
+                            } else {
+                                1.0
+                            }
+                    && s.nearest(p.truncate()).1 <= crate::road::TREE_CLEARANCE_METERS
+            })
+            || self.height(d, uncut) < uncut - 0.25
+    }
+    pub fn deck_height(&self, d: DVec3, eye: f64) -> Option<f64> {
+        if d.dot(self.frame.up) < 0.99 {
+            return None;
+        }
+        let local = self.frame.radial_local(d, eye);
+        let ray = DVec3::new(
+            d.dot(self.frame.across),
+            d.dot(self.frame.forward),
+            d.dot(self.frame.up),
+        );
+        self.candidates(local.truncate())
+            .filter_map(|s| {
+                let delta = (s.b - s.a).truncate();
+                let normal =
+                    DVec3::Z - delta.extend(0.0) * (s.b.z - s.a.z) / delta.length_squared();
+                let radial = (normal.dot(s.a) + normal.z * self.frame.radius) / normal.dot(ray);
+                let p = ray * radial - DVec3::Z * self.frame.radius;
+                let along = (p - s.a).truncate().dot(delta) / delta.length_squared();
+                if (along < -1e-8 && !s.junction_a) || (along > 1.0 + 1e-8 && !s.junction_b) {
+                    return None;
+                }
+                (s.nearest(p.truncate()).1 <= crate::road::HALF_WIDTH + 0.01
+                    && eye >= radial - self.frame.radius - 0.25)
+                    .then_some(radial - self.frame.radius)
+            })
+            .reduce(f64::max)
+    }
+    pub fn camera_surface_height(&self, d: DVec3, eye: f64, terrain: f64) -> f64 {
+        if self.tunnel_void(d, eye) > 0.0 {
+            if let Some(deck) = self.deck_height(d, eye) {
+                return deck;
+            }
+            let p = self.frame.radial_local(d, eye);
+            return self
+                .candidates(p.truncate())
+                .filter(|s| s.tunnel && s.void(p, 0.5) > 0.0)
+                .map(|s| {
+                    let z = s.nearest(p.truncate()).0.z - 6.0;
+                    self.frame.world(DVec3::new(p.x, p.y, z)).length() - self.frame.radius
+                })
+                .reduce(f64::max)
+                .unwrap_or(terrain);
+        }
+        self.deck_height(d, eye)
+            .map_or(terrain, |deck| terrain.max(deck))
+    }
+    pub fn constrain_motion(&self, from: DVec3, to: DVec3) -> DVec3 {
+        if (from + to).normalize_or_zero().dot(self.frame.up) < 0.99 {
+            return to;
+        }
+        let a = self.frame.local(from);
+        let b = self.frame.local(to);
+        let air = |p: DVec3| {
+            self.candidates(p.truncate())
+                .filter(|s| s.tunnel)
+                .any(|s| s.void(p, -0.2) > 0.0)
+        };
+        let column = |p: DVec3| {
+            self.candidates(p.truncate()).filter(|s| s.tunnel).any(|s| {
+                let delta = (s.b - s.a).truncate();
+                let t = (p - s.a).truncate().dot(delta) / delta.length_squared();
+                (0.0..=1.0).contains(&t) && s.nearest(p.truncate()).1 < 9.0
+            })
+        };
+        let steps = ((a.distance(b) / 0.5).ceil() as usize).clamp(1, 1024);
+        let mut previous = a;
+        let mut prior_air = air(a);
+        for i in 1..=steps {
+            let p = a.lerp(b, i as f64 / steps as f64);
+            let now_air = air(p);
+            if prior_air != now_air && column(previous) && column(p) {
+                let (mut lo, mut hi) = (previous, p);
+                for _ in 0..20 {
+                    let mid = (lo + hi) * 0.5;
+                    if air(mid) == prior_air {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                return self.frame.world(lo);
+            }
+            previous = p;
+            prior_air = now_air;
+        }
+        to
     }
     /// Union of local bores. A branching tunnel is one connected air volume,
     /// not several mutually blocking closed liners. Terrain above stays solid.
@@ -195,13 +381,7 @@ impl Field {
         let p = self.frame.radial_local(d, height);
         self.candidates(p.truncate())
             .filter(|s| s.tunnel)
-            .map(|s| {
-                let (centre, offset) = s.nearest(p.truncate());
-                let z = p.z - centre.z;
-                (7.0 - offset)
-                    .min(z + 6.5)
-                    .min(crate::road_tunnel::roof(offset) + 0.5 - z)
-            })
+            .map(|s| s.void(p, 0.5))
             .fold(-1e6, f64::max)
     }
 }
@@ -215,6 +395,9 @@ mod tests {
             b: b.into(),
             tunnel,
             reach: 48.0,
+            floor_depth: 6.0,
+            junction_a: false,
+            junction_b: false,
         }
     }
     #[test]
@@ -264,6 +447,55 @@ mod tests {
         let s = segment([-10.0, 0.0, 100.0], [10.0, 0.0, 100.0], false);
         assert!(Field::build(f, vec![s; MAX_PER_CELL + 1]).is_err());
         assert!(Field::build(f, vec![Segment { b: s.a, ..s }]).is_err());
+    }
+    #[test]
+    fn network_field_clears_crowns_and_cuts_but_keeps_trees_above_tunnels() {
+        let frame = Frame::new(DVec3::X, 4e6).unwrap();
+        let field = Field::build(
+            frame,
+            vec![
+                segment([-100.0, 0.0, 100.0], [100.0, 0.0, 100.0], false),
+                segment([-100.0, 200.0, 100.0], [100.0, 200.0, 100.0], true),
+            ],
+        )
+        .unwrap();
+        for (y, height, cleared) in [
+            (0.0, 90.0, true),
+            (24.0, 90.0, true),
+            (26.0, 90.0, false),
+            (35.0, 130.0, true),
+            (80.0, 130.0, false),
+            (200.0, 130.0, false),
+        ] {
+            let p = frame.world(DVec3::new(0.0, y, height));
+            assert_eq!(
+                field.clears_tree(p.normalize(), p.length() - frame.radius),
+                cleared,
+                "y={y}"
+            );
+        }
+    }
+    #[test]
+    fn road_network_motion_crosses_bore_stations_but_stops_at_walls_and_roof() {
+        let frame = Frame::new(DVec3::X, 4e6).unwrap();
+        let field = Field::build(
+            frame,
+            vec![
+                segment([-40.0, 0.0, -100.0], [0.0, 0.0, -100.0], true),
+                segment([0.0, 0.0, -100.0], [40.0, 0.0, -100.0], true),
+            ],
+        )
+        .unwrap();
+        let from = frame.world(DVec3::new(-10.0, 0.0, -98.0));
+        let to = frame.world(DVec3::new(10.0, 0.0, -98.0));
+        assert!(
+            field.constrain_motion(from, to).distance(to) < 1e-4,
+            "station joins must not be collision caps"
+        );
+        let wall = frame.world(DVec3::new(-10.0, 20.0, -98.0));
+        assert!(frame.local(field.constrain_motion(from, wall)).y < 6.4);
+        let roof = frame.world(DVec3::new(-10.0, 0.0, -80.0));
+        assert!(frame.local(field.constrain_motion(from, roof)).z < -91.0);
     }
     #[test]
     fn network_field_finite_banks_fade_without_a_reach_boundary_step() {
@@ -319,6 +551,10 @@ mod tests {
                 .map(|r| field.data[REFS + r / 4][r % 4] as usize)
                 .collect();
             assert_eq!(&actual, expected);
+            assert_eq!(
+                entry[3].fract() > 0.0,
+                expected.iter().any(|&i| field.segments[i].tunnel)
+            );
         }
     }
 }

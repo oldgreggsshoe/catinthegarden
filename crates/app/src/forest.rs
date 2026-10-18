@@ -242,7 +242,8 @@ impl PendingForestPatch {
                 sample,
                 FOREST_MINIMUM_MOISTURE,
                 FOREST_MAXIMUM_SLOPE_RADIANS,
-            ) && f64::from(layout.seed) <= forest_placement_density_at(direction)
+            ) && !terrain.road_clears_tree(direction, sample.height_meters)
+                && f64::from(layout.seed) <= forest_placement_density_at(direction)
             {
                 let centre = direction
                     * (planet_radius_meters() + sample.height_meters
@@ -355,6 +356,7 @@ pub struct ForestRenderer {
     /// the planet, so the compute pass is only rerun when the cells, their
     /// tiers or the camera (the detail filter) have changed enough.
     gpu_generated_signature: Option<u64>,
+    road_revision: u64,
     gpu_generated_camera: DVec3,
     gpu_generation_needed: bool,
     gpu_cell_count: u32,
@@ -647,6 +649,7 @@ impl ForestRenderer {
             primary_patch_key: Some(initial_key),
             gpu_batches: Vec::new(),
             gpu_generated_signature: None,
+            road_revision: terrain.road_revision(),
             gpu_generated_camera: DVec3::ZERO,
             gpu_generation_needed: false,
             gpu_cell_count: 0,
@@ -691,6 +694,14 @@ impl ForestRenderer {
         vertical_fov_radians: f64,
         simulation_time_seconds: f64,
     ) {
+        if self.road_revision != terrain.road_revision() {
+            self.road_revision = terrain.road_revision();
+            self.gpu_generated_signature = None;
+            self.patches.clear();
+            self.proxy_patches.clear();
+            self.empty_patch_keys.clear();
+            self.pending_patch = None;
+        }
         let camera_direction = camera_planet_position.normalize_or_zero();
         if camera_direction.length_squared() <= f64::EPSILON
             || !camera_altitude_meters.is_finite()
@@ -1642,7 +1653,8 @@ fn build_forest_proxy_patch(
             sample,
             FOREST_MINIMUM_MOISTURE,
             FOREST_MAXIMUM_SLOPE_RADIANS,
-        ) || f64::from(layout.seed) > density.sqrt()
+        ) || terrain.road_clears_tree(direction, sample.height_meters)
+            || f64::from(layout.seed) > density.sqrt()
         {
             continue;
         }
@@ -1658,6 +1670,19 @@ fn build_forest_proxy_patch(
                 + bitangent
                     * (bitangent_offset * f64::from(width_meters) / planet_radius_meters()))
             .normalize();
+            let extra_radius = (f64::from(width_meters) * 0.7 - 16.0).max(0.0);
+            let blocked = terrain.road_clears_tree(card_direction, sample.height_meters)
+                || (extra_radius > 0.0
+                    && [tangent, -tangent, bitangent, -bitangent].into_iter().any(|axis| {
+                        terrain.road_clears_tree(
+                            (card_direction + axis * (extra_radius / planet_radius_meters()))
+                                .normalize(),
+                            sample.height_meters,
+                        )
+                    }));
+            if blocked {
+                continue;
+            }
             let centre = card_direction
                 * (planet_radius_meters() + sample.height_meters
                     - tree_base_sink_meters(width_meters, sample.slope_radians));
@@ -2578,6 +2603,7 @@ mod tests {
     #[test]
     fn immediate_gpu_forest_shader_validates_and_uses_canonical_cells() {
         let shader = gpu_forest_shader_source();
+        assert!(shader.contains("road_clears_tree(direction, surface_height)"));
         let module = wgpu::naga::front::wgsl::parse_str(&shader)
             .expect("immediate GPU forest shader parses");
         wgpu::naga::valid::Validator::new(

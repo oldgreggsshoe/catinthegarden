@@ -1,0 +1,452 @@
+//! One bounded worker owns source I/O, planetary topology and regional plans.
+//! The render thread only replaces a latest-request slot and takes ready meshes.
+use crate::{
+    road_network::{self, Ground, Survey},
+    road_network_mesh::{self, Prepared, Snapshot},
+    road_network_survey::Surface,
+};
+use glam::DVec3;
+use planet_coretypes::{TileKey, tile_key_for_direction};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc,
+    },
+    thread,
+};
+
+const CACHE_REGIONS: usize = 32;
+#[derive(Clone, Copy)]
+struct Request {
+    centre: DVec3,
+    generation: u64,
+}
+struct Shared {
+    request: Mutex<Option<Request>>,
+    wake: Condvar,
+    result: Mutex<Option<(u64, Result<Snapshot, String>)>>,
+    generation: AtomicU64,
+    stop: AtomicBool,
+}
+pub struct Worker {
+    shared: Arc<Shared>,
+    last_centre: DVec3,
+    pub source_version: u64,
+}
+struct Engineering<'a> {
+    source: &'a Surface,
+    shared: &'a Shared,
+    generation: u64,
+}
+impl Survey for Engineering<'_> {
+    fn cancelled(&self) -> bool {
+        self.shared.stop.load(Ordering::Relaxed)
+            || self.shared.generation.load(Ordering::Relaxed) != self.generation
+    }
+    fn settlement_core_at(&self, d: DVec3) -> Result<bool, String> {
+        if self.cancelled() {
+            return Err("road generation superseded".into());
+        }
+        self.source.settlement_core_at(d)
+    }
+    fn village_access_height(&self, g: Ground) -> f64 {
+        g.height + 0.25
+    }
+    fn ground(&self, d: DVec3) -> Result<Ground, String> {
+        if self.cancelled() {
+            return Err("road generation superseded".into());
+        }
+        self.source.engineering_ground(d)
+    }
+    fn villages(&self, key: TileKey) -> Result<Vec<DVec3>, String> {
+        if self.cancelled() {
+            return Err("road generation superseded".into());
+        }
+        self.source.villages(key)
+    }
+}
+
+/// Projection samples include diagonals and cross cube edges/corners without
+/// clamping to one face. Only these nearby regions become resident on the GPU.
+pub fn nearby_keys(centre: DVec3) -> Vec<TileKey> {
+    let key = tile_key_for_direction(centre, road_network::REGION_LEVEL);
+    let mut keys = std::collections::BTreeSet::new();
+    for y in -1..=1 {
+        for x in -1..=1 {
+            keys.insert(tile_key_for_direction(
+                road_network::direction(key, 0.5 + x as f64, 0.5 + y as f64),
+                key.level,
+            ));
+        }
+    }
+    let mut keys: Vec<_> = keys.into_iter().collect();
+    keys.sort_by(|a, b| {
+        road_network::direction(*b, 0.5, 0.5)
+            .dot(centre.normalize())
+            .total_cmp(&road_network::direction(*a, 0.5, 0.5).dot(centre.normalize()))
+            .then(a.cmp(b))
+    });
+    keys
+}
+
+impl Worker {
+    pub fn start(root: PathBuf, initial: DVec3) -> Result<(Self, Snapshot), String> {
+        let shared = Arc::new(Shared {
+            request: Mutex::new(None),
+            wake: Condvar::new(),
+            result: Mutex::new(None),
+            generation: AtomicU64::new(0),
+            stop: AtomicBool::new(false),
+        });
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let thread_shared = shared.clone();
+        let body = crate::body::active();
+        thread::Builder::new()
+            .name("village road builder".into())
+            .spawn(move || {
+                crate::body::with_body(body, || {
+                    let work = || -> Result<(), String> {
+                        let source = Surface::load(&root)?;
+                        let version = source.version();
+                        let backbone = source.backbone()?;
+                        let radius = crate::planet::planet_radius_meters();
+                        let key = backbone.region_key(initial);
+                        let survey = Engineering {
+                            source: &source,
+                            shared: &thread_shared,
+                            generation: 0,
+                        };
+                        let plan = Arc::new(road_network_mesh::prepare(
+                            backbone.local(key, radius, &survey)?,
+                            radius,
+                            &survey,
+                        )?);
+                        let pose = plan.inspection_pose(initial, radius);
+                        let centre = pose.map_or(initial, |p| p.0);
+                        let mut initial_plans = vec![plan.clone()];
+                        if centre.length() < radius {
+                            // Do not spawn a swimmer beside an unloaded sea
+                            // gateway, exposing sky at the end of a dry bore.
+                            // Load the immediate continuation before showing it;
+                            // the rest of the neighbourhood remains background.
+                            let cell_centre = road_network::direction(key, 0.5, 0.5);
+                            for terminal in &plan.region.terminals {
+                                if !matches!(
+                                    terminal.kind,
+                                    road_network::TerminalKind::Gateway { .. }
+                                ) {
+                                    continue;
+                                }
+                                let d = DVec3::from_array(terminal.direction);
+                                if d.distance(centre.normalize()) * radius > 2000.0 {
+                                    continue;
+                                }
+                                let neighbour = tile_key_for_direction(
+                                    d.lerp(cell_centre, -0.01).normalize(),
+                                    key.level,
+                                );
+                                if neighbour != key
+                                    && !initial_plans.iter().any(|p| p.region.key == neighbour)
+                                {
+                                    initial_plans.push(Arc::new(road_network_mesh::prepare(
+                                        backbone.local(neighbour, radius, &survey)?,
+                                        radius,
+                                        &survey,
+                                    )?));
+                                }
+                            }
+                        }
+                        let mut snapshot =
+                            road_network_mesh::snapshot(&initial_plans, centre, radius, &survey)?;
+                        snapshot.inspection = pose.or(snapshot.inspection);
+                        sender
+                            .send(Ok((version, snapshot)))
+                            .map_err(|_| "road startup receiver closed")?;
+                        let mut cache = HashMap::<TileKey, (Arc<Prepared>, u64)>::new();
+                        for plan in initial_plans {
+                            cache.insert(plan.region.key, (plan, 0));
+                        }
+                        let mut tick = 0_u64;
+                        loop {
+                            let request = {
+                                let mut slot = thread_shared.request.lock().unwrap();
+                                while slot.is_none() && !thread_shared.stop.load(Ordering::Relaxed)
+                                {
+                                    slot = thread_shared.wake.wait(slot).unwrap();
+                                }
+                                if thread_shared.stop.load(Ordering::Relaxed) {
+                                    return Ok(());
+                                }
+                                slot.take().unwrap()
+                            };
+                            let survey = Engineering {
+                                source: &source,
+                                shared: &thread_shared,
+                                generation: request.generation,
+                            };
+                            let result = (|| {
+                                let mut plans = Vec::new();
+                                tick += 1;
+                                for key in nearby_keys(request.centre) {
+                                    if survey.cancelled() {
+                                        return Err("road generation superseded".into());
+                                    }
+                                    if !cache.contains_key(&key) {
+                                        let plan = road_network_mesh::prepare(
+                                            backbone.local(key, radius, &survey)?,
+                                            radius,
+                                            &survey,
+                                        )?;
+                                        if cache.len() >= CACHE_REGIONS {
+                                            let oldest = *cache
+                                                .iter()
+                                                .min_by_key(|(_, (_, age))| *age)
+                                                .unwrap()
+                                                .0;
+                                            cache.remove(&oldest);
+                                        }
+                                        cache.insert(key, (Arc::new(plan), tick));
+                                    }
+                                    let (plan, age) = cache.get_mut(&key).unwrap();
+                                    *age = tick;
+                                    plans.push(plan.clone());
+                                }
+                                road_network_mesh::snapshot(&plans, request.centre, radius, &survey)
+                            })();
+                            if !survey.cancelled() {
+                                *thread_shared.result.lock().unwrap() =
+                                    Some((request.generation, result));
+                            }
+                        }
+                    };
+                    if let Err(error) = work() {
+                        // Startup failures have no partially connected substitute.
+                        let _ = sender.send(Err(error));
+                    }
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let (version, snapshot) = receiver.recv().map_err(|e| e.to_string())??;
+        Ok((
+            Self {
+                shared,
+                last_centre: initial,
+                source_version: version,
+            },
+            snapshot,
+        ))
+    }
+    pub fn request(&mut self, centre: DVec3, force: bool) {
+        if !force
+            && self.last_centre.distance(centre) < 1000.0
+            && tile_key_for_direction(self.last_centre, road_network::REGION_LEVEL)
+                == tile_key_for_direction(centre, road_network::REGION_LEVEL)
+        {
+            return;
+        }
+        self.last_centre = centre;
+        let generation = self.shared.generation.fetch_add(1, Ordering::Relaxed) + 1;
+        *self.shared.request.lock().unwrap() = Some(Request { centre, generation });
+        self.shared.wake.notify_one();
+    }
+    pub fn take(&self) -> Option<(u64, Result<Snapshot, String>)> {
+        self.shared.result.lock().unwrap().take()
+    }
+    pub fn current(&self, generation: u64) -> bool {
+        self.shared.generation.load(Ordering::Relaxed) == generation
+    }
+}
+impl Drop for Worker {
+    fn drop(&mut self) {
+        // Pair the predicate change with the condvar mutex: otherwise notify
+        // can race between the worker's predicate check and entering wait.
+        let _slot = self.shared.request.lock().unwrap();
+        self.shared.stop.store(true, Ordering::Relaxed);
+        self.shared.wake.notify_one();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    #[ignore = "asset-backed network startup, no display/GPU"]
+    fn road_network_live_village_startup_mesh_is_complete_and_bounded() {
+        let root = crate::find_default_outmap().expect("active bake");
+        let initial = DVec3::new(2574139.618674488, -2554011.900402223, 1699659.6951081678)
+            .normalize()
+            * 4_010_000.0;
+        let (worker, snapshot) = Worker::start(root, initial).unwrap();
+        assert_eq!(snapshot.villages, 39);
+        assert_eq!(snapshot.keys.len(), 1);
+        assert!(!snapshot.vertices.is_empty());
+        assert!(snapshot.vertices.len() <= crate::road_network_mesh::MAX_VERTICES);
+        assert!(
+            snapshot
+                .vertices
+                .iter()
+                .all(|v| v.position.iter().all(|c| c.is_finite()))
+        );
+        eprintln!(
+            "network startup: {} villages, {} segments, {} vertices",
+            snapshot.villages,
+            snapshot.segments,
+            snapshot.vertices.len()
+        );
+        drop(worker);
+    }
+    #[test]
+    #[ignore = "asset-backed streamed neighbour engineering, no display/GPU"]
+    fn road_network_live_village_neighbours_publish_one_complete_set() {
+        let root = crate::find_default_outmap().expect("active bake");
+        let initial = DVec3::new(2574139.618674488, -2554011.900402223, 1699659.6951081678)
+            .normalize()
+            * 4_010_000.0;
+        let (mut worker, snapshot) = Worker::start(root, initial).unwrap();
+        worker.request(snapshot.build_centre, true);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        let ready = loop {
+            if let Some((_, ready)) = worker.take() {
+                break ready.unwrap();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "neighbour generation deadline"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert_eq!(ready.keys.len(), nearby_keys(snapshot.build_centre).len());
+        assert!(ready.villages >= snapshot.villages);
+        assert!(ready.vertices.len() <= crate::road_network_mesh::MAX_VERTICES);
+        eprintln!(
+            "complete resident set: {} regions, {} villages, {} spans, {} vertices",
+            ready.keys.len(),
+            ready.villages,
+            ready.segments,
+            ready.vertices.len()
+        );
+    }
+    #[test]
+    #[ignore = "asset-backed undersea/cube-seam network, no display/GPU"]
+    fn road_network_live_undersea_neighbours_keep_a_dry_covered_route() {
+        let root = crate::find_default_outmap().expect("active bake");
+        let key = TileKey {
+            face: planet_coretypes::CubeFace::NegativeX,
+            level: road_network::REGION_LEVEL,
+            x: 0,
+            y: 184,
+        };
+        let initial = crate::road_network_render::undersea_start_position();
+        let (mut worker, snapshot) = Worker::start(root, initial).unwrap();
+        let (eye, _) = snapshot.inspection.unwrap();
+        let altitude = eye.length() - 4e6;
+        assert!(altitude < 0.0);
+        assert!(
+            snapshot.keys.iter().any(|k| k.face != key.face),
+            "a dry seam start needs its immediate continuation before the first frame"
+        );
+        let gateway = DVec3::new(-0.674991988920733, 0.2979456826095423, -0.674991988920733);
+        assert!(snapshot.field.tunnel_void(gateway, altitude) > 0.0);
+        assert!(snapshot.field.tunnel_void(eye.normalize(), altitude) > 1.0);
+        assert!(
+            snapshot
+                .field
+                .camera_surface_height(eye.normalize(), altitude, 0.0)
+                < altitude - 1.0
+        );
+        worker.request(snapshot.build_centre, true);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        let ready = loop {
+            if let Some((_, ready)) = worker.take() {
+                break ready.unwrap();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "undersea generation deadline"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert!(ready.keys.iter().any(|k| k.face != key.face));
+        assert!(ready.field.tunnel_void(eye.normalize(), altitude) > 1.0);
+        eprintln!(
+            "undersea resident set: {} regions, {} villages, {} tunnel spans, {} vertices",
+            ready.keys.len(),
+            ready.villages,
+            ready.tunnels,
+            ready.vertices.len()
+        );
+    }
+    #[test]
+    #[ignore = "asset-backed mountainous resident network, no display/GPU"]
+    fn road_network_live_mountain_neighbours_keep_every_access() {
+        let root = crate::find_default_outmap().expect("active bake");
+        let initial = crate::road::up() * 4_010_000.0;
+        let (mut worker, snapshot) = Worker::start(root, initial).unwrap();
+        worker.request(snapshot.build_centre, true);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        let ready = loop {
+            if let Some((_, ready)) = worker.take() {
+                break ready.unwrap();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "mountain generation deadline"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert_eq!(ready.keys.len(), nearby_keys(snapshot.build_centre).len());
+        assert!(ready.villages >= snapshot.villages);
+        eprintln!(
+            "mountain resident set: {} regions, {} villages, {} spans, {} vertices",
+            ready.keys.len(),
+            ready.villages,
+            ready.segments,
+            ready.vertices.len()
+        );
+    }
+    #[test]
+    fn road_stream_keeps_only_the_latest_request_and_cancels_old_generations() {
+        let shared = Arc::new(Shared {
+            request: Mutex::new(None),
+            wake: Condvar::new(),
+            result: Mutex::new(None),
+            generation: AtomicU64::new(0),
+            stop: AtomicBool::new(false),
+        });
+        let mut worker = Worker {
+            shared: shared.clone(),
+            last_centre: DVec3::X * 4e6,
+            source_version: 1,
+        };
+        worker.request(DVec3::Y * 4e6, false);
+        let first = shared.request.lock().unwrap().unwrap().generation;
+        worker.request(DVec3::Z * 4e6, false);
+        let latest = shared.request.lock().unwrap().unwrap();
+        assert!(worker.current(latest.generation));
+        assert!(!worker.current(first));
+        assert_eq!(latest.centre, DVec3::Z * 4e6);
+        worker.request(latest.centre, false);
+        assert_eq!(shared.generation.load(Ordering::Relaxed), latest.generation);
+        drop(worker);
+        assert!(shared.stop.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn road_stream_neighbours_span_cube_seams_and_remain_bounded() {
+        for d in [
+            DVec3::X,
+            DVec3::new(1.0, 1.0, 0.0).normalize(),
+            DVec3::ONE.normalize(),
+        ] {
+            let keys = nearby_keys(d);
+            assert!((4..=9).contains(&keys.len()));
+            assert!(keys.contains(&tile_key_for_direction(d, road_network::REGION_LEVEL)));
+            if d.y > 0.0 {
+                assert!(keys.iter().any(|k| k.face != keys[0].face));
+            }
+        }
+    }
+}

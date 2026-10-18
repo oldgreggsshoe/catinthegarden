@@ -87,15 +87,17 @@ fn road_tunnel_lining_owns(direction: vec3<f32>, height: f32) -> bool {
 const NETWORK_BUCKETS: u32 = 32768u;
 const NETWORK_REFS: u32 = 32772u;
 const NETWORK_SEGMENTS: u32 = 98308u;
-fn road_network_cell(xy: vec2<f32>) -> vec2<u32> {
+fn road_network_cell(xy: vec2<f32>) -> vec3<u32> {
     let cell = vec2<i32>(floor(xy / road_cut_data[0].y));
     let hash = (bitcast<u32>(cell.x)*73856093u) ^ (bitcast<u32>(cell.y)*19349663u);
     for (var probe=0u; probe<32u; probe+=1u) {
         let entry=road_cut_data[4u+((hash+probe)&(NETWORK_BUCKETS-1u))];
         if entry.w<0.5 { break; }
-        if all(vec2<i32>(entry.xy)==cell) { return vec2<u32>(entry.zw); }
+        if all(vec2<i32>(entry.xy)==cell) {
+            return vec3<u32>(vec2<u32>(entry.zw),select(0u,1u,fract(entry.w)>0.1));
+        }
     }
-    return vec2<u32>(0u);
+    return vec3<u32>(0u);
 }
 fn road_network_segment(reference: u32) -> u32 {
     let index=u32(road_cut_data[NETWORK_REFS+reference/4u][reference%4u]);
@@ -123,12 +125,15 @@ fn road_network_terrain_cut(direction: vec3<f32>, uncut: f32) -> RoadTerrainCut 
             let b=road_cut_data[index+1u];
             if b.w>0.5 { continue; }
             let delta=b.xyz-a.xyz;
+            let along=dot(p.xy-a.xy,delta.xy)/length(delta.xy);
+            if along < -1.0 || along>length(delta.xy)+1.0 { continue; }
             let t=clamp(dot(p.xy-a.xy,delta.xy)/dot(delta.xy,delta.xy),0.0,1.0);
             let centre=mix(a.xyz,b.xyz,t);
             let displacement=p.xy-centre.xy;
             let offset=length(displacement);
             if offset>a.w { continue; }
-            let cap=centre.z-6.0+max(offset-9.0,0.0);
+            let floor=select(-6.0,b.w+1.0,b.w<0.0);
+            let cap=centre.z+floor+max(offset-9.0,0.0);
             let raw_height=(cap-(cosine-1.0)*road_cut_data[0].x)/cosine;
             // A finite bank blends out before its index footprint ends. No
             // hard cut at a cell/reach boundary, even with f32 radius rounding.
@@ -150,8 +155,13 @@ fn road_network_terrain_cut(direction: vec3<f32>, uncut: f32) -> RoadTerrainCut 
 }
 fn road_network_tunnel_void(direction: vec3<f32>, height: f32) -> f32 {
     if dot(direction,road_cut_data[3].xyz)<0.99 { return -1000000.0; }
-    let p=road_network_local(direction,height);
+    return road_network_void_local(road_network_local(direction,height));
+}
+fn road_network_void_local(p: vec3<f32>) -> f32 {
+    // Uniform no-bore regions and open-only cells are the common case.
+    if road_cut_data[0].z<0.5 { return -1000000.0; }
     let list=road_network_cell(p.xy);
+    if list.z==0u { return -1000000.0; }
     var result=-1000000.0;
     for (var j=0u; j<min(list.y,64u); j+=1u) {
         let index=road_network_segment(list.x+j);
@@ -159,12 +169,12 @@ fn road_network_tunnel_void(direction: vec3<f32>, height: f32) -> f32 {
         let b=road_cut_data[index+1u];
         if b.w<0.5 { continue; }
         let delta=b.xyz-a.xyz;
-        let t=clamp(dot(p.xy-a.xy,delta.xy)/dot(delta.xy,delta.xy),0.0,1.0);
-        let centre=mix(a.xyz,b.xyz,t);
-        let offset=length(p.xy-centre.xy);
-        let z=p.z-centre.z;
+        let length_xy=length(delta.xy);
+        let along=dot(p.xy-a.xy,delta.xy)/length_xy;
+        let offset=abs(dot(p.xy-a.xy,vec2<f32>(delta.y,-delta.x))/length_xy);
+        let z=p.z-a.z-along*delta.z/length_xy;
         let roof=min(9.0-0.25*offset,12.8-1.2*offset);
-        result=max(result,min(min(7.0-offset,z+6.5),roof+0.5-z));
+        result=max(result,min(min(min(7.0-offset,z+6.5),roof+0.5-z),min(along+0.5,length_xy+0.5-along)));
     }
     return result;
 }
@@ -177,4 +187,68 @@ fn road_tunnel_void(direction: vec3<f32>, height: f32) -> f32 {
     if !ROAD_CUTS_ENABLED { return -1000000.0; }
     if road_cut_data[0].w>1.5 { return road_network_tunnel_void(direction,height); }
     return road_pilot_tunnel_void(direction,height);
+}
+
+// Clear a crown-sized margin around open decks/shoulders, plus excavated banks.
+// Covered bore segments deliberately do not clear the forest above their roof.
+fn road_clears_tree(direction: vec3<f32>, uncut: f32) -> bool {
+    if !ROAD_CUTS_ENABLED || road_cut_data[0].w<0.5 { return false; }
+    if dot(direction,road_cut_data[3].xyz)<0.99 { return false; }
+    if road_cut_data[0].w>1.5 {
+        let p=road_network_local(direction,uncut);
+        let list=road_network_cell(p.xy);
+        for (var j=0u;j<min(list.y,64u);j+=1u) {
+            let index=road_network_segment(list.x+j);
+            let a=road_cut_data[index]; let b=road_cut_data[index+1u];
+            if b.w>0.5 { continue; }
+            let delta=b.xy-a.xy;
+            let along=dot(p.xy-a.xy,delta)/length(delta);
+            let margin=select(1.0,25.0,b.w>=-2.0 && b.w<0.0);
+            if along < -margin || along>length(delta)+margin { continue; }
+            let t=clamp(dot(p.xy-a.xy,delta)/dot(delta,delta),0.0,1.0);
+            if distance(p.xy,mix(a.xy,b.xy,t))<=25.0 { return true; }
+        }
+    } else {
+        let p=road_network_local(direction,uncut);
+        let last=u32(road_cut_data[0].z)-1u;
+        let end=road_cut_data[4u+last].y;
+        if p.y < -25.0 || p.y>end+25.0 { return false; }
+        let station=clamp(p.y/road_cut_data[0].y,0.0,f32(last));
+        let i=min(u32(floor(station)),last-1u);
+        let a=road_cut_data[4u+i]; let b=road_cut_data[5u+i];
+        if a.w>0.5 { return false; }
+        let centre=mix(a.xyz,b.xyz,station-f32(i));
+        let slope=(b.x-a.x)/(b.y-a.y);
+        if abs(p.x-centre.x)/sqrt(1.0+slope*slope)<=25.0 { return true; }
+    }
+    return road_terrain_cut(direction,uncut).height<uncut-0.25;
+}
+
+fn road_network_open_cut_owns(direction: vec3<f32>, height: f32) -> bool {
+    if !ROAD_CUTS_ENABLED || road_cut_data[0].w<1.5 || road_cut_data[3].w<=0.0 {return false;}
+    let p=road_network_local(direction,height);
+    if distance(p.xy,vec2<f32>(road_cut_data[1].w,road_cut_data[2].w))>road_cut_data[3].w {return false;}
+    // Test the actual fragment against the bank planes in one indexed pass.
+    // A ground-level apron has almost no excavation, but its slab must still
+    // own the pixels down to its underside. A cut-depth-only test leaves
+    // interpolated terrain poking through the asphalt (and f32 radial error
+    // can exceed the apron excavation itself).
+    let list=road_network_cell(p.xy);
+    for (var j=0u; j<min(list.y,64u); j+=1u) {
+        let index=road_network_segment(list.x+j);
+        let a=road_cut_data[index]; let b=road_cut_data[index+1u];
+        if b.w>0.5 { continue; }
+        let delta=b.xy-a.xy;
+        let along=dot(p.xy-a.xy,delta)/length(delta);
+        if along < -0.5 || along > length(delta)+0.5 { continue; }
+        let t=clamp(dot(p.xy-a.xy,delta)/dot(delta,delta),0.0,1.0);
+        let centre=mix(a.xyz,b.xyz,t);
+        let offset=distance(p.xy,centre.xy);
+        if offset<=5.1 && p.z>centre.z-0.75 { return true; }
+        let floor_depth=select(6.0,-b.w-1.0,b.w<0.0);
+        let cap=centre.z-floor_depth+max(offset-9.0,0.0);
+        let weight=smoothstep(0.0,8.0,a.w-offset);
+        if (p.z-cap)*weight>0.75 { return true; }
+    }
+    return false;
 }

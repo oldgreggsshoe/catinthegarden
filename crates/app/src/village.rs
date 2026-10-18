@@ -54,7 +54,7 @@ const VILLAGE_SITE_CANDIDATES_PER_CELL: u32 = 6;
 /// its own ground, so a village on broken terrain simply ends up smaller.
 const HOUSES_PER_VILLAGE: u32 = 20;
 /// How far houses scatter from the village centre.
-const VILLAGE_RADIUS_METERS: f64 = 110.0;
+pub(crate) const VILLAGE_RADIUS_METERS: f64 = 110.0;
 /// How much the ground may rise and fall across a village's own footprint.
 ///
 /// Flatness is tested over the footprint rather than as a slope at one point,

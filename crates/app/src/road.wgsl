@@ -1,5 +1,6 @@
 // Same camera prefix and flat sunlight/hemisphere convention as village.wgsl.
-// Only a camera bind group: no terrain, weather or road-mask texture lookups.
+// The pilot only binds the camera. Streamed roads also query the resident
+// excavation field to clip internal bore walls and overlapping cut banks.
 struct Camera {
     projection_matrix: mat4x4<f32>,
     camera_forward: vec4<f32>,
@@ -29,6 +30,9 @@ struct Output {
     @location(2) @interpolate(flat) up: vec3<f32>,
     @location(3) @interpolate(linear) coverage: vec4<f32>,
     @location(4) @interpolate(flat) sheltered: f32,
+    @location(5) local_position: vec3<f32>,
+    @location(6) @interpolate(flat) network_kind: f32,
+    @location(7) removed: f32,
 }
 
 fn project_vertex(input: Input) -> Output {
@@ -41,9 +45,16 @@ fn project_vertex(input: Input) -> Output {
     output.normal = normalize(input.across.xyz * input.normal.x
         + input.forward * input.normal.y + input.up * input.normal.z);
     output.colour = abs(input.colour);
+    output.local_position = input.position;
+    output.network_kind = select(select(0.0, 1.0, input.colour.y<0.0 && input.colour.z<0.0),
+        2.0, input.colour.y<0.0 && input.colour.z>=0.0);
+    output.removed=max(0.0,(-input.colour.y-0.19)*64.0);
+    if output.network_kind>1.5 {output.colour=vec3<f32>(0.24,0.19,0.13);}
     // Signed colour lanes avoid increasing the cached vertex stride:
     // negative blue = sheltered; negative red = emissive marker (near mesh).
     output.sheltered = select(select(0.0, 1.0, input.colour.z < 0.0), 2.0, input.colour.x < 0.0);
+    // An outward-facing tunnel shell is lit outdoors, not an emissive marker.
+    if all(input.colour<vec3<f32>(0.0)) {output.network_kind=3.0;output.sheltered=0.0;}
     output.up = input.up;
     output.coverage = vec4<f32>(0.0);
     return output;
@@ -69,6 +80,7 @@ fn vs_main(input: Input) -> Output {
 
 @fragment
 fn fs_main(input: Output) -> @location(0) vec4<f32> {
+    /* NETWORK_EXCAVATION_CLIP */
     return vec4<f32>(lit_colour(input), 1.0);
 }
 
@@ -91,18 +103,26 @@ fn vs_far(input: Input) -> Output {
         + input.forward * input.normal.y + input.up * input.normal.z;
     let across = input.across.xyz * input.normal.y - input.forward * input.normal.x;
     let viewport = max(vec2<f32>(input.origin.w, input.across.w), vec2<f32>(1.0));
-    let along_px = pixel_vector(tangent, output.position, viewport);
-    let across_px = pixel_vector(across, output.position, viewport);
-    var n = vec2<f32>(along_px.y, -along_px.x) / max(length(along_px), 0.000001);
-    n *= select(-1.0, 1.0, dot(n, across_px) >= 0.0);
-    let half_width = abs(dot(n, across_px));
-    let extent = half_width + 1.0;
     let side = sign(input.colour.x);
-    if output.position.w > 0.0001 {
+    if output.position.w > max(1.0, 2.0 * length(tangent)) {
+        let along_px = pixel_vector(tangent, output.position, viewport);
+        let across_px = pixel_vector(across, output.position, viewport);
+        var n = vec2<f32>(along_px.y, -along_px.x) / max(length(along_px), 0.000001);
+        n *= select(-1.0, 1.0, dot(n, across_px) >= 0.0);
+        let half_width = abs(dot(n, across_px));
+        let extent = half_width + 1.0;
         output.position = vec4<f32>(output.position.xy
             + side * n * extent * 2.0 / viewport * output.position.w,
             output.position.zw);
         output.coverage = vec4<f32>(side * extent, half_width, n);
+    } else {
+        // Perspective's derivative is singular at the eye plane. A road far
+        // offscreen can otherwise expand across the entire image. Use its
+        // real physical quad here and let homogeneous clipping handle it.
+        var physical = input;
+        physical.position += side * vec3<f32>(input.normal.y, -input.normal.x, 0.0);
+        output = project_vertex(physical);
+        output.coverage = vec4<f32>(0.0, 1000000.0, 1.0, 0.0);
     }
     output.normal = normalize(cross(across, tangent));
     output.colour = abs(input.colour);

@@ -30,8 +30,11 @@ mod road;
 mod road_gpu_tests;
 mod road_network;
 mod road_network_field;
+mod road_network_mesh;
 mod road_network_profile;
+mod road_network_render;
 mod road_network_route;
+mod road_network_stream;
 mod road_network_survey;
 mod road_render;
 mod road_route;
@@ -1590,6 +1593,7 @@ struct State {
     forest: forest::ForestRenderer,
     villages: village_render::VillageRenderer,
     road: Option<road_render::RoadRenderer>,
+    road_network: Option<road_network_render::NetworkRenderer>,
     ship_hull: ship::ShipHull,
     ship_body: ship::ShipBody,
     ship_renderer: ship_render::ShipRenderer,
@@ -1882,7 +1886,7 @@ impl State {
         };
         let sync_present = presentation_sync_enabled(
             std::env::var("PLANET_SYNC_PRESENT").ok().as_deref(),
-            road::enabled() && body::active() == body::PLANET,
+            (road::enabled() || road_network_render::enabled()) && body::active() == body::PLANET,
         );
         tracing::info!(
             target: "planet::adapter",
@@ -2008,6 +2012,13 @@ impl State {
         startup_profile::mark("foveated renderer");
         let (shadow_height_view, shadow_face_quads) = foveated.shadow_height_faces();
         startup_profile::mark("foveated shadow faces");
+        let network_root = match &terrain_source {
+            terrain::TerrainSource::Outmap(root) => Some(root.clone()),
+            terrain::TerrainSource::Placeholder => None,
+        };
+        let network_active = road_network_render::enabled()
+            && body::active() == body::PLANET
+            && !scenario.as_ref().is_some_and(|s| road::is_replay(s.name()));
         let mut terrain = terrain::TerrainRenderer::new(
             &device,
             &queue,
@@ -2021,13 +2032,26 @@ impl State {
         )
         .expect("terrain renderer must initialize");
         startup_profile::mark("terrain renderer");
-        let road = (road::enabled() && body::active() == body::PLANET).then(|| {
-            road_render::RoadRenderer::new(
+        let road =
+            (road::enabled() && body::active() == body::PLANET && !network_active).then(|| {
+                road_render::RoadRenderer::new(
+                    &device,
+                    hdr::HdrRenderer::SCENE_FORMAT,
+                    &camera_bind_group_layout,
+                    &mut terrain,
+                )
+            });
+        let road_network = network_active.then(|| {
+            road_network_render::NetworkRenderer::new(
                 &device,
+                &queue,
                 hdr::HdrRenderer::SCENE_FORMAT,
                 &camera_bind_group_layout,
                 &mut terrain,
+                network_root.expect("village roads require a baked planet"),
+                road_network_render::initial_position(),
             )
+            .expect("village road network initial region must pass engineering")
         });
         startup_profile::mark("road");
         let forest = forest::ForestRenderer::new(
@@ -2227,6 +2251,7 @@ impl State {
             forest,
             villages,
             road,
+            road_network,
             ship_hull,
             ship_body,
             ship_renderer,
@@ -2445,13 +2470,21 @@ impl State {
 
     /// Only interactive startup calls this; scripted replays retain their poses.
     fn position_road_start(&mut self) -> bool {
-        let Some(road) = &self.road else {
+        let pose = self
+            .road_network
+            .as_ref()
+            .and_then(|roads| roads.inspection_pose())
+            .or_else(|| self.road.as_ref().map(|road| road.plan.inspection_pose()));
+        let Some((position, target)) = pose else {
             return false;
         };
-        let (position, target) = road.plan.inspection_pose();
         let radial = position.normalize();
         self.flight_local_position = position;
-        self.flight_surface_height_meters = road.plan.plane_height_at(radial);
+        self.flight_surface_height_meters = self.road_camera_surface_height(
+            radial,
+            position.length() - planet::planet_radius_meters(),
+            0.0,
+        );
         self.flight_local_tangent = initial_flight_tangent(radial);
         (self.flight_look_yaw_radians, self.flight_look_pitch_radians) = flight_look_angles_toward(
             radial,
@@ -2921,13 +2954,40 @@ impl State {
         );
     }
 
+    fn road_camera_surface_height(&self, d: glam::DVec3, eye: f64, ground: f64) -> f64 {
+        if let Some(roads) = &self.road_network {
+            roads.plan().camera_surface_height(d, eye, ground)
+        } else {
+            self.road.as_ref().map_or(ground, |road| {
+                road.plan.camera_surface_height(d, eye, ground)
+            })
+        }
+    }
+    fn road_constrain_motion(&self, from: glam::DVec3, to: glam::DVec3) -> glam::DVec3 {
+        if let Some(roads) = &self.road_network {
+            roads.plan().constrain_motion(from, to)
+        } else {
+            self.road
+                .as_ref()
+                .map_or(to, |road| road.plan.constrain_tunnel_motion(from, to))
+        }
+    }
+    fn in_road_tunnel(&self, d: glam::DVec3, eye: f64) -> bool {
+        self.road_network
+            .as_ref()
+            .is_some_and(|roads| roads.plan().tunnel_void(d, eye) > 0.0)
+    }
+
     fn open_ocean_environment_at(
         &self,
         local_radial: glam::DVec3,
-        _camera_altitude_meters: f64,
+        camera_altitude_meters: f64,
         ocean_time_seconds: f64,
         fallback_terrain_height_meters: f64,
     ) -> Option<(f64, f64, f64)> {
+        if self.in_road_tunnel(local_radial, camera_altitude_meters) {
+            return None;
+        }
         if self.terrain.open_ocean_at(local_radial) != Some(true) {
             return None;
         }
@@ -2982,11 +3042,10 @@ impl State {
                 .terrain
                 .surface_height_meters_at(local_radial, camera_altitude_meters),
         }?;
-        let sampled_terrain_height_meters = self.road.as_ref().map_or(
+        let sampled_terrain_height_meters = self.road_camera_surface_height(
+            local_radial,
+            camera_altitude_meters,
             sampled_terrain_height_meters,
-            |road| road.plan.camera_surface_height(
-                local_radial, camera_altitude_meters, sampled_terrain_height_meters,
-            ),
         );
         let ocean_environment = self.open_ocean_environment_at(
             local_radial,
@@ -3201,14 +3260,11 @@ impl State {
             jump_requested = false;
             self.flight_local_position =
                 moved_radial * (planet::planet_radius_meters() + resolved_eye_altitude);
-            if let Some(road) = &self.road {
-                let constrained = road.plan.constrain_tunnel_motion(
-                    previous_tunnel_position, self.flight_local_position,
-                );
-                if constrained.distance(self.flight_local_position) > 1.0e-6 {
-                    self.surface_physics.vertical_velocity_meters_per_second = 0.0;
-                    self.flight_local_position = constrained;
-                }
+            let constrained =
+                self.road_constrain_motion(previous_tunnel_position, self.flight_local_position);
+            if constrained.distance(self.flight_local_position) > 1e-6 {
+                self.surface_physics.vertical_velocity_meters_per_second = 0.0;
+                self.flight_local_position = constrained;
             }
             self.flight_surface_height_meters = environment.visible_surface_height_meters();
             // The step is already deducted from the pending backlog above.
@@ -3603,8 +3659,10 @@ impl State {
         self.gust = gust::Gust::at_camera(camera_position, ocean_time_seconds, self.storm_overcast);
         let direction = camera_position.normalize();
         let altitude = camera_position.length() - planet::planet_radius_meters();
-        // The sea can stand over the eye only near sea level.
-        let water = if altitude < ocean::MAXIMUM_WAVE_HEIGHT_METERS + 50.0 {
+        // A covered bore is air even below the sea: use the same exclusion
+        // for rain, bubble depth and underwater sound as the camera collider.
+        let in_tunnel = self.in_road_tunnel(direction, altitude);
+        let water = if !in_tunnel && altitude < ocean::MAXIMUM_WAVE_HEIGHT_METERS + 50.0 {
             ocean::global_wave_height_meters(
                 direction,
                 ocean_time_seconds,
@@ -3613,7 +3671,7 @@ impl State {
         } else {
             f64::NEG_INFINITY
         };
-        let intensity = if rain::reaches_the_eye(altitude, water) {
+        let intensity = if !in_tunnel && rain::reaches_the_eye(altitude, water) {
             rain::intensity_for(self.storm_overcast, self.gust.value)
         } else {
             0.0
@@ -3864,12 +3922,9 @@ impl State {
         planet_rotation_radians: f64,
         ocean_time_seconds: f64,
     ) {
-        if let Some(road) = &self.road
-            && let Some(start) = movement_start_position
-        {
-            self.flight_local_position = road.plan.constrain_tunnel_motion(
-                start, self.flight_local_position,
-            );
+        if let Some(start) = movement_start_position {
+            self.flight_local_position =
+                self.road_constrain_motion(start, self.flight_local_position);
         }
         if self.render_path == RenderPath::Raster
             && let Some(start) = movement_start_position
@@ -3883,9 +3938,8 @@ impl State {
                     let terrain_height = self
                         .terrain
                         .raster_surface_height_meters_at(direction, altitude_meters)?;
-                    let terrain_height = self.road.as_ref().map_or(terrain_height, |road| {
-                        road.plan.camera_surface_height(direction, altitude_meters, terrain_height)
-                    });
+                    let terrain_height =
+                        self.road_camera_surface_height(direction, altitude_meters, terrain_height);
                     Some(
                         if let Some((bathymetry, water_height, _)) = self.open_ocean_environment_at(
                             direction,
@@ -3921,7 +3975,12 @@ impl State {
         let previous_local_position = self.flight_local_position;
         let local_radial = self.flight_local_position.normalize();
         let camera_altitude_meters =
-            (self.flight_local_position.length() - planet::planet_radius_meters()).max(0.0);
+            self.flight_local_position.length() - planet::planet_radius_meters();
+        let camera_altitude_meters = if self.road_network.is_some() {
+            camera_altitude_meters
+        } else {
+            camera_altitude_meters.max(0.0)
+        };
         let surface_height_meters = match self.render_path {
             RenderPath::Raster => self
                 .terrain
@@ -3931,9 +3990,7 @@ impl State {
                 .surface_height_meters_at(local_radial, camera_altitude_meters),
         };
         let surface_height_meters = surface_height_meters.map(|height| {
-            self.road.as_ref().map_or(height, |road| {
-                road.plan.camera_surface_height(local_radial, camera_altitude_meters, height)
-            })
+            self.road_camera_surface_height(local_radial, camera_altitude_meters, height)
         });
         let ocean_environment = surface_height_meters.and_then(|terrain_height| {
             self.open_ocean_environment_at(
@@ -5012,6 +5069,9 @@ impl State {
         }
         startup_profile::frame_started();
         let profile_started = Instant::now();
+        if let Some(roads) = &mut self.road_network {
+            roads.prepare(&self.device, &self.queue, &mut self.terrain);
+        }
         let now = Instant::now();
         let completed_gpu_samples = self
             .gpu_profiler
@@ -5083,16 +5143,29 @@ impl State {
         };
         let planet_rotation_radians = planet::planet_rotation_radians(planet_rotation_time);
         if let Some((position, look_at)) = scenario_pose {
-            let route_pose = self.road.as_ref().and_then(|road| {
-                self.scenario
-                    .as_ref()
-                    .filter(|s| road::is_replay(s.name()))
-                    .and_then(|s| road.plan.scenario_pose(s.name(), sim_time))
-            });
+            let route_pose = self
+                .road
+                .as_ref()
+                .and_then(|road| {
+                    self.scenario
+                        .as_ref()
+                        .filter(|s| road::is_replay(s.name()))
+                        .and_then(|s| road.plan.scenario_pose(s.name(), sim_time))
+                })
+                .or_else(|| {
+                    self.road_network.as_ref().and_then(|roads| {
+                        self.scenario
+                            .as_ref()
+                            .and_then(|s| roads.scenario_pose(s.name()))
+                    })
+                });
             let (mut position, look_at) = route_pose.unwrap_or((position, look_at));
             if route_pose.is_some()
-                && self.scenario.as_ref().is_some_and(|s| s.name() == "road_viaduct_overview"
-                    || (s.name() == "road_tunnel_trial" && sim_time >= 13.0))
+                && self.scenario.as_ref().is_some_and(|s| {
+                    s.name() == "road_viaduct_overview"
+                        || s.name() == "road_network_overview"
+                        || (s.name() == "road_tunnel_trial" && sim_time >= 13.0)
+                })
             {
                 // Side cameras may sit on a hillside higher than the cut.
                 let direction = position.normalize();
@@ -5764,13 +5837,11 @@ impl State {
                 .surface_height_meters_at(camera_direction, camera_sea_level_altitude_meters),
         }
         .unwrap_or(0.0);
-        if let Some(road) = &self.road {
-            camera_surface_height_meters = road.plan.camera_surface_height(
-                camera_direction,
-                camera_sea_level_altitude_meters,
-                camera_surface_height_meters,
-            );
-        }
+        camera_surface_height_meters = self.road_camera_surface_height(
+            camera_direction,
+            camera_sea_level_altitude_meters,
+            camera_surface_height_meters,
+        );
         let mut ocean_water_depth_meters = 0.0;
         // Over land there is no open sea to be under, so the eye is clear of it.
         // Zero here made the shader read every folded (back-facing) sea triangle
@@ -5886,6 +5957,15 @@ impl State {
             camera_planet_frame_position,
             camera_sea_level_altitude_meters,
         );
+        if let Some(roads) = &mut self.road_network {
+            roads.update_camera(
+                &self.queue,
+                camera_planet_frame_position,
+                self.camera
+                    .planet_frame_direction_dvec3(planet_rotation_radians),
+                [self.size.width, self.size.height],
+            );
+        }
         if let Some(road) = &mut self.road {
             road.update(
                 &self.queue,
@@ -6488,6 +6568,16 @@ impl State {
             {
                 road.draw(&mut render_pass, &self.camera_bind_group);
             }
+            if subsystem_enabled("roads")
+                && let Some(roads) = &self.road_network
+            {
+                roads.draw(
+                    &mut render_pass,
+                    &self.camera_bind_group,
+                    self.terrain.shared_bind_group(),
+                    false,
+                );
+            }
             if subsystem_enabled("forest") {
                 self.forest.draw(
                     &mut render_pass,
@@ -6507,6 +6597,16 @@ impl State {
                 && let Some(road) = &self.road
             {
                 road.draw_far(&mut render_pass, &self.camera_bind_group);
+            }
+            if subsystem_enabled("roads")
+                && let Some(roads) = &self.road_network
+            {
+                roads.draw(
+                    &mut render_pass,
+                    &self.camera_bind_group,
+                    self.terrain.shared_bind_group(),
+                    true,
+                );
             }
             if body::has_atmosphere() {
                 if subsystem_enabled("cloud_impostors") {

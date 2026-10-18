@@ -18,7 +18,8 @@ use std::{
 
 const HEIGHT_STEP: f64 = 10.0;
 // Leave room for the verifier's conservative global radius and later curves.
-const SEARCH_GRADE: f64 = crate::road_route::MAX_GRADE - 0.005;
+// Reserve distance for flat, 20m junction/turn aprons in the dense verifier.
+const SEARCH_GRADE: f64 = 0.17;
 const MAX_STATES: usize = 400_000;
 // Bounded weighted A*: engineering feasibility matters more than proving an
 // exact minimum of the construction proxy. Never relax any geometric bound.
@@ -47,6 +48,7 @@ pub struct Rejected {
     pub connected_terminals: usize,
     pub reason: &'static str,
     pub expanded_states: usize,
+    pub verification: Option<profile::Rejected>,
 }
 pub struct Plan {
     pub region: Region,
@@ -130,13 +132,28 @@ impl Span {
             .collect::<Result<Vec<_>, String>>()?;
         Ok(Self { length, samples })
     }
-    fn cost(&self, a: f64, b: f64, radius: f64) -> Option<f64> {
+    fn cost(&self, a: f64, b: f64, radius: f64, flat_a: bool, flat_b: bool) -> Option<f64> {
         if (a - b).abs() > SEARCH_GRADE * self.length * (1.0 + a.min(b) / radius) + 1e-7 {
+            return None;
+        }
+        // Every lattice endpoint can become a turn/shared junction later.
+        // Price and verify its actual flat first/last dense stations now, not
+        // a straight ramp that the final apron would push above a terrain cap.
+        let station = self.length / (self.samples.len() - 1) as f64;
+        let start = if flat_a { station } else { 0.0 };
+        let end = if flat_b { station } else { 0.0 };
+        let run = (self.length - start - end).max(0.0);
+        if (a - b).abs() > 0.24 * run * (1.0 + a.min(b) / radius) + 1e-7 {
             return None;
         }
         let mut effort = 0.0;
         for &(t, s) in &self.samples {
-            let h = a + (b - a) * t;
+            let progress = if run > 1e-9 {
+                ((t * self.length - start) / run).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let h = a + (b - a) * progress;
             if h > s.cap + 1e-7 {
                 return None;
             }
@@ -200,8 +217,7 @@ impl Grid {
             .map(|s| s.cap)
             .fold(f64::NEG_INFINITY, f64::max);
         for terminal in &region.terminals {
-            let h =
-                profile::sample_at(DVec3::from_array(terminal.direction), radius, terrain)?.anchor;
+            let h = profile::terminal_sample(terminal, radius, terrain)?.anchor;
             lo = lo.min(h - 40.0);
             hi = hi.max(h + 10.0);
         }
@@ -257,9 +273,9 @@ impl Grid {
         let radius = self.radius;
         let span = self.span(a.cell, b.cell, terrain)?;
         Ok(if a.cell <= b.cell {
-            span.cost(a.height(), b.height(), radius)
+            span.cost(a.height(), b.height(), radius, true, true)
         } else {
-            span.cost(b.height(), a.height(), radius)
+            span.cost(b.height(), a.height(), radius, true, true)
         })
     }
     fn approaches(
@@ -281,22 +297,38 @@ impl Grid {
         let y = xy[1].clamp(0.0, (quad - 1) as f64) as usize;
         let side = quad + 1;
         let mut result = Vec::new();
-        for cell in [
-            y * side + x,
-            y * side + x + 1,
-            (y + 1) * side + x,
-            (y + 1) * side + x + 1,
-        ] {
-            let span = Span::survey(d, self.dirs[cell], self.radius, terrain)?;
-            let allowance = SEARCH_GRADE * span.length * (1.0 + height.abs() / self.radius);
-            let lo = ((height - allowance) / HEIGHT_STEP).ceil() as i32;
-            let hi =
-                ((height + allowance).min(self.samples[cell].cap) / HEIGHT_STEP).floor() as i32;
-            for level in lo.max(self.minimum_level)..=hi.min(self.maximum_level) {
-                let position = Position { cell, level };
-                if let Some(cost) = span.cost(height, position.height(), self.radius) {
-                    result.push((position, cost));
+        // A near-ground terminal can lie too close to all four lattice
+        // corners for a quantized height plus its flat apron. Broaden only a
+        // failed approach, keeping the search bounded and the terminal fixed.
+        for ring in 0..=3 {
+            for cy in y.saturating_sub(ring)..=(y + 1 + ring).min(quad) {
+                for cx in x.saturating_sub(ring)..=(x + 1 + ring).min(quad) {
+                    if ring > 0
+                        && cx >= x.saturating_sub(ring - 1)
+                        && cx <= x + ring
+                        && cy >= y.saturating_sub(ring - 1)
+                        && cy <= y + ring
+                    {
+                        continue;
+                    }
+                    let cell = cy * side + cx;
+                    let span = Span::survey(d, self.dirs[cell], self.radius, terrain)?;
+                    let allowance = SEARCH_GRADE * span.length * (1.0 + height.abs() / self.radius);
+                    let lo = ((height - allowance) / HEIGHT_STEP).ceil() as i32;
+                    let hi = ((height + allowance).min(self.samples[cell].cap) / HEIGHT_STEP)
+                        .floor() as i32;
+                    for level in lo.max(self.minimum_level)..=hi.min(self.maximum_level) {
+                        let position = Position { cell, level };
+                        if let Some(cost) =
+                            span.cost(height, position.height(), self.radius, true, true)
+                        {
+                            result.push((position, cost));
+                        }
+                    }
                 }
+            }
+            if !result.is_empty() {
+                break;
             }
         }
         Ok(result)
@@ -431,6 +463,9 @@ fn search(
             continue;
         }
         expanded += 1;
+        if expanded % 256 == 0 && terrain.cancelled() {
+            return Err("road generation superseded".into());
+        }
         if expanded > limit {
             return Ok(Err(("height-state search budget exceeded", expanded)));
         }
@@ -576,9 +611,10 @@ fn reroute_with_limit(
         .iter()
         .map(|t| DVec3::from_array(t.direction))
         .collect();
-    let samples = dirs
+    let samples = region
+        .terminals
         .iter()
-        .map(|&d| profile::sample_at(d, radius, terrain))
+        .map(|terminal| profile::terminal_sample(terminal, radius, terrain))
         .collect::<Result<Vec<_>, _>>()?;
     let mut grid = Grid::survey(region, radius, terrain)?;
     let root = (0..dirs.len())
@@ -646,6 +682,7 @@ fn reroute_with_limit(
                     connected_terminals: connected.len(),
                     reason,
                     expanded_states: stats.expanded_states + expanded,
+                    verification: None,
                 }));
             }
         };
@@ -749,12 +786,13 @@ fn reroute_with_limit(
     let fixed: Vec<_> = heights.into_iter().enumerate().collect();
     let p = match Profile::fit_fixed(&result, radius, terrain, &fixed)? {
         Ok(p) => p,
-        Err(_) => {
+        Err(verification) => {
             return Ok(Err(Rejected {
                 terminal: root,
                 connected_terminals: connected.len(),
                 reason: "dense verification rejected searched alignment",
                 expanded_states: stats.expanded_states,
+                verification: Some(verification),
             }));
         }
     };
@@ -772,6 +810,30 @@ mod tests {
     use super::*;
     use crate::road_network::{Ground, Terminal, TerminalKind};
     use planet_coretypes::{CubeFace, TileKey};
+    #[test]
+    fn road_network_search_checks_flat_aprons_against_the_dense_caps() {
+        let sample = |cap| Sample {
+            ground: Ground {
+                height: 5680.0,
+                ocean: false,
+            },
+            cap,
+            anchor: 5688.0,
+        };
+        let span = Span {
+            length: 200.0,
+            samples: (0..=10)
+                .map(|i| {
+                    (
+                        i as f64 / 10.0,
+                        sample(if i == 1 { 5709.172 } else { 5740.0 }),
+                    )
+                })
+                .collect(),
+        };
+        assert!(span.cost(5710.0, 5680.0, 4e6, false, false).is_some());
+        assert!(span.cost(5710.0, 5680.0, 4e6, true, false).is_none());
+    }
     fn key() -> TileKey {
         TileKey {
             face: CubeFace::PositiveX,
@@ -848,6 +910,32 @@ mod tests {
             Ok(Vec::new())
         }
     }
+    #[test]
+    fn road_network_terminal_approach_widens_if_its_nearest_aprons_cannot_change_height() {
+        let r = region(key(), &[(0.5, 0.5)]);
+        let land = Land::Flat(1000.25);
+        let mut grid = Grid::survey(&r, 4e6, &land).unwrap();
+        let d = DVec3::from_array(r.terminals[0].direction);
+        let side = road_network::LOCAL_QUADS + 1;
+        // All four closest corners are too close for flat aprons and a change
+        // to a 10m lattice level. A wider outward approach is still feasible.
+        for cell in [
+            64 * side + 64,
+            64 * side + 65,
+            65 * side + 64,
+            65 * side + 65,
+        ] {
+            grid.dirs[cell] = d;
+        }
+        let approaches = grid.approaches(&r, d, 1000.5, &land).unwrap();
+        assert!(!approaches.is_empty());
+        assert!(
+            approaches
+                .iter()
+                .all(|(p, _)| distance(d, grid.dirs[p.cell], 4e6) > 40.0)
+        );
+    }
+
     fn validate(plan: &Plan, original: &Region, terrain: &impl Survey) {
         assert_eq!(plan.region.terminals.len(), original.terminals.len());
         assert_eq!(plan.region.village_count, original.village_count);

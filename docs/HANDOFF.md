@@ -10,39 +10,66 @@ surface appearance and crest geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current priority (18 October): jitter reported again, including road walking.**
-Latest user runs `manual/1792344531-951752`, `1792344509-951571`,
-`1792344494-951387` all log `sync_present:false`,1280x800,Fifo,c21cfdb.
-Thus the previous workaround was NOT active; these runs do not establish that
-optimized synchronized presentation regressed. They do not distinguish unset
-from an explicit disabling value. Do not assert the compositor mechanism is
-proven or the live recurrence is cured.
+**Current work, 18 October: live planet-wide village roads and forest clearance.**
+The user confirmed the default jitter workaround works ("all good"). Preserve
+synchronized presentation with CPU/GPU overlap; no new presentation change is
+part of this network work. The earlier recurrence logged `sync_present:false`;
+commit `2bab9fa` made the workaround automatic for road launches.
 
-`presentation_sync_enabled(value,road_experiment)` now defaults ON only when
-planet road experiments are active and no explicit variable is supplied.
-Explicit0/false/off (and other non-enabling values) still disable;1/true/on
-force it on,including non-road launches. Non-road defaults remain off. The
-existing overlapped GPU fence implementation is unchanged. README documents it.
-Policy regression failed before the fix,then passed with all override cases.
-11 presentation-filter tests pass;full suite695 pass/same6 baseline failures/
-50ignored;release builds. Logs `/tmp/stuff-road-sync-default-{red,green,full-tests,build}.log`.
+The usual `PLANET_ROAD_EXPERIMENT=1` now enables the streamed village network.
+`PLANET_ROAD_NETWORK=0` restores the original interactive 30km pilot; existing
+pilot replay names still use that pilot automatically. Default site is mountain;
+`PLANET_ROAD_NETWORK_SITE=village`/`undersea` select the other checked starts.
+New scenarios: road_network_trial/overview/walk. See ROAD_NETWORK.md for the
+live architecture, bounds, and explicit incomplete-region failure policy.
 
-Live own-process default activation (SYNC variable removed),X11/Fifo1280x800:
-`manual/1792345062-954307`,sync_present:true,no fence failures,clean exit.
-Walking forward/back4s each gave125 steady trace samples,no backwards CPU
-steps,clearance stable1.700m. No capture readbacks were used. Evidence:
-`test-runs/road-turn-jitter/road-walk-auto-sync-2026-10-18.json`;
-`/tmp/stuff-road-walk-visible-{trace.txt,result.json,app.log,control.log}`.
-First attempt `manual/1792345005-953046` was display-sleep throttled (~1fps),
-not useful motion evidence; DPMS was transiently woken and the test repeated.
-No persistent display setting changed. This validates CPU walking and default
-activation,NOT compositor frame ordering or the user's visual acceptance.
-Next: user retries normal roads launch. If it still jumps with logged sync:true,
-compare serial-vs-overlapped fencing on that walking repro and instrument final
-camera/collider changes before further fixes. Do not resume network work while
-this live jitter report remains unresolved.
+Completed implementation: one cancellable body-pinned CPU worker, global
+backbone, exact local village enumeration, shared-height graded junctions,
+ground-level village access outside protected houses, cached piers/decks/cut
+banks/union-clipped bore lining, CPU/GPU atomic mesh-field publication and
+matching deck/bore camera collision. Forest CPU/GPU paths exclude decks,
+shoulders/crowns and real open cuts, retaining trees over covered roofs.
+Four asset-backed tests pass: all244 villages in the village nine-region set,
+all15 in mountains, all76 at the real undersea cube-face seam, plus initial
+39-village mesh. `/tmp/stuff-road-network-final-assets-5.log`.
+Full-world detailed engineering has NOT been exhaustively baked; any bounded
+search/index/mesh rejection is explicit and retains the previous complete set.
 
-**New requested work (18 October):** move the road test to steeper mountains,
+Validation: standard app706 pass/same6 failures/56ignored; all five production
+Vulkan road tests and four real startup/resident instruments pass. See
+ROAD_NETWORK.md for opened village/mountain/undersea walking captures and
+ROI evidence of apron/sky/bubble fixes. Bore-presence flags skip open-only
+candidate walks without changing pixels. Initial measured network cost is
+~54ms visible vs~39ms hidden at the village overview; this remains a real
+performance issue, NOT a zero-cost or FPS-complete claim. Draw-only ablation
+is55.7ms against56.0ms original: excavation queries dominate. Bounds/caches
+prevent per-frame routing/I/O, but do not remove shader cost.
+
+Final visibility fixes: spatial graph jumps/cache-tier boundaries now split
+chunks and LOD uses nearest bounds, not centre distance. Far AA's singular eye-
+plane projection falls back to the actual physical quad. Red/green Vulkan
+regression retains all24 old coverage cases plus4 camera-plane depths. The
+final undersea replay `road_network_walk/1792359557-1001663` was opened, with
+no black polygons, sky gaps or bubbles. Legacy pilot all7 captures pass in
+`road_surface_trial/1792359726-1002200` (no network worker); capture004 opened.
+Final exact same-binary village pair,13 steady samples/run:54.572ms visible,
+39.492ms roads+cuts hidden (~18.3 vs25.3fps), ~15.08ms remaining network cost.
+`test-runs/road-network-release-verification.json` retains binary hash and data;
+`road_network_overview/1792359629-1001910` opened. Full suite706 pass/same6
+failures/56ignored; five Vulkan tests pass; release builds. Logs:
+`/tmp/stuff-road-network-release-{full,build}.log`,
+`/tmp/stuff-road-network-far-camera-plane-green.log`.
+
+Next: user explores the live network; collect exact route/camera/logs for any
+engineering rejection. Further FPS work must preserve real raster bank coverage.
+A ~47ms vertex-deformation bypass exposed103 distant sky pixels and was fully
+reverted (including CPU collision changes); lower-bound caching/coalescing
+also made no useful gain and were removed. Do not revive these from a timing
+alone. The user-confirmed jitter/presentation scheduling remains untouched.
+
+## Historical road phases (superseded by live integration above)
+
+**Earlier requested work (18 October):** move the road test to steeper mountains,
 allow up to 25% physical grade, and finish the whole-planet village network.
 Shared junctions and tunnel-only island connections still apply. Implement in
 stages; the network below remains headless until its mesh/cut/collision/streaming

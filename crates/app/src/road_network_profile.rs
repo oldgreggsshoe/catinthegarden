@@ -104,7 +104,7 @@ pub(crate) struct Sample {
 }
 
 fn anchor_height(g: crate::road_network::Ground, cap: f64) -> f64 {
-    if g.ocean {
+    if g.ocean || cap < g.height {
         cap - (UNDERSEA_DECK_DEPTH - UNDERSEA_CROWN - UNDERSEA_COVER)
     } else {
         g.height + CLEARANCE
@@ -116,7 +116,8 @@ pub(crate) fn sample_at(d: DVec3, radius: f64, terrain: &impl Survey) -> Result<
     if !ground.height.is_finite() {
         return Err("non-finite profile terrain".into());
     }
-    let cap = if ground.ocean {
+    let protected = terrain.settlement_core_at(d)?;
+    let cap = if ground.ocean || protected {
         // Canonical radial stencil: shared gateway height on both regions/faces.
         let reference = if d.z.abs() < 0.9 { DVec3::Z } else { DVec3::Y };
         let u = d.cross(reference).normalize();
@@ -129,7 +130,11 @@ pub(crate) fn sample_at(d: DVec3, radius: f64, terrain: &impl Survey) -> Result<
             }
             bed = bed.min(g.height);
         }
-        bed - UNDERSEA_CROWN - UNDERSEA_COVER
+        bed - if protected {
+            20.0
+        } else {
+            UNDERSEA_CROWN + UNDERSEA_COVER
+        }
     } else {
         ground.height + PIER_CAP
     };
@@ -138,6 +143,18 @@ pub(crate) fn sample_at(d: DVec3, radius: f64, terrain: &impl Survey) -> Result<
         cap,
         anchor: anchor_height(ground, cap),
     })
+}
+
+pub(crate) fn terminal_sample(
+    terminal: &crate::road_network::Terminal,
+    radius: f64,
+    terrain: &impl Survey,
+) -> Result<Sample, String> {
+    let mut sample = sample_at(DVec3::from_array(terminal.direction), radius, terrain)?;
+    if matches!(terminal.kind, crate::road_network::TerminalKind::Village) && !sample.ground.ocean {
+        sample.anchor = terrain.village_access_height(sample.ground);
+    }
+    Ok(sample)
 }
 
 impl Profile {
@@ -207,6 +224,50 @@ impl Profile {
             adjacency[a].push((b, length));
             adjacency[b].push((a, length));
         }
+        // Flat junction/turn aprons stop intersecting deck planes producing
+        // steps across a mouth. Densified first stations share the hub height;
+        // the global envelope still enforces grade and all terminal anchors.
+        let mut original_adj = vec![Vec::new(); region.nodes.len()];
+        for e in &region.edges {
+            original_adj[e.a].push(e.b);
+            original_adj[e.b].push(e.a);
+        }
+        for i in 0..region.nodes.len() {
+            let neighbours: Vec<_> = original_adj[i]
+                .iter()
+                .copied()
+                .filter(|&j| dirs[j].distance(dirs[i]) > 1e-10)
+                .collect();
+            let gateway = region
+                .terminals
+                .iter()
+                .any(|t| DVec3::from_array(t.direction).distance(dirs[i]) < 1e-10);
+            let flat = gateway
+                || neighbours.len() > 2
+                || (neighbours.len() == 2 && {
+                    let up = dirs[i];
+                    let a = (dirs[neighbours[0]] - up * dirs[neighbours[0]].dot(up))
+                        .normalize_or_zero();
+                    let b = (dirs[neighbours[1]] - up * dirs[neighbours[1]].dot(up))
+                        .normalize_or_zero();
+                    a.dot(b) > -0.995
+                });
+            if flat {
+                let adjacent: Vec<_> = adjacency[i].iter().map(|(j, _)| *j).collect();
+                for j in adjacent {
+                    for (other, length) in &mut adjacency[i] {
+                        if *other == j {
+                            *length = 0.0;
+                        }
+                    }
+                    for (other, length) in &mut adjacency[j] {
+                        if *other == i {
+                            *length = 0.0;
+                        }
+                    }
+                }
+            }
+        }
         let undersea_roofs: Vec<_> = ground
             .iter()
             .zip(&caps)
@@ -214,9 +275,8 @@ impl Profile {
             .collect();
         let mut low_sources = vec![f64::INFINITY; dirs.len()];
         let mut upper_sources = caps;
-        for &i in &region.terminal_nodes {
-            let g = ground[i];
-            let anchor = anchor_height(g, upper_sources[i]);
+        for (terminal, &i) in region.terminals.iter().zip(&region.terminal_nodes) {
+            let anchor = terminal_sample(terminal, radius, terrain)?.anchor;
             low_sources[i] = -anchor;
             upper_sources[i] = anchor;
         }
@@ -431,6 +491,37 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn road_network_protected_gateway_keeps_the_houses_and_shared_bore_height() {
+        struct Town;
+        impl Survey for Town {
+            fn ground(&self, _: DVec3) -> Result<Ground, String> {
+                Ok(Ground {
+                    height: 900.0,
+                    ocean: false,
+                })
+            }
+            fn villages(&self, _: TileKey) -> Result<Vec<DVec3>, String> {
+                Ok(vec![])
+            }
+            fn settlement_core_at(&self, _: DVec3) -> Result<bool, String> {
+                Ok(true)
+            }
+        }
+        let t = Terminal {
+            direction: direction(0.0, 0.0).to_array(),
+            kind: TerminalKind::Gateway { link: 0 },
+        };
+        let sample = terminal_sample(&t, 4e6, &Town).unwrap();
+        assert_eq!(sample.cap, 880.0);
+        assert_eq!(sample.anchor, 874.0);
+        assert!(sample.anchor + UNDERSEA_CROWN + UNDERSEA_COVER <= 900.0);
+        assert_eq!(
+            terminal_sample(&t, 4e6, &Town).unwrap().anchor,
+            sample.anchor
+        );
+    }
+
     #[test]
     fn road_network_profile_undersea_roof_is_below_the_bed() {
         let p = Profile::fit(

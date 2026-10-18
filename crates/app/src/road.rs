@@ -8,6 +8,8 @@ use std::sync::Arc;
 pub const HALF_WIDTH: f64 = 5.0;
 pub const CUT_FLOOR_DEPTH: f64 = 6.0;
 pub const CUT_HALF_WIDTH: f64 = 9.0;
+/// Shoulder plus the largest full-tree crown radius, so boughs cannot overhang.
+pub const TREE_CLEARANCE_METERS: f64 = 25.0;
 pub const CUT_BUFFER_FLOAT4S: usize = 4 + 3001;
 const DECK_THICKNESS: f64 = 1.0;
 const CHUNK_SEGMENTS: usize = 50;
@@ -23,7 +25,8 @@ pub fn enabled() -> bool {
 pub fn cut_shader_source() -> String {
     format!(
         "const ROAD_CUTS_ENABLED: bool = {};\n{}",
-        enabled() && crate::subsystem_enabled("road_cuts"),
+        (enabled() || crate::road_network_render::enabled())
+            && crate::subsystem_enabled("road_cuts"),
         include_str!("road_cuts.wgsl")
     )
 }
@@ -107,6 +110,27 @@ impl CutField {
             height = uncut_height.min((radius + cap) / cosine - radius);
         }
         height
+    }
+    pub fn clears_tree(&self, direction: DVec3, uncut_height: f64) -> bool {
+        if direction.dot(up()) < 0.99 {
+            return false;
+        }
+        let p = local(direction * (crate::planet::planet_radius_meters() + uncut_height));
+        let end = self.points.last().unwrap().y;
+        if p.y < -TREE_CLEARANCE_METERS || p.y > end + TREE_CLEARANCE_METERS {
+            return false;
+        }
+        let at = (p.y / SAMPLE_STEP).clamp(0.0, (self.points.len() - 1) as f64 - 1e-9);
+        let i = at.floor() as usize;
+        if self.tunnel_segments[i] {
+            return false;
+        }
+        let a = self.points[i];
+        let b = self.points[i + 1];
+        let centre = a.lerp(b, at.fract());
+        let slope = (b.x - a.x) / (b.y - a.y);
+        (p.x - centre.x).abs() / (1.0 + slope * slope).sqrt() <= TREE_CLEARANCE_METERS
+            || self.height(direction, uncut_height) < uncut_height - 0.25
     }
     /// Local bore frame, including the one-station portal approach. The
     /// outside hillside remains the ordinary heightfield above the roof.
@@ -655,7 +679,7 @@ pub(crate) fn quad(mesh: &mut Vec<Vertex>, points: [DVec3; 4], colour: [f32; 3])
     }
 }
 
-fn box_mesh(mesh: &mut Vec<Vertex>, lo: DVec3, hi: DVec3, colour: [f32; 3]) {
+pub(crate) fn box_mesh(mesh: &mut Vec<Vertex>, lo: DVec3, hi: DVec3, colour: [f32; 3]) {
     let p = |x: bool, y: bool, z: bool| {
         DVec3::new(
             if x { hi.x } else { lo.x },

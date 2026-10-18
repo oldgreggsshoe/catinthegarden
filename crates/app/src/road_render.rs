@@ -269,13 +269,65 @@ pub(crate) fn create_pipeline(
     camera_layout: &wgpu::BindGroupLayout,
     far: bool,
 ) -> wgpu::RenderPipeline {
+    create_pipeline_inner(device, format, camera_layout, far, None)
+}
+
+pub(crate) fn create_network_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    camera_layout: &wgpu::BindGroupLayout,
+    shared: &wgpu::BindGroupLayout,
+    far: bool,
+) -> wgpu::RenderPipeline {
+    create_pipeline_inner(device, format, camera_layout, far, Some(shared))
+}
+fn create_pipeline_inner(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    camera_layout: &wgpu::BindGroupLayout,
+    far: bool,
+    shared: Option<&wgpu::BindGroupLayout>,
+) -> wgpu::RenderPipeline {
+    let source = if shared.is_some() {
+        let clip = r#"
+            // Close the union, not each individual tube at its junction.
+            if ((input.network_kind > 0.5 && input.network_kind < 1.5)
+                || (input.network_kind > 2.5 && input.network_kind < 3.5))
+                && road_network_void_local(input.local_position) > 0.55 { discard; }
+            if input.network_kind > 1.5 && input.network_kind < 2.5 {
+                if input.removed < 0.25 { discard; }
+                let p = input.local_position;
+                let r = road_cut_data[0].x + p.z;
+                let h = p.z + dot(p.xy,p.xy) / (sqrt(r*r + dot(p.xy,p.xy)) + r);
+                let d = normalize(road_cut_data[3].xyz*r
+                    + road_cut_data[1].xyz*p.x + road_cut_data[2].xyz*p.y);
+                if road_terrain_cut(d,h).height < h - 0.75 { discard; }
+            }
+        "#;
+        format!(
+            "{}\n{}",
+            crate::road::cut_shader_source(),
+            include_str!("road.wgsl").replace("/* NETWORK_EXCAVATION_CLIP */", clip)
+        )
+    } else {
+        include_str!("road.wgsl").to_owned()
+    };
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("viaduct shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("road.wgsl").into()),
+        label: Some("cached road shader"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
     });
+    let empty = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("road unused group"),
+        entries: &[],
+    });
+    let layouts = if let Some(shared) = shared {
+        vec![Some(camera_layout), Some(&empty), Some(shared)]
+    } else {
+        vec![Some(camera_layout)]
+    };
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("viaduct pipeline layout"),
-        bind_group_layouts: &[Some(camera_layout)],
+        bind_group_layouts: &layouts,
         immediate_size: 0,
     });
     const VERTEX: [wgpu::VertexAttribute; 3] =

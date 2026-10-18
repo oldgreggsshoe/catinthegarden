@@ -1,0 +1,335 @@
+//! Shared near/far pipelines, bounded uploads and atomic mesh/field publication.
+use crate::{
+    road_network_field::Field, road_network_mesh::Snapshot, road_network_stream::Worker,
+    terrain::TerrainRenderer,
+};
+use glam::DVec3;
+use std::{path::PathBuf, sync::Arc};
+
+pub fn enabled() -> bool {
+    match std::env::var("PLANET_ROAD_NETWORK") {
+        Ok(v) => matches!(v.trim(), "1" | "true" | "on"),
+        Err(_) => crate::road::enabled(),
+    }
+}
+pub fn initial_position() -> DVec3 {
+    let direction = match std::env::var("PLANET_ROAD_NETWORK_SITE").as_deref() {
+        Ok("village") => {
+            DVec3::new(2574139.618674488, -2554011.900402223, 1699659.6951081678).normalize()
+        }
+        Ok("undersea") => return undersea_start_position(),
+        _ => crate::road::up(),
+    };
+    direction * (crate::planet::planet_radius_meters() + 10_000.0)
+}
+pub(crate) fn undersea_start_position() -> DVec3 {
+    let r = crate::planet::planet_radius_meters();
+    let gateway = DVec3::new(-0.674991988920733, 0.2979456826095423, -0.674991988920733);
+    let centre = crate::road_network::direction(
+        planet_coretypes::TileKey {
+            face: planet_coretypes::CubeFace::NegativeX,
+            level: crate::road_network::REGION_LEVEL,
+            x: 0,
+            y: 184,
+        },
+        0.5,
+        0.5,
+    );
+    gateway.lerp(centre, 0.001).normalize() * (r - 30.0)
+}
+const VERTEX_UPLOAD_BYTES: usize = 1024 * 1024;
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct Instance {
+    origin: [f32; 4],
+    across: [f32; 4],
+    forward: [f32; 4],
+    up: [f32; 4],
+}
+struct Scene {
+    snapshot: Snapshot,
+    vertices: wgpu::Buffer,
+    visible: Vec<(bool, bool)>,
+}
+struct Upload {
+    generation: u64,
+    scene: Scene,
+    copied: usize,
+}
+pub struct NetworkRenderer {
+    worker: Worker,
+    active: Scene,
+    pending: Option<Upload>,
+    pipeline: wgpu::RenderPipeline,
+    far_pipeline: wgpu::RenderPipeline,
+    empty: wgpu::BindGroup,
+    instance: wgpu::Buffer,
+    inspection: Option<(DVec3, DVec3)>,
+}
+impl NetworkRenderer {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+        camera: &wgpu::BindGroupLayout,
+        terrain: &mut TerrainRenderer,
+        root: PathBuf,
+        initial: DVec3,
+    ) -> Result<Self, String> {
+        let (mut worker, snapshot) = Worker::start(root, initial)?;
+        let inspection = snapshot.inspection;
+        let centre = snapshot.build_centre;
+        terrain.prepare_flight_start_surface_height_meters(
+            centre.normalize(),
+            centre.length() - crate::planet::planet_radius_meters(),
+        );
+        let pipeline = crate::road_render::create_network_pipeline(
+            device,
+            format,
+            camera,
+            terrain.shared_bind_group_layout(),
+            false,
+        );
+        let far_pipeline = crate::road_render::create_network_pipeline(
+            device,
+            format,
+            camera,
+            terrain.shared_bind_group_layout(),
+            true,
+        );
+        let empty_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("road empty layout"),
+            entries: &[],
+        });
+        let empty = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("road empty group"),
+            layout: &empty_layout,
+            entries: &[],
+        });
+        let instance = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("network camera-relative frame"),
+            size: 64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut active = Self::allocate(device, snapshot);
+        if !active.snapshot.vertices.is_empty() {
+            queue.write_buffer(
+                &active.vertices,
+                0,
+                bytemuck::cast_slice(&active.snapshot.vertices),
+            );
+        }
+        drop(std::mem::take(&mut active.snapshot.vertices));
+        terrain.set_network_road_cuts(active.snapshot.field.clone());
+        tracing::info!(target:"planet::roads",source_version=worker.source_version,
+            villages=active.snapshot.villages,regions=active.snapshot.keys.len(),segments=active.snapshot.segments,
+            field_segments=active.snapshot.field.segments.len(),
+            "road network startup region ready");
+        worker.request(centre, true);
+        Ok(Self {
+            worker,
+            active,
+            pending: None,
+            pipeline,
+            far_pipeline,
+            empty,
+            instance,
+            inspection,
+        })
+    }
+    fn allocate(device: &wgpu::Device, snapshot: Snapshot) -> Scene {
+        let vertices = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("streamed static network geometry"),
+            size: (snapshot.vertices.len() * size_of::<crate::road::Vertex>()).max(36) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let visible = vec![(false, false); snapshot.chunks.len()];
+        Scene {
+            snapshot,
+            vertices,
+            visible,
+        }
+    }
+    pub fn plan(&self) -> &Arc<Field> {
+        &self.active.snapshot.field
+    }
+    pub fn inspection_pose(&self) -> Option<(DVec3, DVec3)> {
+        self.inspection
+    }
+    pub fn scenario_pose(&self, name: &str) -> Option<(DVec3, DVec3)> {
+        let (eye, target) = self.inspection?;
+        match name {
+            "road_network_walk" if eye.length() < crate::planet::planet_radius_meters() => {
+                // The sea preset begins just inside a shared gateway. Walk
+                // across that cube-face seam, rather than farther inland.
+                Some((eye, eye - (target - eye)))
+            }
+            "road_network_trial" | "road_network_walk" => Some((eye, target)),
+            "road_network_overview" => {
+                let up = eye.normalize();
+                let forward = (target - eye).normalize();
+                let side = forward.cross(up).normalize();
+                Some((eye - side * 900.0 + up * 500.0, eye + forward * 250.0))
+            }
+            _ => None,
+        }
+    }
+    /// Called before movement, camera uniforms or forest generation. Old
+    /// meshes/CPU/GPU fields remain a consistent set until the final upload.
+    pub fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        terrain: &mut TerrainRenderer,
+    ) {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|u| !self.worker.current(u.generation))
+        {
+            self.pending = None;
+        }
+        if let Some((generation, result)) = self.worker.take() {
+            if self.worker.current(generation) {
+                match result {
+                    Ok(snapshot) => {
+                        self.pending = Some(Upload {
+                            generation,
+                            scene: Self::allocate(device, snapshot),
+                            copied: 0,
+                        })
+                    }
+                    Err(error) => {
+                        tracing::warn!(target:"planet::roads",%error,"road region engineering rejected; retaining previous complete resident set")
+                    }
+                }
+            }
+        }
+        let Some(upload) = &mut self.pending else {
+            return;
+        };
+        let data = bytemuck::cast_slice::<crate::road::Vertex, u8>(&upload.scene.snapshot.vertices);
+        let end = (upload.copied + VERTEX_UPLOAD_BYTES).min(data.len());
+        if end > upload.copied {
+            queue.write_buffer(
+                &upload.scene.vertices,
+                upload.copied as u64,
+                &data[upload.copied..end],
+            );
+        }
+        upload.copied = end;
+        if end == data.len() {
+            let mut complete = self.pending.take().unwrap().scene;
+            drop(std::mem::take(&mut complete.snapshot.vertices));
+            terrain.set_network_road_cuts(complete.snapshot.field.clone());
+            tracing::info!(target:"planet::roads",regions=complete.snapshot.keys.len(),villages=complete.snapshot.villages,
+                segments=complete.snapshot.segments,tunnel_segments=complete.snapshot.tunnels,
+                field_segments=complete.snapshot.field.segments.len(),"road network resident set published");
+            self.active = complete;
+        }
+    }
+    pub fn update_camera(
+        &mut self,
+        queue: &wgpu::Queue,
+        eye: DVec3,
+        forward: DVec3,
+        viewport: [u32; 2],
+    ) {
+        if eye.length() - crate::planet::planet_radius_meters() < 50_000.0 {
+            self.worker.request(eye, false);
+        }
+        for (chunk, state) in self
+            .active
+            .snapshot
+            .chunks
+            .iter()
+            .zip(&mut self.active.visible)
+        {
+            let relative = chunk.centre - eye;
+            state.0 = relative.length() < 25_000.0 + chunk.radius
+                && relative.dot(forward) > -chunk.radius;
+            state.1 = far_lod(relative.length(), chunk.radius, chunk.near.is_empty());
+        }
+        let f = self.active.snapshot.field.frame;
+        let v = |p: DVec3| [p.x as f32, p.y as f32, p.z as f32, 0.0];
+        let mut frame = Instance {
+            origin: v(f.up * f.radius - eye),
+            across: v(f.across),
+            forward: v(f.forward),
+            up: v(f.up),
+        };
+        frame.origin[3] = viewport[0] as f32;
+        frame.across[3] = viewport[1] as f32;
+        queue.write_buffer(&self.instance, 0, bytemuck::bytes_of(&frame));
+    }
+    pub fn draw<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        camera: &'a wgpu::BindGroup,
+        shared: &'a wgpu::BindGroup,
+        far: bool,
+    ) {
+        if far && !crate::subsystem_enabled("road_far") {
+            return;
+        }
+        pass.set_pipeline(if far {
+            &self.far_pipeline
+        } else {
+            &self.pipeline
+        });
+        pass.set_bind_group(0, camera, &[]);
+        pass.set_bind_group(1, &self.empty, &[]);
+        pass.set_bind_group(2, shared, &[]);
+        pass.set_vertex_buffer(0, self.active.vertices.slice(..));
+        pass.set_vertex_buffer(1, self.instance.slice(..));
+        // Coalesce contiguous visible ranges just as the pilot does.
+        let mut pending: Option<std::ops::Range<u32>> = None;
+        for (chunk, &(visible, distant)) in
+            self.active.snapshot.chunks.iter().zip(&self.active.visible)
+        {
+            let range = if far { &chunk.far } else { &chunk.near };
+            if !visible || distant != far || range.is_empty() {
+                if let Some(r) = pending.take() {
+                    pass.draw(r, 0..1);
+                }
+                continue;
+            }
+            if let Some(p) = &mut pending {
+                if p.end == range.start {
+                    p.end = range.end;
+                    continue;
+                }
+                pass.draw(p.clone(), 0..1);
+            }
+            pending = Some(range.clone());
+        }
+        if let Some(r) = pending {
+            pass.draw(r, 0..1);
+        }
+        if !far {
+            for (chunk, &(visible, _)) in
+                self.active.snapshot.chunks.iter().zip(&self.active.visible)
+            {
+                if visible && !chunk.structures.is_empty() {
+                    pass.draw(chunk.structures.clone(), 0..1);
+                }
+            }
+        }
+    }
+}
+
+fn far_lod(distance: f64, radius: f64, near_empty: bool) -> bool {
+    distance - radius > 4000.0 || near_empty
+}
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn near_decks_do_not_become_far_ribbons_when_the_batch_centre_is_far_away() {
+        assert!(!super::far_lod(10000.0, 9990.0, false));
+        assert!(!super::far_lod(4500.0, 600.0, false));
+        assert!(super::far_lod(4700.0, 600.0, false));
+        assert!(super::far_lod(100.0, 50.0, true));
+    }
+}

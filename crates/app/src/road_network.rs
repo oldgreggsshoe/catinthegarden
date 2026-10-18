@@ -32,6 +32,16 @@ impl Ground {
 }
 
 pub trait Survey {
+    fn cancelled(&self) -> bool {
+        false
+    }
+    fn settlement_core_at(&self, _direction: DVec3) -> Result<bool, String> {
+        Ok(false)
+    }
+    /// Runtime approaches meet the ground; diagnostic/legacy plans retain 8m.
+    fn village_access_height(&self, ground: Ground) -> f64 {
+        ground.height + 8.0
+    }
     /// Conservative occupancy: false must imply no accepted village in this
     /// region. False-positive land cells cost roads; false negatives isolate
     /// real settlements. Unknown sources therefore default to retained.

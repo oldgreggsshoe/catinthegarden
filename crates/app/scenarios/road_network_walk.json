@@ -1,0 +1,56 @@
+{
+  "name": "road_network_walk",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 8,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "skip_birds": true,
+  "terrain_eye_height_meters": 2.0,
+  "planet_rotation_time_scale": 0.0,
+  "fixed_exposure": true,
+  "screenshot_times_seconds": [
+    1,
+    4,
+    8
+  ],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [
+        3798565.6107044,
+        1158562.5180681,
+        493813.5381958
+      ],
+      "look_at": [
+        3798559.822108,
+        1158557.3510153,
+        493858.0303848
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        0.9,
+        0.3,
+        0.2
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 70.0
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 3,
+    "min_camera_clearance_m": 1.0
+  },
+  "walk_on_surface": true,
+  "forward_flight_start_time_seconds": 1
+}

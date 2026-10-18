@@ -893,6 +893,7 @@ pub struct TerrainRenderer {
     /// filled each frame by `sun::SunRenderer::encode_visibility`.
     sun_visibility_buffer: wgpu::Buffer,
     road_cut_buffer: wgpu::Buffer,
+    road_revision: u64,
     road_cuts: Option<std::sync::Arc<crate::road::CutField>>,
     network_road_cuts: Option<std::sync::Arc<crate::road_network_field::Field>>,
     foam_history: ocean_foam::OceanFoamHistory,
@@ -1451,6 +1452,7 @@ impl TerrainRenderer {
             shared_bind_groups,
             sun_visibility_buffer,
             road_cut_buffer,
+            road_revision: 0,
             road_cuts: None,
             network_road_cuts: None,
             foam_history,
@@ -1557,18 +1559,41 @@ impl TerrainRenderer {
 
     pub fn set_road_cuts(&mut self, cuts: std::sync::Arc<crate::road::CutField>) {
         self.queue.write_buffer(
-            &self.road_cut_buffer, 0, bytemuck::cast_slice(&cuts.gpu_data()),
+            &self.road_cut_buffer,
+            0,
+            bytemuck::cast_slice(&cuts.gpu_data()),
         );
+        self.road_revision += 1;
         self.road_cuts = Some(cuts);
         self.network_road_cuts = None;
     }
 
-    pub fn set_network_road_cuts(&mut self, cuts: std::sync::Arc<crate::road_network_field::Field>) {
+    pub fn set_network_road_cuts(
+        &mut self,
+        cuts: std::sync::Arc<crate::road_network_field::Field>,
+    ) {
         self.queue.write_buffer(
-            &self.road_cut_buffer, 0, bytemuck::cast_slice(cuts.gpu_data()),
+            &self.road_cut_buffer,
+            0,
+            bytemuck::cast_slice(cuts.gpu_data()),
         );
+        self.road_revision += 1;
         self.network_road_cuts = Some(cuts);
         self.road_cuts = None;
+    }
+
+    pub fn road_revision(&self) -> u64 {
+        self.road_revision
+    }
+
+    pub fn road_clears_tree(&self, direction: DVec3, height: f64) -> bool {
+        if let Some(cuts) = &self.network_road_cuts {
+            cuts.clears_tree(direction, height)
+        } else {
+            self.road_cuts
+                .as_ref()
+                .is_some_and(|cuts| cuts.clears_tree(direction, height))
+        }
     }
 
     fn cut_surface_height(&self, direction: DVec3, height: f64) -> f64 {
@@ -3691,7 +3716,7 @@ pub fn create_shared_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroup
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 21,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
@@ -5884,7 +5909,10 @@ mod tests {
         assert!(lighting.contains("(vec3<f32>(1.0) - fresnel)"));
         let terrain = shader.split("fn terrain_fragment_color(").nth(1).unwrap();
         let bottom = terrain.find("let bottom_height").unwrap();
-        let discard = terrain.find("discard;").unwrap();
+        // Road CSG deliberately precedes bathymetry so an undersea bore is
+        // dry. The later open-ocean shell discard must still follow the bed.
+        assert!(terrain[..bottom].contains("road_tunnel_void(direction"));
+        let discard = bottom + terrain[bottom..].find("discard;").unwrap();
         assert!(
             bottom < discard,
             "seabed must shade before the open-ocean discard"

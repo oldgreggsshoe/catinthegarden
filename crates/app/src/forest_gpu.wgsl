@@ -129,6 +129,10 @@ fn gpu_forest_generate(
         base_height,
     );
     let surface_height = base_height + detail.height_meters;
+    if road_clears_tree(direction, surface_height) {
+        gpu_forest_trees[output_index] = gpu_forest_invalid_tree();
+        return;
+    }
     var surface_normal = displaced_surface_normal(
         direction,
         source_uv,

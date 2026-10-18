@@ -8,11 +8,126 @@ junctions rather than every village connected separately to every other village.
 bridges.** The existing elevated deck, terrain-led alignment, <=25% physical
 grade and hillside tunnels remain the intended construction rules.
 
-This first phase implements a **headless topology survey and shared profile
-feasibility checks**. It is **not a visible, walkable road network yet**. Normal
-rendering and `PLANET_ROAD_EXPERIMENT=1` still use the existing single pilot.
-No network survey, additional geometry or GPU upload runs in a movement frame.
-Do not claim an FPS result for road-network rendering before it exists.
+The network is now **rendered, streamed and walkable**, enabled by the usual
+`PLANET_ROAD_EXPERIMENT=1` launch. It includes exact village enumeration, shared
+regional gateways, fitted decks on legs, cuts, covered bores and tree clearance.
+Generation is on demand: this does **not** claim that every region of the world
+has already passed a complete engineering audit.
+
+## Live integration, 18 October
+
+- `road_network_stream.rs`: one body-pinned CPU worker owns source I/O, the
+  global backbone and a 32-region RAM plan cache. Requests/results are bounded
+  latest-only slots with generation cancellation. A projected 3x3 neighbourhood
+  includes adjacent cube faces. Plans use the finest available baked source;
+  production village eligibility still uses the same pinned dense siting source
+  as houses. No filesystem I/O or routing runs in a movement/render frame.
+- `road_network_mesh.rs`: cached decks, real shared junction mouths, flat
+  turn/terminal aprons, piers, sampled banks, portal shells and union-clipped
+  tunnel lining. Village access ends outside the houses and meets natural
+  ground; trunk routes retain protected cover under settlement cores. The
+  router reserves flat-apron run length and broadens a failed terminal approach
+  by at most three lattice rings without changing its height or grade limit.
+- `road_network_render.rs`: shared near/far pipelines, camera-relative geometry,
+  chunk culling and coalesced ranges. Near geometry is cached to 8 km, far decks
+  to 25 km; the 10 km field covers the 8 km forest plus refresh margin. Banks
+  own excavated raster fragments only inside a conservative geometry window.
+  At most 1.5 million vertices are accepted in one resident snapshot.
+- Open-only cells carry a fractional bore-presence flag alongside their exact
+  integer reference count; no-bore regions/cells bypass the expensive tunnel
+  candidate walk. This retains the existing buffer size and query bounds.
+- Vertex staging is capped at 1 MiB/frame; the final fixed field is about
+  2.62 MB. Mesh, CPU collision and GPU excavation are published together after
+  vertex upload, never as a partially connected set. Initial startup builds one
+  complete region (and any immediately visible sea-gateway continuation); the
+  worker then fills the complete neighbouring set.
+- CPU/GPU excavation also masks full trees and CPU proxy cards, with a 25 m
+  crown/shoulder clearance plus actual open banks. Forest caches invalidate
+  when the resident road field changes. Covered bores do not clear the forest
+  above them. Existing pilot roads use the same tree-exclusion entry point.
+- Junction end faces close the outside corner of intersecting convex bores;
+  the same union shader removes their internal portions, retaining open turns.
+  Open-ended tubes alone leaked sky at the real sea gateway. Bubble and sound
+  depth now share the dry-air exclusion as well as rain and camera corrections.
+- Deck-aware walking and swept bore wall/roof collision retain terrain above
+  the roof. Covered sea bores suppress swimmer/sea-surface corrections and
+  underwater eye fog/bubbles; they remain dry air below the sea.
+- No road work starts in ordinary non-road launches. Explicit
+  `PLANET_ROAD_NETWORK=0` retains the old interactive 30 km pilot; existing
+  pilot replays select it automatically. Network presets: default mountain,
+  `PLANET_ROAD_NETWORK_SITE=village` and `undersea`.
+- The user confirmed the road jitter workaround works. Automatic synchronized
+  presentation and CPU/GPU overlap are retained unchanged.
+
+Current asset-backed checks build complete nine-region sets: **244 villages**
+at the village start, **15** in mountains, **76** at the real undersea cube-face
+seam. All four startup/residency instruments pass, with bounded meshes and
+positive bore air/deck clearance. Logs:
+`/tmp/stuff-road-network-final-assets-5.log`. The village set contains 22,023
+spans / 763,830 vertices; the underwater set contains 32 covered spans. These
+are tested local windows of the global connected topology, not a world bake.
+
+Runtime cache identity includes the source manifest and engineering code; it
+is process-local, not a persistent disk mesh cache. Source tiles (64 fine tiles)
+and village siting cells (1024) are bounded. Search/index/mesh failures reject
+explicitly and hold the previous complete resident set. Missing regions are
+not silently declared connected. Continuous unsampled cover, all planetary
+engineering cases and ray-renderer exterior terrain are not signed off.
+
+### Validation and measured cost of the live network
+
+- Standard app suite: **706 pass, the same six unrelated failures, 56 ignored**.
+  The failures remain optical-zoom/FOV, shallow-water tint and water-counter
+  assertions; none is a new road/forest failure. Final logs:
+  `/tmp/stuff-road-network-release-{full,build}.log` and
+  `/tmp/stuff-road-network-far-camera-plane-green.log`.
+- Five production Vulkan road tests pass: 26,460 network samples (max height
+  difference 0.260 m), 77 pilot samples (0.349 m), sub-pixel coverage/depth,
+  crown/bank/bore tree exclusion, and shallow-apron raster ownership.
+- Opened village overview/walk, mountain walk and undersea cube-seam junction
+  captures pass scenario assertions. Walking clearance is 1.7 m. Shallow apron
+  regression: `road_network_walk/1792356584-985780` versus
+  `1792356932-989959`; foreground road ROI green intrusions **4997 -> 0**.
+  Undersea before/after: `1792356108-980175` versus `1792356449-984313`;
+  blue sky/bubble pixels **11329/34516/351 -> 0/0/0**. These are opened local
+  checks, not visual sign-off on every generated planetary route.
+- Final visibility regression: batches now split at graph-edge spatial jumps
+  and cached near/far boundaries; LOD uses the nearest bounding-sphere distance,
+  not just its centre. Nearby decks cannot accidentally become far ribbons.
+  Far AA falls back to the real physical quad near the eye plane, rather than
+  using a singular perspective derivative. The Vulkan regression reproduces
+  an entirely offscreen road 5 km below the eye painting black polygons (red),
+  then verifies four near-plane depths remain clear (green), with all original
+  24 sub-pixel phase/angle/depth checks retained. `PLANET_DISABLE=road_far` is
+  the network far-pass diagnostic ablation. Opened fixed undersea capture:
+  `road_network_walk/1792359557-1001663`; no black polygons or sky/bubbles.
+- The original pilot still runs via its existing scenario names. All seven
+  `road_surface_trial/1792359726-1002200` captures pass; capture 004 was opened.
+  Its run starts no network worker.
+- Two initial matched X11/Immediate 640x360 synchronized pairs at the village
+  overview: **56.027/56.061 ms visible**, **39.543/39.271 ms with
+  `PLANET_DISABLE=roads,road_cuts`**. Draw-only ablation is **55.70 ms**:
+  excavation queries, not mesh draw calls, dominate this cost.
+  `test-runs/road-network-live-before-lookup-flags.json` retains the baseline.
+- Bore-presence flags reduce the initial visible trial to **54.35 ms**; its
+  final PNG is byte-identical to both original visible runs. This is a small
+  improvement, **not a claim that network FPS is solved**. Remaining overhead
+  is substantial. Generation/I/O remains off-frame and uploads are bounded.
+- Final corrected-visibility build, same binary/pose/flags, 13 steady samples
+  each: **54.572 ms visible / 39.492 ms roads+cuts hidden** (~18.3 / 25.3 FPS).
+  The remaining network rendering cost is **~15.08 ms**, not solved. Evidence:
+  `test-runs/road-network-release-verification.json`; opened final overview
+  `road_network_overview/1792359629-1001910`. Do not substitute headless planning
+  timings or the cheap mesh draw ablation for this full rendering cost.
+- Rejected experiments: a per-cell minimum-height cache and 1cm-centreline
+  span coalescing made no useful timing difference and were removed. Skipping
+  supposedly redundant terrain vertex deformation reached ~47 ms, but exposed
+  **103 new blue sky pixels in distant cuts**: fine-ground bank meshes do not
+  always cover every discarded coarse raster facet. That prototype, including
+  its CPU collision changes, was reverted. Never repeat it without proving
+  complete raster bank coverage and opened close/distant transition captures.
+
+The remaining sections retain the earlier groundwork and historical evidence.
 
 ## Implemented
 
@@ -74,8 +189,8 @@ Do not claim an FPS result for road-network rendering before it exists.
   it never silently discards a road. Finite banks blend out before their index
   footprint ends, avoiding a sharp edge under radius-sized f32 rounding.
   `TerrainRenderer::set_network_road_cuts` is the upload/CPU-query hook.
-  **No live network producer calls this hook yet.** The pilot retains its own
-  original corridor field; this is tested integration plumbing, not live roads.
+  The live streamer now calls this hook atomically with mesh publication; the
+  pilot retains its original corridor field.
 
 The MST minimises a sampled cost proxy **on the candidate cell/lattice graph**,
 not worldwide engineering cost or a globally optimal Steiner tree. The coarse
@@ -97,9 +212,9 @@ It cannot be combined with `--scenario`. The JSON is diagnostic evidence,
 It contains global counts and exact local topology/profile data for the known
 village region, the current mountain pilot region, and both sides of a sampled
 real undersea gateway. A profile can be feasible while its final tunnel/portal
-geometry is still unvalidated. The engineering source is pinned to dense baked
-terrain with close-range detail; sparse-source and actual rendered-LOD grounding
-must be reconciled before meshing.
+geometry is still unvalidated. The diagnostic CLI source is pinned to dense baked terrain with close-range
+detail. The live worker instead resolves the finest available baked ancestor;
+these are deliberately distinct diagnostics, not interchangeable mesh caches.
 
 ## Evidence, 18 October
 
@@ -164,7 +279,7 @@ The final release CLI also passed overwrite refusal (existing report hash unchan
 and placeholder-source rejection. Binary SHA256:
 `fe99ac2dabc95ce390eee4594b79082ebce26a163a7406ae46df5988c19c4bc8`.
 
-## Next implementation steps — not yet done
+## Earlier implementation checklist (superseded by live integration above)
 
 1. Height-aware rerouting is implemented and tested. Validate more real regions,
    including budget failures, before claiming the whole planet is engineered.

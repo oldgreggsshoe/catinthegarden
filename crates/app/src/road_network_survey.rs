@@ -10,16 +10,20 @@ use glam::DVec3;
 use planet_coretypes::{BiomeId, CubeFace, TileKey, direction_to_face_uv, tile_key_for_direction};
 use serde::Serialize;
 use std::{
+    cell::RefCell,
     collections::HashMap,
     fs::File,
     io::{BufWriter, Write},
     path::Path,
+    sync::Arc,
     time::Instant,
 };
 
 pub struct Surface {
     outmap: Outmap,
     tiles: HashMap<TileKey, TileData>,
+    fine_tiles: RefCell<HashMap<TileKey, Arc<TileData>>>,
+    village_sites: RefCell<HashMap<TileKey, Vec<DVec3>>>,
 }
 impl Surface {
     pub fn load(root: &Path) -> Result<Self, String> {
@@ -41,7 +45,89 @@ impl Surface {
                 }
             }
         }
-        Ok(Self { outmap, tiles })
+        Ok(Self {
+            outmap,
+            tiles,
+            fine_tiles: RefCell::new(HashMap::new()),
+            village_sites: RefCell::new(HashMap::new()),
+        })
+    }
+    pub fn backbone(&self) -> Result<Backbone, String> {
+        Backbone::survey(
+            road_network::REGION_LEVEL,
+            crate::planet::planet_radius_meters(),
+            &Macro(self),
+        )
+    }
+    pub fn version(&self) -> u64 {
+        let bytes = serde_json::to_vec(self.outmap.manifest()).expect("serializable manifest");
+        let mut hash = 0xcbf29ce484222325_u64;
+        for b in bytes
+            .iter()
+            .copied()
+            .chain(include_bytes!("road_network_profile.rs").iter().copied())
+            .chain(include_bytes!("road_network_route.rs").iter().copied())
+        {
+            hash = (hash ^ u64::from(b)).wrapping_mul(0x100000001b3);
+        }
+        hash
+    }
+    /// Worker-only, finest available baked source. Never called by a frame.
+    pub fn engineering_ground(&self, d: DVec3) -> Result<Ground, String> {
+        let (face, u, v) = direction_to_face_uv(d);
+        let requested = tile_key_for_direction(d, self.outmap.manifest().max_level);
+        let source = self
+            .outmap
+            .resolve_tile(requested)
+            .map_err(|e| e.to_string())?;
+        let owned;
+        let tile = if let Some(tile) = self.tiles.get(&source) {
+            tile
+        } else {
+            let mut cache = self.fine_tiles.borrow_mut();
+            if !cache.contains_key(&source) {
+                if cache.len() >= 64 {
+                    cache.clear();
+                }
+                cache.insert(
+                    source,
+                    Arc::new(self.outmap.load_tile(source).map_err(|e| e.to_string())?),
+                );
+            }
+            owned = cache[&source].clone();
+            &owned
+        };
+        let uv = terrain::source_tile_uv(source, face, [u, v]).ok_or("invalid engineering UV")?;
+        let raw = f64::from(terrain::sample_height_cpu(&tile.heights_meters, uv));
+        let biome = BiomeId::try_from(terrain::sample_biome_cpu(&tile.biome_ids, uv))
+            .map_err(|_| "invalid engineering biome")?;
+        let height = if raw <= 0.0 {
+            raw
+        } else {
+            crate::planet::outmap_surface_height_meters(
+                raw,
+                d,
+                0.0,
+                crate::planet::continuous_baked_sample_spacing_meters(
+                    [u, v],
+                    source.level,
+                    self.outmap.manifest().dense_level,
+                ),
+            )
+        };
+        Ok(Ground {
+            height,
+            ocean: terrain::is_open_ocean_sample(raw as f32, biome),
+        })
+    }
+    pub fn settlement_core_at(&self, d: DVec3) -> Result<bool, String> {
+        let key = tile_key_for_direction(d, village::VILLAGE_CELL_LEVEL);
+        let radius =
+            (village::VILLAGE_RADIUS_METERS + 15.0) / crate::planet::planet_radius_meters();
+        Ok(self
+            .villages(key)?
+            .iter()
+            .any(|p| p.normalize().distance_squared(d) < radius * radius))
     }
     fn raw(&self, d: DVec3) -> Result<(f64, BiomeId, [f64; 2]), String> {
         let (face, u, v) = direction_to_face_uv(d);
@@ -101,7 +187,16 @@ impl Survey for Surface {
         if key.level != village::VILLAGE_CELL_LEVEL || !key.is_valid() {
             return Err("invalid village cell".into());
         }
-        Ok(village::village_beam_sites_in_cell(self, key))
+        if let Some(sites) = self.village_sites.borrow().get(&key) {
+            return Ok(sites.clone());
+        }
+        let sites = village::village_beam_sites_in_cell(self, key);
+        let mut cache = self.village_sites.borrow_mut();
+        if cache.len() >= 1024 {
+            cache.clear();
+        }
+        cache.insert(key, sites.clone());
+        Ok(sites)
     }
 }
 struct Macro<'a>(&'a Surface);

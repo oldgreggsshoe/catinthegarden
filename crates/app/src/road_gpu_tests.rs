@@ -64,6 +64,14 @@ fn gpu_road_cuts_match_cpu_at_bends_banks_ends_and_underpasses() {
             DVec3::new(c[0] as f64, c[1] as f64, c[2] as f64),
             c[3] as f64,
         );
+        assert_eq!(
+            h[3] > 0.5,
+            plan.cuts.clears_tree(
+                DVec3::new(c[0] as f64, c[1] as f64, c[2] as f64),
+                c[3] as f64
+            ),
+            "pilot tree clearance at {c:?}"
+        );
         let error = (h[0] as f64 - expected).abs();
         maximum = maximum.max(error);
         assert!(
@@ -93,11 +101,20 @@ fn gpu_road_cuts_match_cpu_at_bends_banks_ends_and_underpasses() {
 }
 
 fn execute_cut_samples(profile_data: &[[f32; 4]], cases: &[[f32; 4]]) -> Vec<[f32; 4]> {
+    execute_cut_samples_with_ownership(profile_data, cases, "road_tunnel_lining_owns(c.xyz,c.w)")
+}
+
+fn execute_cut_samples_with_ownership(
+    profile_data: &[[f32; 4]],
+    cases: &[[f32; 4]],
+    ownership: &str,
+) -> Vec<[f32; 4]> {
     let source = format!(
         "const ROAD_CUTS_ENABLED: bool = true;\n{}\n{}",
         include_str!("road_cuts.wgsl").replace("@group(2) @binding(21)", "@group(0) @binding(1)"),
-        "@group(0) @binding(0) var<storage,read_write> results: array<vec4<f32>>;\n@group(0) @binding(2) var<storage,read> cases: array<vec4<f32>>;\n@compute @workgroup_size(1) fn test_cut(@builtin(global_invocation_id) id: vec3<u32>) { let c=cases[id.x]; results[id.x]=vec4<f32>(road_terrain_cut(c.xyz,c.w).height,road_tunnel_void(c.xyz,c.w),select(0.0,1.0,road_tunnel_lining_owns(c.xyz,c.w)),0.0); }"
+        "@group(0) @binding(0) var<storage,read_write> results: array<vec4<f32>>;\n@group(0) @binding(2) var<storage,read> cases: array<vec4<f32>>;\n@compute @workgroup_size(1) fn test_cut(@builtin(global_invocation_id) id: vec3<u32>) { let c=cases[id.x]; results[id.x]=vec4<f32>(road_terrain_cut(c.xyz,c.w).height,road_tunnel_void(c.xyz,c.w),select(0.0,1.0,road_tunnel_lining_owns(c.xyz,c.w)),select(0.0,1.0,road_clears_tree(c.xyz,c.w))); }"
     );
+    let source = source.replace("road_tunnel_lining_owns(c.xyz,c.w)", ownership);
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::VULKAN,
         ..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -281,10 +298,11 @@ fn gpu_far_road_retains_subpixel_coverage_without_black_specks() {
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
-    let render = |angle: f64, phase: f32, clear_depth: f32| {
+    let render = |angle: f64, phase: f32, clear_depth: f32, camera_plane: bool| {
         let tangent = DVec3::new(angle.sin(), angle.cos(), 0.0);
         let mut vertices = Vec::new();
-        for (a, b) in [(-5000.0, 0.0), (0.0, 5000.0)] {
+        let end = if camera_plane { 10.0 } else { 5000.0 };
+        for (a, b) in [(-end, 0.0), (0.0, end)] {
             crate::road::far_segment(
                 &mut vertices,
                 tangent * a,
@@ -298,12 +316,23 @@ fn gpu_far_road_retains_subpixel_coverage_without_black_specks() {
             contents: bytemuck::cast_slice(&vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        let data = [
-            [phase * 50.0, 0.0, -50000.0, 64.0],
-            [1.0, 0.0, 0.0, 64.0],
-            [0.0, 1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0, 0.0],
-        ];
+        let data = if camera_plane {
+            // A physical road 5km BELOW the eye cannot touch the view, even
+            // when its cross-section straddles the eye plane in depth.
+            [
+                [0.0, -5000.0, -phase, 64.0],
+                [1.0, 0.0, 0.0, 64.0],
+                [0.0, 0.0, -1.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+            ]
+        } else {
+            [
+                [phase * 50.0, 0.0, -50000.0, 64.0],
+                [1.0, 0.0, 0.0, 64.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+            ]
+        };
         queue.write_buffer(&frame, 0, bytemuck::cast_slice(&data));
         let mut encoder = device.create_command_encoder(&Default::default());
         {
@@ -377,7 +406,7 @@ fn gpu_far_road_retains_subpixel_coverage_without_black_specks() {
         let mut energies = Vec::new();
         let mut peak = 0.0_f64;
         for i in 0..8 {
-            let pixels = render(angle, i as f32 / 8.0, 0.0);
+            let pixels = render(angle, i as f32 / 8.0, 0.0, false);
             if let Some(dir) = std::env::var_os("PLANET_ROAD_AA_TEST_CAPTURES") {
                 let dir = std::path::PathBuf::from(dir);
                 std::fs::create_dir_all(&dir).unwrap();
@@ -405,11 +434,18 @@ fn gpu_far_road_retains_subpixel_coverage_without_black_specks() {
         );
         assert!(peak < 0.3, "subpixel road became a full dark pixel: {peak}");
     }
-    let hidden = render(0.0, 0.5, 0.00004);
+    let hidden = render(0.0, 0.5, 0.00004, false);
     assert!(
         hidden.chunks_exact(4).all(|p| p[0] == 255),
         "road painted over closer depth"
     );
+    for phase in [0.25, 1.0, 2.0, 4.0] {
+        let hidden = render(std::f64::consts::FRAC_PI_2, phase, 0.0, true);
+        assert!(
+            hidden.chunks_exact(4).all(|p| p[0] == 255),
+            "offscreen far road crossed the camera plane into the frame at depth {phase}"
+        );
+    }
 }
 
 #[test]
@@ -423,6 +459,9 @@ fn gpu_network_field_matches_cpu_for_negative_cells_bends_and_branching_bores() 
             b: b.into(),
             tunnel,
             reach: 48.0,
+            floor_depth: 6.0,
+            junction_a: false,
+            junction_b: false,
         };
         let field = Field::build(
             frame,
@@ -475,5 +514,110 @@ fn gpu_network_field_matches_cpu_for_negative_cells_bends_and_branching_bores() 
             "network up={up:?}: {} GPU samples, max cut error {maximum:.4}m",
             cases.len()
         );
+    }
+}
+
+#[test]
+#[ignore = "requires Vulkan; production forest road exclusion mask"]
+fn gpu_roads_clear_tree_crowns_and_banks_but_retain_forest_above_bores() {
+    use crate::road_network_field::{Field, Frame, Segment};
+    for up in [DVec3::X, DVec3::new(1.0, 2.0, 3.0).normalize()] {
+        let frame = Frame::new(up, crate::planet::planet_radius_meters()).unwrap();
+        let field = Field::build(
+            frame,
+            vec![
+                Segment {
+                    a: DVec3::new(-100.0, 0.0, 100.0),
+                    b: DVec3::new(100.0, 0.0, 100.0),
+                    tunnel: false,
+                    reach: 48.0,
+                    floor_depth: 6.0,
+                    junction_a: false,
+                    junction_b: false,
+                },
+                Segment {
+                    a: DVec3::new(-100.0, 200.0, 100.0),
+                    b: DVec3::new(100.0, 200.0, 100.0),
+                    tunnel: true,
+                    reach: 48.0,
+                    floor_depth: 6.0,
+                    junction_a: false,
+                    junction_b: false,
+                },
+            ],
+        )
+        .unwrap();
+        let fixture = [
+            (0.0, 90.0, true),
+            (20.0, 90.0, true),
+            (30.0, 90.0, false),
+            (35.0, 130.0, true),
+            (80.0, 130.0, false),
+            (200.0, 130.0, false),
+        ];
+        let cases: Vec<_> = fixture
+            .iter()
+            .map(|&(y, h, _)| {
+                let p = frame.world(DVec3::new(0.0, y, h));
+                let d = p.normalize().as_vec3();
+                [d.x, d.y, d.z, (p.length() - frame.radius) as f32]
+            })
+            .collect();
+        for ((_, _, expected), result) in fixture
+            .iter()
+            .zip(execute_cut_samples(field.gpu_data(), &cases))
+        {
+            assert_eq!(result[3] > 0.5, *expected, "up={up:?}, result={result:?}");
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires Vulkan; shallow village apron raster ownership"]
+fn gpu_shallow_approaches_remove_terrain_intruding_through_the_deck() {
+    use crate::road_network_field::{Field, Frame, Segment};
+    for up in [DVec3::X, DVec3::new(1.0, 2.0, 3.0).normalize()] {
+        let frame = Frame::new(up, crate::planet::planet_radius_meters()).unwrap();
+        let mut field = Field::build(
+            frame,
+            vec![Segment {
+                a: DVec3::new(-100.0, 0.0, 100.0),
+                b: DVec3::new(100.0, 0.0, 100.0),
+                tunnel: false,
+                reach: 64.0,
+                floor_depth: 0.15,
+                junction_a: false,
+                junction_b: false,
+            }],
+        )
+        .unwrap();
+        field.set_geometry_window(glam::DVec2::ZERO, 1000.0);
+        let fixtures = [
+            (0.0, 100.1, true),
+            (4.5, 100.1, true),
+            (0.0, 99.6, true),
+            (8.0, 100.1, false),
+            (0.0, 98.0, false),
+        ];
+        let cases: Vec<_> = fixtures
+            .iter()
+            .map(|&(y, h, _)| {
+                let p = frame.world(DVec3::new(0.0, y, h));
+                let d = p.normalize().as_vec3();
+                [d.x, d.y, d.z, (p.length() - frame.radius) as f32]
+            })
+            .collect();
+        let result = execute_cut_samples_with_ownership(
+            field.gpu_data(),
+            &cases,
+            "road_network_open_cut_owns(c.xyz,c.w)",
+        );
+        for ((_, _, expected), r) in fixtures.iter().zip(result) {
+            assert_eq!(
+                r[2] > 0.5,
+                *expected,
+                "shallow approach up={up:?} sample={r:?}"
+            );
+        }
     }
 }

@@ -2598,6 +2598,9 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let biome_id = sample_biome(outmap, input.source_uv, direction);
     let ice = outmap && biome_id == 2u;
     let lake = outmap && biome_id == 1u;
+    if road_tunnel_void(direction, input.surface_height_and_fog_color.x) > 0.0 { discard; }
+    // Cached network banks author narrow cuts the terrain grid can miss.
+    if road_network_open_cut_owns(direction,input.surface_height_and_fog_color.x) { discard; }
     // Render baked bathymetry into the opaque snapshot for surface refraction.
     // A submerged eye sees it directly through the same 100m water medium.
     // This branch adds no geometry, and fetches only for its caustics: macro
@@ -2661,7 +2664,6 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     {
         discard;
     }
-    if road_tunnel_void(direction, input.surface_height_and_fog_color.x) > 0.0 { discard; }
     if render_debug_mode == RENDER_DEBUG_FLAT_TRIANGLES {
         return flat_triangle_colour(input);
     }
