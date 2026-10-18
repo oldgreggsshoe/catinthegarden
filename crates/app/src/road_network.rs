@@ -76,7 +76,7 @@ fn key(index: usize, level: u8) -> TileKey {
         y: (index / side % side) as u32,
     }
 }
-fn direction(key: TileKey, x: f64, y: f64) -> DVec3 {
+pub(crate) fn direction(key: TileKey, x: f64, y: f64) -> DVec3 {
     let side = f64::from(1_u32 << key.level);
     face_uv_to_direction(
         key.face,

@@ -143,6 +143,7 @@ enum Engineering {
     },
     NeedsReroute {
         rejection: crate::road_network_profile::Rejected,
+        rerouting: crate::road_network_route::Rejected,
     },
 }
 
@@ -151,6 +152,7 @@ struct RegionReport {
     #[serde(flatten)]
     topology: road_network::Region,
     engineering: Engineering,
+    rerouting: Option<crate::road_network_route::Stats>,
 }
 
 #[derive(Serialize)]
@@ -232,7 +234,8 @@ pub fn run(root: &Path, output: &Path) -> Result<(), String> {
     let mut samples = Vec::new();
     for key in keys {
         eprintln!("Road network: detailed local survey {key:?}");
-        let region = network.local(key, crate::planet::planet_radius_meters(), &terrain)?;
+        let mut region = network.local(key, crate::planet::planet_radius_meters(), &terrain)?;
+        let mut rerouting = None;
         eprintln!(
             "  {} villages, {} junctions, {:.2} km shared alignment",
             region.village_count,
@@ -254,17 +257,46 @@ pub fn run(root: &Path, output: &Path) -> Result<(), String> {
             }
             Err(rejection) => {
                 eprintln!("  rerouting required: {:?}", rejection);
-                Engineering::NeedsReroute { rejection }
+                match crate::road_network_route::reroute(
+                    &region,
+                    crate::planet::planet_radius_meters(),
+                    &terrain,
+                )? {
+                    Ok(plan) => {
+                        eprintln!(
+                            "  rerouted: {} terminals, {} junctions, {:.2} km, {:.3}% grade; {} states / {:.3}s",
+                            plan.region.terminals.len(),
+                            plan.region.junction_count,
+                            plan.region.length_meters / 1000.0,
+                            plan.profile.maximum_grade * 100.0,
+                            plan.stats.expanded_states,
+                            plan.stats.seconds
+                        );
+                        region = plan.region;
+                        rerouting = Some(plan.stats);
+                        Engineering::Feasible {
+                            profile: plan.profile,
+                        }
+                    }
+                    Err(failure) => {
+                        eprintln!("  rerouting rejected: {:?}", failure);
+                        Engineering::NeedsReroute {
+                            rejection,
+                            rerouting: failure,
+                        }
+                    }
+                }
             }
         };
         samples.push(RegionReport {
             topology: region,
             engineering,
+            rerouting,
         });
     }
     let report = Report {
         status: "survey_and_profile_checks_only",
-        limitations: "Not rendered; profile checks use pinned dense-level terrain, not final sparse-source/render-LOD grounding. Shared profiles are checked at <=9.9% physical grade with a 32m deck-clearance cap and sampled seabed roof cover; infeasible alignments are explicitly rejected for rerouting. Continuous cover, portals, excavation, approach ramps and collision remain unvalidated. Coarse water links REQUIRE tunnels below the bed. Backbone MST optimises a sampled cost proxy on cell adjacency, not global road construction cost; transit-only leaves are conservatively pruned (coarse occupancy may retain unused land roads).",
+        limitations: "Not rendered; profile checks use pinned dense-level terrain, not final sparse-source/render-LOD grounding. Shared profiles are checked at <=24.9% physical grade (user limit 25%) with a 32m deck-clearance cap and sampled seabed roof cover; infeasible alignments are explicitly rejected for height-aware rerouting. Continuous cover, portals, excavation, approach ramps and collision remain unvalidated. Coarse water links REQUIRE tunnels below the bed. Backbone MST optimises a sampled cost proxy on cell adjacency, not global road construction cost; transit-only leaves are conservatively pruned (coarse occupancy may retain unused land roads).",
         source_seed: terrain.outmap.manifest().seed,
         source_generator: terrain.outmap.manifest().generator.clone(),
         source_dense_level: terrain.outmap.manifest().dense_level,
@@ -305,6 +337,134 @@ pub fn run(root: &Path, output: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "asset-backed mountain pilot, physical grades and tunnel coverage"]
+    fn road_mountain_pilot_profile_report() {
+        let root = crate::find_default_outmap().expect("active baked planet");
+        let surface = Surface::load(&root).unwrap();
+        let plan =
+            crate::road::Viaduct::survey(|d| surface.ground(d).ok().map(|g| g.height)).unwrap();
+        let min = plan
+            .route
+            .ground
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min);
+        let max = plan
+            .route
+            .ground
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        let tunnel_length: f64 = plan
+            .tunnels
+            .iter()
+            .map(|t| plan.route.distances[t.end] - plan.route.distances[t.start])
+            .sum();
+        eprintln!(
+            "mountain pilot: relief={}m length={}m tunnels={} bore_length={}m cut_proxy={}m3 straight_proxy={}m3",
+            max - min,
+            plan.route.length(),
+            plan.tunnels.len(),
+            tunnel_length,
+            plan.route.cut_volume,
+            plan.route.straight_cut_volume
+        );
+        assert!(max - min > 2000.0, "test site must have substantial relief");
+        assert!((29980.0..=30000.0).contains(&plan.route.length()));
+        assert!(
+            !plan.tunnels.is_empty(),
+            "mountain test must exercise covered tunnels"
+        );
+        for p in &plan.route.points {
+            let (height, biome, _) = surface.raw(crate::road::world(*p).normalize()).unwrap();
+            assert!(
+                height > 0.0 && !matches!(biome, BiomeId::Ocean | BiomeId::Lake),
+                "pilot must stay on dry mountain terrain"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "instrument: measures dry mountainous road corridors on the active bake"]
+    fn road_test_mountain_site_survey() {
+        let root = crate::find_default_outmap().expect("active baked planet");
+        let surface = Surface::load(&root).unwrap();
+        let old = crate::road::up();
+        let radius = crate::planet::planet_radius_meters();
+        let north = (DVec3::Z - old * old.z).normalize();
+        let across = north.cross(old);
+        let mut candidates = Vec::new();
+        for y in -10..=10 {
+            for x in -10..=10 {
+                let up =
+                    (old * radius + across * (x as f64 * 8000.0) + north * (y as f64 * 8000.0))
+                        .normalize();
+                for heading in [0.0_f64, 90.0, 180.0, 270.0] {
+                    let forward = glam::DQuat::from_axis_angle(up, heading.to_radians())
+                        * (DVec3::Z - up * up.z).normalize();
+                    let mut heights = Vec::new();
+                    let mut dry = 0;
+                    for row in 0..=60 {
+                        let d = (up * radius + forward * (row as f64 * 500.0)).normalize();
+                        let (raw, biome, _) = surface.raw(d).unwrap();
+                        dry += usize::from(
+                            raw > 0.0 && !matches!(biome, BiomeId::Ocean | BiomeId::Lake),
+                        );
+                        heights.push(surface.ground_at(d, false).unwrap().height);
+                    }
+                    let min = heights.iter().copied().fold(f64::INFINITY, f64::min);
+                    let max = heights.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                    if dry >= 55 && min > 0.0 && max < 25_000.0 {
+                        candidates.push((max - min, up, forward, heading));
+                    }
+                }
+            }
+        }
+        candidates.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let mut found = 0;
+        for (_, up, forward, heading) in candidates.into_iter().take(80) {
+            let side = forward.cross(up);
+            let mut ground = |p: glam::DVec2| -> Option<f64> {
+                let mut z = 0.0;
+                for _ in 0..2 {
+                    let d = (up * (radius + z) + forward * p.y + side * p.x).normalize();
+                    let (raw, biome, _) = surface.raw(d).ok()?;
+                    if raw <= 0.0 || matches!(biome, BiomeId::Ocean | BiomeId::Lake) {
+                        return None;
+                    }
+                    let h = surface.ground(d).ok()?.height;
+                    z = d.dot(up) * (radius + h) - radius;
+                }
+                Some(z)
+            };
+            if let Some(route) = crate::road_route::Route::plan(&mut ground) {
+                let tunnels = crate::road_tunnel::select(&route, &mut ground);
+                let min = route.ground.iter().copied().fold(f64::INFINITY, f64::min);
+                let max = route
+                    .ground
+                    .iter()
+                    .copied()
+                    .fold(f64::NEG_INFINITY, f64::max);
+                if max - min > 2000.0 && !tunnels.is_empty() {
+                    found += 1;
+                    eprintln!(
+                        "mountain candidate {}",
+                        serde_json::to_string(&(max - min, tunnels.len(), up.to_array(), heading))
+                            .unwrap()
+                    );
+                    if found == 5 {
+                        break;
+                    }
+                }
+            }
+        }
+        assert!(
+            found > 0,
+            "no dry mountain route with a covered tunnel found"
+        );
+    }
 
     #[test]
     #[ignore = "instrument: requires the active baked planet; no GPU needed"]

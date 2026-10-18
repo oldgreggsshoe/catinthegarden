@@ -40,8 +40,9 @@ pub fn is_replay(name: &str) -> bool {
     )
 }
 pub fn up() -> DVec3 {
-    // Mountain foothills, below the summit: a 30 km graded alpine corridor.
-    DVec3::new(0.48836709668686046, 0.5231724814861347, 0.6984183083863758).normalize()
+    // Alpine ridge country: the westbound trial crosses steep natural
+    // relief and covered ridge tunnels; the allowed road grade is 25%.
+    DVec3::new(0.45242405006232295, 0.5402686479569877, 0.7095225626855942).normalize()
 }
 pub fn forward() -> DVec3 {
     static HEADING: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
@@ -50,7 +51,7 @@ pub fn forward() -> DVec3 {
             .ok()
             .and_then(|v| v.parse::<f64>().ok())
             .filter(|v| v.is_finite())
-            .unwrap_or(0.0)
+            .unwrap_or(270.0)
             .to_radians()
     });
     let north = (DVec3::Z - up() * up().z).normalize();
@@ -711,7 +712,7 @@ mod tests {
         Viaduct::survey(|d| Some(1900.0 + 35.0 * (d.dot(forward()) * 10000.0).sin())).unwrap()
     }
     #[test]
-    fn graded_road_stays_within_ten_percent_on_the_curved_planet() {
+    fn graded_road_stays_within_twenty_five_percent_on_the_curved_planet() {
         let p = plan();
         for pair in p.route.points.windows(2) {
             let a = world(pair[0]);

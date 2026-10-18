@@ -4,9 +4,9 @@ use glam::{DVec2, DVec3};
 
 pub const TARGET_LENGTH: f64 = 30_000.0;
 pub const SAMPLE_STEP: f64 = 10.0;
-pub const MAX_GRADE: f64 = 0.10;
+pub const MAX_GRADE: f64 = 0.25;
 // Reserve one percentage point for the changing local vertical over 30 km.
-const LOCAL_GRADE: f64 = 0.09;
+const LOCAL_GRADE: f64 = MAX_GRADE - 0.01;
 const ROW_STEP: f64 = 100.0;
 const COLUMN_STEP: f64 = 50.0;
 const COLUMNS: usize = 121;
@@ -250,6 +250,18 @@ fn estimated_cut_volume(ground: &[f64], points: &[DVec3], distances: &[f64]) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn alpine_grade_limit_follows_twenty_percent_ground_without_deep_cuts() {
+        assert_eq!(MAX_GRADE, 0.25);
+        let route = Route::plan(|p| Some(1800.0 + 0.20 * p.y)).unwrap();
+        // The end curves deliberately flatten; test the sustained climb.
+        assert!(route.ground.iter().zip(&route.points).skip(100)
+            .take(route.ground.len() - 200).all(|(g, p)| g - p.z < 1.0));
+        assert!(route.points.windows(2).any(|p| {
+            (p[1].z - p[0].z).abs() / (p[1] - p[0]).truncate().length() > 0.19
+        }));
+    }
+
     #[test]
     fn route_bends_around_hills_instead_of_cutting_straight_through() {
         let ground = |p: DVec2| {

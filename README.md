@@ -77,9 +77,8 @@ internal and display resolutions.
 The new headless planner builds a shared planet-wide backbone and local village
 junction trees, with island links designated as **undersea tunnels**. It also
 checks shared elevations, physical grade and sampled seabed cover. This is
-**not yet a visible/drivable network**: rejected alignments need rerouting,
-followed by mesh/cut/collision and background-streaming integration. The current
-single-road experiment below is unchanged. See [implementation status](docs/ROAD_NETWORK.md).
+**not yet a visible/drivable network**: height-aware rerouting is implemented,
+but mesh/cut/collision and background-streaming integration remain outstanding. See [implementation status](docs/ROAD_NETWORK.md).
 
 Run the CPU-only survey with a new output filename (no display/GPU required):
 
@@ -91,7 +90,7 @@ cargo run --release -p planet-app -- --road-network-survey test-runs/road-networ
 
 The opt-in trial is now approximately **30 km** of terrain-led bends on
 variable-height legs. A one-time corridor search penalises steep natural
-ground, route length and sharp turns; a fitted deck profile has a hard **10%
+ground, route length and sharp turns; a fitted deck profile has a hard **25%
 maximum grade**. Local hillside cuts make room beneath the deck, with exposed
 earth on cut faces. Cuts are reversible runtime deformation, not edits to the
 baked outmap. Meshes/cuts are cached, with local batches and a distant deck LOD.
@@ -99,17 +98,18 @@ Distant decks use analytic pixel coverage: a sub-pixel road contributes a faint
 line instead of flickering solid pixels. This works independently of F6 post-AA;
 close geometry is unchanged and foreground terrain still occludes the road.
 
-The trial now starts in a **mountain valley**. Sustained cuts deeper than 25 m
+The trial now starts in **steeper alpine ridge country**, crossing about 6.4 km
+of natural relief. Sustained cuts deeper than 25 m
 for at least 100 m become tunnels where a five-point cross-road survey confirms
 at least 5 m of cover above the 9 m crown. Portals extend toward the hillside;
 sections still buried at a survey endpoint are not given false portals. The
-current ~30 km route includes a ~1.76 km portal-to-portal tunnel. Its deck stays
+current ~30 km route includes five tunnels totalling about 1.57 km. Its deck stays
 on legs, with cached lining, portal collars and small marker strips; walking
 uses the deck beneath the hill, with swept wall/roof collision.
 `road_tunnel_trial` shows entry/interior/exit/roof views; `road_tunnel_walk`
 walks through the entrance. `PLANET_ROAD_TUNNELS=0` keeps the same route but
 uses the previous open-cut treatment, for comparisons. `PLANET_ROAD_HEADING`
-rotates the local survey corridor in degrees (default 0); other alignments
+rotates the local survey corridor in degrees (default 270, westbound); other alignments
 are experimental and may not produce a tunnel.
 Use the default **raster** renderer for exploration: the alternate ray path
 still has exterior terrain issues at this mountain site, even with tunnels off.

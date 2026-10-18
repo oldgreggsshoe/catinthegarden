@@ -13,10 +13,10 @@ use std::{
     collections::BinaryHeap,
 };
 
-const STEP: f64 = 20.0;
+pub(crate) const STEP: f64 = 20.0;
 // Radial heights (unlike the pilot's tangent z) already include curvature.
-// Retain 0.1 percentage point for tessellation below the user's 10% limit.
-const GRADE: f64 = 0.099;
+// Retain 0.1 percentage point for tessellation below the user's 25% limit.
+const GRADE: f64 = crate::road_route::MAX_GRADE - 0.001;
 const CLEARANCE: f64 = 8.0;
 const PIER_CAP: f64 = 32.0;
 const UNDERSEA_CROWN: f64 = 9.0;
@@ -96,11 +96,66 @@ fn envelope(mut heights: Vec<f64>, adjacency: &[Vec<(usize, f64)>]) -> Vec<f64> 
     heights
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct Sample {
+    pub ground: crate::road_network::Ground,
+    pub cap: f64,
+    pub anchor: f64,
+}
+
+fn anchor_height(g: crate::road_network::Ground, cap: f64) -> f64 {
+    if g.ocean {
+        cap - (UNDERSEA_DECK_DEPTH - UNDERSEA_CROWN - UNDERSEA_COVER)
+    } else {
+        g.height + CLEARANCE
+    }
+}
+
+pub(crate) fn sample_at(d: DVec3, radius: f64, terrain: &impl Survey) -> Result<Sample, String> {
+    let ground = terrain.ground(d)?;
+    if !ground.height.is_finite() {
+        return Err("non-finite profile terrain".into());
+    }
+    let cap = if ground.ocean {
+        // Canonical radial stencil: shared gateway height on both regions/faces.
+        let reference = if d.z.abs() < 0.9 { DVec3::Z } else { DVec3::Y };
+        let u = d.cross(reference).normalize();
+        let v = d.cross(u);
+        let mut bed = ground.height;
+        for offset in [u, -u, v, -v] {
+            let g = terrain.ground((d + offset * (8.0 / radius)).normalize())?;
+            if !g.height.is_finite() {
+                return Err("non-finite tunnel cover".into());
+            }
+            bed = bed.min(g.height);
+        }
+        bed - UNDERSEA_CROWN - UNDERSEA_COVER
+    } else {
+        ground.height + PIER_CAP
+    };
+    Ok(Sample {
+        ground,
+        cap,
+        anchor: anchor_height(ground, cap),
+    })
+}
+
 impl Profile {
     pub fn fit(
         region: &Region,
         radius: f64,
         terrain: &impl Survey,
+    ) -> Result<Result<Self, Rejected>, String> {
+        Self::fit_fixed(region, radius, terrain, &[])
+    }
+
+    /// The height-aware router fixes shared lattice states as well as terminal
+    /// anchors; do not subsequently slide a junction onto a different level.
+    pub(crate) fn fit_fixed(
+        region: &Region,
+        radius: f64,
+        terrain: &impl Survey,
+        fixed: &[(usize, f64)],
     ) -> Result<Result<Self, Rejected>, String> {
         if !radius.is_finite() || radius <= 0.0 {
             return Err("invalid network profile radius".into());
@@ -131,38 +186,17 @@ impl Profile {
         let mut ground = Vec::with_capacity(dirs.len());
         let mut caps = Vec::with_capacity(dirs.len());
         for &d in &dirs {
-            let g = terrain.ground(d)?;
-            if !g.height.is_finite() {
-                return Err("non-finite profile terrain".into());
-            }
-            // A deterministic radial stencil gives the same conservative
-            // gateway cap on both sides of a cube/region boundary. Detailed
-            // portal engineering must additionally test the actual bore sides.
-            let cap = if g.ocean {
-                let reference = if d.z.abs() < 0.9 { DVec3::Z } else { DVec3::Y };
-                let u = d.cross(reference).normalize();
-                let v = d.cross(u);
-                let mut bed = g.height;
-                for offset in [u, -u, v, -v] {
-                    let sample = terrain.ground((d + offset * (8.0 / radius)).normalize())?;
-                    if !sample.height.is_finite() {
-                        return Err("non-finite tunnel cover".into());
-                    }
-                    bed = bed.min(sample.height);
-                }
-                bed - UNDERSEA_CROWN - UNDERSEA_COVER
-            } else {
-                g.height + PIER_CAP
-            };
-            ground.push(g);
-            caps.push(cap);
+            let sample = sample_at(d, radius, terrain)?;
+            ground.push(sample.ground);
+            caps.push(sample.cap);
         }
         // Envelope edge lengths use a conservative lower radius. Heights
         // cannot fall below the lowest cap minus this anchor allowance, so
         // even a deep undersea tunnel respects the PHYSICAL grade limit.
         let cap_to_target =
             (PIER_CAP - CLEARANCE).max(UNDERSEA_DECK_DEPTH - UNDERSEA_CROWN - UNDERSEA_COVER);
-        let minimum_height = caps.iter().copied().reduce(f64::min).unwrap_or(0.0) - cap_to_target;
+        let minimum_height = (caps.iter().copied().reduce(f64::min).unwrap_or(0.0) - cap_to_target)
+            .min(fixed.iter().map(|(_, h)| *h).fold(f64::INFINITY, f64::min));
         let minimum_radius = radius + minimum_height;
         if minimum_radius <= 0.0 {
             return Err("profile reaches the planet centre".into());
@@ -182,14 +216,28 @@ impl Profile {
         let mut upper_sources = caps;
         for &i in &region.terminal_nodes {
             let g = ground[i];
-            let anchor = if g.ocean {
-                // The stencil, not just the centre texel, owns seabed cover.
-                upper_sources[i] - (UNDERSEA_DECK_DEPTH - UNDERSEA_CROWN - UNDERSEA_COVER)
-            } else {
-                g.height + CLEARANCE
-            };
+            let anchor = anchor_height(g, upper_sources[i]);
             low_sources[i] = -anchor;
             upper_sources[i] = anchor;
+        }
+        for &(i, height) in fixed {
+            if i >= region.nodes.len() || !height.is_finite() {
+                return Err("invalid fixed road-profile state".into());
+            }
+            if height > upper_sources[i] + 1e-6 {
+                return Ok(Err(Rejected {
+                    reason: "fixed state exceeds clearance/cover cap",
+                    node: i,
+                    required_minimum_meters: height,
+                    allowed_maximum_meters: upper_sources[i],
+                }));
+            }
+            // A fixed state may coincide with a terminal, but cannot change it.
+            if low_sources[i].is_finite() && (height + low_sources[i]).abs() > 1e-6 {
+                return Err("fixed state moved a village/gateway anchor".into());
+            }
+            low_sources[i] = -height;
+            upper_sources[i] = height;
         }
         let lower: Vec<_> = envelope(low_sources, &adjacency)
             .into_iter()
@@ -257,6 +305,29 @@ mod tests {
     use super::*;
     use crate::road_network::{Ground, Node, RoadEdge, Terminal, TerminalKind};
     use planet_coretypes::{CubeFace, TileKey};
+    #[test]
+    fn road_network_profile_allows_twenty_percent_but_rejects_twenty_six_percent() {
+        struct Ramp(f64);
+        impl Survey for Ramp {
+            fn ground(&self, d: DVec3) -> Result<Ground, String> {
+                Ok(Ground {
+                    height: 1000.0 + self.0 * d.y / d.x * 4e6,
+                    ocean: false,
+                })
+            }
+            fn villages(&self, _: TileKey) -> Result<Vec<DVec3>, String> {
+                Ok(Vec::new())
+            }
+        }
+        for (grade, accepted) in [(0.20, true), (0.26, false)] {
+            let result = Profile::fit(&tree(), 4e6, &Ramp(grade)).unwrap();
+            assert_eq!(result.is_ok(), accepted, "physical grade {grade}");
+            if let Ok(profile) = result {
+                assert!(profile.maximum_grade <= 0.25);
+            }
+        }
+    }
+
     fn direction(x: f64, y: f64) -> DVec3 {
         DVec3::new(1.0, x / 4e6, y / 4e6).normalize()
     }

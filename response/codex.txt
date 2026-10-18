@@ -71,3 +71,7 @@ I’ll also finish checking the presentation optimization already in progress, s
 The matched runs recovered most of the loss: about **21 FPS → 28 FPS**, with synchronization still enabled. Final captures are pixel-identical.
 
 I’m checking resize and low-latency behaviour next, then moving on to the steeper site and 25% grade limit. The optimized path will still need your live jitter check.
+
+The new 30 km route crosses about 6.4 km of natural relief and includes five covered tunnels. I’ve inspected the driving, tunnel-entry, interior and exit captures; the route stays on dry terrain and within the 25% grade limit.
+
+All four sampled network profiles now pass engineering checks. I’m still working on live network integration—that result alone doesn’t mean the whole network is finished.

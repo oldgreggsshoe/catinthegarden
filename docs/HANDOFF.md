@@ -16,6 +16,22 @@ Shared junctions and tunnel-only island connections still apply. Implement in
 stages; the network below remains headless until its mesh/cut/collision/streaming
 integration is actually implemented and validated.
 
+**Completed road engineering phase (18 October): steeper site and 25% grades.**
+Pilot now uses up=(0.45242405006232295,0.5402686479569877,0.7095225626855942),
+heading270 degrees. Actual dry route:29.993km,6.414km ground relief,5 bores
+(1.567km total),max support33.65m. The 25% shared grade constant reserves 1pp
+for pilot curvature,0.1pp for radial network profiles,0.5pp for A* search.
+Asset-backed pilot regression passes,including dry biome checks. Road tests32
+pass/5ignored before the following network-field work. Opened raster overview,
+drive and entry/interior/exit captures listed in ROAD_NETWORK.md; all replay
+assertions pass. The distant overview road is faint on snow; deepest-cut view
+shows intact roof,not the buried deck. No new FPS claim at this site yet.
+Height-aware rerouting is now included, with6 passing tests. Fresh release CLI
+`test-runs/road-network-25-grade-2026-10-18.json` has all4 sampled profiles
+feasible<=24.9%,including39 villages and both undersea gateway sides;9.30s.
+This is not a completed visible/streamed network. Next work: bounded arbitrary
+network excavation index,then source reconciliation/meshes/live streaming.
+
 **Completed performance phase (18 October): synchronized presentation overlap.**
 
 The same `PLANET_SYNC_PRESENT=1` flag now retains one submitted swapchain image.
@@ -83,14 +99,6 @@ captures), `test-runs/road-turn-jitter/before-fixed-residual.json`, and the
 camera/focus logs and screen barcode were removed; the pre-existing
 `PLANET_DEBUG_TURN` logger remains. Physical-screen capture/recording attempts
 were inconclusive, so do not claim displayed-frame ordering has been measured.
-
-Uncommitted height-aware network rerouting work from before this bug report
-remains in `road_network_route.rs`, `road_network_profile.rs`,
-`road_network_survey.rs`, `road_network.rs` and its main.rs module declaration.
-Six new routing tests pass, including the sea-aware heuristic's island fixture;
-the final sea-aware version still needs a fresh real CLI survey and review.
-Do not stage this unfinished work with the presentation diagnostic or confuse
-it with a rendered network.
 
 **Previous phase (18 October): whole-planet road-network planning and profile checks.**
 

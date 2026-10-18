@@ -30,6 +30,7 @@ mod road;
 mod road_gpu_tests;
 mod road_network;
 mod road_network_profile;
+mod road_network_route;
 mod road_network_survey;
 mod road_render;
 mod road_route;

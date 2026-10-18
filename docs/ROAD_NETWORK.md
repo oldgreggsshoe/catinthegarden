@@ -5,7 +5,7 @@
 The requested network covers the **whole planet**, with shared roads and real
 junctions rather than every village connected separately to every other village.
 **Island connections must be tunnels below the seabed, not ferries or surface
-bridges.** The existing elevated deck, terrain-led alignment, <=10% physical
+bridges.** The existing elevated deck, terrain-led alignment, <=25% physical
 grade and hillside tunnels remain the intended construction rules.
 
 This first phase implements a **headless topology survey and shared profile
@@ -46,8 +46,8 @@ Do not claim an FPS result for road-network rendering before it exists.
   extension fit one elevation per shared node. Independent per-edge fits would
   produce vertically disconnected junctions. Village approaches and gateways
   have fixed elevations; grade, bounded deck clearance and sampled seabed
-  cover constrain the rest. Physical grade is capped at 9.9%, retaining a small
-  margin below 10%; the propagation uses a conservative lower physical radius,
+  cover constrain the rest. Physical grade is capped at 24.9%, retaining a small
+  margin below the user-requested 25%; the propagation uses a conservative lower physical radius,
   including underwater depth. Land deck clearance is capped at 32 m.
 - Undersea profiles retain a 9 m crown plus at least 5 m sampled roof cover,
   using a centre and four 8 m radial stencil samples. Gateway anchors use that
@@ -57,6 +57,15 @@ Do not claim an FPS result for road-network rendering before it exists.
 - `road_network_survey.rs`: CPU-only baked-terrain source and a headless CLI.
   The exact production village sampler was factored out of `terrain.rs`; no
   placement rule, constant or camera-dependent village behaviour was changed.
+
+- `road_network_route.rs`: bounded height-aware A* reroutes alignments rejected
+  by the initial shared profile. States include lattice position, height and
+  incoming heading; new branches join a trunk at exactly its existing height.
+  Terminal/gateway anchors do not move, and sampled spans retain grade,
+  clearance and undersea-cover constraints. A sea-aware planar lower-bound
+  guide avoids exhausting the search on cheap-looking land before a dive.
+  Search/memory limits reject explicitly; a failed branch is never accepted as
+  a complete network. The weighted search is not a global optimality claim.
 
 The MST minimises a sampled cost proxy **on the candidate cell/lattice graph**,
 not worldwide engineering cost or a globally optimal Steiner tree. The coarse
@@ -83,6 +92,21 @@ terrain with close-range detail; sparse-source and actual rendered-LOD grounding
 must be reconciled before meshing.
 
 ## Evidence, 18 October
+
+Current 25% survey: `test-runs/road-network-25-grade-2026-10-18.json`,
+console `/tmp/stuff-network-25-cli.log`: all four detailed samples are feasible,
+including all 39 villages at PositiveX (43,1) and both sides of the real undersea
+link. Maximum sampled physical grade 24.9%; total headless time 9.30 s. These
+four cases do not establish feasibility of every planetary region.
+Six height-aware rerouting tests cover longer climbs, shared branch heights,
+coincident terminals, island dives, explicit budgets and exact seam anchors.
+Pilot regression checks a dry ~29.993 km mountain route, ~6.414 km ground relief,
+five covered tunnels totalling ~1.567 km, with the 25% cap checked physically.
+Opened pilot captures: `road_viaduct_overview/1792339098-938892`,
+`road_tunnel_trial/1792339309-939529`, `road_surface_trial/1792339344-939615`.
+The first overview views the roof rather than exposing the buried road.
+
+Earlier 10% evidence (historical):
 
 Verified survey: `test-runs/road-network-survey-final-2026-10-18.json`;
 console/resources: `/tmp/stuff-network-cli-final.log`.
@@ -117,11 +141,10 @@ and placeholder-source rejection. Binary SHA256:
 
 ## Next implementation steps — not yet done
 
-1. Feed profile rejection back into alignment search. A cheap 2D route can be
-   too short to climb, descend or dive beneath a coast within 10%. Do not solve
-   that by relaxing grade, moving settlement heights, or silently dropping a
-   connection. A height-aware route search/longer tunnel approach is required;
-   independently refitting edge endpoints cannot fix it.
+1. Height-aware rerouting is implemented and tested. Validate more real regions,
+   including budget failures, before claiming the whole planet is engineered.
+   The requested maximum is now 25%; never relax it or move terminal heights to
+   disguise an infeasible connection.
 2. Reconcile dense survey heights with finest baked source and the drawn
    terrain/detail ladder. Smooth horizontal/vertical curves while retaining
    shared junction and cross-region endpoint constraints. Add village-edge
