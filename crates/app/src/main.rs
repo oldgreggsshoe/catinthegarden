@@ -110,6 +110,21 @@ fn presentation_sync_enabled(value: Option<&str>) -> bool {
     matches!(value.map(str::trim), Some("1" | "true" | "on"))
 }
 
+/// Consume the single pending image only after its own submission completes.
+/// Keeping the wait separate lets the next frame's CPU work overlap that GPU
+/// submission without ever presenting an incomplete image.
+fn complete_pending_present<F, S, E>(
+    pending: &mut Option<(F, S)>,
+    wait: impl FnOnce(S) -> Result<(), E>,
+    present: impl FnOnce(F),
+) -> Result<(), E> {
+    if let Some((image, submission)) = pending.take() {
+        wait(submission)?;
+        present(image);
+    }
+    Ok(())
+}
+
 fn movement_key_latch_expired(released_for: Duration) -> bool {
     released_for >= MOVEMENT_KEY_LATCH
 }
@@ -1544,6 +1559,7 @@ struct State {
     config: wgpu::SurfaceConfiguration,
     /// Opt-in diagnostic for unsynchronised compositor presentation.
     sync_present: bool,
+    pending_present: Option<(wgpu::SurfaceTexture, wgpu::SubmissionIndex)>,
     /// Internal HDR/depth/LOD resolution. This remains fixed while fullscreen.
     size: winit::dpi::PhysicalSize<u32>,
     /// Native swapchain size, which can be larger than the internal scene.
@@ -2184,6 +2200,7 @@ impl State {
             queue,
             config,
             sync_present,
+            pending_present: None,
             size,
             surface_size: size,
             fullscreen_render_size: None,
@@ -2512,6 +2529,8 @@ impl State {
             return;
         }
 
+        // A surface cannot be reconfigured while its old image is held.
+        self.finish_pending_present();
         self.surface_size = size;
         self.config.width = size.width;
         self.config.height = size.height;
@@ -2539,6 +2558,27 @@ impl State {
             fixed_render_resolution = self.fullscreen_render_size.is_some(),
             "resized render surface"
         );
+    }
+
+    fn finish_pending_present(&mut self) -> bool {
+        let device = &self.device;
+        match complete_pending_present(
+            &mut self.pending_present,
+            |submission_index| {
+                device.poll(wgpu::PollType::Wait {
+                    submission_index: Some(submission_index),
+                    timeout: Some(Duration::from_secs(5)),
+                }).map(|_| ())
+            },
+            |output| output.present(),
+        ) {
+            Ok(()) => true,
+            Err(error) => {
+                self.scenario_capture_failed = true;
+                tracing::error!(%error, "presentation sync failed; discarding incomplete frame");
+                false
+            }
+        }
     }
 
     fn resize_render_targets(&mut self, size: winit::dpi::PhysicalSize<u32>) {
@@ -5604,12 +5644,20 @@ impl State {
             let layout = self.sky_moon_pending_layout.take().unwrap();
             self.sky_moon = sky_moon::SkyMoon::new(self, &layout);
         }
-        let paint_jobs = render_egui.then_some(&self.cached_paint_jobs);
         if !self.debug_overlay_visible && !water_display {
             self.hud_dirty = false;
             self.next_hud_update = now + HIDDEN_REFRESH_INTERVAL;
         }
         let egui_ms = profile_started.elapsed().as_secs_f32() * 1_000.0 - simulation_ms;
+        // Prepare the next view while the previous image renders, then fence
+        // and present it before acquiring another. This also works with a
+        // one-frame swapchain latency: never hold two acquired images.
+        let deferred_present_started = Instant::now();
+        if !self.finish_pending_present() {
+            return None;
+        }
+        let deferred_present_ms = deferred_present_started.elapsed().as_secs_f32() * 1_000.0;
+        let paint_jobs = render_egui.then_some(&self.cached_paint_jobs);
         let screen_descriptor = egui_wgpu::ScreenDescriptor {
             size_in_pixels: [self.surface_size.width, self.surface_size.height],
             pixels_per_point: window.scale_factor() as f32,
@@ -6697,22 +6745,16 @@ impl State {
         let gpu_timestamp_readback_ms = gpu_readback_started.elapsed().as_secs_f32() * 1_000.0;
         let present_started = Instant::now();
         if let Some(output) = output {
-            // Xwayland on older NVIDIA drivers can display a buffer before
-            // rendering completes. Keep this diagnostic opt-in: waiting here
-            // removes CPU/GPU overlap and can reduce FPS. Offscreen profiling
-            // has no presentation and must not pay for this fence.
-            if self.sync_present
-                && let Err(error) = self.device.poll(wgpu::PollType::Wait {
-                    submission_index: Some(submission_index),
-                    timeout: Some(Duration::from_secs(5)),
-                })
-            {
-                tracing::error!(%error, "presentation sync failed; skipping incomplete frame");
-                return None;
+            if self.sync_present {
+                // Fence this exact submission next frame, after CPU preparation
+                // but before presentation. Offscreen profiling queues no image.
+                debug_assert!(self.pending_present.is_none());
+                self.pending_present = Some((output, submission_index));
+            } else {
+                output.present();
             }
-            output.present();
         }
-        let present_ms = present_started.elapsed().as_secs_f32() * 1_000.0;
+        let present_ms = deferred_present_ms + present_started.elapsed().as_secs_f32() * 1_000.0;
         let capture_started = Instant::now();
         let mut captured_frame = None;
         if let Some(pending_capture) = pending_capture {
@@ -6891,6 +6933,7 @@ impl State {
         }
 
         if scenario_complete {
+            self.finish_pending_present();
             self.flush_gpu_profile();
             let expected_screenshots = self
                 .scenario
@@ -6918,6 +6961,8 @@ impl State {
 
 impl Drop for State {
     fn drop(&mut self) {
+        // Release any unpresented image before the surface itself is dropped.
+        self.pending_present.take();
         let _ = self.log_writer.flush();
     }
 }
@@ -8027,6 +8072,81 @@ mod tests {
         for value in ["1", "true", "on", " 1 "] {
             assert!(super::presentation_sync_enabled(Some(value)));
         }
+    }
+
+    #[test]
+    fn synchronized_presentation_waits_before_showing_the_pending_frame() {
+        let events = std::cell::RefCell::new(vec!["submit", "prepare next frame"]);
+        let mut pending = Some(("image", 7));
+        super::complete_pending_present(
+            &mut pending,
+            |submission| {
+                assert_eq!(submission, 7);
+                events.borrow_mut().push("wait");
+                Ok::<(), ()>(())
+            },
+            |image| {
+                assert_eq!(image, "image");
+                events.borrow_mut().push("present");
+            },
+        )
+        .unwrap();
+        assert!(pending.is_none());
+        assert_eq!(
+            events.into_inner(),
+            ["submit", "prepare next frame", "wait", "present"]
+        );
+    }
+
+    #[test]
+    fn synchronized_presentation_discards_an_incomplete_frame() {
+        struct Image<'a>(&'a std::cell::Cell<u32>);
+        impl Drop for Image<'_> {
+            fn drop(&mut self) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+        let dropped = std::cell::Cell::new(0);
+        let mut pending = Some((Image(&dropped), 7));
+        let result = super::complete_pending_present(
+            &mut pending,
+            |_| Err("timeout"),
+            |_| panic!("must not show an incomplete frame"),
+        );
+        assert_eq!(result, Err("timeout"));
+        assert!(pending.is_none());
+        assert_eq!(dropped.get(), 1);
+    }
+
+    #[test]
+    fn synchronized_presentation_does_not_wait_without_a_pending_frame() {
+        let mut pending: Option<(u32, u32)> = None;
+        let result = super::complete_pending_present(
+            &mut pending,
+            |_| -> Result<(), ()> { panic!("no GPU wait without a frame") },
+            |_| panic!("no image to present"),
+        );
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn synchronized_presentation_overlaps_preparation_and_drains_before_acquisition() {
+        let source = include_str!("main.rs");
+        let render = source.split("fn render(&mut self, window: &Window)").nth(1).unwrap();
+        let prepare = render.find("let egui_ms =").unwrap();
+        let finish = render.find("self.finish_pending_present()").unwrap();
+        let acquire = render.find("self.surface.get_current_texture()").unwrap();
+        assert!(prepare < finish && finish < acquire);
+        let submitted = render.split("let submission_index = self.queue.submit").nth(1).unwrap();
+        let scheduled = submitted.split("let capture_started =").next().unwrap();
+        assert!(scheduled.contains("self.pending_present = Some((output, submission_index))"));
+        assert!(!scheduled.contains("self.device.poll"), "do not serialize the new frame");
+        let resize = source.split("fn resize(&mut self, size:").nth(1).unwrap();
+        assert!(resize.find("self.finish_pending_present()").unwrap()
+            < resize.find("self.surface.configure").unwrap());
+        let complete = render.split("if scenario_complete {").nth(1).unwrap();
+        assert!(complete.find("self.finish_pending_present()").unwrap()
+            < complete.find("self.artifacts.finish").unwrap());
     }
 
     #[test]

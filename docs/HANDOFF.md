@@ -10,6 +10,32 @@ surface appearance and crest geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
+**New requested work (18 October):** move the road test to steeper mountains,
+allow up to 25% physical grade, and finish the whole-planet village network.
+Shared junctions and tunnel-only island connections still apply. Implement in
+stages; the network below remains headless until its mesh/cut/collision/streaming
+integration is actually implemented and validated.
+
+**Completed performance phase (18 October): synchronized presentation overlap.**
+
+The same `PLANET_SYNC_PRESENT=1` flag now retains one submitted swapchain image.
+Next frame's CPU simulation/terrain/HUD preparation overlaps its GPU work, then
+the image's own submission is fenced and presented BEFORE acquiring another.
+It never presents unfinished work or holds two acquired images. Resize and
+scenario completion drain it; shutdown releases any held image before the
+surface. Empty/offscreen paths do not GPU-wait. `present_ms` includes the
+deferred wait, so the saving is real overlap rather than hidden timing.
+
+Two matched X11/Immediate 640x360 pairs, 12 non-capture samples each:
+serial 47.52 / 47.28 ms, overlapped 35.83 / 35.81 ms (~21 -> ~28 FPS).
+All four final captures are pixel-identical; scenario assertions pass.
+Evidence: `test-runs/road-turn-jitter/present-overlap-comparison.json`.
+Four scheduling/error/empty/call-site regression tests pass. Full working-tree
+suite: 686 pass / same 6 existing failures / 47 ignored (includes pending
+network rerouting tests). Logs `/tmp/stuff-present-overlap-{red,tests,build,full-tests}.log`.
+The GPU-completion guarantee is retained, but the user has not yet confirmed
+the live jitter result on this optimized scheduling path.
+
 **Current priority (18 October): road-enabled downward-turn jitter.**
 
 User reports back-and-forth whole-scene jumps away from the road, looking down
@@ -32,8 +58,9 @@ stack: https://download.nvidia.com/XFree86/Linux-x86_64/550.163.01/README/waylan
 The live result supports this lead, but the exact mechanism is not proven.
 `PLANET_SYNC_PRESENT=1` is an **opt-in
 diagnostic/workaround** for the main planet renderer: wait for the submitted GPU
-frame before `present()`. It defaults off, does not fence offscreen profiling,
-and can reduce FPS by removing CPU/GPU overlap. Wait failures are logged and the
+frame before `present()`. It defaults off and does not fence offscreen profiling;
+the original serial version removed CPU/GPU overlap (now recovered above).
+Wait failures are logged and the
 incomplete frame is not presented. Keep the flag available for this stack;
 do not enable the expensive wait globally on the strength of this one result.
 Next follow-up is a performance-preserving solution, not terrain/camera tuning
@@ -45,7 +72,8 @@ routing tests). Release build passes. Matched X11/Immediate 640x360
 `road_viaduct_performance` runs pass with sync off/on and their final captures
 are pixel-identical. One pair, 12 non-capture samples each: 34.20 ms off versus
 48.16 ms on (~29 versus ~21 FPS); the measured wait is in `present_ms`. This is
-why the fence is diagnostic and defaults OFF, not an accepted performance fix.
+why the original serial fence was diagnostic and defaulted OFF. The improved
+scheduling above keeps that same opt-in flag.
 Results: `test-runs/road-turn-jitter/present-sync-comparison.json`;
 logs: `/tmp/stuff-present-sync-{green,full-tests,final-build}.log`.
 

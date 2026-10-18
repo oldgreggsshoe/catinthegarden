@@ -55,3 +55,19 @@ That strongly points to presentation synchronization rather than road geometry. 
 Good—keep `PLANET_SYNC_PRESENT=1` for now. Your result strongly points to frame-delivery synchronization rather than road geometry.
 
 I’ve recorded that. It stays opt-in because of the FPS cost; a smoother solution without that penalty is still outstanding.
+
+Yes—there’s a promising way to recover them. We can let the CPU prepare the next frame while the GPU finishes the previous one, then wait only before presenting that completed frame.
+
+I’ll inspect the presentation and resize paths, test that scheduling change, and compare matched frame times. The “finish rendering before showing it” guarantee will stay intact.
+
+The timings support that approach: the workaround adds about 14 ms, while CPU frame preparation takes about 12 ms.
+
+I’ll test three possibilities: recovering CPU/GPU overlap, swapchain throttling still limiting throughput, or a change in CPU workload. I’ll keep those timings separate so moving the wait doesn’t merely hide its cost.
+
+I’ll do this in stages: find a measurably steeper test site, raise the physical grade limit to 25%, then finish the network’s live rendering, terrain cuts and collision, and bounded streaming. The plan will keep shared junctions, connect every village, and use tunnels for island links.
+
+I’ll also finish checking the presentation optimization already in progress, so we don’t lose the jitter workaround or its FPS improvement.
+
+The matched runs recovered most of the loss: about **21 FPS → 28 FPS**, with synchronization still enabled. Final captures are pixel-identical.
+
+I’m checking resize and low-latency behaviour next, then moving on to the steeper site and 25% grade limit. The optimized path will still need your live jitter check.
